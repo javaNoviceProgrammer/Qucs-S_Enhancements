@@ -63,12 +63,63 @@ double besselZero(int n)
 /// in a list, and the operations are the few the recursion needs.
 using Series = QList<QPair<double, double>>;   // (coefficient, path length)
 
-constexpr double kTermFloor = 1e-13;   ///< a term smaller than this is dropped
+/*!
+ * How weak a term may be before it is pruned, measured as what it is
+ * worth beside one at the stack's finest length (Budget::worth).
+ *
+ * A part in a hundred million, which is four orders below what the method
+ * of moments on top of this can tell apart and three below what the
+ * spectral integral the images are checked against can resolve. Tightening
+ * it does not make an answer better; it only makes a deep stack
+ * combinatorial, which five slabs at 1e-13 showed by running to eighteen
+ * thousand images and half a minute.
+ */
+constexpr double kTermFloor = 1e-13;
 constexpr int kMostTerms = 20000;      ///< and no more than this many are kept
+
+/*!
+ * What a term is worth, and what was dropped.
+ *
+ * Enumerating every path through a stack is combinatorial - five slabs ran
+ * to eighteen thousand images and half a minute - and nearly all of the
+ * long ones are worth nothing, because an image at a distance z is worth
+ * at most a/z. So a term is judged by that, against the finest length of
+ * the stack, and not by its coefficient alone: an image a hundred slabs
+ * away must be a hundred times stronger to be kept.
+ *
+ * What is pruned is not thrown away. Its charge and its first moment are
+ * kept and put back at the end as one image at their own mean distance,
+ * which is right in both limits - near the charge those paths were
+ * negligible anyway, and far from it only the total charge is felt - and
+ * between them is wrong by no more than the pruned terms themselves.
+ */
+struct Budget {
+    double zRef = 1;        ///< the length a path is judged against, m
+    double lumpA = 0;       ///< the coarsened terms' charge
+    double lumpAz = 0;      ///< and their first moment
+    double coarsened = 0;   ///< their worth, which the lump stands for
+    double missing = 0;     ///< the worth of what nothing stands for
+
+    /// What a term at \a z with coefficient \a a is worth, relative to
+    /// one at the reference length.
+    double worth(double a, double z) const { return std::abs(a) * zRef / std::max(z, zRef); }
+    /// A term too weak to keep on its own: its charge goes into the lump,
+    /// which is put back at the end, so nothing of it is lost but where
+    /// along the path it sat.
+    void coarsen(double a, double z)
+    {
+        lumpA += a;
+        lumpAz += a * z;
+        coarsened += worth(a, z);
+    }
+    /// A term nothing stands for: the bounces ran out before the series
+    /// did, so this much of the reflection is simply not there.
+    void lose(double a, double z) { missing += worth(a, z); }
+};
 
 ///  s with the terms below the floor dropped and equal lengths added
 /// together; what was dropped is added to  lost.
-Series tidied(Series s, double* lost)
+Series tidied(Series s, Budget* lost)
 {
     std::sort(s.begin(), s.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
     Series out;
@@ -80,37 +131,37 @@ Series tidied(Series s, double* lost)
     }
     Series kept;
     for (const auto& t : std::as_const(out)) {
-        if (std::abs(t.first) < kTermFloor) {
-            if (lost != nullptr) *lost += std::abs(t.first);
-        } else {
-            kept << t;
-        }
+        if (lost != nullptr && lost->worth(t.first, t.second) < kTermFloor) lost->coarsen(t.first, t.second);
+        else if (std::abs(t.first) >= kTermFloor) kept << t;
     }
     if (kept.size() > kMostTerms) {
-        std::sort(kept.begin(), kept.end(), [](const auto& a, const auto& b) { return std::abs(a.first) > std::abs(b.first); });
+        std::sort(kept.begin(), kept.end(), [&lost](const auto& a, const auto& b) {
+            return (lost != nullptr ? lost->worth(a.first, a.second) : std::abs(a.first))
+                   > (lost != nullptr ? lost->worth(b.first, b.second) : std::abs(b.first));
+        });
         for (int i = kMostTerms; i < kept.size(); ++i)
-            if (lost != nullptr) *lost += std::abs(kept.at(i).first);
+            if (lost != nullptr) lost->coarsen(kept.at(i).first, kept.at(i).second);
         kept.erase(kept.begin() + kMostTerms, kept.end());
     }
     return kept;
 }
 
-Series times(const Series& a, const Series& b, double* lost)
+Series times(const Series& a, const Series& b, Budget* lost)
 {
     Series out;
     out.reserve(std::min(a.size() * b.size(), qsizetype(kMostTerms * 2)));
     for (const auto& x : a)
         for (const auto& y : b) {
-            const double c = x.first * y.first;
-            if (std::abs(c) >= kTermFloor) out << QPair<double, double>{c, x.second + y.second};
-            else if (lost != nullptr) *lost += std::abs(c);
+            const double c = x.first * y.first, z = x.second + y.second;
+            if (lost != nullptr && lost->worth(c, z) < kTermFloor) lost->coarsen(c, z);
+            else if (std::abs(c) >= kTermFloor) out << QPair<double, double>{c, z};
         }
     return tidied(std::move(out), lost);
 }
 
 /// 1/(1 -  x), where every term of  x decays: the geometric series,
 /// to the term that no longer matters.
-Series overOneMinus(const Series& x, double* lost)
+Series overOneMinus(const Series& x, Budget* lost)
 {
     Series out{{1.0, 0.0}}, power{{1.0, 0.0}};
     constexpr int kMostBounces = 2000;
@@ -127,7 +178,7 @@ Series overOneMinus(const Series& x, double* lost)
     // What the next term would have been is counted as lost, which is the
     // order of all the rest of them, so that the caller can see it.
     if (lost != nullptr)
-        for (const auto& t : std::as_const(power)) *lost += std::abs(t.first);
+        for (const auto& t : std::as_const(power)) lost->lose(t.first, t.second);
     return tidied(std::move(out), lost);
 }
 
@@ -223,113 +274,361 @@ Layers layersOf(const Stack& stack)
 
 // ------------------------------------------------- The Green's function
 
-Green::Green(const Layers& layers, double z) : a_z(z)
+Green::Green(const Layers& layers, double z) : Green(layers, z, z) {}
+
+double Green::interfaceAt(int i) const
+{
+    const double here = a_layers.slabs.at(i).epsr;
+    const double above = i + 1 < a_layers.slabs.size() ? a_layers.slabs.at(i + 1).epsr : a_layers.epsrAbove;
+    return (here - above) / (here + above);
+}
+
+double Green::thicknessAt(int i) const
+{
+    return a_layers.slabs.at(i).z1 - a_layers.slabs.at(i).z0;
+}
+
+double Green::upwardAt(int i, double k) const
+{
+    double r = interfaceAt(a_layers.slabs.size() - 1);
+    for (int j = int(a_layers.slabs.size()) - 2; j >= i; --j) {
+        const double e = std::exp(-2 * k * thicknessAt(j + 1));
+        r = (interfaceAt(j) + r * e) / (1 + interfaceAt(j) * r * e);
+    }
+    return r;
+}
+
+double Green::downwardAt(int i, double k) const
+{
+    // Looking down from slab j's bottom interface: the reflection of that
+    // interface is the one above it, taken the other way round.
+    const auto below = [this](int j) {
+        const double here = a_layers.slabs.at(j).epsr;
+        const double under = j > 0 ? a_layers.slabs.at(j - 1).epsr : a_layers.epsrBelow;
+        return (here - under) / (here + under);
+    };
+    double r = a_ground ? -1.0 : below(0);
+    for (int j = 1; j <= i; ++j) {
+        const double e = std::exp(-2 * k * thicknessAt(j - 1));
+        r = (below(j) + r * e) / (1 + below(j) * r * e);
+    }
+    return r;
+}
+
+Green::Green(const Layers& layers, double zField, double zSource)
+    : a_layers(layers), a_z(zField), a_zSource(zSource)
 {
     if (!layers.ok()) {
         a_problems = layers.problems.isEmpty() ? QStringList{tr("The stack cannot be read as layers.")} : layers.problems;
         return;
     }
-    const int at = layers.slabAt(z);
-    if (at < 0) {
+    a_src = layers.slabAt(zSource);
+    a_fld = layers.slabAt(zField);
+    if (a_src < 0) {
         a_problems << tr("A charge at %1 µm is outside the stack (it is %2 µm high).")
-                          .arg(z * 1e6, 0, 'g', 4).arg(layers.height() * 1e6, 0, 'g', 4);
+                          .arg(zSource * 1e6, 0, 'g', 4).arg(layers.height() * 1e6, 0, 'g', 4);
         return;
     }
-    const Layers::Slab& slab = layers.slabs.at(at);
-    a_epsr = slab.epsr;
-    a_up = slab.z1 - z;
-    a_down = z - slab.z0;
+    if (a_fld < 0) {
+        a_problems << tr("A point at %1 µm is outside the stack (it is %2 µm high).")
+                          .arg(zField * 1e6, 0, 'g', 4).arg(layers.height() * 1e6, 0, 'g', 4);
+        return;
+    }
+    a_epsr = layers.slabs.at(a_src).epsr;
     a_ground = layers.groundBelow;
+    // The stack's finest length, which is what a path is judged against.
+    a_zRef = std::numeric_limits<double>::max();
+    for (int i = 0; i < layers.slabs.size(); ++i)
+        a_zRef = std::min(a_zRef, layers.slabs.at(i).z1 - layers.slabs.at(i).z0);
+    if (!(a_zRef > 0) || a_zRef == std::numeric_limits<double>::max()) a_zRef = 1e-9;
 
-    // The interfaces above the charge's slab, and the slabs between them:
-    // the first coefficient is of its own top interface.
-    for (int i = at; i < layers.slabs.size(); ++i) {
-        const double above = i + 1 < layers.slabs.size() ? layers.slabs.at(i + 1).epsr : layers.epsrAbove;
-        const double here = layers.slabs.at(i).epsr;
-        a_rUp << (here - above) / (here + above);
-        if (i + 1 < layers.slabs.size()) a_hUp << (layers.slabs.at(i + 1).z1 - layers.slabs.at(i + 1).z0);
-    }
-    // And below it, the first of its own bottom interface.
-    for (int i = at; i >= 0; --i) {
-        const double below = i > 0 ? layers.slabs.at(i - 1).epsr : layers.epsrBelow;
-        const double here = layers.slabs.at(i).epsr;
-        a_rDown << (here - below) / (here + below);
-        if (i > 0) a_hDown << (layers.slabs.at(i - 1).z1 - layers.slabs.at(i - 1).z0);
-    }
+}
 
-    // The images: the reflections expanded into the paths that make them.
-    // Looking up, from the topmost interface down to the charge's own; the
-    // recursion of a stratified medium, written out.
-    Series up{{a_rUp.isEmpty() ? 0.0 : a_rUp.last(), 0.0}};
-    for (int i = a_rUp.size() - 2; i >= 0; --i) {
-        const Series e = shifted(up, 2 * a_hUp.at(i));          // R' exp(-2 k h)
-        const Series num = Series{{a_rUp.at(i), 0.0}} + e;      // r + R' E
-        const Series den = scaled(e, -a_rUp.at(i));             // -(r R' E)
-        up = times(num, overOneMinus(den, &a_truncated), &a_truncated);
+void Green::build() const
+{
+    if (a_built || !ok()) return;
+    a_built = true;
+    const Layers& layers = a_layers;
+    // ---- the images, by the same recursion written symbolically.
+    //
+    // Judged against the finest length of the stack: an image far away is
+    // worth little however strong it is, and enumerating every one of the
+    // long paths is what makes a deep stack combinatorial.
+    Budget budget;
+    budget.zRef = a_zRef;
+    //
+    // A series here is a sum of a exp(-k z): the coefficient of an image
+    // and the length of the path it travelled. Every exponent below is
+    // negative, so no path is of negative length and nothing grows.
+    // (Built once each: the chain below asks for the same slab's
+    // reflections several times over, and each one is the whole nested
+    // expansion above or below it.)
+    QHash<int, Series> upCache, downCache;
+    const auto up = [this, &budget, &upCache](int i) {
+        if (upCache.contains(i)) return upCache.value(i);
+        Series r{{interfaceAt(int(a_layers.slabs.size()) - 1), 0.0}};
+        for (int j = int(a_layers.slabs.size()) - 2; j >= i; --j) {
+            const Series e = shifted(r, 2 * thicknessAt(j + 1));
+            r = times(Series{{interfaceAt(j), 0.0}} + e, overOneMinus(scaled(e, -interfaceAt(j)), &budget),
+                      &budget);
+        }
+        upCache.insert(i, r);
+        return r;
+    };
+    const auto belowOf = [this](int j) {
+        const double here = a_layers.slabs.at(j).epsr;
+        const double under = j > 0 ? a_layers.slabs.at(j - 1).epsr : a_layers.epsrBelow;
+        return (here - under) / (here + under);
+    };
+    const auto down = [this, &belowOf, &budget, &downCache](int i) {
+        if (downCache.contains(i)) return downCache.value(i);
+        Series r{{a_ground ? -1.0 : belowOf(0), 0.0}};
+        for (int j = 1; j <= i; ++j) {
+            const Series e = shifted(r, 2 * thicknessAt(j - 1));
+            r = times(Series{{belowOf(j), 0.0}} + e, overOneMinus(scaled(e, -belowOf(j)), &budget), &budget);
+        }
+        downCache.insert(i, r);
+        return r;
+    };
+
+    Series series;
+    if (a_fld == a_src) {
+        const double h = thicknessAt(a_src);
+        const double u = a_z - a_layers.slabs.at(a_src).z0, us = a_zSource - a_layers.slabs.at(a_src).z0;
+        const Series ru = up(a_src), rd = down(a_src);
+        const Series both = shifted(times(ru, rd, &budget), 2 * h);
+        // One bounce down, one up, and the two round trips - whose paths
+        // are 2h minus and plus the gap between the heights, both of them
+        // longer than the slab itself.
+        Series numerator = shifted(rd, u + us) + shifted(ru, 2 * h - u - us)
+                           + shifted(times(ru, rd, &budget), 2 * h - (u - us))
+                           + shifted(times(ru, rd, &budget), 2 * h + (u - us));
+        series = times(tidied(std::move(numerator), &budget), overOneMinus(both, &budget), &budget);
+        // Two metals with one dielectric between them are both in that
+        // slab, at its two faces: the same slab, but not the same height.
+        // The way straight from one to the other is then a term like any
+        // other, since there is no 1/rho to take out of it.
+        if (a_z != a_zSource) series << QPair<double, double>{1.0, std::abs(a_z - a_zSource)};
+    } else {
+        // Across two slabs. The wave that leaves the source's slab on the
+        // side the point is, then through each interface between them,
+        // then what it does inside the point's own slab. Taken upward;
+        // where the point is below the charge it is the same thing upside
+        // down, which is what the mirrored indices do.
+        const bool upward = a_fld > a_src;
+        const int lo = upward ? a_src : a_fld, hi = upward ? a_fld : a_src;
+        // Measured from the source's slab in the direction of travel.
+        const int from = upward ? a_src : a_fld;   // the slab the wave starts in
+        Q_UNUSED(lo);
+        Q_UNUSED(hi);
+        const double hs = thicknessAt(a_src);
+        const double us = a_zSource - a_layers.slabs.at(a_src).z0;
+        // How far the charge is from the face it leaves by, and how far
+        // the point is from the face the wave arrives at.
+        const double leaveAt = upward ? hs - us : us;
+        const double arriveAt = upward ? a_z - a_layers.slabs.at(a_fld).z0
+                                       : a_layers.slabs.at(a_fld).z1 - a_z;
+        const Series ruS = upward ? up(a_src) : down(a_src);
+        const Series rdS = upward ? down(a_src) : up(a_src);
+        // Leaving the source's slab: the direct way out, and the way that
+        // went the other way first and came back.
+        Series amp = times(Series{{1.0, leaveAt}} + shifted(rdS, 2 * hs - leaveAt),
+                           overOneMinus(shifted(times(ruS, rdS, &budget), 2 * hs), &budget), &budget);
+        // Through each interface on the way, and across each slab between
+        // them. The cavity of a slab it only passes through is of that
+        // slab's two faces alone: the reflection back the way it came is
+        // the one interface it just crossed, not everything beyond it,
+        // which those paths are already counted in.
+        const int step = upward ? 1 : -1;
+        for (int j = a_src; j != a_fld; j += step) {
+            const int face = upward ? j : j - 1;        // the interface between j and the next
+            const double t = upward ? 1 + interfaceAt(face) : 1 - interfaceAt(face);
+            amp = scaled(amp, t);
+            const int next = j + step;
+            if (next != a_fld) {
+                const double hj = thicknessAt(next);
+                const Series ahead = upward ? up(next) : down(next);
+                const double back = upward ? -interfaceAt(face) : interfaceAt(face);
+                amp = times(shifted(amp, hj), overOneMinus(shifted(scaled(ahead, back), 2 * hj), &budget),
+                            &budget);
+            }
+        }
+        // And inside the point's own slab: straight to it, and round off
+        // the far face.
+        const double hf = thicknessAt(a_fld);
+        const int lastFace = upward ? a_fld - 1 : a_fld;
+        const Series ahead = upward ? up(a_fld) : down(a_fld);
+        const double back = upward ? -interfaceAt(lastFace) : interfaceAt(lastFace);
+        const Series inside = times(Series{{1.0, arriveAt}} + shifted(ahead, 2 * hf - arriveAt),
+                                    overOneMinus(shifted(scaled(ahead, back), 2 * hf), &budget), &budget);
+        series = times(amp, inside, &budget);
+        Q_UNUSED(from);
     }
-    Series down{{a_ground ? -1.0 : (a_rDown.isEmpty() ? 0.0 : a_rDown.last()), 0.0}};
-    for (int i = a_rDown.size() - 2; i >= 0; --i) {
-        const Series e = shifted(down, 2 * a_hDown.at(i));
-        const Series num = Series{{a_rDown.at(i), 0.0}} + e;
-        const Series den = scaled(e, -a_rDown.at(i));
-        down = times(num, overOneMinus(den, &a_truncated), &a_truncated);
+    series = tidied(std::move(series), &budget);
+    // What was pruned, put back as one image at the mean distance of the
+    // paths it stands for: near the charge those paths were worth nothing,
+    // far from it only their charge is felt, and this is right in both.
+    if (std::abs(budget.lumpA) > kTermFloor) {
+        const double z = std::abs(budget.lumpAz / budget.lumpA);
+        series << QPair<double, double>{budget.lumpA, std::max(z, budget.zRef)};
     }
-    // The charge and the point are at one height, so one bounce down is
-    // 2 a_down of path, one bounce up 2 a_up, and a round trip the slab
-    // twice over.
-    const double h = a_up + a_down;
-    const Series both = shifted(times(up, down, &a_truncated), 2 * h);
-    Series series = shifted(down, 2 * a_down) + shifted(up, 2 * a_up) + scaled(both, 2.0);
-    series = times(tidied(std::move(series), &a_truncated), overOneMinus(both, &a_truncated), &a_truncated);
-    series = tidied(std::move(series), &a_truncated);
-    std::sort(series.begin(), series.end(), [](const auto& a, const auto& b) { return std::abs(a.first) > std::abs(b.first); });
+    // What is missing is what nothing stands for - the bounces that ran
+    // out - and not what was coarsened into the lump, whose charge is
+    // still there and only its place along the path approximate.
+    a_truncated = budget.missing;
+    a_coarsened = budget.coarsened;
+    // Strongest first, by what each is worth near the charge: that is the
+    // order strongestTerms() hands out, and the order a reader wants.
+    std::sort(series.begin(), series.end(), [&budget](const auto& a, const auto& b) {
+        return budget.worth(a.first, a.second) > budget.worth(b.first, b.second);
+    });
     a_images.reserve(series.size());
     for (const auto& t : std::as_const(series)) a_images << Image{t.first, t.second};
+
+    // The table over distance, filled from the images. Building it costs
+    // one pass over them; reading it costs nothing, which is what a method
+    // of moments needs when a stack of three slabs runs to six thousand
+    // images and every pair of cells would otherwise sum all of them.
+    double small = std::numeric_limits<double>::max(), large = 0;
+    const auto note = [&](double d) {
+        if (d > 0) {
+            small = std::min(small, d);
+            large = std::max(large, d);
+        }
+    };
+    for (int i = 0; i < layers.slabs.size(); ++i) note(thicknessAt(i));
+    note(std::abs(a_z - a_zSource));
+    note(a_layers.slabs.at(a_src).z1 - a_zSource);
+    note(a_zSource - a_layers.slabs.at(a_src).z0);
+    if (large <= 0) {
+        small = large = std::max(1e-9, a_zRef);
+    }
+    const double from = small * 1e-4, to = large * 1e4;
+    // A hundred and twenty a decade: the product curves most where the
+    // nearest image sits, and sixty left a few parts in a hundred
+    // thousand there. Filling costs one pass over the images, which is
+    // nothing beside what reading the table saves.
+    const int count = std::clamp(int(std::ceil(std::log10(to / from) * 120)), 320, 3200);
+    a_rho.reserve(count);
+    a_table.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        const double rho = from * std::pow(to / from, double(i) / (count - 1));
+        a_rho << rho;
+        a_table << rho * reflected(rho);
+    }
+}
+
+double Green::reflectedByTable(double rho) const
+{
+    if (!ok() || rho <= 0) return 0;
+    build();
+    if (a_table.isEmpty() || rho < a_rho.first() || rho > a_rho.last()) return reflected(rho);
+    // A cubic through the four samples around it (Catmull-Rom), of rho
+    // times the value rather than the value: that product tends to a
+    // constant at either end and is smooth between, where the value
+    // itself curves like 1/sqrt(rho^2 + z^2).
+    const double t = std::log(rho / a_rho.first()) / std::log(a_rho.last() / a_rho.first());
+    const double x = t * (a_table.size() - 1);
+    const int i = std::clamp(int(x), 0, int(a_table.size()) - 2);
+    const double f = x - i;
+    const double p0 = a_table.at(std::max(0, i - 1)), p1 = a_table.at(i), p2 = a_table.at(i + 1),
+                 p3 = a_table.at(std::min(int(a_table.size()) - 1, i + 2));
+    const double product =
+        p1 + 0.5 * f * ((p2 - p0) + f * ((2 * p0 - 5 * p1 + 4 * p2 - p3) + f * (3 * (p1 - p2) + p3 - p0)));
+    return product / rho;
+}
+
+QList<Green::Image> Green::strongestTerms(int most) const
+{
+    QList<Image> all = allTerms();
+    if (all.size() <= most) return all;
+    all.erase(all.begin() + most, all.end());
+    return all;
+}
+
+double Green::beyondStrongest(double rho, int most) const
+{
+    if (!ok() || rho <= 0) return 0;
+    build();
+    double sum = 0;
+    for (int i = most; i < a_images.size(); ++i)
+        sum += a_images.at(i).a / std::sqrt(rho * rho + a_images.at(i).z * a_images.at(i).z);
+    // (allTerms() puts the charge itself first at one height, so the
+    // images beyond the n'th of allTerms() are the images beyond the
+    // (n-1)'th of a_images.)
+    if (sameHeight() && most > 0) {
+        sum = 0;
+        for (int i = most - 1; i < a_images.size(); ++i)
+            sum += a_images.at(i).a / std::sqrt(rho * rho + a_images.at(i).z * a_images.at(i).z);
+    }
+    return sum / (4 * M_PI * epsilon());
 }
 
 double Green::spectralReflection(double k) const
 {
-    if (k <= 0) {
-        // The limit at k = 0: every exponential is one. (A test asks for
-        // it; the integral's own panels start above zero.)
-        double ru = a_rUp.isEmpty() ? 0.0 : a_rUp.last();
-        for (int i = a_rUp.size() - 2; i >= 0; --i) ru = (a_rUp.at(i) + ru) / (1 + a_rUp.at(i) * ru);
-        double rd = a_ground ? -1.0 : (a_rDown.isEmpty() ? 0.0 : a_rDown.last());
-        for (int i = a_rDown.size() - 2; i >= 0; --i) rd = (a_rDown.at(i) + rd) / (1 + a_rDown.at(i) * rd);
-        const double den = 1 - ru * rd;
-        return std::abs(den) < 1e-14 ? 0.0 : (rd + ru + 2 * ru * rd) / den;
+    if (!ok()) return 0;
+    if (k <= 0) k = 1e-12 / std::max(1e-12, a_layers.height());
+    const double hs = thicknessAt(a_src);
+    const double us = a_zSource - a_layers.slabs.at(a_src).z0;
+    if (a_fld == a_src) {
+        const double u = a_z - a_layers.slabs.at(a_src).z0;
+        const double ru = upwardAt(a_src, k), rd = downwardAt(a_src, k);
+        const double den = 1 - ru * rd * std::exp(-2 * k * hs);
+        if (std::abs(den) < 1e-14) return 0;
+        const double direct = a_z != a_zSource ? std::exp(-k * std::abs(u - us)) : 0.0;
+        return direct
+               + (rd * std::exp(-k * (u + us)) + ru * std::exp(-k * (2 * hs - u - us))
+                  + ru * rd * (std::exp(-k * (2 * hs - (u - us))) + std::exp(-k * (2 * hs + (u - us)))))
+                     / den;
     }
-    // Looking up from the charge's slab, and down: the generalized
-    // reflection of a stratified medium, which only ever holds decaying
-    // exponentials and so cannot overflow.
-    double ru = a_rUp.isEmpty() ? 0.0 : a_rUp.last();
-    for (int i = a_rUp.size() - 2; i >= 0; --i) {
-        const double e = std::exp(-2 * k * a_hUp.at(i));
-        ru = (a_rUp.at(i) + ru * e) / (1 + a_rUp.at(i) * ru * e);
+    const bool upward = a_fld > a_src;
+    const double leaveAt = upward ? hs - us : us;
+    const double arriveAt = upward ? a_z - a_layers.slabs.at(a_fld).z0 : a_layers.slabs.at(a_fld).z1 - a_z;
+    const double ruS = upward ? upwardAt(a_src, k) : downwardAt(a_src, k);
+    const double rdS = upward ? downwardAt(a_src, k) : upwardAt(a_src, k);
+    double amp = (std::exp(-k * leaveAt) + rdS * std::exp(-k * (2 * hs - leaveAt)))
+                 / (1 - ruS * rdS * std::exp(-2 * k * hs));
+    const int step = upward ? 1 : -1;
+    for (int j = a_src; j != a_fld; j += step) {
+        const int face = upward ? j : j - 1;
+        amp *= upward ? 1 + interfaceAt(face) : 1 - interfaceAt(face);
+        const int next = j + step;
+        if (next != a_fld) {
+            const double hj = thicknessAt(next);
+            const double ahead = upward ? upwardAt(next, k) : downwardAt(next, k);
+            const double back = upward ? -interfaceAt(face) : interfaceAt(face);
+            amp *= std::exp(-k * hj) / (1 - ahead * back * std::exp(-2 * k * hj));
+        }
     }
-    double rd = a_ground ? -1.0 : (a_rDown.isEmpty() ? 0.0 : a_rDown.last());
-    for (int i = a_rDown.size() - 2; i >= 0; --i) {
-        const double e = std::exp(-2 * k * a_hDown.at(i));
-        rd = (a_rDown.at(i) + rd * e) / (1 + a_rDown.at(i) * rd * e);
-    }
-    // The charge and the point are at one height, so the two one-bounce
-    // terms are e^-2k(distance to that interface) and the round trip is
-    // twice the slab.
-    const double h = a_up + a_down;
-    const double eUp = std::exp(-2 * k * a_up), eDown = std::exp(-2 * k * a_down), eBoth = std::exp(-2 * k * h);
-    const double den = 1 - ru * rd * eBoth;
-    if (std::abs(den) < 1e-14) return 0;
-    return (rd * eDown + ru * eUp + 2 * ru * rd * eBoth) / den;
+    const double hf = thicknessAt(a_fld);
+    const int lastFace = upward ? a_fld - 1 : a_fld;
+    const double ahead = upward ? upwardAt(a_fld, k) : downwardAt(a_fld, k);
+    const double back = upward ? -interfaceAt(lastFace) : interfaceAt(lastFace);
+    return amp * (std::exp(-k * arriveAt) + ahead * std::exp(-k * (2 * hf - arriveAt)))
+           / (1 - ahead * back * std::exp(-2 * k * hf));
+}
+
+QList<Green::Image> Green::allTerms() const
+{
+    build();
+    QList<Image> out;
+    if (sameHeight()) out << Image{1.0, 0.0};
+    out += a_images;
+    return out;
 }
 
 double Green::freeSpace(double rho) const
 {
-    return rho > 0 ? 1.0 / (4 * M_PI * epsilon() * rho) : 0.0;
+    // Across two heights the direct path crosses interfaces to get there,
+    // so it is one of the images and there is no free-space term of its
+    // own to take out.
+    return sameHeight() && rho > 0 ? 1.0 / (4 * M_PI * epsilon() * rho) : 0.0;
 }
 
 double Green::reflected(double rho) const
 {
     if (!ok() || rho <= 0) return 0;
+    build();
     double sum = 0;
     for (const Image& i : a_images) sum += i.a / std::sqrt(rho * rho + i.z * i.z);
     return sum / (4 * M_PI * epsilon());
@@ -341,10 +640,16 @@ double Green::reflectedByIntegral(double rho) const
     // What the reflections tend to as k grows: a charge lying on an
     // interface sees its image at no distance at all, and that part of the
     // integral is the closed form 1/rho rather than something to
-    // integrate. What is left of the reflections decays.
-    const double rUp = a_rUp.isEmpty() ? 0.0 : a_rUp.first();
-    const double rDown = a_ground ? -1.0 : (a_rDown.isEmpty() ? 0.0 : a_rDown.first());
-    const double tail = (a_down <= 0 ? rDown : 0.0) + (a_up <= 0 ? rUp : 0.0);
+    // integrate. What is left of the reflections decays. Across two
+    // heights there is no such part at all, since every path there has a
+    // slab to cross.
+    const double toTop = a_layers.slabs.at(a_src).z1 - a_zSource, toBottom = a_zSource - a_layers.slabs.at(a_src).z0;
+    const double rUp = interfaceAt(a_src);
+    const double rDown = a_ground && a_src == 0
+                             ? -1.0
+                             : (a_layers.slabs.at(a_src).epsr - (a_src > 0 ? a_layers.slabs.at(a_src - 1).epsr : a_layers.epsrBelow))
+                                   / (a_layers.slabs.at(a_src).epsr + (a_src > 0 ? a_layers.slabs.at(a_src - 1).epsr : a_layers.epsrBelow));
+    const double tail = sameHeight() ? ((toBottom <= 0 ? rDown : 0.0) + (toTop <= 0 ? rUp : 0.0)) : 0.0;
     const auto f = [this, tail](double k) { return spectralReflection(k) - tail; };
 
     // The scales the integrand decays on: the smallest sets how far in k
@@ -356,10 +661,10 @@ double Green::reflectedByIntegral(double rho) const
             large = std::max(large, d);
         }
     };
-    note(a_up);
-    note(a_down);
-    for (double h : std::as_const(a_hUp)) note(h);
-    for (double h : std::as_const(a_hDown)) note(h);
+    note(toTop);
+    note(toBottom);
+    note(std::abs(a_z - a_zSource));
+    for (int i = 0; i < a_layers.slabs.size(); ++i) note(thicknessAt(i));
     if (large <= 0) return tail / (4 * M_PI * epsilon() * rho);
     const double kMax = 40.0 / small;
 
@@ -437,7 +742,7 @@ double Green::reflectedByIntegral(double rho) const
 double Green::potential(double rho) const
 {
     if (!ok() || rho <= 0) return 0;
-    return freeSpace(rho) + reflected(rho);
+    return freeSpace(rho) + reflectedByTable(rho);
 }
 
 } // namespace qucs_s::rf25
