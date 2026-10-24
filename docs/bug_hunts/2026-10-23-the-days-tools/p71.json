@@ -1,0 +1,12 @@
+[["open_document", {"path": "ac.sch"}],
+ ["get_schematic", {}],
+ ["tune", {"component": "nothing", "range": [1, 2], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1}, 120],
+ ["tune", {"component": "R1", "range": [2, 1], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1}, 120],
+ ["tune", {"component": "R1", "range": [1, 1], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1}, 120],
+ ["tune", {"component": "R1", "range": [-1, 1e300], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1}, 120],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "nothing", "what": "final"}, "target": 1}, 120],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "ac.gain_db", "what": "banana"}, "target": 1}, 120],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1, "max_runs": 0}, 120],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1, "tolerance": -1}, 120],
+ ["tune", {"component": "R1", "values": ["1k", "2k"], "measure": {"variable": "ac.gain_db", "what": "final"}, "apply": false}, 240],
+ ["get_schematic", {}]]

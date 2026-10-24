@@ -1,0 +1,6 @@
+[["new_document", {}],
+ ["save_document", {"as": "l.sch"}],
+ ["get_dataset", {"path": "lie.dat"}],
+ ["get_dataset", {"path": "lie.dat", "variables": ["gain"]}],
+ ["add_diagram", {"type": "rect", "x": 100, "y": 300, "traces": [{"variable": "gain"}]}],
+ ["get_state", {}]]

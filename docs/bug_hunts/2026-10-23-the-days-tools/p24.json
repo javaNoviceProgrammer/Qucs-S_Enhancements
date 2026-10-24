@@ -1,0 +1,8 @@
+[["fem_model", {"action": "open", "path": "bratu.qfem"}],
+ ["fem_solve", {}, 600],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["__run", {"cmd": "stat -f '%Sm %z %N' -t '%H:%M:%S' WS/*.dpl > WS/t1.txt 2>&1", "wait": 2}],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["__run", {"cmd": "stat -f '%Sm %z %N' -t '%H:%M:%S' WS/*.dpl > WS/t2.txt 2>&1", "wait": 2}],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["__run", {"cmd": "stat -f '%Sm %z %N' -t '%H:%M:%S' WS/*.dpl > WS/t3.txt 2>&1"}]]

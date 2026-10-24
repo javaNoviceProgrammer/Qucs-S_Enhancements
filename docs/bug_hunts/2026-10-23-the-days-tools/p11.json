@@ -1,0 +1,4 @@
+[["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [117, 343, 495, 376]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [495, 376, 117, 343]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [1, 1, 1.0001, 1.0001]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [0.01, 0.005, 0.06, 0.02]}]]

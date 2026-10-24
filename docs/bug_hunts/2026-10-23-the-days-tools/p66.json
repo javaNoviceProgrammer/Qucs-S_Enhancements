@@ -1,0 +1,7 @@
+[["open_document", {"path": "ac.sch"}],
+ ["simulate", {}, 240],
+ ["get_dataset", {"variables": ["ac.gain_db"], "points": 3}],
+ ["get_dataset", {"variables": ["ac.gain_db"], "points": 0}],
+ ["get_dataset", {"variables": ["ac.gain_db"], "points": -5}],
+ ["get_dataset", {"variables": ["ac.gain_db"], "points": 2147483647}],
+ ["get_dataset", {"variables": ["ac.gain_db"]}]]

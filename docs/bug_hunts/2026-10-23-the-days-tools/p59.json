@@ -1,0 +1,11 @@
+[["new_document", {}],
+ ["get_ui", {}],
+ ["trigger_action", {"action": "nothing at all"}],
+ ["trigger_action", {"action": ""}],
+ ["set_ui", {"press": "nothing at all"}],
+ ["context_menu", {"on": {"x": 1e300, "y": 1e300}}],
+ ["context_menu", {"on": {"x": 100, "y": 100}, "choose": "nothing at all"}],
+ ["send_input", {"keys": "a", "repeat": 1000000}, 40],
+ ["send_input", {"keys": ""}],
+ ["send_input", {"click": [1e300, 1e300]}],
+ ["get_state", {}, 25]]

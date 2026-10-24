@@ -1,0 +1,14 @@
+* a netlist with things a reader may not expect
+.subckt  sub 1 2
+R1 1 2 1k
+.ends
+X1 a b sub
+R2 a 0 1e999
+C3 a b -1
+.model dd d(is=1e-14)
+D4 a b dd
+.tran 1n 1u
+.control
+shell echo hello
+.endc
+.END

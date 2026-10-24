@@ -1,0 +1,4 @@
+[["new_document", {}],
+ ["save_document", {"as": "s.sch"}],
+ ["import_data", {"file": "good.s2p", "name": "g"}],
+ ["import_data", {"file": "odd.s2p", "name": "o"}]]

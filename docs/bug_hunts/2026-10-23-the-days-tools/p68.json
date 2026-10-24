@@ -1,0 +1,13 @@
+[["open_document", {"path": "ac.sch"}],
+ ["simulate", {}, 240],
+ ["add_diagram", {"type": "rect", "x": 100, "y": 400, "traces": [{"variable": "ac.gain_db"}]}],
+ ["add_trace", {"diagram": 1, "variable": "nothing at all"}],
+ ["add_trace", {"diagram": 1, "variable": "ac.gain_db", "thickness": -5}],
+ ["add_trace", {"diagram": 1, "variable": "ac.gain_db", "thickness": 1000000}],
+ ["add_trace", {"diagram": 99, "variable": "ac.gain_db"}],
+ ["add_trace", {"diagram": 1, "variable": "ac.gain_db", "axis": "banana"}],
+ ["add_marker", {"diagram": 1, "trace": 1, "at": [1e300]}],
+ ["add_marker", {"diagram": 1, "trace": 1, "at": [-1]}],
+ ["add_marker", {"diagram": 1, "trace": 99, "at": [1000]}],
+ ["edit_trace", {"diagram": 1, "trace": 1, "numbers": "banana"}],
+ ["get_schematic", {}]]

@@ -1,0 +1,5 @@
+[["open_document", {"path": "ac.sch"}],
+ ["simulate", {}, 240],
+ ["get_dataset", {"points": 3}],
+ ["get_dataset", {"points": 0}],
+ ["get_dataset", {"points": -5}]]

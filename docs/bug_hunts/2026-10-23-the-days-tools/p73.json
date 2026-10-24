@@ -1,0 +1,7 @@
+[["open_document", {"path": "ac.sch"}],
+ ["import_data", {"file": "meas.csv"}],
+ ["import_data", {"file": "odd.csv", "name": "odd"}],
+ ["import_data", {"file": "nothing.csv"}],
+ ["import_data", {"file": "meas.csv", "name": "../escaped"}],
+ ["get_dataset", {"path": "ac.sch"}],
+ ["list_documents", {}]]

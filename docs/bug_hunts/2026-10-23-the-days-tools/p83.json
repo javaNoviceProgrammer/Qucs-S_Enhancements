@@ -1,0 +1,7 @@
+[["new_document", {}],
+ ["add_component", {"type": "SPfile", "x": 200, "y": 200, "properties": {"File": "odd.s2p"}}],
+ ["add_component", {"type": "SPfile", "x": 400, "y": 200, "properties": {"File": "nothing_here.s2p"}}],
+ ["add_component", {"type": "SPfile", "x": 600, "y": 200, "properties": {"File": "bad_unit.s2p"}}],
+ ["save_document", {"as": "sp.sch"}],
+ ["check_schematic", {}],
+ ["get_netlist", {}]]

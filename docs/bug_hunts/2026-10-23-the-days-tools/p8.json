@@ -1,0 +1,8 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_solve", {}, 300],
+ ["fem_describe", {"what": "geometry"}],
+ ["fem_evaluate", {"expression": "es.C11, lp1.Z0", "reference": {"nothing": 7}}],
+ ["fem_evaluate", {"expression": "es.C11, lp1.Z0", "reference": {"es.C11": 1e-10, "typo": 7}}],
+ ["fem_evaluate", {"expression": "es.C11, lp1.Z0", "reference": {"Es.c11": 1e-10}}],
+ ["fem_evaluate", {"expression": "es.C11", "reference": [1e-10, 2e-10, 3e-10]}],
+ ["fem_evaluate", {"expression": "es.C11, lp1.Z0", "reference": [1e-10]}]]

@@ -1,0 +1,9 @@
+[["describe_tool", {"name": "set_settings", "arguments": {"scope": "app", "values": {"Locations/Library search paths": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}}}],
+ ["set_settings", {"scope": "app", "values": {"Locations/Library search paths": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}}],
+ ["new_project", {"name": "proj"}],
+ ["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["connect", {"from": "R1.1", "to": "ground"}],
+ ["save_document", {"as": "part.sch"}],
+ ["describe_tool", {"name": "create_library", "arguments": {"name": "Escaped", "subcircuits": ["part.sch"], "destination": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}}],
+ ["create_library", {"name": "Escaped", "subcircuits": ["part.sch"], "destination": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}]]

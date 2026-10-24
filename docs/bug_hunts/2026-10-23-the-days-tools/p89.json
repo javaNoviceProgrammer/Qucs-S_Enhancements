@@ -1,0 +1,12 @@
+[["new_document", {}],
+ ["add_component", {"type": "SPICE", "x": 300, "y": 200, "properties": {"File": "missing.cir"}}],
+ ["add_component", {"type": "R", "x": 100, "y": 200}],
+ ["connect", {"from": "R1.1", "to": "ground"}],
+ ["save_document", {"as": "sp1.sch"}],
+ ["check_schematic", {}],
+ ["new_document", {}],
+ ["add_component", {"type": "SpLib", "x": 300, "y": 200, "properties": {"File": "missing.lib"}}],
+ ["add_component", {"type": "R", "x": 100, "y": 200}],
+ ["connect", {"from": "R1.1", "to": "ground"}],
+ ["save_document", {"as": "sp2.sch"}],
+ ["check_schematic", {}]]

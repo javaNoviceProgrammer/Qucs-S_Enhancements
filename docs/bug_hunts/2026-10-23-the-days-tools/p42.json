@@ -1,0 +1,5 @@
+[["receiver_budget", {"stages": [{"gain": 1e300, "nf": 1e300}], "bandwidth": 1e300}],
+ ["receiver_budget", {"stages": [{"gain": -1e300, "nf": -1e300}], "temperature": -273.15}],
+ ["receiver_budget", {"stages": [{"gain": 20, "nf": -5}]}],
+ ["receiver_budget", {"stages": [{"gain": 20, "nf": 2}], "temperature": -500}],
+ ["receiver_budget", {"stages": [{"gain": 20, "nf": 2}], "bandwidth": -1}]]

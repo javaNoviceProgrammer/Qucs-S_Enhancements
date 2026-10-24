@@ -1,0 +1,4 @@
+[["new_document", {}],
+ ["save_document", {"as": "s.sch"}],
+ ["import_data", {"file": "oneport_as_s2p.s2p", "name": "one"}],
+ ["import_data", {"file": "noheader.s2p", "name": "nohdr"}]]

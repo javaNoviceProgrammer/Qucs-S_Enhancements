@@ -1,0 +1,11 @@
+[["open_document", {"path": "t.xml"}],
+ ["xml", {"path": "t.xml"}],
+ ["xml", {"path": "t.xml", "action": "set", "node": "/root/item[1]", "value": "ONE"}],
+ ["xml", {"path": "t.xml"}],
+ ["xml", {"path": "t.xml", "action": "set", "node": "/root/item[99]", "value": "x"}],
+ ["xml", {"path": "t.xml", "action": "set", "node": "/root/../../etc/passwd", "value": "x"}],
+ ["xml", {"path": "t.xml", "action": "rename", "node": "/root/item[1]", "value": "<bad>"}],
+ ["xml", {"path": "t.xml", "action": "add_element", "node": "/root", "name": "<bad>"}],
+ ["xml", {"path": "t.xml", "action": "add_attribute", "node": "/root", "name": "1bad", "value": "x"}],
+ ["xml", {"path": "t.xml", "depth": 999999, "max": 999999}],
+ ["get_text", {"path": "t.xml"}]]

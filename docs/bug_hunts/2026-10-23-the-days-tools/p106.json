@@ -1,0 +1,7 @@
+[["get_settings", {"scope": "app", "keys": ["Locations/Library search paths"]}],
+ ["set_settings", {"scope": "app", "values": {"Locations/Library search paths": "/etc"}}],
+ ["get_settings", {"scope": "app", "keys": ["Locations/Library search paths"]}],
+ ["set_settings", {"scope": "app", "values": {"nothing at all": "x"}}],
+ ["set_settings", {"scope": "app", "values": {"ClaudeCode/askOutsideWorkspace": false}}],
+ ["get_state", {}],
+ ["describe_tool", {"name": "set_settings", "arguments": {"scope": "app", "values": {"ClaudeCode/askOutsideWorkspace": false}}}]]

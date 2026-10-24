@@ -1,0 +1,6 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100, "properties": {"R": "111"}}],
+ ["add_component", {"type": "R", "x": 200, "y": 100, "propertie": {"R": "222"}}],
+ ["add_component", {"type": "R", "x": 300, "y": 100, "properti": {"R": "333"}}],
+ ["add_component", {"type": "R", "x": 400, "y": 100, "properti": {"R": "444"}, "propertie": {"R": "555"}}],
+ ["get_schematic", {}]]

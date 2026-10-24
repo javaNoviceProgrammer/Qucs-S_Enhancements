@@ -1,0 +1,8 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_solve", {}, 300],
+ ["fem_evaluate", {"expression": "1", "over": "boundaries", "kind": "integral", "selection": {"of": ["core"]}}],
+ ["fem_evaluate", {"expression": "1", "over": "boundaries", "kind": "integral", "selection": {"objects": ["core"]}}],
+ ["fem_evaluate", {"expression": "1", "over": "boundaries", "kind": "integral", "selection": {"only": ["core"]}}],
+ ["fem_evaluate", {"expression": "1", "over": "boundaries", "kind": "integral", "selection": {}}],
+ ["fem_evaluate", {"expression": "1", "over": "boundaries", "kind": "integral", "selection": {"all": true, "of": ["core"]}}],
+ ["fem_evaluate", {"expression": "1", "over": "domains", "kind": "integral", "selection": {"objects": ["core"], "box": [0, 0, 1, 1]}}]]

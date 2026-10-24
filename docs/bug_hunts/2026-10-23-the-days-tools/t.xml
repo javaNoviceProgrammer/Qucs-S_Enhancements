@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<root attr="v">
+  <item name="a">one</item>
+  <item name="b">two</item>
+  <nested><deep>x</deep></nested>
+</root>

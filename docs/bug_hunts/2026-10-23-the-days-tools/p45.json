@@ -1,0 +1,12 @@
+[["synthesize_attenuator", {"topology": "pi", "attenuation": 10, "z_in": 50, "z_out": 50}],
+ ["synthesize_attenuator", {"topology": "pi", "attenuation": 0, "z_in": 50, "z_out": 50}],
+ ["synthesize_attenuator", {"topology": "pi", "attenuation": -10, "z_in": 50, "z_out": 50}],
+ ["synthesize_attenuator", {"topology": "pi", "attenuation": 10, "z_in": 0, "z_out": 50}],
+ ["synthesize_attenuator", {"topology": "pi", "attenuation": 1e300, "z_in": 50, "z_out": 50}],
+ ["synthesize_attenuator", {"topology": "pi", "attenuation": 10, "z_in": -50, "z_out": 50}],
+ ["synthesize_power_combiner", {"ways": 2, "z0": 50, "f": 1e9}],
+ ["synthesize_power_combiner", {"ways": 1, "z0": 50, "f": 1e9}],
+ ["synthesize_power_combiner", {"ways": 0, "z0": 50, "f": 1e9}],
+ ["synthesize_power_combiner", {"ways": 2, "z0": 0, "f": 1e9}],
+ ["synthesize_power_combiner", {"ways": 2, "z0": 50, "f": 0}],
+ ["synthesize_power_combiner", {"ways": 200000, "z0": 50, "f": 1e9}, 90]]

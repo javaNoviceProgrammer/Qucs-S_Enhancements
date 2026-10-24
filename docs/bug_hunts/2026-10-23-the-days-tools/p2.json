@@ -1,0 +1,7 @@
+[["new_document", {"path": "one.sch"}],
+ ["save_document", {"as": "one.sch"}],
+ ["describe_tool", {"name": "save_document", "arguments": {"as": "/Users/person/Desktop/outside1.sch"}}],
+ ["describe_tool", {"name": "save_document", "arguments": {"a": "/Users/person/Desktop/outside1.sch"}}],
+ ["describe_tool", {"name": "export_image", "arguments": {"save_as": "/Users/person/Desktop/outside2.png"}}],
+ ["describe_tool", {"name": "export_image", "arguments": {"save_a": "/Users/person/Desktop/outside2.png"}}],
+ ["describe_tool", {"name": "export_netlist", "arguments": {"save_a": "/Users/person/Desktop/outside3.cir"}}]]

@@ -1,0 +1,5 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["describe_tool", {"name": "fem_model", "arguments": {"action": "save", "as": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/escaped_model.qfem"}}],
+ ["describe_tool", {"name": "fem_model", "arguments": {"action": "save", "path": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/escaped_model.qfem"}}],
+ ["describe_tool", {"name": "fem_export", "arguments": {"export": "geometry", "copy": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/x.svg"}}],
+ ["fem_model", {"action": "save", "as": "../escaped_model.qfem"}]]

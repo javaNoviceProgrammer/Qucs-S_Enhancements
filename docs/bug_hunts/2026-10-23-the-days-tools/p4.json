@@ -1,0 +1,3 @@
+[["new_document", {"path": "one.sch"}],
+ ["batch", {"call": {"tool": "add_component", "arguments": {"type": "R", "x": 100, "y": 100}}}],
+ ["get_schematic", {}]]

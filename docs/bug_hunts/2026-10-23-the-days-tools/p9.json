@@ -1,0 +1,9 @@
+[["new_document", {}],
+ ["save_document", {"as": "victim.sch"}],
+ ["new_document", {}],
+ ["save_document", {"as": "victim2.sch"}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('trash_file', {path: 'victim.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('trash'+'_file', {path: 'victim.sch'})"}}],
+ ["list_documents", {}],
+ ["run_script", {"script": "qucs.call('trash'+'_file', {path: 'victim.sch'})"}],
+ ["list_documents", {}]]

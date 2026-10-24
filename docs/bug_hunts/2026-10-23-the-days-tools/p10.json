@@ -1,0 +1,11 @@
+[["read_pdf", {"path": "paper.pdf", "pages": 2}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [117, 343, 495, 376]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [0, 0, 0, 0]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [495, 376, 117, 343]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [0.9, 0.9, 0.1, 0.1]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [0, 0, 1, 1]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [-1e9, -1e9, 1e9, 1e9]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [1, 1, 1.0001, 1.0001]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": ["NaN", 0, 1, 1]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [0, 0, 1]}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [0, 0, 1, 1, 5]}]]

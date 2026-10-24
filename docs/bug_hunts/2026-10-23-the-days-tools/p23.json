@@ -1,0 +1,9 @@
+[["fem_model", {"action": "open", "path": "bratu.qfem"}],
+ ["fem_solve", {}, 600],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["__run", {"cmd": "ls -l --time-style=full-iso WS/*.dpl 2>/dev/null || stat -f '%Sm %N' -t '%H:%M:%S' WS/*.dpl", "wait": 2}],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["__run", {"cmd": "stat -f '%Sm %N' -t '%H:%M:%S' WS/*.dpl", "wait": 2}],
+ ["get_state", {}],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["__run", {"cmd": "stat -f '%Sm %N' -t '%H:%M:%S' WS/*.dpl"}]]

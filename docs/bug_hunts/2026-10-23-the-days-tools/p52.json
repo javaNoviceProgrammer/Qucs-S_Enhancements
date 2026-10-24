@@ -1,0 +1,7 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "a.sch"}],
+ ["make_symbol", {"path": "a.sch", "save_as": "../escaped_sym.sch"}],
+ ["create_library", {"name": "L", "subcircuits": ["a.sch"], "save_as": "../escaped_lib.lib"}],
+ ["new_project", {"name": "../escaped_project"}],
+ ["list_documents", {}]]
