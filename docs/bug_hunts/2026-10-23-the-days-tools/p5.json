@@ -1,0 +1,10 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_evaluate", {"expression": "1[m]", "step": ""}],
+ ["fem_describe", {"what": "tree"}],
+ ["fem_converge", {"factors": []}, 90],
+ ["fem_converge", {"factors": [0]}, 90],
+ ["fem_converge", {"factors": [-1]}, 90],
+ ["fem_converge", {"factors": [1e9]}, 90],
+ ["fem_converge", {"factors": ["2"]}, 90],
+ ["fem_converge", {"factors": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}, 120],
+ ["fem_describe", {"what": "tree"}]]

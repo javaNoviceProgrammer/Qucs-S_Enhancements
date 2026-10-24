@@ -1,0 +1,9 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["add_component", {"type": "C", "x": 200, "y": 100}],
+ ["add_component", {"type": "L", "x": 300, "y": 100}],
+ ["save_document", {"as": "half.sch"}],
+ ["get_schematic", {}],
+ ["__run", {"cmd": "python3 -B -I mkpartial.py WS/half.sch WS/half.sch 0.75"}],
+ ["get_schematic", {}],
+ ["get_state", {}]]

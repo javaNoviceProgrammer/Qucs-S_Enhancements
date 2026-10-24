@@ -1,0 +1,3 @@
+[["fem_model", {"action": "open", "path": "bratu.qfem"}],
+ ["fem_describe", {"what": "tree"}],
+ ["fem_solve", {}, 600]]

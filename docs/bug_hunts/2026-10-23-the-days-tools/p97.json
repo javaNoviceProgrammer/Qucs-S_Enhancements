@@ -1,0 +1,6 @@
+[["open_document", {"path": "ac.sch"}],
+ ["simulate", {}, 240],
+ ["get_dataset", {"variables": ["ac.gain_db", "frequency"]}],
+ ["export_data", {"save_as": "round.csv", "variables": ["ac.gain_db"]}],
+ ["import_data", {"file": "round.csv", "name": "back"}],
+ ["get_dataset", {"path": "back.dat"}]]

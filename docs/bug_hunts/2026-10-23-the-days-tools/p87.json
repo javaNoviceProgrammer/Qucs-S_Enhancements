@@ -1,0 +1,8 @@
+[["new_document", {}],
+ ["add_component", {"type": "Sub", "x": 300, "y": 200, "properties": {"File": "missing_sub.sch"}}],
+ ["add_component", {"type": "R", "x": 100, "y": 200}],
+ ["connect", {"from": "R1.1", "to": "ground"}],
+ ["add_analysis", {"kind": "ac", "from": "1G", "to": "3G", "points": 3}],
+ ["save_document", {"as": "subc.sch"}],
+ ["check_schematic", {}],
+ ["get_netlist", {}]]

@@ -1,0 +1,5 @@
+[["open_document", {"path": "ac.sch"}],
+ ["tune", {"component": "R1", "range": [2, 1], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1}, 180],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "ac.gain_db", "what": "final"}, "target": 1, "max_runs": 0}, 180],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "nothing", "what": "final"}, "target": 1}, 180],
+ ["tune", {"component": "R1", "range": [1, 2], "measure": {"variable": "ac.gain_db", "what": "banana"}, "target": 1}, 180]]

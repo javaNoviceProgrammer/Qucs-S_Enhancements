@@ -1,0 +1,10 @@
+[["new_document", {}],
+ ["save_document", {"as": "n.sch"}],
+ ["import_data", {"file": "nan.csv", "name": "n"}],
+ ["get_dataset", {"path": "n.dat"}],
+ ["add_diagram", {"type": "rect", "x": 100, "y": 300, "traces": [{"variable": "n:v"}]}],
+ ["add_diagram", {"type": "rect", "x": 400, "y": 300, "traces": [{"variable": "n:v"}], "x_axis": {"log": true}}],
+ ["add_marker", {"diagram": 1, "trace": 1, "at": "peak"}],
+ ["add_marker", {"diagram": 1, "trace": 1, "at": "min"}],
+ ["screenshot", {}],
+ ["get_state", {}]]

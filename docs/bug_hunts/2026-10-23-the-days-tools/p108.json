@@ -1,0 +1,12 @@
+[["set_settings", {"scope": "app", "values": {"Locations/Library search paths": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}}],
+ ["new_project", {"name": "proj"}],
+ ["new_document", {}],
+ ["add_component", {"type": "R", "x": 200, "y": 100}],
+ ["add_component", {"type": "Port", "x": 100, "y": 100, "properties": {"Num": "1"}}],
+ ["add_component", {"type": "Port", "x": 300, "y": 100, "properties": {"Num": "2"}}],
+ ["connect", {"from": "P1.1", "to": "R1.1"}],
+ ["connect", {"from": "R1.2", "to": "P2.1"}],
+ ["save_document", {"as": "apart.sch"}],
+ ["get_schematic", {}],
+ ["describe_tool", {"name": "create_library", "arguments": {"name": "Escaped", "subcircuits": ["apart.sch"], "destination": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}}],
+ ["create_library", {"name": "Escaped", "subcircuits": ["apart.sch"], "destination": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/libtarget"}]]

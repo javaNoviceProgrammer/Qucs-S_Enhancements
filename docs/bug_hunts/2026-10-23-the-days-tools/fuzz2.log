@@ -1,0 +1,41 @@
+# 0 calls, rss 606 MB
+# 200 calls, rss 620 MB
+# 400 calls, rss 688 MB
+# 600 calls, rss 711 MB
+# 800 calls, rss 748 MB
+# 1000 calls, rss 741 MB
+# 1200 calls, rss 772 MB
+# 1400 calls, rss 782 MB
+# 1600 calls, rss 791 MB
+# 1800 calls, rss 806 MB
+# 2000 calls, rss 811 MB
+# 2200 calls, rss 822 MB
+# 2400 calls, rss 824 MB
+# 2600 calls, rss 829 MB
+# 2800 calls, rss 829 MB
+counts {"add_component:error": 100, "add_wire:error": 97, "add_wire:ok": 1, "batch:error": 68, "batch:ok": 39, "delete:error": 93, "describe_tool:error": 80, "describe_tool:ok": 19, "edit_text:error": 103, "fem_converge:error": 106, "fem_describe:error": 80, "fem_describe:ok": 36, "fem_edit:error": 103, "fem_evaluate:error": 127, "fem_export:error": 114, "fem_model:error": 99, "fem_model:ok": 1, "fem_plot:error": 104, "fem_plot:ok": 2, "get_dataset:error": 97, "get_schematic:error": 104, "get_schematic:ok": 2, "get_settings:error": 96, "get_settings:ok": 13, "get_state:ok": 108, "get_text:error": 90, "import_data:error": 87, "list_documents:error": 97, "list_documents:ok": 24, "move:error": 103, "open_document:error": 85, "read_pdf:error": 109, "redo:error": 79, "redo:ok": 12, "run_script:error": 13, "run_script:ok": 78, "select:error": 100, "select:ok": 1, "undo:error": 99, "undo:ok": 15, "undo_history:error": 102, "undo_history:ok": 1, "xml:error": 113}
+rss 831 MB at the end
+exit 0
+# 0 calls, rss 149 MB
+# 200 calls, rss 152 MB
+# 400 calls, rss 153 MB
+# 600 calls, rss 163 MB
+# 800 calls, rss 163 MB
+# 1000 calls, rss 163 MB
+# 1200 calls, rss 163 MB
+# 1400 calls, rss 177 MB
+# 1600 calls, rss 177 MB
+# 1800 calls, rss 177 MB
+# 2000 calls, rss 177 MB
+# 2200 calls, rss 177 MB
+# 2400 calls, rss 178 MB
+# 2600 calls, rss 178 MB
+# 2800 calls, rss 178 MB
+# 3000 calls, rss 178 MB
+# 3200 calls, rss 178 MB
+# 3400 calls, rss 178 MB
+# 3600 calls, rss 178 MB
+# 3800 calls, rss 179 MB
+counts {"add_component:error": 151, "add_wire:error": 149, "add_wire:ok": 2, "batch:error": 96, "batch:ok": 58, "delete:error": 122, "delete:ok": 1, "describe_tool:error": 115, "describe_tool:ok": 32, "edit_text:error": 144, "fem_converge:error": 127, "fem_converge:ok": 1, "fem_describe:error": 113, "fem_describe:ok": 36, "fem_edit:error": 144, "fem_edit:ok": 1, "fem_evaluate:error": 140, "fem_evaluate:ok": 1, "fem_export:error": 156, "fem_model:error": 116, "fem_model:ok": 1, "fem_plot:error": 111, "fem_plot:ok": 3, "get_dataset:error": 129, "get_schematic:error": 129, "get_settings:error": 128, "get_settings:ok": 9, "get_state:ok": 158, "get_text:error": 141, "import_data:error": 117, "list_documents:error": 123, "list_documents:ok": 26, "move:error": 130, "open_document:error": 132, "open_document:ok": 1, "read_pdf:error": 136, "redo:error": 111, "redo:ok": 19, "run_script:error": 32, "run_script:ok": 110, "select:error": 140, "select:ok": 2, "undo:error": 139, "undo:ok": 18, "undo_history:error": 119, "xml:error": 131}
+rss 179 MB at the end
+exit 0

@@ -1,0 +1,8 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "a.sch"}],
+ ["describe_tool", {"name": "build_verilog_a", "arguments": {"file": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/m.va"}}],
+ ["describe_tool", {"name": "import_library", "arguments": {"path": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/some.lib"}}],
+ ["describe_tool", {"name": "create_library", "arguments": {"name": "L", "subcircuits": ["a.sch"], "destination": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe"}}],
+ ["describe_tool", {"name": "git_clone", "arguments": {"url": "https://example.com/x.git", "path": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/clone"}}],
+ ["describe_tool", {"name": "export_data", "arguments": {"save_as": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe/d.csv"}}]]

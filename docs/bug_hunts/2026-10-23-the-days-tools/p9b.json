@@ -1,0 +1,6 @@
+[["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('trash_file', {path: 'v.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('trash'+'_file', {path: 'v.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "var t='trash_'+'file'; qucs.call(t, {path: 'v.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('clean'+'_scratch', {})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('save_document', {'a': '/Users/meisam/Desktop/x.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('console', {console: 'terminal', input: 'ls'})"}}]]

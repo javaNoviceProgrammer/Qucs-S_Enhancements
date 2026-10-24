@@ -1,0 +1,10 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100, "bogus": 1}],
+ ["batch", {"calls": [{"tool": "add_component", "arguments": {"type": "R", "x": 100, "y": 100, "bogus": 1}}]}],
+ ["batch", {"calls": [{"tool": "add_component", "arguments": {"type": "R", "x": "100", "y": 100}}]}],
+ ["batch", {"calls": [{"tool": "delete", "arguments": {"name": "R1"}}]}],
+ ["run_script", {"script": "qucs.call('add_component', {type:'C', x:200, y:100, bogus:1})"}],
+ ["run_script", {"script": "qucs.call('delete', {name:'C1'})"}],
+ ["get_schematic", {}],
+ ["add_diagram", {"type": "rect", "traces": [{"bogus": 1}]}],
+ ["add_diagram", {"type": "rect", "x_axis": {"bogus": 1}}]]

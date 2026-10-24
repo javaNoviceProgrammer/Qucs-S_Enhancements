@@ -1,0 +1,4 @@
+[["open_document", {"path": "ac.sch"}],
+ ["import_data", {"file": "plain.csv", "name": "p"}],
+ ["import_data", {"file": "dup.csv", "name": "d"}],
+ ["import_data", {"file": "ragged.csv", "name": "r"}]]

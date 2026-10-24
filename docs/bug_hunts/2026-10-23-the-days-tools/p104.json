@@ -1,0 +1,13 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["add_component", {"type": "C", "x": 200, "y": 100}],
+ ["connect", {"from": "R1.2", "to": "C1.1"}],
+ ["save_document", {"as": "top.sch"}],
+ ["create_subcircuit", {"names": ["R1", "C1"], "save_as": "sub1.sch"}],
+ ["create_subcircuit", {"names": [], "save_as": "sub2.sch"}],
+ ["create_subcircuit", {"names": ["nothing"], "save_as": "sub3.sch"}],
+ ["create_subcircuit", {"names": ["R1"], "save_as": "top.sch"}],
+ ["create_subcircuit", {"names": ["R1"], "save_as": "../escaped_sub.sch"}],
+ ["make_symbol", {"path": "sub1.sch"}],
+ ["make_symbol", {"path": "sub1.sch", "sides": {"left": ["nothing"]}}],
+ ["list_documents", {}]]

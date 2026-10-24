@@ -1,0 +1,6 @@
+`include "disciplines.vams"
+module huge(p, n);
+  inout p, n;
+  electrical p, n;
+  analog V(p,n) <+ 1.0 * I(p,n);
+endmodule

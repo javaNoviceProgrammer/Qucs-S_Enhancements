@@ -1,0 +1,7 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["connect", {"from": "R1.1", "to": "ground"}],
+ ["save_document", {"as": "a.sch"}],
+ ["create_subcircuit", {"path": "a.sch", "names": ["R1"], "save_as": "sub.sch"}],
+ ["create_library", {"name": "EscapedLib", "subcircuits": ["sub.sch"], "destination": "/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/f7072696-6e97-48ce-a8af-64a96bc8ed24/scratchpad/outside_probe"}],
+ ["create_library", {"name": "EscapedLib2", "subcircuits": ["sub.sch"], "destination": "../escaped_dest"}]]

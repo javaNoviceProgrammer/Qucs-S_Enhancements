@@ -1,0 +1,10 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "lay.sch"}],
+ ["get_layout", {}],
+ ["show_layout", {"layers": "nothing at all"}],
+ ["show_layout", {"layers": []}],
+ ["show_layout", {"texts": true}],
+ ["find_shapes", {"near": [1e300, 1e300]}],
+ ["find_shapes", {"texts": true}],
+ ["find_shapes", {"layer": "nothing"}]]

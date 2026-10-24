@@ -1,0 +1,6 @@
+[["open_document", {"path": "deck.pptx"}],
+ ["__run", {"cmd": "mkdir -p WS/out && printf x > WS/out/t-2.png && printf x > WS/out/t.png"}],
+ ["describe_tool", {"name": "export_image", "arguments": {"path": "deck.pptx", "slides": "2-3", "save_as": "out/t.png"}}],
+ ["describe_tool", {"name": "export_image", "arguments": {"path": "deck.pptx", "slide": "2-3", "save_as": "out/t.png"}}],
+ ["describe_tool", {"name": "export_image", "arguments": {"path": "deck.pptx", "slides": "2-3", "save_as": "/Users/meisam/Desktop/outx.png"}}],
+ ["describe_tool", {"name": "export_image", "arguments": {"path": "deck.pptx", "slide": "2-3", "save_as": "/Users/meisam/Desktop/outx.png"}}]]

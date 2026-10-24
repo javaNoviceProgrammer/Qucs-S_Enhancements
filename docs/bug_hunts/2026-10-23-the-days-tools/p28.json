@@ -1,0 +1,7 @@
+[["fem_model", {"action": "open", "path": "bratu.qfem"}],
+ ["fem_solve", {}, 600],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["get_state", {}],
+ ["fem_plot", {"plot": "pg1d1"}, 120],
+ ["get_state", {}],
+ ["get_state", {}]]

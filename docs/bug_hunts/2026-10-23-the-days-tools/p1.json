@@ -1,0 +1,8 @@
+[["new_document", {"path": "one.sch"}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {}],
+ ["save_document", {"a": "snuck.sch"}],
+ ["list_documents", {}],
+ ["simulate", {"allow_command": true}],
+ ["fem_describe", {"v": "x"}],
+ ["save_document", {"a": 5}]]

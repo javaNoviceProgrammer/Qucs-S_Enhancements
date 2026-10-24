@@ -1,0 +1,13 @@
+[["new_document", {}],
+ ["add_component", {"type": "SPfile", "x": 300, "y": 200, "properties": {"File": "good.s2p"}}],
+ ["add_component", {"type": "Pac", "x": 100, "y": 200}],
+ ["add_component", {"type": "Pac", "x": 500, "y": 200}],
+ ["connect", {"from": "P1.1", "to": "X1.1"}],
+ ["connect", {"from": "X1.2", "to": "P2.1"}],
+ ["connect", {"from": "P1.2", "to": "ground"}],
+ ["connect", {"from": "P2.2", "to": "ground"}],
+ ["connect", {"from": "X1.3", "to": "ground"}],
+ ["add_analysis", {"kind": "ac", "from": "1G", "to": "3G", "points": 3}],
+ ["save_document", {"as": "spc.sch"}],
+ ["check_schematic", {}],
+ ["get_netlist", {}]]

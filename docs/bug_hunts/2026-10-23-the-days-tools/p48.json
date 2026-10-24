@@ -1,0 +1,2 @@
+[["describe_tool", {"name": "import_netlist", "arguments": {"file": "bad.cir", "symbols": "/Users/meisam/Desktop/probe_outside.sym"}}],
+ ["describe_tool", {"name": "import_netlist", "arguments": {"file": "bad.cir", "symbol": "/Users/meisam/Desktop/probe_outside.sym"}}]]

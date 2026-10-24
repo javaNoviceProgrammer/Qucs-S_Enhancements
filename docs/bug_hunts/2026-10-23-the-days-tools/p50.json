@@ -1,0 +1,8 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "a.sch"}],
+ ["describe_tool", {"name": "rename_file", "arguments": {"path": "a.sch", "to": "/Users/meisam/Desktop/moved.sch"}}],
+ ["describe_tool", {"name": "rename_file", "arguments": {"path": "a.sch", "to": "../moved.sch"}}],
+ ["describe_tool", {"name": "copy_document", "arguments": {"path": "a.sch", "to": "/Users/meisam/Desktop/copied.sch"}}],
+ ["describe_tool", {"name": "trash_file", "arguments": {"path": "a.sch"}}],
+ ["describe_tool", {"name": "save_document", "arguments": {"as": "/Users/meisam/Desktop/saved.sch"}}]]

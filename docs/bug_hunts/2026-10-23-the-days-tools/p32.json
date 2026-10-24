@@ -1,0 +1,9 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["add_component", {"type": "C", "x": 200, "y": 100}],
+ ["save_document", {"as": "whole.sch"}],
+ ["close_document", {}],
+ ["__run", {"cmd": "python3 -B -I mkpartial.py WS/whole.sch WS/cut.sch 0.75"}],
+ ["open_document", {"path": "cut.sch"}, 25],
+ ["get_state", {}, 25],
+ ["get_schematic", {}, 25]]

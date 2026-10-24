@@ -1,0 +1,5 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_describe", {"what": "tree"}],
+ ["__run", {"cmd": "python3 -B -I mkpartial.py WS/coax.qfem WS/coax.qfem 0.6", "wait": 5}],
+ ["fem_describe", {"what": "tree"}, 25],
+ ["get_state", {}, 25]]

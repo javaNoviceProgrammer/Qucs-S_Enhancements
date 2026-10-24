@@ -1,0 +1,13 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"from": 1, "to": 1}}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"from": 10, "to": 1}}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"from": 0, "to": 100, "log": true}}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"from": -5, "to": 100, "log": true}}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"decimals": -5}}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"decimals": 1000000}}],
+ ["add_diagram", {"type": "rect", "x": 300, "y": 300, "x_axis": {"notation": "banana"}}],
+ ["add_diagram", {"type": "rect", "x": 1e300, "y": 1e300}],
+ ["add_marker", {"diagram": 1, "x": 1e300}],
+ ["get_schematic", {}]]

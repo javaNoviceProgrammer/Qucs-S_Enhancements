@@ -1,0 +1,11 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "a.sch"}],
+ ["describe_tool", {"name": "create_library", "arguments": {"name": "L", "save_as": "/Users/meisam/Desktop/lib.lib"}}],
+ ["describe_tool", {"name": "import_library", "arguments": {"file": "/Users/meisam/Desktop/lib.lib"}}],
+ ["describe_tool", {"name": "new_project", "arguments": {"name": "/Users/meisam/Desktop/proj"}}],
+ ["describe_tool", {"name": "git_clone", "arguments": {"url": "https://example.com/x.git", "to": "/Users/meisam/Desktop/clone"}}],
+ ["describe_tool", {"name": "build_verilog_a", "arguments": {"path": "/Users/meisam/Desktop/m.va"}}],
+ ["describe_tool", {"name": "make_symbol", "arguments": {"path": "a.sch", "save_as": "/Users/meisam/Desktop/sym.sym"}}],
+ ["describe_tool", {"name": "clean_scratch", "arguments": {}}],
+ ["describe_tool", {"name": "export_data", "arguments": {"save_as": "/Users/meisam/Desktop/d.csv"}}]]

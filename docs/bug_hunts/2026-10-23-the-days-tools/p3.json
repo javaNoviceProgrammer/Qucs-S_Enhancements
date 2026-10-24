@@ -1,0 +1,7 @@
+[["new_document", {"path": "one.sch"}],
+ ["save_document", {"as": "one.sch"}],
+ ["describe_tool", {"name": "batch", "arguments": {"calls": [{"tool": "trash_file", "arguments": {"path": "one.sch"}}]}}],
+ ["describe_tool", {"name": "batch", "arguments": {"call": {"tool": "trash_file", "arguments": {"path": "one.sch"}}}}],
+ ["describe_tool", {"name": "batch", "arguments": {"calls": [{"tool": "console", "arguments": {"console": "terminal", "input": "ls"}}]}}],
+ ["describe_tool", {"name": "batch", "arguments": {"call": {"tool": "console", "arguments": {"console": "terminal", "input": "ls"}}}}],
+ ["describe_tool", {"name": "batch", "arguments": {"call": {"tool": "save_document", "arguments": {"as": "/Users/meisam/Desktop/outside9.sch"}}}}]]

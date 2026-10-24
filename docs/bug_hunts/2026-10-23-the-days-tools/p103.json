@@ -1,0 +1,11 @@
+[["open_document", {"path": "lay.gds"}],
+ ["get_layout", {}],
+ ["find_shapes", {"limit": 3}],
+ ["find_shapes", {"limit": 0}],
+ ["find_shapes", {"limit": -5}],
+ ["find_shapes", {"limit": 2147483647}, 60],
+ ["find_shapes", {"region": [1e300, 1e300, -1e300, -1e300]}],
+ ["find_shapes", {"depth": 2147483647}, 60],
+ ["find_shapes", {"layer": "nothing at all"}],
+ ["show_layout", {"layers": "nothing at all"}],
+ ["get_state", {}]]

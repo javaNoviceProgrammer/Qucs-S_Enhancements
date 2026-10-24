@@ -1,0 +1,4 @@
+[["import_netlist", {"file": "bad.cir", "save_as": "imported.sch"}],
+ ["get_schematic", {"path": "imported.sch"}],
+ ["check_schematic", {"path": "imported.sch"}],
+ ["get_netlist", {"path": "imported.sch"}]]

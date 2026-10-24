@@ -1,0 +1,13 @@
+[["open_document", {"path": "t.txt"}],
+ ["get_text", {}],
+ ["edit_text", {"edits": [{"old": "line two", "new": "LINE TWO"}]}],
+ ["get_text", {}],
+ ["edit_text", {"edits": [{"old": "nothing here", "new": "x"}]}],
+ ["edit_text", {"edits": [{"old": "line", "new": "L"}]}],
+ ["edit_text", {"edits": [{"old": "", "new": "x"}]}],
+ ["edit_text", {"edit": {"old": "line three", "new": "3"}}],
+ ["get_text", {}],
+ ["goto_line", {"line": 999999}],
+ ["goto_line", {"line": -1}],
+ ["edit_text", {"edits": [{"old": "line one", "new": "line one"}]}],
+ ["get_text", {}]]

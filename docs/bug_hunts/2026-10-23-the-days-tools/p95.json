@@ -1,0 +1,7 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "ui.sch"}],
+ ["get_ui", {}],
+ ["set_ui", {"area": "nothing at all", "press": "x"}],
+ ["set_ui", {"area": "window", "press": "nothing at all"}],
+ ["get_state", {}]]

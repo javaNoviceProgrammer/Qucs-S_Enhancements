@@ -1,0 +1,2 @@
+[["fem_model", {"action": "open", "path": "coax_rlgc.qfem"}],
+ ["fem_describe", {"what": "mesh"}]]

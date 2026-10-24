@@ -1,0 +1,10 @@
+[["open_document", {"path": "ac.sch"}],
+ ["simulate", {}, 240],
+ ["get_dataset", {"points": 3}],
+ ["get_dataset", {"points": 0}],
+ ["get_dataset", {"points": -5}],
+ ["get_dataset", {"points": 2147483647}],
+ ["get_dataset", {"variables": ["nothing at all"]}],
+ ["get_dataset", {"harmonics": 99999}],
+ ["get_dataset", {"periods": -1}],
+ ["get_dataset", {"decibels": true, "points": 2}]]

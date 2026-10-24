@@ -1,0 +1,6 @@
+[["new_document", {}],
+ ["save_document", {"as": "s.sch"}],
+ ["import_data", {"file": "ghz.s2p", "name": "ghz"}],
+ ["import_data", {"file": "db.s2p", "name": "db"}],
+ ["import_data", {"file": "hz.s2p", "name": "hz"}],
+ ["import_data", {"file": "bad_unit.s2p", "name": "bad"}]]

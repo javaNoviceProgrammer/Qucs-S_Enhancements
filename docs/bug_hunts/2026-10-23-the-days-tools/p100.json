@@ -1,0 +1,12 @@
+[["open_document", {"path": "ac.sch"}],
+ ["simulate", {}, 240],
+ ["get_schematic", {}],
+ ["add_diagram", {"type": "rect", "x": 100, "y": 500}],
+ ["probe", {"what": "R1.1", "diagram": 1}],
+ ["probe", {"what": "R1.2", "diagram": 1}],
+ ["probe", {"what": "R1", "diagram": 1}],
+ ["probe", {"what": "nothing at all", "diagram": 1}],
+ ["probe", {"what": [1e300, 1e300], "diagram": 1}],
+ ["probe", {"what": "R1.99", "diagram": 1}],
+ ["probe", {"what": [], "diagram": 1}],
+ ["probe", {"what": "R1.1", "diagram": 99}]]

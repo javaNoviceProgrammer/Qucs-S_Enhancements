@@ -1,0 +1,13 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_describe", {"what": "tree"}],
+ ["fem_edit", {"action": "set", "tag": "mesh", "props": {"hmax": "nonsense"}}],
+ ["fem_edit", {"action": "set", "tag": "mesh", "props": {"hmax": "-1[mm]"}}],
+ ["fem_edit", {"action": "set", "tag": "mesh", "props": {"hmax": "1e308[m]"}}],
+ ["fem_edit", {"action": "add", "parent": "geometry", "type": "rectangle", "props": {"size": ["1e308", "1e308"]}}],
+ ["fem_edit", {"action": "add", "parent": "geometry", "type": "rectangle", "props": {"size": ["nan", "inf"]}}],
+ ["fem_edit", {"action": "add", "parent": "nowhere", "type": "rectangle"}],
+ ["fem_edit", {"action": "move", "tag": "mesh", "by": 2147483647}],
+ ["fem_edit", {"action": "delete", "tag": "geometry"}],
+ ["fem_describe", {"what": "tree"}],
+ ["fem_export", {"path": "coax.qfem", "file": "out/x.svg"}],
+ ["fem_export", {"path": "coax.qfem", "file": "/Users/meisam/Desktop/outside.svg"}]]

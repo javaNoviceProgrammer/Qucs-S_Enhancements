@@ -1,0 +1,5 @@
+[["build_verilog_a", {"file": "bad.va"}, 120],
+ ["build_verilog_a", {"file": "huge.va"}, 120],
+ ["build_verilog_a", {"file": "nothing.va"}, 60],
+ ["build_verilog_a", {"file": "bad.va", "timeout": 0}, 60],
+ ["build_verilog_a", {"file": "bad.va", "timeout": -5}, 60]]

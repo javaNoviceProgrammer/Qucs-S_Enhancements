@@ -1,0 +1,12 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["add_component", {"type": "R", "x": 100, "y": 160}],
+ ["add_component", {"type": "Vdc", "x": 300, "y": 130}],
+ ["connect", {"from": "R1.2", "to": "ground"}],
+ ["connect", {"from": "R2.2", "to": "ground"}],
+ ["connect", {"from": "V1.2", "to": "ground"}],
+ ["connect", {"from": "R1.1", "to": "V1.1"}],
+ ["connect", {"from": "R2.1", "to": "V1.1"}],
+ ["add_analysis", {"analysis": "dc"}],
+ ["get_netlist", {}],
+ ["check_schematic", {}]]
