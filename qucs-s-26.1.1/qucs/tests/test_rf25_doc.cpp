@@ -208,6 +208,7 @@ private slots:
     {
         for (QucsDoc* d : app->allDocuments()) {
             if (auto* rf25 = dynamic_cast<RF25Doc*>(d)) {
+                rf25->stopSolving();
                 rf25->waitForLayout(30000);
                 rf25->waitForPrepared(30000);
             }
@@ -905,6 +906,91 @@ private slots:
         doc->view()->setView(QPointF(1e6, 1e6), doc->view()->scale());
         QVERIFY(!doc->view()->picture().isNull());
         QCOMPARE(doc->view()->overlayShapesDrawn(), 0);
+    }
+
+    // The solve: asked for, done in the background, and what it found
+    // said in the tab's notes, its status line and under the Results node
+    // - with a line's impedance worked out from the capacitance.
+    void theModelIsSolvedAndSaysWhatItFound()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("solved.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->mesh() != nullptr && !doc->mesh()->cells.isEmpty());
+
+        // Nothing is solved until it is asked for: the shapes and the
+        // mesh are made at every edit, a dense matrix is not.
+        QVERIFY(doc->extraction() == nullptr);
+        QVERIFY(doc->solveButton() != nullptr);
+        QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
+        QVERIFY2(panel()->settingsArea() != nullptr, "the panel has a form");
+        panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QVERIFY2(reportSays(QStringLiteral("Nothing is solved yet")), qPrintable(reportText()));
+
+        doc->solveButton()->click();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY(!e->names.isEmpty());
+        QVERIFY(e->unknowns > 0);
+        QVERIFY2(e->selfCapacitance(0) > 0, qPrintable(QString::number(e->selfCapacitance(0))));
+        // The length it was taken over is the longer side of what was
+        // solved, which for this layout is its 1200 µm of wire.
+        QVERIFY2(doc->solvedLength() > 1e-3 && doc->solvedLength() < 2e-3,
+                 qPrintable(QString::number(doc->solvedLength() * 1e6)));
+        // A line's own words: a capacitance per metre and an impedance.
+        const QStringList said = doc->lineSummary();
+        QVERIFY2(!said.isEmpty(), "it said nothing of the line");
+        QVERIFY2(said.first().contains(QStringLiteral("pF/m")) && said.first().contains(QStringLiteral("Z0")),
+                 qPrintable(said.first()));
+        // In the notes, in the status line, and under the Results node.
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("Z0")), qPrintable(doc->statusLabel()->text()));
+        // The Results node was chosen before the solve and has not been
+        // chosen again: the solve ending is what brings its report up to
+        // date, not a node picked anew.
+        QCOMPARE(panel()->currentTag(), doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QCoreApplication::processEvents();
+        QVERIFY2(reportSays(QStringLiteral("Z0")), qPrintable(reportText()));
+        QVERIFY2(!reportText().contains(QStringLiteral("Nothing is solved yet")), qPrintable(reportText()));
+
+        // An edit throws it away: a capacitance of shapes that are no
+        // longer there is worse than none at all.
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("30[um]")); },
+                              QStringLiteral("coarser")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->extraction() == nullptr, "the capacitance of the mesh before was kept");
+        QVERIFY(doc->lineSummary().isEmpty());
+        QVERIFY(!doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")));
+    }
+
+    // What a solve will not do: run with no mesh under it, and run twice
+    // at once.
+    void aSolveWithNothingToSolveOnIsRefused()
+    {
+        RF25Doc* doc = app->newRf25Model();
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForPrepared(30000));
+        // A new model names no layout, so there are no cells.
+        doc->solve();
+        QVERIFY(!doc->isSolving());
+        QVERIFY(doc->extraction() == nullptr);
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("no mesh")), qPrintable(doc->solveProblem()));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("no mesh")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QLabel* said = panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfNodeProblems"));
+        QVERIFY(said != nullptr);
+        QVERIFY2(said->text().contains(QStringLiteral("no mesh")), qPrintable(said->text()));
     }
 
     // A model dropped on the tabs, and one double-clicked in the project
