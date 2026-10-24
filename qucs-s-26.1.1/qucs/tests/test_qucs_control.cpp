@@ -2181,11 +2181,182 @@ private slots:
         // A frequency that is none.
         QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}, {"frequency", "-1"}}, 60000)));
 
+        // The line as a two-port, at the ports it is asked for: matched
+        // to its own impedance it reflects next to nothing, and into
+        // something else it reflects a good deal.
+        const QJsonObject sp = fline.value("s parameters").toObject();
+        QVERIFY2(!sp.isEmpty(), qPrintable(text(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}}, 300000))));
+        QCOMPARE(sp.value("reference impedance").toDouble(), 50.0);
+        // Into 50 Ohm it is passive and it cannot gain; most of what it
+        // does not pass is reflected, not lost - this wide strip is
+        // nowhere near 50 Ohm.
+        QVERIFY2(sp.value("S21_dB").toDouble() < 0.001, "a passive line cannot gain");
+        const double through = std::norm(std::complex<double>(sp.value("S21").toDouble(), sp.value("S21_im").toDouble()));
+        const double back = std::norm(std::complex<double>(sp.value("S11").toDouble(), sp.value("S11_im").toDouble()));
+        QVERIFY2(through + back <= 1.0 + 1e-6, qPrintable(QString::number(through + back)));
+        QVERIFY2(back > 0.1, "a strip this wide is badly mismatched to 50 Ohm, and the mismatch is the reflection");
+        // Matched to its own impedance instead, it reflects next to
+        // nothing and passes all but its attenuation.
+        const double z0 = fline.value("Zc").toDouble();
+        QVERIFY(z0 > 0);
+        const QJsonObject matched =
+            json(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}, {"frequency", "10[GHz]"},
+                                     {"impedance", QString::number(z0)}}, 300000)).toObject();
+        const QJsonObject msp = matched.value("nets").toArray().first().toObject().value("line").toObject()
+                                    .value("s parameters").toObject();
+        // What it passes is its attenuation over its own length, which is
+        // the alpha in dB/m it reported and not a bound on it.
+        const double wanted = -fline.value("alpha").toDouble() * atF.value("length").toDouble();
+        QVERIFY2(std::abs(msp.value("S21_dB").toDouble() - wanted) < 0.1 * std::abs(wanted),
+                 qPrintable(QStringLiteral("S21 %1 dB vs -alpha l %2 dB").arg(msp.value("S21_dB").toDouble()).arg(wanted)));
+        QVERIFY2(msp.value("S11_dB").toDouble() < sp.value("S11_dB").toDouble() - 10,
+                 "matched to its own impedance it should reflect far less than into 50 Ohm");
+        // Not nothing, though: a lossy line's Zc is complex and the port
+        // is real, so what is left is about Im(Zc)/(2 Re(Zc)).
+        const double residual = std::abs(fline.value("Zc_im").toDouble()) / (2 * z0);
+        const double got = std::abs(std::complex<double>(msp.value("S11").toDouble(), msp.value("S11_im").toDouble()));
+        QVERIFY2(std::abs(got - residual) < 0.3 * residual,
+                 qPrintable(QStringLiteral("|S11| %1 vs Im(Zc)/2Re(Zc) %2").arg(got).arg(residual)));
+        // An impedance that is none.
+        QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}, {"impedance", "0"}}, 60000)));
+
+        // And where the quasi-static answer gives out, which the caller
+        // must not be left to guess at.
+        const QJsonObject limit = atF.value("quasi-static limit").toObject();
+        QVERIFY2(limit.value("frequency").toDouble() > 0, qPrintable(text(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}}, 300000))));
+        QVERIFY(!limit.value("what sets it").toString().isEmpty());
+        QVERIFY(limit.value("epsilon_max").toDouble() >= 1);
+        QVERIFY2(limit.value("first half-wave resonance").toDouble() > 0, "a line of a length has a resonance");
+
+        // The Touchstone it writes of all that: the study's own 41 points,
+        // nine numbers to each.
+        const QJsonObject wrote = call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"}, {"file", "line.s2p"}}, 120000);
+        QVERIFY2(!failed(wrote), qPrintable(text(wrote)));
+        const QJsonObject wout = json(wrote).toObject();
+        QCOMPARE(wout.value("ports").toInt(), 2);
+        QCOMPARE(wout.value("frequencies").toInt(), 41);
+        QCOMPARE(wout.value("reference impedance").toDouble(), 50.0);
+        const QString file = wout.value("file").toString();
+        QVERIFY2(file.endsWith(QStringLiteral("line.s2p")), qPrintable(file));
+        QFile touchstone(file);
+        QVERIFY2(touchstone.open(QIODevice::ReadOnly | QIODevice::Text), qPrintable(file));
+        const QStringList all = QString::fromUtf8(touchstone.readAll()).split(QLatin1Char('\n'));
+        QVERIFY2(all.contains(QStringLiteral("# Hz S RI R 50")), qPrintable(all.value(0)));
+        // The file says what made it, by name: a Touchstone that outlives
+        // the session has nothing else to go on.
+        QVERIFY2(all.join(QLatin1Char('\n')).contains(QStringLiteral("lossy.qrf25")),
+                 "the file does not name the model it came from");
+        int written = 0;
+        for (const QString& row : all) {
+            if (row.trimmed().isEmpty() || row.startsWith(QLatin1Char('!')) || row.startsWith(QLatin1Char('#'))) continue;
+            ++written;
+            QCOMPARE(row.split(QLatin1Char(' '), Qt::SkipEmptyParts).size(), 9);
+        }
+        QCOMPARE(written, 41);
+        // Its comments say what made it and where it stops being right.
+        QVERIFY2(all.join(QLatin1Char('\n')).contains(QStringLiteral("Quasi-static")), "the file does not say what it is");
+
+        // Coupled, on a model with one net, is a two-port of that net -
+        // a 2N-port of N = 1 - and says as much.
+        const QJsonObject pair = json(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"},
+                                                           {"of", "coupled"}, {"file", "pair.s2p"}}, 120000)).toObject();
+        QCOMPARE(pair.value("ports").toInt(), 2);
+        QVERIFY2(pair.value("what it wrote").toString().contains(QStringLiteral("coupled")), qPrintable(pair.value("what it wrote").toString()));
+
+        // An impedance of its own, which the file's own header must carry:
+        // a Touchstone whose ports are not what it says they are is worse
+        // than none.
+        const QJsonObject at75 = json(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"},
+                                                           {"impedance", "75"}, {"file", "at75.s2p"}}, 120000)).toObject();
+        QCOMPARE(at75.value("reference impedance").toDouble(), 75.0);
+        QFile seventyFive(at75.value("file").toString());
+        QVERIFY(seventyFive.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString header = QString::fromUtf8(seventyFive.readAll());
+        QVERIFY2(header.contains(QStringLiteral("# Hz S RI R 75")), qPrintable(header.left(500)));
+        QVERIFY2(!header.contains(QStringLiteral("# Hz S RI R 50")), "it wrote 50 Ohm after being told 75");
+
+        // What it refuses: a net that is not there, an 'of' that is
+        // neither, a length and an impedance that are none, and a model
+        // that was never solved.
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"}, {"net", "M9"}}, 60000)));
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"}, {"of", "sideways"}}, 60000)));
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"}, {"length", "0"}}, 60000)));
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"}, {"impedance", "-50"}}, 60000)));
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/line.qrf25"}, {"node", "nothing"}}, 60000)));
+        // A model nothing has solved: it says so rather than writing an
+        // empty file. (line.qrf25 was solved above, so it is no test of
+        // this - a fresh one is.)
+        QVERIFY(put(ws + "/rf/fresh.qrf25", m.toJson()));
+        const QJsonObject unsolved = call("rf25_export", {{"path", ws + "/rf/fresh.qrf25"}}, 60000);
+        QVERIFY2(failed(unsolved), qPrintable(text(unsolved)));
+        // In the tool's own words, which tell a caller what to call -
+        // not the panel's "press Solve", which is no use to one.
+        QVERIFY2(text(unsolved).contains(QStringLiteral("rf25_solve it first")) || text(unsolved).contains(QStringLiteral("no mesh")),
+                 qPrintable(text(unsolved)));
+
+        // Two metals with no via between them: two nets, so a coupled
+        // export is a 4-port and not a 2-port. (One metal cannot show
+        // that, since twice one is two either way.)
+        {
+            qucs_s::rf25::Model two = m;
+            qucs_s::rf25::Node ild = two.make(QStringLiteral("rf_dielectric"));
+            ild.props.insert(QStringLiteral("thickness"), QStringLiteral("2[um]"));
+            QVERIFY(two.add(QStringLiteral("stack"), ild) != nullptr);
+            qucs_s::rf25::Node metal2 = two.make(QStringLiteral("rf_metal"));
+            QVERIFY(two.add(QStringLiteral("stack"), metal2) != nullptr);
+            QJsonArray both;
+            for (int layer = 0; layer < 64; ++layer) {
+                QJsonArray r;
+                r.append(QString::number(layer));
+                r.append(QStringLiteral("0"));
+                r.append(layer == 1 ? QStringLiteral("M1") : QStringLiteral("M2"));
+                both.append(r);
+            }
+            two.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), both);
+            two.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("40[um]"));
+            QVERIFY(put(ws + "/rf/two.qrf25", two.toJson()));
+            const QJsonObject solvedTwo = json(call("rf25_solve", {{"path", ws + "/rf/two.qrf25"}}, 300000)).toObject();
+            QCOMPARE(solvedTwo.value("nets").toArray().size(), 2);
+            // And as coupled lines: their modes and the 4-port S matrix.
+            const QJsonObject coupled = solvedTwo.value("coupled lines").toObject();
+            QVERIFY2(!coupled.isEmpty(), "two nets were not reported as coupled lines");
+            QCOMPARE(coupled.value("modes").toArray().size(), 2);
+            QCOMPARE(coupled.value("s matrix").toArray().size(), 4);
+            for (const QJsonValue& v : coupled.value("s matrix").toArray()) {
+                QCOMPARE(v.toObject().value("re").toArray().size(), 4);
+                QCOMPARE(v.toObject().value("im").toArray().size(), 4);
+            }
+            QVERIFY2(coupled.value("ports").toString().contains(QStringLiteral("M1")), qPrintable(coupled.value("ports").toString()));
+            const QJsonObject four = json(call("rf25_export", {{"path", ws + "/rf/two.qrf25"},
+                                                               {"of", "coupled"}, {"file", "two.s4p"}}, 120000)).toObject();
+            QCOMPARE(four.value("ports").toInt(), 4);
+            QVERIFY2(four.value("file").toString().endsWith(QStringLiteral("two.s4p")), qPrintable(four.value("file").toString()));
+            QFile s4p(four.value("file").toString());
+            QVERIFY(s4p.open(QIODevice::ReadOnly | QIODevice::Text));
+            int wide = 0;
+            for (const QString& row : QString::fromUtf8(s4p.readAll()).split(QLatin1Char('\n'))) {
+                if (row.trimmed().isEmpty() || row.startsWith(QLatin1Char('!')) || row.startsWith(QLatin1Char('#'))) continue;
+                ++wide;
+                // A 4-port writes 32 numbers a frequency, and Touchstone 1
+                // wraps them over several lines, so this counts the lot.
+                QVERIFY(row.split(QLatin1Char(' '), Qt::SkipEmptyParts).size() > 1);
+            }
+            QVERIFY2(wide > 41, qPrintable(QStringLiteral("%1 data lines for 41 frequencies of a 4-port").arg(wide)));
+            // One net exported coupled is a 2-port, which is 2N of N = 1.
+            QCOMPARE(json(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"},
+                                               {"of", "coupled"}, {"file", "one.s2p"}}, 120000)).toObject()
+                         .value("ports").toInt(),
+                     2);
+        }
+
         // And what is no RF 2.5D model at all.
         QVERIFY(put(ws + "/rf/plain.sch", QByteArray("<Qucs Schematic 24.1.1>\n")));
         const QJsonObject wrong = call("rf25_solve", {{"path", ws + "/rf/plain.sch"}}, 60000);
         QVERIFY(failed(wrong));
         QVERIFY2(text(wrong).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrong)));
+        const QJsonObject wrongToo = call("rf25_export", {{"path", ws + "/rf/plain.sch"}}, 60000);
+        QVERIFY(failed(wrongToo));
+        QVERIFY2(text(wrongToo).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrongToo)));
         app->closeAllFiles();
     }
 

@@ -82,6 +82,20 @@ struct Extraction {
     QList<QList<double>> c;           ///< the capacitance matrix, F (mutual form)
     QList<QList<double>> c0;          ///< the same with every dielectric vacuum, F
     QList<QList<double>> maxwell;     ///< as solved: the short-circuit matrix, F
+    QList<QList<double>> maxwell0;    ///< the same with every dielectric vacuum, F
+    /*!
+     * The matrix the dielectrics' losses make, F, in the same
+     * short-circuit form: sum over the lossy layers of tand_k eps_k
+     * dC/deps_k, so that the conductance matrix of a line is w times it.
+     *
+     * It is the matrix form of \a lossTangent, and the one that is
+     * actually solved for - a layer's permittivity is nudged a part in a
+     * thousand and the whole matrix is solved again, which gives dC/deps
+     * for every pair of nets at once. Reducing it to one number per net
+     * (which is what \a lossTangent is) throws away how a layer's loss
+     * couples two conductors, and coupled lines need that.
+     */
+    QList<QList<double>> dielectricLoss;
     int unknowns = 0;                 ///< the cells it solved for
     double conditionHint = 0;         ///< the matrix's diagonal spread, for a warning
     /*!
@@ -100,6 +114,8 @@ struct Extraction {
     QList<double> crowding;
     /// Each net's effective loss tangent: the dielectrics' own, weighted
     /// by how much of the field each holds (eps dC/deps). G = w C tand.
+    /// The diagonal of \a dielectricLoss over that of the capacitance, as
+    /// a single line needs it.
     QList<double> lossTangent;
     /// The metal each net is on, for its surface resistance: its
     /// conductivity (S/m) and thickness (m), or zero where it said none.
