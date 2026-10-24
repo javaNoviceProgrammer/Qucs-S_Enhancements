@@ -818,7 +818,7 @@ private slots:
         const QString linked = QDir(workspace).absoluteFilePath("amp_prj");
         QVERIFY(isLink(linked));
         QCOMPARE(QFileInfo(linked).canonicalFilePath(), QFileInfo(source).canonicalFilePath());
-        QCOMPARE(tabs->currentIndex(), 0);   // the Projects tab
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("projects"));   // the Projects tab, wherever it sits
         QTRY_COMPARE(app.projectsView()->currentIndex().data().toString(), QStringLiteral("amp_prj"));
         QVERIFY(app.projectsView()->currentIndex().data(Qt::FontRole).value<QFont>().italic());   // a link
         QVERIFY2(dialogs.isEmpty(), qPrintable(dialogs.join(" | ")));
@@ -828,7 +828,7 @@ private slots:
         app.projectsView()->setCurrentIndex(QModelIndex());
         QVERIFY(choose(source + "/"));
         QCOMPARE(inWorkspace(), QStringList({"amp_prj"}));
-        QCOMPARE(tabs->currentIndex(), 0);
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("projects"));
         QTRY_COMPARE(app.projectsView()->currentIndex().data().toString(), QStringLiteral("amp_prj"));
         QVERIFY2(dialogs.isEmpty(), qPrintable(dialogs.join(" | ")));
 

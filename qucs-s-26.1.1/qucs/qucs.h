@@ -305,6 +305,30 @@ public:
   /// Code, a tab each, in the workspace folder unless another is chosen.
   ClaudeCodeTabs *claudeCode() const { return claudeTabs; }
   FileBrowser *fileBrowserPanel() const { return fileBrowser; }
+  /// The pages of the left dock. They were jumped to by bare number, so a
+  /// page added before another moved every jump to the wrong panel - and
+  /// the number a session kept meant another page the next time; each is
+  /// looked up by page now.
+  enum class SidePage { Workspaces, Projects, Content, Components, Libraries, FileBrowser, Multiphysics };
+  /// Where \a page is in the dock, or -1 when this build has it not.
+  int sidePage(SidePage page) const;
+  /// Shows \a page; false when it is not there.
+  bool showSidePage(SidePage page);
+  /// \a page as a session file names it ("content"); empty for none.
+  static QString sidePageName(SidePage page);
+  /// The page in front, as a session file names it.
+  QString currentSidePageName() const;
+  /// Shows the page of that name (sidePageName's); false when there is no
+  /// such page.
+  bool showSidePageNamed(const QString &name);
+  /// The Workspaces panel's list: the workspaces opened before, the one
+  /// open now marked as the Projects panel marks the open project.
+  QListWidget *workspacesPanel() const { return Workspaces; }
+  /// The Workspaces list filled again: the history newest first, the one
+  /// open now with its dot, and one whose folder is gone greyed.
+  void refreshWorkspaces();
+  /// The workspace a row of that panel names.
+  QString workspaceOfRow(const QListWidgetItem *item) const;
   /// The open project's folder in the File Browser (the Content panel's
   /// Open in File Browser): the tab showing it, else a new one; the File
   /// Browser in front. Nothing without a project open.
@@ -1013,6 +1037,11 @@ private:
 
   QListView *Projects;
   ProjectView *Content;
+  QListWidget *Workspaces = nullptr;   // the left dock's Workspaces tab
+  QHash<int, QWidget *> a_sidePages;   // SidePage to the dock's page
+  void initWorkspacesPanel();          // the Workspaces tab (qucs_workspace.cpp)
+  /// \a dir into the history, newest first, and written to the settings.
+  void rememberWorkspace(const QString &dir);
 
   QLineEdit *CompSearch;
   QPushButton *CompSearchClear;
@@ -1164,7 +1193,7 @@ private:
           *moveDocumentToNextPane = nullptr, *nextPaneAction = nullptr, *maximizeDocument = nullptr;
 
   // menus contain the items of their menubar
-  enum { MaxRecentFiles = 8, MaxRecentProjects = 8 };
+  enum { MaxRecentFiles = 8, MaxRecentProjects = 8, MaxRecentWorkspaces = 20 };
   QMenu *fileMenu, *editMenu, *insMenu, *projMenu, *recentProjMenu, *simMenu,
       *viewMenu, *helpMenu, *alignMenu, *toolMenu, *recentFilesMenu, *cmMenu,
       *symbolMenu;
@@ -1327,6 +1356,7 @@ private slots:
   void slotExportGraphAsCsv();
   void slotUpdateRecentFiles();
   void slotClearRecentFiles();
+  void slotWorkspacesContextMenu(const QPoint &point);
   void slotUpdateRecentProjects();
   void slotClearRecentProjects();
   void slotLoadModule();

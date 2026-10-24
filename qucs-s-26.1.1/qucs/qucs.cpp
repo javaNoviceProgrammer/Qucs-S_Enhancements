@@ -56,6 +56,7 @@
 
 #include "main.h"
 #include "qucs.h"
+#include "projectstatedelegate.h"
 #include "datasetfile.h"
 #include "systemopen.h"
 #include "workspace.h"
@@ -149,58 +150,6 @@
 
 namespace {
 
-// The Projects panel's rows: at the right end of a project's, a dot - green
-// for the project open now, grey for the others; a folder that is no
-// project has none. The name ends before it.
-class ProjectStateDelegate : public QStyledItemDelegate
-{
-public:
-  using QStyledItemDelegate::QStyledItemDelegate;
-
-  static int stateOf(const QModelIndex &index)
-  {
-    return index.data(QucsFileSystemModel::ProjectStateRole).toInt();
-  }
-  // The dot's size and its room at the right end, in a row \a rect.
-  static int dotSize(const QRect &rect) { return std::clamp(rect.height() * 2 / 5, 7, 12); }
-  static int dotRoom(const QRect &rect) { return dotSize(rect) + 12; }
-  static QRect dotRect(const QRect &rect)
-  {
-    const int d = dotSize(rect);
-    return QRect(rect.right() - dotRoom(rect) + (dotRoom(rect) - d) / 2, rect.center().y() - d / 2 + 1, d, d);
-  }
-  static QColor openColour() { return QColor(0x34, 0xc7, 0x59); }
-
-  void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
-  {
-    QStyledItemDelegate::paint(painter, option, index);
-    const int state = stateOf(index);
-    if (state == QucsFileSystemModel::NoProject) return;
-    // (A neutral grey on a highlighted row too: of the list's colours, not
-    // the highlight's, which would tint it.)
-    const QColor colour = state == QucsFileSystemModel::OpenProject
-                              ? openColour()
-                              : qucs_s::apptheme::mix(option.palette.color(QPalette::Base), option.palette.color(QPalette::Text), 0.45);
-    painter->save();
-    painter->setRenderHint(QPainter::Antialiasing);
-    painter->setPen(Qt::NoPen);
-    painter->setBrush(colour);
-    painter->drawEllipse(dotRect(option.rect));
-    painter->restore();
-  }
-
-protected:
-  void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
-  {
-    QStyledItemDelegate::initStyleOption(option, index);
-    if (stateOf(index) == QucsFileSystemModel::NoProject) return;
-    // The name cut short before the dot rather than under it.
-    const QStyle *style = option->widget != nullptr ? option->widget->style() : QApplication::style();
-    const int margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, option->widget) + 1;
-    const int room = option->rect.width() - option->decorationSize.width() - 4 * margin - dotRoom(option->rect);
-    option->text = option->fontMetrics.elidedText(option->text, option->textElideMode, std::max(room, 0));
-  }
-};
 
 // The editing keys in text one reads (misc::isReadOnlyText): the Claude
 // Code dock's conversation, a log, a preview, a label. Qt claims them
@@ -654,6 +603,11 @@ void QucsApp::initView()
   connect(editText, SIGNAL(editingFinished()), SLOT(slotHideEdit()));
 
   // ----------------------------------------------------------
+  // "Workspaces" Tab of the left QTabWidget: the workspaces opened before,
+  // the one open now marked as the Projects panel marks the open project.
+  initWorkspacesPanel();
+
+  // ----------------------------------------------------------
   // "Project Tab" of the left QTabWidget
   QWidget *ProjGroup = new QWidget();
   QVBoxLayout *ProjGroupLayout = new QVBoxLayout();
@@ -706,6 +660,7 @@ void QucsApp::initView()
   });
 
   TabView->addTab(ProjGroup, tr("Projects"));
+  a_sidePages.insert(int(SidePage::Projects), ProjGroup);
   TabView->setTabToolTip(TabView->indexOf(ProjGroup), tr("content of project directory"));
 
   connect(Projects, SIGNAL(doubleClicked(const QModelIndex &)),
@@ -733,6 +688,7 @@ void QucsApp::initView()
   connect(contentFilter, &QLineEdit::textChanged, Content, &ProjectView::setFilterText);
 
   TabView->addTab(ContentGroup, tr("Content"));
+  a_sidePages.insert(int(SidePage::Content), ContentGroup);
   TabView->setTabToolTip(TabView->indexOf(ContentGroup), tr("content of current project"));
 
   connect(Content, SIGNAL(clicked(const QModelIndex &)),
@@ -786,6 +742,7 @@ void QucsApp::initView()
 #endif
 
   TabView->addTab(CompGroup,tr("Components"));
+  a_sidePages.insert(int(SidePage::Components), CompGroup);
   TabView->setTabToolTip(TabView->indexOf(CompGroup), tr("components and diagrams"));
 
   connect(CompChoose, SIGNAL(activated(int)), SLOT(slotSetCompView(int)));
@@ -845,6 +802,7 @@ void QucsApp::initView()
   slotSetCompView(0);
 
   TabView->addTab (LibGroup, tr("Libraries"));
+  a_sidePages.insert(int(SidePage::Libraries), LibGroup);
   TabView->setTabToolTip (TabView->indexOf (LibGroup), tr ("system and user component libraries"));
 
   connect(libTreeWidget, SIGNAL(itemPressed (QTreeWidgetItem*, int)),
@@ -864,6 +822,7 @@ void QucsApp::initView()
     return doc != nullptr ? doc->getDocName() : QString();
   });
   TabView->addTab(fileBrowser, tr("File Browser"));
+  a_sidePages.insert(int(SidePage::FileBrowser), fileBrowser);
   TabView->setTabToolTip(TabView->indexOf(fileBrowser), tr("files and folders, in the view you choose"));
   connect(fileBrowser, &FileBrowser::openRequested, this, [this](const QString &path) {
     editText->setHidden(true); // disable text edit of component property
@@ -886,7 +845,10 @@ void QucsApp::initView()
   dock->setWidget(TabView);
   dock->setAllowedAreas(Qt::LeftDockWidgetArea);
   this->addDockWidget(Qt::LeftDockWidgetArea, dock);
-  TabView->setCurrentIndex(2);
+  showSidePage(SidePage::Components);
+  // The workspace this run started in belongs in the panel's history as
+  // much as one switched to.
+  refreshWorkspaces();
 
 #if __APPLE__
   QWidgetList widgets = TabView->findChildren<QWidget*>();
@@ -2274,6 +2236,17 @@ void QucsApp::openProject(const QString& PathGiven)
     return;
   }
 
+  // The project open now, opened again: every tab was closed and a fresh
+  // one opened in their place, which threw away the work in front and read
+  // the project anew for nothing. There is nothing to do but show what it
+  // holds (a double-click in the panel and "Open with Qucs-S" of a folder
+  // both come through here).
+  if (!ProjName.isEmpty() && QDir(QucsSettings.QucsWorkDir).canonicalPath() == real) {
+    showSidePage(SidePage::Content);
+    statusBar()->showMessage(tr("%1 is the project open already.").arg(openProjName), 5000);
+    return;
+  }
+
   if(!closeAllFiles()) return;   // close files and ask for saving them
   Schematic *d = new Schematic(this, "");
   int i = addDocumentTab(d);
@@ -2289,7 +2262,7 @@ void QucsApp::openProject(const QString& PathGiven)
   fileBrowser->setProjectPath(QucsSettings.QucsWorkDir.absolutePath());
   if (claudeTabs != nullptr) claudeTabs->setProjectDirectory(QucsSettings.QucsWorkDir.absolutePath());
 
-  TabView->setCurrentIndex(1);   // switch to "Content"-Tab
+  showSidePage(SidePage::Content);
 
   ProjName = qucs_s::workspace::projectName(openProjName);   // "amp_prj" is amp
   a_homeDirModel->setOpenProject(QucsSettings.QucsWorkDir.absolutePath());
@@ -2406,7 +2379,7 @@ void QucsApp::slotMenuProjClose()
   fileBrowser->setProjectPath(QString());
   if (claudeTabs != nullptr) claudeTabs->setProjectDirectory(QString());
 
-  TabView->setCurrentIndex(0);   // switch to "Projects"-Tab
+  showSidePage(SidePage::Projects);
   ProjName = "";
   a_homeDirModel->setOpenProject(QString());
   Projects->viewport()->update();
@@ -2762,6 +2735,7 @@ void QucsApp::setWorkspace(const QString &dir)
   QucsSettings.projsDir.setPath(QDir(dir).absolutePath());   // the folder the panel lists
   slotMenuProjClose();   // a project of the old workspace closes; the user libraries follow
   readProjects();
+  refreshWorkspaces();
 }
 
 QString QucsApp::bringProjectIn(const QString &sourceGiven, bool link)
@@ -2819,7 +2793,7 @@ QString QucsApp::bringProjectIn(const QString &sourceGiven, bool link)
 
 void QucsApp::showProjectInList(const QString &path)
 {
-  TabView->setCurrentIndex(0);   // the Projects tab
+  showSidePage(SidePage::Projects);
   if (QucsSettings.projsDir.absolutePath() != QucsSettings.qucsWorkspaceDir.absolutePath()) {
     QucsSettings.projsDir.setPath(QucsSettings.qucsWorkspaceDir.absolutePath());
     readProjects();
@@ -5255,7 +5229,7 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
     if(Schematic *sch = schematicIn (w))
       sch->reloadGraphs();  // ... changes, reload here !
 
-  TabView->setCurrentIndex(2);   // switch to "Component"-Tab
+  showSidePage(SidePage::Components);
   if (Name.right(4) == ".dpl") {
     int i = Category::getModulesNr (QObject::tr("diagrams"));
     CompChoose->setCurrentIndex(i);   // switch to diagrams
