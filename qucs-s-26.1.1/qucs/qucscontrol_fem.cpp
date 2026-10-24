@@ -1137,8 +1137,45 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
                 // solve reads it (the check of 23 October, 2). Said, not
                 // refused: the value may name a parameter the model has
                 // not got yet, and the solve refuses it in any case.
-                if (const PropertyDef* def = k != nullptr ? k->property(it.key()) : nullptr;
-                    def != nullptr && def->kind == PropertyDef::Expression && !def->unit.isEmpty()
+                const PropertyDef* def = k != nullptr ? k->property(it.key()) : nullptr;
+                if (def != nullptr
+                    && (def->kind == PropertyDef::Expression || def->kind == PropertyDef::Pair
+                        || def->kind == PropertyDef::Points)) {
+                    // One expression, a pair of them (a rectangle's 'size'
+                    // is ["w", "h"]) or a list of pairs (a polygon's
+                    // corners): every one of them is read.
+                    QStringList written;
+                    const std::function<void(const QJsonValue&)> gather = [&written, &gather](const QJsonValue& one) {
+                        if (one.isString()) written << one.toString();
+                        else if (one.isArray())
+                            for (const QJsonValue& inner : one.toArray()) gather(inner);
+                    };
+                    gather(v);
+                    for (const QString& text : std::as_const(written)) {
+                        const Expression e = Expression::compile(text, doc->parameters()->scope);
+                        // A number that is no number: refused here, whatever
+                        // the unit. A rectangle of 1e308 by 1e308, or of
+                        // nan, was taken without a word and broke the
+                        // geometry for every later call (the hunt of 23
+                        // October, B3).
+                        if (e.isValid() && e.isConstant() && !std::isfinite(e.constant()))
+                            return tr("%1 is %2, which is no number: nothing of the model can be built from it")
+                                .arg(it.key(), text.trimmed());
+                        // A length has no scale to judge it by - the
+                        // geometry's unit is the model's - but a number this
+                        // far out is no length either.
+                        if (e.isValid() && e.isConstant() && std::abs(e.constant()) > 1e12)
+                            return tr("%1 is %2, which is beyond any geometry: give it in the model's own unit")
+                                .arg(it.key(), text.trimmed());
+                        // One that does not read at all: said at the edit,
+                        // not only when something comes to read it. Said and
+                        // not refused - it may name a parameter the model has
+                        // not got yet, and the solve refuses it in any case.
+                        if (!e.isValid())
+                            checked << tr("%1: %2 does not read as an expression here (%3)").arg(it.key(), text.trimmed(), e.error());
+                    }
+                }
+                if (def != nullptr && def->kind == PropertyDef::Expression && !def->unit.isEmpty()
                     && def->unit != QLatin1String("length") && def->unit != QLatin1String("angle") && v.isString())
                     if (const std::optional<qucs_s::fem::Unit> unit = qucs_s::fem::parseUnit(def->unit); unit) {
                         const Expression e = Expression::compile(v.toString(), doc->parameters()->scope);
@@ -1701,9 +1738,15 @@ QJsonArray valuesAgainst(const QJsonArray& values, const QJsonObject& reference,
     for (const QJsonValue& v : values) {
         QJsonObject one = v.toObject();
         const QString name = one.contains(QLatin1String("name")) ? one.value(QLatin1String("name")).toString() : expression;
-        // (One number for one value: whatever it is named.)
+        // One number for one value, whatever it is named - but only where
+        // it was given without a name at all ('reference': 1e-10 arrives
+        // under an empty key). A number given under a name is matched by
+        // that name: one that names nothing used to be measured against
+        // anyway, and counted as matched so the answer said nothing of it
+        // (the hunt of 23 October, B1).
         QJsonValue want = reference.value(name);
-        if (want.isUndefined() && reference.size() == 1 && values.size() == 1) want = reference.constBegin().value();
+        if (want.isUndefined() && reference.size() == 1 && values.size() == 1 && reference.constBegin().key().isEmpty())
+            want = reference.constBegin().value();
         if (!want.isDouble() || !one.contains(QLatin1String("SI"))) {
             out.append(one);
             continue;
@@ -1721,7 +1764,9 @@ QJsonArray valuesAgainst(const QJsonArray& values, const QJsonObject& reference,
             }
         }
         ++*matched;
-        met.insert(reference.contains(name) ? name : reference.constBegin().key());
+        // (Named, or the one unnamed number - whose key is empty, and which
+        // 'unmatched' leaves out.)
+        met.insert(reference.contains(name) ? name : QString());
         out.append(one);
     }
     // The rows of the reference that no value answers to: named, not only
@@ -2125,6 +2170,14 @@ QJsonObject refineMesh(Model& m, const Node& meshWas, double h0, double hmin0, d
 // was, whatever happens.
 void QucsControl::femConverge(const QJsonObject& args, const Done& done)
 {
+    // A count of nought is either a refusal or means none, and it used to
+    // mean neither: it was clamped in silence, so 'timeout': 0 waited a
+    // second and the solve ran on (the hunt of 23 October, B5). Asked
+    // before anything else, so the answer is about the argument.
+    if (args.contains(QLatin1String("timeout")) && args.value(QLatin1String("timeout")).toInt(-1) < 1)
+        return done(errorResult(tr("'timeout' is how many seconds each solve is waited for, 1 or more (600 when not given): "
+                                   "%1 waits for none, which is no convergence study.")
+                                    .arg(args.value(QLatin1String("timeout")).toInt(-1))));
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return done(errorResult(error));

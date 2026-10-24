@@ -369,6 +369,12 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
     const QJsonValue layerSpec = args.value(QLatin1String("layer"));
     const QJsonValue depthGiven = args.value(QLatin1String("depth"));
     const bool texts = args.value(QLatin1String("texts")).toBool(true);
+    // Clamped in silence before: 'limit': 0 listed one shape of the four
+    // there were, and said "1 listed of 4" as though that was asked (B5).
+    if (args.contains(QLatin1String("limit")) && !(args.value(QLatin1String("limit")).toInt(0) >= 1
+                                                   && args.value(QLatin1String("limit")).toInt(0) <= 1000))
+        return done(errorResult(tr("'limit' is how many shapes to list at most, 1 to 1000 (50 when not given): %1 is none of "
+                                   "them.").arg(args.value(QLatin1String("limit")).toInt(0))));
     const int limit = std::clamp(args.value(QLatin1String("limit")).toInt(50), 1, 1000);
     withLayout(args, false, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         const QVector<LayerStyle> styles = doc != nullptr ? doc->view()->styles()

@@ -426,6 +426,44 @@ private slots:
         QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("2 point(s)")), qPrintable(d.notes.join(QLatin1Char(' '))));
     }
 
+    // The hunt of 23 October, B9 and B10: what a CSV's header says, and
+    // what the answer says about it.
+    void aCsvKeepsItsHeaderAndSaysWhatItRenamed()
+    {
+        // B9. Rows of 3, 2 and 4 values under a header of 3. The widest row
+        // decided the table and the header was looked for just above it, so
+        // the names were thrown away (A, B, C, D) and every row ahead of
+        // the widest one was dropped with them.
+        di::Data d = read(write("ragged.csv", "a,b,c\n1,2,3\n4,5\n6,7,8,9\n"));
+        QCOMPARE(names(d), (QStringList{"a", "b", "c", "D"}));   // ('D': the fourth column no header names)
+        QCOMPARE(find(d, "a")->re, (QVector<double>{1, 4, 6}));  // every row, the short one filled
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("not all the same width")),
+                 qPrintable(d.notes.join(QLatin1Char(' '))));
+
+        // B10. Three columns of one name: the rename map is keyed by the
+        // name in the file, so only the last of them was reported.
+        d = read(write("dup.csv", "a,a,a\n1,2,3\n4,5,6\n"));
+        QCOMPARE(names(d), (QStringList{"a", "a_2", "a_3"}));
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("3 columns are called \"a\"")),
+                 qPrintable(d.notes.join(QLatin1Char(' '))));
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("a, a_2, a_3")),
+                 qPrintable(d.notes.join(QLatin1Char(' '))));
+        // The map is left alone rather than made to say something half
+        // true; one column read under another name still uses it.
+        QVERIFY(d.renamed.isEmpty());
+        d = read(write("unit.csv", "Frequency (Hz),V out\n1,2\n3,4\n"));
+        QCOMPARE(d.renamed.value(QStringLiteral("Frequency (Hz)")), QStringLiteral("Frequency"));
+
+        // And what was right stays right: one width, its own header, and a
+        // count written above the numbers that is not taken for data.
+        d = read(write("plain2.csv", "a,b,c\n1,2,3\n4,5,6\n"));
+        QCOMPARE(names(d), (QStringList{"a", "b", "c"}));
+        QVERIFY(d.notes.isEmpty());
+        d = read(write("counted2.txt", "3\n0 1\n1 2\n2 3\n"));
+        QCOMPARE(names(d), (QStringList{"A", "B"}));
+        QCOMPARE(find(d, "A")->re, (QVector<double>{0, 1, 2}));
+    }
+
     void touchstoneIsRead()
     {
         di::Data d = read(write("ant.s1p", "! an antenna\n# GHz S MA R 50\n1 0.5 90\n2 0.25 180\n"));

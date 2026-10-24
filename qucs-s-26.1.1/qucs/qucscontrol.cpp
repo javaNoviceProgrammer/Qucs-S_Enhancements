@@ -11819,10 +11819,17 @@ QString QucsControl::refusedAction(QAction* action) const
 
 QAction* QucsControl::actionNamed(const QString& wanted) const
 {
+    // Nothing names no action. Most QActions never have an object name
+    // set, so an empty 'wanted' equalled the first one's and fired it -
+    // File > New, as the menus happen to be ordered (the hunt of 23
+    // October, B8), and trigger_action reaches every menu item there is.
+    if (wanted.trimmed().isEmpty()) return nullptr;
     QStringList paths;
     const QList<QAction*> actions = menuActions(&paths);
     for (int i = 0; i < actions.size(); ++i)
-        if (normalized(paths.at(i)) == normalized(wanted) || actions.at(i)->objectName() == wanted) return actions.at(i);
+        if (normalized(paths.at(i)) == normalized(wanted)
+            || (!actions.at(i)->objectName().isEmpty() && actions.at(i)->objectName() == wanted))
+            return actions.at(i);
     // Only the last part of the path, when it names one action alone.
     QList<QAction*> tails;
     for (int i = 0; i < actions.size(); ++i)
@@ -11871,7 +11878,8 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
             near << cleanText(paths.at(i));
         }
         if (near.size() > 5) near.clear();
-        done(errorResult(near.isEmpty() ? tr("There is no action %1 (list_actions lists them).").arg(wanted)
+        done(errorResult(near.isEmpty() ? wanted.isEmpty() ? tr("Give 'action': the name of a menu item, as list_actions lists them - 'action' was empty, which names none.")
+                                                     : tr("There is no action %1 (list_actions lists them).").arg(wanted)
                                         : tr("There is no action %1. Meant %2? (list_actions lists them.)")
                                               .arg(wanted, near.join(tr(" or ")))));
         return;

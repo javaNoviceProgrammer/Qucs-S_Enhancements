@@ -1,0 +1,6 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_edit", {"action": "add", "parent": "geometry", "type": "rectangle", "props": {"size": ["1e308", "1e308"]}}],
+ ["fem_edit", {"action": "add", "parent": "geometry", "type": "rectangle", "props": {"size": ["nan", "inf"]}}],
+ ["fem_edit", {"action": "add", "parent": "geometry", "type": "rectangle", "props": {"size": ["notaparam", "1"]}}],
+ ["fem_edit", {"action": "add", "parent": "geometry", "type": "rectangle", "props": {"size": ["1[mm]", "2[mm]"]}}],
+ ["fem_describe", {"what": "tree"}]]
