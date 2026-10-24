@@ -575,6 +575,13 @@ void LayoutView::setMode(Mode mode)
     emit modeChanged(mode);
 }
 
+void LayoutView::setOverlays(const QList<Overlay>& overlays)
+{
+    a_overlays = overlays;
+    // (Drawn over the layout's picture, which is unchanged: no invalidate.)
+    update();
+}
+
 void LayoutView::addRuler(const QLineF& ruler)
 {
     a_rulers.append(ruler);
@@ -711,6 +718,44 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
         for (const QPointF& pt : a_selectionOutline) shown << toPixel(pt);
         if (a_selection && a_selection->isText()) p.drawEllipse(shown.first(), 6, 6);
         else p.drawPolygon(shown);
+    }
+    // What another tab makes of the layout: drawn over it, in the order
+    // given. Only what is in sight, and no more shapes than the budget.
+    a_overlayDrawn = 0;
+    a_overlayLeftOut = 0;
+    if (!a_overlays.isEmpty()) {
+        const QRectF seen = visibleRegion();
+        QVector<QPointF> dots;
+        for (const Overlay& overlay : std::as_const(a_overlays)) {
+            p.setPen(QPen(overlay.line, overlay.width));
+            p.setBrush(Qt::NoBrush);
+            dots.clear();
+            for (const QPolygonF& shape : overlay.shapes) {
+                if (shape.size() < 2) continue;
+                const QRectF box = shape.boundingRect();
+                if (!box.intersects(seen)) continue;
+                if (a_overlayDrawn >= MostOverlayShapes) {
+                    ++a_overlayLeftOut;
+                    continue;
+                }
+                ++a_overlayDrawn;
+                // Smaller than two pixels: a point, which is what a cell
+                // of a fine mesh is at this scale, and far cheaper than a
+                // polygon of its own.
+                if (box.width() * a_scale < 2 && box.height() * a_scale < 2) {
+                    dots << toPixel(box.center());
+                    continue;
+                }
+                QPolygonF shown;
+                shown.reserve(shape.size());
+                for (const QPointF& pt : shape) shown << toPixel(pt);
+                p.drawPolygon(shown);
+            }
+            if (!dots.isEmpty()) {
+                p.setPen(QPen(overlay.line, std::max(1.4, overlay.width)));
+                p.drawPoints(dots.constData(), int(dots.size()));
+            }
+        }
     }
     // The rulers.
     if (!a_rulers.isEmpty()) {

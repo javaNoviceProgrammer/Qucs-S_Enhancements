@@ -131,6 +131,33 @@ public:
     void addRuler(const QLineF& ruler);
     void clearRulers();
 
+    /*!
+     * Polygons another tab draws over the layout, in the µm of the cell
+     * shown: the RF 2.5D tab's processed shapes and its mesh cells. The
+     * view knows nothing of what they mean - it draws them over the
+     * layout's picture, in the order given, the first underneath - and
+     * they are not part of what it reads, so a selection, a ruler and the
+     * stats are unchanged by them.
+     *
+     * They are drawn every frame, unlike the layout, which is cached: a
+     * mesh of tens of thousands of cells is kept cheap by drawing only
+     * what is in sight, by drawing a shape under two pixels as a point,
+     * and by stopping at MostOverlayShapes.
+     */
+    struct Overlay {
+        QList<QPolygonF> shapes;   ///< µm, the cell shown's
+        QColor line;               ///< the outline's colour
+        double width = 1.0;        ///< its width, in pixels
+        QString name;              ///< what it is, for a tooltip
+    };
+    void setOverlays(const QList<Overlay>& overlays);
+    const QList<Overlay>& overlays() const { return a_overlays; }
+    /// How many of the overlays' shapes the last frame drew, and how many
+    /// it left out (in sight but past the budget).
+    int overlayShapesDrawn() const { return a_overlayDrawn; }
+    int overlayShapesLeftOut() const { return a_overlayLeftOut; }
+    static constexpr int MostOverlayShapes = 40000;
+
     /// The shape or text selected, in the coordinates of the cell shown.
     const std::optional<Found>& selection() const { return a_selection; }
     void select(const std::optional<Found>& found);
@@ -232,6 +259,10 @@ private:
     int a_renders = 0;
     /// The CPU's drawing of the view as it stands.
     RenderOptions renderOptions() const;
+
+    QList<Overlay> a_overlays;
+    int a_overlayDrawn = 0;
+    int a_overlayLeftOut = 0;
 
     QList<QLineF> a_rulers;
     bool a_measuring = false;

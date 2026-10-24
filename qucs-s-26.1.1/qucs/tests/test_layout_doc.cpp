@@ -972,6 +972,74 @@ private slots:
         QVERIFY(!doc->getDocChanged());
     }
 
+    // Polygons another tab draws over the layout (the RF 2.5D tab's
+    // processed shapes and its cells): drawn over its picture, only where
+    // they are in sight, a shape under two pixels as a point, and no more
+    // of them than the budget.
+    void overlaysAreDrawnOverTheLayoutWithinTheirBudget()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        view->fit();
+        view->repaint();
+        const quint64 shapesOfTheLayout = view->lastStats().polygons + view->lastStats().dots;
+        QVERIFY(shapesOfTheLayout > 0);
+        QVERIFY(view->overlays().isEmpty());
+        QCOMPARE(view->overlayShapesDrawn(), 0);
+
+        // Three in sight and one far away: the three are drawn, and the
+        // layout under them is unchanged (it is cached, not drawn again).
+        const QRectF seen = view->visibleRegion();
+        LayoutView::Overlay here;
+        here.shapes << QPolygonF(QRectF(seen.center(), QSizeF(seen.width() / 8, seen.height() / 8)))
+                    << QPolygonF(seen.adjusted(seen.width() / 4, seen.height() / 4, -seen.width() / 4, -seen.height() / 4))
+                    << QPolygonF(QRectF(seen.topLeft() + QPointF(1, 1), QSizeF(seen.width() / 9, seen.height() / 9)));
+        here.line = QColor(Qt::red);
+        here.name = QStringLiteral("processed");
+        LayoutView::Overlay away;
+        away.shapes << QPolygonF(QRectF(seen.right() + seen.width() * 10, seen.top(), 5, 5));
+        away.line = QColor(Qt::blue);
+        const int rendersBefore = view->renders();
+        // (Any frame already asked for, delivered, so that what follows
+        // waits on setOverlays() alone.)
+        QCoreApplication::processEvents();
+        view->setOverlays({here, away});
+        QCOMPARE(view->overlays().size(), 2);
+        // Setting them asks for a frame of its own: nothing else here
+        // paints, and the three are drawn by the time the events are
+        // through.
+        QCoreApplication::processEvents();
+        QCOMPARE(view->overlayShapesDrawn(), 3);
+        QCOMPARE(view->overlayShapesLeftOut(), 0);
+        view->repaint();
+        QCOMPARE(view->overlayShapesDrawn(), 3);
+        QCOMPARE(view->lastStats().polygons + view->lastStats().dots, shapesOfTheLayout);
+        // And the layout under them is not drawn again for it: its picture
+        // is cached, and the overlays go over that picture.
+        view->repaint();
+        QCOMPARE(view->renders(), rendersBefore);
+
+        // Past the budget: that many drawn, the rest counted as left out
+        // rather than silently dropped.
+        LayoutView::Overlay many;
+        const double step = seen.width() / (LayoutView::MostOverlayShapes + 60);
+        for (int i = 0; i < LayoutView::MostOverlayShapes + 50; ++i)
+            many.shapes << QPolygonF(QRectF(seen.left() + i * step, seen.center().y(), step / 2, step / 2));
+        many.line = QColor(Qt::green);
+        view->setOverlays({many});
+        view->repaint();
+        QCOMPARE(view->overlayShapesDrawn(), LayoutView::MostOverlayShapes);
+        QCOMPARE(view->overlayShapesLeftOut(), 50);
+
+        // Taken away again: the layout alone, as before.
+        view->setOverlays({});
+        view->repaint();
+        QCOMPARE(view->overlayShapesDrawn(), 0);
+        QCOMPARE(view->lastStats().polygons + view->lastStats().dots, shapesOfTheLayout);
+        QVERIFY(!view->picture().isNull());
+    }
+
     // A click selects the shape under the pointer, said under the view;
     // clicked again where two lie, the other; Escape lets it go.
     void aClickSelectsTheShapeUnderIt()

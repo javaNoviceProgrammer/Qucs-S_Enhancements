@@ -36,6 +36,7 @@
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
 
@@ -46,6 +47,7 @@
 #include "misc.h"
 #include "module.h"
 #include "qucs.h"
+#include "layoutdoc.h"
 #include "rf25doc.h"
 #include "rf25panel.h"
 
@@ -137,6 +139,26 @@ class TestRf25Doc : public QObject
         f.close();
         return file;
     }
+    /// The map's rows set on \a doc, a step of Undo: the shapes of those
+    /// layers go to those layers of the stack.
+    void mapTo(RF25Doc* doc, const QList<QStringList>& rows)
+    {
+        const rf::Node* map = doc->model().layout().child(QStringLiteral("rf_layer_map"));
+        if (map == nullptr) return;
+        doc->editNode(map->tag,
+                      [&rows](rf::Node& n) { n.props.insert(QStringLiteral("rows"), rowsOf(rows)); },
+                      QStringLiteral("map"));
+    }
+    /// What the panel says the node chosen did.
+    QString reportText() const
+    {
+        QLabel* label = panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfNodeReport"));
+        return label != nullptr ? label->text() : QString();
+    }
+    bool reportSays(const QString& words) const
+    {
+        return !words.isEmpty() && reportText().contains(words);
+    }
     /// The layout of the multiphysics examples, in the workspace.
     QString layoutCopy()
     {
@@ -185,7 +207,10 @@ private slots:
     void cleanup()
     {
         for (QucsDoc* d : app->allDocuments()) {
-            if (auto* rf25 = dynamic_cast<RF25Doc*>(d)) rf25->waitForLayout(30000);
+            if (auto* rf25 = dynamic_cast<RF25Doc*>(d)) {
+                rf25->waitForLayout(30000);
+                rf25->waitForPrepared(30000);
+            }
             d->setDocChanged(false);
         }
         app->closeAllFiles();
@@ -591,6 +616,295 @@ private slots:
                               QStringLiteral("file")));
         QVERIFY(doc->waitForLayout(30000));
         QVERIFY2(doc->layoutProblem().contains(QStringLiteral("not a GDSII")), qPrintable(doc->layoutProblem()));
+    }
+
+    // What the solver would be given, made of the layout as read: the
+    // shapes processed, those shapes divided into cells, and the unknowns
+    // counted - in the tab's notes, in its status line and under the very
+    // nodes that decide them.
+    void theShapesAndTheMeshAreMadeOfTheLayoutRead()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("made.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY2(doc->waitForLayout(60000), "the layout was read");
+        QVERIFY2(doc->layout() != nullptr, qPrintable(doc->layoutProblem()));
+
+        // The map names 31/0, which this layout has not: nothing comes
+        // through, and the mesh is empty with it said.
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->processed() != nullptr);
+        QVERIFY(doc->processed()->conductors.isEmpty());
+        QVERIFY2(doc->processed()->report.ignored > 0, "the shapes left out went uncounted");
+        QVERIFY(doc->mesh() != nullptr);
+        QVERIFY(doc->mesh()->cells.isEmpty());
+        QVERIFY2(says(doc->mesh()->problems, "no shapes to mesh"), qPrintable(doc->mesh()->problems.join(" | ")));
+
+        // Its layers 1 and 11 sent to M1 and M2: the shapes come through
+        // and are divided.
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")},
+                    {QStringLiteral("11"), QStringLiteral("0"), QStringLiteral("M2")}});
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(!doc->isPreparing());
+        const std::shared_ptr<const rf::Processed> processed = doc->processed();
+        const std::shared_ptr<const rf::Mesh> mesh = doc->mesh();
+        QVERIFY2(processed != nullptr && !processed->conductors.isEmpty(),
+                 qPrintable(processed ? processed->problems.join(" | ") : QStringLiteral("nothing processed")));
+        QVERIFY(processed->report.read > 0);
+        QCOMPARE(processed->byLayer().keys(), QStringList({QStringLiteral("M1"), QStringLiteral("M2")}));
+        QVERIFY2(mesh != nullptr && !mesh->cells.isEmpty(),
+                 qPrintable(mesh ? mesh->problems.join(" | ") : QStringLiteral("no mesh")));
+        QVERIFY(mesh->ok());
+        QVERIFY(mesh->cellSize > 0);
+        // A wavelength at 40 GHz in the substrate, over 20 cells: the
+        // cells are far larger than the 80 um the layout is wide, so each
+        // conductor is a cell or a few, and the unknowns are the edges
+        // they share.
+        QVERIFY(mesh->cost.unknowns > 0);
+        QVERIFY(!mesh->cost.tooBig);
+        QVERIFY(mesh->cost.matrixBytes > 0);
+
+        // The tab's notes say what each step did, and its status line the
+        // cells and what they would cost.
+        const QString notes = doc->problemsText()->toPlainText();
+        QVERIFY2(notes.contains(QStringLiteral("What the layout gives the solver")), qPrintable(notes));
+        for (const QString& line : doc->preparedLines()) QVERIFY2(notes.contains(line), qPrintable(line));
+        QVERIFY2(doc->statusLabel()->text().contains(mesh->cost.said), qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("%1 cell(s)").arg(mesh->cells.size())),
+                 qPrintable(doc->statusLabel()->text()));
+
+        // And the panel says it under the nodes that decide it: the
+        // processing's steps under the Processing, the cells and their
+        // cost under the Mesh, and what the map let through under the
+        // Layout.
+        const rf::Node* processing = doc->model().layout().child(QStringLiteral("rf_processing"));
+        QVERIFY(processing != nullptr);
+        panel()->selectNode(processing->tag);
+        QVERIFY2(!processed->report.lines.isEmpty(), "the processing said nothing of what it did");
+        for (const QString& line : processed->report.lines) QVERIFY2(reportSays(line), qPrintable(line));
+        panel()->selectNode(doc->model().mesh().tag);
+        QVERIFY2(reportSays(mesh->cost.said), qPrintable(reportText()));
+        panel()->selectNode(doc->model().layout().tag);
+        QVERIFY2(reportSays(QStringLiteral("sent to a layer of the stack")), qPrintable(reportText()));
+        // A node that decides none of it has no report of its own.
+        panel()->selectNode(QStringLiteral("m1"));
+        QVERIFY(panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfNodeReport")) == nullptr);
+
+        // Read the Layout Again, with nothing else touched: that read
+        // alone makes them, with no edit of the model behind it to have
+        // asked for a run. (A run already there is not one that happened:
+        // the count of runs is what says it did.)
+        const int runs = doc->preparedRuns();
+        doc->refreshLayout();
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->preparedRuns() > runs, "the read made nothing of the layout by itself");
+        QVERIFY2(doc->processed() != nullptr && !doc->processed()->conductors.isEmpty(),
+                 "the read did not make them again by itself");
+        QVERIFY(doc->mesh() != nullptr && !doc->mesh()->cells.isEmpty());
+
+        // And a layout that has gone takes them with it, by that same
+        // button: the shapes of the file before must not be left over a
+        // tab that now has none.
+        QVERIFY(QFile::remove(path(QStringLiteral("heater.gds"))));
+        doc->refreshLayout();
+        QVERIFY(doc->waitForLayout(30000));
+        QVERIFY(doc->waitForPrepared(30000));
+        QVERIFY(doc->layout() == nullptr);
+        QVERIFY2(doc->layoutProblem().contains(QStringLiteral("not there")), qPrintable(doc->layoutProblem()));
+        QVERIFY2(doc->processed() == nullptr, "the shapes of the layout before were left behind");
+        QVERIFY(doc->mesh() == nullptr);
+        QVERIFY(doc->view()->overlays().isEmpty());
+        QVERIFY(doc->preparedLines().isEmpty());
+        QVERIFY(!doc->statusLabel()->text().contains(QStringLiteral("cell(s),")));
+    }
+
+    // The mesh is made again when what decides it changes - its own
+    // settings, the processing, the stack, the study - and the layout is
+    // not read again for it.
+    void theMeshIsMadeAgainWithoutReadingTheLayoutAgain()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("again.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")},
+                    {QStringLiteral("11"), QStringLiteral("0"), QStringLiteral("M2")}});
+        QVERIFY(doc->waitForPrepared(60000));
+        const std::shared_ptr<const qucs_s::layout::Layout> read = doc->layout();
+        QVERIFY(read != nullptr);
+        const int coarse = doc->mesh()->cells.size();
+        const double coarseSize = doc->mesh()->cellSize;
+        QVERIFY(coarse > 0);
+
+        // A largest cell of 20 um, where a wavelength gave over a hundred:
+        // smaller cells, more of them, more unknowns - and the same layout,
+        // not read again.
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QCOMPARE(doc->layout(), read);
+        QVERIFY2(doc->mesh()->cellSize < coarseSize,
+                 qPrintable(QStringLiteral("%1 vs %2").arg(doc->mesh()->cellSize).arg(coarseSize)));
+        QVERIFY2(doc->mesh()->cells.size() > coarse,
+                 qPrintable(QStringLiteral("%1 vs %2").arg(doc->mesh()->cells.size()).arg(coarse)));
+        QVERIFY(doc->mesh()->cost.unknowns > 0);
+
+        // Fewer than four cells to a wavelength carries no current: said,
+        // and under the Mesh node.
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("per_wavelength"), 2); },
+                              QStringLiteral("per wavelength")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(says(doc->mesh()->problems, "too few"), qPrintable(doc->mesh()->problems.join(" | ")));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("stands in the way")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        panel()->selectNode(QStringLiteral("m1"));
+        panel()->selectNode(doc->model().mesh().tag);
+        QLabel* said = panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfNodeProblems"));
+        QVERIFY(said != nullptr);
+        QVERIFY2(said->text().contains(QStringLiteral("too few")), qPrintable(said->text()));
+
+        // The Mesh node left where it is while the mesh is made again: the
+        // run ending is what brings its report up to date, not a node
+        // chosen anew.
+        QCOMPARE(panel()->currentTag(), doc->model().mesh().tag);
+        const QString before = reportText();
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("per_wavelength"), 20);
+                                  n.props.insert(QStringLiteral("maximum"), QStringLiteral("8[um]"));
+                              },
+                              QStringLiteral("finer")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QCoreApplication::processEvents();
+        QCOMPARE(panel()->currentTag(), doc->model().mesh().tag);
+        QVERIFY2(reportSays(doc->mesh()->cost.said), qPrintable(reportText() + QStringLiteral(" | want ") + doc->mesh()->cost.said));
+        QVERIFY2(reportText() != before, "the report is the one of the run before");
+
+        // The processing turned off is the processing not run: its steps
+        // say nothing of a merge, and the shapes are the file's own.
+        const rf::Node* processing = doc->model().layout().child(QStringLiteral("rf_processing"));
+        QVERIFY(doc->editNode(processing->tag,
+                              [](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("merge"), false);
+                                  n.props.insert(QStringLiteral("merge_vias"), false);
+                                  n.props.insert(QStringLiteral("heal"), false);
+                                  n.props.insert(QStringLiteral("drop_slivers"), false);
+                              },
+                              QStringLiteral("processing")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(!says(doc->processed()->report.lines, "merged"), qPrintable(doc->processed()->report.summary()));
+        QCOMPARE(doc->layout(), read);
+    }
+
+    // The processed shapes and the cells drawn over the layout they came
+    // from, each layer in the colour the stack gives it, and either of the
+    // two shown or hidden by its own button.
+    void theProcessedShapesAndTheMeshAreDrawnOverTheLayout()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("drawnmesh.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")},
+                    {QStringLiteral("11"), QStringLiteral("0"), QStringLiteral("M2")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+
+        // The shapes, on by default: one overlay a layer, in that layer's
+        // colour, holding that layer's conductors.
+        QVERIFY(doc->processedShown());
+        QVERIFY(!doc->meshShown());
+        QCOMPARE(doc->processedButton()->isChecked(), true);
+        QCOMPARE(doc->meshButton()->isChecked(), false);
+        const QMap<QString, int> conductors = doc->processed()->byLayer();
+        QCOMPARE(doc->view()->overlays().size(), conductors.size());
+        const rf::Stack stack = doc->model().stack();
+        int at = -1;
+        for (int i = 0; i < stack.layers.size(); ++i)
+            if (stack.layers.at(i).name == QStringLiteral("M1")) at = i;
+        QVERIFY(at >= 0);
+        bool foundM1 = false;
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+            if (o.name.contains(QStringLiteral("M1"))) {
+                foundM1 = true;
+                QCOMPARE(o.shapes.size(), conductors.value(QStringLiteral("M1")));
+                QCOMPARE(o.line, doc->outlineColor(RF25Doc::layerColor(at)));
+                QVERIFY2(o.line != RF25Doc::layerColor(at), "the outline is the fill it lies on");
+                QVERIFY(o.name.contains(QStringLiteral("processed")));
+            }
+        QVERIFY(foundM1);
+
+        // The cells, turned on: their own overlays beside the shapes', one
+        // a layer, holding that layer's cells.
+        doc->setMeshShown(true);
+        QCOMPARE(doc->meshButton()->isChecked(), true);
+        const QMap<QString, int> cells = doc->mesh()->byLayer();
+        QCOMPARE(doc->view()->overlays().size(), conductors.size() + cells.size());
+        int drawnCells = 0;
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+            if (o.name.contains(QStringLiteral("the cells"))) {
+                drawnCells += o.shapes.size();
+                // The cells are geometry: the canvas's ink, not a layer's
+                // colour, and let through a little.
+                QCOMPARE(o.line.rgb(), doc->view()->colors().ink.rgb());
+                QVERIFY(o.line.alpha() < 255);
+            }
+        QCOMPARE(drawnCells, doc->mesh()->cells.size());
+        QVERIFY(drawnCells > conductors.value(QStringLiteral("M1")));
+
+        // The shapes turned off: the cells alone.
+        doc->setProcessedShown(false);
+        QCOMPARE(doc->view()->overlays().size(), cells.size());
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+            QVERIFY(o.name.contains(QStringLiteral("the cells")));
+        // Both off: nothing over the layout, which is still drawn.
+        doc->setMeshShown(false);
+        QVERIFY(doc->view()->overlays().isEmpty());
+        QVERIFY(doc->view()->layout() != nullptr);
+
+        // The canvas gone dark: the outline and the ink are told against
+        // it, so both are taken again - darker than the fill on a light
+        // canvas, lighter on a dark one, and never the fill itself.
+        doc->setProcessedShown(true);
+        doc->setMeshShown(true);
+        const auto lineOf = [doc](const QString& words) {
+            for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+                if (o.name.contains(words)) return o.line;
+            return QColor();
+        };
+        doc->view()->setTheme(qucs_s::layout::LayoutView::Theme::Light);
+        const QColor onLight = lineOf(QStringLiteral("M1, processed"));
+        const QColor inkOnLight = lineOf(QStringLiteral("the cells"));
+        QVERIFY(onLight.isValid() && inkOnLight.isValid());
+        QVERIFY2(onLight.lightness() < RF25Doc::layerColor(at).lightness(),
+                 qPrintable(QStringLiteral("%1 vs %2").arg(onLight.name(), RF25Doc::layerColor(at).name())));
+        doc->view()->setTheme(qucs_s::layout::LayoutView::Theme::Dark);
+        const QColor onDark = lineOf(QStringLiteral("M1, processed"));
+        QVERIFY(onDark.isValid());
+        QVERIFY2(onDark.lightness() > RF25Doc::layerColor(at).lightness(),
+                 qPrintable(QStringLiteral("%1 vs %2").arg(onDark.name(), RF25Doc::layerColor(at).name())));
+        QVERIFY(onDark != onLight);
+        QCOMPARE(lineOf(QStringLiteral("the cells")).rgb(), doc->view()->colors().ink.rgb());
+        QVERIFY(lineOf(QStringLiteral("the cells")).rgb() != inkOnLight.rgb());
+        doc->view()->setTheme(qucs_s::layout::LayoutView::Theme::Application);
+
+        // And they are drawn: the view fitted draws every cell it has, and
+        // a view looking somewhere else draws none of them.
+        doc->setProcessedShown(true);
+        doc->setMeshShown(true);
+        doc->view()->fit();
+        QVERIFY(!doc->view()->picture().isNull());
+        const int shapes = doc->processed()->conductors.size() + doc->mesh()->cells.size();
+        QCOMPARE(doc->view()->overlayShapesDrawn(), shapes);
+        QCOMPARE(doc->view()->overlayShapesLeftOut(), 0);
+        doc->view()->setView(QPointF(1e6, 1e6), doc->view()->scale());
+        QVERIFY(!doc->view()->picture().isNull());
+        QCOMPARE(doc->view()->overlayShapesDrawn(), 0);
     }
 
     // A model dropped on the tabs, and one double-clicked in the project

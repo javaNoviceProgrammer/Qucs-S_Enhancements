@@ -14,6 +14,7 @@
 #include "misc.h"
 #include "multiphysics/fem_expr.h"
 #include "qucs.h"
+#include "settings.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -33,6 +34,7 @@
 #include <QSaveFile>
 #include <QSplitter>
 #include <QThread>
+#include <QTimer>
 #include <QToolButton>
 #include <QUndoCommand>
 #include <QUndoStack>
@@ -47,6 +49,9 @@ using qucs_s::layout::Layout;
 using qucs_s::layout::LayoutView;
 
 namespace {
+
+const char* const kShowProcessedKey = "RF25/showProcessed";
+const char* const kShowMeshKey = "RF25/showMesh";
 
 /// A change of the model: the model before and after, whole (it is small).
 class ModelCommand : public QUndoCommand
@@ -217,6 +222,18 @@ struct RF25Doc::Job {
     qucs_s::layout::Progress progress{-1};
 };
 
+/// What the solver would be given, made on a thread of its own: the
+/// layer map applied and the processing run over the layout as read, and
+/// those shapes divided into cells. The model is copied and the layout
+/// held, so that an edit while it runs changes neither under it.
+struct RF25Doc::PrepareJob {
+    Model model;
+    std::shared_ptr<const Layout> layout;
+    QString called;
+    std::shared_ptr<Processed> processed;
+    std::shared_ptr<Mesh> mesh;
+};
+
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
 {
     setObjectName(QStringLiteral("RF25Doc"));
@@ -235,6 +252,10 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     connect(a_undo, &QUndoStack::canRedoChanged, this, [this, front](bool can) {
         if (front()) a_App->redo->setEnabled(can);
     });
+    a_prepareSoon = new QTimer(this);
+    a_prepareSoon->setSingleShot(true);
+    a_prepareSoon->setInterval(300);
+    connect(a_prepareSoon, &QTimer::timeout, this, &RF25Doc::prepare);
     buildUi();
     showProblems();
     if (app != nullptr) connect(this, SIGNAL(signalFileChanged(bool)), app, SLOT(slotFileChanged(bool)));
@@ -249,6 +270,10 @@ RF25Doc::~RF25Doc()
     // The read going on is let go: it ends at its next step and drops its
     // result, which nothing holds any more.
     if (a_job) a_job->cancelled = true;
+    // The same for the shapes and the mesh being made: the job holds its
+    // own copy of the model and of the layout, so it ends on nothing this
+    // tab owns.
+    a_prepareJob.reset();
 }
 
 Model RF25Doc::starterModel()
@@ -259,6 +284,13 @@ Model RF25Doc::starterModel()
 QColor RF25Doc::layerColor(int index)
 {
     return qucs_s::layout::paletteStyle(std::max(0, index)).fill;
+}
+
+QColor RF25Doc::outlineColor(const QColor& fill) const
+{
+    // Darker on a light canvas, lighter on a dark one: either way a line
+    // told from the fill of that very colour under it.
+    return a_view != nullptr && a_view->colors().background.lightness() < 128 ? fill.lighter(180) : fill.darker(220);
 }
 
 void RF25Doc::buildUi()
@@ -285,6 +317,22 @@ void RF25Doc::buildUi()
     a_reread = button(tr("Read the Layout Again"), tr("Read the layout file the model names once more"), "rfReread");
     connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
     row->addSpacing(10);
+    // What the solver would be given, over the layout it came from.
+    const QucsSettingsFile settings;
+    a_showProcessed = settings.value(QLatin1String(kShowProcessedKey), true).toBool();
+    a_showMesh = settings.value(QLatin1String(kShowMeshKey), false).toBool();
+    a_showProcessedButton = button(tr("Processed Shapes"),
+                                   tr("Draw the shapes as the processing leaves them over the layout they came from: "
+                                      "what the mesher is given"),
+                                   "rfShowProcessed");
+    a_showProcessedButton->setCheckable(true);
+    a_showProcessedButton->setChecked(a_showProcessed);
+    connect(a_showProcessedButton, &QToolButton::toggled, this, &RF25Doc::setProcessedShown);
+    a_showMeshButton = button(tr("Mesh"), tr("Draw the cells the shapes are divided into"), "rfShowMesh");
+    a_showMeshButton->setCheckable(true);
+    a_showMeshButton->setChecked(a_showMesh);
+    connect(a_showMeshButton, &QToolButton::toggled, this, &RF25Doc::setMeshShown);
+    row->addSpacing(10);
     a_layoutLabel = new QLabel(bar);
     a_layoutLabel->setObjectName(QStringLiteral("rfLayoutLabel"));
     a_layoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -300,6 +348,9 @@ void RF25Doc::buildUi()
     a_view->setObjectName(QStringLiteral("rfView"));
     connect(a_stack, &StackView::layerChosen, this, &RF25Doc::focusNode);
     connect(a_view, &LayoutView::pointerMoved, this, &RF25Doc::pointerMoved);
+    // The canvas went light or dark: the outlines and the cells' ink are
+    // told against it, so they are taken again.
+    connect(a_view, &LayoutView::colorsChanged, this, &RF25Doc::showOverlays);
     a_sides->addWidget(a_stack);
     a_sides->addWidget(a_view);
     a_sides->setStretchFactor(0, 0);
@@ -492,10 +543,15 @@ void RF25Doc::applyModel(const Model& model, bool read)
     showProblems();
     emit modelChanged();
     // The layout file changed under it (another file, another cell): read
-    // again. Reading it is the only work this build does, so an edit of
-    // anything else costs nothing.
+    // again, and what is made of it follows that read rather than this
+    // edit.
     if (!read && layoutFile() != layoutBefore) refreshLayout();
     else if (!read) showLayout();
+    // What the solver would be given is made of the model and the layout
+    // both, so an edit of the stack, the map, the processing or the mesh
+    // changes it without the layout being read again. A read just started
+    // makes it when it ends.
+    if (!a_job) schedulePrepare();
 }
 
 void RF25Doc::showProblems()
@@ -511,15 +567,37 @@ void RF25Doc::showProblems()
     }
     if (!a_layoutProblem.isEmpty()) lines << a_layoutProblem;
     if (!a_readNotes.isEmpty()) lines << tr("Read with notes: %1").arg(a_readNotes);
+    // What the layout gives the solver: the processing's steps and the
+    // mesh's, each saying what it did, and what the two of them cannot do.
+    const QStringList did = preparedLines();
+    if (a_prepareJob) {
+        lines << tr("Making the shapes and the mesh…");
+    } else if (!did.isEmpty()) {
+        lines << tr("What the layout gives the solver:");
+        for (const QString& line : did) lines << QStringLiteral("  • ") + line;
+    }
+    QStringList cannot;
+    if (a_processed) cannot += a_processed->problems;
+    if (a_mesh) cannot += a_mesh->problems;
+    if (!cannot.isEmpty()) {
+        lines << tr("What stands in the way of a solve:");
+        for (const QString& line : cannot) lines << QStringLiteral("  • ") + line;
+    }
     a_problemsText->setPlainText(lines.join(QLatin1Char('\n')));
     const Stack s = a_model.stack();
     // (conductors(): the metals and the ground - what the layer map and a
     // port may name. A via is metal too, but is named by its own metals.)
-    a_status->setText(tr("%1 layer(s), %2 of them metals or ground; the stack is %3 high; %4")
-                          .arg(s.layers.size())
-                          .arg(s.conductors().size())
-                          .arg(qucs_s::fem::formatQuantity(s.height(), qucs_s::fem::Dim::length()),
-                               said.isEmpty() ? tr("nothing is missing") : tr("%1 thing(s) missing").arg(said.size())));
+    QString tail = tr("%1 layer(s), %2 of them metals or ground; the stack is %3 high; %4")
+                       .arg(s.layers.size())
+                       .arg(s.conductors().size())
+                       .arg(qucs_s::fem::formatQuantity(s.height(), qucs_s::fem::Dim::length()),
+                            said.isEmpty() ? tr("nothing is missing") : tr("%1 thing(s) missing").arg(said.size()));
+    // The unknowns, where the mesh has them: what the proposal asks the
+    // panel to show before a solve is ever started.
+    if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
+    else if (a_mesh && !a_mesh->cells.isEmpty())
+        tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(a_mesh->cost.said);
+    a_status->setText(tail);
 }
 
 // ------------------------------------------------------------------ The layout
@@ -543,6 +621,11 @@ void RF25Doc::refreshLayout()
         a_job->cancelled = true;
         a_job.reset();
     }
+    // The shapes and the mesh were made of the layout as it was: a run
+    // going on is let go here, and they are made again from what this
+    // read leaves.
+    a_prepareJob.reset();
+    a_prepareAgain = false;
     const QString path = layoutFile();
     a_layoutProblem.clear();
     // Nothing named, or nothing that can be read: what is shown says so,
@@ -551,6 +634,7 @@ void RF25Doc::refreshLayout()
         a_layout.reset();
         a_layoutRead.clear();
         a_layoutProblem = why;
+        prepare();   // (nothing read: it clears the shapes and the mesh)
         showLayout();
         showProblems();
         emit stateChanged();
@@ -593,6 +677,10 @@ void RF25Doc::readingDone()
     showLayout();
     showProblems();
     emit stateChanged();
+    // What the solver would be given, of the layout as it has just been
+    // read. It is the work that follows a read, and it waits for none of
+    // the 300 ms a burst of edits is given.
+    prepare();
 }
 
 bool RF25Doc::waitForLayout(int ms)
@@ -680,6 +768,164 @@ void RF25Doc::showLayout()
     // where the user left it; a layout just read is fitted.
     if (again) a_view->setView(center, scale);
     else a_view->fit();
+}
+
+// ------------------------------- What the solver would be given
+
+void RF25Doc::schedulePrepare()
+{
+    a_prepareSoon->start();
+}
+
+void RF25Doc::prepare()
+{
+    a_prepareSoon->stop();
+    // One run at a time: a model that changed while this one went on is
+    // made again when it ends, so that a burst of edits over a slow
+    // layout leaves one run waiting, not one an edit.
+    if (a_prepareJob) {
+        a_prepareAgain = true;
+        return;
+    }
+    a_prepareAgain = false;
+    if (!a_layout) {
+        // Nothing read: there is nothing to process, and the layout's own
+        // problem says why.
+        const bool had = a_processed || a_mesh;
+        a_processed.reset();
+        a_mesh.reset();
+        if (had) {
+            showOverlays();
+            showProblems();
+            emit preparedChanged();
+        }
+        return;
+    }
+    auto job = std::make_shared<PrepareJob>();
+    job->model = a_model;
+    job->layout = a_layout;
+    job->called = QFileInfo(a_layoutRead).fileName();
+    a_prepareJob = job;
+    QThread* thread = QThread::create([job] {
+        job->processed = std::make_shared<Processed>(processRead(job->model, *job->layout, job->called));
+        QStringList said;
+        const MeshSettings how = meshSettingsOf(job->model.mesh(), job->model.parameters(), &said);
+        Mesh mesh = meshOf(job->processed->conductors, how, job->model.stack(), topFrequency(job->model));
+        mesh.problems = said + mesh.problems;
+        job->mesh = std::make_shared<Mesh>(std::move(mesh));
+    });
+    // (The hierarchy of a cell is walked by recursion, as the read does
+    // it: a thread's 512 kB stack on macOS is not enough.)
+    thread->setStackSize(8u << 20);
+    connect(thread, &QThread::finished, this, [this, job] {
+        if (job == a_prepareJob) prepareDone();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+    emit preparedChanged();
+}
+
+void RF25Doc::prepareDone()
+{
+    const std::shared_ptr<PrepareJob> job = a_prepareJob;
+    a_prepareJob.reset();
+    a_processed = job->processed;
+    a_mesh = job->mesh;
+    ++a_preparedRuns;
+    showOverlays();
+    showProblems();
+    emit preparedChanged();
+    // It changed while that run went on: again, on what it is now.
+    if (a_prepareAgain) prepare();
+}
+
+bool RF25Doc::waitForPrepared(int ms)
+{
+    QElapsedTimer t;
+    t.start();
+    // A run waiting its 300 ms is started at once: a test and a tool ask
+    // for what the model says now, not for what it said 300 ms ago.
+    if (a_prepareSoon->isActive()) prepare();
+    while ((a_prepareJob || a_prepareAgain) && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_prepareJob;
+}
+
+QStringList RF25Doc::preparedLines() const
+{
+    QStringList lines;
+    if (a_processed) lines += a_processed->report.lines;
+    if (a_mesh) lines += a_mesh->lines;
+    return lines;
+}
+
+void RF25Doc::setProcessedShown(bool shown)
+{
+    if (a_showProcessed == shown) return;
+    a_showProcessed = shown;
+    if (a_showProcessedButton != nullptr && a_showProcessedButton->isChecked() != shown)
+        a_showProcessedButton->setChecked(shown);
+    QucsSettingsFile().setValue(QLatin1String(kShowProcessedKey), shown);
+    showOverlays();
+}
+
+void RF25Doc::setMeshShown(bool shown)
+{
+    if (a_showMesh == shown) return;
+    a_showMesh = shown;
+    if (a_showMeshButton != nullptr && a_showMeshButton->isChecked() != shown)
+        a_showMeshButton->setChecked(shown);
+    QucsSettingsFile().setValue(QLatin1String(kShowMeshKey), shown);
+    showOverlays();
+}
+
+void RF25Doc::showOverlays()
+{
+    QList<LayoutView::Overlay> overlays;
+    const Stack stack = a_model.stack();
+    // (The colour a layer's shapes are drawn in, as the stack and the
+    // layout viewer have it: a conductor and its cells are the same
+    // colour in every tab.)
+    const auto colourOf = [&stack](const QString& layer) {
+        for (int i = 0; i < stack.layers.size(); ++i)
+            if (stack.layers.at(i).name == layer || stack.layers.at(i).tag == layer) return RF25Doc::layerColor(i);
+        return QColor(130, 135, 145);
+    };
+    if (a_showProcessed && a_processed) {
+        // Each layer's own overlay, in its own colour told against the
+        // canvas, not a tint of it: the shape under the outline is drawn
+        // in that very colour, filled, and a tint of a fill is no line at
+        // all. What the processing changed is then plain against the
+        // original beneath it.
+        QMap<QString, QList<QPolygonF>> byLayer;
+        for (const Conductor& c : a_processed->conductors) byLayer[c.layer] << c.outline;
+        for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
+            LayoutView::Overlay overlay;
+            overlay.shapes = it.value();
+            overlay.line = outlineColor(colourOf(it.key()));
+            overlay.width = 2.0;
+            overlay.name = tr("%1, processed").arg(it.key());
+            overlays << overlay;
+        }
+    }
+    if (a_showMesh && a_mesh) {
+        // The cells are geometry, not metal: the canvas's own ink draws
+        // them, which is told from every layer's colour and from the
+        // background in either theme. Thin, and let through a little, so
+        // that a fine mesh does not black out the shape it divides.
+        QColor ink = a_view->colors().ink;
+        ink.setAlpha(190);
+        QMap<QString, QList<QPolygonF>> byLayer;
+        for (const MeshCell& c : a_mesh->cells) byLayer[c.layer] << c.outline;
+        for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
+            LayoutView::Overlay overlay;
+            overlay.shapes = it.value();
+            overlay.line = ink;
+            overlay.width = 1.0;
+            overlay.name = tr("%1, the cells").arg(it.key());
+            overlays << overlay;
+        }
+    }
+    a_view->setOverlays(overlays);
 }
 
 void RF25Doc::pointerMoved(QPointF point, bool inside)
