@@ -212,18 +212,21 @@ private slots:
 
     // ---- The panel, the tab
 
-    // The left dock's sixth tab: with no model in front, it offers a new
-    // one, to open one, the examples.
-    void thePanelIsTheDocksSixthTab()
+    // The left dock's last tab: with no model in front, it offers a new
+    // one, to open one, the examples. (Its place was asserted as a number
+    // until the Workspaces panel went in above Projects and moved it; the
+    // page is named now.)
+    void thePanelHasItsOwnDockTab()
     {
         QVERIFY(panel() != nullptr);
         auto* tabs = panel()->parentWidget() ? qobject_cast<QTabWidget*>(panel()->parentWidget()->parentWidget()) : nullptr;
         QVERIFY(tabs != nullptr);
         QCOMPARE(tabs->tabText(tabs->indexOf(panel())), QStringLiteral("Multiphysics"));
-        QCOMPARE(tabs->indexOf(panel()), 5);
+        QCOMPARE(tabs->indexOf(panel()), tabs->count() - 1);
         QCOMPARE(panel()->pages()->currentIndex(), 0);
         QVERIFY(panel()->exampleList()->count() >= 3);
         app->showMultiphysicsPanel();
+        QCOMPARE(app->currentSidePageName(), QStringLiteral("multiphysics"));
         shoot(app, "00-start");
         // The Multiphysics menu, before View.
         QMenu* menu = app->multiphysicsMenu();

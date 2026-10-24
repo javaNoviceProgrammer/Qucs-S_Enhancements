@@ -11,10 +11,12 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStandardPaths>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 
@@ -531,6 +533,135 @@ private slots:
     // project's folder in a File Browser tab of its own, the File Browser
     // brought to the front; asked again, the tab showing it, not another.
     // No project open: not to be chosen.
+    // The project open now, opened again: nothing is closed and nothing
+    // read anew - it only shows what the project holds. (It closed every
+    // tab and opened a fresh untitled one, so a double-click on the open
+    // project in the panel threw the work in front away.)
+    void theProjectOpenIsNotOpenedAgain()
+    {
+        fresh("again");
+        const QString project = workspace + "/amp_prj";
+        QVERIFY(QDir().mkpath(project));
+        QVERIFY(write(project + "/one.sch", "<Qucs Schematic 27.0.4>\n<Components>\n</Components>\n"));
+        QVERIFY(write(project + "/two.sch", "<Qucs Schematic 27.0.4>\n<Components>\n</Components>\n"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        QListView* panel = app.projectsView();
+        QTRY_VERIFY(rowOf(panel, "amp_prj").isValid());
+        emit panel->doubleClicked(rowOf(panel, "amp_prj"));
+        QCOMPARE(app.ProjName, QStringLiteral("amp"));
+
+        QVERIFY(app.gotoPage(project + "/one.sch", false, false));
+        QVERIFY(app.gotoPage(project + "/two.sch", false, false));
+        const int tabs = int(app.allDocuments().size());
+        QVERIFY2(tabs >= 2, qPrintable(QString::number(tabs)));
+        QucsDoc* front = app.getDoc();
+        QVERIFY(front != nullptr);
+        app.showSidePage(QucsApp::SidePage::Projects);
+
+        // Opened again, by the panel and by its folder: the same documents
+        // are still there, in front the same one, and the dock shows what
+        // the project holds.
+        emit panel->doubleClicked(rowOf(panel, "amp_prj"));
+        QCOMPARE(int(app.allDocuments().size()), tabs);
+        QCOMPARE(app.getDoc(), front);
+        QCOMPARE(app.ProjName, QStringLiteral("amp"));
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("content"));
+
+        // Another project still closes them (and opens its own tab).
+        QVERIFY(QDir().mkpath(workspace + "/filter_prj"));
+        QTRY_VERIFY(rowOf(panel, "filter_prj").isValid());
+        emit panel->doubleClicked(rowOf(panel, "filter_prj"));
+        QCOMPARE(app.ProjName, QStringLiteral("filter"));
+        QCOMPARE(int(app.allDocuments().size()), 1);
+    }
+
+    // The Workspaces panel: the workspaces opened before, newest first,
+    // the one open now with a green dot as a project has one; a folder
+    // that has gone is greyed and can be forgotten, and the workspace open
+    // now cannot.
+    void theWorkspacesPanelKeepsItsHistory()
+    {
+        fresh("history");
+        const QString first = workspace;
+        const QString second = dir.filePath("history/second");
+        const QString gone = dir.filePath("history/gone");
+        for (const QString& w : {second, gone}) QVERIFY(QDir().mkpath(w));
+        // This test's own workspaces alone: the tests before it in this
+        // suite switched workspace too, and the history is kept.
+        QucsSettings.RecentWorkspaces.clear();
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QListWidget* panel = app.workspacesPanel();
+        QVERIFY(panel != nullptr);
+
+        QVERIFY(app.switchWorkspace(first));
+        QVERIFY(app.switchWorkspace(gone));
+        QVERIFY(app.switchWorkspace(second));
+        QVERIFY(app.showSidePage(QucsApp::SidePage::Workspaces));   // (the page one looks at, and grabs)
+        panel->resize(320, 240);
+        // Newest first, and each the folder's own name.
+        QCOMPARE(listed(panel), QStringList({"second", "gone", QDir(first).dirName()}));
+        const auto state = [&](const QString& name) {
+            return rowOf(panel, name).data(QucsFileSystemModel::ProjectStateRole).toInt();
+        };
+        QCOMPARE(state("second"), int(QucsFileSystemModel::OpenProject));
+        QCOMPARE(state("gone"), int(QucsFileSystemModel::ClosedProject));
+        // (Its rows are laid out as the list is shown: tried again while
+        // the events run.)
+        QTRY_COMPARE(dotOf(panel, rowOf(panel, "second")), QStringLiteral("green"));
+        QTRY_COMPARE(dotOf(panel, rowOf(panel, "gone")), QStringLiteral("grey"));
+        QVERIFY2(rowOf(panel, "second").data(Qt::ToolTipRole).toString().contains("The workspace open now"),
+                 qPrintable(rowOf(panel, "second").data(Qt::ToolTipRole).toString()));
+        // The path is in the tooltip, so two of one name are told apart.
+        QVERIFY(rowOf(panel, "gone").data(Qt::ToolTipRole).toString().contains(QDir::toNativeSeparators(gone)));
+
+        // A workspace that is no longer there says so; it is not opened.
+        QVERIFY(QDir(gone).removeRecursively());
+        app.refreshWorkspaces();
+        QVERIFY2(rowOf(panel, "gone").data(Qt::ToolTipRole).toString().contains("not there now"),
+                 qPrintable(rowOf(panel, "gone").data(Qt::ToolTipRole).toString()));
+        emit panel->itemDoubleClicked(panel->item(rowOf(panel, "gone").row()));
+        QCOMPARE(QDir(QucsSettings.qucsWorkspaceDir).canonicalPath(), QDir(second).canonicalPath());
+
+        // Forgetting one takes the row away and leaves the folder alone;
+        // the one open now stays in the list.
+        auto* forget = app.findChild<QPushButton*>(QStringLiteral("workspaceForget"));
+        QVERIFY(forget != nullptr);
+        panel->setCurrentItem(panel->item(rowOf(panel, QDir(first).dirName()).row()));
+        forget->click();
+        QCOMPARE(listed(panel), QStringList({"second", "gone"}));
+        QVERIFY(QFileInfo(first).isDir());
+        panel->setCurrentItem(panel->item(rowOf(panel, "second").row()));
+        forget->click();
+        QVERIFY2(listed(panel).contains(QStringLiteral("second")), "the workspace open now was forgotten");
+        // It says so rather than letting the row go and bringing it back.
+        QVERIFY2(app.statusBar()->currentMessage().contains("stays in the list"),
+                 qPrintable(app.statusBar()->currentMessage()));
+
+        // A run with a workspace of its own keeps nothing in the user's
+        // settings, though its panel shows it.
+        {
+            const QString held = QucsSettingsFile().value(QStringLiteral("RecentWorkspaces")).toString();
+            QucsSettings.workspaceOfRun = dir.filePath("history/ofTheRun");
+            QVERIFY(QDir().mkpath(QucsSettings.workspaceOfRun));
+            QVERIFY(app.switchWorkspace(QucsSettings.workspaceOfRun));
+            QVERIFY2(listed(panel).contains(QStringLiteral("ofTheRun")), qPrintable(listed(panel).join(QLatin1Char(' '))));
+            QCOMPARE(QucsSettingsFile().value(QStringLiteral("RecentWorkspaces")).toString(), held);
+            QucsSettings.workspaceOfRun.clear();
+            QVERIFY(app.switchWorkspace(second));
+            QucsSettings.RecentWorkspaces.removeAll(QDir(dir.filePath("history/ofTheRun")).absolutePath());
+            app.refreshWorkspaces();
+        }
+
+        // It is kept: the settings hold the list the panel shows.
+        const QStringList stored = QucsSettingsFile().value(QStringLiteral("RecentWorkspaces")).toString()
+                                       .split(QLatin1Char('*'), Qt::SkipEmptyParts);
+        QCOMPARE(stored.size(), 2);
+        QVERIFY2(stored.first() == QDir(second).absolutePath(), qPrintable(stored.join(QLatin1Char(' '))));
+    }
+
     void theContentPanelOpensTheProjectInTheFileBrowser()
     {
         fresh("browse");

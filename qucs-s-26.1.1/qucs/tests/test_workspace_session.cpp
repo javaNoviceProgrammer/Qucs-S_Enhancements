@@ -426,6 +426,48 @@ private slots:
         QVERIFY(session::Workspace::fromJson(odd).isEmpty());
     }
 
+    // The left dock's page is kept by name, not by number: a page added
+    // before another moved every number, so a session written before meant
+    // a different page the next time (the Workspaces panel of 24 October
+    // went in above Projects).
+    void theSidePageIsKeptByName()
+    {
+        session::Workspace w;
+        w.sidePage = QStringLiteral("content");
+        QCOMPARE(w.toJson().value("side page").toString(), QStringLiteral("content"));
+        QCOMPARE(session::Workspace::fromJson(w.toJson()).sidePage, QStringLiteral("content"));
+        // Written before the pages had names: the number meant the order
+        // the dock had then.
+        QJsonObject old = w.toJson();
+        old.remove("side page");
+        old.insert("side tab", 1);
+        QCOMPARE(session::Workspace::fromJson(old).sidePage, QStringLiteral("content"));
+        old.insert("side tab", 4);
+        QCOMPARE(session::Workspace::fromJson(old).sidePage, QStringLiteral("file browser"));
+        // A number that meant no page then says nothing now.
+        old.insert("side tab", -1);
+        QVERIFY(session::Workspace::fromJson(old).sidePage.isEmpty());
+        old.insert("side tab", 99);
+        QVERIFY(session::Workspace::fromJson(old).sidePage.isEmpty());
+
+        // The window's own pages answer to those names, and to no other.
+        QucsApp app(false);
+        QVERIFY(app.showSidePageNamed(QStringLiteral("content")));
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("content"));
+        QVERIFY(app.showSidePageNamed(QStringLiteral("workspaces")));
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("workspaces"));
+        QVERIFY(!app.showSidePageNamed(QStringLiteral("nothing of the kind")));
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("workspaces"));
+        // Every page it has is named, and each name is its own.
+        QSet<QString> names;
+        for (int i = 0; i < 7; ++i) {
+            const QString name = QucsApp::sidePageName(QucsApp::SidePage(i));
+            QVERIFY2(!name.isEmpty(), qPrintable(QString::number(i)));
+            QVERIFY2(!names.contains(name), qPrintable(name));
+            names.insert(name);
+        }
+    }
+
     // Application Settings > Workspace: the workspace folder and what a
     // project is are there; the parts of the workspace are set, and off
     // when the whole is; turned off, what was kept is forgotten; Forget It
