@@ -17,6 +17,8 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QTimer>
+#include <QFileDialog>
 #include <QAction>
 #include <QCheckBox>
 #include <QClipboard>
@@ -52,6 +54,8 @@
 #include "rf25panel.h"
 
 namespace rf = qucs_s::rf25;
+
+extern QString lastDirOpenSave;   // (qucs.cpp)
 
 namespace {
 
@@ -343,14 +347,23 @@ private slots:
         QCOMPARE(doc->undoStack()->count(), 2);
 
         // A ground belongs under the stack and a cover over it, whatever
-        // order they are added in.
+        // order they are added in - and the tree is in z from the bottom
+        // up, so the ground is first and the cover last. (This held the
+        // ground after the layers, the order the phase A check of 24
+        // October found the Ground's help and the Stack's at odds over.)
         const QString ground = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_ground"));
         const QString cover = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_cover"));
         const QString last = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_metal"));
         QStringList order;
         for (const rf::Node& c : doc->model().stackNode().children) order << c.tag;
-        QCOMPARE(order.indexOf(last) < order.indexOf(ground), true);
+        QCOMPARE(order.first(), ground);
+        QVERIFY(order.indexOf(last) > order.indexOf(ground));
         QCOMPARE(order.last(), cover);
+        // (Two metals with nothing between them are a problem of their
+        //  own here; the order of the ground and the cover is not.)
+        for (const QString& problem : doc->model().stack().problems)
+            QVERIFY2(!problem.contains(QStringLiteral("not the first layer")) && !problem.contains(QStringLiteral("not the last layer")),
+                     qPrintable(problem));
 
         // Moved, disabled, deleted - and a part of the tree itself kept.
         QVERIFY(panel()->moveNode(metal, -1));
@@ -1185,6 +1198,113 @@ private slots:
         QVERIFY(doc->waitForPrepared(60000));
         QVERIFY2(doc->inductance() == nullptr, "the loop of the mesh before was kept");
         QVERIFY(doc->inductanceSummary().isEmpty());
+    }
+
+    // A new model's stack is drawn from the first: only an edit or a read
+    // drew it, so the view said "No layer" beside a status line counting
+    // three (the phase A check of 24 October).
+    void aNewModelsStackIsDrawnAtOnce()
+    {
+        RF25Doc* doc = app->newRf25Model();
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->stackView() != nullptr);
+        const rf::Stack drawn = doc->stackView()->stack();
+        const rf::Stack held = doc->model().stack();
+        QVERIFY2(!held.layers.isEmpty(), "the starter model has no layers to draw");
+        QCOMPARE(drawn.layers.size(), held.layers.size());
+        for (int i = 0; i < held.layers.size(); ++i) QCOMPARE(drawn.layers.at(i).name, held.layers.at(i).name);
+    }
+
+    // The tree's two columns have names, for a reader of the window: it
+    // was given Qt's own "1" and "2".
+    void theTreesColumnsAreNamed()
+    {
+        RF25Doc* doc = app->newRf25Model();
+        QVERIFY(doc != nullptr);
+        QTreeWidget* tree = panel()->tree();
+        QVERIFY(tree != nullptr);
+        QCOMPARE(tree->columnCount(), 2);
+        QCOMPARE(tree->headerItem()->text(0), QStringLiteral("Node"));
+        QCOMPARE(tree->headerItem()->text(1), QStringLiteral("Status"));
+        // Still out of sight, as it was meant to be.
+        QVERIFY(tree->isHeaderHidden());
+    }
+
+    // An untitled model's Save starts in the workspace, as the open
+    // dialogs do, and not in the home folder - with no project open and
+    // nothing opened or saved yet.
+    void anUntitledModelIsSavedIntoTheWorkspace()
+    {
+        app->closeAllFiles();
+        QVERIFY2(app->ProjName.isEmpty(), "a project is open in this fixture");
+        const QString lastBefore = lastDirOpenSave;
+        lastDirOpenSave.clear();
+        RF25Doc* doc = app->newRf25Model();
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->getDocName().isEmpty());
+        // (A modal dialog runs a loop of its own: what answers it is set
+        //  going before the call that opens it, and runs in that loop.)
+        const bool nativeBefore = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+        QString startedIn;
+        bool seen = false;
+        QTimer::singleShot(400, this, [&] {
+            if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+                seen = true;
+                startedIn = dialog->directory().absolutePath();
+                dialog->reject();
+            }
+        });
+        const bool saved = app->saveAs();
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nativeBefore);
+        lastDirOpenSave = lastBefore;
+        QVERIFY2(seen, "no file dialog came up");
+        QVERIFY(!saved);
+        const QString workspace = QFileInfo(QucsSettings.qucsWorkspaceDir.absolutePath()).canonicalFilePath();
+        QVERIFY2(QFileInfo(startedIn).canonicalFilePath() == workspace,
+                 qPrintable(QStringLiteral("it started in %1, not the workspace %2").arg(startedIn, workspace)));
+        QVERIFY2(QFileInfo(startedIn).canonicalFilePath() != QFileInfo(QDir::homePath()).canonicalFilePath(),
+                 "it started in the home folder");
+    }
+
+    // A file read again is shown in the panel's form at once: a tool call
+    // reads a changed file before it answers, and the form was made again
+    // only on the next turn of the event loop - so the first get_ui after
+    // a file was mended still listed what it had mended.
+    void aFileReadAgainIsShownInTheFormAtOnce()
+    {
+        rf::Model broken = rf::Model::blank();
+        for (rf::Node& c : broken.stackNode().children)
+            if (c.type == QLatin1String("rf_metal")) c.props.insert(QStringLiteral("thickness"), QStringLiteral("nonsense"));
+        const QString file = path(QStringLiteral("mended.qrf25"));
+        const auto put = [&file](const QByteArray& json) {
+            QFile f(file);
+            return f.open(QIODevice::WriteOnly) && f.write(json) == json.size();
+        };
+        QVERIFY(put(broken.toJson()));
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        panel()->selectNode(doc->model().root.tag);
+        QCoreApplication::processEvents();
+        const auto listed = [this] {
+            const auto labels = panel()->settingsArea()->findChildren<QLabel*>();
+            for (QLabel* l : labels)
+                if (l->text().contains(QStringLiteral("is not a number"))) return true;
+            return false;
+        };
+        QVERIFY2(listed(), "the form does not list the bad thickness to begin with");
+        // Mended on disk and read again - and the form looked at before the
+        // event loop has turned, as a tool call that read it first does.
+        QVERIFY(put(rf::Model::blank().toJson()));
+        QVERIFY(doc->reload());
+        QVERIFY2(!listed(), "the form still lists what the file no longer says");
+        // An edit is still left to the next turn: it comes from one of the
+        // form's own fields, which must not be destroyed in its own signal.
+        QVERIFY(doc->lastChangeWasRead());
+        QVERIFY(doc->editNode(QStringLiteral("m1"),
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("thickness"), QStringLiteral("1[um]")); },
+                              QStringLiteral("an edit")));
+        QVERIFY(!doc->lastChangeWasRead());
     }
 
     // What a solve will not do: run with no mesh under it, and run twice

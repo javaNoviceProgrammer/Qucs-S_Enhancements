@@ -6,6 +6,9 @@
  * There is no solver yet, and nothing here asks for one.
  */
 #include <QtTest>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QJsonArray>
 
 #include "rf25/rf25_model.h"
 
@@ -277,6 +280,208 @@ private slots:
             set(only, "thickness", QStringLiteral("1[um]"));
             QVERIFY(says(m.stack().problems, "no metal"));
         }
+    }
+
+    // A ground plane is under the stack wherever the tree puts it: at
+    // nought, with no place in the order to get wrong. It was put at the
+    // running height, so after the passivation it sat on top, and the one
+    // order the solver took was the one these checks refused (the phase A
+    // check of 24 October).
+    void aGroundIsUnderTheStackWhereverItIsPut()
+    {
+        const auto withGround = [](int at, bool cover) {
+            rf::Model m = twoMetals();
+            rf::Node& stack = m.stackNode();
+            if (cover) {
+                rf::Node& c = add(stack, "rf_cover", QStringLiteral("cov1"), QStringLiteral("Air"));
+                set(c, "height", QStringLiteral("1[mm]"));
+            }
+            rf::Node ground;
+            ground.type = QStringLiteral("rf_ground");
+            ground.tag = QStringLiteral("gnd1");
+            ground.label = QStringLiteral("GND");
+            const int where = at < 0 ? int(stack.children.size()) : at;
+            stack.children.insert(stack.children.begin() + where, ground);
+            return m;
+        };
+        // Where the layers sit with no ground at all, for comparison.
+        const rf::Stack bare = twoMetals().stack();
+        QVERIFY2(bare.ok(), qPrintable(bare.problems.join(" | ")));
+        for (const bool cover : {false, true})
+            for (const int at : {0, 1, 3, 6, -1}) {
+                const rf::Stack s = withGround(at, cover).stack();
+                const QString where = QStringLiteral("ground at %1%2").arg(at).arg(cover ? QStringLiteral(", a cover") : QString());
+                QVERIFY2(s.ok(), qPrintable(where + QStringLiteral(": ") + s.problems.join(" | ")));
+                const rf::Layer* g = s.named(QStringLiteral("GND"));
+                QVERIFY(g != nullptr);
+                QVERIFY2(g->z0 == 0 && g->z1 == 0, qPrintable(QStringLiteral("%1: the ground at %2 to %3 m").arg(where).arg(g->z0).arg(g->z1)));
+                // Nothing else moved for it.
+                for (const rf::Layer& l : bare.layers) {
+                    const rf::Layer* same = s.named(l.name);
+                    QVERIFY(same != nullptr);
+                    QVERIFY2(same->z0 == l.z0 && same->z1 == l.z1, qPrintable(where + QStringLiteral(": ") + l.name + QStringLiteral(" moved")));
+                }
+            }
+        // The order checks still see a real mistake, past the ground.
+        {
+            rf::Model m = withGround(0, false);
+            rf::Node& stack = m.stackNode();
+            std::swap(stack.children.at(1), stack.children.at(2));   // the substrate above the oxide
+            QVERIFY2(says(m.stack().problems, "substrate is not the first"), qPrintable(m.stack().problems.join(" | ")));
+        }
+        {
+            rf::Model m = withGround(-1, true);
+            rf::Node& stack = m.stackNode();
+            // The cover before the last metal, the ground still after both.
+            std::swap(stack.children.at(5), stack.children.at(6));
+            QVERIFY2(says(m.stack().problems, "cover is not the last"), qPrintable(m.stack().problems.join(" | ")));
+        }
+        // Its own kind, and a cover's, are read for the solver.
+        {
+            rf::Model m = withGround(0, true);
+            set(*m.find(QStringLiteral("gnd1")), "kind", QStringLiteral("open"));
+            set(*m.find(QStringLiteral("cov1")), "kind", QStringLiteral("perfect"));
+            const rf::Stack s = m.stack();
+            QCOMPARE(s.named(QStringLiteral("GND"))->variant, QStringLiteral("open"));
+            QCOMPARE(s.named(QStringLiteral("Air"))->variant, QStringLiteral("perfect"));
+            QCOMPARE(twoMetals().stack().layers.first().variant, QString());
+        }
+    }
+
+    // A ground added goes first, a substrate after it, and the rest before
+    // the cover - the order of the tree being the order in z. A ground was
+    // put at the end, after a cover added before it.
+    void aLayerAddedGoesWhereItBelongs()
+    {
+        rf::Model m = rf::Model::blank();
+        const QString stack = m.stackNode().tag;
+        QVERIFY(m.add(stack, m.make(QStringLiteral("rf_cover"))) != nullptr);
+        QCOMPARE(m.stackNode().children.back().type, QStringLiteral("rf_cover"));
+        QVERIFY(m.add(stack, m.make(QStringLiteral("rf_ground"))) != nullptr);
+        QCOMPARE(m.stackNode().children.front().type, QStringLiteral("rf_ground"));
+        QCOMPARE(m.stackNode().children.back().type, QStringLiteral("rf_cover"));
+        QVERIFY(m.add(stack, m.make(QStringLiteral("rf_dielectric"))) != nullptr);
+        QCOMPARE(m.stackNode().children.back().type, QStringLiteral("rf_cover"));
+        QCOMPARE(m.stackNode().children.at(m.stackNode().children.size() - 2).type, QStringLiteral("rf_dielectric"));
+        QVERIFY2(m.stack().ok(), qPrintable(m.stack().problems.join(" | ")));
+        // A substrate goes right after a ground, not under it (one at
+        // most, so the blank model's is taken out first).
+        rf::Model fresh;
+        add(fresh.root, "rf_stack", QStringLiteral("st"));
+        QVERIFY(fresh.add(QStringLiteral("st"), fresh.make(QStringLiteral("rf_ground"))) != nullptr);
+        QVERIFY(fresh.add(QStringLiteral("st"), fresh.make(QStringLiteral("rf_substrate"))) != nullptr);
+        QCOMPARE(fresh.stackNode().children.at(0).type, QStringLiteral("rf_ground"));
+        QCOMPARE(fresh.stackNode().children.at(1).type, QStringLiteral("rf_substrate"));
+        // And the help says what the code does: the ground has no place.
+        const rf::NodeKind* ground = rf::nodeKind(QStringLiteral("rf_ground"));
+        const rf::NodeKind* stackKind = rf::nodeKind(QStringLiteral("rf_stack"));
+        QVERIFY(ground != nullptr && stackKind != nullptr);
+        QVERIFY2(!ground->help.contains(QStringLiteral("last in the tree")), qPrintable(ground->help));
+        QVERIFY2(ground->help.contains(QStringLiteral("wherever")), qPrintable(ground->help));
+        QVERIFY2(stackKind->help.contains(QStringLiteral("ground")), qPrintable(stackKind->help));
+    }
+
+    // A value that will not read is said once: not "not a number" and
+    // then the "no thickness" of the nought it was left at.
+    void aBadValueIsSaidOnce()
+    {
+        const auto count = [](const QStringList& problems, const QString& of) {
+            int n = 0;
+            for (const QString& p : problems)
+                if (p.contains(of)) ++n;
+            return n;
+        };
+        {
+            rf::Model m = twoMetals();
+            set(m.stackNode().children.at(2), "thickness", QStringLiteral("nonsense"));
+            const QStringList p = m.stack().problems;
+            QCOMPARE(count(p, QStringLiteral("M1")), 1);
+            QVERIFY2(says(p, "thickness is not a number"), qPrintable(p.join(" | ")));
+            QVERIFY2(!says(p, "M1 has no thickness"), qPrintable(p.join(" | ")));
+        }
+        {   // Each of the values that is checked after it is read.
+            rf::Model m = twoMetals();
+            set(m.stackNode().children.at(2), "sigma", QStringLiteral("x"));
+            set(m.stackNode().children.at(2), "roughness", QStringLiteral("y"));
+            set(m.stackNode().children.at(1), "epsr", QStringLiteral("z"));
+            set(m.stackNode().children.at(1), "tand", QStringLiteral("w"));
+            set(m.stackNode().children.at(4), "sigma", QStringLiteral("v"));
+            const QStringList p = m.stack().problems;
+            QCOMPARE(count(p, QStringLiteral("M1")), 2);    // sigma and roughness, once each
+            QCOMPARE(count(p, QStringLiteral("ILD1")), 2);  // epsr and tand
+            QCOMPARE(count(p, QStringLiteral("V1")), 1);
+            QVERIFY2(!says(p, "has no conductivity") && !says(p, "below 1") && !says(p, "below zero"),
+                     qPrintable(p.join(" | ")));
+        }
+        {   // A value that reads but is wrong is still said as such.
+            rf::Model m = twoMetals();
+            set(m.stackNode().children.at(2), "thickness", QStringLiteral("0"));
+            QVERIFY2(says(m.stack().problems, "M1 has no thickness"), qPrintable(m.stack().problems.join(" | ")));
+        }
+        // And the model's own list counts it once too.
+        rf::Model whole = rf::Model::blank();
+        for (rf::Node& c : whole.stackNode().children)
+            if (c.type == QLatin1String("rf_metal")) set(c, "thickness", QStringLiteral("nonsense"));
+        QCOMPARE(count(whole.problems(), QStringLiteral("thickness")), 1);
+    }
+
+    // What a file has that is not read is said, not passed over: "props"
+    // for "properties" loaded every value at its default, and the model
+    // said that nothing was missing.
+    void whatAFileHasThatIsNotReadIsSaid()
+    {
+        // A blank model, written and read, reads with nothing to say.
+        QString notes = QStringLiteral("unset");
+        QVERIFY(rf::Model::fromJson(rf::Model::blank().toJson(), &notes).has_value());
+        QVERIFY2(notes.isEmpty(), qPrintable(notes));
+
+        QJsonObject o = QJsonDocument::fromJson(rf::Model::blank().toJson()).object();
+        QJsonObject tree = o.value(QStringLiteral("tree")).toObject();
+        QJsonArray parts = tree.value(QStringLiteral("children")).toArray();
+        for (int i = 0; i < parts.size(); ++i) {
+            QJsonObject part = parts.at(i).toObject();
+            if (part.value(QStringLiteral("type")).toString() != QLatin1String("rf_stack")) continue;
+            QJsonArray layers = part.value(QStringLiteral("children")).toArray();
+            for (int j = 0; j < layers.size(); ++j) {
+                QJsonObject layer = layers.at(j).toObject();
+                if (layer.value(QStringLiteral("type")).toString() != QLatin1String("rf_metal")) continue;
+                // "props" for "properties", a key no node has, and a
+                // property no metal has.
+                QJsonObject values = layer.value(QStringLiteral("properties")).toObject();
+                values.insert(QStringLiteral("thickness"), QStringLiteral("5[um]"));
+                layer.remove(QStringLiteral("properties"));
+                layer.insert(QStringLiteral("props"), values);
+                layer.insert(QStringLiteral("colour"), QStringLiteral("red"));
+                layers[j] = layer;
+            }
+            for (int j = 0; j < layers.size(); ++j) {
+                QJsonObject layer = layers.at(j).toObject();
+                if (layer.value(QStringLiteral("type")).toString() != QLatin1String("rf_substrate")) continue;
+                QJsonObject values = layer.value(QStringLiteral("properties")).toObject();
+                values.insert(QStringLiteral("thicknes"), QStringLiteral("1[mm]"));
+                layer.insert(QStringLiteral("properties"), values);
+                layers[j] = layer;
+            }
+            part.insert(QStringLiteral("children"), layers);
+            parts[i] = part;
+        }
+        tree.insert(QStringLiteral("children"), parts);
+        o.insert(QStringLiteral("tree"), tree);
+        const std::optional<rf::Model> read = rf::Model::fromJson(QJsonDocument(o).toJson(), &notes);
+        QVERIFY2(read.has_value(), "a file with keys it does not read is still read");
+        QVERIFY2(notes.contains(QStringLiteral("\"props\"")) && notes.contains(QStringLiteral("\"properties\"")), qPrintable(notes));
+        QVERIFY2(notes.contains(QStringLiteral("\"colour\"")), qPrintable(notes));
+        QVERIFY2(notes.contains(QStringLiteral("\"thicknes\"")), qPrintable(notes));
+        // They are not read: nothing is guessed.
+        for (const rf::Layer& l : read->stack().layers)
+            if (l.kind == rf::Layer::Metal) QVERIFY2(l.thickness != 5e-6, "the props were read after all");
+        // Many are said as many, up to a point.
+        QJsonObject noisy = QJsonDocument::fromJson(rf::Model::blank().toJson()).object();
+        QJsonObject noisyTree = noisy.value(QStringLiteral("tree")).toObject();
+        for (int k = 0; k < 20; ++k) noisyTree.insert(QStringLiteral("extra%1").arg(k), k);
+        noisy.insert(QStringLiteral("tree"), noisyTree);
+        QVERIFY(rf::Model::fromJson(QJsonDocument(noisy).toJson(), &notes).has_value());
+        QVERIFY2(notes.contains(QStringLiteral("and 12 more")), qPrintable(notes));
     }
 
     // The model as a whole: what is missing before anything can be solved.

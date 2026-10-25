@@ -69,6 +69,7 @@
 #include "module.h"
 #include "node.h"
 #include "qucs.h"
+#include "rf25doc.h"
 #include "qucslib_common.h"
 #include "dataset.h"
 #include "datasetfile.h"
@@ -2432,6 +2433,111 @@ private slots:
         const QJsonObject wrongThree = call("rf25_inductance", {{"path", ws + "/rf/plain.sch"}}, 60000);
         QVERIFY(failed(wrongThree));
         QVERIFY2(text(wrongThree).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrongThree)));
+        app->closeAllFiles();
+    }
+
+    // An RF 2.5D model through the window's own tools: its layout framed
+    // by show_layout, screenshot's region pointing there, and its tree's
+    // menu opened by context_menu - none of which reached it (the phase A
+    // check of 24 October).
+    void anRf25ModelIsFramedAndItsTreeMenuReached()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString gds = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(gds)) QSKIP("the example layout is not in this build");
+        QVERIFY(QDir().mkpath(ws + "/rf"));
+        QFile::remove(ws + "/rf/heater.gds");
+        QVERIFY(QFile::copy(gds, ws + "/rf/heater.gds"));
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
+        const QString model = ws + "/rf/framed.qrf25";
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+
+        // show_layout frames the model's own view: a region in µm, the
+        // cells drawn over it.
+        const QJsonObject framed = call("show_layout", {{"path", model}, {"region", QJsonArray{-5, -100, 5, 100}}, {"mesh", true}}, 60000);
+        QVERIFY2(!failed(framed), qPrintable(text(framed)));
+        const QJsonObject f = json(framed).toObject();
+        QCOMPARE(f.value("model").toString(), QStringLiteral("framed.qrf25"));
+        QVERIFY(f.value("mesh drawn").toBool());
+        const QJsonArray region = f.value("region").toArray();
+        QCOMPARE(region.size(), 4);
+        // What is shown holds the region asked for (the tab's own shape
+        // widens it, as for a layout) - and is that region, not the whole
+        // 1200 µm of the wire fitted, which would hold it too.
+        QVERIFY2(region.at(0).toDouble() <= -5 && region.at(2).toDouble() >= 5 && region.at(1).toDouble() <= -100
+                     && region.at(3).toDouble() >= 100,
+                 qPrintable(text(framed)));
+        QVERIFY2(region.at(3).toDouble() - region.at(1).toDouble() < 400, qPrintable(text(framed)));
+        QVERIFY2(std::abs((region.at(1).toDouble() + region.at(3).toDouble()) / 2) < 20, qPrintable(text(framed)));
+        QVERIFY2(f.value("drawn").toObject().value("shapes").toDouble() > 0, qPrintable(text(framed)));
+        // Off again, and a region elsewhere: it follows.
+        const QJsonObject off = json(call("show_layout", {{"path", model}, {"mesh", false}, {"region", QJsonArray{-1, 400, 1, 600}}}, 60000)).toObject();
+        QVERIFY(!off.value("mesh drawn").toBool());
+        const QJsonArray moved = off.value("region").toArray();
+        QVERIFY2(moved.at(3).toDouble() >= 600 && moved.at(1).toDouble() <= 400, qPrintable(QJsonDocument(off).toJson()));
+        QVERIFY2(std::abs((moved.at(1).toDouble() + moved.at(3).toDouble()) / 2 - 500) < 20, qPrintable(QJsonDocument(off).toJson()));
+        // The one in front, with no path.
+        QVERIFY2(!failed(call("show_layout", {{"texts", false}}, 60000)), "the model in front was not taken");
+        // Its cell and its layers are its own nodes' to say.
+        for (const char* key : {"cell", "layers", "depth"}) {
+            const QJsonObject refused = call("show_layout", {{"path", model}, {QLatin1String(key), QStringLiteral("1")}}, 60000);
+            QVERIFY2(failed(refused), key);
+            QVERIFY2(text(refused).contains(QStringLiteral("layer map")), qPrintable(text(refused)));
+        }
+        // screenshot's region is a schematic's, and now says where to go.
+        const QJsonObject shot = call("screenshot", {{"region", QJsonArray{0, 0, 10, 10}}}, 60000);
+        QVERIFY(failed(shot));
+        QVERIFY2(text(shot).contains(QStringLiteral("show_layout")), qPrintable(text(shot)));
+        QVERIFY2(!failed(call("screenshot", {}, 60000)), "the tab itself could not be taken");
+
+        // context_menu on a node of its tree, by name and by tag.
+        const QJsonObject onStack = call("context_menu", {{"on", QJsonObject{{"node", "Stack"}}}}, 30000);
+        QVERIFY2(!failed(onStack), qPrintable(text(onStack)));
+        const QString stackMenu = QString::fromUtf8(QJsonDocument(json(onStack).toObject().value("menu").toArray()).toJson());
+        QVERIFY2(stackMenu.contains(QStringLiteral("Add > Ground")), qPrintable(stackMenu));
+        const QJsonObject onMetal = call("context_menu", {{"on", QJsonObject{{"node", "m1"}}}}, 30000);
+        QVERIFY2(!failed(onMetal), qPrintable(text(onMetal)));
+        QVERIFY2(QString::fromUtf8(QJsonDocument(json(onMetal).toObject().value("menu").toArray()).toJson()).contains(QStringLiteral("Delete")),
+                 qPrintable(text(onMetal)));
+        // Chosen, it does what the menu does: a ground, first in the stack.
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        const int before = int(doc->model().stackNode().children.size());
+        const QJsonObject chosen = call("context_menu", {{"on", QJsonObject{{"node", "Stack"}}}, {"choose", "Add > Ground"}}, 30000);
+        QVERIFY2(!failed(chosen), qPrintable(text(chosen)));
+        QTRY_COMPARE_WITH_TIMEOUT(int(doc->model().stackNode().children.size()), before + 1, 5000);
+        QCOMPARE(doc->model().stackNode().children.front().type, QStringLiteral("rf_ground"));
+        QVERIFY2(doc->model().stack().ok(), qPrintable(doc->model().stack().problems.join(" | ")));
+        // (Its changes let go: a model left changed is asked about on
+        //  closing, and nothing answers that here.)
+        QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}}, 30000)));
+        QVERIFY(!failed(call("open_document", {{"path", model}}, 30000)));
+        // What it will not open.
+        const QJsonObject none = call("context_menu", {{"on", QJsonObject{{"node", "nothing here"}}}}, 30000);
+        QVERIFY(failed(none));
+        QVERIFY2(text(none).contains(QStringLiteral("has no node")), qPrintable(text(none)));
+        {
+            QFile plain(ws + "/rf/plain.sch");
+            QVERIFY(plain.open(QIODevice::WriteOnly));
+            plain.write("<Qucs Schematic 24.1.1>\n");
+        }
+        QVERIFY(!failed(call("open_document", {{"path", ws + "/rf/plain.sch"}}, 30000)));
+        const QJsonObject notAModel = call("context_menu", {{"on", QJsonObject{{"node", "Stack"}}}}, 30000);
+        QVERIFY(failed(notAModel));
+        QVERIFY2(text(notAModel).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(notAModel)));
         app->closeAllFiles();
     }
 

@@ -75,7 +75,10 @@ struct Layer {
     double sigma = 0;      ///< S/m: a metal's, a via's, a lossy substrate's
     double roughness = 0;  ///< m, rms
     QString from, to;      ///< a via's metals, by name
-    double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom)
+    /// A ground's or a cover's own kind: "perfect", "impedance" or "open"
+    /// for a ground, "open" or "perfect" (a metal lid) for a cover.
+    QString variant;
+    double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom; a ground's is 0)
 
     bool isConductor() const { return kind == Metal || kind == Via || kind == Ground; }
 };

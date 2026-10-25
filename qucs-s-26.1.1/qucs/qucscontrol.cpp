@@ -27,6 +27,8 @@
 #include "paintings/painting.h"
 #include "pptx.h"
 #include "pptxdoc.h"
+#include "layoutdoc.h"
+#include "rf25doc.h"
 #include "qucs.h"
 #ifdef QUCS_HAVE_QTPDF
 #include "pdfdoc.h"
@@ -365,8 +367,8 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate", "expand", "collapse"]}}, "required": ["control", "value"]}, "description": "[{\"control\": id or label, \"value\": ..., \"action\": for a view's row: select (the default), activate, expand or collapse}]"},
    "press": {"type": "string", "description": "A button pressed after, by its label or id; \"Button > entry\" chooses an entry of its menu"}}, "required": ["area"]}},
 {"name": "context_menu",
- "description": "Opens the right-click menu the user would get on something, lists its entries (submenus as 'A > B', with whether each can be chosen and is checked), and with 'choose' chooses one - as the keyboard would. A dialog it opens goes on through get_dialog and set_dialog. 'on': {\"part\": \"R1\"}, {\"diagram\": 2} or {\"canvas\": [x, y]} on the schematic ('path'; the one in front), {\"project_item\": \"amp.sch\"} in the Content panel, {\"project\": \"amp_prj\"} in the Projects panel, {\"tab\": \"amp.sch\"} on a document's tab, {\"file\": path} in the File Browser, or {\"slide\": 3} on a presentation's slide in its tab ('path'; the one in front): the menu of its ⋯ too.",
- "inputSchema": {"type": "object", "properties": {"on": {"type": "object", "properties": {"part": {"type": "string"}, "diagram": {"type": ["integer", "string"]}, "canvas": {"type": "array", "items": {"type": "number"}}, "project_item": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"}, "file": {"type": "string"}, "slide": {"type": "integer"}}, "description": "What is right-clicked: one of part, diagram, canvas, project_item, project, tab, file, slide"},
+ "description": "Opens the right-click menu the user would get on something, lists its entries (submenus as 'A > B', with whether each can be chosen and is checked), and with 'choose' chooses one - as the keyboard would. A dialog it opens goes on through get_dialog and set_dialog. 'on': {\"part\": \"R1\"}, {\"diagram\": 2} or {\"canvas\": [x, y]} on the schematic ('path'; the one in front), {\"project_item\": \"amp.sch\"} in the Content panel, {\"project\": \"amp_prj\"} in the Projects panel, {\"tab\": \"amp.sch\"} on a document's tab, {\"file\": path} in the File Browser, {\"slide\": 3} on a presentation's slide in its tab ('path'; the one in front): the menu of its ⋯ too, or {\"node\": \"m1\"} on an RF 2.5D model's node in its tree, by tag or name ('path'; the one in front) - where a layer, a ground or a port is added.",
+ "inputSchema": {"type": "object", "properties": {"on": {"type": "object", "properties": {"part": {"type": "string"}, "diagram": {"type": ["integer", "string"]}, "canvas": {"type": "array", "items": {"type": "number"}}, "project_item": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"}, "file": {"type": "string"}, "slide": {"type": "integer"}, "node": {"type": "string"}}, "description": "What is right-clicked: one of part, diagram, canvas, project_item, project, tab, file, slide, node"},
    "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
    "path": {"type": "string", "description": "The schematic, for part, diagram and canvas, or the presentation, for slide: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
 {"name": "simulate",
@@ -632,11 +634,13 @@ const char* const kTools = R"JSON([
    "layer": {"description": "\"1/0\", \"1\" (any datatype), a layer's name, or a list of them"}, "depth": {"type": "integer", "minimum": 0, "description": "Levels below the cell looked into; all by default (0: its own shapes)"},
    "texts": {"type": "boolean", "description": "Texts too (true by default)"}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many are listed, 50 by default"}}}},
 {"name": "show_layout",
- "description": "Opens a GDSII or OASIS layout in its tab (or brings it to the front) and shows what is asked: 'cell' (shown whole), 'region' [x1, y1, x2, y2] in µm, 'layers' shown (the others hidden: \"1/0\", \"1\", a name, a list, or \"all\"), 'depth' levels of the hierarchy drawn (\"all\", or a number: deeper cells as their frames), 'texts' on or off, the 'grid' behind it shown or hidden (as its G key does: in every layout tab). Returns what the tab shows then, what it drew and the grid's step; screenshot takes a picture of it.",
+ "description": "Opens a GDSII or OASIS layout in its tab (or brings it to the front) and shows what is asked: 'cell' (shown whole), 'region' [x1, y1, x2, y2] in µm, 'layers' shown (the others hidden: \"1/0\", \"1\", a name, a list, or \"all\"), 'depth' levels of the hierarchy drawn (\"all\", or a number: deeper cells as their frames), 'texts' on or off, the 'grid' behind it shown or hidden (as its G key does: in every layout tab). Returns what the tab shows then, what it drew and the grid's step; screenshot takes a picture of it. An RF 2.5D model (.qrf25, or the one in front) is framed in its own tab the same way - 'region', 'texts', 'grid', and 'processed' and 'mesh' to draw over it the shapes as the processing leaves them and the cells they are divided into; its cell and layers are its Layout node's and its layer map's, so 'cell', 'layers' and 'depth' are refused for it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The cell shown, whole unless 'region' says"},
    "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] in µm, shown as large as the tab takes it"}, "layers": {"description": "The layers shown, the others hidden: \"1/0\", \"1\", a name, a list of them, or \"all\""},
    "depth": {"description": "Levels of the hierarchy drawn: \"all\" or a number (0: the cell's own shapes, the cells it places as frames)"}, "texts": {"type": "boolean", "description": "The texts shown or not"},
-   "grid": {"type": "boolean", "description": "The grid behind the layout shown or not (a point every 1, 2 or 5 times a power of ten µm, at least 16 pixels apart; a scale of it in the lower left)"}}}},
+   "grid": {"type": "boolean", "description": "The grid behind the layout shown or not (a point every 1, 2 or 5 times a power of ten µm, at least 16 pixels apart; a scale of it in the lower left)"},
+   "processed": {"type": "boolean", "description": "An RF 2.5D model: the shapes as its processing leaves them drawn over the layout, or not"},
+   "mesh": {"type": "boolean", "description": "An RF 2.5D model: the cells its mesh divides them into drawn over the layout, or not"}}}},
 {"name": "show_pdf",
  "description": "Shows a PDF in its tab - opened when it is not, brought to the front - where it is asked: 'page' a number (1 the first), a page's label as printed (\"iv\"; a number is the page's number in the file), or a destination of its outline (a section's title, or its start: \"2.2.1 Modulation\"); 'find' text (\"Figure 2.15:\"): every hit's page returned, the first shown and marked (a figure or a table named, not its page); 'zoom' a percentage (150) or \"fit width\" / \"fit page\"; 'region' [x1, y1, x2, y2] of the page shown as large as the tab takes it - in points from its top left, or as fractions of it (all four between 0 and 1: [0.5, 0, 1, 0.5] its top right quarter). Returns the page shown, the pages there are, the zoom, the hits. screenshot of the PDF then takes a picture of it; screenshot with 'page' and 'region' draws a page or a part without moving the tab.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"},
@@ -11370,7 +11374,16 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
 #endif
     // One diagram, or a region: that part of the paper picture.
     if (args.contains(QLatin1String("diagram")) || args.contains(QLatin1String("region"))) {
-        if (sch == nullptr) return errorResult(tr("%1 is not a schematic: 'diagram' and 'region' are of a schematic.").arg(titleOf(doc)));
+        if (sch == nullptr) {
+            // A layout's, or an RF 2.5D model's, own region is framed first
+            // and the tab taken as it is: said, rather than only that it is
+            // no schematic (the phase A check of 24 October).
+            const bool layoutLike = dynamic_cast<RF25Doc*>(doc) != nullptr || qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc)) != nullptr;
+            return errorResult(layoutLike ? tr("%1 is not a schematic: 'diagram' and 'region' are of a schematic. Frame its layout "
+                                               "with show_layout's 'region' (in µm), then take screenshot without one.")
+                                                .arg(titleOf(doc))
+                                          : tr("%1 is not a schematic: 'diagram' and 'region' are of a schematic.").arg(titleOf(doc)));
+        }
         QRect wanted;
         QString what;
         if (args.contains(QLatin1String("diagram"))) {

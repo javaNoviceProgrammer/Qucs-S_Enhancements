@@ -624,6 +624,66 @@ private slots:
     // What it will not answer: a layer that is
     // no metal, a stack with nothing to solve in, and a mesh too large for
     // a dense matrix.
+    // The ground is read for what it is, not where the tree has it: a
+    // plane under everything wherever it is put, none at all where it
+    // says open, and a metal lid refused rather than read as air. It was
+    // read by its place - refused after any slab as "above the stack" -
+    // so the one order the solver took was the one the stack refused, and
+    // "Open (no plane)" was solved as a perfect plane (the phase A check
+    // of 24 October, and what came of mending it).
+    void theGroundIsReadForWhatItIsNotWhereItIs()
+    {
+        // The blank model's stack - a substrate, an oxide, a metal - with
+        // a ground put in at \a at (the end where it is -1) and a cover.
+        const auto with = [](int at, const QString& groundKind, const QString& coverKind) {
+            rf::Model m = rf::Model::blank();
+            rf::Node& stack = m.stackNode();
+            if (!coverKind.isEmpty()) {
+                rf::Node cover = m.make(QStringLiteral("rf_cover"));
+                cover.props.insert(QStringLiteral("kind"), coverKind);
+                stack.children.push_back(cover);
+            }
+            rf::Node ground = m.make(QStringLiteral("rf_ground"));
+            ground.label = QStringLiteral("GND");
+            if (!groundKind.isEmpty()) ground.props.insert(QStringLiteral("kind"), groundKind);
+            stack.children.insert(stack.children.begin() + (at < 0 ? int(stack.children.size()) : at), ground);
+            return m.stack();
+        };
+        // Wherever it is, a plane below, and the stack whole.
+        for (const int at : {0, 1, 2, 3, -1}) {
+            const rf::Stack st = with(at, QString(), QStringLiteral("open"));
+            QVERIFY2(st.ok(), qPrintable(QStringLiteral("at %1: ").arg(at) + st.problems.join(" | ")));
+            const rf::Layers l = rf::layersOf(st);
+            QVERIFY2(l.ok(), qPrintable(QStringLiteral("at %1: ").arg(at) + l.problems.join(" | ")));
+            QVERIFY2(l.groundBelow, qPrintable(QStringLiteral("a ground at %1 was not taken as the plane below").arg(at)));
+            QCOMPARE(l.slabs.size(), 2);
+        }
+        // Open is no plane, and a surface impedance is still one.
+        QVERIFY(!rf::layersOf(with(0, QStringLiteral("open"), QString())).groundBelow);
+        QVERIFY(rf::layersOf(with(0, QStringLiteral("impedance"), QString())).groundBelow);
+        QVERIFY(rf::layersOf(with(0, QStringLiteral("perfect"), QString())).groundBelow);
+        // A metal lid is not solved yet, and says so; an open cover is air.
+        const rf::Layers lid = rf::layersOf(with(0, QString(), QStringLiteral("perfect")));
+        QVERIFY2(!lid.ok() && says(lid.problems, "metal lid"), qPrintable(lid.problems.join(" | ")));
+        QVERIFY(rf::layersOf(with(0, QString(), QStringLiteral("open"))).ok());
+
+        // And the charge does not care where the tree put the ground: the
+        // same capacitance to the last bit, first or last.
+        const QList<rf::Conductor> line{strip(0, 0, 600, 40)};
+        const rf::Mesh mesh = meshed(line, 40);
+        const rf::Extraction first = rf::extract(mesh, line, with(0, QString(), QStringLiteral("open")));
+        const rf::Extraction last = rf::extract(mesh, line, with(-1, QString(), QStringLiteral("open")));
+        QVERIFY2(first.ok(), qPrintable(first.problems.join(" | ")));
+        QVERIFY2(last.ok(), qPrintable(last.problems.join(" | ")));
+        QCOMPARE(first.selfCapacitance(0), last.selfCapacitance(0));
+        // Without the plane it holds far less: the charge has nothing near
+        // to face. (It was the plane's capacitance however "open" it said.)
+        const rf::Extraction open = rf::extract(mesh, line, with(0, QStringLiteral("open"), QString()));
+        QVERIFY2(open.ok(), qPrintable(open.problems.join(" | ")));
+        QVERIFY2(open.selfCapacitance(0) < 0.8 * first.selfCapacitance(0),
+                 qPrintable(QStringLiteral("open %1 F vs a plane's %2 F").arg(open.selfCapacitance(0)).arg(first.selfCapacitance(0))));
+    }
+
     void whatItCannotSolveIsRefused()
     {
         // A conductor sent to a layer that is not a metal.
