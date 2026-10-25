@@ -244,12 +244,24 @@ Layers layersOf(const Stack& stack)
     for (const Layer& l : stack.layers) {
         switch (l.kind) {
         case Layer::Ground:
-            if (out.slabs.isEmpty()) out.groundBelow = true;
-            else out.problems << tr("A ground plane above the stack is not solved yet: put it at the bottom.");
+            // A ground is a plane under everything, wherever the tree has
+            // it - the stack puts it at nought - so where it comes in the
+            // list says nothing. It was read by its place: one listed
+            // after a slab was refused as "above the stack", and the one
+            // order accepted was the one the stack's own checks refused,
+            // so no model with a ground was both whole and solvable (the
+            // phase A check of 24 October).
+            //
+            // Open is no plane at all, and was solved as a perfect one.
+            if (l.variant != QLatin1String("open")) out.groundBelow = true;
             break;
         case Layer::Cover:
-            // (A cover closes the stack at the top; nothing is solved
-            // above it yet, so it is read as the air above.)
+            // An open cover is the air above, which is what is solved. A
+            // metal lid is not solved yet, and is said rather than read
+            // as the air it is not.
+            if (l.variant == QLatin1String("perfect"))
+                out.problems << tr("A metal lid over the stack is not solved yet: make the cover open (air above), or "
+                                   "take it out.");
             break;
         case Layer::Metal:
         case Layer::Via:

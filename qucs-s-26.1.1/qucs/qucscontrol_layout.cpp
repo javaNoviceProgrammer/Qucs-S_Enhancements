@@ -17,6 +17,7 @@
 #include "layoutdoc.h"
 #include "misc.h"
 #include "qucs.h"
+#include "rf25doc.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -492,6 +493,75 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
     const bool textsGiven = args.contains(QLatin1String("texts"));
     const bool texts = args.value(QLatin1String("texts")).toBool();
     const QJsonValue grid = args.value(QLatin1String("grid"));
+
+    // An RF 2.5D model's own layout, framed in its own tab: it was refused
+    // as "could not be opened as a layout", so the model's view could only
+    // be zoomed in steps about its middle (the phase A check of 24
+    // October). The model is named by its file, or is the one in front.
+    {
+        const QString path = args.value(QLatin1String("path")).toString().trimmed();
+        RF25Doc* model = nullptr;
+        if (path.endsWith(QLatin1String(".qrf25"), Qt::CaseInsensitive)) {
+            const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+            if (opened.value(QStringLiteral("isError")).toBool()) {
+                done(opened);
+                return;
+            }
+            model = dynamic_cast<RF25Doc*>(a_app->getDoc());
+        } else if (path.isEmpty()) {
+            model = dynamic_cast<RF25Doc*>(a_app->getDoc());
+        }
+        if (model != nullptr) {
+            // Which cell, and which layers, are the model's to say - its
+            // Layout node and its layer map - and are not set from here.
+            for (const char* key : {"cell", "layers", "depth"})
+                if (args.contains(QLatin1String(key))) {
+                    done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
+                                        "its layers are its layer map's. 'region', 'texts', 'grid', 'processed' and "
+                                        "'mesh' frame what it shows.").arg(QLatin1String(key))));
+                    return;
+                }
+            if (!model->waitForLayout(60000)) {
+                done(errorResult(tr("%1's layout is still being read.").arg(titleOf(model))));
+                return;
+            }
+            const std::shared_ptr<const Layout> layout = model->layout();
+            if (!layout) {
+                done(errorResult(model->layoutProblem().isEmpty() ? tr("%1 names no layout: its Layout node's file says which.").arg(titleOf(model))
+                                                                  : model->layoutProblem()));
+                return;
+            }
+            a_app->showDocument(QucsApp::documentWidget(model));
+            if (args.contains(QLatin1String("processed"))) model->setProcessedShown(args.value(QLatin1String("processed")).toBool());
+            if (args.contains(QLatin1String("mesh"))) model->setMeshShown(args.value(QLatin1String("mesh")).toBool());
+            LayoutView* view = model->view();
+            if (textsGiven) view->setLabelsShown(texts);
+            if (grid.isBool()) view->setGridShown(grid.toBool());
+            if (region.size() == 4)
+                view->showRegion(QRectF(QPointF(region.at(0).toDouble(), region.at(1).toDouble()),
+                                        QPointF(region.at(2).toDouble(), region.at(3).toDouble())).normalized());
+            view->repaint();
+            const int shown = view->cell();
+            QJsonObject result{{QStringLiteral("model"), titleOf(model)},
+                               {QStringLiteral("file"), QDir::toNativeSeparators(layout->file)},
+                               {QStringLiteral("cell"), shown >= 0 && shown < layout->cells.size() ? layout->cells.at(shown).name : QString()},
+                               {QStringLiteral("region"), boxJson(*layout, view->visibleRegion())},
+                               {QStringLiteral("processed shapes drawn"), model->processedShown()},
+                               {QStringLiteral("mesh drawn"), model->meshShown()},
+                               {QStringLiteral("drawn"), QJsonObject{{QStringLiteral("shapes"), double(view->lastStats().polygons)},
+                                                                     {QStringLiteral("too small to see, as dots"), double(view->lastStats().dots)},
+                                                                     {QStringLiteral("texts"), double(view->lastStats().labels)}}},
+                               {QStringLiteral("note"), tr("screenshot shows the tab as the user sees it.")}};
+            if (view->gridShown())
+                result.insert(QStringLiteral("grid"), tr("a point every %1 µm, stronger every %2 µm; a scale in the lower left")
+                                                          .arg(micrometres(*layout, view->gridStep()), micrometres(*layout, view->gridMajorStep())));
+            if (view->lastStats().incomplete)
+                result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
+            done(jsonResult(result));
+            return;
+        }
+    }
+
     withLayout(args, true, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         if (doc == nullptr) {
             done(errorResult(tr("%1 is not open as a layout.").arg(QFileInfo(layout->file).fileName())));

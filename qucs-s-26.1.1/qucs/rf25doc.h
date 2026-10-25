@@ -129,6 +129,10 @@ public:
     /// Everything the model says is missing, as the panel and the tab show
     /// it (Model::problems()).
     QStringList problems() const { return a_model.problems(); }
+    /// Whether the model last changed by a read (the file opened or read
+    /// again) rather than an edit: a read comes from no field of the
+    /// panel's form, so the panel may make that form again at once.
+    bool lastChangeWasRead() const { return a_lastChangeRead; }
 
     // The layout behind it.
     /// The layout file the model names, as this tab reads it: beside the
@@ -322,6 +326,7 @@ private:
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
     std::shared_ptr<const qucs_s::rf25::Inductance> a_inductance;
+    bool a_lastChangeRead = false;
     QString a_portsSaid;
     QString a_solveProblem;
     double a_solvedLength = 0;

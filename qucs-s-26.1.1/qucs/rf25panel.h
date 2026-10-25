@@ -53,6 +53,11 @@ public:
 
     QString currentTag() const;
     void selectNode(const QString& tag);
+    /// Opens node \a tag's menu (add, remove, ...) as a right-click on its
+    /// row would, chosen and scrolled to first. False where the tree has
+    /// no such node. For context_menu, whose right-click could not reach
+    /// it (the phase A check of 24 October).
+    bool openNodeMenu(const QString& tag);
     /// The menu of node \a tag, as a right click shows it.
     QMenu* menuFor(const QString& tag);
     /// Adds a node of kind \a type under \a parentTag; its tag, chosen.

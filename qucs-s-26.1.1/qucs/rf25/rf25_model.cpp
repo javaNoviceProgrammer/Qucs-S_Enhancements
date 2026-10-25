@@ -151,7 +151,8 @@ QList<NodeKind> makeKinds()
           QStringLiteral("rf_via"), QStringLiteral("rf_ground"), QStringLiteral("rf_cover")},
          {}, true, true, QString(),
          tr("The layers from the bottom up: the substrate, the dielectrics and metals over it, the vias between two "
-            "metals, and what closes it at either end. Their order in the tree is their order in z.")});
+            "metals, and what closes it at either end. Their order in the tree is their order in z - all but the "
+            "ground's, which is a plane under the substrate wherever it is put.")});
     add({QStringLiteral("rf_substrate"), tr("Substrate"), QStringLiteral("stack"), QStringLiteral("layer"), none,
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("300[um]")),
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("11.9")),
@@ -191,7 +192,8 @@ QList<NodeKind> makeKinds()
                        tr("Of the plane, per square")),
                   "kind=impedance")},
          {}, {}, false, true, QStringLiteral("gnd"),
-         tr("What closes the stack at the bottom. One at most, and last in the tree (it sits under the substrate).")});
+         tr("What closes the stack at the bottom: a plane under the substrate, wherever it is in the tree. One at "
+            "most. Open is no plane at all - the substrate on air.")});
     add({QStringLiteral("rf_cover"), tr("Cover"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
          {expr(QStringLiteral("height"), tr("Height above the top"), QStringLiteral("m"), QStringLiteral("1[mm]")),
           choice(QStringLiteral("kind"), tr("Above the stack"),
@@ -360,7 +362,16 @@ QJsonObject nodeToJson(const Node& node)
     return o;
 }
 
-Node nodeFromJson(const QJsonObject& o)
+/*!
+ * A node read from \a o, and what in it was not read in \a notes.
+ *
+ * A key a node does not have, and a property its kind does not have, were
+ * passed over without a word: a file that wrote "props" for "properties"
+ * loaded with every value at its default and the model said nothing was
+ * missing (the phase A check of 24 October). They are still not read -
+ * guessing what was meant is worse than saying - but they are said.
+ */
+Node nodeFromJson(const QJsonObject& o, QStringList* notes)
 {
     Node n;
     n.type = o.value(QLatin1String("type")).toString();
@@ -368,8 +379,31 @@ Node nodeFromJson(const QJsonObject& o)
     n.label = o.value(QLatin1String("label")).toString();
     n.enabled = o.value(QLatin1String("enabled")).toBool(true);
     n.props = o.value(QLatin1String("properties")).toObject();
+    const NodeKind* kind = nodeKind(n.type);
+    const QString who = !n.label.isEmpty() ? n.label : !n.tag.isEmpty() ? n.tag : n.type;
+    if (notes != nullptr) {
+        static const QStringList keys{QStringLiteral("type"), QStringLiteral("tag"), QStringLiteral("label"),
+                                      QStringLiteral("enabled"), QStringLiteral("properties"), QStringLiteral("children")};
+        for (auto it = o.constBegin(); it != o.constEnd(); ++it) {
+            if (keys.contains(it.key())) continue;
+            *notes << (it.key() == QLatin1String("props")
+                           ? QCoreApplication::translate("qucs_s::rf25", "%1: \"props\" is not read - a node's values are "
+                                                                         "under \"properties\", so they were left at their "
+                                                                         "defaults").arg(who)
+                           : QCoreApplication::translate("qucs_s::rf25", "%1: \"%2\" is no key of a node, and was not read")
+                                 .arg(who, it.key()));
+        }
+        // (Only of a kind this build knows: an unknown kind is said where
+        //  the stack or the tree meets it.)
+        if (kind != nullptr)
+            for (auto it = n.props.constBegin(); it != n.props.constEnd(); ++it)
+                if (kind->property(it.key()) == nullptr)
+                    *notes << QCoreApplication::translate("qucs_s::rf25", "%1: \"%2\" is no property of a %3, and was "
+                                                                          "not read")
+                                  .arg(who, it.key(), kind->title);
+    }
     for (const QJsonValue& c : o.value(QLatin1String("children")).toArray())
-        if (c.isObject()) n.children.push_back(nodeFromJson(c.toObject()));
+        if (c.isObject()) n.children.push_back(nodeFromJson(c.toObject(), notes));
     return n;
 }
 
@@ -544,7 +578,8 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
         return std::nullopt;
     }
     Model m;
-    m.root = nodeFromJson(tree);
+    QStringList notes;
+    m.root = nodeFromJson(tree, &notes);
     // The fixed parts, for a file written by a build that had fewer.
     for (const char* type : {"rf_parameters", "rf_stack", "rf_layout", "rf_ports", "rf_mesh", "rf_study",
                              "rf_results", "rf_exports"})
@@ -552,6 +587,16 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     child(m.layout(), QStringLiteral("rf_layer_map"));
     child(m.layout(), QStringLiteral("rf_processing"));
     m.normalise();
+    // What was not read, as the read's own notes (the multiphysics reader's
+    // way too): the tab says them where it says what it read.
+    if (error != nullptr) {
+        if (notes.size() > 8) {
+            const int more = int(notes.size()) - 8;
+            notes = notes.mid(0, 8);
+            notes << tr("and %1 more").arg(more);
+        }
+        *error = notes.join(QStringLiteral("; "));
+    }
     return m;
 }
 
@@ -592,7 +637,12 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
         scope.setConstant(p.name, e.constant(), e.dim());
     }
 
-    // Every enabled child, in the order the tree has them.
+    // Every enabled child, in the order the tree has them - and, for each,
+    // the properties that would not read, so that the checks below do not
+    // say the same thing again of the value they were left at (a bad
+    // thickness was "not a number" and then "no thickness": one mistake,
+    // two things missing - the phase A check of 24 October).
+    QList<QSet<QString>> unread;
     for (const Node& c : node.children) {
         if (!c.enabled) continue;
         const NodeKind* kind = nodeKind(c.type);
@@ -605,6 +655,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
         layer.tag = c.tag;
         layer.name = c.label.isEmpty() ? c.tag : c.label;
         const QString where = layer.name.isEmpty() ? kind->title : layer.name;
+        QSet<QString> failed;
         const auto read = [&](const QString& key, double* into) {
             QString why;
             if (const std::optional<double> v = numberIn(textOf(c, key), scope, &why)) {
@@ -612,6 +663,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
                 return true;
             }
             out.problems << tr("%1: %2 is not a number (%3).").arg(where, key, why);
+            failed.insert(key);
             return false;
         };
         switch (layer.kind) {
@@ -637,22 +689,32 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("sigma"), &layer.sigma);
             break;
         case Layer::Ground:
-            if (textOf(c, QStringLiteral("kind")) == QLatin1String("impedance"))
+            layer.variant = textOf(c, QStringLiteral("kind"));
+            if (layer.variant == QLatin1String("impedance"))
                 read(QStringLiteral("impedance"), &layer.sigma);   // (per square; not a conductivity)
             break;
         case Layer::Cover:
+            layer.variant = textOf(c, QStringLiteral("kind"));
             read(QStringLiteral("height"), &layer.thickness);
             break;
         }
         out.layers << layer;
+        unread << failed;
     }
 
     // Where each layer sits: the thicknesses from the bottom up. A via
     // takes the room of the dielectric between its metals, so it adds
-    // nothing of its own, and the ground is a plane under everything.
+    // nothing of its own. The ground is a plane under everything, at
+    // nought, wherever the tree has it: it has no place in the order to
+    // get wrong. (It was put at the running height, so one listed after
+    // the passivation sat on top of it - the phase A check of 24 October.)
     double z = 0;
     for (Layer& l : out.layers) {
-        if (l.kind == Layer::Via || l.kind == Layer::Ground) {
+        if (l.kind == Layer::Ground) {
+            l.z0 = l.z1 = 0;
+            continue;
+        }
+        if (l.kind == Layer::Via) {
             l.z0 = l.z1 = z;
             continue;
         }
@@ -663,9 +725,20 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
 
     // What is wrong with it (the proposal's checks).
     const auto name = [](const Layer& l) { return l.name.isEmpty() ? l.tag : l.name; };
+    // The first and the last layer that has a place in z: the ground has
+    // none, so a substrate after it is still the first, and a cover
+    // before it still the last.
+    int firstPlaced = -1, lastPlaced = -1;
+    for (int i = 0; i < out.layers.size(); ++i) {
+        if (out.layers.at(i).kind == Layer::Ground) continue;
+        if (firstPlaced < 0) firstPlaced = i;
+        lastPlaced = i;
+    }
     int substrates = 0, grounds = 0, covers = 0, metals = 0;
     for (int i = 0; i < out.layers.size(); ++i) {
         const Layer& l = out.layers.at(i);
+        // (Said already where it would not read.)
+        const auto read = [&unread, i](const char* key) { return !unread.at(i).contains(QLatin1String(key)); };
         switch (l.kind) {
         case Layer::Substrate: ++substrates; break;
         case Layer::Ground: ++grounds; break;
@@ -673,21 +746,22 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
         case Layer::Metal: ++metals; break;
         default: break;
         }
-        if (l.kind == Layer::Substrate && i != 0)
+        if (l.kind == Layer::Substrate && i != firstPlaced)
             out.problems << tr("The substrate is not the first layer: it lies below every metal.");
-        if (l.kind == Layer::Cover && i != out.layers.size() - 1)
+        if (l.kind == Layer::Cover && i != lastPlaced)
             out.problems << tr("The cover is not the last layer: it closes the stack at the top.");
-        if ((l.kind == Layer::Substrate || l.kind == Layer::Dielectric || l.kind == Layer::Metal) && !(l.thickness > 0))
+        if ((l.kind == Layer::Substrate || l.kind == Layer::Dielectric || l.kind == Layer::Metal) && !(l.thickness > 0)
+            && read("thickness"))
             out.problems << tr("%1 has no thickness.").arg(name(l));
-        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.epsr < 1)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.epsr < 1 && read("epsr"))
             out.problems << tr("%1 has a relative permittivity below 1 (%2).").arg(name(l)).arg(l.epsr);
-        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand < 0)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand < 0 && read("tand"))
             out.problems << tr("%1 has a loss tangent below zero.").arg(name(l));
-        if (l.kind == Layer::Metal && !(l.sigma > 0))
+        if (l.kind == Layer::Metal && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("%1 has no conductivity.").arg(name(l));
-        if (l.kind == Layer::Via && !(l.sigma > 0))
+        if (l.kind == Layer::Via && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("The via %1 has no conductivity.").arg(name(l));
-        if (l.kind == Layer::Metal && l.roughness < 0)
+        if (l.kind == Layer::Metal && l.roughness < 0 && read("roughness"))
             out.problems << tr("%1 has a roughness below zero.").arg(name(l));
         // A via joins the metals it names, and they must be neighbours:
         // nothing but dielectric between them.
@@ -907,17 +981,19 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
     std::vector<Node>& list = parent->children;
     int at = index < 0 || index > int(list.size()) ? int(list.size()) : index;
     if (index < 0 && parent->type == QLatin1String("rf_stack")) {
-        // The order of the tree is the order in z: the substrate lies
-        // under every metal, and the ground and the cover close the stack
-        // at its ends (stackOf() says so of a stack that has them
-        // elsewhere), so a layer added goes where it belongs.
-        if (node.type == QLatin1String("rf_substrate")) {
+        // The order of the tree is the order in z, from the bottom up, so
+        // a layer added goes where it belongs: the ground first (it is
+        // under everything, and stackOf() puts it there wherever it is),
+        // the substrate next, the cover last, and the rest before the
+        // cover. (A ground was put at the end, after a cover added before
+        // it - the phase A check of 24 October.)
+        const bool groundFirst = !list.empty() && list.front().type == QLatin1String("rf_ground");
+        if (node.type == QLatin1String("rf_ground")) {
             at = 0;
-        } else if (node.type != QLatin1String("rf_cover") && node.type != QLatin1String("rf_ground")) {
-            while (at > 0
-                   && (list[std::size_t(at - 1)].type == QLatin1String("rf_cover")
-                       || list[std::size_t(at - 1)].type == QLatin1String("rf_ground")))
-                --at;
+        } else if (node.type == QLatin1String("rf_substrate")) {
+            at = groundFirst ? 1 : 0;
+        } else if (node.type != QLatin1String("rf_cover")) {
+            while (at > 0 && list[std::size_t(at - 1)].type == QLatin1String("rf_cover")) --at;
         }
     }
     list.insert(list.begin() + at, std::move(node));

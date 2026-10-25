@@ -127,6 +127,9 @@ RF25Panel::RF25Panel(QWidget* parent) : QWidget(parent)
     a_tree = new QTreeWidget(a_splitter);
     a_tree->setObjectName(QStringLiteral("rfTree"));
     a_tree->setColumnCount(2);
+    // Hidden, but named: a reader of the window (get_ui) was given Qt's
+    // own "1" and "2" for them (the phase A check of 24 October).
+    a_tree->setHeaderLabels({tr("Node"), tr("Status")});
     a_tree->setHeaderHidden(true);
     a_tree->header()->setStretchLastSection(false);
     a_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -199,7 +202,20 @@ void RF25Panel::setDocument(RF25Doc* doc)
     }
     a_connections << connect(doc, &RF25Doc::modelChanged, this, [this] {
         rebuildTree();
-        scheduleSettings();
+        // A read - the file opened, or read again because it changed on
+        // disk - comes from no field of the form, so the form is made
+        // again now. Deferred, a tool call that read the file first was
+        // answered with the form of the file before: the first get_ui
+        // after a file was mended still listed what it had mended (the
+        // phase A check of 24 October). An edit stays deferred: it comes
+        // from one of the form's own fields, which must not be destroyed
+        // in its own signal.
+        if (a_doc && a_doc->lastChangeWasRead()) {
+            a_settingsPending = false;
+            showSettings();
+        } else {
+            scheduleSettings();
+        }
     });
     a_connections << connect(doc, &RF25Doc::stateChanged, this, [this] {
         updateStatusColumn();
@@ -251,6 +267,21 @@ void RF25Panel::selectNode(const QString& tag)
         a_tree->setCurrentItem(item);
         a_tree->scrollToItem(item);
     }
+}
+
+bool RF25Panel::openNodeMenu(const QString& tag)
+{
+    QTreeWidgetItem* item = itemOf(tag);
+    if (item == nullptr) return false;
+    for (QTreeWidgetItem* up = item->parent(); up != nullptr; up = up->parent()) up->setExpanded(true);
+    a_tree->setCurrentItem(item);
+    a_tree->scrollToItem(item);
+    const QRect at = a_tree->visualItemRect(item);
+    if (at.isEmpty()) return false;
+    // (What a right-click on it sends: the menu is opened by the handler
+    //  of that signal, at the row under the point.)
+    emit a_tree->customContextMenuRequested(at.center());
+    return true;
 }
 
 void RF25Panel::addItems(QTreeWidgetItem* parent, const Node& node)

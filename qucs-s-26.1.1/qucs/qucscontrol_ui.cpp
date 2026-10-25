@@ -19,6 +19,8 @@
 #include "pptxdoc.h"
 #include "projectView.h"
 #include "qucs.h"
+#include "rf25doc.h"
+#include "rf25panel.h"
 #include "schematic.h"
 
 #include <QAbstractItemView>
@@ -644,9 +646,63 @@ void QucsControl::contextMenu(const QJsonObject& args, const Done& done)
             QApplication::sendEvent(viewport, &event);
             return true;
         };
+    } else if (on.contains(QLatin1String("node"))) {
+        // A node of an RF 2.5D model's tree ('path'; the one in front), by
+        // its tag or its name: its menu is where a layer, a ground or a
+        // port is added, and no tool of its own does that. A right-click
+        // sent there did not open it (the phase A check of 24 October).
+        QucsDoc* doc = nullptr;
+        const QString path = args.value(QLatin1String("path")).toString().trimmed();
+        if (!path.isEmpty()) {
+            const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+            if (opened.value(QStringLiteral("isError")).toBool()) {
+                done(opened);
+                return;
+            }
+        }
+        doc = a_app->getDoc();
+        auto* model = dynamic_cast<RF25Doc*>(doc);
+        RF25Panel* panel = a_app->rf25Panel();
+        if (model == nullptr || panel == nullptr) {
+            done(errorResult(tr("%1 is no RF 2.5D model: 'node' is a node of one's tree (a multiphysics model's is "
+                                "edited with fem_edit).")
+                                 .arg(doc != nullptr ? titleOf(doc) : tr("nothing in front"))));
+            return;
+        }
+        a_app->showDocument(QucsApp::documentWidget(model));
+        if (panel->document() != model) panel->setDocument(model);
+        const QString asked = on.value(QLatin1String("node")).toString().trimmed();
+        // By tag, else by name - and a name two nodes share is not guessed
+        // between.
+        QString tag;
+        if (model->model().root.find(asked) != nullptr) {
+            tag = asked;
+        } else {
+            QStringList named;
+            const std::function<void(const qucs_s::rf25::Node&)> look = [&](const qucs_s::rf25::Node& n) {
+                if (qucs_s::rf25::nameOf(n).compare(asked, Qt::CaseInsensitive) == 0) named << n.tag;
+                for (const qucs_s::rf25::Node& c : n.children) look(c);
+            };
+            look(model->model().root);
+            if (named.size() > 1) {
+                done(errorResult(tr("%1 names %2 nodes of %3 (%4): give its tag.")
+                                     .arg(asked).arg(named.size()).arg(titleOf(model), named.join(QStringLiteral(", ")))));
+                return;
+            }
+            if (!named.isEmpty()) tag = named.first();
+        }
+        if (tag.isEmpty()) {
+            done(errorResult(tr("%1 has no node %2 (a tag, as m1, or a name, as M1 or Stack).").arg(titleOf(model), asked)));
+            return;
+        }
+        bringForward(panel);
+        what = tr("%1 in %2's tree").arg(qucs_s::rf25::nameOf(*model->model().root.find(tag)), titleOf(model));
+        QPointer<RF25Panel> target(panel);
+        open = [target, tag] { return target && target->openNodeMenu(tag); };
     } else {
         done(errorResult(tr("'on' is {\"part\": name}, {\"diagram\": n}, {\"canvas\": [x, y]}, {\"project_item\": file}, "
-                            "{\"project\": name}, {\"tab\": title}, {\"file\": path} or a presentation's {\"slide\": n}.")));
+                            "{\"project\": name}, {\"tab\": title}, {\"file\": path}, a presentation's {\"slide\": n} or "
+                            "an RF 2.5D model's {\"node\": tag or name}.")));
         return;
     }
 

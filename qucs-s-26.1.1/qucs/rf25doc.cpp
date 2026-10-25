@@ -279,6 +279,10 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     a_prepareSoon->setInterval(300);
     connect(a_prepareSoon, &QTimer::timeout, this, &RF25Doc::prepare);
     buildUi();
+    // The starter model's stack, drawn from the first: only an edit or a
+    // read drew it, so a new model's view said "No layer" beside a status
+    // line counting three (the phase A check of 24 October).
+    a_stack->setStack(a_model.stack());
     showProblems();
     if (app != nullptr) connect(this, SIGNAL(signalFileChanged(bool)), app, SLOT(slotFileChanged(bool)));
 }
@@ -568,6 +572,7 @@ void RF25Doc::applyModel(const Model& model, bool read)
 {
     const QString layoutBefore = layoutFile();
     a_model = model;
+    a_lastChangeRead = read;
     if (read) contentRead();
     else edited();
     a_stack->setStack(a_model.stack());
