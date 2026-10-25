@@ -198,19 +198,23 @@ public:
     QString solveProblem() const { return a_solveProblem; }
     /// What the solve said it did, for the Results node and the notes.
     QStringList solvedLines() const;
-    /// Each net as a line: its capacitance per metre, its effective
-    /// permittivity and its impedance over the length that was solved.
-    /// Empty where nothing was solved.
+    /// One net as a line: its capacitance per metre, its effective
+    /// permittivity and its impedance over the length that was solved; or
+    /// of several, their modes, since a conductor of a coupled set is no
+    /// line by itself. Empty where nothing was solved.
     QStringList lineSummary() const;
     /// The length a line's parameters are taken over, m: the longer side
     /// of what was solved, which is what a straight line's length is.
     /// Zero where nothing was solved.
     double solvedLength() const;
     QToolButton* solveButton() const { return a_solveButton; }
-    /// Each net's S-parameters at the top of the study's sweep, and where
-    /// a quasi-static answer stops being the whole story. Empty where
-    /// nothing was solved.
-    QStringList sParameterSummary() const;
+    /// The S-parameters at the top of the study's sweep - one net's as a
+    /// two-port, several as their 2N-port - and where a quasi-static
+    /// answer stops being the whole story. Into \a reference Ohm at every
+    /// port, which a Touchstone's own comment must say since its data are
+    /// referred to it; at zero, a lone line into its own impedance and a
+    /// coupled set into 50 Ohm. Empty where nothing was solved.
+    QStringList sParameterSummary(double reference = 0) const;
     /// The loop's inductance as last solved, or null: nothing solved, the
     /// model changed since, or it has not the two ports a loop wants.
     std::shared_ptr<const qucs_s::rf25::Inductance> inductance() const { return a_inductance; }
