@@ -187,11 +187,16 @@ public:
     /// Solves it, in the background, on the shapes and the mesh as they
     /// stand. A solve going on is let go. Nothing happens where there is
     /// no mesh to solve on; solveProblem() then says why.
+    /// While the shapes and the mesh are still to be made of an edit, or
+    /// being made, it waits for them and starts when they are: a solve of
+    /// the mesh before would be thrown away when they were done.
     void solve();
-    /// Lets a solve going on go: its result is dropped.
+    /// Lets a solve going on go, or one waiting for the mesh: its result is
+    /// dropped.
     void stopSolving();
-    bool isSolving() const { return a_solveJob != nullptr; }
-    /// Waits for it, \a ms at most; whether it ended.
+    bool isSolving() const { return a_solveJob != nullptr || a_solveWhenPrepared; }
+    /// Waits for it, a solve waiting for the mesh included, \a ms at most;
+    /// whether it ended.
     bool waitForSolved(int ms = 600000);
     /// Why there is no capacitance: what the extraction refused, or what
     /// stood in the way of starting it. Empty when there is one.
@@ -335,6 +340,9 @@ private:
     QString a_solveProblem;
     double a_solvedLength = 0;
     QTimer* a_prepareSoon = nullptr;
+    /// A Solve asked for while the shapes and the mesh were being made: it
+    /// starts when they are.
+    bool a_solveWhenPrepared = false;
     bool a_showProcessed = true;
     bool a_showMesh = false;
 

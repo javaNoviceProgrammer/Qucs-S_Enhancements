@@ -120,6 +120,8 @@ struct Extraction {
     /// The metal each net is on, for its surface resistance: its
     /// conductivity (S/m) and thickness (m), or zero where it said none.
     QList<double> sigma, thickness;
+    /// Its rms roughness, m, for the loss it adds (roughnessFactor()).
+    QList<double> roughness;
     /*!
      * The line's own values per metre, of its middle cross-section as if
      * the line ran on for ever: each cell there a strip, tiled along by
@@ -142,12 +144,34 @@ struct Extraction {
         double reach = 0;             ///< m: how far either way its copies were summed
         QList<QList<double>> maxwell, maxwell0, dielectricLoss;   ///< F/m, as the matrices above
         QList<double> crowding;       ///< 1/m: a net's R per metre is its surface resistance times this
+        /*!
+         * R by Wheeler's incremental-inductance rule, R = (Rs/mu0) dL/dn:
+         * what each net's metal - [k] - and the ground add to the
+         * resistance matrix per metre per ohm of their surface resistance,
+         * dL/dn/mu0 with every face of that conductor receding into it.
+         * L is of the cross-section's own rectangles, the metal's thickness
+         * and walls in them, by a 2D solve in vacuum over the ground - L
+         * is the vacuum's whatever the dielectrics. The crowding above is a
+         * zero-thickness sheet's, whose edges make R grow without end as
+         * the mesh is refined (the phase B check's F4: +10.5 % from 5 µm
+         * cells to 2.5); this does not. Empty where the line's metal has no
+         * thickness or there is no ground, and the crowding is then all
+         * there is, said.
+         */
+        QList<QList<QList<double>>> wheeler;   ///< [k][i][j], 1/m
+        QList<QList<double>> wheelerGround;    ///< [i][j], 1/m
+        QList<double> dcResistance;            ///< Ohm/m, each net's at direct current
         QString said;                 ///< what was done, in words
     };
     PerMetre perMetre;
     /// Whether there is a ground plane under the stack, so that a lone
     /// conductor has something to be a line against.
     bool grounded = false;
+    /// The ground's own kind ("perfect", "impedance", "metal", "open")
+    /// and, for its loss, its surface impedance (Ohm a square) or its
+    /// metal's conductivity (S/m).
+    QString groundKind;
+    double groundValue = 0;
     QStringList problems;
     QStringList lines;                ///< what it did, for the panel
     bool ok() const { return problems.isEmpty() && !c.isEmpty(); }
@@ -180,9 +204,12 @@ struct LineParameters {
     // none was asked for (the quasi-static values above stand alone).
     double frequency = 0;   ///< Hz
     double r = 0;           ///< Ohm/m, from the surface impedance
+    double rGround = 0;     ///< Ohm/m of it the ground's (Wheeler's rule only)
+    double rDc = 0;         ///< Ohm/m at direct current (Wheeler's rule only)
     double g = 0;           ///< S/m, from the dielectrics' loss tangents
     double skinDepth = 0;   ///< m, in the metal at that frequency
-    double surfaceResistance = 0;   ///< Ohm a square
+    double surfaceResistance = 0;   ///< Ohm a square, the roughness's factor in it
+    double roughnessFactor = 1;     ///< what the metal's roughness multiplies it by
     std::complex<double> zc;        ///< sqrt((R + jwL)/(G + jwC)), Ohm
     std::complex<double> gamma;     ///< sqrt((R + jwL)(G + jwC)), 1/m
     double alphaDb = 0;     ///< dB/m
@@ -212,6 +239,33 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
  * treated - as perfect.
  */
 std::complex<double> surfaceImpedance(double sigma, double t, double frequency);
+
+/*!
+ * The resistance matrix per metre of \a extraction's line at \a frequency
+ * by Wheeler's rule (Extraction::PerMetre::wheeler): each metal's surface
+ * resistance - a slab's, Re surfaceImpedance() - times its factor, and the
+ * ground's times its own, a net's own resistance no less than at direct
+ * current, where the current runs through the whole metal and not along
+ * its faces. \a ground, given, is the ground's part alone. Empty where the
+ * factors were not taken.
+ */
+QList<QList<double>> resistancePerMetre(const Extraction& extraction, double frequency,
+                                        QList<QList<double>>* ground = nullptr);
+
+/*!
+ * What a metal's surface roughness \a rms (m) multiplies its surface
+ * resistance by at \a frequency, for a metal of conductivity \a sigma:
+ * Hammerstad and Bekkadal's 1 + (2/pi) atan(1.4 (rms/delta)^2), delta the
+ * skin depth - nothing added while the roughness is small beside the skin
+ * depth, and at most twice the loss once it is large, the current then
+ * following the surface up and down. 1 where there is no roughness.
+ */
+double roughnessFactor(double rms, double sigma, double frequency);
+
+/// The surface resistance of the ground of \a extraction at \a frequency,
+/// Ohm a square: nothing for a perfect plane, the given one for a surface
+/// impedance, a metal's 1/(sigma delta) for a metal plane.
+double groundSurfaceResistance(const Extraction& extraction, double frequency);
 
 /// The potential at \a point of a rectangle \a rect carrying unit total
 /// charge spread evenly over it, times 4 pi eps, with the charge \a z out

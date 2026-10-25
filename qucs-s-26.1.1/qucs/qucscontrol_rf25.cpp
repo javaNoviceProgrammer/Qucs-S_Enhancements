@@ -159,9 +159,12 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
             if (lp.frequency > 0) {
                 line.insert(QStringLiteral("frequency"), lp.frequency);
                 line.insert(QStringLiteral("R"), lp.r);
+                if (lp.rDc > 0) line.insert(QStringLiteral("R_dc"), lp.rDc);
+                if (!e->perMetre.wheeler.isEmpty()) line.insert(QStringLiteral("R_ground"), lp.rGround);
                 line.insert(QStringLiteral("G"), lp.g);
                 line.insert(QStringLiteral("skin_depth"), lp.skinDepth);
                 line.insert(QStringLiteral("surface_resistance"), lp.surfaceResistance);
+                if (lp.roughnessFactor > 1) line.insert(QStringLiteral("roughness_factor"), lp.roughnessFactor);
                 line.insert(QStringLiteral("Zc"), lp.zc.real());
                 line.insert(QStringLiteral("Zc_im"), lp.zc.imag());
                 line.insert(QStringLiteral("alpha"), lp.alphaDb);
