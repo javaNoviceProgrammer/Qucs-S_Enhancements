@@ -49,8 +49,24 @@ struct MeshSettings {
     double maximum = 0;       ///< the largest cell, m (0: the wavelength alone decides)
     bool edges = true;        ///< smaller cells where the current crowds
     int skin = 0;             ///< layers through the skin depth (0: a surface impedance)
+    /// At least this many cells across each conductor's narrowest part (0:
+    /// none - the wavelength and the largest cell alone). The charge
+    /// crowds at a conductor's edges, so the accuracy of its capacitance
+    /// is in how finely its width is cut, not its length: a cell set by
+    /// the wavelength alone was wider than a strip (the phase B check of
+    /// 24 October: three cells for 1000 by 100 µm, Z0 12 % out).
+    int cellsAcross = 10;
+    /// How many times longer than they are wide a straight strip's cells
+    /// may be along it: its charge hardly changes along a line, so the
+    /// unknowns are better spent across it.
+    double stretch = 4;
 };
 MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>& parameters, QStringList* problems);
+
+/// How many cells the charge solve of a static extraction will set up a
+/// dense matrix of: 8000 is half a gigabyte a matrix and some thirty
+/// seconds a solve on a desktop of 2026.
+constexpr int kMostCharges = 8000;
 
 /// What a mesh would cost a solver to hold.
 struct MeshCost {
@@ -86,6 +102,14 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
 /// What a mesh of that many unknowns would cost, and whether this build
 /// will hold it (a dense matrix of complex doubles, both triangles).
 MeshCost costOf(int unknowns);
+
+/// What the charge solve of \a cells cells costs, said: one unknown a
+/// cell, a dense real matrix of them, and whether it is more than this
+/// build solves (kMostCharges). The mesh has two counts - its cells, the
+/// charge solve's, and the edges between them, a full-wave solve's - and
+/// they were said side by side with the second's matrix (the phase B
+/// check of 24 October).
+QString chargeCostOf(int cells);
 
 /// The highest frequency of the model's study, Hz; 0 when it says none.
 double topFrequency(const Model& model);

@@ -141,7 +141,8 @@ struct QuasiStaticLimit {
  * the line's first half-wave resonance beside it; zero where they are not
  * known.
  */
-QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double micrometre = 1e-6, double velocity = 0, double length = 0);
+QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double micrometre = 1e-6, double velocity = 0, double length = 0,
+                                  int conductors = 1);
 
 } // namespace qucs_s::rf25
 

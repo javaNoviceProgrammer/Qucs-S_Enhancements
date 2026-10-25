@@ -345,7 +345,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     out.nodes = int(nodeOf.size());
     if (out.branches + out.nodes > kMostRuns) {
         out.problems << tr("%1 runs of current over %2 cells is more than this build will set up a dense matrix for "
-                           "(%3 in all). Mesh the layout more coarsely.")
+                           "(%3 in all). Mesh the layout more coarsely: fewer cells across a conductor (the Mesh "
+                           "node's, ten by default), or a larger largest cell.")
                             .arg(out.branches).arg(out.nodes).arg(kMostRuns);
         return out;
     }
@@ -579,8 +580,7 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     }
     const Eigen::VectorXd answer = lu.solve(rhs);
 
-    // The energy the current carries is the inductance, and the loss it
-    // makes on the way is the resistance at direct current.
+    // The energy the current carries is the inductance.
     double energy = 0, loss = 0;
     out.current.clear();
     for (int i = 0; i < nb; ++i) {
@@ -593,9 +593,58 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         return out;
     }
     out.l = energy;        // (one amp, so the energy is the inductance)
+
+    // At direct current the resistance divides the current, not the
+    // inductance: the network's nodal solve, G u = s with G = A R^-1 A',
+    // and the current R^-1 A' u. Its loss is the resistance at direct
+    // current and its energy the inductance there. (The least-energy
+    // current's loss, given as that until the phase B check of 24
+    // October, counted its crowding as resistance: 29 % high on a bar ten
+    // cells across.) Where a run says no resistance there is no such
+    // current, and the least-energy one's loss is all there is.
+    bool resistive = nb > 0;
+    for (const Filament& f : std::as_const(out.runs))
+        if (!(f.resistance() > 0)) resistive = false;
+    out.lDc = energy;
     out.rDc = loss;
+    if (resistive) {
+        const int m = nn - 1;
+        const auto at = [drop](int node) { return node < drop ? node : node - 1; };
+        Eigen::MatrixXd g = Eigen::MatrixXd::Zero(m, m);
+        for (int b = 0; b < nb; ++b) {
+            const double y = 1.0 / out.runs.at(b).resistance();
+            const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
+            if (a != drop) g(at(a), at(a)) += y;
+            if (c != drop) g(at(c), at(c)) += y;
+            if (a != drop && c != drop) {
+                g(at(a), at(c)) -= y;
+                g(at(c), at(a)) -= y;
+            }
+        }
+        Eigen::VectorXd s = Eigen::VectorXd::Zero(m);
+        s(at(in)) = 1.0;
+        const Eigen::LDLT<Eigen::MatrixXd> ldlt(g);
+        const Eigen::VectorXd u = ldlt.solve(s);
+        if (ldlt.info() == Eigen::Success && u.allFinite()) {
+            QList<double> dc;
+            for (int b = 0; b < nb; ++b) {
+                const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
+                const double ua = a == drop ? 0.0 : u(at(a)), uc = c == drop ? 0.0 : u(at(c));
+                dc << (ua - uc) / out.runs.at(b).resistance();
+            }
+            double dcLoss = 0, dcEnergy = 0;
+            for (int i = 0; i < nb; ++i) {
+                dcLoss += out.runs.at(i).resistance() * dc.at(i) * dc.at(i);
+                for (int j = 0; j < nb; ++j) dcEnergy += lp.at(i).at(j) * dc.at(i) * dc.at(j);
+            }
+            if (dcLoss > 0 && dcEnergy > 0) {
+                out.rDc = dcLoss;
+                out.lDc = dcEnergy;
+            }
+        }
+    }
     out.frequency = frequency;
-    if (frequency > 0 && loss > 0) out.q = 2 * M_PI * frequency * energy / loss;
+    if (frequency > 0 && out.rDc > 0) out.q = 2 * M_PI * frequency * energy / out.rDc;
 
     double longest = 0;
     for (const Filament& f : std::as_const(out.runs)) longest = std::max(longest, f.length());
@@ -606,8 +655,10 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                      .arg(mesh.cells.at(source).centre.y(), 0, 'g', 4)
                      .arg(mesh.cells.at(sink).centre.x(), 0, 'g', 4)
                      .arg(mesh.cells.at(sink).centre.y(), 0, 'g', 4);
-    out.lines << tr("The loop is %1 nH and %2 Ohm at direct current.").arg(out.l * 1e9, 0, 'g', 4).arg(out.rDc, 0, 'g', 4);
-    if (out.q > 0) out.lines << tr("Q is %1 at %2 GHz, taking the current as the one at direct current.")
+    out.lines << tr("The loop is %1 nH where its inductance outweighs its resistance, %2 nH and %3 Ohm at direct "
+                    "current.")
+                     .arg(out.l * 1e9, 0, 'g', 4).arg(out.lDc * 1e9, 0, 'g', 4).arg(out.rDc, 0, 'g', 4);
+    if (out.q > 0) out.lines << tr("Q is %1 at %2 GHz, of that inductance over the resistance at direct current.")
                                     .arg(out.q, 0, 'g', 3).arg(frequency / 1e9, 0, 'g', 3);
     return out;
 }

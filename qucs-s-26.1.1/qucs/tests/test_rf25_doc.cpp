@@ -118,9 +118,18 @@ class TestRf25Doc : public QObject
     /// A model with a stack of its own in the workspace: a substrate, an
     /// oxide and two metals with a via, a port on M1, and the layer map
     /// sending 31/0 to M1.
+    /// The mesh node \a n sized by its largest cell alone, \a largest, and
+    /// not by ten cells across the heater's narrow trace, which is
+    /// thousands of cells - a solve of minutes under the sanitizers.
+    static void coarsely(rf::Node& n, const char* largest)
+    {
+        n.props.insert(QStringLiteral("maximum"), QLatin1String(largest));
+        n.props.insert(QStringLiteral("cells_across"), 0);
+    }
     QString written(const QString& name)
     {
         rf::Model m = rf::Model::blank();
+        m.mesh().props.insert(QStringLiteral("cells_across"), 0);
         rf::Node ild2 = m.make(QStringLiteral("rf_dielectric"));
         if (m.add(QStringLiteral("stack"), ild2) == nullptr) return {};
         rf::Node metal2 = m.make(QStringLiteral("rf_metal"));
@@ -319,8 +328,11 @@ private slots:
         QVERIFY(snap != nullptr);
         snap->setChecked(true);
         QTRY_VERIFY(panel()->editorFor(QStringLiteral("grid")) != nullptr);
-        // The ground's surface impedance likewise: its kind alone.
-        const QString ground = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_ground"));
+        // The ground's surface impedance likewise: its kind alone. (The
+        // starter's own ground: a new model has one.)
+        QString ground;
+        for (const rf::Node& c : doc->model().stackNode().children)
+            if (c.type == QLatin1String("rf_ground")) ground = c.tag;
         QVERIFY(!ground.isEmpty());
         panel()->selectNode(ground);
         QVERIFY(panel()->editorFor(QStringLiteral("impedance")) == nullptr);
@@ -351,7 +363,13 @@ private slots:
         // up, so the ground is first and the cover last. (This held the
         // ground after the layers, the order the phase A check of 24
         // October found the Ground's help and the Stack's at odds over.)
-        const QString ground = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_ground"));
+        // A new model has its ground already, and a second is refused.
+        const QString ground = doc->model().stackNode().children.front().tag;
+        QCOMPARE(doc->model().find(ground)->type, QStringLiteral("rf_ground"));
+        {
+            misc::ErrorCapture quiet;
+            QVERIFY(panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_ground")).isEmpty());
+        }
         const QString cover = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_cover"));
         const QString last = panel()->addNode(QStringLiteral("stack"), QStringLiteral("rf_metal"));
         QStringList order;
@@ -382,7 +400,7 @@ private slots:
         for (int i = 0; i < steps; ++i) doc->undo();
         QStringList back;
         for (const rf::Node& c : doc->model().stackNode().children) back << c.tag;
-        QCOMPARE(back, QStringList({QStringLiteral("sub1"), QStringLiteral("d1"), QStringLiteral("m1")}));
+        QCOMPARE(back, QStringList({QStringLiteral("gnd1"), QStringLiteral("sub1"), QStringLiteral("d1"), QStringLiteral("m1")}));
         QVERIFY(!doc->getDocChanged());   // (back where it was saved: clean)
     }
 
@@ -683,7 +701,12 @@ private slots:
         const QString notes = doc->problemsText()->toPlainText();
         QVERIFY2(notes.contains(QStringLiteral("What the layout gives the solver")), qPrintable(notes));
         for (const QString& line : doc->preparedLines()) QVERIFY2(notes.contains(line), qPrintable(line));
-        QVERIFY2(doc->statusLabel()->text().contains(mesh->cost.said), qPrintable(doc->statusLabel()->text()));
+        // (The charge's count and cost, which is what a solve is of: the
+        // full-wave edges' count is the mesh line's, said as such, not a
+        // second number beside the first - the phase B check's N2.)
+        QVERIFY2(doc->statusLabel()->text().contains(rf::chargeCostOf(int(mesh->cells.size()))),
+                 qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(!doc->statusLabel()->text().contains(mesh->cost.said), qPrintable(doc->statusLabel()->text()));
         QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("%1 cell(s)").arg(mesh->cells.size())),
                  qPrintable(doc->statusLabel()->text()));
 
@@ -755,7 +778,7 @@ private slots:
         // smaller cells, more of them, more unknowns - and the same layout,
         // not read again.
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("largest cell")));
         QVERIFY(doc->waitForPrepared(60000));
         QCOMPARE(doc->layout(), read);
@@ -788,7 +811,7 @@ private slots:
         QVERIFY(doc->editNode(doc->model().mesh().tag,
                               [](rf::Node& n) {
                                   n.props.insert(QStringLiteral("per_wavelength"), 20);
-                                  n.props.insert(QStringLiteral("maximum"), QStringLiteral("8[um]"));
+                                  coarsely(n, "8[um]");
                               },
                               QStringLiteral("finer")));
         QVERIFY(doc->waitForPrepared(60000));
@@ -825,7 +848,7 @@ private slots:
         mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")},
                     {QStringLiteral("11"), QStringLiteral("0"), QStringLiteral("M2")}});
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("largest cell")));
         QVERIFY(doc->waitForPrepared(60000));
 
@@ -932,7 +955,7 @@ private slots:
         QVERIFY(doc->waitForLayout(60000));
         mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("largest cell")));
         // A metal that conducts and a substrate that loses, so that the
         // solve has R and G to report beside C at the study's frequency.
@@ -999,12 +1022,57 @@ private slots:
         // An edit throws it away: a capacitance of shapes that are no
         // longer there is worse than none at all.
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("30[um]")); },
+                              [](rf::Node& n) { coarsely(n, "30[um]"); },
                               QStringLiteral("coarser")));
         QVERIFY(doc->waitForPrepared(60000));
         QVERIFY2(doc->extraction() == nullptr, "the capacitance of the mesh before was kept");
         QVERIFY(doc->lineSummary().isEmpty());
         QVERIFY(!doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")));
+    }
+
+    // Two conductors are coupled lines, and the tab says so: their modes
+    // and the 4-port, not each net as a line of its own - its own row, its
+    // charge with both at a volt, is neither mode (the phase B check's
+    // N4). And the starter's ground under them, so that they are lines.
+    void aPairIsShownByItsModes()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("pair.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        // M1 and M2 with nothing joining them: the via out.
+        QString via;
+        for (const rf::Node& child : doc->model().stackNode().children)
+            if (child.type == QLatin1String("rf_via")) via = child.tag;
+        QVERIFY(!via.isEmpty());
+        QVERIFY(panel()->removeNode(via));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")},
+                    {QStringLiteral("11"), QStringLiteral("0"), QStringLiteral("M2")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "30[um]"); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+        QCOMPARE(e->names.size(), 2);
+        QVERIFY(e->grounded);
+        const QStringList said = doc->lineSummary();
+        QVERIFY2(!said.isEmpty() && said.first().contains(QStringLiteral("as coupled lines")), qPrintable(said.join(" | ")));
+        QVERIFY2(said.first().contains(QStringLiteral(" Z ")) && said.first().contains(QStringLiteral("eps_eff")),
+                 qPrintable(said.first()));
+        for (const QString& line : said)
+            QVERIFY2(!line.contains(QStringLiteral("Ohm over")), qPrintable(line));
+        const QStringList sp = doc->sParameterSummary();
+        QVERIFY2(!sp.isEmpty() && sp.first().contains(QStringLiteral("4-port into 50 Ohm"))
+                     && sp.first().contains(QStringLiteral("near end")) && sp.first().contains(QStringLiteral("far")),
+                 qPrintable(sp.join(" | ")));
+        QVERIFY2(sp.join(QStringLiteral(" | ")).contains(QStringLiteral("conductors span"))
+                     || sp.join(QStringLiteral(" | ")).contains(QStringLiteral("deep")),
+                 qPrintable(sp.join(" | ")));
+        // In the Results node's report, as the tab shows it.
+        panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QVERIFY2(reportSays(QStringLiteral("as coupled lines")), qPrintable(reportText()));
     }
 
     // What the solve says of the model as a circuit: the S parameters of
@@ -1018,7 +1086,7 @@ private slots:
         QVERIFY(doc->waitForLayout(60000));
         mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("largest cell")));
         QVERIFY(doc->editNode(QStringLiteral("m1"),
                               [](rf::Node& n) {
@@ -1069,6 +1137,13 @@ private slots:
         QVERIFY2(written.contains(QStringLiteral("# Hz S RI R 50")), qPrintable(written.left(600)));
         QVERIFY2(written.contains(QStringLiteral("written.qrf25")), "the file does not say what made it");
         QVERIFY2(written.contains(QStringLiteral("Quasi-static")), "the file does not say what the solve was");
+        // Its comment's S parameters are into the data's own 50 Ohm, said,
+        // with the line's own impedance beside it - not into the line's
+        // own, as the tab's are, beside data that are not (the phase B
+        // check's N1).
+        QVERIFY2(written.contains(QStringLiteral("into 50 Ohm")) && written.contains(QStringLiteral("its own Zc is")),
+                 qPrintable(written.left(900)));
+        QVERIFY2(sp.first().contains(QStringLiteral("into its own")), qPrintable(sp.first()));
         QStringList rows;
         for (const QString& row : written.split(QLatin1Char('\n')))
             if (!row.trimmed().isEmpty() && !row.startsWith(QLatin1Char('!')) && !row.startsWith(QLatin1Char('#'))) rows << row;
@@ -1120,7 +1195,7 @@ private slots:
         QVERIFY(doc->waitForLayout(60000));
         mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("largest cell")));
         QVERIFY(doc->editNode(QStringLiteral("m1"),
                               [](rf::Node& n) {
@@ -1193,7 +1268,7 @@ private slots:
         // An edit throws it away with the capacitance, for the same
         // reason: a loop of shapes that have gone is worse than none.
         QVERIFY(doc->editNode(doc->model().mesh().tag,
-                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("30[um]")); },
+                              [](rf::Node& n) { coarsely(n, "30[um]"); },
                               QStringLiteral("coarser")));
         QVERIFY(doc->waitForPrepared(60000));
         QVERIFY2(doc->inductance() == nullptr, "the loop of the mesh before was kept");

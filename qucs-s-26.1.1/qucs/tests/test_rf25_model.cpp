@@ -114,7 +114,13 @@ private slots:
             QVERIFY2(blank.root.child(QLatin1String(type)) != nullptr, type);
         QVERIFY(blank.layout().child(QStringLiteral("rf_layer_map")) != nullptr);
         QVERIFY(blank.layout().child(QStringLiteral("rf_processing")) != nullptr);
-        QCOMPARE(blank.stackNode().children.size(), std::size_t(3));
+        // A ground, a substrate, an oxide and a metal: solved, a line with
+        // something to return through (the phase B check of 24 October
+        // found the starter's first solve a strip with no ground).
+        QCOMPARE(blank.stackNode().children.size(), std::size_t(4));
+        QCOMPARE(blank.stackNode().children.front().type, QStringLiteral("rf_ground"));
+        QVERIFY2(blank.stack().ok(), qPrintable(blank.stack().problems.join(" | ")));
+        QCOMPARE(blank.stack().layers.first().kind, rf::Layer::Ground);
 
         const QByteArray json = blank.toJson();
         QVERIFY2(json.contains("\"qucs-s rf 2.5d 1\""), json.left(120).constData());
@@ -355,6 +361,8 @@ private slots:
     {
         rf::Model m = rf::Model::blank();
         const QString stack = m.stackNode().tag;
+        // (The starter's ground out first, to add one after the cover.)
+        QVERIFY(m.remove(m.stackNode().children.front().tag));
         QVERIFY(m.add(stack, m.make(QStringLiteral("rf_cover"))) != nullptr);
         QCOMPARE(m.stackNode().children.back().type, QStringLiteral("rf_cover"));
         QVERIFY(m.add(stack, m.make(QStringLiteral("rf_ground"))) != nullptr);

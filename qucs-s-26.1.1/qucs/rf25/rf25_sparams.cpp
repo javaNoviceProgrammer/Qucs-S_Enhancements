@@ -119,9 +119,24 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
         }
         return r;
     };
-    out.C = perMetre(extraction.maxwell, 1);
-    out.C0 = perMetre(extraction.maxwell0, 1);
-    out.G = out.rlgc ? perMetre(extraction.dielectricLoss, omega) : fem::CoupledLines::Matrix(N, std::vector<double>(N, 0));
+    // From the line's middle where that was taken - the ends' fringing
+    // left out, and per metre already - else the whole over the length.
+    const Extraction::PerMetre& pm = extraction.perMetre;
+    const bool middle = pm.fromMiddle && int(pm.maxwell.size()) == n && int(pm.maxwell0.size()) == n;
+    const auto symmetric = [n, N](const QList<QList<double>>& m, double scale) {
+        fem::CoupledLines::Matrix r(N, std::vector<double>(N, 0));
+        if (int(m.size()) != n) return r;
+        for (int i = 0; i < n; ++i) {
+            if (int(m.at(i).size()) != n) return fem::CoupledLines::Matrix(N, std::vector<double>(N, 0));
+            for (int j = 0; j < n; ++j) r[std::size_t(i)][std::size_t(j)] = scale * 0.5 * (m.at(i).at(j) + m.at(j).at(i));
+        }
+        return r;
+    };
+    out.C = middle ? symmetric(pm.maxwell, 1) : perMetre(extraction.maxwell, 1);
+    out.C0 = middle ? symmetric(pm.maxwell0, 1) : perMetre(extraction.maxwell0, 1);
+    out.G = !out.rlgc ? fem::CoupledLines::Matrix(N, std::vector<double>(N, 0))
+            : middle && int(pm.dielectricLoss.size()) == n ? symmetric(pm.dielectricLoss, omega)
+                                                          : perMetre(extraction.dielectricLoss, omega);
 
     // L = C0^-1/c^2, the quasi-TEM relation, as the engine's own coupled
     // lines take it for a lossless line of any number of conductors.
@@ -146,7 +161,9 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
         for (int i = 0; i < n; ++i) {
             const std::complex<double> zs =
                 surfaceImpedance(extraction.sigma.value(i), extraction.thickness.value(i), frequency);
-            out.R[std::size_t(i)][std::size_t(i)] = zs.real() * length * extraction.crowding.value(i);
+            out.R[std::size_t(i)][std::size_t(i)] = middle && i < pm.crowding.size()
+                                                        ? zs.real() * pm.crowding.at(i)
+                                                        : zs.real() * length * extraction.crowding.value(i);
         }
     // The modes, by the engine's own solver: a lossless line's at 1 GHz,
     // as its quasi-TEM lines are taken.
@@ -262,7 +279,8 @@ fem::CoupledSweep coupledSweep(const Extraction& extraction, double length, cons
     return out;
 }
 
-QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double micrometre, double velocity, double length)
+QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double micrometre, double velocity, double length,
+                                  int conductors)
 {
     QuasiStaticLimit out;
     // The slowest dielectric the field crosses.
@@ -283,7 +301,10 @@ QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double m
     }
     if (wide > deep) {
         out.transverse = wide;
-        out.what = tr("the widest conductor is %1 µm across").arg(wide * 1e6, 0, 'g', 4);
+        // (Of several, what they span together: two 100 µm strips 50 µm
+        // apart are 250 µm, which is not the width of either.)
+        out.what = conductors > 1 ? tr("the conductors span %1 µm across").arg(wide * 1e6, 0, 'g', 4)
+                                  : tr("the conductor is %1 µm across").arg(wide * 1e6, 0, 'g', 4);
     } else {
         out.transverse = deep;
         out.what = tr("the dielectrics are %1 µm deep").arg(deep * 1e6, 0, 'g', 4);

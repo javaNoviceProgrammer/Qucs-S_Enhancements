@@ -44,20 +44,24 @@
  *
  *    with A the node-branch incidence and s the injection. That is a
  *    saddle-point system in I and the node potentials, and its answer is
- *    the direct-current distribution - the current crowding to the short
- *    way round, which is the whole reason to solve rather than to guess.
- *  - Then L = I^T Lp I / I_total^2, and the same current gives the loop's
- *    resistance at direct current, I^T R I / I_total^2, which is a
- *    different quantity from a line's R per metre and worth having beside
- *    it.
+ *    where a current goes once its inductance outweighs its resistance -
+ *    crowding to the short way round, which is the whole reason to solve
+ *    rather than to guess. Then L = I^T Lp I / I_total^2.
+ *  - At direct current it is the resistance that divides the current
+ *    instead: minimise I^T R I subject to the same, which is the
+ *    network's own nodal solve. Its loss is the loop's resistance at
+ *    direct current - a different quantity from a line's R per metre -
+ *    and its energy the inductance at direct current, beside the other.
+ *    (The least-energy current's own loss was given as the resistance at
+ *    direct current until the phase B check of 24 October: on a bar ten
+ *    cells across it was 29 % high, the crowding counted as resistance.)
  *
- * What it does not do: the current is the one at direct current, since
- * the energy minimised is magnetic alone. At a frequency the current
- * leaves the inside of the metal and the loop's L falls a little towards
- * its high-frequency value; that wants (R + jwL) i = v solved at each
- * frequency, which is the next thing. The thin-metal approximation of the
- * rest of the solver is kept: the cross-section's thickness enters the
- * resistance but not the geometric mean distance.
+ * What it does not do: between the two, where R and wL are alike, the
+ * current is neither; that wants (R + jwL) i = v solved at each
+ * frequency, which is the next thing, and so does the current leaving
+ * the inside of the metal. The thin-metal approximation of the rest of
+ * the solver is kept: the cross-section's thickness enters the resistance
+ * but not the geometric mean distance.
  */
 #ifndef QUCS_RF25_INDUCTANCE_H
 #define QUCS_RF25_INDUCTANCE_H
@@ -140,7 +144,8 @@ double loopInductance(const QList<Filament>& loop);
 
 /// What an inductance extraction found.
 struct Inductance {
-    double l = 0;             ///< H: the loop's inductance
+    double l = 0;             ///< H: the loop's inductance, of the least-energy current
+    double lDc = 0;           ///< H: the same of the current at direct current
     double rDc = 0;           ///< Ohm: its resistance at direct current
     double q = 0;             ///< wL/R at the frequency asked for; 0 at none
     double frequency = 0;     ///< Hz, for q

@@ -642,7 +642,7 @@ void RF25Doc::showProblems()
     // panel to show before a solve is ever started.
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
-        tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(a_mesh->cost.said);
+        tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(chargeCostOf(int(a_mesh->cells.size())));
     if (a_solveJob) tail += tr("; solving");
     else if (a_inductance && a_inductance->ok()) tail += tr("; the loop is %1 nH").arg(a_inductance->l * 1e9, 0, 'g', 4);
     else if (a_extraction && a_extraction->ok() && !a_extraction->names.isEmpty())
@@ -1100,6 +1100,30 @@ QStringList RF25Doc::lineSummary() const
     // At the top of the study's own sweep, which is where a line is
     // worst: the quasi-static values alone where it names none.
     const double f = topFrequency(a_model);
+    // Several conductors are coupled lines, whose modes are what there is:
+    // one net's own row - its charge with every conductor at a volt - is
+    // neither mode, and was given as if it were a line of its own (the
+    // phase B check of 24 October).
+    if (a_extraction->names.size() > 1) {
+        const fem::CoupledLines cl = asCoupledLines(*a_extraction, a_solvedLength, f);
+        if (!cl.error.isEmpty()) {
+            out << tr("As coupled lines: %1.").arg(cl.error);
+            return out;
+        }
+        QStringList modes;
+        for (const fem::LineMode& m : cl.modes)
+            modes << tr("%1 Z %2 Ohm, eps_eff %3").arg(m.name).arg(m.Z.real(), 0, 'g', 4).arg(m.nEff * m.nEff, 0, 'g', 4);
+        out << tr("%1 as coupled lines over %2 µm: %3")
+                   .arg(a_extraction->names.join(QStringLiteral(", ")))
+                   .arg(a_solvedLength * 1e6, 0, 'g', 4)
+                   .arg(modes.join(QStringLiteral("; ")));
+        if (cl.rlgc) {
+            QStringList losses;
+            for (const fem::LineMode& m : cl.modes) losses << tr("%1 %2 dB/m").arg(m.name).arg(m.alphaDb, 0, 'g', 3);
+            out << tr("At %1 GHz: %2").arg(cl.frequency / 1e9, 0, 'g', 3).arg(losses.join(QStringLiteral(", ")));
+        }
+        return out;
+    }
     for (int i = 0; i < a_extraction->names.size(); ++i) {
         const LineParameters lp = lineParameters(*a_extraction, i, a_solvedLength, f);
         if (!lp.ok()) continue;
@@ -1122,7 +1146,7 @@ QStringList RF25Doc::lineSummary() const
     return out;
 }
 
-QStringList RF25Doc::sParameterSummary() const
+QStringList RF25Doc::sParameterSummary(double reference) const
 {
     QStringList out;
     if (!a_extraction || !a_extraction->ok() || !(a_solvedLength > 0)) return out;
@@ -1133,29 +1157,67 @@ QStringList RF25Doc::sParameterSummary() const
         return out;
     }
     const double f = sweep.last();
-    for (int i = 0; i < a_extraction->names.size(); ++i) {
-        const fem::LineRLGC line = asLine(*a_extraction, i, a_solvedLength, f);
-        if (!line.error.isEmpty()) continue;
-        // Into ports of its own impedance, which is the match a user is
-        // looking for; 50 Ohm is in the export's own property.
-        const double z = line.Zc.real();
-        if (!(z > 0)) continue;
-        const std::array<std::complex<double>, 4> sp = fem::lineSParameters(line, a_solvedLength, z);
-        const double through = 20 * std::log10(std::max(1e-300, std::abs(sp[1])));
-        out << tr("%1 as a two-port into %2 Ohm at %3 GHz: S11 %4 dB, S21 %5 dB at %6°.")
-                   .arg(a_extraction->names.at(i))
+    const auto dB = [](std::complex<double> s) { return 20 * std::log10(std::max(1e-300, std::abs(s))); };
+    double slowest = 0;   // m/s: the slowest mode's, for where the S parameters first turn over
+    const int nets = int(a_extraction->names.size());
+    if (nets > 1) {
+        // A coupled set as its 2N-port: the near ends first, then the far
+        // ends, so that net 1's through is S(N+1, 1) and what it puts on
+        // net 2 is S(2, 1) at the near end and S(N+2, 1) at the far.
+        const fem::CoupledLines cl = asCoupledLines(*a_extraction, a_solvedLength, f);
+        if (!cl.error.isEmpty()) return out;
+        const double z = reference > 0 ? reference : 50.0;
+        const std::vector<std::vector<std::complex<double>>> sm = fem::coupledSParameters(cl, a_solvedLength, z);
+        const std::size_t n = std::size_t(nets);
+        if (sm.size() != 2 * n) return out;
+        out << tr("%1 as a %2-port into %3 Ohm at %4 GHz: %5 through S%6,1 %7 dB; onto %8 S2,1 %9 dB at the near end, "
+                  "S%10,1 %11 dB at the far.")
+                   .arg(a_extraction->names.join(QStringLiteral(", ")))
+                   .arg(2 * nets)
                    .arg(z, 0, 'g', 4)
                    .arg(f / 1e9, 0, 'g', 3)
-                   .arg(20 * std::log10(std::max(1e-300, std::abs(sp[0]))), 0, 'f', 1)
-                   .arg(through, 0, 'f', 2)
-                   .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1);
+                   .arg(a_extraction->names.at(0))
+                   .arg(nets + 1)
+                   .arg(dB(sm[n][0]), 0, 'f', 2)
+                   .arg(a_extraction->names.at(1))
+                   .arg(dB(sm[1][0]), 0, 'f', 1)
+                   .arg(nets + 2)
+                   .arg(dB(sm[n + 1][0]), 0, 'f', 1);
+        for (const fem::LineMode& m : cl.modes)
+            if (m.nEff > 0) slowest = slowest > 0 ? std::min(slowest, kLightSpeed / m.nEff) : kLightSpeed / m.nEff;
+    } else {
+        const fem::LineRLGC line = asLine(*a_extraction, 0, a_solvedLength, f);
+        if (!line.error.isEmpty()) return out;
+        // Into ports of its own impedance, which is the match a user is
+        // looking for - or into the reference asked for, said as such
+        // with its own impedance beside it.
+        const double own = line.Zc.real();
+        if (!(own > 0)) return out;
+        const double z = reference > 0 ? reference : own;
+        const std::array<std::complex<double>, 4> sp = fem::lineSParameters(line, a_solvedLength, z);
+        out << (reference > 0 ? tr("%1 as a two-port into %2 Ohm at %3 GHz: S11 %4 dB, S21 %5 dB at %6°; its own Zc is "
+                                   "%7 Ohm.")
+                                    .arg(a_extraction->names.at(0))
+                                    .arg(z, 0, 'g', 4)
+                                    .arg(f / 1e9, 0, 'g', 3)
+                                    .arg(dB(sp[0]), 0, 'f', 1)
+                                    .arg(dB(sp[1]), 0, 'f', 2)
+                                    .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1)
+                                    .arg(own, 0, 'g', 4)
+                              : tr("%1 as a two-port into its own %2 Ohm at %3 GHz: S11 %4 dB, S21 %5 dB at %6°.")
+                                    .arg(a_extraction->names.at(0))
+                                    .arg(z, 0, 'g', 4)
+                                    .arg(f / 1e9, 0, 'g', 3)
+                                    .arg(dB(sp[0]), 0, 'f', 1)
+                                    .arg(dB(sp[1]), 0, 'f', 2)
+                                    .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1));
+        slowest = lineParameters(*a_extraction, 0, a_solvedLength).velocity;
     }
     if (out.isEmpty()) return out;
     // And where the quasi-static answer stops being the whole story,
     // which is the one thing a caller must not have to guess at.
-    const LineParameters first = lineParameters(*a_extraction, 0, a_solvedLength);
     const QuasiStaticLimit limit =
-        quasiStaticLimit(a_model.stack(), a_mesh ? *a_mesh : Mesh(), 1e-6, first.velocity, a_solvedLength);
+        quasiStaticLimit(a_model.stack(), a_mesh ? *a_mesh : Mesh(), 1e-6, slowest, a_solvedLength, nets);
     if (limit.frequency > 0) {
         out << tr("Quasi-static to about %1 GHz (%2, eps_r %3): above that a mode other than quasi-TEM appears and "
                   "none of this is the whole story.")
@@ -1258,7 +1320,8 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
     comments << tr("%1, an RF 2.5D model of Qucs-S").arg(QFileInfo(a_DocName).fileName());
     comments << tr("Quasi-static: C and C0 from a charge solve, L from C0, R from the metal's surface impedance, G "
                    "from the dielectrics' loss");
-    for (const QString& line : sParameterSummary()) comments << line;
+    // (Into the export's own reference, which is what its data are of.)
+    for (const QString& line : sParameterSummary(what.impedance)) comments << line;
 
     if (what.coupled) {
         const fem::CoupledSweep cs = coupledSweep(*a_extraction, length, sweep);
@@ -1322,12 +1385,14 @@ QStringList RF25Doc::inductanceSummary() const
         return out;
     }
     if (!a_portsSaid.isEmpty()) out << a_portsSaid;
-    out << tr("The loop is %1 nH over %2 run(s) of current, and %3 Ohm at direct current.")
+    out << tr("The loop is %1 nH over %2 run(s) of current where its inductance outweighs its resistance; %3 nH "
+              "and %4 Ohm at direct current.")
                .arg(a_inductance->l * 1e9, 0, 'g', 4)
                .arg(a_inductance->branches)
+               .arg(a_inductance->lDc * 1e9, 0, 'g', 4)
                .arg(a_inductance->rDc, 0, 'g', 4);
     if (a_inductance->q > 0)
-        out << tr("Q is %1 at %2 GHz, taking the current as the one at direct current.")
+        out << tr("Q is %1 at %2 GHz, of that inductance over the resistance at direct current.")
                    .arg(a_inductance->q, 0, 'g', 3)
                    .arg(a_inductance->frequency / 1e9, 0, 'g', 3);
     return out;

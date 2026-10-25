@@ -85,12 +85,22 @@ of the same line and taking the difference, which cancels exactly what the two e
 | The images as a function of k | the series | the spectral recursion itself | < 1e-7 |
 | A rectangle's near term | closed form | a 400 × 400 midpoint sum | < 1e-5 off it, 2e-3 on it |
 | A plate over a ground plane | 2.17, 1.63, 1.33 × the parallel-plate value at a/h = 4, 8, 16 | the edge correction's own `~5 h/a` | the measured 4.7, 5.0, 5.3 |
-| Microstrip, W/h = 1, eps_r 9.8 | eps_eff 6.496, **Z0 50.07 Ohm** | Hammerstad and Jensen: 6.620, 49.21 | **1.9 %, 1.7 %** |
-| Microstrip, W/h = 3, eps_r 9.8 | eps_eff 7.248, **Z0 25.86 Ohm** | Hammerstad and Jensen: 7.368, 25.78 | **1.6 %, 0.3 %** |
+| Microstrip, W/h = 1, eps_r 9.8 | eps_eff 6.496, **Z0 50.07 Ohm** | ~~Hammerstad and Jensen: 6.620, 49.21~~ | ~~1.9 %, 1.7 %~~ |
+| Microstrip, W/h = 3, eps_r 9.8 | eps_eff 7.248, **Z0 25.86 Ohm** | ~~Hammerstad and Jensen: 7.368, 25.78~~ | ~~1.6 %, 0.3 %~~ |
 
 Both branches of the closed form, so that one number agreeing is not mistaken for a method that works.
-Hammerstad and Jensen is itself good to about a per cent, so the solver and the formula agree to within
-the formula's own error at W/h = 3 and to twice it at W/h = 1.
+~~Hammerstad and Jensen is itself good to about a per cent, so the solver and the formula agree to within
+the formula's own error at W/h = 3 and to twice it at W/h = 1.~~
+
+> **Corrected on 25 October** (the reviewer's phase B check of 24 October): the reference struck out
+> above is not Hammerstad and Jensen. It is Hammerstad's form of 1975, 0.7 % high in eps_eff at
+> W/h = 1, and the claim about its accuracy was wrong too: Hammerstad and Jensen (IEEE MTT-S 1980)
+> claim about 0.01 % for Z0 in air and 0.2 % for eps_eff, and the reviewer's own 2D finite-difference
+> solve agrees with them to 0.1 % and 0.2 %. Their values for these two lines are **eps_eff 6.579,
+> Z0 49.29 Ohm** (W/h = 1) and **7.355, 25.73 Ohm** (W/h = 3), so the solver's numbers above were
+> off by 1.3 % and 1.6 % in eps_eff - the ends' fringing and a mesh one cell wide, both since
+> mended. The test now holds three widths to the 1980 form, with the solver's own per-metre values:
+> see `2026-10-25-claude-rf25-phase-b-check.md`.
 
 ## Tested
 
@@ -214,4 +224,6 @@ distances no test reaches it, so it carries no break - a guard, not a behaviour.
   changes the Green's function; both are phase B's own remaining work.
 - **The two-length trick is the test's, not the solver's.** Getting a per-metre number from a layout means
   solving two lengths and differencing; `lineParameters()` takes a length and divides. A model that knows
-  it holds a uniform line could do the differencing itself, and should.
+  it holds a uniform line could do the differencing itself, and should. *(Done on 25 October, and not by
+  differencing: a uniform line's per-metre values are now of its middle cross-section as if it ran on for
+  ever - see `2026-10-25-claude-rf25-phase-b-check.md`.)*

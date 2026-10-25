@@ -2127,6 +2127,9 @@ private slots:
         QCOMPARE(rows.size(), 1);
         m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
         m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
+        // (Of that size alone: ten cells across the wire is thousands, a
+        // solve of minutes under the sanitizers.)
+        m.mesh().props.insert(QStringLiteral("cells_across"), 0);
         const auto put = [](const QString& where, const QByteArray& what) {
             QFile f(where);
             return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
@@ -2149,13 +2152,34 @@ private slots:
         QVERIFY(line.value("C").toDouble() > 0 && line.value("C0").toDouble() > 0);
         QVERIFY2(!out.value("what it did").toArray().isEmpty(), "it said nothing of what it did");
 
-        // A length of its own: the same capacitance over a length the
-        // caller gives, so C per metre scales with it.
+        // The wire is a uniform line, so its values per metre are of its
+        // cross-section (its ends' fringing not in them, the phase B check
+        // of 24 October), and said to be.
+        bool ofTheCrossSection = false;
+        for (const QJsonValue& v : out.value("what it did").toArray())
+            ofTheCrossSection = ofTheCrossSection || v.toString().contains(QStringLiteral("middle cross-section"));
+        QVERIFY2(ofTheCrossSection, qPrintable(text(solved)));
+        QVERIFY2(line.value("C").toDouble() < first.value("capacitance").toDouble() / 1200e-6,
+                 "per metre the same as the whole over the length, ends and all");
+        // A length of its own is the two-port's alone: C per metre does
+        // not move with it.
         const QJsonObject longer = json(call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}, {"length", "2400[um]"}}, 300000)).toObject();
+        QCOMPARE(longer.value("length").toDouble(), 2400e-6);
         const double wide = longer.value("nets").toArray().first().toObject().value("line").toObject().value("C").toDouble();
         const double narrow = line.value("C").toDouble();
-        QVERIFY2(std::abs(wide * 2 - narrow) < 0.02 * narrow,
+        QVERIFY2(std::abs(wide - narrow) < 1e-9 * narrow,
                  qPrintable(QStringLiteral("%1 F/m over 2400 µm vs %2 F/m over 1200").arg(wide).arg(narrow)));
+        // And brief: the numbers a line is asked after, and no more.
+        const QJsonObject brief = json(call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}, {"brief", true}}, 300000)).toObject();
+        const QJsonObject briefLine = brief.value("nets").toArray().first().toObject().value("line").toObject();
+        QCOMPARE(briefLine.value("Z0").toDouble(), line.value("Z0").toDouble());
+        QCOMPARE(briefLine.value("C0").toDouble(), line.value("C0").toDouble());
+        QVERIFY2(!briefLine.contains("s parameters") && !brief.contains("what it did") && !brief.contains("note"),
+                 qPrintable(QJsonDocument(brief).toJson(QJsonDocument::Compact)));
+        QVERIFY2(brief.value("per metre").toString().contains(QStringLiteral("cross-section")),
+                 qPrintable(brief.value("per metre").toString()));
+        QVERIFY2(QJsonDocument(brief).toJson(QJsonDocument::Compact).size() < QJsonDocument(out).toJson(QJsonDocument::Compact).size() / 2,
+                 "brief is not brief");
         // A length that is no length.
         QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}, {"length", "nonsense"}}, 60000)));
 
@@ -2315,9 +2339,21 @@ private slots:
             }
             two.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), both);
             two.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("40[um]"));
+            two.mesh().props.insert(QStringLiteral("cells_across"), 0);
             QVERIFY(put(ws + "/rf/two.qrf25", two.toJson()));
             const QJsonObject solvedTwo = json(call("rf25_solve", {{"path", ws + "/rf/two.qrf25"}}, 300000)).toObject();
             QCOMPARE(solvedTwo.value("nets").toArray().size(), 2);
+            // One of two is no line by itself: each net says so and points
+            // at the modes, rather than giving its own row as a line's
+            // (the phase B check's N4).
+            for (const QJsonValue& v : solvedTwo.value("nets").toArray()) {
+                QVERIFY2(!v.toObject().contains("line"), qPrintable(QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact)));
+                QVERIFY2(v.toObject().value("line not given").toString().contains(QStringLiteral("coupled lines")),
+                         qPrintable(QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact)));
+            }
+            QVERIFY2(solvedTwo.value("quasi-static limit").toObject().value("what sets it").toString().contains(QStringLiteral("conductors span"))
+                         || solvedTwo.value("quasi-static limit").toObject().value("what sets it").toString().contains(QStringLiteral("deep")),
+                     qPrintable(solvedTwo.value("quasi-static limit").toObject().value("what sets it").toString()));
             // And as coupled lines: their modes and the 4-port S matrix.
             const QJsonObject coupled = solvedTwo.value("coupled lines").toObject();
             QVERIFY2(!coupled.isEmpty(), "two nets were not reported as coupled lines");
@@ -2377,6 +2413,9 @@ private slots:
             const double l = ind.value("L").toDouble();
             QVERIFY2(l > 0.5e-9 && l < 10e-9, qPrintable(QStringLiteral("%1 nH").arg(l * 1e9)));
             QVERIFY2(ind.value("R_dc").toDouble() > 0, "copper with no resistance");
+            // And the inductance of the current at direct current beside it,
+            // which the least-energy current's cannot exceed.
+            QVERIFY2(ind.value("L_dc").toDouble() >= l * (1 - 1e-9), qPrintable(QStringLiteral("L %1, L_dc %2 nH").arg(l * 1e9).arg(ind.value("L_dc").toDouble() * 1e9)));
             QVERIFY2(ind.value("runs of current").toInt() > 0, "no runs of current");
             QVERIFY2(ind.value("cells").toInt() > 0, "no cells");
             QVERIFY2(!ind.value("what it did").toArray().isEmpty(), "it said nothing of what it did");
@@ -2458,6 +2497,9 @@ private slots:
         rows.append(row);
         m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
         m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
+        m.mesh().props.insert(QStringLiteral("cells_across"), 0);
+        // (The starter's ground out, for the menu to add one below.)
+        m.stackNode().children.erase(m.stackNode().children.begin());
         const QString model = ws + "/rf/framed.qrf25";
         {
             QFile f(model);
@@ -2521,6 +2563,10 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(int(doc->model().stackNode().children.size()), before + 1, 5000);
         QCOMPARE(doc->model().stackNode().children.front().type, QStringLiteral("rf_ground"));
         QVERIFY2(doc->model().stack().ok(), qPrintable(doc->model().stack().problems.join(" | ")));
+        // And with one there, the menu offers no second.
+        const QJsonObject again = call("context_menu", {{"on", QJsonObject{{"node", "Stack"}}}}, 30000);
+        QVERIFY2(!QString::fromUtf8(QJsonDocument(json(again).toObject().value("menu").toArray()).toJson()).contains(QStringLiteral("Add > Ground")),
+                 qPrintable(text(again)));
         // (Its changes let go: a model left changed is asked about on
         //  closing, and nothing answers that here.)
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}}, 30000)));

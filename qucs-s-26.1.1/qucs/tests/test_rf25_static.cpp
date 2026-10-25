@@ -2,7 +2,7 @@
  * test_rf25_static.cpp - the quasi-static extraction (rf25/rf25_static.h):
  * the rectangle's closed form against a brute-force integral, a
  * parallel-plate capacitor, a microstrip's Z0 and eps_eff against
- * Hammerstad and Jensen's closed form, and a coupled pair's matrix.
+ * Hammerstad and Jensen's closed form of 1980, and a coupled pair's matrix.
  *
  * Phase B of docs/proposals/2026-10-23-rf-2p5d-moment-method.md, whose
  * test list asks for "a parallel-plate capacitor ... a microstrip's Z0
@@ -10,6 +10,7 @@
  */
 #include <QtTest>
 
+#include "rf25/rf25_sparams.h"
 #include "rf25/rf25_static.h"
 
 #include <cmath>
@@ -114,16 +115,24 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell, bool edges 
     return rf::meshOf(conductors, how, rf::Stack(), 0);
 }
 
-/// Hammerstad and Jensen's microstrip, the textbook closed form: its
-/// effective permittivity and characteristic impedance for a zero-thickness
-/// strip of width \a w on a substrate \a h thick of \a epsr.
-QPair<double, double> hammerstad(double w, double h, double epsr)
+/// Hammerstad and Jensen's microstrip (IEEE MTT-S 1980), zero thickness:
+/// its effective permittivity and characteristic impedance for a strip of
+/// width \a w on a substrate \a h thick of \a epsr. They give it as good to
+/// 0.01 % for Z0 in air and 0.2 % for eps_eff, and a 2D finite-difference
+/// solve of the same cross-section agrees with it to 0.1 % and 0.2 % (the
+/// phase B check of 24 October). The form this test held to before - "6.620,
+/// 49.21" at W/h = 1 - was Hammerstad's of 1975, 0.7 % high in eps_eff.
+QPair<double, double> hammerstadJensen(double w, double h, double epsr)
 {
     const double u = w / h;
-    const double eff = (epsr + 1) / 2 + (epsr - 1) / 2 * (1.0 / std::sqrt(1 + 12 / u) + (u < 1 ? 0.04 * std::pow(1 - u, 2) : 0.0));
-    const double z0 = u <= 1 ? 60.0 / std::sqrt(eff) * std::log(8 / u + u / 4)
-                             : 120 * M_PI / (std::sqrt(eff) * (u + 1.393 + 0.667 * std::log(u + 1.444)));
-    return {eff, z0};
+    const double a = 1 + std::log((std::pow(u, 4) + std::pow(u / 52, 2)) / (std::pow(u, 4) + 0.432)) / 49
+                     + std::log(1 + std::pow(u / 18.1, 3)) / 18.7;
+    const double b = 0.564 * std::pow((epsr - 0.9) / (epsr + 3), 0.053);
+    const double eff = (epsr + 1) / 2 + (epsr - 1) / 2 * std::pow(1 + 10 / u, -a * b);
+    const double f = 6 + (2 * M_PI - 6) * std::exp(-std::pow(30.666 / u, 0.7528));
+    const double eta0 = 4e-7 * M_PI * rf::kLightSpeed;   // mu0 c0
+    const double z01 = eta0 / (2 * M_PI) * std::log(f / u + std::sqrt(1 + 4 / (u * u)));
+    return {eff, z01 / std::sqrt(eff)};
 }
 
 bool says(const QStringList& lines, const char* words)
@@ -284,50 +293,74 @@ private slots:
         }
     }
 
-    // A microstrip: its per-metre capacitance from two lengths of it (the
-    // difference cancels what the two ends add), and from that its
-    // eps_eff and Z0 against Hammerstad and Jensen's closed form.
+    // A microstrip's per-metre values, as the solver takes them - of its
+    // middle cross-section, as if it ran on for ever - against Hammerstad
+    // and Jensen's closed form at three widths: a narrow strip and both
+    // branches of the older forms, so that one number agreeing is not taken
+    // for a method that works. The same from a line of 400 µm and of 800,
+    // which the whole over the length is not; and nearer the closed form
+    // with twice the cells across.
     void aMicrostripsImpedanceIsThatOfTheClosedForm()
     {
         const double h = 100e-6, epsr = 9.8;
         const rf::Stack stack = grounded(epsr, h);
-        const auto solve = [&](double w, double length, double cell) {
+        const auto solve = [&](double w, double length, int across) {
             const QList<rf::Conductor> line{strip(0, 0, w, length)};
-            return rf::extract(meshed(line, cell), line, stack);
+            rf::MeshSettings how;
+            how.maximum = 40e-6;
+            how.cellsAcross = across;
+            return rf::extract(rf::meshOf(line, how, rf::Stack(), 0), line, stack);
         };
         rf::Extraction kept;
-        // A narrow strip and a wide one: the two branches of the closed
-        // form, so that one number agreeing is not taken for a method
-        // that works.
-        for (const QPair<double, double>& it : {QPair<double, double>{100.0, 25.0}, QPair<double, double>{300.0, 37.5}}) {
-            const double w = it.first, cell = it.second;
-            const rf::Extraction shortLine = solve(w, 400, cell), longLine = solve(w, 800, cell);
+        double narrowZ0 = 0;
+        for (const double w : {30.0, 100.0, 300.0}) {
+            const rf::Extraction shortLine = solve(w, 400, 10), longLine = solve(w, 800, 10);
             QVERIFY2(shortLine.ok(), qPrintable(shortLine.problems.join(" | ")));
             QVERIFY2(longLine.ok(), qPrintable(longLine.problems.join(" | ")));
-            // Per metre, with what the two ends add removed by the
-            // difference between two lengths of the same line.
-            const double dl = (800 - 400) * 1e-6;
-            const double c = (longLine.selfCapacitance(0) - shortLine.selfCapacitance(0)) / dl;
-            double bareShort = 0, bareLong = 0;
-            for (double v : shortLine.c0.at(0)) bareShort += v;
-            for (double v : longLine.c0.at(0)) bareLong += v;
-            const double c0 = (bareLong - bareShort) / dl;
-            QVERIFY2(c > 0 && c0 > 0, qPrintable(QStringLiteral("C %1 F/m, C0 %2 F/m").arg(c).arg(c0)));
-            const double epsEff = c / c0;
-            const double z0 = 1.0 / (rf::kLightSpeed * std::sqrt(c * c0));
-            const QPair<double, double> want = hammerstad(w * 1e-6, h, epsr);
-            qWarning("microstrip W/h = %.2f: C %.4g pF/m, C0 %.4g pF/m, eps_eff %.4f (Hammerstad %.4f), Z0 %.2f ohm (Hammerstad %.2f)",
-                     w * 1e-6 / h, c * 1e12, c0 * 1e12, epsEff, want.first, z0, want.second);
-            // Within a few per cent of the closed form, which is itself
-            // good to about one: measured at 1.9 % (W/h = 1) and 1.6 %
-            // (W/h = 3) on eps_eff, and 1.7 % and 0.3 % on Z0.
-            QVERIFY2(std::abs(epsEff - want.first) <= 0.04 * want.first,
-                     qPrintable(QStringLiteral("W/h %1: eps_eff %2 vs %3").arg(w * 1e-6 / h).arg(epsEff).arg(want.first)));
-            QVERIFY2(std::abs(z0 - want.second) <= 0.04 * want.second,
-                     qPrintable(QStringLiteral("W/h %1: Z0 %2 vs %3").arg(w * 1e-6 / h).arg(z0).arg(want.second)));
-            // A wider line is a lower impedance and holds more charge.
-            if (!kept.ok()) kept = longLine;
-            else QVERIFY2(z0 < 49.21, qPrintable(QStringLiteral("the wide strip's Z0 %1").arg(z0)));
+            QVERIFY2(longLine.perMetre.fromMiddle, qPrintable(longLine.perMetre.said));
+            QVERIFY2(longLine.perMetre.said.contains(QStringLiteral("cross-section")), qPrintable(longLine.perMetre.said));
+            const rf::LineParameters a = rf::lineParameters(shortLine, 0, 400e-6), b = rf::lineParameters(longLine, 0, 800e-6);
+            QVERIFY2(a.ok() && b.ok(), qPrintable((a.problems + b.problems).join(" | ")));
+            // The same per metre whatever the length: the ends are not in it.
+            QVERIFY2(std::abs(a.c - b.c) <= 2e-3 * b.c && std::abs(a.c0 - b.c0) <= 2e-3 * b.c0,
+                     qPrintable(QStringLiteral("W %1: C %2 and %3 pF/m, C0 %4 and %5 over 400 and 800 µm")
+                                    .arg(w).arg(a.c * 1e12).arg(b.c * 1e12).arg(a.c0 * 1e12).arg(b.c0 * 1e12)));
+            // Where the whole over the length has both ends' fringing in it,
+            // and the more of it the shorter the line.
+            const double whole400 = shortLine.selfCapacitance(0) / 400e-6, whole800 = longLine.selfCapacitance(0) / 800e-6;
+            QVERIFY2(whole400 > whole800 && whole800 > 1.02 * b.c,
+                     qPrintable(QStringLiteral("W %1: the whole over 400 µm %2, over 800 %3, per metre %4 pF/m")
+                                    .arg(w).arg(whole400 * 1e12).arg(whole800 * 1e12).arg(b.c * 1e12)));
+            const QPair<double, double> want = hammerstadJensen(w * 1e-6, h, epsr);
+            qWarning("microstrip W/h = %.2f: C %.5g pF/m, C0 %.5g pF/m, eps_eff %.4f (H&J %.4f), Z0 %.3f ohm (H&J %.3f)",
+                     w * 1e-6 / h, b.c * 1e12, b.c0 * 1e12, b.epsilonEff, want.first, b.z0, want.second);
+            // Ten cells across: eps_eff within 0.5 % and Z0 within 1.5 % of
+            // a closed form good to 0.2 % and 0.1 % - measured at 0.06, 0.12
+            // and 0.06 % on eps_eff and 0.26, 0.37 and 1.0 % on Z0 for W/h
+            // 0.3, 1 and 3. (Square cells of 10 µm give 0.8 % at W/h = 1:
+            // these 40 µm along are a little nearer by a cancellation, the
+            // error being of the cells across, first order in their size.)
+            QVERIFY2(std::abs(b.epsilonEff - want.first) <= 0.005 * want.first,
+                     qPrintable(QStringLiteral("W/h %1: eps_eff %2 vs %3").arg(w * 1e-6 / h).arg(b.epsilonEff).arg(want.first)));
+            QVERIFY2(std::abs(b.z0 - want.second) <= 0.015 * want.second,
+                     qPrintable(QStringLiteral("W/h %1: Z0 %2 vs %3").arg(w * 1e-6 / h).arg(b.z0).arg(want.second)));
+            // A wider line is a lower impedance.
+            if (narrowZ0 > 0) QVERIFY2(b.z0 < narrowZ0, qPrintable(QStringLiteral("W %1: Z0 %2 after %3").arg(w).arg(b.z0).arg(narrowZ0)));
+            narrowZ0 = b.z0;
+            if (w == 100.0) kept = longLine;
+        }
+        // Twice the cells across the 50 Ohm strip, and nearer: the error is
+        // the mesh's, and it shrinks as the mesh does (0.37 % to 0.13 %).
+        {
+            const QPair<double, double> want = hammerstadJensen(100e-6, h, epsr);
+            const rf::LineParameters coarse = rf::lineParameters(kept, 0, 800e-6);
+            const rf::Extraction fine = solve(100, 800, 20);
+            QVERIFY2(fine.ok(), qPrintable(fine.problems.join(" | ")));
+            const rf::LineParameters lp = rf::lineParameters(fine, 0, 800e-6);
+            qWarning("microstrip W/h = 1, 20 across: eps_eff %.4f, Z0 %.3f ohm", lp.epsilonEff, lp.z0);
+            QVERIFY2(std::abs(lp.z0 - want.second) < 0.7 * std::abs(coarse.z0 - want.second),
+                     qPrintable(QStringLiteral("Z0 %1 with 20 across, %2 with 10, %3 the closed form")
+                                    .arg(lp.z0).arg(coarse.z0).arg(want.second)));
         }
 
         // And the line parameters say the same, by the relations the
@@ -481,8 +514,11 @@ private slots:
             const rf::Extraction e = rf::extract(mesh, pair, stack);
             QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
             QCOMPARE(e.names.size(), 2);
-            // Symmetric, as a capacitance matrix must be.
-            QVERIFY2(std::abs(e.c.at(0).at(1) - e.c.at(1).at(0)) <= 1e-6 * std::abs(e.c.at(0).at(1)),
+            // Symmetric, as a capacitance matrix must be - to what point
+            // matching allows: each cell's potential is matched at its
+            // centre, and the half-wide cells at the conductors' edges make
+            // that a little asymmetric (1e-5 measured, at a gap of 5 µm).
+            QVERIFY2(std::abs(e.c.at(0).at(1) - e.c.at(1).at(0)) <= 1e-4 * std::abs(e.c.at(0).at(1)),
                      qPrintable(QStringLiteral("gap %1: %2 vs %3").arg(gap).arg(e.c.at(0).at(1)).arg(e.c.at(1).at(0))));
             // Two of the same line, so the same self capacitance.
             QVERIFY2(std::abs(e.selfCapacitance(0) - e.selfCapacitance(1)) <= 1e-3 * std::abs(e.selfCapacitance(0)),
@@ -633,11 +669,13 @@ private slots:
     // of 24 October, and what came of mending it).
     void theGroundIsReadForWhatItIsNotWhereItIs()
     {
-        // The blank model's stack - a substrate, an oxide, a metal - with
-        // a ground put in at \a at (the end where it is -1) and a cover.
+        // The blank model's stack - a substrate, an oxide, a metal, its own
+        // ground taken out - with a ground put in at \a at (the end where
+        // it is -1) and a cover.
         const auto with = [](int at, const QString& groundKind, const QString& coverKind) {
             rf::Model m = rf::Model::blank();
             rf::Node& stack = m.stackNode();
+            stack.children.erase(stack.children.begin());   // (its ground)
             if (!coverKind.isEmpty()) {
                 rf::Node cover = m.make(QStringLiteral("rf_cover"));
                 cover.props.insert(QStringLiteral("kind"), coverKind);
@@ -682,6 +720,107 @@ private slots:
         QVERIFY2(open.ok(), qPrintable(open.problems.join(" | ")));
         QVERIFY2(open.selfCapacitance(0) < 0.8 * first.selfCapacitance(0),
                  qPrintable(QStringLiteral("open %1 F vs a plane's %2 F").arg(open.selfCapacitance(0)).arg(first.selfCapacitance(0))));
+    }
+
+    // A coupled pair per metre, of its cross-section: its even and odd
+    // impedances against the reviewer's own 2D finite-difference values
+    // for W/h 1, s/h 0.5 over eps_r 9.8 (59.5 and 37.4 Ohm), the same from
+    // two lengths of it.
+    void aCoupledPairsModesAreOfItsCrossSection()
+    {
+        const double h = 100e-6, epsr = 9.8;
+        const rf::Stack stack = grounded(epsr, h);
+        const auto solve = [&](double length) {
+            const QList<rf::Conductor> pair{strip(0, 0, 100, length), strip(150, 0, 100, length)};
+            rf::MeshSettings how;   // ten across, as the mesh's own default
+            how.maximum = 40e-6;
+            return rf::extract(rf::meshOf(pair, how, rf::Stack(), 0), pair, stack);
+        };
+        const rf::Extraction shortPair = solve(500), longPair = solve(1000);
+        QVERIFY2(shortPair.ok() && longPair.ok(), qPrintable((shortPair.problems + longPair.problems).join(" | ")));
+        QVERIFY2(longPair.perMetre.fromMiddle, qPrintable(longPair.perMetre.said));
+        const qucs_s::fem::CoupledLines a = rf::asCoupledLines(shortPair, 500e-6), b = rf::asCoupledLines(longPair, 1000e-6);
+        QVERIFY2(a.error.isEmpty() && b.error.isEmpty(), qPrintable(a.error + b.error));
+        QCOMPARE(b.modes.size(), std::size_t(2));
+        const auto mode = [](const qucs_s::fem::CoupledLines& l, const char* name) {
+            for (const qucs_s::fem::LineMode& m : l.modes)
+                if (m.name == QLatin1String(name)) return m.Z.real();
+            return 0.0;
+        };
+        const double even = mode(b, "even"), odd = mode(b, "odd");
+        qWarning("coupled pair W/h 1, s/h 0.5: Z_even %.3f ohm (2D 59.5), Z_odd %.3f ohm (2D 37.4)", even, odd);
+        // Within 2 % and 3 % - measured at 59.71 and 37.69, 0.36 % and
+        // 0.79 % high, the error the mesh's, as a single line's is.
+        QVERIFY2(std::abs(even - 59.5) < 0.02 * 59.5, qPrintable(QStringLiteral("Z_even %1").arg(even)));
+        QVERIFY2(std::abs(odd - 37.4) < 0.03 * 37.4, qPrintable(QStringLiteral("Z_odd %1").arg(odd)));
+        // The same whatever its length: the ends are not in it.
+        QVERIFY2(std::abs(mode(a, "even") - even) < 2e-3 * even && std::abs(mode(a, "odd") - odd) < 2e-3 * odd,
+                 qPrintable(QStringLiteral("500 µm: %1 and %2, 1000 µm: %3 and %4")
+                                .arg(mode(a, "even")).arg(mode(a, "odd")).arg(even).arg(odd)));
+    }
+
+    // One conductor and no ground is no line: a capacitance to infinity,
+    // and no Z0 or S parameters made of it (the phase B check's F6).
+    void aLoneConductorWithNoGroundIsNoLine()
+    {
+        rf::Stack open = grounded(9.8, 100e-6);
+        open.layers.removeFirst();   // (the ground)
+        rf::MeshSettings how;
+        how.maximum = 40e-6;
+        const QList<rf::Conductor> line{strip(0, 0, 100, 1000)};
+        const rf::Extraction e = rf::extract(rf::meshOf(line, how, rf::Stack(), 0), line, open);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));   // its capacitance is an answer
+        QVERIFY(!e.grounded);
+        QVERIFY(e.selfCapacitance(0) > 0);
+        const rf::LineParameters lp = rf::lineParameters(e, 0, 1e-3, 10e9);
+        QVERIFY(!lp.ok());
+        QVERIFY2(says(lp.problems, "no line"), qPrintable(lp.problems.join(" | ")));
+        QVERIFY2(e.perMetre.said.contains(QStringLiteral("no values per metre")), qPrintable(e.perMetre.said));
+        // Two of them with no ground: between them a line, said with what
+        // a capacitance to infinity per metre is not.
+        const QList<rf::Conductor> pair{strip(0, 0, 100, 1000), strip(150, 0, 100, 1000)};
+        const rf::Extraction two = rf::extract(rf::meshOf(pair, how, rf::Stack(), 0), pair, open);
+        QVERIFY2(two.ok(), qPrintable(two.problems.join(" | ")));
+        QVERIFY2(two.perMetre.said.contains(QStringLiteral("With no ground")), qPrintable(two.perMetre.said));
+        // And with the ground under it, the one strip is a line.
+        const rf::Extraction grounded1 = rf::extract(rf::meshOf(line, how, rf::Stack(), 0), line, grounded(9.8, 100e-6));
+        QVERIFY(grounded1.grounded);
+        QVERIFY2(rf::lineParameters(grounded1, 0, 1e-3, 10e9).ok(), qPrintable(rf::lineParameters(grounded1, 0, 1e-3).problems.join(" | ")));
+    }
+
+    // What is no uniform line - a bend, a taper - has no cross-section to
+    // be of, and its per-metre values are the whole over its length, said.
+    void whatIsNoUniformLineIsSaidToBe()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        rf::MeshSettings how;
+        how.maximum = 40e-6;
+        how.cellsAcross = 3;   // (what is said does not want more, and clipped cells are dear)
+        rf::Conductor ell;
+        ell.layer = QStringLiteral("M1");
+        ell.outline = QPolygonF({QPointF(0, 0), QPointF(600, 0), QPointF(600, 50), QPointF(50, 50),
+                                 QPointF(50, 300), QPointF(0, 300)});
+        rf::Conductor taper;
+        taper.layer = QStringLiteral("M1");
+        taper.outline = QPolygonF({QPointF(0, 0), QPointF(800, 20), QPointF(800, 80), QPointF(0, 100)});
+        // A step: 40 µm wide, then 100 from 300 µm on - as broad overall
+        // as its middle is, its middle's cells rectangles, and still no
+        // line: only its cross-section a quarter of the way along says so.
+        // (A step at the middle itself cuts the middle's cells into shapes
+        // that are no rectangles, which says so first.)
+        rf::Conductor step;
+        step.layer = QStringLiteral("M1");
+        step.outline = QPolygonF({QPointF(0, 30), QPointF(300, 30), QPointF(300, 0), QPointF(800, 0),
+                                  QPointF(800, 100), QPointF(300, 100), QPointF(300, 70), QPointF(0, 70)});
+        for (const rf::Conductor& c : {ell, taper, step}) {
+            const rf::Extraction e = rf::extract(rf::meshOf({c}, how, rf::Stack(), 0), {c}, stack);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            QVERIFY2(!e.perMetre.fromMiddle, qPrintable(e.perMetre.said));
+            QVERIFY2(e.perMetre.said.contains(QStringLiteral("Not a uniform line")), qPrintable(e.perMetre.said));
+            const rf::LineParameters lp = rf::lineParameters(e, 0, 800e-6);
+            QVERIFY2(lp.ok(), qPrintable(lp.problems.join(" | ")));
+            QVERIFY2(std::abs(lp.c - e.selfCapacitance(0) / 800e-6) < 1e-12 * lp.c, "the whole over the length");
+        }
     }
 
     void whatItCannotSolveIsRefused()
