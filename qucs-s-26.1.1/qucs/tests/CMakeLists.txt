@@ -210,6 +210,11 @@ qucs_add_test(test_rf25_mesh)
 qucs_add_test(test_rf25_green)
 qucs_add_test(test_rf25_static)
 qucs_add_test(test_rf25_sparams)
+# (Dense solves of a few thousand cells, many of them: test_rf25_sparams ran
+# past 900 s on CI's sanitized Debug at b62b55d, three times its 300, where
+# it is some 150 s sanitized here - the runner's two shared processors.
+# test_rf25_static is the same kind.)
+set_tests_properties(test_rf25_static test_rf25_sparams PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_inductance)
 qucs_add_test(test_rf25_doc)
 qucs_add_test(test_multiphysics_doc)
@@ -309,6 +314,9 @@ qucs_add_test(test_qucs_control)
 qucs_add_test(test_wishlist_tools)
 # The merged MCP wishlist of 22 October (test_mcp_wishlist.cpp).
 qucs_add_test(test_mcp_wishlist)
+# (Its mesh refinements - fem_converge solving at finer meshes - ran past
+# 900 s on CI's sanitized Debug at b62b55d; some 220 s sanitized here.)
+set_tests_properties(test_mcp_wishlist PROPERTIES TIMEOUT 900)
 qucs_add_test(test_file_browser)
 qucs_add_test(test_file_browser_drop)
 qucs_add_test(test_file_browser_tabs)

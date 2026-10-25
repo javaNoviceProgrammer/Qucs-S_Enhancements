@@ -615,6 +615,8 @@ void RF25Doc::showProblems()
     // The solve: what it found, or that it is running, or why it is not.
     if (a_solveJob) {
         lines << tr("Solving…");
+    } else if (a_solveWhenPrepared) {
+        lines << tr("Solving once the shapes and the mesh of the last edit are made…");
     } else if (a_extraction && a_extraction->ok()) {
         lines << tr("What it solves to:");
         for (const QString& line : a_extraction->lines) lines << QStringLiteral("  • ") + line;
@@ -884,7 +886,10 @@ void RF25Doc::prepareDone()
     ++a_preparedRuns;
     // The shapes or the cells are not the ones that were solved on, so
     // the capacitance is of something that is no longer there. A solve
-    // going on is of them too, and goes with it.
+    // going on is of them too, and goes with it - and is started again on
+    // these, with one that waited for them: it was asked for, and an edit
+    // under it is no reason to give it up and say nothing.
+    const bool wanted = a_solveJob != nullptr || a_solveWhenPrepared;
     stopSolving();
     a_extraction.reset();
     a_inductance.reset();
@@ -894,8 +899,14 @@ void RF25Doc::prepareDone()
     showOverlays();
     showProblems();
     emit preparedChanged();
-    // It changed while that run went on: again, on what it is now.
-    if (a_prepareAgain) prepare();
+    // It changed while that run went on: again, on what it is now - and a
+    // solve wanted waits for that one.
+    if (a_prepareAgain) {
+        a_solveWhenPrepared = wanted;
+        prepare();
+    } else if (wanted) {
+        solve();
+    }
 }
 
 bool RF25Doc::waitForPrepared(int ms)
@@ -1002,7 +1013,19 @@ void RF25Doc::solve()
         showProblems();
         emit solvedChanged();
     };
-    if (isPreparing()) return nothing(tr("The shapes and the mesh are still being made."));
+    // An edit not yet made into shapes and cells, or being made: the solve
+    // is of what the model says now, so it waits for them and starts when
+    // they are done. Started at once, it was thrown away when they were,
+    // and nothing said why - a Solve straight after an edit, or under the
+    // sanitizers' slowness any solve after one, came to nothing.
+    if (a_prepareSoon->isActive() || isPreparing()) {
+        a_solveWhenPrepared = true;
+        if (a_prepareSoon->isActive()) prepare();
+        if (a_solveButton != nullptr) a_solveButton->setText(tr("Stop"));
+        showProblems();
+        emit solvedChanged();
+        return;
+    }
     if (!a_mesh || a_mesh->cells.isEmpty())
         return nothing(tr("There is no mesh to solve on: give the model a layout and a layer map first."));
     if (!a_processed) return nothing(tr("The layout has not been processed."));
@@ -1064,6 +1087,13 @@ void RF25Doc::solve()
 
 void RF25Doc::stopSolving()
 {
+    if (a_solveWhenPrepared && !a_solveJob) {
+        a_solveWhenPrepared = false;
+        if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
+        emit solvedChanged();
+        return;
+    }
+    a_solveWhenPrepared = false;
     if (!a_solveJob) return;
     // Let go: it ends on its own copies, and nothing is waiting for it.
     a_solveJob.reset();
@@ -1089,8 +1119,9 @@ bool RF25Doc::waitForSolved(int ms)
 {
     QElapsedTimer t;
     t.start();
-    while (a_solveJob && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-    return !a_solveJob;
+    while ((a_solveJob || a_solveWhenPrepared) && t.elapsed() < ms)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_solveJob && !a_solveWhenPrepared;
 }
 
 QStringList RF25Doc::lineSummary() const

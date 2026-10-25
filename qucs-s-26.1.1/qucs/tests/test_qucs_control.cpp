@@ -2198,6 +2198,14 @@ private slots:
         const QJsonObject fline = atF.value("nets").toArray().first().toObject().value("line").toObject();
         QVERIFY2(std::abs(fline.value("frequency").toDouble() - 1e10) < 1, qPrintable(QString::number(fline.value("frequency").toDouble())));
         QVERIFY2(fline.value("R").toDouble() > 0, "no resistance at 10 GHz");
+        // By Wheeler's rule on the thick cross-section: its resistance at
+        // direct current beside it, and no more than R - the same, for this
+        // wire half a micrometre wide, whose skin depth at 10 GHz is not
+        // small beside it - and the perfect ground's share nothing.
+        QVERIFY2(fline.value("R_dc").toDouble() > 0 && fline.value("R_dc").toDouble() <= fline.value("R").toDouble(),
+                 qPrintable(QJsonDocument(fline).toJson(QJsonDocument::Compact)));
+        QVERIFY2(fline.contains("R_ground") && fline.value("R_ground").toDouble() == 0.0,
+                 qPrintable(QJsonDocument(fline).toJson(QJsonDocument::Compact)));
         QVERIFY2(fline.value("G").toDouble() > 0, "no conductance with a lossy substrate");
         QVERIFY2(fline.value("alpha").toDouble() > 0, "no attenuation");
         // Copper's skin depth at 10 GHz is 0.66 µm.
