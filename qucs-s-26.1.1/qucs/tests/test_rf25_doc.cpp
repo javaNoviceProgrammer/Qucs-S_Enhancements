@@ -1384,6 +1384,64 @@ private slots:
 
     // What a solve will not do: run with no mesh under it, and run twice
     // at once.
+    // A Solve straight after an edit is of the edit: it waits for the
+    // shapes and the mesh to be made of it and starts when they are.
+    // Started at once on the mesh before, it was thrown away when they
+    // were done and nothing said why - under the sanitizers' slowness the
+    // Touchstone test's solve, after its export node was added, came to
+    // nothing every time (CI's Linux job, b62b55d).
+    void aSolveStraightAfterAnEditIsOfTheEdit()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("straight.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "30[um]"); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        const int coarse = int(doc->mesh()->cells.size());
+        // The edit, and Solve before its 300 ms are up.
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "15[um]"); },
+                              QStringLiteral("finer")));
+        doc->solve();
+        QVERIFY2(doc->isSolving(), "a solve after an edit was not waiting for it");
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("once the shapes and the mesh")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+        // Of the edit's mesh, not the one before it.
+        QVERIFY(doc->mesh() != nullptr);
+        QVERIFY2(int(doc->mesh()->cells.size()) > coarse, "the finer mesh is not finer");
+        QCOMPARE(e->unknowns, int(doc->mesh()->cells.size()));
+        // A solve going on when an edit's shapes and mesh are made is of
+        // what is gone: it starts again on them, rather than coming to
+        // nothing. (A fine mesh, so that it is still going on when they
+        // are made: its matrix is cubic in the cells, their making not.)
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "1[um]"); },
+                              QStringLiteral("fine")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "1.2[um]"); },
+                              QStringLiteral("a little coarser")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->isSolving(), "a solve overtaken by an edit's mesh was let go");
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::Extraction> again = doc->extraction();
+        QVERIFY2(again != nullptr && again->ok(), qPrintable(doc->solveProblem()));
+        QCOMPARE(again->unknowns, int(doc->mesh()->cells.size()));
+        // A solve waiting for the mesh is stopped as one going on is.
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "30[um]"); },
+                              QStringLiteral("coarser")));
+        doc->solve();
+        QVERIFY(doc->isSolving());
+        doc->stopSolving();
+        QVERIFY(!doc->isSolving());
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(!doc->isSolving() && doc->extraction() == nullptr, "a stopped solve went on");
+    }
+
     void aSolveWithNothingToSolveOnIsRefused()
     {
         RF25Doc* doc = app->newRf25Model();

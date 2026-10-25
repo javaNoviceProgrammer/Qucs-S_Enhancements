@@ -62,6 +62,10 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell)
     rf::MeshSettings how;
     how.maximum = cell * 1e-6;
     how.edges = true;
+    // (Of that size alone, as these were written: ten cells across each
+    // strip is a solve of minutes under CI's sanitizers, and what is held
+    // here is the algebra of lines, not how well a mesh converges.)
+    how.cellsAcross = 0;
     return rf::meshOf(conductors, how, rf::Stack(), 0);
 }
 
@@ -440,8 +444,10 @@ private slots:
             QVERIFY2((*m)[0][1] == (*m)[1][0], "a matrix came through asymmetric");
 
         // Lossy, so that each net's resistance is a number and not zero:
-        // it is the surface resistance times the length times how its own
-        // charge crowds, which is what the single line reports.
+        // Wheeler's, which is what the single line reports - and between
+        // them a term of their own, since one strip's faces receding moves
+        // the other's L too: the proximity the crowding of each alone
+        // could not give, small beside each one's own.
         const rf::Extraction lossy = rf::extract(meshed(pair, 60), pair, grounded(epsr, h, 0.002, 5.8e7, 3e-6));
         QVERIFY2(lossy.ok(), qPrintable(lossy.problems.join(" | ")));
         const fem::CoupledLines cl = rf::asCoupledLines(lossy, length, f);
@@ -451,7 +457,9 @@ private slots:
         QVERIFY2(each.R > 0, "the fixture must lose");
         QVERIFY2(std::abs(cl.R[0][0] - each.R) < 1e-9 * each.R,
                  qPrintable(QStringLiteral("%1 Ohm/m in the matrix vs %2 of the line").arg(cl.R[0][0]).arg(each.R)));
-        QVERIFY(cl.R[0][1] == 0.0);
+        QVERIFY2(cl.R[0][1] == cl.R[1][0], "R came through asymmetric");
+        QVERIFY2(cl.R[0][1] != 0.0 && std::abs(cl.R[0][1]) < 0.2 * cl.R[0][0],
+                 qPrintable(QStringLiteral("R12 %1 beside R11 %2 Ohm/m").arg(cl.R[0][1]).arg(cl.R[0][0])));
 
         // Asked for no frequency at all, a lossless line still has modes:
         // its own are taken at 1 GHz, as the engine's quasi-TEM ones are,

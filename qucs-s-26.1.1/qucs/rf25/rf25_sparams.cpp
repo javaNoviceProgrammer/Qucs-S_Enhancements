@@ -153,17 +153,24 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
     for (int i = 0; i < n; ++i)
         for (int j = 0; j < n; ++j) out.L[std::size_t(i)][std::size_t(j)] = 0.5 * (l(i, j) + l(j, i));
 
-    // R is diagonal: each net's surface resistance times how its own
-    // charge crowds. One conductor pushing another's current about - the
-    // proximity effect - is not in an electrostatic solve.
+    // Without Wheeler's factors R is diagonal: each net's surface
+    // resistance times how its own charge crowds, and one conductor
+    // pushing another's current about - the proximity effect - is not in
+    // it.
     out.R.assign(N, std::vector<double>(N, 0));
-    if (out.rlgc)
+    // By Wheeler's rule where it was taken: the whole matrix, since one
+    // conductor's faces receding moves the other's L too - the proximity
+    // the crowding of each alone could not give.
+    const QList<QList<double>> wheeler = out.rlgc ? resistancePerMetre(extraction, frequency) : QList<QList<double>>();
+    if (wheeler.size() == n) {
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out.R[std::size_t(i)][std::size_t(j)] = wheeler.at(i).at(j);
+    } else if (out.rlgc)
         for (int i = 0; i < n; ++i) {
-            const std::complex<double> zs =
-                surfaceImpedance(extraction.sigma.value(i), extraction.thickness.value(i), frequency);
-            out.R[std::size_t(i)][std::size_t(i)] = middle && i < pm.crowding.size()
-                                                        ? zs.real() * pm.crowding.at(i)
-                                                        : zs.real() * length * extraction.crowding.value(i);
+            const double rs = surfaceImpedance(extraction.sigma.value(i), extraction.thickness.value(i), frequency).real()
+                              * roughnessFactor(extraction.roughness.value(i), extraction.sigma.value(i), frequency);
+            out.R[std::size_t(i)][std::size_t(i)] = middle && i < pm.crowding.size() ? rs * pm.crowding.at(i)
+                                                                                     : rs * length * extraction.crowding.value(i);
         }
     // The modes, by the engine's own solver: a lossless line's at 1 GHz,
     // as its quasi-TEM lines are taken.

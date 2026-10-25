@@ -112,6 +112,9 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell, bool edges 
     rf::MeshSettings how;
     how.maximum = cell * 1e-6;
     how.edges = edges;
+    // (Of that size alone, as these were written; the tests of cells across
+    // a conductor set their own.)
+    how.cellsAcross = 0;
     return rf::meshOf(conductors, how, rf::Stack(), 0);
 }
 
@@ -133,6 +136,36 @@ QPair<double, double> hammerstadJensen(double w, double h, double epsr)
     const double eta0 = 4e-7 * M_PI * rf::kLightSpeed;   // mu0 c0
     const double z01 = eta0 / (2 * M_PI) * std::log(f / u + std::sqrt(1 + 4 / (u * u)));
     return {eff, z01 / std::sqrt(eff)};
+}
+
+/// Hammerstad and Jensen's air line with its thickness correction: the
+/// impedance of a strip \a w wide and \a t thick, \a h over a ground, in
+/// vacuum.
+double z01Thick(double w, double h, double t)
+{
+    const double eta0 = 4e-7 * M_PI * rf::kLightSpeed;
+    double u = w / h;
+    const double t1 = t / h;
+    if (t1 > 0) {
+        const double coth = 1 / std::tanh(std::sqrt(6.517 * u));
+        u += t1 / M_PI * std::log(1 + 4 * M_E / (t1 * coth * coth));
+    }
+    const double f = 6 + (2 * M_PI - 6) * std::exp(-std::pow(30.666 / u, 0.7528));
+    return eta0 / (2 * M_PI) * std::log(f / u + std::sqrt(1 + 4 / (u * u)));
+}
+
+/// Wheeler's incremental-inductance rule on it: R = (Rs/eta0) dZ01/dn, the
+/// strip's every wall receding (its edges in, its faces in, its bottom up)
+/// and, apart, the ground's (down). The strip's share and the ground's,
+/// Ohm/m. A separate 2D solve of the whole thick perimeter puts this 0.4 to
+/// 1.2 % above the exact value at W/h 0.3 to 3.
+QPair<double, double> wheelerOnHammerstadJensen(double w, double h, double t, double rs, double rsGround)
+{
+    const double eta0 = 4e-7 * M_PI * rf::kLightSpeed, dn = 1e-10;
+    const double base = z01Thick(w, h, t);
+    const double strip = (z01Thick(w - 2 * dn, h + dn, t - 2 * dn) - base) / dn;
+    const double ground = (z01Thick(w, h + dn, t) - base) / dn;
+    return {rs / eta0 * strip, rsGround / eta0 * ground};
 }
 
 bool says(const QStringList& lines, const char* words)
@@ -452,11 +485,14 @@ private slots:
         // is thick beside it and Rs is 1/(sigma delta) = 26 mOhm.
         QVERIFY2(std::abs(lp.skinDepth - 6.6e-7) < 2e-8, qPrintable(QString::number(lp.skinDepth)));
         QVERIFY2(std::abs(lp.surfaceResistance - 0.0261) < 1e-3, qPrintable(QString::number(lp.surfaceResistance)));
-        // R is more than Rs/W, because the current crowds at the edges,
-        // and not by more than a few times.
-        const double even = lp.surfaceResistance / (w * 1e-6);
-        QVERIFY2(lp.r > even, qPrintable(QStringLiteral("%1 vs Rs/W %2").arg(lp.r).arg(even)));
-        QVERIFY2(lp.r < 4 * even, qPrintable(QStringLiteral("%1 vs Rs/W %2").arg(lp.r).arg(even)));
+        // R is Wheeler's, of the strip's faces - both of them, so less than
+        // the Rs/W of a current on one - and the ground, being perfect,
+        // loses nothing.
+        const QPair<double, double> wheeler = wheelerOnHammerstadJensen(w * 1e-6, h, thick, lp.surfaceResistance, 0);
+        QVERIFY2(std::abs(lp.r - wheeler.first) < 0.03 * wheeler.first,
+                 qPrintable(QStringLiteral("%1 vs Wheeler's %2 Ohm/m").arg(lp.r).arg(wheeler.first)));
+        QCOMPARE(lp.rGround, 0.0);
+        QVERIFY2(std::abs(lp.rDc - 1.0 / (sigma * w * 1e-6 * thick)) < 1e-9 * lp.rDc, qPrintable(QString::number(lp.rDc)));
         // G is w C tand, with the effective loss tangent.
         QVERIFY2(std::abs(lp.g - 2 * M_PI * f * lp.c * e.lossTangent.first()) <= 1e-9 * lp.g, "G is w C tand");
         // The characteristic impedance is near the lossless one, since a
@@ -700,6 +736,19 @@ private slots:
         QVERIFY(!rf::layersOf(with(0, QStringLiteral("open"), QString())).groundBelow);
         QVERIFY(rf::layersOf(with(0, QStringLiteral("impedance"), QString())).groundBelow);
         QVERIFY(rf::layersOf(with(0, QStringLiteral("perfect"), QString())).groundBelow);
+        // A metal plane is a plane for the charge too, and is read with its
+        // conductivity, for its share of the loss.
+        QVERIFY(rf::layersOf(with(0, QStringLiteral("metal"), QString())).groundBelow);
+        {
+            rf::Model m = rf::Model::blank();
+            rf::Node& ground = m.stackNode().children.front();
+            ground.props.insert(QStringLiteral("kind"), QStringLiteral("metal"));
+            ground.props.insert(QStringLiteral("sigma"), QStringLiteral("4.1e7"));
+            const rf::Stack st = m.stack();
+            QVERIFY2(st.ok(), qPrintable(st.problems.join(" | ")));
+            QCOMPARE(st.layers.first().variant, QStringLiteral("metal"));
+            QCOMPARE(st.layers.first().sigma, 4.1e7);
+        }
         // A metal lid is not solved yet, and says so; an open cover is air.
         const rf::Layers lid = rf::layersOf(with(0, QString(), QStringLiteral("perfect")));
         QVERIFY2(!lid.ok() && says(lid.problems, "metal lid"), qPrintable(lid.problems.join(" | ")));
@@ -720,6 +769,161 @@ private slots:
         QVERIFY2(open.ok(), qPrintable(open.problems.join(" | ")));
         QVERIFY2(open.selfCapacitance(0) < 0.8 * first.selfCapacitance(0),
                  qPrintable(QStringLiteral("open %1 F vs a plane's %2 F").arg(open.selfCapacitance(0)).arg(first.selfCapacitance(0))));
+    }
+
+    // R by Wheeler's incremental-inductance rule on the line's own thick
+    // cross-section, against the rule on Hammerstad and Jensen's thick air
+    // line at three widths (the phase B check's F4): the same with twenty
+    // cells across as with ten, where the crowding of a zero-thickness
+    // sheet grew 10 % from 5 µm cells to 2.5; a metal ground's share
+    // Wheeler's too; at a frequency whose skin depth dwarfs the metal, its
+    // resistance at direct current; and a metal of no thickness the sheet's
+    // crowding, said.
+    void aLinesResistanceIsWheelersOnItsThickness()
+    {
+        const double h = 100e-6, t = 3e-6, sigma = 5.8e7, f = 10e9;
+        const auto stackOf = [&](const QString& groundKind) {
+            rf::Stack stack = grounded(9.8, h);
+            for (rf::Layer& l : stack.layers) {
+                if (l.kind == rf::Layer::Metal) {
+                    l.sigma = sigma;
+                    l.thickness = t;
+                }
+                if (l.kind == rf::Layer::Ground) {
+                    l.variant = groundKind;
+                    if (groundKind == QLatin1String("metal")) l.sigma = sigma;
+                }
+            }
+            return stack;
+        };
+        // (Short, and its cells long along it: R is of the cross-section,
+        // and the solve of the whole line - all this costs - wants no more.
+        // Under the sanitizers 800 µm lines took five minutes. Four times
+        // as long as it is wide, though, or its length is taken across.)
+        const auto lengthOf = [](double w) { return std::max(200.0, 4 * w); };
+        const auto solve = [&](double w, int across, const rf::Stack& stack) {
+            const QList<rf::Conductor> line{strip(0, 0, w, lengthOf(w))};
+            rf::MeshSettings how;
+            how.maximum = 40e-6;
+            how.cellsAcross = across;
+            how.stretch = 40;
+            return rf::extract(rf::meshOf(line, how, rf::Stack(), 0), line, stack);
+        };
+        const double rs = rf::surfaceImpedance(sigma, t, f).real();
+        for (const double w : {30.0, 100.0, 300.0}) {
+            const QPair<double, double> want = wheelerOnHammerstadJensen(w * 1e-6, h, t, rs, rs);
+            const rf::Extraction ten = solve(w, 10, stackOf(QStringLiteral("perfect")));
+            const rf::Extraction twenty = solve(w, 20, stackOf(QStringLiteral("perfect")));
+            QVERIFY2(ten.ok() && twenty.ok(), qPrintable((ten.problems + twenty.problems).join(" | ")));
+            QCOMPARE(ten.perMetre.wheeler.size(), 1);
+            QVERIFY2(says(ten.lines, "Wheeler's rule"), qPrintable(ten.lines.join(" | ")));
+            const double length = lengthOf(w) * 1e-6;
+            const rf::LineParameters a = rf::lineParameters(ten, 0, length, f), b = rf::lineParameters(twenty, 0, length, f);
+            QVERIFY2(a.ok() && b.ok(), qPrintable((a.problems + b.problems).join(" | ")));
+            qWarning("W %.0f um: R %.1f (ten across), %.1f (twenty), Wheeler on H&J %.1f Ohm/m", w, a.r, b.r, want.first);
+            // Within 3 % of the rule on the closed form - which is itself
+            // 0.4 to 1.2 % above the exact - measured at -0.9, -0.6 and
+            // -1.2 % for W 30, 100 and 300 (and within 0.2 % of the exact
+            // solve of the whole perimeter: 616.2, 226.4, 80.5 Ohm/m).
+            QVERIFY2(std::abs(a.r - want.first) < 0.03 * want.first,
+                     qPrintable(QStringLiteral("W %1: R %2 vs %3").arg(w).arg(a.r).arg(want.first)));
+            // Converged: twenty across within 1 % of ten (measured 0.1 % or
+            // less).
+            QVERIFY2(std::abs(b.r - a.r) < 0.01 * a.r, qPrintable(QStringLiteral("W %1: R %2 and %3").arg(w).arg(a.r).arg(b.r)));
+            // A perfect ground loses nothing; a copper one its share, as
+            // Wheeler's rule on the closed form has it: its factor times
+            // copper's surface resistance - and, solved with a copper
+            // ground at one width, that share added to the strip's.
+            QCOMPARE(a.rGround, 0.0);
+            // (A ground plane's copper is taken as deep: its bulk 1/(sigma
+            // delta), not a 3 µm slab's.)
+            const double rsBulk = std::sqrt(M_PI * f * 4e-7 * M_PI / sigma);
+            const double copperShare = rsBulk * ten.perMetre.wheelerGround.at(0).at(0);
+            qWarning("W %.0f um: the copper ground's %.2f Ohm/m, Wheeler on H&J %.2f", w, copperShare, want.second);
+            QVERIFY2(std::abs(copperShare - want.second) < 0.03 * want.second,
+                     qPrintable(QStringLiteral("W %1: ground %2 vs %3").arg(w).arg(copperShare).arg(want.second)));
+            if (w == 100.0) {
+                const rf::Extraction copper = solve(w, 10, stackOf(QStringLiteral("metal")));
+                QVERIFY2(copper.ok(), qPrintable(copper.problems.join(" | ")));
+                QCOMPARE(copper.groundKind, QStringLiteral("metal"));
+                const rf::LineParameters c = rf::lineParameters(copper, 0, length, f);
+                QVERIFY2(std::abs(c.rGround - copperShare) < 1e-9 * copperShare,
+                         qPrintable(QStringLiteral("%1 vs %2").arg(c.rGround).arg(copperShare)));
+                QVERIFY2(std::abs(c.r - (a.r + c.rGround)) < 1e-9 * c.r, "the ground's share added to the strip's");
+            }
+            // At 1 MHz the skin depth is 66 µm, twenty times the metal: the
+            // current runs through all of it, and R is 1/(sigma w t).
+            const rf::LineParameters dc = rf::lineParameters(ten, 0, length, 1e6);
+            const double bar = 1.0 / (sigma * w * 1e-6 * t);
+            QVERIFY2(std::abs(dc.r - bar) < 1e-9 * bar, qPrintable(QStringLiteral("W %1: %2 vs %3").arg(w).arg(dc.r).arg(bar)));
+            QCOMPARE(dc.rDc, bar);
+        }
+        // A metal of no thickness: the sheet's crowding, and said why.
+        rf::Stack sheet = stackOf(QStringLiteral("perfect"));
+        for (rf::Layer& l : sheet.layers)
+            if (l.kind == rf::Layer::Metal) l.thickness = 0;
+        const rf::Extraction none = solve(100, 10, sheet);
+        QVERIFY(none.ok());
+        QVERIFY(none.perMetre.wheeler.isEmpty());
+        QVERIFY2(says(none.lines, "has no thickness"), qPrintable(none.lines.join(" | ")));
+        // Nor with no ground to return through.
+        rf::Stack open = stackOf(QStringLiteral("perfect"));
+        open.layers.removeFirst();
+        const QList<rf::Conductor> pair{strip(0, 0, 100, 600), strip(150, 0, 100, 600)};
+        rf::MeshSettings how;
+        how.maximum = 40e-6;
+        how.stretch = 40;
+        const rf::Extraction lone = rf::extract(rf::meshOf(pair, how, rf::Stack(), 0), pair, open);
+        QVERIFY(lone.ok() && lone.perMetre.wheeler.isEmpty());
+        QVERIFY2(says(lone.lines, "With no ground, R"), qPrintable(lone.lines.join(" | ")));
+    }
+
+    // A metal's roughness raises its loss as Hammerstad and Bekkadal have
+    // it - the node said so, and nothing read it: 1 + (2/pi) atan(1.4
+    // (rms/delta)^2), nothing while the roughness is small beside the skin
+    // depth, twice the loss at most. Of the metal's faces alone: the
+    // ground's share, and the resistance at direct current, are not moved.
+    void aMetalsRoughnessRaisesItsLoss()
+    {
+        const double sigma = 5.8e7, f = 10e9;
+        const double depth = std::sqrt(2.0 / (2 * M_PI * f * 4e-7 * M_PI * sigma));
+        QCOMPARE(rf::roughnessFactor(0, sigma, f), 1.0);
+        QCOMPARE(rf::roughnessFactor(1e-6, sigma, 0), 1.0);
+        QVERIFY(std::abs(rf::roughnessFactor(depth, sigma, f) - (1 + 2 / M_PI * std::atan(1.4))) < 1e-12);
+        QVERIFY(rf::roughnessFactor(1e-4, sigma, f) > 1.999 && rf::roughnessFactor(1e-4, sigma, f) < 2);
+        QVERIFY(rf::roughnessFactor(1e-9, sigma, f) < 1.0001);
+
+        const auto stackOf = [&](double rms) {
+            rf::Stack stack = grounded(9.8, 100e-6);
+            for (rf::Layer& l : stack.layers) {
+                if (l.kind == rf::Layer::Metal) {
+                    l.sigma = sigma;
+                    l.thickness = 3e-6;
+                    l.roughness = rms;
+                }
+                if (l.kind == rf::Layer::Ground) {
+                    l.variant = QStringLiteral("metal");
+                    l.sigma = sigma;
+                }
+            }
+            return stack;
+        };
+        const QList<rf::Conductor> line{strip(0, 0, 100, 400)};
+        rf::MeshSettings how;
+        how.maximum = 40e-6;
+        how.stretch = 40;
+        const rf::Mesh mesh = rf::meshOf(line, how, rf::Stack(), 0);
+        const rf::Extraction smooth = rf::extract(mesh, line, stackOf(0)), rough = rf::extract(mesh, line, stackOf(1e-6));
+        QVERIFY2(smooth.ok() && rough.ok(), qPrintable((smooth.problems + rough.problems).join(" | ")));
+        const rf::LineParameters a = rf::lineParameters(smooth, 0, 400e-6, f), b = rf::lineParameters(rough, 0, 400e-6, f);
+        const double k = rf::roughnessFactor(1e-6, sigma, f);
+        QCOMPARE(a.roughnessFactor, 1.0);
+        QVERIFY2(std::abs(b.roughnessFactor - k) < 1e-12, qPrintable(QString::number(b.roughnessFactor)));
+        QVERIFY2(std::abs((b.r - b.rGround) - k * (a.r - a.rGround)) < 1e-9 * b.r,
+                 qPrintable(QStringLiteral("rough %1, smooth %2, factor %3").arg(b.r - b.rGround).arg(a.r - a.rGround).arg(k)));
+        QVERIFY2(std::abs(b.rGround - a.rGround) < 1e-12 * a.rGround, "the ground's share moved with the metal's roughness");
+        QCOMPARE(b.rDc, a.rDc);
+        QVERIFY(b.alphaDb > a.alphaDb);
     }
 
     // A coupled pair per metre, of its cross-section: its even and odd

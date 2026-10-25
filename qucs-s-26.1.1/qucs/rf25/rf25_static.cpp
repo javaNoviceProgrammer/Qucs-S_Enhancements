@@ -214,6 +214,104 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
     return p;
 }
 
+// The antiderivative in u of ln sqrt(u^2 + d^2): a straight segment's even
+// charge, in 2D, integrated along it.
+double lnAntiderivative(double u, double d)
+{
+    const double r2 = u * u + d * d;
+    double v = r2 > 0 ? 0.5 * u * std::log(r2) - u : -u;
+    if (d != 0) v += d * std::atan(u / d);
+    return v;
+}
+
+/// A face of a conductor's cross-section in 2D, m: from a to b along it,
+/// horizontal at height z = at, or vertical at x = at.
+struct Face2D {
+    int net = 0;
+    bool horizontal = true;
+    double a = 0, b = 0, at = 0;
+};
+
+/// A conductor's cross-section: a rectangle, its faces' grid across (the
+/// mesh's own lines, m) and its bottom and top, m.
+struct Box2D {
+    int net = 0;
+    QList<double> across;
+    double z0 = 0, z1 = 0;
+    int up = 2;   ///< cells up each wall
+};
+
+// The potential at (x, z) of a unit charge per metre spread evenly over a
+// face, over a perfect ground at z = 0 - its image at -z.
+double facePotential(double x, double z, const Face2D& f)
+{
+    const auto integral = [&f, x, z](bool image) {
+        if (f.horizontal) {
+            const double d = z - (image ? -f.at : f.at);
+            return lnAntiderivative(f.b - x, d) - lnAntiderivative(f.a - x, d);
+        }
+        const double d = x - f.at;
+        const double a = image ? -f.b : f.a, b = image ? -f.a : f.b;
+        return lnAntiderivative(b - z, d) - lnAntiderivative(a - z, d);
+    };
+    return (integral(true) - integral(false)) / (2 * M_PI * kEps0 * (f.b - f.a));
+}
+
+// L per metre of the conductors \a boxes over a perfect ground in vacuum,
+// C0^-1/c^2, by a 2D method of moments in closed form: every face of each
+// rectangle - its bottom, its top and its two walls - in cells, an even
+// charge on each, matched at its middle. \a recede is a net whose every
+// face moves \a dn into its metal, or -2 for the ground moving \a dn away
+// below everything, or -1 for neither.
+Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, int nets, int recede, double dn)
+{
+    QList<Face2D> faces;
+    for (const Box2D& box : boxes) {
+        QList<double> across = box.across;
+        double z0 = box.z0, z1 = box.z1;
+        if (recede == box.net) {
+            const double x0 = across.first(), x1 = across.last();
+            for (double& x : across) x = x0 + dn + (x - x0) * (x1 - x0 - 2 * dn) / (x1 - x0);
+            z0 += dn;
+            z1 -= dn;
+        } else if (recede == -2) {
+            z0 += dn;
+            z1 += dn;
+        }
+        // The walls' grid as the faces': the outermost half as tall.
+        QList<double> zs{z0};
+        const double step = (z1 - z0) / box.up;
+        zs << z0 + step / 2;
+        for (int i = 1; i < box.up; ++i) zs << z0 + i * step;
+        zs << z1 - step / 2 << z1;
+        for (int i = 0; i + 1 < across.size(); ++i) {
+            faces << Face2D{box.net, true, across.at(i), across.at(i + 1), z0};
+            faces << Face2D{box.net, true, across.at(i), across.at(i + 1), z1};
+        }
+        for (int i = 0; i + 1 < zs.size(); ++i) {
+            faces << Face2D{box.net, false, zs.at(i), zs.at(i + 1), across.first()};
+            faces << Face2D{box.net, false, zs.at(i), zs.at(i + 1), across.last()};
+        }
+    }
+    const int k = int(faces.size());
+    Eigen::MatrixXd p(k, k);
+    for (int i = 0; i < k; ++i) {
+        const Face2D& f = faces.at(i);
+        const double middle = (f.a + f.b) / 2;
+        const double x = f.horizontal ? middle : f.at, z = f.horizontal ? f.at : middle;
+        for (int j = 0; j < k; ++j) p(i, j) = facePotential(x, z, faces.at(j));
+    }
+    const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
+    Eigen::MatrixXd c = Eigen::MatrixXd::Zero(nets, nets);
+    for (int e = 0; e < nets; ++e) {
+        Eigen::VectorXd v = Eigen::VectorXd::Zero(k);
+        for (int i = 0; i < k; ++i) v(i) = faces.at(i).net == e ? 1.0 : 0.0;
+        const Eigen::VectorXd q = lu.solve(v);
+        for (int i = 0; i < k; ++i) c(faces.at(i).net, e) += q(i);
+    }
+    return c.inverse() / (kLightSpeed * kLightSpeed);
+}
+
 } // namespace
 
 Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre)
@@ -505,6 +603,118 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         crossSection(fromStack, &out.perMetre.maxwell, &out.perMetre.crowding);
         crossSection(fromVacuum, &out.perMetre.maxwell0, nullptr);
     }
+    // The ground's kind, for its share of the loss.
+    out.groundKind = QStringLiteral("open");
+    for (const Layer& l : stack.layers)
+        if (l.kind == Layer::Ground) {
+            out.groundKind = l.variant.isEmpty() ? QStringLiteral("perfect") : l.variant;
+            out.groundValue = l.sigma;   // (the impedance's ohms, or the metal's conductivity)
+        }
+
+    // R by Wheeler's incremental-inductance rule, R = (Rs/mu0) dL/dn, on
+    // the cross-section's own rectangles: every face of a conductor - its
+    // bottom, its top, its walls - receding into it, and the ground
+    // receding below them all. The crowding of a zero-thickness sheet's
+    // charge diverges at its edges, so R from it grew without end as the
+    // mesh was refined (the phase B check's F4: +10.5 % from 5 µm cells to
+    // 2.5); the thickness is what stops that, and L - which is all the rule
+    // asks of a geometry - is the vacuum's whatever the dielectrics, so a
+    // 2D solve of the rectangles in closed form over the ground's image is
+    // the whole of it. (Measured in a separate solve of the whole
+    // perimeter, Wheeler's rule on Hammerstad and Jensen's thick air line
+    // is within 0.4 to 1.2 % of it; two sheets without their walls were 4
+    // to 7 % low.)
+    if (uniform && out.grounded) {
+        QMap<QPair<int, QString>, QList<std::pair<double, double>>> spans;
+        for (const int a : std::as_const(column)) {
+            const MeshCell& cell = mesh.cells.at(which.at(a));
+            spans[{netOf.at(a), cell.layer}] << acrossOf(cell.outline.boundingRect());
+        }
+        QList<Box2D> boxes;
+        QList<double> conductance(nets.size(), 0.0);   // S of a metre of each net at direct current
+        QStringList thin;
+        double finest = 0, thinnest = 0;
+        for (auto it = spans.begin(); it != spans.end(); ++it) {
+            const Layer* metal = stack.named(it.key().second);
+            const double t = metal != nullptr ? metal->thickness : 0.0;
+            if (!(t > 0)) {
+                if (!thin.contains(it.key().second)) thin << it.key().second;
+                continue;
+            }
+            QList<std::pair<double, double>> cells = it.value();
+            std::sort(cells.begin(), cells.end());
+            const auto close = [&](Box2D box) {
+                if (box.across.size() < 2) return;
+                // The corners are where the field crowds: the outermost
+                // cells halved until they are no wider than half the
+                // metal's thickness, which the 2D solve can afford and the
+                // mesh's own cells across need not be.
+                while (box.across.at(1) - box.across.at(0) > t / 2)
+                    box.across.insert(1, (box.across.at(0) + box.across.at(1)) / 2);
+                while (box.across.at(box.across.size() - 1) - box.across.at(box.across.size() - 2) > t / 2)
+                    box.across.insert(box.across.size() - 1,
+                                      (box.across.at(box.across.size() - 2) + box.across.last()) / 2);
+                box.net = it.key().first;
+                box.z0 = height.value(it.key().second);
+                box.z1 = box.z0 + t;
+                for (int i = 0; i + 1 < box.across.size(); ++i) {
+                    const double w = box.across.at(i + 1) - box.across.at(i);
+                    if (finest <= 0 || w < finest) finest = w;
+                }
+                conductance[box.net] += metal->sigma * (box.across.last() - box.across.first()) * t;
+                boxes << box;
+            };
+            Box2D box;
+            for (const auto& [t0, t1] : cells) {
+                // (Across in the layout's units, the box's lines in metres.)
+                if (!box.across.isEmpty() && std::abs(t0 - box.across.last() / micrometre) > eps) {
+                    close(box);
+                    box = Box2D();
+                }
+                if (box.across.isEmpty()) box.across << t0 * micrometre;
+                box.across << t1 * micrometre;
+            }
+            close(box);
+            if (thinnest <= 0 || t < thinnest) thinnest = t;
+        }
+        // Up each wall as finely as the finest cell across: the walls' grid
+        // as the faces'.
+        for (Box2D& box : boxes) box.up = std::clamp(int(std::ceil((box.z1 - box.z0) / std::max(1e-30, finest))), 2, 16);
+        if (thin.isEmpty() && !boxes.isEmpty()) {
+            const int count = int(nets.size());
+            const double dn = 1e-4 * std::min(thinnest, finest);
+            constexpr double mu0 = 4e-7 * M_PI;
+            const auto factor = [&](int recede) {
+                const Eigen::MatrixXd d =
+                    (inductance2D(boxes, count, recede, dn) - inductance2D(boxes, count, recede, -dn)) / (2 * dn * mu0);
+                QList<QList<double>> m;
+                for (int i = 0; i < count; ++i) {
+                    QList<double> row;
+                    for (int j = 0; j < count; ++j) row << 0.5 * (d(i, j) + d(j, i));
+                    m << row;
+                }
+                return m;
+            };
+            for (int k = 0; k < count; ++k) out.perMetre.wheeler << factor(k);
+            out.perMetre.wheelerGround = factor(-2);
+            for (int i = 0; i < count; ++i) out.perMetre.dcResistance << (conductance.at(i) > 0 ? 1.0 / conductance.at(i) : 0.0);
+            QStringList each;
+            for (int i = 0; i < count; ++i)
+                each << tr("%1's faces %2/m").arg(nets.at(i).name).arg(out.perMetre.wheeler.at(i).at(i).at(i), 0, 'g', 4);
+            out.lines << tr("R per metre by Wheeler's rule on the cross-section's own rectangles, the metal's thickness and "
+                            "walls in them: every face of a conductor receding into it, and the ground below them all, "
+                            "in a 2D solve of their L. Per ohm of surface resistance, %1, and the ground %2/m.")
+                             .arg(each.join(QStringLiteral(", ")))
+                             .arg(out.perMetre.wheelerGround.at(0).at(0), 0, 'g', 4);
+        } else if (!thin.isEmpty()) {
+            out.lines << tr("%1 has no thickness: R is from how the charge crowds on a sheet of none, which grows without "
+                            "end as the mesh is refined. Give the metal its thickness, and R is Wheeler's.")
+                             .arg(thin.join(QStringLiteral(", ")));
+        }
+    } else if (uniform) {
+        out.lines << tr("With no ground, R is from how the charge crowds on a sheet, which grows as the mesh is refined: "
+                        "Wheeler's rule wants the ground the current returns through.");
+    }
 
     // Each dielectric's share of the field, for the loss it adds. The
     // energy a layer holds is eps dC/deps, so G = w sum(tand_k eps_k
@@ -610,6 +820,7 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         const Layer* metal = net.layers.isEmpty() ? nullptr : stack.named(net.layers.first());
         out.sigma << (metal != nullptr ? metal->sigma : 0.0);
         out.thickness << (metal != nullptr ? metal->thickness : 0.0);
+        out.roughness << (metal != nullptr ? metal->roughness : 0.0);
     }
 
     // The short-circuit (Maxwell) matrix as the mutual one a circuit uses:
@@ -665,6 +876,57 @@ std::complex<double> surfaceImpedance(double sigma, double t, double frequency)
     if (std::abs(kt.real()) > 30) coth = 1.0;
     else coth = std::cosh(kt) / std::sinh(kt);
     return k / sigma * coth;
+}
+
+double roughnessFactor(double rms, double sigma, double frequency)
+{
+    if (!(rms > 0) || !(sigma > 0) || !(frequency > 0)) return 1;
+    constexpr double mu0 = 4e-7 * M_PI;
+    const double depth = std::sqrt(2.0 / (2 * M_PI * frequency * mu0 * sigma));
+    const double ratio = rms / depth;
+    return 1 + 2 / M_PI * std::atan(1.4 * ratio * ratio);
+}
+
+double groundSurfaceResistance(const Extraction& extraction, double frequency)
+{
+    if (extraction.groundKind == QLatin1String("impedance")) return std::max(0.0, extraction.groundValue);
+    if (extraction.groundKind == QLatin1String("metal") && extraction.groundValue > 0 && frequency > 0) {
+        constexpr double mu0 = 4e-7 * M_PI;
+        return std::sqrt(M_PI * frequency * mu0 / extraction.groundValue);
+    }
+    return 0;   // (a perfect plane, or none)
+}
+
+QList<QList<double>> resistancePerMetre(const Extraction& extraction, double frequency, QList<QList<double>>* ground)
+{
+    const Extraction::PerMetre& pm = extraction.perMetre;
+    const int n = int(extraction.names.size());
+    if (ground != nullptr) ground->clear();
+    if (!pm.fromMiddle || int(pm.wheeler.size()) != n || int(pm.wheelerGround.size()) != n
+        || int(pm.dcResistance.size()) != n || !(frequency > 0))
+        return {};
+    QList<QList<double>> r(n, QList<double>(n, 0.0)), g(n, QList<double>(n, 0.0));
+    // Each metal's slab surface resistance times its own factor: a slab's
+    // and not a half space's, so that a metal thin beside its skin depth
+    // loses as the slab it is.
+    for (int k = 0; k < n; ++k) {
+        const double rs = surfaceImpedance(extraction.sigma.value(k), extraction.thickness.value(k), frequency).real()
+                          * roughnessFactor(extraction.roughness.value(k), extraction.sigma.value(k), frequency);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) r[i][j] += rs * pm.wheeler.at(k).at(i).at(j);
+    }
+    const double rsg = groundSurfaceResistance(extraction, frequency);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            g[i][j] = rsg * pm.wheelerGround.at(i).at(j);
+            r[i][j] += g[i][j];
+        }
+    // Wheeler's rule is of a current on the faces, a skin depth deep; at
+    // direct current it runs through the whole metal, and a net's own
+    // resistance is never less than that.
+    for (int i = 0; i < n; ++i) r[i][i] = std::max(r[i][i], pm.dcResistance.at(i) + g[i][i]);
+    if (ground != nullptr) *ground = g;
+    return r;
 }
 
 LineParameters lineParameters(const Extraction& extraction, int index, double length, double frequency)
@@ -730,7 +992,10 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     const double omega = 2 * M_PI * frequency;
     const double sigma = extraction.sigma.value(index), t = extraction.thickness.value(index);
     const std::complex<double> zs = surfaceImpedance(sigma, t, frequency);
-    out.surfaceResistance = zs.real();
+    // (Its roughness's share in it: the node said it raised the loss, and
+    // until the phase B check's round nothing read it.)
+    out.roughnessFactor = roughnessFactor(extraction.roughness.value(index), sigma, frequency);
+    out.surfaceResistance = zs.real() * out.roughnessFactor;
     if (sigma > 0) {
         constexpr double mu0 = 4e-7 * M_PI;
         out.skinDepth = std::sqrt(2.0 / (omega * mu0 * sigma));
@@ -740,6 +1005,16 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     // crowds at the edges it is more.
     out.r = middle && index < pm.crowding.size() ? out.surfaceResistance * pm.crowding.at(index)
                                                  : out.surfaceResistance * length * extraction.crowding.value(index);
+    // By Wheeler's rule where it was taken: the metal's faces and the
+    // ground's, of the thick cross-section, which converges as the mesh is
+    // refined where the crowding of a sheet does not.
+    QList<QList<double>> groundPart;
+    const QList<QList<double>> wheeler = resistancePerMetre(extraction, frequency, &groundPart);
+    if (index < wheeler.size()) {
+        out.r = wheeler.at(index).at(index);
+        out.rGround = groundPart.at(index).at(index);
+        out.rDc = pm.dcResistance.value(index);
+    }
     // And the dielectrics', by the share of the field each holds.
     out.g = omega * out.c * extraction.lossTangent.value(index);
     if (!(out.r >= 0) || !(out.g >= 0)) {

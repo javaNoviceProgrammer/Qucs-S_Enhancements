@@ -186,14 +186,19 @@ QList<NodeKind> makeKinds()
             "in the stack.")});
     add({QStringLiteral("rf_ground"), tr("Ground"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
          {choice(QStringLiteral("kind"), tr("Below the stack"),
-                 {QStringLiteral("perfect"), QStringLiteral("impedance"), QStringLiteral("open")},
-                 {tr("A perfect plane"), tr("A surface impedance"), tr("Open (no plane)")}, QStringLiteral("perfect")),
+                 {QStringLiteral("perfect"), QStringLiteral("metal"), QStringLiteral("impedance"), QStringLiteral("open")},
+                 {tr("A perfect plane"), tr("A metal plane"), tr("A surface impedance"), tr("Open (no plane)")},
+                 QStringLiteral("perfect")),
+          shownIf(expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("5.8e7"),
+                       tr("Its loss, a skin depth deep: its share of a line's R")),
+                  "kind=metal"),
           shownIf(expr(QStringLiteral("impedance"), tr("Surface impedance"), QStringLiteral("Ohm"), QStringLiteral("0"),
                        tr("Of the plane, per square")),
                   "kind=impedance")},
          {}, {}, false, true, QStringLiteral("gnd"),
          tr("What closes the stack at the bottom: a plane under the substrate, wherever it is in the tree. One at "
-            "most. Open is no plane at all - the substrate on air.")});
+            "most. A perfect plane loses nothing; a metal plane loses as its conductivity says, its share of a "
+            "line's R. Open is no plane at all - the substrate on air.")});
     add({QStringLiteral("rf_cover"), tr("Cover"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
          {expr(QStringLiteral("height"), tr("Height above the top"), QStringLiteral("m"), QStringLiteral("1[mm]")),
           choice(QStringLiteral("kind"), tr("Above the stack"),
@@ -706,6 +711,8 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             layer.variant = textOf(c, QStringLiteral("kind"));
             if (layer.variant == QLatin1String("impedance"))
                 read(QStringLiteral("impedance"), &layer.sigma);   // (per square; not a conductivity)
+            else if (layer.variant == QLatin1String("metal"))
+                read(QStringLiteral("sigma"), &layer.sigma);
             break;
         case Layer::Cover:
             layer.variant = textOf(c, QStringLiteral("kind"));
