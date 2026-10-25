@@ -39,6 +39,8 @@ namespace qucs_s::rf25 {
 
 /// \a polygon's area, positive whichever way it is wound.
 double areaOf(const QPolygonF& polygon);
+/// The length of \a polygon's boundary.
+double perimeterOf(const QPolygonF& polygon);
 /// \a shapes joined where they touch or overlap.
 QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes);
 /// \a shapes grown by \a distance (negative: shrunk), in their own units.

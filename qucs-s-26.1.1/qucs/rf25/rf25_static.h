@@ -120,6 +120,34 @@ struct Extraction {
     /// The metal each net is on, for its surface resistance: its
     /// conductivity (S/m) and thickness (m), or zero where it said none.
     QList<double> sigma, thickness;
+    /*!
+     * The line's own values per metre, of its middle cross-section as if
+     * the line ran on for ever: each cell there a strip, tiled along by
+     * copies of itself, and the charge per metre on those strips solved
+     * for, so that the fringing of its two open ends is not in them.
+     * Dividing the whole charge by the length put both ends' fringing into
+     * every value "per metre" - a 50 Ohm line came out 7 % low, a coupled
+     * pair's even mode 9 % (the phase B check of 24 October). The ends are
+     * a real capacitance, but it is at the ends, which is what a port puts
+     * in a circuit, not spread along the line.
+     *
+     * Empty (fromMiddle false) where the layout is no uniform line - a net
+     * that does not run the whole length, or whose cross-section changes
+     * along it - and then the whole over the length is all there is, and
+     * said to be.
+     */
+    struct PerMetre {
+        bool fromMiddle = false;
+        double length = 0;            ///< m: the line's whole length along its axis
+        double reach = 0;             ///< m: how far either way its copies were summed
+        QList<QList<double>> maxwell, maxwell0, dielectricLoss;   ///< F/m, as the matrices above
+        QList<double> crowding;       ///< 1/m: a net's R per metre is its surface resistance times this
+        QString said;                 ///< what was done, in words
+    };
+    PerMetre perMetre;
+    /// Whether there is a ground plane under the stack, so that a lone
+    /// conductor has something to be a line against.
+    bool grounded = false;
     QStringList problems;
     QStringList lines;                ///< what it did, for the panel
     bool ok() const { return problems.isEmpty() && !c.isEmpty(); }

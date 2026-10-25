@@ -74,6 +74,28 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
     return e.constant();
 }
 
+/// Where a side of \a length from \a from is cut: spaced at most \a step
+/// apart, evenly, and - where \a graded - the first and the last space
+/// halved. A side shorter than a step is one space (two where graded).
+QList<double> gridLines(double from, double length, double step, bool graded)
+{
+    QList<double> at;
+    const int n = step > 0 ? std::max(1, int(std::ceil(length / step - 1e-9))) : 1;
+    const double d = length / n;
+    at << from;
+    if (graded) at << from + d / 2;
+    for (int i = 1; i < n; ++i) at << from + i * d;
+    if (graded) at << from + length - d / 2;
+    at << from + length;
+    std::sort(at.begin(), at.end());
+    // (One space graded at both ends is cut once, in its middle.)
+    QList<double> out;
+    for (const double x : std::as_const(at))
+        if (out.isEmpty() || x - out.last() > 1e-9 * std::max(1.0, std::abs(length))) out << x;
+    if (out.size() < 2) out = {from, from + length};
+    return out;
+}
+
 /// A key that two cells sharing an edge agree on, whichever way round they
 /// have it: the midpoint, rounded to a nanometre.
 QString edgeKey(const QPointF& a, const QPointF& b)
@@ -103,6 +125,18 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
     const QJsonValue edges = propertyOf(node, QStringLiteral("edges"));
     how.edges = edges.isBool() ? edges.toBool() : how.edges;
     how.maximum = numberIn(node, QStringLiteral("maximum"), scope, 0, tr("Mesh"), problems);
+    const QJsonValue across = propertyOf(node, QStringLiteral("cells_across"));
+    if (across.isDouble()) how.cellsAcross = across.toInt();
+    else if (across.isString() && !across.toString().trimmed().isEmpty()) how.cellsAcross = across.toString().toInt();
+    how.stretch = numberIn(node, QStringLiteral("stretch"), scope, how.stretch, tr("Mesh"), problems);
+    if (how.cellsAcross < 0) {
+        if (problems != nullptr) *problems << tr("Mesh: the cells across a conductor cannot be fewer than none.");
+        how.cellsAcross = 0;
+    }
+    if (how.stretch < 1) {
+        if (problems != nullptr) *problems << tr("Mesh: a strip's cells cannot be shorter along it than across (a stretch of 1 at least).");
+        how.stretch = 1;
+    }
     if (how.perWavelength < 4) {
         if (problems != nullptr)
             *problems << tr("Mesh: %1 cells to a wavelength is too few to carry a current (4 at least).")
@@ -148,6 +182,18 @@ double topFrequency(const Model& model)
     return std::max(from, to);
 }
 
+QString chargeCostOf(int cells)
+{
+    // A dense real matrix: 8 bytes a term.
+    const double mb = 8.0 * double(cells) * double(cells) / (1024 * 1024);
+    QString said = mb >= 1024 ? tr("%1 to solve the charge on, a dense matrix of %2 GB").arg(cells).arg(mb / 1024, 0, 'f', 1)
+                              : tr("%1 to solve the charge on, a dense matrix of %2 MB").arg(cells).arg(mb, 0, 'f', 1);
+    if (cells > kMostCharges)
+        said += tr(" - more than this build will solve (%1 at most): ask for fewer cells across a conductor, or a larger "
+                   "largest cell").arg(kMostCharges);
+    return said;
+}
+
 Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const Stack& stack, double top,
             double micrometre)
 {
@@ -187,76 +233,124 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     }
     mesh.cellSize = size;
 
-    // Each conductor cut against a grid of that size. A conductor smaller
-    // than a cell is one cell, whatever the grid says.
-    for (const Conductor& conductor : conductors) {
-        // A conductor smaller than a cell needs no special case: the grid
-        // below is one square, cut to its outline, which is the conductor
-        // itself.
-        const QRectF bounds = conductor.outline.boundingRect();
-        const int across = std::max(1, int(std::ceil(bounds.width() / size)));
-        const int up = std::max(1, int(std::ceil(bounds.height() / size)));
-        // A conductor that would need more cells than the whole mesh may
-        // hold is not cut at all: the count below says why.
-        if (double(across) * double(up) > 4.0 * kMostUnknowns) {
-            mesh.problems << tr("%1 would take %2 cells of %3 µm: give the mesh a larger cell, or the study a lower "
-                                "frequency.").arg(conductor.layer).arg(double(across) * double(up), 0, 'g', 3)
-                                 .arg(size, 0, 'g', 3);
-            return mesh;
-        }
-        const double dx = bounds.width() / across, dy = bounds.height() / up;
-        for (int i = 0; i < across; ++i)
-            for (int j = 0; j < up; ++j) {
-                const QRectF square(bounds.left() + i * dx, bounds.top() + j * dy, dx, dy);
-                const QList<QPolygonF> pieces = clipTo({conductor.outline}, QPolygonF(square));
-                for (const QPolygonF& piece : pieces) {
-                    const double area = areaOf(piece);
-                    if (area <= 0) continue;
-                    MeshCell cell;
-                    cell.layer = conductor.layer;
-                    cell.outline = piece;
-                    cell.centre = piece.boundingRect().center();
-                    cell.area = area;
-                    // On the edge where the cut took something off, or
-                    // where the square touches the conductor's bounds.
-                    cell.onEdge = std::abs(area - dx * dy) > dx * dy * 1e-6
-                                  || i == 0 || j == 0 || i == across - 1 || j == up - 1;
-                    mesh.cells << cell;
-                }
+    // Each conductor cut against a grid of its own: lines spaced to put at
+    // least cellsAcross cells across its narrowest part, a straight
+    // strip's stretched along it, and - where the edges are refined - the
+    // outermost space of each side halved, which is where its charge
+    // crowds. A grid of lines rather than cells divided again keeps every
+    // pair of neighbours sharing a whole edge (a quartered cell met its
+    // undivided neighbour along half of one, so the inductance's runs of
+    // current, which follow shared edges, lost the conductor's rim).
+    double narrowest = 0, finest = 0;
+    int strips = 0;
+    // The conductors cut with \a perFeature cells across each: false where
+    // one of them would take more cells than a mesh may hold, \a many then
+    // how many it would have taken.
+    const auto cut = [&](int perFeature, double* many) {
+        mesh.cells.clear();
+        narrowest = finest = 0;
+        strips = 0;
+        for (const Conductor& conductor : conductors) {
+            const QRectF bounds = conductor.outline.boundingRect();
+            const double area = areaOf(conductor.outline);
+            const double box = bounds.width() * bounds.height();
+            const bool rectangle = box > 0 && std::abs(area - box) <= 1e-6 * box;
+            const double narrow = std::min(bounds.width(), bounds.height());
+            // How wide the conductor is where it is narrowest: a rectangle's
+            // short side, else twice its area over its perimeter - which is
+            // a trace's width for a trace of any shape, a spiral's included.
+            const double perimeter = perimeterOf(conductor.outline);
+            const double feature = rectangle ? narrow : (perimeter > 0 ? 2 * area / perimeter : narrow);
+            double across = size;
+            if (perFeature > 0 && feature > 0) across = std::min(across, feature / perFeature);
+            const bool strip = rectangle && std::max(bounds.width(), bounds.height()) >= 3 * narrow;
+            const bool alongX = bounds.width() >= bounds.height();
+            double along = across;
+            if (strip && how.stretch > 1) along = std::min(size, how.stretch * across);
+            const double stepX = strip ? (alongX ? along : across) : across;
+            const double stepY = strip ? (alongX ? across : along) : across;
+            // (Counted before the lines are made: a fine grid over a large
+            // layout would be millions of them.)
+            const double squares = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
+            if (squares > 4.0 * kMostUnknowns) {
+                *many = squares;
+                return false;
             }
-    }
-
-    // Where the current crowds: the cells on a boundary divided once more.
-    if (how.edges) {
-        QList<MeshCell> refined;
-        int divided = 0;
-        for (const MeshCell& cell : std::as_const(mesh.cells)) {
-            const QRectF box = cell.outline.boundingRect();
-            if (!cell.onEdge || box.width() <= size / 4 || box.height() <= size / 4) {
-                refined << cell;
-                continue;
-            }
-            ++divided;
-            for (int i = 0; i < 2; ++i)
-                for (int j = 0; j < 2; ++j) {
-                    const QRectF quarter(box.left() + i * box.width() / 2, box.top() + j * box.height() / 2,
-                                         box.width() / 2, box.height() / 2);
-                    for (const QPolygonF& piece : clipTo({cell.outline}, QPolygonF(quarter))) {
-                        const double area = areaOf(piece);
-                        if (area <= 0) continue;
-                        MeshCell part = cell;
-                        part.outline = piece;
-                        part.centre = piece.boundingRect().center();
-                        part.area = area;
-                        refined << part;
+            const QList<double> xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges);
+            const QList<double> ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges);
+            if (narrowest <= 0 || feature < narrowest) narrowest = feature;
+            if (finest <= 0 || across < finest) finest = across;
+            if (strip) ++strips;
+            for (int i = 0; i + 1 < xs.size(); ++i)
+                for (int j = 0; j + 1 < ys.size(); ++j) {
+                    const QRectF square(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1)));
+                    const double full = square.width() * square.height();
+                    const QList<QPolygonF> pieces = rectangle ? QList<QPolygonF>{QPolygonF(square)}
+                                                              : clipTo({conductor.outline}, QPolygonF(square));
+                    for (const QPolygonF& piece : pieces) {
+                        const double a = rectangle ? full : areaOf(piece);
+                        if (a <= 0) continue;
+                        MeshCell cell;
+                        cell.layer = conductor.layer;
+                        cell.outline = piece;
+                        cell.centre = piece.boundingRect().center();
+                        cell.area = a;
+                        // On the edge where the cut took something off, or
+                        // where the square touches the conductor's bounds.
+                        cell.onEdge = std::abs(a - full) > full * 1e-6 || i == 0 || j == 0 || i + 2 == xs.size()
+                                      || j + 2 == ys.size();
+                        mesh.cells << cell;
                     }
                 }
         }
-        if (divided > 0) {
-            mesh.lines << tr("Divided %1 cell(s) again at the conductors' edges.").arg(divided);
-            mesh.cells = refined;
+        *many = double(mesh.cells.size());
+        return true;
+    };
+    // As many across as asked, or as many as the solver will take: a large
+    // layout at ten across a narrow trace is tens of thousands of cells,
+    // and refusing it outright left a user nothing to solve (the heater
+    // example came out at 72 024). Fewer across is said, with why.
+    int perFeature = how.cellsAcross;
+    double many = 0;
+    bool fits = cut(perFeature, &many) && many <= kMostCharges;
+    while (!fits && perFeature > 1) {
+        const double was = many;
+        const int fewer = std::max(1, int(std::floor(perFeature * std::sqrt(double(kMostCharges) / std::max(1.0, many)))));
+        const int tried = std::min(perFeature - 1, fewer);
+        double now = 0;
+        const bool cutOk = cut(tried, &now);
+        // (Where the largest cell sets the size and not the cells across,
+        // fewer across changes nothing: no use going on.)
+        if (cutOk && now >= was) {
+            perFeature = tried;
+            many = now;
+            break;
         }
+        perFeature = tried;
+        many = now;
+        fits = cutOk && many <= kMostCharges;
     }
+    if (!fits && many > 4.0 * kMostUnknowns) {
+        mesh.cells.clear();
+        mesh.problems << tr("The layout would take %1 cells of %2 µm even at one across a conductor: ask for a larger "
+                            "largest cell, or a lower top frequency.")
+                             .arg(many, 0, 'g', 3).arg(size, 0, 'g', 3);
+        return mesh;
+    }
+    if (perFeature < how.cellsAcross && fits)
+        mesh.lines << tr("%1 cells across a conductor would be more than the %2 this build solves: %3 across instead.")
+                          .arg(how.cellsAcross).arg(kMostCharges).arg(perFeature);
+    else if (perFeature < how.cellsAcross)
+        mesh.lines << tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
+                         "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
+                          .arg(kMostCharges);
+    if (perFeature > 0 && narrowest > 0)
+        mesh.lines << tr("%1 cell(s) across the narrowest conductor (%2 µm across): cells of %3 µm there%4.")
+                          .arg(perFeature).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
+                          .arg(strips > 0 ? tr(", up to %1 times as long along a straight strip").arg(how.stretch, 0, 'g', 3)
+                                          : QString());
+    if (how.edges) mesh.lines << tr("The outermost cells of each conductor's sides are half as wide, where its charge "
+                                    "crowds.");
 
     // The unknowns: an edge two cells of a layer share is where current
     // flows from one to the other, and is one unknown of a rooftop basis.
@@ -268,10 +362,12 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     for (auto it = shared.constBegin(); it != shared.constEnd(); ++it)
         if (it.value() >= 2) ++unknowns;
     mesh.cost = costOf(unknowns);
-    mesh.lines << tr("%1 cell(s) on %2 layer(s); %3.")
-                      .arg(mesh.cells.size()).arg(mesh.byLayer().size()).arg(mesh.cost.said);
+    mesh.lines << tr("%1 cell(s) on %2 layer(s): %3. The %4 edge(s) between them are a full-wave solve's unknowns: %5.")
+                      .arg(mesh.cells.size()).arg(mesh.byLayer().size()).arg(chargeCostOf(int(mesh.cells.size())))
+                      .arg(unknowns).arg(mesh.cost.said);
     if (mesh.cost.tooBig)
         mesh.problems << mesh.cost.said;
+    if (mesh.cells.size() > kMostCharges) mesh.problems << chargeCostOf(int(mesh.cells.size()));
     if (mesh.cells.isEmpty()) mesh.problems << tr("The mesh came out empty.");
     return mesh;
 }

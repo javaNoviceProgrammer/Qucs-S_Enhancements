@@ -105,6 +105,7 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell)
     rf::MeshSettings how;
     how.maximum = cell * 1e-6;
     how.edges = false;   // (an even grid, so the cells share whole edges)
+    how.cellsAcross = 0; // (and of that size alone, as the tests were written)
     return rf::meshOf(conductors, how, rf::Stack(), 0);
 }
 
@@ -429,6 +430,42 @@ private slots:
         const QString where = got.lines.join(QLatin1Char(' '));
         QVERIFY2(where.contains(QStringLiteral("In at the cell at 20,")), qPrintable(where));
         QVERIFY2(where.contains(QStringLiteral("out at 380,")), qPrintable(where));
+    }
+
+    // At direct current the resistance divides the current, and a bar's
+    // resistance is rho l/(w t) exactly whatever the mesh - of ten cells
+    // across, the outermost half as wide, as the mesh's own default makes
+    // it. The least-energy current crowds to the edges instead, and its
+    // loss, given as the resistance at direct current until the phase B
+    // check of 24 October, came out 29 % high here.
+    void aBarsResistanceAtDirectCurrentIsItsOwnOnAnyMesh()
+    {
+        const double length = 400.0, width = 40.0;   // µm
+        const QList<rf::Conductor> bar{strip(0, 0, length, width)};
+        rf::MeshSettings how;   // ten across, graded, stretched along
+        how.maximum = 40e-6;
+        const rf::Mesh mesh = rf::meshOf(bar, how, rf::Stack(), 0);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        QVERIFY2(mesh.cells.size() > 100, qPrintable(QString::number(mesh.cells.size())));
+        const double sigma = 5.8e7, thick = 3e-6;
+        const rf::Stack stack = grounded(9.8, 100e-6, thick, sigma);
+        const rf::Inductance got = rf::inductanceOf(mesh, bar, stack, QPointF(0, width / 2), QPointF(length, width / 2),
+                                                    1e-6, 10e9);
+        QVERIFY2(got.ok(), qPrintable(got.problems.join(" | ")));
+        const double bars = length * 1e-6 / (sigma * width * 1e-6 * thick);
+        QVERIFY2(std::abs(got.rDc - bars) < 1e-9 * bars,
+                 qPrintable(QStringLiteral("%1 Ohm solved vs %2 Ohm of the bar").arg(got.rDc).arg(bars)));
+        // The current at direct current is the bar's even current, whose
+        // inductance is the textbook's; the least-energy current's is no
+        // more than it, being the least.
+        const double wanted = textbookStrip(length * 1e-6, width * 1e-6);
+        QVERIFY2(std::abs(got.lDc - wanted) < 0.02 * wanted,
+                 qPrintable(QStringLiteral("%1 nH at direct current vs %2 nH of the bar").arg(got.lDc * 1e9).arg(wanted * 1e9)));
+        QVERIFY2(got.l <= got.lDc * (1 + 1e-9) && got.l > 0.9 * got.lDc,
+                 qPrintable(QStringLiteral("%1 nH least, %2 nH at direct current").arg(got.l * 1e9).arg(got.lDc * 1e9)));
+        // And Q is of the one inductance over the true resistance.
+        QVERIFY2(std::abs(got.q - 2 * M_PI * 10e9 * got.l / got.rDc) < 1e-9 * got.q, qPrintable(QString::number(got.q)));
+        QVERIFY2(got.lines.join(QLatin1Char(' ')).contains(QStringLiteral("at direct current")), qPrintable(got.lines.join(" | ")));
     }
 
     // A wide plate taken corner to corner: the current spreads, so it

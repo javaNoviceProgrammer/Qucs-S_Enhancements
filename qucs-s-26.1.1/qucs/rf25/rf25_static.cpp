@@ -171,6 +171,32 @@ constexpr int kMostNear = 64;
 /// P(i, j) is the potential at cell i's centre of a unit charge spread
 /// over cell j. \a greenOf gives the Green's function for a point on one
 /// layer and a charge on another.
+// The potential at \a at (m) of a unit charge spread over \a rect (m):
+// near, or the cell itself, the terms worth it over the rectangle in
+// closed form, the rest - far enough that their field hardly changes over
+// a cell - at its centre; far, the charge at the cell's centre, which the
+// Green's function answers from its table in one step. \a side is the
+// wider of the two cells, so that a pair is near or far whichever way
+// round it is asked: the edge refinement leaves cells of two sizes, and
+// judging by the charged one alone made the matrix asymmetric where they
+// met.
+double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, double side, bool self)
+{
+    const double distance = std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y());
+    if (self || distance < kNearWidths * side) {
+        const QList<Green::Image> terms = g.strongestTerms(kMostNear);
+        double sum = 0;
+        for (const Green::Image& t : terms) sum += t.a * rectanglePotential(rect, at, t.z);
+        return sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, int(terms.size()));
+    }
+    return g.potential(distance);
+}
+
+QRectF scaled(const QRectF& box, double unit)
+{
+    return QRectF(box.left() * unit, box.top() * unit, box.width() * unit, box.height() * unit);
+}
+
 Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which,
                              const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit)
 {
@@ -181,28 +207,8 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
         const QPointF at = ci.centre * unit;
         for (int j = 0; j < n; ++j) {
             const MeshCell& cj = cells.at(which.at(j));
-            const Green& g = greenOf(ci.layer, cj.layer);
-            const QRectF box = cj.outline.boundingRect();
-            const QRectF rect(box.left() * unit, box.top() * unit, box.width() * unit, box.height() * unit);
-            // The wider of the two cells decides, so that a pair is near
-            // or far whichever way round it is asked: the edge refinement
-            // leaves cells of two sizes, and judging by the charged one
-            // alone made the matrix asymmetric where they met.
             const double side = std::max(std::sqrt(ci.area), std::sqrt(cj.area)) * unit;
-            const double distance = std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y());
-            if (i == j || distance < kNearWidths * side) {
-                // Near, or the cell itself: the terms worth it over the
-                // rectangle in closed form, the rest - far enough that
-                // their field hardly changes over a cell - at its centre.
-                const QList<Green::Image> terms = g.strongestTerms(kMostNear);
-                double sum = 0;
-                for (const Green::Image& t : terms) sum += t.a * rectanglePotential(rect, at, t.z);
-                p(i, j) = sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, int(terms.size()));
-            } else {
-                // Far: the charge at the cell's centre, which the Green's
-                // function answers from its table in one step.
-                p(i, j) = g.potential(distance);
-            }
+            p(i, j) = cellPotential(at, scaled(cj.outline.boundingRect(), unit), greenOf(ci.layer, cj.layer), side, i == j);
         }
     }
     return p;
@@ -291,9 +297,10 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     for (const Net& n : nets) which += n.cells;
     const int n = int(which.size());
     out.unknowns = n;
-    if (n > 4000) {
-        out.problems << tr("%1 cells is more than this build will solve a dense matrix for (4000 at most): mesh more coarsely.")
-                            .arg(n);
+    if (n > kMostCharges) {
+        out.problems << tr("%1 cells is more than this build will solve a dense matrix for (%2 at most): ask for fewer cells "
+                           "across a conductor, or a larger largest cell.")
+                            .arg(n).arg(kMostCharges);
         return out;
     }
 
@@ -302,6 +309,158 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     netOf.reserve(n);
     for (int i = 0; i < nets.size(); ++i)
         for (int k = 0; k < nets.at(i).cells.size(); ++k) netOf << i;
+
+    // The line's per-metre values are of its middle cross-section, as if
+    // the line ran on for ever: each cell there a strip the line's whole
+    // length, tiled by copies of itself end to end, and the charge per
+    // metre on those strips solved for. Its two open ends' fringing is then
+    // not in it at all. Dividing the whole charge by the length put both
+    // ends' fringing into every value "per metre" - a 50 Ohm line came out
+    // 7 % low, a coupled pair's even mode 9 % (the phase B check of 24
+    // October). Nor is the middle of the line enough, nor the difference of
+    // the line and its half: in vacuum what the ends do falls off as a power
+    // of the distance, not at once, and both left the C0 of a 1000 µm line
+    // over 100 µm a per cent high.
+    QRectF all;
+    for (const int k : std::as_const(which)) all = all.united(mesh.cells.at(k).outline.boundingRect());
+    const bool alongX = all.width() >= all.height();
+    const double lineFrom = alongX ? all.left() : all.top();
+    const double lineLength = alongX ? all.width() : all.height();   // (the layout's units)
+    const double middle = lineFrom + lineLength / 2;
+    const double eps = 1e-6 * std::max(1.0, lineLength);
+    const auto alongOf = [alongX](const QRectF& b) { return alongX ? std::pair(b.left(), b.right()) : std::pair(b.top(), b.bottom()); };
+    const auto acrossOf = [alongX](const QRectF& b) { return alongX ? std::pair(b.top(), b.bottom()) : std::pair(b.left(), b.right()); };
+    // Each net's cells at a place along the line, across it: which layer
+    // and from where to where.
+    const auto sectionAt = [&](double at) {
+        QList<QList<std::tuple<QString, double, double>>> section(nets.size());
+        for (int k = 0; k < n; ++k) {
+            const QRectF b = mesh.cells.at(which.at(k)).outline.boundingRect();
+            const auto [s0, s1] = alongOf(b);
+            if (!(s0 <= at && at < s1)) continue;
+            const auto [t0, t1] = acrossOf(b);
+            section[netOf.at(k)] << std::make_tuple(mesh.cells.at(which.at(k)).layer, t0, t1);
+        }
+        for (auto& cells : section) std::sort(cells.begin(), cells.end());
+        return section;
+    };
+    // A uniform line: every net there and the same across a quarter, half
+    // and three quarters of the way along, of rectangles, and nowhere wider
+    // than its middle - an L's other arm is at none of the three. A pad, a
+    // stub, a taper or a bend is no line, and its per-metre values are the
+    // whole over its length, said as such.
+    QList<int> column;   // (into `which')
+    bool uniform = lineLength > 0 && !nets.isEmpty();
+    if (uniform) {
+        const auto middleSection = sectionAt(middle);
+        for (const double at : {lineFrom + lineLength / 4, lineFrom + 3 * lineLength / 4}) {
+            const auto there = sectionAt(at);
+            for (int net = 0; net < nets.size() && uniform; ++net) {
+                const auto& a = middleSection.at(net);
+                const auto& b = there.at(net);
+                if (a.isEmpty() || a.size() != b.size()) uniform = false;
+                for (int i = 0; i < a.size() && uniform; ++i)
+                    if (std::get<0>(a.at(i)) != std::get<0>(b.at(i)) || std::abs(std::get<1>(a.at(i)) - std::get<1>(b.at(i))) > eps
+                        || std::abs(std::get<2>(a.at(i)) - std::get<2>(b.at(i))) > eps)
+                        uniform = false;
+            }
+        }
+        // (Each net's own breadth, of all its cells, against its middle's.)
+        for (int net = 0; net < nets.size() && uniform; ++net) {
+            double lo = 0, hi = 0, midLo = 0, midHi = 0;
+            bool first = true;
+            for (int k = 0; k < n; ++k) {
+                if (netOf.at(k) != net) continue;
+                const auto [t0, t1] = acrossOf(mesh.cells.at(which.at(k)).outline.boundingRect());
+                lo = first ? t0 : std::min(lo, t0);
+                hi = first ? t1 : std::max(hi, t1);
+                first = false;
+            }
+            const auto& mid = middleSection.at(net);
+            for (int i = 0; i < mid.size(); ++i) {
+                midLo = i == 0 ? std::get<1>(mid.at(i)) : std::min(midLo, std::get<1>(mid.at(i)));
+                midHi = i == 0 ? std::get<2>(mid.at(i)) : std::max(midHi, std::get<2>(mid.at(i)));
+            }
+            if (first || mid.isEmpty() || std::abs(lo - midLo) > eps || std::abs(hi - midHi) > eps) uniform = false;
+        }
+        for (int k = 0; k < n && uniform; ++k) {
+            const MeshCell& cell = mesh.cells.at(which.at(k));
+            const QRectF b = cell.outline.boundingRect();
+            const auto [s0, s1] = alongOf(b);
+            if (!(s0 <= middle && middle < s1)) continue;
+            if (std::abs(b.width() * b.height() - cell.area) > 1e-6 * std::max(1e-30, cell.area)) uniform = false;
+            column << k;
+        }
+    }
+    // How far along the copies are summed: a hundred times the larger of
+    // the stack's height and the cross-section's span. Over a ground what a
+    // strip does falls as the cube of the distance, so what is left beyond
+    // is a part in ten thousand; with no ground it falls as the distance
+    // itself, and a line's capacitance per metre to infinity has no value -
+    // it falls as the log of the length - so its values are of that much
+    // line, which is said.
+    double reach = 0;   // m
+    if (uniform) {
+        double lo = 0, hi = 0, top = 0;
+        for (int i = 0; i < column.size(); ++i) {
+            const MeshCell& cell = mesh.cells.at(which.at(column.at(i)));
+            const auto [t0, t1] = acrossOf(cell.outline.boundingRect());
+            lo = i == 0 ? t0 : std::min(lo, t0);
+            hi = i == 0 ? t1 : std::max(hi, t1);
+            top = std::max(top, height.value(cell.layer));
+        }
+        reach = 100 * std::max((hi - lo) * micrometre, top);
+    }
+    // The cross-section's own Maxwell matrix per metre, and how each net's
+    // charge crowds across it: R per metre is the surface resistance times
+    // the sum of each strip's charge squared over its width, over the
+    // whole charge squared - the current running where the charge sits.
+    const auto crossSection = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
+                                  QList<QList<double>>* matrix, QList<double>* crowd) {
+        const int m = int(column.size());
+        Eigen::MatrixXd p(m, m);
+        for (int a = 0; a < m; ++a) {
+            const MeshCell& ca = mesh.cells.at(which.at(column.at(a)));
+            const QPointF at = ca.centre * micrometre;
+            for (int b = 0; b < m; ++b) {
+                const MeshCell& cb = mesh.cells.at(which.at(column.at(b)));
+                const Green& g = greenOf(ca.layer, cb.layer);
+                const QRectF rect = scaled(cb.outline.boundingRect(), micrometre);
+                const double delta = alongX ? rect.width() : rect.height();
+                const double side = std::max(std::sqrt(ca.area), std::sqrt(cb.area)) * micrometre;
+                const int copies = int(std::ceil(reach / delta));
+                double sum = 0;
+                for (int k = -copies; k <= copies; ++k) {
+                    const QRectF copy = rect.translated(alongX ? k * delta : 0.0, alongX ? 0.0 : k * delta);
+                    sum += cellPotential(at, copy, g, side, a == b && k == 0);
+                }
+                // (A charge per metre on the strip puts delta of it on each copy.)
+                p(a, b) = sum * delta;
+            }
+        }
+        const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
+        matrix->clear();
+        if (crowd != nullptr) crowd->clear();
+        for (int net = 0; net < nets.size(); ++net) {
+            Eigen::VectorXd v = Eigen::VectorXd::Zero(m);
+            for (int a = 0; a < m; ++a) v(a) = netOf.at(column.at(a)) == net ? 1.0 : 0.0;
+            const Eigen::VectorXd q = lu.solve(v);   // C/m on each strip
+            QList<double> row(nets.size(), 0.0);
+            for (int a = 0; a < m; ++a) row[netOf.at(column.at(a))] += q(a);
+            matrix->append(row);
+            if (crowd != nullptr) {
+                double square = 0, total = 0;
+                for (int a = 0; a < m; ++a) {
+                    if (netOf.at(column.at(a)) != net) continue;
+                    const auto [t0, t1] = acrossOf(mesh.cells.at(which.at(column.at(a))).outline.boundingRect());
+                    const double width = (t1 - t0) * micrometre;
+                    if (width > 0) square += q(a) * q(a) / width;
+                    total += q(a);
+                }
+                crowd->append(total != 0 ? square / (total * total) : 0.0);
+            }
+        }
+    };
 
     QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
@@ -341,6 +500,11 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     out.conditionHint = solve(fromStack, &out.maxwell, &crowding);
     solve(fromVacuum, &out.maxwell0);
     out.crowding = crowding;
+    out.grounded = layers0.groundBelow;
+    if (uniform) {
+        crossSection(fromStack, &out.perMetre.maxwell, &out.perMetre.crowding);
+        crossSection(fromVacuum, &out.perMetre.maxwell0, nullptr);
+    }
 
     // Each dielectric's share of the field, for the loss it adds. The
     // energy a layer holds is eps dC/deps, so G = w sum(tand_k eps_k
@@ -349,6 +513,9 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     // all for a stack that says no loss.
     out.dielectricLoss.clear();
     for (int i = 0; i < nets.size(); ++i) out.dielectricLoss << QList<double>(nets.size(), 0.0);
+    out.perMetre.dielectricLoss.clear();
+    if (uniform)
+        for (int i = 0; i < nets.size(); ++i) out.perMetre.dielectricLoss << QList<double>(nets.size(), 0.0);
     bool lossy = false;
     for (const Layer& l : stack.layers)
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand > 0) lossy = true;
@@ -378,8 +545,10 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
                 const auto it = some.constFind(keyOf(a, b));
                 return it != some.constEnd() ? it.value() : some.constBegin().value();
             };
-            QList<QList<double>> nudgedMaxwell;
+            QList<QList<double>> nudgedMaxwell, nudgedPerMetre;
             solve(fromNudged, &nudgedMaxwell);
+            // (And of the cross-section, for G per metre.)
+            if (uniform) crossSection(fromNudged, &nudgedPerMetre, nullptr);
             // The whole matrix's derivative, not one number of it: a
             // layer's loss couples two conductors as well as loading one,
             // and coupled lines need that term.
@@ -387,19 +556,53 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
                 for (int j = 0; j < nets.size(); ++j) {
                     const double dCdEps = (nudgedMaxwell.at(i).at(j) - out.maxwell.at(i).at(j)) / step;
                     out.dielectricLoss[i][j] += tand * was * dCdEps;
+                    // (And per metre, of the cross-section.)
+                    if (uniform && i < nudgedPerMetre.size() && j < nudgedPerMetre.at(i).size())
+                        out.perMetre.dielectricLoss[i][j] +=
+                            tand * was * (nudgedPerMetre.at(i).at(j) - out.perMetre.maxwell.at(i).at(j)) / step;
                 }
         }
     }
-    // One net's own loss tangent, for a single line: its row of the loss
-    // matrix over its row of the capacitance, which is what it was before
-    // the matrix was kept.
-    for (int i = 0; i < nets.size(); ++i) {
-        double here = 0, lost = 0;
-        for (int j = 0; j < nets.size(); ++j) {
-            here += out.maxwell.at(i).at(j);
-            lost += out.dielectricLoss.at(i).at(j);
+    // What was done for the per-metre values, said.
+    {
+        Extraction::PerMetre& pm = out.perMetre;
+        pm.fromMiddle = uniform && pm.maxwell.size() == nets.size() && pm.maxwell0.size() == nets.size();
+        pm.length = lineLength * micrometre;
+        pm.reach = pm.fromMiddle ? reach : 0;
+        if (pm.fromMiddle) {
+            pm.said = tr("Per metre of the line's middle cross-section, as if it ran on for ever: its two open ends' "
+                         "fringing is not in it.");
+            if (!out.grounded && nets.size() == 1)
+                pm.said = tr("One conductor and no ground: no line, so no values per metre.");
+            else if (!out.grounded)
+                pm.said += tr(" With no ground, a line's capacitance to infinity has no value per metre - it falls as "
+                              "the log of the length - so these are of %1 mm of it; between its conductors they hold.")
+                               .arg(2 * reach * 1e3, 0, 'g', 3);
+        } else {
+            pm.maxwell.clear();
+            pm.maxwell0.clear();
+            pm.dielectricLoss.clear();
+            pm.crowding.clear();
+            pm.said = tr("Not a uniform line - a net does not run its whole length - so its per-metre values are the "
+                         "whole over its length, the ends' fringing in them.");
         }
-        out.lossTangent << (here != 0 ? lost / here : 0.0);
+        out.lines << pm.said;
+    }
+    // One net's own loss tangent, for a single line: its row of the loss
+    // matrix over its row of the capacitance - of the line's middle where
+    // that was taken, which is what its C per metre is of too.
+    {
+        const bool middle = out.perMetre.fromMiddle;
+        const QList<QList<double>>& cap = middle ? out.perMetre.maxwell : out.maxwell;
+        const QList<QList<double>>& loss = middle ? out.perMetre.dielectricLoss : out.dielectricLoss;
+        for (int i = 0; i < nets.size(); ++i) {
+            double here = 0, lost = 0;
+            for (int j = 0; j < nets.size(); ++j) {
+                here += cap.at(i).at(j);
+                lost += loss.at(i).at(j);
+            }
+            out.lossTangent << (here != 0 ? lost / here : 0.0);
+        }
     }
     // The metal each net is on: its conductivity and thickness, for the
     // surface resistance at a frequency.
@@ -430,8 +633,13 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     out.c0 = mutualOf(out.maxwell0);
     for (const Net& net : nets) out.names << net.name;
 
-    out.lines << tr("%1 cell(s) on %2 net(s) over %3, as %4 unknowns.")
-                     .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", "))).arg(n);
+    // (The charge's own count, as the mesh's line gives it - "unknowns"
+    // there are a full-wave solve's edges, a second number the phase B
+    // check found beside this one under the same word.)
+    const double megabytes = 8.0 * double(n) * double(n) / (1024 * 1024);
+    out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, a dense matrix of %4 to solve.")
+                     .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")))
+                     .arg(megabytes >= 1024 ? tr("%1 GB").arg(megabytes / 1024, 0, 'f', 1) : tr("%1 MB").arg(megabytes, 0, 'f', 1));
     for (const QString& name : std::as_const(layers))
         out.lines << tr("%1 sits %2 µm up the stack.").arg(name).arg(height.value(name) * 1e6, 0, 'g', 4);
     const Green& first = greens[keyOf(layers.first(), layers.first())];
@@ -475,10 +683,33 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
         out.problems << tr("A line's parameters are per metre: say how long the piece that was solved is.");
         return out;
     }
-    out.c = extraction.selfCapacitance(index) / length;
-    double bare = 0;
-    for (int j = 0; j < extraction.c0.at(index).size(); ++j) bare += extraction.c0.at(index).at(j);
-    out.c0 = bare / length;
+    // A lone conductor with no ground is no line: its charge has nothing
+    // to return through, so it has a capacitance - to infinity - and no
+    // Z0, eps_eff or S parameters (the phase B check of 24 October).
+    if (!extraction.grounded && extraction.c.size() == 1) {
+        out.problems << tr("One conductor and no ground is no line: its current has nothing to return through. It has "
+                           "a capacitance, to infinity, but no Z0, eps_eff or S parameters - put a ground plane under "
+                           "the stack, or draw the conductor it returns through.");
+        return out;
+    }
+    // From the line's cross-section, where that was taken: its own per metre,
+    // the ends' fringing left out, whatever length is asked for - which is
+    // then the length of the two-port alone. Else the whole over the
+    // length, ends and all.
+    const Extraction::PerMetre& pm = extraction.perMetre;
+    const bool middle = pm.fromMiddle && index < pm.maxwell.size() && index < pm.maxwell0.size();
+    if (middle) {
+        double held = 0, bare = 0;
+        for (int j = 0; j < pm.maxwell.at(index).size(); ++j) held += pm.maxwell.at(index).at(j);
+        for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);
+        out.c = held;
+        out.c0 = bare;
+    } else {
+        out.c = extraction.selfCapacitance(index) / length;
+        double bare = 0;
+        for (int j = 0; j < extraction.c0.at(index).size(); ++j) bare += extraction.c0.at(index).at(j);
+        out.c0 = bare / length;
+    }
     if (!(out.c > 0) || !(out.c0 > 0)) {
         out.problems << tr("Its capacitance came out as %1 F/m and %2 F/m in vacuum: neither can be nothing or less.")
                             .arg(out.c, 0, 'g', 3).arg(out.c0, 0, 'g', 3);
@@ -507,7 +738,8 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     // Rs times the length times how the charge crowds: for a line of
     // width W whose current runs evenly that is Rs/W, and where it
     // crowds at the edges it is more.
-    out.r = out.surfaceResistance * length * extraction.crowding.value(index);
+    out.r = middle && index < pm.crowding.size() ? out.surfaceResistance * pm.crowding.at(index)
+                                                 : out.surfaceResistance * length * extraction.crowding.value(index);
     // And the dielectrics', by the share of the field each holds.
     out.g = omega * out.c * extraction.lossTangent.value(index);
     if (!(out.r >= 0) || !(out.g >= 0)) {

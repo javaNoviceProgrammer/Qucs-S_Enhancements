@@ -535,12 +535,22 @@ private slots:
         QVERIFY2(std::abs(off) < e.dielectricLoss.at(0).at(0), "a pair couples less than it loads");
         QVERIFY2(std::abs(off - e.dielectricLoss.at(1).at(0)) < 1e-6 * std::abs(off), "the loss matrix is symmetric");
 
-        // G is w times it, which the coupled lines carry across whole.
+        // G is w times it, which the coupled lines carry across whole - of
+        // the line's cross-section, per metre as C is, its ends' share not
+        // in it; so near the whole over the length, but not it (the
+        // coupling per metre is a little more: at the ends the field
+        // goes to the ground rather than to the other line).
         const fem::CoupledLines c = rf::asCoupledLines(e, length, f);
         QVERIFY(c.error.isEmpty());
         const double omega = 2 * M_PI * f;
-        QVERIFY2(std::abs(c.G[0][1] - omega * off / length) < 1e-6 * std::abs(omega * off / length),
+        QVERIFY(e.perMetre.fromMiddle);
+        QCOMPARE(e.perMetre.dielectricLoss.size(), 2);
+        const double offPerMetre = e.perMetre.dielectricLoss.at(0).at(1);
+        QVERIFY2(std::abs(c.G[0][1] - omega * offPerMetre) < 1e-6 * std::abs(omega * offPerMetre),
                  "the conductance matrix is w times the loss matrix, per metre");
+        QVERIFY2(offPerMetre < 0 && std::abs(offPerMetre - off / length) < 0.2 * std::abs(off / length)
+                     && std::abs(offPerMetre - off / length) > 1e-4 * std::abs(off / length),
+                 qPrintable(QStringLiteral("per metre %1, the whole over the length %2").arg(offPerMetre).arg(off / length)));
         QVERIFY2(c.G[0][1] < 0, "and its coupling term survives the crossing");
 
         // A stack that declares no loss has none of it.
@@ -586,7 +596,15 @@ private slots:
         // 2000 µm length, so the depth is not what sets it: the width is.
         QCOMPARE(limit.epsilonMax, epsr);
         QVERIFY2(std::abs(limit.transverse - 200e-6) < 1e-9, qPrintable(QStringLiteral("%1 m").arg(limit.transverse)));
-        QVERIFY2(limit.what.contains(QStringLiteral("widest")), qPrintable(limit.what));
+        QVERIFY2(limit.what.contains(QStringLiteral("the conductor is 200")), qPrintable(limit.what));
+        // Of a pair, what the two span - not the width of either (the
+        // phase B check's N3: two 100 µm strips said "the widest is 250").
+        {
+            const QList<rf::Conductor> pair{strip(0, 0, 2000, 100), strip(0, 150, 2000, 100)};
+            const rf::QuasiStaticLimit both = rf::quasiStaticLimit(stack, meshed(pair, 60), 1e-6, 1e8, 2e-3, 2);
+            QVERIFY2(both.what.contains(QStringLiteral("the conductors span 250")), qPrintable(both.what));
+            QVERIFY2(!both.what.contains(QStringLiteral("widest")), qPrintable(both.what));
+        }
         // A tenth of a wavelength in alumina at 200 µm: about 48 GHz.
         const double wanted = rf::kLightSpeed / (10 * 200e-6 * std::sqrt(epsr));
         QVERIFY2(std::abs(limit.frequency - wanted) < 1e-6 * wanted, qPrintable(QStringLiteral("%1 Hz").arg(limit.frequency)));

@@ -134,6 +134,18 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         }
         net.insert(QStringLiteral("c"), row);
         net.insert(QStringLiteral("c0"), bare);
+        // One of several conductors is no line by itself: its own row - its
+        // charge with every conductor at a volt - is neither of a pair's
+        // modes, which "coupled lines" gives.
+        if (e->names.size() > 1) {
+            net.insert(QStringLiteral("line not given"),
+                       tr("%1 is one of %2 coupled conductors, which have modes rather than a line each: see \"coupled "
+                          "lines\".")
+                           .arg(e->names.at(i))
+                           .arg(e->names.size()));
+            nets.append(net);
+            continue;
+        }
         const LineParameters lp = lineParameters(*e, i, length, frequency);
         if (lp.ok()) {
             QJsonObject line;
@@ -180,7 +192,8 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     out.insert(QStringLiteral("nets"), nets);
     // Several conductors are coupled lines, whose modes are what a
     // designer of a pair actually asks after.
-    if (e->names.size() > 1 && frequency > 0 && length > 0) {
+    double slowest = 0;   // m/s: the slowest mode's, for where the S parameters first turn over
+    if (e->names.size() > 1 && length > 0) {
         const fem::CoupledLines cl = asCoupledLines(*e, length, frequency);
         if (cl.error.isEmpty() && !cl.modes.empty()) {
             QJsonObject coupled;
@@ -194,7 +207,9 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                 one.insert(QStringLiteral("Z_im"), m.Z.imag());
                 one.insert(QStringLiteral("alpha"), m.alphaDb);
                 one.insert(QStringLiteral("beta"), m.gamma.imag());
+                one.insert(QStringLiteral("epsilon_eff"), m.nEff * m.nEff);
                 modes.append(one);
+                if (m.nEff > 0) slowest = slowest > 0 ? std::min(slowest, kLightSpeed / m.nEff) : kLightSpeed / m.nEff;
             }
             coupled.insert(QStringLiteral("modes"), modes);
             // The 2N-port: the near ends first, then the far ends.
@@ -226,10 +241,10 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     // Where a quasi-static answer stops being the whole story: the one
     // thing a caller must not be left to guess at.
     {
-        const LineParameters first = lineParameters(*e, 0, length);
+        if (e->names.size() == 1) slowest = lineParameters(*e, 0, length).velocity;
         const std::shared_ptr<const Mesh> mesh = model->mesh();
-        const QuasiStaticLimit limit =
-            quasiStaticLimit(model->model().stack(), mesh ? *mesh : Mesh(), 1e-6, first.velocity, length);
+        const QuasiStaticLimit limit = quasiStaticLimit(model->model().stack(), mesh ? *mesh : Mesh(), 1e-6, slowest, length,
+                                                        int(e->names.size()));
         QJsonObject said;
         said.insert(QStringLiteral("frequency"), limit.frequency);
         said.insert(QStringLiteral("what sets it"), limit.what);
@@ -257,8 +272,53 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                   "and L from the two; with a frequency, R from the metal's surface impedance and how the charge "
                   "crowds, G from the dielectrics' loss tangents, and the Zc, alpha, beta and S parameters those "
                   "make. The S parameters are of a uniform line of this length and are right wherever the "
-                  "cross-section is electrically small - see the quasi-static limit. No inductance of a loop, no "
-                  "ports and no full-wave solve in this build; rf25_export writes a Touchstone of these."));
+                  "cross-section is electrically small - see the quasi-static limit. A loop's inductance is "
+                  "rf25_inductance's, by another method; no full-wave solve in this build; rf25_export writes a "
+                  "Touchstone of these."));
+    // Brief: the numbers a line is asked after and nothing else - an
+    // answer of 2.5 kB a net had its line cut first by max_chars (the
+    // phase B check of 24 October).
+    if (args.value(QLatin1String("brief")).toBool()) {
+        QJsonObject brief;
+        brief.insert(QStringLiteral("model"), out.value(QStringLiteral("model")));
+        brief.insert(QStringLiteral("length"), length);
+        brief.insert(QStringLiteral("unknowns"), e->unknowns);
+        QJsonArray few;
+        for (const QJsonValue& v : out.value(QStringLiteral("nets")).toArray()) {
+            const QJsonObject net = v.toObject();
+            QJsonObject one;
+            one.insert(QStringLiteral("name"), net.value(QStringLiteral("name")));
+            one.insert(QStringLiteral("capacitance"), net.value(QStringLiteral("capacitance")));
+            const QJsonObject line = net.value(QStringLiteral("line")).toObject();
+            if (!line.isEmpty()) {
+                QJsonObject kept;
+                for (const char* key : {"C", "C0", "epsilon_eff", "Z0", "L", "R", "G", "alpha"})
+                    if (line.contains(QLatin1String(key))) kept.insert(QLatin1String(key), line.value(QLatin1String(key)));
+                one.insert(QStringLiteral("line"), kept);
+            } else if (net.contains(QStringLiteral("line not given"))) {
+                one.insert(QStringLiteral("line not given"), net.value(QStringLiteral("line not given")));
+            }
+            few.append(one);
+        }
+        brief.insert(QStringLiteral("nets"), few);
+        const QJsonObject coupled = out.value(QStringLiteral("coupled lines")).toObject();
+        if (!coupled.isEmpty()) {
+            QJsonArray modes;
+            for (const QJsonValue& v : coupled.value(QStringLiteral("modes")).toArray()) {
+                const QJsonObject mode = v.toObject();
+                QJsonObject kept;
+                for (const char* key : {"name", "Z", "epsilon_eff", "alpha"}) kept.insert(QLatin1String(key), mode.value(QLatin1String(key)));
+                modes.append(kept);
+            }
+            brief.insert(QStringLiteral("modes"), modes);
+        } else if (out.contains(QStringLiteral("coupled lines not given"))) {
+            brief.insert(QStringLiteral("coupled lines not given"), out.value(QStringLiteral("coupled lines not given")));
+        }
+        brief.insert(QStringLiteral("quasi-static limit"),
+                     out.value(QStringLiteral("quasi-static limit")).toObject().value(QStringLiteral("frequency")));
+        brief.insert(QStringLiteral("per metre"), e->perMetre.said);
+        return jsonResult(brief);
+    }
     return jsonResult(out);
 }
 
@@ -319,6 +379,7 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     QJsonObject out;
     out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
     out.insert(QStringLiteral("L"), ind->l);
+    out.insert(QStringLiteral("L_dc"), ind->lDc);
     out.insert(QStringLiteral("R_dc"), ind->rDc);
     // Q at the frequency asked for, else at the study's own: wL/R, which
     // needs no second solve since neither L nor R moves with it.
@@ -335,10 +396,11 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     out.insert(QStringLiteral("what it did"), said);
     out.insert(QStringLiteral("note"),
                tr("Ruehli's partial inductances over the runs of current the mesh's shared edges give, with the "
-                  "current solved for rather than assumed: of every current that obeys Kirchhoff's law and carries the "
-                  "terminal current, the one that flows is the one of least magnetic energy. That is the current at "
-                  "direct current, so L is the low-frequency value and R_dc is the loop's own resistance, not a line's "
-                  "R per metre. rf25_solve's L is a different quantity: 1/(c0^2 C0), of a uniform cross-section."));
+                  "current solved for rather than assumed. L is of the current of least magnetic energy, which is "
+                  "where a current goes once its inductance outweighs its resistance; L_dc and R_dc are of the current "
+                  "at direct current, which the resistance divides instead - R_dc the loop's own resistance, not a "
+                  "line's R per metre. Between the two regimes the current is neither, and is not solved. rf25_solve's "
+                  "L is a different quantity: 1/(c0^2 C0), of a uniform cross-section."));
     return jsonResult(out);
 }
 

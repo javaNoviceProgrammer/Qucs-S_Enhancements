@@ -173,6 +173,12 @@ here rather than left in the file as a break nothing can catch.
   the low-frequency L. At a frequency the current leaves the inside of the metal and L falls a little
   towards its high-frequency value; that wants `(R + jwL)i = v` solved at each frequency, which is the
   next thing and would also give the loss properly.
+  *(Corrected on 25 October: this had it backwards. At direct current the resistance divides the current,
+  not the inductance; the current of least magnetic energy is where a current goes once its inductance
+  outweighs its resistance. Its loss, given as the resistance at direct current, counted its crowding as
+  resistance - 29 % high on a bar ten cells across, which the finer default mesh of the phase B check
+  showed. R at direct current, and the inductance of that current beside the other, now come from the
+  network's own resistive solve: see `2026-10-25-claude-rf25-phase-b-check.md`.)*
 - **The thickness is in the resistance but not the geometry.** The geometric mean distance is the thin
   strip's, consistent with the thin-metal approximation the rest of the solver makes, and good to a few
   per cent while `t/w` stays small — which on a chip it does.

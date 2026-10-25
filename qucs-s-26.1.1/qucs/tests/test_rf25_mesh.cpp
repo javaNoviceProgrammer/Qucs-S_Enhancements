@@ -115,6 +115,7 @@ private slots:
 
         rf::MeshSettings how;
         how.edges = false;
+        how.cellsAcross = 0;   // (the wavelength and the largest cell alone)
         // 10 GHz in eps_r 4: 30 mm / 2 = 15 mm, and 20 cells to it is 750 µm.
         const rf::Mesh mesh = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 2000, 100)}, how, m.stack(), rf::topFrequency(m));
         QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
@@ -132,6 +133,7 @@ private slots:
         // than guessing.
         rf::MeshSettings nothing;
         nothing.edges = false;
+        nothing.cellsAcross = 0;
         const rf::Mesh blind = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 10, 10)}, nothing, m.stack(), 0);
         QVERIFY(!blind.ok());
         QVERIFY2(says(blind.problems, "how large a cell may be"), qPrintable(blind.problems.join(" | ")));
@@ -144,6 +146,7 @@ private slots:
         rf::Model m = stacked();
         rf::MeshSettings how;
         how.edges = false;
+        how.cellsAcross = 0;
         how.maximum = 1e-6;   // 1 µm cells
         const rf::Mesh mesh = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 4, 2)}, how, m.stack(), 0);
         QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
@@ -189,26 +192,149 @@ private slots:
         QVERIFY2(says(none.problems, "no shapes to mesh"), qPrintable(none.problems.join(" | ")));
     }
 
-    // The edges: where the current crowds, the cells are divided again -
-    // and only there.
-    void theCellsAtAnEdgeAreDividedAgain()
+    // The edges: where the charge crowds, the outermost cells of each side
+    // are half as wide - lines of the grid, not cells divided again, so
+    // that every two neighbours still share a whole edge.
+    void theCellsAtAnEdgeAreHalved()
     {
         rf::Model m = stacked();
         rf::MeshSettings how;
         how.maximum = 1e-6;
         how.edges = false;
+        how.cellsAcross = 0;
         const rf::Mesh plain = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 6, 6)}, how, m.stack(), 0);
         QCOMPARE(plain.cells.size(), 36);
-        QVERIFY(!says(plain.lines, "Divided"));
+        QVERIFY(!says(plain.lines, "half as wide"));
 
         how.edges = true;
         const rf::Mesh refined = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 6, 6)}, how, m.stack(), 0);
-        // The 20 cells of the border become four each; the 16 inside stay.
-        QCOMPARE(refined.cells.size(), 16 + 20 * 4);
-        QVERIFY2(says(refined.lines, "Divided 20 cell(s)"), qPrintable(refined.lines.join(" | ")));
-        double area = 0;
-        for (const rf::MeshCell& c : refined.cells) area += c.area;
+        // Lines at 0, 0.5, 1 ... 5, 5.5, 6: eight spaces a side.
+        QCOMPARE(refined.cells.size(), 64);
+        QVERIFY2(says(refined.lines, "half as wide"), qPrintable(refined.lines.join(" | ")));
+        double area = 0, smallest = 1e9;
+        for (const rf::MeshCell& c : refined.cells) {
+            area += c.area;
+            smallest = std::min(smallest, c.area);
+        }
         QVERIFY2(std::abs(area - 36.0) < 1e-6, qPrintable(QString::number(area)));
+        QVERIFY2(std::abs(smallest - 0.25) < 1e-9, qPrintable(QString::number(smallest)));   // a corner's
+        // Every edge of a cell is either the conductor's or one whole edge
+        // of one neighbour: 2 x 8 x 7 between them, no T-junction.
+        QCOMPARE(refined.cost.unknowns, 2 * 8 * 7);
+    }
+
+    // Cells across a conductor: at least so many across its narrowest
+    // part, whatever the wavelength - the phase B check found a 100 µm
+    // strip one cell wide at the default, its Z0 12 % high - and a straight
+    // strip's stretched along it, where the charge hardly changes.
+    void aConductorHasCellsAcrossIt()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;   // ten across, four times as long, edges halved
+        QCOMPARE(how.cellsAcross, 10);
+        QCOMPARE(how.stretch, 4.0);
+        // 10 GHz in eps_r 4: 750 µm cells by the wavelength, on a strip
+        // 100 µm wide and 1000 long.
+        const rf::Mesh strip = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 100)}, how, m.stack(), 10e9);
+        QVERIFY2(strip.ok(), qPrintable(strip.problems.join(" | ")));
+        // Across: 10 µm, the outermost 5 - twelve. Along: 40 µm, the
+        // outermost 20 - twenty-seven.
+        QCOMPARE(strip.cells.size(), 12 * 27);
+        double narrowest = 1e9, longest = 0;
+        for (const rf::MeshCell& c : strip.cells) {
+            const QRectF b = c.outline.boundingRect();
+            narrowest = std::min(narrowest, b.height());
+            longest = std::max(longest, b.width());
+        }
+        QVERIFY2(std::abs(narrowest - 5) < 1e-9 && std::abs(longest - 40) < 1e-9,
+                 qPrintable(QStringLiteral("%1 µm across, %2 along").arg(narrowest).arg(longest)));
+        QVERIFY2(says(strip.lines, "10 cell(s) across the narrowest conductor (100 "), qPrintable(strip.lines.join(" | ")));
+        QVERIFY2(says(strip.lines, "up to 4 times as long"), qPrintable(strip.lines.join(" | ")));
+        // No stretch: square cells along it too.
+        rf::MeshSettings square = how;
+        square.stretch = 1;
+        QCOMPARE(rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 100)}, square, m.stack(), 10e9).cells.size(), 12 * 102);
+        // The largest cell still wins where it is smaller than that.
+        rf::MeshSettings small = how;
+        small.maximum = 5e-6;
+        const rf::Mesh capped = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 100)}, small, m.stack(), 10e9);
+        QCOMPARE(capped.cells.size(), 22 * 202);
+        // A pad no strip: square cells, ten across its short side.
+        const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 200, 100)}, how, m.stack(), 10e9);
+        QCOMPARE(pad.cells.size(), 22 * 12);
+        QVERIFY(!says(pad.lines, "times as long"));
+        // A shape that is no rectangle goes by twice its area over its
+        // perimeter, a trace's width: an L of 20 µm arms is 20 across.
+        rf::Conductor ell;
+        ell.layer = QStringLiteral("M1");
+        ell.outline = QPolygonF({QPointF(0, 0), QPointF(200, 0), QPointF(200, 20), QPointF(20, 20),
+                                 QPointF(20, 200), QPointF(0, 200)});
+        const rf::Mesh bent = rf::meshOf({ell}, how, m.stack(), 10e9);
+        QVERIFY2(bent.ok(), qPrintable(bent.problems.join(" | ")));
+        double area = 0;
+        for (const rf::MeshCell& c : bent.cells) area += c.area;
+        QVERIFY2(std::abs(area - (200 * 20 + 180 * 20)) < 1e-6, qPrintable(QString::number(area)));
+        QVERIFY2(says(bent.lines, "narrowest conductor (19 "), qPrintable(bent.lines.join(" | ")));
+        // None at all: the wavelength alone, as before.
+        rf::MeshSettings none = how;
+        none.cellsAcross = 0;
+        QVERIFY(rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 100)}, none, m.stack(), 10e9).cells.size() < 10);
+    }
+
+    // As many across as asked - or as many as the solver takes, said: a
+    // layout too large for ten across a trace gets fewer, not a refusal.
+    void aMeshTooLargeForTheSolverHasFewerAcross()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;
+        // Forty strips 10 µm wide and 2 mm long: ten across is 40 x 12 x
+        // 52, over 24 000 cells.
+        QList<rf::Conductor> many;
+        for (int i = 0; i < 40; ++i) many << on(QStringLiteral("M1"), 0, i * 30, 2000, 10);
+        const rf::Mesh mesh = rf::meshOf(many, how, m.stack(), 10e9);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        QVERIFY2(mesh.cells.size() <= rf::kMostCharges, qPrintable(QString::number(mesh.cells.size())));
+        QVERIFY2(mesh.cells.size() > rf::kMostCharges / 4, qPrintable(QString::number(mesh.cells.size())));
+        QVERIFY2(says(mesh.lines, "10 cells across a conductor would be more than the 8000"), qPrintable(mesh.lines.join(" | ")));
+        QVERIFY2(says(mesh.lines, "across instead"), qPrintable(mesh.lines.join(" | ")));
+        // One that fits is not touched.
+        const rf::Mesh one = rf::meshOf({many.first()}, how, m.stack(), 10e9);
+        QVERIFY(!says(one.lines, "across instead"));
+        // Where the largest cell sets the size, fewer across cannot help,
+        // and the count is said as too many, with what would.
+        rf::MeshSettings tiny = how;
+        tiny.maximum = 4e-6;
+        const rf::Mesh capped = rf::meshOf(many.mid(0, 20), tiny, m.stack(), 10e9);
+        QVERIFY(!capped.ok());
+        QVERIFY2(says(capped.problems, "more than this build will solve"), qPrintable(capped.problems.join(" | ")));
+        QVERIFY2(says(capped.lines, "ask for a larger largest cell"), qPrintable(capped.lines.join(" | ")));
+        QVERIFY(!says(capped.lines, "across instead"));
+    }
+
+    // The two new settings read from the node, and what is no setting.
+    void theCellsAcrossAndTheStretchAreRead()
+    {
+        rf::Model m = stacked();
+        rf::Node& node = m.mesh();
+        QStringList problems;
+        set(node, "cells_across", 16);
+        set(node, "stretch", QStringLiteral("2.5"));
+        const rf::MeshSettings how = rf::meshSettingsOf(node, m.parameters(), &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        QCOMPARE(how.cellsAcross, 16);
+        QCOMPARE(how.stretch, 2.5);
+        set(node, "cells_across", -2);
+        set(node, "stretch", QStringLiteral("0.5"));
+        const rf::MeshSettings odd = rf::meshSettingsOf(node, m.parameters(), &problems);
+        QVERIFY2(says(problems, "fewer than none"), qPrintable(problems.join(" | ")));
+        QVERIFY2(says(problems, "a stretch of 1 at least"), qPrintable(problems.join(" | ")));
+        QCOMPARE(odd.cellsAcross, 0);
+        QCOMPARE(odd.stretch, 1.0);
+        // And the node has them, with their defaults.
+        const rf::Model blank = rf::Model::blank();
+        QVERIFY2(blank.mesh().props.contains(QStringLiteral("cells_across")) || rf::integerOf(blank.mesh(), QStringLiteral("cells_across")) == 10,
+                 "no cells_across on a new model's mesh");
+        QCOMPARE(rf::integerOf(blank.mesh(), QStringLiteral("cells_across")), 10);
     }
 
     // The count a solver would hold: the edges two cells share, what a
@@ -218,6 +344,7 @@ private slots:
         rf::Model m = stacked();
         rf::MeshSettings how;
         how.edges = false;
+        how.cellsAcross = 0;
         how.maximum = 1e-6;
         // Two cells side by side share one edge: one unknown.
         const rf::Mesh two = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 2, 1)}, how, m.stack(), 0);
@@ -247,6 +374,7 @@ private slots:
         // refused before it is cut, not after.
         rf::MeshSettings fine;
         fine.edges = false;
+        fine.cellsAcross = 0;
         fine.maximum = 1e-9;   // 1 nm cells over 100 µm
         const rf::Mesh huge = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 100, 100)}, fine, m.stack(), 0);
         QVERIFY(!huge.ok());

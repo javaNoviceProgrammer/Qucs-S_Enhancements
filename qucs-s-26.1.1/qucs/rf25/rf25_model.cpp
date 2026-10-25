@@ -269,6 +269,12 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("maximum"), tr("Largest cell"), QStringLiteral("m"), QStringLiteral("0")),
           boolean(QStringLiteral("edges"), tr("Refine at the edges"), true,
                   tr("The current crowds at a conductor's edge; cells there are smaller")),
+          integer(QStringLiteral("cells_across"), tr("Cells across a conductor"), 10,
+                  tr("At least this many across each conductor's narrowest part (0: none): its charge crowds at "
+                     "the edges, so the accuracy is in its width")),
+          expr(QStringLiteral("stretch"), tr("Stretch along a line"), QString(), QStringLiteral("4"),
+               tr("How many times longer than wide a straight strip's cells may be along it: its charge hardly "
+                  "changes along it")),
           integer(QStringLiteral("skin"), tr("Layers through the skin depth"), 0,
                   tr("0: the surface impedance alone, which is right above a few skin depths"))},
          {}, {}, true, true, QString(), tr("How finely the metals are divided. It is drawn in the view.")});
@@ -515,8 +521,15 @@ Model Model::blank()
     // The layout's own fixed children.
     child(m.layout(), QStringLiteral("rf_layer_map"));
     child(m.layout(), QStringLiteral("rf_processing"));
-    // A stack one can see at once: a substrate, an oxide and one metal.
+    // A stack one can see at once and solve as a line: a ground plane, a
+    // substrate, an oxide and one metal. (Without the ground, its first
+    // solve was of a strip with nothing to return through - a capacitance
+    // to infinity, and no line at all.)
     Node& stack = m.stackNode();
+    Node ground;
+    ground.type = QStringLiteral("rf_ground");
+    ground.tag = QStringLiteral("gnd1");
+    ground.label = tr("Ground");
     Node substrate;
     substrate.type = QStringLiteral("rf_substrate");
     substrate.tag = QStringLiteral("sub1");
@@ -529,6 +542,7 @@ Model Model::blank()
     metal.type = QStringLiteral("rf_metal");
     metal.tag = QStringLiteral("m1");
     metal.label = QStringLiteral("M1");
+    stack.children.push_back(ground);
     stack.children.push_back(substrate);
     stack.children.push_back(oxide);
     stack.children.push_back(metal);
