@@ -3226,7 +3226,11 @@ bool QucsApp::saveAs()
       s = newZip->suggestedFile();   // (New Zip…: a free name in its folder)
     } else if(s.isEmpty()) {   // which is default directory ?
       if(ProjName.isEmpty()) {
-        if(lastDirOpenSave.isEmpty())  s = QDir::homePath();
+        // With no project open and nothing opened or saved yet: the
+        // workspace, as the open dialogs start in, rather than the home
+        // folder, where nothing of the workspace's lives (for a new RF 2.5D
+        // model, and every new document).
+        if(lastDirOpenSave.isEmpty())  s = QucsSettings.qucsWorkspaceDir.absolutePath();
         else  s = lastDirOpenSave;
       }
       else s = QucsSettings.QucsWorkDir.path();
