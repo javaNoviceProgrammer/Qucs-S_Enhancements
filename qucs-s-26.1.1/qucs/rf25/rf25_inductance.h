@@ -159,6 +159,16 @@ struct Inductance {
 };
 
 /*!
+ * The cells a port at \a where (the layout's units) drives: those of \a reached
+ * with a side on the outline edge of the conductor the point lies on -
+ * the whole face - or the one nearest it where the point is on no face.
+ * \a onLine and \a alongLine, given, are a point of that edge and its
+ * direction (nought where there is no face).
+ */
+QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
+                     QPointF* onLine = nullptr, QPointF* alongLine = nullptr);
+
+/*!
  * The mesh of \a conductors on \a stack solved for the current that goes
  * in at \a from and out at \a to (both in the layout's own units), and
  * the inductance and resistance of the loop it makes.
