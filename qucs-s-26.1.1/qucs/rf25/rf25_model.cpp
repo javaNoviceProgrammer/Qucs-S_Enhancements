@@ -257,6 +257,12 @@ QList<NodeKind> makeKinds()
                  {QStringLiteral("auto"), QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y")},
                  {tr("Outwards"), QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y")},
                  QStringLiteral("auto")),
+          choice(QStringLiteral("return"), tr("Return"), {QStringLiteral("ground"), QStringLiteral("beside")},
+                 {tr("Through the ground plane"), tr("Through the conductors beside it (ground-signal-ground)")},
+                 QStringLiteral("ground"),
+                 tr("Where its current comes back: up from the ground plane under its face, or - for a coplanar "
+                    "line, as a probe's grounds touch it - through the conductors either side of it on the line of "
+                    "its edge, which must reach that edge too, tied together (full wave)")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
           boolean(QStringLiteral("calibrate"), tr("Take out its own discontinuity"), false,
                   tr("Solve two strips of its feed and take the port's own discontinuity out of the answer: its "
@@ -272,10 +278,12 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("line_eps"), tr("Line effective permittivity"), QString(), QStringLiteral("1")),
                   "along=line")},
          {}, {}, false, false, QStringLiteral("p"),
-         tr("A port on the edge of a polygon, driven against the ground below it. Solved as it is, its reference "
-            "plane is at the centres of the cells along its face, and its own discontinuity - the face's fringing "
-            "charge, the current's turn into it - is in the answer. Taken out, by two strips of its feed solved the "
-            "same way, the reference plane is at its edge, and can be moved along the line from there.")});
+         tr("A port on the edge of a polygon, driven against the ground below it - or, for a coplanar line, "
+            "against the conductors beside it on the line of its edge, as a ground-signal-ground probe drives it. "
+            "Solved as it is, its reference plane is at the centres of the cells along its face, and its own "
+            "discontinuity - the face's fringing charge, the current's turn into it - is in the answer. Taken out, by "
+            "two strips of its feed solved the same way, the reference plane is at its edge, and can be moved along "
+            "the line from there.")});
     add({QStringLiteral("rf_internal_port"), tr("Internal Port"), QStringLiteral("port"), QStringLiteral("port"), none,
          {expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
           expr(QStringLiteral("y"), tr("At y"), QStringLiteral("m"), QStringLiteral("0")),

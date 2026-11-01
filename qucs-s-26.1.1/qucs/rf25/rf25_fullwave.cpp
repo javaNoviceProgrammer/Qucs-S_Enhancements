@@ -19,8 +19,10 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace qucs_s::rf25 {
@@ -155,6 +157,77 @@ QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QP
     if (!(sum > 0)) return QList<double>(cells.size(), 1.0 / std::max<qsizetype>(1, cells.size()));
     for (double& l : lengths) l /= sum;
     return lengths;
+}
+
+/// The faces beside an edge port's own on its edge's line - what a
+/// ground-signal-ground probe's grounds touch: either side of \a face, the
+/// nearest run of cells of \a reached on its layer with a side along that
+/// line (through \a on, along \a along) and inside on the same side of it
+/// as the port's own face. A side with none is empty.
+std::array<QList<int>, 2> besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>& face, QPointF on,
+                                      QPointF along)
+{
+    std::array<QList<int>, 2> out;
+    const double norm = std::hypot(along.x(), along.y());
+    if (face.isEmpty() || !(norm > 0)) return out;
+    const QPointF unit = along / norm, normal(-unit.y(), unit.x());
+    const QString layer = mesh.cells.at(face.first()).layer;
+    QRectF all;
+    for (const int c : reached) all = all.united(mesh.cells.at(c).outline.boundingRect());
+    const double tol = 1e-6 * std::max(1.0, std::max(all.width(), all.height()));
+    // A cell's side along the line, as from and to along it.
+    const auto sideOn = [&mesh, on, unit, normal, tol](int c, double* t0, double* t1) {
+        const QPolygonF& outline = mesh.cells.at(c).outline;
+        for (int i = 0, m = int(outline.size()); i < m; ++i) {
+            const QPointF a = outline.at(i) - on, b = outline.at((i + 1) % m) - on;
+            if (std::abs(a.x() * normal.x() + a.y() * normal.y()) > tol || std::abs(b.x() * normal.x() + b.y() * normal.y()) > tol)
+                continue;
+            const double ta = a.x() * unit.x() + a.y() * unit.y(), tb = b.x() * unit.x() + b.y() * unit.y();
+            *t0 = std::min(ta, tb);
+            *t1 = std::max(ta, tb);
+            return true;
+        }
+        return false;
+    };
+    // The port's own face: how far along the line it reaches, and which
+    // side of the line its conductor is on.
+    double lo = 0, hi = 0, inside = 0;
+    bool any = false;
+    for (const int c : face) {
+        double t0 = 0, t1 = 0;
+        if (!sideOn(c, &t0, &t1)) continue;
+        lo = any ? std::min(lo, t0) : t0;
+        hi = any ? std::max(hi, t1) : t1;
+        any = true;
+        const QPointF d = mesh.cells.at(c).centre - on;
+        inside += d.x() * normal.x() + d.y() * normal.y();
+    }
+    if (!any) return out;
+    QList<std::tuple<double, double, int>> below, above;   // (from the face out, the far end, the cell)
+    for (const int c : reached) {
+        if (mesh.cells.at(c).layer != layer || face.contains(c)) continue;
+        double t0 = 0, t1 = 0;
+        if (!sideOn(c, &t0, &t1)) continue;
+        const QPointF d = mesh.cells.at(c).centre - on;
+        if ((d.x() * normal.x() + d.y() * normal.y()) * inside <= 0) continue;
+        if (t1 <= lo + tol) below << std::make_tuple(lo - t1, lo - t0, c);
+        else if (t0 >= hi - tol) above << std::make_tuple(t0 - hi, t1 - hi, c);
+    }
+    // Of each side, the cells from the nearest outwards, each meeting the
+    // last: the nearest conductor's face, the slot between left out.
+    int k = 0;
+    for (QList<std::tuple<double, double, int>>* side : {&below, &above}) {
+        std::sort(side->begin(), side->end());
+        double reach = 0;
+        for (int i = 0; i < side->size(); ++i) {
+            const auto [near, far, cell] = side->at(i);
+            if (i > 0 && near > reach + tol) break;
+            out[std::size_t(k)] << cell;
+            reach = std::max(reach, far);
+        }
+        ++k;
+    }
+    return out;
 }
 
 QRectF scaledBy(const QRectF& box, double unit)
@@ -387,8 +460,10 @@ struct Context {
     QList<Via> vias;
     QList<ViaGreen::Span> spans;         ///< each of the stack's vias that the mesh has
     /// Each port's current into the charges (and out of an internal
-    /// port's other metal): charges x ports.
+    /// port's other metal): charges x columns. A port is one column, or a
+    /// coplanar one a column against each conductor beside it.
     MatrixC drive;
+    QList<int> portOf;                   ///< which port each column is
     double rhoMax = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
@@ -803,8 +878,14 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     // The ports. An edge port drives the face of the conductor it is on,
     // its current shared out by the length of face each cell has; an
     // internal port the cell under it, against the ground or against the
-    // cell under it on another metal.
-    c.drive = MatrixC::Zero(nc, np);
+    // cell under it on another metal. A coplanar edge port drives its face
+    // against the faces beside it on its edge's line, a column against
+    // each: the columns of a port are side by side - one voltage, their
+    // currents added - so the grounds are tied, as a probe's are, and the
+    // solve shares the current out between them.
+    QList<Eigen::VectorXcd> columns;
+    QList<int> portOf;
+    bool coplanar = false;
     out.faceWidths = QList<double>(np, 0.0);
     out.faceMetals = QStringList(QList<QString>(np));
     for (int p = 0; p < np; ++p) {
@@ -818,7 +899,8 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                                     .arg(name, x, y, port.metal.isEmpty() ? tr("any metal") : port.metal);
                 return out;
             }
-            c.drive(nodeOf.value(to), p) += 1;
+            Eigen::VectorXcd column = Eigen::VectorXcd::Zero(nc);
+            column(nodeOf.value(to)) += 1;
             QString against = tr("the ground");
             if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
                 const int from = cellUnder(mesh, cellOf, port.at, port.from);
@@ -827,9 +909,11 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                                         .arg(name, x, y, port.from);
                     return out;
                 }
-                c.drive(nodeOf.value(from), p) -= 1;
+                column(nodeOf.value(from)) -= 1;
                 against = tr("the cell under it on %1").arg(port.from);
             }
+            columns << column;
+            portOf << p;
             out.portsSaid << tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
                                  .arg(name, x, y, mesh.cells.at(to).layer, against);
             continue;
@@ -842,23 +926,64 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         }
         double faceWidth = 0;
         const QList<double> shares = sharesOf(mesh, face, on, along, &faceWidth);
-        for (int k = 0; k < face.size(); ++k) c.drive(nodeOf.value(face.at(k)), p) += shares.at(k);
+        Eigen::VectorXcd own = Eigen::VectorXcd::Zero(nc);
+        for (int k = 0; k < face.size(); ++k) own(nodeOf.value(face.at(k))) += shares.at(k);
         if (along != QPointF(0, 0)) {
             out.faceWidths[p] = faceWidth;
             out.faceMetals[p] = mesh.cells.at(face.first()).layer;
         }
-        if (along != QPointF(0, 0))
-            out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm.").arg(name).arg(face.size()).arg(x, y);
-        else
-            out.portsSaid << tr("%1 is on no face, and drives the one cell nearest %2, %3 µm.").arg(name, x, y);
+        if (!port.coplanar) {
+            columns << own;
+            portOf << p;
+            if (along != QPointF(0, 0))
+                out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm.").arg(name).arg(face.size()).arg(x, y);
+            else
+                out.portsSaid << tr("%1 is on no face, and drives the one cell nearest %2, %3 µm.").arg(name, x, y);
+            continue;
+        }
+        if (along == QPointF(0, 0)) {
+            out.problems << tr("%1 returns through the conductors beside it, so it wants the face of one to stand on, and "
+                               "%2, %3 µm is on none.")
+                                .arg(name, x, y);
+            return out;
+        }
+        coplanar = true;
+        QList<int> counts;
+        for (const QList<int>& ground : besideFaces(mesh, cellOf, face, on, along)) {
+            if (ground.isEmpty()) continue;
+            const QList<double> back = sharesOf(mesh, ground, on, along);
+            Eigen::VectorXcd column = own;
+            for (int k = 0; k < ground.size(); ++k) column(nodeOf.value(ground.at(k))) -= back.at(k);
+            columns << column;
+            portOf << p;
+            counts << int(ground.size());
+        }
+        if (counts.isEmpty()) {
+            out.problems << tr("%1 returns through the conductors beside it, and on the line of its edge at %2, %3 µm there "
+                               "is none either side of it: draw its grounds to the same edge, or return it through the "
+                               "ground plane.")
+                                .arg(name, x, y);
+            return out;
+        }
+        out.portsSaid << (counts.size() == 2
+                              ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm against the conductors beside it, "
+                                   "%5 and %6 cell(s) of their faces either side: the two tied, as a probe's grounds are.")
+                                    .arg(name).arg(face.size()).arg(x, y).arg(counts.at(0)).arg(counts.at(1))
+                              : tr("%1 drives the %2 cell(s) along the face at %3, %4 µm against the conductor beside it on "
+                                   "one side, %5 cell(s) of its face: a ground-signal probe's.")
+                                    .arg(name).arg(face.size()).arg(x, y).arg(counts.at(0)));
     }
-    for (int p = 0; p < np; ++p)
-        for (int q = 0; q < p; ++q)
-            if ((c.drive.col(p) - c.drive.col(q)).norm() < 1e-12) {
+    for (int a = 0; a < columns.size(); ++a)
+        for (int b = 0; b < a; ++b)
+            if (portOf.at(a) != portOf.at(b) && (columns.at(a) - columns.at(b)).norm() < 1e-12) {
                 out.problems << tr("%1 and %2 drive the same face or cell of the layout: put them apart.")
-                                    .arg(out.portNames.at(q), out.portNames.at(p));
+                                    .arg(out.portNames.at(portOf.at(b)), out.portNames.at(portOf.at(a)));
                 return out;
             }
+    c.drive = MatrixC(nc, columns.size());
+    for (int k = 0; k < columns.size(); ++k) c.drive.col(k) = columns.at(k);
+    c.np = int(columns.size());
+    c.portOf = portOf;
 
     // The cells in metres, and the heights they are at.
     c.rect.resize(nc);
@@ -978,10 +1103,31 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                         "under it to the cell over it, entering each at its centre.")
                          .arg(c.vias.size()).arg(grounded);
     out.lines << viaSaid;
-    out.lines << tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of its "
-                    "thickness, and an edge port's current as coming back through the ground.");
+    out.lines << (coplanar ? tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of "
+                                "its thickness, an edge port's current as coming back through the ground, and a coplanar "
+                                "port's through the conductors beside it.")
+                           : tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of "
+                                "its thickness, and an edge port's current as coming back through the ground."));
+    // The columns of a port side by side: one voltage, their currents
+    // added. The ports' Z is (B^T Z^-1 B)^-1, B which port each column is
+    // of, and an ampere into a port is Z^-1 B Z into the columns.
+    MatrixC ofPort = MatrixC::Zero(c.np, np);
+    for (int k = 0; k < c.np; ++k) ofPort(k, c.portOf.at(k)) = 1;
     for (int k = 0; k < nf; ++k) {
-        const AtFrequency& a = solved[std::size_t(k)];
+        AtFrequency a = solved[std::size_t(k)];
+        if (c.np != np) {
+            const MatrixC x = Eigen::PartialPivLU<MatrixC>(a.z).solve(ofPort);
+            const MatrixC y = ofPort.transpose() * x;
+            const MatrixC z = Eigen::PartialPivLU<MatrixC>(y).solve(MatrixC::Identity(np, np));
+            if (!z.allFinite()) {
+                out.problems << tr("At %1 GHz the coplanar ports' grounds could not be tied: their columns came out "
+                                   "singular.")
+                                    .arg(frequencies.at(k) / 1e9, 0, 'g', 4);
+                return out;
+            }
+            a.current = a.current * (x * z);
+            a.z = z;
+        }
         const QList<QList<Complex>> zRows = rowsOf(a.z);
         out.frequencies << frequencies.at(k);
         out.z << zRows;

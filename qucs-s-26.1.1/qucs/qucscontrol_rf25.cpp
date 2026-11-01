@@ -192,10 +192,12 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                    "QucsControl",
                    "Full wave: the mixed-potential integral equation on the mesh - currents on the runs between cells "
                    "that share an edge, charges on the cells - with the stack's retarded Green's functions, solved at "
-                   "each frequency. Each port drives the face of the conductor it is on (an edge port) or the cell "
-                   "under it (an internal port), its reference plane at the centres of the cells it drives, and its S "
-                   "is into its own reference impedance (Kurokawa's power waves). The ground plane is taken as "
-                   "perfect and a metal as a sheet. rf25_export writes these as a Touchstone."));
+                   "each frequency. Each port drives the face of the conductor it is on (an edge port, its current "
+                   "back through the ground - or, a coplanar one, through the conductors beside it, tied as a probe's "
+                   "grounds are) or the cell under it (an internal port), its reference plane at the centres of the "
+                   "cells it drives, and its S is into its own reference impedance (Kurokawa's power waves). The "
+                   "ground plane is taken as perfect and a metal as a sheet. rf25_export writes these as a "
+                   "Touchstone."));
     return out;
 }
 
@@ -412,18 +414,22 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     {
         if (e->names.size() == 1) slowest = lineParameters(*e, 0, length).velocity;
         const std::shared_ptr<const Mesh> mesh = model->mesh();
+        const bool line = e->perMetre.fromMiddle;
         const QuasiStaticLimit limit = quasiStaticLimit(model->model().stack(), mesh ? *mesh : Mesh(), 1e-6, slowest, length,
-                                                        int(e->names.size()));
+                                                        int(e->names.size()), line);
         QJsonObject said;
         said.insert(QStringLiteral("frequency"), limit.frequency);
         said.insert(QStringLiteral("what sets it"), limit.what);
         said.insert(QStringLiteral("epsilon_max"), limit.epsilonMax);
         said.insert(QStringLiteral("first half-wave resonance"), limit.resonance);
         said.insert(QStringLiteral("why"),
-                    tr("A per-metre RLGC is a property of the cross-section and holds while the cross-section is "
-                       "electrically small; this is a tenth of a wavelength of the dimension named, which is the usual "
-                       "engineering rule. The resonance is not a limit of the model - a line's own S parameters carry "
-                       "it - only where they first turn over."));
+                    line ? tr("A per-metre RLGC is a property of the cross-section and holds while the cross-section is "
+                              "electrically small; this is a tenth of a wavelength of the dimension named, which is the "
+                              "usual engineering rule. The resonance is not a limit of the model - a line's own S "
+                              "parameters carry it - only where they first turn over.")
+                         : tr("It is no line, so it has no per-metre values: its capacitance holds while all of it is "
+                              "electrically small, and this is a tenth of a wavelength of its longest extent, the usual "
+                              "engineering rule. Above it, and for its ports' S at all, solve it full-wave."));
         if (frequency > limit.frequency && limit.frequency > 0)
             said.insert(QStringLiteral("warning"),
                         tr("The frequency asked for (%1 GHz) is above it: these numbers are extrapolated, not solved.")
