@@ -205,7 +205,7 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                    "that share an edge, charges on the cells - with the stack's retarded Green's functions, solved at "
                    "each frequency. Each port drives the face of the conductor it is on (an edge port, its current "
                    "back through the ground - or, a coplanar one, through the conductors beside it, tied as a probe's "
-                   "grounds are) or the cell under it (an internal port), its reference plane at the centres of the "
+                   "grounds are) or the cells under it (an internal port: its rectangle's, or the one under its point), its reference plane at the centres of the "
                    "cells it drives, and its S is into its own reference impedance (Kurokawa's power waves). The "
                    "ground plane is taken as perfect and a metal as a sheet, its edges losing as its thickness lets "
                    "the current crowd there. rf25_export writes these as a "

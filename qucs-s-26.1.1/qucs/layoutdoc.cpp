@@ -571,7 +571,12 @@ void LayoutView::setMode(Mode mode)
     if (mode == a_mode) return;
     a_mode = mode;
     a_measuring = false;
-    setCursor(mode == Mode::Ruler ? Qt::CrossCursor : Qt::ArrowCursor);
+    if (a_drag == Drag::Box) {
+        a_drag = Drag::None;
+        a_zoomBox = QRect();
+        update();
+    }
+    setCursor(mode == Mode::Select ? Qt::ArrowCursor : Qt::CrossCursor);
     emit modeChanged(mode);
 }
 
@@ -763,6 +768,7 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
                 p.setPen(QPen(overlay.fill.isValid() ? overlay.fill : overlay.line, std::max(1.4, overlay.width)));
                 p.drawPoints(dots.constData(), int(dots.size()));
             }
+            paintLabels(p, c, overlay);
         }
     }
     // The scale of what the overlays colour, in the top right corner (the
@@ -819,14 +825,64 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
             p.drawText(at, Qt::AlignCenter, text);
         }
     }
-    if (a_drag == Drag::Zoom && !a_zoomBox.isNull()) {
-        p.setPen(QPen(c.highlight, 1, Qt::DashLine));
+    if ((a_drag == Drag::Zoom || a_drag == Drag::Box) && !a_zoomBox.isNull()) {
+        p.setPen(QPen(c.highlight, a_drag == Drag::Box ? 1.5 : 1, a_drag == Drag::Box ? Qt::SolidLine : Qt::DashLine));
         QColor tint = c.highlight;
         tint.setAlpha(40);
         p.setBrush(tint);
         p.drawRect(a_zoomBox);
     }
     p.restore();
+}
+
+void LayoutView::paintLabels(QPainter& p, const Colors& c, const Overlay& overlay) const
+{
+    if (overlay.labels.isEmpty()) return;
+    const QColor ink = overlay.line.isValid() ? overlay.line : c.ink;
+    QFont font = p.font();
+    font.setPixelSize(12);
+    font.setBold(true);
+    p.setFont(font);
+    const QFontMetricsF fm(font);
+    const QRectF seen = QRectF(rect()).adjusted(-40, -40, 40, 40);
+    QColor paper = c.background;
+    paper.setAlpha(225);
+    for (const Overlay::Label& label : overlay.labels) {
+        const QPointF at = toPixel(label.at);
+        if (!seen.contains(at)) continue;
+        // Its arrow, a fixed size whatever the zoom, out the way it points
+        // (y up in µm, down in pixels); or a ring at the point.
+        const double norm = std::hypot(label.towards.x(), label.towards.y());
+        QPointF tip = at, way(0.7071, -0.7071);
+        p.setPen(QPen(ink, 2));
+        if (norm > 0) {
+            way = QPointF(label.towards.x() / norm, -label.towards.y() / norm);
+            tip = at + 22 * way;
+            p.drawLine(at, tip);
+            const QPointF side(-way.y(), way.x());
+            QPolygonF head;
+            head << tip + 3 * way << tip - 5 * way + 4 * side << tip - 5 * way - 4 * side;
+            p.setBrush(ink);
+            p.drawPolygon(head);
+        } else {
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(at, 5, 5);
+            tip = at + 7 * way;
+        }
+        // The text by the tip, on the side it points to, on a little card.
+        const QSizeF size(fm.horizontalAdvance(label.text) + 8, fm.height() + 2);
+        QPointF corner = tip + 4 * way;
+        if (way.x() < -0.3) corner.rx() -= size.width();
+        else if (std::abs(way.x()) <= 0.3) corner.rx() -= size.width() / 2;
+        if (way.y() < -0.3) corner.ry() -= size.height();
+        else if (std::abs(way.y()) <= 0.3) corner.ry() -= size.height() / 2;
+        const QRectF card(corner, size);
+        p.setPen(QPen(ink, 1));
+        p.setBrush(paper);
+        p.drawRoundedRect(card, 3, 3);
+        p.setPen(ink);
+        p.drawText(card, Qt::AlignCenter, label.text);
+    }
 }
 
 void LayoutView::paintGrid(QPainter& p, const Colors& c) const
@@ -949,7 +1005,7 @@ bool LayoutView::event(QEvent* event)
     if (event->type() == QEvent::ShortcutOverride) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Escape && key->modifiers() == Qt::NoModifier
-            && (a_measuring || a_selection || !a_rulers.isEmpty() || a_mode == Mode::Ruler)) {
+            && (a_measuring || a_selection || !a_rulers.isEmpty() || a_mode != Mode::Select)) {
             event->accept();
             return true;
         }
@@ -996,7 +1052,8 @@ void LayoutView::mousePressEvent(QMouseEvent* event)
         update();
         return;
     }
-    if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) a_drag = Drag::Pan;
+    if (event->button() == Qt::LeftButton && a_mode == Mode::PickBox) a_drag = Drag::Box;
+    else if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) a_drag = Drag::Pan;
     else if (event->button() == Qt::RightButton) a_drag = Drag::Zoom;
 }
 
@@ -1017,6 +1074,7 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
         break;
     }
     case Drag::Zoom:
+    case Drag::Box:
         a_zoomBox = QRect(a_pressPos, pos).normalized();
         update();
         break;
@@ -1045,7 +1103,19 @@ void LayoutView::mouseReleaseEvent(QMouseEvent* event)
     a_drag = Drag::None;
     switch (drag) {
     case Drag::Pan:
-        if (!a_moved && event->button() == Qt::LeftButton) selectAt(event->position());
+        if (!a_moved && event->button() == Qt::LeftButton) {
+            if (a_mode == Mode::PickPoint || a_mode == Mode::PickBox) emit picked(toLayout(event->position()));
+            else selectAt(event->position());
+        }
+        break;
+    case Drag::Box:
+        // A box of a few pixels and more is a box; less, a click.
+        if (a_moved && a_zoomBox.width() > 4 && a_zoomBox.height() > 4)
+            emit boxPicked(QRectF(toLayout(a_zoomBox.bottomLeft()), toLayout(a_zoomBox.topRight())).normalized());
+        else if (event->button() == Qt::LeftButton)
+            emit picked(toLayout(event->position()));
+        a_zoomBox = QRect();
+        update();
         break;
     case Drag::Zoom:
         if (a_moved && a_zoomBox.width() > 4 && a_zoomBox.height() > 4) {
@@ -1126,7 +1196,7 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
             select(std::nullopt);
         } else if (!a_rulers.isEmpty()) {
             clearRulers();
-        } else if (a_mode == Mode::Ruler) {
+        } else if (a_mode != Mode::Select) {
             setMode(Mode::Select);
         } else {
             event->ignore();

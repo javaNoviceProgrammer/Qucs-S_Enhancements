@@ -284,15 +284,22 @@ QList<NodeKind> makeKinds()
             "Solved as it is, its reference plane is at the centres of the cells along its face, and its own "
             "discontinuity - the face's fringing charge, the current's turn into it - is in the answer. Taken out, by "
             "two strips of its feed solved the same way, the reference plane is at its edge, and can be moved along "
-            "the line from there.")});
+            "the line from there. The Edge Port tool puts one on an edge clicked on the layout, facing out of it.")});
     add({QStringLiteral("rf_internal_port"), tr("Internal Port"), QStringLiteral("port"), QStringLiteral("port"), none,
          {expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
           expr(QStringLiteral("y"), tr("At y"), QStringLiteral("m"), QStringLiteral("0")),
           text(QStringLiteral("from"), tr("From metal"), QString(), tr("A metal of the stack, or \"ground\"")),
           text(QStringLiteral("to"), tr("To metal"), QString()),
+          expr(QStringLiteral("width"), tr("Width"), QStringLiteral("m"), QStringLiteral("0"),
+               tr("Across x, the rectangle about its point whose cells it drives together; nought, with the height, "
+                  "the one cell under the point (full wave)")),
+          expr(QStringLiteral("height"), tr("Height"), QStringLiteral("m"), QStringLiteral("0"),
+               tr("Across y, the same rectangle's")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50"))},
          {}, {}, false, false, QStringLiteral("p"),
-         tr("A port between two metals at a point, or between a metal and the ground.")});
+         tr("A port between two metals, or between a metal and the ground: at a point, the one cell under it, or over "
+            "a rectangle about the point, every cell of the metal in it driven together - as a rectangle drawn on "
+            "the layout with the Internal Port tool makes it.")});
 
     // ---- the mesh, the study, the results ----
     add({QStringLiteral("rf_mesh"), tr("Mesh"), QString(), QStringLiteral("mesh"), none,
@@ -1005,15 +1012,21 @@ Node Model::make(const QString& type) const
     n.tag = newTag(k->prefix);
     // A name of its own. A layer is named by the layer map, the vias and
     // the ports, so one made without a name could be named by nothing: the
-    // metals are M1, M2..., the dielectrics ILD1..., the ports P1....
-    const auto numbered = [this, &type](const QString& stem) {
-        int count = 0;
+    // metals are M1, M2..., the dielectrics ILD1..., the ports P1.... One
+    // past the highest of its stem in use, by any node: an internal port
+    // counted among internal ports alone was P1 beside an edge port P1.
+    const auto numbered = [this](const QString& stem) {
+        int highest = 0;
         std::function<void(const Node&)> walk = [&](const Node& node) {
-            count += node.type == type ? 1 : 0;
+            if (node.label.startsWith(stem)) {
+                bool number = false;
+                const int n = node.label.mid(stem.size()).toInt(&number);
+                if (number && n > highest) highest = n;
+            }
             for (const Node& c : node.children) walk(c);
         };
         walk(root);
-        return stem + QString::number(count + 1);
+        return stem + QString::number(highest + 1);
     };
     if (type == QLatin1String("rf_metal")) n.label = numbered(QStringLiteral("M"));
     else if (type == QLatin1String("rf_dielectric")) n.label = numbered(QStringLiteral("ILD"));

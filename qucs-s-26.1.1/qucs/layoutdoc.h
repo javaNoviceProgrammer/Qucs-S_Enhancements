@@ -123,7 +123,12 @@ public:
     QPointF toLayout(QPointF pixel) const;
     QPointF toPixel(QPointF point) const;
 
-    enum class Mode { Select, Ruler };
+    /// Select: a click selects; Ruler: a drag measures. And for a tab that
+    /// places things on the layout, two picking modes the view knows
+    /// nothing more of: PickPoint, a click is picked() and a drag pans;
+    /// PickBox, a drag draws a box, which is boxPicked(), and a click is
+    /// picked(). Escape goes back to Select.
+    enum class Mode { Select, Ruler, PickPoint, PickBox };
     Mode mode() const { return a_mode; }
     void setMode(Mode mode);
     /// The rulers, µm; the last one is being drawn while a drag lasts.
@@ -150,6 +155,15 @@ public:
         double width = 1.0;        ///< its width, in pixels
         QString name;              ///< what it is, for a tooltip
         QColor fill;               ///< what the shapes are filled with (invalid: nothing)
+        /// A name written over the layout at a point: an arrow of a fixed
+        /// size from \a at the way \a towards points (µm's way, y up), the
+        /// text at its head; with no way, a ring at \a at and the text by it.
+        struct Label {
+            QPointF at;
+            QString text;
+            QPointF towards;
+        };
+        QList<Label> labels;       ///< in the line's colour, over the shapes
     };
     void setOverlays(const QList<Overlay>& overlays);
     const QList<Overlay>& overlays() const { return a_overlays; }
@@ -214,6 +228,10 @@ signals:
     void modeChanged(Mode mode);
     /// A double click on a frame: show that cell.
     void cellRequested(int cell);
+    /// In a picking mode: a click at \a point (µm), and a box dragged
+    /// (µm, normalised).
+    void picked(QPointF point);
+    void boxPicked(QRectF box);
     void menuRequested(QPoint globalPos);
     /// The canvas's colours changed: its theme, the layers' adapted or not.
     void colorsChanged();
@@ -236,6 +254,7 @@ private:
     friend class LayoutGpu;
     void invalidate();
     void paintGrid(QPainter& p, const Colors& c) const;
+    void paintLabels(QPainter& p, const Colors& c, const Overlay& overlay) const;
     void paintScale(QPainter& p, const Colors& c) const;
     Query queryHere() const;
     double tolerance() const;   // µm: a few pixels
@@ -281,7 +300,7 @@ private:
     std::optional<Found> a_selection;
     QPolygonF a_selectionOutline;   // µm, the cell shown's
 
-    enum class Drag { None, Pan, Zoom, Ruler };
+    enum class Drag { None, Pan, Zoom, Ruler, Box };
     Drag a_drag = Drag::None;
     QPoint a_pressPos;
     QPoint a_lastPos;

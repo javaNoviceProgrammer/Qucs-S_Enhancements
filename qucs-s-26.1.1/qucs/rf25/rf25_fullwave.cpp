@@ -404,6 +404,26 @@ int cellUnder(const Mesh& mesh, const QList<int>& reached, QPointF where, const 
     return best;
 }
 
+/// The cells of \a reached on \a layer (any, where it is empty) that
+/// \a rect overlaps, each with its share of the area they overlap it by
+/// together; empty where it overlaps none.
+QList<std::pair<int, double>> cellsUnder(const Mesh& mesh, const QList<int>& reached, const QRectF& rect, const QString& layer)
+{
+    QList<std::pair<int, double>> out;
+    double total = 0;
+    for (const int c : reached) {
+        const MeshCell& cell = mesh.cells.at(c);
+        if (!layer.isEmpty() && cell.layer != layer) continue;
+        const QRectF overlap = cell.outline.boundingRect().intersected(rect);
+        const double area = overlap.width() * overlap.height();
+        if (!(area > 0)) continue;
+        out << std::make_pair(c, area);
+        total += area;
+    }
+    for (std::pair<int, double>& each : out) each.second /= total;
+    return out;
+}
+
 /// s asinh(s/rho) - sqrt(s^2 + rho^2): the second antiderivative of
 /// 1/sqrt(s^2 + rho^2).
 double antiderivative(double s, double rho)
@@ -1130,29 +1150,50 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         const QString& name = out.portNames.at(p);
         const QString x = QString::number(port.at.x(), 'g', 4), y = QString::number(port.at.y(), 'g', 4);
         if (port.internal) {
-            const int to = cellUnder(mesh, cellOf, port.at, port.metal);
-            if (to < 0) {
-                out.problems << tr("%1, at %2, %3 µm, is over no cell of %4 that a current reaches.")
-                                    .arg(name, x, y, port.metal.isEmpty() ? tr("any metal") : port.metal);
+            // The one cell under its point - or, over a rectangle about it,
+            // every cell of its metal the rectangle overlaps, each by its
+            // share of the area, as an edge port's face is shared out.
+            const bool over = port.size.width() > 0 && port.size.height() > 0;
+            const QRectF rect(port.at - QPointF(port.size.width(), port.size.height()) / 2, port.size);
+            const auto driven = [&](const QString& metal) {
+                if (over) return cellsUnder(mesh, cellOf, rect, metal);
+                const int one = cellUnder(mesh, cellOf, port.at, metal);
+                return one < 0 ? QList<std::pair<int, double>>() : QList<std::pair<int, double>>{std::make_pair(one, 1.0)};
+            };
+            const QString w = QString::number(port.size.width(), 'g', 4), h = QString::number(port.size.height(), 'g', 4);
+            const QList<std::pair<int, double>> to = driven(port.metal);
+            if (to.isEmpty()) {
+                out.problems << (over ? tr("%1's %2 by %3 µm rectangle at %4, %5 µm is over no cell of %6 that a current "
+                                           "reaches.")
+                                            .arg(name, w, h, x, y, port.metal.isEmpty() ? tr("any metal") : port.metal)
+                                      : tr("%1, at %2, %3 µm, is over no cell of %4 that a current reaches.")
+                                            .arg(name, x, y, port.metal.isEmpty() ? tr("any metal") : port.metal));
                 return out;
             }
             Eigen::VectorXcd column = Eigen::VectorXcd::Zero(nc);
-            column(nodeOf.value(to)) += 1;
+            for (const auto& [cell, share] : to) column(nodeOf.value(cell)) += share;
             QString against = tr("the ground");
             if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
-                const int from = cellUnder(mesh, cellOf, port.at, port.from);
-                if (from < 0 || from == to) {
+                const QList<std::pair<int, double>> from = driven(port.from);
+                bool same = from.isEmpty();
+                for (const auto& [cell, share] : from)
+                    for (const auto& [other, part] : to) same = same || cell == other;
+                if (same) {
                     out.problems << tr("%1, at %2, %3 µm, has no cell of %4 under it to drive against.")
                                         .arg(name, x, y, port.from);
                     return out;
                 }
-                column(nodeOf.value(from)) -= 1;
-                against = tr("the cell under it on %1").arg(port.from);
+                for (const auto& [cell, share] : from) column(nodeOf.value(cell)) -= share;
+                against = over ? tr("the %1 cell(s) of %2 under it").arg(from.size()).arg(port.from)
+                               : tr("the cell under it on %1").arg(port.from);
             }
             columns << column;
             portOf << p;
-            out.portsSaid << tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
-                                 .arg(name, x, y, mesh.cells.at(to).layer, against);
+            out.portsSaid << (over ? tr("%1 drives the %2 cell(s) of %3 under its %4 by %5 µm rectangle at %6, %7 µm "
+                                        "against %8.")
+                                         .arg(name).arg(to.size()).arg(mesh.cells.at(to.first().first).layer, w, h, x, y, against)
+                                   : tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
+                                         .arg(name, x, y, mesh.cells.at(to.first().first).layer, against));
             continue;
         }
         QPointF on, along;

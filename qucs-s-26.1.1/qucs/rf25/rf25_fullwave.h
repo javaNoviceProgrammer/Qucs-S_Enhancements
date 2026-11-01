@@ -86,6 +86,7 @@
 #include <QHash>
 #include <QList>
 #include <QPointF>
+#include <QSizeF>
 #include <QStringList>
 
 #include <atomic>
@@ -108,6 +109,11 @@ struct FullWavePort {
     /// there.
     QString metal;
     QString from;              ///< an internal port's other metal; empty: the ground
+    /// An internal port's rectangle about its point, the layout's units:
+    /// every cell of its metal in it driven together, by its share of the
+    /// rectangle's area (and of the other metal's, against it). Empty: the
+    /// one cell under the point.
+    QSizeF size;
     /// An edge port's outward direction; nought: the face it is nearest.
     QPointF facing;
     /// An edge port that returns through the conductors beside it on its
