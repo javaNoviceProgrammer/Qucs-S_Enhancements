@@ -70,9 +70,12 @@
 #include "rf25_static.h"
 
 #include <QList>
+#include <QLineF>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
+
+#include <array>
 
 namespace qucs_s::rf25 {
 
@@ -157,6 +160,27 @@ struct Inductance {
     QStringList lines;        ///< what it did, for the panel
     bool ok() const { return problems.isEmpty() && l > 0; }
 };
+
+/*!
+ * The outline edge of \a conductors a port at \a where drives, as
+ * faceCells() finds it: the one nearest the point, of the shapes on
+ * \a layer (any, where it is empty), whose outward normal points the way
+ * \a facing does (within 45 degrees; any way, where it is nought). Its
+ * ends in \a edge, its outward normal in \a outward and its layer in
+ * \a onLayer, each where given. False where there is no such edge.
+ */
+bool faceEdge(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing, QLineF* edge,
+              QPointF* outward = nullptr, QString* onLayer = nullptr);
+
+/*!
+ * The stretches of \a conductors on \a layer beside \a face on its own
+ * line, either side of it - below its first end, beyond its second -
+ * whose shapes stand on the same side of it, \a outward pointing away
+ * from them: what a coplanar port's grounds are, as the full-wave solve
+ * finds them on the mesh. A side with none is a null line.
+ */
+std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLineF& face, QPointF outward,
+                                  const QString& layer = QString());
 
 /*!
  * The cells a port at \a where (the layout's units) drives: those of \a reached

@@ -1131,6 +1131,67 @@ private slots:
         QCOMPARE(view->mode(), LayoutView::Mode::Select);
     }
 
+    // For a tab that places things on the layout - the RF 2.5D tab's ports,
+    // the user's request of 1 November: in PickPoint a click is picked() at
+    // its point and selects nothing, and a drag still pans; in PickBox a
+    // drag is a box picked, a click a point; Escape is Select again. And an
+    // overlay's label is written over the layout, its arrow and its text in
+    // the overlay's colour, by the point it names.
+    void aPickingModeSaysWhatIsPickedAndSelectsNothing()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        const QRectF region(QPointF(9, -1), QPointF(13, 2));
+        view->showRegion(region);
+        view->repaint();
+        QSignalSpy points(view, &LayoutView::picked), boxes(view, &LayoutView::boxPicked);
+        view->setMode(LayoutView::Mode::PickPoint);
+        QCOMPARE(view->cursor().shape(), Qt::CrossCursor);
+        click(view, view->toPixel(QPointF(11, 0.2)));
+        QCOMPARE(points.size(), 1);
+        const QPointF at = points.first().first().toPointF();
+        QVERIFY2(std::hypot(at.x() - 11, at.y() - 0.2) < 0.05, qPrintable(QStringLiteral("%1, %2").arg(at.x()).arg(at.y())));
+        QVERIFY(!view->selection().has_value());
+        const QPointF centre = view->center();
+        drag(view, view->toPixel(QPointF(10, 0)), view->toPixel(QPointF(11, 0)));
+        QCOMPARE(points.size(), 1);
+        QVERIFY(view->center() != centre);
+        QCOMPARE(boxes.size(), 0);
+
+        view->showRegion(region);
+        view->setMode(LayoutView::Mode::PickBox);
+        drag(view, view->toPixel(QPointF(10, 0)), view->toPixel(QPointF(12, 1)));
+        QCOMPARE(boxes.size(), 1);
+        const QRectF box = boxes.first().first().toRectF();
+        QVERIFY2(std::abs(box.left() - 10) < 0.05 && std::abs(box.right() - 12) < 0.05 && std::abs(box.top()) < 0.05
+                     && std::abs(box.bottom() - 1) < 0.05,
+                 qPrintable(QStringLiteral("%1, %2 to %3, %4").arg(box.left()).arg(box.top()).arg(box.right()).arg(box.bottom())));
+        QVERIFY(!view->selection().has_value());
+        click(view, view->toPixel(QPointF(12, 0.5)));
+        QCOMPARE(points.size(), 2);
+        QCOMPARE(boxes.size(), 1);
+        QTest::keyClick(view, Qt::Key_Escape);
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+        QCOMPARE(view->cursor().shape(), Qt::ArrowCursor);
+
+        LayoutView::Overlay named;
+        named.line = QColor(255, 0, 255);
+        named.labels << LayoutView::Overlay::Label{QPointF(11, 0.5), QStringLiteral("P1"), QPointF(1, 0)};
+        view->setOverlays({named});
+        const QImage frame = view->grab().toImage();
+        const double dpr = frame.devicePixelRatio();
+        const QPointF anchor = view->toPixel(QPointF(11, 0.5));
+        int magenta = 0;
+        for (int x = int(anchor.x() * dpr); x < int((anchor.x() + 70) * dpr) && x < frame.width(); ++x)
+            for (int y = int((anchor.y() - 12) * dpr); y < int((anchor.y() + 12) * dpr) && y < frame.height(); ++y) {
+                const QColor c = frame.pixelColor(x, y);
+                magenta += c.red() > 200 && c.blue() > 200 && c.green() < 90 ? 1 : 0;
+            }
+        QVERIFY2(magenta > 40, qPrintable(QStringLiteral("%1 pixels of the label's colour by its point").arg(magenta)));
+        view->setOverlays({});
+    }
+
     // The find bar finds cells by name - a part of it, or a wildcard - lists
     // them in the cell panel and shows each in turn.
     void aCellIsFoundByItsName()

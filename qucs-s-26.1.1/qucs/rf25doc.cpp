@@ -57,6 +57,7 @@ namespace {
 const char* const kShowProcessedKey = "RF25/showProcessed";
 const char* const kShowMeshKey = "RF25/showMesh";
 const char* const kShowCurrentsKey = "RF25/showCurrents";
+const char* const kShowPortsKey = "RF25/showPorts";
 
 /// The current density's colours, dark to bright: viridis, which reads in
 /// order in either theme and to a reader who sees no red - its eight
@@ -138,6 +139,17 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
         } else {
             p.internal = true;
             p.metal = textOf(port, QStringLiteral("to")).trimmed();
+            // Over a rectangle about its point, where it has one.
+            bool okW = true, okH = true;
+            const double w = numberOf(port, QStringLiteral("width"), model, 0, &okW);
+            const double h = numberOf(port, QStringLiteral("height"), model, 0, &okH);
+            if (!okW || !okH || w < 0 || h < 0) {
+                *problem = QCoreApplication::translate("RF25Doc", "%1's rectangle is none: its width and height are "
+                                                                  "lengths of nought or more.")
+                               .arg(p.name);
+                return {};
+            }
+            p.size = QSizeF(w, h) / 1e-6;
             const QString from = textOf(port, QStringLiteral("from")).trimmed();
             p.from = from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0 ? QString() : from;
         }
@@ -489,6 +501,33 @@ void RF25Doc::buildUi()
     a_showCurrentsButton->setCheckable(true);
     a_showCurrentsButton->setChecked(a_showCurrents);
     connect(a_showCurrentsButton, &QToolButton::toggled, this, &RF25Doc::setCurrentsShown);
+    a_showPorts = settings.value(QLatin1String(kShowPortsKey), true).toBool();
+    a_showPortsButton = button(tr("Ports"),
+                               tr("Draw the ports over the layout, each by its name: the edge an edge port drives, with "
+                                  "an arrow out of it, a coplanar one's grounds beside it, an internal port's rectangle"),
+                               "rfShowPorts");
+    a_showPortsButton->setCheckable(true);
+    a_showPortsButton->setChecked(a_showPorts);
+    connect(a_showPortsButton, &QToolButton::toggled, this, &RF25Doc::setPortsShown);
+    row->addSpacing(10);
+    // Ports placed by hand on the layout.
+    a_edgePortButton = button(tr("Edge Port"),
+                              tr("Put an edge port on an edge of a metal's shape: click on the edge (Escape to stop)"),
+                              "rfPlaceEdgePort");
+    a_edgePortButton->setCheckable(true);
+    connect(a_edgePortButton, &QToolButton::toggled, this, [this](bool on) {
+        if (on) setPlacing(Placing::EdgePort);
+        else if (a_placing == Placing::EdgePort) setPlacing(Placing::None);
+    });
+    a_internalPortButton = button(tr("Internal Port"),
+                                  tr("Put an internal port on a metal: drag a rectangle over the cells it is to drive, or "
+                                     "click for the one cell under the point (Escape to stop)"),
+                                  "rfPlaceInternalPort");
+    a_internalPortButton->setCheckable(true);
+    connect(a_internalPortButton, &QToolButton::toggled, this, [this](bool on) {
+        if (on) setPlacing(Placing::InternalPort);
+        else if (a_placing == Placing::InternalPort) setPlacing(Placing::None);
+    });
     row->addSpacing(10);
     // The one piece of work this build does on being asked rather than at
     // every edit: a dense matrix of the unknowns is cubic.
@@ -516,6 +555,23 @@ void RF25Doc::buildUi()
     a_view->setObjectName(QStringLiteral("rfView"));
     connect(a_stack, &StackView::layerChosen, this, &RF25Doc::focusNode);
     connect(a_view, &LayoutView::pointerMoved, this, &RF25Doc::pointerMoved);
+    // A port placed where the pointer picks, by the tool in hand; the view
+    // back in its own mode (Escape) puts the tool down.
+    connect(a_view, &LayoutView::picked, this, [this](QPointF at) {
+        QString why;
+        const QString tag = a_placing == Placing::EdgePort       ? placeEdgePortAt(at, 0, &why)
+                            : a_placing == Placing::InternalPort ? placeInternalPort(QRectF(at, QSizeF(0, 0)), &why)
+                                                                 : QString();
+        if (tag.isEmpty() && !why.isEmpty()) a_status->setText(why);
+    });
+    connect(a_view, &LayoutView::boxPicked, this, [this](QRectF box) {
+        if (a_placing != Placing::InternalPort) return;
+        QString why;
+        if (placeInternalPort(box, &why).isEmpty() && !why.isEmpty()) a_status->setText(why);
+    });
+    connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
+        if (mode == LayoutView::Mode::Select && a_placing != Placing::None) setPlacing(Placing::None);
+    });
     // The canvas went light or dark: the outlines and the cells' ink are
     // told against it, so they are taken again.
     connect(a_view, &LayoutView::colorsChanged, this, &RF25Doc::showOverlays);
@@ -710,6 +766,9 @@ void RF25Doc::applyModel(const Model& model, bool read)
     else edited();
     a_stack->setStack(a_model.stack());
     showProblems();
+    // (A port added, moved or taken away is drawn at once, before any
+    //  preparing it may bring.)
+    showOverlays();
     emit modelChanged();
     // The layout file changed under it (another file, another cell): read
     // again, and what is made of it follows that read rather than this
@@ -1096,6 +1155,154 @@ void RF25Doc::setMeshShown(bool shown)
     showOverlays();
 }
 
+void RF25Doc::setPortsShown(bool shown)
+{
+    if (a_showPorts == shown) return;
+    a_showPorts = shown;
+    if (a_showPortsButton != nullptr && a_showPortsButton->isChecked() != shown) a_showPortsButton->setChecked(shown);
+    QucsSettingsFile().setValue(QLatin1String(kShowPortsKey), shown);
+    showOverlays();
+}
+
+void RF25Doc::setPlacing(Placing placing)
+{
+    a_placing = placing;
+    // The two tools, one at a time; the view picking for the one in hand.
+    if (a_edgePortButton != nullptr) {
+        const QSignalBlocker quiet(a_edgePortButton);
+        a_edgePortButton->setChecked(placing == Placing::EdgePort);
+    }
+    if (a_internalPortButton != nullptr) {
+        const QSignalBlocker quiet(a_internalPortButton);
+        a_internalPortButton->setChecked(placing == Placing::InternalPort);
+    }
+    a_view->setMode(placing == Placing::EdgePort       ? LayoutView::Mode::PickPoint
+                    : placing == Placing::InternalPort ? LayoutView::Mode::PickBox
+                                                       : LayoutView::Mode::Select);
+    if (placing == Placing::EdgePort)
+        a_status->setText(tr("Click on an edge of a metal's shape to put an edge port on it; Escape to stop."));
+    else if (placing == Placing::InternalPort)
+        a_status->setText(tr("Drag a rectangle over a metal for an internal port driving its cells in it, or click for "
+                             "the one cell under the point; Escape to stop."));
+}
+
+QString RF25Doc::placeEdgePortAt(QPointF at, double reach, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return QString();
+    };
+    if (!a_processed) return fail(tr("The layout has not been processed: there are no shapes to put a port on."));
+    // The metals' shapes alone: a port is on a metal, not a via.
+    const Stack stack = a_model.stack();
+    QList<Conductor> metals;
+    for (const Conductor& c : a_processed->conductors) {
+        const Layer* layer = stack.named(c.layer);
+        if (layer != nullptr && layer->kind == Layer::Metal) metals << c;
+    }
+    QLineF edge;
+    QPointF outward;
+    QString metal;
+    if (!faceEdge(metals, at, QString(), QPointF(), &edge, &outward, &metal))
+        return fail(tr("There is no shape of a metal to put an edge port on."));
+    if (!(reach > 0)) reach = 10 / std::max(LayoutView::MinScale, a_view->scale());
+    const QPointF d = edge.p2() - edge.p1();
+    const double t = std::clamp(QPointF::dotProduct(at - edge.p1(), d) / std::max(1e-300, QPointF::dotProduct(d, d)), 0.0, 1.0);
+    const QPointF onEdge = edge.p1() + t * d;
+    if (std::hypot(at.x() - onEdge.x(), at.y() - onEdge.y()) > reach)
+        return fail(tr("No edge of a metal's shape is near enough to put an edge port on: click on the edge itself."));
+    // One port to an edge: the solve refuses two on one face.
+    QString problem;
+    for (const FullWavePort& p : portsOf(a_model, &problem)) {
+        if (p.internal) continue;
+        QLineF theirs;
+        if (faceEdge(metals, p.at, p.metal, p.facing, &theirs) && theirs == edge)
+            return fail(tr("%1 drives that edge already.").arg(p.name));
+    }
+    // At its middle, facing out of it the way of the axis it is along.
+    const QPointF middle = edge.center();
+    QString facing = QStringLiteral("auto");
+    if (std::abs(outward.x()) > 0.999) facing = outward.x() > 0 ? QStringLiteral("+x") : QStringLiteral("-x");
+    else if (std::abs(outward.y()) > 0.999) facing = outward.y() > 0 ? QStringLiteral("+y") : QStringLiteral("-y");
+    Model m = a_model;
+    Node port = m.make(QStringLiteral("rf_edge_port"));
+    port.props.insert(QStringLiteral("conductor"), metal);
+    port.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(middle.x(), 0, 'g', 9));
+    port.props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(middle.y(), 0, 'g', 9));
+    port.props.insert(QStringLiteral("facing"), facing);
+    const QString tag = port.tag;
+    const QString label = port.label;
+    QString error;
+    if (m.add(QStringLiteral("ports"), port, -1, &error) == nullptr) return fail(error);
+    if (!setModel(m, tr("an edge port"))) return fail(tr("The port could not be added."));
+    focusNode(tag);
+    a_status->setText(tr("%1 put on the edge of %2 from %3, %4 to %5, %6 µm, facing %7.")
+                          .arg(label, metal)
+                          .arg(edge.p1().x(), 0, 'g', 6)
+                          .arg(edge.p1().y(), 0, 'g', 6)
+                          .arg(edge.p2().x(), 0, 'g', 6)
+                          .arg(edge.p2().y(), 0, 'g', 6)
+                          .arg(facing));
+    return tag;
+}
+
+QString RF25Doc::placeInternalPort(const QRectF& box, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return QString();
+    };
+    if (!a_processed) return fail(tr("The layout has not been processed: there are no shapes to put a port on."));
+    // The topmost metal with a shape under it: under the point, or one that
+    // the rectangle overlaps.
+    const Stack stack = a_model.stack();
+    const QRectF r = box.normalized();
+    const bool point = !(r.width() > 0 && r.height() > 0);
+    QString metal;
+    double highest = -1;
+    for (const Conductor& c : a_processed->conductors) {
+        const Layer* layer = stack.named(c.layer);
+        if (layer == nullptr || layer->kind != Layer::Metal) continue;
+        const bool under = point ? c.outline.containsPoint(r.center(), Qt::OddEvenFill)
+                                 : !c.outline.intersected(QPolygonF(r)).isEmpty();
+        if (!under) continue;
+        const double z = metalHeight(stack, c.layer);
+        if (z > highest) {
+            highest = z;
+            metal = c.layer;
+        }
+    }
+    if (metal.isEmpty()) return fail(tr("No shape of a metal is under it to put an internal port on."));
+    Model m = a_model;
+    Node port = m.make(QStringLiteral("rf_internal_port"));
+    port.props.insert(QStringLiteral("to"), metal);
+    port.props.insert(QStringLiteral("from"), QStringLiteral("ground"));
+    port.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(r.center().x(), 0, 'g', 9));
+    port.props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(r.center().y(), 0, 'g', 9));
+    if (!point) {
+        port.props.insert(QStringLiteral("width"), QStringLiteral("%1[um]").arg(r.width(), 0, 'g', 9));
+        port.props.insert(QStringLiteral("height"), QStringLiteral("%1[um]").arg(r.height(), 0, 'g', 9));
+    }
+    const QString tag = port.tag;
+    const QString label = port.label;
+    QString error;
+    if (m.add(QStringLiteral("ports"), port, -1, &error) == nullptr) return fail(error);
+    if (!setModel(m, tr("an internal port"))) return fail(tr("The port could not be added."));
+    focusNode(tag);
+    a_status->setText(point ? tr("%1 put on %2 at %3, %4 µm, from the ground: the one cell under the point.")
+                                  .arg(label, metal)
+                                  .arg(r.center().x(), 0, 'g', 6)
+                                  .arg(r.center().y(), 0, 'g', 6)
+                            : tr("%1 put on %2 over %3 by %4 µm at %5, %6 µm, from the ground: its cells in the "
+                                 "rectangle driven together.")
+                                  .arg(label, metal)
+                                  .arg(r.width(), 0, 'g', 6)
+                                  .arg(r.height(), 0, 'g', 6)
+                                  .arg(r.center().x(), 0, 'g', 6)
+                                  .arg(r.center().y(), 0, 'g', 6));
+    return tag;
+}
+
 void RF25Doc::setCurrentsShown(bool shown)
 {
     if (a_showCurrents == shown) return;
@@ -1216,6 +1423,65 @@ void RF25Doc::showOverlays()
             if (!a_fullWave->viaCells.isEmpty())
                 a_currentsSaid += QLatin1Char(' ') + tr("A via is drawn by its current round its sides, per metre of them.");
         }
+    }
+    // The ports, by their names, over everything: an edge port's face - the
+    // whole edge it drives, as the solve finds it - and an arrow out of it,
+    // a coplanar one's grounds beside it, thinner; an internal port's
+    // rectangle, or a ring at its point.
+    if (a_showPorts && a_processed) {
+        const bool dark = a_view->colors().background.lightness() < 128;
+        const QColor ink = dark ? QColor(255, 170, 70) : QColor(205, 75, 0);
+        LayoutView::Overlay faces, grounds, regions;
+        faces.line = grounds.line = regions.line = ink;
+        faces.width = 4;
+        grounds.width = 2;
+        regions.width = 2;
+        QColor tint = ink;
+        tint.setAlpha(45);
+        regions.fill = tint;
+        faces.name = tr("the ports");
+        grounds.name = tr("the ports' grounds beside them");
+        regions.name = tr("the internal ports' rectangles");
+        const QList<Conductor>& shapes = a_processed->conductors;
+        for (const Node& node : a_model.ports().children) {
+            if (!node.enabled) continue;
+            const bool edge = node.type == QLatin1String("rf_edge_port");
+            if (!edge && node.type != QLatin1String("rf_internal_port")) continue;
+            const QString name = node.label.isEmpty() ? node.tag : node.label;
+            bool okX = true, okY = true;
+            const double x = numberOf(node, QStringLiteral("x"), a_model, 0, &okX);
+            const double y = numberOf(node, QStringLiteral("y"), a_model, 0, &okY);
+            if (!okX || !okY) continue;
+            const QPointF at = QPointF(x, y) / 1e-6;
+            if (edge) {
+                const QString facing = textOf(node, QStringLiteral("facing"));
+                const QPointF way = facing == QLatin1String("+x")   ? QPointF(1, 0)
+                                    : facing == QLatin1String("-x") ? QPointF(-1, 0)
+                                    : facing == QLatin1String("+y") ? QPointF(0, 1)
+                                    : facing == QLatin1String("-y") ? QPointF(0, -1)
+                                                                    : QPointF();
+                QLineF face;
+                QPointF outward;
+                QString layer;
+                if (faceEdge(shapes, at, textOf(node, QStringLiteral("conductor")).trimmed(), way, &face, &outward, &layer)) {
+                    faces.shapes << QPolygonF(QList<QPointF>{face.p1(), face.p2()});
+                    faces.labels << LayoutView::Overlay::Label{face.center(), name, outward};
+                    if (textOf(node, QStringLiteral("return")) == QLatin1String("beside"))
+                        for (const QLineF& g : besideEdges(shapes, face, outward, layer))
+                            if (!g.isNull()) grounds.shapes << QPolygonF(QList<QPointF>{g.p1(), g.p2()});
+                } else {
+                    faces.labels << LayoutView::Overlay::Label{at, name, QPointF()};
+                }
+                continue;
+            }
+            bool okW = true, okH = true;
+            const double w = numberOf(node, QStringLiteral("width"), a_model, 0, &okW) / 1e-6;
+            const double h = numberOf(node, QStringLiteral("height"), a_model, 0, &okH) / 1e-6;
+            if (okW && okH && w > 0 && h > 0) regions.shapes << QPolygonF(QRectF(at - QPointF(w, h) / 2, QSizeF(w, h)));
+            faces.labels << LayoutView::Overlay::Label{at, name, QPointF()};
+        }
+        for (const LayoutView::Overlay* o : {&regions, &grounds, &faces})
+            if (!o->shapes.isEmpty() || !o->labels.isEmpty()) overlays << *o;
     }
     a_view->setOverlays(overlays);
     a_view->setLegend(legend);

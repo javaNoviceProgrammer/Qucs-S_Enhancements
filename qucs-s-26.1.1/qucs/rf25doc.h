@@ -310,6 +310,35 @@ public:
     /// What the current density drawn is of, and its range: for the panel.
     /// Empty where none is drawn.
     QString currentsSaid() const { return a_currentsSaid; }
+    /// Whether the ports are drawn over the layout, each by its name: an
+    /// edge port's face - the whole edge it drives - with an arrow out of
+    /// it, a coplanar one's grounds beside it, an internal port's
+    /// rectangle or point. Kept for the next model opened.
+    bool portsShown() const { return a_showPorts; }
+    void setPortsShown(bool shown);
+    QToolButton* portsButton() const { return a_showPortsButton; }
+
+    /// Placing a port on the layout by hand: with the Edge Port tool a
+    /// click on (or by) an edge of a metal's shape puts an edge port on
+    /// that edge, facing out of it; with the Internal Port tool a rectangle
+    /// dragged over a metal puts an internal port there, driving its cells
+    /// in the rectangle against the ground - a click, the one cell under
+    /// it. Escape, or the tool's button again, puts it down.
+    enum class Placing { None, EdgePort, InternalPort };
+    Placing placing() const { return a_placing; }
+    void setPlacing(Placing placing);
+    QToolButton* edgePortButton() const { return a_edgePortButton; }
+    QToolButton* internalPortButton() const { return a_internalPortButton; }
+    /// An edge port put on the edge of a metal's processed shape nearest
+    /// \a at (µm), within \a reach µm (nought: ten pixels as the view is
+    /// zoomed): at its middle, facing out of it, its conductor that metal -
+    /// an edit that can be undone, and the panel shows it. Its tag, or
+    /// empty and why in \a why: no edge in reach, or a port drives it.
+    QString placeEdgePortAt(QPointF at, double reach = 0, QString* why = nullptr);
+    /// An internal port over \a box (µm) - a point where it is empty - to
+    /// the topmost metal with a shape under it, from the ground. Its tag,
+    /// or empty and why.
+    QString placeInternalPort(const QRectF& box, QString* why = nullptr);
 
     // What is shown.
     qucs_s::layout::LayoutView* view() const { return a_view; }
@@ -376,6 +405,11 @@ private:
     bool a_prepareAgain = false;   ///< it changed while that run went on
     int a_preparedRuns = 0;
     std::shared_ptr<const qucs_s::rf25::Processed> a_processed;
+    bool a_showPorts = true;
+    QToolButton* a_showPortsButton = nullptr;
+    Placing a_placing = Placing::None;
+    QToolButton* a_edgePortButton = nullptr;
+    QToolButton* a_internalPortButton = nullptr;
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;

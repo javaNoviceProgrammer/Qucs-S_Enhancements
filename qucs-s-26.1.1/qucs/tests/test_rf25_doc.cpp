@@ -31,6 +31,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
@@ -57,6 +58,7 @@
 #include <gdstk/gdstk.hpp>
 
 namespace rf = qucs_s::rf25;
+using LayoutView = qucs_s::layout::LayoutView;
 
 // gdstk's Vec2 is a union of {x, y} and others: {1, 2} is one, braces or not.
 #pragma GCC diagnostic ignored "-Wmissing-braces"
@@ -914,6 +916,8 @@ private slots:
                               [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("largest cell")));
         QVERIFY(doc->waitForPrepared(60000));
+        // (The ports, drawn over these, are thePortsAreDrawnByTheirNames'.)
+        doc->setPortsShown(false);
 
         // The shapes, on by default: one overlay a layer, in that layer's
         // colour, holding that layer's conductors.
@@ -966,6 +970,7 @@ private slots:
         doc->setMeshShown(false);
         QVERIFY(doc->view()->overlays().isEmpty());
         QVERIFY(doc->view()->layout() != nullptr);
+        doc->setPortsShown(true);
 
         // The canvas gone dark: the outline and the ink are told against
         // it, so both are taken again - darker than the fill on a light
@@ -1743,6 +1748,211 @@ private slots:
     // all (the recheck of the same afternoon: they were not solved, and it
     // kept it). And a lone strip has nothing beside it to return through,
     // which is said rather than solved.
+    // A press, a few moves and a release of the left button in \a view, at
+    // its pixels: a drag, or where \a from and \a to are one, a click.
+    static void drag(QWidget* view, QPointF from, QPointF to)
+    {
+        const auto send = [view](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, at, view->mapToGlobal(at), button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(view, &e);
+        };
+        send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+        for (int i = 1; i <= 5; ++i) send(QEvent::MouseMove, from + (to - from) * (i / 5.0), Qt::NoButton, Qt::LeftButton);
+        send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+    }
+    /// The micrometres of a length the tab wrote ("120.4[um]").
+    static double micrometres(const rf::Node& n, const char* key)
+    {
+        QString text = n.props.value(QLatin1String(key)).toString();
+        text.remove(QStringLiteral("[um]"));
+        return text.toDouble();
+    }
+
+    // The ports drawn over the layout by their names (the user's request of
+    // 1 November, "so that it's easy to understand them"): an edge port's
+    // face - the whole edge it drives, as the solve finds it - with an
+    // arrow out of it; a coplanar one's grounds beside it; an internal
+    // port's rectangle. The Ports button hides them.
+    void thePortsAreDrawnByTheirNames()
+    {
+        QVERIFY(writeRectangles(path(QStringLiteral("cpwports.gds")),
+                                {QRectF(QPointF(0, -50), QPointF(1000, 50)), QRectF(QPointF(0, 100), QPointF(1000, 350)),
+                                 QRectF(QPointF(0, -350), QPointF(1000, -100))}));
+        const QString model = fullWaveLine(QStringLiteral("cpwports.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.layout().props.insert(QStringLiteral("file"), QStringLiteral("cpwports.gds"));
+            // Each at a corner of the signal, where two edges meet and its
+            // facing says which it drives: its whole end.
+            for (rf::Node& port : m.ports().children) {
+                const bool first = port.label == QLatin1String("P1");
+                port.props.insert(QStringLiteral("y"), first ? QStringLiteral("-50[um]") : QStringLiteral("50[um]"));
+                port.props.insert(QStringLiteral("facing"), first ? QStringLiteral("-x") : QStringLiteral("+x"));
+                if (first) port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
+            }
+            rf::Node inner = m.make(QStringLiteral("rf_internal_port"));
+            inner.props.insert(QStringLiteral("x"), QStringLiteral("500[um]"));
+            inner.props.insert(QStringLiteral("y"), QStringLiteral("0"));
+            inner.props.insert(QStringLiteral("to"), QStringLiteral("M1"));
+            inner.props.insert(QStringLiteral("width"), QStringLiteral("120[um]"));
+            inner.props.insert(QStringLiteral("height"), QStringLiteral("60[um]"));
+            QVERIFY(m.add(QStringLiteral("ports"), inner) != nullptr);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        const auto overlay = [doc](const QString& name) -> const LayoutView::Overlay* {
+            for (const LayoutView::Overlay& o : doc->view()->overlays())
+                if (o.name == name) return &o;
+            return nullptr;
+        };
+        QVERIFY(doc->portsShown() && doc->portsButton()->isChecked());
+        const LayoutView::Overlay* ports = overlay(QStringLiteral("the ports"));
+        QVERIFY(ports != nullptr);
+        QCOMPARE(ports->labels.size(), 3);
+        QMap<QString, LayoutView::Overlay::Label> byName;
+        for (const LayoutView::Overlay::Label& l : ports->labels) byName.insert(l.text, l);
+        QCOMPARE(byName.value(QStringLiteral("P1")).at, QPointF(0, 0));
+        QCOMPARE(byName.value(QStringLiteral("P1")).towards, QPointF(-1, 0));
+        QCOMPARE(byName.value(QStringLiteral("P2")).at, QPointF(1000, 0));
+        QCOMPARE(byName.value(QStringLiteral("P2")).towards, QPointF(1, 0));
+        QCOMPARE(byName.value(QStringLiteral("P3")).at, QPointF(500, 0));
+        QCOMPARE(byName.value(QStringLiteral("P3")).towards, QPointF(0, 0));
+        // Each edge port's face is the signal's whole end.
+        QCOMPARE(ports->shapes.size(), 2);
+        for (const QPolygonF& face : ports->shapes) {
+            const QRectF b = face.boundingRect();
+            QVERIFY2((b.left() == 0 || b.left() == 1000) && b.width() == 0 && b.top() == -50 && b.bottom() == 50,
+                     qPrintable(QStringLiteral("%1, %2 to %3, %4").arg(b.left()).arg(b.top()).arg(b.right()).arg(b.bottom())));
+        }
+        // The coplanar one's grounds beside it, on its edge's line; the
+        // other returns through the ground, and has none drawn.
+        const LayoutView::Overlay* grounds = overlay(QStringLiteral("the ports' grounds beside them"));
+        QVERIFY(grounds != nullptr);
+        QCOMPARE(grounds->shapes.size(), 2);
+        QList<QRectF> beside;
+        for (const QPolygonF& g : grounds->shapes) beside << g.boundingRect();
+        std::sort(beside.begin(), beside.end(), [](const QRectF& a, const QRectF& b) { return a.top() < b.top(); });
+        QCOMPARE(beside.at(0), QRectF(QPointF(0, -350), QPointF(0, -100)));
+        QCOMPARE(beside.at(1), QRectF(QPointF(0, 100), QPointF(0, 350)));
+        const LayoutView::Overlay* regions = overlay(QStringLiteral("the internal ports' rectangles"));
+        QVERIFY(regions != nullptr);
+        QCOMPARE(regions->shapes.size(), 1);
+        QCOMPARE(regions->shapes.first().boundingRect(), QRectF(440, -30, 120, 60));
+        doc->portsButton()->click();
+        QVERIFY(!doc->portsShown());
+        QVERIFY(overlay(QStringLiteral("the ports")) == nullptr);
+        doc->portsButton()->click();
+        QVERIFY(overlay(QStringLiteral("the ports")) != nullptr);
+    }
+
+    // A port placed by hand on the layout (the user's request of 1
+    // November, "similar to how EMX handles ports"): with the Edge Port
+    // tool a click on an edge of a metal's shape puts an edge port on that
+    // edge, at its middle, facing out of it, the panel showing it and an
+    // undo taking it away - not a second on the same edge, nor one where
+    // no edge is near. With the Internal Port tool a rectangle dragged over
+    // a metal puts an internal port over it, a click a point one. Escape
+    // puts the tool down. And the solve drives the rectangle's cells.
+    void aPortIsPlacedByHandOnTheLayout()
+    {
+        const QString model = fullWaveLine(QStringLiteral("handports.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.ports().children.clear();
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            QVERIFY(study != nullptr);
+            study->props.insert(QStringLiteral("to"), QStringLiteral("1[GHz]"));
+            study->props.insert(QStringLiteral("points"), 1);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(QPointF(-100, -150), QPointF(1100, 200)));
+        view->repaint();
+        const auto portsOfModel = [doc] { return doc->model().ports().children; };
+        QCOMPARE(int(portsOfModel().size()), 0);
+
+        doc->edgePortButton()->click();
+        QCOMPARE(doc->placing(), RF25Doc::Placing::EdgePort);
+        QCOMPARE(view->mode(), LayoutView::Mode::PickPoint);
+        drag(view, view->toPixel(QPointF(1000, 10)), view->toPixel(QPointF(1000, 10)));
+        QCOMPARE(int(portsOfModel().size()), 1);
+        rf::Node edge = portsOfModel().front();
+        QCOMPARE(edge.type, QStringLiteral("rf_edge_port"));
+        QCOMPARE(edge.props.value(QStringLiteral("conductor")).toString(), QStringLiteral("M1"));
+        QCOMPARE(edge.props.value(QStringLiteral("x")).toString(), QStringLiteral("1000[um]"));
+        QCOMPARE(edge.props.value(QStringLiteral("y")).toString(), QStringLiteral("25[um]"));
+        QCOMPARE(edge.props.value(QStringLiteral("facing")).toString(), QStringLiteral("+x"));
+        QCOMPARE(doc->focusedNode(), edge.tag);
+        // Again on that edge: not a second; and nowhere near an edge,
+        // nothing - each said.
+        drag(view, view->toPixel(QPointF(1000, 40)), view->toPixel(QPointF(1000, 40)));
+        QCOMPARE(int(portsOfModel().size()), 1);
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("drives that edge already")), qPrintable(doc->statusLabel()->text()));
+        drag(view, view->toPixel(QPointF(500, 150)), view->toPixel(QPointF(500, 150)));
+        QCOMPARE(int(portsOfModel().size()), 1);
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("No edge")), qPrintable(doc->statusLabel()->text()));
+        doc->undo();
+        QCOMPARE(int(portsOfModel().size()), 0);
+        doc->undoStack()->redo();
+        QCOMPARE(int(portsOfModel().size()), 1);
+        // It is drawn as soon as it is put.
+        bool drawn = false;
+        for (const LayoutView::Overlay& o : view->overlays())
+            for (const LayoutView::Overlay::Label& l : o.labels) drawn = drawn || l.text == edge.label;
+        QVERIFY(drawn);
+
+        doc->internalPortButton()->click();
+        QCOMPARE(doc->placing(), RF25Doc::Placing::InternalPort);
+        QVERIFY(!doc->edgePortButton()->isChecked());
+        QCOMPARE(view->mode(), LayoutView::Mode::PickBox);
+        drag(view, view->toPixel(QPointF(400, 10)), view->toPixel(QPointF(520, 40)));
+        QCOMPARE(int(portsOfModel().size()), 2);
+        const rf::Node inner = portsOfModel().at(1);
+        QCOMPARE(inner.type, QStringLiteral("rf_internal_port"));
+        QCOMPARE(inner.props.value(QStringLiteral("to")).toString(), QStringLiteral("M1"));
+        QCOMPARE(inner.props.value(QStringLiteral("from")).toString(), QStringLiteral("ground"));
+        QVERIFY2(std::abs(micrometres(inner, "width") - 120) < 4 && std::abs(micrometres(inner, "height") - 30) < 4
+                     && std::abs(micrometres(inner, "x") - 460) < 4 && std::abs(micrometres(inner, "y") - 25) < 4,
+                 qPrintable(QStringLiteral("%1 by %2 at %3, %4").arg(micrometres(inner, "width")).arg(micrometres(inner, "height"))
+                                .arg(micrometres(inner, "x")).arg(micrometres(inner, "y"))));
+        drag(view, view->toPixel(QPointF(700, 25)), view->toPixel(QPointF(700, 25)));
+        QCOMPARE(int(portsOfModel().size()), 3);
+        QVERIFY(!portsOfModel().at(2).props.contains(QStringLiteral("width")));
+        QTest::keyClick(view, Qt::Key_Escape);
+        QCOMPARE(doc->placing(), RF25Doc::Placing::None);
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+        QVERIFY(!doc->internalPortButton()->isChecked());
+
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("cell(s) of M1 under its")), qPrintable(w->portsSaid.join(" | ")));
+    }
+
     void aCoplanarPortIsReadAndItsFeedCalibrated()
     {
         QVERIFY(writeRectangles(path(QStringLiteral("cpw.gds")),

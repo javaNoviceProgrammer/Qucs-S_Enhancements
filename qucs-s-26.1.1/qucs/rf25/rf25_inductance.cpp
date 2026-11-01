@@ -17,6 +17,7 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace qucs_s::rf25 {
@@ -319,6 +320,86 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     return runs;
 }
 
+bool faceEdge(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing, QLineF* edge,
+              QPointF* outward, QString* onLayer)
+{
+    const double facingNorm = std::hypot(facing.x(), facing.y());
+    double closest = 0;
+    bool found = false;
+    for (const Conductor& c : conductors) {
+        if (!layer.isEmpty() && c.layer != layer) continue;
+        for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+            const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % n);
+            const QPointF d = b - a;
+            const double len2 = d.x() * d.x() + d.y() * d.y();
+            if (!(len2 > 0)) continue;
+            // Its outward normal: of the edge's two, the one whose side of
+            // the middle is not inside the shape.
+            const double len = std::sqrt(len2);
+            QPointF normal(d.y() / len, -d.x() / len);
+            const QPointF middle = (a + b) / 2;
+            if (c.outline.containsPoint(middle + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
+            if (facingNorm > 0 && (normal.x() * facing.x() + normal.y() * facing.y()) / facingNorm < M_SQRT1_2) continue;
+            double t = ((where.x() - a.x()) * d.x() + (where.y() - a.y()) * d.y()) / len2;
+            t = std::clamp(t, 0.0, 1.0);
+            const QPointF on = a + d * t;
+            const double far = std::hypot(where.x() - on.x(), where.y() - on.y());
+            if (!found || far < closest) {
+                closest = far;
+                found = true;
+                if (edge != nullptr) *edge = QLineF(a, b);
+                if (outward != nullptr) *outward = normal;
+                if (onLayer != nullptr) *onLayer = c.layer;
+            }
+        }
+    }
+    return found;
+}
+
+std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLineF& face, QPointF outward, const QString& layer)
+{
+    std::array<QLineF, 2> out;
+    const double len = face.length();
+    if (!(len > 0)) return out;
+    const QPointF unit = (face.p2() - face.p1()) / len, normal(-unit.y(), unit.x());
+    const double tol = 1e-6 * std::max(1.0, len);
+    // Every edge of the layer on the face's line, facing out the same way:
+    // a conductor on the same side of it. As (from the face's end out, to
+    // its far end) on either side.
+    QList<std::pair<double, double>> sides[2];
+    for (const Conductor& c : conductors) {
+        if (!layer.isEmpty() && c.layer != layer) continue;
+        for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+            const QPointF a = c.outline.at(i) - face.p1(), b = c.outline.at((i + 1) % n) - face.p1();
+            if (std::abs(a.x() * normal.x() + a.y() * normal.y()) > tol || std::abs(b.x() * normal.x() + b.y() * normal.y()) > tol)
+                continue;
+            const QPointF d = b - a;
+            const double el = std::hypot(d.x(), d.y());
+            if (!(el > 0)) continue;
+            QPointF out(d.y() / el, -d.x() / el);
+            const QPointF middle = (c.outline.at(i) + c.outline.at((i + 1) % n)) / 2;
+            if (c.outline.containsPoint(middle + out * (1e-3 * el), Qt::OddEvenFill)) out = -out;
+            if (out.x() * outward.x() + out.y() * outward.y() < 0.9) continue;
+            const double t0 = std::min(a.x() * unit.x() + a.y() * unit.y(), b.x() * unit.x() + b.y() * unit.y());
+            const double t1 = std::max(a.x() * unit.x() + a.y() * unit.y(), b.x() * unit.x() + b.y() * unit.y());
+            if (t1 <= tol) sides[0] << std::make_pair(-t1, -t0);
+            else if (t0 >= len - tol) sides[1] << std::make_pair(t0 - len, t1 - len);
+        }
+    }
+    // Of each side, the nearest stretch, through the edges that meet it.
+    for (int k = 0; k < 2; ++k) {
+        QList<std::pair<double, double>>& side = sides[k];
+        if (side.isEmpty()) continue;
+        std::sort(side.begin(), side.end());
+        const double near = side.first().first;
+        double reach = side.first().second;
+        for (int i = 1; i < side.size() && side.at(i).first <= reach + tol; ++i) reach = std::max(reach, side.at(i).second);
+        out[std::size_t(k)] = k == 0 ? QLineF(face.p1() - unit * near, face.p1() - unit * reach)
+                                     : QLineF(face.p2() + unit * near, face.p2() + unit * reach);
+    }
+    return out;
+}
+
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine, QPointF* alongLine, const QString& layer, QPointF facing)
 {
@@ -353,38 +434,10 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     };
     // The outline edge the point is on, over every shape - of the layer
     // asked for, and facing the way asked for.
-    const double facingNorm = std::hypot(facing.x(), facing.y());
-    double closest = 0;
-    QPointF p, q;
+    QLineF edge;
     QString onLayer;
-    for (const Conductor& c : conductors) {
-        if (!layer.isEmpty() && c.layer != layer) continue;
-        for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
-            const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % n);
-            const QPointF d = b - a;
-            const double len2 = d.x() * d.x() + d.y() * d.y();
-            if (!(len2 > 0)) continue;
-            if (facingNorm > 0) {
-                // Its outward normal: of the edge's two, the one whose
-                // side of the middle is not inside the shape.
-                const double len = std::sqrt(len2);
-                QPointF normal(d.y() / len, -d.x() / len);
-                const QPointF middle = (a + b) / 2;
-                if (c.outline.containsPoint(middle + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
-                if ((normal.x() * facing.x() + normal.y() * facing.y()) / facingNorm < M_SQRT1_2) continue;
-            }
-            double t = ((where.x() - a.x()) * d.x() + (where.y() - a.y()) * d.y()) / len2;
-            t = std::clamp(t, 0.0, 1.0);
-            const QPointF on = a + d * t;
-            const double far = std::hypot(where.x() - on.x(), where.y() - on.y());
-            if (onLayer.isEmpty() || far < closest) {
-                closest = far;
-                p = a;
-                q = b;
-                onLayer = c.layer;
-            }
-        }
-    }
+    faceEdge(conductors, where, layer, facing, &edge, nullptr, &onLayer);
+    const QPointF p = edge.p1(), q = edge.p2();
     if (onLayer.isEmpty()) {
         // No edge of that layer facing that way: the cell nearest it.
         const int one = nearest();

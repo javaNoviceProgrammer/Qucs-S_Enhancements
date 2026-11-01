@@ -1150,6 +1150,44 @@ private slots:
         QVERIFY2(why(none).contains(QStringLiteral("none either side")), qPrintable(why(none)));
     }
 
+    // An internal port over a rectangle (the ports placed by hand, 1
+    // November: a rectangle drawn on a metal): every cell of its metal the
+    // rectangle overlaps driven together against the ground, by its share
+    // of the area, as an edge port's face is shared out. Over a line's end,
+    // the whole width and no deeper than its last cells, it drives what the
+    // edge port there does, and is that port to the last digit - where the
+    // one cell under a point is not (0.0013 off in S11 at 20 GHz, 0.0025 in
+    // S21). A rectangle over no cell of its metal is said.
+    void anInternalPortOverARectangleDrivesItsCells()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> line = {strip(0, 0, 2000, 100)};
+        const rf::Mesh mesh = meshed(line, 3, 100e-6);
+        const QList<double> fs = {20e9};
+        const rf::FullWave edges = rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, fs);
+        rf::FullWavePort near = internalPort(QPointF(25, 50), QStringLiteral("M1")), far = internalPort(QPointF(1975, 50), QStringLiteral("M1"));
+        const rf::FullWave points = rf::fullWaveOf(mesh, line, stack, {near, far}, fs);
+        near.size = far.size = QSizeF(50, 100);
+        const rf::FullWave boxes = rf::fullWaveOf(mesh, line, stack, {near, far}, fs);
+        QVERIFY2(edges.ok() && points.ok() && boxes.ok(), qPrintable(why(edges) + why(points) + why(boxes)));
+        QVERIFY2(says(boxes.portsSaid, "drives the 5 cell(s) of M1 under its 50 by 100") && says(boxes.portsSaid, "rectangle at 25, 50"),
+                 qPrintable(boxes.portsSaid.join(" | ")));
+        QVERIFY2(says(points.portsSaid, "drives the cell at 25, 50"), qPrintable(points.portsSaid.join(" | ")));
+        QVERIFY(boxes.asymmetry < 1e-9 && boxes.gain < 1e-6);
+        const Complex e21 = edges.s.at(0).at(1).at(0), b21 = boxes.s.at(0).at(1).at(0), p21 = points.s.at(0).at(1).at(0);
+        const Complex e11 = edges.s.at(0).at(0).at(0), b11 = boxes.s.at(0).at(0).at(0), p11 = points.s.at(0).at(0).at(0);
+        QVERIFY2(std::abs(b11 - e11) < 1e-9 && std::abs(b21 - e21) < 1e-9 && std::abs(p11 - e11) > 3e-4 && std::abs(p21 - e21) > 3e-4,
+                 qPrintable(QStringLiteral("off the edge ports': as a rectangle S11 %1, S21 %2; as a point %3, %4")
+                                .arg(std::abs(b11 - e11)).arg(std::abs(b21 - e21)).arg(std::abs(p11 - e11)).arg(std::abs(p21 - e21))));
+        // Over nothing of its metal: said.
+        rf::FullWavePort off = internalPort(QPointF(1000, 400), QStringLiteral("M1"));
+        off.size = QSizeF(40, 40);
+        const rf::FullWave none = rf::fullWaveOf(mesh, line, stack, {off}, fs);
+        QVERIFY(!none.ok());
+        QVERIFY2(none.problems.join(' ').contains(QStringLiteral("rectangle at 1000, 400 µm is over no cell of M1")),
+                 qPrintable(why(none)));
+    }
+
     void whatItCannotSolveIsSaid()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
