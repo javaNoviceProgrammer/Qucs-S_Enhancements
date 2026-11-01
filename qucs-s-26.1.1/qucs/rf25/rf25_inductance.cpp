@@ -320,7 +320,7 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
 }
 
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
-                     QPointF* onLine, QPointF* alongLine)
+                     QPointF* onLine, QPointF* alongLine, const QString& layer, QPointF facing)
 {
     /*
      * A port drives the whole face of the conductor it is on, not the one
@@ -337,10 +337,11 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     QList<int> cells;
     if (onLine != nullptr) *onLine = where;
     if (alongLine != nullptr) *alongLine = QPointF(0, 0);
-    const auto nearest = [&mesh, &reached, where] {
+    const auto nearest = [&mesh, &reached, where, &layer] {
         int best = -1;
         double closest = 0;
         for (const int c : reached) {
+            if (!layer.isEmpty() && mesh.cells.at(c).layer != layer) continue;
             const QPointF d = mesh.cells.at(c).centre - where;
             const double far = d.x() * d.x() + d.y() * d.y();
             if (best < 0 || far < closest) {
@@ -350,28 +351,46 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
         }
         return best;
     };
-    // The outline edge the point is on, over every shape.
+    // The outline edge the point is on, over every shape - of the layer
+    // asked for, and facing the way asked for.
+    const double facingNorm = std::hypot(facing.x(), facing.y());
     double closest = 0;
     QPointF p, q;
-    QString layer;
-    for (const Conductor& c : conductors)
+    QString onLayer;
+    for (const Conductor& c : conductors) {
+        if (!layer.isEmpty() && c.layer != layer) continue;
         for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
             const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % n);
             const QPointF d = b - a;
             const double len2 = d.x() * d.x() + d.y() * d.y();
             if (!(len2 > 0)) continue;
+            if (facingNorm > 0) {
+                // Its outward normal: of the edge's two, the one whose
+                // side of the middle is not inside the shape.
+                const double len = std::sqrt(len2);
+                QPointF normal(d.y() / len, -d.x() / len);
+                const QPointF middle = (a + b) / 2;
+                if (c.outline.containsPoint(middle + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
+                if ((normal.x() * facing.x() + normal.y() * facing.y()) / facingNorm < M_SQRT1_2) continue;
+            }
             double t = ((where.x() - a.x()) * d.x() + (where.y() - a.y()) * d.y()) / len2;
             t = std::clamp(t, 0.0, 1.0);
             const QPointF on = a + d * t;
             const double far = std::hypot(where.x() - on.x(), where.y() - on.y());
-            if (layer.isEmpty() || far < closest) {
+            if (onLayer.isEmpty() || far < closest) {
                 closest = far;
                 p = a;
                 q = b;
-                layer = c.layer;
+                onLayer = c.layer;
             }
         }
-    if (layer.isEmpty()) return cells;
+    }
+    if (onLayer.isEmpty()) {
+        // No edge of that layer facing that way: the cell nearest it.
+        const int one = nearest();
+        if (one >= 0) cells << one;
+        return cells;
+    }
     const QPointF along = q - p;
     const double len = std::hypot(along.x(), along.y());
     if (!(len > 0)) return cells;
@@ -384,7 +403,7 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     const double tol = 1e-6 * std::max(1.0, len);
     for (const int c : reached) {
         const MeshCell& cell = mesh.cells.at(c);
-        if (cell.layer != layer) continue;
+        if (cell.layer != onLayer) continue;
         for (int i = 0, n = int(cell.outline.size()); i < n; ++i) {
             const QPointF a = cell.outline.at(i), b = cell.outline.at((i + 1) % n);
             const double offA = (a.x() - p.x()) * normal.x() + (a.y() - p.y()) * normal.y();

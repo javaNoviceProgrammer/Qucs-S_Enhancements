@@ -294,25 +294,30 @@ QList<NodeKind> makeKinds()
                  {tr("Linear"), tr("Logarithmic")}, QStringLiteral("linear")),
           boolean(QStringLiteral("adaptive"), tr("Add points where it changes"), false)},
          {}, {}, true, true, QStringLiteral("st"),
-         tr("The frequencies to solve at. The quasi-static solver reads them for a line's R and G and for its "
-            "S-parameters; the full-wave one is not built yet.")});
+         tr("The frequencies to solve at, and by which solver. The quasi-static one solves the charge once and reads "
+            "the frequencies for a line's R and G and its S-parameters; the full-wave one solves the currents at each "
+            "frequency, driven at the ports, for their S.")});
     add({QStringLiteral("rf_results"), tr("Results"), QString(), QStringLiteral("results"), none, {}, {}, {}, true, true,
-         QString(), tr("What the solve found: each net's capacitance, each as a line with its RLGC and S parameters, "
-                       "and the frequency above which a quasi-static answer is no longer the whole story.")});
+         QString(), tr("What the solve found. Quasi-static: each net's capacitance, each as a line with its RLGC and S "
+                       "parameters, and the frequency above which that is no longer the whole story. Full wave: the "
+                       "ports' S at each frequency, whether it is reciprocal and passive, and the currents drawn on "
+                       "the layout.")});
     add({QStringLiteral("rf_exports"), tr("Exports"), QString(), QStringLiteral("exports"), none, {},
          {QStringLiteral("rf_touchstone")}, {}, true, true, QString(), tr("What is written out of a solution.")});
     add({QStringLiteral("rf_touchstone"), tr("Touchstone"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
           choice(QStringLiteral("of"), tr("Of"), {QStringLiteral("line"), QStringLiteral("coupled")},
-                 {tr("One net, as a two-port"), tr("Every net, as coupled lines")}, QStringLiteral("line")),
+                 {tr("One net, as a two-port"), tr("Every net, as coupled lines")}, QStringLiteral("line"),
+                 tr("Of a quasi-static solve; a full-wave solve writes its ports")),
           text(QStringLiteral("net"), tr("Net"), QString(),
                tr("Which conductor, by the name the solve gave it (empty: the first)")),
           expr(QStringLiteral("length"), tr("Length"), QStringLiteral("m"), QString(),
                tr("How long a piece of line to write (empty: the length that was solved)")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50"))},
          {}, {}, false, false, QStringLiteral("ts"),
-         tr("An .sNp file of the S parameters, at the study's own frequencies. Coupled lines are written as a "
-            "2N-port: the near ends first, then the far ends.")});
+         tr("An .sNp file of the S parameters, at the study's own frequencies: a full-wave solve's ports, in their "
+            "order under Ports; or of a quasi-static solve, one net as a line or every net as coupled lines - a "
+            "2N-port, the near ends first, then the far ends.")});
     return k;
 }
 

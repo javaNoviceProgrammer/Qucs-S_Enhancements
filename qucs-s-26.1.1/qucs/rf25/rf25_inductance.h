@@ -164,9 +164,14 @@ struct Inductance {
  * the whole face - or the one nearest it where the point is on no face.
  * \a onLine and \a alongLine, given, are a point of that edge and its
  * direction (nought where there is no face).
+ *
+ * \a layer, given, keeps to the conductors on that layer of the stack;
+ * \a facing, given, to the edges whose outward normal points that way
+ * (within 45 degrees) - a port at a corner then drives the face it says.
  */
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
-                     QPointF* onLine = nullptr, QPointF* alongLine = nullptr);
+                     QPointF* onLine = nullptr, QPointF* alongLine = nullptr, const QString& layer = QString(),
+                     QPointF facing = QPointF());
 
 /*!
  * The mesh of \a conductors on \a stack solved for the current that goes

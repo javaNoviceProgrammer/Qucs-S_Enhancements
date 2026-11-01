@@ -55,6 +55,79 @@ namespace {
 
 const char* const kShowProcessedKey = "RF25/showProcessed";
 const char* const kShowMeshKey = "RF25/showMesh";
+const char* const kShowCurrentsKey = "RF25/showCurrents";
+
+/// The current density's colours, dark to bright: viridis, which reads in
+/// order in either theme and to a reader who sees no red - its eight
+/// anchors, and \a bands colours between them.
+QList<QColor> currentRamp(int bands = 8)
+{
+    static const QList<QColor> anchors{QColor(0x44, 0x01, 0x54), QColor(0x46, 0x32, 0x7e), QColor(0x36, 0x5c, 0x8d),
+                                       QColor(0x27, 0x7f, 0x8e), QColor(0x1f, 0xa1, 0x87), QColor(0x4a, 0xc1, 0x6d),
+                                       QColor(0xa0, 0xda, 0x39), QColor(0xfd, 0xe7, 0x25)};
+    QList<QColor> out;
+    for (int b = 0; b < bands; ++b) {
+        const double t = bands > 1 ? double(b) / (bands - 1) * (anchors.size() - 1) : 0.0;
+        const int i = std::min(int(t), int(anchors.size()) - 2);
+        const double u = t - i;
+        const QColor& a = anchors.at(i);
+        const QColor& c = anchors.at(i + 1);
+        out << QColor(int(std::lround(a.red() + u * (c.red() - a.red()))), int(std::lround(a.green() + u * (c.green() - a.green()))),
+                      int(std::lround(a.blue() + u * (c.blue() - a.blue()))), 235);
+    }
+    return out;
+}
+
+/// The model's ports as the full-wave solve takes them: an edge port on its
+/// metal, facing the way it says; an internal port from the metal it names
+/// (or the ground) to the other; each with its own reference. What one says
+/// that is not done goes into \a notes; one that cannot be read is
+/// \a problem, and nothing is returned.
+QList<FullWavePort> portsOf(const Model& model, QStringList* notes, QString* problem)
+{
+    QList<FullWavePort> out;
+    for (const Node& port : model.ports().children) {
+        if (!port.enabled) continue;
+        const bool edge = port.type == QLatin1String("rf_edge_port");
+        if (!edge && port.type != QLatin1String("rf_internal_port")) continue;
+        FullWavePort p;
+        p.name = port.label.isEmpty() ? port.tag : port.label;
+        bool okX = true, okY = true, okZ = true;
+        const double x = numberOf(port, QStringLiteral("x"), model, 0, &okX);
+        const double y = numberOf(port, QStringLiteral("y"), model, 0, &okY);
+        p.impedance = numberOf(port, QStringLiteral("impedance"), model, 50, &okZ);
+        if (!okX || !okY || !okZ) {
+            *problem = QCoreApplication::translate("RF25Doc", "%1's %2 is not a number.")
+                           .arg(p.name, !okX ? QStringLiteral("x") : !okY ? QStringLiteral("y")
+                                                                           : QCoreApplication::translate("RF25Doc", "reference impedance"));
+            return {};
+        }
+        // (The ports are in metres; the cells are in the layout's own.)
+        p.at = QPointF(x, y) / 1e-6;
+        if (edge) {
+            p.metal = textOf(port, QStringLiteral("conductor")).trimmed();
+            const QString facing = textOf(port, QStringLiteral("facing"));
+            if (facing == QLatin1String("+x")) p.facing = QPointF(1, 0);
+            else if (facing == QLatin1String("-x")) p.facing = QPointF(-1, 0);
+            else if (facing == QLatin1String("+y")) p.facing = QPointF(0, 1);
+            else if (facing == QLatin1String("-y")) p.facing = QPointF(0, -1);
+            bool ok = true;
+            const double deembed = numberOf(port, QStringLiteral("deembed"), model, 0, &ok);
+            if (ok && deembed != 0)
+                *notes << QCoreApplication::translate("RF25Doc", "%1 asks for %2 of de-embedding, which is not done yet "
+                                                                 "(calibration lines are the next phase's): its reference "
+                                                                 "plane is at its face.")
+                              .arg(p.name, fem::formatQuantity(deembed, fem::Dim::length()));
+        } else {
+            p.internal = true;
+            p.metal = textOf(port, QStringLiteral("to")).trimmed();
+            const QString from = textOf(port, QStringLiteral("from")).trimmed();
+            p.from = from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0 ? QString() : from;
+        }
+        out << p;
+    }
+    return out;
+}
 
 /// A change of the model: the model before and after, whole (it is small).
 class ModelCommand : public QUndoCommand
@@ -254,6 +327,16 @@ struct RF25Doc::SolveJob {
     double frequency = 0;
     QString portsSaid;
     std::shared_ptr<Inductance> inductance;
+    // A full-wave solve's: the ports as the model has them, the sweep, and
+    // what reading the ports said; and the flag that stops it between
+    // frequencies, with the count it keeps of them.
+    bool fullWave = false;
+    QList<FullWavePort> ports;
+    QList<double> frequencies;
+    QStringList notes;
+    std::shared_ptr<FullWave> wave;
+    std::atomic_bool stop{false};
+    std::atomic_int done{0};
 };
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
@@ -278,6 +361,18 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     a_prepareSoon->setSingleShot(true);
     a_prepareSoon->setInterval(300);
     connect(a_prepareSoon, &QTimer::timeout, this, &RF25Doc::prepare);
+    // A full-wave solve's frequencies, counted for the notes and the panel
+    // while it runs: a sweep of many is minutes.
+    a_progress = new QTimer(this);
+    a_progress->setInterval(400);
+    connect(a_progress, &QTimer::timeout, this, [this] {
+        if (!a_solveJob) {
+            a_progress->stop();
+            return;
+        }
+        showProblems();
+        emit solvedChanged();
+    });
     buildUi();
     // The starter model's stack, drawn from the first: only an edit or a
     // read drew it, so a new model's view said "No layer" beside a status
@@ -300,6 +395,9 @@ RF25Doc::~RF25Doc()
     // own copy of the model and of the layout, so it ends on nothing this
     // tab owns.
     a_prepareJob.reset();
+    // And a full-wave sweep stops at its next frequency rather than run on
+    // for minutes for nothing.
+    if (a_solveJob) a_solveJob->stop = true;
 }
 
 Model RF25Doc::starterModel()
@@ -358,10 +456,20 @@ void RF25Doc::buildUi()
     a_showMeshButton->setCheckable(true);
     a_showMeshButton->setChecked(a_showMesh);
     connect(a_showMeshButton, &QToolButton::toggled, this, &RF25Doc::setMeshShown);
+    a_showCurrents = settings.value(QLatin1String(kShowCurrentsKey), false).toBool();
+    a_showCurrentsButton = button(tr("Currents"),
+                                  tr("Draw the surface current density a full-wave solve found, over the layout: of one "
+                                     "port driven alone at one of its frequencies (the Results node chooses which)"),
+                                  "rfShowCurrents");
+    a_showCurrentsButton->setCheckable(true);
+    a_showCurrentsButton->setChecked(a_showCurrents);
+    connect(a_showCurrentsButton, &QToolButton::toggled, this, &RF25Doc::setCurrentsShown);
     row->addSpacing(10);
     // The one piece of work this build does on being asked rather than at
     // every edit: a dense matrix of the unknowns is cubic.
-    a_solveButton = button(tr("Solve"), tr("Find the capacitance of the conductors, and a line's impedance from it"),
+    a_solveButton = button(tr("Solve"),
+                           tr("Solve the model by the study's solver: the quasi-static extraction (the conductors' "
+                              "capacitance, a line's RLGC) or the full-wave one (the ports' S at each frequency)"),
                            "rfSolve");
     connect(a_solveButton, &QToolButton::clicked, this, [this] {
         if (isSolving()) stopSolving();
@@ -595,8 +703,8 @@ void RF25Doc::showProblems()
     const QStringList said = problems();
     QStringList lines;
     if (said.isEmpty()) {
-        lines << tr("The model is whole: a stack, a layout with its map, and ports. There is no solver in this build "
-                    "(phase A), so nothing is computed from it yet.");
+        lines << tr("The model is whole: a stack, a layout with its map, and ports. Solve finds what the study asks for: "
+                    "the quasi-static extraction or the full-wave solve.");
     } else {
         lines << tr("What is still missing:");
         for (const QString& s : said) lines << QStringLiteral("  • ") + s;
@@ -614,9 +722,15 @@ void RF25Doc::showProblems()
     }
     // The solve: what it found, or that it is running, or why it is not.
     if (a_solveJob) {
-        lines << tr("Solving…");
+        lines << (a_solveJob->fullWave ? tr("Solving full-wave: %1 of %2 frequencies…")
+                                             .arg(frequenciesSolved()).arg(frequenciesToSolve())
+                                       : tr("Solving…"));
     } else if (a_solveWhenPrepared) {
         lines << tr("Solving once the shapes and the mesh of the last edit are made…");
+    } else if (a_fullWave && a_fullWave->ok()) {
+        lines << tr("What it solves to:");
+        for (const QString& line : a_fullWave->lines) lines << QStringLiteral("  • ") + line;
+        for (const QString& line : fullWaveSummary()) lines << QStringLiteral("  • ") + line;
     } else if (a_extraction && a_extraction->ok()) {
         lines << tr("What it solves to:");
         for (const QString& line : a_extraction->lines) lines << QStringLiteral("  • ") + line;
@@ -645,7 +759,11 @@ void RF25Doc::showProblems()
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
         tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(chargeCostOf(int(a_mesh->cells.size())));
-    if (a_solveJob) tail += tr("; solving");
+    if (a_solveJob && a_solveJob->fullWave)
+        tail += tr("; solving %1 of %2 frequencies").arg(frequenciesSolved()).arg(frequenciesToSolve());
+    else if (a_solveJob) tail += tr("; solving");
+    else if (a_fullWave && a_fullWave->ok())
+        tail += tr("; full wave, %1 port(s) at %2 frequencies").arg(a_fullWave->portNames.size()).arg(a_fullWave->frequencies.size());
     else if (a_inductance && a_inductance->ok()) tail += tr("; the loop is %1 nH").arg(a_inductance->l * 1e9, 0, 'g', 4);
     else if (a_extraction && a_extraction->ok() && !a_extraction->names.isEmpty())
         tail += tr("; %1").arg(lineSummary().value(0, tr("solved")));
@@ -892,6 +1010,8 @@ void RF25Doc::prepareDone()
     const bool wanted = a_solveJob != nullptr || a_solveWhenPrepared;
     stopSolving();
     a_extraction.reset();
+    a_fullWave.reset();
+    a_waveNotes.clear();
     a_inductance.reset();
     a_portsSaid.clear();
     a_solvedLength = 0;
@@ -905,7 +1025,7 @@ void RF25Doc::prepareDone()
         a_solveWhenPrepared = wanted;
         prepare();
     } else if (wanted) {
-        solve();
+        solveWith(a_solveRequest);
     }
 }
 
@@ -946,6 +1066,26 @@ void RF25Doc::setMeshShown(bool shown)
         a_showMeshButton->setChecked(shown);
     QucsSettingsFile().setValue(QLatin1String(kShowMeshKey), shown);
     showOverlays();
+}
+
+void RF25Doc::setCurrentsShown(bool shown)
+{
+    if (a_showCurrents == shown) return;
+    a_showCurrents = shown;
+    if (a_showCurrentsButton != nullptr && a_showCurrentsButton->isChecked() != shown)
+        a_showCurrentsButton->setChecked(shown);
+    QucsSettingsFile().setValue(QLatin1String(kShowCurrentsKey), shown);
+    showOverlays();
+    emit solvedChanged();
+}
+
+void RF25Doc::setCurrentsOf(int port, int frequency)
+{
+    if (port == a_currentsPort && frequency == a_currentsFrequency) return;
+    a_currentsPort = std::max(0, port);
+    a_currentsFrequency = frequency;
+    showOverlays();
+    emit solvedChanged();
 }
 
 void RF25Doc::showOverlays()
@@ -995,21 +1135,85 @@ void RF25Doc::showOverlays()
             overlays << overlay;
         }
     }
+    // A full-wave solve's surface current density, each cell filled by how
+    // much of the largest it carries - in decibels over three decades, since
+    // the current crowds at the edges and the driven end and on a linear
+    // scale the rest of a line is all one colour.
+    LayoutView::Legend legend;
+    a_currentsSaid.clear();
+    if (a_showCurrents && a_fullWave && a_fullWave->ok() && a_mesh) {
+        const int nf = int(a_fullWave->frequencies.size()), np = int(a_fullWave->portNames.size());
+        const int k = a_currentsFrequency < 0 || a_currentsFrequency >= nf ? nf - 1 : a_currentsFrequency;
+        const int port = std::clamp(a_currentsPort, 0, np - 1);
+        // (Driven as a circuit drives it: a source of the port's own
+        //  reference, the other ports ended in theirs. Driven by an ampere
+        //  with the others open, a line's far end is open and shows a
+        //  standing wave that no circuit puts on it.)
+        const QHash<int, double> density = currentDensity(*a_fullWave, k, port, true);
+        double most = 0;
+        for (const double j : density) most = std::max(most, j);
+        if (most > 0) {
+            // (Twenty-four bands, 2.5 dB each: eight looked like steps.)
+            const QList<QColor> ramp = currentRamp(24);
+            const int bands = int(ramp.size());
+            QList<LayoutView::Overlay> layer(bands);
+            for (int b = 0; b < bands; ++b) {
+                layer[b].fill = ramp.at(b);
+                layer[b].name = tr("the current density");
+            }
+            for (auto it = density.cbegin(); it != density.cend(); ++it) {
+                if (it.key() < 0 || it.key() >= a_mesh->cells.size() || !(it.value() > 0)) continue;
+                const double below = 20 * std::log10(it.value() / most);   // dB, at most nought
+                const int b = std::clamp(int(std::floor((below + 60) / 60 * bands)), 0, bands - 1);
+                layer[b].shapes << a_mesh->cells.at(it.key()).outline;
+            }
+            for (const LayoutView::Overlay& o : std::as_const(layer))
+                if (!o.shapes.isEmpty()) overlays << o;
+            const double f = a_fullWave->frequencies.at(k);
+            legend.title = tr("|J|, %1 driven at %2 GHz, A/m").arg(a_fullWave->portNames.at(port)).arg(f / 1e9, 0, 'g', 4);
+            legend.ramp = currentRamp();
+            legend.low = QString::number(most * 1e-3, 'g', 3);
+            legend.high = QString::number(most, 'g', 3);
+            a_currentsSaid = tr("The surface current density at %1 GHz with %2 driven by a wave of a watt from a source of "
+                                "its own %3 Ohm, the other ports ended in theirs: up to %4 A/m, drawn from dark to bright "
+                                "over three decades below that.")
+                                 .arg(f / 1e9, 0, 'g', 4)
+                                 .arg(a_fullWave->portNames.at(port))
+                                 .arg(a_fullWave->references.at(port), 0, 'g', 4)
+                                 .arg(most, 0, 'g', 3);
+        }
+    }
     a_view->setOverlays(overlays);
+    a_view->setLegend(legend);
 }
 
 // ------------------------------------------------------ The solve
 
+bool RF25Doc::studyIsFullWave() const
+{
+    const Node* study = a_model.root.child(QStringLiteral("rf_study"));
+    return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave");
+}
+
 void RF25Doc::solve()
+{
+    solveWith(SolveRequest());
+}
+
+void RF25Doc::solveWith(const SolveRequest& request)
 {
     stopSolving();
     a_solveProblem.clear();
+    a_solveRequest = request;
     const auto nothing = [this](const QString& why) {
         a_extraction.reset();
+        a_fullWave.reset();
+        a_waveNotes.clear();
         a_inductance.reset();
         a_portsSaid.clear();
         a_solvedLength = 0;
         a_solveProblem = why;
+        showOverlays();
         showProblems();
         emit solvedChanged();
     };
@@ -1039,36 +1243,64 @@ void RF25Doc::solve()
     QRectF bounds;
     for (const Conductor& c : std::as_const(job->conductors)) bounds = bounds.united(c.outline.boundingRect());
     job->length = std::max(bounds.width(), bounds.height()) * 1e-6;
-    // An inductor's L is of a loop, and what the loop is comes from the
-    // ports: the current goes in at one and out at another. Two is what
-    // it takes; with one, or none, there is no loop and the quasi-static
-    // L of a uniform line is all that can be said.
-    QList<QPointF> at;
-    for (const Node& port : a_model.ports().children) {
-        if (!port.enabled) continue;
-        if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
-        bool ok = true;
-        const double x = numberOf(port, QStringLiteral("x"), a_model, 0, &ok);
-        if (!ok) continue;
-        const double y = numberOf(port, QStringLiteral("y"), a_model, 0, &ok);
-        if (!ok) continue;
-        // (The ports are in metres; the cells are in the layout's own.)
-        at << QPointF(x, y) / 1e-6;
-    }
-    if (at.size() >= 2) {
-        job->loop = true;
-        job->in = at.at(0);
-        job->out = at.at(1);
-        job->frequency = topFrequency(a_model);
-        if (at.size() > 2)
-            job->portsSaid = tr("%1 ports: the loop is taken from the first two.").arg(at.size());
+    job->fullWave = request.solver.isEmpty() ? studyIsFullWave() : request.solver == QLatin1String("full_wave");
+    if (job->fullWave) {
+        // The full-wave solve is driven at the ports, at each of the
+        // study's frequencies (or of those asked for).
+        QString problem;
+        job->ports = portsOf(a_model, &job->notes, &problem);
+        if (!problem.isEmpty()) return nothing(problem);
+        if (job->ports.isEmpty())
+            return nothing(tr("A full-wave solve is driven at its ports, and the model has none: put an edge port or an "
+                              "internal port under Ports."));
+        QString why;
+        job->frequencies = request.frequencies.isEmpty() ? studySweep(a_model, &why) : request.frequencies;
+        if (job->frequencies.isEmpty())
+            return nothing(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
+        const Node* study = a_model.root.child(QStringLiteral("rf_study"));
+        if (request.frequencies.isEmpty() && study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool())
+            job->notes << tr("Adding points where the answer changes is not done yet: the study's own %1 are solved.")
+                              .arg(job->frequencies.size());
     } else {
-        job->portsSaid = at.size() == 1 ? tr("One port: a loop's inductance wants two, so that a current has somewhere "
-                                             "to go in and somewhere to come out.")
-                                        : tr("No ports: a loop's inductance wants two of them.");
+        // An inductor's L is of a loop, and what the loop is comes from the
+        // ports: the current goes in at one and out at another. Two is what
+        // it takes; with one, or none, there is no loop and the quasi-static
+        // L of a uniform line is all that can be said.
+        QList<QPointF> at;
+        for (const Node& port : a_model.ports().children) {
+            if (!port.enabled) continue;
+            if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
+            bool ok = true;
+            const double x = numberOf(port, QStringLiteral("x"), a_model, 0, &ok);
+            if (!ok) continue;
+            const double y = numberOf(port, QStringLiteral("y"), a_model, 0, &ok);
+            if (!ok) continue;
+            // (The ports are in metres; the cells are in the layout's own.)
+            at << QPointF(x, y) / 1e-6;
+        }
+        if (at.size() >= 2) {
+            job->loop = true;
+            job->in = at.at(0);
+            job->out = at.at(1);
+            job->frequency = topFrequency(a_model);
+            if (at.size() > 2)
+                job->portsSaid = tr("%1 ports: the loop is taken from the first two.").arg(at.size());
+        } else {
+            job->portsSaid = at.size() == 1 ? tr("One port: a loop's inductance wants two, so that a current has "
+                                                 "somewhere to go in and somewhere to come out.")
+                                            : tr("No ports: a loop's inductance wants two of them.");
+        }
     }
     a_solveJob = job;
     QThread* thread = QThread::create([job] {
+        if (job->fullWave) {
+            FullWaveControl control;
+            control.stop = &job->stop;
+            control.done = &job->done;
+            job->wave = std::make_shared<FullWave>(
+                fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control));
+            return;
+        }
         job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack));
         if (job->loop)
             job->inductance = std::make_shared<Inductance>(
@@ -1080,9 +1312,20 @@ void RF25Doc::solve()
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
+    if (job->fullWave) a_progress->start();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Stop"));
     showProblems();
     emit solvedChanged();
+}
+
+int RF25Doc::frequenciesSolved() const
+{
+    return a_solveJob && a_solveJob->fullWave ? a_solveJob->done.load() : 0;
+}
+
+int RF25Doc::frequenciesToSolve() const
+{
+    return a_solveJob && a_solveJob->fullWave ? int(a_solveJob->frequencies.size()) : 0;
 }
 
 void RF25Doc::stopSolving()
@@ -1095,8 +1338,12 @@ void RF25Doc::stopSolving()
     }
     a_solveWhenPrepared = false;
     if (!a_solveJob) return;
-    // Let go: it ends on its own copies, and nothing is waiting for it.
+    // Let go: it ends on its own copies, and nothing is waiting for it. A
+    // full-wave sweep is told to stop at its next frequency, so that a
+    // stopped sweep of minutes does not run on for nothing.
+    a_solveJob->stop = true;
     a_solveJob.reset();
+    a_progress->stop();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
     emit solvedChanged();
 }
@@ -1105,12 +1352,30 @@ void RF25Doc::solveDone()
 {
     const std::shared_ptr<SolveJob> job = a_solveJob;
     a_solveJob.reset();
+    a_progress->stop();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
-    a_extraction = job->result;
-    a_inductance = job->inductance;
-    a_portsSaid = job->portsSaid;
-    a_solvedLength = job->length;
-    a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
+    if (job->fullWave) {
+        a_extraction.reset();
+        a_inductance.reset();
+        a_portsSaid.clear();
+        a_solvedLength = 0;
+        a_fullWave = job->wave;
+        a_waveNotes = job->notes;
+        a_solveProblem = job->wave && !job->wave->ok() ? job->wave->problems.join(QStringLiteral("; ")) : QString();
+        if (a_fullWave && a_fullWave->ok()) {
+            if (a_currentsPort >= a_fullWave->portNames.size()) a_currentsPort = 0;
+            if (a_currentsFrequency >= a_fullWave->frequencies.size()) a_currentsFrequency = -1;
+        }
+    } else {
+        a_fullWave.reset();
+        a_waveNotes.clear();
+        a_extraction = job->result;
+        a_inductance = job->inductance;
+        a_portsSaid = job->portsSaid;
+        a_solvedLength = job->length;
+        a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
+    }
+    showOverlays();
     showProblems();
     emit solvedChanged();
 }
@@ -1174,6 +1439,45 @@ QStringList RF25Doc::lineSummary() const
                        .arg(lp.c * 1e12, 0, 'g', 4)
                        .arg(lp.alphaDb, 0, 'g', 3);
     }
+    return out;
+}
+
+QStringList RF25Doc::fullWaveSummary() const
+{
+    QStringList out;
+    if (!a_fullWave || !a_fullWave->ok()) return out;
+    const FullWave& w = *a_fullWave;
+    out << a_waveNotes;
+    const int np = int(w.portNames.size()), last = int(w.frequencies.size()) - 1;
+    QStringList refs;
+    for (int p = 0; p < np; ++p) refs << tr("%1 into %2 Ohm").arg(w.portNames.at(p)).arg(w.references.at(p), 0, 'g', 4);
+    out << tr("Full wave at %1 frequency(ies) from %2 to %3 GHz; the ports %4.")
+               .arg(w.frequencies.size())
+               .arg(w.frequencies.first() / 1e9, 0, 'g', 4)
+               .arg(w.frequencies.last() / 1e9, 0, 'g', 4)
+               .arg(refs.join(QStringLiteral(", ")));
+    // At the top of the sweep: every term for a few ports, and for many the
+    // first port's column and each port's own reflection.
+    const auto dB = [](Complex v) { return 20 * std::log10(std::max(1e-300, std::abs(v))); };
+    QStringList terms;
+    for (int j = 0; j < np; ++j)
+        for (int i = 0; i < np; ++i) {
+            if (np > 4 && i != j && j != 0) continue;
+            const Complex v = w.s.at(last).at(i).at(j);
+            terms << tr("S%1,%2 %3 dB at %4°").arg(i + 1).arg(j + 1).arg(dB(v), 0, 'f', 2).arg(std::arg(v) * 180 / M_PI, 0, 'f', 1);
+        }
+    out << tr("At %1 GHz: %2.").arg(w.frequencies.at(last) / 1e9, 0, 'g', 4).arg(terms.join(QStringLiteral("; ")));
+    // Whether the answer is what physics allows: the first sign of a bad port
+    // or a mesh too coarse is that it is not.
+    out << (w.asymmetry <= 1e-9
+                ? tr("Reciprocal: Z is symmetric to %1 of its largest term.").arg(w.asymmetry, 0, 'g', 2)
+                : tr("Not reciprocal: Z is asymmetric by %1 of its largest term - look at the ports and the mesh.")
+                      .arg(w.asymmetry, 0, 'g', 2));
+    out << (w.gain <= 1e-6
+                ? tr("Passive: of a wave in at any port, at most %1 % comes back out over the sweep.").arg(100 * (1 + w.gain), 0, 'f', 2)
+                : tr("Not passive: at one frequency it gives back %1 % more than it is given - look at the ports and the "
+                     "mesh.")
+                      .arg(100 * w.gain, 0, 'g', 3));
     return out;
 }
 
@@ -1288,10 +1592,13 @@ QString RF25Doc::exportPath(const QString& tag) const
         const QFileInfo info(named);
         return info.isAbsolute() ? info.absoluteFilePath() : QDir::cleanPath(dir.absoluteFilePath(named));
     }
-    // Named nothing: beside the model, with as many ports as it writes.
+    // Named nothing: beside the model, with as many ports as it writes - a
+    // full-wave solve's own, or a quasi-static solve's line or lines.
     const bool coupled = textOf(*node, QStringLiteral("of")) == QLatin1String("coupled");
     const int nets = a_extraction ? int(a_extraction->names.size()) : 1;
-    const int ports = coupled ? 2 * std::max(1, nets) : 2;
+    const int ports = a_fullWave && a_fullWave->ok() ? int(a_fullWave->portNames.size())
+                      : coupled                       ? 2 * std::max(1, nets)
+                                                      : 2;
     const QString stem = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
     return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.s%3p").arg(stem, tag).arg(ports)));
 }
@@ -1336,6 +1643,23 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
         return QString();
     };
     if (error != nullptr) error->clear();
+    // A full-wave solve's ports, whatever the export's Of says - that is a
+    // choice among a quasi-static solve's lines, and the S of a full-wave
+    // solve is its ports'.
+    if (a_fullWave && a_fullWave->ok()) {
+        if (!(what.impedance > 0))
+            return refuse(tr("A reference impedance of %1 Ohm is none.").arg(what.impedance, 0, 'g', 4));
+        QStringList comments;
+        comments << tr("%1, an RF 2.5D model of Qucs-S").arg(QFileInfo(a_DocName).fileName());
+        comments << tr("Full wave: the mixed-potential integral equation on the mesh, the retarded Green's functions of "
+                       "the stack");
+        for (const QString& line : a_fullWave->portsSaid) comments << line;
+        comments << tr("Each port's reference plane is at the centres of the cells it drives; every port into %1 Ohm "
+                       "here, whatever its own reference")
+                        .arg(what.impedance, 0, 'g', 4);
+        for (const QString& line : a_waveNotes) comments << line;
+        return touchstoneOf(*a_fullWave, what.impedance, comments);
+    }
     if (!a_extraction || !a_extraction->ok())
         return refuse(a_solveProblem.isEmpty() ? tr("Nothing is solved yet: Solve the model first.") : a_solveProblem);
     QString why;

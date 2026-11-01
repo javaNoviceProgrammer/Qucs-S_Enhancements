@@ -146,12 +146,23 @@ public:
      */
     struct Overlay {
         QList<QPolygonF> shapes;   ///< µm, the cell shown's
-        QColor line;               ///< the outline's colour
+        QColor line;               ///< the outline's colour (invalid: none)
         double width = 1.0;        ///< its width, in pixels
         QString name;              ///< what it is, for a tooltip
+        QColor fill;               ///< what the shapes are filled with (invalid: nothing)
     };
     void setOverlays(const QList<Overlay>& overlays);
     const QList<Overlay>& overlays() const { return a_overlays; }
+    /// A scale drawn in the corner, for overlays that colour a quantity:
+    /// its title, the colours from low to high, and what each end is.
+    struct Legend {
+        QString title;
+        QList<QColor> ramp;
+        QString low, high;
+        bool isEmpty() const { return ramp.isEmpty(); }
+    };
+    void setLegend(const Legend& legend);
+    const Legend& legend() const { return a_legend; }
     /// How many of the overlays' shapes the last frame drew, and how many
     /// it left out (in sight but past the budget).
     int overlayShapesDrawn() const { return a_overlayDrawn; }
@@ -261,6 +272,7 @@ private:
     RenderOptions renderOptions() const;
 
     QList<Overlay> a_overlays;
+    Legend a_legend;
     int a_overlayDrawn = 0;
     int a_overlayLeftOut = 0;
 

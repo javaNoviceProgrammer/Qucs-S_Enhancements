@@ -582,6 +582,12 @@ void LayoutView::setOverlays(const QList<Overlay>& overlays)
     update();
 }
 
+void LayoutView::setLegend(const Legend& legend)
+{
+    a_legend = legend;
+    update();
+}
+
 void LayoutView::addRuler(const QLineF& ruler)
 {
     a_rulers.append(ruler);
@@ -727,8 +733,9 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
         const QRectF seen = visibleRegion();
         QVector<QPointF> dots;
         for (const Overlay& overlay : std::as_const(a_overlays)) {
-            p.setPen(QPen(overlay.line, overlay.width));
-            p.setBrush(Qt::NoBrush);
+            if (overlay.line.isValid()) p.setPen(QPen(overlay.line, overlay.width));
+            else p.setPen(Qt::NoPen);
+            p.setBrush(overlay.fill.isValid() ? QBrush(overlay.fill) : QBrush(Qt::NoBrush));
             dots.clear();
             for (const QPolygonF& shape : overlay.shapes) {
                 if (shape.size() < 2) continue;
@@ -752,10 +759,40 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
                 p.drawPolygon(shown);
             }
             if (!dots.isEmpty()) {
-                p.setPen(QPen(overlay.line, std::max(1.4, overlay.width)));
+                // (A filled overlay's points are its fill's colour.)
+                p.setPen(QPen(overlay.fill.isValid() ? overlay.fill : overlay.line, std::max(1.4, overlay.width)));
                 p.drawPoints(dots.constData(), int(dots.size()));
             }
         }
+    }
+    // The scale of what the overlays colour, in the top right corner (the
+    // bottom left is the scale bar's).
+    if (!a_legend.isEmpty()) {
+        QFont font = p.font();
+        font.setPixelSize(11);
+        p.setFont(font);
+        const QFontMetricsF fm(font);
+        const double bar = 160, high = 10, pad = 6;
+        const double textHeight = fm.height();
+        const QRectF box(width() - 10 - (bar + 2 * pad), 10, bar + 2 * pad, pad * 3 + textHeight * 2 + high);
+        QColor paper = c.background;
+        paper.setAlpha(225);
+        p.setPen(QPen(c.ink, 0.8));
+        p.setBrush(paper);
+        p.drawRoundedRect(box, 3, 3);
+        p.setPen(c.ink);
+        p.drawText(QPointF(box.left() + pad, box.top() + pad + fm.ascent()), fm.elidedText(a_legend.title, Qt::ElideRight, bar));
+        QLinearGradient ramp(box.left() + pad, 0, box.left() + pad + bar, 0);
+        const int n = int(a_legend.ramp.size());
+        for (int i = 0; i < n; ++i) ramp.setColorAt(n > 1 ? double(i) / (n - 1) : 0.0, a_legend.ramp.at(i));
+        const QRectF strip(box.left() + pad, box.top() + pad + textHeight + pad / 2, bar, high);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ramp);
+        p.drawRect(strip);
+        p.setPen(c.ink);
+        const double below = strip.bottom() + pad / 2 + fm.ascent();
+        p.drawText(QPointF(strip.left(), below), a_legend.low);
+        p.drawText(QPointF(strip.right() - fm.horizontalAdvance(a_legend.high), below), a_legend.high);
     }
     // The rulers.
     if (!a_rulers.isEmpty()) {

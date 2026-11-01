@@ -14,11 +14,14 @@
 #include <QCoreApplication>
 #include <QHash>
 #include <QRectF>
+#include <QThread>
 
 #include <Eigen/Dense>
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
+#include <vector>
 
 namespace qucs_s::rf25 {
 
@@ -160,6 +163,187 @@ QRectF scaledBy(const QRectF& box, double unit)
 
 using MatrixC = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
 
+/// How much memory the frequencies solved side by side may take, bytes.
+constexpr double kSweepMemory = 1.5e9;
+
+/// The cell of \a reached under \a where on \a layer (any, where it is
+/// empty): the one whose outline holds the point, else the one whose
+/// centre is nearest it. -1 where there is none on that layer.
+int cellUnder(const Mesh& mesh, const QList<int>& reached, QPointF where, const QString& layer)
+{
+    int best = -1;
+    double closest = 0;
+    for (const int c : reached) {
+        const MeshCell& cell = mesh.cells.at(c);
+        if (!layer.isEmpty() && cell.layer != layer) continue;
+        if (cell.outline.containsPoint(where, Qt::OddEvenFill)) return c;
+        const QPointF d = cell.centre - where;
+        const double far = d.x() * d.x() + d.y() * d.y();
+        if (best < 0 || far < closest) {
+            best = c;
+            closest = far;
+        }
+    }
+    return best;
+}
+
+/// Everything a frequency's solve needs that does not change with the
+/// frequency: made once, and read by every thread.
+struct Context {
+    Layers layers;
+    QList<Filament> runs;
+    QList<int> tail, head;               ///< each run's cells, as charges
+    QList<QRectF> rect;                  ///< each charge's cell, m
+    QList<QPointF> centre;               ///< m
+    QList<double> heights;               ///< the metals', m, from the lowest
+    QList<int> hNode, hRun;              ///< which of them each charge and run is at
+    QList<double> dirX, dirY, midX, midY;
+    Eigen::MatrixXd lDirect, lImage, pStatic;
+    /// Each port's current into the charges (and out of an internal
+    /// port's other metal): charges x ports.
+    MatrixC drive;
+    double rhoMax = 0;
+    int nr = 0, nc = 0, np = 0, nh = 0;
+};
+
+/// What one frequency solved to.
+struct AtFrequency {
+    MatrixC z;                           ///< ports x ports
+    MatrixC current;                     ///< runs x ports
+    double rcond = 1;
+    QStringList problems;
+};
+
+AtFrequency solveAt(const Context& c, double f)
+{
+    AtFrequency out;
+    const double w = 2 * M_PI * f;
+    const Complex jw(0, w);
+    const int nr = c.nr, nc = c.nc, nh = c.nh;
+
+    // The retarded Green's functions of each pair of heights.
+    QList<WaveGreen> greens;
+    QList<int> pairOf(nh * nh, -1);
+    for (int i = 0; i < nh; ++i)
+        for (int j = i; j < nh; ++j) {
+            WaveGreen g(c.layers, c.heights.at(i), c.heights.at(j), f, c.rhoMax);
+            if (!g.ok()) {
+                out.problems << g.problems();
+                return out;
+            }
+            g.prepare();
+            pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
+            greens << g;
+        }
+
+    // jw L: the static partial inductances scaled as the vector
+    // potential's singular terms are, and the rest at the centres - the
+    // retardation of the source and of its image, and the stack's own
+    // remainder.
+    MatrixC m(nr, nr);
+    for (int a = 0; a < nr; ++a)
+        for (int b = a; b < nr; ++b) {
+            const double dot = c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b);
+            Complex l(0, 0);
+            if (std::abs(dot) >= 1e-9) {
+                const WaveGreen& g = greens.at(pairOf.at(c.hRun.at(a) * nh + c.hRun.at(b)));
+                const WaveGreen::Term direct = g.vectorTerm(), image = g.vectorImage();
+                const double rho = std::hypot(c.midX.at(a) - c.midX.at(b), c.midY.at(a) - c.midY.at(b));
+                l = 2.0 * direct.coefficient / kMu0 * c.lDirect(a, b) + 2.0 * image.coefficient / kMu0 * c.lImage(a, b);
+                const Complex smooth = direct.coefficient / (2 * M_PI) * retardation(direct.k, std::hypot(rho, direct.dz))
+                                       + image.coefficient / (2 * M_PI) * retardation(image.k, std::hypot(rho, image.dz))
+                                       + g.vectorRemainder(rho);
+                l += dot * c.runs.at(a).length() * c.runs.at(b).length() * smooth;
+            }
+            m(a, b) = m(b, a) = jw * l;
+        }
+
+    // P: each cell's potential of a unit charge spread over another - the
+    // static singular part over the cell in closed form, its retardation
+    // at the centres, and the remainder integrated over the charged cell,
+    // or at its centre where the cell is small beside the distance the
+    // remainder changes over. Made symmetric: a potential at a centre of a
+    // charge over a cell is not quite the other way round where the cells
+    // differ in size, and the port matrix is reciprocal only if P is.
+    MatrixC p(nc, nc);
+    const auto coefficient = [&c](int i, int j, const WaveGreen& g) {
+        const WaveGreen::Term t = g.scalarTerm();
+        const double rho = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
+        const Complex v = t.coefficient / (2 * M_PI) * (c.pStatic(i, j) + retardation(t.k, std::hypot(rho, t.dz)));
+        const double longest = std::max(c.rect.at(j).width(), c.rect.at(j).height());
+        const double scale = std::hypot(rho, g.reach());
+        const bool centred = i != j && longest * longest < kCentreBound * scale * scale;
+        return v + (centred ? g.scalarRemainder(rho) : remainderOver(g, c.rect.at(j), c.centre.at(i), scale));
+    };
+    for (int i = 0; i < nc; ++i)
+        for (int j = i; j < nc; ++j) {
+            const WaveGreen& g = greens.at(pairOf.at(c.hNode.at(i) * nh + c.hNode.at(j)));
+            const Complex v = i == j ? coefficient(i, i, g) : 0.5 * (coefficient(i, j, g) + coefficient(j, i, g));
+            p(i, j) = p(j, i) = v;
+        }
+
+    // The charge eliminated: M = Zs l/w + jw L + A^T P A / jw.
+    for (int a = 0; a < nr; ++a)
+        for (int b = 0; b < nr; ++b)
+            m(a, b) += (p(c.tail.at(a), c.tail.at(b)) - p(c.tail.at(a), c.head.at(b)) - p(c.head.at(a), c.tail.at(b))
+                        + p(c.head.at(a), c.head.at(b)))
+                       / jw;
+    for (int a = 0; a < nr; ++a) {
+        const Filament& run = c.runs.at(a);
+        if (run.width > 0) m(a, a) += sheetImpedance(run.sigma, run.thickness, f) * run.length() / run.width;
+    }
+
+    // Each port driven by an ampere in turn: A^T P J / jw the drive.
+    const MatrixC pDrive = p * c.drive;
+    MatrixC rhs(nr, c.np);
+    for (int a = 0; a < nr; ++a)
+        for (int q = 0; q < c.np; ++q) rhs(a, q) = (pDrive(c.tail.at(a), q) - pDrive(c.head.at(a), q)) / jw;
+    const Eigen::PartialPivLU<MatrixC> lu(m);
+    out.current = lu.solve(rhs);
+    out.rcond = lu.rcond();
+    if (!out.current.allFinite()) {
+        out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
+        return out;
+    }
+
+    // The charges it leaves, (J - A I)/jw; their potentials; and each
+    // port's voltage, its cells' potentials by the same shares.
+    MatrixC charge = c.drive;
+    for (int a = 0; a < nr; ++a)
+        for (int q = 0; q < c.np; ++q) {
+            charge(c.tail.at(a), q) -= out.current(a, q);
+            charge(c.head.at(a), q) += out.current(a, q);
+        }
+    charge /= jw;
+    out.z = c.drive.transpose() * (p * charge);
+    return out;
+}
+
+QList<QList<Complex>> rowsOf(const MatrixC& m)
+{
+    QList<QList<Complex>> out;
+    for (int i = 0; i < m.rows(); ++i) {
+        QList<Complex> row;
+        for (int j = 0; j < m.cols(); ++j) row << m(i, j);
+        out << row;
+    }
+    return out;
+}
+
+MatrixC matrixOf(const QList<QList<Complex>>& rows)
+{
+    const int n = int(rows.size());
+    MatrixC m(n, n);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) m(i, j) = rows.at(i).at(j);
+    return m;
+}
+
+QString num(double v)
+{
+    return QString::number(v, 'g', 12);
+}
+
 } // namespace
 
 Complex sheetImpedance(double sigma, double thickness, double frequency)
@@ -172,30 +356,48 @@ Complex sheetImpedance(double sigma, double thickness, double frequency)
 
 QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, double reference)
 {
+    return scatteringOf(z, QList<double>(z.size(), reference));
+}
+
+QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, const QList<double>& references)
+{
     const int n = int(z.size());
-    MatrixC a(n, n), b(n, n);
-    for (int i = 0; i < n; ++i)
-        for (int j = 0; j < n; ++j) {
-            a(i, j) = z.at(i).at(j) - (i == j ? reference : 0.0);
-            b(i, j) = z.at(i).at(j) + (i == j ? reference : 0.0);
-        }
-    // (Z - Z0) and (Z + Z0) are both functions of Z, so they commute and
-    // the inverse may be taken on either side.
-    const MatrixC s = Eigen::PartialPivLU<MatrixC>(b).solve(a);
-    QList<QList<Complex>> out;
+    if (references.size() != n) return {};
+    MatrixC a = matrixOf(z), b = a;
+    Eigen::VectorXd root(n);
     for (int i = 0; i < n; ++i) {
-        QList<Complex> row;
-        for (int j = 0; j < n; ++j) row << s(i, j);
-        out << row;
+        a(i, i) -= references.at(i);
+        b(i, i) += references.at(i);
+        root(i) = std::sqrt(std::max(0.0, references.at(i)));
     }
-    return out;
+    // (Z - R)(Z + R)^-1, the inverse on the right - with references that
+    // differ the two do not commute - as (B^T \ A^T)^T; then scaled to
+    // power waves.
+    MatrixC s = Eigen::PartialPivLU<MatrixC>(b.transpose()).solve(a.transpose()).transpose();
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) s(i, j) *= root(j) / root(i);
+    return rowsOf(s);
 }
 
 FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, const QList<QPointF>& ports,
                     const QList<double>& frequencies, double reference, double micrometre)
 {
+    QList<FullWavePort> defined;
+    for (int i = 0; i < ports.size(); ++i) {
+        FullWavePort port;
+        port.name = QStringLiteral("P%1").arg(i + 1);
+        port.at = ports.at(i);
+        port.impedance = reference;
+        defined << port;
+    }
+    return fullWaveOf(mesh, conductors, stack, defined, frequencies, micrometre);
+}
+
+FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack,
+                    const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre,
+                    const FullWaveControl* control)
+{
     FullWave out;
-    out.reference = reference;
     if (mesh.cells.isEmpty()) {
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
@@ -215,30 +417,36 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                                 .arg(f);
             return out;
         }
-    if (!(reference > 0) || !std::isfinite(reference)) {
-        out.problems << tr("A reference impedance of %1 Ohm is none to give S parameters in.").arg(reference);
+    for (int p = 0; p < ports.size(); ++p) {
+        out.portNames << (ports.at(p).name.isEmpty() ? QStringLiteral("P%1").arg(p + 1) : ports.at(p).name);
+        out.references << ports.at(p).impedance;
+        if (!(ports.at(p).impedance > 0) || !std::isfinite(ports.at(p).impedance)) {
+            out.problems << tr("The reference impedance of %1, %2 Ohm, is none to give S parameters in.")
+                                .arg(out.portNames.last()).arg(ports.at(p).impedance);
+            return out;
+        }
+    }
+    Context c;
+    c.layers = layersOf(stack);
+    if (!c.layers.ok()) {
+        out.problems << c.layers.problems;
         return out;
     }
-    const Layers layers = layersOf(stack);
-    if (!layers.ok()) {
-        out.problems << layers.problems;
-        return out;
-    }
-    if (!layers.groundBelow) {
+    if (!c.layers.groundBelow) {
         out.problems << tr("The full-wave solve refers its ports to a ground plane, and the stack has none: put a ground "
                            "under it.");
         return out;
     }
 
     QList<QPair<int, int>> ends;
-    const QList<Filament> runs = runsOf(mesh, conductors, stack, micrometre, &ends);
-    for (const Filament& f : runs)
+    c.runs = runsOf(mesh, conductors, stack, micrometre, &ends);
+    for (const Filament& f : std::as_const(c.runs))
         if (f.z0 != f.z1) {
             out.problems << tr("A via joins two metals, and its current runs up and down, which the full-wave solve "
                                "does not do yet: solve one metal at a time, or use the quasi-static extraction.");
             return out;
         }
-    if (runs.isEmpty()) {
+    if (c.runs.isEmpty()) {
         out.problems << tr("No two cells of the mesh share an edge, so there is nowhere for a current to flow. Mesh the "
                            "layout more finely.");
         return out;
@@ -251,7 +459,10 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     cellOf.erase(std::unique(cellOf.begin(), cellOf.end()), cellOf.end());
     QHash<int, int> nodeOf;
     for (int i = 0; i < cellOf.size(); ++i) nodeOf.insert(cellOf.at(i), i);
-    const int nr = int(runs.size()), nc = int(cellOf.size());
+    const int nr = int(c.runs.size()), nc = int(cellOf.size()), np = int(ports.size());
+    c.nr = nr;
+    c.nc = nc;
+    c.np = np;
     out.runs = nr;
     out.cells = nc;
     if (nr + nc > kMostUnknowns) {
@@ -261,242 +472,303 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                             .arg(nr).arg(nc).arg(kMostUnknowns);
         return out;
     }
-    QList<int> tail(nr), head(nr);
+    c.tail.resize(nr);
+    c.head.resize(nr);
     for (int a = 0; a < nr; ++a) {
-        tail[a] = nodeOf.value(ends.at(a).first);
-        head[a] = nodeOf.value(ends.at(a).second);
+        c.tail[a] = nodeOf.value(ends.at(a).first);
+        c.head[a] = nodeOf.value(ends.at(a).second);
     }
 
-    // The ports: each drives the face of the conductor it is on, its
-    // current shared out by the length of face each cell has.
-    const int np = int(ports.size());
-    QList<QList<int>> portNodes;
-    QList<QList<double>> portShares;
+    // The ports. An edge port drives the face of the conductor it is on,
+    // its current shared out by the length of face each cell has; an
+    // internal port the cell under it, against the ground or against the
+    // cell under it on another metal.
+    c.drive = MatrixC::Zero(nc, np);
     for (int p = 0; p < np; ++p) {
-        QPointF on, along;
-        const QList<int> face = faceCells(mesh, conductors, cellOf, ports.at(p), &on, &along);
-        if (face.isEmpty()) {
-            out.problems << tr("Port %1, at %2, %3 µm, is on no cell a current reaches.")
-                                .arg(p + 1).arg(ports.at(p).x(), 0, 'g', 4).arg(ports.at(p).y(), 0, 'g', 4);
-            return out;
-        }
-        QList<int> nodes;
-        for (const int c : face) nodes << nodeOf.value(c);
-        QList<int> sorted = nodes;
-        std::sort(sorted.begin(), sorted.end());
-        for (int q = 0; q < p; ++q) {
-            QList<int> other = portNodes.at(q);
-            std::sort(other.begin(), other.end());
-            if (other == sorted) {
-                out.problems << tr("Ports %1 and %2 drive the same face of the layout: put them on different ones.")
-                                    .arg(q + 1).arg(p + 1);
+        const FullWavePort& port = ports.at(p);
+        const QString& name = out.portNames.at(p);
+        const QString x = QString::number(port.at.x(), 'g', 4), y = QString::number(port.at.y(), 'g', 4);
+        if (port.internal) {
+            const int to = cellUnder(mesh, cellOf, port.at, port.metal);
+            if (to < 0) {
+                out.problems << tr("%1, at %2, %3 µm, is over no cell of %4 that a current reaches.")
+                                    .arg(name, x, y, port.metal.isEmpty() ? tr("any metal") : port.metal);
                 return out;
             }
+            c.drive(nodeOf.value(to), p) += 1;
+            QString against = tr("the ground");
+            if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
+                const int from = cellUnder(mesh, cellOf, port.at, port.from);
+                if (from < 0 || from == to) {
+                    out.problems << tr("%1, at %2, %3 µm, has no cell of %4 under it to drive against.")
+                                        .arg(name, x, y, port.from);
+                    return out;
+                }
+                c.drive(nodeOf.value(from), p) -= 1;
+                against = tr("the cell under it on %1").arg(port.from);
+            }
+            out.portsSaid << tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
+                                 .arg(name, x, y, mesh.cells.at(to).layer, against);
+            continue;
         }
-        portNodes << nodes;
-        portShares << sharesOf(mesh, face, on, along);
+        QPointF on, along;
+        const QList<int> face = faceCells(mesh, conductors, cellOf, port.at, &on, &along, port.metal, port.facing);
+        if (face.isEmpty()) {
+            out.problems << tr("%1, at %2, %3 µm, is on no cell a current reaches.").arg(name, x, y);
+            return out;
+        }
+        const QList<double> shares = sharesOf(mesh, face, on, along);
+        for (int k = 0; k < face.size(); ++k) c.drive(nodeOf.value(face.at(k)), p) += shares.at(k);
         if (along != QPointF(0, 0))
-            out.portsSaid << tr("Port %1 drives the %2 cell(s) along the face at %3, %4 µm.")
-                                 .arg(p + 1).arg(face.size()).arg(ports.at(p).x(), 0, 'g', 4).arg(ports.at(p).y(), 0, 'g', 4);
+            out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm.").arg(name).arg(face.size()).arg(x, y);
         else
-            out.portsSaid << tr("Port %1 is on no face, and drives the one cell nearest %2, %3 µm.")
-                                 .arg(p + 1).arg(ports.at(p).x(), 0, 'g', 4).arg(ports.at(p).y(), 0, 'g', 4);
+            out.portsSaid << tr("%1 is on no face, and drives the one cell nearest %2, %3 µm.").arg(name, x, y);
     }
+    for (int p = 0; p < np; ++p)
+        for (int q = 0; q < p; ++q)
+            if ((c.drive.col(p) - c.drive.col(q)).norm() < 1e-12) {
+                out.problems << tr("%1 and %2 drive the same face or cell of the layout: put them apart.")
+                                    .arg(out.portNames.at(q), out.portNames.at(p));
+                return out;
+            }
 
     // The cells in metres, and the heights they are at.
-    QList<QRectF> rect(nc);
-    QList<QPointF> centre(nc);
+    c.rect.resize(nc);
+    c.centre.resize(nc);
     QList<double> zOf(nc, -1);
     QRectF extent;   // (of every cell, for how far the Green's tables go)
     for (int i = 0; i < nc; ++i) {
         const MeshCell& cell = mesh.cells.at(cellOf.at(i));
-        rect[i] = scaledBy(cell.outline.boundingRect(), micrometre);
-        centre[i] = cell.centre * micrometre;
-        extent = i == 0 ? rect.at(i) : extent.united(rect.at(i));
+        c.rect[i] = scaledBy(cell.outline.boundingRect(), micrometre);
+        c.centre[i] = cell.centre * micrometre;
+        extent = i == 0 ? c.rect.at(i) : extent.united(c.rect.at(i));
     }
-    for (int a = 0; a < nr; ++a) zOf[tail.at(a)] = zOf[head.at(a)] = runs.at(a).z0;
-    const double tol = 1e-9 * std::max(1e-9, layers.height());
-    QList<double> heights;
+    for (int a = 0; a < nr; ++a) zOf[c.tail.at(a)] = zOf[c.head.at(a)] = c.runs.at(a).z0;
+    const double tol = 1e-9 * std::max(1e-9, c.layers.height());
     for (const double z : std::as_const(zOf)) {
         bool known = false;
-        for (const double h : std::as_const(heights)) known = known || std::abs(h - z) <= tol;
-        if (!known) heights << z;
+        for (const double h : std::as_const(c.heights)) known = known || std::abs(h - z) <= tol;
+        if (!known) c.heights << z;
     }
-    std::sort(heights.begin(), heights.end());
-    const auto heightIndex = [&heights, tol](double z) {
-        for (int i = 0; i < heights.size(); ++i)
-            if (std::abs(heights.at(i) - z) <= tol) return i;
+    std::sort(c.heights.begin(), c.heights.end());
+    const auto heightIndex = [&c, tol](double z) {
+        for (int i = 0; i < c.heights.size(); ++i)
+            if (std::abs(c.heights.at(i) - z) <= tol) return i;
         return 0;
     };
-    const int nh = int(heights.size());
-    QList<int> hNode(nc), hRun(nr);
-    for (int i = 0; i < nc; ++i) hNode[i] = heightIndex(zOf.at(i));
-    for (int a = 0; a < nr; ++a) hRun[a] = heightIndex(runs.at(a).z0);
+    c.nh = int(c.heights.size());
+    c.hNode.resize(nc);
+    c.hRun.resize(nr);
+    for (int i = 0; i < nc; ++i) c.hNode[i] = heightIndex(zOf.at(i));
+    for (int a = 0; a < nr; ++a) c.hRun[a] = heightIndex(c.runs.at(a).z0);
     // As far as any two points of the layout are apart, and a little more.
-    const double rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
+    c.rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
 
     // What does not change with the frequency: the runs' static partial
     // inductances, direct and of their images in the ground, and the
     // static potential of each cell's charge spread over it - the singular
     // parts of the two kernels, in closed form.
-    Eigen::MatrixXd lDirect = Eigen::MatrixXd::Zero(nr, nr), lImage = Eigen::MatrixXd::Zero(nr, nr);
-    QList<double> dirX(nr), dirY(nr), midX(nr), midY(nr);
-    QList<Filament> mirrored = runs;
+    c.lDirect = Eigen::MatrixXd::Zero(nr, nr);
+    c.lImage = Eigen::MatrixXd::Zero(nr, nr);
+    c.dirX.resize(nr);
+    c.dirY.resize(nr);
+    c.midX.resize(nr);
+    c.midY.resize(nr);
+    QList<Filament> mirrored = c.runs;
     for (int a = 0; a < nr; ++a) {
-        runs.at(a).direction(&dirX[a], &dirY[a], nullptr);
-        runs.at(a).middle(&midX[a], &midY[a], nullptr);
-        mirrored[a].z0 = mirrored[a].z1 = -runs.at(a).z0;
+        c.runs.at(a).direction(&c.dirX[a], &c.dirY[a], nullptr);
+        c.runs.at(a).middle(&c.midX[a], &c.midY[a], nullptr);
+        mirrored[a].z0 = mirrored[a].z1 = -c.runs.at(a).z0;
     }
     for (int a = 0; a < nr; ++a)
         for (int b = a; b < nr; ++b) {
-            if (std::abs(dirX.at(a) * dirX.at(b) + dirY.at(a) * dirY.at(b)) < 1e-9) continue;
-            lDirect(a, b) = lDirect(b, a) = partialInductance(runs.at(a), runs.at(b));
-            lImage(a, b) = lImage(b, a) = partialInductance(runs.at(a), mirrored.at(b));
+            if (std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9) continue;
+            c.lDirect(a, b) = c.lDirect(b, a) = partialInductance(c.runs.at(a), c.runs.at(b));
+            c.lImage(a, b) = c.lImage(b, a) = partialInductance(c.runs.at(a), mirrored.at(b));
         }
-    Eigen::MatrixXd pStatic(nc, nc);
+    c.pStatic.resize(nc, nc);
     for (int i = 0; i < nc; ++i)
-        for (int j = 0; j < nc; ++j) pStatic(i, j) = rectanglePotential(rect.at(j), centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
+        for (int j = 0; j < nc; ++j)
+            c.pStatic(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
 
-    out.lines << tr("%1 run(s) of current over %2 cell(s), at %3 metal height(s); %4 port(s), %5 frequency(ies) from "
-                    "%6 to %7 GHz.")
-                     .arg(nr).arg(nc).arg(nh).arg(np).arg(frequencies.size())
-                     .arg(*std::min_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
-                     .arg(*std::max_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4);
-    out.lines << out.portsSaid;
-    out.lines << tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of its "
-                    "thickness, and each port's current as coming back through the ground.");
-
-    for (int fi = 0; fi < frequencies.size(); ++fi) {
-        const double f = frequencies.at(fi), w = 2 * M_PI * f;
-        const Complex jw(0, w);
-
-        // The retarded Green's functions of each pair of heights.
-        QList<WaveGreen> greens;
-        QList<int> pairOf(nh * nh, -1);
-        for (int i = 0; i < nh; ++i)
-            for (int j = i; j < nh; ++j) {
-                WaveGreen g(layers, heights.at(i), heights.at(j), f, rhoMax);
-                if (!g.ok()) {
-                    out.problems << g.problems();
-                    out.frequencies.clear();
-                    out.z.clear();
-                    out.s.clear();
-                    return out;
-                }
-                g.prepare();
-                pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
-                greens << g;
-            }
-
-        // jw L: the static partial inductances scaled as the vector
-        // potential's singular terms are, and the rest at the centres -
-        // the retardation of the source and of its image, and the stack's
-        // own remainder.
-        MatrixC m(nr, nr);
-        for (int a = 0; a < nr; ++a)
-            for (int b = a; b < nr; ++b) {
-                const double dot = dirX.at(a) * dirX.at(b) + dirY.at(a) * dirY.at(b);
-                Complex l(0, 0);
-                if (std::abs(dot) >= 1e-9) {
-                    const WaveGreen& g = greens.at(pairOf.at(hRun.at(a) * nh + hRun.at(b)));
-                    const WaveGreen::Term direct = g.vectorTerm(), image = g.vectorImage();
-                    const double rho = std::hypot(midX.at(a) - midX.at(b), midY.at(a) - midY.at(b));
-                    l = 2.0 * direct.coefficient / kMu0 * lDirect(a, b) + 2.0 * image.coefficient / kMu0 * lImage(a, b);
-                    const Complex smooth = direct.coefficient / (2 * M_PI) * retardation(direct.k, std::hypot(rho, direct.dz))
-                                           + image.coefficient / (2 * M_PI) * retardation(image.k, std::hypot(rho, image.dz))
-                                           + g.vectorRemainder(rho);
-                    l += dot * runs.at(a).length() * runs.at(b).length() * smooth;
-                }
-                m(a, b) = m(b, a) = jw * l;
-            }
-
-        // P: each cell's potential of a unit charge spread over another -
-        // the static singular part over the cell in closed form, its
-        // retardation at the centres, and the remainder integrated over the
-        // charged cell, or at its centre where the cell is small beside the
-        // distance the remainder changes over.
-        // Made symmetric: a potential at a centre of a charge over a cell is
-        // not quite the other way round where the cells differ in size,
-        // and the port matrix is reciprocal only if P is.
-        MatrixC p(nc, nc);
-        const auto coefficient = [&](int i, int j, const WaveGreen& g) {
-            const WaveGreen::Term t = g.scalarTerm();
-            const double rho = std::hypot(centre.at(i).x() - centre.at(j).x(), centre.at(i).y() - centre.at(j).y());
-            const Complex v = t.coefficient / (2 * M_PI) * (pStatic(i, j) + retardation(t.k, std::hypot(rho, t.dz)));
-            const double longest = std::max(rect.at(j).width(), rect.at(j).height());
-            const double scale = std::hypot(rho, g.reach());
-            const bool centred = i != j && longest * longest < kCentreBound * scale * scale;
-            return v + (centred ? g.scalarRemainder(rho) : remainderOver(g, rect.at(j), centre.at(i), scale));
-        };
-        for (int i = 0; i < nc; ++i)
-            for (int j = i; j < nc; ++j) {
-                const WaveGreen& g = greens.at(pairOf.at(hNode.at(i) * nh + hNode.at(j)));
-                const Complex v = i == j ? coefficient(i, i, g) : 0.5 * (coefficient(i, j, g) + coefficient(j, i, g));
-                p(i, j) = p(j, i) = v;
-            }
-
-        // The charge eliminated: M = Zs l/w + jw L + A^T P A / jw.
-        for (int a = 0; a < nr; ++a)
-            for (int b = 0; b < nr; ++b)
-                m(a, b) += (p(tail.at(a), tail.at(b)) - p(tail.at(a), head.at(b)) - p(head.at(a), tail.at(b))
-                            + p(head.at(a), head.at(b)))
-                           / jw;
-        for (int a = 0; a < nr; ++a) {
-            const Filament& run = runs.at(a);
-            if (run.width > 0) m(a, a) += sheetImpedance(run.sigma, run.thickness, f) * run.length() / run.width;
+    // The frequencies, side by side: each its own Green's functions and
+    // its own system, the static parts shared. As many threads as the
+    // machine has, and no more than the memory allows - a system and its
+    // LU and P are some 16 (2 nr^2 + nc^2) bytes a frequency.
+    const int nf = int(frequencies.size());
+    const double perFrequency = 16.0 * (2.0 * double(nr) * nr + double(nc) * nc) + 1e6;
+    int threads = control != nullptr && control->threads > 0 ? control->threads
+                                                              : int(std::max(1u, std::thread::hardware_concurrency()));
+    threads = std::min({threads, nf, std::max(1, int(kSweepMemory / perFrequency))});
+    out.threads = threads;
+    // (A vector, not a QList: the threads write to it side by side, and a
+    //  QList's implicit sharing is no place for that.)
+    std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
+    std::atomic_int next{0};
+    std::atomic_bool failed{false};
+    const auto work = [&c, &frequencies, &solved, &next, &failed, control, nf] {
+        for (int k = next++; k < nf; k = next++) {
+            if (failed || (control != nullptr && control->stop != nullptr && control->stop->load())) return;
+            solved[std::size_t(k)] = solveAt(c, frequencies.at(k));
+            if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
+            if (control != nullptr && control->done != nullptr) ++*control->done;
         }
-
-        // Each port driven by an ampere in turn: its current into its
-        // face's cells, A^T P J / jw the drive.
-        MatrixC drive(nc, np), rhs(nr, np);
-        drive.setZero();
-        for (int q = 0; q < np; ++q)
-            for (int k = 0; k < portNodes.at(q).size(); ++k) drive(portNodes.at(q).at(k), q) += portShares.at(q).at(k);
-        const MatrixC pDrive = p * drive;
-        for (int a = 0; a < nr; ++a)
-            for (int q = 0; q < np; ++q) rhs(a, q) = (pDrive(tail.at(a), q) - pDrive(head.at(a), q)) / jw;
-        const Eigen::PartialPivLU<MatrixC> lu(m);
-        const MatrixC current = lu.solve(rhs);
-        if (!current.allFinite()) {
-            out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
-            out.frequencies.clear();
-            out.z.clear();
-            out.s.clear();
+    };
+    QList<QThread*> pool;
+    for (int t = 1; t < threads; ++t) {
+        QThread* thread = QThread::create(work);
+        thread->setStackSize(8u << 20);
+        thread->start();
+        pool << thread;
+    }
+    work();
+    for (QThread* thread : std::as_const(pool)) {
+        thread->wait();
+        delete thread;
+    }
+    if (control != nullptr && control->stop != nullptr && control->stop->load()) {
+        int done = 0;
+        for (const AtFrequency& a : std::as_const(solved)) done += a.z.size() > 0 ? 1 : 0;
+        out.problems << tr("Stopped, %1 of %2 frequencies solved.").arg(done).arg(nf);
+        return out;
+    }
+    for (const AtFrequency& a : std::as_const(solved))
+        if (!a.problems.isEmpty()) {
+            out.problems << a.problems;
             return out;
         }
-        if (lu.rcond() < 1e-14)
+
+    out.lines << tr("%1 run(s) of current over %2 cell(s), at %3 metal height(s); %4 port(s), %5 frequency(ies) from "
+                    "%6 to %7 GHz, %8 at a time.")
+                     .arg(nr).arg(nc).arg(c.nh).arg(np).arg(nf)
+                     .arg(*std::min_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
+                     .arg(*std::max_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
+                     .arg(threads);
+    out.lines << out.portsSaid;
+    out.lines << tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of its "
+                    "thickness, and an edge port's current as coming back through the ground.");
+    for (int k = 0; k < nf; ++k) {
+        const AtFrequency& a = solved[std::size_t(k)];
+        const QList<QList<Complex>> zRows = rowsOf(a.z);
+        out.frequencies << frequencies.at(k);
+        out.z << zRows;
+        out.s << scatteringOf(zRows, out.references);
+        QList<QList<Complex>> perPort;
+        for (int q = 0; q < np; ++q) {
+            QList<Complex> column;
+            column.reserve(nr);
+            for (int r = 0; r < nr; ++r) column << a.current(r, q);
+            perPort << column;
+        }
+        out.currents << perPort;
+        // Reciprocity, and passivity: what S gives back of every wave in.
+        const double largest = a.z.cwiseAbs().maxCoeff();
+        if (largest > 0) out.asymmetry = std::max(out.asymmetry, (a.z - a.z.transpose()).cwiseAbs().maxCoeff() / largest);
+        const MatrixC s = matrixOf(out.s.last());
+        const Eigen::SelfAdjointEigenSolver<MatrixC> eig(s.adjoint() * s);
+        if (eig.info() == Eigen::Success) out.gain = std::max(out.gain, eig.eigenvalues().maxCoeff() - 1);
+        if (a.rcond < 1e-14)
             out.lines << tr("At %1 GHz the system is nearly singular (a reciprocal condition of %2): the answer there may "
                             "be rounding.")
-                             .arg(f / 1e9, 0, 'g', 4).arg(lu.rcond(), 0, 'g', 2);
+                             .arg(frequencies.at(k) / 1e9, 0, 'g', 4).arg(a.rcond, 0, 'g', 2);
+    }
+    out.geometry = c.runs;
+    out.ends = ends;
+    out.lines << tr("The Green's functions of %1 pair(s) of heights, tabulated to %2 mm at each frequency.")
+                     .arg(c.nh * (c.nh + 1) / 2).arg(c.rhoMax * 1e3, 0, 'g', 3);
+    return out;
+}
 
-        // The charges it leaves, (J - A I)/jw; their potentials; and each
-        // port's voltage, its cells' potentials by the same shares.
-        MatrixC charge = drive;
-        for (int a = 0; a < nr; ++a)
-            for (int q = 0; q < np; ++q) {
-                charge(tail.at(a), q) -= current(a, q);
-                charge(head.at(a), q) += current(a, q);
-            }
-        charge /= jw;
-        const MatrixC potential = p * charge;
-        const MatrixC z = drive.transpose() * potential;
-        QList<QList<Complex>> zRows;
-        for (int i = 0; i < np; ++i) {
-            QList<Complex> row;
-            for (int j = 0; j < np; ++j) row << z(i, j);
-            zRows << row;
-        }
-        out.frequencies << f;
-        out.z << zRows;
-        out.s << scatteringOf(zRows, reference);
-        if (fi + 1 == frequencies.size()) {
-            out.current.clear();
-            for (int a = 0; a < nr; ++a) out.current << current(a, 0);
+QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool terminated)
+{
+    QHash<int, double> out;
+    if (k < 0 || k >= solved.currents.size() || port < 0 || port >= solved.currents.at(k).size()) return out;
+    // The ports' currents: an ampere into this one; or, ended, what a source
+    // of its own reference r sends - an EMF of 2 sqrt(r), a wave of a watt -
+    // with each of the others ended in its own: (Z + R) i = 2 sqrt(r) e.
+    const QList<QList<Complex>>& each = solved.currents.at(k);
+    const int np = int(each.size());
+    QList<Complex> drive(np, Complex(0, 0));
+    if (!terminated) {
+        drive[port] = 1.0;
+    } else {
+        if (k >= solved.z.size() || solved.references.size() != np) return out;
+        MatrixC a = matrixOf(solved.z.at(k));
+        Eigen::VectorXcd e = Eigen::VectorXcd::Zero(np);
+        for (int q = 0; q < np; ++q) a(q, q) += solved.references.at(q);
+        e(port) = 2 * std::sqrt(solved.references.at(port));
+        const Eigen::VectorXcd i = Eigen::PartialPivLU<MatrixC>(a).solve(e);
+        for (int q = 0; q < np; ++q) drive[q] = i(q);
+    }
+    QList<Complex> current(each.first().size(), Complex(0, 0));
+    for (int q = 0; q < np; ++q)
+        for (int r = 0; r < current.size() && r < each.at(q).size(); ++r) current[r] += each.at(q).at(r) * drive.at(q);
+    // Along each direction, the mean of the runs a cell has that way -
+    // its current per metre of the edge it crosses.
+    struct Sum {
+        Complex x, y;
+        double nx = 0, ny = 0;
+    };
+    QHash<int, Sum> sums;
+    const int runs = int(std::min({solved.geometry.size(), solved.ends.size(), current.size()}));
+    for (int r = 0; r < runs; ++r) {
+        const Filament& f = solved.geometry.at(r);
+        if (!(f.width > 0)) continue;
+        double dx = 0, dy = 0;
+        f.direction(&dx, &dy, nullptr);
+        const Complex j = current.at(r) / f.width;
+        for (const int cell : {solved.ends.at(r).first, solved.ends.at(r).second}) {
+            Sum& s = sums[cell];
+            s.x += j * dx;
+            s.nx += std::abs(dx);
+            s.y += j * dy;
+            s.ny += std::abs(dy);
         }
     }
-    out.geometry = runs;
-    out.lines << tr("The Green's functions of %1 pair(s) of heights, tabulated to %2 mm at each frequency.")
-                     .arg(nh * (nh + 1) / 2).arg(rhoMax * 1e3, 0, 'g', 3);
+    for (auto it = sums.cbegin(); it != sums.cend(); ++it) {
+        const Complex jx = it->nx > 0 ? it->x / it->nx : Complex(0, 0);
+        const Complex jy = it->ny > 0 ? it->y / it->ny : Complex(0, 0);
+        out.insert(it.key(), std::sqrt(std::norm(jx) + std::norm(jy)));
+    }
+    return out;
+}
+
+QString touchstoneOf(const FullWave& solved, double reference, const QStringList& comments)
+{
+    if (!solved.ok() || !(reference > 0)) return {};
+    const int np = int(solved.portNames.size());
+    QString out;
+    for (const QString& comment : comments)
+        for (const QString& line : comment.split(QLatin1Char('\n'))) out += QStringLiteral("! ") + line + QLatin1Char('\n');
+    QStringList ports;
+    for (int p = 0; p < np; ++p) ports << QStringLiteral("%1 %2").arg(p + 1).arg(solved.portNames.at(p));
+    out += QStringLiteral("! Ports: %1\n").arg(ports.join(QStringLiteral(", ")));
+    out += np == 2 ? QStringLiteral("! f  S11 (re, im)  S21  S12  S22\n")
+                   : QStringLiteral("! f, then the S-matrix by rows (re, im), four to a line\n");
+    out += QStringLiteral("# Hz S RI R %1\n").arg(num(reference));
+    const auto pair = [](Complex v) { return QLatin1Char(' ') + num(v.real()) + QLatin1Char(' ') + num(v.imag()); };
+    for (int k = 0; k < solved.frequencies.size(); ++k) {
+        const QList<QList<Complex>> s = scatteringOf(solved.z.at(k), reference);
+        QString line = num(solved.frequencies.at(k));
+        if (np <= 2) {
+            // One port: S11; two: S11 S21 S12 S22, Touchstone's own order.
+            if (np == 1) line += pair(s[0][0]);
+            else line += pair(s[0][0]) + pair(s[1][0]) + pair(s[0][1]) + pair(s[1][1]);
+            out += line + QLatin1Char('\n');
+            continue;
+        }
+        for (int i = 0; i < np; ++i) {
+            if (i > 0) line.clear();
+            for (int j = 0; j < np; ++j) {
+                if (j > 0 && j % 4 == 0) {
+                    out += line + QLatin1Char('\n');
+                    line.clear();
+                }
+                line += pair(s[i][j]);
+            }
+            out += line + QLatin1Char('\n');
+        }
+    }
     return out;
 }
 

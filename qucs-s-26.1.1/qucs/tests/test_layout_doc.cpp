@@ -1032,6 +1032,34 @@ private slots:
         QCOMPARE(view->overlayShapesDrawn(), LayoutView::MostOverlayShapes);
         QCOMPARE(view->overlayShapesLeftOut(), 50);
 
+        // Filled (a current density's cells): the fill is what is painted
+        // there, the layout under it hidden. And a scale for what the fill
+        // stands for, painted in the top right corner.
+        LayoutView::Overlay filled;
+        filled.shapes << QPolygonF(seen.adjusted(seen.width() / 4, seen.height() / 4, -seen.width() / 4, -seen.height() / 4));
+        filled.fill = QColor(255, 0, 255);
+        view->setOverlays({filled});
+        LayoutView::Legend legend;
+        legend.title = QStringLiteral("|J|, A/m");
+        legend.ramp = {QColor(255, 0, 0), QColor(0, 0, 255)};
+        legend.low = QStringLiteral("1");
+        legend.high = QStringLiteral("1000");
+        view->setLegend(legend);
+        QCOMPARE(view->legend().title, legend.title);
+        const QImage frame = view->grab().toImage();
+        const double dpr = frame.devicePixelRatio();
+        QCOMPARE(frame.pixelColor(int(view->width() / 2 * dpr), int(view->height() / 2 * dpr)), QColor(255, 0, 255));
+        bool red = false, blue = false;
+        for (int x = int((view->width() - 200) * dpr); x < frame.width(); ++x)
+            for (int y = 0; y < int(90 * dpr) && y < frame.height(); ++y) {
+                const QColor c = frame.pixelColor(x, y);
+                red = red || (c.red() > 200 && c.green() < 60 && c.blue() < 60);
+                blue = blue || (c.blue() > 200 && c.red() < 60 && c.green() < 60);
+            }
+        QVERIFY2(red && blue, "the legend's ramp is not in the top right corner");
+        view->setLegend(LayoutView::Legend());
+        QVERIFY(view->legend().isEmpty());
+
         // Taken away again: the layout alone, as before.
         view->setOverlays({});
         view->repaint();

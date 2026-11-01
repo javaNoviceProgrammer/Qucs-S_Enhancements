@@ -53,7 +53,12 @@
 #include "rf25doc.h"
 #include "rf25panel.h"
 
+#include <gdstk/gdstk.hpp>
+
 namespace rf = qucs_s::rf25;
+
+// gdstk's Vec2 is a union of {x, y} and others: {1, 2} is one, braces or not.
+#pragma GCC diagnostic ignored "-Wmissing-braces"
 
 extern QString lastDirOpenSave;   // (qucs.cpp)
 
@@ -62,6 +67,23 @@ namespace {
 QString examples()
 {
     return QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+}
+
+/// A GDSII file of one strip \a length by \a width µm on layer 1/0, in
+/// cell TOP: a line, as plain as a layout can be.
+bool writeStrip(const QString& path, double length, double width)
+{
+    gdstk::Library lib = {};
+    lib.init("STRIP", 1e-6, 1e-9);
+    auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+    cell->init("TOP");
+    lib.cell_array.append(cell);
+    auto* strip = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+    *strip = gdstk::rectangle(gdstk::Vec2{0, 0}, gdstk::Vec2{length, width}, gdstk::make_tag(1, 0));
+    cell->polygon_array.append(strip);
+    const bool ok = lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
+    lib.free_all();
+    return ok;
 }
 
 /// The tree's item of \a tag, or null.
@@ -1440,6 +1462,206 @@ private slots:
         QVERIFY(!doc->isSolving());
         QVERIFY(doc->waitForPrepared(60000));
         QVERIFY2(!doc->isSolving() && doc->extraction() == nullptr, "a stopped solve went on");
+    }
+
+    /// A microstrip to solve full-wave, in the workspace as \a name: 1000 by
+    /// 50 µm on 100 µm of 9.8 over a ground, an edge port at each end, and a
+    /// study of three frequencies from 1 to 5 GHz by the full-wave solver.
+    QString fullWaveLine(const QString& name)
+    {
+        if (!writeStrip(path(QStringLiteral("strip.gds")), 1000, 50)) return {};
+        rf::Model m = rf::Model::blank();
+        std::vector<rf::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const rf::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (rf::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("100[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("9.8"));
+            }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("strip.gds"));
+        m.layout().child(QStringLiteral("rf_layer_map"))
+            ->props.insert(QStringLiteral("rows"), rowsOf({{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}}));
+        m.mesh().props.insert(QStringLiteral("cells_across"), 3);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+        for (const QPair<const char*, const char*>& at : {qMakePair("0", "P1"), qMakePair("1000[um]", "P2")}) {
+            rf::Node port = m.make(QStringLiteral("rf_edge_port"));
+            port.label = QLatin1String(at.second);
+            port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+            port.props.insert(QStringLiteral("x"), QLatin1String(at.first));
+            port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
+            if (m.add(QStringLiteral("ports"), port) == nullptr) return {};
+        }
+        rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+        if (study == nullptr) return {};
+        study->props.insert(QStringLiteral("kind"), QStringLiteral("full_wave"));
+        study->props.insert(QStringLiteral("from"), QStringLiteral("1[GHz]"));
+        study->props.insert(QStringLiteral("to"), QStringLiteral("5[GHz]"));
+        study->props.insert(QStringLiteral("points"), 3);
+        if (m.add(QStringLiteral("exports"), m.make(QStringLiteral("rf_touchstone"))) == nullptr) return {};
+        const QString file = path(name);
+        QFile f(file);
+        if (!f.open(QIODevice::WriteOnly)) return {};
+        f.write(m.toJson());
+        f.close();
+        return file;
+    }
+
+    // A study by the full-wave solver: Solve drives the ports at each of its
+    // frequencies, and the tab, the panel and the export give the ports' S;
+    // the currents are drawn on the layout; a stop stops it; an edit throws
+    // it away; and a solve asked for by the other solver is that solver's.
+    void aFullWaveStudySolvesThePortsAndDrawsTheCurrents()
+    {
+        const QString file = fullWaveLine(QStringLiteral("wave.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->mesh() != nullptr && !doc->mesh()->cells.isEmpty(), qPrintable(doc->layoutProblem()));
+        QVERIFY(doc->studyIsFullWave());
+        panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QVERIFY2(reportSays(QStringLiteral("the ports' S")), qPrintable(reportText()));
+
+        doc->solveButton()->click();
+        QVERIFY(doc->isSolving());
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY(doc->extraction() == nullptr);
+        QCOMPARE(w->frequencies, (QList<double>{1e9, 3e9, 5e9}));
+        QCOMPARE(w->portNames, (QStringList{QStringLiteral("P1"), QStringLiteral("P2")}));
+        QCOMPARE(w->references, (QList<double>{50, 50}));
+        // A 50 Ohm-ish line of a millimetre: it passes nearly everything,
+        // reciprocally and passively.
+        const double through = std::abs(w->s.last()[1][0]);
+        QVERIFY2(through > 0.8 && through <= 1, qPrintable(QString::number(through)));
+        const QStringList summary = doc->fullWaveSummary();
+        QVERIFY2(says(summary, "Full wave at 3 frequency") && says(summary, "S2,1") && says(summary, "Reciprocal")
+                     && says(summary, "Passive"),
+                 qPrintable(summary.join(" | ")));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("full wave, 2 port(s) at 3 frequencies")),
+                 qPrintable(doc->statusLabel()->text()));
+        QCoreApplication::processEvents();
+        QVERIFY2(reportSays(QStringLiteral("S2,1")), qPrintable(reportText()));
+
+        // The currents: drawn from the panel, of a port and a frequency it chooses.
+        auto* shown = panel()->settingsArea()->findChild<QCheckBox*>(QStringLiteral("rfCurrentsShown"));
+        auto* port = panel()->settingsArea()->findChild<QComboBox*>(QStringLiteral("rfCurrentsPort"));
+        auto* at = panel()->settingsArea()->findChild<QComboBox*>(QStringLiteral("rfCurrentsFrequency"));
+        QVERIFY(shown != nullptr && port != nullptr && at != nullptr);
+        QCOMPARE(port->count(), 2);
+        QCOMPARE(at->count(), 3);
+        doc->setCurrentsShown(false);
+        QVERIFY(doc->view()->legend().isEmpty());
+        doc->setCurrentsShown(true);
+        int filled = 0;
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+            if (o.fill.isValid()) filled += int(o.shapes.size());
+        QVERIFY2(filled > 0, "no cell filled by its current");
+        QVERIFY2(doc->view()->legend().title.contains(QStringLiteral("P1")) && doc->view()->legend().title.contains(QStringLiteral("5 GHz")),
+                 qPrintable(doc->view()->legend().title));
+        QVERIFY2(doc->currentsSaid().contains(QStringLiteral("P1")), qPrintable(doc->currentsSaid()));
+        doc->setCurrentsOf(1, 0);
+        QVERIFY2(doc->view()->legend().title.contains(QStringLiteral("P2")) && doc->view()->legend().title.contains(QStringLiteral("1 GHz")),
+                 qPrintable(doc->view()->legend().title));
+        // Driven as a circuit drives it: the scale's top is the largest
+        // density of a source of P2's own 50 Ohm, P1 ended in its.
+        double most = 0;
+        for (const double j : rf::currentDensity(*w, 0, 1, true)) most = std::max(most, j);
+        QCOMPARE(doc->view()->legend().high, QString::number(most, 'g', 3));
+        QVERIFY(doc->currentsButton() != nullptr && doc->currentsButton()->isChecked());
+
+        // The Touchstone: the ports' 2-port at the frequencies solved.
+        QString why;
+        const QString text = doc->exportText(RF25Doc::ExportRequest(), &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QVERIFY2(text.contains(QStringLiteral("! Ports: 1 P1, 2 P2")) && text.contains(QStringLiteral("# Hz S RI R 50"))
+                     && text.contains(QStringLiteral("Full wave")),
+                 qPrintable(text.left(600)));
+        int lines = 0;
+        for (const QString& line : text.split(QLatin1Char('\n')))
+            if (!line.isEmpty() && !line.startsWith(QLatin1Char('!')) && !line.startsWith(QLatin1Char('#'))) ++lines;
+        QCOMPARE(lines, 3);
+        const QString ts = doc->model().root.child(QStringLiteral("rf_exports"))->children.front().tag;
+        QVERIFY2(doc->exportPath(ts).endsWith(QStringLiteral(".s2p")), qPrintable(doc->exportPath(ts)));
+
+        // The other solver, for one solve: the model is left as it was.
+        RF25Doc::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        doc->solveWith(quasi);
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->extraction() != nullptr && doc->extraction()->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY(doc->fullWave() == nullptr);
+        QVERIFY(doc->view()->legend().isEmpty());
+        QVERIFY(doc->studyIsFullWave());
+        // And a full-wave solve of one frequency alone, then one stopped
+        // as soon as it began: nothing kept, nothing said wrongly.
+        RF25Doc::SolveRequest one;
+        one.solver = QStringLiteral("full_wave");
+        one.frequencies = {2e9};
+        doc->solveWith(one);
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->frequencies == QList<double>{2e9}, qPrintable(doc->solveProblem()));
+        RF25Doc::SolveRequest many;
+        for (int k = 1; k <= 30; ++k) many.frequencies << k * 1e9;
+        doc->solveWith(many);
+        QCOMPARE(doc->frequenciesToSolve(), 30);
+        doc->stopSolving();
+        QVERIFY(!doc->isSolving());
+        QVERIFY(doc->fullWave() == nullptr || doc->fullWave()->frequencies == QList<double>{2e9});
+        QCOMPARE(doc->frequenciesToSolve(), 0);
+
+        // A port that asks for a de-embedding: solved at its face, and said.
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY(doc->fullWave() != nullptr && doc->fullWave()->ok());
+        const QString p1 = doc->model().ports().children.front().tag;
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("deembed"), QStringLiteral("20[um]")); },
+                              QStringLiteral("de-embed")));
+        // (The edit throws the solve away: shapes that are no longer the
+        //  ones solved are worse than none.)
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->fullWave() == nullptr);
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(says(doc->fullWaveSummary(), "de-embedding"), qPrintable(doc->fullWaveSummary().join(" | ")));
+
+        // A port's metal and the way it faces reach the solve: facing +y,
+        // P1 drives the strip's long side, not its end; on a metal that is
+        // not there, nothing.
+        const int atTheEnd = int(doc->fullWave()->portsSaid.value(0).section(QLatin1Char(' '), 3, 3).toInt());
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("facing"), QStringLiteral("+y"));
+            n.props.insert(QStringLiteral("deembed"), QStringLiteral("0"));
+        }, QStringLiteral("facing")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        const int alongTheSide = int(doc->fullWave()->portsSaid.value(0).section(QLatin1Char(' '), 3, 3).toInt());
+        QVERIFY2(atTheEnd > 0 && alongTheSide > 2 * atTheEnd,
+                 qPrintable(QStringLiteral("%1 and %2 cells").arg(atTheEnd).arg(alongTheSide)));
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("facing"), QStringLiteral("auto"));
+            n.props.insert(QStringLiteral("conductor"), QStringLiteral("M9"));
+        }, QStringLiteral("no such metal")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("on no cell")), qPrintable(doc->solveProblem()));
+
+        // With no ports, a full-wave solve has nothing to drive.
+        for (const rf::Node& p : std::vector<rf::Node>(doc->model().ports().children))
+            QVERIFY(doc->editNode(p.tag, [](rf::Node& n) { n.enabled = false; }, QStringLiteral("off")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(60000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("driven at its ports")), qPrintable(doc->solveProblem()));
     }
 
     void aSolveWithNothingToSolveOnIsRefused()

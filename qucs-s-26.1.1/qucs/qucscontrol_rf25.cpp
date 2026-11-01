@@ -1,8 +1,10 @@
 /*
  * qucscontrol_rf25.cpp - Claude's tools for an RF 2.5D model: rf25_solve,
- *                        the capacitance of its conductors, each net as a
- *                        line with its RLGC and S-parameters, and
- *                        rf25_export, which writes a Touchstone of them
+ *                        by the full-wave solver the ports' S, or by the
+ *                        quasi-static one the capacitance of its conductors
+ *                        and each net as a line with its RLGC and
+ *                        S-parameters; and rf25_export, which writes a
+ *                        Touchstone of them
  *
  * This file is part of Qucs-S.
  *
@@ -28,6 +30,7 @@
 #include "rf25/rf25_sparams.h"
 #include "rf25doc.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QDir>
 #include <QJsonArray>
@@ -52,6 +55,120 @@ std::optional<double> positiveNumber(const QString& text, const RF25Doc& model)
     const fem::Expression given = fem::Expression::compile(text, scope);
     if (!given.isValid() || !given.isConstant() || !(given.constant() > 0)) return std::nullopt;
     return given.constant();
+}
+
+/// \a m's real and imaginary parts, and its size in decibels and its angle
+/// in degrees where \a polar: each a list of rows.
+QJsonObject matrixJson(const QList<QList<std::complex<double>>>& m, bool polar)
+{
+    QJsonArray re, im, db, deg;
+    for (const QList<std::complex<double>>& row : m) {
+        QJsonArray r, i, d, a;
+        for (const std::complex<double>& v : row) {
+            r.append(v.real());
+            i.append(v.imag());
+            d.append(20 * std::log10(std::max(1e-300, std::abs(v))));
+            a.append(std::arg(v) * 180 / M_PI);
+        }
+        re.append(r);
+        im.append(i);
+        db.append(d);
+        deg.append(a);
+    }
+    QJsonObject out;
+    out.insert(QStringLiteral("re"), re);
+    out.insert(QStringLiteral("im"), im);
+    if (polar) {
+        out.insert(QStringLiteral("dB"), db);
+        out.insert(QStringLiteral("degrees"), deg);
+    }
+    return out;
+}
+
+/*!
+ * What a full-wave solve of \a model found, as rf25_solve answers it: its
+ * ports, the ports' S and Z at the frequency nearest \a asked (the top
+ * where none is), each S term's size over the sweep, and whether it is
+ * reciprocal and passive. \a brief keeps to the ports, the top's S in
+ * decibels and the checks.
+ */
+QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked, bool brief)
+{
+    QJsonObject out;
+    out.insert(QStringLiteral("model"), QFileInfo(model.getDocName()).fileName());
+    out.insert(QStringLiteral("solver"), QStringLiteral("full wave"));
+    const int np = int(w.portNames.size()), nf = int(w.frequencies.size());
+    QJsonArray ports;
+    for (int p = 0; p < np; ++p) {
+        QJsonObject port;
+        port.insert(QStringLiteral("name"), w.portNames.at(p));
+        port.insert(QStringLiteral("reference impedance"), w.references.at(p));
+        port.insert(QStringLiteral("drives"), w.portsSaid.value(p));
+        ports.append(port);
+    }
+    out.insert(QStringLiteral("ports"), ports);
+    out.insert(QStringLiteral("frequencies"), nf);
+    out.insert(QStringLiteral("from"), w.frequencies.first());
+    out.insert(QStringLiteral("to"), w.frequencies.last());
+    int k = nf - 1;
+    if (asked > 0)
+        for (int i = 0; i < nf; ++i)
+            if (std::abs(w.frequencies.at(i) - asked) < std::abs(w.frequencies.at(k) - asked)) k = i;
+    QJsonObject s = matrixJson(w.s.at(k), true);
+    s.insert(QStringLiteral("frequency"), w.frequencies.at(k));
+    QJsonObject checks;
+    checks.insert(QStringLiteral("reciprocal"), w.asymmetry <= 1e-9);
+    checks.insert(QStringLiteral("asymmetry"), w.asymmetry);
+    checks.insert(QStringLiteral("passive"), w.gain <= 1e-6);
+    checks.insert(QStringLiteral("most returned"), 1 + w.gain);
+    if (brief) {
+        QJsonObject few;
+        few.insert(QStringLiteral("frequency"), w.frequencies.at(k));
+        few.insert(QStringLiteral("dB"), s.value(QStringLiteral("dB")));
+        out.insert(QStringLiteral("s matrix"), few);
+        out.insert(QStringLiteral("checks"), checks);
+        return out;
+    }
+    out.insert(QStringLiteral("s matrix"), s);
+    QJsonObject z = matrixJson(w.z.at(k), false);
+    z.insert(QStringLiteral("frequency"), w.frequencies.at(k));
+    out.insert(QStringLiteral("z matrix"), z);
+    // Each term over the sweep, in decibels: every one for a few ports, and
+    // for many the first port's column and each port's own reflection.
+    QJsonArray sweep;
+    for (int f = 0; f < nf; ++f) {
+        QJsonObject point;
+        point.insert(QStringLiteral("frequency"), w.frequencies.at(f));
+        for (int j = 0; j < np; ++j)
+            for (int i = 0; i < np; ++i) {
+                if (np > 4 && i != j && j != 0) continue;
+                point.insert(QStringLiteral("S%1%2_dB").arg(i + 1).arg(j + 1),
+                             20 * std::log10(std::max(1e-300, std::abs(w.s.at(f).at(i).at(j)))));
+            }
+        sweep.append(point);
+    }
+    out.insert(QStringLiteral("sweep"), sweep);
+    out.insert(QStringLiteral("checks"), checks);
+    QJsonObject unknowns;
+    unknowns.insert(QStringLiteral("runs of current"), w.runs);
+    unknowns.insert(QStringLiteral("cells"), w.cells);
+    out.insert(QStringLiteral("unknowns"), unknowns);
+    out.insert(QStringLiteral("threads"), w.threads);
+    QJsonArray said;
+    for (const QString& line : model.preparedLines()) said.append(line);
+    for (const QString& line : w.lines) said.append(line);
+    for (const QString& line : model.fullWaveSummary()) said.append(line);
+    out.insert(QStringLiteral("what it did"), said);
+    out.insert(QStringLiteral("note"),
+               QCoreApplication::translate(
+                   "QucsControl",
+                   "Full wave: the mixed-potential integral equation on the mesh - currents on the runs between cells "
+                   "that share an edge, charges on the cells - with the stack's retarded Green's functions, solved at "
+                   "each frequency. Each port drives the face of the conductor it is on (an edge port) or the cell "
+                   "under it (an internal port), its reference plane at the centres of the cells it drives, and its S "
+                   "is into its own reference impedance (Kurokawa's power waves). The ground plane is taken as "
+                   "perfect and a metal as a sheet. rf25_export writes these as a Touchstone."));
+    return out;
 }
 
 } // namespace
@@ -83,11 +200,37 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     if (!model->waitForPrepared(timeout * 1000))
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
 
-    model->solve();
+    // Which solver: the one named, else the study's own - for this solve
+    // alone, the model left as it is.
+    RF25Doc::SolveRequest request;
+    if (args.contains(QLatin1String("solver"))) {
+        request.solver = args.value(QLatin1String("solver")).toString().trimmed();
+        if (request.solver != QLatin1String("quasi_static") && request.solver != QLatin1String("full_wave"))
+            return errorResult(tr("'solver' is \"quasi_static\" or \"full_wave\"; %1 is neither.").arg(request.solver));
+    }
+    const bool fullWave = request.solver.isEmpty() ? model->studyIsFullWave() : request.solver == QLatin1String("full_wave");
+    // The frequency asked after: of the losses for the quasi-static solve,
+    // and for the full-wave one the one frequency solved.
+    double asked = 0;
+    if (args.contains(QLatin1String("frequency"))) {
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("frequency")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
+        asked = *given;
+    }
+    if (fullWave && asked > 0) request.frequencies = {asked};
+
+    model->solveWith(request);
     if (!model->waitForSolved(timeout * 1000)) {
         model->stopSolving();
-        return errorResult(tr("It is still solving after %1 s: mesh it more coarsely (the Mesh node's largest cell), or "
-                              "give rf25_solve a longer 'timeout'.").arg(timeout));
+        return errorResult(tr("It is still solving after %1 s: mesh it more coarsely (the Mesh node's largest cell), ask "
+                              "for fewer frequencies, or give rf25_solve a longer 'timeout'.").arg(timeout));
+    }
+    if (fullWave) {
+        const std::shared_ptr<const FullWave> w = model->fullWave();
+        if (!w || !w->ok())
+            return errorResult(!model->solveProblem().isEmpty() ? model->solveProblem()
+                                                                : tr("It solved to nothing, and said no reason."));
+        return jsonResult(fullWaveAnswer(*model, *w, asked, args.value(QLatin1String("brief")).toBool()));
     }
     const std::shared_ptr<const Extraction> e = model->extraction();
     if (!e || !e->ok())
@@ -106,12 +249,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
 
     // The frequency the metal's and the dielectrics' losses are taken at:
     // the one given, else the top of the model's own sweep.
-    double frequency = topFrequency(model->model());
-    if (args.contains(QLatin1String("frequency"))) {
-        const std::optional<double> given = positiveNumber(args.value(QLatin1String("frequency")).toString().trimmed(), *model);
-        if (!given) return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
-        frequency = *given;
-    }
+    const double frequency = asked > 0 ? asked : topFrequency(model->model());
     // The ports the S-parameters are referred to.
     double zref = 50;
     if (args.contains(QLatin1String("impedance"))) {
@@ -276,8 +414,8 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                   "crowds, G from the dielectrics' loss tangents, and the Zc, alpha, beta and S parameters those "
                   "make. The S parameters are of a uniform line of this length and are right wherever the "
                   "cross-section is electrically small - see the quasi-static limit. A loop's inductance is "
-                  "rf25_inductance's, by another method; no full-wave solve in this build; rf25_export writes a "
-                  "Touchstone of these."));
+                  "rf25_inductance's, by another method; the full-wave solve is 'solver' full_wave, or the study's "
+                  "Solver; rf25_export writes a Touchstone of these."));
     // Brief: the numbers a line is asked after and nothing else - an
     // answer of 2.5 kB a net had its line cut first by max_chars (the
     // phase B check of 24 October).
@@ -357,12 +495,15 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     }
 
     // The shapes, the cells, and then the solve - which finds the charge
-    // and the loop together, on the same copies.
+    // and the loop together, on the same copies: the quasi-static one,
+    // whatever the study's Solver, since that is where the loop is found.
     if (!model->waitForLayout(timeout * 1000))
         return errorResult(tr("Its layout is still being read after %1 s.").arg(timeout));
     if (!model->waitForPrepared(timeout * 1000))
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
-    model->solve();
+    RF25Doc::SolveRequest quasiStatic;
+    quasiStatic.solver = QStringLiteral("quasi_static");
+    model->solveWith(quasiStatic);
     if (!model->waitForSolved(timeout * 1000)) {
         model->stopSolving();
         return errorResult(tr("It is still solving after %1 s: mesh it more coarsely (the Mesh node's largest cell), or "
@@ -422,7 +563,9 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_export writes the S parameters of one.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
-    if (!model->extraction() || !model->extraction()->ok())
+    const std::shared_ptr<const FullWave> wave = model->fullWave();
+    const bool full = wave && wave->ok();
+    if (!full && (!model->extraction() || !model->extraction()->ok()))
         return errorResult(model->solveProblem().isEmpty()
                                ? tr("Nothing is solved yet: rf25_solve it first, or press Solve on its tab.")
                                : model->solveProblem());
@@ -464,7 +607,7 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     if (where.isEmpty()) {
         const QString name = model->getDocName();
         const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
-        const int ports = what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
+        const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
         const QString stem = name.isEmpty() ? QStringLiteral("model") : QFileInfo(name).completeBaseName();
         where = QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1.s%2p").arg(stem).arg(ports)));
     } else if (QFileInfo(where).isRelative()) {
@@ -481,25 +624,33 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     QJsonObject out;
     out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
     out.insert(QStringLiteral("file"), where);
-    const int ports = what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
+    const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
     out.insert(QStringLiteral("ports"), ports);
     out.insert(QStringLiteral("reference impedance"), what.impedance);
-    out.insert(QStringLiteral("length"), what.length > 0 ? what.length : model->solvedLength());
+    if (!full) out.insert(QStringLiteral("length"), what.length > 0 ? what.length : model->solvedLength());
     out.insert(QStringLiteral("bytes"), text.toUtf8().size());
     QString sweepProblem;
-    const QList<double> sweep = studySweep(model->model(), &sweepProblem);
+    const QList<double> sweep = full ? wave->frequencies : studySweep(model->model(), &sweepProblem);
     out.insert(QStringLiteral("frequencies"), int(sweep.size()));
     if (!sweep.isEmpty()) {
         out.insert(QStringLiteral("from"), sweep.first());
         out.insert(QStringLiteral("to"), sweep.last());
     }
     out.insert(QStringLiteral("what it wrote"),
-               what.coupled ? tr("Every net as coupled lines: a %1-port, the near ends first, then the far ends.").arg(ports)
-                            : tr("Net %1 as a two-port, port 1 at its start.")
-                                  .arg(what.net.isEmpty() ? model->extraction()->names.value(0) : what.net));
+               full ? tr("The ports of the full-wave solve: a %1-port, %2 in that order, each into %3 Ohm. ('of', 'net' "
+                         "and 'length' are a quasi-static solve's.)")
+                          .arg(ports)
+                          .arg(wave->portNames.join(QStringLiteral(", ")))
+                          .arg(what.impedance, 0, 'g', 4)
+               : what.coupled ? tr("Every net as coupled lines: a %1-port, the near ends first, then the far ends.").arg(ports)
+                              : tr("Net %1 as a two-port, port 1 at its start.")
+                                    .arg(what.net.isEmpty() ? model->extraction()->names.value(0) : what.net));
     out.insert(QStringLiteral("note"),
-               tr("Touchstone 1.1, real and imaginary, one line a frequency. A schematic's S-parameter part reads it "
-                  "at once. The file's own comments carry what the solve was and where the quasi-static answer stops "
-                  "being the whole story."));
+               full ? tr("Touchstone 1.1, real and imaginary, the frequencies of the solve. A schematic's S-parameter "
+                         "part reads it at once. The file's own comments carry what each port drives and where its "
+                         "reference plane is.")
+                    : tr("Touchstone 1.1, real and imaginary, one line a frequency. A schematic's S-parameter part reads "
+                         "it at once. The file's own comments carry what the solve was and where the quasi-static answer "
+                         "stops being the whole story."));
     return jsonResult(out);
 }
