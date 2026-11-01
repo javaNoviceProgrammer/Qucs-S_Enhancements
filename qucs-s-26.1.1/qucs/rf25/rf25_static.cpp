@@ -30,9 +30,9 @@ QString tr(const char* text)
     return QCoreApplication::translate("qucs_s::rf25", text);
 }
 
-/// How many cell widths away a pair has to be before the cell's charge may
-/// be taken as sitting at its centre. Within it the rectangle's own closed
-/// form is used instead.
+/// How many of the cells' longest sides away a pair has to be before the
+/// cell's charge may be taken as sitting at its centre. Within it the
+/// rectangle's own closed form is used instead.
 constexpr double kNearWidths = 4.0;
 
 /// The antiderivative of 1/sqrt(x^2 + y^2 + z^2) in x and y: its mixed
@@ -176,10 +176,15 @@ constexpr int kMostNear = 64;
 // closed form, the rest - far enough that their field hardly changes over
 // a cell - at its centre; far, the charge at the cell's centre, which the
 // Green's function answers from its table in one step. \a side is the
-// wider of the two cells, so that a pair is near or far whichever way
+// longest side of either cell, so that a pair is near or far whichever way
 // round it is asked: the edge refinement leaves cells of two sizes, and
 // judging by the charged one alone made the matrix asymmetric where they
-// met.
+// met. And the longest, not the square root of the area: a line's cells
+// are four times as long as they are wide, and judged by their area the
+// cell two lengths along was a point charge a part in fifty out - which
+// left C 0.4 % high on a 50 Ohm line, and the answer depending on how the
+// cells were stretched (the full-wave solve's low-frequency check, 1
+// November).
 double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, double side, bool self)
 {
     const double distance = std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y());
@@ -190,6 +195,14 @@ double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, doub
         return sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, int(terms.size()));
     }
     return g.potential(distance);
+}
+
+/// The longest side of either cell's box, in the cells' units: what a
+/// pair's nearness is judged by.
+double longestSide(const MeshCell& a, const MeshCell& b)
+{
+    const QRectF ba = a.outline.boundingRect(), bb = b.outline.boundingRect();
+    return std::max({ba.width(), ba.height(), bb.width(), bb.height()});
 }
 
 QRectF scaled(const QRectF& box, double unit)
@@ -207,7 +220,7 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
         const QPointF at = ci.centre * unit;
         for (int j = 0; j < n; ++j) {
             const MeshCell& cj = cells.at(which.at(j));
-            const double side = std::max(std::sqrt(ci.area), std::sqrt(cj.area)) * unit;
+            const double side = longestSide(ci, cj) * unit;
             p(i, j) = cellPotential(at, scaled(cj.outline.boundingRect(), unit), greenOf(ci.layer, cj.layer), side, i == j);
         }
     }
@@ -525,7 +538,7 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
                 const Green& g = greenOf(ca.layer, cb.layer);
                 const QRectF rect = scaled(cb.outline.boundingRect(), micrometre);
                 const double delta = alongX ? rect.width() : rect.height();
-                const double side = std::max(std::sqrt(ca.area), std::sqrt(cb.area)) * micrometre;
+                const double side = longestSide(ca, cb) * micrometre;
                 const int copies = int(std::ceil(reach / delta));
                 double sum = 0;
                 for (int k = -copies; k <= copies; ++k) {

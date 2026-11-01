@@ -368,11 +368,14 @@ private slots:
             qWarning("microstrip W/h = %.2f: C %.5g pF/m, C0 %.5g pF/m, eps_eff %.4f (H&J %.4f), Z0 %.3f ohm (H&J %.3f)",
                      w * 1e-6 / h, b.c * 1e12, b.c0 * 1e12, b.epsilonEff, want.first, b.z0, want.second);
             // Ten cells across: eps_eff within 0.5 % and Z0 within 1.5 % of
-            // a closed form good to 0.2 % and 0.1 % - measured at 0.06, 0.12
-            // and 0.06 % on eps_eff and 0.26, 0.37 and 1.0 % on Z0 for W/h
-            // 0.3, 1 and 3. (Square cells of 10 µm give 0.8 % at W/h = 1:
-            // these 40 µm along are a little nearer by a cancellation, the
-            // error being of the cells across, first order in their size.)
+            // a closed form good to 0.2 % and 0.1 % - measured at 0.09, 0.21
+            // and 0.07 % on eps_eff and 0.49, 0.79 and 1.0 % on Z0 for W/h
+            // 0.3, 1 and 3, the error being of the cells across, first order
+            // in their size. (It was 0.37 % at W/h = 1 until 1 November, and
+            // square cells of 10 µm gave 0.8 %: these cells four times as
+            // long were judged near or far by their area, and the far ones'
+            // point charges cancelled part of the error by chance. Judged
+            // by their longest side, they give what the square cells do.)
             QVERIFY2(std::abs(b.epsilonEff - want.first) <= 0.005 * want.first,
                      qPrintable(QStringLiteral("W/h %1: eps_eff %2 vs %3").arg(w * 1e-6 / h).arg(b.epsilonEff).arg(want.first)));
             QVERIFY2(std::abs(b.z0 - want.second) <= 0.015 * want.second,
@@ -383,7 +386,7 @@ private slots:
             if (w == 100.0) kept = longLine;
         }
         // Twice the cells across the 50 Ohm strip, and nearer: the error is
-        // the mesh's, and it shrinks as the mesh does (0.37 % to 0.13 %).
+        // the mesh's, and it halves as the cells do (0.79 % to 0.36 %).
         {
             const QPair<double, double> want = hammerstadJensen(100e-6, h, epsr);
             const rf::LineParameters coarse = rf::lineParameters(kept, 0, 800e-6);
