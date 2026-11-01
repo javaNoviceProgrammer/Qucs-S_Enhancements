@@ -248,6 +248,77 @@ private slots:
     // A plate over a ground plane: the parallel-plate value plus the
     // fringing a real solver finds, which is more, and less of it the
     // wider the plate is.
+    // A metal solved as its two faces (its "Solved as"): a sheet at its
+    // bottom and one at its top, the room between them the air over it,
+    // joined by its walls. The walls hold field in the air across a narrow
+    // gap - the recheck of 75ff6f9: the reviewer's copper coplanar line's
+    // eps_eff 2 to 3 % over QFEM's, of 3 µm of metal in 50 µm gaps.
+    void aMetalSolvedAsItsTwoFacesHoldsItsWallsField()
+    {
+        rf::Stack sheet = grounded(9.8, 200e-6);
+        sheet.layers.last().thickness = 3e-6;
+        sheet.layers.last().sigma = 5.8e7;
+        rf::Stack faces = sheet;
+        faces.layers.last().twoSheets = true;
+        // The reviewer's line without its fences: the signal 100 µm, its
+        // gaps 50, its grounds 250, four cells across.
+        const QList<rf::Conductor> line{strip(0, -50, 1000, 100), strip(0, 100, 1000, 250), strip(0, -350, 1000, 250)};
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        how.maximum = 100e-6;
+        const rf::Mesh mesh = rf::meshOf(line, how, rf::Stack(), 0);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        const rf::Extraction es = rf::extract(mesh, line, sheet), ef = rf::extract(mesh, line, faces);
+        QVERIFY2(es.ok() && ef.ok(), qPrintable((es.problems + ef.problems).join(" | ")));
+        // Its nets the metal's, its top face theirs; said.
+        QCOMPARE(ef.names, es.names);
+        QCOMPARE(ef.names.size(), 3);
+        QVERIFY2(ef.lines.join(' ').contains(QLatin1String("M1 is solved as its two faces")), qPrintable(ef.lines.join(" | ")));
+        QVERIFY(!es.lines.join(' ').contains(QLatin1String("two faces")));
+        QVERIFY2(ef.unknowns == 2 * es.unknowns, qPrintable(QStringLiteral("%1 and %2").arg(ef.unknowns).arg(es.unknowns)));
+        QVERIFY(ef.perMetre.fromMiddle && es.perMetre.fromMiddle);
+        // The coplanar line - the signal at a volt, the grounds at none -
+        // per metre of its middle. The signal holds the least charge of
+        // the three at a volt each.
+        int s = 0;
+        for (int i = 1; i < 3; ++i)
+            if (es.c.at(i).at(i) < es.c.at(s).at(s)) s = i;
+        const auto coplanar = [s](const rf::Extraction& e) {
+            const double c = e.perMetre.maxwell.at(s).at(s), c0 = e.perMetre.maxwell0.at(s).at(s);
+            return std::pair(c / c0, 1 / (rf::kLightSpeed * std::sqrt(c * c0)));
+        };
+        const auto [epsSheet, zSheet] = coplanar(es);
+        const auto [epsFaces, zFaces] = coplanar(ef);
+        // A 2D solve of the cross-section (by moments, and by finite
+        // differences): the sheet's eps_eff 5.581 and 5.571, Z0 49.00 and
+        // 48.81; the whole 3 µm, walls and top, 3.9 and 3.8 % lower in
+        // eps_eff and 3.0 and 2.9 % in Z0; and two sheets on four cells
+        // across 2.9 and 2.2 % - three quarters of it, and more as the
+        // cells across are more (83 % at eight, 88 % at twenty).
+        qWarning("the coplanar line per metre: eps_eff %.4f as a sheet, %.4f as its faces (%.2f %%); Z0 %.3f, %.3f (%.2f %%)",
+                 epsSheet, epsFaces, 100 * (epsFaces / epsSheet - 1), zSheet, zFaces, 100 * (zFaces / zSheet - 1));
+        QVERIFY2(std::abs(epsSheet / 5.576 - 1) < 0.005, qPrintable(QStringLiteral("eps_eff %1 as a sheet").arg(epsSheet)));
+        QVERIFY2(100 * (1 - epsFaces / epsSheet) > 0.8 * 2.94 && 100 * (1 - epsFaces / epsSheet) < 3.94,
+                 qPrintable(QStringLiteral("eps_eff %1 as its faces, %2 as a sheet").arg(epsFaces).arg(epsSheet)));
+        QVERIFY2(100 * (1 - zFaces / zSheet) > 0.8 * 2.15 && 100 * (1 - zFaces / zSheet) < 2.99,
+                 qPrintable(QStringLiteral("Z0 %1 as its faces, %2 as a sheet").arg(zFaces).arg(zSheet)));
+        // Its resistance by Wheeler's rule is of the metal's own
+        // rectangles either way - the top face is in them, not on them - and
+        // how the charge crowds is of the metal's cells, both faces
+        // together: as a sheet's, which the walls' field moves a little
+        // (measured +1 %), where of either face alone it is half.
+        const QList<QList<double>> rs = rf::resistancePerMetre(es, 10e9), rf2 = rf::resistancePerMetre(ef, 10e9);
+        QVERIFY(!rs.isEmpty() && !rf2.isEmpty());
+        QVERIFY2(std::abs(rf2.at(s).at(s) / rs.at(s).at(s) - 1) < 1e-9,
+                 qPrintable(QStringLiteral("R' %1 Ohm/m as its faces, %2 as a sheet").arg(rf2.at(s).at(s)).arg(rs.at(s).at(s))));
+        QCOMPARE(ef.perMetre.dcResistance, es.perMetre.dcResistance);
+        const double crowd = ef.perMetre.crowding.at(s) / es.perMetre.crowding.at(s);
+        const double whole = ef.crowding.at(s) / es.crowding.at(s);   // (of the whole, where the line is none)
+        qWarning("the charge's crowding as its faces %.4f of the sheet's, of the whole %.4f", crowd, whole);
+        QVERIFY2(crowd > 0.9 && crowd < 1.15 && whole > 0.9 && whole < 1.15,
+                 qPrintable(QStringLiteral("%1 and %2 of the sheet's").arg(crowd).arg(whole)));
+    }
+
     void aPlateOverAGroundPlaneIsItsParallelPlateValuePlusFringing()
     {
         const double h = 10e-6;

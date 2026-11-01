@@ -79,6 +79,17 @@ struct Layer {
     /// for a ground, "open" or "perfect" (a metal lid) for a cover.
     QString variant;
     double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom; a ground's is 0)
+    /// A metal solved as its two faces - a sheet at its bottom and one at
+    /// its top, joined along its edges by its walls - rather than as one
+    /// sheet: its thickness in the field as well as in its loss (its
+    /// "Solved as"; thickened() makes the second sheet).
+    bool twoSheets = false;
+    /// In a stack thickened() made: which part of a metal solved as two
+    /// sheets this layer is - its bottom face (the metal itself), its top
+    /// face, or the walls that join them - and the metal it is part of.
+    enum Face { Whole, Bottom, Top, Walls };
+    Face face = Whole;
+    QString faceOf;
 
     bool isConductor() const { return kind == Metal || kind == Via || kind == Ground; }
 };

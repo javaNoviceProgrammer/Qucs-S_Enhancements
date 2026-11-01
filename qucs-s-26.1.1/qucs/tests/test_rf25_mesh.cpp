@@ -7,6 +7,7 @@
  */
 #include <QtTest>
 
+#include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_mesh.h"
 
 namespace rf = qucs_s::rf25;
@@ -455,6 +456,191 @@ private slots:
         QVERIFY(!huge.ok());
         QVERIFY2(says(huge.problems, "would take"), qPrintable(huge.problems.join(" | ")));
         QVERIFY(huge.cells.isEmpty());
+    }
+
+    // A metal solved as its two faces (its "Solved as"): a sheet at its
+    // bottom and one at its top, the room between them filled with what is
+    // over it, and walls joining the two along its edges - which is what
+    // the solvers are handed, as sheets and vias.
+    void aMetalSolvedAsItsTwoFacesIsTwoSheetsAndItsWalls()
+    {
+        rf::Model m = stacked();
+        rf::Node& ground = add(m.stackNode(), "rf_ground", QStringLiteral("gnd"), QStringLiteral("GND"));
+        set(ground, "kind", QStringLiteral("perfect"));
+        rf::Node& ild2 = add(m.stackNode(), "rf_dielectric", QStringLiteral("d2"), QStringLiteral("ILD2"));
+        set(ild2, "thickness", QStringLiteral("2[um]"));
+        set(ild2, "epsr", QStringLiteral("3.5"));
+        set(ild2, "tand", QStringLiteral("0.01"));
+        rf::Node& m2 = add(m.stackNode(), "rf_metal", QStringLiteral("m2"), QStringLiteral("M2"));
+        set(m2, "thickness", QStringLiteral("0.9[um]"));
+        rf::Node& up = add(m.stackNode(), "rf_via", QStringLiteral("v1"), QStringLiteral("V1"));
+        set(up, "from", QStringLiteral("M1"));
+        set(up, "to", QStringLiteral("M2"));
+        rf::Node& down = add(m.stackNode(), "rf_via", QStringLiteral("v0"), QStringLiteral("V0"));
+        set(down, "from", QStringLiteral("ground"));
+        set(down, "to", QStringLiteral("M1"));
+        // Two strips of M1 touching end to end, and M2 over them.
+        const QList<rf::Conductor> shapes{on(QStringLiteral("M1"), 0, 0, 4, 2), on(QStringLiteral("M1"), 4, 0, 2, 2),
+                                          on(QStringLiteral("M2"), 0, 0, 6, 2)};
+        rf::MeshSettings how;
+        how.edges = false;
+        how.cellsAcross = 0;
+        how.maximum = 1e-6;
+        {   // As sheets, as the stack has always been solved: nothing made.
+            const rf::Stack stack = m.stack();
+            QVERIFY2(stack.ok(), qPrintable(stack.problems.join(" | ")));
+            const rf::Mesh mesh = rf::meshOf(shapes, how, stack, 0);
+            const rf::Thickened t = rf::thickened(stack, shapes, mesh);
+            QVERIFY(!t.any);
+            QCOMPARE(t.stack.layers.size(), stack.layers.size());
+            QCOMPARE(t.mesh.cells.size(), mesh.cells.size());
+            QCOMPARE(t.conductors.size(), shapes.size());
+            QCOMPARE(rf::metalHeight(t.stack, QStringLiteral("M2")), 303e-6);
+        }
+        set(*m.find(QStringLiteral("m1")), "model", QStringLiteral("faces"));
+        const rf::Stack stack = m.stack();
+        QVERIFY2(stack.ok(), qPrintable(stack.problems.join(" | ")));
+        QVERIFY(stack.named(QStringLiteral("M1"))->twoSheets);
+        QVERIFY(!stack.named(QStringLiteral("M2"))->twoSheets);
+        const rf::Mesh mesh = rf::meshOf(shapes, how, stack, 0);
+        QCOMPARE(mesh.cells.size(), 12 + 12);
+        const rf::Thickened t = rf::thickened(stack, shapes, mesh);
+        QVERIFY(t.any);
+        QCOMPARE(t.cells, int(mesh.cells.size()));
+
+        // The stack: M1 its bottom face, then the room its thickness takes -
+        // of ILD2, which is over it and fills its gaps - its top face at
+        // the top of that room, and the walls between the two.
+        const rf::Layer* bottom = t.stack.named(QStringLiteral("M1"));
+        QVERIFY(bottom != nullptr);
+        QCOMPARE(bottom->face, rf::Layer::Bottom);
+        const rf::Layer* room = t.stack.named(QStringLiteral("M1 (beside)"));
+        QVERIFY(room != nullptr);
+        QCOMPARE(room->kind, rf::Layer::Dielectric);
+        QCOMPARE(room->thickness, 0.6e-6);
+        QCOMPARE(room->epsr, 3.5);
+        QCOMPARE(room->tand, 0.01);
+        const rf::Layer* top = t.stack.named(QStringLiteral("M1 (top)"));
+        QVERIFY(top != nullptr);
+        QCOMPARE(top->kind, rf::Layer::Metal);
+        QCOMPARE(top->face, rf::Layer::Top);
+        QCOMPARE(top->faceOf, QStringLiteral("M1"));
+        QCOMPARE(top->thickness, 0.6e-6);
+        QCOMPARE(top->sigma, bottom->sigma);
+        QVERIFY(top->tag.isEmpty());   // (the tag is the metal's own)
+        const rf::Layer* walls = t.stack.named(QStringLiteral("M1 (walls)"));
+        QVERIFY(walls != nullptr);
+        QCOMPARE(walls->kind, rf::Layer::Via);
+        QCOMPARE(walls->face, rf::Layer::Walls);
+        QCOMPARE(walls->from, QStringLiteral("M1"));
+        QCOMPARE(walls->to, QStringLiteral("M1 (top)"));
+        QVERIFY(t.made(QStringLiteral("M1 (top)")));
+        QVERIFY(t.made(QStringLiteral("M1 (walls)")));
+        QVERIFY(!t.made(QStringLiteral("M1")));
+        QVERIFY(!t.made(QStringLiteral("ILD2")));
+        // Its top 0.6 µm over its bottom, and what is above it as high as
+        // the stack draws it - 0.6 µm higher than as sheets.
+        QCOMPARE(rf::metalHeight(t.stack, QStringLiteral("M1")), 301e-6);
+        QCOMPARE(rf::metalHeight(t.stack, QStringLiteral("M1 (top)")), 301.6e-6);
+        QCOMPARE(rf::metalHeight(t.stack, QStringLiteral("M2")), 303.6e-6);
+        const rf::Layers slabs = rf::layersOf(t.stack);
+        QVERIFY2(slabs.ok(), qPrintable(slabs.problems.join(" | ")));
+        QCOMPARE(slabs.slabs.size(), 4);
+        QCOMPARE(slabs.slabs.at(2).epsr, 3.5);
+        QVERIFY(std::abs(slabs.slabs.at(2).z0 - 301e-6) < 1e-15 && std::abs(slabs.slabs.at(2).z1 - 301.6e-6) < 1e-15);
+        // A via up from it leaves its top face; one up to it from the
+        // ground arrives at its bottom.
+        QCOMPARE(t.stack.named(QStringLiteral("V1"))->from, QStringLiteral("M1 (top)"));
+        QCOMPARE(t.stack.named(QStringLiteral("V1"))->to, QStringLiteral("M2"));
+        QCOMPARE(t.stack.named(QStringLiteral("V0"))->to, QStringLiteral("M1"));
+        QVERIFY(t.said.join(' ').contains(QLatin1String("ILD2")));
+
+        // The shapes: each of M1's on its top face too, and its walls over
+        // both; M2's alone.
+        QCOMPARE(t.conductors.size(), shapes.size() + 4);
+        int onTop = 0, onWalls = 0;
+        for (const rf::Conductor& c : t.conductors) {
+            onTop += c.layer == QLatin1String("M1 (top)") ? 1 : 0;
+            onWalls += c.layer == QLatin1String("M1 (walls)") ? 1 : 0;
+        }
+        QCOMPARE(onTop, 2);
+        QCOMPARE(onWalls, 2);
+
+        // The cells: the mesh's own in their places, each of M1's twelve
+        // on its top face after them, and a wall along every side of an M1
+        // cell that is the conductor's edge - not along the side where the
+        // two strips touch, which is no edge: 6 + 6 along the long sides
+        // and 2 at either end, 16.
+        for (int c = 0; c < mesh.cells.size(); ++c) {
+            QCOMPARE(t.mesh.cells.at(c).layer, mesh.cells.at(c).layer);
+            QCOMPARE(t.mesh.cells.at(c).centre, mesh.cells.at(c).centre);
+        }
+        QCOMPARE(t.topOf.size(), 12);
+        QCOMPARE(t.walls, 16);
+        QCOMPARE(t.mesh.cells.size(), mesh.cells.size() + 12 + 16);
+        for (auto it = t.topOf.cbegin(); it != t.topOf.cend(); ++it) {
+            QCOMPARE(mesh.cells.at(it.key()).layer, QStringLiteral("M1"));
+            const rf::MeshCell& copy = t.mesh.cells.at(it.value());
+            QCOMPARE(copy.layer, QStringLiteral("M1 (top)"));
+            QCOMPARE(copy.outline, mesh.cells.at(it.key()).outline);
+            QCOMPARE(t.bottomOf.value(it.value()), it.key());
+        }
+        int where = 0;
+        for (int c = int(mesh.cells.size()) + 12; c < t.mesh.cells.size(); ++c) {
+            const rf::MeshCell& wall = t.mesh.cells.at(c);
+            QCOMPARE(wall.layer, QStringLiteral("M1 (walls)"));
+            QVERIFY(wall.area > 0);
+            // It stands inside a cell of M1 along its edge, and never where
+            // the two strips meet.
+            bool inside = false;
+            for (int k = 0; k < mesh.cells.size(); ++k)
+                inside = inside || (mesh.cells.at(k).layer == QLatin1String("M1")
+                                    && mesh.cells.at(k).outline.containsPoint(wall.centre, Qt::OddEvenFill));
+            QVERIFY2(inside, qPrintable(QStringLiteral("a wall at %1, %2").arg(wall.centre.x()).arg(wall.centre.y())));
+            QVERIFY2(std::abs(wall.centre.x() - 4) > 0.2, qPrintable(QStringLiteral("a wall at x %1").arg(wall.centre.x())));
+            where += wall.centre.y() < 0.2 || wall.centre.y() > 1.8 ? 1 : 0;
+        }
+        QCOMPARE(where, 12);
+
+        // What the panel counts: M1's cells and edges twice, and a wall up
+        // from each of its cells along an edge.
+        const rf::Mesh sheets = rf::meshOf(shapes, how, m.stack(), 0);
+        rf::Model asSheets = m;
+        set(*asSheets.find(QStringLiteral("m1")), "model", QStringLiteral("sheet"));
+        const rf::Mesh plain = rf::meshOf(shapes, how, asSheets.stack(), 0);
+        QCOMPARE(sheets.cost.unknowns - plain.cost.unknowns, 16 + 12);   // M1's 16 edges again, and its 12 cells all on an edge
+        QVERIFY2(says(sheets.lines, "M1 solved as its two faces"), qPrintable(sheets.lines.join(" | ")));
+        QVERIFY(!says(plain.lines, "two faces"));
+
+        {   // A top metal's room is the air over it; and a metal of no
+            // thickness to be two faces is a sheet still.
+            rf::Model only = stacked();
+            set(*only.find(QStringLiteral("m1")), "model", QStringLiteral("faces"));
+            const rf::Stack s = only.stack();
+            const rf::Mesh one = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 2, 1)}, how, s, 0);
+            const rf::Thickened aired = rf::thickened(s, {on(QStringLiteral("M1"), 0, 0, 2, 1)}, one);
+            QVERIFY(aired.any);
+            QCOMPARE(aired.stack.named(QStringLiteral("M1 (beside)"))->epsr, 1.0);
+            QVERIFY(aired.said.join(' ').contains(QLatin1String("the air")));
+            QCOMPARE(aired.walls, 6);
+            set(*only.find(QStringLiteral("m1")), "thickness", QStringLiteral("0"));
+            const rf::Stack flat = only.stack();
+            QVERIFY(!rf::thickened(flat, {on(QStringLiteral("M1"), 0, 0, 2, 1)}, rf::meshOf({on(QStringLiteral("M1"), 0, 0, 2, 1)}, how, flat, 0)).any);
+        }
+        // And what is made is made once: a stack made already is as it is.
+        const rf::Thickened again = rf::thickened(t.stack, t.conductors, t.mesh);
+        QVERIFY(!again.any);
+        // A mesh whose cells twice over are more charges than the
+        // extraction solves is still a mesh: the solver says what it cannot
+        // hold, and a calibration strip too long for the full wave is cut
+        // short rather than refused.
+        rf::MeshSettings fine = how;
+        fine.maximum = 0.5e-6;
+        const QList<rf::Conductor> wide{on(QStringLiteral("M1"), 0, 0, 50, 25)};
+        const rf::Mesh many = rf::meshOf(wide, fine, stack, 0);
+        QCOMPARE(many.cells.size(), 5000);   // 100 by 50 cells of 0.5 µm
+        QVERIFY2(many.ok(), qPrintable(many.problems.join(" | ")));
+        QVERIFY2(says(many.lines, "10000 to solve the charge on"), qPrintable(many.lines.join(" | ")));
     }
 };
 

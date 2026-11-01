@@ -581,18 +581,201 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     for (const MeshCell& cell : std::as_const(mesh.cells))
         for (int i = 0, n = cell.outline.size(); i < n; ++i)
             ++shared[cell.layer + QLatin1Char('|') + edgeKey(cell.outline.at(i), cell.outline.at((i + 1) % n))];
-    int unknowns = 0;
+    // A metal solved as its two faces is its cells twice, its edges twice,
+    // and a wall up from each cell along its conductor's edge (thickened()).
+    const auto twoFaces = [&stack](const QString& layer) {
+        const Layer* l = stack.named(layer);
+        return l != nullptr && l->kind == Layer::Metal && l->twoSheets && l->thickness > 0;
+    };
+    int unknowns = 0, charges = int(mesh.cells.size());
     for (auto it = shared.constBegin(); it != shared.constEnd(); ++it)
-        if (it.value() >= 2) ++unknowns;
+        if (it.value() >= 2) unknowns += twoFaces(it.key().section(QLatin1Char('|'), 0, 0)) ? 2 : 1;
+    QStringList faced;
+    for (const MeshCell& cell : std::as_const(mesh.cells))
+        if (twoFaces(cell.layer)) {
+            ++charges;
+            if (cell.onEdge) ++unknowns;
+            if (!faced.contains(cell.layer)) faced << cell.layer;
+        }
     mesh.cost = costOf(unknowns);
     mesh.lines << tr("%1 cell(s) on %2 layer(s): %3. The %4 edge(s) between them are a full-wave solve's unknowns: %5.")
-                      .arg(mesh.cells.size()).arg(mesh.byLayer().size()).arg(chargeCostOf(int(mesh.cells.size())))
+                      .arg(charges).arg(mesh.byLayer().size()).arg(chargeCostOf(charges))
                       .arg(unknowns).arg(mesh.cost.said);
+    if (!faced.isEmpty())
+        mesh.lines << tr("%1 solved as its two faces: its cells and their edges twice, and a wall up from each cell along "
+                         "its edges, in those counts.")
+                          .arg(faced.join(QStringLiteral(", ")));
     if (mesh.cost.tooBig)
         mesh.problems << mesh.cost.said;
+    // (The mesh's own cells: a metal's top face is the solver's to refuse,
+    //  which a calibration strip too long for it is cut short for.)
     if (mesh.cells.size() > kMostCharges) mesh.problems << chargeCostOf(int(mesh.cells.size()));
     if (mesh.cells.isEmpty()) mesh.problems << tr("The mesh came out empty.");
     return mesh;
+}
+
+
+bool Thickened::made(const QString& layer) const
+{
+    const Layer* l = stack.named(layer);
+    return l != nullptr && (l->face == Layer::Top || l->face == Layer::Walls);
+}
+
+Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, const Mesh& mesh)
+{
+    Thickened out;
+    out.stack = stack;
+    out.conductors = conductors;
+    out.mesh = mesh;
+    out.cells = int(mesh.cells.size());
+    QStringList metals;
+    for (const Layer& l : stack.layers)
+        if (l.kind == Layer::Metal && l.twoSheets && l.thickness > 0 && l.face == Layer::Whole) metals << l.name;
+    if (metals.isEmpty()) return out;
+    out.any = true;
+
+    // A name no layer of the stack has, for what is made.
+    const auto unused = [&stack](const QString& wanted) {
+        QString name = wanted;
+        for (int k = 2; stack.named(name) != nullptr; ++k) name = QStringLiteral("%1 %2").arg(wanted).arg(k);
+        return name;
+    };
+    QHash<QString, QString> topOf, wallsOf;   // (by the metal's name)
+    QList<Layer> layers;
+    for (int i = 0; i < stack.layers.size(); ++i) {
+        Layer metal = stack.layers.at(i);
+        if (!metals.contains(metal.name)) {
+            layers << metal;
+            continue;
+        }
+        metal.face = Layer::Bottom;
+        metal.faceOf = metal.name;
+        layers << metal;
+        // The room its thickness takes, filled with what is over it: the
+        // first dielectric above it short of another metal, else the air.
+        Layer room;
+        room.kind = Layer::Dielectric;
+        room.name = unused(tr("%1 (beside)").arg(metal.name));
+        room.thickness = metal.thickness;
+        room.z0 = metal.z0;
+        room.z1 = metal.z1;
+        QString filled = tr("the air");
+        for (int j = i + 1; j < stack.layers.size(); ++j) {
+            const Layer& above = stack.layers.at(j);
+            if (above.kind == Layer::Metal || above.kind == Layer::Cover) break;
+            if (above.kind != Layer::Dielectric) continue;
+            room.epsr = above.epsr;
+            room.tand = above.tand;
+            filled = above.name;
+            break;
+        }
+        room.faceOf = metal.name;
+        layers << room;
+        Layer top = metal;
+        top.tag.clear();
+        top.name = unused(tr("%1 (top)").arg(metal.name));
+        top.face = Layer::Top;
+        top.z0 = top.z1 = metal.z1;
+        layers << top;
+        Layer walls;
+        walls.kind = Layer::Via;
+        walls.name = unused(tr("%1 (walls)").arg(metal.name));
+        walls.from = metal.name;
+        walls.to = top.name;
+        walls.sigma = metal.sigma;
+        walls.face = Layer::Walls;
+        walls.faceOf = metal.name;
+        walls.z0 = metal.z0;
+        walls.z1 = metal.z1;
+        layers << walls;
+        topOf.insert(metal.name, top.name);
+        wallsOf.insert(metal.name, walls.name);
+        out.said << tr("%1 is solved as its two faces: a sheet at its bottom and one at its top, %2 µm over it, with %3 "
+                       "between them beside its walls, which join the two along its edges.")
+                        .arg(metal.name).arg(metal.thickness * 1e6, 0, 'g', 4).arg(filled);
+    }
+    // A via up from such a metal leaves its top face; one down from it, or
+    // up to it from below, its bottom. (Above by its place in the stack,
+    // which is its place in z: a stack made by hand has no z of its own.)
+    const auto place = [&stack](const Layer* l) { return l == nullptr ? -1 : int(l - stack.layers.constData()); };
+    for (Layer& via : layers) {
+        if (via.kind != Layer::Via || via.face != Layer::Whole) continue;
+        const Layer* from = stack.named(via.from);
+        const Layer* to = stack.named(via.to);
+        const auto upper = [&stack, &place](const Layer* a, const Layer* b, const QString& bName) {
+            return a != nullptr && b != nullptr && !stack.isGround(bName) && place(b) > place(a);
+        };
+        if (from != nullptr && topOf.contains(from->name) && upper(from, to, via.to)) via.from = topOf.value(from->name);
+        else if (to != nullptr && topOf.contains(to->name) && upper(to, from, via.from)) via.to = topOf.value(to->name);
+    }
+    out.stack.layers = layers;
+
+    // The shapes: each on its top face too, and its walls the shape over
+    // both, which is what joins the two into one conductor.
+    for (const Conductor& c : conductors) {
+        const Layer* metal = stack.named(c.layer);
+        if (metal == nullptr || !topOf.contains(metal->name)) continue;
+        Conductor top = c;
+        top.layer = topOf.value(metal->name);
+        out.conductors << top;
+        Conductor walls = c;
+        walls.layer = wallsOf.value(metal->name);
+        out.conductors << walls;
+    }
+
+    // The cells: each of a two-sheet metal's on its top face too, and a
+    // wall along each side that is its conductor's edge - a strip a tenth
+    // of the cell deep inside that side, which lands on the cell and on its
+    // top. Its outline is only where it stands: the walls carry the
+    // current between the faces, and their own impedance is nothing beside
+    // the rest.
+    for (int c = 0; c < out.cells; ++c) {
+        const MeshCell& cell = mesh.cells.at(c);
+        const Layer* metal = stack.named(cell.layer);
+        if (metal == nullptr || !topOf.contains(metal->name)) continue;
+        MeshCell top = cell;
+        top.layer = topOf.value(metal->name);
+        out.topOf.insert(c, int(out.mesh.cells.size()));
+        out.bottomOf.insert(int(out.mesh.cells.size()), c);
+        out.mesh.cells << top;
+    }
+    for (int c = 0; c < out.cells; ++c) {
+        const MeshCell& cell = mesh.cells.at(c);
+        const Layer* metal = stack.named(cell.layer);
+        if (metal == nullptr || !topOf.contains(metal->name) || !cell.onEdge) continue;
+        const QPolygonF& outline = cell.outline;
+        const QRectF box = outline.boundingRect();
+        const double size = std::max(box.width(), box.height());
+        for (int i = 0, n = int(outline.size()); i < n; ++i) {
+            const QPointF a = outline.at(i), b = outline.at((i + 1) % n), d = b - a;
+            const double length = std::hypot(d.x(), d.y());
+            if (!(length > 0)) continue;
+            QPointF outward(d.y() / length, -d.x() / length);
+            const QPointF middle = (a + b) / 2;
+            if (outline.containsPoint(middle + outward * (1e-3 * length), Qt::OddEvenFill)) outward = -outward;
+            const QPointF probe = middle + outward * (1e-4 * size);
+            bool covered = false;
+            for (const Conductor& shape : conductors)
+                if (shape.layer == cell.layer && shape.outline.boundingRect().contains(probe)
+                    && shape.outline.containsPoint(probe, Qt::OddEvenFill)) {
+                    covered = true;
+                    break;
+                }
+            if (covered) continue;
+            double deep = 0;   // (how far the cell reaches in from that side)
+            for (const QPointF& p : outline) deep = std::max(deep, -((p - a).x() * outward.x() + (p - a).y() * outward.y()));
+            const QPointF in = -outward * (0.1 * deep);
+            MeshCell wall;
+            wall.layer = wallsOf.value(metal->name);
+            wall.outline = QPolygonF({a, b, b + in, a + in});
+            wall.centre = middle + in / 2;
+            wall.area = length * 0.1 * deep;
+            wall.onEdge = true;
+            out.mesh.cells << wall;
+            ++out.walls;
+        }
+    }
+    return out;
 }
 
 } // namespace qucs_s::rf25
