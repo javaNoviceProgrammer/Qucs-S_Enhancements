@@ -74,6 +74,8 @@ struct Layers {
     struct Slab {
         double z0 = 0, z1 = 0;   ///< m, z0 below z1
         double epsr = 1;
+        double tand = 0;         ///< its loss tangent (the retarded Green's functions only)
+        double sigma = 0;        ///< S/m, a conductive substrate's (the same)
         QString name;
     };
     QList<Slab> slabs;        ///< from the bottom up, touching
