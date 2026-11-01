@@ -273,6 +273,10 @@ Layers layersOf(const Stack& stack)
                 s.z0 = z;
                 s.z1 = z + l.thickness;
                 s.epsr = l.epsr > 0 ? l.epsr : 1;
+                // (Read by the retarded Green's functions alone: a static
+                // charge sees the real permittivity.)
+                s.tand = std::max(0.0, l.tand);
+                s.sigma = l.kind == Layer::Substrate ? std::max(0.0, l.sigma) : 0.0;
                 s.name = l.name;
                 out.slabs << s;
                 z = s.z1;
