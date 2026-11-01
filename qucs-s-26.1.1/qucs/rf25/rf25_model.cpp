@@ -258,10 +258,24 @@ QList<NodeKind> makeKinds()
                  {tr("Outwards"), QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y")},
                  QStringLiteral("auto")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
+          boolean(QStringLiteral("calibrate"), tr("Take out its own discontinuity"), false,
+                  tr("Solve two strips of its feed and take the port's own discontinuity out of the answer: its "
+                     "reference plane is then at its edge (full wave)")),
           expr(QStringLiteral("deembed"), tr("De-embed"), QStringLiteral("m"), QStringLiteral("0"),
-               tr("How far the reference plane is moved in along the line"))},
+               tr("How far the reference plane is then moved in along the line (out, below nought)")),
+          choice(QStringLiteral("along"), tr("Moved along"), {QStringLiteral("feed"), QStringLiteral("line")},
+                 {tr("Its feed, as two strips of it say (and its own discontinuity taken out)"),
+                  tr("A line of given impedance and permittivity (nothing else taken out)")},
+                 QStringLiteral("feed")),
+          shownIf(expr(QStringLiteral("line_z0"), tr("Line impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
+                  "along=line"),
+          shownIf(expr(QStringLiteral("line_eps"), tr("Line effective permittivity"), QString(), QStringLiteral("1")),
+                  "along=line")},
          {}, {}, false, false, QStringLiteral("p"),
-         tr("A port on the edge of a polygon, driven against the ground below it.")});
+         tr("A port on the edge of a polygon, driven against the ground below it. Solved as it is, its reference "
+            "plane is at the centres of the cells along its face, and its own discontinuity - the face's fringing "
+            "charge, the current's turn into it - is in the answer. Taken out, by two strips of its feed solved the "
+            "same way, the reference plane is at its edge, and can be moved along the line from there.")});
     add({QStringLiteral("rf_internal_port"), tr("Internal Port"), QStringLiteral("port"), QStringLiteral("port"), none,
          {expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
           expr(QStringLiteral("y"), tr("At y"), QStringLiteral("m"), QStringLiteral("0")),
@@ -316,7 +330,11 @@ QList<NodeKind> makeKinds()
                tr("Which conductor, by the name the solve gave it (empty: the first)")),
           expr(QStringLiteral("length"), tr("Length"), QStringLiteral("m"), QString(),
                tr("How long a piece of line to write (empty: the length that was solved)")),
-          expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50"))},
+          expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
+          choice(QStringLiteral("version"), tr("Version"), {QStringLiteral("1.1"), QStringLiteral("2.0")},
+                 {tr("1.1, every port into one reference"), tr("2.0, each port into its own")}, QStringLiteral("1.1"),
+                 tr("1.1 is what a schematic's S-parameter file reads; 2.0 carries each full-wave port's own "
+                    "reference impedance"))},
          {}, {}, false, false, QStringLiteral("ts"),
          tr("An .sNp file of the S parameters, at the study's own frequencies: a full-wave solve's ports, in their "
             "order under Ports; or of a quasi-static solve, one net as a line or every net as coupled lines - a "

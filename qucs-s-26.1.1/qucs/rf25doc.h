@@ -264,6 +264,7 @@ public:
         QString net;            ///< which net, for a two-port (empty: the first)
         double length = 0;      ///< m (0: the length that was solved)
         double impedance = 50;  ///< the ports' reference, Ohm
+        bool version2 = false;  ///< Touchstone 2.0, each full-wave port into its own reference
     };
     /// The Touchstone file \a what asks for, as text. Empty and why in
     /// \a error where it cannot be made.

@@ -13,6 +13,7 @@
 #include "main.h"
 #include "misc.h"
 #include "multiphysics/fem_expr.h"
+#include "rf25/rf25_deembed.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_sparams.h"
 #include "qucs.h"
@@ -111,13 +112,28 @@ QList<FullWavePort> portsOf(const Model& model, QStringList* notes, QString* pro
             else if (facing == QLatin1String("-x")) p.facing = QPointF(-1, 0);
             else if (facing == QLatin1String("+y")) p.facing = QPointF(0, 1);
             else if (facing == QLatin1String("-y")) p.facing = QPointF(0, -1);
+            // Its own discontinuity taken out after the solve, by strips of
+            // its feed, and its reference plane moved along the line - asked
+            // for, or implied by a move.
             bool ok = true;
-            const double deembed = numberOf(port, QStringLiteral("deembed"), model, 0, &ok);
-            if (ok && deembed != 0)
-                *notes << QCoreApplication::translate("RF25Doc", "%1 asks for %2 of de-embedding, which is not done yet "
-                                                                 "(calibration lines are the next phase's): its reference "
-                                                                 "plane is at its face.")
-                              .arg(p.name, fem::formatQuantity(deembed, fem::Dim::length()));
+            p.shift = numberOf(port, QStringLiteral("deembed"), model, 0, &ok);
+            if (!ok) {
+                *problem = QCoreApplication::translate("RF25Doc", "%1's de-embedding is not a number.").arg(p.name);
+                return {};
+            }
+            p.calibrate = flagOf(port, QStringLiteral("calibrate"));
+            if (textOf(port, QStringLiteral("along")) == QLatin1String("line")) {
+                bool okZ = true, okE = true;
+                p.lineImpedance = numberOf(port, QStringLiteral("line_z0"), model, 50, &okZ);
+                p.lineEps = numberOf(port, QStringLiteral("line_eps"), model, 1, &okE);
+                if (!okZ || !okE || !(p.lineImpedance > 0) || !(p.lineEps >= 1)) {
+                    *problem = QCoreApplication::translate("RF25Doc", "The line %1's reference plane is to move along is "
+                                                                      "none: its impedance above nought and its effective "
+                                                                      "permittivity at least one.")
+                                   .arg(p.name);
+                    return {};
+                }
+            }
         } else {
             p.internal = true;
             p.metal = textOf(port, QStringLiteral("to")).trimmed();
@@ -337,6 +353,12 @@ struct RF25Doc::SolveJob {
     std::shared_ptr<FullWave> wave;
     std::atomic_bool stop{false};
     std::atomic_int done{0};
+    // The ports' de-embedding after it: the mesh's settings, so that the
+    // strips of their feeds are meshed as the structure was, and whether
+    // those strips are being solved.
+    MeshSettings how;
+    double top = 0;
+    std::atomic_bool calibrating{false};
 };
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
@@ -722,9 +744,10 @@ void RF25Doc::showProblems()
     }
     // The solve: what it found, or that it is running, or why it is not.
     if (a_solveJob) {
-        lines << (a_solveJob->fullWave ? tr("Solving full-wave: %1 of %2 frequencies…")
-                                             .arg(frequenciesSolved()).arg(frequenciesToSolve())
-                                       : tr("Solving…"));
+        lines << (!a_solveJob->fullWave       ? tr("Solving…")
+                  : a_solveJob->calibrating ? tr("Taking out the ports' own discontinuities: solving strips of their feeds…")
+                                            : tr("Solving full-wave: %1 of %2 frequencies…")
+                                                  .arg(frequenciesSolved()).arg(frequenciesToSolve()));
     } else if (a_solveWhenPrepared) {
         lines << tr("Solving once the shapes and the mesh of the last edit are made…");
     } else if (a_fullWave && a_fullWave->ok()) {
@@ -759,7 +782,9 @@ void RF25Doc::showProblems()
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
         tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(chargeCostOf(int(a_mesh->cells.size())));
-    if (a_solveJob && a_solveJob->fullWave)
+    if (a_solveJob && a_solveJob->fullWave && a_solveJob->calibrating)
+        tail += tr("; calibrating the ports");
+    else if (a_solveJob && a_solveJob->fullWave)
         tail += tr("; solving %1 of %2 frequencies").arg(frequenciesSolved()).arg(frequenciesToSolve());
     else if (a_solveJob) tail += tr("; solving");
     else if (a_fullWave && a_fullWave->ok())
@@ -1263,6 +1288,9 @@ void RF25Doc::solveWith(const SolveRequest& request)
         job->frequencies = request.frequencies.isEmpty() ? studySweep(a_model, &why) : request.frequencies;
         if (job->frequencies.isEmpty())
             return nothing(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
+        QStringList said;
+        job->how = meshSettingsOf(a_model.mesh(), a_model.parameters(), &said);
+        job->top = topFrequency(a_model);
         const Node* study = a_model.root.child(QStringLiteral("rf_study"));
         if (request.frequencies.isEmpty() && study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool())
             job->notes << tr("Adding points where the answer changes is not done yet: the study's own %1 are solved.")
@@ -1305,6 +1333,50 @@ void RF25Doc::solveWith(const SolveRequest& request)
             control.done = &job->done;
             job->wave = std::make_shared<FullWave>(
                 fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control));
+            // The ports that asked: their own discontinuity taken out by
+            // strips of their feeds - one calibration for each feed, its
+            // metal and its width - and their reference planes moved.
+            if (!job->wave->ok()) return;
+            FullWaveControl quiet;
+            quiet.stop = &job->stop;
+            QList<Deembedding> each(job->ports.size());
+            QMap<QString, std::shared_ptr<Calibration>> feeds;
+            bool asked = false;
+            for (int p = 0; p < job->ports.size(); ++p) {
+                const FullWavePort& port = job->ports.at(p);
+                if (!port.deembeds()) continue;
+                asked = true;
+                each[p] = Deembedding{nullptr, port.shift, port.lineImpedance, port.lineEps};
+                if (!port.wantsStrips()) continue;
+                const QString name = job->wave->portNames.at(p);
+                const double width = job->wave->faceWidths.value(p);
+                const QString metal = job->wave->faceMetals.value(p);
+                if (port.internal || !(width > 0)) {
+                    job->notes << tr("%1 is not on the face of a conductor, so it has no feed to calibrate: it is "
+                                     "solved as it is.").arg(name);
+                    continue;
+                }
+                std::shared_ptr<Calibration>& calibration = feeds[QStringLiteral("%1|%2").arg(metal).arg(width, 0, 'g', 9)];
+                if (!calibration) {
+                    job->calibrating = true;
+                    calibration = std::make_shared<Calibration>(
+                        calibrate(job->stack, job->how, job->top, metal, width, job->frequencies, 1e-6, &quiet));
+                }
+                if (job->stop.load()) {
+                    job->wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
+                    return;
+                }
+                if (!calibration->ok()) {
+                    job->notes << tr("%1's feed could not be calibrated: %2 It is solved as it is.")
+                                      .arg(name, calibration->problems.join(QLatin1Char(' ')));
+                    continue;
+                }
+                each[p].calibration = calibration.get();
+            }
+            if (!asked) return;
+            *job->wave = deembedded(*job->wave, each);
+            for (const std::shared_ptr<Calibration>& c : std::as_const(feeds))
+                if (c->ok()) job->wave->lines << c->lines;
             return;
         }
         job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack));
@@ -1473,17 +1545,49 @@ QStringList RF25Doc::fullWaveSummary() const
             terms << tr("S%1,%2 %3 dB at %4°").arg(i + 1).arg(j + 1).arg(dB(v), 0, 'f', 2).arg(std::arg(v) * 180 / M_PI, 0, 'f', 1);
         }
     out << tr("At %1 GHz: %2.").arg(w.frequencies.at(last) / 1e9, 0, 'g', 4).arg(terms.join(QStringLiteral("; ")));
+    // Where each port's reference plane is: de-embedded, at its edge or
+    // moved along its feed, whose line is said.
+    for (int p = 0; p < np; ++p) {
+        const PortDeembedding d = w.deembedding.value(p);
+        if (!d.done) continue;
+        const QString from = d.calibrated ? tr("its edge") : tr("where it was solved");
+        const QString plane = d.shift == 0 ? tr("at %1").arg(from)
+                                           : tr("%1 µm %2 from %3").arg(std::abs(d.shift) * 1e6, 0, 'g', 4)
+                                                 .arg(d.shift > 0 ? tr("in") : tr("out"), from);
+        if (d.calibrated && !d.givenLine)
+            out << tr("%1 de-embedded: its own discontinuity taken out, its reference plane %2; its feed a line of %3 Ohm, "
+                      "eps_eff %4 at %5 GHz.")
+                       .arg(w.portNames.at(p), plane)
+                       .arg(d.impedance.real(), 0, 'g', 4)
+                       .arg(d.epsEff, 0, 'g', 4)
+                       .arg(w.frequencies.at(last) / 1e9, 0, 'g', 4);
+        else
+            out << tr("%1 de-embedded: %2, its reference plane %3 along a given line of %4 Ohm, eps_eff %5.")
+                       .arg(w.portNames.at(p),
+                            d.calibrated ? tr("its own discontinuity taken out") : tr("its own discontinuity left in"),
+                            plane)
+                       .arg(d.impedance.real(), 0, 'g', 4)
+                       .arg(d.epsEff, 0, 'g', 4);
+    }
     // Whether the answer is what physics allows: the first sign of a bad port
-    // or a mesh too coarse is that it is not.
+    // or a mesh too coarse is that it is not. A de-embedding can leave a
+    // little of what the calibration strips and the structure's own feed
+    // differ by, which is the de-embedding's, not the solve's.
+    const bool deembedded = !w.zSolved.isEmpty();
     out << (w.asymmetry <= 1e-9
                 ? tr("Reciprocal: Z is symmetric to %1 of its largest term.").arg(w.asymmetry, 0, 'g', 2)
                 : tr("Not reciprocal: Z is asymmetric by %1 of its largest term - look at the ports and the mesh.")
                       .arg(w.asymmetry, 0, 'g', 2));
-    out << (w.gain <= 1e-6
-                ? tr("Passive: of a wave in at any port, at most %1 % comes back out over the sweep.").arg(100 * (1 + w.gain), 0, 'f', 2)
-                : tr("Not passive: at one frequency it gives back %1 % more than it is given - look at the ports and the "
-                     "mesh.")
-                      .arg(100 * w.gain, 0, 'g', 3));
+    if (w.gain <= 1e-6)
+        out << tr("Passive: of a wave in at any port, at most %1 % comes back out over the sweep.").arg(100 * (1 + w.gain), 0, 'f', 2);
+    else if (deembedded && w.solvedGain <= 1e-6)
+        out << tr("Passive as solved; de-embedded, at one frequency it gives back %1 % more than it is given - what the "
+                  "calibration strips and this structure's own feeds differ by.")
+                   .arg(100 * w.gain, 0, 'g', 3);
+    else
+        out << tr("Not passive: at one frequency it gives back %1 % more than it is given - look at the ports and the "
+                  "mesh.")
+                   .arg(100 * w.gain, 0, 'g', 3);
     return out;
 }
 
@@ -1631,6 +1735,7 @@ bool RF25Doc::exportRequest(const QString& tag, ExportRequest* what, QString* er
         if (error != nullptr) *error = tr("The export's length is not a number.");
         return false;
     }
+    out.version2 = textOf(*node, QStringLiteral("version")) == QLatin1String("2.0");
     if (what != nullptr) *what = out;
     return true;
 }
@@ -1660,10 +1765,37 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
         comments << tr("Full wave: the mixed-potential integral equation on the mesh, the retarded Green's functions of "
                        "the stack");
         for (const QString& line : a_fullWave->portsSaid) comments << line;
-        comments << tr("Each port's reference plane is at the centres of the cells it drives; every port into %1 Ohm "
-                       "here, whatever its own reference")
-                        .arg(what.impedance, 0, 'g', 4);
+        // Where each reference plane is - a port's definition is where
+        // comparisons with other solvers go wrong.
+        QStringList planes;
+        for (int p = 0; p < a_fullWave->portNames.size(); ++p) {
+            const PortDeembedding d = a_fullWave->deembedding.value(p);
+            const QString name = a_fullWave->portNames.at(p);
+            const QString along = d.givenLine ? tr("along a given line of %1 Ohm, eps_eff %2")
+                                                    .arg(d.impedance.real(), 0, 'g', 4).arg(d.epsEff, 0, 'g', 4)
+                                              : tr("along its feed");
+            if (!d.done)
+                planes << tr("%1's at the centres of the cells it drives").arg(name);
+            else if (!d.calibrated)
+                planes << tr("%1's %2 µm %3 from the centres of the cells it drives, %4, its own discontinuity left in")
+                              .arg(name)
+                              .arg(std::abs(d.shift) * 1e6, 0, 'g', 4)
+                              .arg(d.shift > 0 ? tr("in") : tr("out"), along);
+            else if (d.shift == 0)
+                planes << tr("%1's at its edge, its own discontinuity taken out").arg(name);
+            else
+                planes << tr("%1's %2 µm %3 from its edge %4, its own discontinuity taken out")
+                              .arg(name)
+                              .arg(std::abs(d.shift) * 1e6, 0, 'g', 4)
+                              .arg(d.shift > 0 ? tr("in") : tr("out"), along);
+        }
+        comments << tr("The reference planes: %1").arg(planes.join(QStringLiteral("; ")));
         for (const QString& line : a_waveNotes) comments << line;
+        if (what.version2) {
+            comments << tr("Each port into its own reference, as [Reference] says");
+            return touchstone2Of(*a_fullWave, comments);
+        }
+        comments << tr("Every port into %1 Ohm here, whatever its own reference").arg(what.impedance, 0, 'g', 4);
         return touchstoneOf(*a_fullWave, what.impedance, comments);
     }
     if (!a_extraction || !a_extraction->ok())

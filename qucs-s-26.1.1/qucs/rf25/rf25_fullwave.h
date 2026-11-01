@@ -38,9 +38,11 @@
  * and comes back through the ground plane; its voltage is those cells'
  * potentials averaged with the same shares, which keeps the port matrix
  * reciprocal. The reference plane is then at those cells' centres, half
- * their depth inside the face; moving it, and de-embedding a port's own
- * feed, are phase D's. An internal port drives the cell under its point,
- * against the ground or against the cell under it on another metal.
+ * their depth inside the face; taking the port's own discontinuity out and
+ * moving the plane along its feed is rf25_deembed.h's, after the solve,
+ * from the face's width and metal reported here. An internal port drives
+ * the cell under its point, against the ground or against the cell under it
+ * on another metal.
  *
  * A via is a run of current in z, from the cell of the metal under it - or
  * the ground, which takes its charge at nought - to the cell of the metal
@@ -85,6 +87,11 @@
 
 namespace qucs_s::rf25 {
 
+/// How high conductor \a name sits in \a stack, m: the dielectrics below
+/// it summed, the ground at nought wherever the tree lists it. -1 where it
+/// is no conductor of the stack.
+double metalHeight(const Stack& stack, const QString& name);
+
 /// A port of the full-wave solve, as the model's Ports say it.
 struct FullWavePort {
     QString name;              ///< what it is called ("P1")
@@ -99,6 +106,32 @@ struct FullWavePort {
     /// An edge port's outward direction; nought: the face it is nearest.
     QPointF facing;
     double impedance = 50;     ///< its reference, Ohm
+    /// An edge port's own discontinuity to be taken out after the solve,
+    /// and how far its reference plane is then moved in along its line, m
+    /// (rf25_deembed.h; the solve itself takes no notice): along its feed,
+    /// as two strips of it say, or along a line of given impedance (Ohm)
+    /// and effective permittivity, where those are above nought.
+    bool calibrate = false;
+    double shift = 0;
+    double lineImpedance = 0, lineEps = 0;
+    /// Whether anything is to be done to it after the solve.
+    bool deembeds() const { return calibrate || shift != 0; }
+    /// Whether that wants strips of its feed solved.
+    bool wantsStrips() const { return calibrate || (shift != 0 && !(lineImpedance > 0)); }
+};
+
+/// What de-embedding a port had, at the top frequency solved.
+struct PortDeembedding {
+    bool done = false;
+    bool calibrated = false;   ///< its own discontinuity taken out, by strips of its feed
+    bool givenLine = false;    ///< the shift along a line given, not the feed's
+    double shift = 0;          ///< m, the reference plane moved in from the face
+    double length = 0;         ///< the shorter calibration strip, the layout's units
+    Complex impedance;         ///< the feed line's, Ohm, in the port's own voltage and current
+    double epsEff = 0;         ///< its effective permittivity, (beta c0 / w)^2
+    double alpha = 0;          ///< its attenuation, Np/m
+    double shuntC = 0;         ///< the port's own discontinuity: F at its face,
+    double seriesL = 0;        ///< and H at the port
 };
 
 /// What a long solve is told, and tells: a flag that stops it between
@@ -121,6 +154,16 @@ struct FullWave {
     /// At each frequency, each port driven by an ampere in turn, the
     /// others open: each run's current, A - [f][port][run].
     QList<QList<QList<Complex>>> currents;
+    /// Each edge port's face: how wide it is, the layout's units, and the
+    /// metal it is on; nought and empty for an internal port or one on no
+    /// face.
+    QList<double> faceWidths;
+    QStringList faceMetals;
+    /// Where the ports were de-embedded (rf25_deembed.h): Z as solved, at
+    /// the cells the ports drive, which is what their currents are of; and
+    /// what each port had. Both empty where none was.
+    QList<QList<QList<Complex>>> zSolved;
+    QList<PortDeembedding> deembedding;
     QList<Filament> geometry;        ///< the runs themselves, beside the currents: in the plane, then the vias
     /// The cells of the mesh each run goes from and to; -1 from: the ground
     /// a via stands on.
@@ -131,6 +174,9 @@ struct FullWave {
     /// S gives back more than it is given (the largest eigenvalue of
     /// S^H S, less one): both nought for a reciprocal, passive answer.
     double asymmetry = 0, gain = 0;
+    /// The same of the ports as solved, before any de-embedding: the solve's
+    /// own, beside what a de-embedding leaves.
+    double solvedAsymmetry = 0, solvedGain = 0;
     int threads = 1;                 ///< how many it used
     QStringList portsSaid;           ///< what each port drives
     QStringList problems;
@@ -181,6 +227,9 @@ QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool 
 /// \a reference Ohm, \a comments at its head. Empty where it solved to
 /// nothing.
 QString touchstoneOf(const FullWave& solved, double reference, const QStringList& comments = {});
+/// The same as Touchstone 2.0, each port into its own reference, which its
+/// [Reference] says.
+QString touchstone2Of(const FullWave& solved, const QStringList& comments = {});
 
 } // namespace qucs_s::rf25
 
