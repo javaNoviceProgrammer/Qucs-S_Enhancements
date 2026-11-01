@@ -28,7 +28,9 @@ The quasi-static extraction is unchanged and remains the study's default.
     solved at its face, and the Results say so.
 - **Each port into its own reference.** S is Kurokawa's power waves, `R^-1/2 (Z - R)(Z + R)^-1 R^1/2`.
   With references that differ, the inverse must be on the right. Touchstone 1.1 has one reference, so
-  the export renormalises every port to its own impedance and says so in the file.
+  the export renormalises every port to ~~its own impedance~~ the one reference it is given and says so in
+  the file. (Corrected 1 November, the phase C check's F3: the file's comment said it rightly, this did
+  not. Touchstone 2.0, from `45dc14b`, writes each port into its own.)
 - **The frequencies side by side.** Each frequency is solved on a thread of its own, sharing the static
   parts, as many at once as the machine has and the memory allows: 1.5 GB for the systems in flight. The
   answer is the same bit for bit on one thread as on three.

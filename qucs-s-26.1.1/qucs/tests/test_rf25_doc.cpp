@@ -52,6 +52,7 @@
 #include "layoutdoc.h"
 #include "rf25doc.h"
 #include "rf25panel.h"
+#include "rf25/rf25_sparams.h"
 
 #include <gdstk/gdstk.hpp>
 
@@ -102,6 +103,25 @@ bool writeStripWithVia(const QString& path, double length, double width, double 
     *via = gdstk::rectangle(gdstk::Vec2{length - side, (width - side) / 2}, gdstk::Vec2{length, (width + side) / 2},
                             gdstk::make_tag(2, 0));
     cell->polygon_array.append(via);
+    const bool ok = lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
+    lib.free_all();
+    return ok;
+}
+
+/// A GDSII file of \a boxes (µm) on layer 1/0: several conductors side by
+/// side, a coplanar line's.
+bool writeRectangles(const QString& path, const QList<QRectF>& boxes)
+{
+    gdstk::Library lib = {};
+    lib.init("BOXES", 1e-6, 1e-9);
+    auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+    cell->init("TOP");
+    lib.cell_array.append(cell);
+    for (const QRectF& b : boxes) {
+        auto* box = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+        *box = gdstk::rectangle(gdstk::Vec2{b.left(), b.top()}, gdstk::Vec2{b.right(), b.bottom()}, gdstk::make_tag(1, 0));
+        cell->polygon_array.append(box);
+    }
     const bool ok = lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
     lib.free_all();
     return ok;
@@ -1148,6 +1168,46 @@ private slots:
     // What the solve says of the model as a circuit: the S parameters of
     // each net, where the quasi-static answer gives out, and the
     // Touchstone the Exports node writes of them.
+    // What is no uniform line - the heater's two pads - has no S parameters
+    // as one: the tab says so and why, with where its capacitance stops
+    // being the whole story, and its Touchstone is refused with the same
+    // reason rather than written as a line of its length (the phase C check
+    // of 1 November, F2).
+    void whatIsNoLineHasNoSParameters()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("pads.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("12"), QStringLiteral("0"), QStringLiteral("M1")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "20[um]"); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        rf::Node touchstone = doc->model().make(QStringLiteral("rf_touchstone"));
+        const QString tag = touchstone.tag;
+        {
+            rf::Model m = doc->model();
+            QVERIFY(m.add(QStringLiteral("exports"), touchstone) != nullptr);
+            QVERIFY(doc->setModel(m, QStringLiteral("an export")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY(!e->perMetre.fromMiddle);
+        const QStringList sp = doc->sParameterSummary();
+        QVERIFY2(!sp.isEmpty() && sp.first().startsWith(QStringLiteral("No uniform line")), qPrintable(sp.join(" | ")));
+        QVERIFY2(sp.join(' ').contains(QStringLiteral("is no line")), qPrintable(sp.join(" | ")));
+        QString why;
+        QVERIFY(doc->exportText(tag, &why).isEmpty());
+        QVERIFY2(why.contains(QStringLiteral("no uniform line")), qPrintable(why));
+        // Nor modes per metre, of its two pads as coupled lines.
+        QCOMPARE(e->names.size(), 2);
+        const qucs_s::fem::CoupledLines cl = rf::asCoupledLines(*e, doc->solvedLength(), 10e9);
+        QVERIFY2(cl.error.contains(QStringLiteral("no uniform line")), qPrintable(cl.error));
+    }
+
     void theSolvedModelIsWrittenAsATouchstone()
     {
         layoutCopy();
@@ -1676,6 +1736,71 @@ private slots:
     // frequencies, and the tab, the panel and the export give the ports' S;
     // the currents are drawn on the layout; a stop stops it; an edit throws
     // it away; and a solve asked for by the other solver is that solver's.
+    // The phase C check of 1 November, F6, through the tab: an edge port's
+    // Return read - a coplanar line's three strips driven from its signal
+    // against the grounds beside it - and what such a port cannot have
+    // said: no calibration strips of a coplanar feed are solved, so one
+    // that asks keeps its own discontinuity. And a lone strip has nothing
+    // beside it to return through, which is said rather than solved.
+    void aCoplanarPortIsReadAndSaysWhatItCannotHave()
+    {
+        QVERIFY(writeRectangles(path(QStringLiteral("cpw.gds")),
+                                {QRectF(QPointF(0, -50), QPointF(1000, 50)), QRectF(QPointF(0, 100), QPointF(1000, 350)),
+                                 QRectF(QPointF(0, -350), QPointF(1000, -100))}));
+        const QString model = fullWaveLine(QStringLiteral("cpw.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.layout().props.insert(QStringLiteral("file"), QStringLiteral("cpw.gds"));
+            std::vector<rf::Node>& stack = m.stackNode().children;
+            for (rf::Node& n : stack)
+                if (n.type == QLatin1String("rf_substrate")) n.props.insert(QStringLiteral("thickness"), QStringLiteral("200[um]"));
+            for (rf::Node& port : m.ports().children) {
+                port.props.insert(QStringLiteral("y"), QStringLiteral("0"));
+                port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
+                if (port.label == QLatin1String("P1")) port.props.insert(QStringLiteral("calibrate"), true);
+            }
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            QVERIFY(study != nullptr);
+            study->props.insert(QStringLiteral("from"), QStringLiteral("10[GHz]"));
+            study->props.insert(QStringLiteral("to"), QStringLiteral("10[GHz]"));
+            study->props.insert(QStringLiteral("points"), 1);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("against the conductors beside it")),
+                 qPrintable(w->portsSaid.join(" | ")));
+        const QString summary = doc->fullWaveSummary().join(QStringLiteral(" | "));
+        QVERIFY2(summary.contains(QStringLiteral("strips of a coplanar feed")), qPrintable(summary));
+        QVERIFY(!w->deembedding.value(0).done);
+        // The same port on a lone strip: nothing beside it, said.
+        const QString lone = fullWaveLine(QStringLiteral("lone.qrf25"));
+        RF25Doc* single = open(lone);
+        QVERIFY(single != nullptr);
+        QVERIFY(single->waitForLayout(60000));
+        for (const rf::Node& port : single->model().ports().children)
+            QVERIFY(single->editNode(port.tag, [](rf::Node& n) { n.props.insert(QStringLiteral("return"), QStringLiteral("beside")); },
+                                     QStringLiteral("return")));
+        QVERIFY(single->waitForPrepared(60000));
+        single->solve();
+        QVERIFY(single->waitForSolved(300000));
+        QVERIFY2(single->solveProblem().contains(QStringLiteral("none either side")), qPrintable(single->solveProblem()));
+    }
+
     void aFullWaveStudySolvesThePortsAndDrawsTheCurrents()
     {
         const QString file = fullWaveLine(QStringLiteral("wave.qrf25"));

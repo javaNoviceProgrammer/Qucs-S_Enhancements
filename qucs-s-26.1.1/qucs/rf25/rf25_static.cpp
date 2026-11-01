@@ -104,6 +104,21 @@ QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors, const St
             }
         }
     }
+    // Shapes of one metal that touch or overlap are one piece of it, merged
+    // or not: left unmerged, a stub touching its line was a second net, and
+    // the two "coupled lines" (the phase C check of 1 November).
+    for (int a = 0; a < conductors.size(); ++a) {
+        const Layer* metal = stack.named(conductors.at(a).layer);
+        if (metal == nullptr || metal->kind != Layer::Metal) continue;
+        const QRectF ra = conductors.at(a).outline.boundingRect();
+        const double tol = 1e-9 * std::max(1.0, std::max(ra.width(), ra.height()));
+        for (int b = a + 1; b < conductors.size(); ++b) {
+            if (conductors.at(b).layer != conductors.at(a).layer || rootOf(a) == rootOf(b)) continue;
+            if (!ra.adjusted(-tol, -tol, tol, tol).intersects(conductors.at(b).outline.boundingRect())) continue;
+            if (unionOf({conductors.at(a).outline, conductors.at(b).outline}).size() > 1) continue;
+            join(a, b);
+        }
+    }
     // The nets, in the order their first conductor appears.
     QMap<int, int> indexOf;
     QList<Net> nets;
@@ -818,8 +833,9 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
             pm.maxwell0.clear();
             pm.dielectricLoss.clear();
             pm.crowding.clear();
-            pm.said = tr("Not a uniform line - a net does not run its whole length - so its per-metre values are the "
-                         "whole over its length, the ends' fringing in them.");
+            pm.said = tr("Not a uniform line - a net does not run its whole length, or is not the same along all of "
+                         "it - so there are no values per metre: its capacitance stands whole, and its ports' S are "
+                         "the full-wave solve's.");
         }
         out.lines << pm.said;
     }
@@ -979,24 +995,28 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
                            "the stack, or draw the conductor it returns through.");
         return out;
     }
-    // From the line's cross-section, where that was taken: its own per metre,
-    // the ends' fringing left out, whatever length is asked for - which is
-    // then the length of the two-port alone. Else the whole over the
-    // length, ends and all.
+    // A layout that is no uniform line - a tee, a bend, a step, a pad - has
+    // no values per metre: what it holds over its length is no line's, and
+    // a two-port of a line that long is no circuit it makes. It was given
+    // one anyway, the whole over its length (a tee's "Z0 31 Ohm": the phase
+    // C check of 1 November, F2). Its capacitance stands whole, and its
+    // ports' S are the full-wave solve's.
     const Extraction::PerMetre& pm = extraction.perMetre;
-    const bool middle = pm.fromMiddle && index < pm.maxwell.size() && index < pm.maxwell0.size();
-    if (middle) {
-        double held = 0, bare = 0;
-        for (int j = 0; j < pm.maxwell.at(index).size(); ++j) held += pm.maxwell.at(index).at(j);
-        for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);
-        out.c = held;
-        out.c0 = bare;
-    } else {
-        out.c = extraction.selfCapacitance(index) / length;
-        double bare = 0;
-        for (int j = 0; j < extraction.c0.at(index).size(); ++j) bare += extraction.c0.at(index).at(j);
-        out.c0 = bare / length;
+    if (!pm.fromMiddle || index >= pm.maxwell.size() || index >= pm.maxwell0.size()) {
+        out.problems << tr("%1 is no uniform line - it is not the same along its whole length, as a tee, a bend, a step "
+                           "or a pad is not - so it has no values per metre and no S parameters as a line: its "
+                           "capacitance stands whole, and the full-wave solve gives its ports' S.")
+                            .arg(extraction.names.value(index));
+        return out;
     }
+    // From the line's cross-section: its own per metre, the ends' fringing
+    // left out, whatever length is asked for - which is then the length of
+    // the two-port alone.
+    double held = 0, bare = 0;
+    for (int j = 0; j < pm.maxwell.at(index).size(); ++j) held += pm.maxwell.at(index).at(j);
+    for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);
+    out.c = held;
+    out.c0 = bare;
     if (!(out.c > 0) || !(out.c0 > 0)) {
         out.problems << tr("Its capacitance came out as %1 F/m and %2 F/m in vacuum: neither can be nothing or less.")
                             .arg(out.c, 0, 'g', 3).arg(out.c0, 0, 'g', 3);
@@ -1028,8 +1048,8 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     // Rs times the length times how the charge crowds: for a line of
     // width W whose current runs evenly that is Rs/W, and where it
     // crowds at the edges it is more.
-    out.r = middle && index < pm.crowding.size() ? out.surfaceResistance * pm.crowding.at(index)
-                                                 : out.surfaceResistance * length * extraction.crowding.value(index);
+    out.r = index < pm.crowding.size() ? out.surfaceResistance * pm.crowding.at(index)
+                                       : out.surfaceResistance * length * extraction.crowding.value(index);
     // By Wheeler's rule where it was taken: the metal's faces and the
     // ground's, of the thick cross-section, which converges as the mesh is
     // refined where the crowding of a sheet does not.

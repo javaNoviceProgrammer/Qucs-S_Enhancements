@@ -122,6 +122,7 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
                 return {};
             }
             p.calibrate = flagOf(port, QStringLiteral("calibrate"));
+            p.coplanar = textOf(port, QStringLiteral("return")) == QLatin1String("beside");
             if (textOf(port, QStringLiteral("along")) == QLatin1String("line")) {
                 bool okZ = true, okE = true;
                 p.lineImpedance = numberOf(port, QStringLiteral("line_z0"), model, 50, &okZ);
@@ -1364,6 +1365,13 @@ void RF25Doc::solveWith(const SolveRequest& request)
                                      "solved as it is.").arg(name);
                     continue;
                 }
+                if (port.coplanar) {
+                    job->notes << tr("%1 returns through the conductors beside it, and strips of a coplanar feed - its "
+                                     "grounds and their vias with it - are not solved to calibrate it: its own "
+                                     "discontinuity is left in, and a plane moved along a given line is moved.")
+                                      .arg(name);
+                    continue;
+                }
                 std::shared_ptr<Calibration>& calibration = feeds[QStringLiteral("%1|%2").arg(metal).arg(width, 0, 'g', 9)];
                 if (!calibration) {
                     job->calibrating = true;
@@ -1613,6 +1621,19 @@ QStringList RF25Doc::sParameterSummary(double reference) const
     const auto dB = [](std::complex<double> s) { return 20 * std::log10(std::max(1e-300, std::abs(s))); };
     double slowest = 0;   // m/s: the slowest mode's, for where the S parameters first turn over
     const int nets = int(a_extraction->names.size());
+    // What is no uniform line has no S parameters as one: said, and where
+    // its capacitance stops being the whole story (the phase C check of 1
+    // November, F2).
+    if (!a_extraction->perMetre.fromMiddle) {
+        out << tr("No uniform line, so no S parameters as one: the full-wave solve gives its ports' S.");
+        const QuasiStaticLimit limit = quasiStaticLimit(a_model.stack(), a_mesh ? *a_mesh : Mesh(), 1e-6, 0, 0, nets, false);
+        if (limit.frequency > 0)
+            out << tr("Its capacitance is quasi-static to about %1 GHz (%2, eps_r %3).")
+                       .arg(limit.frequency / 1e9, 0, 'g', 3)
+                       .arg(limit.what)
+                       .arg(limit.epsilonMax, 0, 'g', 3);
+        return out;
+    }
     if (nets > 1) {
         // A coupled set as its 2N-port: the near ends first, then the far
         // ends, so that net 1's through is S(N+1, 1) and what it puts on

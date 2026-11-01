@@ -630,6 +630,15 @@ private slots:
         QVERIFY2(deep.frequency < limit.frequency, "a deeper stack gives out sooner");
         // No length, no resonance to report.
         QCOMPARE(deep.resonance, 0.0);
+        // What is no line has no width: all of it is to be small beside a
+        // wavelength, so its longest extent sets it - a tee's was its stub,
+        // "the conductor is 1900 µm across" (the phase C check of 1
+        // November, F2).
+        const rf::QuasiStaticLimit notLine = rf::quasiStaticLimit(stack, mesh, 1e-6, 0, 0, 1, false);
+        QVERIFY2(std::abs(notLine.transverse - 2000e-6) < 1e-9, qPrintable(QStringLiteral("%1 m").arg(notLine.transverse)));
+        QVERIFY2(notLine.what.contains(QStringLiteral("spans 2000")) && notLine.what.contains(QStringLiteral("no line")),
+                 qPrintable(notLine.what));
+        QCOMPARE(notLine.resonance, 0.0);
     }
 
     // The writers the engine already has, on an RF 2.5D answer: a
