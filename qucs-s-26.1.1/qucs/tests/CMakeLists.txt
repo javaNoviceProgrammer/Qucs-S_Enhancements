@@ -218,6 +218,11 @@ set_tests_properties(test_rf25_static test_rf25_sparams PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_inductance)
 qucs_add_test(test_rf25_wave)
 qucs_add_test(test_rf25_fullwave)
+# (The same kind again, and a metal solved as its two faces twice the cells:
+# 357 s sanitized here, its heaviest function 82 s. CI's runner took 266 s
+# at ac6ce8f, twice this machine's then: some 710 s now, at that rate three
+# quarters of its 300 times 3.)
+set_tests_properties(test_rf25_fullwave PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_deembed)
 qucs_add_test(test_rf25_doc)
 qucs_add_test(test_multiphysics_doc)

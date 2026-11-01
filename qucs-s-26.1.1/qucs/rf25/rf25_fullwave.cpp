@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QHash>
 #include <QRectF>
+#include <QSet>
 #include <QThread>
 
 #include <Eigen/Dense>
@@ -37,10 +38,13 @@ QString tr(const char* text)
 constexpr double kMu0 = 4e-7 * M_PI;
 const Complex kJ(0, 1);
 /// Beyond this many runs and cells together the dense complex solve is not
-/// set up: the inductance's bound - some 200 MB (two static inductance
-/// matrices, the system and its LU) and, measured at 2858, 0.8 s a
-/// frequency after 0.4 s once, on a desktop of 2026.
-constexpr int kMostUnknowns = 3000;
+/// set up: the inductance's bound - some 750 MB there (two static inductance
+/// matrices, the system and its LU) and, measured at 5588, 8 s a frequency
+/// on a desktop of 2026. It was 3000 (0.8 s at 2858) until a metal could be
+/// solved as its two faces, which doubles its cells: a millimetre of
+/// coplanar line eight cells across was more than that so (the recheck of
+/// 75ff6f9).
+constexpr int kMostUnknowns = 6000;
 /// How small a charged cell must be beside the distance the stack's
 /// remainder changes over - the distance itself, or the remainder's reach,
 /// whichever is the longer - for its charge to be taken at its centre: its
@@ -630,6 +634,9 @@ struct Context {
     /// How many of each run in the plane's two sides are its conductor's
     /// edge, where the current crowds inside the cells (crowding()).
     QList<int> freeSides;
+    /// Each run in the plane's own on its metal's other face, where the
+    /// metal is solved as its two (thickened()); -1 on a sheet.
+    QList<int> twin;
     double rhoMax = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
@@ -653,24 +660,65 @@ struct AtFrequency {
  * ln(e/D) with both. D is where the metal's \a thickness stops the
  * crowding: t/(4 pi e^pi), the stopping distance at which a sheet loses
  * what a rectangular edge's walls and corners do (Holloway and Kuester,
- * Radio Sci. 29 (1994) 539; it is the t in Ghione's coplanar loss) - where
- * the metal is thick beside its skin depth. Where it is not, its \a sheet
- * resistance beyond a thick metal's two faces' spreads the current over
- * Pearl's length 2 R/(w mu0) as well: a micrometre of copper at 2 GHz,
- * a micrometre and a half, past which an edge cell of 12.5 holds little
- * crowding; at direct current, all of it, and the factor is one. Never
- * below one.
+ * Radio Sci. 29 (1994) 539; it is the t in Ghione's coplanar loss) - at a
+ * thick metal's resistance, Rs/2 a face. Where the metal is not thick
+ * beside its skin depth, its \a sheet resistance beyond that is spread
+ * over the cell as it is through the metal - the edge's loss is the
+ * crowding at Rs/2 and that beyond it evenly, over the sheet's own: where
+ * the half slab dips under Rs/2 (copper 3 µm thick at 5 GHz, 8 %) the
+ * edge's loss does not. The crowding itself wants the cell wide beside
+ * Pearl's length 2 R/(w mu0), over which the sheet's own resistance spreads
+ * a current sideways, and fades where it is not - near direct current,
+ * where the factor is one. So a 2D solve of the current through a thick
+ * metal's edge says, within about 10 % from a third of a skin depth thick
+ * to ten; the stopping distance alone had a metal three micrometres thick
+ * at 1 GHz lose a third less than it does (the recheck of 1 November).
+ *
+ * A metal solved as its two \a faces stops it three times as far out. Its
+ * walls draw into its edge cells the current that crowds there - a
+ * microstrip's outer cell carries 0.469 of it, as a 2D solve of its
+ * current through the metal does 0.474, where a sheet's carries 0.444 -
+ * and what is left within the cell is the less: the 2D solve's edge cell
+ * loses 1.50 times its current's average at four cells across, 1.28 at
+ * eight, where Holloway and Kuester's stopping distance says 1.82 and
+ * 1.64. Three times it says 1.50 and 1.33, and within -4 to +10 % from 2
+ * to 60 GHz and from 1 to 3 µm thick.
  */
-double crowding(double width, double thickness, double sigma, int free, double frequency, Complex sheet)
+double crowding(double width, double thickness, double sigma, int free, double frequency, Complex sheet, bool faces = false)
 {
-    if (free <= 0 || !(width > 0) || !(thickness > 0) || !(sigma > 0) || !(frequency > 0)) return 1;
+    if (free <= 0 || !(width > 0) || !(thickness > 0) || !(sigma > 0) || !(frequency > 0) || !(sheet.real() > 0)) return 1;
     constexpr double mu0 = 4e-7 * M_PI;
     const double omega = 2 * M_PI * frequency;
-    const double stop = thickness / (4 * M_PI * std::exp(M_PI));
-    const double faces = std::sqrt(omega * mu0 / (2 * sigma)) / 2;   // a thick metal's sheet: Rs/2
-    const double spread = 2 * std::max(0.0, sheet.real() - faces) / (omega * mu0);
-    const double log = std::log(1 + width / (stop + spread));
-    return std::max(1.0, free >= 2 ? 2 / (M_PI * M_PI) * log : log / 4);
+    const double stop = thickness / (4 * M_PI * std::exp(M_PI)) * (faces ? 3 : 1);
+    const double log = std::log(1 + width / stop);
+    const double thick = std::max(1.0, free >= 2 ? 2 / (M_PI * M_PI) * log : log / 4);
+    const double pearl = 2 * sheet.real() / (omega * mu0) / width;
+    const double crowd = 1 + (thick - 1) / (1 + pearl * pearl);
+    const double half = std::sqrt(omega * mu0 / (2 * sigma)) / 2;   // a thick metal's sheet: Rs/2
+    return (crowd * half + std::max(0.0, sheet.real() - half)) / sheet.real();
+}
+
+/*!
+ * A face of a metal \a thickness (m) thick solved as its two faces
+ * (thickened()): its own surface impedance \a own, Zs coth(gamma t) - the
+ * slab's, with the field on its side alone - and \a across, Zs csch(gamma
+ * t), what the current on the other face adds to it through the metal. The
+ * two faces carrying a current alike are a sheet's (Zs/2) coth(gamma t/2),
+ * sheetImpedance(). Thin beside its skin depth both are 1/(sigma t): the
+ * faces are one metal, and how they share a current is nothing to it.
+ * Many skin depths thick the faces are apart, each Zs.
+ */
+void faceImpedances(double sigma, double thickness, double frequency, Complex* own, Complex* across)
+{
+    *own = *across = Complex(0, 0);
+    if (!(sigma > 0) || !(thickness > 0) || !(frequency > 0)) return;
+    const double delta = std::sqrt(1 / (M_PI * frequency * kMu0 * sigma));
+    const Complex gamma = Complex(1, 1) / delta, zs = gamma / sigma;
+    // (coth = (1 + e^2)/(1 - e^2) and csch = 2e/(1 - e^2), e = exp(-gamma t),
+    //  which neither overflows nor loses the thin metal's 1/(sigma t).)
+    const Complex e = std::exp(-gamma * thickness);
+    *own = zs * (1.0 + e * e) / (1.0 - e * e);
+    *across = zs * 2.0 * e / (1.0 - e * e);
 }
 
 AtFrequency solveAt(const Context& c, double f)
@@ -832,7 +880,24 @@ AtFrequency solveAt(const Context& c, double f)
         const Filament& run = c.runs.at(a);
         if (!(run.width > 0)) continue;
         const Complex sheet = sheetImpedance(run.sigma, run.thickness, f);
-        m(a, a) += crowding(run.width, run.thickness, run.sigma, c.freeSides.value(a), f, sheet) * sheet * run.length() / run.width;
+        const double squares = run.length() / run.width;
+        const int twin = c.twin.value(a, -1);
+        const double crowd = crowding(run.width, run.thickness, run.sigma, c.freeSides.value(a), f, sheet, twin >= 0);
+        if (twin < 0) {
+            m(a, a) += crowd * sheet * squares;
+            continue;
+        }
+        // A face of a metal solved as its two: its own slab's impedance,
+        // and its twin's current's through the metal (faceImpedances());
+        // and what an edge loses beyond its cells' average, of the two
+        // faces' current together - its walls' and corners', within the
+        // metal's thickness of the edge, where the two faces' current
+        // crowds as one - its reactance its resistance, a thick metal's.
+        Complex own, across;
+        faceImpedances(run.sigma, run.thickness, f, &own, &across);
+        const Complex edge = (crowd - 1) * sheet.real() * Complex(1, 1);
+        m(a, a) += (own + edge) * squares;
+        m(a, twin) += (across + edge) * squares;
     }
     // A via's own: a bar whose current runs on its four faces, each with the
     // surface impedance of a quarter of its depth - 1/(sigma area) at direct
@@ -992,11 +1057,18 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     return fullWaveOf(mesh, conductors, stack, defined, frequencies, micrometre);
 }
 
-FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack,
+FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, const Stack& givenStack,
                     const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre,
                     const FullWaveControl* control)
 {
     FullWave out;
+    // A metal solved as its two faces is two sheets and the walls that join
+    // them, which is what the rest solves (thickened()); what is handed
+    // back is of the mesh as given.
+    const Thickened thick = thickened(givenStack, givenConductors, given);
+    const Mesh& mesh = thick.mesh;
+    const QList<Conductor>& conductors = thick.conductors;
+    const Stack& stack = thick.stack;
     if (mesh.cells.isEmpty()) {
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
@@ -1077,10 +1149,28 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             if (!inside) ++c.freeSides[a];
         }
     }
+    // Each run on a metal's top face and its own on the bottom: the runs
+    // between the same two cells' copies.
+    c.twin = QList<int>(c.planar, -1);
+    if (thick.any) {
+        QHash<QPair<int, int>, int> byEnds;
+        for (int a = 0; a < c.planar; ++a) byEnds.insert(ends.at(a), a);
+        for (int a = 0; a < c.planar; ++a) {
+            const int x = ends.at(a).first, y = ends.at(a).second;
+            if (!thick.topOf.contains(x) || !thick.topOf.contains(y)) continue;
+            const int tx = thick.topOf.value(x), ty = thick.topOf.value(y);
+            const int t = byEnds.value(qMakePair(tx, ty), byEnds.value(qMakePair(ty, tx), -1));
+            if (t < 0) continue;
+            c.twin[a] = t;
+            c.twin[t] = a;
+        }
+    }
     QStringList viaSaid;
     const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaSaid);
     int grounded = 0;
+    QSet<int> walled;   // (the runs that are a metal's walls, between its faces)
     for (const ViaRun& v : viaRuns) {
+        if (!v.cells.isEmpty() && v.cells.first() >= thick.cells) walled << int(c.runs.size());
         Via via;
         via.run = int(c.runs.size());
         via.span = v.span;
@@ -1109,6 +1199,11 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     cellOf.erase(std::unique(cellOf.begin(), cellOf.end()), cellOf.end());
     QHash<int, int> nodeOf;
     for (int i = 0; i < cellOf.size(); ++i) nodeOf.insert(cellOf.at(i), i);
+    // (Those of them that are no metal's top face: where a port finds the
+    //  metal it is on.)
+    QList<int> bottoms;
+    for (const int cell : std::as_const(cellOf))
+        if (!thick.bottomOf.contains(cell)) bottoms << cell;
     const int nr = int(c.runs.size()), nc = int(cellOf.size()), np = int(ports.size());
     c.nr = nr;
     c.nc = nc;
@@ -1142,6 +1237,33 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     QList<Eigen::VectorXcd> columns;
     QList<int> portOf;
     bool coplanar = false;
+    // A share of a port's current into a cell: of a metal solved as its two
+    // faces, half into the cell and half into its top's - the face of a
+    // thick conductor is its whole wall, both faces' edges together.
+    const auto put = [&thick, &nodeOf](Eigen::VectorXcd& column, int cell, double share) {
+        const int top = thick.topOf.value(cell, -1);
+        if (top >= 0 && nodeOf.contains(top)) {
+            column(nodeOf.value(cell)) += share / 2;
+            column(nodeOf.value(top)) += share / 2;
+        } else
+            column(nodeOf.value(cell)) += share;
+    };
+    // Of a metal solved as its two faces, the face toward \a other: its
+    // bottom toward the ground or a metal below, its top toward one above.
+    const auto toward = [&stack, &thick](const QString& metal, const QString& other) {
+        const Layer* layer = stack.named(metal);
+        if (!thick.any || layer == nullptr || layer->face != Layer::Bottom || other.isEmpty() || stack.isGround(other))
+            return metal;
+        if (!(metalHeight(stack, other) > metalHeight(stack, layer->name))) return metal;
+        for (const Layer& top : stack.layers)
+            if (top.face == Layer::Top && top.faceOf == layer->name) return top.name;
+        return metal;
+    };
+    // A layer as the model calls it: a metal's top face that metal's.
+    const auto shown = [&stack](const QString& layer) {
+        const Layer* l = stack.named(layer);
+        return l != nullptr && l->face == Layer::Top ? tr("%1's top face").arg(l->faceOf) : layer;
+    };
     out.faceWidths = QList<double>(np, 0.0);
     out.faceMetals = QStringList(QList<QString>(np));
     out.feeds = QList<Feed>(np);
@@ -1156,12 +1278,13 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             const bool over = port.size.width() > 0 && port.size.height() > 0;
             const QRectF rect(port.at - QPointF(port.size.width(), port.size.height()) / 2, port.size);
             const auto driven = [&](const QString& metal) {
-                if (over) return cellsUnder(mesh, cellOf, rect, metal);
-                const int one = cellUnder(mesh, cellOf, port.at, metal);
+                const QList<int>& among = metal.isEmpty() ? bottoms : cellOf;
+                if (over) return cellsUnder(mesh, among, rect, metal);
+                const int one = cellUnder(mesh, among, port.at, metal);
                 return one < 0 ? QList<std::pair<int, double>>() : QList<std::pair<int, double>>{std::make_pair(one, 1.0)};
             };
             const QString w = QString::number(port.size.width(), 'g', 4), h = QString::number(port.size.height(), 'g', 4);
-            const QList<std::pair<int, double>> to = driven(port.metal);
+            const QList<std::pair<int, double>> to = driven(toward(port.metal, port.from));
             if (to.isEmpty()) {
                 out.problems << (over ? tr("%1's %2 by %3 µm rectangle at %4, %5 µm is over no cell of %6 that a current "
                                            "reaches.")
@@ -1174,7 +1297,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             for (const auto& [cell, share] : to) column(nodeOf.value(cell)) += share;
             QString against = tr("the ground");
             if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
-                const QList<std::pair<int, double>> from = driven(port.from);
+                const QList<std::pair<int, double>> from = driven(toward(port.from, port.metal));
                 bool same = from.isEmpty();
                 for (const auto& [cell, share] : from)
                     for (const auto& [other, part] : to) same = same || cell == other;
@@ -1184,16 +1307,16 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                     return out;
                 }
                 for (const auto& [cell, share] : from) column(nodeOf.value(cell)) -= share;
-                against = over ? tr("the %1 cell(s) of %2 under it").arg(from.size()).arg(port.from)
-                               : tr("the cell under it on %1").arg(port.from);
+                const QString on = shown(mesh.cells.at(from.first().first).layer);
+                against = over ? tr("the %1 cell(s) of %2 under it").arg(from.size()).arg(on) : tr("the cell under it on %1").arg(on);
             }
             columns << column;
             portOf << p;
             out.portsSaid << (over ? tr("%1 drives the %2 cell(s) of %3 under its %4 by %5 µm rectangle at %6, %7 µm "
                                         "against %8.")
-                                         .arg(name).arg(to.size()).arg(mesh.cells.at(to.first().first).layer, w, h, x, y, against)
+                                         .arg(name).arg(to.size()).arg(shown(mesh.cells.at(to.first().first).layer), w, h, x, y, against)
                                    : tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
-                                         .arg(name, x, y, mesh.cells.at(to.first().first).layer, against));
+                                         .arg(name, x, y, shown(mesh.cells.at(to.first().first).layer), against));
             continue;
         }
         QPointF on, along;
@@ -1205,7 +1328,14 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         double faceWidth = 0;
         const QList<double> shares = sharesOf(mesh, face, on, along, &faceWidth);
         Eigen::VectorXcd own = Eigen::VectorXcd::Zero(nc);
-        for (int k = 0; k < face.size(); ++k) own(nodeOf.value(face.at(k))) += shares.at(k);
+        for (int k = 0; k < face.size(); ++k) put(own, face.at(k), shares.at(k));
+        // (What of it goes to a top face, said as driven.)
+        int topped = 0;
+        for (const int cell : std::as_const(face)) {
+            const int top = thick.topOf.value(cell, -1);
+            if (top >= 0 && nodeOf.contains(top) && own(nodeOf.value(top)) != Complex(0, 0)) ++topped;
+        }
+        const QString halved = topped > 0 ? tr(", half of it on %1's top face").arg(mesh.cells.at(face.first()).layer) : QString();
         if (along != QPointF(0, 0)) {
             out.faceWidths[p] = faceWidth;
             out.faceMetals[p] = mesh.cells.at(face.first()).layer;
@@ -1216,7 +1346,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             columns << own;
             portOf << p;
             if (along != QPointF(0, 0))
-                out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm.").arg(name).arg(face.size()).arg(x, y);
+                out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5.").arg(name).arg(face.size()).arg(x, y, halved);
             else
                 out.portsSaid << tr("%1 is on no face, and drives the one cell nearest %2, %3 µm.").arg(name, x, y);
             continue;
@@ -1230,11 +1360,16 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         coplanar = true;
         const Beside beside = besideFaces(mesh, cellOf, face, on, along);
         QList<int> counts;
+        int groundsTopped = 0;
         for (const QList<int>& ground : beside.cells) {
             if (ground.isEmpty()) continue;
             const QList<double> back = sharesOf(mesh, ground, on, along);
             Eigen::VectorXcd column = own;
-            for (int k = 0; k < ground.size(); ++k) column(nodeOf.value(ground.at(k))) -= back.at(k);
+            for (int k = 0; k < ground.size(); ++k) put(column, ground.at(k), -back.at(k));
+            for (const int cell : ground) {
+                const int top = thick.topOf.value(cell, -1);
+                if (top >= 0 && nodeOf.contains(top) && column(nodeOf.value(top)) != own(nodeOf.value(top))) ++groundsTopped;
+            }
             columns << column;
             portOf << p;
             counts << int(ground.size());
@@ -1252,7 +1387,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         {
             const QPointF unit = along / std::hypot(along.x(), along.y()), normal(-unit.y(), unit.x());
             const double height = std::max(0.0, metalHeight(stack, feed.metal)) / micrometre;
-            feedVias(&feed, conductors, stack, on, unit, beside.inside < 0 ? -normal : normal, beside.lo,
+            feedVias(&feed, givenConductors, givenStack, on, unit, beside.inside < 0 ? -normal : normal, beside.lo,
                      2 * (8 * height + 2 * faceWidth));
         }
         if (counts.isEmpty()) {
@@ -1263,12 +1398,14 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             return out;
         }
         out.portsSaid << (counts.size() == 2
-                              ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm against the conductors beside it, "
-                                   "%5 and %6 cell(s) of their faces either side: the two tied, as a probe's grounds are.")
-                                    .arg(name).arg(face.size()).arg(x, y).arg(counts.at(0)).arg(counts.at(1))
-                              : tr("%1 drives the %2 cell(s) along the face at %3, %4 µm against the conductor beside it on "
-                                   "one side, %5 cell(s) of its face: a ground-signal probe's.")
-                                    .arg(name).arg(face.size()).arg(x, y).arg(counts.at(0)));
+                              ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5 against the conductors beside it, "
+                                   "%6 and %7 cell(s) of their faces either side%8: the two tied, as a probe's grounds are.")
+                                    .arg(name).arg(face.size()).arg(x, y, halved).arg(counts.at(0)).arg(counts.at(1))
+                                    .arg(groundsTopped > 0 ? tr(", half on their top faces") : QString())
+                              : tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5 against the conductor beside it "
+                                   "on one side, %6 cell(s) of its face%7: a ground-signal probe's.")
+                                    .arg(name).arg(face.size()).arg(x, y, halved).arg(counts.at(0))
+                                    .arg(groundsTopped > 0 ? tr(", half on its top face") : QString()));
     }
     for (int a = 0; a < columns.size(); ++a)
         for (int b = 0; b < a; ++b)
@@ -1395,10 +1532,15 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                      .arg(*std::max_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
                      .arg(threads);
     out.lines << out.portsSaid;
-    if (!c.vias.isEmpty())
+    out.lines << thick.said;
+    if (!walled.isEmpty())
+        out.lines << tr("%1 of the runs are the walls of the metals solved as their two faces, each from a cell along an "
+                        "edge up to the same cell of the top face.")
+                         .arg(walled.size());
+    if (c.vias.size() > walled.size())
         out.lines << tr("%1 of the runs are vias, %2 of them to the ground: a via's current runs up it from the cell "
                         "under it to the cell over it, entering each at its centre.")
-                         .arg(c.vias.size()).arg(grounded);
+                         .arg(c.vias.size() - walled.size()).arg(grounded);
     out.lines << viaSaid;
     int alongEdges = 0;
     for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
@@ -1459,6 +1601,43 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     out.solvedGain = out.gain;
     out.geometry = c.runs;
     out.ends = ends;
+    // As the caller meshed it: a top face's run in its bottom's - the
+    // current through the whole metal there - the walls' runs left out, and
+    // a via landing on a top face on its metal's cell (thickened()).
+    if (thick.any) {
+        QList<int> kept;
+        QHash<int, int> keptAt;
+        for (int a = 0; a < nr; ++a) {
+            if ((a < c.planar && thick.bottomOf.contains(ends.at(a).second)) || walled.contains(a)) continue;
+            keptAt.insert(a, int(kept.size()));
+            kept << a;
+        }
+        const auto metalCell = [&thick](int cell) { return cell < 0 ? cell : thick.bottomOf.value(cell, cell); };
+        QList<Filament> geometry;
+        QList<QPair<int, int>> mapped;
+        for (const int a : std::as_const(kept)) {
+            geometry << c.runs.at(a);
+            mapped << qMakePair(metalCell(ends.at(a).first), metalCell(ends.at(a).second));
+        }
+        for (QList<QList<Complex>>& atFrequency : out.currents)
+            for (QList<Complex>& column : atFrequency) {
+                QList<Complex> folded;
+                folded.reserve(kept.size());
+                for (const int a : std::as_const(kept)) {
+                    Complex i = column.at(a);
+                    const int t = a < c.planar ? c.twin.value(a, -1) : -1;
+                    if (t >= 0) i += (ends.at(t).first == thick.topOf.value(ends.at(a).first) ? 1.0 : -1.0) * column.at(t);
+                    folded << i;
+                }
+                column = folded;
+            }
+        QHash<int, int> viaCells;
+        for (auto it = out.viaCells.cbegin(); it != out.viaCells.cend(); ++it)
+            if (it.key() < thick.cells && keptAt.contains(it.value())) viaCells.insert(it.key(), keptAt.value(it.value()));
+        out.viaCells = viaCells;
+        out.geometry = geometry;
+        out.ends = mapped;
+    }
     out.lines << tr("The Green's functions of %1 pair(s) of heights, tabulated to %2 mm at each frequency.")
                      .arg(c.nh * (c.nh + 1) / 2).arg(c.rhoMax * 1e3, 0, 'g', 3);
     return out;

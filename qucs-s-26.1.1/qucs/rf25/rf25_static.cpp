@@ -158,7 +158,13 @@ QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors, const St
     QHash<QString, int> seen;
     for (Net& n : nets) {
         if (n.cells.isEmpty() || n.layers.isEmpty()) continue;
-        const QString of = n.layers.join(QLatin1Char('+'));
+        // (A metal's top face, solved as its two, is that metal's.)
+        QStringList named;
+        for (const QString& l : std::as_const(n.layers)) {
+            const Layer* layer = stack.named(l);
+            if (layer == nullptr || layer->face != Layer::Top) named << l;
+        }
+        const QString of = named.join(QLatin1Char('+'));
         const int which = ++seen[of];
         n.name = which == 1 ? of : QStringLiteral("%1 #%2").arg(of).arg(which);
         kept << n;
@@ -340,9 +346,33 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, int nets, int recede, do
     return c.inverse() / (kLightSpeed * kLightSpeed);
 }
 
+/*!
+ * The extraction of \a mesh, whose metals are sheets: extract() less the
+ * making of a metal solved as its two faces into two sheets and its walls,
+ * which it has done. \a bottomOf is each top face's cell's bottom one, so
+ * that how the charge crowds is of the metal's cell, both faces together:
+ * R from it at direct current is through the whole metal, as a sheet's is.
+ */
+Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
+                         const QHash<int, int>& bottomOf);
+
 } // namespace
 
 Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre)
+{
+    // A metal solved as its two faces is two sheets and the walls that join
+    // them, which is what the rest solves (thickened()).
+    const Thickened thick = thickened(stack, conductors, mesh);
+    if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {});
+    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf);
+    out.lines = thick.said + out.lines;
+    return out;
+}
+
+namespace {
+
+Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
+                         const QHash<int, int>& bottomOf)
 {
     Extraction out;
     if (mesh.cells.isEmpty()) {
@@ -587,13 +617,20 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
             for (int a = 0; a < m; ++a) row[netOf.at(column.at(a))] += q(a);
             matrix->append(row);
             if (crowd != nullptr) {
+                // (A top face's strip with its bottom's: the metal's, both
+                //  faces together.)
                 double square = 0, total = 0;
+                QMap<int, double> ofCell;
                 for (int a = 0; a < m; ++a) {
                     if (netOf.at(column.at(a)) != net) continue;
-                    const auto [t0, t1] = acrossOf(mesh.cells.at(which.at(column.at(a))).outline.boundingRect());
-                    const double width = (t1 - t0) * micrometre;
-                    if (width > 0) square += q(a) * q(a) / width;
+                    const int cell = which.at(column.at(a));
+                    ofCell[bottomOf.value(cell, cell)] += q(a);
                     total += q(a);
+                }
+                for (auto it = ofCell.cbegin(); it != ofCell.cend(); ++it) {
+                    const auto [t0, t1] = acrossOf(mesh.cells.at(it.key()).outline.boundingRect());
+                    const double width = (t1 - t0) * micrometre;
+                    if (width > 0) square += it.value() * it.value() / width;
                 }
                 crowd->append(total != 0 ? square / (total * total) : 0.0);
             }
@@ -621,13 +658,18 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
             matrix->append(column);
             if (crowd != nullptr) {
                 // How the charge crowds on the net held at a volt: what
-                // its resistance per metre needs beyond Rs.
+                // its resistance per metre needs beyond Rs - a top face's
+                // cell with its bottom's, the metal's, both faces together.
                 double square = 0, total = 0;
+                QMap<int, double> ofCell;
                 for (int i = 0; i < n; ++i) {
                     if (netOf.at(i) != net) continue;
-                    const double area = mesh.cells.at(which.at(i)).area * micrometre * micrometre;
-                    if (area > 0) square += q(i) * q(i) / area;
+                    ofCell[bottomOf.value(which.at(i), which.at(i))] += q(i);
                     total += q(i);
+                }
+                for (auto it = ofCell.cbegin(); it != ofCell.cend(); ++it) {
+                    const double area = mesh.cells.at(it.key()).area * micrometre * micrometre;
+                    if (area > 0) square += it.value() * it.value() / area;
                 }
                 crowd->append(total != 0 ? square / (total * total) : 0.0);
             }
@@ -676,6 +718,9 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         double finest = 0, thinnest = 0;
         for (auto it = spans.begin(); it != spans.end(); ++it) {
             const Layer* metal = stack.named(it.key().second);
+            // (A metal solved as its two faces is its bottom's rectangles,
+            //  its whole thickness up from there: its top is in them.)
+            if (metal != nullptr && metal->face == Layer::Top) continue;
             const double t = metal != nullptr ? metal->thickness : 0.0;
             if (!(t > 0)) {
                 if (!thin.contains(it.key().second)) thin << it.key().second;
@@ -901,6 +946,8 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         out.lines << tr("%1: %2 F to everything else.").arg(out.names.at(i)).arg(out.selfCapacitance(i), 0, 'g', 4);
     return out;
 }
+
+} // namespace
 
 std::complex<double> surfaceImpedance(double sigma, double t, double frequency)
 {

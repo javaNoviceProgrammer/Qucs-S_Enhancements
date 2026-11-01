@@ -26,6 +26,7 @@
 
 #include "rf25_layout.h"
 
+#include <QHash>
 #include <QList>
 #include <QMap>
 #include <QPolygonF>
@@ -113,6 +114,38 @@ QString chargeCostOf(int cells);
 
 /// The highest frequency of the model's study, Hz; 0 when it says none.
 double topFrequency(const Model& model);
+
+/*!
+ * \a stack, \a conductors and \a mesh with every metal solved as its two
+ * faces (Layer::twoSheets) made into what the solvers take, which know
+ * sheets and vias and nothing of a metal's thickness: its bottom face the
+ * metal itself, its top a metal layer of its own at its thickness over it,
+ * and its walls a via layer joining the two along its edges - each cell
+ * with a side on its conductor's edge joined to the same cell of its top.
+ * The room between the two is what is over the metal, a dielectric or the
+ * air, so that what is beside the walls is what fills the gap there; the
+ * layers above it are then as high as the stack draws them, and a via up
+ * from it leaves its top. The rest is as it was.
+ *
+ * The mesh's own cells keep their places; the top faces' cells and the
+ * walls' come after them. A metal that is to be two sheets and has no
+ * thickness is one.
+ */
+struct Thickened {
+    Stack stack;
+    QList<Conductor> conductors;
+    Mesh mesh;
+    bool any = false;              ///< whether any metal is two sheets
+    int cells = 0;                 ///< the mesh's own cells, which come first
+    int walls = 0;                 ///< the walls' cells, which come last
+    QHash<int, int> topOf;         ///< a bottom face's cell, and the same cell of its top
+    QHash<int, int> bottomOf;      ///< and back
+    QStringList said;              ///< what was done, in words
+    /// Whether \a layer of the stack is a metal's top face or its walls:
+    /// what the solvers made and the caller did not.
+    bool made(const QString& layer) const;
+};
+Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, const Mesh& mesh);
 
 } // namespace qucs_s::rf25
 

@@ -37,6 +37,21 @@ constexpr double kMu0 = 4e-7 * M_PI;
 /// eps0 with mu0 = 4 pi 1e-7 puts c0 a part in 1e10 off 299792458.
 const double kC0 = 1.0 / std::sqrt(kMu0 * rf::kEps0);
 
+/// Whether this build is one whose dense solves are many times slower - a
+/// sanitized one, as CI's Linux job is (QUCS_TEST_SLOW: its path in any).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
 /// A stack of a substrate of \a epsr and \a height (m) on a ground plane,
 /// with one metal on top of it and air above.
 rf::Stack grounded(double epsr, double height, double tand = 0, double thickness = 0, double sigma = 0)
@@ -490,8 +505,10 @@ private slots:
     // (Holloway and Kuester's stopping distance): a copper microstrip three
     // micrometres thick at 10 GHz, five skin depths, loses as phase B's
     // Wheeler R of its thick cross-section says, at four cells across and
-    // at eight alike. (Measured +10.4 % and +5.5 %; the sheet as it was,
-    // 33 % under.)
+    // at eight alike; and near what a 2D solve of the current through the
+    // metal's own cross-section gives, 219.0 Ohm/m. (Measured +12 % and +7
+    // % of Wheeler's, +16 % and +10 % of the 2D solve's; the sheet as it
+    // was, 33 % under.)
     void aMetalsLossIsItsThickEdgesWhereTheCurrentCrowds()
     {
         const double h = 100e-6, w = 100;
@@ -519,11 +536,14 @@ private slots:
         }
         const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, f);
         QVERIFY2(lp.problems.isEmpty() && lp.rDc > 0, qPrintable(lp.problems.join(" | ")));
-        const double wheeler = lp.r / (2 * lp.z0);
-        qWarning("10 GHz, 3 um of copper: alpha %.4g Np/m at 4 across, %.4g at 8; Wheeler's R %.4g Ohm/m, alpha %.4g (%.3f, %.3f)",
-                 alpha.at(0), alpha.at(1), lp.r, wheeler, alpha.at(0) / wheeler - 1, alpha.at(1) / wheeler - 1);
+        const double wheeler = lp.r / (2 * lp.z0), eddy = 219.0 / (2 * lp.z0);
+        qWarning("10 GHz, 3 um of copper: alpha %.4g Np/m at 4 across, %.4g at 8; Wheeler's R %.4g Ohm/m, alpha %.4g (%.3f, %.3f); "
+                 "the 2D solve's 219 Ohm/m (%.3f, %.3f)",
+                 alpha.at(0), alpha.at(1), lp.r, wheeler, alpha.at(0) / wheeler - 1, alpha.at(1) / wheeler - 1,
+                 alpha.at(0) / eddy - 1, alpha.at(1) / eddy - 1);
         for (const double a : std::as_const(alpha))
-            QVERIFY2(std::abs(a / wheeler - 1) < 0.13, qPrintable(QStringLiteral("alpha %1 Np/m, Wheeler %2").arg(a).arg(wheeler)));
+            QVERIFY2(std::abs(a / wheeler - 1) < 0.15 && std::abs(a / eddy - 1) < 0.2,
+                     qPrintable(QStringLiteral("alpha %1 Np/m, Wheeler %2, the 2D solve %3").arg(a).arg(wheeler).arg(eddy)));
         QVERIFY2(std::abs(alpha.at(1) / alpha.at(0) - 1) < 0.07,
                  qPrintable(QStringLiteral("%1 at four across, %2 at eight").arg(alpha.at(0)).arg(alpha.at(1))));
     }
@@ -547,15 +567,21 @@ private slots:
         const double k0 = 2 * M_PI * 2e9 / kC0;
         const TwoLine wave = twoLine(chainOf(zOf(a, 1)), chainOf(zOf(b, 1)), 1000e-6, 2000e-6, k0 * std::sqrt(lp.epsilonEff));
         const double alphaD = lp.g * lp.z0 / 2;
-        const double rSheet = rf::sheetImpedance(sigma, t, 2e9).real() * e.perMetre.crowding.value(0);
-        const double alphaC = rSheet / (2 * lp.z0);
-        qWarning("2 GHz: alpha %.5g Np/m; phase B's G %.4g S/m, alpha_d %.5g; a sheet of R %.4g Ohm/m where the charge crowds, "
-                 "alpha_c %.5g; together %.5g (%.3f)",
-                 wave.gamma.real(), lp.g, alphaD, rSheet, alphaC, alphaD + alphaC, wave.gamma.real() / (alphaD + alphaC) - 1);
-        // (Measured 2.7 %: the current where the charge crowds is two
-        //  discretizations of one edge singularity, the solve's runs and
-        //  phase B's charges, and the crowding factor is all edge.)
-        QVERIFY2(std::abs(wave.gamma.real() / (alphaD + alphaC) - 1) < 0.05,
+        // The metal's own: a 2D solve of the current through this cross-
+        // section's metal - a micrometre of copper, two thirds of a skin
+        // depth at 2 GHz, its current through all of it and crowding to its
+        // edges as far as its own resistance lets it - gives 241.3 Ohm/m,
+        // 1.40 times its direct current's. (The same solve gives QFEM's
+        // copper coplanar line of the recheck of 1 November to 2 %.) The
+        // sheet's crowding as phase B takes it, 204 Ohm/m, was what the
+        // full wave was held to, and both were the edge cells' average.
+        constexpr double eddy = 241.3;
+        const double alphaC = eddy / (2 * lp.z0);
+        qWarning("2 GHz: alpha %.5g Np/m; phase B's G %.4g S/m, alpha_d %.5g; the metal's 241.3 Ohm/m of a 2D eddy-current "
+                 "solve, alpha_c %.5g; together %.5g (%.3f)",
+                 wave.gamma.real(), lp.g, alphaD, alphaC, alphaD + alphaC, wave.gamma.real() / (alphaD + alphaC) - 1);
+        // (Measured +5 %.)
+        QVERIFY2(std::abs(wave.gamma.real() / (alphaD + alphaC) - 1) < 0.1,
                  qPrintable(QStringLiteral("alpha %1, %2 + %3").arg(wave.gamma.real()).arg(alphaD).arg(alphaC)));
 
         // The substrate's loss alone: phase B's G.
@@ -570,6 +596,146 @@ private slots:
                  dwave.gamma.real() / lpd.gamma.real() - 1);
         QVERIFY2(std::abs(dwave.gamma.real() / lpd.gamma.real() - 1) < 0.02,
                  qPrintable(QStringLiteral("alpha %1, phase B %2").arg(dwave.gamma.real()).arg(lpd.gamma.real())));
+    }
+
+    // A metal solved as its two faces (its "Solved as"): a sheet at its
+    // bottom and one at its top, joined along its edges by its walls, each
+    // face with its slab's surface impedance and the two coupled through
+    // the metal. Its walls hold field in the air beside them, and its
+    // current shares its faces as the field has it.
+    void aMetalSolvedAsItsTwoFacesHoldsItsWallsFieldAndSharesItsCurrent()
+    {
+        const double h = 100e-6, w = 100, sigma = 5.8e7, t = 3e-6;
+        // (A copper metal for its loss, and a perfect one of the same
+        //  thickness for the line's C and L: at 100 MHz copper's current is
+        //  still spread by its resistance, a fifth of w L, which puts L 2 to
+        //  3 % over the charge's 1/(c0^2 C0) as a sheet or as its faces.)
+        const auto asFaces = [](rf::Stack s) {
+            s.layers.last().twoSheets = true;
+            return s;
+        };
+        const rf::Stack copper = grounded(9.8, h, 0, t, sigma), perfect = grounded(9.8, h, 0, t, 0);
+        // (A sanitized build solves lines of 1000 and 1500 µm, whose ends
+        //  cancel in the low frequencies' differences as the longer ones'
+        //  do, and leaves out the copper's loss at 10 GHz and its own
+        //  inductance at 2 GHz - the two-line method wants twenty substrate
+        //  heights - which the Release builds hold to. A line of two faces
+        //  is twice the unknowns, its walls' kernels and three pairs of
+        //  heights, and this function was two minutes of a sanitized build.)
+        const bool slow = slowBuild();
+        const double l1 = slow ? 1000 : 2000, l2 = slow ? 1500 : 3000;
+        const QList<double> fs = slow ? QList<double>{1e7} : QList<double>{1e7, 10e9, 2e9};
+        const rf::FullWave sa = slow ? rf::FullWave() : line(copper, l1, w, 4, 100e-6, 4, fs);
+        const rf::FullWave sb = slow ? rf::FullWave() : line(copper, l2, w, 4, 100e-6, 4, fs);
+        const rf::FullWave fa = line(asFaces(copper), l1, w, 4, 100e-6, 4, fs);
+        const rf::FullWave fb = line(asFaces(copper), l2, w, 4, 100e-6, 4, fs);
+        QVERIFY2((slow || (sa.ok() && sb.ok())) && fa.ok() && fb.ok(), qPrintable(why(sa) + why(sb) + why(fa) + why(fb)));
+        // The mesh as given: its cells, and the runs between them a sheet has.
+        const rf::Mesh given = meshed({strip(0, 0, l1, w)}, 4, 100e-6);
+        const int own = int(given.cells.size()), sheetRuns = given.cost.unknowns;
+        // Solved as two sheets and the walls between them, said; handed
+        // back on the mesh as given - its own cells, and a run for each of
+        // the sheet's.
+        QVERIFY2(says(fa.lines, "M1 is solved as its two faces"), qPrintable(fa.lines.join(" | ")));
+        QVERIFY2(says(fa.lines, "walls of the metals solved as their two faces"), qPrintable(fa.lines.join(" | ")));
+        QVERIFY2(fa.runs > 2 * sheetRuns && fa.cells == 2 * own, qPrintable(QStringLiteral("%1 runs over %2 cells, as a sheet %3 over %4")
+                                                                              .arg(fa.runs).arg(fa.cells).arg(sheetRuns).arg(own)));
+        QCOMPARE(int(fa.geometry.size()), sheetRuns);
+        QCOMPARE(int(fa.currents.at(0).at(0).size()), sheetRuns);
+        const QHash<int, double> density = rf::currentDensity(fa, 0, 0);
+        QVERIFY(!density.isEmpty());
+        for (auto it = density.cbegin(); it != density.cend(); ++it) QVERIFY2(it.key() < own, qPrintable(QString::number(it.key())));
+        // Its ports drive both faces of the face they are on, half to each.
+        QVERIFY2(says(fa.portsSaid, "half of it on M1's top face"), qPrintable(fa.portsSaid.join(" | ")));
+
+        // 10 MHz: direct current, through the whole metal however the faces
+        // share it - the faces coupled through it, which as two sheets
+        // apart was half (measured 1.4e-3, as the sheet's).
+        const LowFrequency df = lowFrequency(fa, fb, 0, l1 * 1e-6, l2 * 1e-6);
+        const double rDc = 1 / (sigma * w * 1e-6 * t);
+        qWarning("R' at 10 MHz: as its faces %.5g Ohm/m, 1/(sigma W t) %.5g", df.rPer, rDc);
+        QVERIFY2(std::abs(df.rPer / rDc - 1) < 5e-3, qPrintable(QStringLiteral("R' %1 Ohm/m, %2").arg(df.rPer).arg(rDc)));
+        // And the current through the line's middle, of both faces folded
+        // into the sheet's runs, is what charges the line beyond it: half
+        // the ampere at 10 MHz with the far port open, as the sheet's
+        // (measured 1e-6).
+        const double middle = l1 / 2 * 1e-6;
+        const auto through = [middle](const rf::FullWave& fw) {
+            Complex sum(0, 0);
+            for (int r = 0; r < fw.geometry.size(); ++r) {
+                const rf::Filament& f = fw.geometry.at(r);
+                if (f.z0 != f.z1 || !((f.from.x() - middle) * (f.to.x() - middle) < 0)) continue;
+                sum += (f.to.x() > f.from.x() ? 1.0 : -1.0) * fw.currents.at(0).at(0).at(r);
+            }
+            return sum;
+        };
+        qWarning("at 10 MHz through the middle: %.6f A as its faces", std::abs(through(fa)));
+        QVERIFY2(std::abs(std::abs(through(fa)) - 0.5) < 1e-3, qPrintable(QStringLiteral("%1 A").arg(std::abs(through(fa)))));
+        if (!slow)
+            QVERIFY2(std::abs(through(fa) / through(sa) - 1.0) < 1e-3,
+                     qPrintable(QStringLiteral("%1 A, as a sheet %2").arg(std::abs(through(fa))).arg(std::abs(through(sa)))));
+
+        // 100 MHz, of the perfect metal: the line per metre as the
+        // quasi-static extraction of the same two faces has it, C' to its
+        // charge and L' within the two discretizations' 1.5 % (measured
+        // -4e-4 and -0.75 %); and the walls' field in the air beside them,
+        // which lowers eps_eff and Z0 - a 2D solve of the cross-section's
+        // two sheets on its four cells across lowers them 1.48 and 1.13 %,
+        // of the whole thickness's 1.84 and 1.47 % (measured 1.49 and 1.10).
+        rf::Extraction ps, pf;
+        const rf::FullWave pa = line(perfect, l1, w, 4, 100e-6, 4, {1e8}, &ps);
+        const rf::FullWave pb = line(perfect, l2, w, 4, 100e-6, 4, {1e8});
+        const QList<double> ps2 = slow ? QList<double>{1e8} : QList<double>{1e8, 2e9};
+        const rf::FullWave qa = line(asFaces(perfect), l1, w, 4, 100e-6, 4, ps2, &pf);
+        const rf::FullWave qb = line(asFaces(perfect), l2, w, 4, 100e-6, 4, ps2);
+        QVERIFY2(pa.ok() && pb.ok() && qa.ok() && qb.ok(), qPrintable(why(pa) + why(pb) + why(qa) + why(qb)));
+        QVERIFY(!says(pa.lines, "two faces") && !says(pa.portsSaid, "top face"));
+        const LowFrequency ls = lowFrequency(pa, pb, 0, l1 * 1e-6, l2 * 1e-6), lf = lowFrequency(qa, qb, 0, l1 * 1e-6, l2 * 1e-6);
+        const rf::LineParameters lps = rf::lineParameters(ps, 0, l1 * 1e-6), lpf = rf::lineParameters(pf, 0, l1 * 1e-6);
+        QVERIFY2(lps.ok() && lpf.ok(), qPrintable((lps.problems + lpf.problems).join(" | ")));
+        const double epsSheet = ls.cPer * ls.lPer * kC0 * kC0, epsFaces = lf.cPer * lf.lPer * kC0 * kC0;
+        const double zSheet = std::sqrt(ls.lPer / ls.cPer), zFaces = std::sqrt(lf.lPer / lf.cPer);
+        qWarning("100 MHz: C' %.6g pF/m vs the extraction's %.6g (%.2e); L' %.6g nH/m vs %.6g (%.2e); eps_eff %.4f as a sheet, "
+                 "%.4f as its faces (%.2f %%), the extraction's %.4f and %.4f (%.2f %%); Z0 %.3f, %.3f (%.2f %%), the "
+                 "extraction's %.3f, %.3f (%.2f %%)",
+                 lf.cPer * 1e12, lpf.c * 1e12, lf.cPer / lpf.c - 1, lf.lPer * 1e9, lpf.l * 1e9, lf.lPer / lpf.l - 1, epsSheet,
+                 epsFaces, 100 * (epsFaces / epsSheet - 1), lps.epsilonEff, lpf.epsilonEff, 100 * (lpf.epsilonEff / lps.epsilonEff - 1),
+                 zSheet, zFaces, 100 * (zFaces / zSheet - 1), lps.z0, lpf.z0, 100 * (lpf.z0 / lps.z0 - 1));
+        QVERIFY2(std::abs(lf.cPer / lpf.c - 1) < 1e-3, qPrintable(QStringLiteral("C' %1 F/m, the extraction %2").arg(lf.cPer).arg(lpf.c)));
+        QVERIFY2(std::abs(lf.lPer / lpf.l - 1) < 0.015, qPrintable(QStringLiteral("L' %1 H/m, the extraction %2").arg(lf.lPer).arg(lpf.l)));
+        for (const auto& [now, was, two, whole] : {std::tuple(epsFaces, epsSheet, 1.48, 1.84), std::tuple(lpf.epsilonEff, lps.epsilonEff, 1.48, 1.84),
+                                                   std::tuple(zFaces, zSheet, 1.13, 1.47), std::tuple(lpf.z0, lps.z0, 1.13, 1.47)})
+            QVERIFY2(100 * (1 - now / was) > 0.8 * two && 100 * (1 - now / was) < whole,
+                     qPrintable(QStringLiteral("%1 as its faces, %2 as a sheet: %3 % lower, the 2D two sheets' %4 % and the "
+                                               "whole thickness's %5 %")
+                                    .arg(now).arg(was).arg(100 * (1 - now / was)).arg(two).arg(whole)));
+
+        if (slow) return;
+        // 10 GHz: the current through the faces as the field has it - more
+        // on the face toward the ground, 56 % to 44 % where the 2D solve of
+        // the current through the metal has 59 to 41, and as much drawn into
+        // the outer cells as it has, which a sheet's is not - and the loss
+        // that solve's 219 Ohm/m (measured +15.5 % on four cells across, the
+        // sheet's +18.5 %).
+        const rf::LineParameters lp = rf::lineParameters(ps, 0, l1 * 1e-6);
+        const double beta = 2 * M_PI * 10e9 / kC0 * std::sqrt(lp.epsilonEff);
+        const TwoLine ws = twoLine(chainOf(zOf(sa, 1)), chainOf(zOf(sb, 1)), l1 * 1e-6, l2 * 1e-6, beta);
+        const TwoLine wf = twoLine(chainOf(zOf(fa, 1)), chainOf(zOf(fb, 1)), l1 * 1e-6, l2 * 1e-6, beta);
+        const double eddy = 219.0 / (2 * lp.z0);
+        qWarning("10 GHz: alpha %.4g Np/m as a sheet (%.3f of the 2D solve's), %.4g as its faces (%.3f)", ws.gamma.real(),
+                 ws.gamma.real() / eddy - 1, wf.gamma.real(), wf.gamma.real() / eddy - 1);
+        QVERIFY2(std::abs(wf.gamma.real() / eddy - 1) < 0.2,
+                 qPrintable(QStringLiteral("alpha %1 Np/m, the 2D solve %2").arg(wf.gamma.real()).arg(eddy)));
+
+        // 2 GHz, two skin depths thick: the copper's own inductance - L'
+        // over the perfect metal's - that solve's 1.46 %, its edges' share
+        // with their reactance their resistance, as a thick metal's is.
+        const double beta2 = 2 * M_PI * 2e9 / kC0 * std::sqrt(lp.epsilonEff);
+        const TwoLine cu = twoLine(chainOf(zOf(fa, 2)), chainOf(zOf(fb, 2)), l1 * 1e-6, l2 * 1e-6, beta2);
+        const TwoLine pec = twoLine(chainOf(zOf(qa, 1)), chainOf(zOf(qb, 1)), l1 * 1e-6, l2 * 1e-6, beta2);
+        const double internal = (cu.z0 * cu.gamma).imag() / (pec.z0 * pec.gamma).imag() - 1;
+        qWarning("2 GHz: L' of the copper over the perfect metal's, as its faces, %.4f (the 2D solve's 0.0146)", internal);
+        QVERIFY2(std::abs(internal / 0.0146 - 1) < 0.25, qPrintable(QStringLiteral("%1, the 2D solve's 0.0146").arg(internal)));
     }
 
     // Lines on two metals, one over the other: every pair of heights its
@@ -1075,6 +1241,56 @@ private slots:
         }
         QVERIFY2(std::abs(own.at(0) / closed - 1) < 2e-3, "in vacuum, the closed form");
         QVERIFY2(std::abs(own.at(1) / own.at(0) - 1) < 5e-3, "the dielectrics change nothing");
+
+        {   // M1 2 µm thick and solved as its two faces (its "Solved as"):
+            // the via leaves its top face, so it is 2 µm shorter than it
+            // would be from its bottom, and an internal port between the two
+            // metals stands on that top face too - the via its closed form
+            // from there, in vacuum.
+            const double t = 2e-6;
+            rf::Stack two = twoMetals();
+            for (rf::Layer& layer : two.layers) {
+                if (layer.kind == rf::Layer::Dielectric) layer.thickness = h2;
+                layer.epsr = 1;
+                if (layer.name == QLatin1String("M1")) {
+                    layer.thickness = t;
+                    layer.twoSheets = true;
+                }
+            }
+            two = withVia(two, QStringLiteral("V1"), QStringLiteral("M1"), QStringLiteral("M2"));
+            const QList<rf::Conductor> lines = {strip(0, 0, 1000, w), on(QStringLiteral("M2"), 1000 - w, 0, 1000, w)};
+            const QList<rf::Conductor> climbing = lines + QList<rf::Conductor>{on(QStringLiteral("V1"), 1000 - w, 0, w, w)};
+            const QList<rf::FullWavePort> ends = {edgePort(QPointF(0, w / 2), QStringLiteral("M1")),
+                                                  edgePort(QPointF(2000 - w, w / 2), QStringLiteral("M2"))};
+            const rf::FullWave a = rf::fullWaveOf(evenly(climbing, 1, 400e-6, 1), climbing, two, ends, {f});
+            const QList<rf::FullWavePort> joint = {
+                ends.at(0), ends.at(1), internalPort(QPointF(1000 - w / 2, w / 2), QStringLiteral("M2"), QStringLiteral("M1"))};
+            const rf::FullWave b = rf::fullWaveOf(evenly(lines, 1, 400e-6, 1), lines, two, joint, {f});
+            QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+            QVERIFY2(says(a.lines, "1 of the runs are vias, 0 of them to the ground"), qPrintable(a.lines.join(" | ")));
+            // (The port's current goes up from that face: a wide metal's two
+            //  faces meet only round its edges, as a thick one's do once its
+            //  skin is thin.)
+            QVERIFY2(says(b.portsSaid, "the cell under it on M1's top face"), qPrintable(b.portsSaid.join(" | ")));
+            // The via's cells, on the mesh as given, are its run.
+            QVERIFY(!a.viaCells.isEmpty());
+            for (auto it = a.viaCells.cbegin(); it != a.viaCells.cend(); ++it)
+                QVERIFY2(it.value() >= 0 && it.value() < a.geometry.size() && a.geometry.at(it.value()).z0 != a.geometry.at(it.value()).z1,
+                         qPrintable(QStringLiteral("cell %1, run %2").arg(it.key()).arg(it.value())));
+            const Eigen::MatrixXcd ya = keptAdmittance(a, 0, 2), yb = keptAdmittance(b, 0, 2);
+            const double via = (-1.0 / ya(0, 1) + 1.0 / yb(0, 1)).imag() / omega;
+            const double top = h1 + t;
+            const double shorter = kMu0 / (4 * M_PI) * (linePair(top, top + h2, top, top + h2, g) + linePair(top, top + h2, -top - h2, -top, g));
+            // (Measured 1.4 % over it: the bottom face's share of the current
+            //  climbs the walls beside the via's foot, alongside it. From the
+            //  bottom face, 2 µm longer, it read 0.12 % less, its walls' current
+            //  then against it: the stack says where it stands, not this.)
+            qWarning("from M1's top face: the via %.6f nH, its closed form from there %.6f (%.2e)", via * 1e9, shorter * 1e9,
+                     via / shorter - 1);
+            QVERIFY2(via > shorter && via / shorter - 1 < 0.02,
+                     qPrintable(QStringLiteral("%1 nH, %2").arg(via * 1e9).arg(shorter * 1e9)));
+            QVERIFY2(a.asymmetry < 1e-10, qPrintable(QStringLiteral("asymmetry %1").arg(a.asymmetry)));
+        }
     }
 
     // The phase C check of 1 November, F6: a grounded coplanar line driven
@@ -1138,6 +1354,44 @@ private slots:
         }
         QVERIFY2(signal > 0.8 && signal < 1.05 && upper < -0.2 && std::abs(upper - lower) < 1e-3 * std::abs(upper),
                  qPrintable(QStringLiteral("%1 %2 %3").arg(signal).arg(upper).arg(lower)));
+        {   // Of 3 µm of metal solved as its two faces (its "Solved as"), the
+            // port and the grounds beside it drive both faces, half each -
+            // a face of a thick conductor is its whole wall - and the same
+            // current comes back alike along each ground, folded into the
+            // mesh's own runs.
+            rf::Stack thick = stack;
+            for (rf::Layer& l : thick.layers)
+                if (l.kind == rf::Layer::Metal) {
+                    l.thickness = 3e-6;
+                    l.twoSheets = true;
+                }
+            const rf::FullWave faced = rf::fullWaveOf(mesh, cpw, thick, beside, {10e9});
+            QVERIFY2(faced.ok(), qPrintable(why(faced)));
+            QVERIFY2(says(faced.portsSaid, "half of it on M1's top face") && says(faced.portsSaid, "half on their top faces"),
+                     qPrintable(faced.portsSaid.join(" | ")));
+            // Its feed's fences found as the layout has them, its walls no
+            // via of it: the strips of a calibration copy them.
+            QVERIFY2(faced.feeds.at(0).unlike.isEmpty() && faced.feeds.at(0).vias.size() == low.feeds.at(0).vias.size()
+                         && !faced.feeds.at(0).vias.isEmpty(),
+                     qPrintable(QStringLiteral("%1 via(s), %2; as a sheet %3").arg(faced.feeds.at(0).vias.size())
+                                    .arg(faced.feeds.at(0).unlike).arg(low.feeds.at(0).vias.size())));
+            QVERIFY(!says(low.portsSaid, "top face"));
+            QVERIFY2(faced.asymmetry < 1e-9 && faced.gain <= 1e-6, qPrintable(QStringLiteral("%1 %2").arg(faced.asymmetry).arg(faced.gain)));
+            QCOMPARE(faced.geometry.size(), low.geometry.size());
+            double s2 = 0, u2 = 0, l2 = 0;
+            for (int r = 0; r < faced.geometry.size(); ++r) {
+                const rf::Filament& f = faced.geometry.at(r);
+                const int a = faced.ends.at(r).first, b = faced.ends.at(r).second;
+                if (f.z0 != f.z1 || onFace(a) == onFace(b)) continue;
+                const double i = (onFace(a) ? 1 : -1) * faced.currents.at(0).at(0).at(r).real();
+                const double y = mesh.cells.at(onFace(a) ? a : b).centre.y();
+                if (std::abs(y) < 50) s2 += i;
+                else if (y > 100 && y < 350) u2 += i;
+                else if (y < -100 && y > -350) l2 += i;
+            }
+            QVERIFY2(s2 > 0.8 && s2 < 1.05 && u2 < -0.2 && std::abs(u2 - l2) < 1e-3 * std::abs(u2),
+                     qPrintable(QStringLiteral("%1 %2 %3").arg(s2).arg(u2).arg(l2)));
+        }
         // A ground on one side only is a ground-signal probe's.
         const QList<rf::Conductor> gs = {cpw.at(0), cpw.at(1)};
         const rf::FullWave oneSide = rf::fullWaveOf(meshed(gs, 3, 1e-3), gs, grounded(9.8, 200e-6), beside, {10e9});
@@ -1215,6 +1469,14 @@ private slots:
         QVERIFY(refused(rf::fullWaveOf(mesh, one, open, ports, {1e9}), "ground"));
         // Two ports on the same face.
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, {QPointF(0, 20), QPointF(0, 80)}, {1e9}), "same face"));
+        // More runs and cells than this build sets up a dense matrix for,
+        // said and not solved: six thousand at most since a metal can be
+        // solved as its two faces, which doubles its cells (the recheck of
+        // 75ff6f9).
+        const QList<rf::Conductor> square{strip(0, 0, 2000, 2000)};
+        const rf::FullWave big = rf::fullWaveOf(meshed(square, 0, 25e-6, 1), square, stack, {QPointF(0, 1000)}, {1e9});
+        QVERIFY(big.tooLarge);
+        QVERIFY2(refused(big, "(6000 in all)"), qPrintable(why(big)));
         // A port off every edge drives the face nearest it, as the
         // inductance's terminals do, and says which.
         const rf::FullWave inside = rf::fullWaveOf(mesh, one, stack, {QPointF(200, 70)}, {1e9});

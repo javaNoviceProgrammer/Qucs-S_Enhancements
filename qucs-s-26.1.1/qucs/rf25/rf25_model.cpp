@@ -171,7 +171,13 @@ QList<NodeKind> makeKinds()
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("0.6[um]")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("3.3e7")),
           expr(QStringLiteral("roughness"), tr("Roughness"), QStringLiteral("m"), QStringLiteral("0"),
-               tr("The rms roughness of its surface; it raises the loss at high frequency."))},
+               tr("The rms roughness of its surface; it raises the loss at high frequency.")),
+          choice(QStringLiteral("model"), tr("Solved as"), {QStringLiteral("sheet"), QStringLiteral("faces")},
+                 {tr("A sheet (its thickness in its loss)"), tr("Its two faces, joined at its walls")},
+                 QStringLiteral("sheet"),
+                 tr("A sheet is quickest, and right where the metal is thin beside its gaps. Its two faces put its "
+                    "thickness in the field too - the walls' field across a narrow gap, in what is beside them, and "
+                    "how its current shares its top and bottom - at twice its cells."))},
          {}, {}, false, false, QStringLiteral("m"),
          tr("A metal layer. The layout's polygons on the layers mapped to it are its conductors; its name (the label) "
             "is what the layer map and the ports call it.")});
@@ -752,6 +758,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("thickness"), &layer.thickness);
             read(QStringLiteral("sigma"), &layer.sigma);
             read(QStringLiteral("roughness"), &layer.roughness);
+            layer.twoSheets = textOf(c, QStringLiteral("model")) == QLatin1String("faces");
             break;
         case Layer::Via:
             layer.from = textOf(c, QStringLiteral("from")).trimmed();
