@@ -970,7 +970,6 @@ private slots:
         doc->setMeshShown(false);
         QVERIFY(doc->view()->overlays().isEmpty());
         QVERIFY(doc->view()->layout() != nullptr);
-        doc->setPortsShown(true);
 
         // The canvas gone dark: the outline and the ink are told against
         // it, so both are taken again - darker than the fill on a light
@@ -1010,6 +1009,7 @@ private slots:
         doc->view()->setView(QPointF(1e6, 1e6), doc->view()->scale());
         QVERIFY(!doc->view()->picture().isNull());
         QCOMPARE(doc->view()->overlayShapesDrawn(), 0);
+        doc->setPortsShown(true);
     }
 
     // The solve: asked for, done in the background, and what it found
@@ -1849,6 +1849,33 @@ private slots:
         QVERIFY(regions != nullptr);
         QCOMPARE(regions->shapes.size(), 1);
         QCOMPARE(regions->shapes.first().boundingRect(), QRectF(440, -30, 120, 60));
+        // And drawn, not only listed: the faces' bars and the grounds' are in
+        // the ports' colour where they lie - a line along x or y has a box of
+        // no width, and the view once took it for out of sight.
+        {
+            const QColor ink = ports->line;
+            doc->view()->showRegion(QRectF(QPointF(-200, -400), QPointF(1200, 400)));
+            const QImage frame = doc->view()->grab().toImage();
+            const double dpr = frame.devicePixelRatio();
+            const auto inkAlong = [&](QPointF from, QPointF to) {
+                int hits = 0;
+                for (int i = 1; i < 20; ++i) {
+                    const QPointF at = doc->view()->toPixel(from + (to - from) * (i / 20.0)) * dpr;
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        const QColor c = frame.pixelColor(std::clamp(int(at.x()) + dx, 0, frame.width() - 1),
+                                                          std::clamp(int(at.y()), 0, frame.height() - 1));
+                        if (std::abs(c.red() - ink.red()) < 40 && std::abs(c.green() - ink.green()) < 40
+                            && std::abs(c.blue() - ink.blue()) < 40) {
+                            ++hits;
+                            break;
+                        }
+                    }
+                }
+                return hits;
+            };
+            QVERIFY2(inkAlong(QPointF(1000, -45), QPointF(1000, 45)) > 15, "P2's face is not drawn");
+            QVERIFY2(inkAlong(QPointF(0, 110), QPointF(0, 340)) > 15, "P1's ground beside it is not drawn");
+        }
         doc->portsButton()->click();
         QVERIFY(!doc->portsShown());
         QVERIFY(overlay(QStringLiteral("the ports")) == nullptr);
