@@ -1487,20 +1487,33 @@ private slots:
         QCOMPARE(e->unknowns, int(doc->mesh()->cells.size()));
         // A solve going on when an edit's shapes and mesh are made is of
         // what is gone: it starts again on them, rather than coming to
-        // nothing. (A fine mesh, so that it is still going on when they
-        // are made: its matrix is cubic in the cells, their making not.)
-        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "1[um]"); },
-                              QStringLiteral("fine")));
-        QVERIFY(doc->waitForPrepared(60000));
+        // nothing. (Held, so that it is still going on when they are made
+        // in any build. It was a mesh fine enough to be caught at it, whose
+        // solve is a second here and minutes under the sanitizers: CI's
+        // Linux job ran past the wait at 3ae9608.)
+        const int finer = int(doc->mesh()->cells.size());
+        doc->holdSolves(true);
         doc->solve();
-        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "1.2[um]"); },
+        QVERIFY(doc->isSolving());
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "20[um]"); },
                               QStringLiteral("a little coarser")));
         QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(int(doc->mesh()->cells.size()) != finer, "the edit's mesh is the one before");
         QVERIFY2(doc->isSolving(), "a solve overtaken by an edit's mesh was let go");
+        doc->holdSolves(false);
         QVERIFY2(doc->waitForSolved(300000), "the solve ended");
         const std::shared_ptr<const rf::Extraction> again = doc->extraction();
         QVERIFY2(again != nullptr && again->ok(), qPrintable(doc->solveProblem()));
         QCOMPARE(again->unknowns, int(doc->mesh()->cells.size()));
+        // A solve going on is let go by a Stop, and nothing of it arrives.
+        doc->holdSolves(true);
+        doc->solve();
+        QVERIFY(doc->isSolving());
+        doc->stopSolving();
+        QVERIFY(!doc->isSolving());
+        doc->holdSolves(false);
+        QTest::qWait(100);
+        QVERIFY2(doc->extraction() == again, "a stopped solve's answer arrived");
         // A solve waiting for the mesh is stopped as one going on is.
         QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { coarsely(n, "30[um]"); },
                               QStringLiteral("coarser")));

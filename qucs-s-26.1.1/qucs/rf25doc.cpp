@@ -359,6 +359,8 @@ struct RF25Doc::SolveJob {
     MeshSettings how;
     double top = 0;
     std::atomic_bool calibrating{false};
+    // The tab's holdSolves(), which a test holds it back by.
+    std::shared_ptr<std::atomic_bool> held;
 };
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
@@ -1325,8 +1327,14 @@ void RF25Doc::solveWith(const SolveRequest& request)
                                             : tr("No ports: a loop's inductance wants two of them.");
         }
     }
+    job->held = a_solvesHeld;
     a_solveJob = job;
     QThread* thread = QThread::create([job] {
+        // Held by a test, until it lets go; and a solve let go before it
+        // computes anything - overtaken by an edit's mesh, or stopped - has
+        // nothing to compute.
+        while (job->held->load() && !job->stop.load()) QThread::msleep(2);
+        if (job->stop.load()) return;
         if (job->fullWave) {
             FullWaveControl control;
             control.stop = &job->stop;

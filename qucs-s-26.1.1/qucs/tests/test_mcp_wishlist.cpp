@@ -54,6 +54,28 @@ using qucs_s::fem::Dim;
 using qucs_s::fem::Scope;
 using qucs_s::fem::evaluateConstant;
 
+namespace {
+
+/// A Debug or sanitized build (CI's Linux): its sparse solves fifty to a
+/// hundred times slower, so a solve need not be made long to be met.
+bool slowBuild()
+{
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+#ifndef NDEBUG
+    return true;
+#else
+    return false;
+#endif
+}
+
+} // namespace
+
 class TestMcpWishlist : public QObject
 {
     Q_OBJECT
@@ -773,8 +795,37 @@ private slots:
         closeAll();
 
         // Every size the mesh is given is divided, not its own alone: a
-        // model whose mesh is set by Size features grows all the same.
-        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax_rlgc.qfem"), path("local.qfem")));
+        // model whose mesh is set by Size features grows all the same. (The
+        // coax RLGC example's electrostatics alone, its mesh as it is: its
+        // magnetic sweep - nine frequencies of skin effect, 435 s of this
+        // function's 450 under the sanitizers, and past CI's 900 s there at
+        // 3ae9608 - is no part of converging es.C11.)
+        {
+            QFile example(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax_rlgc.qfem"));
+            QVERIFY(example.open(QIODevice::ReadOnly));
+            QJsonObject model = QJsonDocument::fromJson(example.readAll()).object();
+            QJsonArray components = model.value("components").toArray();
+            QJsonObject component = components.at(0).toObject();
+            QJsonArray physics;
+            for (const QJsonValue& p : component.value("physics").toArray())
+                if (p.toObject().value("type").toString() == QLatin1String("electrostatics")) physics.append(p);
+            QCOMPARE(physics.size(), 1);
+            component.insert("physics", physics);
+            components.replace(0, component);
+            model.insert("components", components);
+            QJsonArray studies = model.value("studies").toArray();
+            QJsonObject study = studies.at(0).toObject();
+            QJsonArray steps;
+            for (const QJsonValue& s : study.value("steps").toArray())
+                if (s.toObject().value("type").toString() == QLatin1String("stationary")) steps.append(s);
+            QCOMPARE(steps.size(), 1);
+            study.insert("steps", steps);
+            studies.replace(0, study);
+            model.insert("studies", studies);
+            model.remove("results");
+            QVERIFY(QJsonDocument(model).object().value("components").toArray().at(0).toObject().contains("mesh"));
+            QVERIFY(writeFile(path("local.qfem"), QString::fromUtf8(QJsonDocument(model).toJson())));
+        }
         QVERIFY(!failed(must("open_document", {{"path", "local.qfem"}})));
         const QJsonObject local = json(must("fem_converge", {{"values", QJsonArray{"es.C11"}},
                                                              {"refine", QJsonArray{2}}, {"timeout", 900}}, 1200000));
@@ -1332,13 +1383,39 @@ private slots:
         // that ends against the wrong model says so: that is exactly how
         // the hunt found it.
         const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
-        QVERIFY(writeFile(path("job.qfem"), read(from + QStringLiteral("coax_rlgc.qfem"))));
+        // Long enough to be met. Under the sanitizers that is the example's
+        // own mesh and one frequency of its magnetic sweep, seconds of
+        // solving: its nine frequencies were 96 s there, and this function
+        // had never reached CI's Linux job - the suite stopped at the one
+        // before it - where it waits 300 s for the solve to end.
+        QString job = read(from + QStringLiteral("coax_rlgc.qfem"));
+        if (slowBuild()) {
+            QJsonObject model = QJsonDocument::fromJson(job.toUtf8()).object();
+            QJsonArray studies = model.value("studies").toArray();
+            QJsonObject study = studies.at(0).toObject();
+            QJsonArray steps = study.value("steps").toArray();
+            int swept = 0;
+            for (int k = 0; k < steps.size(); ++k) {
+                QJsonObject step = steps.at(k).toObject();
+                if (step.value("type").toString() != QLatin1String("frequency")) continue;
+                step.insert("frequencies", QStringLiteral("1[kHz]"));
+                steps.replace(k, step);
+                ++swept;
+            }
+            QCOMPARE(swept, 1);
+            study.insert("steps", steps);
+            studies.replace(0, study);
+            model.insert("studies", studies);
+            job = QString::fromUtf8(QJsonDocument(model).toJson());
+        }
+        QVERIFY(writeFile(path("job.qfem"), job));
         QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "job.qfem"}})));
         auto* doc = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
         QVERIFY(doc != nullptr);
         QVERIFY(!control->busyWithAJob(doc));
-        // Fine enough that the solve lasts long enough to be met.
-        QVERIFY(!failed(must("fem_edit", {{"action", "set"}, {"tag", "mesh1"}, {"props", QJsonObject{{"hmax", "0.01"}}}})));
+        // (A Release build's solve is made long by a finer mesh.)
+        if (!slowBuild())
+            QVERIFY(!failed(must("fem_edit", {{"action", "set"}, {"tag", "mesh1"}, {"props", QJsonObject{{"hmax", "0.01"}}}})));
         QVERIFY(!failed(must("fem_model", {{"action", "save"}})));
         QVERIFY(!doc->getDocChanged());
 
