@@ -661,7 +661,21 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     out.insert(QStringLiteral("file"), where);
     const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
     out.insert(QStringLiteral("ports"), ports);
-    out.insert(QStringLiteral("reference impedance"), what.impedance);
+    out.insert(QStringLiteral("version"), what.version2 ? QStringLiteral("2.0") : QStringLiteral("1.1"));
+    // A full-wave solve's 2.0 file puts each port into its own reference;
+    // every other file every port into the one asked.
+    const bool own = full && what.version2;
+    QStringList owns;
+    if (own) {
+        QJsonArray references;
+        for (const double r : wave->references) {
+            references.append(r);
+            owns << QString::number(r, 'g', 4);
+        }
+        out.insert(QStringLiteral("reference impedances"), references);
+    } else {
+        out.insert(QStringLiteral("reference impedance"), what.impedance);
+    }
     if (!full) out.insert(QStringLiteral("length"), what.length > 0 ? what.length : model->solvedLength());
     out.insert(QStringLiteral("bytes"), text.toUtf8().size());
     QString sweepProblem;
@@ -672,20 +686,29 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
         out.insert(QStringLiteral("to"), sweep.last());
     }
     out.insert(QStringLiteral("what it wrote"),
-               full ? tr("The ports of the full-wave solve: a %1-port, %2 in that order, each into %3 Ohm. ('of', 'net' "
-                         "and 'length' are a quasi-static solve's.)")
+               full ? tr("The ports of the full-wave solve: a %1-port, %2 in that order, %3. ('of', 'net' and 'length' "
+                         "are a quasi-static solve's.)")
                           .arg(ports)
-                          .arg(wave->portNames.join(QStringLiteral(", ")))
-                          .arg(what.impedance, 0, 'g', 4)
+                          .arg(wave->portNames.join(QStringLiteral(", ")),
+                               own ? tr("each into its own reference (%1 Ohm)").arg(owns.join(QStringLiteral(", ")))
+                                   : tr("each into %1 Ohm").arg(what.impedance, 0, 'g', 4))
                : what.coupled ? tr("Every net as coupled lines: a %1-port, the near ends first, then the far ends.").arg(ports)
                               : tr("Net %1 as a two-port, port 1 at its start.")
                                     .arg(what.net.isEmpty() ? model->extraction()->names.value(0) : what.net));
+    // Which Touchstone it is, and whether a schematic's part reads it.
+    const QString version =
+        what.version2 ? tr("Touchstone 2.0, real and imaginary, its [Reference] giving %1. A schematic's S-parameter part "
+                           "does not read it: it hands its file to s2spice, which reads Touchstone 1 only - 'version' 1.1 "
+                           "writes one it does.")
+                            .arg(own ? tr("each port its own") : tr("every port 'impedance'"))
+                      : tr("Touchstone 1.1, real and imaginary, %1. A schematic's S-parameter part reads it at once.")
+                            .arg(full         ? tr("the frequencies of the solve")
+                                 : ports <= 2 ? tr("one line a frequency")
+                                              : tr("each frequency's matrix by rows, four to a line"));
     out.insert(QStringLiteral("note"),
-               full ? tr("Touchstone 1.1, real and imaginary, the frequencies of the solve. A schematic's S-parameter "
-                         "part reads it at once. The file's own comments carry what each port drives and where its "
-                         "reference plane is.")
-                    : tr("Touchstone 1.1, real and imaginary, one line a frequency. A schematic's S-parameter part reads "
-                         "it at once. The file's own comments carry what the solve was and where the quasi-static answer "
-                         "stops being the whole story."));
+               version + QLatin1Char(' ')
+                   + (full ? tr("The file's own comments carry what each port drives and where its reference plane is.")
+                           : tr("The file's own comments carry what the solve was and where the quasi-static answer "
+                                "stops being the whole story.")));
     return jsonResult(out);
 }

@@ -2343,6 +2343,36 @@ private slots:
         const QString header = QString::fromUtf8(seventyFive.readAll());
         QVERIFY2(header.contains(QStringLiteral("# Hz S RI R 75")), qPrintable(header.left(500)));
         QVERIFY2(!header.contains(QStringLiteral("# Hz S RI R 50")), "it wrote 50 Ohm after being told 75");
+        QCOMPARE(at75.value("version").toString(), QStringLiteral("1.1"));
+        QVERIFY2(at75.value("note").toString().startsWith(QStringLiteral("Touchstone 1.1")), qPrintable(at75.value("note").toString()));
+        // Touchstone 2.0 of a quasi-static solve: every port into the
+        // export's own reference, as its [Reference] says, the same data as
+        // 1.1's - and the answer says which it wrote, and that a schematic's
+        // part reads 1.1 alone (the DMG's check of phase D found it writing
+        // 1.1 for 2.0 in silence).
+        const QJsonObject v2 = json(call("rf25_export", {{"path", ws + "/rf/lossy.qrf25"}, {"impedance", "75"},
+                                                         {"file", "at75v2.s2p"}, {"version", "2.0"}}, 120000)).toObject();
+        QCOMPARE(v2.value("version").toString(), QStringLiteral("2.0"));
+        QCOMPARE(v2.value("reference impedance").toDouble(), 75.0);
+        QVERIFY2(v2.value("note").toString().startsWith(QStringLiteral("Touchstone 2.0"))
+                     && v2.value("note").toString().contains(QStringLiteral("s2spice")),
+                 qPrintable(v2.value("note").toString()));
+        QFile version2(v2.value("file").toString());
+        QVERIFY(version2.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString v2text = QString::fromUtf8(version2.readAll());
+        QVERIFY2(v2text.contains(QStringLiteral("[Version] 2.0\n# Hz S RI R 75\n[Number of Ports] 2\n[Two-Port Data Order] 21_12\n"
+                                                "[Number of Frequencies] 41\n[Reference] 75 75\n[Network Data]\n"))
+                     && v2text.endsWith(QStringLiteral("[End]\n")),
+                 qPrintable(v2text.left(1500)));
+        const auto dataOf = [](const QString& t) {
+            QStringList rows;
+            for (const QString& r : t.split(QLatin1Char('\n')))
+                if (!r.trimmed().isEmpty() && !r.startsWith(QLatin1Char('!')) && !r.startsWith(QLatin1Char('#')) && !r.startsWith(QLatin1Char('[')))
+                    rows << r;
+            return rows;
+        };
+        QCOMPARE(dataOf(v2text).size(), 41);
+        QCOMPARE(dataOf(v2text), dataOf(header));
 
         // What it refuses: a net that is not there, an 'of' that is
         // neither, a length and an impedance that are none, and a model
@@ -2613,6 +2643,8 @@ private slots:
         QVERIFY(written.open(QIODevice::ReadOnly));
         const QString file = QString::fromUtf8(written.readAll());
         QVERIFY2(file.contains(QStringLiteral("! Ports: 1 In, 2 Out")) && file.contains(QStringLiteral("# Hz S RI R 50")), qPrintable(file.left(400)));
+        QCOMPARE(wrote.value("version").toString(), QStringLiteral("1.1"));
+        QCOMPARE(wrote.value("reference impedance").toDouble(), 50.0);
         // Touchstone 2.0, each port into its own reference; a version that is none.
         const QJsonObject wrote2 =
             json(call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave2.s2p"}, {"version", "2.0"}}, 120000)).toObject();
@@ -2623,6 +2655,20 @@ private slots:
         QVERIFY2(file2.contains(QStringLiteral("[Version] 2.0")) && file2.contains(QStringLiteral("[Reference] 50 50"))
                      && file2.contains(QStringLiteral("[End]")),
                  qPrintable(file2.left(600)));
+        // And the answer says so: the version, each port's own reference,
+        // and that a schematic's part does not read it.
+        QCOMPARE(wrote2.value("version").toString(), QStringLiteral("2.0"));
+        QVERIFY(!wrote2.contains("reference impedance"));
+        const QJsonArray references = wrote2.value("reference impedances").toArray();
+        QCOMPARE(references.size(), 2);
+        QCOMPARE(references.at(0).toDouble(), 50.0);
+        QCOMPARE(references.at(1).toDouble(), 50.0);
+        QVERIFY2(wrote2.value("what it wrote").toString().contains(QStringLiteral("each into its own reference (50, 50 Ohm)")),
+                 qPrintable(wrote2.value("what it wrote").toString()));
+        QVERIFY2(wrote2.value("note").toString().startsWith(QStringLiteral("Touchstone 2.0"))
+                     && wrote2.value("note").toString().contains(QStringLiteral("each port its own"))
+                     && !wrote2.value("note").toString().contains(QStringLiteral("reads it at once")),
+                 qPrintable(wrote2.value("note").toString()));
         QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"version", "3"}}, 60000)));
 
         // A port that asks for its own discontinuity to be taken out: said

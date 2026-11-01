@@ -81,10 +81,10 @@ QList<QColor> currentRamp(int bands = 8)
 
 /// The model's ports as the full-wave solve takes them: an edge port on its
 /// metal, facing the way it says; an internal port from the metal it names
-/// (or the ground) to the other; each with its own reference. What one says
-/// that is not done goes into \a notes; one that cannot be read is
-/// \a problem, and nothing is returned.
-QList<FullWavePort> portsOf(const Model& model, QStringList* notes, QString* problem)
+/// (or the ground) to the other; each with its own reference and its
+/// de-embedding. One that cannot be read is \a problem, and nothing is
+/// returned.
+QList<FullWavePort> portsOf(const Model& model, QString* problem)
 {
     QList<FullWavePort> out;
     for (const Node& port : model.ports().children) {
@@ -1279,7 +1279,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         // The full-wave solve is driven at the ports, at each of the
         // study's frequencies (or of those asked for).
         QString problem;
-        job->ports = portsOf(a_model, &job->notes, &problem);
+        job->ports = portsOf(a_model, &problem);
         if (!problem.isEmpty()) return nothing(problem);
         if (job->ports.isEmpty())
             return nothing(tr("A full-wave solve is driven at its ports, and the model has none: put an edge port or an "
@@ -1740,6 +1740,34 @@ bool RF25Doc::exportRequest(const QString& tag, ExportRequest* what, QString* er
     return true;
 }
 
+namespace {
+
+/// \a text, Touchstone 1.1 of \a ports ports at \a frequencies
+/// frequencies, every port into the one reference its option line gives,
+/// made Touchstone 2.0: [Version] before the option line, the keywords
+/// after it - [Reference] giving every port that one - and [End]. Its data
+/// stay as 1.1 writes them, four pairs to a line, which 2.0 allows.
+QString touchstone2From(const QString& text, int ports, int frequencies)
+{
+    const bool first = text.startsWith(QLatin1Char('#'));
+    const qsizetype option = first ? 0 : text.indexOf(QLatin1String("\n#")) + 1;
+    const qsizetype data = first || option > 0 ? text.indexOf(QLatin1Char('\n'), option) + 1 : 0;
+    if (data <= 0) return text;
+    // (# Hz S RI R <z>: the reference as the option line writes it.)
+    const QString reference = text.mid(option, data - option).trimmed().section(QLatin1Char(' '), -1);
+    QStringList references;
+    for (int p = 0; p < ports; ++p) references << reference;
+    QString keywords = QStringLiteral("[Number of Ports] %1\n").arg(ports);
+    if (ports == 2) keywords += QStringLiteral("[Two-Port Data Order] 21_12\n");
+    keywords += QStringLiteral("[Number of Frequencies] %1\n[Reference] %2\n[Network Data]\n")
+                    .arg(frequencies)
+                    .arg(references.join(QLatin1Char(' ')));
+    return text.left(option) + QStringLiteral("[Version] 2.0\n") + text.mid(option, data - option) + keywords + text.mid(data)
+           + QStringLiteral("[End]\n");
+}
+
+} // namespace
+
 QString RF25Doc::exportText(const QString& tag, QString* error) const
 {
     ExportRequest what;
@@ -1824,7 +1852,8 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
                         .arg(a_extraction->names.join(QStringLiteral(", ")))
                         .arg(a_extraction->names.size() + 1)
                         .arg(2 * a_extraction->names.size());
-        return fem::touchstoneCoupled(cs, length, what.impedance, false, comments);
+        const QString text = fem::touchstoneCoupled(cs, length, what.impedance, false, comments);
+        return what.version2 ? touchstone2From(text, 2 * int(a_extraction->names.size()), int(cs.points.size())) : text;
     }
     // One net, as a two-port: the one it names, or the first.
     int index = 0;
@@ -1837,7 +1866,8 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
     const fem::LineSweep ls = lineSweep(*a_extraction, index, length, sweep);
     if (!ls.error.isEmpty()) return refuse(ls.error);
     comments << tr("Net %1, port 1 at its start").arg(a_extraction->names.value(index));
-    return fem::touchstone(ls, length, what.impedance, comments);
+    const QString text = fem::touchstone(ls, length, what.impedance, comments);
+    return what.version2 ? touchstone2From(text, 2, int(ls.points.size())) : text;
 }
 
 QString RF25Doc::writeExport(const QString& tag, QString* error) const
