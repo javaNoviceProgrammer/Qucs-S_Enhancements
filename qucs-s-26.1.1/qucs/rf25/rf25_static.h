@@ -35,7 +35,11 @@
  * joins what it lands on into one net. A via carries no charge of its own
  * here - in the thin-metal approximation it is a wire between two sheets,
  * and its sidewall's charge is small beside theirs - so its cells are not
- * unknowns, only the joins they make.
+ * unknowns, only the joins they make. A metal solved as its two faces is
+ * two sheets, its bottom and its top, and its walls a via between them
+ * (thickened()): the charge on both, its top's in what is over the metal -
+ * its walls' field across a narrow gap, which the one sheet had in the
+ * dielectric under it as much as in the air.
  *
  * What it does NOT do yet: R from the surface impedance, the partial
  * inductances that a non-TEM structure needs for L, the ports and the

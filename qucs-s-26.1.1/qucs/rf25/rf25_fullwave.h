@@ -65,17 +65,21 @@
  * runs on both its faces - and more in the cells along its edges, where
  * the current crowds as close as the metal's thickness lets it (or, thin
  * beside its skin depth, its own resistance) - a via a bar with its current
- * on its four faces. What it does NOT do yet: a stack with no ground plane,
- * since the ports are referred to one; a metal's thickness beyond its
- * loss - a thick conductor's walls hold field in the air beside them, which
- * a coplanar line's eps_eff feels (3 µm of copper in 50 µm gaps: QFEM's 2
- * to 3 % under the sheet's), and a wide strip's current favours its lower
- * face (a strip three times as wide as it is high loses 7 % more than both
- * faces alike); and a port's own path up from the ground, which carries
- * no field of its own beyond the vias' correction - in a stack all of
- * vacuum, where a line over its ground hardly radiates, that path's share
- * of the radiation is missed, and S gives back up to a part in 1e4 more than it
- * gets.
+ * on its four faces. Or, solved as its two faces (its "Solved as"), it is
+ * two sheets, its bottom and its top at its thickness over it, the room
+ * between them what is over the metal, joined along its edges by its walls
+ * (thickened()): its walls hold field in the air beside them, which a
+ * coplanar line's eps_eff feels (3 µm of copper in 50 µm gaps: 2 to 3 %
+ * under the sheet's, as QFEM's is), and its current shares its faces as the
+ * field has it, each face with its slab's surface impedance from its own
+ * side and the two coupled through the metal (faceImpedances()). A port on
+ * such a metal drives both faces of its face, half each, and an internal
+ * port or a via up from it stands on its top. What it does NOT do yet: a
+ * stack with no ground plane, since the ports are referred to one; and a
+ * port's own path up from the ground, which carries no field of its own
+ * beyond the vias' correction - in a stack all of vacuum, where a line over
+ * its ground hardly radiates, that path's share of the radiation is missed,
+ * and S gives back up to a part in 1e4 more than it gets.
  */
 #ifndef QUCS_RF25_FULLWAVE_H
 #define QUCS_RF25_FULLWAVE_H
