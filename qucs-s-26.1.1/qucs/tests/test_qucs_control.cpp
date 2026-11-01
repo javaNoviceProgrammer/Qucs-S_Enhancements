@@ -2296,6 +2296,25 @@ private slots:
         QVERIFY(!limit.value("what sets it").toString().isEmpty());
         QVERIFY(limit.value("epsilon_max").toDouble() >= 1);
         QVERIFY2(limit.value("first half-wave resonance").toDouble() > 0, "a line of a length has a resonance");
+        // What is no line - the heater's two pads - has none, and none is
+        // said rather than a resonance at nought (the recheck of 1 November).
+        {
+            qucs_s::rf25::Model pads = m;
+            QJsonArray padRow;
+            padRow.append(QStringLiteral("12"));
+            padRow.append(QStringLiteral("0"));
+            padRow.append(QStringLiteral("M1"));
+            QJsonArray padRows;
+            padRows.append(padRow);
+            QVERIFY(padRows.size() == 1 && padRows.at(0).toArray().size() == 3);
+            pads.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), padRows);
+            QVERIFY(put(ws + "/rf/pads.qrf25", pads.toJson()));
+            const QJsonObject padsSolved = json(call("rf25_solve", {{"path", ws + "/rf/pads.qrf25"}}, 300000)).toObject();
+            const QJsonObject padLimit = padsSolved.value("quasi-static limit").toObject();
+            QVERIFY2(padLimit.value("what sets it").toString().contains(QStringLiteral("is no line")),
+                     qPrintable(QJsonDocument(padsSolved).toJson(QJsonDocument::Compact).left(1500)));
+            QVERIFY2(!padLimit.contains("first half-wave resonance"), qPrintable(QJsonDocument(padLimit).toJson(QJsonDocument::Compact)));
+        }
 
         // The Touchstone it writes of all that: the study's own 41 points,
         // nine numbers to each.

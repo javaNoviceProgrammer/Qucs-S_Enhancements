@@ -67,6 +67,38 @@ rf::FullWavePort edgePort(QPointF at, QPointF facing, double impedance = 50)
     return p;
 }
 
+/// \a stack with V1, vias from its ground to M1.
+rf::Stack withVias(rf::Stack stack)
+{
+    rf::Layer via;
+    via.kind = rf::Layer::Via;
+    via.name = QStringLiteral("V1");
+    via.tag = QStringLiteral("v1");
+    via.from = QStringLiteral("GND");
+    via.to = QStringLiteral("M1");
+    stack.layers << via;
+    return stack;
+}
+
+/// A via \a side µm square from the ground at \a x, \a y (its lower corner).
+rf::Conductor via(double x, double y, double side = 50)
+{
+    rf::Conductor c = strip(x, y, side, side);
+    c.layer = QStringLiteral("V1");
+    return c;
+}
+
+/// A grounded coplanar line \a length µm long: a 100 µm signal on y = 0,
+/// 50 µm gaps, 150 µm grounds, and a 50 µm via down the middle of each
+/// ground at each of \a rows (µm in along it) - the recheck's line, on 100
+/// µm of substrate rather than 200.
+QList<rf::Conductor> groundedCpw(double length, const QList<double>& rows)
+{
+    QList<rf::Conductor> out = {strip(0, -50, length, 100), strip(0, 100, length, 150), strip(0, -250, length, 150)};
+    for (const double x : rows) out << via(x, 150) << via(x, -200);
+    return out;
+}
+
 /// Cells \a across a conductor, none longer than \a largest µm, twice as
 /// long as wide along a strip: the structure's and its strips' alike.
 rf::MeshSettings meshing(int across, double largest)
@@ -391,6 +423,244 @@ private slots:
         const QString old = rf::touchstoneOf(fw, 50);
         QVERIFY(!old.contains(QStringLiteral("[Version]")) && old.contains(QStringLiteral("# Hz S RI R 50")));
         QVERIFY(rf::touchstone2Of(rf::FullWave()).isEmpty());
+    }
+
+    // The recheck of 1 November (afternoon): its thru - a line de-embedded
+    // half way in from each end, the two reference planes meeting - came out
+    // passive: false. Most of that is the strips' own accuracy, a reflection
+    // of -56 dB beside a whole transmission; but the de-embedding went
+    // through Z, and a thru has none: a line meshed as the longer strip is,
+    // de-embedded to its middle, came out 59 % active. In waves it is the
+    // thru it is.
+    void aThruWhosePlanesMeetIsAThru()
+    {
+        const double h = 100e-6, w = 100;
+        const rf::Stack stack = grounded(9.8, h);
+        const rf::MeshSettings how = meshing(4, 50);
+        const QList<double> fs = {1e9, 10e9, 20e9};
+        const rf::Calibration cal = rf::calibrate(stack, how, 0, QStringLiteral("M1"), w, fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        const double l = cal.strip + cal.length;   // the longer strip's own, 2000 µm
+        QCOMPARE(l, 2000.0);
+        const QList<rf::Conductor> line = {strip(0, 0, l, w)};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack,
+                                                {edgePort(QPointF(0, w / 2), QPointF(-1, 0)), edgePort(QPointF(l, w / 2), QPointF(1, 0))}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        const rf::FullWave thru = rf::deembedded(raw, {{&cal, l / 2 * 1e-6}, {&cal, l / 2 * 1e-6}});
+        QVERIFY2(thru.ok(), qPrintable(why(thru)));
+        for (int k = 0; k < fs.size(); ++k) {
+            const Complex s21 = thru.s.at(k).at(1).at(0), s11 = thru.s.at(k).at(0).at(0);
+            QVERIFY2(std::abs(s11) < 1e-6 && std::abs(s21 - 1.0) < 1e-6,
+                     qPrintable(QStringLiteral("%1 GHz: |S11| %2, S21 %3 %4").arg(fs.at(k) / 1e9).arg(std::abs(s11))
+                                    .arg(s21.real()).arg(s21.imag())));
+        }
+        QVERIFY2(thru.gain < 1e-9 && thru.asymmetry < 1e-9, qPrintable(QStringLiteral("%1, %2").arg(thru.gain).arg(thru.asymmetry)));
+    }
+
+    // The recheck of 1 November (afternoon): a perfect metal's coplanar line
+    // read -2 to -6 dB/m at 50-60 GHz from two lines 0.9 mm apart - their
+    // ends coupling past the line - and strips 1.8 mm apart still read -1.6.
+    // A line gives nothing back: a plane is moved along one read as gaining
+    // as along one losing nothing, and what was read is kept and said.
+    void aLineReadAsGainingIsMovedAlongAsLosingNothing()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const rf::MeshSettings how = meshing(4, 50);
+        const QList<rf::Conductor> line = {strip(0, 0, 1500, 100)};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack,
+                                                {edgePort(QPointF(0, 50), QPointF(-1, 0)), edgePort(QPointF(1500, 50), QPointF(1, 0))},
+                                                {10e9});
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        // Two calibrations alike but for the line's loss: one read as gaining
+        // 1 Np/m, one as losing nothing; no discontinuity of their own.
+        rf::Calibration gaining;
+        gaining.metal = QStringLiteral("M1");
+        gaining.width = 100;
+        gaining.length = gaining.strip = 1000;
+        gaining.frequencies = {10e9};
+        gaining.discontinuity = {{Complex(1, 0), Complex(0, 0), Complex(0, 0), Complex(1, 0)}};
+        gaining.gamma = {Complex(-1.0, 520.0)};
+        gaining.impedance = {Complex(48, 0)};
+        QVERIFY(gaining.ok());
+        rf::Calibration lossless = gaining;
+        lossless.gamma = {Complex(0.0, 520.0)};
+        const rf::FullWave moved = rf::deembedded(raw, {{&gaining, 500e-6}, {&gaining, 500e-6}});
+        const rf::FullWave plain = rf::deembedded(raw, {{&lossless, 500e-6}, {&lossless, 500e-6}});
+        QVERIFY2(moved.ok() && plain.ok(), qPrintable(why(moved) + why(plain)));
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                QVERIFY2(std::abs(moved.s.at(0).at(i).at(j) - plain.s.at(0).at(i).at(j)) < 1e-12,
+                         qPrintable(QStringLiteral("S%1%2").arg(i + 1).arg(j + 1)));
+        QCOMPARE(moved.deembedding.value(0).gave, -1.0);
+        QCOMPARE(moved.deembedding.value(0).alpha, 0.0);
+        QVERIFY(plain.deembedding.value(0).gave == 0);
+        QVERIFY2(moved.lines.join(' ').contains(QStringLiteral("as losing nothing")), qPrintable(moved.lines.join(" | ")));
+        QVERIFY2(!plain.lines.join(' ').contains(QStringLiteral("as losing nothing")), qPrintable(plain.lines.join(" | ")));
+    }
+
+    // The recheck of 1 November (afternoon): a coplanar port kept its own
+    // discontinuity - |S11| -15 dB at 60 GHz on a 1 mm grounded coplanar
+    // line whose line alone reflects -37 - since no strips of a coplanar
+    // feed were solved. Its strips are its feed whole: the signal, the
+    // grounds beside it as wide and as far from it as at the port, and the
+    // vias down them, the first as far in from each end as the feed's, the
+    // longer strip twice the shorter's periods between. The line here, 1.3
+    // mm, is neither strip, and has a row of vias down each ground every
+    // 150 µm from 25 µm in.
+    void aCoplanarPortsFeedIsItsGroundsAndItsVias()
+    {
+        const rf::Stack stack = withVias(grounded(9.8, 100e-6));
+        QList<double> rows;
+        for (double x = 25; x < 1300; x += 150) rows << x;
+        const QList<rf::Conductor> line = groundedCpw(1300, rows);
+        const rf::MeshSettings how = meshing(2, 100);
+        rf::FullWavePort near = edgePort(QPointF(0, 0), QPointF(-1, 0)), far = edgePort(QPointF(1300, 0), QPointF(1, 0));
+        near.coplanar = far.coplanar = true;
+        const QList<double> fs = {10e9, 40e9};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack, {near, far}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+
+        // The feed as the solve found it at the port: the grounds beside the
+        // signal on the edge's line, and the rows of vias down them.
+        QCOMPARE(raw.feeds.size(), 2);
+        const rf::Feed& feed = raw.feeds.at(0);
+        QVERIFY(feed.coplanar);
+        QVERIFY2(feed.unlike.isEmpty(), qPrintable(feed.unlike));
+        QCOMPARE(feed.width, 100.0);
+        for (int k = 0; k < 2; ++k) {
+            QVERIFY2(std::abs(feed.gap[k] - 50) < 1e-6 && std::abs(feed.ground[k] - 150) < 1e-6,
+                     qPrintable(QStringLiteral("%1: gap %2, ground %3").arg(k).arg(feed.gap[k]).arg(feed.ground[k])));
+        }
+        QCOMPARE(feed.vias.size(), 2);
+        QVERIFY2(std::abs(feed.pitch - 150) < 1e-6, qPrintable(QString::number(feed.pitch)));
+        QVERIFY2(std::abs(feed.offset() - 50) < 1e-6, qPrintable(QString::number(feed.offset())));
+        // The far port's feed is the near one's mirror image: one calibration.
+        QCOMPARE(raw.feeds.at(1).key(), feed.key());
+        // So too where the grounds differ, and the two ends see them - and
+        // the rows of vias down them - the other way round: 150 µm one side,
+        // 250 the other.
+        {
+            QList<rf::Conductor> uneven = {strip(0, -50, 1300, 100), strip(0, 100, 1300, 150), strip(0, -350, 1300, 250)};
+            for (const double x : rows) uneven << via(x, 150) << via(x, -250);
+            const rf::FullWave twoSided = rf::fullWaveOf(rf::meshOf(uneven, how, stack, 0), uneven, stack, {near, far}, {1e9});
+            QVERIFY2(twoSided.ok(), qPrintable(why(twoSided)));
+            const rf::Feed& a = twoSided.feeds.at(0);
+            const rf::Feed& b = twoSided.feeds.at(1);
+            QVERIFY2(a.ground[0] == b.ground[1] && a.ground[1] == b.ground[0] && a.ground[0] != a.ground[1],
+                     qPrintable(QStringLiteral("%1/%2 and %3/%4").arg(a.ground[0]).arg(a.ground[1]).arg(b.ground[0]).arg(b.ground[1])));
+            QCOMPARE(a.vias.size(), 2);
+            QCOMPARE(a.key(), b.key());
+        }
+
+        const rf::Calibration cal = rf::calibrate(stack, how, 0, feed, fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        // Eight heights and twice the width, 1000 µm: 900 µm between the
+        // ends' first vias, six periods; the longer strip twelve.
+        QVERIFY2(std::abs(cal.length - 900) < 1e-6 && std::abs(cal.strip - 1000) < 1e-6,
+                 qPrintable(QStringLiteral("%1 between, %2 long").arg(cal.length).arg(cal.strip)));
+        const QString said = cal.lines.join(QStringLiteral(" | "));
+        QVERIFY2(said.contains(QStringLiteral("coplanar feed")) && said.contains(QStringLiteral("row(s) of vias every 150 µm"))
+                     && said.contains(QStringLiteral("1000 and 1900 µm long")) && said.contains(QStringLiteral("first via, 50 µm")),
+                 qPrintable(said));
+
+        // De-embedded at both ends, the 1.3 mm is a line of the calibration's
+        // own gamma and impedance; as solved, it was its ports' own
+        // discontinuity that set it apart from that line.
+        const rf::FullWave d = rf::deembedded(raw, {{&cal, 0}, {&cal, 0}});
+        QVERIFY2(d.ok(), qPrintable(why(d)));
+        QVERIFY(d.deembedding.value(0).calibrated && d.deembedding.value(0).coplanar);
+        for (int k = 0; k < fs.size(); ++k) {
+            const auto ideal = lineS(cal.gamma.at(k), cal.impedance.at(k), 1.3e-3, 50);
+            const Complex s11 = d.s.at(k).at(0).at(0), s21 = d.s.at(k).at(1).at(0);
+            const double phase = std::abs(std::arg(s21 / ideal[1])) * 180 / M_PI;
+            const double off = std::abs(s11 - ideal[0]), rawOff = std::abs(raw.s.at(k).at(0).at(0) - ideal[0]);
+            QVERIFY2(phase < 0.1 && off < 2e-3 && rawOff > 20 * off,
+                     qPrintable(QStringLiteral("%1 GHz: S21 %2 degrees from the line's; S11 %3 from the line's, as solved %4")
+                                    .arg(fs.at(k) / 1e9).arg(phase).arg(off).arg(rawOff)));
+        }
+        // And half way in from each end - at a via, four periods from the
+        // feed's first - it is a thru.
+        const rf::FullWave thru = rf::deembedded(raw, {{&cal, 0.65e-3}, {&cal, 0.65e-3}});
+        QVERIFY2(thru.ok(), qPrintable(why(thru)));
+        for (int k = 0; k < fs.size(); ++k) {
+            const Complex s11 = thru.s.at(k).at(0).at(0), s21 = thru.s.at(k).at(1).at(0);
+            QVERIFY2(std::abs(s11) < 2e-3 && std::abs(std::abs(s21) - 1) < 1e-3 && std::abs(std::arg(s21)) * 180 / M_PI < 0.1,
+                     qPrintable(QStringLiteral("%1 GHz: |S11| %2, |S21| %3, %4 degrees").arg(fs.at(k) / 1e9).arg(std::abs(s11))
+                                    .arg(std::abs(s21)).arg(std::arg(s21) * 180 / M_PI)));
+        }
+    }
+
+    // Strips too large for a dense solve on the structure's mesh - the
+    // recheck's coplanar line at eight cells across, three conductors 3.7
+    // mm long, past the build's limit, and not calibrated at all - are cut
+    // to a half, then a quarter, and it is said; past that, refused with
+    // why. (The limit lowered here, so that strips of a few hundred
+    // unknowns meet it.)
+    void stripsTooLargeAreCutAndSaid()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const rf::MeshSettings how = meshing(2, 100);
+        const auto unknowns = [&](double l) {
+            const QList<rf::Conductor> one = {strip(0, 0, l, 100)};
+            const rf::FullWave fw = rf::fullWaveOf(rf::meshOf(one, how, stack, 0), one, stack,
+                                                   {edgePort(QPointF(0, 50), QPointF(-1, 0)), edgePort(QPointF(l, 50), QPointF(1, 0))},
+                                                   {1e9});
+            return fw.runs + fw.cells;
+        };
+        const int whole = unknowns(2000), half = unknowns(1000), quarter = unknowns(500);
+        QVERIFY2(quarter < half && half < whole, qPrintable(QStringLiteral("%1 %2 %3").arg(quarter).arg(half).arg(whole)));
+        rf::FullWaveControl limited;
+        limited.mostUnknowns = (half + whole) / 2;
+        const rf::Calibration cut = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &limited);
+        QVERIFY2(cut.ok(), qPrintable(cut.problems.join(" | ")));
+        QCOMPARE(cut.strip, 500.0);
+        QVERIFY2(cut.lines.join(' ').contains(QStringLiteral("Strips of 1000 µm")) && cut.lines.join(' ').contains(QStringLiteral("cut to 500 µm")),
+                 qPrintable(cut.lines.join(" | ")));
+        limited.mostUnknowns = quarter / 2;
+        const rf::Calibration refused = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &limited);
+        QVERIFY(!refused.ok());
+        QVERIFY2(refused.problems.join(' ').contains(QStringLiteral("dense complex matrix")), qPrintable(refused.problems.join(" | ")));
+        // The structure's own length asked for is not cut: its strips are
+        // what it asked, or nothing.
+        limited.mostUnknowns = (half + whole) / 2;
+        QVERIFY(!rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &limited, 1000).ok());
+    }
+
+    // What strips cannot copy of a coplanar feed is said and not calibrated:
+    // one via of a row near the port, whose period nothing tells; rows
+    // staggered by other than half a period, which no strip has alike at
+    // both ends; a via on the signal itself, which is no line.
+    void whatACoplanarFeedsStripsCannotCopyIsSaid()
+    {
+        const rf::Stack stack = withVias(grounded(9.8, 100e-6));
+        const rf::MeshSettings how = meshing(2, 100);
+        rf::FullWavePort near = edgePort(QPointF(0, 0), QPointF(-1, 0)), far = edgePort(QPointF(1000, 0), QPointF(1, 0));
+        near.coplanar = far.coplanar = true;
+        const auto feedOf = [&](const QList<rf::Conductor>& line) {
+            const rf::FullWave fw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack, {near, far}, {1e9});
+            return fw.ok() ? fw.feeds.value(0) : rf::Feed();
+        };
+        const rf::Feed lone = feedOf(groundedCpw(1000, {500}));
+        QVERIFY2(lone.unlike.contains(QStringLiteral("only one via of a row")), qPrintable(lone.unlike));
+        QList<rf::Conductor> staggered = groundedCpw(1000, {});
+        for (double x = 25; x < 1000; x += 150) staggered << via(x, 150);
+        for (double x = 75; x < 1000; x += 150) staggered << via(x, -200);
+        const rf::Feed third = feedOf(staggered);
+        QVERIFY2(third.unlike.contains(QStringLiteral("staggered")), qPrintable(third.unlike));
+        QList<rf::Conductor> shorted = groundedCpw(1000, {25, 175, 325});
+        shorted << via(400, -25);
+        const rf::Feed onSignal = feedOf(shorted);
+        QVERIFY2(onSignal.unlike.contains(QStringLiteral("own conductor")), qPrintable(onSignal.unlike));
+        // Calibrated, each is refused with its reason.
+        const rf::Calibration refused = rf::calibrate(stack, how, 0, third, {1e9});
+        QVERIFY(!refused.ok());
+        QVERIFY2(refused.problems.join(' ').contains(QStringLiteral("staggered")), qPrintable(refused.problems.join(' ')));
+        // Rows staggered by half a period are a feed strips can have.
+        QList<rf::Conductor> half = groundedCpw(1000, {});
+        for (double x = 25; x < 1000; x += 150) half << via(x, 150);
+        for (double x = 100; x < 1000; x += 150) half << via(x, -200);
+        const rf::Feed halfway = feedOf(half);
+        QVERIFY2(halfway.unlike.isEmpty() && halfway.vias.size() == 2, qPrintable(halfway.unlike));
     }
 
     // What cannot be calibrated is said, not answered: a feed of no width, a

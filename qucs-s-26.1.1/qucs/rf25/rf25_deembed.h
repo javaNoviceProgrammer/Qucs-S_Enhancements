@@ -35,6 +35,21 @@
  * A structure's ports are each taken back through their E and the line of
  * the shift asked, [V; I] = F [V'; I']: Z' = (A - Z C)^-1 (Z D - B), F's
  * terms on the diagonals.
+ *
+ * A coplanar port's strips are its feed whole: the signal, the conductors
+ * beside it as wide and as far from it as at the port, and the vias down
+ * them as the feed has them - a grounded coplanar line without its vias is
+ * another line. A row of vias is a line only a whole number of periods at
+ * a time, so the strips begin as the feed does, their first vias as far
+ * in from each end, and the longer has twice the shorter's periods
+ * between - not twice its length:
+ *
+ *     T_1 = E P U^n P',   T_2 = E P U^2n P',   so   T_1 T_2^-1 T_1 = (E P)(E P)'
+ *
+ * P the feed from the face to its first via's centre, U a period. E P is
+ * the port's own discontinuity to there, and the line beyond it is the
+ * rows' own; the line is then taken back to the face, (E P) L(-o), o the
+ * first via in from it.
  */
 #ifndef QUCS_RF25_DEEMBED_H
 #define QUCS_RF25_DEEMBED_H
@@ -50,7 +65,12 @@ namespace qucs_s::rf25 {
 struct Calibration {
     QString metal;                 ///< the feed's metal
     double width = 0;              ///< its width, the layout's units
-    double length = 0;             ///< the shorter strip, the layout's units; the other is twice it
+    Feed feed;                     ///< the whole of it: a coplanar one's grounds and vias
+    /// The line the shorter strip has between its ends' first vias - its
+    /// whole length where it has none - the layout's units; the longer has
+    /// twice it.
+    double length = 0;
+    double strip = 0;              ///< how long the shorter strip is, the layout's units
     QList<double> frequencies;     ///< Hz, as asked
     /// The port's own discontinuity, from the port to its face: a chain
     /// matrix [A, B, C, D] at each frequency, D one - B the series
@@ -73,6 +93,12 @@ struct Calibration {
  * given, is the shorter strip's (the layout's units), else it is chosen.
  */
 Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const QString& metal, double width,
+                      const QList<double>& frequencies, double micrometre = 1e-6, const FullWaveControl* control = nullptr,
+                      double length = 0);
+
+/// The same of \a feed as the full-wave solve found it: a coplanar port's
+/// strips with its grounds and their vias, its ports coplanar too.
+Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const Feed& feed,
                       const QList<double>& frequencies, double micrometre = 1e-6, const FullWaveControl* control = nullptr,
                       double length = 0);
 
