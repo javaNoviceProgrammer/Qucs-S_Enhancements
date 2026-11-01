@@ -995,8 +995,10 @@ private slots:
         QVERIFY2(rf::lineParameters(grounded1, 0, 1e-3, 10e9).ok(), qPrintable(rf::lineParameters(grounded1, 0, 1e-3).problems.join(" | ")));
     }
 
-    // What is no uniform line - a bend, a taper - has no cross-section to
-    // be of, and its per-metre values are the whole over its length, said.
+    // What is no uniform line - a bend, a taper, a step, a tee - has no
+    // cross-section to be of, and no values per metre: its capacitance
+    // stands whole. (It was given a line, the whole over its length - a
+    // tee's "Z0 31 Ohm", the phase C check of 1 November, F2.)
     void whatIsNoUniformLineIsSaidToBe()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
@@ -1019,15 +1021,52 @@ private slots:
         step.layer = QStringLiteral("M1");
         step.outline = QPolygonF({QPointF(0, 30), QPointF(300, 30), QPointF(300, 0), QPointF(800, 0),
                                   QPointF(800, 100), QPointF(300, 100), QPointF(300, 70), QPointF(0, 70)});
-        for (const rf::Conductor& c : {ell, taper, step}) {
+        // A tee: a line with a stub at its middle, which crosses the middle
+        // section - as broad there as anywhere.
+        rf::Conductor tee;
+        tee.layer = QStringLiteral("M1");
+        tee.outline = QPolygonF({QPointF(0, 0), QPointF(800, 0), QPointF(800, 50), QPointF(425, 50), QPointF(425, 300),
+                                 QPointF(375, 300), QPointF(375, 50), QPointF(0, 50)});
+        for (const rf::Conductor& c : {ell, taper, step, tee}) {
             const rf::Extraction e = rf::extract(rf::meshOf({c}, how, rf::Stack(), 0), {c}, stack);
             QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
             QVERIFY2(!e.perMetre.fromMiddle, qPrintable(e.perMetre.said));
-            QVERIFY2(e.perMetre.said.contains(QStringLiteral("Not a uniform line")), qPrintable(e.perMetre.said));
-            const rf::LineParameters lp = rf::lineParameters(e, 0, 800e-6);
-            QVERIFY2(lp.ok(), qPrintable(lp.problems.join(" | ")));
-            QVERIFY2(std::abs(lp.c - e.selfCapacitance(0) / 800e-6) < 1e-12 * lp.c, "the whole over the length");
+            QVERIFY2(e.perMetre.said.contains(QStringLiteral("Not a uniform line"))
+                         && e.perMetre.said.contains(QStringLiteral("no values per metre")),
+                     qPrintable(e.perMetre.said));
+            QVERIFY(e.selfCapacitance(0) > 0);
+            const rf::LineParameters lp = rf::lineParameters(e, 0, 800e-6, 10e9);
+            QVERIFY(!lp.ok());
+            QVERIFY2(lp.problems.join(' ').contains(QStringLiteral("no uniform line"))
+                         && lp.problems.join(' ').contains(QStringLiteral("full-wave")),
+                     qPrintable(lp.problems.join(" | ")));
+            QVERIFY(!(lp.z0 > 0));
         }
+    }
+
+    // Shapes of one metal that touch are one piece of it, merged or not:
+    // left unmerged, a stub touching its line was a second net, and the two
+    // "coupled conductors" with modes (the phase C check of 1 November).
+    void touchingShapesAreOneNet()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        rf::MeshSettings how;
+        how.maximum = 100e-6;
+        how.cellsAcross = 3;
+        const QList<rf::Conductor> apart{strip(0, -50, 1000, 100), strip(450, 50, 100, 600)};
+        rf::Conductor tee;
+        tee.layer = QStringLiteral("M1");
+        tee.outline = QPolygonF({QPointF(0, -50), QPointF(1000, -50), QPointF(1000, 50), QPointF(550, 50), QPointF(550, 650),
+                                 QPointF(450, 650), QPointF(450, 50), QPointF(0, 50)});
+        const rf::Extraction two = rf::extract(rf::meshOf(apart, how, rf::Stack(), 0), apart, stack);
+        const rf::Extraction one = rf::extract(rf::meshOf({tee}, how, rf::Stack(), 0), {tee}, stack);
+        QVERIFY2(two.ok() && one.ok(), qPrintable((two.problems + one.problems).join(" | ")));
+        QCOMPARE(two.names.size(), 1);
+        QVERIFY2(std::abs(two.selfCapacitance(0) - one.selfCapacitance(0)) < 1e-9 * one.selfCapacitance(0),
+                 qPrintable(QStringLiteral("%1 %2").arg(two.selfCapacitance(0)).arg(one.selfCapacitance(0))));
+        // Apart by a hair, they are two.
+        const QList<rf::Conductor> gap{strip(0, -50, 1000, 100), strip(450, 51, 100, 600)};
+        QCOMPARE(rf::extract(rf::meshOf(gap, how, rf::Stack(), 0), gap, stack).names.size(), 2);
     }
 
     void whatItCannotSolveIsRefused()

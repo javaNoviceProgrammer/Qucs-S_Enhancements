@@ -139,10 +139,12 @@ struct QuasiStaticLimit {
  *
  * \a velocity (m/s, from the line's own eps_eff) and \a length (m) give
  * the line's first half-wave resonance beside it; zero where they are not
- * known.
+ * known. A layout that is no uniform \a line has no cross-section: its
+ * capacitance holds while all of it is small beside a wavelength, so its
+ * longest extent is the dimension.
  */
 QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double micrometre = 1e-6, double velocity = 0, double length = 0,
-                                  int conductors = 1);
+                                  int conductors = 1, bool line = true);
 
 } // namespace qucs_s::rf25
 

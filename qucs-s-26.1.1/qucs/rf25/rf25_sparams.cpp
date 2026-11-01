@@ -102,6 +102,13 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
         out.error = tr("there are no nets to make lines of");
         return out;
     }
+    // What is no uniform line has no modes per metre (the phase C check of
+    // 1 November, F2).
+    if (!extraction.perMetre.fromMiddle) {
+        out.error = tr("it is no uniform line - not the same along its whole length - so it has no modes per metre: "
+                       "the full-wave solve gives its ports' S");
+        return out;
+    }
     out.names = extraction.names;
     out.rlgc = frequency > 0;
     out.frequency = out.rlgc ? frequency : 0.0;
@@ -287,7 +294,7 @@ fem::CoupledSweep coupledSweep(const Extraction& extraction, double length, cons
 }
 
 QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double micrometre, double velocity, double length,
-                                  int conductors)
+                                  int conductors, bool line)
 {
     QuasiStaticLimit out;
     // The slowest dielectric the field crosses.
@@ -304,9 +311,15 @@ QuasiStaticLimit quasiStaticLimit(const Stack& stack, const Mesh& mesh, double m
         for (const MeshCell& c : mesh.cells) box = box.isNull() ? c.outline.boundingRect() : box.united(c.outline.boundingRect());
         // A line runs along its longer side, so the shorter one is its
         // width - the dimension across which the quasi-TEM field stands.
-        wide = std::min(box.width(), box.height()) * micrometre;
+        // What is no line has no width: all of it is to be small beside a
+        // wavelength (a tee's "the conductor is 1900 µm across" was its
+        // stub: the phase C check of 1 November, F2).
+        wide = (line ? std::min(box.width(), box.height()) : std::max(box.width(), box.height())) * micrometre;
     }
-    if (wide > deep) {
+    if (!line && wide > deep) {
+        out.transverse = wide;
+        out.what = tr("the layout spans %1 µm at its longest, and is no line").arg(wide * 1e6, 0, 'g', 4);
+    } else if (wide > deep) {
         out.transverse = wide;
         // (Of several, what they span together: two 100 µm strips 50 µm
         // apart are 250 µm, which is not the width of either.)

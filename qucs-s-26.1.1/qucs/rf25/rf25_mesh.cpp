@@ -17,7 +17,9 @@
 #include <QHash>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 
 namespace qucs_s::rf25 {
 
@@ -75,17 +77,18 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
 }
 
 /// Where a side of \a length from \a from is cut: spaced at most \a step
-/// apart, evenly, and - where \a graded - the first and the last space
-/// halved. A side shorter than a step is one space (two where graded).
-QList<double> gridLines(double from, double length, double step, bool graded)
+/// apart, evenly, and the first space halved where \a gradeLow says, the
+/// last where \a gradeHigh does. A side shorter than a step is one space
+/// (two where graded).
+QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh)
 {
     QList<double> at;
     const int n = step > 0 ? std::max(1, int(std::ceil(length / step - 1e-9))) : 1;
     const double d = length / n;
     at << from;
-    if (graded) at << from + d / 2;
+    if (gradeLow) at << from + d / 2;
     for (int i = 1; i < n; ++i) at << from + i * d;
-    if (graded) at << from + length - d / 2;
+    if (gradeHigh) at << from + length - d / 2;
     at << from + length;
     std::sort(at.begin(), at.end());
     // (One space graded at both ends is cut once, in its middle.)
@@ -94,6 +97,109 @@ QList<double> gridLines(double from, double length, double step, bool graded)
         if (out.isEmpty() || x - out.last() > 1e-9 * std::max(1.0, std::abs(length))) out << x;
     if (out.size() < 2) out = {from, from + length};
     return out;
+}
+
+/// \a outline cut into rectangles, where every side of it runs along x or
+/// y: slabs between its corners' heights - across y, or across x, whichever
+/// gives fewer, the broader where both give as many - each slab's spans
+/// inside the outline, a span carried on into the next slab where that has
+/// it too. So a tee is its line and its stub, an L its two arms, a bend its
+/// legs. Empty where a side is slanted.
+QList<QRectF> rectanglesOf(const QPolygonF& outline)
+{
+    QList<QPointF> points(outline.begin(), outline.end());
+    if (points.size() > 1 && points.first() == points.last()) points.removeLast();
+    const int m = int(points.size());
+    if (m < 4) return {};
+    const QRectF bounds = outline.boundingRect();
+    const double tol = 1e-9 * std::max(1.0, std::max(bounds.width(), bounds.height()));
+    for (int i = 0; i < m; ++i) {
+        const QPointF a = points.at(i), b = points.at((i + 1) % m);
+        if (std::abs(b.x() - a.x()) > tol && std::abs(b.y() - a.y()) > tol) return {};
+    }
+    const auto slabs = [&points, m, tol](bool acrossY) {
+        QList<double> cuts;
+        for (const QPointF& v : std::as_const(points)) cuts << (acrossY ? v.y() : v.x());
+        std::sort(cuts.begin(), cuts.end());
+        QList<double> unique;
+        for (const double c : std::as_const(cuts))
+            if (unique.isEmpty() || c - unique.last() > tol) unique << c;
+        QList<QRectF> done, open;
+        for (int s = 0; s + 1 < unique.size(); ++s) {
+            const double c0 = unique.at(s), c1 = unique.at(s + 1), mid = (c0 + c1) / 2;
+            // Where the outline's sides across the slab cross its middle:
+            // inside between each odd crossing and the next.
+            QList<double> crossings;
+            for (int i = 0; i < m; ++i) {
+                const QPointF a = points.at(i), b = points.at((i + 1) % m);
+                const double a0 = acrossY ? a.y() : a.x(), b0 = acrossY ? b.y() : b.x();
+                if (std::abs(b0 - a0) <= tol) continue;
+                if (mid > std::min(a0, b0) && mid < std::max(a0, b0)) crossings << (acrossY ? a.x() : a.y());
+            }
+            std::sort(crossings.begin(), crossings.end());
+            QList<QRectF> next;
+            for (int k = 0; k + 1 < crossings.size(); k += 2) {
+                const double u0 = crossings.at(k), u1 = crossings.at(k + 1);
+                if (u1 - u0 <= tol) continue;
+                int carried = -1;
+                for (int o = 0; o < open.size() && carried < 0; ++o) {
+                    const QRectF& r = open.at(o);
+                    const double r0 = acrossY ? r.left() : r.top(), r1 = acrossY ? r.right() : r.bottom();
+                    if (std::abs(r0 - u0) <= tol && std::abs(r1 - u1) <= tol) carried = o;
+                }
+                if (carried >= 0) {
+                    QRectF r = open.takeAt(carried);
+                    if (acrossY) r.setBottom(c1);
+                    else r.setRight(c1);
+                    next << r;
+                } else {
+                    next << (acrossY ? QRectF(QPointF(u0, c0), QPointF(u1, c1)) : QRectF(QPointF(c0, u0), QPointF(c1, u1)));
+                }
+            }
+            done << open;
+            open = next;
+        }
+        done << open;
+        return done;
+    };
+    const QList<QRectF> byY = slabs(true), byX = slabs(false);
+    const auto narrowest = [](const QList<QRectF>& rs) {
+        double n = std::numeric_limits<double>::infinity();
+        for (const QRectF& r : rs) n = std::min(n, std::min(r.width(), r.height()));
+        return n;
+    };
+    const QList<QRectF>& chosen = byY.size() < byX.size() || (byY.size() == byX.size() && narrowest(byY) >= narrowest(byX))
+                                      ? byY
+                                      : byX;
+    // (Their areas add up to the outline's, or it was no simple outline.)
+    double sum = 0;
+    for (const QRectF& r : chosen) sum += r.width() * r.height();
+    if (std::abs(sum - areaOf(outline)) > 1e-6 * std::max(1e-30, areaOf(outline))) return {};
+    return chosen;
+}
+
+/// The lines of \a mine and of \a theirs within [\a lo, \a hi] each made
+/// the other's too: where two pieces meet along that stretch, so that
+/// every cell of one there shares a whole edge with a cell of the other.
+/// Whether \a mine or \a theirs gained any.
+bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol)
+{
+    QList<double> both;
+    for (const double x : std::as_const(mine))
+        if (x >= lo - tol && x <= hi + tol) both << x;
+    for (const double x : std::as_const(theirs))
+        if (x >= lo - tol && x <= hi + tol) both << x;
+    both << lo << hi;
+    bool gained = false;
+    for (QList<double>* lines : {&mine, &theirs})
+        for (const double x : std::as_const(both)) {
+            bool known = false;
+            for (const double y : std::as_const(*lines)) known = known || std::abs(x - y) <= tol;
+            if (known) continue;
+            lines->insert(std::lower_bound(lines->begin(), lines->end(), x), x);
+            gained = true;
+        }
+    return gained;
 }
 
 /// A key that two cells sharing an edge agree on, whichever way round they
@@ -241,29 +347,123 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     // pair of neighbours sharing a whole edge (a quartered cell met its
     // undivided neighbour along half of one, so the inductance's runs of
     // current, which follow shared edges, lost the conductor's rim).
+    //
+    // A conductor whose every side runs along x or y is cut into the
+    // rectangles it is made of first, and each is meshed as a strip of its
+    // own: a tee merged into one outline was a grid of the whole, square
+    // cells sized by twice its area over its perimeter, and 1120 cells at
+    // four across where its two strips are 312 (the phase C check of 1
+    // November, F1). Where two rectangles meet - of one conductor, or two
+    // shapes left unmerged - each takes the other's lines along the stretch
+    // they share, so that every cell there shares a whole edge with one
+    // across it: meshed apart, a stub met its line through one run of
+    // current, where two lines happened to coincide. And a side is graded
+    // only where it is the conductor's edge, not where it meets another.
+    struct Piece {
+        int conductor = -1;
+        QRectF box;
+        bool rectangle = false;        // a rectangle, of a conductor or cut from one
+        bool grade[4] = {true, true, true, true};   // its sides at low x, high x, low y, high y
+        QList<double> xs, ys;
+    };
+    QList<Piece> pieces;
+    int cutInto = 0, cutFrom = 0;
+    for (int c = 0; c < conductors.size(); ++c) {
+        const QPolygonF& outline = conductors.at(c).outline;
+        const QRectF bounds = outline.boundingRect();
+        const double area = areaOf(outline);
+        const double box = bounds.width() * bounds.height();
+        QList<QRectF> boxes;
+        if (box > 0 && std::abs(area - box) <= 1e-6 * box) boxes << bounds;
+        else boxes = rectanglesOf(outline);
+        if (boxes.size() > 1) {
+            ++cutFrom;
+            cutInto += int(boxes.size());
+        }
+        if (boxes.isEmpty()) {
+            Piece whole;
+            whole.conductor = c;
+            whole.box = bounds;
+            pieces << whole;
+            continue;
+        }
+        for (const QRectF& b : std::as_const(boxes)) {
+            Piece piece;
+            piece.conductor = c;
+            piece.box = b;
+            piece.rectangle = true;
+            pieces << piece;
+        }
+    }
+    // Which rectangles meet which, along which stretch; and a side wholly
+    // met by others is no edge.
+    struct Meeting {
+        int a, b;
+        bool alongX;   // they meet along a line of constant y, so share their x lines
+        double lo, hi;
+    };
+    QList<Meeting> meetings;
+    {
+        QRectF all;
+        for (const Piece& p : std::as_const(pieces)) all = all.united(p.box);
+        const double tol = 1e-9 * std::max(1.0, std::max(all.width(), all.height()));
+        QList<std::array<double, 4>> met(pieces.size(), {0, 0, 0, 0});
+        for (int a = 0; a < pieces.size(); ++a) {
+            if (!pieces.at(a).rectangle) continue;
+            for (int b = a + 1; b < pieces.size(); ++b) {
+                if (!pieces.at(b).rectangle) continue;
+                if (conductors.at(pieces.at(a).conductor).layer != conductors.at(pieces.at(b).conductor).layer) continue;
+                const QRectF& A = pieces.at(a).box;
+                const QRectF& B = pieces.at(b).box;
+                const double xLo = std::max(A.left(), B.left()), xHi = std::min(A.right(), B.right());
+                const double yLo = std::max(A.top(), B.top()), yHi = std::min(A.bottom(), B.bottom());
+                if (xHi - xLo > tol && (std::abs(A.bottom() - B.top()) <= tol || std::abs(A.top() - B.bottom()) <= tol)) {
+                    meetings << Meeting{a, b, true, xLo, xHi};
+                    const bool aBelow = std::abs(A.bottom() - B.top()) <= tol;
+                    met[a][aBelow ? 3 : 2] += xHi - xLo;
+                    met[b][aBelow ? 2 : 3] += xHi - xLo;
+                }
+                if (yHi - yLo > tol && (std::abs(A.right() - B.left()) <= tol || std::abs(A.left() - B.right()) <= tol)) {
+                    meetings << Meeting{a, b, false, yLo, yHi};
+                    const bool aLeft = std::abs(A.right() - B.left()) <= tol;
+                    met[a][aLeft ? 1 : 0] += yHi - yLo;
+                    met[b][aLeft ? 0 : 1] += yHi - yLo;
+                }
+            }
+        }
+        for (int a = 0; a < pieces.size(); ++a) {
+            const QRectF& A = pieces.at(a).box;
+            const double side[4] = {A.height(), A.height(), A.width(), A.width()};
+            for (int k = 0; k < 4; ++k) pieces[a].grade[k] = met.at(a).at(k) < side[k] - tol;
+        }
+    }
+    if (cutFrom > 0)
+        mesh.lines << tr("%1 shape(s) cut into the %2 rectangle(s) they are made of, each meshed as a strip of its own; "
+                         "where two rectangles meet, their cells meet edge to edge.")
+                          .arg(cutFrom).arg(cutInto);
     double narrowest = 0, finest = 0;
     int strips = 0;
     // The conductors cut with \a perFeature cells across each: false where
     // one of them would take more cells than a mesh may hold, \a many then
     // how many it would have taken.
-    const auto cut = [&](int perFeature, double* many) {
+    const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, size](int perFeature,
+                                                                                                         double* many) {
         mesh.cells.clear();
         narrowest = finest = 0;
         strips = 0;
-        for (const Conductor& conductor : conductors) {
-            const QRectF bounds = conductor.outline.boundingRect();
-            const double area = areaOf(conductor.outline);
-            const double box = bounds.width() * bounds.height();
-            const bool rectangle = box > 0 && std::abs(area - box) <= 1e-6 * box;
+        for (Piece& piece : pieces) {
+            const Conductor& conductor = conductors.at(piece.conductor);
+            const QRectF bounds = piece.box;
             const double narrow = std::min(bounds.width(), bounds.height());
             // How wide the conductor is where it is narrowest: a rectangle's
             // short side, else twice its area over its perimeter - which is
             // a trace's width for a trace of any shape, a spiral's included.
-            const double perimeter = perimeterOf(conductor.outline);
-            const double feature = rectangle ? narrow : (perimeter > 0 ? 2 * area / perimeter : narrow);
+            const double area = piece.rectangle ? bounds.width() * bounds.height() : areaOf(conductor.outline);
+            const double perimeter = piece.rectangle ? 0 : perimeterOf(conductor.outline);
+            const double feature = piece.rectangle ? narrow : (perimeter > 0 ? 2 * area / perimeter : narrow);
             double across = size;
             if (perFeature > 0 && feature > 0) across = std::min(across, feature / perFeature);
-            const bool strip = rectangle && std::max(bounds.width(), bounds.height()) >= 3 * narrow;
+            const bool strip = piece.rectangle && std::max(bounds.width(), bounds.height()) >= 3 * narrow;
             const bool alongX = bounds.width() >= bounds.height();
             double along = across;
             if (strip && how.stretch > 1) along = std::min(size, how.stretch * across);
@@ -276,24 +476,47 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                 *many = squares;
                 return false;
             }
-            const QList<double> xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges);
-            const QList<double> ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges);
+            piece.xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges && piece.grade[0], how.edges && piece.grade[1]);
+            piece.ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges && piece.grade[2], how.edges && piece.grade[3]);
             if (narrowest <= 0 || feature < narrowest) narrowest = feature;
             if (finest <= 0 || across < finest) finest = across;
             if (strip) ++strips;
+        }
+        // Each meeting's lines made both pieces', until none gains any: a
+        // line one takes may lie where it meets a third.
+        QRectF all;
+        for (const Piece& p : std::as_const(pieces)) all = all.united(p.box);
+        const double tol = 1e-9 * std::max(1.0, std::max(all.width(), all.height()));
+        bool gained = !meetings.isEmpty();
+        for (int round = 0; gained && round < 64; ++round) {
+            gained = false;
+            for (const Meeting& m : std::as_const(meetings)) {
+                Piece& a = pieces[m.a];
+                Piece& b = pieces[m.b];
+                gained = (m.alongX ? shareLines(a.xs, b.xs, m.lo, m.hi, tol) : shareLines(a.ys, b.ys, m.lo, m.hi, tol)) || gained;
+            }
+        }
+        for (const Piece& piece : std::as_const(pieces)) {
+            const Conductor& conductor = conductors.at(piece.conductor);
+            const QList<double>& xs = piece.xs;
+            const QList<double>& ys = piece.ys;
+            if (double(xs.size() - 1) * double(ys.size() - 1) > 4.0 * kMostUnknowns) {
+                *many = double(xs.size() - 1) * double(ys.size() - 1);
+                return false;
+            }
             for (int i = 0; i + 1 < xs.size(); ++i)
                 for (int j = 0; j + 1 < ys.size(); ++j) {
                     const QRectF square(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1)));
                     const double full = square.width() * square.height();
-                    const QList<QPolygonF> pieces = rectangle ? QList<QPolygonF>{QPolygonF(square)}
-                                                              : clipTo({conductor.outline}, QPolygonF(square));
-                    for (const QPolygonF& piece : pieces) {
-                        const double a = rectangle ? full : areaOf(piece);
+                    const QList<QPolygonF> cut = piece.rectangle ? QList<QPolygonF>{QPolygonF(square)}
+                                                                 : clipTo({conductor.outline}, QPolygonF(square));
+                    for (const QPolygonF& part : cut) {
+                        const double a = piece.rectangle ? full : areaOf(part);
                         if (a <= 0) continue;
                         MeshCell cell;
                         cell.layer = conductor.layer;
-                        cell.outline = piece;
-                        cell.centre = piece.boundingRect().center();
+                        cell.outline = part;
+                        cell.centre = part.boundingRect().center();
                         cell.area = a;
                         // On the edge where the cut took something off, or
                         // where the square touches the conductor's bounds.

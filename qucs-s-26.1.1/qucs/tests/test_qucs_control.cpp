@@ -2403,8 +2403,11 @@ private slots:
             QVERIFY(two.add(QStringLiteral("stack"), ild) != nullptr);
             qucs_s::rf25::Node metal2 = two.make(QStringLiteral("rf_metal"));
             QVERIFY(two.add(QStringLiteral("stack"), metal2) != nullptr);
+            // (The heater's two strips, and not its pads: a strip with a pad
+            // at each end is no uniform line, and has no modes per metre -
+            // the phase C check of 1 November, F2.)
             QJsonArray both;
-            for (int layer = 0; layer < 64; ++layer) {
+            for (const int layer : {1, 11}) {
                 QJsonArray r;
                 r.append(QString::number(layer));
                 r.append(QStringLiteral("0"));
@@ -2686,6 +2689,16 @@ private slots:
                  qPrintable(QString::fromUtf8(QJsonDocument(de.value("ports").toArray()).toJson(QJsonDocument::Compact))));
         QVERIFY(!de.value("ports").toArray().at(1).toObject().contains("de-embedded"));
         QVERIFY(de.value("checks").toObject().contains("passive as solved"));
+        // A port that returns through the conductors beside it - a coplanar
+        // line's - on a lone strip: none either side, said through the tool
+        // (the phase C check of 1 November, F6).
+        qucs_s::rf25::Model beside = m;
+        for (qucs_s::rf25::Node& port : beside.ports().children) port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
+        QVERIFY(put(ws + "/rf/wave4.qrf25", beside.toJson()));
+        const QJsonObject lone = call("rf25_solve", {{"path", ws + "/rf/wave4.qrf25"}, {"solver", "full_wave"},
+                                                     {"frequency", "3[GHz]"}}, 300000);
+        QVERIFY(failed(lone));
+        QVERIFY2(text(lone).contains(QStringLiteral("none either side")), qPrintable(text(lone)));
 
         // A solver that is none.
         QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "sideways"}}, 60000)));

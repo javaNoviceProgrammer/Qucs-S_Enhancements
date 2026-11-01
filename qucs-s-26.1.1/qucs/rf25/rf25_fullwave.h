@@ -105,6 +105,13 @@ struct FullWavePort {
     QString from;              ///< an internal port's other metal; empty: the ground
     /// An edge port's outward direction; nought: the face it is nearest.
     QPointF facing;
+    /// An edge port that returns through the conductors beside it on its
+    /// own metal, at its own edge's line - as a ground-signal-ground
+    /// probe's grounds touch them - rather than through the ground plane:
+    /// what a coplanar line wants, whose ground-plane return radiated (the
+    /// phase C check of 1 November, F6). The grounds either side are tied
+    /// together, and the solve shares the current out between them.
+    bool coplanar = false;
     double impedance = 50;     ///< its reference, Ohm
     /// An edge port's own discontinuity to be taken out after the solve,
     /// and how far its reference plane is then moved in along its line, m

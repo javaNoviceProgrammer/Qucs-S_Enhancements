@@ -263,8 +263,11 @@ private slots:
         const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 200, 100)}, how, m.stack(), 10e9);
         QCOMPARE(pad.cells.size(), 22 * 12);
         QVERIFY(!says(pad.lines, "times as long"));
-        // A shape that is no rectangle goes by twice its area over its
-        // perimeter, a trace's width: an L of 20 µm arms is 20 across.
+        // A shape whose sides all run along x or y is cut into the
+        // rectangles it is made of, each a strip of its own: an L of 20 µm
+        // arms is its two arms, 20 across each and stretched along them. (It
+        // was a grid of the whole, by twice its area over its perimeter -
+        // 19 µm - and square: the phase C check of 1 November, F1.)
         rf::Conductor ell;
         ell.layer = QStringLiteral("M1");
         ell.outline = QPolygonF({QPointF(0, 0), QPointF(200, 0), QPointF(200, 20), QPointF(20, 20),
@@ -274,11 +277,83 @@ private slots:
         double area = 0;
         for (const rf::MeshCell& c : bent.cells) area += c.area;
         QVERIFY2(std::abs(area - (200 * 20 + 180 * 20)) < 1e-6, qPrintable(QString::number(area)));
-        QVERIFY2(says(bent.lines, "narrowest conductor (19 "), qPrintable(bent.lines.join(" | ")));
+        QVERIFY2(says(bent.lines, "narrowest conductor (20 "), qPrintable(bent.lines.join(" | ")));
+        QVERIFY2(says(bent.lines, "cut into the 2 rectangle(s)"), qPrintable(bent.lines.join(" | ")));
+        QVERIFY2(says(bent.lines, "times as long"), qPrintable(bent.lines.join(" | ")));
+        // A shape with a slanted side still goes by twice its area over its
+        // perimeter, a trace's width for a trace of any shape: a right
+        // triangle of 200 µm legs is 58.58 across.
+        rf::Conductor wedge;
+        wedge.layer = QStringLiteral("M1");
+        wedge.outline = QPolygonF({QPointF(0, 0), QPointF(200, 0), QPointF(0, 200)});
+        const rf::Mesh slanted = rf::meshOf({wedge}, how, m.stack(), 10e9);
+        QVERIFY2(says(slanted.lines, "narrowest conductor (58.58 "), qPrintable(slanted.lines.join(" | ")));
+        QVERIFY(!says(slanted.lines, "rectangle(s)"));
         // None at all: the wavelength alone, as before.
         rf::MeshSettings none = how;
         none.cellsAcross = 0;
         QVERIFY(rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 100)}, none, m.stack(), 10e9).cells.size() < 10);
+    }
+
+    // The phase C check of 1 November, F1: a tee merged into one outline
+    // meshes as its two strips do - 1120 cells at four across, refused by
+    // the full-wave solve, where its strips are 342 - and where they meet,
+    // every cell of one shares a whole edge with a cell of the other. So do
+    // two touching shapes left unmerged, which met through one run of
+    // current, where two of their grid lines happened to coincide.
+    void aTeeIsItsStripsMeetingEdgeToEdge()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        how.stretch = 4;
+        const rf::Conductor line = on(QStringLiteral("M1"), 0, -50, 3000, 100);
+        const rf::Conductor stub = on(QStringLiteral("M1"), 1450, 50, 100, 1800);
+        rf::Conductor tee;
+        tee.layer = QStringLiteral("M1");
+        tee.outline = QPolygonF({QPointF(0, -50), QPointF(3000, -50), QPointF(3000, 50), QPointF(1550, 50),
+                                 QPointF(1550, 1850), QPointF(1450, 1850), QPointF(1450, 50), QPointF(0, 50)});
+        const rf::Mesh merged = rf::meshOf({tee}, how, m.stack(), 25e9);
+        const rf::Mesh apart = rf::meshOf({line, stub}, how, m.stack(), 25e9);
+        QVERIFY2(merged.ok() && apart.ok(), qPrintable((merged.problems + apart.problems).join(" | ")));
+        QCOMPARE(merged.cells.size(), apart.cells.size());
+        QVERIFY2(merged.cells.size() < 400, qPrintable(QString::number(merged.cells.size())));
+        QVERIFY2(says(merged.lines, "narrowest conductor (100 "), qPrintable(merged.lines.join(" | ")));
+        // Its line and its stub, two: cut across x it would be three, the
+        // line in two halves and a column through it - meshed as well,
+        // edge to edge, but with more lines forced where they meet.
+        QVERIFY2(says(merged.lines, "cut into the 2 rectangle(s)"), qPrintable(merged.lines.join(" | ")));
+        // The joint: as many edges shared across y = 50 as the stub has
+        // cells along its foot, the whole 100 µm of it.
+        for (const rf::Mesh* mesh : {&merged, &apart}) {
+            QHash<QString, int> edges;
+            double foot = 0;
+            int stubCells = 0;
+            for (const rf::MeshCell& c : mesh->cells) {
+                const QRectF b = c.outline.boundingRect();
+                if (std::abs(b.top() - 50) < 1e-9 && b.left() >= 1450 - 1e-9 && b.right() <= 1550 + 1e-9) {
+                    ++stubCells;
+                    foot += b.width();
+                    edges[QStringLiteral("%1-%2").arg(b.left()).arg(b.right())] += 1;
+                }
+                if (std::abs(b.bottom() - 50) < 1e-9 && b.left() >= 1450 - 1e-9 && b.right() <= 1550 + 1e-9)
+                    edges[QStringLiteral("%1-%2").arg(b.left()).arg(b.right())] += 1;
+            }
+            QVERIFY2(stubCells >= 4, qPrintable(QString::number(stubCells)));
+            QVERIFY2(std::abs(foot - 100) < 1e-6, qPrintable(QString::number(foot)));
+            for (auto it = edges.constBegin(); it != edges.constEnd(); ++it)
+                QVERIFY2(it.value() == 2, qPrintable(it.key() + QStringLiteral(" is met by one side only")));
+        }
+        // Where the two meet is no edge: the stub's cell at its foot is a
+        // whole step along it, and at its open end half of one.
+        double atFoot = 0, atEnd = 0;
+        for (const rf::MeshCell& c : merged.cells) {
+            const QRectF b = c.outline.boundingRect();
+            if (b.left() < 1450 - 1e-9 || b.right() > 1550 + 1e-9 || b.top() < 50 - 1e-9) continue;
+            if (std::abs(b.top() - 50) < 1e-9) atFoot = b.height();
+            if (std::abs(b.bottom() - 1850) < 1e-9) atEnd = b.height();
+        }
+        QVERIFY2(atFoot > 0 && std::abs(atEnd - atFoot / 2) < 1e-6, qPrintable(QStringLiteral("%1 %2").arg(atFoot).arg(atEnd)));
     }
 
     // As many across as asked - or as many as the solver takes, said: a

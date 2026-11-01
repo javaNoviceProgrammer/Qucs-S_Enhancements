@@ -1031,6 +1031,79 @@ private slots:
         QVERIFY2(std::abs(own.at(1) / own.at(0) - 1) < 5e-3, "the dielectrics change nothing");
     }
 
+    // The phase C check of 1 November, F6: a grounded coplanar line driven
+    // by edge ports that return through the ground plane radiates from its
+    // ends - a millimetre of it lost a third of the power at 60 GHz, and a
+    // longer line less, so it is at the ends - where a ground-signal-ground
+    // probe's return, through the conductors either side of it on the line
+    // of its edge, is what a coplanar line wants. 100 µm on 200 µm of 9.8,
+    // 50 µm slots, 250 µm grounds with a fence of vias down each.
+    void aCoplanarPortReturnsThroughItsGrounds()
+    {
+        const rf::Stack stack = withVia(grounded(9.8, 200e-6), QStringLiteral("V1"), QStringLiteral("ground"), QStringLiteral("M1"));
+        const double l = 1000;
+        const QString m1 = QStringLiteral("M1");
+        QList<rf::Conductor> cpw = {on(m1, 0, -50, l, 100), on(m1, 0, 100, l, 250), on(m1, 0, -350, l, 250)};
+        for (double x = 25; x < l; x += 150)
+            for (const double y : {200.0, -250.0}) cpw << on(QStringLiteral("V1"), x, y, 50, 50);
+        const rf::Mesh mesh = meshed(cpw, 3, 1e-3);
+        const QList<double> fs = {60e9};
+        const QList<rf::FullWavePort> ground = {edgePort(QPointF(0, 0), m1, QPointF(-1, 0)), edgePort(QPointF(l, 0), m1, QPointF(1, 0))};
+        QList<rf::FullWavePort> beside = ground;
+        for (rf::FullWavePort& p : beside) p.coplanar = true;
+        const rf::FullWave viaGround = rf::fullWaveOf(mesh, cpw, stack, ground, fs);
+        const rf::FullWave viaBeside = rf::fullWaveOf(mesh, cpw, stack, beside, fs);
+        QVERIFY2(viaGround.ok(), qPrintable(why(viaGround)));
+        QVERIFY2(viaBeside.ok(), qPrintable(why(viaBeside)));
+        QVERIFY2(says(viaBeside.portsSaid, "against the conductors beside it") && says(viaBeside.portsSaid, "either side"),
+                 qPrintable(viaBeside.portsSaid.join(" | ")));
+        QVERIFY2(says(viaBeside.lines, "a coplanar port's through the conductors beside it"), qPrintable(viaBeside.lines.join(" | ")));
+        QVERIFY2(viaBeside.asymmetry < 1e-9 && viaBeside.gain <= 1e-6,
+                 qPrintable(QStringLiteral("%1 %2").arg(viaBeside.asymmetry).arg(viaBeside.gain)));
+        const auto lost = [](const rf::FullWave& w) {
+            const Complex s11 = w.s.at(0).at(0).at(0), s21 = w.s.at(0).at(1).at(0);
+            return 1 - std::norm(s11) - std::norm(s21);
+        };
+        qWarning().noquote() << QStringLiteral("1 mm at 60 GHz loses %1 of the power returned through the ground, %2 "
+                                               "through the conductors beside it")
+                                    .arg(lost(viaGround), 0, 'f', 4).arg(lost(viaBeside), 0, 'f', 4);
+        QVERIFY2(lost(viaBeside) < 0.03, qPrintable(QString::number(lost(viaBeside))));
+        QVERIFY2(lost(viaGround) > 0.15, qPrintable(QString::number(lost(viaGround))));
+        // An ampere into P1 at 10 GHz goes along the signal from its face,
+        // and comes back alike along each ground: the grounds tied, and the
+        // solve sharing the current out between them. (Not all of it by the
+        // runs out of the faces' cells: some charges them, and on a ground
+        // some goes down the fence's first via, which stands on its face.)
+        const rf::FullWave low = rf::fullWaveOf(mesh, cpw, stack, beside, {10e9});
+        QVERIFY2(low.ok(), qPrintable(why(low)));
+        // (What leaves each face's own cells by the runs out of them, so
+        //  that it holds whatever length the cells along the line have.)
+        const auto onFace = [&mesh](int cell) { return cell >= 0 && std::abs(mesh.cells.at(cell).outline.boundingRect().left()) < 1e-6; };
+        double signal = 0, upper = 0, lower = 0;
+        for (int r = 0; r < low.geometry.size(); ++r) {
+            const rf::Filament& f = low.geometry.at(r);
+            const int a = low.ends.at(r).first, b = low.ends.at(r).second;
+            if (f.z0 != f.z1 || onFace(a) == onFace(b)) continue;
+            const double i = (onFace(a) ? 1 : -1) * low.currents.at(0).at(0).at(r).real();
+            const double y = mesh.cells.at(onFace(a) ? a : b).centre.y();
+            if (std::abs(y) < 50) signal += i;
+            else if (y > 100 && y < 350) upper += i;
+            else if (y < -100 && y > -350) lower += i;
+        }
+        QVERIFY2(signal > 0.8 && signal < 1.05 && upper < -0.2 && std::abs(upper - lower) < 1e-3 * std::abs(upper),
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(signal).arg(upper).arg(lower)));
+        // A ground on one side only is a ground-signal probe's.
+        const QList<rf::Conductor> gs = {cpw.at(0), cpw.at(1)};
+        const rf::FullWave oneSide = rf::fullWaveOf(meshed(gs, 3, 1e-3), gs, grounded(9.8, 200e-6), beside, {10e9});
+        QVERIFY2(oneSide.ok(), qPrintable(why(oneSide)));
+        QVERIFY2(says(oneSide.portsSaid, "on one side"), qPrintable(oneSide.portsSaid.join(" | ")));
+        // And none beside it is said, not solved as something else.
+        const QList<rf::Conductor> alone = {cpw.at(0)};
+        const rf::FullWave none = rf::fullWaveOf(meshed(alone, 3, 1e-3), alone, grounded(9.8, 200e-6), beside, {10e9});
+        QVERIFY(!none.ok());
+        QVERIFY2(why(none).contains(QStringLiteral("none either side")), qPrintable(why(none)));
+    }
+
     void whatItCannotSolveIsSaid()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
