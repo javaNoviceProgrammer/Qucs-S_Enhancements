@@ -1038,6 +1038,22 @@ private slots:
         QVERIFY(!wrong.ok());
         QVERIFY2(wrong.problems.first().contains(QStringLiteral("not a metal")), qPrintable(wrong.problems.join(" | ")));
 
+        // A via down to the ground, which would hold what it lands on at the
+        // ground's potential: every net here is free, so it is said and the
+        // full-wave solve named, not solved as a floating pad.
+        rf::Stack drilled = grounded(4.1, 10e-6);
+        rf::Layer hole;
+        hole.kind = rf::Layer::Via;
+        hole.name = QStringLiteral("V0");
+        hole.from = QStringLiteral("ground");
+        hole.to = QStringLiteral("M1");
+        drilled.layers << hole;
+        const QList<rf::Conductor> pad{strip(0, 0, 20, 20), strip(5, 5, 10, 10, QStringLiteral("V0"))};
+        const rf::Extraction shorted = rf::extract(meshed(pad, 10), pad, drilled);
+        QVERIFY(!shorted.ok());
+        QVERIFY2(says(shorted.problems, "joins M1 to the ground") && says(shorted.problems, "full-wave"),
+                 qPrintable(shorted.problems.join(" | ")));
+
         // A layer the stack has not at all.
         const QList<rf::Conductor> nowhere{strip(0, 0, 20, 20, QStringLiteral("M9"))};
         const rf::Extraction none = rf::extract(meshed(nowhere, 10), nowhere, grounded(4.1, 10e-6));

@@ -259,6 +259,34 @@ private slots:
             stack.children.at(4).props.insert(QStringLiteral("to"), QStringLiteral("M3"));
             QVERIFY2(says(three.stack().problems, "not neighbours"), qPrintable(three.stack().problems.join(" | ")));
         }
+        {   // A via down to the ground: named "ground", or by the ground's own
+            // name, from the lowest metal; not past a metal, not to itself.
+            rf::Model m = twoMetals();
+            rf::Node& stack = m.stackNode();
+            add(stack, "rf_ground", QStringLiteral("gnd"), QStringLiteral("GND"));
+            rf::Node& v0 = add(stack, "rf_via", QStringLiteral("v0"), QStringLiteral("V0"));
+            set(v0, "from", QStringLiteral("ground"));
+            set(v0, "to", QStringLiteral("M1"));
+            set(v0, "sigma", QStringLiteral("5.8e7"));
+            QVERIFY2(m.stack().problems.isEmpty(), qPrintable(m.stack().problems.join(" | ")));
+            QVERIFY(m.stack().isGround(QStringLiteral("ground")) && m.stack().isGround(QStringLiteral("Ground")));
+            QVERIFY(m.stack().isGround(QStringLiteral("GND")) && !m.stack().isGround(QStringLiteral("M1")));
+            QVERIFY(!m.stack().isGround(QString()));
+            stack.children.back().props.insert(QStringLiteral("from"), QStringLiteral("GND"));
+            QVERIFY2(m.stack().problems.isEmpty(), qPrintable(m.stack().problems.join(" | ")));
+            stack.children.back().props.insert(QStringLiteral("to"), QStringLiteral("M2"));
+            QVERIFY2(says(m.stack().problems, "not neighbours"), qPrintable(m.stack().problems.join(" | ")));
+            stack.children.back().props.insert(QStringLiteral("to"), QStringLiteral("ground"));
+            QVERIFY2(says(m.stack().problems, "to itself"), qPrintable(m.stack().problems.join(" | ")));
+            // With no ground in the stack the word names nothing.
+            rf::Model bare = twoMetals();
+            rf::Node& lone = add(bare.stackNode(), "rf_via", QStringLiteral("v0"), QStringLiteral("V0"));
+            set(lone, "from", QStringLiteral("ground"));
+            set(lone, "to", QStringLiteral("M1"));
+            set(lone, "sigma", QStringLiteral("5.8e7"));
+            QVERIFY2(says(bare.stack().problems, "which is no metal"), qPrintable(bare.stack().problems.join(" | ")));
+            QVERIFY(!bare.stack().isGround(QStringLiteral("ground")));
+        }
         {   // Two metals with nothing between them.
             rf::Model m = twoMetals();
             m.stackNode().children.erase(m.stackNode().children.begin() + 3);   // the oxide above M1
