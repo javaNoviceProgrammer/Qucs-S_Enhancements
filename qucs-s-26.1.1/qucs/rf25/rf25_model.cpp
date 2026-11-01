@@ -265,8 +265,9 @@ QList<NodeKind> makeKinds()
                     "its edge, which must reach that edge too, tied together (full wave)")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
           boolean(QStringLiteral("calibrate"), tr("Take out its own discontinuity"), false,
-                  tr("Solve two strips of its feed and take the port's own discontinuity out of the answer: its "
-                     "reference plane is then at its edge (full wave)")),
+                  tr("Solve two strips of its feed - a coplanar port's with its grounds and their vias - and take "
+                     "the port's own discontinuity out of the answer: its reference plane is then at its edge (full "
+                     "wave)")),
           expr(QStringLiteral("deembed"), tr("De-embed"), QStringLiteral("m"), QStringLiteral("0"),
                tr("How far the reference plane is then moved in along the line (out, below nought)")),
           choice(QStringLiteral("along"), tr("Moved along"), {QStringLiteral("feed"), QStringLiteral("line")},
