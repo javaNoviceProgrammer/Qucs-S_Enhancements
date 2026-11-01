@@ -1740,7 +1740,9 @@ private slots:
         QVERIFY(doc->fullWave() == nullptr || doc->fullWave()->frequencies == QList<double>{2e9});
         QCOMPARE(doc->frequenciesToSolve(), 0);
 
-        // A port that asks for a de-embedding: solved at its face, and said.
+        // A port that asks for a de-embedding: its own discontinuity taken
+        // out by two strips of its feed, its reference plane moved 20 µm in,
+        // and said - in the Results, the solve's lines and the export.
         doc->solve();
         QVERIFY(doc->waitForSolved(300000));
         QVERIFY(doc->fullWave() != nullptr && doc->fullWave()->ok());
@@ -1753,7 +1755,55 @@ private slots:
         QVERIFY(doc->fullWave() == nullptr);
         doc->solve();
         QVERIFY(doc->waitForSolved(300000));
-        QVERIFY2(says(doc->fullWaveSummary(), "de-embedding"), qPrintable(doc->fullWaveSummary().join(" | ")));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(says(doc->fullWaveSummary(), "P1 de-embedded") && says(doc->fullWaveSummary(), " in from its edge"),
+                 qPrintable(doc->fullWaveSummary().join(" | ")));
+        QVERIFY(doc->fullWave()->deembedding.value(0).done && !doc->fullWave()->deembedding.value(1).done);
+        QCOMPARE(doc->fullWave()->deembedding.value(0).shift, 20e-6);
+        QCOMPARE(doc->fullWave()->zSolved.size(), doc->fullWave()->z.size());
+        QVERIFY2(says(doc->fullWave()->lines, "Two strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
+        {
+            QString why;
+            const QString text = doc->exportText(RF25Doc::ExportRequest(), &why);
+            QVERIFY2(text.contains(QStringLiteral("P1's 20 µm in from its edge along its feed"))
+                         && text.contains(QStringLiteral("P2's at the centres of the cells it drives")),
+                     qPrintable(text.left(900)));
+            // Touchstone 2.0 through the export's own Version: each port into
+            // its own reference.
+            const QString ts = doc->model().root.child(QStringLiteral("rf_exports"))->children.front().tag;
+            QVERIFY(doc->editNode(ts, [](rf::Node& n) { n.props.insert(QStringLiteral("version"), QStringLiteral("2.0")); },
+                                  QStringLiteral("version")));
+            RF25Doc::ExportRequest asked;
+            QVERIFY(doc->exportRequest(ts, &asked, &why) && asked.version2);
+            QVERIFY2(doc->exportText(asked, &why).contains(QStringLiteral("[Reference] 50 50")), qPrintable(why));
+        }
+        // Moved along a line given instead: no strips solved, the port's own
+        // discontinuity left in, and said; a line that is none, refused.
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("along"), QStringLiteral("line"));
+            n.props.insert(QStringLiteral("line_z0"), QStringLiteral("50"));
+            n.props.insert(QStringLiteral("line_eps"), QStringLiteral("6.5"));
+        }, QStringLiteral("along a line")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(says(doc->fullWaveSummary(), "along a given line of 50 Ohm") && says(doc->fullWaveSummary(), "discontinuity left in"),
+                 qPrintable(doc->fullWaveSummary().join(" | ")));
+        QVERIFY2(!says(doc->fullWave()->lines, "Two strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("line_eps"), QStringLiteral("0.5")); },
+                              QStringLiteral("no line")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("is none")), qPrintable(doc->solveProblem()));
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("along"), QStringLiteral("feed"));
+            n.props.insert(QStringLiteral("line_eps"), QStringLiteral("1"));
+        }, QStringLiteral("along the feed")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
 
         // A port's metal and the way it faces reach the solve: facing +y,
         // P1 drives the strip's long side, not its end; on a metal that is

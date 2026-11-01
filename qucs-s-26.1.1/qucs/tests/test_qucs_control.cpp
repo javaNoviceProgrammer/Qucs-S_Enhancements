@@ -2613,6 +2613,33 @@ private slots:
         QVERIFY(written.open(QIODevice::ReadOnly));
         const QString file = QString::fromUtf8(written.readAll());
         QVERIFY2(file.contains(QStringLiteral("! Ports: 1 In, 2 Out")) && file.contains(QStringLiteral("# Hz S RI R 50")), qPrintable(file.left(400)));
+        // Touchstone 2.0, each port into its own reference; a version that is none.
+        const QJsonObject wrote2 =
+            json(call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave2.s2p"}, {"version", "2.0"}}, 120000)).toObject();
+        QCOMPARE(wrote2.value("ports").toInt(), 2);
+        QFile written2(ws + "/rf/wave2.s2p");
+        QVERIFY(written2.open(QIODevice::ReadOnly));
+        const QString file2 = QString::fromUtf8(written2.readAll());
+        QVERIFY2(file2.contains(QStringLiteral("[Version] 2.0")) && file2.contains(QStringLiteral("[Reference] 50 50"))
+                     && file2.contains(QStringLiteral("[End]")),
+                 qPrintable(file2.left(600)));
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"version", "3"}}, 60000)));
+
+        // A port that asks for its own discontinuity to be taken out: said
+        // in its answer - where its reference plane is, its feed's line, the
+        // discontinuity - and the solve's own checks beside the de-embedded.
+        qucs_s::rf25::Model calibrated = m;
+        calibrated.ports().children.front().props.insert(QStringLiteral("calibrate"), true);
+        QVERIFY(put(ws + "/rf/wave3.qrf25", calibrated.toJson()));
+        const QJsonObject de = json(call("rf25_solve", {{"path", ws + "/rf/wave3.qrf25"}, {"solver", "full_wave"},
+                                                        {"frequency", "3[GHz]"}}, 300000)).toObject();
+        const QJsonObject in = de.value("ports").toArray().at(0).toObject().value("de-embedded").toObject();
+        QVERIFY2(in.value("reference plane").toString() == QStringLiteral("at its edge") && in.value("line impedance").toDouble() > 30
+                     && in.value("line eps_eff").toDouble() > 5 && in.value("shunt C").toDouble() > 0
+                     && in.value("discontinuity taken out").toBool() && in.value("moved along").toString() == QStringLiteral("its feed"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(de.value("ports").toArray()).toJson(QJsonDocument::Compact))));
+        QVERIFY(!de.value("ports").toArray().at(1).toObject().contains("de-embedded"));
+        QVERIFY(de.value("checks").toObject().contains("passive as solved"));
 
         // A solver that is none.
         QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "sideways"}}, 60000)));

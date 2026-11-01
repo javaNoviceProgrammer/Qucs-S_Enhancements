@@ -131,7 +131,7 @@ Complex remainderOver(const WaveGreen& g, const QRectF& rect, const QPointF& at,
 /// Each of a port's cells' share of the face it drives: the length of its
 /// side on the face's line over all of theirs - or, a port on no face, the
 /// one cell's whole.
-QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QPointF along)
+QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QPointF along, double* whole = nullptr)
 {
     QList<double> lengths(cells.size(), 0.0);
     const double n = std::hypot(along.x(), along.y());
@@ -151,6 +151,7 @@ QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QP
             sum += lengths.at(k);
         }
     }
+    if (whole != nullptr) *whole = sum;
     if (!(sum > 0)) return QList<double>(cells.size(), 1.0 / std::max<qsizetype>(1, cells.size()));
     for (double& l : lengths) l /= sum;
     return lengths;
@@ -250,20 +251,6 @@ struct Via {
     double side = 0;          ///< its cross-section's side, m (the square of its area)
     double gmd = 0;           ///< its cross-section's mean distance with itself, m
 };
-
-/// How high conductor \a name sits in \a stack, m: the dielectrics below it
-/// summed, the ground at nought wherever the tree lists it. -1 where it is
-/// no conductor of the stack.
-double metalHeight(const Stack& stack, const QString& name)
-{
-    if (stack.isGround(name)) return 0;
-    double z = 0;
-    for (const Layer& l : stack.layers) {
-        if (l.name == name || l.tag == name) return !l.isConductor() ? -1.0 : l.kind == Layer::Ground ? 0.0 : z;
-        if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness;
-    }
-    return -1;
-}
 
 /// A via run as the mesh makes it, before the solve numbers its cells.
 struct ViaRun {
@@ -642,6 +629,17 @@ QString num(double v)
 
 } // namespace
 
+double metalHeight(const Stack& stack, const QString& name)
+{
+    if (stack.isGround(name)) return 0;
+    double z = 0;
+    for (const Layer& l : stack.layers) {
+        if (l.name == name || l.tag == name) return !l.isConductor() ? -1.0 : l.kind == Layer::Ground ? 0.0 : z;
+        if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness;
+    }
+    return -1;
+}
+
 Complex sheetImpedance(double sigma, double thickness, double frequency)
 {
     // Half the slab of half the thickness: the current divides between the
@@ -807,6 +805,8 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     // internal port the cell under it, against the ground or against the
     // cell under it on another metal.
     c.drive = MatrixC::Zero(nc, np);
+    out.faceWidths = QList<double>(np, 0.0);
+    out.faceMetals = QStringList(QList<QString>(np));
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -840,8 +840,13 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             out.problems << tr("%1, at %2, %3 µm, is on no cell a current reaches.").arg(name, x, y);
             return out;
         }
-        const QList<double> shares = sharesOf(mesh, face, on, along);
+        double faceWidth = 0;
+        const QList<double> shares = sharesOf(mesh, face, on, along, &faceWidth);
         for (int k = 0; k < face.size(); ++k) c.drive(nodeOf.value(face.at(k)), p) += shares.at(k);
+        if (along != QPointF(0, 0)) {
+            out.faceWidths[p] = faceWidth;
+            out.faceMetals[p] = mesh.cells.at(face.first()).layer;
+        }
         if (along != QPointF(0, 0))
             out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm.").arg(name).arg(face.size()).arg(x, y);
         else
@@ -1000,6 +1005,8 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                             "be rounding.")
                              .arg(frequencies.at(k) / 1e9, 0, 'g', 4).arg(a.rcond, 0, 'g', 2);
     }
+    out.solvedAsymmetry = out.asymmetry;
+    out.solvedGain = out.gain;
     out.geometry = c.runs;
     out.ends = ends;
     out.lines << tr("The Green's functions of %1 pair(s) of heights, tabulated to %2 mm at each frequency.")
@@ -1013,15 +1020,18 @@ QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool 
     if (k < 0 || k >= solved.currents.size() || port < 0 || port >= solved.currents.at(k).size()) return out;
     // The ports' currents: an ampere into this one; or, ended, what a source
     // of its own reference r sends - an EMF of 2 sqrt(r), a wave of a watt -
-    // with each of the others ended in its own: (Z + R) i = 2 sqrt(r) e.
+    // with each of the others ended in its own: (Z + R) i = 2 sqrt(r) e. At
+    // the ports as solved, which is what the currents are of, de-embedded
+    // or not.
     const QList<QList<Complex>>& each = solved.currents.at(k);
+    const QList<QList<QList<Complex>>>& zAt = solved.zSolved.isEmpty() ? solved.z : solved.zSolved;
     const int np = int(each.size());
     QList<Complex> drive(np, Complex(0, 0));
     if (!terminated) {
         drive[port] = 1.0;
     } else {
-        if (k >= solved.z.size() || solved.references.size() != np) return out;
-        MatrixC a = matrixOf(solved.z.at(k));
+        if (k >= zAt.size() || solved.references.size() != np) return out;
+        MatrixC a = matrixOf(zAt.at(k));
         Eigen::VectorXcd e = Eigen::VectorXcd::Zero(np);
         for (int q = 0; q < np; ++q) a(q, q) += solved.references.at(q);
         e(port) = 2 * std::sqrt(solved.references.at(port));
@@ -1069,9 +1079,15 @@ QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool 
     return out;
 }
 
-QString touchstoneOf(const FullWave& solved, double reference, const QStringList& comments)
+namespace {
+
+/// A Touchstone file's head and data: \a comments, the ports, then
+/// \a keywords (the option line among them) and each frequency's \a s, one
+/// port's S11 S21 S12 S22 in that order, more ports' by rows, four pairs
+/// to a line - which Touchstone 1.1 asks and 2.0 allows.
+QString touchstoneText(const FullWave& solved, const QList<QList<QList<Complex>>>& s, const QStringList& comments,
+                       const QString& keywords, const QString& end)
 {
-    if (!solved.ok() || !(reference > 0)) return {};
     const int np = int(solved.portNames.size());
     QString out;
     for (const QString& comment : comments)
@@ -1081,15 +1097,15 @@ QString touchstoneOf(const FullWave& solved, double reference, const QStringList
     out += QStringLiteral("! Ports: %1\n").arg(ports.join(QStringLiteral(", ")));
     out += np == 2 ? QStringLiteral("! f  S11 (re, im)  S21  S12  S22\n")
                    : QStringLiteral("! f, then the S-matrix by rows (re, im), four to a line\n");
-    out += QStringLiteral("# Hz S RI R %1\n").arg(num(reference));
+    out += keywords;
     const auto pair = [](Complex v) { return QLatin1Char(' ') + num(v.real()) + QLatin1Char(' ') + num(v.imag()); };
     for (int k = 0; k < solved.frequencies.size(); ++k) {
-        const QList<QList<Complex>> s = scatteringOf(solved.z.at(k), reference);
+        const QList<QList<Complex>>& m = s.at(k);
         QString line = num(solved.frequencies.at(k));
         if (np <= 2) {
             // One port: S11; two: S11 S21 S12 S22, Touchstone's own order.
-            if (np == 1) line += pair(s[0][0]);
-            else line += pair(s[0][0]) + pair(s[1][0]) + pair(s[0][1]) + pair(s[1][1]);
+            if (np == 1) line += pair(m[0][0]);
+            else line += pair(m[0][0]) + pair(m[1][0]) + pair(m[0][1]) + pair(m[1][1]);
             out += line + QLatin1Char('\n');
             continue;
         }
@@ -1100,12 +1116,40 @@ QString touchstoneOf(const FullWave& solved, double reference, const QStringList
                     out += line + QLatin1Char('\n');
                     line.clear();
                 }
-                line += pair(s[i][j]);
+                line += pair(m[i][j]);
             }
             out += line + QLatin1Char('\n');
         }
     }
-    return out;
+    return out + end;
+}
+
+} // namespace
+
+QString touchstoneOf(const FullWave& solved, double reference, const QStringList& comments)
+{
+    if (!solved.ok() || !(reference > 0)) return {};
+    QList<QList<QList<Complex>>> s;
+    for (const QList<QList<Complex>>& z : solved.z) s << scatteringOf(z, reference);
+    return touchstoneText(solved, s, comments, QStringLiteral("# Hz S RI R %1\n").arg(num(reference)), QString());
+}
+
+QString touchstone2Of(const FullWave& solved, const QStringList& comments)
+{
+    if (!solved.ok()) return {};
+    const int np = int(solved.portNames.size());
+    QStringList references;
+    for (const double r : solved.references) references << num(r);
+    // (The option line's R a default the [Reference] keyword then gives each
+    //  port its own of; a two-port's order said, as 2.0 asks.)
+    QString keywords = QStringLiteral("[Version] 2.0\n# Hz S RI R %1\n[Number of Ports] %2\n")
+                           .arg(num(solved.references.value(0, 50)))
+                           .arg(np);
+    if (np == 2) keywords += QStringLiteral("[Two-Port Data Order] 21_12\n");
+    keywords += QStringLiteral("[Number of Frequencies] %1\n[Reference] %2\n[Network Data]\n")
+                    .arg(solved.frequencies.size())
+                    .arg(references.join(QLatin1Char(' ')));
+    return touchstoneText(solved, solved.s, comments, keywords, QStringLiteral("[End]\n"));
 }
 
 } // namespace qucs_s::rf25

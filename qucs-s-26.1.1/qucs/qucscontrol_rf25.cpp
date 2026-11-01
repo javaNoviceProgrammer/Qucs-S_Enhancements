@@ -104,6 +104,28 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         port.insert(QStringLiteral("name"), w.portNames.at(p));
         port.insert(QStringLiteral("reference impedance"), w.references.at(p));
         port.insert(QStringLiteral("drives"), w.portsSaid.value(p));
+        // Its own discontinuity taken out, at the top of the sweep: where
+        // its reference plane is, the line of its feed, and the
+        // discontinuity as a shunt C at its face and a series L at the port.
+        const PortDeembedding d = w.deembedding.value(p);
+        if (d.done) {
+            QJsonObject de;
+            de.insert(QStringLiteral("reference plane"),
+                      d.shift == 0 ? QStringLiteral("at its edge")
+                                   : QStringLiteral("%1 m %2 from its edge").arg(std::abs(d.shift)).arg(d.shift > 0 ? "in" : "out"));
+            de.insert(QStringLiteral("shift"), d.shift);
+            de.insert(QStringLiteral("discontinuity taken out"), d.calibrated);
+            de.insert(QStringLiteral("moved along"), d.givenLine ? QStringLiteral("a given line") : QStringLiteral("its feed"));
+            de.insert(QStringLiteral("line impedance"), d.impedance.real());
+            de.insert(QStringLiteral("line eps_eff"), d.epsEff);
+            if (d.calibrated) {
+                de.insert(QStringLiteral("line dB/m"), 20 / std::log(10.0) * d.alpha);
+                de.insert(QStringLiteral("shunt C"), d.shuntC);
+                de.insert(QStringLiteral("series L"), d.seriesL);
+                de.insert(QStringLiteral("calibration strip"), d.length * 1e-6);
+            }
+            port.insert(QStringLiteral("de-embedded"), de);
+        }
         ports.append(port);
     }
     out.insert(QStringLiteral("ports"), ports);
@@ -121,6 +143,12 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     checks.insert(QStringLiteral("asymmetry"), w.asymmetry);
     checks.insert(QStringLiteral("passive"), w.gain <= 1e-6);
     checks.insert(QStringLiteral("most returned"), 1 + w.gain);
+    // (A de-embedding can leave what its strips and the structure's own feed
+    //  differ by: the solve's own checks beside it.)
+    if (!w.zSolved.isEmpty()) {
+        checks.insert(QStringLiteral("passive as solved"), w.solvedGain <= 1e-6);
+        checks.insert(QStringLiteral("reciprocal as solved"), w.solvedAsymmetry <= 1e-9);
+    }
     if (brief) {
         QJsonObject few;
         few.insert(QStringLiteral("frequency"), w.frequencies.at(k));
@@ -589,6 +617,13 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
         const std::optional<double> given = positiveNumber(args.value(QLatin1String("length")).toString().trimmed(), *model);
         if (!given) return errorResult(tr("'length' is a length above zero (\"800[um]\")."));
         what.length = *given;
+    }
+    if (args.contains(QLatin1String("version"))) {
+        const QString version = args.value(QLatin1String("version")).toString().trimmed();
+        if (version != QLatin1String("1.1") && version != QLatin1String("2.0"))
+            return errorResult(tr("'version' is \"1.1\" (every port into one reference, what a schematic's S-parameter "
+                                  "file reads) or \"2.0\" (each full-wave port into its own), not \"%1\".").arg(version));
+        what.version2 = version == QLatin1String("2.0");
     }
     if (args.contains(QLatin1String("impedance"))) {
         const std::optional<double> given = positiveNumber(args.value(QLatin1String("impedance")).toString().trimmed(), *model);
