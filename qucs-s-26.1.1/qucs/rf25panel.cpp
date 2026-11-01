@@ -739,10 +739,17 @@ void RF25Panel::showSettings()
             did << tr("%1 shape(s) sent to a layer of the stack, %2 left out by the map.")
                        .arg(processed->report.read).arg(processed->report.ignored);
     } else if (n->type == QLatin1String("rf_results")) {
-        // What the solve found, where there is one: the capacitance of
-        // each net, and each as a line.
+        // What the solve found, where there is one: the ports' S of a
+        // full-wave solve, or the capacitance of each net and each as a line.
         if (a_doc->isSolving()) {
-            did << tr("Solving…");
+            did << (a_doc->frequenciesToSolve() > 0 ? tr("Solving full-wave: %1 of %2 frequencies…")
+                                                          .arg(a_doc->frequenciesSolved())
+                                                          .arg(a_doc->frequenciesToSolve())
+                                                    : tr("Solving…"));
+        } else if (a_doc->fullWave() && a_doc->fullWave()->ok()) {
+            did = a_doc->fullWave()->lines;
+            did += a_doc->fullWaveSummary();
+            if (!a_doc->currentsSaid().isEmpty()) did << a_doc->currentsSaid();
         } else if (a_doc->extraction() && a_doc->extraction()->ok()) {
             did = a_doc->solvedLines();
             did += a_doc->lineSummary();
@@ -751,7 +758,10 @@ void RF25Panel::showSettings()
         } else if (!a_doc->solveProblem().isEmpty()) {
             cannot << a_doc->solveProblem();
         } else {
-            did << tr("Nothing is solved yet: the tab's Solve finds the capacitance of the conductors.");
+            did << (a_doc->studyIsFullWave() ? tr("Nothing is solved yet: the tab's Solve finds the ports' S at the "
+                                                  "study's frequencies.")
+                                             : tr("Nothing is solved yet: the tab's Solve finds the capacitance of the "
+                                                  "conductors."));
         }
     }
     if (a_doc->isPreparing() && itsOwn) {
@@ -765,6 +775,40 @@ void RF25Panel::showSettings()
         report->setWordWrap(true);
         report->setTextInteractionFlags(Qt::TextSelectableByMouse);
         v->addWidget(report);
+    }
+    // A full-wave solve's currents: whether they are drawn, of which port
+    // driven alone, at which of its frequencies.
+    const std::shared_ptr<const FullWave> wave = a_doc->fullWave();
+    if (n->type == QLatin1String("rf_results") && !a_doc->isSolving() && wave && wave->ok()) {
+        auto* row = new QWidget(a_form);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        auto* shown = new QCheckBox(tr("Draw the currents, driven at"), row);
+        shown->setObjectName(QStringLiteral("rfCurrentsShown"));
+        shown->setChecked(a_doc->currentsShown());
+        auto* port = new QComboBox(row);
+        port->setObjectName(QStringLiteral("rfCurrentsPort"));
+        port->addItems(wave->portNames);
+        port->setCurrentIndex(std::clamp(a_doc->currentsPort(), 0, int(wave->portNames.size()) - 1));
+        auto* at = new QComboBox(row);
+        at->setObjectName(QStringLiteral("rfCurrentsFrequency"));
+        for (const double f : wave->frequencies) at->addItem(tr("%1 GHz").arg(f / 1e9, 0, 'g', 4));
+        const int last = int(wave->frequencies.size()) - 1;
+        at->setCurrentIndex(a_doc->currentsFrequency() < 0 || a_doc->currentsFrequency() > last ? last : a_doc->currentsFrequency());
+        h->addWidget(shown);
+        h->addWidget(port);
+        h->addWidget(new QLabel(tr("at"), row));
+        h->addWidget(at, 1);
+        connect(shown, &QCheckBox::toggled, this, [this](bool on) {
+            if (a_doc) a_doc->setCurrentsShown(on);
+        });
+        connect(port, qOverload<int>(&QComboBox::activated), this, [this, at](int index) {
+            if (a_doc) a_doc->setCurrentsOf(index, at->currentIndex());
+        });
+        connect(at, qOverload<int>(&QComboBox::activated), this, [this, port](int index) {
+            if (a_doc) a_doc->setCurrentsOf(port->currentIndex(), index);
+        });
+        v->addWidget(row);
     }
     // What is missing, where it is about this node: the stack's problems
     // under the stack, the whole model's under the model.

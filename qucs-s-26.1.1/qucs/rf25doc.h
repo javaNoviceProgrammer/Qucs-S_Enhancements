@@ -17,6 +17,7 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "qucsdoc.h"
+#include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
@@ -82,13 +83,12 @@ private:
 /*!
  * An RF 2.5D model in a tab. The model (the tree the RF 2.5D panel shows)
  * is changed through setModel() or editNode(): each change a step of Undo.
- * Nothing is solved in this build - phase A of
- * docs/proposals/2026-10-23-rf-2p5d-moment-method.md is the document, the
- * stack and the layout -, so the work it does in the background is reading
- * the layout file the model names and then making of it what the solver
- * would be given: the shapes processed and divided into cells, with the
- * unknowns counted. A large GDSII file never holds the window, and
- * isBusy() is true while either runs.
+ * The work it does in the background is reading the layout file the model
+ * names and then making of it what the solver is given - the shapes
+ * processed and divided into cells, with the unknowns counted - at every
+ * edit, and the solve when asked: the quasi-static extraction or the
+ * full-wave one, as the study says. A large GDSII file never holds the
+ * window, and isBusy() is true while the first two run.
  */
 class RF25Doc : public QFrame, public QucsDoc
 {
@@ -182,15 +182,35 @@ public:
     // every edit because they cost nothing, this is asked for: a dense
     // matrix of the unknowns is cubic work, and a user says when.
     /// The capacitance of the model as last solved, or null (never
-    /// solved, or the model changed since).
+    /// solved, solved full-wave, or the model changed since).
     std::shared_ptr<const qucs_s::rf25::Extraction> extraction() const { return a_extraction; }
+    /// The ports' Z and S at each of the study's frequencies, and the
+    /// currents, as last solved full-wave; or null (never solved so, solved
+    /// quasi-statically, or the model changed since). One of this and
+    /// extraction() is what a solve leaves, never both.
+    std::shared_ptr<const qucs_s::rf25::FullWave> fullWave() const { return a_fullWave; }
+    /// Whether the study asks for the full-wave solve (its Solver).
+    bool studyIsFullWave() const;
     /// Solves it, in the background, on the shapes and the mesh as they
-    /// stand. A solve going on is let go. Nothing happens where there is
-    /// no mesh to solve on; solveProblem() then says why.
+    /// stand, by the solver the study names. A solve going on is let go.
+    /// Nothing happens where there is no mesh to solve on; solveProblem()
+    /// then says why.
     /// While the shapes and the mesh are still to be made of an edit, or
     /// being made, it waits for them and starts when they are: a solve of
     /// the mesh before would be thrown away when they were done.
     void solve();
+    /// What a solve may be asked to be in place of what the study says - a
+    /// tool's question, which must leave the model as it was.
+    struct SolveRequest {
+        QString solver;              ///< "quasi_static" or "full_wave"; empty: the study's
+        QList<double> frequencies;   ///< a full-wave solve's, Hz; empty: the study's sweep
+    };
+    /// solve(), as \a request says.
+    void solveWith(const SolveRequest& request);
+    /// How far a full-wave solve going on has got: frequencies solved, of
+    /// how many. Nought of nought where none is going on.
+    int frequenciesSolved() const;
+    int frequenciesToSolve() const;
     /// Lets a solve going on go, or one waiting for the mesh: its result is
     /// dropped.
     void stopSolving();
@@ -220,6 +240,11 @@ public:
     /// referred to it; at zero, a lone line into its own impedance and a
     /// coupled set into 50 Ohm. Empty where nothing was solved.
     QStringList sParameterSummary(double reference = 0) const;
+    /// What the full-wave solve found, for the Results node and the notes:
+    /// its ports, each port's S at the top of the sweep in its own
+    /// reference, and whether the answer is reciprocal and passive. Empty
+    /// where nothing was solved full-wave.
+    QStringList fullWaveSummary() const;
     /// The loop's inductance as last solved, or null: nothing solved, the
     /// model changed since, or it has not the two ports a loop wants.
     std::shared_ptr<const qucs_s::rf25::Inductance> inductance() const { return a_inductance; }
@@ -235,7 +260,7 @@ public:
     /// these and a tool may give one outright, so that the two have one
     /// path to the file between them and cannot drift apart.
     struct ExportRequest {
-        bool coupled = false;   ///< every net as a 2N-port, rather than one as a two-port
+        bool coupled = false;   ///< every net as a 2N-port, rather than one as a two-port (a quasi-static solve's)
         QString net;            ///< which net, for a two-port (empty: the first)
         double length = 0;      ///< m (0: the length that was solved)
         double impedance = 50;  ///< the ports' reference, Ohm
@@ -265,6 +290,20 @@ public:
     void setMeshShown(bool shown);
     QToolButton* processedButton() const { return a_showProcessedButton; }
     QToolButton* meshButton() const { return a_showMeshButton; }
+    /// Whether a full-wave solve's current density is drawn over the
+    /// layout: with port \a currentsPort() driven by a source of its own
+    /// reference and the others ended in theirs, at the
+    /// currentsFrequency()'th of its frequencies (-1: the last). Kept for
+    /// the next model opened, the port and the frequency for this one.
+    bool currentsShown() const { return a_showCurrents; }
+    void setCurrentsShown(bool shown);
+    int currentsPort() const { return a_currentsPort; }
+    int currentsFrequency() const { return a_currentsFrequency; }
+    void setCurrentsOf(int port, int frequency);
+    QToolButton* currentsButton() const { return a_showCurrentsButton; }
+    /// What the current density drawn is of, and its range: for the panel.
+    /// Empty where none is drawn.
+    QString currentsSaid() const { return a_currentsSaid; }
 
     // What is shown.
     qucs_s::layout::LayoutView* view() const { return a_view; }
@@ -334,6 +373,10 @@ private:
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
+    std::shared_ptr<const qucs_s::rf25::FullWave> a_fullWave;
+    QStringList a_waveNotes;       ///< what reading the ports said (a de-embedding not done...)
+    SolveRequest a_solveRequest;   ///< the last asked for, for one waiting for the mesh
+    QTimer* a_progress = nullptr;  ///< a full-wave solve's frequencies counted while it runs
     std::shared_ptr<const qucs_s::rf25::Inductance> a_inductance;
     bool a_lastChangeRead = false;
     QString a_portsSaid;
@@ -345,11 +388,16 @@ private:
     bool a_solveWhenPrepared = false;
     bool a_showProcessed = true;
     bool a_showMesh = false;
+    bool a_showCurrents = false;
+    int a_currentsPort = 0;
+    int a_currentsFrequency = -1;
+    QString a_currentsSaid;
 
     QToolButton* a_fit = nullptr;
     QToolButton* a_reread = nullptr;
     QToolButton* a_showProcessedButton = nullptr;
     QToolButton* a_showMeshButton = nullptr;
+    QToolButton* a_showCurrentsButton = nullptr;
     QToolButton* a_solveButton = nullptr;
     QLabel* a_layoutLabel = nullptr;
     QSplitter* a_splitter = nullptr;

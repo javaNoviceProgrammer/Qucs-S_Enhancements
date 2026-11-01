@@ -95,7 +95,12 @@
 #include <QClipboard>
 #include <QStatusBar>
 
+#include <gdstk/gdstk.hpp>
+
 using qucs_s::control::renameComponentIn;
+
+// gdstk's Vec2 is a union of {x, y} and others: {1, 2} is one, braces or not.
+#pragma GCC diagnostic ignored "-Wmissing-braces"
 
 namespace {
 
@@ -103,6 +108,22 @@ struct MainGuard {
     explicit MainGuard(QucsApp* app) { QucsMain = app; }
     ~MainGuard() { QucsMain = nullptr; }
 };
+
+/// A GDSII file of one strip \a length by \a width µm on layer 1/0.
+bool writeStrip(const QString& path, double length, double width)
+{
+    gdstk::Library lib = {};
+    lib.init("STRIP", 1e-6, 1e-9);
+    auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+    cell->init("TOP");
+    lib.cell_array.append(cell);
+    auto* strip = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+    *strip = gdstk::rectangle(gdstk::Vec2{0, 0}, gdstk::Vec2{length, width}, gdstk::make_tag(1, 0));
+    cell->polygon_array.append(strip);
+    const bool ok = lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
+    lib.free_all();
+    return ok;
+}
 
 } // namespace
 
@@ -120,6 +141,21 @@ class TestQucsControl : public QObject
     }
     static bool failed(const QJsonObject& r) { return r.value("isError").toBool(); }
     static QString text(const QJsonObject& r) { return QucsControl::textOf(r); }
+    /// Closes the documents under \a folder, their changes thrown away. Not
+    /// closeAllFiles(): an earlier test's untitled schematic, changed, is
+    /// asked after, and the question waits a minute for an answer that never
+    /// comes - the RF tests, which did so, were a third of this suite.
+    void closeUnder(const QString& folder)
+    {
+        const QString root = QFileInfo(folder).canonicalFilePath();
+        QStringList names;
+        for (QucsDoc* doc : app->allDocuments()) {
+            const QString name = doc->getDocName();
+            if (!name.isEmpty() && !root.isEmpty() && QFileInfo(name).canonicalFilePath().startsWith(root + QLatin1Char('/')))
+                names << name;
+        }
+        for (const QString& name : std::as_const(names)) call("close_document", {{"path", name}, {"unsaved", "discard"}}, 30000);
+    }
     static QJsonValue json(const QJsonObject& r)
     {
         // (The first text: a note may follow it - what changed since the
@@ -2480,7 +2516,122 @@ private slots:
         const QJsonObject wrongThree = call("rf25_inductance", {{"path", ws + "/rf/plain.sch"}}, 60000);
         QVERIFY(failed(wrongThree));
         QVERIFY2(text(wrongThree).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrongThree)));
-        app->closeAllFiles();
+        closeUnder(ws + "/rf");
+    }
+
+    // rf25_solve's full-wave solver, asked for by the tool for one solve
+    // alone: the ports' S and Z, the sweep and the checks; rf25_export of
+    // the ports after it; and rf25_inductance's loop found whatever the
+    // study's solver.
+    void anRf25ModelIsSolvedFullWaveThroughItsTool()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rf"));
+        QVERIFY(writeStrip(ws + "/rf/strip.gds", 1000, 50));
+        // 1000 by 50 µm on 100 µm of 9.8 over a ground, a port at each end.
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (qucs_s::rf25::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("100[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("9.8"));
+            }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("strip.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        QCOMPARE(rows.size(), 1);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("cells_across"), 3);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+        for (const QPair<const char*, const char*>& at : {qMakePair("0", "In"), qMakePair("1000[um]", "Out")}) {
+            qucs_s::rf25::Node port = m.make(QStringLiteral("rf_edge_port"));
+            port.label = QLatin1String(at.second);
+            port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+            port.props.insert(QStringLiteral("x"), QLatin1String(at.first));
+            port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
+            QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+        }
+        const auto put = [](const QString& where, const QByteArray& what) {
+            QFile f(where);
+            return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
+        };
+        QVERIFY(put(ws + "/rf/wave.qrf25", m.toJson()));
+
+        // The study says quasi-static; the tool asks for the full wave at 3 GHz alone.
+        const QJsonObject solved =
+            call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "full_wave"}, {"frequency", "3[GHz]"}}, 300000);
+        QVERIFY2(!failed(solved), qPrintable(text(solved)));
+        const QJsonObject out = json(solved).toObject();
+        QCOMPARE(out.value("solver").toString(), QStringLiteral("full wave"));
+        QCOMPARE(out.value("frequencies").toInt(), 1);
+        QCOMPARE(out.value("to").toDouble(), 3e9);
+        const QJsonArray ports = out.value("ports").toArray();
+        QCOMPARE(ports.size(), 2);
+        QCOMPARE(ports.at(0).toObject().value("name").toString(), QStringLiteral("In"));
+        QCOMPARE(ports.at(1).toObject().value("reference impedance").toDouble(), 50.0);
+        QVERIFY2(ports.at(0).toObject().value("drives").toString().contains(QStringLiteral("along the face")),
+                 qPrintable(ports.at(0).toObject().value("drives").toString()));
+        const QJsonObject s = out.value("s matrix").toObject();
+        QCOMPARE(s.value("frequency").toDouble(), 3e9);
+        QCOMPARE(s.value("re").toArray().size(), 2);
+        QCOMPARE(s.value("dB").toArray().at(1).toArray().size(), 2);
+        const double s21 = s.value("dB").toArray().at(1).toArray().at(0).toDouble();
+        QVERIFY2(s21 < 0 && s21 > -3, qPrintable(QString::number(s21)));
+        QVERIFY(out.value("z matrix").toObject().contains("im"));
+        const QJsonArray sweep = out.value("sweep").toArray();
+        QCOMPARE(sweep.size(), 1);
+        for (const char* key : {"S11_dB", "S21_dB", "S12_dB", "S22_dB"}) QVERIFY2(sweep.at(0).toObject().contains(QLatin1String(key)), key);
+        const QJsonObject checks = out.value("checks").toObject();
+        QVERIFY2(checks.value("reciprocal").toBool() && checks.value("passive").toBool(), qPrintable(text(solved)));
+        QVERIFY(out.value("unknowns").toObject().value("runs of current").toInt() > 0);
+        QVERIFY(!out.value("what it did").toArray().isEmpty());
+        // The model is left as it was: its study is still quasi-static, and
+        // nothing was edited.
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QVERIFY(!doc->studyIsFullWave());
+        QVERIFY(!doc->undoStack()->canUndo());
+        // Brief: the ports, the top's S in decibels and the checks.
+        const QJsonObject brief = json(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "full_wave"},
+                                                           {"frequency", "3[GHz]"}, {"brief", true}}, 300000)).toObject();
+        QVERIFY(brief.contains("ports") && brief.contains("checks") && !brief.contains("sweep") && !brief.contains("z matrix"));
+        QVERIFY(brief.value("s matrix").toObject().contains("dB") && !brief.value("s matrix").toObject().contains("re"));
+
+        // The Touchstone of the ports, after the full-wave solve.
+        const QJsonObject wrote = json(call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave.s2p"}}, 120000)).toObject();
+        QCOMPARE(wrote.value("ports").toInt(), 2);
+        QCOMPARE(wrote.value("frequencies").toInt(), 1);
+        QVERIFY2(wrote.value("what it wrote").toString().contains(QStringLiteral("full-wave")), qPrintable(wrote.value("what it wrote").toString()));
+        QFile written(ws + "/rf/wave.s2p");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const QString file = QString::fromUtf8(written.readAll());
+        QVERIFY2(file.contains(QStringLiteral("! Ports: 1 In, 2 Out")) && file.contains(QStringLiteral("# Hz S RI R 50")), qPrintable(file.left(400)));
+
+        // A solver that is none.
+        QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "sideways"}}, 60000)));
+        // The study made full-wave: rf25_solve follows it; rf25_inductance
+        // still finds its loop, by the quasi-static solve it needs.
+        qucs_s::rf25::Node* study = m.root.child(QStringLiteral("rf_study"));
+        QVERIFY(study != nullptr);
+        study->props.insert(QStringLiteral("kind"), QStringLiteral("full_wave"));
+        study->props.insert(QStringLiteral("from"), QStringLiteral("1[GHz]"));
+        study->props.insert(QStringLiteral("to"), QStringLiteral("2[GHz]"));
+        study->props.insert(QStringLiteral("points"), 2);
+        QVERIFY(put(ws + "/rf/wave2.qrf25", m.toJson()));
+        const QJsonObject followed = json(call("rf25_solve", {{"path", ws + "/rf/wave2.qrf25"}, {"brief", true}}, 300000)).toObject();
+        QCOMPARE(followed.value("solver").toString(), QStringLiteral("full wave"));
+        QCOMPARE(followed.value("frequencies").toInt(), 2);
+        const QJsonObject loop = call("rf25_inductance", {{"path", ws + "/rf/wave2.qrf25"}}, 300000);
+        QVERIFY2(!failed(loop), qPrintable(text(loop)));
+        QVERIFY(json(loop).toObject().value("L").toDouble() > 0);
+        closeUnder(ws + "/rf");
     }
 
     // An RF 2.5D model through the window's own tools: its layout framed
@@ -2592,7 +2743,7 @@ private slots:
         const QJsonObject notAModel = call("context_menu", {{"on", QJsonObject{{"node", "Stack"}}}}, 30000);
         QVERIFY(failed(notAModel));
         QVERIFY2(text(notAModel).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(notAModel)));
-        app->closeAllFiles();
+        closeUnder(ws + "/rf");
     }
 
     void theWorkspaceIsListed()
