@@ -29,22 +29,28 @@ off in S11 at 20 GHz, and 0.0025 off in S21.
   kind alone, so internal ports and edge ports counted apart. Two ports of one name are two of one name in a
   Touchstone file too. A node is now named one past the highest of its stem in use by any node: P3, and after P7, P8.
 
+- **A line along x or y over the layout was never drawn.** The view drew an overlay's shape only where its box met
+  what is in sight, and a port's face along an axis has a box of no width, which meets nothing. The ports' names and
+  arrows showed and their bars did not. This was seen in the packaged app's picture, after the tests had passed on
+  the overlays' data alone. A shape's box is now grown by a pixel first, and the test now holds the drawn picture to
+  the ports' colour along a face and a ground.
+
 ## Tested
 
 | Test | What it holds to |
 |---|---|
 | `aPickingModeSaysWhatIsPickedAndSelectsNothing` (`test_layout_doc`) | PickPoint: a click picked at its point, nothing selected, a drag pans; PickBox: a drag picked as its box, to 0.05 µm, a click a point; Escape back to Select, the cursor an arrow again; a label's arrow and text in its colour by its point |
-| `thePortsAreDrawnByTheirNames` (`test_rf25_doc`) | A coplanar line with a coplanar port, a ground-return port and an internal rectangle: three names at the faces' middles, pointing out of them, and at the rectangle's centre; the faces the signal's whole ends; the coplanar port's two grounds beside it on its line, and none for the other; the rectangle; the Ports button hides and shows them |
+| `thePortsAreDrawnByTheirNames` (`test_rf25_doc`) | A coplanar line with a coplanar port and a ground-return port, each at a corner of the signal facing out of its end, and an internal rectangle: three names at the faces' middles, pointing out of them, and at the rectangle's centre; the faces the signal's whole ends; the coplanar port's two grounds beside it on its line, and none for the other; the rectangle; the picture in the ports' colour along a face and a ground; the Ports button hides and shows them |
 | `aPortIsPlacedByHandOnTheLayout` | Through the view, by mouse: a click on a strip's end puts an edge port at its middle, facing +x, on M1, which the panel shows; again on that edge, and near no edge, nothing, each said; undo and redo; drawn at once. A rectangle dragged puts an internal port of its size, within a few µm of the pixels; a click a point one; Escape puts the tool down; the solve drives the rectangle's cells |
 | `anInternalPortOverARectangleDrivesItsCells` (`test_rf25_fullwave`) | Over a line's end, the edge ports' S to 1e-9; a point port more than 3e-4 off; said; over nothing of its metal, refused |
 | `aNewNodeIsNamedPastTheHighestOfItsStem` (`test_rf25_model`) | An internal port after P1 and P2 is P3; after P7, P8; a metal M2 |
 
 ## Broken on purpose
 
-`docs/feature_gaps/2026-11-01-rf25-ports-on-layout/breaks.py` holds sixteen:
+`docs/feature_gaps/2026-11-01-rf25-ports-on-layout/breaks.py` holds seventeen:
 
-- **The view:** an overlay's labels not written; a click in PickPoint selecting rather than picked; a drag in PickBox
-  panning; Escape leaving a picking mode as it is.
+- **The view:** an overlay's labels not written; a line along x or y taken for out of sight; a click in PickPoint
+  selecting rather than picked; a drag in PickBox panning; Escape leaving a picking mode as it is.
 - **Drawn:** an edge port's face found facing any way; a coplanar port's grounds not found; the ports drawn when
   hidden; a port put not drawn till the next preparing.
 - **Placed:** an edge port put facing no way; a second put on an edge one drives; one put however far the click; an
@@ -56,7 +62,8 @@ off in S11 at 20 GHz, and 0.0025 off in S21.
 Fifteen of the sixteen were caught at once. The one that was not let an edge port's face be found facing any way.
 The test's ports sat in the middles of their edges, where only one edge is nearest and a port's facing decides
 nothing; it decides only at a corner, where two edges meet. The test's ports now stand on the signal's corners, each
-facing out of its end, and the break is caught: sixteen of sixteen.
+facing out of its end, and the break is caught. The seventeenth, the line taken for out of sight, is the fault the
+packaged app's picture showed; the test's pixels catch it: seventeen of seventeen.
 
 The full ctest (149) and the scenario script (97 checks) were green, both lints too. Two tests of the tab's that
 counted its overlays now leave the ports out of the count: the processed shapes' test turns them off, and a
