@@ -1738,11 +1738,12 @@ private slots:
     // it away; and a solve asked for by the other solver is that solver's.
     // The phase C check of 1 November, F6, through the tab: an edge port's
     // Return read - a coplanar line's three strips driven from its signal
-    // against the grounds beside it - and what such a port cannot have
-    // said: no calibration strips of a coplanar feed are solved, so one
-    // that asks keeps its own discontinuity. And a lone strip has nothing
-    // beside it to return through, which is said rather than solved.
-    void aCoplanarPortIsReadAndSaysWhatItCannotHave()
+    // against the grounds beside it. One that asks has its own
+    // discontinuity taken out by strips of its coplanar feed, grounds and
+    // all (the recheck of the same afternoon: they were not solved, and it
+    // kept it). And a lone strip has nothing beside it to return through,
+    // which is said rather than solved.
+    void aCoplanarPortIsReadAndItsFeedCalibrated()
     {
         QVERIFY(writeRectangles(path(QStringLiteral("cpw.gds")),
                                 {QRectF(QPointF(0, -50), QPointF(1000, 50)), QRectF(QPointF(0, 100), QPointF(1000, 350)),
@@ -1784,9 +1785,12 @@ private slots:
         QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
         QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("against the conductors beside it")),
                  qPrintable(w->portsSaid.join(" | ")));
-        const QString summary = doc->fullWaveSummary().join(QStringLiteral(" | "));
-        QVERIFY2(summary.contains(QStringLiteral("strips of a coplanar feed")), qPrintable(summary));
-        QVERIFY(!w->deembedding.value(0).done);
+        const QString said = w->lines.join(QStringLiteral(" | "));
+        QVERIFY2(said.contains(QStringLiteral("Two strips of the coplanar feed")) && said.contains(QStringLiteral("no vias"))
+                     && said.contains(QStringLiteral("P1 de-embedded")),
+                 qPrintable(said));
+        QVERIFY(w->deembedding.value(0).done && w->deembedding.value(0).calibrated && w->deembedding.value(0).coplanar);
+        QVERIFY(!w->deembedding.value(1).done);
         // The same port on a lone strip: nothing beside it, said.
         const QString lone = fullWaveLine(QStringLiteral("lone.qrf25"));
         RF25Doc* single = open(lone);

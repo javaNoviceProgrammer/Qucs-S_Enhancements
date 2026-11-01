@@ -62,11 +62,16 @@
  * threads as the machine has and the memory allows.
  *
  * A metal is a sheet with the surface impedance of a slab whose current
- * runs on both its faces, a via a bar with its current on its four faces.
- * What it does NOT do yet: a stack with no ground plane, since the ports
- * are referred to one; a metal's loss beyond what a sheet's crowding at its
- * edges gives (the quasi-static R of phase B is Wheeler's, of the thick
- * cross-section); and a port's own path up from the ground, which carries
+ * runs on both its faces - and more in the cells along its edges, where
+ * the current crowds as close as the metal's thickness lets it (or, thin
+ * beside its skin depth, its own resistance) - a via a bar with its current
+ * on its four faces. What it does NOT do yet: a stack with no ground plane,
+ * since the ports are referred to one; a metal's thickness beyond its
+ * loss - a thick conductor's walls hold field in the air beside them, which
+ * a coplanar line's eps_eff feels (3 µm of copper in 50 µm gaps: QFEM's 2
+ * to 3 % under the sheet's), and a wide strip's current favours its lower
+ * face (a strip three times as wide as it is high loses 7 % more than both
+ * faces alike); and a port's own path up from the ground, which carries
  * no field of its own beyond the vias' correction - in a stack all of
  * vacuum, where a line over its ground hardly radiates, that path's share
  * of the radiation is missed, and S gives back up to a part in 1e4 more than it
@@ -134,11 +139,57 @@ struct PortDeembedding {
     bool givenLine = false;    ///< the shift along a line given, not the feed's
     double shift = 0;          ///< m, the reference plane moved in from the face
     double length = 0;         ///< the shorter calibration strip, the layout's units
+    double longer = 0;         ///< and the longer
+    bool coplanar = false;     ///< its strips a coplanar feed's, grounds and vias with it
+    double firstVia = 0;       ///< the layout's units: where its feed's own line begins, in from the face
+    /// Np/m: the most its strips read its line as giving back - their own
+    /// ends coupling past it - which is then taken as losing nothing; nought
+    /// where they did not.
+    double gave = 0;
     Complex impedance;         ///< the feed line's, Ohm, in the port's own voltage and current
     double epsEff = 0;         ///< its effective permittivity, (beta c0 / w)^2
     double alpha = 0;          ///< its attenuation, Np/m
     double shuntC = 0;         ///< the port's own discontinuity: F at its face,
     double seriesL = 0;        ///< and H at the port
+};
+
+/*!
+ * What strips of an edge port's feed are made of, to take the port's own
+ * discontinuity out (rf25_deembed.h): the face's width on its metal and,
+ * for a coplanar port, the conductors beside it on its edge's line - each
+ * side's gap and width there - and the vias down them, which strips of
+ * the feed must have as it has them: a grounded coplanar line without its
+ * vias is another line, its grounds' own modes free.
+ *
+ * In the port's own frame: across, along the edge's line from the face's
+ * lower end; in, from the face along the feed.
+ */
+struct Feed {
+    QString metal;
+    double width = 0;                  ///< the face's, the layout's units
+    bool coplanar = false;
+    /// Either side of the face along its edge - below its lower end, above
+    /// its upper - the gap to the conductor beside it and that conductor's
+    /// width on the line; nought where there is none.
+    double gap[2] = {0, 0}, ground[2] = {0, 0};
+    /// The first via of each row down the feed, or a wall.
+    struct Via {
+        QString layer;
+        double across0 = 0, across1 = 0, in0 = 0, in1 = 0;
+        bool wall = false;             ///< runs on the whole length of the feed from in0
+    };
+    QList<Via> vias;
+    double pitch = 0;                  ///< the rows' period along the feed; nought: walls, or none
+    /// Why strips cannot have the feed's vias as it has them, where they
+    /// cannot: then it is not calibrated.
+    QString unlike;
+    /// Where the feed's own line begins, in from the face: the centre of
+    /// the nearest first via of a row, or the far start of a wall - nought
+    /// with none. Strips take the port's own discontinuity to there, and
+    /// the line back to the face.
+    double offset() const;
+    /// One text for each feed alike, to share a calibration by.
+    QString key() const;
 };
 
 /// What a long solve is told, and tells: a flag that stops it between
@@ -147,6 +198,9 @@ struct FullWaveControl {
     std::atomic_bool* stop = nullptr;
     std::atomic_int* done = nullptr;
     int threads = 0;           ///< 0: as many as the machine has and the memory allows
+    /// The most runs and cells it sets up a dense solve for; 0: the build's
+    /// own. (Lower, a test meets the limit without a solve of thousands.)
+    int mostUnknowns = 0;
 };
 
 /// What the full-wave solve found.
@@ -166,6 +220,9 @@ struct FullWave {
     /// face.
     QList<double> faceWidths;
     QStringList faceMetals;
+    /// Each edge port's feed, as calibration strips of it are made: a
+    /// coplanar one's grounds and vias with it. Empty for an internal port.
+    QList<Feed> feeds;
     /// Where the ports were de-embedded (rf25_deembed.h): Z as solved, at
     /// the cells the ports drive, which is what their currents are of; and
     /// what each port had. Both empty where none was.
@@ -185,6 +242,8 @@ struct FullWave {
     /// own, beside what a de-embedding leaves.
     double solvedAsymmetry = 0, solvedGain = 0;
     int threads = 1;                 ///< how many it used
+    /// Refused as more runs and cells than a dense solve is set up for.
+    bool tooLarge = false;
     QStringList portsSaid;           ///< what each port drives
     QStringList problems;
     QStringList lines;               ///< what it did, for the panel

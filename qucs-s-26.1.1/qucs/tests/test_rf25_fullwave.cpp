@@ -482,6 +482,52 @@ private slots:
     // The losses: a metal's resistance at low frequency is its sheet's,
     // and at 2 GHz a lossy substrate and a lossy metal attenuate the line
     // as phase B's G and the sheet's resistance where the charge crowds say.
+    // The recheck of 1 November (afternoon): a copper coplanar line lost about
+    // half of what QFEM's thick copper does (39-45 against 77 dB/m at 60
+    // GHz), and more as the mesh was refined - the sheet's edge cells carry
+    // the current crowding to the edge as their average, and lose as that
+    // average. Those cells lose as the crowding the metal's thickness stops
+    // (Holloway and Kuester's stopping distance): a copper microstrip three
+    // micrometres thick at 10 GHz, five skin depths, loses as phase B's
+    // Wheeler R of its thick cross-section says, at four cells across and
+    // at eight alike. (Measured +10.4 % and +5.5 %; the sheet as it was,
+    // 33 % under.)
+    void aMetalsLossIsItsThickEdgesWhereTheCurrentCrowds()
+    {
+        const double h = 100e-6, w = 100;
+        const rf::Stack copper = grounded(9.8, h, 0, 3e-6, 5.8e7);
+        rf::Extraction e;
+        const double f = 10e9;
+        QList<double> alpha;
+        for (const int across : {4, 8}) {
+            const rf::FullWave a = line(copper, 1000, w, across, 100e-6, 4, {f}, across == 4 ? &e : nullptr);
+            const rf::FullWave b = line(copper, 2000, w, across, 100e-6, 4, {f});
+            QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+            // The runs along the strip's edges alone, said: its two outer
+            // rows and the rows across its ends - some a quarter of them at
+            // four across, neither none nor all.
+            const QRegularExpressionMatch edges =
+                QRegularExpression(QStringLiteral("where the current crowds as close as the thickness lets it \\((\\d+) run\\(s\\) along an edge\\)"))
+                    .match(a.lines.join(' '));
+            QVERIFY2(edges.hasMatch(), qPrintable(a.lines.join(" | ")));
+            const double share = edges.captured(1).toDouble() / a.runs;
+            QVERIFY2(share > 0.1 && share < 0.4, qPrintable(QStringLiteral("%1 of %2 runs along an edge").arg(edges.captured(1)).arg(a.runs)));
+            const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, f);
+            const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(b, 0)), 1000e-6, 2000e-6,
+                                         2 * M_PI * f / kC0 * std::sqrt(lp.epsilonEff));
+            alpha << wave.gamma.real();
+        }
+        const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, f);
+        QVERIFY2(lp.problems.isEmpty() && lp.rDc > 0, qPrintable(lp.problems.join(" | ")));
+        const double wheeler = lp.r / (2 * lp.z0);
+        qWarning("10 GHz, 3 um of copper: alpha %.4g Np/m at 4 across, %.4g at 8; Wheeler's R %.4g Ohm/m, alpha %.4g (%.3f, %.3f)",
+                 alpha.at(0), alpha.at(1), lp.r, wheeler, alpha.at(0) / wheeler - 1, alpha.at(1) / wheeler - 1);
+        for (const double a : std::as_const(alpha))
+            QVERIFY2(std::abs(a / wheeler - 1) < 0.13, qPrintable(QStringLiteral("alpha %1 Np/m, Wheeler %2").arg(a).arg(wheeler)));
+        QVERIFY2(std::abs(alpha.at(1) / alpha.at(0) - 1) < 0.07,
+                 qPrintable(QStringLiteral("%1 at four across, %2 at eight").arg(alpha.at(0)).arg(alpha.at(1))));
+    }
+
     void aSubstratesAndAMetalsLossesAreTheirs()
     {
         const double h = 100e-6, w = 100, sigma = 5.8e7, t = 1e-6;

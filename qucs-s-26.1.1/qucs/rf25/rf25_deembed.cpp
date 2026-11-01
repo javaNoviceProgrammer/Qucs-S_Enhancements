@@ -96,9 +96,21 @@ int Calibration::indexOf(double frequency) const
 Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const QString& metal, double width,
                       const QList<double>& frequencies, double micrometre, const FullWaveControl* control, double chosen)
 {
+    Feed feed;
+    feed.metal = metal;
+    feed.width = width;
+    return calibrate(stack, how, top, feed, frequencies, micrometre, control, chosen);
+}
+
+Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const Feed& feed,
+                      const QList<double>& frequencies, double micrometre, const FullWaveControl* control, double chosen)
+{
     Calibration out;
+    const QString& metal = feed.metal;
+    const double width = feed.width;
     out.metal = metal;
     out.width = width;
+    out.feed = feed;
     out.frequencies = frequencies;
     if (!(width > 0) || !std::isfinite(width)) {
         out.problems << tr("A feed of no width cannot be calibrated.");
@@ -113,60 +125,118 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
         out.problems << tr("%1 is no metal over the ground: a feed on it cannot be calibrated.").arg(metal);
         return out;
     }
+    if (!feed.unlike.isEmpty()) {
+        out.problems << tr("Strips of its feed cannot be made like it: %1.").arg(feed.unlike);
+        return out;
+    }
 
     // The strips' length: the ports' near fields reach out over the metal's
     // height and the feed's width, and must not meet, or what is taken for
     // the port's own discontinuity would be the two ports' together. (At
     // four heights they did: a line de-embedded to a thru was 0.4 degrees
-    // out at 20 GHz, and |S11| 4e-3; at eight, 0.005 degrees and 5e-4.)
+    // out at 20 GHz, and |S11| 4e-3; at eight, 0.005 degrees and 5e-4. A
+    // coplanar feed's at a quarter of that read a line of 32 dB/m where it
+    // lost nothing, at 60 GHz.) Where the feed has rows of vias, the line
+    // between the ends' first vias is a whole number of their periods.
     double epsMax = 1;
     for (const Layer& l : stack.layers)
         if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) epsMax = std::max(epsMax, l.epsr);
     const double c0 = 1.0 / std::sqrt(kMu0 * kEps0);
-    const double length = chosen > 0 ? chosen * micrometre : 8 * h + 2 * width * micrometre;   // m
-    out.length = length / micrometre;
-    // A frequency low enough that the shorter strip is a few degrees long,
-    // where its phase has no turn to miss: the others are followed up from it.
-    const double anchor = 0.05 * c0 / (length * std::sqrt(epsMax));
-    QList<double> at = frequencies;
-    std::sort(at.begin(), at.end());
-    at.erase(std::unique(at.begin(), at.end()), at.end());
-    const bool anchored = anchor < at.first();
-    if (anchored) at.prepend(anchor);
-
-    // The two strips, a port at each end facing out, meshed as the structure
-    // was so that the cells at a port are the cells at its own.
+    const double first = chosen > 0 ? chosen : 8 * h / micrometre + 2 * width;   // the layout's units
+    const double offset = feed.offset();
+    double between = 0, length = 0, anchor = 0;
+    QList<double> at;
+    bool anchored = false;
     QList<Chain> chains[2];
-    for (int i = 0; i < 2; ++i) {
-        const double l = out.length * (i + 1);
-        Conductor strip;
-        strip.layer = metal;
-        strip.outline = QPolygonF(QRectF(0, 0, l, width));
-        const Mesh mesh = meshOf({strip}, how, stack, top, micrometre);
-        if (!mesh.problems.isEmpty() || mesh.cells.isEmpty()) {
-            out.problems << tr("A calibration strip of %1 by %2 µm on %3 could not be meshed: %4")
-                                .arg(l, 0, 'g', 4)
-                                .arg(width, 0, 'g', 4)
-                                .arg(metal, mesh.problems.join(QLatin1Char(' ')));
-            return out;
+    // Where the strips at that length are more than a dense solve takes on
+    // this mesh - a coplanar feed's three conductors at eight cells across -
+    // they are cut to a half and then a quarter, and it is said: their ports
+    // the nearer, the line they read the less sure.
+    double whole = 0;
+    for (int attempt = 0;; ++attempt) {
+        const double base = first / double(1 << attempt);
+        between = base - 2 * offset;
+        if (feed.pitch > 0) between = feed.pitch * std::max(1.0, std::ceil(between / feed.pitch - 1e-9));
+        else if (!(between > 0)) between = base;
+        out.length = between;
+        out.strip = 2 * offset + between;
+        if (attempt == 0) whole = out.strip;
+        length = between * micrometre;   // m, the line gamma is of
+        // A frequency low enough that the shorter strip is a few degrees
+        // long, where its phase has no turn to miss: the others are followed
+        // up from it.
+        anchor = 0.05 * c0 / (out.strip * micrometre * std::sqrt(epsMax));
+        at = frequencies;
+        std::sort(at.begin(), at.end());
+        at.erase(std::unique(at.begin(), at.end()), at.end());
+        anchored = anchor < at.first();
+        if (anchored) at.prepend(anchor);
+
+        // The two strips, a port at each end facing out, meshed as the
+        // structure was so that the cells at a port are the cells at its
+        // own: a coplanar feed's grounds beside the signal as at the port,
+        // and their vias as far in from each end as the feed's first, a
+        // period apart. The longer first, which is the one too large if
+        // either is.
+        chains[0].clear();
+        chains[1].clear();
+        bool tooLarge = false;
+        for (const int i : {1, 0}) {
+            const double l = 2 * offset + between * (i + 1);
+            QList<Conductor> parts;
+            const auto rect = [&parts](const QString& layer, double x0, double y0, double x1, double y1) {
+                Conductor c;
+                c.layer = layer;
+                c.outline = QPolygonF(QRectF(QPointF(x0, y0), QPointF(x1, y1)));
+                parts << c;
+            };
+            rect(metal, 0, 0, l, width);
+            if (feed.coplanar) {
+                if (feed.ground[0] > 0) rect(metal, 0, -feed.gap[0] - feed.ground[0], l, -feed.gap[0]);
+                if (feed.ground[1] > 0) rect(metal, 0, width + feed.gap[1], l, width + feed.gap[1] + feed.ground[1]);
+                for (const Feed::Via& v : feed.vias) {
+                    if (v.wall) {
+                        rect(v.layer, v.in0, v.across0, l - v.in0, v.across1);
+                        continue;
+                    }
+                    const double centre = 0.5 * (v.in0 + v.in1), half = 0.5 * (v.in1 - v.in0);
+                    for (double c = centre; c <= l - centre + 1e-6 * l; c += feed.pitch)
+                        rect(v.layer, c - half, v.across0, c + half, v.across1);
+                }
+            }
+            const Mesh mesh = meshOf(parts, how, stack, top, micrometre);
+            if (!mesh.problems.isEmpty() || mesh.cells.isEmpty()) {
+                out.problems << tr("A calibration strip of %1 by %2 µm on %3 could not be meshed: %4")
+                                    .arg(l, 0, 'g', 4)
+                                    .arg(width, 0, 'g', 4)
+                                    .arg(metal, mesh.problems.join(QLatin1Char(' ')));
+                return out;
+            }
+            FullWavePort near, far;
+            near.name = QStringLiteral("A");
+            near.at = QPointF(0, width / 2);
+            near.metal = metal;
+            near.facing = QPointF(-1, 0);
+            near.coplanar = feed.coplanar;
+            far.name = QStringLiteral("B");
+            far.at = QPointF(l, width / 2);
+            far.metal = metal;
+            far.facing = QPointF(1, 0);
+            far.coplanar = feed.coplanar;
+            const FullWave fw = fullWaveOf(mesh, parts, stack, {near, far}, at, micrometre, control);
+            if (fw.tooLarge && attempt < 2 && chosen <= 0) {
+                tooLarge = true;
+                break;
+            }
+            if (!fw.ok()) {
+                out.problems << tr("A calibration strip %1 µm long would not solve: %2")
+                                    .arg(l, 0, 'g', 4)
+                                    .arg(fw.problems.join(QLatin1Char(' ')));
+                return out;
+            }
+            for (const QList<QList<Complex>>& z : fw.z) chains[i] << chainOf(z);
         }
-        FullWavePort near, far;
-        near.name = QStringLiteral("A");
-        near.at = QPointF(0, width / 2);
-        near.metal = metal;
-        near.facing = QPointF(-1, 0);
-        far.name = QStringLiteral("B");
-        far.at = QPointF(l, width / 2);
-        far.metal = metal;
-        far.facing = QPointF(1, 0);
-        const FullWave fw = fullWaveOf(mesh, {strip}, stack, {near, far}, at, micrometre, control);
-        if (!fw.ok()) {
-            out.problems << tr("A calibration strip %1 µm long would not solve: %2")
-                                .arg(l, 0, 'g', 4)
-                                .arg(fw.problems.join(QLatin1Char(' ')));
-            return out;
-        }
-        for (const QList<QList<Complex>>& z : fw.z) chains[i] << chainOf(z);
+        if (!tooLarge) break;
     }
 
     // At each frequency, up from the lowest: E from E E' = T_l T_2l^-1 T_l,
@@ -210,7 +280,10 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
         //  slowly for any strip to put the ports apart: 254 µm of alumina from
         //  20 GHz gave back a percent and more.)
         if (wave.real() < -5e-3) gains << at.at(k);
-        error << e;
+        // (E P ends at the feed's first via: the line taken back from there
+        //  to the face, so that the reference plane is at the face.)
+        const Complex lossless(std::max(0.0, wave.real()) / length, wave.imag() / length);
+        error << (offset > 0 ? times(e, lineOf(lossless, z, -offset * micrometre)) : e);
         gamma << wave / length;
         impedance << z;
     }
@@ -223,13 +296,42 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
 
     const int last = int(at.size()) - 1;
     const double w = 2 * M_PI * at.at(last);
-    out.lines << tr("Two strips of the feed, %1 µm wide on %2, %3 and %4 µm long, solved at the %5 frequency(ies)%6.")
-                     .arg(width, 0, 'g', 4)
-                     .arg(metal)
-                     .arg(out.length, 0, 'g', 4)
-                     .arg(2 * out.length, 0, 'g', 4)
-                     .arg(frequencies.size())
-                     .arg(anchored ? tr(" and at %1 MHz to follow the phase up from").arg(anchor / 1e6, 0, 'g', 3) : QString());
+    const QString following = anchored ? tr(" and at %1 MHz to follow the phase up from").arg(anchor / 1e6, 0, 'g', 3) : QString();
+    if (!feed.coplanar) {
+        out.lines << tr("Two strips of the feed, %1 µm wide on %2, %3 and %4 µm long, solved at the %5 frequency(ies)%6.")
+                         .arg(width, 0, 'g', 4)
+                         .arg(metal)
+                         .arg(out.strip, 0, 'g', 4)
+                         .arg(out.strip + out.length, 0, 'g', 4)
+                         .arg(frequencies.size())
+                         .arg(following);
+    } else {
+        QStringList beside;
+        for (int k = 0; k < 2; ++k)
+            if (feed.ground[k] > 0)
+                beside << tr("%1 µm wide %2 µm from it").arg(feed.ground[k], 0, 'g', 4).arg(feed.gap[k], 0, 'g', 4);
+        int rows = 0, walls = 0;
+        for (const Feed::Via& v : feed.vias) (v.wall ? walls : rows) += 1;
+        QStringList what;
+        if (rows > 0)
+            what << tr("%1 row(s) of vias every %2 µm, the first %3 µm in from each end").arg(rows).arg(feed.pitch, 0, 'g', 4)
+                        .arg(offset, 0, 'g', 4);
+        if (walls > 0) what << tr("%1 wall(s) of vias").arg(walls);
+        const QString vias = what.isEmpty() ? tr("no vias") : what.join(tr(" and "));
+        out.lines << tr("Two strips of the coplanar feed on %1 - the signal %2 µm wide, the conductor(s) beside it %3, "
+                        "%4 - %5 and %6 µm long, their ports coplanar too, solved at the %7 frequency(ies)%8.")
+                         .arg(metal)
+                         .arg(width, 0, 'g', 4)
+                         .arg(beside.join(tr(" and ")), vias)
+                         .arg(out.strip, 0, 'g', 4)
+                         .arg(out.strip + out.length, 0, 'g', 4)
+                         .arg(frequencies.size())
+                         .arg(following);
+        if (offset > 0)
+            out.lines << tr("The port's own discontinuity found to the feed's first via, %1 µm in from its face, where "
+                            "the line its rows make begins; the line taken back from there to the face.")
+                             .arg(offset, 0, 'g', 4);
+    }
     out.lines << tr("At %1 GHz: the line %2 Ohm, eps_eff %3, %4 dB/m; the port's own discontinuity %5 fF at its face and "
                     "%6 pH at the port.")
                      .arg(at.at(last) / 1e9, 0, 'g', 4)
@@ -238,6 +340,12 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
                      .arg(20 / std::log(10.0) * gamma.at(last).real(), 0, 'g', 3)
                      .arg(error.at(last)[2].imag() / w * 1e15, 0, 'g', 3)
                      .arg(error.at(last)[1].imag() / w * 1e12, 0, 'g', 3);
+    if (out.strip < whole)
+        out.lines << tr("Strips of %1 µm, eight heights and twice the width, were more than a dense solve takes on this "
+                        "mesh: they were cut to %2 µm, their ports the nearer and the line they read the less sure. A "
+                        "coarser mesh takes them whole.")
+                         .arg(whole, 0, 'g', 4)
+                         .arg(out.strip, 0, 'g', 4);
     if (!halfWaves.isEmpty())
         out.lines << tr("At %1 GHz the shorter strip is a whole number of half waves long: the line's impedance is "
                         "found poorly there, and a reference plane moved along it with it.")
@@ -264,6 +372,7 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
     out.asymmetry = out.gain = 0;
     out.deembedding = QList<PortDeembedding>(np);
     const int top = int(std::max_element(solved.frequencies.begin(), solved.frequencies.end()) - solved.frequencies.begin());
+    QList<double> gave(np, 0.0);   // Np/m: the most each port's line was read as giving back
     const double c0 = 1.0 / std::sqrt(kMu0 * kEps0);
     for (int k = 0; k < solved.frequencies.size(); ++k) {
         const double f = solved.frequencies.at(k), w = 2 * M_PI * f;
@@ -290,6 +399,16 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                 if (!given) {
                     gamma = each.calibration->gamma.at(i);
                     impedance = each.calibration->impedance.at(i);
+                    // A line gives nothing back: where the strips read it as
+                    // gaining - their own two ends coupling past it, which a
+                    // longer pair of strips reads less of - a plane is moved
+                    // along it as losing nothing (the recheck of 1 November:
+                    // -2 to -6 dB/m of a perfect metal's line at 60 GHz from
+                    // two lines 0.9 mm apart, -1.6 from strips 1.8 mm apart).
+                    if (gamma.real() < 0) {
+                        gave[p] = std::min(gave.at(p), gamma.real());
+                        gamma = Complex(0, gamma.imag());
+                    }
                 }
             }
             const Chain total = each.shift != 0 ? times(e, lineOf(gamma, impedance, each.shift)) : e;
@@ -303,7 +422,10 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                 said.calibrated = calibrated;
                 said.givenLine = given;
                 said.shift = each.shift;
-                said.length = calibrated ? each.calibration->length : 0;
+                said.length = calibrated ? each.calibration->strip : 0;
+                said.longer = calibrated ? each.calibration->strip + each.calibration->length : 0;
+                said.coplanar = calibrated && each.calibration->feed.coplanar;
+                said.firstVia = calibrated ? each.calibration->feed.offset() : 0;
                 said.impedance = impedance;
                 said.epsEff = std::pow(gamma.imag() * c0 / w, 2);
                 said.alpha = gamma.real();
@@ -311,28 +433,50 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                 said.seriesL = e[1].imag() / w;
             }
         }
-        // From [V; I] = F [V'; I'] at each port and V = Z I:
-        // (A - Z C) V' = (Z D - B) I'.
-        const MatrixC z = matrixOf(solved.z.at(k));
-        MatrixC left = -(z * c.asDiagonal());
-        left.diagonal() += a;
-        MatrixC right = z * d.asDiagonal();
-        right.diagonal() -= b;
-        const MatrixC inner = Eigen::PartialPivLU<MatrixC>(left).solve(right);
-        if (!inner.allFinite()) {
+        // In waves, each port's F its own two-port in its reference at both
+        // ends: S = E11 + E12 S' (1 - E22 S')^-1 E21, so
+        //     S' = (1 + X E22)^-1 X,   X = E12^-1 (S - E11) E21^-1.
+        // In Z, as it was, (A - Z C)^-1 (Z D - B) is no number where the
+        // two planes meet and what is between them is a thru - which has no
+        // Z: a line de-embedded half way from each end came out 59 % active
+        // (the recheck of 1 November, its own thru meshed as its strips).
+        const MatrixC measured = matrixOf(solved.s.at(k));
+        Eigen::VectorXcd e11(np), e12(np), e21(np), e22(np);
+        for (int p = 0; p < np; ++p) {
+            const double r = out.references.at(p);
+            const Complex den = a(p) + b(p) / r + c(p) * r + d(p);
+            e11(p) = (a(p) + b(p) / r - c(p) * r - d(p)) / den;
+            e12(p) = 2.0 * (a(p) * d(p) - b(p) * c(p)) / den;
+            e21(p) = 2.0 / den;
+            e22(p) = (-a(p) + b(p) / r - c(p) * r + d(p)) / den;
+        }
+        MatrixC x = measured;
+        x.diagonal() -= e11;
+        x = e12.cwiseInverse().asDiagonal() * x * e21.cwiseInverse().asDiagonal();
+        MatrixC grown = x * e22.asDiagonal();
+        grown.diagonal().array() += 1.0;
+        const MatrixC s = Eigen::PartialPivLU<MatrixC>(grown).solve(x);
+        if (!s.allFinite()) {
             out.problems << tr("De-embedding at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 6);
             return out;
         }
-        const QList<QList<Complex>> rows = rowsOf(inner);
-        out.z << rows;
-        out.s << scatteringOf(rows, out.references);
-        const double largest = inner.cwiseAbs().maxCoeff();
-        if (largest > 0) out.asymmetry = std::max(out.asymmetry, (inner - inner.transpose()).cwiseAbs().maxCoeff() / largest);
-        const MatrixC s = matrixOf(out.s.last());
+        out.s << rowsOf(s);
+        // Z from it, R^1/2 (1 - S)^-1 (1 + S) R^1/2: none worth the name for
+        // a thru, whose S stands.
+        Eigen::VectorXd root(np);
+        for (int p = 0; p < np; ++p) root(p) = std::sqrt(out.references.at(p));
+        MatrixC minus = -s, plus = s;
+        minus.diagonal().array() += 1.0;
+        plus.diagonal().array() += 1.0;
+        const auto scale = root.cast<Complex>().asDiagonal();
+        out.z << rowsOf(scale * Eigen::PartialPivLU<MatrixC>(minus).solve(plus) * scale);
+        const double largest = s.cwiseAbs().maxCoeff();
+        if (largest > 0) out.asymmetry = std::max(out.asymmetry, (s - s.transpose()).cwiseAbs().maxCoeff() / largest);
         const Eigen::SelfAdjointEigenSolver<MatrixC> eig(s.adjoint() * s);
         if (eig.info() == Eigen::Success) out.gain = std::max(out.gain, eig.eigenvalues().maxCoeff() - 1);
     }
     for (int p = 0; p < np; ++p) {
+        if (gave.at(p) < 0) out.deembedding[p].gave = gave.at(p);
         const PortDeembedding& said = out.deembedding.at(p);
         if (!said.done) continue;
         const QString plane = said.shift == 0 ? tr("at its face")
@@ -342,16 +486,21 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                                  .arg(said.givenLine ? tr("along a given line,") : tr("along"))
                                  .arg(said.impedance.real(), 0, 'g', 4)
                                  .arg(said.epsEff, 0, 'g', 4);
+        const QString gaining = gave.at(p) < 0 && said.shift != 0 ? tr(" - which its strips read as giving back up to %1 dB/m, their own ends "
+                                                    "coupling past it, and which is moved along as losing nothing")
+                                                     .arg(-20 / std::log(10.0) * gave.at(p), 0, 'g', 3)
+                                               : QString();
         if (said.calibrated)
             out.lines << tr("%1 de-embedded: its own discontinuity, %2 fF at its face and %3 pH at the port at %4 GHz, taken "
-                            "out by two strips of its feed, %5 and %6 µm long; its reference plane %7%8.")
+                            "out by two strips of its %5feed, %6 and %7 µm long; its reference plane %8%9%10.")
                              .arg(solved.portNames.at(p))
                              .arg(said.shuntC * 1e15, 0, 'g', 3)
                              .arg(said.seriesL * 1e12, 0, 'g', 3)
                              .arg(solved.frequencies.at(top) / 1e9, 0, 'g', 4)
+                             .arg(said.coplanar ? tr("coplanar ") : QString())
                              .arg(said.length, 0, 'g', 4)
-                             .arg(2 * said.length, 0, 'g', 4)
-                             .arg(plane, said.shift == 0 ? QString() : QStringLiteral(" ") + line);
+                             .arg(said.longer, 0, 'g', 4)
+                             .arg(plane, said.shift == 0 ? QString() : QStringLiteral(" ") + line, gaining);
         else
             out.lines << tr("%1's reference plane %2 %3; its own discontinuity left in, as solved.")
                              .arg(solved.portNames.at(p), plane, line);

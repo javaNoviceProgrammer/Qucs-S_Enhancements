@@ -1344,7 +1344,8 @@ void RF25Doc::solveWith(const SolveRequest& request)
                 fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control));
             // The ports that asked: their own discontinuity taken out by
             // strips of their feeds - one calibration for each feed, its
-            // metal and its width - and their reference planes moved.
+            // metal and its width, and a coplanar one's grounds and vias -
+            // and their reference planes moved.
             if (!job->wave->ok()) return;
             FullWaveControl quiet;
             quiet.stop = &job->stop;
@@ -1358,25 +1359,17 @@ void RF25Doc::solveWith(const SolveRequest& request)
                 each[p] = Deembedding{nullptr, port.shift, port.lineImpedance, port.lineEps};
                 if (!port.wantsStrips()) continue;
                 const QString name = job->wave->portNames.at(p);
-                const double width = job->wave->faceWidths.value(p);
-                const QString metal = job->wave->faceMetals.value(p);
-                if (port.internal || !(width > 0)) {
+                const Feed feed = job->wave->feeds.value(p);
+                if (port.internal || !(feed.width > 0)) {
                     job->notes << tr("%1 is not on the face of a conductor, so it has no feed to calibrate: it is "
                                      "solved as it is.").arg(name);
                     continue;
                 }
-                if (port.coplanar) {
-                    job->notes << tr("%1 returns through the conductors beside it, and strips of a coplanar feed - its "
-                                     "grounds and their vias with it - are not solved to calibrate it: its own "
-                                     "discontinuity is left in, and a plane moved along a given line is moved.")
-                                      .arg(name);
-                    continue;
-                }
-                std::shared_ptr<Calibration>& calibration = feeds[QStringLiteral("%1|%2").arg(metal).arg(width, 0, 'g', 9)];
+                std::shared_ptr<Calibration>& calibration = feeds[feed.key()];
                 if (!calibration) {
                     job->calibrating = true;
                     calibration = std::make_shared<Calibration>(
-                        calibrate(job->stack, job->how, job->top, metal, width, job->frequencies, 1e-6, &quiet));
+                        calibrate(job->stack, job->how, job->top, feed, job->frequencies, 1e-6, &quiet));
                 }
                 if (job->stop.load()) {
                     job->wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
@@ -1590,16 +1583,23 @@ QStringList RF25Doc::fullWaveSummary() const
     // little of what the calibration strips and the structure's own feed
     // differ by, which is the de-embedding's, not the solve's.
     const bool deembedded = !w.zSolved.isEmpty();
+    // (De-embedded, it is S that is held to it: a thru has no Z.)
+    const QString matrix = deembedded ? QStringLiteral("S") : QStringLiteral("Z");
     out << (w.asymmetry <= 1e-9
-                ? tr("Reciprocal: Z is symmetric to %1 of its largest term.").arg(w.asymmetry, 0, 'g', 2)
-                : tr("Not reciprocal: Z is asymmetric by %1 of its largest term - look at the ports and the mesh.")
-                      .arg(w.asymmetry, 0, 'g', 2));
+                ? tr("Reciprocal: %1 is symmetric to %2 of its largest term.").arg(matrix).arg(w.asymmetry, 0, 'g', 2)
+                : tr("Not reciprocal: %1 is asymmetric by %2 of its largest term - look at the ports and the mesh.")
+                      .arg(matrix).arg(w.asymmetry, 0, 'g', 2));
     if (w.gain <= 1e-6)
         out << tr("Passive: of a wave in at any port, at most %1 % comes back out over the sweep.").arg(100 * (1 + w.gain), 0, 'f', 2);
     else if (deembedded && w.solvedGain <= 1e-6)
-        out << tr("Passive as solved; de-embedded, at one frequency it gives back %1 % more than it is given - what the "
-                  "calibration strips and this structure's own feeds differ by.")
-                   .arg(100 * w.gain, 0, 'g', 3);
+        // (A thru that passes all of a wave and reflects a little more
+        //  gives back twice that reflection: the recheck's 0.12 % was -64
+        //  dB of it.)
+        out << tr("Passive as solved; de-embedded, at one frequency it gives back %1 % more than it is given - as much as "
+                  "a reflection of %2 dB beside a whole transmission gives, and what the calibration strips and this "
+                  "structure's own feeds differ by.")
+                   .arg(100 * w.gain, 0, 'g', 3)
+                   .arg(20 * std::log10(std::max(1e-15, w.gain / 2)), 0, 'f', 0);
     else
         out << tr("Not passive: at one frequency it gives back %1 % more than it is given - look at the ports and the "
                   "mesh.")

@@ -120,9 +120,20 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
             de.insert(QStringLiteral("line eps_eff"), d.epsEff);
             if (d.calibrated) {
                 de.insert(QStringLiteral("line dB/m"), 20 / std::log(10.0) * d.alpha);
+                // (Where its strips read it as gaining - their own ends
+                //  coupling past it - and its plane was moved along it as
+                //  losing nothing: the most they read.)
+                if (d.gave < 0) de.insert(QStringLiteral("line dB/m as read"), 20 / std::log(10.0) * d.gave);
                 de.insert(QStringLiteral("shunt C"), d.shuntC);
                 de.insert(QStringLiteral("series L"), d.seriesL);
                 de.insert(QStringLiteral("calibration strip"), d.length * 1e-6);
+                de.insert(QStringLiteral("longer strip"), d.longer * 1e-6);
+                // A coplanar feed's strips are its grounds and vias too; with
+                // rows of vias, the line begins at the first.
+                if (d.coplanar) {
+                    de.insert(QStringLiteral("coplanar feed"), true);
+                    if (d.firstVia > 0) de.insert(QStringLiteral("first via"), d.firstVia * 1e-6);
+                }
             }
             port.insert(QStringLiteral("de-embedded"), de);
         }
@@ -196,7 +207,8 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                    "back through the ground - or, a coplanar one, through the conductors beside it, tied as a probe's "
                    "grounds are) or the cell under it (an internal port), its reference plane at the centres of the "
                    "cells it drives, and its S is into its own reference impedance (Kurokawa's power waves). The "
-                   "ground plane is taken as perfect and a metal as a sheet. rf25_export writes these as a "
+                   "ground plane is taken as perfect and a metal as a sheet, its edges losing as its thickness lets "
+                   "the current crowd there. rf25_export writes these as a "
                    "Touchstone."));
     return out;
 }
@@ -421,7 +433,9 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         said.insert(QStringLiteral("frequency"), limit.frequency);
         said.insert(QStringLiteral("what sets it"), limit.what);
         said.insert(QStringLiteral("epsilon_max"), limit.epsilonMax);
-        said.insert(QStringLiteral("first half-wave resonance"), limit.resonance);
+        // (A line's own: what is no line has none, and it said 0 - the
+        //  recheck of 1 November.)
+        if (limit.resonance > 0) said.insert(QStringLiteral("first half-wave resonance"), limit.resonance);
         said.insert(QStringLiteral("why"),
                     line ? tr("A per-metre RLGC is a property of the cross-section and holds while the cross-section is "
                               "electrically small; this is a tenth of a wavelength of the dimension named, which is the "

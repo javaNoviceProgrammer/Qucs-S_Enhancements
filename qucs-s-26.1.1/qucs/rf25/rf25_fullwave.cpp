@@ -159,15 +159,25 @@ QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QP
     return lengths;
 }
 
+/// The faces beside an edge port's own on its edge's line, and where they
+/// are along it.
+struct Beside {
+    std::array<QList<int>, 2> cells;   ///< below the face's lower end, above its upper
+    double lo = 0, hi = 0;             ///< the face's own ends, along the line from its point
+    /// Each side's conductor along the line: its near and far ends, out
+    /// from the face's own end.
+    std::array<double, 2> near = {0, 0}, far = {0, 0};
+    double inside = 0;                 ///< the side of the line the port's conductor is on: its sign
+};
+
 /// The faces beside an edge port's own on its edge's line - what a
 /// ground-signal-ground probe's grounds touch: either side of \a face, the
 /// nearest run of cells of \a reached on its layer with a side along that
 /// line (through \a on, along \a along) and inside on the same side of it
 /// as the port's own face. A side with none is empty.
-std::array<QList<int>, 2> besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>& face, QPointF on,
-                                      QPointF along)
+Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>& face, QPointF on, QPointF along)
 {
-    std::array<QList<int>, 2> out;
+    Beside out;
     const double norm = std::hypot(along.x(), along.y());
     if (face.isEmpty() || !(norm > 0)) return out;
     const QPointF unit = along / norm, normal(-unit.y(), unit.x());
@@ -203,6 +213,9 @@ std::array<QList<int>, 2> besideFaces(const Mesh& mesh, const QList<int>& reache
         inside += d.x() * normal.x() + d.y() * normal.y();
     }
     if (!any) return out;
+    out.lo = lo;
+    out.hi = hi;
+    out.inside = inside;
     QList<std::tuple<double, double, int>> below, above;   // (from the face out, the far end, the cell)
     for (const int c : reached) {
         if (mesh.cells.at(c).layer != layer || face.contains(c)) continue;
@@ -222,12 +235,142 @@ std::array<QList<int>, 2> besideFaces(const Mesh& mesh, const QList<int>& reache
         for (int i = 0; i < side->size(); ++i) {
             const auto [near, far, cell] = side->at(i);
             if (i > 0 && near > reach + tol) break;
-            out[std::size_t(k)] << cell;
+            if (i == 0) out.near[std::size_t(k)] = near;
+            out.cells[std::size_t(k)] << cell;
             reach = std::max(reach, far);
         }
+        out.far[std::size_t(k)] = reach;
         ++k;
     }
     return out;
+}
+
+/*!
+ * The vias down a coplanar feed's grounds, into \a feed: of \a conductors
+ * on the stack's vias that land on its metal, those over a ground beside
+ * the face and within \a window (the layout's units) of it, in the port's
+ * frame - across from the face's lower end at \a lo along \a unit from
+ * \a on, in along \a inward. Then whether they are rows of one period, or
+ * walls, laid out so that strips of the feed can have them at both of
+ * their ends alike; where not, \a feed says why.
+ */
+void feedVias(Feed* feed, const QList<Conductor>& conductors, const Stack& stack, QPointF on, QPointF unit, QPointF inward,
+              double lo, double window)
+{
+    const Layer* metal = stack.named(feed->metal);
+    if (metal == nullptr) return;
+    const double tol = 1e-6 * std::max(1.0, window);
+    const double w = feed->width;
+    // Each via over the feed, in the frame.
+    QList<Feed::Via> found;
+    for (const Conductor& c : conductors) {
+        const Layer* via = stack.named(c.layer);
+        if (via == nullptr || via->kind != Layer::Via) continue;
+        if (stack.named(via->from) != metal && stack.named(via->to) != metal) continue;
+        const QRectF box = c.outline.boundingRect();
+        Feed::Via v;
+        v.layer = c.layer;
+        bool first = true;
+        for (const QPointF& corner : {box.topLeft(), box.topRight(), box.bottomLeft(), box.bottomRight()}) {
+            const QPointF d = corner - on;
+            const double across = d.x() * unit.x() + d.y() * unit.y() - lo, in = d.x() * inward.x() + d.y() * inward.y();
+            v.across0 = first ? across : std::min(v.across0, across);
+            v.across1 = first ? across : std::max(v.across1, across);
+            v.in0 = first ? in : std::min(v.in0, in);
+            v.in1 = first ? in : std::max(v.in1, in);
+            first = false;
+        }
+        if (!(v.in1 > tol) || !(v.in0 < window)) continue;
+        v.in0 = std::max(v.in0, 0.0);
+        const double middle = 0.5 * (v.across0 + v.across1);
+        if (middle > 0 && middle < w) {
+            feed->unlike = QCoreApplication::translate("qucs_s::rf25", "a via stands on its own conductor %1 µm in from its "
+                                                                      "face, so its feed is no line there")
+                               .arg(0.5 * (v.in0 + v.in1), 0, 'g', 4);
+            return;
+        }
+        const bool below = feed->ground[0] > 0 && middle <= -feed->gap[0] && middle >= -feed->gap[0] - feed->ground[0];
+        const bool above = feed->ground[1] > 0 && middle >= w + feed->gap[1] && middle <= w + feed->gap[1] + feed->ground[1];
+        if (below || above) found << v;
+    }
+    if (found.isEmpty()) return;
+    // In rows: the same layer and the same place across, nearest first -
+    // and level ones by their place across, so that both ends of a line
+    // find a fence's two rows in one order.
+    std::sort(found.begin(), found.end(), [](const Feed::Via& a, const Feed::Via& b) {
+        return a.in0 != b.in0 ? a.in0 < b.in0 : a.across0 < b.across0;
+    });
+    QList<QList<Feed::Via>> rows;
+    for (const Feed::Via& v : std::as_const(found)) {
+        bool placed = false;
+        for (QList<Feed::Via>& row : rows)
+            if (row.first().layer == v.layer && std::abs(row.first().across0 - v.across0) <= tol
+                && std::abs(row.first().across1 - v.across1) <= tol) {
+                row << v;
+                placed = true;
+                break;
+            }
+        if (!placed) rows << QList<Feed::Via>{v};
+    }
+    const auto say = [feed](const QString& why) {
+        feed->unlike = why;
+        feed->vias.clear();
+        feed->pitch = 0;
+    };
+    for (const QList<Feed::Via>& row : std::as_const(rows)) {
+        // A via far longer down the feed than across it is a wall, taken
+        // to run as far as the feed does.
+        Feed::Via first = row.first();
+        if (first.in1 - first.in0 >= 3 * (first.across1 - first.across0)) {
+            first.wall = true;
+            feed->vias << first;
+            continue;
+        }
+        if (row.size() < 2) {
+            say(QCoreApplication::translate("qucs_s::rf25", "only one via of a row down its grounds is within %1 µm of its "
+                                                            "face, so strips of the feed cannot tell how often they come")
+                    .arg(window, 0, 'g', 4));
+            return;
+        }
+        // Its period from the first two, the feed's own as far as the rest
+        // keep to it; what the structure does beyond is not the feed's.
+        const double pitch = row.at(1).in0 - row.at(0).in0, length = first.in1 - first.in0;
+        if (std::abs(row.at(1).in1 - row.at(1).in0 - length) > 1e-3 * pitch || !(pitch > length)) {
+            say(QCoreApplication::translate("qucs_s::rf25", "the first vias down its grounds are not alike, so strips of "
+                                                            "the feed cannot have them as it has"));
+            return;
+        }
+        if (feed->pitch > 0 && std::abs(pitch - feed->pitch) > 1e-3 * pitch) {
+            say(QCoreApplication::translate("qucs_s::rf25", "its grounds' rows of vias come every %1 and every %2 µm, and "
+                                                            "strips of the feed have one period")
+                    .arg(feed->pitch, 0, 'g', 4)
+                    .arg(pitch, 0, 'g', 4));
+            return;
+        }
+        feed->pitch = pitch;
+        feed->vias << first;
+    }
+    // Both ends of a strip alike: each row's vias where the mirror of the
+    // strip puts them - its first via's centre a whole number of half
+    // periods beyond the nearest row's - and each wall begun before it.
+    const double reference = feed->offset();
+    for (const Feed::Via& v : std::as_const(feed->vias)) {
+        if (v.wall) {
+            if (v.in0 > reference + tol) {
+                say(QCoreApplication::translate("qucs_s::rf25", "a wall of vias down its grounds begins beyond the rows "
+                                                                "beside it, so strips of the feed cannot have both alike"));
+                return;
+            }
+            continue;
+        }
+        const double halves = 2 * (0.5 * (v.in0 + v.in1) - reference) / feed->pitch;
+        if (std::abs(halves - std::round(halves)) > 1e-3) {
+            say(QCoreApplication::translate("qucs_s::rf25", "its grounds' rows of vias are staggered by other than half "
+                                                            "their period, so strips of the feed cannot have them at both "
+                                                            "ends alike"));
+            return;
+        }
+    }
 }
 
 QRectF scaledBy(const QRectF& box, double unit)
@@ -464,6 +607,9 @@ struct Context {
     /// coplanar one a column against each conductor beside it.
     MatrixC drive;
     QList<int> portOf;                   ///< which port each column is
+    /// How many of each run in the plane's two sides are its conductor's
+    /// edge, where the current crowds inside the cells (crowding()).
+    QList<int> freeSides;
     double rhoMax = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
@@ -476,6 +622,36 @@ struct AtFrequency {
     double rcond = 1;
     QStringList problems;
 };
+
+/*!
+ * How much more a run along its conductor's edge loses than its cells'
+ * average current says - the factor on its sheet's surface impedance. The
+ * current on a sheet crowds to a free edge as one over the root of the
+ * distance from it, and a cell along the edge carries it as its average:
+ * of the singular part a cell \a width across (m) holds, its loss is
+ * ln(e/D)/4 times its average's with one side on the edge, (2/pi^2)
+ * ln(e/D) with both. D is where the metal's \a thickness stops the
+ * crowding: t/(4 pi e^pi), the stopping distance at which a sheet loses
+ * what a rectangular edge's walls and corners do (Holloway and Kuester,
+ * Radio Sci. 29 (1994) 539; it is the t in Ghione's coplanar loss) - where
+ * the metal is thick beside its skin depth. Where it is not, its \a sheet
+ * resistance beyond a thick metal's two faces' spreads the current over
+ * Pearl's length 2 R/(w mu0) as well: a micrometre of copper at 2 GHz,
+ * a micrometre and a half, past which an edge cell of 12.5 holds little
+ * crowding; at direct current, all of it, and the factor is one. Never
+ * below one.
+ */
+double crowding(double width, double thickness, double sigma, int free, double frequency, Complex sheet)
+{
+    if (free <= 0 || !(width > 0) || !(thickness > 0) || !(sigma > 0) || !(frequency > 0)) return 1;
+    constexpr double mu0 = 4e-7 * M_PI;
+    const double omega = 2 * M_PI * frequency;
+    const double stop = thickness / (4 * M_PI * std::exp(M_PI));
+    const double faces = std::sqrt(omega * mu0 / (2 * sigma)) / 2;   // a thick metal's sheet: Rs/2
+    const double spread = 2 * std::max(0.0, sheet.real() - faces) / (omega * mu0);
+    const double log = std::log(1 + width / (stop + spread));
+    return std::max(1.0, free >= 2 ? 2 / (M_PI * M_PI) * log : log / 4);
+}
 
 AtFrequency solveAt(const Context& c, double f)
 {
@@ -634,7 +810,9 @@ AtFrequency solveAt(const Context& c, double f)
                        / jw;
     for (int a = 0; a < np0; ++a) {
         const Filament& run = c.runs.at(a);
-        if (run.width > 0) m(a, a) += sheetImpedance(run.sigma, run.thickness, f) * run.length() / run.width;
+        if (!(run.width > 0)) continue;
+        const Complex sheet = sheetImpedance(run.sigma, run.thickness, f);
+        m(a, a) += crowding(run.width, run.thickness, run.sigma, c.freeSides.value(a), f, sheet) * sheet * run.length() / run.width;
     }
     // A via's own: a bar whose current runs on its four faces, each with the
     // surface impedance of a quarter of its depth - 1/(sigma area) at direct
@@ -713,6 +891,38 @@ double metalHeight(const Stack& stack, const QString& name)
         if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness;
     }
     return -1;
+}
+
+double Feed::offset() const
+{
+    double rows = -1, walls = 0;
+    for (const Via& v : vias) {
+        if (v.wall) walls = std::max(walls, v.in0);
+        else rows = rows < 0 ? 0.5 * (v.in0 + v.in1) : std::min(rows, 0.5 * (v.in0 + v.in1));
+    }
+    return rows >= 0 ? rows : walls;
+}
+
+QString Feed::key() const
+{
+    // A feed and its mirror image across its line are the same feed - the
+    // two ends of a line see each other's so - and share one calibration.
+    const auto n = [](double v) { return QString::number(v, 'g', 9); };
+    const auto text = [this, &n](bool mirror) {
+        QStringList parts = {metal, n(width)};
+        if (!coplanar) return parts.join(QLatin1Char('|'));
+        const int a = mirror ? 1 : 0, b = 1 - a;
+        parts << QStringLiteral("coplanar") << n(gap[a]) << n(ground[a]) << n(gap[b]) << n(ground[b]) << n(pitch)
+              << unlike;
+        QStringList each;
+        for (const Via& v : vias)
+            each << QStringList{v.layer, n(mirror ? width - v.across1 : v.across0), n(mirror ? width - v.across0 : v.across1),
+                                n(v.in0), n(v.in1), v.wall ? QStringLiteral("wall") : QString()}
+                        .join(QLatin1Char(','));
+        each.sort();
+        return (parts + each).join(QLatin1Char('|'));
+    };
+    return std::min(text(false), text(true));
 }
 
 Complex sheetImpedance(double sigma, double thickness, double frequency)
@@ -823,6 +1033,30 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         }
     }
     c.planar = int(c.runs.size());
+    // Which of each run's two sides are its conductor's edge: a point just
+    // beyond the side, at the run's middle, on no shape of its layer
+    // (shapes that touch are one conductor there).
+    c.freeSides = QList<int>(c.planar, 0);
+    for (int a = 0; a < c.planar; ++a) {
+        const Filament& run = c.runs.at(a);
+        const QString& layer = mesh.cells.at(ends.at(a).first).layer;
+        const QPointF d = run.to - run.from;
+        const double length = std::hypot(d.x(), d.y());
+        if (!(length > 0)) continue;
+        const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
+        const double reach = 0.5005 * run.width / micrometre;
+        for (const double side : {-1.0, 1.0}) {
+            const QPointF probe = middle + side * reach * normal;
+            bool inside = false;
+            for (const Conductor& shape : conductors)
+                if (shape.layer == layer && shape.outline.boundingRect().contains(probe)
+                    && shape.outline.containsPoint(probe, Qt::OddEvenFill)) {
+                    inside = true;
+                    break;
+                }
+            if (!inside) ++c.freeSides[a];
+        }
+    }
     QStringList viaSaid;
     const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaSaid);
     int grounded = 0;
@@ -861,11 +1095,13 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     c.np = np;
     out.runs = nr;
     out.cells = nc;
-    if (nr + nc > kMostUnknowns) {
+    const int most = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : kMostUnknowns;
+    if (nr + nc > most) {
+        out.tooLarge = true;
         out.problems << tr("%1 runs of current over %2 cells is more than this build sets up a dense complex matrix for "
                            "(%3 in all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger "
                            "largest cell.")
-                            .arg(nr).arg(nc).arg(kMostUnknowns);
+                            .arg(nr).arg(nc).arg(most);
         return out;
     }
     c.tail.resize(nr);
@@ -888,6 +1124,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     bool coplanar = false;
     out.faceWidths = QList<double>(np, 0.0);
     out.faceMetals = QStringList(QList<QString>(np));
+    out.feeds = QList<Feed>(np);
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -931,6 +1168,8 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         if (along != QPointF(0, 0)) {
             out.faceWidths[p] = faceWidth;
             out.faceMetals[p] = mesh.cells.at(face.first()).layer;
+            out.feeds[p].metal = out.faceMetals.at(p);
+            out.feeds[p].width = faceWidth;
         }
         if (!port.coplanar) {
             columns << own;
@@ -948,8 +1187,9 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             return out;
         }
         coplanar = true;
+        const Beside beside = besideFaces(mesh, cellOf, face, on, along);
         QList<int> counts;
-        for (const QList<int>& ground : besideFaces(mesh, cellOf, face, on, along)) {
+        for (const QList<int>& ground : beside.cells) {
             if (ground.isEmpty()) continue;
             const QList<double> back = sharesOf(mesh, ground, on, along);
             Eigen::VectorXcd column = own;
@@ -957,6 +1197,22 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
             columns << column;
             portOf << p;
             counts << int(ground.size());
+        }
+        // Its feed as calibration strips of it are made: the grounds' gaps
+        // and widths on the edge's line, and the vias down them as far as
+        // the strips reach.
+        Feed& feed = out.feeds[p];
+        feed.coplanar = true;
+        for (std::size_t k = 0; k < 2; ++k)
+            if (!beside.cells[k].isEmpty()) {
+                feed.gap[k] = beside.near[k];
+                feed.ground[k] = beside.far[k] - beside.near[k];
+            }
+        {
+            const QPointF unit = along / std::hypot(along.x(), along.y()), normal(-unit.y(), unit.x());
+            const double height = std::max(0.0, metalHeight(stack, feed.metal)) / micrometre;
+            feedVias(&feed, conductors, stack, on, unit, beside.inside < 0 ? -normal : normal, beside.lo,
+                     2 * (8 * height + 2 * faceWidth));
         }
         if (counts.isEmpty()) {
             out.problems << tr("%1 returns through the conductors beside it, and on the line of its edge at %2, %3 µm there "
@@ -1103,11 +1359,18 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                         "under it to the cell over it, entering each at its centre.")
                          .arg(c.vias.size()).arg(grounded);
     out.lines << viaSaid;
-    out.lines << (coplanar ? tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of "
-                                "its thickness, an edge port's current as coming back through the ground, and a coplanar "
-                                "port's through the conductors beside it.")
-                           : tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of "
-                                "its thickness, and an edge port's current as coming back through the ground."));
+    int alongEdges = 0;
+    for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
+    const QString sheet = tr("a metal as a sheet with the surface impedance of its thickness, and more in the cells along "
+                             "its edges, where the current crowds as close as the thickness lets it (%1 run(s) along an "
+                             "edge)")
+                              .arg(alongEdges);
+    out.lines << (coplanar ? tr("The ground plane is taken as perfect, %1; an edge port's current as coming back through "
+                                "the ground, and a coplanar port's through the conductors beside it.")
+                                 .arg(sheet)
+                           : tr("The ground plane is taken as perfect, %1; an edge port's current as coming back through "
+                                "the ground.")
+                                 .arg(sheet));
     // The columns of a port side by side: one voltage, their currents
     // added. The ports' Z is (B^T Z^-1 B)^-1, B which port each column is
     // of, and an ampere into a port is Z^-1 B Z into the columns.
