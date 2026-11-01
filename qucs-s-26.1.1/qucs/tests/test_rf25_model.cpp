@@ -171,6 +171,24 @@ private slots:
         QCOMPARE(m->find(second)->label, QStringLiteral("M2"));
     }
 
+    // A node made is named one past the highest of its stem in use, by any
+    // node: an internal port made beside edge ports P1 and P2 is P3 - it was
+    // counted among internal ports alone, and came out a second P1 (the
+    // ports drawn on the layout, 1 November); after a gap, past the highest.
+    void aNewNodeIsNamedPastTheHighestOfItsStem()
+    {
+        rf::Model m = rf::Model::blank();
+        for (const char* type : {"rf_edge_port", "rf_edge_port"}) {
+            rf::Node port = m.make(QLatin1String(type));
+            QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+        }
+        QCOMPARE(m.ports().children.back().label, QStringLiteral("P2"));
+        QCOMPARE(m.make(QStringLiteral("rf_internal_port")).label, QStringLiteral("P3"));
+        m.ports().children.front().label = QStringLiteral("P7");
+        QCOMPARE(m.make(QStringLiteral("rf_edge_port")).label, QStringLiteral("P8"));
+        QCOMPARE(m.make(QStringLiteral("rf_metal")).label, QStringLiteral("M2"));
+    }
+
     // The stack read out: SI throughout, the layers placed from the bottom
     // up, a via taking no room of its own, and the parameters usable in
     // any of it.
