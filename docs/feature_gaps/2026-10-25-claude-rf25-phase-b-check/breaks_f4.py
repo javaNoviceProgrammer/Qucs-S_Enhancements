@@ -2,7 +2,8 @@
 """breaks_f4.py: each part of the phase B check's F4 - a line's R by
 Wheeler's rule on its own thick cross-section, the ground's share, the
 floor at direct current - undone on purpose. Sources are put back whatever
-happens. BRK_ONLY_CHECK=1 checks the anchors; HUNT_RUNS=<dir> for logs."""
+happens. BRK_ONLY_CHECK=1 checks the anchors; BRK_ONLY=15,16 runs those
+alone; HUNT_RUNS=<dir> for logs."""
 import os, subprocess, sys
 
 Q = "/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/"
@@ -56,8 +57,8 @@ BREAKS = [
   [(ST, WHEELER), (CTL, TOOL)]),
 
  ("a metal's slab resistance of the wrong conductivity",
-  [(S, "        const double rs = surfaceImpedance(extraction.sigma.value(k), extraction.thickness.value(k), frequency).real();",
-    "        const double rs = surfaceImpedance(2 * extraction.sigma.value(k), extraction.thickness.value(k), frequency).real();")],
+  [(S, "        const double rs = surfaceImpedance(extraction.sigma.value(k), extraction.thickness.value(k), frequency).real()\n",
+    "        const double rs = surfaceImpedance(2 * extraction.sigma.value(k), extraction.thickness.value(k), frequency).real()\n")],
   [(ST, WHEELER)]),
 
  # (Not "a metal of no thickness taken as a thick one": the corners'
@@ -104,6 +105,12 @@ BREAKS = [
   [(D, "    while ((a_solveJob || a_solveWhenPrepared) && t.elapsed() < ms)", "    while (a_solveJob && t.elapsed() < ms)")],
   [(DOC, STRAIGHT)]),
 
+ # ---- the round's CI (1 November): the overtake held, and a Stop
+ ("a Stop that does not let a solve going on go",
+  [(D, "    a_solveJob->stop = true;\n    a_solveJob.reset();\n    a_progress->stop();",
+    "    a_solveJob->stop = true;\n    a_progress->stop();")],
+  [(DOC, STRAIGHT)]),
+
  ("the tool gives no R at direct current",
   [(T, "                if (lp.rDc > 0) line.insert(QStringLiteral(\"R_dc\"), lp.rDc);\n", "")],
   [(CTL, TOOL)]),
@@ -121,8 +128,11 @@ def apply(edits, back):
 
 def main():
     only = os.environ.get("BRK_ONLY_CHECK")
+    which = {int(n) for n in os.environ.get("BRK_ONLY", "").split(",") if n.strip()}
     results = []
     for i, (name, edits, tests) in enumerate(BREAKS, 1):
+        if which and i not in which:
+            continue
         back = {}
         print("\n=== %d/%d %s" % (i, len(BREAKS), name), flush=True)
         try:
