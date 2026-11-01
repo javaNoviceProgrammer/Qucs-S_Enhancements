@@ -1116,6 +1116,33 @@ private slots:
         // In the Results node's report, as the tab shows it.
         panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
         QVERIFY2(reportSays(QStringLiteral("as coupled lines")), qPrintable(reportText()));
+
+        // Its Touchstone 2.0, a 4-port: every port into the export's own
+        // reference, as [Reference] says, no two-port's data order, and the
+        // same data as 1.1's, by rows.
+        RF25Doc::ExportRequest asked;
+        asked.coupled = true;
+        asked.length = 1e-3;
+        QString why;
+        const QString one = doc->exportText(asked, &why);
+        QVERIFY2(why.isEmpty() && !one.isEmpty(), qPrintable(why));
+        asked.version2 = true;
+        const QString two = doc->exportText(asked, &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QStringList keywords, rows, rows1;
+        for (const QString& row : two.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            if (row.startsWith(QLatin1Char('[')) || row.startsWith(QLatin1Char('#'))) keywords << row;
+            else if (!row.startsWith(QLatin1Char('!'))) rows << row;
+        for (const QString& row : one.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            if (!row.startsWith(QLatin1Char('!')) && !row.startsWith(QLatin1Char('#'))) rows1 << row;
+        const int frequencies = int(rows.size()) / 4;
+        QCOMPARE(keywords, (QStringList{QStringLiteral("[Version] 2.0"), QStringLiteral("# Hz S RI R 50"),
+                                        QStringLiteral("[Number of Ports] 4"),
+                                        QStringLiteral("[Number of Frequencies] %1").arg(frequencies),
+                                        QStringLiteral("[Reference] 50 50 50 50"), QStringLiteral("[Network Data]"),
+                                        QStringLiteral("[End]")}));
+        QVERIFY(frequencies > 0 && rows.size() == 4 * frequencies);
+        QCOMPARE(rows, rows1);
     }
 
     // What the solve says of the model as a circuit: the S parameters of

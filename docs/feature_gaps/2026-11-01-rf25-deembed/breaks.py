@@ -28,6 +28,8 @@ PHYS = "deembeddingKeepsWhatPhysicsAllows"
 TS2 = "aTouchstone2CarriesEachPortsReference"
 WAVE = "aFullWaveStudySolvesThePortsAndDrawsTheCurrents"
 MCP = "anRf25ModelIsSolvedFullWaveThroughItsTool"
+QS = "anRf25ModelIsSolvedThroughItsTool"
+PAIR = "aPairIsShownByItsModes"
 
 BREAKS = [
  ("the calibration strips four heights long, the ports' near fields meeting",
@@ -116,6 +118,35 @@ BREAKS = [
 
  ("rf25_solve's answer without the de-embedding",
   [(C, "            port.insert(QStringLiteral(\"de-embedded\"), de);", "            (void)de;")],
+  [(TC, MCP)]),
+
+ # Found by the DMG's check: 2.0 asked of a quasi-static solve, and the
+ # tool's answer of a 2.0 file.
+ ("a quasi-static line's 2.0 written as 1.1",
+  [(D, "    return what.version2 ? touchstone2From(text, 2, int(ls.points.size())) : text;", "    return text;")],
+  [(TC, QS)]),
+
+ ("coupled lines' 2.0 written as 1.1",
+  [(D, "        return what.version2 ? touchstone2From(text, 2 * int(a_extraction->names.size()), int(cs.points.size())) : text;",
+    "        return text;")],
+  [(TD, PAIR)]),
+
+ ("a quasi-static 2.0 without its two-port data order",
+  [(D, "    if (ports == 2) keywords += QStringLiteral(\"[Two-Port Data Order] 21_12\\n\");\n", "")],
+  [(TC, QS)]),
+
+ ("a quasi-static 2.0's reference read off the option line's first word",
+  [(D, "text.mid(option, data - option).trimmed().section(QLatin1Char(' '), -1);",
+    "text.mid(option, data - option).trimmed().section(QLatin1Char(' '), 1, 1);")],
+  [(TC, QS), (TD, PAIR)]),
+
+ ("rf25_export's note naming 1.1 for a 2.0 file",
+  [(C, "        what.version2 ? tr(\"Touchstone 2.0, real and imaginary, its [Reference] giving %1.",
+    "        false ? tr(\"Touchstone 2.0, real and imaginary, its [Reference] giving %1.")],
+  [(TC, QS), (TC, MCP)]),
+
+ ("a full-wave 2.0 answer's references the one asked",
+  [(C, "    const bool own = full && what.version2;", "    const bool own = false;")],
   [(TC, MCP)]),
 ]
 
