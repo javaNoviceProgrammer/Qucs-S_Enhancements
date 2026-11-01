@@ -736,6 +736,9 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
     a_overlayLeftOut = 0;
     if (!a_overlays.isEmpty()) {
         const QRectF seen = visibleRegion();
+        // (A shape's box grown by a pixel: a line along x or y - a port's
+        //  face - has a box of no width, which meets nothing.)
+        const double pad = 1.0 / std::max(a_scale, MinScale);
         QVector<QPointF> dots;
         for (const Overlay& overlay : std::as_const(a_overlays)) {
             if (overlay.line.isValid()) p.setPen(QPen(overlay.line, overlay.width));
@@ -745,7 +748,7 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
             for (const QPolygonF& shape : overlay.shapes) {
                 if (shape.size() < 2) continue;
                 const QRectF box = shape.boundingRect();
-                if (!box.intersects(seen)) continue;
+                if (!box.adjusted(-pad, -pad, pad, pad).intersects(seen)) continue;
                 if (a_overlayDrawn >= MostOverlayShapes) {
                     ++a_overlayLeftOut;
                     continue;
