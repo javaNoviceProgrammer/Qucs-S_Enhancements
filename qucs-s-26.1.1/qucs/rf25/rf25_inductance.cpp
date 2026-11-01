@@ -319,6 +319,93 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     return runs;
 }
 
+QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
+                     QPointF* onLine, QPointF* alongLine)
+{
+    /*
+     * A port drives the whole face of the conductor it is on, not the one
+     * cell nearest it. Which face is not a guess: the point lies on an
+     * edge of a processed shape, and the cells that have a side on that
+     * same edge are the face.
+     *
+     * It matters more than it sounds. Fed at a point, a current must
+     * spread out from it, and that spreading resistance is real but is
+     * not the bar's - a bar two cells wide came out a sixth too
+     * resistive, and the answer moved as the mesh was refined, which is
+     * the one thing a solver must not do.
+     */
+    QList<int> cells;
+    if (onLine != nullptr) *onLine = where;
+    if (alongLine != nullptr) *alongLine = QPointF(0, 0);
+    const auto nearest = [&mesh, &reached, where] {
+        int best = -1;
+        double closest = 0;
+        for (const int c : reached) {
+            const QPointF d = mesh.cells.at(c).centre - where;
+            const double far = d.x() * d.x() + d.y() * d.y();
+            if (best < 0 || far < closest) {
+                best = c;
+                closest = far;
+            }
+        }
+        return best;
+    };
+    // The outline edge the point is on, over every shape.
+    double closest = 0;
+    QPointF p, q;
+    QString layer;
+    for (const Conductor& c : conductors)
+        for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+            const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % n);
+            const QPointF d = b - a;
+            const double len2 = d.x() * d.x() + d.y() * d.y();
+            if (!(len2 > 0)) continue;
+            double t = ((where.x() - a.x()) * d.x() + (where.y() - a.y()) * d.y()) / len2;
+            t = std::clamp(t, 0.0, 1.0);
+            const QPointF on = a + d * t;
+            const double far = std::hypot(where.x() - on.x(), where.y() - on.y());
+            if (layer.isEmpty() || far < closest) {
+                closest = far;
+                p = a;
+                q = b;
+                layer = c.layer;
+            }
+        }
+    if (layer.isEmpty()) return cells;
+    const QPointF along = q - p;
+    const double len = std::hypot(along.x(), along.y());
+    if (!(len > 0)) return cells;
+    const QPointF unit = along / len;
+    const QPointF normal(-unit.y(), unit.x());
+    if (onLine != nullptr) *onLine = p;
+    if (alongLine != nullptr) *alongLine = unit;
+    // A cell is on that face where one of its own sides lies along the
+    // same line and within the edge's own extent.
+    const double tol = 1e-6 * std::max(1.0, len);
+    for (const int c : reached) {
+        const MeshCell& cell = mesh.cells.at(c);
+        if (cell.layer != layer) continue;
+        for (int i = 0, n = int(cell.outline.size()); i < n; ++i) {
+            const QPointF a = cell.outline.at(i), b = cell.outline.at((i + 1) % n);
+            const double offA = (a.x() - p.x()) * normal.x() + (a.y() - p.y()) * normal.y();
+            const double offB = (b.x() - p.x()) * normal.x() + (b.y() - p.y()) * normal.y();
+            if (std::abs(offA) > tol || std::abs(offB) > tol) continue;
+            const double tA = (a.x() - p.x()) * unit.x() + (a.y() - p.y()) * unit.y();
+            const double tB = (b.x() - p.x()) * unit.x() + (b.y() - p.y()) * unit.y();
+            if (std::max(tA, tB) < -tol || std::min(tA, tB) > len + tol) continue;
+            cells << c;
+            break;
+        }
+    }
+    // A point that is on no face of anything - inside a shape, or off the
+    // layout - drives the one cell nearest it.
+    if (cells.isEmpty()) {
+        const int one = nearest();
+        if (one >= 0) cells << one;
+    }
+    return cells;
+}
+
 Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, QPointF from, QPointF to,
                         double micrometre, double frequency)
 {
@@ -351,92 +438,11 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         return out;
     }
 
-    // Where the current goes in and comes out: the cells nearest the two
-    // points asked for, of those a run reaches.
-    const auto nearest = [&mesh, &nodeOf](QPointF where) {
-        int best = -1;
-        double closest = 0;
-        for (auto it = nodeOf.constBegin(); it != nodeOf.constEnd(); ++it) {
-            const QPointF d = mesh.cells.at(it.key()).centre - where;
-            const double far = d.x() * d.x() + d.y() * d.y();
-            if (best < 0 || far < closest) {
-                best = it.key();
-                closest = far;
-            }
-        }
-        return best;
-    };
-    /*
-     * A port drives the whole face of the conductor it is on, not the one
-     * cell nearest it. Which face is not a guess: the point lies on an
-     * edge of a processed shape, and the cells that have a side on that
-     * same edge are the face.
-     *
-     * It matters more than it sounds. Fed at a point, a current must
-     * spread out from it, and that spreading resistance is real but is
-     * not the bar's - a bar two cells wide came out a sixth too
-     * resistive, and the answer moved as the mesh was refined, which is
-     * the one thing a solver must not do.
-     */
-    const auto faceAt = [&mesh, &conductors, &nodeOf, &nearest](QPointF where, QPointF* onLine = nullptr,
-                                                                 QPointF* alongLine = nullptr) {
-        QList<int> cells;
-        if (onLine != nullptr) *onLine = where;
-        if (alongLine != nullptr) *alongLine = QPointF(0, 0);
-        // The outline edge the point is on, over every shape.
-        double closest = 0;
-        QPointF p, q;
-        QString layer;
-        for (const Conductor& c : conductors)
-            for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
-                const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % n);
-                const QPointF d = b - a;
-                const double len2 = d.x() * d.x() + d.y() * d.y();
-                if (!(len2 > 0)) continue;
-                double t = ((where.x() - a.x()) * d.x() + (where.y() - a.y()) * d.y()) / len2;
-                t = std::clamp(t, 0.0, 1.0);
-                const QPointF on = a + d * t;
-                const double far = std::hypot(where.x() - on.x(), where.y() - on.y());
-                if (layer.isEmpty() || far < closest) {
-                    closest = far;
-                    p = a;
-                    q = b;
-                    layer = c.layer;
-                }
-            }
-        if (layer.isEmpty()) return cells;
-        const QPointF along = q - p;
-        const double len = std::hypot(along.x(), along.y());
-        if (!(len > 0)) return cells;
-        const QPointF unit = along / len;
-        const QPointF normal(-unit.y(), unit.x());
-        if (onLine != nullptr) *onLine = p;
-        if (alongLine != nullptr) *alongLine = unit;
-        // A cell is on that face where one of its own sides lies along
-        // the same line and within the edge's own extent.
-        const double tol = 1e-6 * std::max(1.0, len);
-        for (auto it = nodeOf.constBegin(); it != nodeOf.constEnd(); ++it) {
-            const MeshCell& cell = mesh.cells.at(it.key());
-            if (cell.layer != layer) continue;
-            for (int i = 0, n = int(cell.outline.size()); i < n; ++i) {
-                const QPointF a = cell.outline.at(i), b = cell.outline.at((i + 1) % n);
-                const double offA = (a.x() - p.x()) * normal.x() + (a.y() - p.y()) * normal.y();
-                const double offB = (b.x() - p.x()) * normal.x() + (b.y() - p.y()) * normal.y();
-                if (std::abs(offA) > tol || std::abs(offB) > tol) continue;
-                const double tA = (a.x() - p.x()) * unit.x() + (a.y() - p.y()) * unit.y();
-                const double tB = (b.x() - p.x()) * unit.x() + (b.y() - p.y()) * unit.y();
-                if (std::max(tA, tB) < -tol || std::min(tA, tB) > len + tol) continue;
-                cells << it.key();
-                break;
-            }
-        }
-        // A point that is on no face of anything - inside a shape, or off
-        // the layout - drives the one cell nearest it.
-        if (cells.isEmpty()) {
-            const int one = nearest(where);
-            if (one >= 0) cells << one;
-        }
-        return cells;
+    // Where the current goes in and comes out: the faces of the conductor
+    // the two points lie on, of the cells a run reaches.
+    const QList<int> reached = nodeOf.keys();
+    const auto faceAt = [&](QPointF where, QPointF* onLine, QPointF* alongLine) {
+        return faceCells(mesh, conductors, reached, where, onLine, alongLine);
     };
     QPointF sourceOn, sourceAlong, sinkOn, sinkAlong;
     const QList<int> sourceFace = faceAt(from, &sourceOn, &sourceAlong);

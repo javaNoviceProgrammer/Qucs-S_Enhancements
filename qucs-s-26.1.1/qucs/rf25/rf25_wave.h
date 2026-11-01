@@ -145,6 +145,11 @@ public:
 
     /// Each slab's complex permittivity at the frequency, F/m.
     Complex epsilonOf(int slab) const;
+    /// The distance the remainders change over, m: the height between the
+    /// two and twice the nearest interface that reflects - where the first
+    /// image is. Nought where nothing reflects. What a method of moments
+    /// judges a cell's size against, to integrate the remainder over it.
+    double reach() const { return a_reach; }
 
     /// Fills the table over distance, if it is not already: the first
     /// remainder asked for does it otherwise. Call it before handing the
