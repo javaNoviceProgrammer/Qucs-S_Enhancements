@@ -42,15 +42,33 @@
  * feed, are phase D's. An internal port drives the cell under its point,
  * against the ground or against the cell under it on another metal.
  *
+ * A via is a run of current in z, from the cell of the metal under it - or
+ * the ground, which takes its charge at nought - to the cell of the metal
+ * over it; the via's cells that land on the same two cells are one run.
+ * Formulation C wants two more kernels for it (ViaGreen): G_zz along the
+ * vias, and the correction a vertical current makes to the scalar
+ * potential, which a run in the plane sees as the difference between its
+ * two ends - that is also what its own vector potential does along the via
+ * (G_zx), so the matrix stays symmetric. The correction is taken at the
+ * cells, as the node potentials are, and at a port's cells too, as though
+ * the port's own path up from the ground carried it: round any path the
+ * dielectric's part of the vias' inductance then cancels, as magnetostatics
+ * says it must. A via to the ground stands at the centre of the cell it
+ * lands on, where its current enters the metal.
+ *
  * The frequencies are independent, and solved side by side on as many
  * threads as the machine has and the memory allows.
  *
  * A metal is a sheet with the surface impedance of a slab whose current
- * runs on both its faces. What it does NOT do yet: vias, whose currents
- * run up and down; a stack with no ground plane, since the ports are
- * referred to one; a metal's loss beyond what a sheet's crowding at its
+ * runs on both its faces, a via a bar with its current on its four faces.
+ * What it does NOT do yet: a stack with no ground plane, since the ports
+ * are referred to one; a metal's loss beyond what a sheet's crowding at its
  * edges gives (the quasi-static R of phase B is Wheeler's, of the thick
- * cross-section).
+ * cross-section); and a port's own path up from the ground, which carries
+ * no field of its own beyond the vias' correction - in a stack all of
+ * vacuum, where a line over its ground hardly radiates, that path's share
+ * of the radiation is missed, and S gives back up to a part in 1e4 more than it
+ * gets.
  */
 #ifndef QUCS_RF25_FULLWAVE_H
 #define QUCS_RF25_FULLWAVE_H
@@ -103,8 +121,11 @@ struct FullWave {
     /// At each frequency, each port driven by an ampere in turn, the
     /// others open: each run's current, A - [f][port][run].
     QList<QList<QList<Complex>>> currents;
-    QList<Filament> geometry;        ///< the runs themselves, beside the currents
-    QList<QPair<int, int>> ends;     ///< the cells of the mesh each run goes from and to
+    QList<Filament> geometry;        ///< the runs themselves, beside the currents: in the plane, then the vias
+    /// The cells of the mesh each run goes from and to; -1 from: the ground
+    /// a via stands on.
+    QList<QPair<int, int>> ends;
+    QHash<int, int> viaCells;        ///< each via cell of the mesh: the run it is part of
     /// The worst over the frequencies of how far Z is from symmetric (its
     /// largest difference over its largest term) and how far the ports'
     /// S gives back more than it is given (the largest eigenvalue of
@@ -151,8 +172,9 @@ QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, const QList<d
 /// \a port driven: by an ampere, the other ports open; or, \a terminated,
 /// by a source of its own reference impedance sending a wave of a watt in,
 /// the other ports ended in theirs - what a circuit does to it. The runs
-/// on either side of a cell averaged along each of the two directions.
-/// Empty where there is no such solve.
+/// on either side of a cell averaged along each of the two directions; a
+/// via's own cells, its current round its sides per metre of them. Empty
+/// where there is no such solve.
 QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool terminated = false);
 
 /// \a solved's ports as a Touchstone 1.1 file (.sNp), every port into

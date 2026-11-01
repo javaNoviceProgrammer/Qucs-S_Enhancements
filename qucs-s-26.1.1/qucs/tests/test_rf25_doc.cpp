@@ -86,6 +86,27 @@ bool writeStrip(const QString& path, double length, double width)
     return ok;
 }
 
+/// A strip of \a length by \a width (µm) on layer 1/0 and, at its far end,
+/// a square via of \a side on layer 2/0.
+bool writeStripWithVia(const QString& path, double length, double width, double side)
+{
+    gdstk::Library lib = {};
+    lib.init("STRIP", 1e-6, 1e-9);
+    auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+    cell->init("TOP");
+    lib.cell_array.append(cell);
+    auto* strip = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+    *strip = gdstk::rectangle(gdstk::Vec2{0, 0}, gdstk::Vec2{length, width}, gdstk::make_tag(1, 0));
+    cell->polygon_array.append(strip);
+    auto* via = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+    *via = gdstk::rectangle(gdstk::Vec2{length - side, (width - side) / 2}, gdstk::Vec2{length, (width + side) / 2},
+                            gdstk::make_tag(2, 0));
+    cell->polygon_array.append(via);
+    const bool ok = lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
+    lib.free_all();
+    return ok;
+}
+
 /// The tree's item of \a tag, or null.
 QTreeWidgetItem* itemOf(QTreeWidget* tree, const QString& tag)
 {
@@ -1506,6 +1527,109 @@ private slots:
         f.write(m.toJson());
         f.close();
         return file;
+    }
+
+    // A line shorted to the ground at its far end by a via, the via a layer
+    // of the GDS mapped to a via of the stack from "ground" to M1: solved
+    // full-wave through the tab, a short - an inductance at a low frequency
+    // - with the via said, and drawn by its current round its sides over
+    // the metal it stands on. The quasi-static extraction says it cannot
+    // hold a conductor at the ground's potential, and names the full wave.
+    void aViaToTheGroundIsSolvedFullWaveAndDrawn()
+    {
+        QVERIFY(writeStripWithVia(path(QStringLiteral("shorted.gds")), 1000, 50, 50));
+        rf::Model m = rf::Model::blank();
+        std::vector<rf::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const rf::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (rf::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("100[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("9.8"));
+            }
+        rf::Node via = m.make(QStringLiteral("rf_via"));
+        via.label = QStringLiteral("V0");
+        via.props.insert(QStringLiteral("from"), QStringLiteral("ground"));
+        via.props.insert(QStringLiteral("to"), QStringLiteral("M1"));
+        via.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+        QVERIFY(m.add(QStringLiteral("stack"), via) != nullptr);
+        QVERIFY2(m.stack().ok(), qPrintable(m.stack().problems.join(" | ")));
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("shorted.gds"));
+        QJsonArray rows;
+        rows.append(row({QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}));
+        rows.append(row({QStringLiteral("2"), QStringLiteral("0"), QStringLiteral("V0")}));
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("cells_across"), 2);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+        rf::Node port = m.make(QStringLiteral("rf_edge_port"));
+        port.label = QStringLiteral("P1");
+        port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+        port.props.insert(QStringLiteral("x"), QStringLiteral("0"));
+        port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
+        QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+        rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+        QVERIFY(study != nullptr);
+        study->props.insert(QStringLiteral("kind"), QStringLiteral("full_wave"));
+        study->props.insert(QStringLiteral("from"), QStringLiteral("0.1[GHz]"));
+        study->props.insert(QStringLiteral("to"), QStringLiteral("2[GHz]"));
+        study->props.insert(QStringLiteral("points"), 2);
+        const QString file = path(QStringLiteral("shorted.qrf25"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->mesh() != nullptr && !doc->mesh()->cells.isEmpty(), qPrintable(doc->layoutProblem()));
+        int viaCells = 0;
+        for (const rf::MeshCell& c : doc->mesh()->cells) viaCells += c.layer == QLatin1String("V0") ? 1 : 0;
+        QVERIFY2(viaCells > 0, "the via is meshed");
+
+        doc->solveButton()->click();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(says(w->lines, "of the runs are vias") && says(w->lines, "to the ground"), qPrintable(w->lines.join(" | ")));
+        // A short: at 100 MHz nearly all reflected, and inductive - the
+        // millimetre of line and the via, half a nanohenry, with an ohm of
+        // the thin metal's loss.
+        const std::complex<double> z = w->z.at(0).at(0).at(0);
+        QVERIFY2(std::abs(w->s.at(0).at(0).at(0)) > 0.95 && z.imag() > 0 && std::abs(z) < 5,
+                 qPrintable(QStringLiteral("Z %1 + %2 j").arg(z.real()).arg(z.imag())));
+        const QStringList summary = doc->fullWaveSummary();
+        QVERIFY2(says(summary, "Passive"), qPrintable(summary.join(" | ")));
+
+        doc->setCurrentsShown(true);
+        int round = 0;
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+            if (o.fill.isValid() && o.name.contains(QStringLiteral("round a via"))) round += int(o.shapes.size());
+        QCOMPARE(round, viaCells);
+        // (Drawn after the metals', over them.)
+        const QList<qucs_s::layout::LayoutView::Overlay> overlays = doc->view()->overlays();
+        int lastMetal = -1, firstVia = -1;
+        for (int i = 0; i < overlays.size(); ++i) {
+            if (overlays.at(i).name.contains(QStringLiteral("round a via"))) {
+                if (firstVia < 0) firstVia = i;
+            } else if (overlays.at(i).fill.isValid()) {
+                lastMetal = i;
+            }
+        }
+        QVERIFY2(firstVia > lastMetal, qPrintable(QStringLiteral("metal to %1, via from %2").arg(lastMetal).arg(firstVia)));
+        QVERIFY2(doc->currentsSaid().contains(QStringLiteral("round its sides")), qPrintable(doc->currentsSaid()));
+
+        RF25Doc::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        doc->solveWith(quasi);
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY(doc->extraction() == nullptr || !doc->extraction()->ok());
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("joins M1 to the ground"))
+                     && doc->solveProblem().contains(QStringLiteral("full-wave")),
+                 qPrintable(doc->solveProblem()));
+        app->closeAllFiles();
     }
 
     // A study by the full-wave solver: Solve drives the ports at each of its

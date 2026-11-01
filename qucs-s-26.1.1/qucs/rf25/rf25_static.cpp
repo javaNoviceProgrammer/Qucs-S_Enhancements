@@ -334,6 +334,18 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
     }
+    // A via to the ground holds what it lands on at the ground's potential;
+    // every net here is free, held at a volt in turn.
+    for (const Conductor& conductor : conductors) {
+        const Layer* via = stack.named(conductor.layer);
+        if (via == nullptr || via->kind != Layer::Via) continue;
+        if (stack.isGround(via->from) || stack.isGround(via->to)) {
+            out.problems << tr("The via %1 joins %2 to the ground, and the quasi-static extraction holds no conductor at the "
+                               "ground's potential: solve it full-wave (the study's Solver).")
+                                .arg(via->name.isEmpty() ? via->tag : via->name, stack.isGround(via->from) ? via->to : via->from);
+            return out;
+        }
+    }
     const QList<Net> nets = netsOf(mesh, conductors, stack);
     if (nets.isEmpty()) {
         out.problems << tr("No cell of the mesh belongs to a conductor of the stack.");
