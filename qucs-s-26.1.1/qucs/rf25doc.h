@@ -218,6 +218,11 @@ public:
     /// Waits for it, a solve waiting for the mesh included, \a ms at most;
     /// whether it ended.
     bool waitForSolved(int ms = 600000);
+    /// Tests: while \a held, a solve waits before it computes anything, and
+    /// gives up at once if it is let go meanwhile - so that what happens to
+    /// a solve going on, an edit's mesh overtaking it or a Stop, is seen in
+    /// any build, not only of a solve slow enough to be caught at it.
+    void holdSolves(bool held) { a_solvesHeld->store(held); }
     /// Why there is no capacitance: what the extraction refused, or what
     /// stood in the way of starting it. Empty when there is one.
     QString solveProblem() const { return a_solveProblem; }
@@ -387,6 +392,8 @@ private:
     /// A Solve asked for while the shapes and the mesh were being made: it
     /// starts when they are.
     bool a_solveWhenPrepared = false;
+    /// holdSolves(): each solve job holds it too, so it outlives the tab.
+    std::shared_ptr<std::atomic_bool> a_solvesHeld = std::make_shared<std::atomic_bool>(false);
     bool a_showProcessed = true;
     bool a_showMesh = false;
     bool a_showCurrents = false;
