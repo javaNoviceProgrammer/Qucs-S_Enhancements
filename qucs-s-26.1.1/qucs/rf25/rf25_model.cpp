@@ -176,14 +176,17 @@ QList<NodeKind> makeKinds()
          tr("A metal layer. The layout's polygons on the layers mapped to it are its conductors; its name (the label) "
             "is what the layer map and the ports call it.")});
     add({QStringLiteral("rf_via"), tr("Via"), QStringLiteral("stack"), QStringLiteral("via"), none,
-         {text(QStringLiteral("from"), tr("From metal"), QString(), tr("The metal below, by its name")),
+         {text(QStringLiteral("from"), tr("From metal"), QString(),
+               tr("The metal below, by its name, or \"ground\" for a via down to the ground plane")),
           text(QStringLiteral("to"), tr("To metal"), QString(), tr("The metal above, by its name")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("2.1e7")),
           expr(QStringLiteral("fill"), tr("Filled fraction"), QString(), QStringLiteral("1"),
                tr("How much of the drawn shape is metal (a tungsten plug in a wider opening: below 1)."))},
          {}, {}, false, false, QStringLiteral("v"),
-         tr("The metal that joins two layers through the dielectric between them. Its two metals must be neighbours "
-            "in the stack.")});
+         tr("The metal that joins two layers through the dielectric between them, or a metal to the ground plane "
+            "(\"ground\", or the ground's name) through the substrate. Its two metals must be neighbours in the stack, "
+            "and a via to the ground goes up to the lowest metal. The full-wave solve carries its current up and down; "
+            "the quasi-static extraction joins what a via joins, and does not solve a via to the ground.")});
     add({QStringLiteral("rf_ground"), tr("Ground"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
          {choice(QStringLiteral("kind"), tr("Below the stack"),
                  {QStringLiteral("perfect"), QStringLiteral("metal"), QStringLiteral("impedance"), QStringLiteral("open")},
@@ -517,6 +520,15 @@ const Layer* Stack::named(const QString& name) const
     return nullptr;
 }
 
+bool Stack::isGround(const QString& name) const
+{
+    for (const Layer& l : layers)
+        if (l.kind == Layer::Ground
+            && (l.name == name || l.tag == name || name.trimmed().compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0))
+            return !name.trimmed().isEmpty();
+    return false;
+}
+
 Model::Model()
 {
     root.type = QStringLiteral("rf_model");
@@ -789,24 +801,40 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("The via %1 has no conductivity.").arg(name(l));
         if (l.kind == Layer::Metal && l.roughness < 0 && read("roughness"))
             out.problems << tr("%1 has a roughness below zero.").arg(name(l));
-        // A via joins the metals it names, and they must be neighbours:
-        // nothing but dielectric between them.
+        // A via joins the metals it names, or a metal and the ground, and
+        // they must be neighbours: nothing but dielectric between them - for
+        // the ground, the metal the lowest. (The ground by its name, or by
+        // the word "ground" as a port names it.)
         if (l.kind == Layer::Via) {
-            const auto metalAt = [&](const QString& named) {
-                for (int j = 0; j < out.layers.size(); ++j)
-                    if (out.layers.at(j).kind == Layer::Metal && name(out.layers.at(j)) == named) return j;
+            const auto conductorAt = [&out, &name](const QString& named) {
+                for (int j = 0; j < out.layers.size(); ++j) {
+                    const Layer& o = out.layers.at(j);
+                    if (o.kind == Layer::Metal && name(o) == named) return j;
+                    if (o.kind == Layer::Ground
+                        && (name(o) == named || named.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0))
+                        return j;
+                }
                 return -1;
             };
-            const int a = metalAt(l.from), b = metalAt(l.to);
+            const int a = conductorAt(l.from), b = conductorAt(l.to);
             if (l.from.isEmpty() || l.to.isEmpty())
                 out.problems << tr("The via %1 does not say which metals it joins.").arg(name(l));
             else if (a < 0 || b < 0)
                 out.problems << tr("The via %1 names %2, which is no metal of the stack.")
                                     .arg(name(l), a < 0 ? l.from : l.to);
+            else if (a == b)
+                out.problems << tr("The via %1 joins %2 to itself.").arg(name(l), l.from);
             else {
                 int between = 0;
-                for (int j = std::min(a, b) + 1; j < std::max(a, b); ++j)
-                    if (out.layers.at(j).kind == Layer::Metal) ++between;
+                const bool a0 = out.layers.at(a).kind == Layer::Ground, b0 = out.layers.at(b).kind == Layer::Ground;
+                if (a0 || b0) {
+                    const Layer& metal = out.layers.at(a0 ? b : a);
+                    for (const Layer& o : std::as_const(out.layers))
+                        if (o.kind == Layer::Metal && o.z0 < metal.z0) ++between;
+                } else {
+                    for (int j = std::min(a, b) + 1; j < std::max(a, b); ++j)
+                        if (out.layers.at(j).kind == Layer::Metal) ++between;
+                }
                 if (between > 0)
                     out.problems << tr("The via %1 joins %2 and %3, which are not neighbours: %4 metal(s) lie between "
                                        "them.").arg(name(l), l.from, l.to).arg(between);

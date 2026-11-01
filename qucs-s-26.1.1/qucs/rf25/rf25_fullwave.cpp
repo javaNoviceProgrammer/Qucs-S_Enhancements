@@ -187,23 +187,224 @@ int cellUnder(const Mesh& mesh, const QList<int>& reached, QPointF where, const 
     return best;
 }
 
+/// s asinh(s/rho) - sqrt(s^2 + rho^2): the second antiderivative of
+/// 1/sqrt(s^2 + rho^2).
+double antiderivative(double s, double rho)
+{
+    return s * std::asinh(s / rho) - std::sqrt(s * s + rho * rho);
+}
+
+/// Int_a0^a1 Int_b0^b1 dz dz' / sqrt(rho^2 + (z - z')^2), m: two lines
+/// along z whose axes are \a rho apart, in the four terms of the
+/// antiderivative - the static part of two vias' coupling.
+double linePair(double a0, double a1, double b0, double b1, double rho)
+{
+    return antiderivative(a1 - b0, rho) - antiderivative(a1 - b1, rho) - antiderivative(a0 - b0, rho)
+           + antiderivative(a0 - b1, rho);
+}
+
+/// The same between two vias of square cross-sections a side \a wa and
+/// \a wb (m) whose axes are \a apart (m): for one via with itself, or with
+/// its image, the cross-section's geometric mean distance with itself
+/// (\a gmd); far apart, between the axes; near, averaged over both
+/// cross-sections, where their breadth is most of the answer.
+double viaPair(double a0, double a1, double b0, double b1, double apart, double wa, double wb, double gmd)
+{
+    const double widest = std::max(wa, wb);
+    if (apart <= 1e-6 * std::max(widest, gmd)) return linePair(a0, a1, b0, b1, gmd);
+    if (apart > 3 * widest) return linePair(a0, a1, b0, b1, apart);
+    const double at[2] = {-0.5 / std::sqrt(3.0), 0.5 / std::sqrt(3.0)};   // (Gauss's two points on a side)
+    double sum = 0;
+    for (const double ax : at)
+        for (const double ay : at)
+            for (const double bx : at)
+                for (const double by : at) {
+                    const double r = std::hypot(apart + ax * wa - bx * wb, ay * wa - by * wb);
+                    sum += linePair(a0, a1, b0, b1, std::max(r, 1e-6 * widest)) / 16;
+                }
+    return sum;
+}
+
+/// Int Int (exp(-jkR) - 1)/R dz dz' between two lines along z, R =
+/// sqrt(rho^2 + (z - z')^2): what the retardation adds to linePair(),
+/// smooth, by Gauss's rule.
+Complex retardedPair(Complex k, double a0, double a1, double b0, double b1, double rho)
+{
+    const Rule& r = gaussRule(4);
+    Complex sum(0, 0);
+    for (int i = 0; i < r.at.size(); ++i)
+        for (int j = 0; j < r.at.size(); ++j) {
+            const double z = (a0 + a1) / 2 + r.at.at(i) * (a1 - a0), zz = (b0 + b1) / 2 + r.at.at(j) * (b1 - b0);
+            sum += r.weight.at(i) * r.weight.at(j) * retardation(k, std::hypot(rho, z - zz));
+        }
+    return sum * (a1 - a0) * (b1 - b0);
+}
+
+/// A via of the mesh: a run of current in z from a cell of one metal (or
+/// the ground) to a cell of the next, the via cells that join the same two
+/// made one.
+struct Via {
+    int run = -1;             ///< its index among the runs
+    int span = 0;             ///< which of the stack's vias it is of
+    QPointF at;               ///< where it stands, m
+    double side = 0;          ///< its cross-section's side, m (the square of its area)
+    double gmd = 0;           ///< its cross-section's mean distance with itself, m
+};
+
+/// How high conductor \a name sits in \a stack, m: the dielectrics below it
+/// summed, the ground at nought wherever the tree lists it. -1 where it is
+/// no conductor of the stack.
+double metalHeight(const Stack& stack, const QString& name)
+{
+    if (stack.isGround(name)) return 0;
+    double z = 0;
+    for (const Layer& l : stack.layers) {
+        if (l.name == name || l.tag == name) return !l.isConductor() ? -1.0 : l.kind == Layer::Ground ? 0.0 : z;
+        if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness;
+    }
+    return -1;
+}
+
+/// A via run as the mesh makes it, before the solve numbers its cells.
+struct ViaRun {
+    Filament run;
+    int tail = -1, head = -1;  ///< the mesh's cells below and above it; -1 below: the ground
+    int span = 0;              ///< which of the stack's vias it is of
+    QPointF at;                ///< m
+    double side = 0, gmd = 0;  ///< m
+    QList<int> cells;          ///< the via's own cells of the mesh it is made of
+};
+
+/*!
+ * The vias of \a mesh as runs of current in z, each from the cell of the
+ * lower metal under it - or the ground - to the cell of the upper one. The
+ * cells of a via that land on the same two cells are one run: their
+ * current goes the same way, and a via cut ten across would otherwise be a
+ * hundred. A run stands where its cells are, but a via to the ground at
+ * the centre of the cell it lands on: its current enters the metal there,
+ * as the runs that carry it away leave from there, and the potential the
+ * formulation adds for a vertical current must be taken at one place for
+ * the two to cancel as they do along a whole path. \a spans gets each of the
+ * stack's vias the mesh has, from the lower metal's height to the upper's;
+ * \a said what was left out.
+ */
+QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre, QList<ViaGreen::Span>* spans,
+                        QStringList* said)
+{
+    // The cell of metal \a metal under via cell \a v: the one whose outline
+    // holds its centre, else the nearest whose box, grown by the via cell's
+    // own size, does; -1 where the via is over none of that metal.
+    const auto under = [&mesh](const QString& metal, const MeshCell& v) {
+        int best = -1;
+        double closest = 0;
+        const QRectF box = v.outline.boundingRect();
+        const double grow = std::hypot(box.width(), box.height()) / 2;
+        for (int c = 0; c < mesh.cells.size(); ++c) {
+            const MeshCell& cell = mesh.cells.at(c);
+            if (cell.layer != metal) continue;
+            if (cell.outline.containsPoint(v.centre, Qt::OddEvenFill)) return c;
+            if (!cell.outline.boundingRect().adjusted(-grow, -grow, grow, grow).contains(v.centre)) continue;
+            const QPointF d = cell.centre - v.centre;
+            const double far = d.x() * d.x() + d.y() * d.y();
+            if (best < 0 || far < closest) {
+                best = c;
+                closest = far;
+            }
+        }
+        return best;
+    };
+    struct Group {
+        int span = 0, tail = -1, head = -1;
+        double area = 0, sigma = 0, z0 = 0, z1 = 0;
+        QPointF weighted;
+        QRectF box;
+        QList<int> cells;
+    };
+    QStringList names;   // (the stack's vias, in the order the mesh meets them)
+    QMap<QString, Group> groups;
+    QStringList keys;    // (the groups in the order they were met)
+    int stranded = 0;
+    for (int index = 0; index < mesh.cells.size(); ++index) {
+        const MeshCell& cell = mesh.cells.at(index);
+        const Layer* via = stack.named(cell.layer);
+        if (via == nullptr || via->kind != Layer::Via) continue;
+        const double za = metalHeight(stack, via->from), zb = metalHeight(stack, via->to);
+        if (!(za >= 0) || !(zb >= 0) || za == zb) {
+            ++stranded;
+            continue;
+        }
+        const QString lower = za < zb ? via->from : via->to, upper = za < zb ? via->to : via->from;
+        const bool grounded = stack.isGround(lower);
+        const int tail = grounded ? -1 : under(lower, cell), head = under(upper, cell);
+        if (head < 0 || (!grounded && tail < 0)) {
+            ++stranded;
+            continue;
+        }
+        if (!names.contains(cell.layer)) {
+            names << cell.layer;
+            spans->append({std::min(za, zb), std::max(za, zb)});
+        }
+        const QString key = QStringLiteral("%1|%2|%3").arg(cell.layer).arg(tail).arg(head);
+        if (!groups.contains(key)) keys << key;
+        Group& g = groups[key];
+        g.span = int(names.indexOf(cell.layer));
+        g.tail = tail;
+        g.head = head;
+        g.area += cell.area;
+        g.weighted += cell.centre * cell.area;
+        g.box = g.box.isNull() ? cell.outline.boundingRect() : g.box.united(cell.outline.boundingRect());
+        g.cells << index;
+        g.sigma = via->sigma;
+        g.z0 = std::min(za, zb);
+        g.z1 = std::max(za, zb);
+    }
+    QList<ViaRun> out;
+    for (const QString& key : std::as_const(keys)) {
+        const Group& g = groups.value(key);
+        if (!(g.area > 0)) continue;
+        ViaRun v;
+        v.tail = g.tail;
+        v.head = g.head;
+        v.span = g.span;
+        v.at = (g.tail < 0 ? mesh.cells.at(g.head).centre : g.weighted / g.area) * micrometre;
+        v.side = std::sqrt(g.area) * micrometre;
+        // Rosa's mean distance of a rectangle with itself, 0.2235 (a + b):
+        // a square's 0.447 a, a thin strip's e^-3/2 of its width.
+        v.gmd = 0.2235 * (g.box.width() + g.box.height()) * micrometre;
+        v.run.from = v.run.to = v.at;
+        v.run.z0 = g.z0;
+        v.run.z1 = g.z1;
+        v.run.width = v.run.thickness = v.side;
+        v.run.sigma = g.sigma;
+        v.cells = g.cells;
+        out << v;
+    }
+    if (stranded > 0)
+        said->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out.")
+                         .arg(stranded));
+    return out;
+}
+
 /// Everything a frequency's solve needs that does not change with the
 /// frequency: made once, and read by every thread.
 struct Context {
     Layers layers;
-    QList<Filament> runs;
-    QList<int> tail, head;               ///< each run's cells, as charges
+    QList<Filament> runs;                ///< in the plane, then the vias
+    QList<int> tail, head;               ///< each run's cells, as charges (a via's tail -1 on the ground)
     QList<QRectF> rect;                  ///< each charge's cell, m
     QList<QPointF> centre;               ///< m
     QList<double> heights;               ///< the metals', m, from the lowest
-    QList<int> hNode, hRun;              ///< which of them each charge and run is at
+    QList<int> hNode, hRun;              ///< which of them each charge and run in the plane is at
     QList<double> dirX, dirY, midX, midY;
     Eigen::MatrixXd lDirect, lImage, pStatic;
+    QList<Via> vias;
+    QList<ViaGreen::Span> spans;         ///< each of the stack's vias that the mesh has
     /// Each port's current into the charges (and out of an internal
     /// port's other metal): charges x ports.
     MatrixC drive;
     double rhoMax = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
+    int planar = 0;                      ///< the runs in the plane, which come first
 };
 
 /// What one frequency solved to.
@@ -236,13 +437,27 @@ AtFrequency solveAt(const Context& c, double f)
             greens << g;
         }
 
+    // A via's kernels, one for each of the stack's vias the mesh has: its
+    // coupling to every via, and its potential at every metal height.
+    QList<ViaGreen> viaGreens;
+    for (const ViaGreen::Span& s : c.spans) {
+        ViaGreen v(c.layers, s, c.spans, c.heights, f, c.rhoMax);
+        if (!v.ok()) {
+            out.problems << v.problems();
+            return out;
+        }
+        v.prepare();
+        viaGreens << v;
+    }
+
     // jw L: the static partial inductances scaled as the vector
     // potential's singular terms are, and the rest at the centres - the
     // retardation of the source and of its image, and the stack's own
     // remainder.
-    MatrixC m(nr, nr);
-    for (int a = 0; a < nr; ++a)
-        for (int b = a; b < nr; ++b) {
+    MatrixC m = MatrixC::Zero(nr, nr);
+    const int np0 = c.planar;
+    for (int a = 0; a < np0; ++a)
+        for (int b = a; b < np0; ++b) {
             const double dot = c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b);
             Complex l(0, 0);
             if (std::abs(dot) >= 1e-9) {
@@ -257,6 +472,71 @@ AtFrequency solveAt(const Context& c, double f)
             }
             m(a, b) = m(b, a) = jw * l;
         }
+
+    // The vias. Between two: G_zz along both - the closed forms between
+    // their axes, statically in closed form and their retardation by
+    // Gauss's rule, and the table's rest - and the scalar correction of the
+    // one's current at the other's two cells, ended by the ground's nought
+    // for a via to it. Its potential is taken at the cells, as the node
+    // potentials are, so that what a via's current adds along the runs that
+    // carry it away cancels what it adds along the via itself; and the two
+    // ways round averaged, which differ by where a via stands in its cell.
+    // Nowhere nearer the via than its cross-section's mean distance with
+    // itself: the dielectric's part of its own G_zz, taken across that
+    // distance, is what its potential is there (to a part in a thousand
+    // through 200 µm of 9.8, against 5 % at its axis), and the two must
+    // cancel round a path for its inductance to be the vacuum's, as it is.
+    const int nv = int(c.vias.size());
+    const auto distance = [](QPointF p, QPointF q) { return std::hypot(p.x() - q.x(), p.y() - q.y()); };
+    const auto potentialOf = [&c, &viaGreens, &distance](const Via& v, int cell) {
+        return viaGreens.at(v.span).potential(c.hNode.at(cell), std::max(distance(c.centre.at(cell), v.at), v.gmd));
+    };
+    MatrixC block(nv, nv);
+    for (int i = 0; i < nv; ++i)
+        for (int j = 0; j < nv; ++j) {
+            const Via& a = c.vias.at(i);
+            const Via& b = c.vias.at(j);
+            const ViaGreen& green = viaGreens.at(a.span);
+            const double apart = distance(a.at, b.at);
+            const double gmd = std::max(a.gmd, b.gmd);
+            Complex v(0, 0);
+            for (const ViaGreen::Term& t : green.couplingTerms(b.span)) {
+                if (t.coefficient == Complex(0, 0)) continue;
+                const double near = viaPair(t.a0, t.a1, t.b0, t.b1, apart, a.side, b.side, gmd);
+                const Complex late = retardedPair(t.k, t.a0, t.a1, t.b0, t.b1, std::max(apart, gmd));
+                v += t.coefficient * (near + late) / (2 * M_PI);
+            }
+            v += green.couplingRemainder(b.span, apart);
+            const int head = c.head.at(a.run), tail = c.tail.at(a.run);
+            v += potentialOf(b, head);
+            if (tail >= 0) v -= potentialOf(b, tail);
+            block(i, j) = v;
+        }
+    for (int i = 0; i < nv; ++i)
+        for (int j = i; j < nv; ++j)
+            m(c.vias.at(i).run, c.vias.at(j).run) = m(c.vias.at(j).run, c.vias.at(i).run) = 0.5 * (block(i, j) + block(j, i));
+    // A run in the plane and a via: the via's potential at the run's head
+    // less at its tail - which is also what the run's vector potential does
+    // along the via (G_zx), by the formulation's reciprocity, both ways.
+    for (int a = 0; a < np0; ++a)
+        for (int j = 0; j < nv; ++j) {
+            const Via& b = c.vias.at(j);
+            const Complex v = potentialOf(b, c.head.at(a)) - potentialOf(b, c.tail.at(a));
+            m(a, b.run) = m(b.run, a) = v;
+        }
+    // A port and a via: the via's potential at the port's cells, by their
+    // shares. Along the runs a via's potential telescopes from the via to
+    // the port, and a port's current comes up to its cells from the ground
+    // by a path the solve otherwise gives no field: this is that path's part
+    // of it, ending it at the ground's nought - without which a via's
+    // inductance seen from a port in a dielectric was short by twice its
+    // potential at the port, a tenth of it 1.8 mm away through 200 µm of 9.8.
+    // Into each port's voltage and, the same, into each via's drive.
+    MatrixC portVia = MatrixC::Zero(c.np, nv);
+    for (int q = 0; q < c.np; ++q)
+        for (int i = 0; i < nc; ++i)
+            if (c.drive(i, q) != Complex(0, 0))
+                for (int j = 0; j < nv; ++j) portVia(q, j) += c.drive(i, q) * potentialOf(c.vias.at(j), i);
 
     // P: each cell's potential of a unit charge spread over another - the
     // static singular part over the cell in closed form, its retardation
@@ -282,22 +562,35 @@ AtFrequency solveAt(const Context& c, double f)
             p(i, j) = p(j, i) = v;
         }
 
-    // The charge eliminated: M = Zs l/w + jw L + A^T P A / jw.
+    // The charge eliminated: M = Zs l/w + jw L + A^T P A / jw. (A via to the
+    // ground has no tail: the ground takes its charge, at nought.)
+    const auto pAt = [&p](int i, int j) { return i < 0 || j < 0 ? Complex(0, 0) : p(i, j); };
     for (int a = 0; a < nr; ++a)
         for (int b = 0; b < nr; ++b)
-            m(a, b) += (p(c.tail.at(a), c.tail.at(b)) - p(c.tail.at(a), c.head.at(b)) - p(c.head.at(a), c.tail.at(b))
-                        + p(c.head.at(a), c.head.at(b)))
+            m(a, b) += (pAt(c.tail.at(a), c.tail.at(b)) - pAt(c.tail.at(a), c.head.at(b)) - pAt(c.head.at(a), c.tail.at(b))
+                        + pAt(c.head.at(a), c.head.at(b)))
                        / jw;
-    for (int a = 0; a < nr; ++a) {
+    for (int a = 0; a < np0; ++a) {
         const Filament& run = c.runs.at(a);
         if (run.width > 0) m(a, a) += sheetImpedance(run.sigma, run.thickness, f) * run.length() / run.width;
+    }
+    // A via's own: a bar whose current runs on its four faces, each with the
+    // surface impedance of a quarter of its depth - 1/(sigma area) at direct
+    // current, (1 + j)/(sigma delta) round its perimeter once the skin is
+    // thinner.
+    for (const Via& v : c.vias) {
+        const Filament& run = c.runs.at(v.run);
+        if (v.side > 0 && run.sigma > 0) m(v.run, v.run) += surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side);
     }
 
     // Each port driven by an ampere in turn: A^T P J / jw the drive.
     const MatrixC pDrive = p * c.drive;
+    const auto driveAt = [&pDrive](int i, int q) { return i < 0 ? Complex(0, 0) : pDrive(i, q); };
     MatrixC rhs(nr, c.np);
     for (int a = 0; a < nr; ++a)
-        for (int q = 0; q < c.np; ++q) rhs(a, q) = (pDrive(c.tail.at(a), q) - pDrive(c.head.at(a), q)) / jw;
+        for (int q = 0; q < c.np; ++q) rhs(a, q) = (driveAt(c.tail.at(a), q) - driveAt(c.head.at(a), q)) / jw;
+    for (int j = 0; j < nv; ++j)
+        for (int q = 0; q < c.np; ++q) rhs(c.vias.at(j).run, q) -= portVia(q, j);
     const Eigen::PartialPivLU<MatrixC> lu(m);
     out.current = lu.solve(rhs);
     out.rcond = lu.rcond();
@@ -311,11 +604,14 @@ AtFrequency solveAt(const Context& c, double f)
     MatrixC charge = c.drive;
     for (int a = 0; a < nr; ++a)
         for (int q = 0; q < c.np; ++q) {
-            charge(c.tail.at(a), q) -= out.current(a, q);
+            if (c.tail.at(a) >= 0) charge(c.tail.at(a), q) -= out.current(a, q);
             charge(c.head.at(a), q) += out.current(a, q);
         }
     charge /= jw;
     out.z = c.drive.transpose() * (p * charge);
+    for (int j = 0; j < nv; ++j)
+        for (int q = 0; q < c.np; ++q)
+            for (int r = 0; r < c.np; ++r) out.z(r, q) += portVia(r, j) * out.current(c.vias.at(j).run, q);
     return out;
 }
 
@@ -438,23 +734,50 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         return out;
     }
 
+    // The runs in the plane, on the metals - runsOf joins a via's own cells
+    // too, as a little sheet of their own, and makes its vias its own way -
+    // and then the vias.
     QList<QPair<int, int>> ends;
-    c.runs = runsOf(mesh, conductors, stack, micrometre, &ends);
-    for (const Filament& f : std::as_const(c.runs))
-        if (f.z0 != f.z1) {
-            out.problems << tr("A via joins two metals, and its current runs up and down, which the full-wave solve "
-                               "does not do yet: solve one metal at a time, or use the quasi-static extraction.");
-            return out;
+    {
+        QList<QPair<int, int>> all;
+        const QList<Filament> runs = runsOf(mesh, conductors, stack, micrometre, &all);
+        for (int i = 0; i < runs.size(); ++i) {
+            if (runs.at(i).z0 != runs.at(i).z1) continue;
+            const Layer* layer = stack.named(mesh.cells.at(all.at(i).first).layer);
+            if (layer == nullptr || layer->kind != Layer::Metal) continue;
+            c.runs << runs.at(i);
+            ends << all.at(i);
         }
+    }
+    c.planar = int(c.runs.size());
+    QStringList viaSaid;
+    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaSaid);
+    int grounded = 0;
+    for (const ViaRun& v : viaRuns) {
+        Via via;
+        via.run = int(c.runs.size());
+        via.span = v.span;
+        via.at = v.at;
+        via.side = v.side;
+        via.gmd = v.gmd;
+        c.vias << via;
+        for (const int cell : v.cells) out.viaCells.insert(cell, int(c.runs.size()));
+        c.runs << v.run;
+        ends << qMakePair(v.tail, v.head);
+        if (v.tail < 0) ++grounded;
+    }
     if (c.runs.isEmpty()) {
         out.problems << tr("No two cells of the mesh share an edge, so there is nowhere for a current to flow. Mesh the "
                            "layout more finely.");
         return out;
     }
 
-    // The cells the runs join - the charges - in the mesh's order.
+    // The cells the runs join - the charges - in the mesh's order. (Not the
+    // ground a via stands on.)
     QList<int> cellOf;
-    for (const QPair<int, int>& e : std::as_const(ends)) cellOf << e.first << e.second;
+    for (const QPair<int, int>& e : std::as_const(ends))
+        for (const int cell : {e.first, e.second})
+            if (cell >= 0) cellOf << cell;
     std::sort(cellOf.begin(), cellOf.end());
     cellOf.erase(std::unique(cellOf.begin(), cellOf.end()), cellOf.end());
     QHash<int, int> nodeOf;
@@ -475,7 +798,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     c.tail.resize(nr);
     c.head.resize(nr);
     for (int a = 0; a < nr; ++a) {
-        c.tail[a] = nodeOf.value(ends.at(a).first);
+        c.tail[a] = ends.at(a).first < 0 ? -1 : nodeOf.value(ends.at(a).first);
         c.head[a] = nodeOf.value(ends.at(a).second);
     }
 
@@ -542,8 +865,8 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
         c.rect[i] = scaledBy(cell.outline.boundingRect(), micrometre);
         c.centre[i] = cell.centre * micrometre;
         extent = i == 0 ? c.rect.at(i) : extent.united(c.rect.at(i));
+        zOf[i] = metalHeight(stack, cell.layer);
     }
-    for (int a = 0; a < nr; ++a) zOf[c.tail.at(a)] = zOf[c.head.at(a)] = c.runs.at(a).z0;
     const double tol = 1e-9 * std::max(1e-9, c.layers.height());
     for (const double z : std::as_const(zOf)) {
         bool known = false;
@@ -560,7 +883,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     c.hNode.resize(nc);
     c.hRun.resize(nr);
     for (int i = 0; i < nc; ++i) c.hNode[i] = heightIndex(zOf.at(i));
-    for (int a = 0; a < nr; ++a) c.hRun[a] = heightIndex(c.runs.at(a).z0);
+    for (int a = 0; a < nr; ++a) c.hRun[a] = a < c.planar ? heightIndex(c.runs.at(a).z0) : -1;
     // As far as any two points of the layout are apart, and a little more.
     c.rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
 
@@ -645,6 +968,11 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                      .arg(*std::max_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
                      .arg(threads);
     out.lines << out.portsSaid;
+    if (!c.vias.isEmpty())
+        out.lines << tr("%1 of the runs are vias, %2 of them to the ground: a via's current runs up it from the cell "
+                        "under it to the cell over it, entering each at its centre.")
+                         .arg(c.vias.size()).arg(grounded);
+    out.lines << viaSaid;
     out.lines << tr("The ground plane is taken as perfect, a metal as a sheet with the surface impedance of its "
                     "thickness, and an edge port's current as coming back through the ground.");
     for (int k = 0; k < nf; ++k) {
@@ -713,11 +1041,13 @@ QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool 
     const int runs = int(std::min({solved.geometry.size(), solved.ends.size(), current.size()}));
     for (int r = 0; r < runs; ++r) {
         const Filament& f = solved.geometry.at(r);
-        if (!(f.width > 0)) continue;
+        // (A via's current runs across no cell.)
+        if (!(f.width > 0) || f.z0 != f.z1) continue;
         double dx = 0, dy = 0;
         f.direction(&dx, &dy, nullptr);
         const Complex j = current.at(r) / f.width;
         for (const int cell : {solved.ends.at(r).first, solved.ends.at(r).second}) {
+            if (cell < 0) continue;
             Sum& s = sums[cell];
             s.x += j * dx;
             s.nx += std::abs(dx);
@@ -729,6 +1059,12 @@ QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool 
         const Complex jx = it->nx > 0 ? it->x / it->nx : Complex(0, 0);
         const Complex jy = it->ny > 0 ? it->y / it->ny : Complex(0, 0);
         out.insert(it.key(), std::sqrt(std::norm(jx) + std::norm(jy)));
+    }
+    // A via's own cells: its current round its four sides, per metre.
+    for (auto it = solved.viaCells.cbegin(); it != solved.viaCells.cend(); ++it) {
+        const int r = it.value();
+        if (r < 0 || r >= runs || !(solved.geometry.at(r).width > 0)) continue;
+        out.insert(it.key(), std::abs(current.at(r)) / (4 * solved.geometry.at(r).width));
     }
     return out;
 }

@@ -289,6 +289,59 @@ rf::FullWavePort internalPort(QPointF at, const QString& metal, const QString& f
     return p;
 }
 
+/// \a stack with a via \a name from \a from to \a to, perfect.
+rf::Stack withVia(rf::Stack stack, const QString& name, const QString& from, const QString& to)
+{
+    rf::Layer via;
+    via.kind = rf::Layer::Via;
+    via.name = name;
+    via.tag = name.toLower();
+    via.from = from;
+    via.to = to;
+    stack.layers << via;
+    return stack;
+}
+
+/// A rectangle in micrometres on \a layer.
+rf::Conductor on(const QString& layer, double x, double y, double w, double h)
+{
+    rf::Conductor c = strip(x, y, w, h);
+    c.layer = layer;
+    return c;
+}
+
+/// Those conductors meshed \a across cells across with the edges not
+/// refined, cells \a stretch times as long along a strip, none longer than
+/// \a largest (m): cells that land where a test puts them.
+rf::Mesh evenly(const QList<rf::Conductor>& conductors, int across, double largest, double stretch = 4)
+{
+    rf::MeshSettings how;
+    how.maximum = largest;
+    how.cellsAcross = across;
+    how.stretch = stretch;
+    how.edges = false;
+    return rf::meshOf(conductors, how, rf::Stack(), 0);
+}
+
+/// The admittance matrix of frequency \a k of a solve with its ports past
+/// the first \a kept shorted: those ports' block of Z inverted.
+Eigen::MatrixXcd keptAdmittance(const rf::FullWave& fw, int k, int kept)
+{
+    const int n = int(fw.z.at(k).size());
+    Eigen::MatrixXcd z(n, n);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) z(i, j) = fw.z.at(k).at(i).at(j);
+    return Eigen::MatrixXcd(z.inverse()).topLeftCorner(kept, kept);
+}
+
+/// Int_a0^a1 Int_b0^b1 dz dz' / sqrt(rho^2 + (z - z')^2): two lines along z,
+/// in closed form - a via's partial inductance over mu0/(4 pi).
+double linePair(double a0, double a1, double b0, double b1, double rho)
+{
+    const auto f = [rho](double s) { return s * std::asinh(s / rho) - std::sqrt(s * s + rho * rho); };
+    return f(a1 - b0) - f(a1 - b1) - f(a0 - b0) + f(a0 - b1);
+}
+
 } // namespace
 
 class TestRf25Fullwave : public QObject
@@ -841,6 +894,143 @@ private slots:
         QCOMPARE(rows.at(2).split(QLatin1Char(' '), Qt::SkipEmptyParts).size(), 8);   // row two's first four
     }
 
+    // A via to the ground at the far end of a line: the line shorted by it
+    // less the same line shorted at the same cells by internal ports - ideal
+    // shorts, with no field - is the via alone, the port and the line being
+    // in both. In vacuum that is its partial inductance and its image's, in
+    // closed form, the cross-section's mean distance with itself standing in
+    // for its breadth. Through 200 µm of 9.8 it is the same, as
+    // magnetostatics says: the dielectric's part of the via's own G_zz, its
+    // potential along the runs and at the port, and the line's G_zx along it
+    // all cancel. With the via over one cell and over two.
+    void aViaToTheGroundIsItsOwnInductance()
+    {
+        const double h = 200e-6, w = 50, l = 2000, f = 1e8, omega = 2 * M_PI * f;
+        const double g = 0.2235 * 2 * w * 1e-6;
+        const double closed = kMu0 / (4 * M_PI) * (linePair(0, h, 0, h, g) + linePair(0, h, -h, 0, g));
+        for (const int across : {1, 2}) {
+            QList<double> own;
+            for (const double epsr : {1.0, 9.8}) {
+                const rf::Stack stack = withVia(grounded(epsr, h), QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+                const QList<rf::Conductor> line = {strip(0, 0, l, w)};
+                const QList<rf::Conductor> shorted = {strip(0, 0, l, w), on(QStringLiteral("V0"), l - w, 0, w, w)};
+                const rf::Mesh meshA = evenly(shorted, across, 400e-6), meshB = evenly(line, across, 400e-6);
+                QList<rf::FullWavePort> ports = {edgePort(QPointF(0, w / 2))};
+                for (const rf::MeshCell& c : meshB.cells)
+                    if (c.outline.boundingRect().intersects(QRectF(l - w, 0, w, w)))
+                        ports << internalPort(c.centre, QStringLiteral("M1"));
+                QCOMPARE(ports.size(), 1 + across);
+                const rf::FullWave a = rf::fullWaveOf(meshA, shorted, stack, {edgePort(QPointF(0, w / 2))}, {f});
+                const rf::FullWave b = rf::fullWaveOf(meshB, line, stack, ports, {f});
+                QVERIFY2(a.ok(), qPrintable(why(a)));
+                QVERIFY2(b.ok(), qPrintable(why(b)));
+                QVERIFY2(says(a.lines, qPrintable(QStringLiteral("%1 of the runs are vias, %1 of them to the ground").arg(across))),
+                         qPrintable(a.lines.join(" | ")));
+                const Complex za = a.z.at(0).at(0).at(0), zb = 1.0 / keptAdmittance(b, 0, 1)(0, 0);
+                own << (za - zb).imag() / omega;
+                // It radiates a little and gives nothing back.
+                QVERIFY2(za.real() > 0 && a.gain <= 1e-12, qPrintable(QStringLiteral("Re Z %1, gain %2").arg(za.real()).arg(a.gain)));
+                // An ampere in at the port all goes down the via at 100 MHz,
+                // drawn on the via's own cells round its sides: each run's
+                // density times its perimeter, summed, is the ampere.
+                const QHash<int, double> density = rf::currentDensity(a, 0, 0);
+                QHash<int, double> down;
+                for (auto it = a.viaCells.cbegin(); it != a.viaCells.cend(); ++it) {
+                    QVERIFY(meshA.cells.at(it.key()).layer == QLatin1String("V0") && density.contains(it.key()));
+                    down.insert(it.value(), density.value(it.key()) * 4 * a.geometry.at(it.value()).width);
+                }
+                double total = 0;
+                for (const double i : std::as_const(down)) total += i;
+                QVERIFY2(down.size() == across && std::abs(total - 1.0) < 1e-3,
+                         qPrintable(QStringLiteral("%1 via run(s) drawn, %2 A down them").arg(down.size()).arg(total)));
+                qWarning().noquote() << QStringLiteral("%1 across, eps_r %2: the via %3 nH, closed form %4 (%5)")
+                                            .arg(across).arg(epsr).arg(own.last() * 1e9, 0, 'f', 6).arg(closed * 1e9, 0, 'f', 6)
+                                            .arg(own.last() / closed - 1, 0, 'e', 2);
+            }
+            // (Measured: over one cell 2e-5 of the closed form, the dielectric
+            //  2.4e-4 of vacuum; over two cells, a pair of vias side by side.)
+            if (across == 1) QVERIFY2(std::abs(own.at(0) / closed - 1) < 2e-4, "in vacuum, the closed form");
+            else QVERIFY2(std::abs(own.at(0) / closed - 1) < 0.05, "two vias side by side, near the one");
+            QVERIFY2(std::abs(own.at(1) / own.at(0) - 1) < (across == 1 ? 1e-3 : 3e-3), "the dielectric changes nothing");
+        }
+    }
+
+    // A via of a metal is a bar: at 10 MHz, the skin far deeper than its
+    // half-width, its resistance is its length over sigma and its area -
+    // the line shorted by it less by an ideal short, in its real part.
+    void aViasResistanceIsItsBars()
+    {
+        const double h = 200e-6, w = 50, l = 2000, f = 1e7, sigma = 1e6;
+        rf::Stack stack = withVia(grounded(9.8, h), QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+        stack.layers.last().sigma = sigma;
+        const QList<rf::Conductor> line = {strip(0, 0, l, w)};
+        const QList<rf::Conductor> shorted = {strip(0, 0, l, w), on(QStringLiteral("V0"), l - w, 0, w, w)};
+        const rf::Mesh meshB = evenly(line, 1, 400e-6);
+        QPointF end;
+        for (const rf::MeshCell& c : meshB.cells)
+            if (c.outline.boundingRect().intersects(QRectF(l - w, 0, w, w))) end = c.centre;
+        const rf::FullWave a = rf::fullWaveOf(evenly(shorted, 1, 400e-6), shorted, stack, {edgePort(QPointF(0, w / 2))}, {f});
+        const rf::FullWave b = rf::fullWaveOf(meshB, line, stack, {edgePort(QPointF(0, w / 2)), internalPort(end, QStringLiteral("M1"))}, {f});
+        QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+        const Complex extra = a.z.at(0).at(0).at(0) - 1.0 / keptAdmittance(b, 0, 1)(0, 0);
+        const double want = h / (sigma * w * w * 1e-12);
+        qWarning().noquote() << QStringLiteral("a via of %1 S/m at 10 MHz: R %2 Ohm, h/(sigma A) %3 (%4)")
+                                    .arg(sigma).arg(extra.real(), 0, 'f', 6).arg(want, 0, 'f', 6).arg(extra.real() / want - 1, 0, 'e', 2);
+        QVERIFY2(std::abs(extra.real() / want - 1) < 1e-3,
+                 qPrintable(QStringLiteral("R %1 Ohm, of h/(sigma A) %2").arg(extra.real()).arg(want)));
+    }
+
+    // A via between two metals in a line that climbs from M1 to M2: the two-
+    // port's series inductance at a low frequency (-1/Y12) less the same
+    // lines joined by an internal port from M1 to M2, shorted, is the via
+    // alone - its partial inductance and its image's, through 100 µm of 4 on
+    // 100 µm of 9.8 as in vacuum. The two-port is reciprocal and passive,
+    // and joined: the line's wave passes.
+    void aViaBetweenTwoMetalsJoinsThem()
+    {
+        const double h1 = 100e-6, h2 = 100e-6, w = 50, f = 1e8, omega = 2 * M_PI * f;
+        const double g = 0.2235 * 2 * w * 1e-6;
+        const double closed = kMu0 / (4 * M_PI) * (linePair(h1, h1 + h2, h1, h1 + h2, g) + linePair(h1, h1 + h2, -h1 - h2, -h1, g));
+        QList<double> own;
+        for (const bool vacuum : {true, false}) {
+            rf::Stack two = twoMetals();
+            for (rf::Layer& layer : two.layers)
+                if (layer.kind == rf::Layer::Dielectric) layer.thickness = h2;
+            if (vacuum)
+                for (rf::Layer& layer : two.layers) layer.epsr = 1;
+            two = withVia(two, QStringLiteral("V1"), QStringLiteral("M1"), QStringLiteral("M2"));
+            const QList<rf::Conductor> lines = {strip(0, 0, 1000, w), on(QStringLiteral("M2"), 1000 - w, 0, 1000, w)};
+            const QList<rf::Conductor> climbing = lines + QList<rf::Conductor>{on(QStringLiteral("V1"), 1000 - w, 0, w, w)};
+            const QList<rf::FullWavePort> ends = {edgePort(QPointF(0, w / 2), QStringLiteral("M1")),
+                                                  edgePort(QPointF(2000 - w, w / 2), QStringLiteral("M2"))};
+            const rf::FullWave a = rf::fullWaveOf(evenly(climbing, 1, 400e-6, 1), climbing, two, ends, {f, 5e9, 20e9});
+            const QList<rf::FullWavePort> joint = {
+                ends.at(0), ends.at(1), internalPort(QPointF(1000 - w / 2, w / 2), QStringLiteral("M2"), QStringLiteral("M1"))};
+            const rf::FullWave b = rf::fullWaveOf(evenly(lines, 1, 400e-6, 1), lines, two, joint, {f});
+            QVERIFY2(a.ok(), qPrintable(why(a)));
+            QVERIFY2(b.ok(), qPrintable(why(b)));
+            QVERIFY2(says(a.lines, "1 of the runs are vias, 0 of them to the ground"), qPrintable(a.lines.join(" | ")));
+            const Eigen::MatrixXcd ya = keptAdmittance(a, 0, 2), yb = keptAdmittance(b, 0, 2);
+            own << (-1.0 / ya(0, 1) + 1.0 / yb(0, 1)).imag() / omega;
+            // Passive through the dielectrics. In vacuum a port's own vertical
+            // current, which no port of this solve gives a field, is the
+            // larger part of what a line over a ground radiates, and without
+            // it S gives back a hair more than it gets - the lines alone, no
+            // via, as much (2e-5 of a wave): phase D's ports.
+            QVERIFY2(a.asymmetry < 1e-10 && (vacuum ? a.gain < 1e-3 : a.gain <= 1e-12),
+                     qPrintable(QStringLiteral("asymmetry %1, gain %2").arg(a.asymmetry).arg(a.gain)));
+            QVERIFY2(std::abs(a.s.at(0).at(1).at(0)) > 0.9,
+                     qPrintable(QStringLiteral("|S21| %1 at 100 MHz").arg(std::abs(a.s.at(0).at(1).at(0)))));
+            qWarning().noquote() << QStringLiteral("%1: the via %2 nH, closed form %3 (%4); |S21| %5 at 5 GHz, %6 at 20")
+                                        .arg(vacuum ? QStringLiteral("vacuum") : QStringLiteral("9.8 and 4"))
+                                        .arg(own.last() * 1e9, 0, 'f', 6).arg(closed * 1e9, 0, 'f', 6)
+                                        .arg(own.last() / closed - 1, 0, 'e', 2)
+                                        .arg(std::abs(a.s.at(1).at(1).at(0)), 0, 'f', 4).arg(std::abs(a.s.at(2).at(1).at(0)), 0, 'f', 4);
+        }
+        QVERIFY2(std::abs(own.at(0) / closed - 1) < 2e-3, "in vacuum, the closed form");
+        QVERIFY2(std::abs(own.at(1) / own.at(0) - 1) < 5e-3, "the dielectrics change nothing");
+    }
+
     void whatItCannotSolveIsSaid()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
@@ -894,7 +1084,16 @@ private slots:
         upper.layer = QStringLiteral("M2");
         joint.layer = QStringLiteral("V1");
         const QList<rf::Conductor> stacked{strip(0, 0, 400, 100), upper, joint};
-        QVERIFY(refused(rf::fullWaveOf(meshed(stacked, 4, 50e-6), stacked, two, ports, {1e9}), "via"));
+        const rf::FullWave joined = rf::fullWaveOf(meshed(stacked, 4, 50e-6), stacked, two, ports, {1e9});
+        QVERIFY2(joined.ok(), qPrintable(why(joined)));
+        QVERIFY2(says(joined.lines, "are vias"), qPrintable(joined.lines.join(" | ")));
+        // A via over no metal it joins is left out, and said.
+        rf::Conductor stray = strip(900, 0, 50, 50);
+        stray.layer = QStringLiteral("V1");
+        const QList<rf::Conductor> astray{strip(0, 0, 400, 100), upper, joint, stray};
+        const rf::FullWave left = rf::fullWaveOf(meshed(astray, 4, 50e-6), astray, two, ports, {1e9});
+        QVERIFY2(left.ok(), qPrintable(why(left)));
+        QVERIFY2(says(left.lines, "land on no metal"), qPrintable(left.lines.join(" | ")));
         // More than a dense complex matrix of this build holds.
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
         rf::MeshSettings fine;

@@ -1156,19 +1156,23 @@ void RF25Doc::showOverlays()
             // (Twenty-four bands, 2.5 dB each: eight looked like steps.)
             const QList<QColor> ramp = currentRamp(24);
             const int bands = int(ramp.size());
-            QList<LayoutView::Overlay> layer(bands);
+            // (The vias' cells in bands of their own, drawn over the metals'
+            //  they stand on.)
+            QList<LayoutView::Overlay> layer(bands), vias(bands);
             for (int b = 0; b < bands; ++b) {
-                layer[b].fill = ramp.at(b);
+                layer[b].fill = vias[b].fill = ramp.at(b);
                 layer[b].name = tr("the current density");
+                vias[b].name = tr("the current round a via");
             }
             for (auto it = density.cbegin(); it != density.cend(); ++it) {
                 if (it.key() < 0 || it.key() >= a_mesh->cells.size() || !(it.value() > 0)) continue;
                 const double below = 20 * std::log10(it.value() / most);   // dB, at most nought
                 const int b = std::clamp(int(std::floor((below + 60) / 60 * bands)), 0, bands - 1);
-                layer[b].shapes << a_mesh->cells.at(it.key()).outline;
+                (a_fullWave->viaCells.contains(it.key()) ? vias : layer)[b].shapes << a_mesh->cells.at(it.key()).outline;
             }
-            for (const LayoutView::Overlay& o : std::as_const(layer))
-                if (!o.shapes.isEmpty()) overlays << o;
+            for (const QList<LayoutView::Overlay>* each : {&layer, &vias})
+                for (const LayoutView::Overlay& o : *each)
+                    if (!o.shapes.isEmpty()) overlays << o;
             const double f = a_fullWave->frequencies.at(k);
             legend.title = tr("|J|, %1 driven at %2 GHz, A/m").arg(a_fullWave->portNames.at(port)).arg(f / 1e9, 0, 'g', 4);
             legend.ramp = currentRamp();
@@ -1181,6 +1185,8 @@ void RF25Doc::showOverlays()
                                  .arg(a_fullWave->portNames.at(port))
                                  .arg(a_fullWave->references.at(port), 0, 'g', 4)
                                  .arg(most, 0, 'g', 3);
+            if (!a_fullWave->viaCells.isEmpty())
+                a_currentsSaid += QLatin1Char(' ') + tr("A via is drawn by its current round its sides, per metre of them.");
         }
     }
     a_view->setOverlays(overlays);

@@ -63,8 +63,9 @@
  *   - **A table over distance**, filled once per frequency and pair of
  *     heights and read by every pair of cells.
  *
- * What it does NOT do yet: vertical currents (a via's), which want the
- * kernels' zz and zx terms; and a metal lid over the stack.
+ * A via's vertical current wants two more kernels of formulation C, which
+ * ViaGreen below gives. What neither does yet is a metal lid over the
+ * stack.
  */
 #ifndef QUCS_RF25_WAVE_H
 #define QUCS_RF25_WAVE_H
@@ -183,6 +184,142 @@ private:
     double a_rhoMax = 0;             ///< m, how far the table goes
     mutable QList<double> a_rho;     ///< the table's distances, m, from nought
     mutable QList<Pair> a_table;     ///< the remainders there
+    QStringList a_problems;
+};
+
+/*!
+ * The retarded kernels of a via: a vertical current, the same all along
+ * it, from one metal height of the stack to another (or from the ground),
+ * at a frequency. Formulation C, which WaveGreen's horizontal kernels are
+ * of, wants two more for it (Michalski and Zheng; the line Green's
+ * functions V and I of a shunt current source, i, or a series voltage
+ * source, v, at z'):
+ *
+ *   - G_zz, the z-component of the vector potential of a vertical current,
+ *     (mu0 / (j w eps(z'))) I_v^e(z|z'), integrated along this via and the
+ *     other: the coupling, Ohm, of a unit current on the other via to the
+ *     voltage along this one;
+ *   - the correction a vertical current makes to the scalar potential,
+ *     whose source derivative is (w^2 mu0 / kr^2)(V_v^e - V_v^h)(z|z'),
+ *     integrated along the via and divided by j w: the potential, Ohm, its
+ *     unit current adds at a metal height. A horizontal run's voltage gets
+ *     the difference between its two ends - which by the formulation's
+ *     reciprocity is also what the vector potential of the run's current
+ *     does along the via (G_zx), so the matrix stays symmetric with no
+ *     G_zx of its own.
+ *
+ * Integrated along whole slabs - a via always spans whole slabs, its metals
+ * sitting on their faces - every one of them comes down to the voltages of
+ * a shunt current source between the slabs' faces, the same lineVoltage
+ * WaveGreen uses:
+ *
+ *     Int_n Int_m I_v = (delta_nm d_n - D^2 V_i / (j kz_m Z_m)) / (j kz_n Z_n)
+ *     Int_m V_v(z|z') dz' = (V_i(z|top_m) - V_i(z|bottom_m)) / (j kz_m Z_m)
+ *
+ * D^2 V_i the second difference of V_i between slab n's faces and slab m's.
+ *
+ * As kr grows, G_zz tends to the free-space direct term between the parts
+ * of the two vias in the same slab, with its images in that slab's two
+ * faces: -Gamma each in a dielectric face (Gamma the TM Fresnel coefficient
+ * looking out of the slab) and +1 in a ground; between neighbouring slabs
+ * the direct term with 2 eps_n / (eps_n + eps_m), n this via's slab. These
+ * are taken out in closed form - Term below, for a method of moments to
+ * integrate between its two vias - and the rest tabulated over distance.
+ * The potential, at a face this via ends on, tends to
+ * -/+ j w mu0 Gamma / (2 kr^3), taken out as a closed form with that tail
+ * and no trouble at nought, coefficient (sqrt(d^2 + rho^2) - rho)/(2 pi).
+ */
+class ViaGreen
+{
+public:
+    /// A via's extent in height, m: z0 below z1.
+    struct Span {
+        double z0 = 0, z1 = 0;
+    };
+    /// What is taken out in closed form:
+    /// coefficient Int_a0^a1 Int_b0^b1 exp(-jkR)/(2 pi R) dz dz', R = sqrt(rho^2 + (z - z')^2),
+    /// [b0, b1] the other via's part, or its image in a face.
+    struct Term {
+        Complex coefficient;
+        Complex k;           ///< 1/m
+        double a0 = 0, a1 = 0, b0 = 0, b1 = 0;
+    };
+    /// The potential's closed form: coefficient (sqrt(d^2 + rho^2) - rho)/(2 pi).
+    struct Tail {
+        Complex coefficient;
+        double d = 0;        ///< m
+    };
+
+    ViaGreen() = default;
+    /// The via spanning \a span in \a layers at \a frequency (Hz): its coupling
+    /// to each via of \a others (itself among them, if wanted) and its
+    /// potential at each of \a heights (metal heights, m), tabulated out to
+    /// \a rhoMax (m). Invalid, with why in problems(), where a span is not
+    /// whole slabs or a height is in none.
+    ViaGreen(const Layers& layers, Span span, const QList<Span>& others, const QList<double>& heights, double frequency,
+             double rhoMax);
+
+    bool ok() const { return a_problems.isEmpty(); }
+    QStringList problems() const { return a_problems; }
+    double frequency() const { return a_frequency; }
+
+    /// jw Int Int G_zz along this via and \a other, Ohm: what is taken out
+    /// in closed form, and the rest at lateral distance \a rho (m).
+    QList<Term> couplingTerms(int other) const;
+    Complex couplingRemainder(int other, double rho) const;
+    /// The potential at height \a height (an index into the heights) at
+    /// lateral distance \a rho of a unit current up this via, Ohm: the
+    /// closed form and the table's rest.
+    Complex potential(int height, double rho) const;
+    Tail potentialTail(int height) const;
+    Complex potentialRemainder(int height, double rho) const;
+
+    /// The spectral functions at \a kr (1/m), whole or (\a remainder) less
+    /// their closed forms; and the remainders straight from the Sommerfeld
+    /// integral, no table. For the tests.
+    Complex couplingSpectral(int other, Complex kr, bool remainder = false) const;
+    Complex potentialSpectral(int height, Complex kr, bool remainder = false) const;
+    Complex couplingRemainderByIntegral(int other, double rho, double ellipse = 0) const;
+    Complex potentialRemainderByIntegral(int height, double rho, double ellipse = 0) const;
+    /// The coupling with the potential's part folded in, spectrally:
+    /// Int Int mu0 I_v^e (1/eps + 1/eps') - (w^2 mu0^2/kr^2)(I_v^e - I_v^h),
+    /// symmetric in the two vias. For the tests, which hold it to the
+    /// coupling plus the other via's potential at this one's top less at
+    /// its bottom.
+    Complex symmetricSpectral(int other, Complex kr) const;
+
+    double reach() const { return a_reach; }
+    /// Fills the table over distance (the first remainder asked for does it
+    /// otherwise). Call it before handing it to several threads.
+    void prepare() const;
+    int tableSize() const { return int(a_rho.size()); }
+
+private:
+    struct Segment {
+        int slab = -1;
+        double z0 = 0, z1 = 0;
+    };
+    /// Every component at \a kr - the couplings, then the potentials - and
+    /// what the closed forms are of them.
+    void spectral(Complex kr, Complex* full) const;
+    void extracted(Complex kr, Complex* cut) const;
+    void integral(double rho, double ellipse, Complex* out) const;
+    Complex fromTable(int component, double rho) const;
+    Complex slabK2(int slab) const;   ///< w^2 mu0 eps of a slab
+
+    Layers a_layers;
+    double a_frequency = 0, a_omega = 0;
+    QList<Complex> a_eps;            ///< each slab's, F/m
+    Complex a_epsAbove, a_epsBelow;
+    double a_kMax = 0, a_decay = 0, a_reach = 0, a_rhoMax = 0;
+    QList<Segment> a_own;            ///< this via's parts, a slab each
+    QList<QList<Segment>> a_others;  ///< each other via's
+    QList<double> a_heights;
+    QList<QList<Term>> a_terms;      ///< each other via's closed forms
+    QList<Tail> a_tails;             ///< each height's
+    int a_count = 0;                 ///< components: others, then heights
+    mutable QList<double> a_rho;
+    mutable QList<QList<Complex>> a_table;   ///< [rho][component]
     QStringList a_problems;
 };
 

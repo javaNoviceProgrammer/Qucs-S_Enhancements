@@ -96,6 +96,9 @@ struct Stack {
     QStringList conductors() const;
     /// The layer of that name, or null.
     const Layer* named(const QString& name) const;
+    /// Whether \a name is the stack's ground: its name, or the word
+    /// "ground" as a port or a via names it.
+    bool isGround(const QString& name) const;
     /// How high the stack reaches, m.
     double height() const { return layers.isEmpty() ? 0 : layers.last().z1; }
 };

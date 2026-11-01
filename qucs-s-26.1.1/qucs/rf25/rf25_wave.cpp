@@ -127,6 +127,55 @@ Complex lineVoltage(const Layers& layers, int m, double zs, int f, double zf, co
     return v;
 }
 
+/// The stack's two equivalent lines at one kr: each slab's kz and its TM
+/// and TE impedances, and the reflections looking up from the top of each
+/// slab and down from its bottom.
+struct Lines {
+    QVarLengthArray<Complex, 8> kz, ze, zh, upE, upH, downE, downH;
+};
+
+/// The lines of \a layers at \a kr, \a eps each slab's permittivity at the
+/// angular frequency \a w: the half-space above matched; below, a short
+/// where there is a ground and matched where there is not.
+Lines linesOf(const Layers& layers, const QList<Complex>& eps, Complex epsAbove, Complex epsBelow, double w, Complex kr)
+{
+    const int count = int(layers.slabs.size());
+    Lines l;
+    for (QVarLengthArray<Complex, 8>* a : {&l.kz, &l.ze, &l.zh, &l.upE, &l.upH, &l.downE, &l.downH}) a->resize(count);
+    for (int n = 0; n < count; ++n) {
+        l.kz[n] = kzOf(w * w * kMu0 * eps.at(n), kr);
+        l.ze[n] = l.kz[n] / (w * eps.at(n));
+        l.zh[n] = w * kMu0 / l.kz[n];
+    }
+    const Complex kzAbove = kzOf(w * w * kMu0 * epsAbove, kr);
+    const Complex zeAbove = kzAbove / (w * epsAbove), zhAbove = w * kMu0 / kzAbove;
+    l.upE[count - 1] = (zeAbove - l.ze[count - 1]) / (zeAbove + l.ze[count - 1]);
+    l.upH[count - 1] = (zhAbove - l.zh[count - 1]) / (zhAbove + l.zh[count - 1]);
+    for (int n = count - 2; n >= 0; --n) {
+        const Complex e = travel(l.kz[n + 1], 2 * (layers.slabs.at(n + 1).z1 - layers.slabs.at(n + 1).z0));
+        const Complex rE = (l.ze[n + 1] - l.ze[n]) / (l.ze[n + 1] + l.ze[n]), gE = l.upE[n + 1] * e;
+        const Complex rH = (l.zh[n + 1] - l.zh[n]) / (l.zh[n + 1] + l.zh[n]), gH = l.upH[n + 1] * e;
+        l.upE[n] = (rE + gE) / (1.0 + rE * gE);
+        l.upH[n] = (rH + gH) / (1.0 + rH * gH);
+    }
+    if (layers.groundBelow) {
+        l.downE[0] = l.downH[0] = Complex(-1, 0);
+    } else {
+        const Complex kzBelow = kzOf(w * w * kMu0 * epsBelow, kr);
+        const Complex zeBelow = kzBelow / (w * epsBelow), zhBelow = w * kMu0 / kzBelow;
+        l.downE[0] = (zeBelow - l.ze[0]) / (zeBelow + l.ze[0]);
+        l.downH[0] = (zhBelow - l.zh[0]) / (zhBelow + l.zh[0]);
+    }
+    for (int n = 1; n < count; ++n) {
+        const Complex e = travel(l.kz[n - 1], 2 * (layers.slabs.at(n - 1).z1 - layers.slabs.at(n - 1).z0));
+        const Complex rE = (l.ze[n - 1] - l.ze[n]) / (l.ze[n - 1] + l.ze[n]), gE = l.downE[n - 1] * e;
+        const Complex rH = (l.zh[n - 1] - l.zh[n]) / (l.zh[n - 1] + l.zh[n]), gH = l.downH[n - 1] * e;
+        l.downE[n] = (rE + gE) / (1.0 + rE * gE);
+        l.downH[n] = (rH + gH) / (1.0 + rH * gH);
+    }
+    return l;
+}
+
 } // namespace
 
 // ------------------------------------------------------------ Bessel's J0
@@ -218,6 +267,116 @@ Complex hankelH0(Complex z, int kind)
     const Complex y = besselY0Series(z);
     return kind == 1 ? besselJ0(z) + kJ * y : besselJ0(z) - kJ * y;
 }
+
+namespace {
+
+/*!
+ * (1/2 pi) Int_0^inf f(kr) J0(kr rho) kr dkr of \a count functions at once,
+ * \a values (kr, out) giving them all at a complex kr.
+ *
+ * The path is the one WaveGreen's remainders were first integrated on, and
+ * each part of it is there for a reason found the hard way:
+ *
+ *   - From nought to a = 1.5 \a kMax, beyond every pole and branch point, on
+ *     a half-ellipse above the real axis, kr = a/2 (1 - cos t) + j b sin t:
+ *     the poles lie on the axis (below it, with loss), and J0 grows as
+ *     exp(b rho) off it, so b - \a ellipse, or by default - is kept under
+ *     1/rho but not so low as to graze them.
+ *   - Along the real axis from there, in panels doubling in length: just
+ *     past a the branch points beneath it still shape the integrand on the
+ *     scale of k, which one panel to the first zero of J0 - thousands of
+ *     times longer - could not see (a ground's image came out a part in a
+ *     thousand wrong). On until a panel is as long as half a period of J0,
+ *     or, where J0 hardly turns before it is all gone (\a decay, 1/m),
+ *     until what one adds is nothing beside \a floors, each function's own.
+ *     Far enough out a remainder is below the arithmetic's own noise - it
+ *     is a kernel less its closed form, two numbers that agree to (k/kr)^4 -
+ *     and the panels stop there whatever they add.
+ *   - The rest along two vertical lines from where the panels stopped: J0 =
+ *     (H0(1) + H0(2))/2, the first turned up into the upper half-plane and
+ *     the second down, where each decays as exp(-t rho) however slowly the
+ *     integrand dies along the real axis - which, with an oxide a few
+ *     micrometres thick, it does over thousands of periods of J0 (an
+ *     extrapolation of their sums ran out of terms a part in 1e5 short).
+ *     Nothing lies between: every branch point and pole is left of it.
+ *     \a reach (m), the distance the functions change over, sets the step.
+ *
+ *       Int_lo^inf f J0(kr rho) kr dkr
+ *         = (j/2) Int_0^inf [f H0(1) kr](lo + jt) - [f H0(2) kr](lo - jt) dt
+ */
+template <typename Values>
+void sommerfeld(double rho, double ellipse, double kMax, double decay, double reach, int count, const double* floors,
+                const Values& values, Complex* out)
+{
+    const Gauss& g = gauss16();
+    QVarLengthArray<Complex, 16> sum(count), r(count), part(count), tail(count), fu(count), fd(count);
+    std::fill(sum.begin(), sum.end(), Complex(0, 0));
+    const double a = std::max(1.5 * kMax, 1e-9);
+    const double b = ellipse > 0 ? ellipse : std::min(0.5 * a, std::max(0.05 * a, rho > 0 ? 1.0 / rho : 0.5 * a));
+    const int arcs = 16;
+    for (int p = 0; p < arcs; ++p)
+        for (int i = 0; i < 16; ++i) {
+            const double t = M_PI * (p + (g.x[i] + 1) / 2) / arcs;
+            const double weight = g.w[i] * M_PI / (2 * arcs);
+            const Complex kr(a / 2 * (1 - std::cos(t)), b * std::sin(t));
+            const Complex dk(a / 2 * std::sin(t), b * std::cos(t));
+            values(kr, r.data());
+            const Complex common = besselJ0(kr * rho) * kr * dk * weight;
+            for (int c = 0; c < count; ++c) sum[c] += r[c] * common;
+        }
+
+    const auto panel = [&part, &r, &g, &values, rho, count](double lo, double hi) {
+        std::fill(part.begin(), part.end(), Complex(0, 0));
+        for (int i = 0; i < 16; ++i) {
+            const double kr = lo + (hi - lo) * (g.x[i] + 1) / 2;
+            const double common = besselJ0(kr * rho) * kr * g.w[i] * (hi - lo) / 2;
+            values(Complex(kr, 0), r.data());
+            for (int c = 0; c < count; ++c) part[c] += r[c] * common;
+        }
+    };
+    // (Every function nothing beside its own sum, or below its floor.)
+    const auto nothing = [&floors, count](const QVarLengthArray<Complex, 16>& added,
+                                          const QVarLengthArray<Complex, 16>& total, double part) {
+        for (int c = 0; c < count; ++c)
+            if (!(std::abs(added[c]) <= part * std::abs(total[c]) + floors[c])) return false;
+        return true;
+    };
+    const double end = std::max(decay, a);
+    const double half = rho > 0 ? M_PI / rho : std::numeric_limits<double>::infinity();
+    const double cap = std::max(end, 1e4 * a);
+    double lo = a;
+    for (int k = 0; k < 200; ++k) {
+        if (lo >= half && (end - lo) * rho >= 4 * M_PI) break;
+        const double hi = 2 * lo;
+        panel(lo, hi);
+        for (int c = 0; c < count; ++c) sum[c] += part[c];
+        if (hi >= cap || (hi > end && nothing(part, sum, 1e-15))) {
+            for (int c = 0; c < count; ++c) out[c] = sum[c] / (2 * M_PI);
+            return;
+        }
+        lo = hi;
+    }
+    const double step = std::min(1.0 / rho, reach > 0 ? M_PI / (2 * reach) : 1.0 / rho);
+    const double last = 40.0 / rho;
+    std::fill(tail.begin(), tail.end(), Complex(0, 0));
+    for (double t0 = 0; t0 < last; t0 += step) {
+        std::fill(part.begin(), part.end(), Complex(0, 0));
+        for (int i = 0; i < 16; ++i) {
+            const double t = t0 + step * (g.x[i] + 1) / 2;
+            const double weight = g.w[i] * step / 2;
+            const Complex up(lo, t), down(lo, -t);
+            values(up, fu.data());
+            values(down, fd.data());
+            const Complex hu = hankelH0(up * rho, 1) * up, hd = hankelH0(down * rho, 2) * down;
+            for (int c = 0; c < count; ++c) part[c] += (fu[c] * hu - fd[c] * hd) * weight;
+        }
+        for (int c = 0; c < count; ++c) tail[c] += part[c];
+        if (t0 * rho > 5 && nothing(part, tail, 1e-16)) break;
+    }
+    for (int c = 0; c < count; ++c) out[c] = (sum[c] + kJ / 2.0 * tail[c]) / (2 * M_PI);
+}
+
+} // namespace
 
 // -------------------------------------------------------------- The kernels
 
@@ -377,45 +536,12 @@ Complex WaveGreen::epsilonOf(int slab) const
 
 WaveGreen::Pair WaveGreen::spectral(Complex kr) const
 {
-    const int count = int(a_layers.slabs.size());
-    QVarLengthArray<Complex, 8> kz(count), ze(count), zh(count), upE(count), upH(count), downE(count), downH(count);
-    const double w = a_omega;
-    for (int n = 0; n < count; ++n) {
-        kz[n] = kzOf(w * w * kMu0 * a_eps.at(n), kr);
-        ze[n] = kz[n] / (w * a_eps.at(n));
-        zh[n] = w * kMu0 / kz[n];
-    }
-    // The half-space above, matched; below, a short where there is a
-    // ground and matched where there is not.
-    const Complex kzAbove = kzOf(w * w * kMu0 * a_epsAbove, kr);
-    const Complex zeAbove = kzAbove / (w * a_epsAbove), zhAbove = w * kMu0 / kzAbove;
-    upE[count - 1] = (zeAbove - ze[count - 1]) / (zeAbove + ze[count - 1]);
-    upH[count - 1] = (zhAbove - zh[count - 1]) / (zhAbove + zh[count - 1]);
-    for (int n = count - 2; n >= 0; --n) {
-        const Complex e = travel(kz[n + 1], 2 * (a_layers.slabs.at(n + 1).z1 - a_layers.slabs.at(n + 1).z0));
-        const Complex rE = (ze[n + 1] - ze[n]) / (ze[n + 1] + ze[n]), gE = upE[n + 1] * e;
-        const Complex rH = (zh[n + 1] - zh[n]) / (zh[n + 1] + zh[n]), gH = upH[n + 1] * e;
-        upE[n] = (rE + gE) / (1.0 + rE * gE);
-        upH[n] = (rH + gH) / (1.0 + rH * gH);
-    }
-    if (a_layers.groundBelow) {
-        downE[0] = downH[0] = Complex(-1, 0);
-    } else {
-        const Complex kzBelow = kzOf(w * w * kMu0 * a_epsBelow, kr);
-        const Complex zeBelow = kzBelow / (w * a_epsBelow), zhBelow = w * kMu0 / kzBelow;
-        downE[0] = (zeBelow - ze[0]) / (zeBelow + ze[0]);
-        downH[0] = (zhBelow - zh[0]) / (zhBelow + zh[0]);
-    }
-    for (int n = 1; n < count; ++n) {
-        const Complex e = travel(kz[n - 1], 2 * (a_layers.slabs.at(n - 1).z1 - a_layers.slabs.at(n - 1).z0));
-        const Complex rE = (ze[n - 1] - ze[n]) / (ze[n - 1] + ze[n]), gE = downE[n - 1] * e;
-        const Complex rH = (zh[n - 1] - zh[n]) / (zh[n - 1] + zh[n]), gH = downH[n - 1] * e;
-        downE[n] = (rE + gE) / (1.0 + rE * gE);
-        downH[n] = (rH + gH) / (1.0 + rH * gH);
-    }
-    const Complex ve = lineVoltage(a_layers, a_src, a_zSource, a_fld, a_zField, ze.data(), kz.data(), upE.data(), downE.data());
-    const Complex vh = lineVoltage(a_layers, a_src, a_zSource, a_fld, a_zField, zh.data(), kz.data(), upH.data(), downH.data());
-    return {kJ * w / (kr * kr) * (ve - vh), vh / (kJ * w)};
+    const Lines l = linesOf(a_layers, a_eps, a_epsAbove, a_epsBelow, a_omega, kr);
+    const Complex ve =
+        lineVoltage(a_layers, a_src, a_zSource, a_fld, a_zField, l.ze.data(), l.kz.data(), l.upE.data(), l.downE.data());
+    const Complex vh =
+        lineVoltage(a_layers, a_src, a_zSource, a_fld, a_zField, l.zh.data(), l.kz.data(), l.upH.data(), l.downH.data());
+    return {kJ * a_omega / (kr * kr) * (ve - vh), vh / (kJ * a_omega)};
 }
 
 WaveGreen::Pair WaveGreen::extracted(Complex kr) const
@@ -442,106 +568,21 @@ Complex WaveGreen::vectorSpectral(Complex kr) const
 
 WaveGreen::Pair WaveGreen::integral(double rho, double ellipse) const
 {
-    const Gauss& g = gauss16();
-    const auto remainder = [this](Complex kr) {
-        const Pair full = spectral(kr), out = extracted(kr);
-        return Pair{full.scalar - out.scalar, full.vector - out.vector};
-    };
     // What is small enough to stop at: a part in 1e12 of the kernel's own
     // size at this distance.
     const double scale = 1.0 / (2 * M_PI * std::max({rho, a_reach, 1e-12}));
-    const double floorS = 1e-13 * std::abs(a_scalarTerm.coefficient) * scale;
-    const double floorV = 1e-13 * std::abs(a_vectorTerm.coefficient) * scale;
-
-    // From nought to beyond every pole and branch point on a half-ellipse
-    // above the real axis, kr = a/2 (1 - cos t) + j b sin t: the poles lie
-    // on the axis (below it, with loss), and J0 grows as exp(b rho) off
-    // it, so b is kept under 1/rho but not so low as to graze them.
-    const double a = std::max(1.5 * a_kMax, 1e-9);
-    const double b = ellipse > 0 ? ellipse : std::min(0.5 * a, std::max(0.05 * a, rho > 0 ? 1.0 / rho : 0.5 * a));
-    Pair sum{Complex(0, 0), Complex(0, 0)};
-    const int arcs = 16;
-    for (int p = 0; p < arcs; ++p)
-        for (int i = 0; i < 16; ++i) {
-            const double t = M_PI * (p + (g.x[i] + 1) / 2) / arcs;
-            const double weight = g.w[i] * M_PI / (2 * arcs);
-            const Complex kr(a / 2 * (1 - std::cos(t)), b * std::sin(t));
-            const Complex dk(a / 2 * std::sin(t), b * std::cos(t));
-            const Pair r = remainder(kr);
-            const Complex common = besselJ0(kr * rho) * kr * dk * weight;
-            sum.scalar += r.scalar * common;
-            sum.vector += r.vector * common;
-        }
-
-    // The real axis from there.
-    const auto panel = [&](double lo, double hi) {
-        Pair part{Complex(0, 0), Complex(0, 0)};
-        for (int i = 0; i < 16; ++i) {
-            const double kr = lo + (hi - lo) * (g.x[i] + 1) / 2;
-            const double common = besselJ0(kr * rho) * kr * g.w[i] * (hi - lo) / 2;
-            const Pair r = remainder(Complex(kr, 0));
-            part.scalar += r.scalar * common;
-            part.vector += r.vector * common;
-        }
-        return part;
-    };
-    const double decay = std::max(a_decay, a);
-    const double half = rho > 0 ? M_PI / rho : std::numeric_limits<double>::infinity();
-    // Beyond this the remainder is below the arithmetic's own noise: it is
-    // the kernel less its closed form, two numbers that agree to (k/kr)^4,
-    // and what is left of their difference is rounding.
-    const double cap = std::max(decay, 1e4 * a);
-    // First, panels doubling in length: just past a the branch points
-    // beneath it still shape the integrand on the scale of k, which one
-    // panel to the first zero of J0 - thousands of times longer - could
-    // not see (a ground's image came out a part in a thousand wrong). On
-    // until a panel is as long as half a period of J0, or, where J0
-    // hardly turns before it is all gone, until what one adds is nothing.
-    double lo = a;
-    for (int k = 0; k < 200; ++k) {
-        if (lo >= half && (decay - lo) * rho >= 4 * M_PI) break;
-        const double hi = 2 * lo;
-        const Pair part = panel(lo, hi);
-        sum.scalar += part.scalar;
-        sum.vector += part.vector;
-        if (hi >= cap
-            || (hi > decay && std::abs(part.scalar) <= 1e-15 * std::abs(sum.scalar) + floorS
-                && std::abs(part.vector) <= 1e-15 * std::abs(sum.vector) + floorV))
-            return {sum.scalar / (2 * M_PI), sum.vector / (2 * M_PI)};
-        lo = hi;
-    }
-    // Then the rest along two vertical lines from lo: J0 = (H0(1) + H0(2))/2,
-    // the first turned up into the upper half-plane and the second down,
-    // where each decays as exp(-t rho) however slowly the integrand dies
-    // along the real axis - which, with an oxide a few micrometres thick,
-    // it does over thousands of periods of J0 (an extrapolation of their
-    // sums ran out of terms a part in 1e5 short). Nothing lies between:
-    // every branch point and pole is left of lo.
-    //   Int_lo^inf f J0(kr rho) kr dkr
-    //     = (j/2) Int_0^inf [f H0(1) kr](lo + jt) - [f H0(2) kr](lo - jt) dt
-    const double step = std::min(1.0 / rho, a_reach > 0 ? M_PI / (2 * a_reach) : 1.0 / rho);
-    const double last = 40.0 / rho;
-    Pair tail{Complex(0, 0), Complex(0, 0)};
-    for (double t0 = 0; t0 < last; t0 += step) {
-        Pair part{Complex(0, 0), Complex(0, 0)};
-        for (int i = 0; i < 16; ++i) {
-            const double t = t0 + step * (g.x[i] + 1) / 2;
-            const double weight = g.w[i] * step / 2;
-            const Complex up(lo, t), down(lo, -t);
-            const Pair fu = remainder(up), fd = remainder(down);
-            const Complex hu = hankelH0(up * rho, 1) * up, hd = hankelH0(down * rho, 2) * down;
-            part.scalar += (fu.scalar * hu - fd.scalar * hd) * weight;
-            part.vector += (fu.vector * hu - fd.vector * hd) * weight;
-        }
-        tail.scalar += part.scalar;
-        tail.vector += part.vector;
-        if (t0 * rho > 5 && std::abs(part.scalar) <= 1e-16 * std::abs(tail.scalar) + floorS
-            && std::abs(part.vector) <= 1e-16 * std::abs(tail.vector) + floorV)
-            break;
-    }
-    sum.scalar += kJ / 2.0 * tail.scalar;
-    sum.vector += kJ / 2.0 * tail.vector;
-    return {sum.scalar / (2 * M_PI), sum.vector / (2 * M_PI)};
+    const double floors[2] = {1e-13 * std::abs(a_scalarTerm.coefficient) * scale,
+                              1e-13 * std::abs(a_vectorTerm.coefficient) * scale};
+    Complex out[2];
+    sommerfeld(
+        rho, ellipse, a_kMax, a_decay, a_reach, 2, floors,
+        [this](Complex kr, Complex* v) {
+            const Pair full = spectral(kr), cut = extracted(kr);
+            v[0] = full.scalar - cut.scalar;
+            v[1] = full.vector - cut.vector;
+        },
+        out);
+    return {out[0], out[1]};
 }
 
 void WaveGreen::prepare() const
@@ -634,6 +675,417 @@ Complex WaveGreen::vector(double rho) const
 {
     if (!ok()) return Complex(0, 0);
     return closedForm(a_vectorTerm, rho) + closedForm(a_vectorImage, rho) + fromTable(rho).vector;
+}
+
+// ------------------------------------------------------------ A via's kernels
+
+namespace {
+
+/// (exp(-u |s|) + u |s| - 1)/u^2: the second antiderivative of exp(-u |s|),
+/// even, and nought with its slope at nought - by its series there, where
+/// the three terms all but cancel.
+Complex secondAntiderivative(Complex u, double s)
+{
+    const double a = std::abs(s);
+    const Complex x = u * a;
+    if (std::abs(x) < 1e-2)
+        return a * a * (0.5 - x * (1.0 / 6 - x * (1.0 / 24 - x * (1.0 / 120 - x * (1.0 / 720 - x * (1.0 / 5040 - x / 40320.0))))));
+    return (std::exp(-x) + x - 1.0) / (u * u);
+}
+
+/// Int_a0^a1 Int_b0^b1 exp(-u |z - z'|) dz dz', in the four terms of the
+/// second antiderivative: right whether the two overlap, touch or are apart.
+Complex pairIntegral(Complex u, double a0, double a1, double b0, double b1)
+{
+    return secondAntiderivative(u, a1 - b0) - secondAntiderivative(u, a1 - b1) - secondAntiderivative(u, a0 - b0)
+           + secondAntiderivative(u, a0 - b1);
+}
+
+/// (1 - (1 + kr d) exp(-kr d))/kr^3: 1/kr^3 as kr grows and d^2/(2 kr) at
+/// nought, so that (1/2 pi) Int ... J0(kr rho) kr dkr converges at both ends,
+/// to (sqrt(d^2 + rho^2) - rho)/(2 pi). By its series where kr d is small.
+Complex tailSpectral(Complex kr, double d)
+{
+    const Complex x = kr * d;
+    if (std::abs(x) < 1e-2)
+        return d * d * d * (0.5 / x - (1.0 / 3 - x * (1.0 / 8 - x * (1.0 / 30 - x * (1.0 / 144 - x / 840.0)))));
+    return (1.0 - (1.0 + x) * std::exp(-x)) / (kr * kr * kr);
+}
+
+} // namespace
+
+ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, const QList<double>& heights,
+                   double frequency, double rhoMax)
+    : a_layers(layers), a_frequency(frequency)
+{
+    if (!layers.ok()) {
+        a_problems += layers.problems;
+        if (a_problems.isEmpty()) a_problems << tr("The stack has no dielectric to solve in.");
+        return;
+    }
+    if (!(frequency > 0) || !std::isfinite(frequency)) {
+        a_problems << tr("A retarded Green's function is of a frequency above nought, not %1 Hz.").arg(frequency);
+        return;
+    }
+    a_omega = 2 * M_PI * frequency;
+    for (const Layers::Slab& s : layers.slabs)
+        a_eps << kEps0 * Complex(s.epsr, -s.epsr * s.tand) - Complex(0, s.sigma / a_omega);
+    a_epsAbove = kEps0 * layers.epsrAbove;
+    a_epsBelow = kEps0 * layers.epsrBelow;
+    for (int n = 0; n < a_eps.size(); ++n) a_kMax = std::max(a_kMax, std::abs(std::sqrt(slabK2(n))));
+    a_kMax = std::max({a_kMax, std::abs(std::sqrt(a_omega * a_omega * kMu0 * a_epsAbove)),
+                       std::abs(std::sqrt(a_omega * a_omega * kMu0 * a_epsBelow))});
+
+    // A via's parts, a slab each. Its metals sit on faces of the slabs, so
+    // its ends are faces (to a hair: the heights are sums of the same
+    // thicknesses, not always in one order) and it spans the slabs whole.
+    const double hair = 1e-12 * std::max(1e-9, layers.height());
+    const auto snapped = [&layers, hair](double z) {
+        for (const Layers::Slab& s : layers.slabs)
+            for (const double face : {s.z0, s.z1})
+                if (std::abs(z - face) <= hair) return face;
+        return z;
+    };
+    const auto partsOf = [&layers, &snapped, hair](Span s, QList<Segment>* parts) {
+        s.z0 = snapped(s.z0);
+        s.z1 = snapped(s.z1);
+        if (!(s.z1 - s.z0 > hair)) return false;
+        double covered = 0;
+        for (int n = 0; n < layers.slabs.size(); ++n) {
+            const Layers::Slab& slab = layers.slabs.at(n);
+            const double lo = std::max(s.z0, slab.z0), hi = std::min(s.z1, slab.z1);
+            if (!(hi - lo > hair)) continue;
+            if (lo != slab.z0 || hi != slab.z1) return false;   // (a part of a slab)
+            parts->append({n, lo, hi});
+            covered += hi - lo;
+        }
+        // (And none of it beyond the stack.)
+        return !parts->isEmpty() && std::abs(covered - (s.z1 - s.z0)) <= 2 * hair * parts->size();
+    };
+    const auto said = [](Span s) {
+        return tr("A via from %1 to %2 µm does not span whole slabs of the stack: its ends are not metal heights.")
+            .arg(s.z0 * 1e6, 0, 'g', 4)
+            .arg(s.z1 * 1e6, 0, 'g', 4);
+    };
+    if (!partsOf(span, &a_own)) {
+        a_problems << said(span);
+        return;
+    }
+    for (const Span& o : others) {
+        QList<Segment> parts;
+        if (!partsOf(o, &parts)) {
+            a_problems << said(o);
+            return;
+        }
+        a_others << parts;
+    }
+    for (const double h : heights) {
+        const double z = snapped(h);
+        if (layers.slabAt(z) < 0) {
+            a_problems << tr("A height of %1 µm is in no slab of the stack.").arg(h * 1e6, 0, 'g', 4);
+            return;
+        }
+        a_heights << z;
+    }
+    a_count = int(a_others.size() + a_heights.size());
+
+    // The static Fresnel coefficients of the TM line, whose impedances go as
+    // 1/eps when kr is large: looking up out of slab n, and down.
+    const int count = int(layers.slabs.size());
+    const auto epsHigh = [this, count](int n) { return n + 1 < count ? a_eps.at(n + 1) : a_epsAbove; };
+    const auto epsLow = [this](int n) { return n > 0 ? a_eps.at(n - 1) : a_epsBelow; };
+    const auto fresnelUp = [this, &epsHigh](int n) { return (a_eps.at(n) - epsHigh(n)) / (a_eps.at(n) + epsHigh(n)); };
+    const auto fresnelDown = [this, &epsLow, &layers](int n) -> Complex {
+        if (n == 0 && layers.groundBelow) return Complex(-1, 0);
+        return (a_eps.at(n) - epsLow(n)) / (a_eps.at(n) + epsLow(n));
+    };
+
+    // G_zz's closed forms: as kr grows, mu0 I_v^e / eps' is the free-space
+    // direct term between parts in one slab, and its images in that slab's
+    // faces - a vertical current's image in a ground is the same current,
+    // in a dielectric face -Gamma of it; between neighbouring slabs the
+    // direct term again, carried across with 2 eps_n/(eps_n + eps_m). The
+    // images are always listed, a coefficient of nothing where a face does
+    // not reflect, so that the list is the same at every frequency.
+    const Complex half = kJ * a_omega * kMu0 / 2.0;
+    for (const QList<Segment>& other : std::as_const(a_others)) {
+        QList<Term> terms;
+        for (const Segment& n : std::as_const(a_own))
+            for (const Segment& m : other) {
+                if (n.slab == m.slab) {
+                    const Complex k = std::sqrt(slabK2(n.slab));
+                    terms << Term{half, k, n.z0, n.z1, m.z0, m.z1};
+                    terms << Term{-fresnelUp(n.slab) * half, k, n.z0, n.z1, 2 * n.z1 - m.z1, 2 * n.z1 - m.z0};
+                    terms << Term{-fresnelDown(n.slab) * half, k, n.z0, n.z1, 2 * n.z0 - m.z1, 2 * n.z0 - m.z0};
+                } else if (std::abs(n.slab - m.slab) == 1) {
+                    const Complex k = std::sqrt((slabK2(n.slab) + slabK2(m.slab)) / 2.0);
+                    const Complex carried = 2.0 * a_eps.at(n.slab) / (a_eps.at(n.slab) + a_eps.at(m.slab));
+                    terms << Term{carried * half, k, n.z0, n.z1, m.z0, m.z1};
+                }
+            }
+        a_terms << terms;
+    }
+    // The potential's at a face this via ends on: (w^2 mu0 / kr^2)(V_v^e -
+    // V_v^h) there is the TM line's reflection in that face, +-Gamma/2 a
+    // wave, integrated along the part below or above it - over j w,
+    // -j w mu0 Gamma / (2 kr^3) at the top and + at the bottom. A ground
+    // reflects both lines alike, and leaves nothing.
+    for (const double h : std::as_const(a_heights)) {
+        Tail t;
+        if (std::abs(h - a_own.last().z1) <= hair) {
+            const Segment& top = a_own.last();
+            t.coefficient = -kJ * a_omega * kMu0 * fresnelUp(top.slab) / 2.0;
+            t.d = top.z1 - top.z0;
+        } else if (std::abs(h - a_own.first().z0) <= hair && !(layers.groundBelow && a_own.first().slab == 0
+                                                               && a_own.first().z0 <= hair)) {
+            const Segment& bottom = a_own.first();
+            t.coefficient = kJ * a_omega * kMu0 * fresnelDown(bottom.slab) / 2.0;
+            t.d = bottom.z1 - bottom.z0;
+        }
+        a_tails << t;
+    }
+
+    // What is left changes over the thinnest part of either via (the next
+    // images are there), the slabs just beyond this one, and the distance
+    // from a height to the nearest face of this via.
+    double reach = std::numeric_limits<double>::infinity();
+    for (const Segment& s : std::as_const(a_own)) reach = std::min(reach, s.z1 - s.z0);
+    for (const QList<Segment>& other : std::as_const(a_others))
+        for (const Segment& s : other) reach = std::min(reach, s.z1 - s.z0);
+    for (const int n : {a_own.first().slab - 1, a_own.last().slab + 1})
+        if (n >= 0 && n < count) reach = std::min(reach, layers.slabs.at(n).z1 - layers.slabs.at(n).z0);
+    for (const double h : std::as_const(a_heights))
+        for (const Segment& s : std::as_const(a_own))
+            for (const double face : {s.z0, s.z1})
+                if (std::abs(h - face) > hair) reach = std::min(reach, std::abs(h - face));
+    a_reach = std::isfinite(reach) ? reach : 0;
+    a_decay = std::max(1.5 * a_kMax, 200 * a_kMax);
+    if (a_reach > 0) a_decay = std::max(a_decay, 46 / a_reach);
+    a_rhoMax = std::max(rhoMax, 1e-9);
+}
+
+Complex ViaGreen::slabK2(int slab) const
+{
+    return a_omega * a_omega * kMu0 * a_eps.at(slab);
+}
+
+void ViaGreen::spectral(Complex kr, Complex* full) const
+{
+    const Lines l = linesOf(a_layers, a_eps, a_epsAbove, a_epsBelow, a_omega, kr);
+    const double w = a_omega;
+    // V_i between two heights, TM or TE: the voltage at zf of a unit shunt
+    // current at zs.
+    const auto voltage = [this, &l](bool tm, double zf, double zs) {
+        return lineVoltage(a_layers, a_layers.slabAt(zs), zs, a_layers.slabAt(zf), zf, tm ? l.ze.data() : l.zh.data(),
+                           l.kz.data(), tm ? l.upE.data() : l.upH.data(), tm ? l.downE.data() : l.downH.data());
+    };
+    const Complex jkzZh = kJ * w * kMu0;
+    const auto jkzZe = [&l](int slab) { return kJ * l.kz[slab] * l.ze[slab]; };
+    int c = 0;
+    for (const QList<Segment>& other : std::as_const(a_others)) {
+        Complex sum(0, 0);
+        for (const Segment& n : std::as_const(a_own))
+            for (const Segment& m : other) {
+                const Complex second = voltage(true, n.z1, m.z1) - voltage(true, n.z1, m.z0) - voltage(true, n.z0, m.z1)
+                                       + voltage(true, n.z0, m.z0);
+                const double same = n.slab == m.slab ? n.z1 - n.z0 : 0.0;
+                const Complex currents = (same - second / jkzZe(m.slab)) / jkzZe(n.slab);   // Int Int I_v^e
+                sum += kMu0 * currents / a_eps.at(m.slab);
+            }
+        full[c++] = sum;
+    }
+    for (const double h : std::as_const(a_heights)) {
+        Complex sum(0, 0);
+        for (const Segment& m : std::as_const(a_own))
+            sum += (voltage(true, h, m.z1) - voltage(true, h, m.z0)) / jkzZe(m.slab)
+                   - (voltage(false, h, m.z1) - voltage(false, h, m.z0)) / jkzZh;
+        full[c++] = -kJ * w * kMu0 / (kr * kr) * sum;
+    }
+}
+
+Complex ViaGreen::symmetricSpectral(int other, Complex kr) const
+{
+    if (!ok() || other < 0 || other >= a_others.size()) return Complex(0, 0);
+    const Lines l = linesOf(a_layers, a_eps, a_epsAbove, a_epsBelow, a_omega, kr);
+    const double w = a_omega;
+    const auto voltage = [this, &l](bool tm, double zf, double zs) {
+        return lineVoltage(a_layers, a_layers.slabAt(zs), zs, a_layers.slabAt(zf), zf, tm ? l.ze.data() : l.zh.data(),
+                           l.kz.data(), tm ? l.upE.data() : l.upH.data(), tm ? l.downE.data() : l.downH.data());
+    };
+    const Complex jkzZh = kJ * w * kMu0;
+    const auto jkzZe = [&l](int slab) { return kJ * l.kz[slab] * l.ze[slab]; };
+    Complex sum(0, 0);
+    for (const Segment& n : std::as_const(a_own))
+        for (const Segment& m : a_others.at(other)) {
+            const auto second = [&](bool tm) {
+                return voltage(tm, n.z1, m.z1) - voltage(tm, n.z1, m.z0) - voltage(tm, n.z0, m.z1) + voltage(tm, n.z0, m.z0);
+            };
+            const double same = n.slab == m.slab ? n.z1 - n.z0 : 0.0;
+            const Complex ie = (same - second(true) / jkzZe(m.slab)) / jkzZe(n.slab);
+            const Complex ih = (same - second(false) / jkzZh) / jkzZh;
+            sum += kMu0 * ie * (1.0 / a_eps.at(n.slab) + 1.0 / a_eps.at(m.slab)) - w * w * kMu0 * kMu0 / (kr * kr) * (ie - ih);
+        }
+    return sum;
+}
+
+void ViaGreen::extracted(Complex kr, Complex* cut) const
+{
+    int c = 0;
+    for (const QList<Term>& terms : std::as_const(a_terms)) {
+        Complex sum(0, 0);
+        for (const Term& t : terms) {
+            if (t.coefficient == Complex(0, 0)) continue;
+            // (Sommerfeld's identity: exp(-u |dz|)/u is exp(-jkR)/R's.)
+            const Complex u = kJ * kzOf(t.k * t.k, kr);
+            sum += t.coefficient * pairIntegral(u, t.a0, t.a1, t.b0, t.b1) / u;
+        }
+        cut[c++] = sum;
+    }
+    for (const Tail& t : std::as_const(a_tails))
+        cut[c++] = t.coefficient == Complex(0, 0) ? Complex(0, 0) : t.coefficient * tailSpectral(kr, t.d);
+}
+
+void ViaGreen::integral(double rho, double ellipse, Complex* out) const
+{
+    // What is small enough to stop at: a part in 1e12 of a coupling's own
+    // size at this distance, jw mu0/2 times the two vias' lengths over
+    // 2 pi rho, and of the largest a potential can be.
+    const double scale = 1.0 / (2 * M_PI * std::max({rho, a_reach, 1e-12}));
+    const double own = a_own.last().z1 - a_own.first().z0;
+    QVarLengthArray<double, 16> floors(a_count);
+    int c = 0;
+    for (const QList<Segment>& other : std::as_const(a_others))
+        floors[c++] = 1e-13 * a_omega * kMu0 / 2 * own * (other.last().z1 - other.first().z0) * scale;
+    for (int h = 0; h < a_heights.size(); ++h) floors[c++] = 1e-13 * a_omega * kMu0 / 2 * own * own * scale;
+    const int count = a_count;
+    sommerfeld(
+        rho, ellipse, a_kMax, a_decay, a_reach, count, floors.data(),
+        [this, count](Complex kr, Complex* v) {
+            QVarLengthArray<Complex, 16> full(count), cut(count);
+            spectral(kr, full.data());
+            extracted(kr, cut.data());
+            for (int i = 0; i < count; ++i) v[i] = full[i] - cut[i];
+        },
+        out);
+}
+
+void ViaGreen::prepare() const
+{
+    if (!ok() || !a_rho.isEmpty() || a_count == 0) return;
+    // From nought, then log-spaced from well inside the thinnest slab -
+    // forty a decade - until the step reaches a sixtieth of the shortest
+    // wavelength, and evenly from there: WaveGreen's table.
+    double low = std::min(1e-3 * a_rhoMax, 1e-3 / a_kMax);
+    if (a_reach > 0) low = std::min(low, 0.01 * a_reach);
+    const double most = 2 * M_PI / (60 * a_kMax);
+    const double ratio = std::pow(10.0, 1.0 / 40);
+    QList<double> rho{0.0};
+    for (double r = low;; r = std::min(r * ratio, r + most)) {
+        rho << r;
+        if (r >= a_rhoMax) break;
+    }
+    QList<QList<Complex>> table;
+    table.reserve(rho.size());
+    QVarLengthArray<Complex, 16> out(a_count);
+    for (const double r : std::as_const(rho)) {
+        integral(r, 0, out.data());
+        table << QList<Complex>(out.begin(), out.end());
+    }
+    a_table = table;
+    a_rho = rho;
+}
+
+Complex ViaGreen::fromTable(int component, double rho) const
+{
+    prepare();
+    if (a_rho.size() < 8 || rho >= a_rho.last()) {
+        QVarLengthArray<Complex, 16> out(a_count);
+        integral(std::max(rho, 0.0), 0, out.data());
+        return out[component];
+    }
+    if (rho <= a_rho.at(1)) {
+        const double t = (rho / a_rho.at(1)) * (rho / a_rho.at(1));
+        return a_table.at(0).at(component) + t * (a_table.at(1).at(component) - a_table.at(0).at(component));
+    }
+    const int i = int(std::upper_bound(a_rho.begin(), a_rho.end(), rho) - a_rho.begin()) - 1;
+    const int j = std::clamp(i - 2, 1, int(a_rho.size()) - 6);
+    Complex out(0, 0);
+    for (int p = j; p < j + 6; ++p) {
+        double weight = 1;
+        for (int q = j; q < j + 6; ++q)
+            if (q != p) weight *= (rho - a_rho.at(q)) / (a_rho.at(p) - a_rho.at(q));
+        out += weight * a_rho.at(p) * a_table.at(p).at(component);
+    }
+    return out / rho;
+}
+
+QList<ViaGreen::Term> ViaGreen::couplingTerms(int other) const
+{
+    return ok() && other >= 0 && other < a_terms.size() ? a_terms.at(other) : QList<Term>();
+}
+
+Complex ViaGreen::couplingRemainder(int other, double rho) const
+{
+    if (!ok() || other < 0 || other >= a_others.size()) return Complex(0, 0);
+    return fromTable(other, rho);
+}
+
+ViaGreen::Tail ViaGreen::potentialTail(int height) const
+{
+    return ok() && height >= 0 && height < a_tails.size() ? a_tails.at(height) : Tail();
+}
+
+Complex ViaGreen::potentialRemainder(int height, double rho) const
+{
+    if (!ok() || height < 0 || height >= a_heights.size()) return Complex(0, 0);
+    return fromTable(int(a_others.size()) + height, rho);
+}
+
+Complex ViaGreen::potential(int height, double rho) const
+{
+    if (!ok() || height < 0 || height >= a_heights.size()) return Complex(0, 0);
+    const Tail& t = a_tails.at(height);
+    const Complex closed = t.coefficient == Complex(0, 0)
+                               ? Complex(0, 0)
+                               : t.coefficient * (std::hypot(t.d, rho) - rho) / (2 * M_PI);
+    return closed + potentialRemainder(height, rho);
+}
+
+Complex ViaGreen::couplingSpectral(int other, Complex kr, bool remainder) const
+{
+    if (!ok() || other < 0 || other >= a_others.size()) return Complex(0, 0);
+    QVarLengthArray<Complex, 16> full(a_count), cut(a_count);
+    spectral(kr, full.data());
+    if (!remainder) return full[other];
+    extracted(kr, cut.data());
+    return full[other] - cut[other];
+}
+
+Complex ViaGreen::potentialSpectral(int height, Complex kr, bool remainder) const
+{
+    if (!ok() || height < 0 || height >= a_heights.size()) return Complex(0, 0);
+    QVarLengthArray<Complex, 16> full(a_count), cut(a_count);
+    spectral(kr, full.data());
+    const int c = int(a_others.size()) + height;
+    if (!remainder) return full[c];
+    extracted(kr, cut.data());
+    return full[c] - cut[c];
+}
+
+Complex ViaGreen::couplingRemainderByIntegral(int other, double rho, double ellipse) const
+{
+    if (!ok() || other < 0 || other >= a_others.size()) return Complex(0, 0);
+    QVarLengthArray<Complex, 16> out(a_count);
+    integral(rho, ellipse, out.data());
+    return out[other];
+}
+
+Complex ViaGreen::potentialRemainderByIntegral(int height, double rho, double ellipse) const
+{
+    if (!ok() || height < 0 || height >= a_heights.size()) return Complex(0, 0);
+    QVarLengthArray<Complex, 16> out(a_count);
+    integral(rho, ellipse, out.data());
+    return out[a_others.size() + height];
 }
 
 } // namespace qucs_s::rf25
