@@ -17,11 +17,13 @@
  * a part in a thousand.
  */
 #include <QtTest>
+#include <QRegularExpression>
 
 #include "rf25/rf25_fullwave.h"
 
 #include <Eigen/Dense>
 
+#include <atomic>
 #include <cmath>
 #include <complex>
 
@@ -239,6 +241,54 @@ QString why(const rf::FullWave& fw)
     return fw.problems.join(QStringLiteral(" | "));
 }
 
+/// A ground plane, 100 µm of 9.8 with M1 on it, and 10 µm of 4 with M2 on
+/// that: two metals with no via between them.
+rf::Stack twoMetals()
+{
+    rf::Stack two;
+    const auto layer = [](rf::Layer::Kind kind, const QString& name, double thickness, double er) {
+        rf::Layer l;
+        l.kind = kind;
+        l.name = name;
+        l.tag = name.toLower();
+        l.thickness = thickness;
+        l.epsr = er;
+        return l;
+    };
+    two.layers << layer(rf::Layer::Ground, QStringLiteral("GND"), 0, 1) << layer(rf::Layer::Substrate, QStringLiteral("SUB"), 100e-6, 9.8)
+               << layer(rf::Layer::Metal, QStringLiteral("M1"), 0, 1) << layer(rf::Layer::Dielectric, QStringLiteral("ILD"), 10e-6, 4)
+               << layer(rf::Layer::Metal, QStringLiteral("M2"), 0, 1);
+    return two;
+}
+
+/// How many cells a port said it drives along its face: "drives the N cell(s)".
+int cellsDriven(const QString& said)
+{
+    const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("drives the (\\d+) cell")).match(said);
+    return m.hasMatch() ? m.captured(1).toInt() : -1;
+}
+
+/// A port of the model's kinds.
+rf::FullWavePort edgePort(QPointF at, const QString& metal = QString(), QPointF facing = QPointF(), double impedance = 50)
+{
+    rf::FullWavePort p;
+    p.at = at;
+    p.metal = metal;
+    p.facing = facing;
+    p.impedance = impedance;
+    return p;
+}
+
+rf::FullWavePort internalPort(QPointF at, const QString& metal, const QString& from = QString())
+{
+    rf::FullWavePort p;
+    p.internal = true;
+    p.at = at;
+    p.metal = metal;
+    p.from = from;
+    return p;
+}
+
 } // namespace
 
 class TestRf25Fullwave : public QObject
@@ -428,19 +478,7 @@ private slots:
     // matrix phase B's.
     void linesOnTwoMetalsAreSolvedTogether()
     {
-        rf::Stack two;
-        const auto layer = [](rf::Layer::Kind kind, const QString& name, double thickness, double er) {
-            rf::Layer l;
-            l.kind = kind;
-            l.name = name;
-            l.tag = name.toLower();
-            l.thickness = thickness;
-            l.epsr = er;
-            return l;
-        };
-        two.layers << layer(rf::Layer::Ground, QStringLiteral("GND"), 0, 1) << layer(rf::Layer::Substrate, QStringLiteral("SUB"), 100e-6, 9.8)
-                   << layer(rf::Layer::Metal, QStringLiteral("M1"), 0, 1) << layer(rf::Layer::Dielectric, QStringLiteral("ILD"), 10e-6, 4)
-                   << layer(rf::Layer::Metal, QStringLiteral("M2"), 0, 1);
+        const rf::Stack two = twoMetals();
         rf::Conductor upper = strip(0, 50, 600, 100);
         upper.layer = QStringLiteral("M2");
         const QList<rf::Conductor> conductors{strip(0, 0, 600, 100), upper};
@@ -525,15 +563,19 @@ private slots:
         const double length = 600, w = 100;
         const rf::FullWave fw = line(grounded(9.8, 100e-6), length, w, 4, 50e-6, 4, {1e8});
         QVERIFY2(fw.ok(), qPrintable(why(fw)));
-        QCOMPARE(fw.current.size(), fw.runs);
+        QCOMPARE(fw.currents.size(), 1);
+        QCOMPARE(fw.currents.first().size(), 2);
+        QCOMPARE(fw.currents.first().first().size(), fw.runs);
         QCOMPARE(fw.geometry.size(), fw.runs);
+        QCOMPARE(fw.ends.size(), fw.runs);
+        const QList<Complex>& current = fw.currents.first().first();
         // The current across a line x = at (µm): the runs along x that cross it.
-        const auto across = [&fw](double at) {
+        const auto across = [&fw, &current](double at) {
             Complex sum(0, 0);
             for (int r = 0; r < fw.geometry.size(); ++r) {
                 const rf::Filament& f = fw.geometry.at(r);
                 const double x0 = std::min(f.from.x(), f.to.x()) * 1e6, x1 = std::max(f.from.x(), f.to.x()) * 1e6;
-                if (x0 < at && x1 > at) sum += fw.current.at(r) * (f.to.x() > f.from.x() ? 1.0 : -1.0);
+                if (x0 < at && x1 > at) sum += current.at(r) * (f.to.x() > f.from.x() ? 1.0 : -1.0);
             }
             return sum;
         };
@@ -545,6 +587,258 @@ private slots:
         QVERIFY2(std::abs(middle - 0.5) < 1e-4, qPrintable(QStringLiteral("%1 %2j at the middle").arg(middle.real()).arg(middle.imag())));
         QVERIFY2(nearEnd.real() > 0.9 && nearEnd.real() <= 1 + 1e-9, qPrintable(QStringLiteral("%1 near the driven end").arg(nearEnd.real())));
         QVERIFY2(std::abs(farEnd) < 0.1, qPrintable(QStringLiteral("%1 near the open end").arg(farEnd.real())));
+    }
+
+    // The model's own ports: an edge port keeps to the metal it names and
+    // to the face it says it faces; an internal port drives the cell under
+    // it, against the ground or against the cell under it on another metal.
+    void itsPortsAreTheModelsOwn()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> one{strip(0, 0, 600, 100)};
+        const rf::Mesh mesh = meshed(one, 4, 50e-6);
+        // At the corner: facing -x drives the strip's end, -y its side.
+        const rf::FullWave end = rf::fullWaveOf(mesh, one, stack, {edgePort(QPointF(0, 0), QString(), QPointF(-1, 0))}, {1e9});
+        const rf::FullWave side = rf::fullWaveOf(mesh, one, stack, {edgePort(QPointF(0, 0), QString(), QPointF(0, -1))}, {1e9});
+        QVERIFY2(end.ok() && side.ok(), qPrintable(why(end) + why(side)));
+        const int across = cellsDriven(end.portsSaid.value(0)), along = cellsDriven(side.portsSaid.value(0));
+        qWarning("at the corner: %d cells facing -x, %d facing -y", across, along);
+        QVERIFY2(across > 0 && along > 2 * across, qPrintable(end.portsSaid.join(" | ") + " / " + side.portsSaid.join(" | ")));
+        // And the very faces: each the same port as one in the middle of
+        // that face, which no facing need tell apart.
+        const rf::FullWave endMiddle = rf::fullWaveOf(mesh, one, stack, {edgePort(QPointF(0, 50))}, {1e9});
+        const rf::FullWave sideMiddle = rf::fullWaveOf(mesh, one, stack, {edgePort(QPointF(300, 0))}, {1e9});
+        QVERIFY2(endMiddle.ok() && sideMiddle.ok(), qPrintable(why(endMiddle) + why(sideMiddle)));
+        QVERIFY(std::abs(end.z[0][0][0] - endMiddle.z[0][0][0]) < 1e-12 * std::abs(endMiddle.z[0][0][0]));
+        QVERIFY(std::abs(side.z[0][0][0] - sideMiddle.z[0][0][0]) < 1e-12 * std::abs(sideMiddle.z[0][0][0]));
+
+        // A strip on M1 under a wider one on M2, their ends one over the
+        // other: the port keeps to the metal it names.
+        const rf::Stack two = twoMetals();
+        rf::Conductor wide = strip(0, 0, 600, 300);
+        wide.layer = QStringLiteral("M2");
+        const QList<rf::Conductor> pair{strip(0, 0, 600, 100), wide};
+        const rf::Mesh both = meshed(pair, 4, 50e-6);
+        const rf::FullWave onM1 = rf::fullWaveOf(both, pair, two, {edgePort(QPointF(0, 50), QStringLiteral("M1"))}, {1e9});
+        const rf::FullWave onM2 = rf::fullWaveOf(both, pair, two, {edgePort(QPointF(0, 50), QStringLiteral("M2"))}, {1e9});
+        QVERIFY2(onM1.ok() && onM2.ok(), qPrintable(why(onM1) + why(onM2)));
+        qWarning("on M1 %d cells, on M2 %d", cellsDriven(onM1.portsSaid.value(0)), cellsDriven(onM2.portsSaid.value(0)));
+        QVERIFY2(cellsDriven(onM2.portsSaid.value(0)) > cellsDriven(onM1.portsSaid.value(0)),
+                 qPrintable(onM1.portsSaid.join(" | ") + " / " + onM2.portsSaid.join(" | ")));
+
+        // An internal port to the ground in the middle of the strip: at low
+        // frequency the strip is one potential, and it sees its whole C.
+        const double w = 2 * M_PI * 1e8;
+        const rf::Extraction e = rf::extract(mesh, one, stack);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+        const rf::FullWave middle = rf::fullWaveOf(mesh, one, stack, {internalPort(QPointF(300, 50), QStringLiteral("M1"))}, {1e8});
+        QVERIFY2(middle.ok(), qPrintable(why(middle)));
+        QVERIFY(says(middle.portsSaid, "against the ground"));
+        const double c = (1.0 / middle.z[0][0][0]).imag() / w;
+        qWarning("an internal port to the ground: C %.6g pF, phase B %.6g (%.2e)", c * 1e12, e.selfCapacitance(0) * 1e12,
+                 c / e.selfCapacitance(0) - 1);
+        QVERIFY2(std::abs(c / e.selfCapacitance(0) - 1) < 1e-3,
+                 qPrintable(QStringLiteral("C %1 pF, phase B %2").arg(c * 1e12).arg(e.selfCapacitance(0) * 1e12)));
+
+        // And between two plates, one over the other: the capacitance between
+        // two conductors that hold no charge between them, of phase B's
+        // Maxwell matrix (Caa Cbb - Cab^2)/(Caa + Cbb + 2 Cab).
+        rf::Conductor upper = strip(0, 0, 300, 300);
+        upper.layer = QStringLiteral("M2");
+        const QList<rf::Conductor> plates{strip(0, 0, 300, 300), upper};
+        const rf::Mesh pm = meshed(plates, 4, 50e-6);
+        const rf::Extraction pe = rf::extract(pm, plates, two);
+        QVERIFY2(pe.ok() && pe.maxwell.size() == 2, qPrintable(pe.problems.join(" | ")));
+        const double caa = pe.maxwell[0][0], cbb = pe.maxwell[1][1], cab = 0.5 * (pe.maxwell[0][1] + pe.maxwell[1][0]);
+        const double between = (caa * cbb - cab * cab) / (caa + cbb + 2 * cab);
+        const rf::FullWave across2 =
+            rf::fullWaveOf(pm, plates, two, {internalPort(QPointF(150, 150), QStringLiteral("M2"), QStringLiteral("M1"))}, {1e8});
+        QVERIFY2(across2.ok(), qPrintable(why(across2)));
+        QVERIFY(says(across2.portsSaid, "on M1"));
+        const double cp = (1.0 / across2.z[0][0][0]).imag() / w;
+        qWarning("between the plates: C %.6g pF, of phase B's matrix %.6g (%.2e)", cp * 1e12, between * 1e12, cp / between - 1);
+        QVERIFY2(std::abs(cp / between - 1) < 3e-3, qPrintable(QStringLiteral("C %1 pF, phase B %2").arg(cp * 1e12).arg(between * 1e12)));
+
+        // An internal port on no cell of its metal, and against its own cell.
+        QVERIFY(says(rf::fullWaveOf(mesh, one, stack, {internalPort(QPointF(300, 50), QStringLiteral("M7"))}, {1e9}).problems,
+                     "over no cell"));
+        QVERIFY(says(rf::fullWaveOf(mesh, one, stack, {internalPort(QPointF(300, 50), QStringLiteral("M1"), QStringLiteral("M1"))},
+                                    {1e9}).problems,
+                     "to drive against"));
+    }
+
+    // Each port into its own reference: Kurokawa's power waves, against
+    // the two-port's closed form; and a solve's S is of its ports' own.
+    void eachPortIsReferredToItsOwnImpedance()
+    {
+        const Complex z11(30, 5), z12(10, -2), z22(70, 20);
+        const double r1 = 50, r2 = 25;
+        const QList<QList<Complex>> s = rf::scatteringOf({{z11, z12}, {z12, z22}}, QList<double>{r1, r2});
+        const Complex d = (z11 + r1) * (z22 + r2) - z12 * z12;
+        const Complex want11 = ((z11 - r1) * (z22 + r2) - z12 * z12) / d, want22 = ((z11 + r1) * (z22 - r2) - z12 * z12) / d;
+        const Complex want21 = 2.0 * z12 * std::sqrt(r1 * r2) / d;
+        QVERIFY(std::abs(s[0][0] - want11) < 1e-14 && std::abs(s[1][1] - want22) < 1e-14);
+        QVERIFY(std::abs(s[1][0] - want21) < 1e-14 && std::abs(s[0][1] - want21) < 1e-14);
+        // One reference is the old (Z - Z0)(Z + Z0)^-1.
+        const QList<QList<Complex>> same = rf::scatteringOf({{z11, z12}, {z12, z22}}, QList<double>{50, 50});
+        const QList<QList<Complex>> plain = rf::scatteringOf({{z11, z12}, {z12, z22}}, 50.0);
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) QVERIFY(std::abs(same[i][j] - plain[i][j]) < 1e-15);
+        QVERIFY(rf::scatteringOf({{z11}}, QList<double>{50, 50}).isEmpty());
+
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> one{strip(0, 0, 600, 100)};
+        const rf::Mesh mesh = meshed(one, 4, 50e-6);
+        const rf::FullWave fw = rf::fullWaveOf(
+            mesh, one, stack, {edgePort(QPointF(0, 50), QString(), QPointF(), 50), edgePort(QPointF(600, 50), QString(), QPointF(), 25)},
+            {5e9});
+        QVERIFY2(fw.ok(), qPrintable(why(fw)));
+        QCOMPARE(fw.references, (QList<double>{50, 25}));
+        QCOMPARE(fw.portNames, (QStringList{QStringLiteral("P1"), QStringLiteral("P2")}));
+        const QList<QList<Complex>> own = rf::scatteringOf(fw.z[0], QList<double>{50, 25});
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) QVERIFY(std::abs(fw.s[0][i][j] - own[i][j]) < 1e-15);
+        // A reference of nothing at one port is refused, naming it.
+        rf::FullWavePort bad = edgePort(QPointF(600, 50), QString(), QPointF(), 0);
+        bad.name = QStringLiteral("Out");
+        QVERIFY(says(rf::fullWaveOf(mesh, one, stack, {edgePort(QPointF(0, 50)), bad}, {5e9}).problems, "Out"));
+    }
+
+    // A sweep's frequencies are solved side by side - the answer the same
+    // on one thread as on several -, counted as they are done, and stopped
+    // when asked.
+    void aSweepIsSolvedSideBySideAndCanBeStopped()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> one{strip(0, 0, 600, 100)};
+        const rf::Mesh mesh = meshed(one, 4, 50e-6);
+        const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))};
+        const QList<double> fs{1e9, 4e9, 9e9};
+        std::atomic_int done{0};
+        rf::FullWaveControl alone;
+        alone.threads = 1;
+        alone.done = &done;
+        const rf::FullWave a = rf::fullWaveOf(mesh, one, stack, ports, fs, 1e-6, &alone);
+        QVERIFY2(a.ok(), qPrintable(why(a)));
+        QCOMPARE(a.threads, 1);
+        QCOMPARE(done.load(), 3);
+        rf::FullWaveControl several;
+        several.threads = 3;
+        const rf::FullWave b = rf::fullWaveOf(mesh, one, stack, ports, fs, 1e-6, &several);
+        QVERIFY2(b.ok(), qPrintable(why(b)));
+        QCOMPARE(b.threads, 3);
+        QCOMPARE(b.frequencies, fs);
+        for (int k = 0; k < 3; ++k)
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) QCOMPARE(b.z[k][i][j], a.z[k][i][j]);
+        // Reciprocal and passive by its own checks.
+        QVERIFY2(b.asymmetry < 1e-12 && b.gain < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(b.asymmetry).arg(b.gain)));
+        // Stopped before it began: nothing, and said.
+        std::atomic_bool stop{true};
+        rf::FullWaveControl stopped;
+        stopped.stop = &stop;
+        const rf::FullWave c = rf::fullWaveOf(mesh, one, stack, ports, fs, 1e-6, &stopped);
+        QVERIFY(!c.ok() && c.z.isEmpty() && says(c.problems, "Stopped, 0 of 3"));
+    }
+
+    // The current density drawn on the layout, and the Touchstone written,
+    // are of the solve.
+    void theCurrentDensityAndTheTouchstoneAreOfTheSolve()
+    {
+        const double length = 600, w = 100;
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> one{strip(0, 0, length, w)};
+        const rf::Mesh mesh = meshed(one, 4, 50e-6);
+        const rf::FullWave fw = rf::fullWaveOf(mesh, one, stack, QList<QPointF>{QPointF(0, w / 2), QPointF(length, w / 2)}, {1e8, 3e9, 6e9});
+        QVERIFY2(fw.ok(), qPrintable(why(fw)));
+        // At low frequency, across the middle the cells' |J| times their
+        // breadth is the half of the port's ampere that charges the far
+        // half: of the two columns of cells either side of it, each the
+        // mean of its runs, the mean - by symmetry, exactly that half.
+        const QHash<int, double> j = rf::currentDensity(fw, 0, 0);
+        QVERIFY(!j.isEmpty());
+        double left = 0, right = length;
+        for (const rf::MeshCell& cell : mesh.cells) {
+            if (cell.centre.x() < length / 2) left = std::max(left, cell.centre.x());
+            if (cell.centre.x() > length / 2) right = std::min(right, cell.centre.x());
+        }
+        double middle = 0, atEnd = 0, nearEnd = 0;
+        for (auto it = j.cbegin(); it != j.cend(); ++it) {
+            const rf::MeshCell& cell = mesh.cells.at(it.key());
+            const QRectF box = cell.outline.boundingRect();
+            if (std::abs(cell.centre.x() - left) < 1e-6 || std::abs(cell.centre.x() - right) < 1e-6)
+                middle += 0.5 * it.value() * box.height() * 1e-6;
+            if (box.left() < 50) nearEnd = std::max(nearEnd, it.value());
+            if (box.right() > length - 50) atEnd = std::max(atEnd, it.value());
+        }
+        qWarning("across the middle %.5f A; |J| up to %.4g A/m at the driven end, %.4g at the open one", middle, nearEnd, atEnd);
+        QVERIFY2(std::abs(middle - 0.5) < 0.02, qPrintable(QString::number(middle)));
+        QVERIFY2(nearEnd > 5 * atEnd, qPrintable(QStringLiteral("%1 %2").arg(nearEnd).arg(atEnd)));
+        QVERIFY(rf::currentDensity(fw, 3, 0).isEmpty() && rf::currentDensity(fw, 0, 2).isEmpty());
+        // Driven as a circuit drives it - a source of 50 Ohm, the far port
+        // ended in 50 -, the millimetre of line is a short piece of wire at
+        // 100 MHz: the same current all along it, 2 sqrt(50) / (50 + 50).
+        const QHash<int, double> ended = rf::currentDensity(fw, 0, 0, true);
+        double endedMiddle = 0;
+        for (auto it = ended.cbegin(); it != ended.cend(); ++it) {
+            const rf::MeshCell& cell = mesh.cells.at(it.key());
+            if (std::abs(cell.centre.x() - left) < 1e-6 || std::abs(cell.centre.x() - right) < 1e-6)
+                endedMiddle += 0.5 * it.value() * cell.outline.boundingRect().height() * 1e-6;
+        }
+        const double through = 2 * std::sqrt(50.0) / 100;
+        qWarning("ended in 50 Ohm: across the middle %.6f A, of %.6f", endedMiddle, through);
+        QVERIFY2(std::abs(endedMiddle / through - 1) < 0.01, qPrintable(QStringLiteral("%1 A, %2").arg(endedMiddle).arg(through)));
+
+        // A two-port: S11 S21 S12 S22 a line, in the file's reference.
+        const QString two = rf::touchstoneOf(fw, 75, {QStringLiteral("a line\nof 600 µm")});
+        QVERIFY(two.startsWith(QStringLiteral("! a line\n! of 600 µm\n")));
+        QVERIFY(two.contains(QStringLiteral("! Ports: 1 P1, 2 P2\n")) && two.contains(QStringLiteral("# Hz S RI R 75\n")));
+        QStringList data;
+        for (const QString& line : two.split(QLatin1Char('\n')))
+            if (!line.isEmpty() && !line.startsWith(QLatin1Char('!')) && !line.startsWith(QLatin1Char('#'))) data << line;
+        QCOMPARE(data.size(), 3);
+        const QStringList cells = data.at(2).split(QLatin1Char(' '));
+        QCOMPARE(cells.size(), 9);
+        const QList<QList<Complex>> s = rf::scatteringOf(fw.z[2], 75.0);
+        QCOMPARE(cells.at(0).toDouble(), 6e9);
+        QVERIFY(std::abs(cells.at(3).toDouble() - s[1][0].real()) < 1e-11 && std::abs(cells.at(6).toDouble() - s[0][1].imag()) < 1e-11);
+        QVERIFY(rf::touchstoneOf(fw, 0).isEmpty() && rf::touchstoneOf(rf::FullWave(), 50).isEmpty());
+
+        // Touchstone's own two-port order is S11 S21 S12 S22, which only a
+        // two-port that is not reciprocal can show.
+        rf::FullWave oneWay;
+        oneWay.frequencies = {1e9};
+        oneWay.z = {{{Complex(50, 0), Complex(10, 0)}, {Complex(30, 0), Complex(50, 0)}}};
+        oneWay.portNames = {"A", "B"};
+        const QList<QList<Complex>> sOneWay = rf::scatteringOf(oneWay.z[0], 50.0);
+        QVERIFY(std::abs(sOneWay[1][0] - sOneWay[0][1]) > 0.1);
+        QStringList oneLine;
+        for (const QString& line : rf::touchstoneOf(oneWay, 50).split(QLatin1Char('\n')))
+            if (!line.isEmpty() && !line.startsWith(QLatin1Char('!')) && !line.startsWith(QLatin1Char('#'))) oneLine << line;
+        QCOMPARE(oneLine.size(), 1);
+        const QStringList terms = oneLine.first().split(QLatin1Char(' '));
+        QVERIFY(std::abs(terms.at(3).toDouble() - sOneWay[1][0].real()) < 1e-11);   // S21 second
+        QVERIFY(std::abs(terms.at(5).toDouble() - sOneWay[0][1].real()) < 1e-11);   // S12 third
+
+        // Five ports: by rows, four to a line, each row on lines of its own.
+        rf::FullWave five;
+        five.frequencies = {1e9};
+        QList<QList<Complex>> z;
+        for (int i = 0; i < 5; ++i) {
+            QList<Complex> row;
+            for (int k = 0; k < 5; ++k) row << Complex(i == k ? 60.0 : 5.0, 0);
+            z << row;
+        }
+        five.z = {z};
+        five.portNames = {"A", "B", "C", "D", "E"};
+        const QString many = rf::touchstoneOf(five, 50);
+        QStringList rows;
+        for (const QString& line : many.split(QLatin1Char('\n')))
+            if (!line.isEmpty() && !line.startsWith(QLatin1Char('!')) && !line.startsWith(QLatin1Char('#'))) rows << line;
+        QCOMPARE(rows.size(), 10);
+        QCOMPARE(rows.at(0).split(QLatin1Char(' ')).size(), 9);   // f and four pairs
+        QCOMPARE(rows.at(1).split(QLatin1Char(' '), Qt::SkipEmptyParts).size(), 2);   // the fifth pair
+        QCOMPARE(rows.at(2).split(QLatin1Char(' '), Qt::SkipEmptyParts).size(), 8);   // row two's first four
     }
 
     void whatItCannotSolveIsSaid()
@@ -559,7 +853,7 @@ private slots:
         QVERIFY(rf::fullWaveOf(mesh, one, stack, ports, {1e9}).ok());
         // No mesh, no port, no frequency, a frequency of nothing, none at all, a reference of nothing.
         QVERIFY(refused(rf::fullWaveOf(rf::Mesh(), one, stack, ports, {1e9}), "mesh the layout"));
-        QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, {}, {1e9}), "port"));
+        QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, QList<QPointF>(), {1e9}), "port"));
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, ports, {}), "No frequency"));
         // (In its own words, before anything is solved: the retarded Green's
         //  functions refuse it too, but only once the static parts are filled

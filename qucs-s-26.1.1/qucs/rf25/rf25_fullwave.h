@@ -33,13 +33,17 @@
  *
  *     (Zs l/w + jw L + A^T P A / jw) I = A^T P J / jw
  *
- * A port drives the face of the conductor it is on: its current goes into
- * the cells along that face, each by its share of the face's length, and
- * comes back through the ground plane; its voltage is those cells'
+ * An edge port drives the face of the conductor it is on: its current goes
+ * into the cells along that face, each by its share of the face's length,
+ * and comes back through the ground plane; its voltage is those cells'
  * potentials averaged with the same shares, which keeps the port matrix
  * reciprocal. The reference plane is then at those cells' centres, half
  * their depth inside the face; moving it, and de-embedding a port's own
- * feed, are phase D's.
+ * feed, are phase D's. An internal port drives the cell under its point,
+ * against the ground or against the cell under it on another metal.
+ *
+ * The frequencies are independent, and solved side by side on as many
+ * threads as the machine has and the memory allows.
  *
  * A metal is a sheet with the surface impedance of a slab whose current
  * runs on both its faces. What it does NOT do yet: vias, whose currents
@@ -54,24 +58,59 @@
 #include "rf25_inductance.h"
 #include "rf25_wave.h"
 
+#include <QHash>
 #include <QList>
 #include <QPointF>
 #include <QStringList>
 
+#include <atomic>
+
 namespace qucs_s::rf25 {
+
+/// A port of the full-wave solve, as the model's Ports say it.
+struct FullWavePort {
+    QString name;              ///< what it is called ("P1")
+    QPointF at;                ///< where, the layout's units
+    /// At a point - between two metals, or a metal and the ground - rather
+    /// than along the face of a conductor.
+    bool internal = false;
+    /// An edge port's metal; an internal port's "to". Empty: whichever is
+    /// there.
+    QString metal;
+    QString from;              ///< an internal port's other metal; empty: the ground
+    /// An edge port's outward direction; nought: the face it is nearest.
+    QPointF facing;
+    double impedance = 50;     ///< its reference, Ohm
+};
+
+/// What a long solve is told, and tells: a flag that stops it between
+/// frequencies, how many it has solved, and how many threads it may use.
+struct FullWaveControl {
+    std::atomic_bool* stop = nullptr;
+    std::atomic_int* done = nullptr;
+    int threads = 0;           ///< 0: as many as the machine has and the memory allows
+};
 
 /// What the full-wave solve found.
 struct FullWave {
     QList<double> frequencies;       ///< Hz
     /// At each frequency, the ports' impedance matrix, Ohm, and their
-    /// scattering matrix into \a reference at every port: [f][row][column].
+    /// scattering matrix, each port into its own reference: [f][row][column].
     QList<QList<QList<Complex>>> z, s;
-    double reference = 50;
+    QStringList portNames;
+    QList<double> references;        ///< Ohm, each port's
     int runs = 0, cells = 0;         ///< the unknowns: currents, and the charges they leave
-    /// At the last frequency, with the first port driven by an ampere: each
-    /// run's current, A - for the drawing.
-    QList<Complex> current;
+    /// At each frequency, each port driven by an ampere in turn, the
+    /// others open: each run's current, A - [f][port][run].
+    QList<QList<QList<Complex>>> currents;
     QList<Filament> geometry;        ///< the runs themselves, beside the currents
+    QList<QPair<int, int>> ends;     ///< the cells of the mesh each run goes from and to
+    /// The worst over the frequencies of how far Z is from symmetric (its
+    /// largest difference over its largest term) and how far the ports'
+    /// S gives back more than it is given (the largest eigenvalue of
+    /// S^H S, less one): both nought for a reciprocal, passive answer.
+    double asymmetry = 0, gain = 0;
+    int threads = 1;                 ///< how many it used
     QStringList portsSaid;           ///< what each port drives
     QStringList problems;
     QStringList lines;               ///< what it did, for the panel
@@ -80,9 +119,16 @@ struct FullWave {
 
 /*!
  * The mesh of \a conductors on \a stack solved full-wave at each of
- * \a frequencies (Hz), with a port at each of \a ports (the layout's units),
- * and the S parameters into \a reference Ohm at every port.
+ * \a frequencies (Hz), driven at \a ports, each with its own reference.
+ * \a micrometre is how many metres one unit of the layout is; \a control,
+ * given, can stop it and counts the frequencies done.
  */
+FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack,
+                    const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre = 1e-6,
+                    const FullWaveControl* control = nullptr);
+
+/// The same with an edge port at each of \a ports (the layout's units),
+/// on whichever face is nearest, each into \a reference Ohm.
 FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, const QList<QPointF>& ports,
                     const QList<double>& frequencies, double reference = 50, double micrometre = 1e-6);
 
@@ -96,6 +142,23 @@ Complex sheetImpedance(double sigma, double thickness, double frequency);
 /// Z parameters made S parameters, the same \a reference at every port:
 /// (Z - Z0)(Z + Z0)^-1.
 QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, double reference);
+/// The same, each port into its own of \a references (real, above nought):
+/// Kurokawa's power waves, R^-1/2 (Z - R)(Z + R)^-1 R^1/2.
+QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, const QList<double>& references);
+
+/// The surface current density on each cell of the mesh, A/m (its size;
+/// the cells by their index in the mesh), at frequency \a k with port
+/// \a port driven: by an ampere, the other ports open; or, \a terminated,
+/// by a source of its own reference impedance sending a wave of a watt in,
+/// the other ports ended in theirs - what a circuit does to it. The runs
+/// on either side of a cell averaged along each of the two directions.
+/// Empty where there is no such solve.
+QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool terminated = false);
+
+/// \a solved's ports as a Touchstone 1.1 file (.sNp), every port into
+/// \a reference Ohm, \a comments at its head. Empty where it solved to
+/// nothing.
+QString touchstoneOf(const FullWave& solved, double reference, const QStringList& comments = {});
 
 } // namespace qucs_s::rf25
 
