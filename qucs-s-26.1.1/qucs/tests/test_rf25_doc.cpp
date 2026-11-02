@@ -2121,6 +2121,68 @@ private slots:
         QVERIFY2(single->solveProblem().contains(QStringLiteral("none either side")), qPrintable(single->solveProblem()));
     }
 
+    // Phase E in the tab: a full-wave study's mesh is cut for a solve held
+    // compressed (its status says the compressed cost, not the charge
+    // solve's), the study's Matrix - shown only for a full-wave study - says
+    // how its system is held, and a solve asked for one way for itself
+    // leaves the model as it was. Held compressed, its S is the dense one's.
+    void aFullWaveStudysMatrixIsItsOwn()
+    {
+        const QString file = fullWaveLine(QStringLiteral("held.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->mesh() != nullptr && doc->mesh()->cost.said.contains(QStringLiteral("held compressed")),
+                 qPrintable(doc->mesh() != nullptr ? doc->mesh()->cost.said : QString()));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("held compressed")), qPrintable(doc->statusLabel()->text()));
+        const rf::Node* study = doc->model().root.child(QStringLiteral("rf_study"));
+        QVERIFY(study != nullptr);
+        QCOMPARE(rf::textOf(*study, QStringLiteral("matrix")), QStringLiteral("automatic"));
+        panel()->selectNode(study->tag);
+        QVERIFY2(panel()->editorFor(QStringLiteral("matrix")) != nullptr, "no Matrix under a full-wave study");
+        RF25Doc* fresh = app->newRf25Model();
+        panel()->selectNode(fresh->model().root.child(QStringLiteral("rf_study"))->tag);
+        QVERIFY2(panel()->editorFor(QStringLiteral("matrix")) == nullptr, "a Matrix under a quasi-static study");
+        app->DocumentTab->setCurrentWidget(doc);
+
+        // Automatic: this line is a few hundred unknowns, dense.
+        doc->solveButton()->click();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> dense = doc->fullWave();
+        QVERIFY2(dense != nullptr && dense->ok() && !dense->compressed, qPrintable(doc->solveProblem()));
+        // Compressed, for one solve: the model left as it was.
+        RF25Doc::SolveRequest held;
+        held.matrix = QStringLiteral("compressed");
+        doc->solveWith(held);
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok() && w->compressed, qPrintable(doc->solveProblem()));
+        QCOMPARE(rf::textOf(*doc->model().root.child(QStringLiteral("rf_study")), QStringLiteral("matrix")), QStringLiteral("automatic"));
+        QVERIFY2(says(w->lines, "The system held compressed"), qPrintable(w->lines.join(" | ")));
+        for (int k = 0; k < w->frequencies.size(); ++k)
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) QVERIFY(std::abs(w->s[k][i][j] - dense->s[k][i][j]) < 2e-6);
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("held compressed")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        // The study's own Matrix, dense: the mesh as the charge solve's, and
+        // the solve dense.
+        QVERIFY(doc->editNode(study->tag, [](rf::Node& n) { n.props.insert(QStringLiteral("matrix"), QStringLiteral("dense")); },
+                              QStringLiteral("dense")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(!doc->mesh()->cost.said.contains(QStringLiteral("held compressed")), qPrintable(doc->mesh()->cost.said));
+        doc->solveButton()->click();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok() && !doc->fullWave()->compressed, qPrintable(doc->solveProblem()));
+        QVERIFY(doc->editNode(study->tag, [](rf::Node& n) { n.props.insert(QStringLiteral("matrix"), QStringLiteral("compressed")); },
+                              QStringLiteral("compressed")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solveButton()->click();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok() && doc->fullWave()->compressed, qPrintable(doc->solveProblem()));
+    }
+
     void aFullWaveStudySolvesThePortsAndDrawsTheCurrents()
     {
         const QString file = fullWaveLine(QStringLiteral("wave.qrf25"));

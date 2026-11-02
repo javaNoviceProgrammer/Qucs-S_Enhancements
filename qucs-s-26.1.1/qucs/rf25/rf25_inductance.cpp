@@ -184,6 +184,30 @@ double partialInductance(const Filament& a, const Filament& b)
     return sign * kMu0 / (4 * M_PI) * sum;
 }
 
+double alignedInductance(const Filament& a, const Filament& b)
+{
+    const Vector da = directionOf(a), db = directionOf(b);
+    const double along = da.dot(db);
+    if (std::abs(std::abs(along) - 1) < 1e-12) return std::abs(partialInductance(a, b));
+    // The direction halfway between the two, the second made to point as
+    // the first does; each run turned onto it about its own middle.
+    const double flip = along < 0 ? -1.0 : 1.0;
+    double hx = da.x + flip * db.x, hy = da.y + flip * db.y;
+    const double norm = std::hypot(hx, hy);
+    if (!(norm > 0)) return 0;
+    hx /= norm;
+    hy /= norm;
+    const auto turned = [hx, hy](const Filament& f) {
+        Filament g = f;
+        const QPointF middle = 0.5 * (f.from + f.to);
+        const double half = 0.5 * std::hypot(f.to.x() - f.from.x(), f.to.y() - f.from.y());
+        g.from = middle - QPointF(hx, hy) * half;
+        g.to = middle + QPointF(hx, hy) * half;
+        return g;
+    };
+    return std::abs(partialInductance(turned(a), turned(b)));
+}
+
 QList<QList<double>> partialInductances(const QList<Filament>& runs)
 {
     QList<QList<double>> out;
@@ -233,7 +257,7 @@ double heightOf(const Stack& stack, const QString& metal)
 } // namespace
 
 QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                       QList<QPair<int, int>>* ends)
+                       QList<QPair<int, int>>* ends, bool vias)
 {
     Q_UNUSED(conductors);
     QList<Filament> runs;
@@ -281,8 +305,10 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     }
 
     // A via joins a cell of one metal to a cell of another: a run in z,
-    // which puts no flux through anything in the plane.
-    for (int v = 0; v < mesh.cells.size(); ++v) {
+    // which puts no flux through anything in the plane. (The full-wave
+    // solve makes its vias its own way, and asks for none of these: each
+    // is a search of every cell, a large mesh's vias a large part of it.)
+    for (int v = 0; vias && v < mesh.cells.size(); ++v) {
         const MeshCell& cell = mesh.cells.at(v);
         const Layer* via = stack.named(cell.layer);
         if (via == nullptr || via->kind != Layer::Via) continue;

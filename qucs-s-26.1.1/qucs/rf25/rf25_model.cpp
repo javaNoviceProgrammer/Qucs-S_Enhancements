@@ -343,7 +343,10 @@ QList<NodeKind> makeKinds()
                tr("How many times longer than wide a straight strip's cells may be along it: its charge hardly "
                   "changes along it")),
           integer(QStringLiteral("skin"), tr("Layers through the skin depth"), 0,
-                  tr("0: the surface impedance alone, which is right above a few skin depths"))},
+                  tr("0: the surface impedance alone, which is right above a few skin depths")),
+          integer(QStringLiteral("most_cells"), tr("Most cells"), 0,
+                  tr("How many cells the mesh may have before fewer are put across a conductor (0: the solver's own - "
+                     "8000 for the quasi-static, 40 000 for the full wave held compressed)"))},
          {}, {}, true, true, QString(), tr("How finely the metals are divided. It is drawn in the view.")});
     add({QStringLiteral("rf_study"), tr("Study"), QString(), QStringLiteral("study"), none,
          {choice(QStringLiteral("kind"), tr("Solver"),
@@ -354,7 +357,14 @@ QList<NodeKind> makeKinds()
           integer(QStringLiteral("points"), tr("Points"), 41),
           choice(QStringLiteral("scale"), tr("Spacing"), {QStringLiteral("linear"), QStringLiteral("log")},
                  {tr("Linear"), tr("Logarithmic")}, QStringLiteral("linear")),
-          boolean(QStringLiteral("adaptive"), tr("Add points where it changes"), false)},
+          boolean(QStringLiteral("adaptive"), tr("Add points where it changes"), false),
+          shownIf(choice(QStringLiteral("matrix"), tr("Matrix"),
+                         {QStringLiteral("automatic"), QStringLiteral("dense"), QStringLiteral("compressed")},
+                         {tr("Automatic"), tr("Dense"), tr("Compressed")}, QStringLiteral("automatic"),
+                         tr("How the full-wave solve holds its system: dense up to 6000 runs and cells and compressed "
+                            "past them (Automatic), always dense - a few thousand at most - or always compressed, its "
+                            "far blocks of low rank and solved by iteration, to some hundreds of thousands")),
+                  "kind=full_wave")},
          {}, {}, true, true, QStringLiteral("st"),
          tr("The frequencies to solve at, and by which solver. The quasi-static one solves the charge once and reads "
             "the frequencies for a line's R and G and its S-parameters; the full-wave one solves the currents at each "

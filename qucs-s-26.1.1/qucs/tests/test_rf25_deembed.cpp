@@ -593,8 +593,10 @@ private slots:
     // Strips too large for a dense solve on the structure's mesh - the
     // recheck's coplanar line at eight cells across, three conductors 3.7
     // mm long, past the build's limit, and not calibrated at all - are cut
-    // to a half, then a quarter, and it is said; past that, refused with
-    // why. (The limit lowered here, so that strips of a few hundred
+    // to a half, then a quarter, and it is said, a dense solve asked; past
+    // that, refused with why. The automatic choice holds them compressed
+    // past the limit, and solves them whole - as a dense solve of them
+    // does. (The limit lowered here, so that strips of a few hundred
     // unknowns meet it.)
     void stripsTooLargeAreCutAndSaid()
     {
@@ -611,6 +613,7 @@ private slots:
         QVERIFY2(quarter < half && half < whole, qPrintable(QStringLiteral("%1 %2 %3").arg(quarter).arg(half).arg(whole)));
         rf::FullWaveControl limited;
         limited.mostUnknowns = (half + whole) / 2;
+        limited.matrix = rf::FullWaveControl::Matrix::Dense;
         const rf::Calibration cut = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &limited);
         QVERIFY2(cut.ok(), qPrintable(cut.problems.join(" | ")));
         QCOMPARE(cut.strip, 500.0);
@@ -624,6 +627,22 @@ private slots:
         // what it asked, or nothing.
         limited.mostUnknowns = (half + whole) / 2;
         QVERIFY(!rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &limited, 1000).ok());
+        rf::FullWaveControl automatic;
+        automatic.mostUnknowns = (half + whole) / 2;
+        const rf::Calibration held = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &automatic);
+        rf::FullWaveControl dense;
+        dense.matrix = rf::FullWaveControl::Matrix::Dense;
+        const rf::Calibration reference = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {1e9}, 1e-6, &dense);
+        QVERIFY2(held.ok() && reference.ok(), qPrintable(held.problems.join(" | ") + reference.problems.join(" | ")));
+        QCOMPARE(held.strip, 1000.0);
+        QCOMPARE(reference.strip, 1000.0);
+        QVERIFY2(std::abs(held.impedance.first() / reference.impedance.first() - 1.0) < 1e-6
+                     && std::abs(held.gamma.first() / reference.gamma.first() - 1.0) < 1e-6,
+                 qPrintable(QStringLiteral("Z %1 %2j / %3 %4j, gamma %5 %6j / %7 %8j")
+                                .arg(held.impedance.first().real()).arg(held.impedance.first().imag())
+                                .arg(reference.impedance.first().real()).arg(reference.impedance.first().imag())
+                                .arg(held.gamma.first().real()).arg(held.gamma.first().imag())
+                                .arg(reference.gamma.first().real()).arg(reference.gamma.first().imag())));
     }
 
     // What strips cannot copy of a coplanar feed is said and not calibrated:

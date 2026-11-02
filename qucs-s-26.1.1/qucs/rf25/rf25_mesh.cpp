@@ -34,6 +34,8 @@ QString tr(const char* text)
 /// the matrix alone is more memory than a desktop has, and the proposal
 /// asks for a refusal rather than a machine that fills its swap.
 constexpr int kMostUnknowns = 60000;
+/// And held compressed: the full-wave solve's own bound.
+constexpr int kMostCompressedUnknowns = 2000000;
 
 constexpr double kLightSpeed = 299792458.0;
 
@@ -235,6 +237,13 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
     if (across.isDouble()) how.cellsAcross = across.toInt();
     else if (across.isString() && !across.toString().trimmed().isEmpty()) how.cellsAcross = across.toString().toInt();
     how.stretch = numberIn(node, QStringLiteral("stretch"), scope, how.stretch, tr("Mesh"), problems);
+    const QJsonValue most = propertyOf(node, QStringLiteral("most_cells"));
+    if (most.isDouble()) how.most = most.toInt();
+    else if (most.isString() && !most.toString().trimmed().isEmpty()) how.most = most.toString().toInt();
+    if (how.most < 0) {
+        if (problems != nullptr) *problems << tr("Mesh: the most cells cannot be fewer than none (0: the solver's own).");
+        how.most = 0;
+    }
     if (how.cellsAcross < 0) {
         if (problems != nullptr) *problems << tr("Mesh: the cells across a conductor cannot be fewer than none.");
         how.cellsAcross = 0;
@@ -260,10 +269,29 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
     return how;
 }
 
-MeshCost costOf(int unknowns)
+int MeshSettings::mostCells() const
+{
+    return most > 0 ? most : (compressed ? kMostCompressedCells : kMostCharges);
+}
+
+MeshCost costOf(int unknowns, bool compressed)
 {
     MeshCost cost;
     cost.unknowns = unknowns;
+    if (compressed) {
+        // Held compressed: some 20 kB an unknown, its low-rank blocks and its
+        // near ones, as the solve measured them from 20 000 unknowns to
+        // 310 000 (16 to 19 kB).
+        cost.matrixBytes = 2e4 * double(unknowns);
+        cost.tooBig = unknowns > kMostCompressedUnknowns;
+        const double mb = cost.matrixBytes / (1024 * 1024);
+        cost.said = mb >= 1024 ? tr("%1 unknowns; held compressed, some %2 GB").arg(unknowns).arg(mb / 1024, 0, 'f', 1)
+                               : tr("%1 unknowns; held compressed, some %2 MB").arg(unknowns).arg(mb, 0, 'f', 1);
+        if (cost.tooBig)
+            cost.said += tr(" - more than this build will set up (%1 unknowns at most). Merge the vias, drop the fill, or "
+                            "mesh more coarsely.").arg(kMostCompressedUnknowns);
+        return cost;
+    }
     // A dense complex matrix: 16 bytes a term, every term kept (the
     // matrix of a mixed-potential formulation is not symmetric).
     cost.matrixBytes = 16.0 * double(unknowns) * double(unknowns);
@@ -446,8 +474,14 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     // The conductors cut with \a perFeature cells across each: false where
     // one of them would take more cells than a mesh may hold, \a many then
     // how many it would have taken.
-    const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, size](int perFeature,
-                                                                                                         double* many) {
+    // As many cells as the solver it is for holds, before fewer are put
+    // across a conductor; and a piece of more than four times that, or of
+    // the old bound of a dense full-wave matrix where that is more, not cut
+    // at all.
+    const int most = how.mostCells();
+    const double pieceMost = std::max(double(kMostUnknowns), double(most));
+    const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, size, pieceMost](int perFeature,
+                                                                                                                    double* many) {
         mesh.cells.clear();
         narrowest = finest = 0;
         strips = 0;
@@ -472,7 +506,7 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             // (Counted before the lines are made: a fine grid over a large
             // layout would be millions of them.)
             const double squares = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
-            if (squares > 4.0 * kMostUnknowns) {
+            if (squares > 4.0 * pieceMost) {
                 *many = squares;
                 return false;
             }
@@ -500,7 +534,7 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             const Conductor& conductor = conductors.at(piece.conductor);
             const QList<double>& xs = piece.xs;
             const QList<double>& ys = piece.ys;
-            if (double(xs.size() - 1) * double(ys.size() - 1) > 4.0 * kMostUnknowns) {
+            if (double(xs.size() - 1) * double(ys.size() - 1) > 4.0 * pieceMost) {
                 *many = double(xs.size() - 1) * double(ys.size() - 1);
                 return false;
             }
@@ -535,10 +569,10 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     // example came out at 72 024). Fewer across is said, with why.
     int perFeature = how.cellsAcross;
     double many = 0;
-    bool fits = cut(perFeature, &many) && many <= kMostCharges;
+    bool fits = cut(perFeature, &many) && many <= most;
     while (!fits && perFeature > 1) {
         const double was = many;
-        const int fewer = std::max(1, int(std::floor(perFeature * std::sqrt(double(kMostCharges) / std::max(1.0, many)))));
+        const int fewer = std::max(1, int(std::floor(perFeature * std::sqrt(double(most) / std::max(1.0, many)))));
         const int tried = std::min(perFeature - 1, fewer);
         double now = 0;
         const bool cutOk = cut(tried, &now);
@@ -551,9 +585,9 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         }
         perFeature = tried;
         many = now;
-        fits = cutOk && many <= kMostCharges;
+        fits = cutOk && many <= most;
     }
-    if (!fits && many > 4.0 * kMostUnknowns) {
+    if (!fits && many > 4.0 * pieceMost) {
         mesh.cells.clear();
         mesh.problems << tr("The layout would take %1 cells of %2 µm even at one across a conductor: ask for a larger "
                             "largest cell, or a lower top frequency.")
@@ -562,11 +596,11 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     }
     if (perFeature < how.cellsAcross && fits)
         mesh.lines << tr("%1 cells across a conductor would be more than the %2 this build solves: %3 across instead.")
-                          .arg(how.cellsAcross).arg(kMostCharges).arg(perFeature);
+                          .arg(how.cellsAcross).arg(most).arg(perFeature);
     else if (perFeature < how.cellsAcross)
         mesh.lines << tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
                          "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
-                          .arg(kMostCharges);
+                          .arg(most);
     if (perFeature > 0 && narrowest > 0)
         mesh.lines << tr("%1 cell(s) across the narrowest conductor (%2 µm across): cells of %3 µm there%4.")
                           .arg(perFeature).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
@@ -597,10 +631,17 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             if (cell.onEdge) ++unknowns;
             if (!faced.contains(cell.layer)) faced << cell.layer;
         }
-    mesh.cost = costOf(unknowns);
-    mesh.lines << tr("%1 cell(s) on %2 layer(s): %3. The %4 edge(s) between them are a full-wave solve's unknowns: %5.")
-                      .arg(charges).arg(mesh.byLayer().size()).arg(chargeCostOf(charges))
-                      .arg(unknowns).arg(mesh.cost.said);
+    mesh.cost = how.compressed ? costOf(unknowns + charges, true) : costOf(unknowns);
+    // (For a full-wave solve held compressed, its cells and runs together
+    //  are its unknowns, and the charge solve's dense matrix is no one's.)
+    if (how.compressed)
+        mesh.lines << tr("%1 cell(s) on %2 layer(s), and the %3 edge(s) between them: a full-wave solve's %4 unknowns, %5.")
+                          .arg(charges).arg(mesh.byLayer().size()).arg(unknowns).arg(unknowns + charges)
+                          .arg(costOf(unknowns + charges, true).said.section(QLatin1String("; "), 1));
+    else
+        mesh.lines << tr("%1 cell(s) on %2 layer(s): %3. The %4 edge(s) between them are a full-wave solve's unknowns: %5.")
+                          .arg(charges).arg(mesh.byLayer().size()).arg(chargeCostOf(charges))
+                          .arg(unknowns).arg(mesh.cost.said);
     if (!faced.isEmpty())
         mesh.lines << tr("%1 solved as its two faces: its cells and their edges twice, and a wall up from each cell along "
                          "its edges, in those counts.")
@@ -609,7 +650,7 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         mesh.problems << mesh.cost.said;
     // (The mesh's own cells: a metal's top face is the solver's to refuse,
     //  which a calibration strip too long for it is cut short for.)
-    if (mesh.cells.size() > kMostCharges) mesh.problems << chargeCostOf(int(mesh.cells.size()));
+    if (!how.compressed && mesh.cells.size() > kMostCharges) mesh.problems << chargeCostOf(int(mesh.cells.size()));
     if (mesh.cells.isEmpty()) mesh.problems << tr("The mesh came out empty.");
     return mesh;
 }

@@ -17,6 +17,7 @@
  * a part in a thousand.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QRegularExpression>
 
 #include "rf25/rf25_fullwave.h"
@@ -1675,6 +1676,165 @@ private slots:
         QVERIFY2(says(marked.lines, "The ground plane is taken as perfect"), qPrintable(marked.lines.join(" | ")));
     }
 
+    // Phase E: past the dense solve's few thousand runs and cells the
+    // system is held compressed - each block between clusters apart beside
+    // their size of low rank - and solved by GMRES, preconditioned by the
+    // near field's sparse LU. Asked for where the dense solve can be had
+    // too, it is the dense solve: a line from 10 MHz to 40 GHz; a metal
+    // solved as its two faces, its walls vias; a lossy tee; two metals and
+    // a via; a GSSG with no ground plane, its ports coplanar and paired; a
+    // pad on a farm of vias at 100 MHz, as near singular as a system gets,
+    // where it is GMRES's residual that counts (at 1e-6 it was 1e-3 out);
+    // and a strip at a slant, whose runs between cells cut to its outline
+    // are oblique - in both of L's kernels at once. Measured within 2.6e-7
+    // of the dense solve's S at its tolerance of 1e-5; held here to 2e-6,
+    // reciprocal and passive as the dense solve is.
+    void aCompressedSolveIsTheDenseOne()
+    {
+        const bool slow = slowBuild();
+        struct Case {
+            const char* name;
+            QList<rf::Conductor> conductors;
+            rf::Mesh mesh;
+            rf::Stack stack;
+            QList<rf::FullWavePort> ports;
+            QList<double> fs;
+        };
+        QList<Case> cases;
+        const QString m1 = QStringLiteral("M1");
+        const QList<rf::Conductor> line{strip(0, 0, 3000, 100)};
+        cases << Case{"line", line, meshed(line, 4, 150e-6, 6), grounded(9.8, 100e-6),
+                      {edgePort(QPointF(0, 50)), edgePort(QPointF(3000, 50))},
+                      slow ? QList<double>{1e7, 10e9} : QList<double>{1e7, 10e9, 40e9}};
+        if (!slow) {
+            rf::Stack faces = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+            faces.layers.last().twoSheets = true;
+            const QList<rf::Conductor> short1{strip(0, 0, 1000, 100)};
+            cases << Case{"faces", short1, meshed(short1, 4, 100e-6, 4), faces,
+                          {edgePort(QPointF(0, 50)), edgePort(QPointF(1000, 50))}, {1e7, 10e9}};
+        }
+        rf::Conductor tee;
+        tee.layer = m1;
+        tee.outline = QPolygonF({QPointF(0, 0), QPointF(1000, 0), QPointF(1000, 100), QPointF(550, 100), QPointF(550, 600),
+                                 QPointF(450, 600), QPointF(450, 100), QPointF(0, 100)});
+        cases << Case{"tee", {tee}, meshed({tee}, 3, 100e-6), grounded(9.8, 100e-6, 0.02, 2e-6, 5.8e7),
+                      {edgePort(QPointF(0, 50)), edgePort(QPointF(1000, 50)), edgePort(QPointF(500, 600))}, {12e9}};
+        const double w = 50;
+        const QList<rf::Conductor> climbing = {strip(0, 0, 1000, w), on(QStringLiteral("M2"), 1000 - w, 0, 1000, w),
+                                               on(QStringLiteral("V1"), 1000 - w, 0, w, w)};
+        cases << Case{"via", climbing, evenly(climbing, 2, 100e-6, 2),
+                      withVia(twoMetals(), QStringLiteral("V1"), QStringLiteral("M1"), QStringLiteral("M2")),
+                      {edgePort(QPointF(0, w / 2), m1), edgePort(QPointF(2000 - w, w / 2), QStringLiteral("M2"))},
+                      slow ? QList<double>{1e8} : QList<double>{1e8, 20e9}};
+        rf::Stack open = grounded(12.4, 150e-6);
+        open.layers[0].variant = QStringLiteral("open");
+        const QList<rf::Conductor> pairs = gssg(600);
+        cases << Case{"gssg", pairs, meshed(pairs, 3, 100e-6), open, gssgPorts(600), {2e9}};
+        QList<rf::Conductor> farm = {on(m1, 0, -50, 1000, 100), on(m1, 1000, -300, 600, 600)};
+        for (int i = 0; i < (slow ? 6 : 12); ++i)
+            for (int j = 0; j < (slow ? 6 : 12); ++j) farm << on(QStringLiteral("V1"), 1020 + 48 * i * (slow ? 2 : 1), -280 + 48 * j * (slow ? 2 : 1), 20, 20);
+        cases << Case{"farm", farm, meshed(farm, 3, 50e-6),
+                      withVia(grounded(9.8, 200e-6), QStringLiteral("V1"), QStringLiteral("ground"), m1),
+                      {edgePort(QPointF(0, 0), m1, QPointF(-1, 0))}, {1e8}};
+        rf::Conductor slant;
+        slant.layer = m1;
+        slant.outline = QPolygonF({QPointF(0, 0), QPointF(1500, 866), QPointF(1500, 966), QPointF(0, 100)});
+        cases << Case{"slant", {slant}, meshed({slant}, 3, 100e-6), grounded(9.8, 100e-6, 0, 2e-6, 5.8e7),
+                      {edgePort(QPointF(0, 50), m1, QPointF(-1, 0)), edgePort(QPointF(1500, 916), m1, QPointF(1, 0))}, {5e9}};
+        for (const Case& c : cases) {
+            rf::FullWaveControl dense, held;
+            dense.matrix = rf::FullWaveControl::Matrix::Dense;
+            held.matrix = rf::FullWaveControl::Matrix::Compressed;
+            const rf::FullWave d = rf::fullWaveOf(c.mesh, c.conductors, c.stack, c.ports, c.fs, 1e-6, &dense);
+            const rf::FullWave h = rf::fullWaveOf(c.mesh, c.conductors, c.stack, c.ports, c.fs, 1e-6, &held);
+            QVERIFY2(d.ok() && h.ok(), qPrintable(QStringLiteral("%1: %2 | %3").arg(QLatin1String(c.name), why(d), why(h))));
+            QVERIFY(!d.compressed && h.compressed);
+            QVERIFY2(says(h.lines, "The system held compressed") && says(h.lines, "Solved by GMRES"), qPrintable(h.lines.join(" | ")));
+            double worst = 0;
+            for (int k = 0; k < c.fs.size(); ++k)
+                for (int i = 0; i < d.s.at(k).size(); ++i)
+                    for (int j = 0; j < d.s.at(k).size(); ++j) worst = std::max(worst, std::abs(h.s[k][i][j] - d.s[k][i][j]));
+            qWarning("%s: %d runs over %d cells, S within %.2g of the dense solve's; %.2f MB, rank %d, %d iteration(s), "
+                     "residual %.2g, asymmetry %.2g, gain %.2g (dense %.2g)",
+                     c.name, h.runs, h.cells, worst, h.memory / 1e6, h.largestRank, h.iterations, h.residual, h.asymmetry, h.gain,
+                     d.gain);
+            QVERIFY2(worst < 2e-6, qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.name)).arg(worst)));
+            QVERIFY2(h.asymmetry < 1e-9, qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.name)).arg(h.asymmetry)));
+            QVERIFY2(h.gain <= d.gain + 1e-9, qPrintable(QStringLiteral("%1: %2 / %3").arg(QLatin1String(c.name)).arg(h.gain).arg(d.gain)));
+            QVERIFY(h.iterations > 0 && h.residual <= 1e-10 && h.memory > 0 && h.tolerance == 1e-5);
+            // The near field's LU is what keeps the iterations few - 10 to 36
+            // here, at 10 MHz too - where the system is as ill conditioned as
+            // a low frequency's: without it GMRES does not get there at all.
+            QVERIFY2(h.iterations < 80, qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.name)).arg(h.iterations)));
+            // And the plainest of them a little over what they take: the near
+            // field's P whole, not its diagonal alone, about halves them (a
+            // line 13 against 30, a via 10 against 18, the slant 16 against 29).
+            const QLatin1String name(c.name);
+            const int few = name == QLatin1String("line") ? 20 : name == QLatin1String("via") ? 14 : name == QLatin1String("slant") ? 24 : 80;
+            QVERIFY2(h.iterations <= few, qPrintable(QStringLiteral("%1: %2 iterations").arg(name).arg(h.iterations)));
+            if (QLatin1String(c.name) == QLatin1String("slant")) {
+                // Its runs oblique, most of them, and both kernels' own.
+                int oblique = 0;
+                for (const rf::Filament& f : h.geometry) {
+                    const double dx = f.to.x() - f.from.x(), dy = f.to.y() - f.from.y();
+                    oblique += std::abs(dx) > 1e-12 && std::abs(dy) > 1e-12 ? 1 : 0;
+                }
+                QVERIFY2(oblique > 10, qPrintable(QString::number(oblique)));
+            }
+        }
+    }
+
+    // Dense up to the limit and compressed past it, unasked: the limit
+    // lowered here, a line past it held compressed and said so, its S the
+    // dense solve's. And in a Release build lines too fine for a dense solve
+    // - ten cells across, 4 and 6 mm long, some 5700 and 8500 runs and
+    // cells - are the line they are: at 10 GHz the two-line method's
+    // effective permittivity within 2e-3 of Kirschning and Jansen from its
+    // own quasi-static one, and its Z0 within a per cent of sqrt(L'/C').
+    void pastTheDenseLimitItIsHeldCompressed()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> l{strip(0, 0, 3000, 100)};
+        const rf::Mesh mesh = meshed(l, 4, 150e-6, 6);
+        const QList<rf::FullWavePort> ends{edgePort(QPointF(0, 50)), edgePort(QPointF(3000, 50))};
+        rf::FullWaveControl low;
+        low.mostUnknowns = 200;
+        const rf::FullWave held = rf::fullWaveOf(mesh, l, stack, ends, {10e9}, 1e-6, &low);
+        const rf::FullWave dense = rf::fullWaveOf(mesh, l, stack, ends, {10e9});
+        QVERIFY2(held.ok() && dense.ok(), qPrintable(why(held) + why(dense)));
+        QVERIFY(held.compressed && !dense.compressed);
+        QVERIFY2(says(held.lines, "past the 200 a dense matrix is set up for"), qPrintable(held.lines.join(" | ")));
+        QVERIFY(!says(dense.lines, "held compressed"));
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) QVERIFY(std::abs(held.s[0][i][j] - dense.s[0][i][j]) < 2e-6);
+        if (slowBuild()) return;
+        const double h = 100e-6, w = 100, epsr = 9.8;
+        const QList<double> fs{1e8, 10e9};
+        rf::FullWaveControl past;
+        past.mostUnknowns = 1000;
+        const auto fine = [&](double length) {
+            const QList<rf::Conductor> c{strip(0, 0, length, w)};
+            return rf::fullWaveOf(meshed(c, 10, 25e-6, 4), c, stack, {edgePort(QPointF(0, w / 2)), edgePort(QPointF(length, w / 2))}, fs,
+                                  1e-6, &past);
+        };
+        const rf::FullWave a = fine(4000), b = fine(6000);
+        QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+        QVERIFY2(a.compressed && b.compressed && a.runs + a.cells > 5000 && b.runs + b.cells > 8000,
+                 qPrintable(QStringLiteral("%1 and %2").arg(a.runs + a.cells).arg(b.runs + b.cells)));
+        const LowFrequency lf = lowFrequency(a, b, 0, 4000e-6, 6000e-6);
+        const double eps0 = kC0 * kC0 * lf.lPer * lf.cPer, z0 = std::sqrt(lf.lPer / lf.cPer);
+        const double k0 = 2 * M_PI * fs.at(1) / kC0;
+        const double kj = kirschningJansen(eps0, epsr, w * 1e-6 / h, fs.at(1) / 1e9, h * 1e3);
+        const TwoLine wave = twoLine(chainOf(zOf(a, 1)), chainOf(zOf(b, 1)), 4000e-6, 6000e-6, k0 * std::sqrt(kj));
+        const double eps = std::pow(wave.gamma.imag() / k0, 2);
+        qWarning("ten across, %d and %d runs and cells: eps_eff %.5f (quasi-static %.5f), Kirschning and Jansen %.5f; Z0 %.3f "
+                 "%+.3fj vs %.3f; %.1f MB, %d iteration(s)",
+                 a.runs + a.cells, b.runs + b.cells, eps, eps0, kj, wave.z0.real(), wave.z0.imag(), z0, b.memory / 1e6, b.iterations);
+        QVERIFY2(std::abs(eps / kj - 1) < 2e-3, qPrintable(QStringLiteral("eps_eff %1, K&J %2").arg(eps).arg(kj)));
+        QVERIFY2(std::abs(wave.z0 - z0) < 0.01 * z0, qPrintable(QStringLiteral("Z0 %1, %2").arg(wave.z0.real()).arg(z0)));
+        QVERIFY2(a.iterations < 80 && b.iterations < 80, qPrintable(QStringLiteral("%1 %2").arg(a.iterations).arg(b.iterations)));
+    }
+
     void whatItCannotSolveIsSaid()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
@@ -1703,14 +1863,24 @@ private slots:
         QVERIFY(refused(rf::fullWaveOf(mesh, one, open, ports, {1e9}), "no ground plane under the stack, and P1, P2 return(s)"));
         // Two ports on the same face.
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, {QPointF(0, 20), QPointF(0, 80)}, {1e9}), "same face"));
-        // More runs and cells than this build sets up a dense matrix for,
-        // said and not solved: six thousand at most since a metal can be
-        // solved as its two faces, which doubles its cells (the recheck of
-        // 75ff6f9).
+        // More runs and cells than this build sets up a dense matrix for, a
+        // dense solve asked: said and not solved - six thousand at most since
+        // a metal can be solved as its two faces, which doubles its cells (the
+        // recheck of 75ff6f9) - and the compressed solve named. Held
+        // compressed, as the automatic choice holds it past that, more memory
+        // than a solve may take is said the same way, before anything is
+        // filled. (The bound lowered here.)
         const QList<rf::Conductor> square{strip(0, 0, 2000, 2000)};
-        const rf::FullWave big = rf::fullWaveOf(meshed(square, 0, 25e-6, 1), square, stack, {QPointF(0, 1000)}, {1e9});
+        const rf::Mesh squareMesh = meshed(square, 0, 25e-6, 1);
+        rf::FullWaveControl asDense, tight;
+        asDense.matrix = rf::FullWaveControl::Matrix::Dense;
+        tight.mostBytes = 1e7;
+        const rf::FullWave big = rf::fullWaveOf(squareMesh, square, stack, {edgePort(QPointF(0, 1000))}, {1e9}, 1e-6, &asDense);
         QVERIFY(big.tooLarge);
-        QVERIFY2(refused(big, "(6000 in all)"), qPrintable(why(big)));
+        QVERIFY2(refused(big, "(6000 in all)") && refused(big, "hold it compressed"), qPrintable(why(big)));
+        const rf::FullWave over = rf::fullWaveOf(squareMesh, square, stack, {edgePort(QPointF(0, 1000))}, {1e9}, 1e-6, &tight);
+        QVERIFY(over.tooLarge);
+        QVERIFY2(refused(over, "held compressed, would take some") && refused(over, "a solve may take here"), qPrintable(why(over)));
         // A port off every edge drives the face nearest it, as the
         // inductance's terminals do, and says which.
         const rf::FullWave inside = rf::fullWaveOf(mesh, one, stack, {QPointF(200, 70)}, {1e9});
@@ -1747,13 +1917,15 @@ private slots:
         const rf::FullWave left = rf::fullWaveOf(meshed(astray, 4, 50e-6), astray, two, ports, {1e9});
         QVERIFY2(left.ok(), qPrintable(why(left)));
         QVERIFY2(says(left.lines, "land on no metal"), qPrintable(left.lines.join(" | ")));
-        // More than a dense complex matrix of this build holds.
+        // More than a dense complex matrix of this build holds, a dense solve
+        // asked (unasked, it is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
         rf::MeshSettings fine;
         fine.maximum = 20e-6;
         fine.cellsAcross = 0;
         fine.edges = false;
-        QVERIFY(refused(rf::fullWaveOf(rf::meshOf(plate, fine, rf::Stack(), 0), plate, stack, {QPointF(0, 500)}, {1e9}),
+        QVERIFY(refused(rf::fullWaveOf(rf::meshOf(plate, fine, rf::Stack(), 0), plate, stack, {edgePort(QPointF(0, 500))}, {1e9},
+                                       1e-6, &asDense),
                         "more than this build"));
     }
 };
