@@ -158,6 +158,9 @@ struct FullWavePort {
     bool calibrate = false;
     double shift = 0;
     double lineImpedance = 0, lineEps = 0;
+    /// How long the shorter of the strips its discontinuity is found by is,
+    /// m; nought: chosen (rf25_deembed.h).
+    double strips = 0;
     /// Whether anything is to be done to it after the solve.
     bool deembeds() const { return calibrate || shift != 0; }
     /// Whether that wants strips of its feed solved.
@@ -183,6 +186,17 @@ struct PortDeembedding {
     double alpha = 0;          ///< its attenuation, Np/m
     double shuntC = 0;         ///< the port's own discontinuity: F at its face,
     double seriesL = 0;        ///< and H at the port
+    /// How far its strips agree on one line between two ends alike: up to
+    /// \a agreedTo, Hz, within a percent at every frequency; at most they
+    /// differ by \a worst, at \a worstAt (Hz). Nought where not calibrated.
+    double agreedTo = 0, worst = 0, worstAt = 0;
+    QList<double> strips;      ///< the shorter strips' lengths, the layout's units, longest first
+    double third = 0;          ///< the third strip's, which checks the other two
+    /// How far its feed runs straight from its face before the structure
+    /// begins (below nought: not looked at), and how far its own field
+    /// reaches along it - four heights over the ground and its width (nought
+    /// for a coplanar feed) - the layout's units.
+    double feedLength = -1, reach = 0;
 };
 
 /*!
@@ -212,6 +226,10 @@ struct Feed {
     };
     QList<Via> vias;
     double pitch = 0;                  ///< the rows' period along the feed; nought: walls, or none
+    /// How far it runs straight in from the face, as wide as the face and
+    /// nothing over or under it, the layout's units - at most as far as was
+    /// looked; below nought: not looked at.
+    double length = -1;
     /// Why strips cannot have the feed's vias as it has them, where they
     /// cannot: then it is not calibrated.
     QString unlike;
@@ -295,6 +313,12 @@ struct FullWave {
     /// The same of the ports as solved, before any de-embedding: the solve's
     /// own, beside what a de-embedding leaves.
     double solvedAsymmetry = 0, solvedGain = 0;
+    /// Hz: where each gave back the most (nought where nothing).
+    double gainAt = 0, solvedGainAt = 0;
+    /// Hz: where the stack begins to carry a second surface wave - TE1 over
+    /// a ground plane - past which this solve does not hold power to
+    /// account; nought where there is none below twice the sweep's top.
+    double secondWave = 0;
     int threads = 1;                 ///< how many it used
     /// Held compressed and solved by iteration (rf25_fast.h), not dense: the
     /// low-rank blocks' tolerance; what the matrices of the frequency that
@@ -313,8 +337,17 @@ struct FullWave {
     QStringList portsSaid;           ///< what each port drives
     QStringList problems;
     QStringList lines;               ///< what it did, for the panel
+    /// What makes the answer, or part of it, not to be trusted - said
+    /// among the lines too, and kept apart for whoever reads only these.
+    QStringList warnings;
     bool ok() const { return problems.isEmpty() && !z.isEmpty(); }
 };
+
+/// The frequency, Hz, from which \a stack carries a second surface wave -
+/// TE1 over a ground plane, or the slab's first TE wave past the one with no
+/// cutoff where there is none - as a lossless stack; nought where there is
+/// none up to \a most.
+double secondSurfaceWave(const Stack& stack, double most);
 
 /*!
  * The mesh of \a conductors on \a stack solved full-wave at each of

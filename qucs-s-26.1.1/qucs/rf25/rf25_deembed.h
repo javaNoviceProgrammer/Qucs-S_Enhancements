@@ -50,6 +50,24 @@
  * the port's own discontinuity to there, and the line beyond it is the
  * rows' own; the line is then taken back to the face, (E P) L(-o), o the
  * first via in from it.
+ *
+ * Two strips fit what they are taken for whatever they are: T_2l = E L(l)^2 E'
+ * holds by how E and L(l) are found. A third strip, its line phi = 1.618
+ * times the shorter's (a whole number of the rows' periods with vias),
+ * checks them: E^-1 T_3 E'^-1 should be the line over its own length, and
+ * how far it is from it is the calibration's residual at each frequency. On
+ * a substrate thick beside the wavelength the ports at a strip's two ends
+ * reach one another past the line, by its surface wave, and the strips are
+ * no longer one line between two ends alike: a 10 µm feed over 305 µm of
+ * silicon was within 1e-4 to 13 GHz and wrong by tens of percent from 45
+ * (the phase E check of 2 November). Where they differ by more than a
+ * percent, shorter strips - half, a quarter and an eighth as long - are
+ * solved too, their ports the nearer but the surface wave's way between
+ * them the shorter, and each frequency is taken from the strips that agree
+ * best there. The third also stands in where the shorter strip is a whole
+ * number of half waves long and its L(l), all but the identity, gives the
+ * line's impedance poorly: the impedance is taken from whichever of the
+ * two is the further from it.
  */
 #ifndef QUCS_RF25_DEEMBED_H
 #define QUCS_RF25_DEEMBED_H
@@ -78,6 +96,22 @@ struct Calibration {
     QList<std::array<Complex, 4>> discontinuity;
     QList<Complex> gamma;          ///< the line's propagation constant, 1/m
     QList<Complex> impedance;      ///< its impedance in the port's voltage and current, Ohm
+    double third = 0;              ///< the third strip's line, the layout's units, which checks the other two
+    /// At each frequency asked, how far the strips taken there are from one
+    /// line between two ends alike (the largest term of the difference over
+    /// the largest of the line's chain matrix), and the shorter strip's
+    /// length they were (the layout's units).
+    QList<double> residual, stripAt;
+    QList<double> tried;           ///< the shorter strips' lengths solved, longest first
+    /// Hz: up to it the strips agree within a percent at every frequency
+    /// asked (nought where they do not at the lowest); and the most they
+    /// differ, and where.
+    double agreedTo = 0, worst = 0, worstAt = 0;
+    /// How far, the layout's units, a port's own field reaches along its
+    /// feed - four heights over the ground and its width - past which a
+    /// structure's feed must run straight for what its strips find of the
+    /// port to be what the port has there; nought for a coplanar feed.
+    double reach = 0;
     QStringList problems;
     QStringList lines;             ///< what it did, for the panel
     bool ok() const { return problems.isEmpty() && !discontinuity.isEmpty(); }
@@ -113,9 +147,16 @@ struct Deembedding {
     bool any() const { return (calibration != nullptr && calibration->ok()) || (shift != 0 && impedance > 0 && eps > 0); }
 };
 
+/// The most a third strip may differ from the line the other two read for
+/// the strips to be one line between two ends alike: a percent.
+constexpr double kStripsAgree = 1e-2;
+
 /// \a solved with each of its ports de-embedded as \a ports says, in their
 /// order: Z and S at the new reference planes, each port into its own
-/// reference, Z as solved kept beside them.
+/// reference, Z as solved kept beside them. What makes the de-embedding not
+/// to be trusted - strips that do not agree, a feed shorter than its port's
+/// own field reaches, a de-embedding that gives back where the structure as
+/// solved does not - goes into its warnings.
 FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports);
 
 } // namespace qucs_s::rf25

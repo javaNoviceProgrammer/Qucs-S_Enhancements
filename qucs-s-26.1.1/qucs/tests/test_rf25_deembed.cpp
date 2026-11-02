@@ -115,6 +115,21 @@ QString why(const rf::FullWave& fw)
     return fw.problems.join(QStringLiteral(" | "));
 }
 
+/// Whether this build is one whose dense solves are many times slower - a
+/// sanitized one, as CI's Linux job is (QUCS_TEST_SLOW: its path in any).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
 /// The S matrix [S11, S21, S12, S22] of a line \a length (m) of propagation
 /// constant \a gamma and impedance \a z between two ports of \a reference.
 std::array<Complex, 4> lineS(Complex gamma, Complex z, double length, double reference)
@@ -204,7 +219,7 @@ private slots:
         QCOMPARE(thru.deembedding.value(0).shift, 1500e-6);
         QCOMPARE(thru.deembedding.value(0).length, 1000.0);
         QVERIFY2(thru.lines.join(' ').contains(QStringLiteral("P1 de-embedded")), qPrintable(thru.lines.join(" | ")));
-        QVERIFY2(cal.lines.join(' ').contains(QStringLiteral("Two strips of the feed")), qPrintable(cal.lines.join(" | ")));
+        QVERIFY2(cal.lines.join(' ').contains(QStringLiteral("Three strips of the feed")), qPrintable(cal.lines.join(" | ")));
     }
 
     // The feed's line is the line: its impedance and effective permittivity
@@ -533,6 +548,9 @@ private slots:
         }
         QCOMPARE(feed.vias.size(), 2);
         QVERIFY2(std::abs(feed.pitch - 150) < 1e-6, qPrintable(QString::number(feed.pitch)));
+        // Its grounds beside it are no widening, nor their vias over them:
+        // the feed runs straight the line's whole length.
+        QVERIFY2(std::abs(feed.length - 1300) <= 25, qPrintable(QString::number(feed.length)));
         QVERIFY2(std::abs(feed.offset() - 50) < 1e-6, qPrintable(QString::number(feed.offset())));
         // The far port's feed is the near one's mirror image: one calibration.
         QCOMPARE(raw.feeds.at(1).key(), feed.key());
@@ -560,7 +578,7 @@ private slots:
                  qPrintable(QStringLiteral("%1 between, %2 long").arg(cal.length).arg(cal.strip)));
         const QString said = cal.lines.join(QStringLiteral(" | "));
         QVERIFY2(said.contains(QStringLiteral("coplanar feed")) && said.contains(QStringLiteral("row(s) of vias every 150 µm"))
-                     && said.contains(QStringLiteral("1000 and 1900 µm long")) && said.contains(QStringLiteral("first via, 50 µm")),
+                     && said.contains(QStringLiteral("1000, 1900 and 1600 µm long")) && said.contains(QStringLiteral("first via, 50 µm")),
                  qPrintable(said));
 
         // De-embedded at both ends, the 1.3 mm is a line of the calibration's
@@ -685,6 +703,159 @@ private slots:
     // What cannot be calibrated is said, not answered: a feed of no width, a
     // metal that is not over the ground, no frequency; a de-embedding asked
     // at a frequency its calibration was not solved at.
+    // A third strip checks the other two (the phase E check of 2 November):
+    // on 100 µm of alumina they are one line between two ends alike over
+    // the sweep, and only the strips asked are solved. On 254 µm the strips
+    // of eight heights stop agreeing past some 12 GHz - their ends reach one
+    // another past the line through the surface wave - and shorter strips,
+    // solved beside them, agree further; each frequency is taken from the
+    // longest that agree, said, and a length given is solved as given.
+    void aThirdStripSaysWhereTheStripsAreOneLine()
+    {
+        const bool slow = slowBuild();
+        const rf::Calibration thin = rf::calibrate(grounded(9.8, 100e-6), meshing(slow ? 3 : 4, slow ? 100 : 50), 0,
+                                                   QStringLiteral("M1"), 100, {2e9, 10e9, 20e9});
+        QVERIFY2(thin.ok(), qPrintable(thin.problems.join(" | ")));
+        qWarning() << "thin: residuals" << thin.residual << "agreed to" << thin.agreedTo;
+        QCOMPARE(thin.third, 1000 * 1.6180339887498949);
+        QCOMPARE(thin.tried.size(), 1);
+        QCOMPARE(thin.tried.first(), 1000.0);
+        QCOMPARE(thin.residual.size(), 3);
+        // (Never nought: the third is a strip of its own, which the line the
+        //  other two read fits only as far as they are one line.)
+        for (const double r : thin.residual) QVERIFY2(r > 1e-7 && r < 3e-3, qPrintable(QString::number(r)));
+        QCOMPARE(thin.agreedTo, 20e9);
+        QVERIFY2(thin.lines.join(' ').contains(QStringLiteral("The three agree on one line")), qPrintable(thin.lines.join(" | ")));
+
+        const rf::Stack thick = grounded(9.8, 254e-6);
+        const rf::MeshSettings how = meshing(3, slow ? 200 : 100);
+        const QList<double> fs = slow ? QList<double>{6e9, 20e9} : QList<double>{6e9, 12e9, 16e9, 20e9};
+        const rf::Calibration chosen = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, fs);
+        const rf::Calibration fixed = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, fs, 1e-6, nullptr, 8 * 254 + 2 * 250);
+        QVERIFY2(chosen.ok() && fixed.ok(), qPrintable(chosen.problems.join(" | ") + fixed.problems.join(" | ")));
+        qWarning() << "thick: chosen" << chosen.residual << chosen.tried << chosen.stripAt << "agreed to" << chosen.agreedTo;
+        qWarning() << "thick: fixed " << fixed.residual << fixed.tried << "agreed to" << fixed.agreedTo;
+        QCOMPARE(fixed.tried.size(), 1);
+        QCOMPARE(fixed.tried.first(), 2532.0);
+        QVERIFY2(fixed.residual.last() > rf::kStripsAgree, "eight heights' strips do not agree at the top");
+        QVERIFY2(chosen.tried.size() > 1 && chosen.tried.at(1) < chosen.tried.at(0), "shorter strips solved beside them");
+        QVERIFY2(chosen.residual.last() < 0.5 * fixed.residual.last(), "and they agree the better there");
+        QVERIFY2(chosen.agreedTo >= fixed.agreedTo, "as far up at least");
+        QVERIFY2(fixed.residual.first() > 1e-6, qPrintable(QString::number(fixed.residual.first())));
+        // Where the longest agree they are taken, whatever shorter ones say.
+        for (int k = 0; k < fs.size(); ++k)
+            if (fixed.residual.at(k) <= rf::kStripsAgree) {
+                QCOMPARE(chosen.residual.at(k), fixed.residual.at(k));
+                QCOMPARE(chosen.stripAt.at(k), 2532.0);
+            }
+        QVERIFY2(chosen.lines.join(' ').contains(QStringLiteral("shorter ones")), qPrintable(chosen.lines.join(" | ")));
+        // A length given is solved as given, whatever its strips say.
+        const rf::Calibration given = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, {20e9}, 1e-6, nullptr, 800);
+        QVERIFY2(given.ok(), qPrintable(given.problems.join(" | ")));
+        QCOMPARE(given.tried.size(), 1);
+        QCOMPARE(given.tried.first(), 800.0);
+        QCOMPARE(given.strip, 800.0);
+    }
+
+    // Where the shorter strip is a whole number of half waves long its line
+    // is all but the identity, and gave the line's impedance poorly - 124
+    // Ohm among 145s on the phase E check's feed at 26 GHz. The third strip
+    // is not, and its impedance is taken there: strips of 3 mm on 100 µm of
+    // alumina, a half wave at 19.5 GHz, read the line's impedance there as
+    // either side of it.
+    void aHalfWaveTakesItsImpedanceFromTheThird()
+    {
+        const bool slow = slowBuild();
+        const QList<double> fs = {18.5e9, 19.47e9, 20.5e9};
+        const rf::Calibration cal = rf::calibrate(grounded(9.8, 100e-6), meshing(slow ? 2 : 3, slow ? 100 : 50), 0,
+                                                  QStringLiteral("M1"), 100, fs, 1e-6, nullptr, 3000);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k)
+            qWarning().noquote() << QStringLiteral("%1 GHz: %2 Ohm, %3 half waves, residual %4")
+                                        .arg(fs.at(k) / 1e9).arg(std::abs(cal.impedance.at(k)), 0, 'f', 3)
+                                        .arg(cal.gamma.at(k).imag() * cal.length * 1e-6 / M_PI, 0, 'f', 3).arg(cal.residual.at(k), 0, 'e', 2);
+        const double turns = cal.gamma.at(1).imag() * cal.length * 1e-6 / M_PI;
+        QVERIFY2(std::abs(turns - 1) < 0.05, qPrintable(QString::number(turns)));
+        const double either = 0.5 * (std::abs(cal.impedance.at(0)) + std::abs(cal.impedance.at(2)));
+        QVERIFY2(std::abs(std::abs(cal.impedance.at(1)) / either - 1) < 1e-2,
+                 qPrintable(QStringLiteral("%1 Ohm at the half wave, %2 either side").arg(std::abs(cal.impedance.at(1))).arg(either)));
+        QVERIFY2(cal.lines.join(' ').contains(QStringLiteral("the third strip's is taken there")), qPrintable(cal.lines.join(" | ")));
+    }
+
+    // A structure's own feed must run straight as far as its port's own field
+    // reaches - four heights over the ground and its width - for the port
+    // there to be what its strips find: the phase E check's MOM capacitor,
+    // its feeds 50 µm long over a ground 305 µm down, came out de-embedded
+    // giving back 16 times what it was given. A feed of 50 µm into a pad on
+    // 100 µm of alumina is said not to be trusted; one of 600 µm is not.
+    void aFeedShorterThanItsPortsFieldIsSaid()
+    {
+        const bool slow = slowBuild();
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const rf::MeshSettings how = meshing(slow ? 2 : 3, slow ? 100 : 50);
+        const QList<double> fs = {5e9};
+        const rf::Calibration cal = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        QCOMPARE(cal.reach, 500.0);
+        for (const double feed : {50.0, 600.0}) {
+            QPolygonF outline;   // (the feed 100 µm wide, then a pad 500 µm square)
+            outline << QPointF(0, 0) << QPointF(feed, 0) << QPointF(feed, -200) << QPointF(feed + 500, -200)
+                    << QPointF(feed + 500, 300) << QPointF(feed, 300) << QPointF(feed, 100) << QPointF(0, 100);
+            rf::Conductor pad;
+            pad.layer = QStringLiteral("M1");
+            pad.outline = outline;
+            const rf::FullWave raw = rf::fullWaveOf(rf::meshOf({pad}, how, stack, 0), {pad}, stack,
+                                                    {edgePort(QPointF(0, 50), QPointF(-1, 0))}, fs);
+            QVERIFY2(raw.ok(), qPrintable(why(raw)));
+            qWarning() << "a feed of" << feed << "um: measured" << raw.feeds.value(0).length;
+            QVERIFY2(std::abs(raw.feeds.value(0).length - feed) <= 25, qPrintable(QString::number(raw.feeds.value(0).length)));
+            const rf::FullWave d = rf::deembedded(raw, {{&cal, 0}});
+            QVERIFY2(d.ok(), qPrintable(why(d)));
+            QCOMPARE(d.deembedding.value(0).reach, 500.0);
+            const bool said = d.warnings.join(' ').contains(QStringLiteral("feed is as wide as its face and alone for"));
+            QVERIFY2(said == (feed < 500), qPrintable(d.warnings.join(" | ")));
+        }
+        // A straight line's feed is as long as was looked: no warning.
+        const QList<rf::Conductor> line = {strip(0, 0, 3000, 100)};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack,
+                                                {edgePort(QPointF(0, 50), QPointF(-1, 0)), edgePort(QPointF(3000, 50), QPointF(1, 0))}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        QVERIFY2(raw.feeds.value(0).length >= 500 && raw.feeds.value(1).length >= 500,
+                 qPrintable(QStringLiteral("%1, %2").arg(raw.feeds.value(0).length).arg(raw.feeds.value(1).length)));
+    }
+
+    // A de-embedding that gives back where the structure as solved does not
+    // is said to be the de-embedding's: a line taken out through a
+    // discontinuity that loses, which it does not.
+    void aDeembeddingThatGivesBackIsSaid()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const rf::MeshSettings how = meshing(2, 100);
+        const QList<double> fs = {5e9};
+        const QList<rf::Conductor> line = {strip(0, 0, 2000, 100)};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack,
+                                                {edgePort(QPointF(0, 50), QPointF(-1, 0)), edgePort(QPointF(2000, 50), QPointF(1, 0))}, fs);
+        QVERIFY2(raw.ok() && raw.gain <= 1e-9, qPrintable(why(raw)));
+        rf::Calibration lossy;
+        lossy.metal = QStringLiteral("M1");
+        lossy.width = 100;
+        lossy.frequencies = fs;
+        lossy.discontinuity = {{Complex(1, 0), Complex(20, 0), Complex(0, 0), Complex(1, 0)}};   // (20 Ohm in series)
+        lossy.gamma = {Complex(0, 200)};
+        lossy.impedance = {Complex(50, 0)};
+        lossy.residual = {0};
+        lossy.agreedTo = 5e9;
+        const rf::FullWave d = rf::deembedded(raw, {{&lossy, 0}, {&lossy, 0}});
+        QVERIFY2(d.ok(), qPrintable(why(d)));
+        QVERIFY2(d.gain > 0.1 && d.gainAt == 5e9, qPrintable(QString::number(d.gain)));
+        QVERIFY2(d.warnings.join(' ').contains(QStringLiteral("that is the de-embedding's")), qPrintable(d.warnings.join(" | ")));
+        QVERIFY2(d.lines.join(' ').contains(QStringLiteral("that is the de-embedding's")), "said among the lines too");
+        // The structure's own loss taken out is no gain: nothing said.
+        lossy.discontinuity = {{Complex(1, 0), Complex(0, 0), Complex(0, 0), Complex(1, 0)}};
+        const rf::FullWave plain = rf::deembedded(raw, {{&lossy, 0}, {&lossy, 0}});
+        QVERIFY2(!plain.warnings.join(' ').contains(QStringLiteral("de-embedding's")), qPrintable(plain.warnings.join(" | ")));
+    }
+
     void whatCannotBeCalibratedIsSaid()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
