@@ -356,7 +356,8 @@ bool faceEdge(const QList<Conductor>& conductors, QPointF where, const QString& 
     return found;
 }
 
-std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLineF& face, QPointF outward, const QString& layer)
+std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLineF& face, QPointF outward, const QString& layer,
+                                  const QList<bool>* returns)
 {
     std::array<QLineF, 2> out;
     const double len = face.length();
@@ -367,8 +368,10 @@ std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLin
     // a conductor on the same side of it. As (from the face's end out, to
     // its far end) on either side.
     QList<std::pair<double, double>> sides[2];
-    for (const Conductor& c : conductors) {
+    for (int k = 0; k < conductors.size(); ++k) {
+        const Conductor& c = conductors.at(k);
         if (!layer.isEmpty() && c.layer != layer) continue;
+        if (returns != nullptr && !returns->value(k, false)) continue;
         for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
             const QPointF a = c.outline.at(i) - face.p1(), b = c.outline.at((i + 1) % n) - face.p1();
             if (std::abs(a.x() * normal.x() + a.y() * normal.y()) > tol || std::abs(b.x() * normal.x() + b.y() * normal.y()) > tol)

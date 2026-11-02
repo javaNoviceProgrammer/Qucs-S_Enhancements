@@ -349,6 +349,43 @@ Eigen::MatrixXcd keptAdmittance(const rf::FullWave& fw, int k, int kept)
     return Eigen::MatrixXcd(z.inverse()).topLeftCorner(kept, kept);
 }
 
+/// The rf_benchmark's GSSG, \a l µm long along x: signals of 50 µm 50 µm
+/// apart, gaps of 35 µm and grounds of 300 - S1 above x's axis, S2 below.
+QList<rf::Conductor> gssg(double l)
+{
+    return {strip(0, 25, l, 50), strip(0, -75, l, 50), strip(0, 110, l, 300), strip(0, -410, l, 300)};
+}
+
+/// Its four coplanar ports, S1's and S2's at each end, P1 and P2 at x = 0
+/// - each pair a differential one, where \a paired.
+QList<rf::FullWavePort> gssgPorts(double l, bool paired = true)
+{
+    const QString m1 = QStringLiteral("M1");
+    QList<rf::FullWavePort> p = {edgePort(QPointF(0, 50), m1, QPointF(-1, 0)), edgePort(QPointF(0, -50), m1, QPointF(-1, 0)),
+                                 edgePort(QPointF(l, 50), m1, QPointF(1, 0)), edgePort(QPointF(l, -50), m1, QPointF(1, 0))};
+    for (int i = 0; i < p.size(); ++i) {
+        p[i].name = QStringLiteral("P%1").arg(i + 1);
+        p[i].coplanar = true;
+    }
+    if (paired) {
+        p[0].pair = QStringLiteral("P2");
+        p[2].pair = QStringLiteral("P4");
+    }
+    return p;
+}
+
+/// The two-port of modes \a i and \a j of frequency \a k of a solve's
+/// mixed-mode S (mixedModeOf()'s order), as a chain matrix: its S into
+/// \a reference, the modes', made Z.
+Matrix2 modeChain(const rf::FullWave& fw, int k, int i, int j, double reference)
+{
+    const QList<QList<Complex>> m = rf::mixedModeOf(fw, k);
+    Matrix2 s;
+    s << m[i][i], m[i][j], m[j][i], m[j][j];
+    const Matrix2 one = Matrix2::Identity();
+    return chainOf(reference * (one + s) * (one - s).inverse());
+}
+
 /// Int_a0^a1 Int_b0^b1 dz dz' / sqrt(rho^2 + (z - z')^2): two lines along z,
 /// in closed form - a via's partial inductance over mu0/(4 pi).
 double linePair(double a0, double a1, double b0, double b1, double rho)
@@ -1442,6 +1479,202 @@ private slots:
                  qPrintable(why(none)));
     }
 
+    // A GSSG on 150 µm of InP with nothing under it (the GSSG review of 1
+    // November, G4 and G5). A port on each signal returns through the two
+    // grounds - the outermost of the four, there being no ground plane and
+    // none marked - past the other signal, the grounds tied as a GSSG
+    // probe's are; the two at each end a differential pair. With no plane
+    // what goes into a port comes out of it, and the potential's nought, at
+    // infinity, drops out: at 2 GHz each mode is the quasi-static
+    // extraction's of the same mesh, the differential mode the odd mode's
+    // and the common mode the even's - infinity floating there, as the
+    // structure's charge is none in all here.
+    void aGssgReturnsThroughItsGroundsWithNoGroundPlane()
+    {
+        rf::Stack open = grounded(12.4, 150e-6);
+        open.layers[0].variant = QStringLiteral("open");
+        const double l1 = 600, l2 = 1200;
+        const QList<rf::Conductor> c1 = gssg(l1), c2 = gssg(l2);
+        const rf::Mesh m1 = meshed(c1, 3, 100e-6), m2 = meshed(c2, 3, 100e-6);
+        const rf::FullWave a = rf::fullWaveOf(m1, c1, open, gssgPorts(l1), {2e9});
+        const rf::FullWave b = rf::fullWaveOf(m2, c2, open, gssgPorts(l2), {2e9});
+        QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+        QVERIFY2(says(b.lines, "There is no ground plane") && says(b.lines, "the outermost across the line"),
+                 qPrintable(b.lines.join(" | ")));
+        // Each signal's port against both grounds, past the other signal -
+        // whose strips its feed cannot be - and the grounds' names said.
+        const QRegularExpression through(QStringLiteral("return through (M1[ #0-9]*) and (M1[ #0-9]*), the outermost"));
+        const QRegularExpressionMatch grounds = through.match(b.lines.join(' '));
+        QVERIFY2(grounds.hasMatch(), qPrintable(b.lines.join(" | ")));
+        for (int p = 0; p < 4; ++p) {
+            const QString& said = b.portsSaid.at(p);
+            QVERIFY2(said.contains(QStringLiteral("which is no return")) && said.contains(grounds.captured(1))
+                         && said.contains(grounds.captured(2)) && said.contains(QStringLiteral("either side")),
+                     qPrintable(said));
+            QVERIFY2(b.feeds.at(p).unlike.contains(QStringLiteral("no return, lies between it and its return")),
+                     qPrintable(b.feeds.at(p).unlike));
+        }
+        QCOMPARE(b.pairs, (QList<QPair<int, int>>{qMakePair(0, 1), qMakePair(2, 3)}));
+        QVERIFY2(says(b.lines, "Differential pairs, each its plus port first: P1 and P2; P3 and P4"), qPrintable(b.lines.join(" | ")));
+        QVERIFY2(b.asymmetry < 1e-9 && b.gain <= 1e-6, qPrintable(QStringLiteral("%1 %2").arg(b.asymmetry).arg(b.gain)));
+        // The modes: a symmetric GSSG turns none into the other, to the
+        // mesh's own symmetry.
+        QStringList order, of;
+        const QList<QList<Complex>> modes = rf::mixedModeOf(b, 0, &order, &of);
+        QCOMPARE(order, (QStringList{"D1", "D2", "C1", "C2"}));
+        QCOMPARE(of, (QStringList{"P1 - P2", "P3 - P4", "P1 + P2", "P3 + P4"}));
+        double converted = 0;
+        for (int i = 0; i < 2; ++i)
+            for (int j = 2; j < 4; ++j) converted = std::max({converted, std::abs(modes[i][j]), std::abs(modes[j][i])});
+        QVERIFY2(converted < 1e-6, qPrintable(QString::number(converted)));
+        // Each mode by the two lengths, against the extraction's: within
+        // 1.5 %, the partial inductances' L under the charge's 1/(c0^2 C0)
+        // as the existing line's is (n_eff and Z both 0.8 % under for the
+        // odd mode, 1.2 % for the even, at three cells across; 1.1 and 1.3
+        // at two, 0.6 and 1.0 at four).
+        const rf::Extraction e = rf::extract(m2, c2, open);
+        const rf::SignalLines lines = rf::signalsOf(e, l2 * 1e-6);
+        QVERIFY2(lines.ok() && lines.nets.size() == 2, qPrintable(lines.problem));
+        const double k0 = 2 * M_PI * 2e9 / kC0;
+        for (const bool odd : {true, false}) {
+            const double sign = odd ? -1 : 1;
+            const double c = lines.c[0][0] + sign * lines.c[0][1], c0 = lines.c0[0][0] + sign * lines.c0[0][1];
+            const double nStatic = std::sqrt(c / c0), zStatic = 1 / (kC0 * std::sqrt(c * c0));
+            const int i = odd ? 0 : 2;
+            const double reference = odd ? 100 : 25;
+            const TwoLine two = twoLine(modeChain(a, 0, i, i + 1, reference), modeChain(b, 0, i, i + 1, reference), l1 * 1e-6,
+                                        l2 * 1e-6, nStatic * k0);
+            const double n = two.gamma.imag() / k0;
+            // (The mode's own Z0 is the line's: the differential mode's is
+            //  twice the odd mode's, the common mode's half the even's.)
+            const double z = two.z0.real() * (odd ? 0.5 : 2.0);
+            qWarning("%s mode: n_eff %.5f, extraction %.5f (%.2e); Z %.3f Ohm, extraction %.3f (%.2e)", odd ? "odd" : "even", n,
+                     nStatic, n / nStatic - 1, z, zStatic, z / zStatic - 1);
+            QVERIFY2(std::abs(n / nStatic - 1) < 0.015 && std::abs(z / zStatic - 1) < 0.015,
+                     qPrintable(QStringLiteral("%1: n_eff %2 against %3, Z %4 against %5")
+                                    .arg(odd ? "odd" : "even").arg(n).arg(nStatic).arg(z).arg(zStatic)));
+        }
+        // Driven against the ground there is none to return through, and
+        // that is said rather than driven against infinity: an edge port of
+        // the ground, an internal one from it, or a via down to it.
+        QList<rf::FullWavePort> grounded = gssgPorts(l1, false);
+        grounded[1].coplanar = false;
+        const rf::FullWave edge = rf::fullWaveOf(m1, c1, open, grounded, {2e9});
+        QVERIFY(!edge.ok());
+        QVERIFY2(says(edge.problems, "There is no ground plane under the stack, and P2 return(s) through the ground"), qPrintable(why(edge)));
+        const rf::FullWave inside = rf::fullWaveOf(m1, c1, open, {internalPort(QPointF(300, 50), QStringLiteral("M1"))}, {2e9});
+        QVERIFY2(says(inside.problems, "drive an internal port from a metal"), qPrintable(why(inside)));
+        // From a metal it is solved: a pair of strips one over the other,
+        // driven between them at each end.
+        rf::Stack pair = twoMetals();
+        pair.layers[0].variant = QStringLiteral("open");
+        const QList<rf::Conductor> broadside{on(QStringLiteral("M1"), 0, 0, 800, 100), on(QStringLiteral("M2"), 0, 0, 800, 100)};
+        const rf::FullWave between = rf::fullWaveOf(meshed(broadside, 2, 100e-6), broadside, pair,
+                                                    {internalPort(QPointF(25, 50), QStringLiteral("M2"), QStringLiteral("M1")),
+                                                     internalPort(QPointF(775, 50), QStringLiteral("M2"), QStringLiteral("M1"))},
+                                                    {2e9});
+        QVERIFY2(between.ok() && between.asymmetry < 1e-9 && between.gain <= 1e-6, qPrintable(why(between)));
+        rf::Stack down = withVia(open, QStringLiteral("V1"), QStringLiteral("ground"), QStringLiteral("M1"));
+        QList<rf::Conductor> viaed = c1;
+        viaed << on(QStringLiteral("V1"), 300, 200, 50, 50);
+        const rf::FullWave via = rf::fullWaveOf(meshed(viaed, 2, 100e-6), viaed, down, gssgPorts(l1), {2e9});
+        QVERIFY2(says(via.problems, "go down to the ground, and there is no ground plane"), qPrintable(why(via)));
+    }
+
+    // A differential pair, and the conductors a coplanar port returns
+    // through named (the GSSG review's G5). The mixed-mode S is T S T',
+    // T orthogonal: each pair's differential mode, then each common mode,
+    // then the ports of no pair - as Touchstone 2.0's [Mixed-Mode Order]
+    // writes it. A pair is checked as given; and over a ground plane, where
+    // nothing makes the GSSG's grounds its returns, a port that would return
+    // through the other signal is said, then returns through the grounds
+    // once they are marked.
+    void aDifferentialPairsModesAreItsMixedModeS()
+    {
+        rf::Stack open = grounded(12.4, 150e-6);
+        open.layers[0].variant = QStringLiteral("open");
+        const double l = 600;
+        const QList<rf::Conductor> c = gssg(l);
+        const rf::Mesh mesh = meshed(c, 2, 100e-6);
+        QList<rf::FullWavePort> ports = gssgPorts(l);
+        ports[1].pair = QStringLiteral("P1");   // (named from both ends: one pair)
+        const rf::FullWave fw = rf::fullWaveOf(mesh, c, open, ports, {5e9, 10e9});
+        QVERIFY2(fw.ok(), qPrintable(why(fw)));
+        QCOMPARE(fw.pairs, (QList<QPair<int, int>>{qMakePair(0, 1), qMakePair(2, 3)}));
+        // T S T' by hand, and power kept: T is orthogonal.
+        const double h = 1 / std::sqrt(2.0);
+        Eigen::MatrixXd t = Eigen::MatrixXd::Zero(4, 4);
+        t(0, 0) = h, t(0, 1) = -h, t(1, 2) = h, t(1, 3) = -h, t(2, 0) = h, t(2, 1) = h, t(3, 2) = h, t(3, 3) = h;
+        for (int k = 0; k < 2; ++k) {
+            Eigen::MatrixXcd s(4, 4);
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j) s(i, j) = fw.s.at(k).at(i).at(j);
+            const Eigen::MatrixXcd want = t * s * t.transpose();
+            const QList<QList<Complex>> got = rf::mixedModeOf(fw, k);
+            double off = 0;
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j) off = std::max(off, std::abs(got[i][j] - want(i, j)));
+            QVERIFY2(off < 1e-12, qPrintable(QString::number(off)));
+        }
+        QVERIFY(rf::mixedModeOf(fw, 2).isEmpty());
+        // A port of no pair stays as it is, after the modes.
+        QList<rf::FullWavePort> three = gssgPorts(l, false);
+        three[0].pair = QStringLiteral("P2");
+        const rf::FullWave partly = rf::fullWaveOf(mesh, c, open, three, {5e9});
+        QVERIFY2(partly.ok(), qPrintable(why(partly)));
+        QStringList order, of;
+        const QList<QList<Complex>> modes = rf::mixedModeOf(partly, 0, &order, &of);
+        QCOMPARE(order, (QStringList{"D1", "C1", "P3", "P4"}));
+        QCOMPARE(of, (QStringList{"P1 - P2", "P1 + P2", "P3", "P4"}));
+        QVERIFY(std::abs(modes[2][3] - partly.s.at(0).at(2).at(3)) < 1e-15);
+        // Touchstone 2.0 of the modes: [Mixed-Mode Order] after [Reference],
+        // each matrix the modes'. None without a pair.
+        const QString text = rf::touchstone2Of(fw, {QStringLiteral("a GSSG")}, true);
+        QVERIFY2(text.contains(QStringLiteral("[Reference] 50 50 50 50\n[Mixed-Mode Order] D1,2 D3,4 C1,2 C3,4\n[Network Data]\n")),
+                 qPrintable(text.left(800)));
+        QVERIFY2(text.contains(QStringLiteral("! Mixed-mode S: D1,2 P1 - P2, D3,4 P3 - P4, C1,2 P1 + P2, C3,4 P3 + P4")), qPrintable(text.left(800)));
+        const QList<QList<Complex>> first = rf::mixedModeOf(fw, 0);
+        const QStringList data = text.section(QStringLiteral("[Network Data]\n"), 1).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        const QStringList row = data.at(0).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        QCOMPARE(row.at(0).toDouble(), 5e9);
+        QVERIFY2(std::abs(row.at(1).toDouble() - first[0][0].real()) < 1e-9 && std::abs(row.at(2).toDouble() - first[0][0].imag()) < 1e-9
+                     && std::abs(row.at(3).toDouble() - first[0][1].real()) < 1e-9,
+                 qPrintable(data.at(0)));
+        QVERIFY(rf::touchstone2Of(partly, {}, true).contains(QStringLiteral("[Mixed-Mode Order] D1,2 C1,2 S3 S4\n")));
+        QVERIFY(rf::touchstone2Of(rf::fullWaveOf(mesh, c, open, gssgPorts(l, false), {5e9}), {}, true).isEmpty());
+        QVERIFY(!rf::touchstone2Of(fw).contains(QStringLiteral("Mixed")));
+        // A pair checked as given: a port the layout has not, itself, a
+        // port in two pairs, and two references.
+        const auto refusal = [&](QList<rf::FullWavePort> given) {
+            const rf::FullWave w = rf::fullWaveOf(mesh, c, open, given, {5e9});
+            return w.ok() ? QString() : why(w);
+        };
+        QList<rf::FullWavePort> bad = gssgPorts(l, false);
+        bad[0].pair = QStringLiteral("P9");
+        QVERIFY2(refusal(bad).contains(QStringLiteral("P1 is paired with P9, and the layout has no port called that")), qPrintable(refusal(bad)));
+        bad[0].pair = QStringLiteral("P1");
+        QVERIFY2(refusal(bad).contains(QStringLiteral("P1 is paired with itself")), qPrintable(refusal(bad)));
+        bad[0].pair = QStringLiteral("P2");
+        bad[2].pair = QStringLiteral("P2");
+        QVERIFY2(refusal(bad).contains(QStringLiteral("P2 is in two pairs")), qPrintable(refusal(bad)));
+        bad[2].pair.clear();
+        bad[1].impedance = 25;
+        QVERIFY2(refusal(bad).contains(QStringLiteral("P1 and P2 are a pair, and their reference impedances differ (50 and 25 Ohm)")),
+                 qPrintable(refusal(bad)));
+        // Over a ground plane, nothing marked: the nearest conductor either
+        // side would be the other signal - said, not solved; marked, the
+        // grounds are its returns.
+        const rf::Stack plane = grounded(12.4, 150e-6);
+        const rf::FullWave unmarked = rf::fullWaveOf(mesh, c, plane, gssgPorts(l), {5e9});
+        QVERIFY2(says(unmarked.problems, "which P2 drives: mark the conductors the lines return through"), qPrintable(why(unmarked)));
+        const QList<rf::ReturnMark> marks = {{QPointF(300, 200), QStringLiteral("M1")}, {QPointF(300, -200), QString()}};
+        const rf::FullWave marked = rf::fullWaveOf(mesh, c, plane, gssgPorts(l), {5e9}, 1e-6, nullptr, marks);
+        QVERIFY2(marked.ok(), qPrintable(why(marked)));
+        QVERIFY2(says(marked.lines, "marked as returns") && says(marked.portsSaid, "which is no return"),
+                 qPrintable((marked.lines + marked.portsSaid).join(" | ")));
+        QVERIFY2(says(marked.lines, "The ground plane is taken as perfect"), qPrintable(marked.lines.join(" | ")));
+    }
+
     void whatItCannotSolveIsSaid()
     {
         const rf::Stack stack = grounded(9.8, 100e-6);
@@ -1463,10 +1696,11 @@ private slots:
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, ports, {-1e9}), "the quasi-static extraction answers"));
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, ports, {std::nan("")}), "the quasi-static extraction answers"));
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, ports, {1e9}, 0), "reference"));
-        // No ground plane to refer the ports to.
+        // No ground plane for the ports to return through: their current
+        // comes back through the conductors or not at all.
         rf::Stack open = stack;
         open.layers[0].variant = QStringLiteral("open");
-        QVERIFY(refused(rf::fullWaveOf(mesh, one, open, ports, {1e9}), "ground"));
+        QVERIFY(refused(rf::fullWaveOf(mesh, one, open, ports, {1e9}), "no ground plane under the stack, and P1, P2 return(s)"));
         // Two ports on the same face.
         QVERIFY(refused(rf::fullWaveOf(mesh, one, stack, {QPointF(0, 20), QPointF(0, 80)}, {1e9}), "same face"));
         // More runs and cells than this build sets up a dense matrix for,

@@ -97,8 +97,7 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
         out.error = tr("coupled lines' parameters are per metre: say how long the piece that was solved is");
         return out;
     }
-    const int n = int(extraction.names.size());
-    if (n < 1) {
+    if (extraction.names.isEmpty()) {
         out.error = tr("there are no nets to make lines of");
         return out;
     }
@@ -109,41 +108,29 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
                        "the full-wave solve gives its ports' S");
         return out;
     }
-    out.names = extraction.names;
+    // The signals against the returns, where there are returns: a coplanar
+    // line's, its grounds at nought (the GSSG check of 1 November, G1) -
+    // else every net, against the ground or infinity.
+    const SignalLines lines = signalsOf(extraction, length);
+    if (!lines.ok()) {
+        out.error = lines.problem;
+        return out;
+    }
+    const int n = int(lines.nets.size());
+    const std::size_t N = std::size_t(n);
+    for (const int i : lines.nets) out.names << extraction.names.at(i);
     out.rlgc = frequency > 0;
     out.frequency = out.rlgc ? frequency : 0.0;
     const double omega = 2 * M_PI * frequency;
-    const std::size_t N = std::size_t(n);
-    // Per metre, and symmetric: the solve's own asymmetry is numerical,
-    // and a capacitance matrix that is not symmetric has no modes.
-    auto perMetre = [n, N, length](const QList<QList<double>>& m, double scale) {
+    const auto matrix = [n, N](const QList<QList<double>>& m, double scale) {
         fem::CoupledLines::Matrix r(N, std::vector<double>(N, 0));
-        if (int(m.size()) != n) return r;
-        for (int i = 0; i < n; ++i) {
-            if (int(m.at(i).size()) != n) return fem::CoupledLines::Matrix(N, std::vector<double>(N, 0));
-            for (int j = 0; j < n; ++j)
-                r[std::size_t(i)][std::size_t(j)] = scale * 0.5 * (m.at(i).at(j) + m.at(j).at(i)) / length;
-        }
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) r[std::size_t(i)][std::size_t(j)] = scale * m.at(i).at(j);
         return r;
     };
-    // From the line's middle where that was taken - the ends' fringing
-    // left out, and per metre already - else the whole over the length.
-    const Extraction::PerMetre& pm = extraction.perMetre;
-    const bool middle = pm.fromMiddle && int(pm.maxwell.size()) == n && int(pm.maxwell0.size()) == n;
-    const auto symmetric = [n, N](const QList<QList<double>>& m, double scale) {
-        fem::CoupledLines::Matrix r(N, std::vector<double>(N, 0));
-        if (int(m.size()) != n) return r;
-        for (int i = 0; i < n; ++i) {
-            if (int(m.at(i).size()) != n) return fem::CoupledLines::Matrix(N, std::vector<double>(N, 0));
-            for (int j = 0; j < n; ++j) r[std::size_t(i)][std::size_t(j)] = scale * 0.5 * (m.at(i).at(j) + m.at(j).at(i));
-        }
-        return r;
-    };
-    out.C = middle ? symmetric(pm.maxwell, 1) : perMetre(extraction.maxwell, 1);
-    out.C0 = middle ? symmetric(pm.maxwell0, 1) : perMetre(extraction.maxwell0, 1);
-    out.G = !out.rlgc ? fem::CoupledLines::Matrix(N, std::vector<double>(N, 0))
-            : middle && int(pm.dielectricLoss.size()) == n ? symmetric(pm.dielectricLoss, omega)
-                                                          : perMetre(extraction.dielectricLoss, omega);
+    out.C = matrix(lines.c, 1);
+    out.C0 = matrix(lines.c0, 1);
+    out.G = out.rlgc ? matrix(lines.loss, omega) : fem::CoupledLines::Matrix(N, std::vector<double>(N, 0));
 
     // L = C0^-1/c^2, the quasi-TEM relation, as the engine's own coupled
     // lines take it for a lossless line of any number of conductors.
@@ -160,27 +147,27 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
     for (int i = 0; i < n; ++i)
         for (int j = 0; j < n; ++j) out.L[std::size_t(i)][std::size_t(j)] = 0.5 * (l(i, j) + l(j, i));
 
-    // Without Wheeler's factors R is diagonal: each net's surface
-    // resistance times how its own charge crowds, and one conductor
-    // pushing another's current about - the proximity effect - is not in
-    // it.
-    out.R.assign(N, std::vector<double>(N, 0));
     // By Wheeler's rule where it was taken: the whole matrix, since one
     // conductor's faces receding moves the other's L too - the proximity
-    // the crowding of each alone could not give.
+    // the crowding of each alone could not give - and the returns' faces
+    // with them. Without it R is diagonal: each signal's surface resistance
+    // times how its own charge crowds.
+    out.R.assign(N, std::vector<double>(N, 0));
+    const Extraction::PerMetre& pm = extraction.perMetre;
     const QList<QList<double>> wheeler = out.rlgc ? resistancePerMetre(extraction, frequency) : QList<QList<double>>();
     if (wheeler.size() == n) {
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) out.R[std::size_t(i)][std::size_t(j)] = wheeler.at(i).at(j);
     } else if (out.rlgc)
-        for (int i = 0; i < n; ++i) {
+        for (int p = 0; p < n; ++p) {
+            const int i = lines.nets.at(p);
             const double rs = surfaceImpedance(extraction.sigma.value(i), extraction.thickness.value(i), frequency).real()
                               * roughnessFactor(extraction.roughness.value(i), extraction.sigma.value(i), frequency);
-            out.R[std::size_t(i)][std::size_t(i)] = middle && i < pm.crowding.size() ? rs * pm.crowding.at(i)
-                                                                                     : rs * length * extraction.crowding.value(i);
+            out.R[std::size_t(p)][std::size_t(p)] = i < pm.crowding.size() ? rs * pm.crowding.at(i)
+                                                                           : rs * length * extraction.crowding.value(i);
         }
     // The modes, by the engine's own solver: a lossless line's at 1 GHz,
-    // as its quasi-TEM lines are taken.
+    // as its quasi-TEM lines are taken; a symmetric pair's even and odd.
     fem::coupledModes(out, out.rlgc ? omega : 2 * M_PI * 1e9);
     return out;
 }

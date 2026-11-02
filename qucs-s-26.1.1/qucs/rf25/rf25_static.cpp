@@ -172,6 +172,121 @@ QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors, const St
     return kept;
 }
 
+QList<bool> returnNetsOf(const QList<Net>& nets, const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack,
+                        const QList<ReturnMark>& marks, QString* said)
+{
+    QList<bool> out(nets.size(), false);
+    QStringList why;
+    bool plane = false;
+    for (const Layer& l : stack.layers)
+        if (l.kind == Layer::Ground && l.variant != QLatin1String("open")) plane = true;
+    // Marked: the net of the cell under each mark, on its metal.
+    QStringList stray;
+    QStringList marked;
+    for (const ReturnMark& mark : marks) {
+        const Layer* metal = mark.metal.isEmpty() ? nullptr : stack.named(mark.metal);
+        int found = -1;
+        for (int i = 0; i < nets.size() && found < 0; ++i)
+            for (const int c : nets.at(i).cells) {
+                const MeshCell& cell = mesh.cells.at(c);
+                if (metal != nullptr && cell.layer != metal->name) continue;
+                if (cell.outline.containsPoint(mark.at, Qt::OddEvenFill)) {
+                    found = i;
+                    break;
+                }
+            }
+        if (found < 0) {
+            stray << QStringLiteral("%1, %2 µm").arg(mark.at.x(), 0, 'g', 6).arg(mark.at.y(), 0, 'g', 6);
+            continue;
+        }
+        if (!out.at(found)) marked << nets.at(found).name;
+        out[found] = true;
+    }
+    if (!marked.isEmpty()) why << tr("%1, marked as returns").arg(marked.join(QStringLiteral(", ")));
+    // Joined to the ground plane by a via: at its potential.
+    QStringList joined;
+    for (const Conductor& v : conductors) {
+        const Layer* via = stack.named(v.layer);
+        if (via == nullptr || via->kind != Layer::Via) continue;
+        if (!stack.isGround(via->from) && !stack.isGround(via->to)) continue;
+        const Layer* metal = stack.named(stack.isGround(via->from) ? via->to : via->from);
+        if (metal == nullptr) continue;
+        const QRectF foot = v.outline.boundingRect();
+        for (int i = 0; i < nets.size(); ++i) {
+            if (out.at(i)) continue;
+            for (const int c : nets.at(i).cells) {
+                const MeshCell& cell = mesh.cells.at(c);
+                if (cell.layer == metal->name && cell.outline.boundingRect().intersects(foot)) {
+                    out[i] = true;
+                    joined << nets.at(i).name;
+                    break;
+                }
+            }
+        }
+    }
+    if (!joined.isEmpty()) why << tr("%1, joined to the ground plane by a via").arg(joined.join(QStringLiteral(", ")));
+    // With no ground plane and none of those: a coplanar line's grounds, the
+    // two outermost of three or more nets across a straight run of them,
+    // each its whole length and wholly outside the rest.
+    if (!out.contains(true) && !plane && nets.size() >= 3) {
+        QRectF all;
+        QList<QRectF> boxes;
+        for (const Net& n : nets) {
+            QRectF box;
+            for (const int c : n.cells) box = box.isNull() ? mesh.cells.at(c).outline.boundingRect()
+                                                          : box.united(mesh.cells.at(c).outline.boundingRect());
+            boxes << box;
+            all = all.isNull() ? box : all.united(box);
+        }
+        // Along x or along y, whichever the nets lie side by side across -
+        // not the longer side of them all: a short GSSG is wider than long.
+        const double tol = 1e-6 * std::max(1.0, std::max(all.width(), all.height()));
+        int low = 0, high = 0;
+        bool outside = false;
+        for (const bool alongX : {true, false}) {
+            const auto lo = [alongX](const QRectF& b) { return alongX ? b.top() : b.left(); };
+            const auto hi = [alongX](const QRectF& b) { return alongX ? b.bottom() : b.right(); };
+            const auto run = [alongX](const QRectF& b) { return alongX ? b.width() : b.height(); };
+            const double length = alongX ? all.width() : all.height();
+            low = high = 0;
+            for (int i = 1; i < boxes.size(); ++i) {
+                if (lo(boxes.at(i)) < lo(boxes.at(low))) low = i;
+                if (hi(boxes.at(i)) > hi(boxes.at(high))) high = i;
+            }
+            outside = low != high && run(boxes.at(low)) >= 0.9 * length && run(boxes.at(high)) >= 0.9 * length;
+            for (int i = 0; i < boxes.size() && outside; ++i) {
+                if (i == low || i == high) continue;
+                outside = lo(boxes.at(i)) >= hi(boxes.at(low)) - tol && hi(boxes.at(i)) <= lo(boxes.at(high)) + tol;
+            }
+            if (outside) break;
+        }
+        if (outside) {
+            out[low] = out[high] = true;
+            why << tr("%1 and %2, the outermost across the line, as a coplanar line's grounds: there is no ground plane "
+                      "and none is marked (a Return Conductor under Ports names others)")
+                       .arg(nets.at(low).name, nets.at(high).name);
+        }
+    }
+    if (said != nullptr) {
+        QStringList all;
+        if (out.contains(true))
+            all << tr("The lines return through %1, held at nought with the ground; the rest are their signals.")
+                       .arg(why.join(QStringLiteral("; ")));
+        if (!stray.isEmpty())
+            all << tr("A Return Conductor at %1 is on no conductor, and is left out.").arg(stray.join(QStringLiteral("; ")));
+        *said = all.join(QLatin1Char(' '));
+    }
+    return out;
+}
+
+QList<int> Extraction::signalNets() const
+{
+    QList<int> out;
+    for (int i = 0; i < names.size(); ++i)
+        if (!returns.value(i, false)) out << i;
+    return out;
+}
+
 double Extraction::selfCapacitance(int i) const
 {
     if (i < 0 || i >= c.size()) return 0;
@@ -276,8 +391,10 @@ struct Box2D {
 };
 
 // The potential at (x, z) of a unit charge per metre spread evenly over a
-// face, over a perfect ground at z = 0 - its image at -z.
-double facePotential(double x, double z, const Face2D& f)
+// face, over a perfect ground at z = 0 - its image at -z - where \a image,
+// else in free space (to a constant, which a charge of none in all leaves
+// out).
+double facePotential(double x, double z, const Face2D& f, bool image = true)
 {
     const auto integral = [&f, x, z](bool image) {
         if (f.horizontal) {
@@ -288,16 +405,20 @@ double facePotential(double x, double z, const Face2D& f)
         const double a = image ? -f.b : f.a, b = image ? -f.a : f.b;
         return lnAntiderivative(b - z, d) - lnAntiderivative(a - z, d);
     };
-    return (integral(true) - integral(false)) / (2 * M_PI * kEps0 * (f.b - f.a));
+    return ((image ? integral(true) : 0.0) - integral(false)) / (2 * M_PI * kEps0 * (f.b - f.a));
 }
 
-// L per metre of the conductors \a boxes over a perfect ground in vacuum,
-// C0^-1/c^2, by a 2D method of moments in closed form: every face of each
-// rectangle - its bottom, its top and its two walls - in cells, an even
-// charge on each, matched at its middle. \a recede is a net whose every
-// face moves \a dn into its metal, or -2 for the ground moving \a dn away
-// below everything, or -1 for neither.
-Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, int nets, int recede, double dn)
+// L per metre of the signals among the conductors \a boxes - the nets
+// \a signalNets lists, the rest held at nought with them as their return - in
+// vacuum, C0^-1/c^2 of the signals' own block, by a 2D method of moments in
+// closed form: every face of each rectangle - its bottom, its top and its
+// two walls - in cells, an even charge on each, matched at its middle. Over
+// a perfect ground where \a plane, its image below; else in free space,
+// where a line's charge per metre to infinity is nothing however long it is,
+// so the charge is held to none in all and the potential's constant left
+// free. \a recede is a net whose every face moves \a dn into its metal, or
+// -2 for the ground moving \a dn away below everything, or -1 for neither.
+Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, const QList<int>& signalNets, bool plane, int recede, double dn)
 {
     QList<Face2D> faces;
     for (const Box2D& box : boxes) {
@@ -327,21 +448,27 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, int nets, int recede, do
             faces << Face2D{box.net, false, zs.at(i), zs.at(i + 1), across.last()};
         }
     }
-    const int k = int(faces.size());
-    Eigen::MatrixXd p(k, k);
+    const int k = int(faces.size()), ns = int(signalNets.size());
+    // (A free constant and a row of ones where there is no plane.)
+    const int order = plane ? k : k + 1;
+    Eigen::MatrixXd p = Eigen::MatrixXd::Zero(order, order);
     for (int i = 0; i < k; ++i) {
         const Face2D& f = faces.at(i);
         const double middle = (f.a + f.b) / 2;
         const double x = f.horizontal ? middle : f.at, z = f.horizontal ? f.at : middle;
-        for (int j = 0; j < k; ++j) p(i, j) = facePotential(x, z, faces.at(j));
+        for (int j = 0; j < k; ++j) p(i, j) = facePotential(x, z, faces.at(j), plane);
+        if (!plane) p(i, k) = p(k, i) = 1;
     }
     const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
-    Eigen::MatrixXd c = Eigen::MatrixXd::Zero(nets, nets);
-    for (int e = 0; e < nets; ++e) {
-        Eigen::VectorXd v = Eigen::VectorXd::Zero(k);
-        for (int i = 0; i < k; ++i) v(i) = faces.at(i).net == e ? 1.0 : 0.0;
+    Eigen::MatrixXd c = Eigen::MatrixXd::Zero(ns, ns);
+    for (int e = 0; e < ns; ++e) {
+        Eigen::VectorXd v = Eigen::VectorXd::Zero(order);
+        for (int i = 0; i < k; ++i) v(i) = faces.at(i).net == signalNets.at(e) ? 1.0 : 0.0;
         const Eigen::VectorXd q = lu.solve(v);
-        for (int i = 0; i < k; ++i) c(faces.at(i).net, e) += q(i);
+        for (int i = 0; i < k; ++i) {
+            const int s = int(signalNets.indexOf(faces.at(i).net));
+            if (s >= 0) c(s, e) += q(i);
+        }
     }
     return c.inverse() / (kLightSpeed * kLightSpeed);
 }
@@ -354,17 +481,18 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, int nets, int recede, do
  * R from it at direct current is through the whole metal, as a sheet's is.
  */
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                         const QHash<int, int>& bottomOf);
+                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks);
 
 } // namespace
 
-Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre)
+Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
+                   const QList<ReturnMark>& returns)
 {
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()).
     const Thickened thick = thickened(stack, conductors, mesh);
-    if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {});
-    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf);
+    if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {}, returns);
+    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns);
     out.lines = thick.said + out.lines;
     return out;
 }
@@ -372,30 +500,25 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
 namespace {
 
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                         const QHash<int, int>& bottomOf)
+                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks)
 {
     Extraction out;
     if (mesh.cells.isEmpty()) {
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
     }
-    // A via to the ground holds what it lands on at the ground's potential;
-    // every net here is free, held at a volt in turn.
-    for (const Conductor& conductor : conductors) {
-        const Layer* via = stack.named(conductor.layer);
-        if (via == nullptr || via->kind != Layer::Via) continue;
-        if (stack.isGround(via->from) || stack.isGround(via->to)) {
-            out.problems << tr("The via %1 joins %2 to the ground, and the quasi-static extraction holds no conductor at the "
-                               "ground's potential: solve it full-wave (the study's Solver).")
-                                .arg(via->name.isEmpty() ? via->tag : via->name, stack.isGround(via->from) ? via->to : via->from);
-            return out;
-        }
-    }
     const QList<Net> nets = netsOf(mesh, conductors, stack);
     if (nets.isEmpty()) {
         out.problems << tr("No cell of the mesh belongs to a conductor of the stack.");
         return out;
     }
+    // Every net is free, held at a volt in turn, and the lines are of the
+    // signals with the returns at nought: a via to the ground holds what it
+    // lands on at the ground's potential, so it is a return (once refused,
+    // "solve it full-wave"), as is a net marked one, and with no ground
+    // plane a coplanar line's grounds (returnNetsOf()).
+    out.returns = returnNetsOf(nets, mesh, conductors, stack, marks, &out.returnsSaid);
+    if (!out.returnsSaid.isEmpty()) out.lines << out.returnsSaid;
     // Every metal the cells are on, and where each sits once the metals
     // are collapsed to sheets.
     QStringList layers;
@@ -491,7 +614,29 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // over 100 µm a per cent high.
     QRectF all;
     for (const int k : std::as_const(which)) all = all.united(mesh.cells.at(k).outline.boundingRect());
-    const bool alongX = all.width() >= all.height();
+    // Along x or along y: the longer side - or the way every net runs the
+    // whole length of, where that is the shorter, the nets side by side
+    // across it no further apart than it is long: a short GSSG is wider
+    // than it is long, and two pads far apart are no line.
+    QList<QRectF> netBoxes(nets.size());
+    for (int k = 0; k < n; ++k) netBoxes[netOf.at(k)] = netBoxes.at(netOf.at(k)).united(mesh.cells.at(which.at(k)).outline.boundingRect());
+    bool spansX = true, spansY = true;
+    for (const QRectF& b : std::as_const(netBoxes)) {
+        spansX = spansX && b.width() >= 0.999 * all.width();
+        spansY = spansY && b.height() >= 0.999 * all.height();
+    }
+    bool alongX = all.width() >= all.height();
+    if (spansX != spansY && spansX != alongX) {
+        QList<std::pair<double, double>> across;
+        for (const QRectF& b : std::as_const(netBoxes)) across << (spansX ? std::pair(b.top(), b.bottom()) : std::pair(b.left(), b.right()));
+        std::sort(across.begin(), across.end());
+        double widest = 0, reach = across.isEmpty() ? 0 : across.first().second;
+        for (const auto& [from, to] : std::as_const(across)) {
+            widest = std::max(widest, from - reach);
+            reach = std::max(reach, to);
+        }
+        if (widest <= (spansX ? all.width() : all.height())) alongX = spansX;
+    }
     const double lineFrom = alongX ? all.left() : all.top();
     const double lineLength = alongX ? all.width() : all.height();   // (the layout's units)
     const double middle = lineFrom + lineLength / 2;
@@ -706,7 +851,10 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // perimeter, Wheeler's rule on Hammerstad and Jensen's thick air line
     // is within 0.4 to 1.2 % of it; two sheets without their walls were 4
     // to 7 % low.)
-    if (uniform && out.grounded) {
+    QList<int> signalNets;   // (the nets' own order: the names come last)
+    for (int i = 0; i < nets.size(); ++i)
+        if (!out.returns.value(i, false)) signalNets << i;
+    if (uniform && (out.grounded || out.hasReturns())) {
         QMap<QPair<int, QString>, QList<std::pair<double, double>>> spans;
         for (const int a : std::as_const(column)) {
             const MeshCell& cell = mesh.cells.at(which.at(a));
@@ -765,40 +913,59 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         // Up each wall as finely as the finest cell across: the walls' grid
         // as the faces'.
         for (Box2D& box : boxes) box.up = std::clamp(int(std::ceil((box.z1 - box.z0) / std::max(1e-30, finest))), 2, 16);
-        if (thin.isEmpty() && !boxes.isEmpty()) {
-            const int count = int(nets.size());
+        if (thin.isEmpty() && !boxes.isEmpty() && !signalNets.isEmpty()) {
+            const int count = int(nets.size()), ns = int(signalNets.size());
             const double dn = 1e-4 * std::min(thinnest, finest);
             constexpr double mu0 = 4e-7 * M_PI;
-            const auto factor = [&](int recede) {
+            const bool plane = out.grounded;
+            const auto factor = [&boxes, &signalNets, plane, dn, ns](int recede) {
                 const Eigen::MatrixXd d =
-                    (inductance2D(boxes, count, recede, dn) - inductance2D(boxes, count, recede, -dn)) / (2 * dn * mu0);
+                    (inductance2D(boxes, signalNets, plane, recede, dn) - inductance2D(boxes, signalNets, plane, recede, -dn))
+                    / (2 * dn * mu0);
                 QList<QList<double>> m;
-                for (int i = 0; i < count; ++i) {
+                for (int i = 0; i < ns; ++i) {
                     QList<double> row;
-                    for (int j = 0; j < count; ++j) row << 0.5 * (d(i, j) + d(j, i));
+                    for (int j = 0; j < ns; ++j) row << 0.5 * (d(i, j) + d(j, i));
                     m << row;
                 }
                 return m;
             };
+            // Every conductor's faces receding, the returns' too - the
+            // current comes back through them - and the ground's.
             for (int k = 0; k < count; ++k) out.perMetre.wheeler << factor(k);
-            out.perMetre.wheelerGround = factor(-2);
-            for (int i = 0; i < count; ++i) out.perMetre.dcResistance << (conductance.at(i) > 0 ? 1.0 / conductance.at(i) : 0.0);
+            out.perMetre.wheelerGround = plane ? factor(-2) : QList<QList<double>>(ns, QList<double>(ns, 0.0));
+            double back = 0;
+            for (int i = 0; i < count; ++i) {
+                if (out.returns.value(i, false)) back += conductance.at(i);
+                else out.perMetre.dcResistance << (conductance.at(i) > 0 ? 1.0 / conductance.at(i) : 0.0);
+            }
+            out.perMetre.dcReturn = back > 0 ? 1.0 / back : 0.0;
             QStringList each;
-            for (int i = 0; i < count; ++i)
-                each << tr("%1's faces %2/m").arg(nets.at(i).name).arg(out.perMetre.wheeler.at(i).at(i).at(i), 0, 'g', 4);
-            out.lines << tr("R per metre by Wheeler's rule on the cross-section's own rectangles, the metal's thickness and "
-                            "walls in them: every face of a conductor receding into it, and the ground below them all, "
-                            "in a 2D solve of their L. Per ohm of surface resistance, %1, and the ground %2/m.")
-                             .arg(each.join(QStringLiteral(", ")))
-                             .arg(out.perMetre.wheelerGround.at(0).at(0), 0, 'g', 4);
+            for (int p = 0; p < ns; ++p)
+                each << tr("%1's faces %2/m").arg(nets.at(signalNets.at(p)).name)
+                            .arg(out.perMetre.wheeler.at(signalNets.at(p)).at(p).at(p), 0, 'g', 4);
+            if (!out.hasReturns())
+                out.lines << tr("R per metre by Wheeler's rule on the cross-section's own rectangles, the metal's thickness "
+                                "and walls in them: every face of a conductor receding into it, and the ground below them "
+                                "all, in a 2D solve of their L. Per ohm of surface resistance, %1, and the ground %2/m.")
+                                 .arg(each.join(QStringLiteral(", ")))
+                                 .arg(out.perMetre.wheelerGround.at(0).at(0), 0, 'g', 4);
+            else
+                out.lines << tr("R per metre of the signals by Wheeler's rule on the cross-section's own rectangles, the "
+                                "metal's thickness and walls in them: every face of a conductor receding into it, the "
+                                "returns' too, %1 in a 2D solve of their L with the returns at nought. Per ohm of surface "
+                                "resistance, %2.")
+                                 .arg(plane ? tr("and the ground below them all,") : tr("with no ground plane - no charge in all -"),
+                                      each.join(QStringLiteral(", ")));
         } else if (!thin.isEmpty()) {
             out.lines << tr("%1 has no thickness: R is from how the charge crowds on a sheet of none, which grows without "
                             "end as the mesh is refined. Give the metal its thickness, and R is Wheeler's.")
                              .arg(thin.join(QStringLiteral(", ")));
         }
     } else if (uniform) {
-        out.lines << tr("With no ground, R is from how the charge crowds on a sheet, which grows as the mesh is refined: "
-                        "Wheeler's rule wants the ground the current returns through.");
+        out.lines << tr("With no ground and no return conductor, R is from how the charge crowds on a sheet, which grows as "
+                        "the mesh is refined: Wheeler's rule wants what the current returns through - a ground plane, or "
+                        "a coplanar line's grounds (a Return Conductor under Ports).");
     }
 
     // Each dielectric's share of the field, for the loss it adds. The
@@ -988,33 +1155,94 @@ double groundSurfaceResistance(const Extraction& extraction, double frequency)
 QList<QList<double>> resistancePerMetre(const Extraction& extraction, double frequency, QList<QList<double>>* ground)
 {
     const Extraction::PerMetre& pm = extraction.perMetre;
-    const int n = int(extraction.names.size());
+    const int n = int(extraction.names.size()), ns = int(extraction.signalNets().size());
     if (ground != nullptr) ground->clear();
-    if (!pm.fromMiddle || int(pm.wheeler.size()) != n || int(pm.wheelerGround.size()) != n
-        || int(pm.dcResistance.size()) != n || !(frequency > 0))
+    if (!pm.fromMiddle || int(pm.wheeler.size()) != n || int(pm.wheelerGround.size()) != ns
+        || int(pm.dcResistance.size()) != ns || !(frequency > 0))
         return {};
-    QList<QList<double>> r(n, QList<double>(n, 0.0)), g(n, QList<double>(n, 0.0));
+    QList<QList<double>> r(ns, QList<double>(ns, 0.0)), g(ns, QList<double>(ns, 0.0));
     // Each metal's slab surface resistance times its own factor: a slab's
     // and not a half space's, so that a metal thin beside its skin depth
-    // loses as the slab it is.
+    // loses as the slab it is. Every conductor's, a return's too: the
+    // signals' current comes back through it.
     for (int k = 0; k < n; ++k) {
         const double rs = surfaceImpedance(extraction.sigma.value(k), extraction.thickness.value(k), frequency).real()
                           * roughnessFactor(extraction.roughness.value(k), extraction.sigma.value(k), frequency);
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) r[i][j] += rs * pm.wheeler.at(k).at(i).at(j);
+        for (int i = 0; i < ns; ++i)
+            for (int j = 0; j < ns; ++j) r[i][j] += rs * pm.wheeler.at(k).at(i).at(j);
     }
     const double rsg = groundSurfaceResistance(extraction, frequency);
-    for (int i = 0; i < n; ++i)
-        for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < ns; ++i)
+        for (int j = 0; j < ns; ++j) {
             g[i][j] = rsg * pm.wheelerGround.at(i).at(j);
             r[i][j] += g[i][j];
         }
     // Wheeler's rule is of a current on the faces, a skin depth deep; at
-    // direct current it runs through the whole metal, and a net's own
-    // resistance is never less than that.
-    for (int i = 0; i < n; ++i) r[i][i] = std::max(r[i][i], pm.dcResistance.at(i) + g[i][i]);
+    // direct current it runs through the whole metal, and a signal's own
+    // resistance - with the returns' its current comes back through - is
+    // never less than that. (A mutual one is: each signal's return crowds
+    // to its own side of the returns as the frequency rises.)
+    for (int i = 0; i < ns; ++i) r[i][i] = std::max(r[i][i], pm.dcResistance.at(i) + pm.dcReturn + g[i][i]);
     if (ground != nullptr) *ground = g;
     return r;
+}
+
+SignalLines signalsOf(const Extraction& extraction, double length)
+{
+    SignalLines out;
+    const int n = int(extraction.names.size());
+    out.nets = extraction.signalNets();
+    if (out.nets.isEmpty()) {
+        out.problem = tr("every conductor is a return, and there is no signal to be a line");
+        return out;
+    }
+    const Extraction::PerMetre& pm = extraction.perMetre;
+    const bool middle = pm.fromMiddle && int(pm.maxwell.size()) == n && int(pm.maxwell0.size()) == n;
+    if (!middle && !(length > 0)) {
+        out.problem = tr("lines' parameters are per metre: say how long the piece that was solved is");
+        return out;
+    }
+    // Per metre and symmetric: the solve's own asymmetry is numerical.
+    const auto perMetre = [n, middle, length](const QList<QList<double>>& m, const QList<QList<double>>& whole) {
+        const QList<QList<double>>& from = middle ? m : whole;
+        Eigen::MatrixXd r = Eigen::MatrixXd::Zero(n, n);
+        if (int(from.size()) != n) return r;
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n && int(from.at(i).size()) == n && int(from.at(j).size()) == n; ++j)
+                r(i, j) = 0.5 * (from.at(i).at(j) + from.at(j).at(i)) / (middle ? 1.0 : length);
+        return r;
+    };
+    Eigen::MatrixXd c = perMetre(pm.maxwell, extraction.maxwell), c0 = perMetre(pm.maxwell0, extraction.maxwell0);
+    Eigen::MatrixXd loss = perMetre(pm.dielectricLoss, extraction.dielectricLoss);
+    // With returns and no ground plane, a line's charge to infinity per
+    // metre is nothing - it falls as the log of its length - so infinity
+    // floats: the charge is held to none in all, C - (C1)(C1)'/(1'C1). Its
+    // loss matrix is that one's derivative in the permittivities.
+    if (extraction.hasReturns() && !extraction.grounded) {
+        const Eigen::VectorXd one = Eigen::VectorXd::Ones(n);
+        const Eigen::VectorXd a = c * one, a0 = c0 * one, d = loss * one;
+        const double sum = one.dot(a), sum0 = one.dot(a0), dsum = one.dot(d);
+        if (!(sum > 0) || !(sum0 > 0)) {
+            out.problem = tr("the conductors' charge to infinity came out as none");
+            return out;
+        }
+        loss = loss - (d * a.transpose() + a * d.transpose()) / sum + a * a.transpose() * (dsum / (sum * sum));
+        c = c - a * a.transpose() / sum;
+        c0 = c0 - a0 * a0.transpose() / sum0;
+    }
+    const int ns = int(out.nets.size());
+    for (int i = 0; i < ns; ++i) {
+        QList<double> rc, rc0, rl;
+        for (int j = 0; j < ns; ++j) {
+            rc << c(out.nets.at(i), out.nets.at(j));
+            rc0 << c0(out.nets.at(i), out.nets.at(j));
+            rl << loss(out.nets.at(i), out.nets.at(j));
+        }
+        out.c << rc;
+        out.c0 << rc0;
+        out.loss << rl;
+    }
+    return out;
 }
 
 LineParameters lineParameters(const Extraction& extraction, int index, double length, double frequency)
@@ -1058,10 +1286,30 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     }
     // From the line's cross-section: its own per metre, the ends' fringing
     // left out, whatever length is asked for - which is then the length of
-    // the two-port alone.
-    double held = 0, bare = 0;
-    for (int j = 0; j < pm.maxwell.at(index).size(); ++j) held += pm.maxwell.at(index).at(j);
-    for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);
+    // the two-port alone. Against its returns, where it has them: the one
+    // signal held at a volt, they at nought.
+    double held = 0, bare = 0, lost = -1;
+    if (extraction.hasReturns()) {
+        if (extraction.returns.value(index, false)) {
+            out.problems << tr("%1 is a return conductor: the lines are of the signals, against it.").arg(extraction.names.value(index));
+            return out;
+        }
+        const SignalLines sl = signalsOf(extraction, length);
+        if (!sl.ok() || sl.nets.size() != 1) {
+            out.problems << (sl.ok() ? tr("%1 is one of %2 signals, which are coupled lines with modes rather than a line "
+                                          "each: see the coupled lines.")
+                                           .arg(extraction.names.value(index))
+                                           .arg(sl.nets.size())
+                                     : sl.problem);
+            return out;
+        }
+        held = sl.c.at(0).at(0);
+        bare = sl.c0.at(0).at(0);
+        lost = sl.loss.at(0).at(0);
+    } else {
+        for (int j = 0; j < pm.maxwell.at(index).size(); ++j) held += pm.maxwell.at(index).at(j);
+        for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);
+    }
     out.c = held;
     out.c0 = bare;
     if (!(out.c > 0) || !(out.c0 > 0)) {
@@ -1102,13 +1350,14 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     // refined where the crowding of a sheet does not.
     QList<QList<double>> groundPart;
     const QList<QList<double>> wheeler = resistancePerMetre(extraction, frequency, &groundPart);
-    if (index < wheeler.size()) {
-        out.r = wheeler.at(index).at(index);
-        out.rGround = groundPart.at(index).at(index);
-        out.rDc = pm.dcResistance.value(index);
+    const int at = int(extraction.signalNets().indexOf(index));   // (its row among the signals)
+    if (at >= 0 && at < wheeler.size()) {
+        out.r = wheeler.at(at).at(at);
+        out.rGround = groundPart.at(at).at(at);
+        out.rDc = pm.dcResistance.value(at) + pm.dcReturn;
     }
     // And the dielectrics', by the share of the field each holds.
-    out.g = omega * out.c * extraction.lossTangent.value(index);
+    out.g = lost >= 0 ? omega * lost : omega * out.c * extraction.lossTangent.value(index);
     if (!(out.r >= 0) || !(out.g >= 0)) {
         out.problems << tr("Its resistance came out as %1 Ohm/m and its conductance as %2 S/m: neither can be less than "
                            "nothing.").arg(out.r, 0, 'g', 3).arg(out.g, 0, 'g', 3);

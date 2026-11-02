@@ -1726,14 +1726,17 @@ private slots:
         QVERIFY2(firstVia > lastMetal, qPrintable(QStringLiteral("metal to %1, via from %2").arg(lastMetal).arg(firstVia)));
         QVERIFY2(doc->currentsSaid().contains(QStringLiteral("round its sides")), qPrintable(doc->currentsSaid()));
 
+        // Quasi-static the via holds the strip at the ground's potential: a
+        // return, solved, and no line of its own (the GSSG review of 1
+        // November - once refused, "solve it full-wave").
         RF25Doc::SolveRequest quasi;
         quasi.solver = QStringLiteral("quasi_static");
         doc->solveWith(quasi);
         QVERIFY(doc->waitForSolved(300000));
-        QVERIFY(doc->extraction() == nullptr || !doc->extraction()->ok());
-        QVERIFY2(doc->solveProblem().contains(QStringLiteral("joins M1 to the ground"))
-                     && doc->solveProblem().contains(QStringLiteral("full-wave")),
-                 qPrintable(doc->solveProblem()));
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+        QCOMPARE(e->returns, QList<bool>{true});
+        QVERIFY2(e->returnsSaid.contains(QStringLiteral("joined to the ground plane by a via")), qPrintable(e->returnsSaid));
         app->closeAllFiles();
     }
 
@@ -1881,6 +1884,82 @@ private slots:
         QVERIFY(overlay(QStringLiteral("the ports")) == nullptr);
         doc->portsButton()->click();
         QVERIFY(overlay(QStringLiteral("the ports")) != nullptr);
+    }
+
+    // A coplanar port's grounds drawn where it returns (the GSSG review of
+    // 1 November, G5): on a GSSG whose grounds are marked as Return
+    // Conductors - named G1, G2 as they are put down, and drawn by their
+    // names - S1's port's grounds are the two grounds' edges, past S2, as
+    // the solve has them; not the nearest conductor either side. And the
+    // Touchstone node's Modes read into the export.
+    void aCoplanarPortsGroundsAreDrawnAsItsReturns()
+    {
+        QVERIFY(writeRectangles(path(QStringLiteral("gssgports.gds")),
+                                {QRectF(QPointF(0, 25), QPointF(1000, 75)), QRectF(QPointF(0, -75), QPointF(1000, -25)),
+                                 QRectF(QPointF(0, 110), QPointF(1000, 410)), QRectF(QPointF(0, -410), QPointF(1000, -110))}));
+        const QString model = fullWaveLine(QStringLiteral("gssgports.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.layout().props.insert(QStringLiteral("file"), QStringLiteral("gssgports.gds"));
+            for (rf::Node& port : m.ports().children) {
+                const bool first = port.label == QLatin1String("P1");
+                port.props.insert(QStringLiteral("y"), QStringLiteral("50[um]"));
+                port.props.insert(QStringLiteral("facing"), first ? QStringLiteral("-x") : QStringLiteral("+x"));
+                if (first) port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
+            }
+            for (const char* y : {"260[um]", "-260[um]"}) {
+                rf::Node mark = m.make(QStringLiteral("rf_return"));
+                QCOMPARE(mark.label, QString::fromLatin1(y[0] == '-' ? "G2" : "G1"));
+                mark.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                mark.props.insert(QStringLiteral("x"), QStringLiteral("500[um]"));
+                mark.props.insert(QStringLiteral("y"), QLatin1String(y));
+                QVERIFY(m.add(QStringLiteral("ports"), mark) != nullptr);
+            }
+            m.root.child(QStringLiteral("rf_exports"))->children.front().props.insert(QStringLiteral("modes"), QStringLiteral("mixed"));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        const auto overlay = [doc](const QString& name) -> const LayoutView::Overlay* {
+            for (const LayoutView::Overlay& o : doc->view()->overlays())
+                if (o.name == name) return &o;
+            return nullptr;
+        };
+        const LayoutView::Overlay* grounds = overlay(QStringLiteral("the ports' grounds beside them"));
+        QVERIFY(grounds != nullptr);
+        QList<QRectF> beside;
+        for (const QPolygonF& g : grounds->shapes) beside << g.boundingRect();
+        std::sort(beside.begin(), beside.end(), [](const QRectF& a, const QRectF& b) { return a.top() < b.top(); });
+        QCOMPARE(beside, (QList<QRectF>{QRectF(QPointF(0, -410), QPointF(0, -110)), QRectF(QPointF(0, 110), QPointF(0, 410))}));
+        const LayoutView::Overlay* returns = overlay(QStringLiteral("the return conductors"));
+        QVERIFY(returns != nullptr);
+        QStringList names;
+        for (const LayoutView::Overlay::Label& l : returns->labels) names << l.text;
+        QCOMPARE(names, (QStringList{"G1", "G2"}));
+        QCOMPARE(returns->labels.first().at, QPointF(500, 260));
+        // The export node's Modes.
+        RF25Doc::ExportRequest what;
+        QVERIFY(doc->exportRequest(doc->model().root.child(QStringLiteral("rf_exports"))->children.front().tag, &what));
+        QVERIFY(what.mixed);
+        // And the solve has the marks: S1's port returns through the grounds
+        // past S2 - over the ground plane nothing else makes them returns.
+        RF25Doc::SolveRequest one;
+        one.frequencies = {2e9};
+        doc->solveWith(one);
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(w->portsSaid.value(0).contains(QStringLiteral("which is no return")), qPrintable(w->portsSaid.join(" | ")));
     }
 
     // A port placed by hand on the layout (the user's request of 1

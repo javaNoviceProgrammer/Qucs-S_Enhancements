@@ -125,6 +125,24 @@ bool writeStrip(const QString& path, double length, double width)
     return ok;
 }
 
+/// Rectangles on layer 1, in micrometres, as a GDS file at \a path.
+bool writeBoxes(const QString& path, const QList<QRectF>& boxes)
+{
+    gdstk::Library lib = {};
+    lib.init("BOXES", 1e-6, 1e-9);
+    auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+    cell->init("TOP");
+    lib.cell_array.append(cell);
+    for (const QRectF& b : boxes) {
+        auto* box = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+        *box = gdstk::rectangle(gdstk::Vec2{b.left(), b.top()}, gdstk::Vec2{b.right(), b.bottom()}, gdstk::make_tag(1, 0));
+        cell->polygon_array.append(box);
+    }
+    const bool ok = lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
+    lib.free_all();
+    return ok;
+}
+
 } // namespace
 
 class TestQucsControl : public QObject
@@ -2437,7 +2455,10 @@ private slots:
             two.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("40[um]"));
             two.mesh().props.insert(QStringLiteral("cells_across"), 0);
             QVERIFY(put(ws + "/rf/two.qrf25", two.toJson()));
-            const QJsonObject solvedTwo = json(call("rf25_solve", {{"path", ws + "/rf/two.qrf25"}}, 300000)).toObject();
+            // (Of a length asked for: the 4-port is a length's - the GSSG
+            //  round's G7.)
+            const QJsonObject solvedTwo =
+                json(call("rf25_solve", {{"path", ws + "/rf/two.qrf25"}, {"length", "1000[um]"}}, 300000)).toObject();
             QCOMPARE(solvedTwo.value("nets").toArray().size(), 2);
             // One of two is no line by itself: each net says so and points
             // at the modes, rather than giving its own row as a line's
@@ -2736,6 +2757,161 @@ private slots:
         const QJsonObject loop = call("rf25_inductance", {{"path", ws + "/rf/wave2.qrf25"}}, 300000);
         QVERIFY2(!failed(loop), qPrintable(text(loop)));
         QVERIFY(json(loop).toObject().value("L").toDouble() > 0);
+        closeUnder(ws + "/rf");
+    }
+
+    // A GSSG through the tools (the GSSG review of 1 November): with nothing
+    // under it, its two signals' coupled lines against its two grounds -
+    // which nets are returns, the pair's even and odd modes and the
+    // matrices per metre, brief too, and the S matrix only of a length asked
+    // for (G1, G3, G7); and full wave, four coplanar ports returning through
+    // the grounds past the other signal, in two differential pairs, whose
+    // mixed-mode S is in the answer and in a Touchstone 2.0 file's
+    // [Mixed-Mode Order] (G4, G5).
+    void aGssgIsSolvedThroughTheToolsAsItsModes()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rf"));
+        QVERIFY(writeBoxes(ws + "/rf/gssg.gds", {QRectF(0, 25, 600, 50), QRectF(0, -75, 600, 50), QRectF(0, 110, 600, 300),
+                                                  QRectF(0, -410, 600, 300)}));
+        // On 150 µm of 12.4, open below; 2 µm of gold.
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (qucs_s::rf25::Node& n : stack) {
+            if (n.type == QLatin1String("rf_ground")) n.props.insert(QStringLiteral("kind"), QStringLiteral("open"));
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("150[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("12.4"));
+            }
+            if (n.type == QLatin1String("rf_metal")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("2[um]"));
+                n.props.insert(QStringLiteral("sigma"), QStringLiteral("4.1e7"));
+            }
+        }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("gssg.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("cells_across"), 2);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+        const auto put = [](const QString& where, const QByteArray& what) {
+            QFile f(where);
+            return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
+        };
+        QVERIFY(put(ws + "/rf/gssg.qrf25", m.toJson()));
+
+        // Quasi-static: the grounds are returns, the signals a symmetric
+        // pair against them, per metre, and no S matrix of a length not
+        // asked for.
+        const QJsonObject solved = call("rf25_solve", {{"path", ws + "/rf/gssg.qrf25"}, {"frequency", "10[GHz]"}}, 300000);
+        QVERIFY2(!failed(solved), qPrintable(text(solved)));
+        const QJsonObject out = json(solved).toObject();
+        // Of its own length, 600 µm, though it is 820 across.
+        QVERIFY2(std::abs(out.value("length").toDouble() - 600e-6) < 1e-12, qPrintable(QString::number(out.value("length").toDouble())));
+        int returns = 0;
+        for (const QJsonValue& net : out.value("nets").toArray()) returns += net.toObject().value("return").toBool() ? 1 : 0;
+        QCOMPARE(returns, 2);
+        const QJsonObject coupled = out.value("coupled lines").toObject();
+        QCOMPARE(coupled.value("conductors").toArray().size(), 2);
+        QCOMPARE(coupled.value("returning through").toArray().size(), 2);
+        QVERIFY(coupled.value("symmetric pair").toBool());
+        const QJsonObject perMetre = coupled.value("per metre").toObject();
+        for (const char* key : {"C", "C0", "L", "R", "G"})
+            QVERIFY2(perMetre.value(QLatin1String(key)).toArray().size() == 2, key);
+        QVERIFY(perMetre.value("L").toArray().at(0).toArray().at(0).toDouble() > 0);
+        QStringList names;
+        for (const QJsonValue& mode : coupled.value("modes").toArray()) {
+            names << mode.toObject().value("name").toString();
+            QVERIFY(mode.toObject().value("n_eff").toDouble() > 2.4 && mode.toObject().value("n_eff").toDouble() < 2.7);
+        }
+        QCOMPARE(names, (QStringList{"even", "odd"}));
+        QVERIFY2(coupled.value("s matrix").isString() && coupled.value("s matrix").toString().contains(QStringLiteral("'length'")),
+                 qPrintable(QString::fromUtf8(QJsonDocument(coupled).toJson(QJsonDocument::Compact)).left(1500)));
+        const QJsonObject withLength =
+            json(call("rf25_solve", {{"path", ws + "/rf/gssg.qrf25"}, {"frequency", "10[GHz]"}, {"length", "600[um]"}}, 300000)).toObject();
+        QCOMPARE(withLength.value("coupled lines").toObject().value("s matrix").toArray().size(), 4);
+        // Brief: the per-metre matrices and the modes with their n_eff.
+        const QJsonObject brief =
+            json(call("rf25_solve", {{"path", ws + "/rf/gssg.qrf25"}, {"frequency", "10[GHz]"}, {"brief", true}}, 300000)).toObject();
+        QVERIFY(brief.value("coupled lines").toObject().value("per metre").toObject().contains("C"));
+        QVERIFY(brief.value("modes").toArray().size() == 2 && brief.value("modes").toArray().at(1).toObject().contains("n_eff"));
+        // Written as the signals' 4-port, near ends then far, and the tab's
+        // summary of the same - not the four nets'.
+        const QJsonObject four = json(call("rf25_export", {{"path", ws + "/rf/gssg.qrf25"}, {"of", "coupled"},
+                                                           {"file", "gssg.s4p"}}, 120000)).toObject();
+        QCOMPARE(four.value("ports").toInt(), 4);
+        QFile s4p(four.value("file").toString());
+        QVERIFY(s4p.open(QIODevice::ReadOnly));
+        const QString s4pText = QString::fromUtf8(s4p.readAll());
+        QVERIFY2(s4pText.contains(QStringLiteral("Ports 1 to 2 are the near ends of ")), qPrintable(s4pText.left(800)));
+        auto* gssgDoc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(gssgDoc != nullptr);
+        const QStringList summary = gssgDoc->sParameterSummary();
+        QVERIFY2(!summary.isEmpty() && summary.first().contains(QStringLiteral("as a 4-port")), qPrintable(summary.join(" | ")));
+
+        // Full wave: S1's and S2's ports at each end, coplanar, paired.
+        qucs_s::rf25::Model wave = m;
+        const QList<std::tuple<const char*, const char*, const char*, const char*>> at = {
+            {"P1", "0", "50[um]", "P2"}, {"P2", "0", "-50[um]", ""}, {"P3", "600[um]", "50[um]", "P4"}, {"P4", "600[um]", "-50[um]", ""}};
+        for (const auto& [name, x, y, pair] : at) {
+            qucs_s::rf25::Node port = wave.make(QStringLiteral("rf_edge_port"));
+            port.label = QLatin1String(name);
+            port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+            port.props.insert(QStringLiteral("x"), QLatin1String(x));
+            port.props.insert(QStringLiteral("y"), QLatin1String(y));
+            port.props.insert(QStringLiteral("facing"), QLatin1String(x) == QLatin1String("0") ? QStringLiteral("-x") : QStringLiteral("+x"));
+            port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
+            port.props.insert(QStringLiteral("pair"), QLatin1String(pair));
+            QVERIFY(wave.add(QStringLiteral("ports"), port) != nullptr);
+        }
+        QVERIFY(put(ws + "/rf/gssg_fw.qrf25", wave.toJson()));
+        const QJsonObject fw =
+            call("rf25_solve", {{"path", ws + "/rf/gssg_fw.qrf25"}, {"solver", "full_wave"}, {"frequency", "5[GHz]"}}, 300000);
+        QVERIFY2(!failed(fw), qPrintable(text(fw)));
+        const QJsonObject fwOut = json(fw).toObject();
+        QVERIFY2(fwOut.value("ports").toArray().at(0).toObject().value("drives").toString().contains(QStringLiteral("which is no return")),
+                 qPrintable(fwOut.value("ports").toArray().at(0).toObject().value("drives").toString()));
+        QVERIFY2(QJsonDocument(fwOut.value("what it did").toArray()).toJson().contains("There is no ground plane"), qPrintable(text(fw).left(2000)));
+        const QJsonObject mixed = fwOut.value("mixed-mode").toObject();
+        QCOMPARE(mixed.value("modes").toArray(), (QJsonArray{"D1", "D2", "C1", "C2"}));
+        QCOMPARE(mixed.value("of").toArray(), (QJsonArray{"P1 - P2", "P3 - P4", "P1 + P2", "P3 + P4"}));
+        QCOMPARE(mixed.value("reference impedances").toArray(), (QJsonArray{100.0, 100.0, 25.0, 25.0}));
+        QCOMPARE(mixed.value("dB").toArray().size(), 4);
+        const QJsonObject point = mixed.value("sweep").toArray().at(0).toObject();
+        for (const char* key : {"SDD21_dB", "SCC21_dB", "SDC21_dB", "SCD11_dB"}) QVERIFY2(point.contains(QLatin1String(key)), key);
+        QVERIFY2(point.value("SDD21_dB").toDouble() > -3 && point.value("SDC21_dB").toDouble() < -60,
+                 qPrintable(QString::fromUtf8(QJsonDocument(point).toJson(QJsonDocument::Compact))));
+        const QJsonObject fwBrief = json(call("rf25_solve", {{"path", ws + "/rf/gssg_fw.qrf25"}, {"solver", "full_wave"},
+                                                             {"frequency", "5[GHz]"}, {"brief", true}}, 300000)).toObject();
+        QVERIFY(fwBrief.value("mixed-mode").toObject().contains("dB") && !fwBrief.value("mixed-mode").toObject().contains("re"));
+        // Its modes as Touchstone 2.0, and what cannot be: 1.1, or a mode
+        // that is none.
+        const QJsonObject wrote = json(call("rf25_export", {{"path", ws + "/rf/gssg_fw.qrf25"}, {"file", "gssg_mm.s4p"},
+                                                            {"modes", "mixed"}}, 120000)).toObject();
+        QCOMPARE(wrote.value("version").toString(), QStringLiteral("2.0"));
+        QCOMPARE(wrote.value("modes").toString(), QStringLiteral("mixed"));
+        QVERIFY2(wrote.value("what it wrote").toString().contains(QStringLiteral("D1 (P1 - P2), D2 (P3 - P4), C1 (P1 + P2)")),
+                 qPrintable(wrote.value("what it wrote").toString()));
+        QFile written(ws + "/rf/gssg_mm.s4p");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const QString file = QString::fromUtf8(written.readAll());
+        QVERIFY2(file.contains(QStringLiteral("[Mixed-Mode Order] D1,2 D3,4 C1,2 C3,4\n[Network Data]")), qPrintable(file.left(1200)));
+        const QJsonObject oldOne = call("rf25_export", {{"path", ws + "/rf/gssg_fw.qrf25"}, {"modes", "mixed"}, {"version", "1.1"}}, 60000);
+        QVERIFY(failed(oldOne));
+        QVERIFY2(text(oldOne).contains(QStringLiteral("Touchstone 2.0")), qPrintable(text(oldOne)));
+        QVERIFY(failed(call("rf25_export", {{"path", ws + "/rf/gssg_fw.qrf25"}, {"modes", "sideways"}}, 60000)));
+        // A quasi-static solve has nets, not pairs.
+        call("rf25_solve", {{"path", ws + "/rf/gssg.qrf25"}, {"brief", true}}, 300000);
+        const QJsonObject noPairs = call("rf25_export", {{"path", ws + "/rf/gssg.qrf25"}, {"modes", "mixed"}}, 60000);
+        QVERIFY(failed(noPairs));
+        QVERIFY2(text(noPairs).contains(QStringLiteral("differential pairs")), qPrintable(text(noPairs)));
         closeUnder(ws + "/rf");
     }
 
