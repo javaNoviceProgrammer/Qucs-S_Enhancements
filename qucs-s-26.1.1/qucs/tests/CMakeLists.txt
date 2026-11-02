@@ -219,18 +219,33 @@ qucs_add_test(test_rf25_inductance)
 qucs_add_test(test_rf25_wave)
 qucs_add_test(test_rf25_fast)
 qucs_add_test(test_rf25_fullwave)
-# (The same kind again, and a metal solved as its two faces twice the cells:
-# 357 s sanitized here, its heaviest function 82 s. CI's runner took 266 s
-# at ac6ce8f, twice this machine's then: some 710 s now, at that rate three
-# quarters of its 300 times 3.)
+# (The same kind again, and a metal solved as its two faces twice the cells.
+# Since G9's fix of 2 November a port's own path up from the ground has a
+# via's vertical kernels, built at every frequency beside the horizontal
+# ones: 1150 s sanitized here, its heaviest function 263 s - the two faces,
+# whose ports' paths go up to both. CI's runner took 266 s at ac6ce8f, twice
+# this machine's then, and at that rate the one entry would be past three
+# quarters of its 900 times 3: its functions in two parts since, each its
+# own limit and the two at once, its init() skipping the other part's -
+# some 550 and 600 s here.)
 set_tests_properties(test_rf25_fullwave PROPERTIES TIMEOUT 900)
+set_property(TEST test_rf25_fullwave APPEND PROPERTY ENVIRONMENT "QUCS_TEST_PART=1")
+add_test(NAME test_rf25_fullwave_2 COMMAND test_rf25_fullwave)
+set_tests_properties(test_rf25_fullwave_2 PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh;QUCS_TEST_PART=2"
+  TIMEOUT 900)
 qucs_add_test(test_rf25_deembed)
 # (Each calibration solves three strips now, and shorter ones beside them
-# where they disagree - the phase E check of 2 November: 396 s sanitized
-# here, its heaviest function some 60 s; at CI's runner's twice, past three
-# quarters of 300 times 3.)
+# where they disagree - the phase E check of 2 November - and every strip's
+# ports their paths up from the ground since G9's fix: 731 s sanitized here,
+# its heaviest function 176 s, the long strips' four sets on 635 µm at 30
+# GHz; at CI's runner's twice, half of 900 times 3.)
 set_tests_properties(test_rf25_deembed PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_doc)
+# (Its full-wave studies' ports have their paths up from the ground since
+# G9's fix of 2 November: 273 s sanitized here, past nine tenths of the 300
+# a test has unasked; at CI's runner's twice, some 545 s.)
+set_tests_properties(test_rf25_doc PROPERTIES TIMEOUT 900)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics_view)

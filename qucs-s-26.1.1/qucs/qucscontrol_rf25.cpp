@@ -178,7 +178,8 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         checks.insert(QStringLiteral("reciprocal as solved"), w.solvedAsymmetry <= 1e-9);
     }
     // What makes it, or part of it, not to be trusted - the brief answer
-    // too; and where the stack carries a second surface wave.
+    // too; and where the stack carries a second surface wave, the top of a
+    // microstrip's band on it.
     if (!w.warnings.isEmpty()) out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(w.warnings));
     if (w.secondWave > 0) out.insert(QStringLiteral("second surface wave from"), w.secondWave);
     if (w.gain > 1e-6) checks.insert(QStringLiteral("most returned at"), w.gainAt);

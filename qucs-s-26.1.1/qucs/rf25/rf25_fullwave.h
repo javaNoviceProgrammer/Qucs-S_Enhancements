@@ -44,6 +44,22 @@
  * the cell under its point, against the ground or against the cell under it
  * on another metal.
  *
+ * A port's current comes up to its cells by a path of its own: a via whose
+ * current the port sets rather than the solve, from the ground - or from
+ * the cells of the metal an internal port is driven from - to each cell it
+ * drives, at the cell's centre, as wide as the face the cell has (an
+ * internal port's, the cell's box). It has the field a via's current has:
+ * its G_zz, with every via's along it, and the formulation's correction to
+ * the scalar potential, which the runs see along them and which by
+ * reciprocity is also their G_zx along it. Without that field the charge a
+ * port brings up had its potential and the current that brings it none,
+ * the scalar potential alone takes a vertical current's radiation the
+ * wrong way, and S gave back more than it got once the ground was some way
+ * down: twice on 635 µm of alumina at 41.5 GHz, 49 times over 2 mm of
+ * vacuum (G9 of the phase E check). A path is part of its port's own
+ * discontinuity, which rf25_deembed.h takes out; an internal port shorted
+ * over a via's square is that via.
+ *
  * A via is a run of current in z, from the cell of the metal under it - or
  * the ground, which takes its charge at nought - to the cell of the metal
  * over it; the via's cells that land on the same two cells are one run.
@@ -52,8 +68,8 @@
  * potential, which a run in the plane sees as the difference between its
  * two ends - that is also what its own vector potential does along the via
  * (G_zx), so the matrix stays symmetric. The correction is taken at the
- * cells, as the node potentials are, and at a port's cells too, as though
- * the port's own path up from the ground carried it: round any path the
+ * cells, as the node potentials are, and at a port's cells too, at the top
+ * of the port's own path up from the ground: round any path the
  * dielectric's part of the vias' inductance then cancels, as magnetostatics
  * says it must. A via to the ground stands at the centre of the cell it
  * lands on, where its current enters the metal.
@@ -90,12 +106,10 @@
  * field has it, each face with its slab's surface impedance from its own
  * side and the two coupled through the metal (faceImpedances()). A port on
  * such a metal drives both faces of its face, half each, and an internal
- * port or a via up from it stands on its top. What it does NOT do yet: a
- * stack with no ground plane, since the ports are referred to one; and a
- * port's own path up from the ground, which carries no field of its own
- * beyond the vias' correction - in a stack all of vacuum, where a line over
- * its ground hardly radiates, that path's share of the radiation is missed,
- * and S gives back up to a part in 1e4 more than it gets.
+ * port or a via up from it stands on its top. With no ground plane under
+ * the stack a port's current comes back through the layout's own
+ * conductors: a coplanar port's through those beside it, an internal
+ * port's through the metal it is driven from.
  */
 #ifndef QUCS_RF25_FULLWAVE_H
 #define QUCS_RF25_FULLWAVE_H
@@ -306,8 +320,8 @@ struct FullWave {
     /// Hz: where each gave back the most (nought where nothing).
     double gainAt = 0, solvedGainAt = 0;
     /// Hz: where the stack begins to carry a second surface wave - TE1 over
-    /// a ground plane - past which this solve does not hold power to
-    /// account; nought where there is none below twice the sweep's top.
+    /// a ground plane - the top of a microstrip's band on it; nought where
+    /// there is none below twice the sweep's top.
     double secondWave = 0;
     int threads = 1;                 ///< how many it used
     /// Held compressed and solved by iteration (rf25_fast.h), not dense: the
