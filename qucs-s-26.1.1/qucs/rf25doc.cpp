@@ -35,7 +35,9 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPrinter>
+#include <QProgressBar>
 #include <QSaveFile>
+#include <QSet>
 #include <QSplitter>
 #include <QThread>
 #include <QTimer>
@@ -412,14 +414,19 @@ struct RF25Doc::SolveJob {
     std::atomic_int done{0};
     // The ports' de-embedding after it: the mesh's settings, so that the
     // strips of their feeds are meshed as the structure was, and whether
-    // those strips are being solved.
+    // those strips are being solved; and how far they have got, for the
+    // bar - the feeds to calibrate, two strips each, the strips begun and
+    // the frequencies they have, and of those how many are solved.
     MeshSettings how;
     double top = 0;
     std::atomic_bool calibrating{false};
+    std::atomic_int feedsToCalibrate{0}, stripsBegun{0}, stripFrequencies{0}, calibrated{0};
     FullWaveControl::Matrix matrix = FullWaveControl::Matrix::Automatic;   ///< the study's
 
-    // The tab's holdSolves(), which a test holds it back by.
+    // The tab's holdSolves() and allowFrequencies(), which a test holds it
+    // back by.
     std::shared_ptr<std::atomic_bool> held;
+    std::shared_ptr<std::atomic_int> allowed;
 };
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
@@ -444,15 +451,13 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     a_prepareSoon->setSingleShot(true);
     a_prepareSoon->setInterval(300);
     connect(a_prepareSoon, &QTimer::timeout, this, &RF25Doc::prepare);
-    // A full-wave solve's frequencies, counted for the notes and the panel
-    // while it runs: a sweep of many is minutes.
+    // A solve's bar while it runs, and a full-wave solve's frequencies
+    // counted for the notes and the panel: a sweep of many is minutes.
     a_progress = new QTimer(this);
     a_progress->setInterval(400);
     connect(a_progress, &QTimer::timeout, this, [this] {
-        if (!a_solveJob) {
-            a_progress->stop();
-            return;
-        }
+        showProgress();
+        if (!a_solveJob || !a_solveJob->fullWave) return;
         showProblems();
         emit solvedChanged();
     });
@@ -637,11 +642,25 @@ void RF25Doc::buildUi()
     a_splitter->setSizes({560, 150});
     all->addWidget(a_splitter, 1);
 
+    // The status line, and at its end how far a solve has got. The bar is
+    // of a fixed width and the line gives way to it, so that the tab's
+    // least width - the bar of buttons above's - is what it was, and no
+    // taller than the line, so that nothing above it moves.
+    auto* statusRow = new QHBoxLayout();
+    statusRow->setContentsMargins(0, 0, 6, 0);
+    statusRow->setSpacing(6);
     a_status = new ElidedLabel(this);
     a_status->setObjectName(QStringLiteral("rfStatus"));
     a_status->setContentsMargins(8, 2, 8, 2);
     a_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    all->addWidget(a_status);
+    statusRow->addWidget(a_status, 1);
+    a_progressBar = new QProgressBar(this);
+    a_progressBar->setObjectName(QStringLiteral("rfProgress"));
+    a_progressBar->setFixedWidth(160);
+    a_progressBar->setMaximumHeight(a_status->fontMetrics().height() + 4);
+    a_progressBar->hide();
+    statusRow->addWidget(a_progressBar);
+    all->addLayout(statusRow);
 }
 
 // ------------------------------------------------------------------ QucsDoc
@@ -1144,7 +1163,7 @@ void RF25Doc::prepareDone()
     // these, with one that waited for them: it was asked for, and an edit
     // under it is no reason to give it up and say nothing.
     const bool wanted = a_solveJob != nullptr || a_solveWhenPrepared;
-    stopSolving();
+    letSolveGo();
     a_extraction.reset();
     a_fullWave.reset();
     a_waveNotes.clear();
@@ -1163,6 +1182,7 @@ void RF25Doc::prepareDone()
     } else if (wanted) {
         solveWith(a_solveRequest);
     }
+    showProgress();
 }
 
 bool RF25Doc::waitForPrepared(int ms)
@@ -1595,7 +1615,7 @@ void RF25Doc::solve()
 
 void RF25Doc::solveWith(const SolveRequest& request)
 {
-    stopSolving();
+    letSolveGo();
     a_solveProblem.clear();
     a_solveRequest = request;
     const auto nothing = [this](const QString& why) {
@@ -1608,6 +1628,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         a_solveProblem = why;
         showOverlays();
         showProblems();
+        showProgress();
         emit solvedChanged();
     };
     // An edit not yet made into shapes and cells, or being made: the solve
@@ -1620,6 +1641,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (a_prepareSoon->isActive()) prepare();
         if (a_solveButton != nullptr) a_solveButton->setText(tr("Stop"));
         showProblems();
+        showProgress();
         emit solvedChanged();
         return;
     }
@@ -1698,6 +1720,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         }
     }
     job->held = a_solvesHeld;
+    job->allowed = a_frequenciesAllowed;
     a_solveJob = job;
     QThread* thread = QThread::create([job] {
         // Held by a test, until it lets go; and a solve let go before it
@@ -1709,6 +1732,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
             FullWaveControl control;
             control.stop = &job->stop;
             control.done = &job->done;
+            control.allowed = job->allowed.get();
             control.matrix = job->matrix;
             job->wave = std::make_shared<FullWave>(
                 fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control, job->returns));
@@ -1720,6 +1744,26 @@ void RF25Doc::solveWith(const SolveRequest& request)
             FullWaveControl quiet;
             quiet.stop = &job->stop;
             quiet.matrix = job->matrix;
+            // (Counted for the bar: the strips as they begin, with their
+            //  frequencies, and those frequencies as they are solved.)
+            quiet.done = &job->calibrated;
+            quiet.allowed = job->allowed.get();
+            quiet.begins = [counted = job.get()](int frequencies) {
+                counted->stripFrequencies += frequencies;
+                ++counted->stripsBegun;
+            };
+            {
+                // The feeds to calibrate - each once, however many ports
+                // share it - counted before the first is: the bar counts
+                // two strips of each.
+                QSet<QString> keys;
+                for (int p = 0; p < job->ports.size(); ++p) {
+                    const FullWavePort& port = job->ports.at(p);
+                    const Feed feed = job->wave->feeds.value(p);
+                    if (port.wantsStrips() && !port.internal && feed.width > 0) keys.insert(feed.key());
+                }
+                job->feedsToCalibrate = int(keys.size());
+            }
             QList<Deembedding> each(job->ports.size());
             QMap<QString, std::shared_ptr<Calibration>> feeds;
             bool asked = false;
@@ -1770,9 +1814,9 @@ void RF25Doc::solveWith(const SolveRequest& request)
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
-    if (job->fullWave) a_progress->start();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Stop"));
     showProblems();
+    showProgress();
     emit solvedChanged();
 }
 
@@ -1788,6 +1832,12 @@ int RF25Doc::frequenciesToSolve() const
 
 void RF25Doc::stopSolving()
 {
+    letSolveGo();
+    showProgress();
+}
+
+void RF25Doc::letSolveGo()
+{
     if (a_solveWhenPrepared && !a_solveJob) {
         a_solveWhenPrepared = false;
         if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
@@ -1801,16 +1851,53 @@ void RF25Doc::stopSolving()
     // stopped sweep of minutes does not run on for nothing.
     a_solveJob->stop = true;
     a_solveJob.reset();
-    a_progress->stop();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
     emit solvedChanged();
+}
+
+void RF25Doc::showProgress()
+{
+    if (!isSolving()) {
+        a_progress->stop();
+        a_progressBar->hide();
+        a_solvingSince.invalidate();
+        return;
+    }
+    if (!a_solvingSince.isValid()) a_solvingSince.start();
+    if (!a_progress->isActive()) a_progress->start();
+    // Nought of nought is busy: the quasi-static extraction, which cannot
+    // say how far it has got, and a solve waiting for its mesh.
+    const SolveJob* job = a_solveJob.get();
+    int of = 0, done = 0;
+    QString said = job != nullptr ? tr("Solving…") : tr("Solving once the shapes and the mesh of the last edit are made…");
+    if (job != nullptr && job->fullWave && job->calibrating) {
+        // The ports' calibration: its strips' frequencies solved, of those
+        // of the strips begun and as many again for each strip still to
+        // begin - exact for one feed from its first strip, for several
+        // once the last has begun. Busy until the first has.
+        const int begun = job->stripsBegun, planned = job->stripFrequencies;
+        if (begun > 0) of = planned + std::max(0, 2 * job->feedsToCalibrate - begun) * planned / begun;
+        done = std::min(job->calibrated.load(), of);
+        said = of > 0 ? tr("Taking out the ports' own discontinuities: %1 of %2 frequencies of the strips of their feeds solved")
+                            .arg(done).arg(of)
+                      : tr("Taking out the ports' own discontinuities: solving strips of their feeds…");
+    } else if (job != nullptr && job->fullWave) {
+        of = frequenciesToSolve();
+        done = std::min(frequenciesSolved(), of);
+        said = tr("Solving full-wave: %1 of %2 frequencies…").arg(done).arg(of);
+    }
+    a_progressBar->setRange(0, of);
+    a_progressBar->setValue(done);
+    a_progressBar->setToolTip(said);
+    // Shown once the solve has taken a quarter of a second, it never
+    // flashes up and away: a coarse mesh solves in a few milliseconds.
+    if (a_progressBar->isHidden() && a_solvingSince.elapsed() >= 250) a_progressBar->show();
 }
 
 void RF25Doc::solveDone()
 {
     const std::shared_ptr<SolveJob> job = a_solveJob;
     a_solveJob.reset();
-    a_progress->stop();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
     if (job->fullWave) {
         a_extraction.reset();
@@ -1839,6 +1926,7 @@ void RF25Doc::solveDone()
     }
     showOverlays();
     showProblems();
+    showProgress();
     emit solvedChanged();
 }
 
