@@ -139,6 +139,7 @@ ClaudeCodePanel* ClaudeCodeTabs::addPanel(ClaudeCodePanel* like)
     if (like != nullptr && like->workingDirectory() != like->defaultDirectory())
         panel->setWorkingDirectory(like->workingDirectory());
     if (a_document) panel->setDocumentProvider(a_document);
+    if (a_drawings) panel->setDrawingsProvider(a_drawings);
     if (a_schematics) panel->setSchematicsProvider(a_schematics);
     if (a_files) panel->setFilesProvider(a_files);
     panel->session()->setToolHost(a_host);
@@ -673,6 +674,12 @@ void ClaudeCodeTabs::setDocumentProvider(std::function<QString()> provider)
 {
     a_document = std::move(provider);
     for (ClaudeCodePanel* panel : panels()) panel->setDocumentProvider(a_document);
+}
+
+void ClaudeCodeTabs::setDrawingsProvider(std::function<std::pair<quint64, QString>(const QString& file, quint64 known)> provider)
+{
+    a_drawings = std::move(provider);
+    for (ClaudeCodePanel* panel : panels()) panel->setDrawingsProvider(a_drawings);
 }
 
 void ClaudeCodeTabs::setSchematicsProvider(std::function<QStringList()> provider)

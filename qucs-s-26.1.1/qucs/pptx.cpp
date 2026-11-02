@@ -645,6 +645,76 @@ struct TextFrame {
         p.restore();
     }
 
+    /// Each paragraph with text, where paint() draws it in \a frame: the
+    /// box of its lines' text, its text, and each word's box - in the
+    /// frame's coordinates (turned with vertical text).
+    struct Placed {
+        QPolygonF outline;
+        QString text;
+        QList<std::pair<QString, QPolygonF>> words;
+    };
+    QList<Placed> placed(QRectF frame) const
+    {
+        QList<Placed> out;
+        if (paras.isEmpty()) return out;
+        if (box) frame = *box;
+        // (As paint() places them.)
+        QTransform turn;
+        if (vertical != 0) {
+            const QPointF mid = frame.center();
+            turn.translate(mid.x(), mid.y());
+            turn.rotate(vertical);
+            frame = QRectF(-frame.height() / 2, -frame.width() / 2, frame.height(), frame.width());
+        }
+        const QRectF inner = frame.adjusted(l, t, -r, -b);
+        QTextDocument* doc = document(inner.width());
+        const qreal h = doc->size().height();
+        qreal y = inner.top();
+        if (anchor == QLatin1String("ctr")) y += (inner.height() - h) / 2;
+        else if (anchor == QLatin1String("b")) y += inner.height() - h;
+        qreal x = inner.left();
+        if (!wrap || inner.width() <= 0) {
+            const qreal w = doc->idealWidth();
+            const Qt::Alignment a = paras.first().block.alignment();
+            if (a & Qt::AlignHCenter) x += (inner.width() - w) / 2;
+            else if (a & Qt::AlignRight) x += inner.width() - w;
+        }
+        QTextBlock block = doc->begin();
+        for (int i = 0; i < paras.size() && block.isValid(); ++i, block = block.next()) {
+            const TextPara& para = paras.at(i);
+            QString text;
+            for (const TextRun& run : para.runs) text += run.lineBreak ? QStringLiteral(" ") : run.text;
+            text = text.simplified();
+            const QTextLayout* layout = block.layout();
+            if (text.isEmpty() || layout == nullptr || layout->lineCount() == 0) continue;
+            const QPointF at = layout->position() + QPointF(x, y);
+            const QString whole = block.text();
+            // (The words, not the bullet before them.)
+            const int skip = !para.hanging && !para.bullet.isEmpty() ? int(para.bullet.size()) + 1 : 0;
+            Placed one;
+            one.text = text;
+            QRectF lines;
+            for (int k = 0; k < layout->lineCount(); ++k) {
+                const QTextLine line = layout->lineAt(k);
+                lines = lines.united(line.naturalTextRect());
+                const int end = line.textStart() + line.textLength();
+                for (int c = std::max(line.textStart(), skip); c < end;) {
+                    while (c < end && (whole.at(c).isSpace() || whole.at(c) == QChar::LineSeparator)) ++c;
+                    int e = c;
+                    while (e < end && !whole.at(e).isSpace() && whole.at(e) != QChar::LineSeparator) ++e;
+                    if (e > c) {
+                        const QRectF word(QPointF(line.cursorToX(c), line.y()), QPointF(line.cursorToX(e), line.y() + line.height()));
+                        one.words << std::make_pair(whole.mid(c, e - c), turn.map(QPolygonF(word.normalized().translated(at))));
+                    }
+                    c = e;
+                }
+            }
+            one.outline = turn.map(QPolygonF(lines.translated(at)));
+            out << one;
+        }
+        return out;
+    }
+
     mutable std::unique_ptr<QTextDocument> a_doc;
     mutable qreal a_width = -2;
 };
@@ -760,6 +830,7 @@ struct Element {
     std::shared_ptr<Table> table;
     std::shared_ptr<Chart> chart;
     QString missing;   // what is in its place, said
+    QString label;     // its alt text (cNvPr descr), else its name
 
     QTransform transform() const
     {
@@ -2425,6 +2496,7 @@ Element buildShape(const Node* sp, Layer layer, Ctx& c, bool* skip)
         *skip = true;
         return e;
     }
+    if (cNvPr != nullptr) e.label = cNvPr->attr(u"descr").trimmed().isEmpty() ? cNvPr->attr(u"name").trimmed() : cNvPr->attr(u"descr").trimmed();
     const PlaceholderChain ph = placeholderOf(nv != nullptr ? nv->child(u"nvPr") : nullptr, layer, c);
     // A master's or a layout's placeholders are where its slides' go, not
     // drawn themselves.
@@ -2534,6 +2606,8 @@ Element buildPicture(const Node* pic, Layer layer, Ctx& c, bool* skip)
         *skip = true;
         return e;
     }
+    if (const Node* cNvPr = nv != nullptr ? nv->child(u"cNvPr") : nullptr)
+        e.label = cNvPr->attr(u"descr").trimmed().isEmpty() ? cNvPr->attr(u"name").trimmed() : cNvPr->attr(u"descr").trimmed();
     const PlaceholderChain ph = placeholderOf(nv != nullptr ? nv->child(u"nvPr") : nullptr, layer, c);
     if (ph.ph != nullptr && layer != Layer::Slide) {
         *skip = true;
@@ -3101,11 +3175,13 @@ void drawShadow(QPainter& p, const Element& e, const QRectF& box)
     p.restore();
 }
 
-void drawTable(QPainter& p, const Element& e)
+/// Each cell's rectangle as a table is drawn, in its frame's coordinates:
+/// rows as tall as their text needs, at least as tall as they say. A cell
+/// merged into another has none (an empty one).
+QList<QRectF> cellRects(const Table& t)
 {
-    const Table& t = *e.table;
-    if (t.cols.isEmpty() || t.rows.isEmpty()) return;
-    // Rows as tall as their text needs, at least as tall as they say.
+    QList<QRectF> out;
+    if (t.cols.isEmpty() || t.rows.isEmpty()) return out;
     QList<qreal> rows = t.rows;
     QList<qreal> xs{0};
     for (qreal w : t.cols) xs << xs.last() + w;
@@ -3118,11 +3194,24 @@ void drawTable(QPainter& p, const Element& e)
             rows[c.row] = std::max(rows[c.row], c.text->height(spanWidth(c)));
     QList<qreal> ys{0};
     for (qreal h : rows) ys << ys.last() + h;
-    const auto cellRect = [&](const Cell& c) {
+    for (const Cell& c : t.cells) {
+        if (c.covered) {
+            out << QRectF();
+            continue;
+        }
         const int c2 = std::min(int(t.cols.size()), c.col + c.colSpan), r2 = std::min(int(rows.size()), c.row + c.rowSpan);
         const int c1 = std::min(c.col, int(t.cols.size())), r1 = std::min(c.row, int(rows.size()));
-        return QRectF(xs.value(c1), ys.value(r1), xs.value(c2) - xs.value(c1), ys.value(r2) - ys.value(r1));
-    };
+        out << QRectF(xs.value(c1), ys.value(r1), xs.value(c2) - xs.value(c1), ys.value(r2) - ys.value(r1));
+    }
+    return out;
+}
+
+void drawTable(QPainter& p, const Element& e)
+{
+    const Table& t = *e.table;
+    const QList<QRectF> rects = cellRects(t);
+    if (rects.isEmpty()) return;
+    const auto cellRect = [&t, &rects](const Cell& c) { return rects.at(&c - t.cells.constData()); };
     for (const Cell& c : t.cells) {
         if (c.covered) continue;
         const QRectF r = cellRect(c);
@@ -3842,6 +3931,79 @@ void paintElement(QPainter& p, const Element& e)
     p.restore();
 }
 
+/// \a e's parts into \a out, \a toSlide its parent's coordinates to the
+/// slide's: as paintElement() draws them.
+void partsOf(const Element& e, const QTransform& toSlide, QList<SlidePart>& out)
+{
+    if (e.rect.width() < 0 || e.rect.height() < 0) return;
+    const QTransform t = e.transform() * toSlide;
+    const QRectF box(0, 0, e.rect.width(), e.rect.height());
+    // A text frame's paragraphs, or a cell's (\a kind) all in one.
+    const auto texts = [&out](const TextFrame& frame, const QRectF& in, const QTransform& to, SlidePart::Kind kind) {
+        const QList<TextFrame::Placed> placed = frame.placed(in);
+        if (kind == SlidePart::Paragraph) {
+            for (const TextFrame::Placed& one : placed) {
+                SlidePart part{SlidePart::Paragraph, to.map(one.outline), one.text, {}};
+                for (const auto& [word, at] : one.words) part.words << std::make_pair(word, to.map(at));
+                out << part;
+            }
+            return;
+        }
+        SlidePart cell{kind, to.map(QPolygonF(in)), QString(), {}};
+        QStringList said;
+        for (const TextFrame::Placed& one : placed) {
+            said << one.text;
+            for (const auto& [word, at] : one.words) cell.words << std::make_pair(word, to.map(at));
+        }
+        cell.text = said.join(QLatin1Char(' '));
+        if (!cell.text.isEmpty()) out << cell;
+    };
+    switch (e.kind) {
+    case Element::Shape:
+        if (e.text != nullptr && !e.text->empty()) {
+            // (Its text turned as paintElement() turns a flipped shape's.)
+            QTransform text = t;
+            if (e.flipH || e.flipV) {
+                QTransform f;
+                f.translate(box.center().x(), box.center().y());
+                f.scale(e.flipH ? -1 : 1, e.flipV ? -1 : 1);
+                if (e.flipV) f.rotate(180);
+                f.translate(-box.center().x(), -box.center().y());
+                text = f * t;
+            }
+            texts(*e.text, box, text, SlidePart::Paragraph);
+        } else if (!e.path.isEmpty()) {
+            out << SlidePart{SlidePart::Shape, t.map(QPolygonF(box)), e.label, {}};
+        }
+        break;
+    case Element::Picture: out << SlidePart{SlidePart::Picture, t.map(QPolygonF(box)), e.label, {}}; break;
+    case Element::Group: {
+        QTransform inner = t;
+        if (e.childSpace.width() > 0 && e.childSpace.height() > 0) {
+            QTransform g;
+            g.scale(box.width() / e.childSpace.width(), box.height() / e.childSpace.height());
+            g.translate(-e.childSpace.left(), -e.childSpace.top());
+            inner = g * t;
+        }
+        for (const Element& c : e.children) partsOf(c, inner, out);
+        break;
+    }
+    case Element::TableFrame:
+        if (e.table != nullptr) {
+            const QList<QRectF> rects = cellRects(*e.table);
+            for (int i = 0; i < rects.size(); ++i) {
+                const Cell& c = e.table->cells.at(i);
+                if (!c.covered && c.text != nullptr && !c.text->empty()) texts(*c.text, rects.at(i), t, SlidePart::Cell);
+            }
+        }
+        break;
+    case Element::ChartFrame:
+        out << SlidePart{SlidePart::Chart, t.map(QPolygonF(box)), e.chart != nullptr && e.chart->hasTitle ? e.chart->title : e.label, {}};
+        break;
+    case Element::Missing: out << SlidePart{SlidePart::Picture, t.map(QPolygonF(box)), e.missing, {}}; break;
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 QHash<QString, QString> colorMap(const Node* map)
@@ -4066,10 +4228,7 @@ QImage Presentation::render(int index, qreal scale) const
 void Presentation::render(int index, QPainter* painter, const QRectF& target) const
 {
     if (painter == nullptr || index < 0 || index >= d->slides.size() || target.isEmpty()) return;
-    // The slide's aspect, in the middle of the target.
-    const qreal fit = std::min(target.width() / d->size.width(), target.height() / d->size.height());
-    const QSizeF shown = d->size * fit;
-    const QRectF at(target.center().x() - shown.width() / 2, target.center().y() - shown.height() / 2, shown.width(), shown.height());
+    const QRectF at = placed(target);
     // As many pixels as the device has there.
     const QRectF device = painter->deviceTransform().mapRect(at);
     const qreal scale = std::clamp(device.width() / d->size.width(), 0.05, 12.0);
@@ -4078,6 +4237,22 @@ void Presentation::render(int index, QPainter* painter, const QRectF& target) co
     painter->setRenderHint(QPainter::SmoothPixmapTransform);
     painter->drawImage(at, image);
     painter->restore();
+}
+
+QList<SlidePart> Presentation::parts(int index) const
+{
+    QList<SlidePart> out;
+    if (index < 0 || index >= d->slides.size()) return out;
+    for (const Element& e : d->slides.at(index).elements) partsOf(e, QTransform(), out);
+    return out;
+}
+
+QRectF Presentation::placed(const QRectF& target) const
+{
+    // The slide's aspect, in the middle of the target.
+    const qreal fit = std::min(target.width() / d->size.width(), target.height() / d->size.height());
+    const QSizeF shown = d->size * fit;
+    return QRectF(target.center().x() - shown.width() / 2, target.center().y() - shown.height() / 2, shown.width(), shown.height());
 }
 
 QList<std::pair<int, int>> Presentation::find(const QString& text) const

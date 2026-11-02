@@ -634,13 +634,14 @@ const char* const kTools = R"JSON([
    "layer": {"description": "\"1/0\", \"1\" (any datatype), a layer's name, or a list of them"}, "depth": {"type": "integer", "minimum": 0, "description": "Levels below the cell looked into; all by default (0: its own shapes)"},
    "texts": {"type": "boolean", "description": "Texts too (true by default)"}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many are listed, 50 by default"}}}},
 {"name": "show_layout",
- "description": "Opens a GDSII or OASIS layout in its tab (or brings it to the front) and shows what is asked: 'cell' (shown whole), 'region' [x1, y1, x2, y2] in µm, 'layers' shown (the others hidden: \"1/0\", \"1\", a name, a list, or \"all\"), 'depth' levels of the hierarchy drawn (\"all\", or a number: deeper cells as their frames), 'texts' on or off, the 'grid' behind it shown or hidden (as its G key does: in every layout tab). Returns what the tab shows then, what it drew and the grid's step; screenshot takes a picture of it. An RF 2.5D model (.qrf25, or the one in front) is framed in its own tab the same way - 'region', 'texts', 'grid', and 'processed' and 'mesh' to draw over it the shapes as the processing leaves them and the cells they are divided into; its cell and layers are its Layout node's and its layer map's, so 'cell', 'layers' and 'depth' are refused for it.",
+ "description": "Opens a GDSII or OASIS layout in its tab (or brings it to the front) and shows what is asked: 'cell' (shown whole), 'region' [x1, y1, x2, y2] in µm, 'layers' shown (the others hidden: \"1/0\", \"1\", a name, a list, or \"all\"), 'depth' levels of the hierarchy drawn (\"all\", or a number: deeper cells as their frames), 'texts' on or off, the 'grid' behind it shown or hidden (as its G key does: in every layout tab), the user's 'pen' taken up (a drag draws on the cell shown) or put down, 'drawings': \"clear\" what it drew taken away. Returns what the tab shows then, what it drew and the grid's step, and what the user drew with the pen, cell by cell (strokes, their box in µm, their colours); screenshot takes a picture of it, drawings and all. An RF 2.5D model (.qrf25, or the one in front) is framed in its own tab the same way - 'region', 'texts', 'grid', and 'processed' and 'mesh' to draw over it the shapes as the processing leaves them and the cells they are divided into; its cell and layers are its Layout node's and its layer map's, so 'cell', 'layers' and 'depth' are refused for it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The cell shown, whole unless 'region' says"},
    "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] in µm, shown as large as the tab takes it"}, "layers": {"description": "The layers shown, the others hidden: \"1/0\", \"1\", a name, a list of them, or \"all\""},
    "depth": {"description": "Levels of the hierarchy drawn: \"all\" or a number (0: the cell's own shapes, the cells it places as frames)"}, "texts": {"type": "boolean", "description": "The texts shown or not"},
    "grid": {"type": "boolean", "description": "The grid behind the layout shown or not (a point every 1, 2 or 5 times a power of ten µm, at least 16 pixels apart; a scale of it in the lower left)"},
    "processed": {"type": "boolean", "description": "An RF 2.5D model: the shapes as its processing leaves them drawn over the layout, or not"},
-   "mesh": {"type": "boolean", "description": "An RF 2.5D model: the cells its mesh divides them into drawn over the layout, or not"}}}},
+   "mesh": {"type": "boolean", "description": "An RF 2.5D model: the cells its mesh divides them into drawn over the layout, or not"},
+   "pen": {"type": "boolean", "description": "A layout's tab: the user's pen taken up (true: a drag draws on the cell shown) or put down (false)"}, "drawings": {"type": "string", "enum": ["clear"], "description": "A layout's tab: clear, what the pen drew taken away (the pen's Undo gives it back)"}}}},
 {"name": "show_pdf",
  "description": "Shows a PDF in its tab - opened when it is not, brought to the front - where it is asked: 'page' a number (1 the first), a page's label as printed (\"iv\"; a number is the page's number in the file), or a destination of its outline (a section's title, or its start: \"2.2.1 Modulation\"); 'find' text (\"Figure 2.15:\"): every hit's page returned, the first shown and marked (a figure or a table named, not its page); 'zoom' a percentage (150) or \"fit width\" / \"fit page\"; 'region' [x1, y1, x2, y2] of the page shown as large as the tab takes it - in points from its top left, or as fractions of it (all four between 0 and 1: [0.5, 0, 1, 0.5] its top right quarter). Returns the page shown, the pages there are, the zoom, the hits. screenshot of the PDF then takes a picture of it; screenshot with 'page' and 'region' draws a page or a part without moving the tab.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"},
@@ -650,14 +651,19 @@ const char* const kTools = R"JSON([
  "description": "Reads a PowerPoint presentation (.pptx, .pptm, .ppsx, .potx) - a talk, a review deck, a lecture: each slide's title, its text paragraph by paragraph (a table's rows as cells | cells, a chart's title), its speaker notes, whether it is hidden, how many pictures, tables and charts it holds, and what of it is not drawn as PowerPoint draws it (an EMF picture). An open one is read as its tab shows it. 'path' is relative to the project, otherwise the workspace (the presentation in front if not given); 'slides' is [3, 4], \"2-5\" or 7 (all by default, 40,000 characters at most - the rest named); 'search' finds a word or value in the slides' text and notes. An open one's answer has 'its tab': the slide shown, the zoom, the panes, the find bar, a slide show playing. 'image' draws the slides too, as pictures (four at most; 'region' a part of each, sharp enough to read). show_pptx drives its tab; screenshot draws a slide, export_image writes slides to files.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"}, "slides": {"description": "Which slides: [3, 4], \"2-5\" or 7; all by default"}, "search": {"type": "string", "description": "A word or value to find in the slides' text and notes: the paragraphs that have it"}, "image": {"type": "boolean", "description": "The slides drawn as pictures too (four at most)"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "image: only [x1, y1, x2, y2] of each slide, in points from its top left or as fractions of it"}}}},
 {"name": "show_pptx",
- "description": "Drives a PowerPoint presentation's tab as the user does - opened when it is not, brought to the front: 'slide' a number (1 the first), a slide's title (or its start), or next, previous, first, last - while a slide show plays, the show's slide; 'find' text: the tab's find bar open with it, the first slide with it from the one shown on (the slides with it returned), \"\" closes the bar; 'find_next' next or previous: the next slide with it, or the one before; 'zoom' a percentage (150) or \"fit width\" / \"fit slide\"; 'region' [x1, y1, x2, y2] of the slide shown as large as the tab takes it (points from its top left, or fractions of it); 'notes' and 'sidebar' show or hide the speaker notes' pane and the thumbnails; 'play' true plays the slides full screen from the one shown, \"first\" from the first (hidden ones left out; the user's Escape ends it), false ends it; 'reload' reads its file again first; 'copy' picture or text puts the slide shown on the clipboard. Done in that order, none of it when an argument is wrong. Returns what the tab shows then: the slide and its title, the slides there are, the zoom, the panes, the find bar and its hits, the show playing. screenshot takes a picture of the tab, or with 'slide' of a slide; get_ui and set_ui with area \"document\" use its bar (its ⋯ menu as press \"More > Reload\"); context_menu {\"slide\": n} its right-click menu.",
+ "description": "Drives a PowerPoint presentation's tab as the user does - opened when it is not, brought to the front: 'slide' a number (1 the first), a slide's title (or its start), or next, previous, first, last - while a slide show plays, the show's slide; 'find' text: the tab's find bar open with it, the first slide with it from the one shown on (the slides with it returned), \"\" closes the bar; 'find_next' next or previous: the next slide with it, or the one before; 'zoom' a percentage (150) or \"fit width\" / \"fit slide\"; 'region' [x1, y1, x2, y2] of the slide shown as large as the tab takes it (points from its top left, or fractions of it); 'notes' and 'sidebar' show or hide the speaker notes' pane and the thumbnails; 'play' true plays the slides full screen from the one shown, \"first\" from the first (hidden ones left out; the user's Escape ends it), false ends it; 'reload' reads its file again first; 'copy' picture or text puts the slide shown on the clipboard. Done in that order, none of it when an argument is wrong. Returns what the tab shows then: the slide and its title, the slides there are, the zoom, the panes, the find bar and its hits, the show playing. screenshot takes a picture of the tab, or with 'slide' of a slide; get_ui and set_ui with area \"document\" use its bar (its ⋯ menu as press \"More > Reload\"); context_menu {\"slide\": n} its right-click menu. 'pen' takes the user's pen up (a drag over a slide draws on it) or puts it down, 'drawings': \"clear\" takes away what it drew; the answer gives what the user drew, slide by slide (strokes, their box in points, their colours), and screenshot's and read_pptx's pictures show it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"},
    "slide": {"description": "A slide's number (from 1), a slide's title (or its start), or next, previous, first, last; the show's slide while one plays"}, "find": {"type": "string", "description": "Text found in the slides' text and notes, the find bar open with it: the slides with it returned, the first from the one shown on shown; \"\" closes the bar"},
    "find_next": {"type": "string", "enum": ["next", "previous"], "description": "The next slide with the find bar's text, or the one before (Return, Shift+Return in the bar)"},
    "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit slide\""}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] of the slide shown, as large as the tab takes it: points from its top left, or fractions of it"},
    "notes": {"type": "boolean", "description": "The speaker notes' pane shown (true) or hidden (false)"}, "sidebar": {"type": "boolean", "description": "The thumbnails shown (true) or hidden (false)"},
    "play": {"type": ["boolean", "string"], "description": "true: the slides played full screen from the one shown; \"first\": from the first; false: the slide show ended"},
-   "reload": {"type": "boolean", "description": "Its file read again first (changed elsewhere)"}, "copy": {"type": "string", "enum": ["picture", "text"], "description": "The slide shown to the clipboard: a picture 1920 pixels wide, or its text with its notes"}}}},
+   "reload": {"type": "boolean", "description": "Its file read again first (changed elsewhere)"}, "copy": {"type": "string", "enum": ["picture", "text"], "description": "The slide shown to the clipboard: a picture 1920 pixels wide, or its text with its notes"},
+   "pen": {"type": "boolean", "description": "The user's pen taken up (true: a drag over a slide draws on it) or put down (false)"}, "drawings": {"type": "string", "enum": ["clear"], "description": "clear: what the pen drew on the slides taken away (the pen's Undo gives it back)"}}}},
+{"name": "read_drawings",
+ "description": "Reads what the user drew with the pen on open layouts and presentations - as one would read it, no picture needed. Each stroke: where (a slide; a layout's cell), how it was drawn (a ring, a line, an arrow - its head drawn with it or as a stroke of its own, which reads as its arrowhead - a mark, a dot), its tool (pen or highlighter), colour and box, and what it marks. On a slide: the paragraphs, table cells, pictures, charts and shapes a ring is round, or some of their words; the words a line underlines or strikes through; what a highlighter or a mark lies on; what a line or an arrow begins at and points at; what a dot is on. On a layout: the shapes by layer, the texts and the cells placed, of the layers shown to the depth drawn. With its points, simplified to a few dozen, in the slide's points from its top left or the layout's µm. 'path' one document, its file or its tab's title; every open one drawn on when not given. show_pptx and show_layout give the same readings without the points; screenshot shows the drawings as drawn; a prompt from the Claude Code panel brings what changed since the last.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "An open layout or presentation, its file or its tab's title; every one drawn on when not given"},
+   "points": {"type": "boolean", "description": "Each stroke's points, simplified (true by default)"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -987,6 +993,7 @@ const struct {
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "show a PDF's page in Qucs-S")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "read a presentation's slides in Qucs-S")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "drive a presentation's tab in Qucs-S")},
+    {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "read what was drawn with the pen in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -1077,7 +1084,7 @@ const struct {
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
-                                 "read_pdf", "read_pptx", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
+                                 "read_pdf", "read_pptx", "read_drawings", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
                                  "find_shapes", "git_status", "git_diff", "git_log", "git_show", "git_blame",
@@ -1176,6 +1183,7 @@ const struct {
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "Reads a PowerPoint presentation's slides - titles, text, tables' rows, notes, what is not drawn - and draws them with 'image'.")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Drives a presentation's tab: a slide (next, previous, by title), its find bar, the zoom or a region, its panes; plays it full screen and steps the show; reloads; copies a slide.")},
+    {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "Reads what the user drew with the pen on open layouts and slides - each stroke's gesture, what it marks, its points - without a picture.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -1337,6 +1345,7 @@ const struct {
     {"read_pdf", "datasheet pdf text read"},
     {"read_pptx", "powerpoint pptx presentation slides deck talk notes text read"},
     {"show_pptx", "powerpoint pptx presentation slide show play deck go to next previous find zoom region notes thumbnails reload copy clipboard"},
+    {"read_drawings", "pen drawing drawn draw marks markup annotation ink highlighter circle ring arrow underline sketch layout slide user"},
     {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
     {"edit_text", "text document tab edit change replace lines cir va verilog-a netlist script"},
     {"goto_line", "text document line cursor show error"},
@@ -3825,6 +3834,15 @@ QSet<QString> QucsControl::inEveryTurn() const
         for (const char* t : kPdf) out << QString::fromLatin1(t);
     if (deck)
         for (const char* t : kPptx) out << QString::fromLatin1(t);
+    // (While something is drawn on with the pen: its reading.)
+    for (QucsDoc* doc : a_app->allDocuments()) {
+        auto* layout = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc));
+        auto* drawn = dynamic_cast<PptxDoc*>(doc);
+        if ((layout != nullptr && !layout->view()->drawing().isEmpty()) || (drawn != nullptr && !drawn->view()->drawing().isEmpty())) {
+            out << QStringLiteral("read_drawings");
+            break;
+        }
+    }
     // (A project of models: its first prompt is often before one is open.)
     if (!model && !a_app->ProjName.isEmpty())
         model = !QDir(QucsSettings.QucsWorkDir.absolutePath()).entryList({QStringLiteral("*.qfem")}, QDir::Files).isEmpty();
@@ -4122,6 +4140,7 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         else if (tool == QLatin1String("goto_line")) subject += tr(", line %1").arg(a.value(QLatin1String("line")).toInt());
     } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
     else if (tool == QLatin1String("read_pptx")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("read_drawings")) subject = s("path").isEmpty() ? tr("the pen's drawings") : tr("the pen's drawings on %1").arg(s("path"));
     else if (tool == QLatin1String("show_pptx"))
         subject = (s("path").isEmpty() ? tr("the presentation in front") : s("path"))
                   + (a.value(QLatin1String("play")).toBool() || s("play") == QLatin1String("first") ? tr(", played") : QString())
@@ -5085,7 +5104,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"), QStringLiteral("get_ui"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
-        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("read_pptx"), QStringLiteral("get_text"),
+        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("read_pptx"), QStringLiteral("read_drawings"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
         QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("git_status"),
@@ -5230,6 +5249,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("show_pdf")) return showPdf(args);
     if (tool == QLatin1String("read_pptx")) return readPptx(args);
     if (tool == QLatin1String("show_pptx")) return showPptx(args);
+    if (tool == QLatin1String("read_drawings")) return readDrawings(args);
     if (tool == QLatin1String("get_text")) return getText(args);
     if (tool == QLatin1String("edit_text")) return editText(args);
     if (tool == QLatin1String("goto_line")) return gotoLine(args);

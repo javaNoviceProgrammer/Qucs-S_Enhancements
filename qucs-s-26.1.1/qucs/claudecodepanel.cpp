@@ -1646,6 +1646,11 @@ QString ClaudeCodePanel::gitDirectory() const
     return a_projectDir.isEmpty() ? a_defaultDir : a_projectDir;
 }
 
+void ClaudeCodePanel::setDrawingsProvider(DrawingsProvider provider)
+{
+    a_drawings = std::move(provider);
+}
+
 void ClaudeCodePanel::setDocumentProvider(std::function<QString()> provider)
 {
     a_document = std::move(provider);
@@ -2213,6 +2218,21 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument, const QSt
         if (!attached.isEmpty())
             prompt += QStringLiteral("\n\n") + tr("(The document open in Qucs-S: %1)").arg(QDir::toNativeSeparators(attached));
     }
+    // What the pen drew on it, read, where that changed since it was last
+    // told in this conversation: Claude sees the user's marks with no
+    // picture taken, and is not told the same twice - nor that a drawing it
+    // never heard of went. (Read only when it changed: a big layout's
+    // reading takes a while.)
+    if (!attached.isEmpty() && a_drawings) {
+        const quint64 known = a_drawingsTold.value(attached, 0);
+        const auto [revision, read] = a_drawings(attached, known);
+        if (revision != known && !read.isEmpty()) {
+            a_drawingsTold.insert(attached, revision);
+            prompt += QStringLiteral("\n\n") + tr("(Drawn on it with the pen, as read - read_drawings gives each stroke's points:\n%1)").arg(read);
+        } else if (revision != known && a_drawingsTold.remove(attached) > 0) {
+            prompt += QStringLiteral("\n\n") + tr("(What was drawn on it with the pen has been taken away.)");
+        }
+    }
     Entry e = promptEntry(text, attached.isEmpty() ? QString() : QFileInfo(attached).fileName());
     e.images = images;
     append(e);
@@ -2240,6 +2260,7 @@ void ClaudeCodePanel::newConversation()
     emit conversationEnding();   // (kept as it is: /resume brings it back)
     a_conversationId.clear();
     a_session->reset();
+    a_drawingsTold.clear();
     // With the saved permissions, not what the last one was allowed.
     a_session->setPermissionMode(QucsSettingsFile().value(kMode).toString());
     a_name.clear();
@@ -3354,6 +3375,7 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
 {
     emit conversationEnding();
     a_session->reset();
+    a_drawingsTold.clear();
     // In its folder: Claude Code keeps a session with the folder it ran in.
     const QString folder = conversation.value(QLatin1String("folder")).toString();
     if (!folder.isEmpty() && QFileInfo(folder).isDir()) setWorkingDirectory(folder);
@@ -3516,6 +3538,7 @@ bool ClaudeCodePanel::importClaudeSession(const QString& file)
 
     emit conversationEnding();
     a_session->reset();
+    a_drawingsTold.clear();
     a_conversationId.clear();   // (kept as one of ours from now on)
     if (!folder.isEmpty() && QFileInfo(folder).isDir()) setWorkingDirectory(folder);
     forgetEdit();

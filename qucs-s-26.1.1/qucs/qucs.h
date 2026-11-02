@@ -34,6 +34,8 @@
 #include <QStack>
 #include <QString>
 
+#include <utility>
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -279,6 +281,11 @@ public:
   FindBar *findBarOf(ContextMenuTabWidget *pane) const;
   /// All open documents, pane by pane, in tab order.
   QList<QucsDoc *> allDocuments() const;
+  /// The revision of the pen's drawing on the open layout or presentation
+  /// \a file (nought: none open, or never drawn on) and, when that is not
+  /// \a known, the drawing read, a stroke a line - what a prompt to Claude
+  /// tells of it.
+  std::pair<quint64, QString> drawingsOf(const QString &file, quint64 known = 0) const;
   /// The Simulate toolbar's list of the simulators installed (its items'
   /// data: spicecompat::Simulator).
   QComboBox *simulatorList() const { return simulatorsCombobox; }
