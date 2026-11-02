@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "multiphysicsdoc.h"
+#include "elidedlabel.h"
 #include "fem_import.h"
 #include "fem_materials.h"
 #include "fem_process_results.h"
@@ -492,7 +493,7 @@ void MultiphysicsDoc::buildUi()
     a_splitter->setStretchFactor(1, 1);
     a_splitter->setSizes({500, 140});
     all->addWidget(a_splitter, 1);
-    a_status = new QLabel(this);
+    a_status = new ElidedLabel(this);
     a_status->setObjectName(QStringLiteral("mpStatus"));
     a_status->setContentsMargins(8, 2, 8, 2);
     a_status->setTextInteractionFlags(Qt::TextSelectableByMouse);

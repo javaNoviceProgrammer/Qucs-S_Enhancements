@@ -11,6 +11,7 @@
  */
 #include "pythonrun.h"
 
+#include "elidedlabel.h"
 #include "main.h"
 #include "settings.h"
 #include "processconsole.h"
@@ -82,7 +83,8 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     a_output->viewport()->installEventFilter(this);
     a_output->viewport()->setMouseTracking(true);
 
-    a_status = new QLabel(tr("Run a Python script with Run on the Python toolbar (F2)."), this);
+    a_status = new ElidedLabel(tr("Run a Python script with Run on the Python toolbar (F2)."), this);
+    a_status->setObjectName(QStringLiteral("pythonRunStatus"));
     a_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_stop = new QPushButton(tr("Stop"), this);
     a_stop->setObjectName(QStringLiteral("pythonRunStop"));

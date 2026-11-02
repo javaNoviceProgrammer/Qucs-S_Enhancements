@@ -11,6 +11,8 @@
  */
 #include "pythonviews.h"
 
+#include "elidedlabel.h"
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -459,7 +461,7 @@ PythonPlotsPane::PythonPlotsPane(QWidget* parent) : QWidget(parent)
     a_previous->setArrowType(Qt::LeftArrow);
     a_next = toolButton(this, "pythonPlotsNext", tr("Next"), tr("The figure after (Right)"));
     a_next->setArrowType(Qt::RightArrow);
-    a_title = new QLabel(this);
+    a_title = new ElidedLabel(this);
     a_title->setObjectName(QStringLiteral("pythonPlotsTitle"));
     a_title->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_fitButton = toolButton(this, "pythonPlotsFit", tr("Fit"), tr("Fitted to the pane, or at its own size"));
@@ -1140,7 +1142,7 @@ PythonDataViewer::PythonDataViewer(const QString& name, PythonTableModel::Fetch 
                              tr("magnitude"), tr("dB (20 log10)"), tr("phase (\u00b0)")});
     a_complexMode->setToolTip(tr("How complex numbers are shown, copied, exported and plotted"));
     connect(a_complexMode, &QComboBox::currentIndexChanged, this, [this](int mode) { a_model->setComplexMode(mode); });
-    a_filtersShown = new QLabel(this);
+    a_filtersShown = new ElidedLabel(this);
     a_filtersShown->setObjectName(QStringLiteral("pythonDataFilters"));
     a_filtersShown->setEnabled(false);
     auto* filters = new QHBoxLayout;

@@ -12,6 +12,7 @@
  */
 #include "imagedoc.h"
 
+#include "elidedlabel.h"
 #include "links.h"
 #include "misc.h"
 #include "qucs.h"
@@ -1192,7 +1193,8 @@ void ImageDoc::buildUi()
     auto* info = new QHBoxLayout(a_infoBar);
     info->setContentsMargins(8, 3, 8, 3);
     info->setSpacing(16);
-    a_factsLabel = new QLabel(a_infoBar);
+    a_factsLabel = new ElidedLabel(a_infoBar);
+    a_factsLabel->setObjectName(QStringLiteral("imageFacts"));
     a_factsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_factsLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     a_selectionLabel = new QLabel(a_infoBar);

@@ -11,6 +11,7 @@
  */
 #include "claudecodepanel.h"
 
+#include "elidedlabel.h"
 #include "svgguard.h"
 #include "claudegitbar.h"
 #include "claudehistory.h"
@@ -749,9 +750,9 @@ void ClaudeCodePanel::buildHeader()
     a_title->setObjectName(QStringLiteral("claudeTitle"));
     a_stateDot = new QLabel(a_header);
     a_stateDot->setFixedSize(10, 10);
-    a_stateText = new QLabel(a_header);
+    a_stateText = new ElidedLabel(a_header);
     a_stateText->setObjectName(QStringLiteral("claudeState"));
-    a_modelLabel = new QLabel(a_header);
+    a_modelLabel = new ElidedLabel(a_header);
     a_modelLabel->setObjectName(QStringLiteral("claudeModel"));
     a_newButton = new QToolButton(a_header);
     a_newButton->setObjectName(QStringLiteral("claudeHeaderButton"));
@@ -988,14 +989,14 @@ void ClaudeCodePanel::buildComposer()
     layout->addWidget(a_input);
     auto* row = new QHBoxLayout;
     row->setSpacing(6);
-    a_attach = new QToolButton(a_composer);
+    a_attach = new ElidedToolButton(a_composer);
     a_attach->setObjectName(QStringLiteral("claudeAttach"));
     a_attach->setCheckable(true);
     a_attach->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     a_attach->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
     a_attach->setIconSize(QSize(12, 12));
     a_attach->setToolTip(tr("Tell Claude which document is open in Qucs-S"));
-    a_pin = new QToolButton(a_composer);
+    a_pin = new ElidedToolButton(a_composer);
     a_pin->setObjectName(QStringLiteral("claudePin"));
     a_pin->setCheckable(true);
     a_pin->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
