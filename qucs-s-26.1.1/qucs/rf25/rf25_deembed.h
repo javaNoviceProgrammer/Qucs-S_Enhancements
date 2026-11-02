@@ -119,12 +119,19 @@ struct Calibration {
     int indexOf(double frequency) const;
 };
 
+/// The strips calibrate() solves at each length it tries, all at the same
+/// frequencies: the shorter, the longer of twice its line, and the third
+/// that checks the two. (The RF 2.5D tab counts a calibration by them.)
+constexpr int kStripsPerLength = 3;
+
 /*!
  * The feed of a port on \a metal of \a stack, \a width wide (the layout's
  * units, \a micrometre metres each), solved full-wave at \a frequencies as
- * two strips meshed as \a how and \a top say - as the structure was - and
- * what they say of the port. \a control, given, can stop it; \a length,
- * given, is the shorter strip's (the layout's units), else it is chosen.
+ * strips - kStripsPerLength of one length, and as many of each shorter one
+ * where those do not agree - meshed as \a how and \a top say - as the
+ * structure was - and what they say of the port. \a control, given, can
+ * stop it; \a length, given, is the shorter strip's (the layout's units),
+ * else it is chosen.
  */
 Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const QString& metal, double width,
                       const QList<double>& frequencies, double micrometre = 1e-6, const FullWaveControl* control = nullptr,
