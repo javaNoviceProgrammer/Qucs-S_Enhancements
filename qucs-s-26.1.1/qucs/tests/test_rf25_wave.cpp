@@ -14,12 +14,15 @@
  * Phase C of docs/proposals/2026-10-23-rf-2p5d-moment-method.md.
  */
 #include <QtTest>
+#include <QThread>
 
 #include "rf25/rf25_green.h"
 #include "rf25/rf25_wave.h"
 
+#include <atomic>
 #include <cmath>
 #include <complex>
+#include <vector>
 
 namespace rf = qucs_s::rf25;
 using Complex = std::complex<double>;
@@ -674,6 +677,153 @@ private slots:
         QVERIFY(!rf::ViaGreen(l, {0, 100e-6}, {}, {400e-6}, 1e9, 1e-3).ok());
         QVERIFY(!rf::ViaGreen(l, {0, 100e-6}, {}, {}, 0, 1e-3).ok());
         QVERIFY(rf::ViaGreen(l, {0, 150e-6}, {{100e-6, 150e-6}}, {100e-6, 150e-6}, 1e9, 1e-3).ok());
+    }
+
+    // The tables kept between solves (keepGreens()): a kernel handed a kept
+    // table reads what its own would have read, to the last digit, whichever
+    // was kept first - one wanted nearer than another kept, or further,
+    // which grows the kept one by its further distances alone - and keeping
+    // nothing changes nothing. Kept by their kernel: another frequency,
+    // height or set of vias a via couples to builds its own. Past the budget
+    // the least lately used is forgotten. The wave kernel at 1 GHz on 254 µm
+    // of 9.8, where a grid begun at a thousandth of the farthest distance
+    // would begin at 2 µm for 2 mm and at the image's 5 for 10 mm - one
+    // sequence now - and a via's beside a 3 µm slab at 10 GHz.
+    void aKeptTableIsTheOneItsKernelWouldMake()
+    {
+        const rf::Layers thick = stackOf({{9.8, 254e-6, 0.002}}, true);
+        const rf::Layers l = stackOf({{9.8, 100e-6, 0.002}, {4.0, 3e-6, 0}}, true);
+        const QList<double> at = {0.0, 7.3e-7, 2.9e-6, 1.33e-4, 7.7e-4, 1.37e-3, 1.99e-3};
+        struct Read {
+            QList<Complex> values;
+            int size = 0;
+        };
+        const auto wave = [&thick, &at](double rhoMax, double f = 1e9, double z = 254e-6) {
+            const rf::WaveGreen g(thick, z, z, f, rhoMax);
+            g.prepare();
+            Read out;
+            for (const double rho : at) out.values << g.scalarRemainder(rho) << g.vectorRemainder(rho);
+            out.size = g.tableSize();
+            return out;
+        };
+        const auto via = [&l, &at](double rhoMax, const QList<rf::ViaGreen::Span>& others) {
+            const rf::ViaGreen v(l, {0, 100e-6}, others, {100e-6, 103e-6}, 10e9, rhoMax);
+            v.prepare();
+            Read out;
+            for (const double rho : at)
+                for (int k = 0; k < others.size(); ++k) out.values << v.couplingRemainder(k, rho);
+            for (const double rho : at) out.values << v.potentialRemainder(0, rho) << v.potentialRemainder(1, rho);
+            out.size = v.tableSize();
+            return out;
+        };
+        // (Coupling to one via each, of the same count and different spans,
+        //  and to both.)
+        const QList<rf::ViaGreen::Span> one = {{0, 100e-6}}, other = {{100e-6, 103e-6}}, two = {{0, 100e-6}, {100e-6, 103e-6}};
+        // Nothing kept: each its own table.
+        rf::keepGreens(0);
+        const Read nearOwn = wave(2e-3), farOwn = wave(10e-3), viaNearOwn = via(1e-3, one), viaOtherOwn = via(1e-3, other),
+                   viaTwoOwn = via(1e-3, two);
+        QCOMPARE(rf::greensKept().tables, 0);
+        QVERIFY2(farOwn.size > nearOwn.size && nearOwn.size > 50, qPrintable(QStringLiteral("%1 %2").arg(nearOwn.size).arg(farOwn.size)));
+        rf::keepGreens(256e6);
+        // One kept to 10 mm, then one wanted to 2 mm: handed its first part,
+        // nothing built - the table it would have made itself.
+        rf::forgetGreens();
+        const Read farKept = wave(10e-3);
+        const long long builtFar = rf::greensKept().built;
+        QCOMPARE(builtFar, (long long)farOwn.size);
+        const Read nearKept = wave(2e-3);
+        QCOMPARE(rf::greensKept().built, builtFar);
+        QCOMPARE(rf::greensKept().reused, (long long)nearOwn.size);
+        QVERIFY(farKept.values == farOwn.values && nearKept.values == nearOwn.values);
+        QCOMPARE(nearKept.size, nearOwn.size);
+        // One kept to 2 mm, then one wanted to 10 mm: the kept one grown by
+        // its further distances alone.
+        rf::forgetGreens();
+        wave(2e-3);
+        const Read farGrown = wave(10e-3);
+        QCOMPARE(rf::greensKept().built, (long long)farOwn.size);
+        QVERIFY(farGrown.values == farOwn.values);
+        QCOMPARE(rf::greensKept().tables, 1);
+        // Another frequency: its own. Another height too - two either side of
+        // the 3 µm slab, 100 and 103 µm, as near the same faces to the last
+        // digit, so that their grids are one and only the heights tell them
+        // apart.
+        wave(2e-3, 0.8e9);
+        QCOMPARE(rf::greensKept().tables, 2);
+        const auto either = [&l](double z) {
+            const rf::WaveGreen g(l, z, z, 10e9, 1e-3);
+            g.prepare();
+            return g.scalarRemainder(2e-4);
+        };
+        QVERIFY(either(100e-6) != either(103e-6));
+        QCOMPARE(rf::greensKept().tables, 4);
+        // A via's: the same, and with other vias to couple to, a table of
+        // its own - its values so many more a distance.
+        rf::forgetGreens();
+        via(5e-3, one);
+        const Read viaNearKept = via(1e-3, one), viaOtherKept = via(1e-3, other), viaTwoKept = via(1e-3, two);
+        QVERIFY(viaNearKept.values == viaNearOwn.values && viaOtherKept.values == viaOtherOwn.values
+                && viaTwoKept.values == viaTwoOwn.values);
+        QCOMPARE(rf::greensKept().tables, 3);
+        // Past the budget, the least lately used forgotten: room for two of
+        // three tables alike, the first used again before the third is
+        // made - the second goes.
+        rf::forgetGreens();
+        wave(2e-3);
+        const double each = rf::greensKept().bytes;
+        rf::keepGreens(2.5 * each);
+        wave(2e-3, 0.8e9);
+        wave(2e-3);
+        wave(2e-3, 0.9e9);
+        QVERIFY2(rf::greensKept().tables == 2 && rf::greensKept().bytes <= 2.5 * each,
+                 qPrintable(QStringLiteral("%1 table(s), %2 bytes of %3").arg(rf::greensKept().tables).arg(rf::greensKept().bytes).arg(2.5 * each)));
+        const long long built = rf::greensKept().built;
+        wave(2e-3);         // kept: nothing built
+        wave(2e-3, 0.9e9);
+        QCOMPARE(rf::greensKept().built, built);
+        wave(2e-3, 0.8e9);  // forgotten: built again
+        QVERIFY(rf::greensKept().built > built);
+        rf::keepGreens(256e6);
+        rf::forgetGreens();
+    }
+
+    // A kernel read from many threads at once - as a compressed solve's
+    // threads fill their blocks - reads what one thread reads, its table
+    // shared with a copy of it as a kept table once shared the store's. Its
+    // lists are mutable, and a reader's non-const begin() or last() would
+    // detach a shared list under the others: under load that undid the heap
+    // and gave a compressed line eps_eff 16 for 6.6.
+    void aKernelReadFromManyThreadsReadsAsFromOne()
+    {
+        const rf::Layers l = stackOf({{9.8, 254e-6, 0.002}}, true);
+        const rf::WaveGreen g(l, 254e-6, 254e-6, 10e9, 5e-3);
+        g.prepare();
+        QList<double> at;
+        for (int i = 0; i < 400; ++i) at << 5e-3 * (i + 0.5) / 400;
+        QList<Complex> once;
+        for (const double rho : at) once << g.scalarRemainder(rho) << g.vectorRemainder(rho);
+        bool same = true;
+        for (int round = 0; round < 100 && same; ++round) {
+            const rf::WaveGreen shared = g;   // (its lists g's)
+            std::atomic_int ready{0};
+            std::vector<QList<Complex>> read(8);
+            QList<QThread*> threads;
+            for (int t = 0; t < 8; ++t)
+                threads << QThread::create([&shared, &at, &read, &ready, t] {
+                    ++ready;
+                    while (ready.load() < 8) {
+                    }
+                    for (const double rho : at) read[std::size_t(t)] << shared.scalarRemainder(rho) << shared.vectorRemainder(rho);
+                });
+            for (QThread* thread : std::as_const(threads)) thread->start();
+            for (QThread* thread : std::as_const(threads)) {
+                thread->wait();
+                delete thread;
+            }
+            for (const QList<Complex>& r : read) same = same && r == once;
+        }
+        QVERIFY2(same, "read from eight threads at once as from one");
     }
 };
 

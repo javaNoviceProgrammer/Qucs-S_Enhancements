@@ -227,7 +227,8 @@ qucs_add_test(test_rf25_fullwave)
 # this machine's then, and at that rate the one entry would be past three
 # quarters of its 900 times 3: its functions in two parts since, each its
 # own limit and the two at once, its init() skipping the other part's -
-# some 550 and 600 s here.)
+# some 550 and 600 s here; 293 and 403 since the stack's tables are kept
+# between solves, the same day.)
 set_tests_properties(test_rf25_fullwave PROPERTIES TIMEOUT 900)
 set_property(TEST test_rf25_fullwave APPEND PROPERTY ENVIRONMENT "QUCS_TEST_PART=1")
 add_test(NAME test_rf25_fullwave_2 COMMAND test_rf25_fullwave)
@@ -239,12 +240,14 @@ qucs_add_test(test_rf25_deembed)
 # where they disagree - the phase E check of 2 November - and every strip's
 # ports their paths up from the ground since G9's fix: 731 s sanitized here,
 # its heaviest function 176 s, the long strips' four sets on 635 µm at 30
-# GHz; at CI's runner's twice, half of 900 times 3.)
+# GHz; 314 since a calibration's strips build one set of tables between
+# them, kept between solves.)
 set_tests_properties(test_rf25_deembed PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_doc)
 # (Its full-wave studies' ports have their paths up from the ground since
 # G9's fix of 2 November: 273 s sanitized here, past nine tenths of the 300
-# a test has unasked; at CI's runner's twice, some 545 s.)
+# a test has unasked; at CI's runner's twice, some 545 s. 145 since the
+# stack's tables are kept between solves.)
 set_tests_properties(test_rf25_doc PROPERTIES TIMEOUT 900)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)

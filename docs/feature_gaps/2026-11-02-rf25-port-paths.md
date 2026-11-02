@@ -231,10 +231,9 @@ every solve, and a calibration's strips and a two-line test's pair build the sam
 
 ## Not done
 
-- **The Green's functions kept between solves.** Every solve builds its stack's tables at each frequency afresh,
-  and since the ports' paths have a field those tables are twice what they were. A calibration's three strips, the
-  shorter ones beside them, and a two-line test's pair all build the same ones. Kept by stack, heights, spans and
-  frequency, they would win back what the paths cost, here and under the sanitizers.
+- **The Green's functions kept between solves.** Done the same day (`2026-11-02-rf25-greens-kept.md`): sanitized,
+  the de-embedding's 731 s now 314, under the 396 it took before the paths, and the full-wave suite's 1147 s now
+  696.
 - **The coarse-level preconditioner** for via-stitched structures, still from phase E's own list.
 - **A broad path in a dielectric.** Its G_zz's dielectric part cancels to a part in a thousand of the whole, its
   potential taken across its mean distance: 0.17 pH of a 72 pH path 50 by 200 µm through 200 µm of 9.8. It is in
