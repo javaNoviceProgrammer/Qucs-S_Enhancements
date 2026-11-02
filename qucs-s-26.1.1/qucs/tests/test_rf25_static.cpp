@@ -13,6 +13,8 @@
 #include "rf25/rf25_sparams.h"
 #include "rf25/rf25_static.h"
 
+#include <Eigen/Dense>
+
 #include <cmath>
 
 namespace rf = qucs_s::rf25;
@@ -949,7 +951,7 @@ private slots:
         how.stretch = 40;
         const rf::Extraction lone = rf::extract(rf::meshOf(pair, how, rf::Stack(), 0), pair, open);
         QVERIFY(lone.ok() && lone.perMetre.wheeler.isEmpty());
-        QVERIFY2(says(lone.lines, "With no ground, R"), qPrintable(lone.lines.join(" | ")));
+        QVERIFY2(says(lone.lines, "With no ground and no return conductor, R"), qPrintable(lone.lines.join(" | ")));
     }
 
     // A metal's roughness raises its loss as Hammerstad and Bekkadal have
@@ -1140,6 +1142,167 @@ private slots:
         QCOMPARE(rf::extract(rf::meshOf(gap, how, rf::Stack(), 0), gap, stack).names.size(), 2);
     }
 
+    // A GSSG with nothing under it (the GSSG review of 1 November, G1-G3
+    // and G6): its two signals are coupled lines against its two grounds -
+    // the outermost of the four, there being no ground plane and none
+    // marked - held at nought with infinity floating, as the reviewer
+    // reduced the solve's partial capacitances by hand: C of the signals
+    // alone, M - (M1)(M1)'/(1'M1) of the Maxwell matrix per metre; L, R and
+    // G beside it; a symmetric pair whose even and odd modes are the zero
+    // thickness closed form's (even 2.500, 79.9 Ohm; odd 2.596, 41.4 Ohm);
+    // and R by Wheeler's rule, the grounds what the current returns
+    // through, settled as the mesh is refined where the sheet's crowding
+    // grew (the odd mode at 50 GHz: 192 dB/m at six across, 228 at sixteen;
+    // QFEM 148). The same of a piece shorter than it is wide. Marked, the
+    // returns are those marked; over a plane, what a via joins to it.
+    void aGssgsSignalsAreCoupledLinesAgainstItsGrounds()
+    {
+        rf::Stack open = grounded(12.4, 150e-6);
+        for (rf::Layer& l : open.layers) {
+            if (l.kind == rf::Layer::Ground) l.variant = QStringLiteral("open");
+            if (l.kind == rf::Layer::Metal) {
+                l.thickness = 2e-6;
+                l.sigma = 4.1e7;
+            }
+        }
+        const auto gssg = [](double l) {
+            return QList<rf::Conductor>{strip(0, 25, l, 50), strip(0, -75, l, 50), strip(0, 110, l, 300), strip(0, -410, l, 300)};
+        };
+        const auto meshOf = [](const QList<rf::Conductor>& c, int across) {
+            rf::MeshSettings how;
+            how.maximum = 200e-6;
+            how.cellsAcross = across;
+            return rf::meshOf(c, how, rf::Stack(), 0);
+        };
+        const double l = 1000, f = 50e9;
+        const QList<rf::Conductor> c = gssg(l);
+        const rf::Mesh mesh = meshOf(c, 4);
+        const rf::Extraction e = rf::extract(mesh, c, open);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+        QVERIFY2(e.perMetre.fromMiddle, qPrintable(e.perMetre.said));
+        // The grounds, which are the nets out past |y| = 100 µm.
+        const QList<rf::Net> nets = rf::netsOf(mesh, c, open);
+        QCOMPARE(e.returns.size(), nets.size());
+        for (int i = 0; i < nets.size(); ++i)
+            QCOMPARE(e.returns.at(i), std::abs(mesh.cells.at(nets.at(i).cells.first()).centre.y()) > 100);
+        QVERIFY2(e.returnsSaid.contains(QStringLiteral("the outermost across the line"))
+                     && e.returnsSaid.contains(QStringLiteral("held at nought with the ground")),
+                 qPrintable(e.returnsSaid));
+        // The signals' C: the hand reduction of the solve's own matrix.
+        const rf::SignalLines lines = rf::signalsOf(e, l * 1e-6);
+        QVERIFY2(lines.ok() && lines.nets == e.signalNets() && lines.nets.size() == 2, qPrintable(lines.problem));
+        const int n = int(nets.size());
+        Eigen::MatrixXd m(n, n);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) m(i, j) = 0.5 * (e.perMetre.maxwell.at(i).at(j) + e.perMetre.maxwell.at(j).at(i));
+        const Eigen::VectorXd m1 = m * Eigen::VectorXd::Ones(n);
+        const Eigen::MatrixXd floating = m - m1 * m1.transpose() / m1.sum();
+        for (int a = 0; a < 2; ++a)
+            for (int b = 0; b < 2; ++b) {
+                const double want = floating(lines.nets.at(a), lines.nets.at(b));
+                QVERIFY2(std::abs(lines.c.at(a).at(b) - want) < 1e-9 * std::abs(floating(lines.nets.at(0), lines.nets.at(0))),
+                         qPrintable(QStringLiteral("C%1%2 %3, by hand %4").arg(a + 1).arg(b + 1).arg(lines.c.at(a).at(b)).arg(want)));
+            }
+        // As coupled lines: the two signals by name, against the grounds.
+        const auto modesOf = [&](const rf::Extraction& x, double length) {
+            const qucs_s::fem::CoupledLines cl = rf::asCoupledLines(x, length * 1e-6, f);
+            QHash<QString, qucs_s::fem::LineMode> out;
+            for (const qucs_s::fem::LineMode& mode : cl.modes) out.insert(mode.name, mode);
+            return std::make_pair(cl, out);
+        };
+        const auto [coupled, modes] = modesOf(e, l);
+        QVERIFY2(coupled.error.isEmpty(), qPrintable(coupled.error));
+        QVERIFY(coupled.symmetricPair);
+        QCOMPARE(coupled.names, (QStringList{e.names.at(lines.nets.at(0)), e.names.at(lines.nets.at(1))}));
+        QVERIFY(modes.contains(QStringLiteral("even")) && modes.contains(QStringLiteral("odd")));
+        const qucs_s::fem::LineMode even = modes.value(QStringLiteral("even")), odd = modes.value(QStringLiteral("odd"));
+        qWarning("GSSG on InP, four across: even n_eff %.4f, %.2f Ohm; odd %.4f, %.2f Ohm; at 50 GHz %.1f and %.1f dB/m",
+                 even.nEff, even.Z.real(), odd.nEff, odd.Z.real(), even.alphaDb, odd.alphaDb);
+        // The closed form's of a zero-thickness GSSG with grounds that run
+        // on for ever: n_eff within 1 %, and Z within 10 % - the mesh's
+        // error, four cells across (the reviewer's 84.4 and 42.9 at six).
+        QVERIFY2(std::abs(even.nEff / 2.500 - 1) < 0.01 && std::abs(odd.nEff / 2.596 - 1) < 0.01,
+                 qPrintable(QStringLiteral("n_eff %1 and %2").arg(even.nEff).arg(odd.nEff)));
+        QVERIFY2(std::abs(even.Z.real() / 79.9 - 1) < 0.1 && std::abs(odd.Z.real() / 41.4 - 1) < 0.1,
+                 qPrintable(QStringLiteral("Z %1 and %2").arg(even.Z.real()).arg(odd.Z.real())));
+        // R of Wheeler's rule against the grounds, and settled: the odd
+        // mode's loss within 3 % from four cells across to six, and of
+        // QFEM's 148 dB/m within 10 %.
+        QVERIFY2(!e.perMetre.wheeler.isEmpty(), qPrintable(e.perMetre.said));
+        const rf::Extraction finer = rf::extract(meshOf(c, 6), c, open);
+        const qucs_s::fem::LineMode odd6 = modesOf(finer, l).second.value(QStringLiteral("odd"));
+        QVERIFY2(std::abs(odd6.alphaDb / odd.alphaDb - 1) < 0.03 && std::abs(odd6.alphaDb / 148 - 1) < 0.1,
+                 qPrintable(QStringLiteral("odd mode %1 dB/m at four across, %2 at six").arg(odd.alphaDb).arg(odd6.alphaDb)));
+        // At direct current a signal's R is never less than its own and the
+        // returns' its current comes back through, together: on 10 µm of
+        // gold, where Wheeler's rule of a current on the faces gives less,
+        // 48.8 and 4.1 Ohm/m.
+        rf::Stack thick = open;
+        for (rf::Layer& layer : thick.layers)
+            if (layer.kind == rf::Layer::Metal) layer.thickness = 10e-6;
+        const qucs_s::fem::CoupledLines dc = rf::asCoupledLines(rf::extract(mesh, c, thick), l * 1e-6, 1e3);
+        const double own = 1 / (4.1e7 * 10e-6 * 50e-6), back = 1 / (4.1e7 * 10e-6 * 600e-6);
+        QVERIFY2(std::abs(dc.R[0][0] / (own + back) - 1) < 1e-9 && std::abs(dc.R[1][1] / (own + back) - 1) < 1e-9,
+                 qPrintable(QStringLiteral("R %1 and %2 Ohm/m at 1 kHz, against %3").arg(dc.R[0][0]).arg(dc.R[1][1]).arg(own + back)));
+        // A piece shorter than it is wide - 500 µm of a line 820 across -
+        // is the same line: along x, the way every net runs.
+        const QList<rf::Conductor> shortOne = gssg(500);
+        const rf::Extraction piece = rf::extract(meshOf(shortOne, 4), shortOne, open);
+        QVERIFY2(piece.ok() && piece.perMetre.fromMiddle && std::abs(piece.perMetre.length - 500e-6) < 1e-12, qPrintable(piece.perMetre.said));
+        QCOMPARE(piece.returns.count(true), 2);
+        const qucs_s::fem::LineMode oddShort = modesOf(piece, 500).second.value(QStringLiteral("odd"));
+        QVERIFY2(std::abs(oddShort.nEff / odd.nEff - 1) < 2e-3 && std::abs(oddShort.Z.real() / odd.Z.real() - 1) < 5e-3,
+                 qPrintable(QStringLiteral("odd mode %1, %2 Ohm on 500 µm").arg(oddShort.nEff).arg(oddShort.Z.real())));
+        // Marked: the one ground marked is the one return - the outermost
+        // pair is the default only where none is marked - and a mark on no
+        // conductor is said and left out.
+        const QList<rf::ReturnMark> marks = {{QPointF(500, 300), QStringLiteral("M1")}, {QPointF(500, 1000), QString()}};
+        const rf::Extraction marked = rf::extract(mesh, c, open, 1e-6, marks);
+        QVERIFY2(marked.ok(), qPrintable(marked.problems.join(" | ")));
+        QCOMPARE(marked.returns.count(true), 1);
+        QVERIFY2(marked.returnsSaid.contains(QStringLiteral("marked as returns"))
+                     && marked.returnsSaid.contains(QStringLiteral("500, 1000 µm is on no conductor, and is left out")),
+                 qPrintable(marked.returnsSaid));
+        QCOMPARE(rf::signalsOf(marked, l * 1e-6).nets.size(), 3);
+        // A return is no line of its own; one signal is a line against the
+        // returns, of its own C and L.
+        const int ground = int(e.returns.indexOf(true));
+        QVERIFY2(!rf::lineParameters(e, ground, l * 1e-6, f).ok(), "a return is no line");
+        const QList<rf::Conductor> gsg = {strip(0, -25, l, 50), strip(0, 60, l, 300), strip(0, -360, l, 300)};
+        const rf::Extraction cpw = rf::extract(meshOf(gsg, 4), gsg, open);
+        QVERIFY2(cpw.ok() && cpw.signalNets().size() == 1, qPrintable(cpw.returnsSaid));
+        const rf::LineParameters lp = rf::lineParameters(cpw, cpw.signalNets().first(), l * 1e-6, f);
+        QVERIFY2(lp.ok() && lp.z0 > 30 && lp.z0 < 60 && lp.r > 0, qPrintable(lp.problems.join(" | ")));
+        // (Of one signal, a ground asked after is not given the signal's line.)
+        const rf::LineParameters asGround = rf::lineParameters(cpw, int(cpw.returns.indexOf(true)), l * 1e-6, f);
+        QVERIFY2(!asGround.ok() && asGround.problems.join(' ').contains(QStringLiteral("is a return conductor")),
+                 qPrintable(asGround.problems.join(" | ")));
+        // Over a ground plane, the grounds a via joins to it are the returns,
+        // and the signals' C the block of the Maxwell matrix that is theirs.
+        rf::Stack plane = grounded(12.4, 150e-6);
+        rf::Layer via;
+        via.kind = rf::Layer::Via;
+        via.name = QStringLiteral("V1");
+        via.tag = QStringLiteral("v1");
+        via.from = QStringLiteral("ground");
+        via.to = QStringLiteral("M1");
+        plane.layers << via;
+        QList<rf::Conductor> fenced = c;
+        fenced << strip(500, 200, 50, 50, QStringLiteral("V1")) << strip(500, -250, 50, 50, QStringLiteral("V1"));
+        const rf::Mesh fencedMesh = meshOf(fenced, 4);
+        const rf::Extraction gcpw = rf::extract(fencedMesh, fenced, plane);
+        QVERIFY2(gcpw.ok() && gcpw.returns.count(true) == 2, qPrintable(gcpw.problems.join(" | ") + gcpw.returnsSaid));
+        QVERIFY2(gcpw.returnsSaid.contains(QStringLiteral("joined to the ground plane by a via")), qPrintable(gcpw.returnsSaid));
+        const rf::SignalLines over = rf::signalsOf(gcpw, l * 1e-6);
+        QVERIFY2(over.ok(), qPrintable(over.problem));
+        for (int a = 0; a < 2; ++a)
+            for (int b = 0; b < 2; ++b) {
+                const int i = over.nets.at(a), j = over.nets.at(b);
+                QVERIFY(std::abs(over.c.at(a).at(b) - 0.5 * (gcpw.perMetre.maxwell.at(i).at(j) + gcpw.perMetre.maxwell.at(j).at(i)))
+                        < 1e-12 * std::abs(over.c.at(0).at(0)));
+            }
+    }
+
     void whatItCannotSolveIsRefused()
     {
         // A conductor sent to a layer that is not a metal.
@@ -1148,9 +1311,9 @@ private slots:
         QVERIFY(!wrong.ok());
         QVERIFY2(wrong.problems.first().contains(QStringLiteral("not a metal")), qPrintable(wrong.problems.join(" | ")));
 
-        // A via down to the ground, which would hold what it lands on at the
-        // ground's potential: every net here is free, so it is said and the
-        // full-wave solve named, not solved as a floating pad.
+        // A via down to the ground holds what it lands on at the ground's
+        // potential: a return, said - once refused ("solve it full-wave") -
+        // and no line of its own.
         rf::Stack drilled = grounded(4.1, 10e-6);
         rf::Layer hole;
         hole.kind = rf::Layer::Via;
@@ -1160,9 +1323,10 @@ private slots:
         drilled.layers << hole;
         const QList<rf::Conductor> pad{strip(0, 0, 20, 20), strip(5, 5, 10, 10, QStringLiteral("V0"))};
         const rf::Extraction shorted = rf::extract(meshed(pad, 10), pad, drilled);
-        QVERIFY(!shorted.ok());
-        QVERIFY2(says(shorted.problems, "joins M1 to the ground") && says(shorted.problems, "full-wave"),
-                 qPrintable(shorted.problems.join(" | ")));
+        QVERIFY2(shorted.ok(), qPrintable(shorted.problems.join(" | ")));
+        QCOMPARE(shorted.returns, QList<bool>{true});
+        QVERIFY2(says(shorted.lines, "joined to the ground plane by a via"), qPrintable(shorted.lines.join(" | ")));
+        QVERIFY(!rf::lineParameters(shorted, 0, 20e-6).ok());
 
         // A layer the stack has not at all.
         const QList<rf::Conductor> nowhere{strip(0, 0, 20, 20, QStringLiteral("M9"))};

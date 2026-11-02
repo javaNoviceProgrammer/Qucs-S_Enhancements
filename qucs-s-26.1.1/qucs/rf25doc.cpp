@@ -85,6 +85,27 @@ QList<QColor> currentRamp(int bands = 8)
 /// (or the ground) to the other; each with its own reference and its
 /// de-embedding. One that cannot be read is \a problem, and nothing is
 /// returned.
+/// The model's Return Conductors as the solvers take them: each one's point,
+/// in the layout's units, on its metal. One whose point is no number is
+/// \a problem, and nothing is returned.
+QList<ReturnMark> returnMarksOf(const Model& model, QString* problem)
+{
+    QList<ReturnMark> out;
+    for (const Node& node : model.ports().children) {
+        if (!node.enabled || node.type != QLatin1String("rf_return")) continue;
+        bool okX = true, okY = true;
+        const double x = numberOf(node, QStringLiteral("x"), model, 0, &okX);
+        const double y = numberOf(node, QStringLiteral("y"), model, 0, &okY);
+        if (!okX || !okY) {
+            *problem = QCoreApplication::translate("RF25Doc", "%1's %2 is not a number.")
+                           .arg(node.label.isEmpty() ? node.tag : node.label, !okX ? QStringLiteral("x") : QStringLiteral("y"));
+            return {};
+        }
+        out << ReturnMark{QPointF(x, y) / 1e-6, textOf(node, QStringLiteral("conductor")).trimmed()};
+    }
+    return out;
+}
+
 QList<FullWavePort> portsOf(const Model& model, QString* problem)
 {
     QList<FullWavePort> out;
@@ -106,6 +127,7 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
         }
         // (The ports are in metres; the cells are in the layout's own.)
         p.at = QPointF(x, y) / 1e-6;
+        p.pair = textOf(port, QStringLiteral("pair")).trimmed();
         if (edge) {
             p.metal = textOf(port, QStringLiteral("conductor")).trimmed();
             const QString facing = textOf(port, QStringLiteral("facing"));
@@ -346,6 +368,7 @@ struct RF25Doc::SolveJob {
     Mesh mesh;
     QList<Conductor> conductors;
     Stack stack;
+    QList<ReturnMark> returns;   ///< the Return Conductors under Ports
     double length = 0;
     std::shared_ptr<Extraction> result;
     // The loop's inductance, where two ports say what the loop is: the
@@ -1442,7 +1465,41 @@ void RF25Doc::showOverlays()
         faces.name = tr("the ports");
         grounds.name = tr("the ports' grounds beside them");
         regions.name = tr("the internal ports' rectangles");
+        // (Drawn as the grounds are: what the lines return through.)
+        LayoutView::Overlay returns = grounds;
+        returns.name = tr("the return conductors");
         const QList<Conductor>& shapes = a_processed->conductors;
+        // A coplanar port's grounds as the solve finds them: the nearest
+        // return conductors either side, past a signal (returnNetsOf()) -
+        // each shape a return where the net of a cell inside it is one.
+        QList<bool> shapeReturns;
+        bool coplanar = false;
+        for (const Node& node : a_model.ports().children)
+            coplanar = coplanar || (node.enabled && node.type == QLatin1String("rf_edge_port")
+                                    && textOf(node, QStringLiteral("return")) == QLatin1String("beside"));
+        if (coplanar && a_mesh) {
+            QString problem;
+            const QList<ReturnMark> marks = returnMarksOf(a_model, &problem);
+            const Stack stack = a_model.stack();
+            const QList<Net> nets = netsOf(*a_mesh, shapes, stack);
+            const QList<bool> isReturn = returnNetsOf(nets, *a_mesh, shapes, stack, marks);
+            if (isReturn.contains(true)) {
+                for (const Conductor& shape : shapes) {
+                    const QRectF box = shape.outline.boundingRect();
+                    int net = -1;
+                    for (int i = 0; i < nets.size() && net < 0; ++i)
+                        for (const int c : nets.at(i).cells) {
+                            const MeshCell& cell = a_mesh->cells.at(c);
+                            if (cell.layer == shape.layer && box.contains(cell.centre)
+                                && shape.outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
+                                net = i;
+                                break;
+                            }
+                        }
+                    shapeReturns << isReturn.value(net, false);
+                }
+            }
+        }
         for (const Node& node : a_model.ports().children) {
             if (!node.enabled) continue;
             const bool edge = node.type == QLatin1String("rf_edge_port");
@@ -1467,7 +1524,7 @@ void RF25Doc::showOverlays()
                     faces.shapes << QPolygonF(QList<QPointF>{face.p1(), face.p2()});
                     faces.labels << LayoutView::Overlay::Label{face.center(), name, outward};
                     if (textOf(node, QStringLiteral("return")) == QLatin1String("beside"))
-                        for (const QLineF& g : besideEdges(shapes, face, outward, layer))
+                        for (const QLineF& g : besideEdges(shapes, face, outward, layer, shapeReturns.isEmpty() ? nullptr : &shapeReturns))
                             if (!g.isNull()) grounds.shapes << QPolygonF(QList<QPointF>{g.p1(), g.p2()});
                 } else {
                     faces.labels << LayoutView::Overlay::Label{at, name, QPointF()};
@@ -1480,7 +1537,17 @@ void RF25Doc::showOverlays()
             if (okW && okH && w > 0 && h > 0) regions.shapes << QPolygonF(QRectF(at - QPointF(w, h) / 2, QSizeF(w, h)));
             faces.labels << LayoutView::Overlay::Label{at, name, QPointF()};
         }
-        for (const LayoutView::Overlay* o : {&regions, &grounds, &faces})
+        // The return conductors, each by its name at its point.
+        for (const Node& node : a_model.ports().children) {
+            if (!node.enabled || node.type != QLatin1String("rf_return")) continue;
+            bool okX = true, okY = true;
+            const double x = numberOf(node, QStringLiteral("x"), a_model, 0, &okX);
+            const double y = numberOf(node, QStringLiteral("y"), a_model, 0, &okY);
+            if (okX && okY)
+                returns.labels << LayoutView::Overlay::Label{QPointF(x, y) / 1e-6, node.label.isEmpty() ? node.tag : node.label,
+                                                             QPointF()};
+        }
+        for (const LayoutView::Overlay* o : {&regions, &grounds, &returns, &faces})
             if (!o->shapes.isEmpty() || !o->labels.isEmpty()) overlays << *o;
     }
     a_view->setOverlays(overlays);
@@ -1543,6 +1610,11 @@ void RF25Doc::solveWith(const SolveRequest& request)
     QRectF bounds;
     for (const Conductor& c : std::as_const(job->conductors)) bounds = bounds.united(c.outline.boundingRect());
     job->length = std::max(bounds.width(), bounds.height()) * 1e-6;
+    {
+        QString problem;
+        job->returns = returnMarksOf(a_model, &problem);
+        if (!problem.isEmpty()) return nothing(problem);
+    }
     job->fullWave = request.solver.isEmpty() ? studyIsFullWave() : request.solver == QLatin1String("full_wave");
     if (job->fullWave) {
         // The full-wave solve is driven at the ports, at each of the
@@ -1607,7 +1679,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
             control.stop = &job->stop;
             control.done = &job->done;
             job->wave = std::make_shared<FullWave>(
-                fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control));
+                fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control, job->returns));
             // The ports that asked: their own discontinuity taken out by
             // strips of their feeds - one calibration for each feed, its
             // metal and its width, and a coplanar one's grounds and vias -
@@ -1654,7 +1726,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
                 if (c->ok()) job->wave->lines << c->lines;
             return;
         }
-        job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack));
+        job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack, 1e-6, job->returns));
         if (job->loop)
             job->inductance = std::make_shared<Inductance>(
                 inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency));
@@ -1725,7 +1797,11 @@ void RF25Doc::solveDone()
         a_extraction = job->result;
         a_inductance = job->inductance;
         a_portsSaid = job->portsSaid;
-        a_solvedLength = job->length;
+        // A uniform line's own length along it - a short GSSG is wider than
+        // it is long - else the longer side of what was solved.
+        a_solvedLength = job->result && job->result->perMetre.fromMiddle && job->result->perMetre.length > 0
+                             ? job->result->perMetre.length
+                             : job->length;
         a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
     }
     showOverlays();
@@ -1752,20 +1828,39 @@ QStringList RF25Doc::lineSummary() const
     // Several conductors are coupled lines, whose modes are what there is:
     // one net's own row - its charge with every conductor at a volt - is
     // neither mode, and was given as if it were a line of its own (the
-    // phase B check of 24 October).
-    if (a_extraction->names.size() > 1) {
+    // phase B check of 24 October). Where there are returns, the signals'
+    // lines against them (the GSSG check of 1 November, G1).
+    const int signalCount = a_extraction->hasReturns() ? int(a_extraction->signalNets().size()) : int(a_extraction->names.size());
+    if (signalCount > 1) {
         const fem::CoupledLines cl = asCoupledLines(*a_extraction, a_solvedLength, f);
         if (!cl.error.isEmpty()) {
             out << tr("As coupled lines: %1.").arg(cl.error);
             return out;
         }
-        QStringList modes;
+        QStringList modes, returning;
         for (const fem::LineMode& m : cl.modes)
             modes << tr("%1 Z %2 Ohm, eps_eff %3").arg(m.name).arg(m.Z.real(), 0, 'g', 4).arg(m.nEff * m.nEff, 0, 'g', 4);
-        out << tr("%1 as coupled lines over %2 µm: %3")
-                   .arg(a_extraction->names.join(QStringLiteral(", ")))
-                   .arg(a_solvedLength * 1e6, 0, 'g', 4)
-                   .arg(modes.join(QStringLiteral("; ")));
+        for (int i = 0; i < a_extraction->names.size(); ++i)
+            if (a_extraction->returns.value(i, false)) returning << a_extraction->names.at(i);
+        out << (returning.isEmpty() ? tr("%1 as coupled lines over %2 µm: %3")
+                                          .arg(cl.names.join(QStringLiteral(", ")))
+                                          .arg(a_solvedLength * 1e6, 0, 'g', 4)
+                                          .arg(modes.join(QStringLiteral("; ")))
+                                    : tr("%1 as coupled lines against %2, over %3 µm: %4")
+                                          .arg(cl.names.join(QStringLiteral(", ")), returning.join(QStringLiteral(", ")))
+                                          .arg(a_solvedLength * 1e6, 0, 'g', 4)
+                                          .arg(modes.join(QStringLiteral("; "))));
+        // Their matrices per metre (G3).
+        const auto rows = [](const fem::CoupledLines::Matrix& m, double scale) {
+            QStringList all;
+            for (const std::vector<double>& r : m) {
+                QStringList row;
+                for (const double v : r) row << QString::number(v * scale, 'g', 4);
+                all << row.join(QStringLiteral(" "));
+            }
+            return all.join(QStringLiteral("; "));
+        };
+        out << tr("Per metre: C [%1] pF/m, C0 [%2] pF/m, L [%3] nH/m").arg(rows(cl.C, 1e12), rows(cl.C0, 1e12), rows(cl.L, 1e9));
         if (cl.rlgc) {
             QStringList losses;
             for (const fem::LineMode& m : cl.modes) losses << tr("%1 %2 dB/m").arg(m.name).arg(m.alphaDb, 0, 'g', 3);
@@ -1900,33 +1995,37 @@ QStringList RF25Doc::sParameterSummary(double reference) const
                        .arg(limit.epsilonMax, 0, 'g', 3);
         return out;
     }
-    if (nets > 1) {
+    // The lines are the signals - every net where none is a return.
+    const QList<int> signalNets = a_extraction->signalNets();
+    const int lines = int(signalNets.size());
+    if (lines > 1) {
         // A coupled set as its 2N-port: the near ends first, then the far
-        // ends, so that net 1's through is S(N+1, 1) and what it puts on
-        // net 2 is S(2, 1) at the near end and S(N+2, 1) at the far.
+        // ends, so that line 1's through is S(N+1, 1) and what it puts on
+        // line 2 is S(2, 1) at the near end and S(N+2, 1) at the far.
         const fem::CoupledLines cl = asCoupledLines(*a_extraction, a_solvedLength, f);
         if (!cl.error.isEmpty()) return out;
         const double z = reference > 0 ? reference : 50.0;
         const std::vector<std::vector<std::complex<double>>> sm = fem::coupledSParameters(cl, a_solvedLength, z);
-        const std::size_t n = std::size_t(nets);
-        if (sm.size() != 2 * n) return out;
+        const std::size_t n = std::size_t(lines);
+        if (sm.size() != 2 * n || cl.names.size() != lines) return out;
         out << tr("%1 as a %2-port into %3 Ohm at %4 GHz: %5 through S%6,1 %7 dB; onto %8 S2,1 %9 dB at the near end, "
                   "S%10,1 %11 dB at the far.")
-                   .arg(a_extraction->names.join(QStringLiteral(", ")))
-                   .arg(2 * nets)
+                   .arg(cl.names.join(QStringLiteral(", ")))
+                   .arg(2 * lines)
                    .arg(z, 0, 'g', 4)
                    .arg(f / 1e9, 0, 'g', 3)
-                   .arg(a_extraction->names.at(0))
-                   .arg(nets + 1)
+                   .arg(cl.names.at(0))
+                   .arg(lines + 1)
                    .arg(dB(sm[n][0]), 0, 'f', 2)
-                   .arg(a_extraction->names.at(1))
+                   .arg(cl.names.at(1))
                    .arg(dB(sm[1][0]), 0, 'f', 1)
-                   .arg(nets + 2)
+                   .arg(lines + 2)
                    .arg(dB(sm[n + 1][0]), 0, 'f', 1);
         for (const fem::LineMode& m : cl.modes)
             if (m.nEff > 0) slowest = slowest > 0 ? std::min(slowest, kLightSpeed / m.nEff) : kLightSpeed / m.nEff;
     } else {
-        const fem::LineRLGC line = asLine(*a_extraction, 0, a_solvedLength, f);
+        const int index = signalNets.value(0, 0);
+        const fem::LineRLGC line = asLine(*a_extraction, index, a_solvedLength, f);
         if (!line.error.isEmpty()) return out;
         // Into ports of its own impedance, which is the match a user is
         // looking for - or into the reference asked for, said as such
@@ -1937,7 +2036,7 @@ QStringList RF25Doc::sParameterSummary(double reference) const
         const std::array<std::complex<double>, 4> sp = fem::lineSParameters(line, a_solvedLength, z);
         out << (reference > 0 ? tr("%1 as a two-port into %2 Ohm at %3 GHz: S11 %4 dB, S21 %5 dB at %6°; its own Zc is "
                                    "%7 Ohm.")
-                                    .arg(a_extraction->names.at(0))
+                                    .arg(a_extraction->names.at(index))
                                     .arg(z, 0, 'g', 4)
                                     .arg(f / 1e9, 0, 'g', 3)
                                     .arg(dB(sp[0]), 0, 'f', 1)
@@ -1945,13 +2044,13 @@ QStringList RF25Doc::sParameterSummary(double reference) const
                                     .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1)
                                     .arg(own, 0, 'g', 4)
                               : tr("%1 as a two-port into its own %2 Ohm at %3 GHz: S11 %4 dB, S21 %5 dB at %6°.")
-                                    .arg(a_extraction->names.at(0))
+                                    .arg(a_extraction->names.at(index))
                                     .arg(z, 0, 'g', 4)
                                     .arg(f / 1e9, 0, 'g', 3)
                                     .arg(dB(sp[0]), 0, 'f', 1)
                                     .arg(dB(sp[1]), 0, 'f', 2)
                                     .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1));
-        slowest = lineParameters(*a_extraction, 0, a_solvedLength).velocity;
+        slowest = lineParameters(*a_extraction, index, a_solvedLength).velocity;
     }
     if (out.isEmpty()) return out;
     // And where the quasi-static answer stops being the whole story,
@@ -2000,9 +2099,9 @@ QString RF25Doc::exportPath(const QString& tag) const
     // Named nothing: beside the model, with as many ports as it writes - a
     // full-wave solve's own, or a quasi-static solve's line or lines.
     const bool coupled = textOf(*node, QStringLiteral("of")) == QLatin1String("coupled");
-    const int nets = a_extraction ? int(a_extraction->names.size()) : 1;
+    const int lines = a_extraction ? int(a_extraction->signalNets().size()) : 1;
     const int ports = a_fullWave && a_fullWave->ok() ? int(a_fullWave->portNames.size())
-                      : coupled                       ? 2 * std::max(1, nets)
+                      : coupled                       ? 2 * std::max(1, lines)
                                                       : 2;
     const QString stem = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
     return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.s%3p").arg(stem, tag).arg(ports)));
@@ -2031,6 +2130,7 @@ bool RF25Doc::exportRequest(const QString& tag, ExportRequest* what, QString* er
         return false;
     }
     out.version2 = textOf(*node, QStringLiteral("version")) == QLatin1String("2.0");
+    out.mixed = textOf(*node, QStringLiteral("modes")) == QLatin1String("mixed");
     if (what != nullptr) *what = out;
     return true;
 }
@@ -2114,6 +2214,14 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
         }
         comments << tr("The reference planes: %1").arg(planes.join(QStringLiteral("; ")));
         for (const QString& line : a_waveNotes) comments << line;
+        // A differential pair's modes are Touchstone 2.0's alone.
+        if (what.mixed) {
+            if (a_fullWave->pairs.isEmpty())
+                return refuse(tr("Mixed modes are of differential pairs, and the solve has none: pair two ports (a port's "
+                                 "Pair with) and solve again."));
+            comments << tr("Each port into its own reference, as [Reference] says");
+            return touchstone2Of(*a_fullWave, comments, true);
+        }
         if (what.version2) {
             comments << tr("Each port into its own reference, as [Reference] says");
             return touchstone2Of(*a_fullWave, comments);
@@ -2123,6 +2231,9 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
     }
     if (!a_extraction || !a_extraction->ok())
         return refuse(a_solveProblem.isEmpty() ? tr("Nothing is solved yet: Solve the model first.") : a_solveProblem);
+    if (what.mixed)
+        return refuse(tr("Mixed modes are of a full-wave solve's differential pairs: a quasi-static solve's coupled lines "
+                         "are written by their nets."));
     QString why;
     const QList<double> sweep = studySweep(a_model, &why);
     if (sweep.isEmpty()) return refuse(why.isEmpty() ? tr("The study asks for no frequencies to write.") : why);
@@ -2142,16 +2253,19 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
     if (what.coupled) {
         const fem::CoupledSweep cs = coupledSweep(*a_extraction, length, sweep);
         if (!cs.error.isEmpty()) return refuse(cs.error);
+        // (The signals' lines, against the returns where there are any.)
+        QStringList lines;
+        for (const int i : a_extraction->signalNets()) lines << a_extraction->names.at(i);
         comments << tr("Ports 1 to %1 are the near ends of %2, in that order; %3 to %4 their far ends")
-                        .arg(a_extraction->names.size())
-                        .arg(a_extraction->names.join(QStringLiteral(", ")))
-                        .arg(a_extraction->names.size() + 1)
-                        .arg(2 * a_extraction->names.size());
+                        .arg(lines.size())
+                        .arg(lines.join(QStringLiteral(", ")))
+                        .arg(lines.size() + 1)
+                        .arg(2 * lines.size());
         const QString text = fem::touchstoneCoupled(cs, length, what.impedance, false, comments);
-        return what.version2 ? touchstone2From(text, 2 * int(a_extraction->names.size()), int(cs.points.size())) : text;
+        return what.version2 ? touchstone2From(text, 2 * int(lines.size()), int(cs.points.size())) : text;
     }
-    // One net, as a two-port: the one it names, or the first.
-    int index = 0;
+    // One net, as a two-port: the one it names, or the first signal.
+    int index = a_extraction->signalNets().value(0, 0);
     if (!what.net.isEmpty()) {
         index = int(a_extraction->names.indexOf(what.net));
         if (index < 0)

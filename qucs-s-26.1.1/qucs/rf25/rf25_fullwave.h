@@ -127,6 +127,11 @@ struct FullWavePort {
     /// phase C check of 1 November, F6). The grounds either side are tied
     /// together, and the solve shares the current out between them.
     bool coplanar = false;
+    /// An edge port's partner in a differential pair, by its name: this port
+    /// its plus and that one its minus, as a probe's two signals drive a
+    /// GSSG - the pair's mixed-mode S given beside the single-ended
+    /// (mixedModeOf()). Empty: none.
+    QString pair;
     double impedance = 50;     ///< its reference, Ohm
     /// An edge port's own discontinuity to be taken out after the solve,
     /// and how far its reference plane is then moved in along its line, m
@@ -238,6 +243,8 @@ struct FullWave {
     /// what each port had. Both empty where none was.
     QList<QList<QList<Complex>>> zSolved;
     QList<PortDeembedding> deembedding;
+    /// The differential pairs: each its plus port's index and its minus's.
+    QList<QPair<int, int>> pairs;
     QList<Filament> geometry;        ///< the runs themselves, beside the currents: in the plane, then the vias
     /// The cells of the mesh each run goes from and to; -1 from: the ground
     /// a via stands on.
@@ -268,7 +275,18 @@ struct FullWave {
  */
 FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack,
                     const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre = 1e-6,
-                    const FullWaveControl* control = nullptr);
+                    const FullWaveControl* control = nullptr, const QList<ReturnMark>& returns = {});
+
+/*!
+ * The mixed-mode S of frequency \a k of \a solved: each differential
+ * pair's (FullWave::pairs) differential and common mode, then each port of
+ * no pair as it is - D1, D2..., C1, C2..., then the rest - each pair's two
+ * ports of one reference impedance, the differential mode's twice it and
+ * the common mode's half, so that it is T S T' with T orthogonal. \a order
+ * names the modes ("D1"), and \a of says of which ports ("P1 - P2").
+ * Empty where there is no pair.
+ */
+QList<QList<Complex>> mixedModeOf(const FullWave& solved, int k, QStringList* order = nullptr, QStringList* of = nullptr);
 
 /// The same with an edge port at each of \a ports (the layout's units),
 /// on whichever face is nearest, each into \a reference Ohm.
@@ -304,8 +322,11 @@ QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool 
 /// nothing.
 QString touchstoneOf(const FullWave& solved, double reference, const QStringList& comments = {});
 /// The same as Touchstone 2.0, each port into its own reference, which its
-/// [Reference] says.
-QString touchstone2Of(const FullWave& solved, const QStringList& comments = {});
+/// [Reference] says - or, \a mixed, the mixed-mode S of its differential
+/// pairs (mixedModeOf()), as its [Mixed-Mode Order] says: each pair's
+/// differential mode, then each common mode, then the ports of no pair.
+/// Empty where it solved to nothing, or \a mixed and it has no pair.
+QString touchstone2Of(const FullWave& solved, const QStringList& comments = {}, bool mixed = false);
 
 } // namespace qucs_s::rf25
 

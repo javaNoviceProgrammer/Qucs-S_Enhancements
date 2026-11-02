@@ -160,15 +160,67 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         checks.insert(QStringLiteral("passive as solved"), w.solvedGain <= 1e-6);
         checks.insert(QStringLiteral("reciprocal as solved"), w.solvedAsymmetry <= 1e-9);
     }
+    // The differential pairs' modes (mixedModeOf()): each pair's
+    // differential mode, then each common mode, then the ports of no pair,
+    // into twice, half and their own reference.
+    QJsonObject mixed;
+    if (!w.pairs.isEmpty()) {
+        QStringList modes, of;
+        mixed = matrixJson(mixedModeOf(w, k, &modes, &of), true);
+        mixed.insert(QStringLiteral("frequency"), w.frequencies.at(k));
+        mixed.insert(QStringLiteral("modes"), QJsonArray::fromStringList(modes));
+        mixed.insert(QStringLiteral("of"), QJsonArray::fromStringList(of));
+        const int pairs = int(w.pairs.size());
+        QJsonArray references;
+        QList<bool> paired(np, false);
+        for (const double factor : {2.0, 0.5})
+            for (const QPair<int, int>& pair : w.pairs) {
+                references.append(factor * w.references.at(pair.first));
+                paired[pair.first] = paired[pair.second] = true;
+            }
+        for (int p = 0; p < np; ++p)
+            if (!paired.at(p)) references.append(w.references.at(p));
+        mixed.insert(QStringLiteral("reference impedances"), references);
+        // Over the sweep, in decibels: each pair's terms, SDD21 the
+        // differential mode out of the second pair for the differential mode
+        // into the first; for more than two pairs, the first column and the
+        // diagonal of the two modes' own blocks.
+        QJsonArray sweep;
+        for (int f = 0; f < nf && !brief; ++f) {
+            const QList<QList<std::complex<double>>> m = mixedModeOf(w, f);
+            QJsonObject point;
+            point.insert(QStringLiteral("frequency"), w.frequencies.at(f));
+            for (int j = 0; j < 2 * pairs; ++j)
+                for (int i = 0; i < 2 * pairs; ++i) {
+                    const bool rowD = i < pairs, columnD = j < pairs;
+                    const int a = i % pairs, b = j % pairs;
+                    if (pairs > 2 && (rowD != columnD || (b != 0 && a != b))) continue;
+                    point.insert(QStringLiteral("S%1%2%3%4_dB")
+                                     .arg(rowD ? QLatin1Char('D') : QLatin1Char('C'))
+                                     .arg(columnD ? QLatin1Char('D') : QLatin1Char('C'))
+                                     .arg(a + 1)
+                                     .arg(b + 1),
+                                 20 * std::log10(std::max(1e-300, std::abs(m.at(i).at(j)))));
+                }
+            sweep.append(point);
+        }
+        if (!brief) mixed.insert(QStringLiteral("sweep"), sweep);
+    }
     if (brief) {
         QJsonObject few;
         few.insert(QStringLiteral("frequency"), w.frequencies.at(k));
         few.insert(QStringLiteral("dB"), s.value(QStringLiteral("dB")));
         out.insert(QStringLiteral("s matrix"), few);
+        if (!mixed.isEmpty()) {
+            QJsonObject modes;
+            for (const char* key : {"modes", "of", "frequency", "dB"}) modes.insert(QLatin1String(key), mixed.value(QLatin1String(key)));
+            out.insert(QStringLiteral("mixed-mode"), modes);
+        }
         out.insert(QStringLiteral("checks"), checks);
         return out;
     }
     out.insert(QStringLiteral("s matrix"), s);
+    if (!mixed.isEmpty()) out.insert(QStringLiteral("mixed-mode"), mixed);
     QJsonObject z = matrixJson(w.z.at(k), false);
     z.insert(QStringLiteral("frequency"), w.frequencies.at(k));
     out.insert(QStringLiteral("z matrix"), z);
@@ -204,12 +256,13 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                    "Full wave: the mixed-potential integral equation on the mesh - currents on the runs between cells "
                    "that share an edge, charges on the cells - with the stack's retarded Green's functions, solved at "
                    "each frequency. Each port drives the face of the conductor it is on (an edge port, its current "
-                   "back through the ground - or, a coplanar one, through the conductors beside it, tied as a probe's "
+                   "back through the ground - or, a coplanar one, through the nearest return conductors beside it, tied as a probe's "
                    "grounds are) or the cells under it (an internal port: its rectangle's, or the one under its point), its reference plane at the centres of the "
                    "cells it drives, and its S is into its own reference impedance (Kurokawa's power waves). The "
-                   "ground plane is taken as perfect and a metal as a sheet, its edges losing as its thickness lets "
-                   "the current crowd there. rf25_export writes these as a "
-                   "Touchstone."));
+                   "ground plane, where there is one, is taken as perfect - with none, every port returns through the "
+                   "layout's conductors - and a metal as a sheet, its edges losing as its thickness lets the current "
+                   "crowd there. A pair's mixed-mode S is its differential mode into twice the ports' reference and "
+                   "its common mode into half. rf25_export writes these as a Touchstone."));
     return out;
 }
 
@@ -314,15 +367,21 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         }
         net.insert(QStringLiteral("c"), row);
         net.insert(QStringLiteral("c0"), bare);
-        // One of several conductors is no line by itself: its own row - its
-        // charge with every conductor at a volt - is neither of a pair's
-        // modes, which "coupled lines" gives.
-        if (e->names.size() > 1) {
+        // A return conductor is what the lines come back through; one of
+        // several conductors - or signals, where there are returns - is no
+        // line by itself: its own row is neither of a pair's modes, which
+        // "coupled lines" gives.
+        const bool back = e->returns.value(i, false);
+        if (back) net.insert(QStringLiteral("return"), true);
+        const int count = e->hasReturns() ? int(e->signalNets().size()) : int(e->names.size());
+        if (back || count > 1) {
             net.insert(QStringLiteral("line not given"),
-                       tr("%1 is one of %2 coupled conductors, which have modes rather than a line each: see \"coupled "
-                          "lines\".")
-                           .arg(e->names.at(i))
-                           .arg(e->names.size()));
+                       back ? tr("%1 is a return conductor: the lines are of the signals, against it.").arg(e->names.at(i))
+                            : tr("%1 is one of %2 coupled %3, which have modes rather than a line each: see \"coupled "
+                                 "lines\".")
+                                  .arg(e->names.at(i))
+                                  .arg(count)
+                                  .arg(e->hasReturns() ? tr("signals") : tr("conductors")));
             nets.append(net);
             continue;
         }
@@ -376,11 +435,41 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     // Several conductors are coupled lines, whose modes are what a
     // designer of a pair actually asks after.
     double slowest = 0;   // m/s: the slowest mode's, for where the S parameters first turn over
-    if (e->names.size() > 1 && length > 0) {
+    const int signalCount = e->hasReturns() ? int(e->signalNets().size()) : int(e->names.size());
+    if (signalCount > 1 && length > 0) {
         const fem::CoupledLines cl = asCoupledLines(*e, length, frequency);
         if (cl.error.isEmpty() && !cl.modes.empty()) {
             QJsonObject coupled;
+            // The signals, against the returns where there are any (a
+            // coplanar line's grounds at nought: the GSSG check of 1
+            // November, G1), and their matrices per metre (G3).
+            QJsonArray conductors, returning;
+            for (const QString& name : cl.names) conductors.append(name);
+            for (int i = 0; i < e->names.size(); ++i)
+                if (e->returns.value(i, false)) returning.append(e->names.at(i));
+            coupled.insert(QStringLiteral("conductors"), conductors);
+            if (!returning.isEmpty()) coupled.insert(QStringLiteral("returning through"), returning);
             coupled.insert(QStringLiteral("symmetric pair"), cl.symmetricPair);
+            const auto matrix = [](const fem::CoupledLines::Matrix& m) {
+                QJsonArray rows;
+                for (const std::vector<double>& r : m) {
+                    QJsonArray row;
+                    for (const double v : r) row.append(v);
+                    rows.append(row);
+                }
+                return rows;
+            };
+            QJsonObject per;
+            per.insert(QStringLiteral("C"), matrix(cl.C));
+            per.insert(QStringLiteral("C0"), matrix(cl.C0));
+            per.insert(QStringLiteral("L"), matrix(cl.L));
+            if (cl.rlgc) {
+                per.insert(QStringLiteral("R"), matrix(cl.R));
+                per.insert(QStringLiteral("G"), matrix(cl.G));
+                per.insert(QStringLiteral("frequency"), cl.frequency);
+            }
+            per.insert(QStringLiteral("units"), QStringLiteral("F/m, H/m, Ohm/m, S/m; Maxwell form, of the conductors in order"));
+            coupled.insert(QStringLiteral("per metre"), per);
             QJsonArray modes;
             for (const fem::LineMode& m : cl.modes) {
                 QJsonObject one;
@@ -395,8 +484,12 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                 if (m.nEff > 0) slowest = slowest > 0 ? std::min(slowest, kLightSpeed / m.nEff) : kLightSpeed / m.nEff;
             }
             coupled.insert(QStringLiteral("modes"), modes);
-            // The 2N-port: the near ends first, then the far ends.
-            const std::vector<std::vector<std::complex<double>>> sm = fem::coupledSParameters(cl, length, zref);
+            // The 2N-port, of a length asked for: the near ends first, then
+            // the far ends. Of the solved length unasked, it came first in
+            // the answer and was what max_chars cut around (G7).
+            const std::vector<std::vector<std::complex<double>>> sm =
+                args.contains(QLatin1String("length")) ? fem::coupledSParameters(cl, length, zref)
+                                                       : std::vector<std::vector<std::complex<double>>>();
             QJsonArray rows;
             for (const std::vector<std::complex<double>>& row : sm) {
                 QJsonArray re, im;
@@ -409,13 +502,18 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                 pair.insert(QStringLiteral("im"), im);
                 rows.append(pair);
             }
-            coupled.insert(QStringLiteral("s matrix"), rows);
-            coupled.insert(QStringLiteral("ports"),
-                           tr("1 to %1 are the near ends of %2, in that order; %3 to %4 their far ends")
-                               .arg(e->names.size())
-                               .arg(e->names.join(QStringLiteral(", ")))
-                               .arg(e->names.size() + 1)
-                               .arg(2 * e->names.size()));
+            if (!sm.empty()) {
+                coupled.insert(QStringLiteral("s matrix"), rows);
+                coupled.insert(QStringLiteral("ports"),
+                               tr("1 to %1 are the near ends of %2, in that order; %3 to %4 their far ends")
+                                   .arg(cl.names.size())
+                                   .arg(cl.names.join(QStringLiteral(", ")))
+                                   .arg(cl.names.size() + 1)
+                                   .arg(2 * cl.names.size()));
+            } else {
+                coupled.insert(QStringLiteral("s matrix"),
+                               tr("of a length asked for: give rf25_solve a 'length' (rf25_export writes it too)"));
+            }
             out.insert(QStringLiteral("coupled lines"), coupled);
         } else if (!cl.error.isEmpty()) {
             out.insert(QStringLiteral("coupled lines not given"), cl.error);
@@ -492,11 +590,17 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         brief.insert(QStringLiteral("nets"), few);
         const QJsonObject coupled = out.value(QStringLiteral("coupled lines")).toObject();
         if (!coupled.isEmpty()) {
+            // The signals, what they return through and their matrices per
+            // metre, as well as the modes (G7).
+            QJsonObject lines;
+            for (const char* key : {"conductors", "returning through", "symmetric pair", "per metre"})
+                if (coupled.contains(QLatin1String(key))) lines.insert(QLatin1String(key), coupled.value(QLatin1String(key)));
+            brief.insert(QStringLiteral("coupled lines"), lines);
             QJsonArray modes;
             for (const QJsonValue& v : coupled.value(QStringLiteral("modes")).toArray()) {
                 const QJsonObject mode = v.toObject();
                 QJsonObject kept;
-                for (const char* key : {"name", "Z", "epsilon_eff", "alpha"}) kept.insert(QLatin1String(key), mode.value(QLatin1String(key)));
+                for (const char* key : {"name", "n_eff", "Z", "epsilon_eff", "alpha"}) kept.insert(QLatin1String(key), mode.value(QLatin1String(key)));
                 modes.append(kept);
             }
             brief.insert(QStringLiteral("modes"), modes);
@@ -650,6 +754,20 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
         if (!given) return errorResult(tr("'impedance' is a reference impedance above zero (\"50\")."));
         what.impedance = *given;
     }
+    if (args.contains(QLatin1String("modes"))) {
+        const QString modes = args.value(QLatin1String("modes")).toString().trimmed();
+        if (modes != QLatin1String("single") && modes != QLatin1String("mixed"))
+            return errorResult(tr("'modes' is \"single\" (each port as it is) or \"mixed\" (each differential pair's "
+                                  "differential and common modes), not \"%1\".").arg(modes));
+        what.mixed = modes == QLatin1String("mixed");
+    }
+    // A pair's modes are Touchstone 2.0's alone.
+    if (what.mixed) {
+        if (args.value(QLatin1String("version")).toString().trimmed() == QLatin1String("1.1"))
+            return errorResult(tr("Mixed modes are written in Touchstone 2.0, whose [Mixed-Mode Order] says what each is; "
+                                  "1.1 has no way to."));
+        what.version2 = true;
+    }
 
     QString why;
     const QString text = model->exportText(what, &why);
@@ -662,7 +780,7 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     if (where.isEmpty()) {
         const QString name = model->getDocName();
         const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
-        const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
+        const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->signalNets().size()) : 2;
         const QString stem = name.isEmpty() ? QStringLiteral("model") : QFileInfo(name).completeBaseName();
         where = QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1.s%2p").arg(stem).arg(ports)));
     } else if (QFileInfo(where).isRelative()) {
@@ -679,9 +797,10 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     QJsonObject out;
     out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
     out.insert(QStringLiteral("file"), where);
-    const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
+    const int ports = full ? int(wave->portNames.size()) : what.coupled ? 2 * int(model->extraction()->signalNets().size()) : 2;
     out.insert(QStringLiteral("ports"), ports);
     out.insert(QStringLiteral("version"), what.version2 ? QStringLiteral("2.0") : QStringLiteral("1.1"));
+    if (what.mixed) out.insert(QStringLiteral("modes"), QStringLiteral("mixed"));
     // A full-wave solve's 2.0 file puts each port into its own reference;
     // every other file every port into the one asked.
     const bool own = full && what.version2;
@@ -705,8 +824,16 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
         out.insert(QStringLiteral("from"), sweep.first());
         out.insert(QStringLiteral("to"), sweep.last());
     }
+    QStringList modes, of;
+    if (full && what.mixed) mixedModeOf(*wave, 0, &modes, &of);
+    for (int m = 0; m < modes.size(); ++m) modes[m] = QStringLiteral("%1 (%2)").arg(modes.at(m), of.at(m));
     out.insert(QStringLiteral("what it wrote"),
-               full ? tr("The ports of the full-wave solve: a %1-port, %2 in that order, %3. ('of', 'net' and 'length' "
+               !modes.isEmpty()
+                   ? tr("The full-wave solve's ports as their modes, in the order its [Mixed-Mode Order] says: %1 - each "
+                        "differential mode into twice its ports' reference, each common mode into half, a port of no pair "
+                        "into its own.")
+                         .arg(modes.join(QStringLiteral(", ")))
+               : full ? tr("The ports of the full-wave solve: a %1-port, %2 in that order, %3. ('of', 'net' and 'length' "
                          "are a quasi-static solve's.)")
                           .arg(ports)
                           .arg(wave->portNames.join(QStringLiteral(", ")),
@@ -714,7 +841,8 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
                                    : tr("each into %1 Ohm").arg(what.impedance, 0, 'g', 4))
                : what.coupled ? tr("Every net as coupled lines: a %1-port, the near ends first, then the far ends.").arg(ports)
                               : tr("Net %1 as a two-port, port 1 at its start.")
-                                    .arg(what.net.isEmpty() ? model->extraction()->names.value(0) : what.net));
+                                    .arg(what.net.isEmpty() ? model->extraction()->names.value(model->extraction()->signalNets().value(0, 0))
+                                                            : what.net));
     // Which Touchstone it is, and whether a schematic's part reads it.
     const QString version =
         what.version2 ? tr("Touchstone 2.0, real and imaginary, its [Reference] giving %1. A schematic's S-parameter part "

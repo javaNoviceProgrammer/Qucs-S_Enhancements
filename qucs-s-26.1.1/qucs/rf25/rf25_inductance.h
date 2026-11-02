@@ -177,10 +177,12 @@ bool faceEdge(const QList<Conductor>& conductors, QPointF where, const QString& 
  * line, either side of it - below its first end, beyond its second -
  * whose shapes stand on the same side of it, \a outward pointing away
  * from them: what a coplanar port's grounds are, as the full-wave solve
- * finds them on the mesh. A side with none is a null line.
+ * finds them on the mesh. Given \a returns (a conductor's), only the
+ * return conductors', any other passed over, as the solve passes a GSSG's
+ * other signal. A side with none is a null line.
  */
 std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLineF& face, QPointF outward,
-                                  const QString& layer = QString());
+                                  const QString& layer = QString(), const QList<bool>* returns = nullptr);
 
 /*!
  * The cells a port at \a where (the layout's units) drives: those of \a reached
