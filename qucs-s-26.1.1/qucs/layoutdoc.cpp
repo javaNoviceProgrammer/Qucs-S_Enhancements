@@ -56,6 +56,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSet>
 #include <QShortcut>
 #include <QSpinBox>
 #include <QSplitter>
@@ -71,8 +72,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 using namespace qucs_s::layout;
+namespace markup = qucs_s::markup;
 
 namespace {
 
@@ -572,6 +575,17 @@ void LayoutView::setMode(Mode mode)
     if (mode == a_mode) return;
     a_mode = mode;
     a_measuring = false;
+    // A stroke being drawn is let go; what an eraser took is kept, for Undo.
+    if (a_drag == Drag::Ink) {
+        a_drag = Drag::None;
+        a_stroke = markup::Stroke();
+        update();
+    } else if (a_drag == Drag::Erase) {
+        a_drag = Drag::None;
+        if (a_erased) a_drawing.changed(a_beforeErase);
+        a_erased = false;
+        emit drawingChanged();
+    }
     if (a_drag == Drag::Box) {
         a_drag = Drag::None;
         a_zoomBox = QRect();
@@ -599,6 +613,277 @@ void LayoutView::addRuler(const QLineF& ruler)
     a_rulers.append(ruler);
     update();
     emit rulersChanged();
+}
+
+QString LayoutView::drawingPart() const
+{
+    return a_layout && a_cell >= 0 && a_cell < a_layout->cells.size() ? a_layout->cells.at(a_cell).name : QString();
+}
+
+void LayoutView::addStroke(const markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    a_drawing.add(stroke);
+    update();
+    emit drawingChanged();
+}
+
+bool LayoutView::undoDrawing()
+{
+    if (!a_drawing.undo()) return false;
+    update();
+    emit drawingChanged();
+    return true;
+}
+
+bool LayoutView::clearDrawing(bool all)
+{
+    if (!all && drawingPart().isEmpty()) return false;
+    if (!a_drawing.clear(all ? QString() : drawingPart())) return false;
+    update();
+    emit drawingChanged();
+    return true;
+}
+
+namespace {
+
+/// The most shapes and texts a reading of one stroke looks at.
+constexpr int MostRead = 200000;
+
+/// A shape or a text near a stroke: its outline (a text's: its origin)
+/// and that outline's box.
+struct Near {
+    Found found;
+    QPolygonF outline;
+    QRectF box;
+};
+
+/// What \a base finds whose bounds meet \a region, MostRead at most.
+QList<Near> nearOf(const Layout& layout, Query base, const QRectF& region)
+{
+    QList<Near> out;
+    base.region = region;
+    search(layout, base, [&layout, &out](const Found& f) {
+        const QPolygonF outline = outlineOf(layout, f);
+        out << Near{f, outline, outline.boundingRect()};
+        return out.size() < MostRead;
+    });
+    return out;
+}
+
+/// How far \a point lies from \a n: nought inside it.
+double distanceTo(const Near& n, QPointF point)
+{
+    const QPolygonF& o = n.outline;
+    if (o.isEmpty()) return std::numeric_limits<double>::infinity();
+    if (n.found.isText() || o.size() == 1) return QLineF(point, o.first()).length();
+    if (o.containsPoint(point, Qt::OddEvenFill)) return 0;
+    double d = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < o.size(); ++i) {
+        const QPointF a = o.at(i), ab = o.at((i + 1) % o.size()) - a;
+        const double l2 = QPointF::dotProduct(ab, ab);
+        const double t = l2 > 0 ? std::clamp(QPointF::dotProduct(point - a, ab) / l2, 0.0, 1.0) : 0.0;
+        d = std::min(d, QLineF(point, a + t * ab).length());
+    }
+    return d;
+}
+
+/// What a reading of a layout gathers: the shapes by layer, the texts, the
+/// cells placed - each once.
+struct Gathered {
+    QMap<QString, int> shapes, cells;
+    QStringList texts;
+    QSet<QString> seen;
+
+    bool isEmpty() const { return seen.isEmpty() && cells.isEmpty(); }
+    QJsonObject json() const
+    {
+        QJsonObject o;
+        if (!shapes.isEmpty()) {
+            QJsonObject s;
+            for (auto it = shapes.begin(); it != shapes.end(); ++it) s.insert(it.key(), it.value());
+            o.insert(QStringLiteral("shapes"), s);
+        }
+        if (!texts.isEmpty()) o.insert(QStringLiteral("texts"), QJsonArray::fromStringList(texts));
+        if (!cells.isEmpty()) {
+            QJsonObject c;
+            for (auto it = cells.begin(); it != cells.end(); ++it) c.insert(it.key(), it.value());
+            o.insert(QStringLiteral("cells"), c);
+        }
+        return o;
+    }
+    /// A shape or a text found, counted once.
+    void add(const Layout& layout, const Found& f)
+    {
+        const QString key = QStringLiteral("%1 %2 %3 %4 %5 %6").arg(f.cell).arg(f.shape).arg(f.label).arg(f.copy).arg(f.transform.dx()).arg(f.transform.dy());
+        if (seen.contains(key)) return;
+        seen.insert(key);
+        if (f.isText()) {
+            const QString text = layout.cells.at(f.cell).labels.at(f.label).text;
+            if (!texts.contains(text)) texts << text;
+            return;
+        }
+        ++shapes[layout.layers.at(layout.cells.at(f.cell).shapes.at(f.shape).layer).key.text()];
+    }
+};
+
+/// Calls \a each with every copy's box of each cell \a cell places
+/// (its own coordinates) that meets \a region, and the placed cell.
+void eachPlaced(const Layout& layout, int cell, const QRectF& region, const std::function<void(int, const QRectF&)>& each)
+{
+    const Cell& c = layout.cells.at(cell);
+    for (const Instance& inst : c.instances) {
+        if (inst.cell < 0) continue;
+        const QRectF one = inst.transform().mapRect(layout.cells.at(inst.cell).bounds);
+        if (inst.repetition < 0) {
+            if (one.intersects(region)) each(inst.cell, one);
+            continue;
+        }
+        c.repetitions.at(inst.repetition).forEach(one, region, [&each, &inst, &one](QPointF off) {
+            each(inst.cell, one.translated(off));
+            return true;
+        });
+    }
+}
+
+/// The placements \a point lies in, into \a g.
+void placedAt(const Layout& layout, int cell, QPointF point, Gathered& g)
+{
+    eachPlaced(layout, cell, QRectF(point - QPointF(1e-6, 1e-6), QSizeF(2e-6, 2e-6)), [&layout, &g, point](int placed, const QRectF& box) {
+        if (box.contains(point)) ++g.cells[layout.cells.at(placed).name];
+    });
+}
+
+/// What \a ring holds half inside it or more, of what \a base finds: a
+/// text, its origin.
+QJsonObject gatheredWithin(const Layout& layout, const Query& base, const QPolygonF& ring)
+{
+    Gathered g;
+    for (const Near& n : nearOf(layout, base, ring.boundingRect()))
+        if (n.found.isText() ? ring.containsPoint(n.outline.value(0), Qt::OddEvenFill) : markup::insideShare(ring, n.box) >= 0.5)
+            g.add(layout, n.found);
+    eachPlaced(layout, base.cell, ring.boundingRect(), [&layout, &ring, &g](int placed, const QRectF& box) {
+        if (markup::insideShare(ring, box) >= 0.5) ++g.cells[layout.cells.at(placed).name];
+    });
+    return g.json();
+}
+
+/// What lies under \a along - within \a reach of any of its points - of
+/// what \a base finds, and the placements it passes through.
+QJsonObject gatheredUnder(const Layout& layout, const Query& base, const QPolygonF& along, double reach)
+{
+    Gathered g;
+    const QRectF region = along.boundingRect().adjusted(-reach, -reach, reach, reach);
+    for (const Near& n : nearOf(layout, base, region)) {
+        const QRectF grown = n.box.adjusted(-reach, -reach, reach, reach);
+        for (const QPointF& pt : along)
+            if (grown.contains(pt) && distanceTo(n, pt) <= reach) {
+                g.add(layout, n.found);
+                break;
+            }
+    }
+    eachPlaced(layout, base.cell, region, [&layout, &along, &g](int placed, const QRectF& box) {
+        for (const QPointF& pt : along)
+            if (box.contains(pt)) {
+                ++g.cells[layout.cells.at(placed).name];
+                break;
+            }
+    });
+    return g.json();
+}
+
+/// What a stroke reaching \a end points at, of what \a base finds: what is
+/// under it there (within \a close) and the placements it is in, else the
+/// first such on ahead of it - \a along, within \a ahead - else the nearest
+/// shape or text within \a reach of its end.
+QJsonObject gatheredAt(const Layout& layout, const Query& base, QPointF end, QPointF along, double ahead, double close, double reach)
+{
+    const double grow = std::max(close, reach);
+    const QRectF region = QRectF(end, end + along * ahead).normalized().adjusted(-grow, -grow, grow, grow);
+    const QList<Near> near = nearOf(layout, base, region);
+    for (int k = 0; k <= (ahead > 0 ? 16 : 0); ++k) {
+        const QPointF pt = end + along * (ahead * k / 16);
+        Gathered g;
+        for (const Near& n : near)
+            if (n.box.adjusted(-close, -close, close, close).contains(pt) && distanceTo(n, pt) <= close) g.add(layout, n.found);
+        placedAt(layout, base.cell, pt, g);
+        if (!g.isEmpty()) return g.json();
+    }
+    // The nearest, and whatever is as near.
+    double best = reach;
+    for (const Near& n : near) best = std::min(best, distanceTo(n, end));
+    Gathered g;
+    if (best < reach)
+        for (const Near& n : near)
+            if (distanceTo(n, end) <= best + close) g.add(layout, n.found);
+    return g.json();
+}
+
+} // namespace
+
+QJsonArray LayoutView::readDrawing(bool points) const
+{
+    QJsonArray out;
+    if (!a_layout) return out;
+    const Layout& layout = *a_layout;
+    // What is seen: the layers shown, to the depth drawn, the texts if shown.
+    QVector<bool> layers(layout.layers.size(), true);
+    for (int i = 0; i < a_styles.size() && i < layers.size(); ++i) layers[i] = a_styles.at(i).visible;
+    for (const QString& part : a_drawing.parts()) {
+        const int cell = layout.cellIndex(part);
+        if (cell < 0) continue;
+        Query base;
+        base.cell = cell;
+        base.depth = a_depth;
+        base.layers = layers;
+        base.labels = a_labels;
+        const QList<markup::Stroke> strokes = a_drawing.on(part);
+        QList<QPointF> tips;
+        QList<int> heads;
+        const QList<markup::Gesture> gestures = markup::gesturesOf(strokes, &tips, &heads);
+        for (int i = 0; i < strokes.size(); ++i) {
+            const markup::Stroke& s = strokes.at(i);
+            const markup::Gesture g = gestures.at(i);
+            if (s.points.isEmpty()) continue;
+            QJsonObject o = markup::readingOf(s, i + 1, g, points);
+            o.insert(QStringLiteral("cell"), part);
+            const double reach = markup::reachOf(s), close = std::max(s.width / 2, 1e-9);
+            switch (g) {
+            case markup::Gesture::Arrowhead: o.insert(QStringLiteral("of stroke"), heads.at(i) + 1); break;
+            case markup::Gesture::Dot:
+                if (const QJsonObject on = gatheredAt(layout, base, s.points.first(), QPointF(), 0, close, reach); !on.isEmpty())
+                    o.insert(QStringLiteral("on"), on);
+                break;
+            case markup::Gesture::Ring: {
+                QPolygonF ring = s.points;
+                ring << ring.first();
+                if (const QJsonObject in = gatheredWithin(layout, base, ring); !in.isEmpty()) o.insert(QStringLiteral("around"), in);
+                break;
+            }
+            case markup::Gesture::Line:
+            case markup::Gesture::Arrow:
+            case markup::Gesture::Mark: {
+                // A highlighter's stroke, or a mark: what it lies on.
+                if (s.highlighter || g == markup::Gesture::Mark) {
+                    if (const QJsonObject on = gatheredUnder(layout, base, markup::alongOf(s), close); !on.isEmpty())
+                        o.insert(s.highlighter ? QStringLiteral("highlights") : QStringLiteral("on"), on);
+                    if (g != markup::Gesture::Arrow) break;
+                }
+                // Else from something, to what it points at.
+                const QPointF start = s.points.first(), end = tips.at(i);
+                const double length = QLineF(start, end).length();
+                const QPointF along = length > 0 ? (end - start) / length : QPointF();
+                if (const QJsonObject from = gatheredAt(layout, base, start, -along, 0, close, reach); !from.isEmpty())
+                    o.insert(QStringLiteral("from"), from);
+                if (const QJsonObject to = gatheredAt(layout, base, end, along, 0.3 * length, close, reach); !to.isEmpty())
+                    o.insert(QStringLiteral("points at"), to);
+                break;
+            }
+            }
+            out.append(o);
+        }
+    }
+    return out;
 }
 
 void LayoutView::clearRulers()
@@ -829,6 +1114,12 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
             p.drawText(at, Qt::AlignCenter, text);
         }
     }
+    // What the pen drew on the cell shown, and the stroke being drawn.
+    if (a_layout && a_cell >= 0 && (!a_drawing.isEmpty() || a_drag == Drag::Ink)) {
+        QList<markup::Stroke> strokes = a_drawing.on(drawingPart());
+        if (a_drag == Drag::Ink) strokes << a_stroke;
+        markup::paint(p, strokes, [this](QPointF pt) { return toPixel(pt); }, a_scale);
+    }
     if ((a_drag == Drag::Zoom || a_drag == Drag::Box) && !a_zoomBox.isNull()) {
         p.setPen(QPen(c.highlight, a_drag == Drag::Box ? 1.5 : 1, a_drag == Drag::Box ? Qt::SolidLine : Qt::DashLine));
         QColor tint = c.highlight;
@@ -1046,8 +1337,29 @@ void LayoutView::wheelEvent(QWheelEvent* event)
 void LayoutView::mousePressEvent(QMouseEvent* event)
 {
     setFocus();
+    // (Another button pressed while a stroke is drawn changes nothing.)
+    if (a_drag == Drag::Ink || a_drag == Drag::Erase) return;
     a_pressPos = a_lastPos = event->position().toPoint();
     a_moved = false;
+    if (event->button() == Qt::LeftButton && a_mode == Mode::Draw && !drawingPart().isEmpty()) {
+        const markup::Pen pen = markup::currentPen();
+        const QPointF at = toLayout(event->position());
+        if (pen.tool == markup::Tool::Eraser) {
+            a_beforeErase = a_drawing.strokes();
+            a_erased = false;
+            a_drag = Drag::Erase;
+            while (a_drawing.eraseAt(drawingPart(), at, markup::EraserReach / a_scale)) a_erased = true;
+            if (a_erased) {
+                update();
+                emit drawingChanged();
+            }
+        } else {
+            a_stroke = markup::begin(pen, drawingPart(), at, a_scale);
+            a_drag = Drag::Ink;
+            update();
+        }
+        return;
+    }
     if (event->button() == Qt::LeftButton && a_mode == Mode::Ruler && a_layout) {
         const QPointF start = snap(*a_layout, queryHere(), toLayout(event->position()), tolerance() * 1.5);
         a_rulers.append(QLineF(start, start));
@@ -1066,6 +1378,24 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
     const QPoint pos = event->position().toPoint();
     emit pointerMoved(toLayout(event->position()), true);
     if (a_drag == Drag::None) return;
+    // The pen and the eraser follow every move, the least of them too.
+    if (a_drag == Drag::Ink) {
+        if (QLineF(toPixel(a_stroke.points.last()), event->position()).length() >= markup::LeastStep) {
+            a_stroke.points << toLayout(event->position());
+            update();
+        }
+        return;
+    }
+    if (a_drag == Drag::Erase) {
+        bool erased = false;
+        while (a_drawing.eraseAt(drawingPart(), toLayout(event->position()), markup::EraserReach / a_scale)) erased = true;
+        if (erased) {
+            a_erased = true;
+            update();
+            emit drawingChanged();
+        }
+        return;
+    }
     if (!a_moved && (pos - a_pressPos).manhattanLength() >= 4) a_moved = true;
     if (!a_moved) return;
     switch (a_drag) {
@@ -1077,6 +1407,8 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
         emit viewChanged();
         break;
     }
+    case Drag::Ink:
+    case Drag::Erase: break;
     case Drag::Zoom:
     case Drag::Box:
         // The box between the two points, whichever way it is dragged: Qt 6's
@@ -1108,8 +1440,22 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
 void LayoutView::mouseReleaseEvent(QMouseEvent* event)
 {
     const Drag drag = a_drag;
+    // (A stroke ends with the button that began it.)
+    if ((drag == Drag::Ink || drag == Drag::Erase) && event->button() != Qt::LeftButton) return;
     a_drag = Drag::None;
     switch (drag) {
+    case Drag::Ink:
+        a_drawing.add(a_stroke);
+        a_stroke = markup::Stroke();
+        update();
+        emit drawingChanged();
+        break;
+    case Drag::Erase:
+        if (a_erased) a_drawing.changed(a_beforeErase);
+        a_beforeErase.clear();
+        a_erased = false;
+        emit drawingChanged();
+        break;
     case Drag::Pan:
         if (!a_moved && event->button() == Qt::LeftButton) {
             if (a_mode == Mode::PickPoint || a_mode == Mode::PickBox) emit picked(toLayout(event->position()));
@@ -1192,9 +1538,13 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
         emit gridToggleRequested();
         break;
     case Qt::Key_Escape:
-        // One thing at a time: the ruler being drawn, the selection, the
-        // rulers, ruler mode.
-        if (a_measuring && !a_rulers.isEmpty()) {
+        // One thing at a time: the stroke or the ruler being drawn, the
+        // selection, the rulers, the mode.
+        if (a_drag == Drag::Ink) {
+            a_drag = Drag::None;
+            a_stroke = markup::Stroke();
+            update();
+        } else if (a_measuring && !a_rulers.isEmpty()) {
             a_rulers.removeLast();
             a_measuring = false;
             a_drag = Drag::None;
@@ -1210,7 +1560,13 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
             event->ignore();
         }
         return;
-    default: QWidget::keyPressEvent(event); return;
+    default:
+        if (a_mode == Mode::Draw && event->matches(QKeySequence::Undo)) {
+            undoDrawing();
+            break;
+        }
+        QWidget::keyPressEvent(event);
+        return;
     }
     event->accept();
 }
@@ -1318,6 +1674,8 @@ void LayoutDoc::buildUi()
     depthLabel->setBuddy(a_depthBox);
     a_rulerButton = toolButton(a_toolbar, glyph(GlyphIcon::Ruler), tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"));
     a_rulerButton->setCheckable(true);
+    a_penButton = new markup::PenButton(tr("Cell"), a_toolbar);
+    a_penButton->setProperty("layoutTool", true);
     a_labelsButton = toolButton(a_toolbar, glyph(GlyphIcon::Text), tr("Show the texts"));
     a_labelsButton->setCheckable(true);
     a_gridButton = toolButton(a_toolbar, glyph(GlyphIcon::Grid), tr("Show the grid (G, or View > Show Grid)"));
@@ -1390,6 +1748,7 @@ void LayoutDoc::buildUi()
     bar->addWidget(a_depthBox);
     bar->addSpacing(12);
     bar->addWidget(a_rulerButton);
+    bar->addWidget(a_penButton);
     bar->addWidget(a_labelsButton);
     bar->addWidget(a_gridButton);
     bar->addStretch(1);
@@ -1544,9 +1903,23 @@ void LayoutDoc::buildUi()
         a_view->setMode(on ? LayoutView::Mode::Ruler : LayoutView::Mode::Select);
         a_view->setFocus();
     });
+    // The pen taken up and put down; its menu's undo and clearing.
+    connect(a_penButton, &QToolButton::toggled, this, [this](bool on) {
+        a_view->setMode(on ? LayoutView::Mode::Draw : LayoutView::Mode::Select);
+        a_view->setFocus();
+    });
+    a_penButton->setColorChooser([this](const QColor& now) {
+        const InADialog inADialog(this);   // (not freed under its own dialog)
+        return QColorDialog::getColor(now, this, tr("The Pen's Colour"));
+    });
+    connect(a_penButton, &markup::PenButton::undoRequested, this, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(); });
+    connect(a_penButton, &markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(true); });
+    connect(a_view, &LayoutView::drawingChanged, this, &LayoutDoc::updatePen);
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
-        const QSignalBlocker block(a_rulerButton);
+        const QSignalBlocker block(a_rulerButton), blockPen(a_penButton);
         a_rulerButton->setChecked(mode == LayoutView::Mode::Ruler);
+        a_penButton->setChecked(mode == LayoutView::Mode::Draw);
     });
     connect(a_findButton, &QToolButton::clicked, this, [this] { a_searchBar->isVisible() ? hideSearch() : showSearch(); });
     connect(a_findField, &QLineEdit::textChanged, this, [this](const QString& text) { find(text); });
@@ -1628,9 +2001,14 @@ void LayoutDoc::buildUi()
         QAction* ruler = menu.addAction(tr("Ruler"), this, [this](bool on) { a_rulerButton->setChecked(on); });
         ruler->setCheckable(true);
         ruler->setChecked(a_view->mode() == LayoutView::Mode::Ruler);
+        QAction* pen = menu.addAction(tr("Pen"), this, [this](bool on) { a_penButton->setChecked(on); });
+        pen->setCheckable(true);
+        pen->setChecked(a_view->mode() == LayoutView::Mode::Draw);
         QAction* grid = menu.addAction(tr("Grid"), this, [this](bool on) { setGridShown(on); });
         grid->setCheckable(true);
         grid->setChecked(a_view->gridShown());
+        if (a_view->drawing().count(a_view->drawingPart()) > 0)
+            menu.addAction(tr("Clear the Drawings on This Cell"), this, [this] { a_view->clearDrawing(); });
         if (!a_view->rulers().isEmpty()) {
             menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
             menu.addAction(tr("Cross-Section to Multiphysics…"), this, &LayoutDoc::crossSectionFromRuler);
@@ -1866,6 +2244,13 @@ void LayoutDoc::showCell(int cell, bool fit)
         if (f.bold()) a_cells->setCurrentItem(item);
     }
     updateInfo();
+    updatePen();
+}
+
+void LayoutDoc::updatePen()
+{
+    const markup::Drawing& d = a_view->drawing();
+    a_penButton->setDrawingState(d.canUndo(), d.count(a_view->drawingPart()), int(d.strokes().size()));
 }
 
 int LayoutDoc::depth() const
@@ -2335,6 +2720,8 @@ void LayoutDoc::print(QPrinter*, QPainter* painter, bool, bool)
     o.text = Qt::black;
     if (a_view->colorsAdapted()) o.background = Qt::white;
     qucs_s::layout::render(*painter, *a_layout, o);
+    // What the pen drew on it, as the view has it.
+    markup::paint(*painter, a_view->drawing().on(a_view->drawingPart()), [&o](QPointF pt) { return o.toDevice.map(pt); }, scale);
     painter->restore();
 }
 

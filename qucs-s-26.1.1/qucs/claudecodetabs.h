@@ -19,6 +19,7 @@
 #include <QWidget>
 
 #include <functional>
+#include <utility>
 
 class ClaudeCodePanel;
 namespace qucs_s::claude {
@@ -116,6 +117,8 @@ public:
     /// bars are about (ClaudeCodePanel::setProjectDirectory()).
     void setProjectDirectory(const QString& dir);
     void setDocumentProvider(std::function<QString()> provider);
+    /// What the pen drew on a document (ClaudeCodePanel::setDrawingsProvider()).
+    void setDrawingsProvider(std::function<std::pair<quint64, QString>(const QString& file, quint64 known)> provider);
     void setSchematicsProvider(std::function<QStringList()> provider);
     void setFilesProvider(std::function<QStringList()> provider);
     /// A document was saved under another name (Save As): a conversation
@@ -167,6 +170,7 @@ private:
     QString a_defaultDir;
     QString a_projectDir;
     std::function<QString()> a_document;
+    std::function<std::pair<quint64, QString>(const QString& file, quint64 known)> a_drawings;
     std::function<QStringList()> a_schematics;
     std::function<QStringList()> a_files;
     qucs_s::claude::ToolHost* a_host = nullptr;

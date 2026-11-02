@@ -15,6 +15,7 @@
 
 #include <QImage>
 #include <QList>
+#include <QPolygonF>
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
@@ -47,6 +48,20 @@ struct SlideInfo {
     QStringList notShown;
 };
 
+/// A part of a slide where it is drawn, in points from the slide's top
+/// left: a paragraph of text, a table's cell, a picture, a chart, a shape.
+/// What a mark drawn on the slide is read against (markup.h).
+struct SlidePart {
+    enum Kind { Paragraph, Cell, Picture, Chart, Shape };
+    Kind kind = Shape;
+    QPolygonF outline;   ///< as drawn, turned with what holds it
+    /// A paragraph's or a cell's text; a picture's alt text, else its name;
+    /// a chart's title; a shape's name.
+    QString text;
+    /// A paragraph's or a cell's words, each where it is drawn.
+    QList<std::pair<QString, QPolygonF>> words;
+};
+
 /// A presentation read: its slides, drawn on demand.
 class Presentation
 {
@@ -71,9 +86,16 @@ public:
     /// on its own background. A null image for a slide that is not there.
     QImage render(int index, qreal scale) const;
     /// Slide \a index drawn by \a painter into \a target (in its
-    /// coordinates; the slide's aspect kept, in the middle): through an
-    /// image at the resolution \a painter's device has there.
+    /// coordinates; the slide's aspect kept, in the middle - placed()):
+    /// through an image at the resolution \a painter's device has there.
     void render(int index, QPainter* painter, const QRectF& target) const;
+    /// Where a slide drawn into \a target lands: its aspect kept, in the
+    /// middle.
+    QRectF placed(const QRectF& target) const;
+    /// Slide \a index's parts, where they are drawn - its paragraphs and
+    /// their words, its tables' cells, its pictures, charts and shapes, those
+    /// underneath first.
+    QList<SlidePart> parts(int index) const;
 
     /// The slides whose text has \a text (case aside), and how often each.
     QList<std::pair<int, int>> find(const QString& text) const;

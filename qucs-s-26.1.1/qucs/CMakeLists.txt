@@ -215,7 +215,7 @@ SET(QUCS_SRCS
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp settingsio.cpp textcodec.cpp links.cpp
   autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp designedstyle.cpp statusbar.cpp elidedlabel.cpp erc.cpp
-  embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp probe.cpp spectrum.cpp cursorvalues.cpp ltspiceimport.cpp ink.cpp levelofdetail.cpp valuereading.cpp
+  embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp probe.cpp spectrum.cpp cursorvalues.cpp ltspiceimport.cpp ink.cpp markup.cpp levelofdetail.cpp valuereading.cpp
   systemopen.cpp oppoint.cpp workspace.cpp vamodule.cpp optimization.cpp ngoptimize.cpp
   ngstatistics.cpp ngsweep.cpp
   exportdevices.cpp graphicsexport.cpp osdiselection.cpp projectlibraries.cpp numberformat.cpp
@@ -234,6 +234,7 @@ spectrum.h
 cursorvalues.h
 ltspiceimport.h
 ink.h
+markup.h
 levelofdetail.h
 valuereading.h
 systemopen.h

@@ -36,6 +36,7 @@
 #include "pptx.h"
 #include "pptxdoc.h"
 #include "qucs.h"
+#include "settings.h"
 #include "qucscontrol.h"
 #include "svgguard.h"
 #include "zipfile.h"
@@ -46,6 +47,7 @@
 #include <cmath>
 
 using namespace qucs_s;
+namespace markup = qucs_s::markup;
 
 namespace {
 
@@ -2057,6 +2059,698 @@ private slots:
 
     // A deck of one's own in its tab, the window's picture taken: the first
     // file of QUCS_PPTX_RENDER, at slide QUCS_PPTX_SLIDE, into QUCS_PPTX_OUT.
+    // A drawing (markup.h): the strokes of a part, the parts drawn on; an
+    // eraser takes the latest stroke within its reach (its own half width
+    // more) and no other part's; each stroke added, an eraser's drag and a
+    // clearing undone in turn, back to nothing. A stroke's box is its
+    // points' grown by half its width. A stroke begun is as broad as its
+    // pen at the zoom it is drawn at, in the measures drawn on; a
+    // highlighter's its own width, its colour let through.
+    void aDrawingIsUndoneChangeByChange()
+    {
+        markup::Pen hand;
+        hand.color = QColor(10, 200, 30);
+        hand.width = 4;
+        hand.highlighterWidth = 20;
+        const markup::Stroke inked = markup::begin(hand, QStringLiteral("7"), QPointF(1, 2), 8);
+        QVERIFY(inked.on == QStringLiteral("7") && inked.points == QPolygonF({QPointF(1, 2)}) && !inked.highlighter);
+        QCOMPARE(inked.width, 0.5);
+        QCOMPARE(inked.color, hand.color);
+        hand.tool = markup::Tool::Highlighter;
+        const markup::Stroke band = markup::begin(hand, QStringLiteral("7"), QPointF(1, 2), 8);
+        QVERIFY(band.highlighter);
+        QCOMPARE(band.width, 2.5);
+        QCOMPARE(band.color.rgb(), hand.color.rgb());
+        QVERIFY2(band.color.alpha() > 80 && band.color.alpha() < 125, qPrintable(QString::number(band.color.alpha())));
+        markup::Drawing d;
+        markup::Stroke a, b, c;
+        a.on = b.on = QStringLiteral("1");
+        c.on = QStringLiteral("2");
+        a.points = {QPointF(0, 0), QPointF(10, 0)};
+        b.points = {QPointF(0, 5), QPointF(10, 5)};
+        c.points = {QPointF(3, 3)};
+        a.width = b.width = 2;
+        c.width = 4;
+        d.add(a);
+        d.add(b);
+        d.add(c);
+        QCOMPARE(d.count(QStringLiteral("1")), 2);
+        QCOMPARE(d.count(QStringLiteral("2")), 1);
+        QCOMPARE(d.parts(), QStringList({QStringLiteral("1"), QStringLiteral("2")}));
+        QCOMPARE(c.bounds(), QRectF(1, 1, 4, 4));
+        const QList<markup::Stroke> before = d.strokes();
+        QVERIFY(!d.eraseAt(QStringLiteral("1"), QPointF(5, 2.4), 0.3));   // 2.4 and 2.6 off, 1.3 its reach
+        QVERIFY(d.eraseAt(QStringLiteral("1"), QPointF(5, 4), 0.5));       // b, the latest, 1 off
+        QCOMPARE(d.count(QStringLiteral("1")), 1);
+        QCOMPARE(d.strokes().first().points.first(), QPointF(0, 0));
+        d.changed(before);
+        QVERIFY(!d.eraseAt(QStringLiteral("2"), QPointF(5, 0), 1));        // another part's stroke there
+        QVERIFY(d.clear(QStringLiteral("1")));
+        QCOMPARE(d.count(QStringLiteral("1")), 0);
+        QCOMPARE(d.count(QStringLiteral("2")), 1);
+        QVERIFY(!d.clear(QStringLiteral("3")));
+        QVERIFY(d.undo());
+        QCOMPARE(d.count(QStringLiteral("1")), 1);   // the clearing
+        QVERIFY(d.undo());
+        QCOMPARE(d.count(QStringLiteral("1")), 2);   // the eraser's drag
+        for (int i = 0; i < 3; ++i) QVERIFY(d.undo());
+        QVERIFY(d.isEmpty() && !d.canUndo() && !d.undo());
+    }
+
+    // The pen in hand, picked from the toolbar pen's menu - its tool, a
+    // colour, how broad, any colour the chooser gives - kept in the settings
+    // and the same in every viewer: another button's menu knows it at once.
+    // Picking takes the pen up; a colour picked with the eraser in hand
+    // takes the pen. The highlighter's width is its own. The icon is drawn
+    // in the pen's colour; the menu's undo and clearing are as the drawing.
+    void thePenIsPickedFromItsMenuAndKept()
+    {
+        markup::setCurrentPen(markup::Pen());
+        markup::PenButton one(QStringLiteral("Slide")), two(QStringLiteral("Cell"));
+        const auto entry = [](markup::PenButton& b, const QString& text) -> QAction* {
+            for (QAction* a : b.penMenu()->actions())
+                if (a->text() == text) return a;
+            return nullptr;
+        };
+        for (const QString& text : {QStringLiteral("Pen"), QStringLiteral("Highlighter"), QStringLiteral("Eraser"), QStringLiteral("Blue"),
+                                    QStringLiteral("Other Colour…"), QStringLiteral("Fine"), QStringLiteral("Undo the Last Change"),
+                                    QStringLiteral("Clear the Drawings on This Slide"), QStringLiteral("Clear All the Drawings")})
+            QVERIFY2(entry(one, text) != nullptr, qPrintable(text));
+        QVERIFY(!one.isChecked());
+        entry(one, QStringLiteral("Highlighter"))->trigger();
+        QVERIFY(one.isChecked());
+        QCOMPARE(markup::currentPen().tool, markup::Tool::Highlighter);
+        QVERIFY(entry(two, QStringLiteral("Highlighter"))->isChecked());
+        entry(one, QStringLiteral("Blue"))->trigger();
+        QCOMPARE(markup::currentPen().color, QColor(0x1c, 0x71, 0xd8));
+        entry(one, QStringLiteral("Bold"))->trigger();
+        QCOMPARE(markup::currentPen().highlighterWidth, 24.0);
+        QCOMPARE(markup::currentPen().width, 3.0);
+        one.setColorChooser([](const QColor&) { return QColor(10, 20, 30); });
+        entry(one, QStringLiteral("Other Colour…"))->trigger();
+        QCOMPARE(markup::currentPen().color, QColor(10, 20, 30));
+        one.setColorChooser([](const QColor&) { return QColor(); });
+        entry(one, QStringLiteral("Other Colour…"))->trigger();
+        QCOMPARE(markup::currentPen().color, QColor(10, 20, 30));
+        {
+            const QucsSettingsFile settings;
+            QCOMPARE(settings.value(QStringLiteral("Viewers/penTool")).toString(), QStringLiteral("highlighter"));
+            QCOMPARE(settings.value(QStringLiteral("Viewers/penColor")).toString(), QStringLiteral("#0a141e"));
+            QCOMPARE(settings.value(QStringLiteral("Viewers/highlighterWidth")).toDouble(), 24.0);
+        }
+        entry(one, QStringLiteral("Eraser"))->trigger();
+        QVERIFY(!entry(one, QStringLiteral("Fine"))->isEnabled());
+        entry(one, QStringLiteral("Red"))->trigger();
+        QCOMPARE(markup::currentPen().tool, markup::Tool::Pen);
+        QVERIFY(entry(two, QStringLiteral("Red"))->isChecked());
+        const QImage icon = markup::PenButton::icon(markup::currentPen()).pixmap(32, 32).toImage();
+        int red = 0;
+        for (int y = 0; y < icon.height(); ++y)
+            for (int x = 0; x < icon.width(); ++x)
+                if (icon.pixelColor(x, y).alpha() > 200 && near(icon.pixelColor(x, y), QColor(0xe0, 0x1b, 0x24), 30)) ++red;
+        QVERIFY2(red > 10, qPrintable(QString::number(red)));
+        QVERIFY(!entry(one, QStringLiteral("Undo the Last Change"))->isEnabled());
+        one.setDrawingState(true, 2, 5);
+        QVERIFY(entry(one, QStringLiteral("Undo the Last Change"))->isEnabled()
+                && entry(one, QStringLiteral("Clear the Drawings on This Slide"))->isEnabled());
+        one.setDrawingState(false, 0, 5);
+        QVERIFY(!entry(one, QStringLiteral("Clear the Drawings on This Slide"))->isEnabled()
+                && entry(one, QStringLiteral("Clear All the Drawings"))->isEnabled());
+        markup::setCurrentPen(markup::Pen());
+    }
+
+    // The pen on a slide. Taken up from the toolbar, a drag over slide 2
+    // draws on it in the pen's colour: in points of the slide, so that it
+    // zooms with it, as broad as the pen was at the zoom it was drawn at,
+    // and no further than its edges - on screen, in the slide's picture at
+    // twice the size, copied, printed where the slide lands on the page.
+    // A double click draws dots and plays nothing; Ctrl+Z undoes, pressed;
+    // the eraser takes the line away; Escape puts the pen down. Kept when
+    // the file is read again; the pen's menu clears this slide's, then all.
+    void aPenDrawsOnTheSlide()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1100, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        for (int i = 0; i < 3; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            d.slides << s;
+        }
+        const QString file = dir.filePath("workspace/pen.pptx");
+        QDir().mkpath(QFileInfo(file).absolutePath());
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly) && f.write(d.build()) > 0);
+        }
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr && doc->penButton() != nullptr);
+        pptx::SlideView* view = doc->view();
+        QWidget* port = view->viewport();
+        const auto send = [port](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, at, port->mapToGlobal(at), button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(port, &e);
+        };
+        const auto drag = [&send](QPointF from, QPointF to) {
+            send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            for (int i = 1; i <= 8; ++i) send(QEvent::MouseMove, from + (to - from) * (i / 8.0), Qt::NoButton, Qt::LeftButton);
+            send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+        };
+        const QColor green(0, 160, 0);
+        markup::Pen pen;
+        pen.color = green;
+        pen.width = 6;
+        markup::setCurrentPen(pen);
+        view->setZoom(1.0);
+        doc->goToSlide(1);
+        QApplication::processEvents();
+        doc->penButton()->click();
+        QVERIFY(view->penActive() && doc->penButton()->isChecked());
+        const QRect r = view->slideRect(1);
+        QCOMPARE(r.width(), 960);   // (a point a pixel)
+        drag(r.topLeft() + QPointF(100, 100), r.topLeft() + QPointF(300, 150));
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        const markup::Stroke s = view->drawing().strokes().first();
+        QCOMPARE(s.on, QStringLiteral("2"));
+        QVERIFY(QLineF(s.points.first(), QPointF(100, 100)).length() < 1e-9 && QLineF(s.points.last(), QPointF(300, 150)).length() < 1e-9);
+        QCOMPARE(s.width, 6.0);
+        // On screen, where it was drawn.
+        QApplication::processEvents();
+        const QImage screen = port->grab().toImage();
+        const qreal dpr = screen.devicePixelRatio();
+        QVERIFY(near(screen.pixelColor(((r.topLeft() + QPointF(200, 125)) * dpr).toPoint()), green, 30));
+        // In the slide's picture at twice the size: where it is, as broad -
+        // 3 points either side of the line, measured across it.
+        const QImage twice = doc->slideImage(1, 2);
+        const QPointF mid(200, 125), across = QPointF(-50, 200) / QLineF(0, 0, -50, 200).length();
+        QVERIFY(near(at(twice, mid, 2), green, 30));
+        QVERIFY(near(at(twice, mid + 2.2 * across, 2), green, 40));
+        QVERIFY(!near(at(twice, mid + 4.5 * across, 2), green, 60));
+        int greenOnOne = 0;
+        const QImage first = doc->slideImage(0, 1);
+        for (int y = 0; y < first.height(); y += 2)
+            for (int x = 0; x < first.width(); x += 2)
+                if (near(first.pixelColor(x, y), green, 30)) ++greenOnOne;
+        QCOMPARE(greenOnOne, 0);
+        // Past the slide's right edge a stroke goes on, drawn as far as the
+        // edge: none of it in the gap beside the slide (at 40 %, the slide
+        // whole in the view).
+        {
+            view->setZoom(0.4);
+            doc->goToSlide(1);
+            QApplication::processEvents();
+            const QRect half = view->slideRect(1);
+            QVERIFY2(half.right() + 12 < port->width(), qPrintable(QStringLiteral("%1 of %2").arg(half.right()).arg(port->width())));
+            const qreal y = half.top() + 100;
+            drag(QPointF(half.right() - 60, y), QPointF(half.right() + 12, y));
+            QApplication::processEvents();
+            const QImage edge = port->grab().toImage();
+            QVERIFY(near(edge.pixelColor((QPointF(half.right() - 20, y) * dpr).toPoint()), green, 30));
+            QVERIFY(!near(edge.pixelColor((QPointF(half.right() + 8, y) * dpr).toPoint()), green, 60));
+            QVERIFY(view->undoDrawing());
+            view->setZoom(1.0);
+            doc->goToSlide(1);
+            QApplication::processEvents();
+            QCOMPARE(view->slideRect(1), r);
+        }
+        // A double click draws, and plays nothing: what a widget is given
+        // of one, a press, a release, the double click and its release.
+        const QPointF dot = r.topLeft() + QPointF(500, 300);
+        send(QEvent::MouseButtonPress, dot, Qt::LeftButton, Qt::LeftButton);
+        send(QEvent::MouseButtonRelease, dot, Qt::LeftButton, Qt::NoButton);
+        send(QEvent::MouseButtonDblClick, dot, Qt::LeftButton, Qt::LeftButton);
+        send(QEvent::MouseButtonRelease, dot, Qt::LeftButton, Qt::NoButton);
+        QApplication::processEvents();
+        QVERIFY(doc->slideShow() == nullptr);
+        QCOMPARE(view->drawing().strokes().size(), 3);
+        // Ctrl+Z, pressed: the window's Undo does not take it.
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // The eraser across the line, and the erasing undone.
+        pen.tool = markup::Tool::Eraser;
+        markup::setCurrentPen(pen);
+        drag(r.topLeft() + QPointF(200, 105), r.topLeft() + QPointF(200, 145));
+        QCOMPARE(view->drawing().strokes().size(), 0);
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // Copied - 1920 pixels wide, two a point - and printed, with it.
+        doc->copySlide();
+        QVERIFY(near(at(QApplication::clipboard()->image(), mid, 2), green, 30));
+        {
+            QPrinter printer;
+            QImage page(1200, 900, QImage::Format_ARGB32_Premultiplied);
+            page.fill(Qt::white);
+            QPainter painter(&page);
+            doc->print(&printer, &painter, false, true);
+            painter.end();
+            // (The slide 1200 by 675 in the middle of the page: 1.25 a point.)
+            QVERIFY(near(page.pixelColor(QPointF(mid.x() * 1.25, 112.5 + mid.y() * 1.25).toPoint()), green, 40));
+        }
+        // Escape puts the pen down.
+        pen.tool = markup::Tool::Pen;
+        markup::setCurrentPen(pen);
+        QTest::keyClick(view, Qt::Key_Escape);
+        QVERIFY(!view->penActive() && !doc->penButton()->isChecked());
+        // Kept when the file is read again.
+        QVERIFY(doc->reload());
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // The pen's menu: this slide's cleared, then all.
+        markup::Stroke other = s;
+        other.on = QStringLiteral("1");
+        view->addStroke(other);
+        QAction* clearHere = nullptr;
+        QAction* clearAll = nullptr;
+        for (QAction* a : doc->penButton()->penMenu()->actions()) {
+            if (a->text() == QStringLiteral("Clear the Drawings on This Slide")) clearHere = a;
+            if (a->text() == QStringLiteral("Clear All the Drawings")) clearAll = a;
+        }
+        QVERIFY(clearHere != nullptr && clearAll != nullptr && clearHere->isEnabled());
+        doc->goToSlide(1);
+        clearHere->trigger();
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QCOMPARE(view->drawing().strokes().first().on, QStringLiteral("1"));
+        QVERIFY(!clearHere->isEnabled() && clearAll->isEnabled());
+        clearAll->trigger();
+        QVERIFY(view->drawing().isEmpty());
+        markup::setCurrentPen(markup::Pen());
+        app.closeAllFiles();
+    }
+
+    // A stroke read as one reads it (markup.h): a dot; a ring, back near
+    // where it began; a line, straight or nearly; an arrow drawn at one go,
+    // its tip where it turns back, but not a pen lifted with a wobble; a
+    // line with a short stroke drawn just after it at one of its ends, an
+    // arrow pointing there, the short one its head; a tick, a mark. Its
+    // points simplified; how much of a box a ring holds. On a page: a ring
+    // round a paragraph whole, or round some of its words; a line under
+    // words, or through them; a highlighter over words; an arrow from a
+    // word pointing at a picture it stops short of; a dot on a word; a mark
+    // on a chart; a dot on nothing. A reading in a sentence, the latest so
+    // many of them.
+    void strokesAreReadAsDrawn()
+    {
+        const auto stroke = [](const QPolygonF& points, double width = 2) {
+            markup::Stroke s;
+            s.on = QStringLiteral("1");
+            s.points = points;
+            s.width = width;
+            s.color = QColor(0xe0, 0x1b, 0x24);
+            return s;
+        };
+        // An ellipse of 23 points round c, a twelfth of it left open.
+        const auto ring = [&stroke](QPointF c, double rx, double ry) {
+            QPolygonF p;
+            for (int k = 0; k < 23; ++k) p << c + QPointF(rx * std::cos(2 * M_PI * k / 24), ry * std::sin(2 * M_PI * k / 24));
+            return stroke(p);
+        };
+        const auto line = [&stroke](QPointF a, QPointF b, int n = 12) {
+            QPolygonF p;
+            for (int k = 0; k <= n; ++k) p << a + (b - a) * (double(k) / n);
+            return stroke(p);
+        };
+        QPointF tip;
+        QCOMPARE(markup::gestureOf(stroke({QPointF(5, 5)})), markup::Gesture::Dot);
+        QCOMPARE(markup::gestureOf(stroke({QPointF(5, 5), QPointF(6, 6)})), markup::Gesture::Dot);
+        QCOMPARE(markup::gestureOf(ring(QPointF(100, 100), 60, 30)), markup::Gesture::Ring);
+        QCOMPARE(markup::gestureOf(line(QPointF(0, 0), QPointF(200, 20)), &tip), markup::Gesture::Line);
+        QCOMPARE(tip, QPointF(200, 20));
+        markup::Stroke wobbly = line(QPointF(0, 0), QPointF(200, 0));
+        wobbly.points[6].ry() += 9;
+        QCOMPARE(markup::gestureOf(wobbly), markup::Gesture::Line);
+        markup::Stroke oneGo = line(QPointF(0, 0), QPointF(200, 100));
+        oneGo.points << QPointF(185, 82) << QPointF(200, 100) << QPointF(180, 103);
+        QCOMPARE(markup::gestureOf(oneGo, &tip), markup::Gesture::Arrow);
+        QCOMPARE(tip, QPointF(200, 100));
+        markup::Stroke lifted = line(QPointF(0, 0), QPointF(200, 0));
+        lifted.points << QPointF(198, 1.5);
+        QCOMPARE(markup::gestureOf(lifted), markup::Gesture::Line);
+        QCOMPARE(markup::gestureOf(stroke({QPointF(0, 50), QPointF(20, 80), QPointF(70, 0)})), markup::Gesture::Mark);
+        // A head drawn after its line, at its end; a short stroke far from
+        // either end of the next line, a stroke of its own.
+        const QList<markup::Stroke> four{line(QPointF(0, 0), QPointF(200, 0)), stroke({QPointF(185, -12), QPointF(200, 0), QPointF(185, 12)}),
+                                         line(QPointF(0, 50), QPointF(200, 50)), stroke({QPointF(90, 40), QPointF(100, 50), QPointF(90, 60)})};
+        QList<QPointF> tips;
+        QList<int> heads;
+        QCOMPARE(markup::gesturesOf(four, &tips, &heads),
+                 (QList<markup::Gesture>{markup::Gesture::Arrow, markup::Gesture::Arrowhead, markup::Gesture::Line, markup::Gesture::Mark}));
+        QCOMPARE(tips.at(0), QPointF(200, 0));
+        QCOMPARE(heads, (QList<int>{-1, 0, -1, -1}));
+        // A dot at a line's end: a pin, not its head.
+        const QList<markup::Stroke> pinned{line(QPointF(0, 0), QPointF(200, 0)), stroke({QPointF(201, 1)})};
+        QCOMPARE(markup::gesturesOf(pinned, &tips, &heads), (QList<markup::Gesture>{markup::Gesture::Line, markup::Gesture::Dot}));
+        // Drawn from its tip back to its tail, its head at its start.
+        const QList<markup::Stroke> backwards{line(QPointF(200, 0), QPointF(0, 0)), stroke({QPointF(185, -12), QPointF(200, 0), QPointF(185, 12)})};
+        QCOMPARE(markup::gesturesOf(backwards, &tips, &heads).first(), markup::Gesture::Arrow);
+        QCOMPARE(tips.at(0), QPointF(200, 0));
+        // Simplified; what a ring holds.
+        QCOMPARE(markup::simplified(line(QPointF(0, 0), QPointF(200, 20), 50).points, 0.5), (QPolygonF{QPointF(0, 0), QPointF(200, 20)}));
+        const QPolygonF square{QPointF(0, 0),     QPointF(50, 0),  QPointF(100, 0), QPointF(100, 50),
+                               QPointF(100, 100), QPointF(50, 100), QPointF(0, 100), QPointF(0, 50)};
+        QCOMPARE(markup::simplified(square, 1), (QPolygonF{QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100), QPointF(0, 50)}));
+        QCOMPARE(markup::insideShare(square, QRectF(20, 20, 30, 30)), 1.0);
+        QCOMPARE(markup::insideShare(square, QRectF(60, 20, 100, 30)), 0.4);
+        QVERIFY(markup::insideShare(square, QRectF(200, 200, 10, 10)) == 0);
+
+        // A page: a paragraph of five words, a picture, a chart.
+        const auto box = [](double l, double t, double r, double b) { return QPolygonF(QRectF(QPointF(l, t), QPointF(r, b))); };
+        markup::Target paragraph{QStringLiteral("paragraph"), QStringLiteral("The gain rises with frequency"), box(100, 100, 450, 130), {}};
+        const std::pair<double, double> spans[] = {{100, 140}, {150, 200}, {210, 270}, {280, 330}, {340, 450}};
+        const QStringList words = paragraph.text.split(QLatin1Char(' '));
+        for (int i = 0; i < 5; ++i) paragraph.words << std::make_pair(words.at(i), box(spans[i].first, 100, spans[i].second, 130));
+        const QList<markup::Target> page{paragraph, {QStringLiteral("picture"), QStringLiteral("Bode plot"), box(600, 100, 900, 400), {}},
+                                         {QStringLiteral("chart"), QStringLiteral("Noise figure"), box(100, 300, 400, 500), {}}};
+        markup::Stroke band = line(QPointF(98, 115), QPointF(202, 115));
+        band.width = 14;
+        band.highlighter = true;
+        band.color = QColor(0xf6, 0xd3, 0x2d, 102);
+        markup::Stroke arrow = line(QPointF(440, 118), QPointF(585, 200));
+        arrow.points << QPointF(570, 197) << QPointF(585, 200) << QPointF(575, 186);
+        markup::Stroke orange = stroke({QPointF(50, 50)});
+        orange.color = QColor(0xff, 0x78, 0x00);
+        const QList<markup::Stroke> drawn{ring(QPointF(275, 115), 200, 40),
+                                          ring(QPointF(210, 115), 80, 25),
+                                          line(QPointF(205, 133), QPointF(335, 134)),
+                                          line(QPointF(335, 116), QPointF(455, 114)),
+                                          band,
+                                          arrow,
+                                          stroke({QPointF(300, 115)}),
+                                          stroke({QPointF(200, 400), QPointF(220, 430), QPointF(270, 350)}),
+                                          orange};
+        const QJsonArray read = markup::readPage(drawn, page, true);
+        QCOMPARE(read.size(), drawn.size());
+        const auto reading = [&read](int stroke) { return read.at(stroke - 1).toObject(); };
+        const QJsonObject whole{{"paragraph", "The gain rises with frequency"}};
+        const auto some = [](const QString& words) { return QJsonObject{{"words", words}, {"in paragraph", "The gain rises with frequency"}}; };
+        QCOMPARE(reading(1).value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(reading(1).value("around").toArray(), QJsonArray{whole});
+        QCOMPARE(reading(2).value("around").toArray(), QJsonArray{some("gain rises")});   // (a tenth of "The" and "with" in it)
+        QCOMPARE(reading(3).value("drawn as").toString(), QStringLiteral("line"));
+        QCOMPARE(reading(3).value("underlines").toArray(), QJsonArray{some("rises with")});
+        QVERIFY(!reading(3).contains("strikes through") && !reading(3).contains("points at"));
+        QCOMPARE(reading(4).value("strikes through").toArray(), QJsonArray{some("frequency")});
+        QVERIFY(!reading(4).contains("underlines"));
+        QCOMPARE(reading(5).value("tool").toString(), QStringLiteral("highlighter"));
+        QCOMPARE(reading(5).value("colour").toString(), QStringLiteral("#f6d32d"));
+        QCOMPARE(reading(5).value("highlights").toArray(), QJsonArray{some("The gain")});
+        QCOMPARE(reading(6).value("drawn as").toString(), QStringLiteral("arrow"));
+        QCOMPARE(reading(6).value("from").toObject(), some("frequency"));
+        QCOMPARE(reading(6).value("points at").toObject(), (QJsonObject{{"picture", "Bode plot"}}));
+        QCOMPARE(reading(7).value("drawn as").toString(), QStringLiteral("dot"));
+        QCOMPARE(reading(7).value("on").toObject(), some("with"));
+        QCOMPARE(reading(7).value("box").toArray(), (QJsonArray{299, 114, 301, 116}));
+        QCOMPARE(reading(8).value("drawn as").toString(), QStringLiteral("mark"));
+        QCOMPARE(reading(8).value("on").toArray(), (QJsonArray{QJsonObject{{"chart", "Noise figure"}}}));
+        QVERIFY(!reading(9).contains("on"));
+        for (int i = 1; i <= read.size(); ++i) QCOMPARE(reading(i).value("stroke").toInt(), i);
+        // Its points: a line's two ends, a ring's few.
+        QCOMPARE(reading(3).value("points").toArray(), (QJsonArray{QJsonArray{205, 133}, QJsonArray{335, 134}}));
+        const int few = int(reading(1).value("points").toArray().size());
+        QVERIFY2(few >= 6 && few <= 32, qPrintable(QString::number(few)));
+        QVERIFY(!markup::readPage(drawn, page, false).at(0).toObject().contains("points"));
+        // In sentences: on slide 3, the latest three, the earlier counted.
+        QJsonArray onSlide;
+        for (const QJsonValue& v : read) {
+            QJsonObject o = v.toObject();
+            o.insert("slide", 3);
+            onSlide.append(o);
+        }
+        const QStringList lines = markup::sentencesOf(onSlide, true).split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), drawn.size());
+        QVERIFY2(lines.at(0).startsWith("slide 3, stroke 1: a red pen ring around the paragraph \"The gain rises with frequency\" (its box "), qPrintable(lines.at(0)));
+        QVERIFY2(lines.at(0).endsWith(" points)"), qPrintable(lines.at(0)));
+        QVERIFY2(lines.at(1).contains("ring around \"gain rises\" in the paragraph \"The gain rises with frequency\""), qPrintable(lines.at(1)));
+        QVERIFY2(lines.at(2).contains("line under \"rises with\" in the paragraph"), qPrintable(lines.at(2)));
+        QVERIFY2(lines.at(3).contains("line through \"frequency\""), qPrintable(lines.at(3)));
+        QVERIFY2(lines.at(4).contains("a yellow highlighter line over \"The gain\""), qPrintable(lines.at(4)));
+        QVERIFY2(lines.at(5).contains("arrow from \"frequency\" in the paragraph \"The gain rises with frequency\" pointing at the picture \"Bode plot\""),
+                 qPrintable(lines.at(5)));
+        QVERIFY2(lines.at(7).contains("mark on the chart \"Noise figure\""), qPrintable(lines.at(7)));
+        QVERIFY2(lines.at(8).startsWith("slide 3, stroke 9: an orange pen dot (its box"), qPrintable(lines.at(8)));
+        const QStringList latest = markup::sentencesOf(onSlide, true, 3).split(QLatin1Char('\n'));
+        QCOMPARE(latest.size(), 4);
+        QVERIFY2(latest.at(0).contains("6 earlier stroke(s) left out"), qPrintable(latest.at(0)));
+        QVERIFY(latest.at(1).startsWith("slide 3, stroke 7:"));
+    }
+
+    // A slide's parts where they are drawn (Presentation::parts()), what a
+    // mark on it is read against: its paragraphs and their words, under
+    // which its text's ink lies and none outside them - the title's, a text
+    // box's two, a text turned with its shape, one in a group where the
+    // group puts it, a table's cells; a picture by its alt text, else its
+    // name; a chart by its title.
+    void slidePartsAreWhereTheyAreDrawn()
+    {
+        Deck d;
+        QImage red(20, 20, QImage::Format_RGB32);
+        red.fill(Qt::red);
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image1.png"), png(red)};
+        d.extra << zip::Entry{QStringLiteral("ppt/charts/chart1.xml"),
+                              "<?xml version=\"1.0\"?><c:chartSpace " + ns() + "><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>Noise figure</a:t></a:r></a:p>"
+                              "</c:rich></c:tx></c:title><c:autoTitleDeleted val=\"0\"/><c:plotArea><c:pieChart><c:varyColors val=\"1\"/><c:ser><c:idx val=\"0\"/><c:val>"
+                              "<c:numRef><c:numCache><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>1</c:v></c:pt><c:pt idx=\"1\"><c:v>1</c:v></c:pt></c:numCache></c:numRef>"
+                              "</c:val></c:ser></c:pieChart></c:plotArea></c:chart></c:chartSpace>"};
+        const QByteArray bare = "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln>";
+        const auto pic = [](int id, const QByteArray& cNvPr, const QRectF& at) {
+            return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + QByteArray::number(id) + "\" " + cNvPr + "/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rIdP1\"/>"
+                   "<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>" + xfrm(at.x(), at.y(), at.width(), at.height()) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+        };
+        const auto cell = [](const QString& t) { return "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>" + para(run(t)) + "</a:txBody><a:tcPr/></a:tc>"; };
+        Deck::SlideSpec s;
+        s.tree = shape(2, QByteArray(), text(para(run("Results of the run"))), "<p:ph type=\"title\"/>")
+                 + shape(3, xfrm(60, 140, 400, 110) + bare, text(para(run("alpha beta gamma")) + para(run("delta"))))
+                 + pic(4, "name=\"Picture 4\" descr=\"Bode plot\"", QRectF(520, 140, 200, 120)) + pic(5, "name=\"Picture 5\"", QRectF(760, 140, 120, 120))
+                 + "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"6\" name=\"t\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\"" + emu(60)
+                 + "\" y=\"" + emu(280) + "\"/><a:ext cx=\"" + emu(400) + "\" cy=\"" + emu(60) + "\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\">"
+                   "<a:tbl><a:tblPr/><a:tblGrid><a:gridCol w=\"" + emu(200) + "\"/><a:gridCol w=\"" + emu(200) + "\"/></a:tblGrid><a:tr h=\"" + emu(60) + "\">" + cell("a1 x")
+                 + cell("b1") + "</a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>"
+                 + "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"7\" name=\"c\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\"" + emu(520)
+                 + "\" y=\"" + emu(290) + "\"/><a:ext cx=\"" + emu(200) + "\" cy=\"" + emu(120) + "\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\">"
+                   "<c:chart r:id=\"rIdC1\"/></a:graphicData></a:graphic></p:graphicFrame>"
+                 + shape(8, xfrm(760, 330, 160, 40, " rot=\"5400000\"") + bare, text(para(run("turned"))))
+                 + "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"9\" name=\"g\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"" + emu(60) + "\" y=\"" + emu(380)
+                 + "\"/><a:ext cx=\"" + emu(200) + "\" cy=\"" + emu(100) + "\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"" + emu(400) + "\" cy=\"" + emu(200)
+                 + "\"/></a:xfrm></p:grpSpPr>" + shape(10, xfrm(0, 0, 400, 200) + bare, text(para(run("grouped words")))) + "</p:grpSp>"
+                 + shape(11, xfrm(280, 430, 220, 50) + bare,
+                         text(para(run("one two"), "<a:pPr marL=\"0\" indent=\"0\"><a:buFont typeface=\"Arial\"/><a:buChar char=\"&#8226;\"/></a:pPr>")));
+        s.rels = "<Relationship Id=\"rIdP1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image1.png\"/>"
+                 "<Relationship Id=\"rIdC1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" Target=\"../charts/chart1.xml\"/>";
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QList<pptx::SlidePart> parts = deck->parts(0);
+        QStringList said;
+        for (const pptx::SlidePart& p : parts) said << QStringLiteral("%1 %2").arg(int(p.kind)).arg(p.text);
+        QCOMPARE(said, (QStringList{"0 Results of the run", "0 alpha beta gamma", "0 delta", "2 Bode plot", "2 Picture 5", "1 a1 x", "1 b1", "3 Noise figure",
+                                    "0 turned", "0 grouped words", "0 one two"}));
+        QCOMPARE(parts.at(3).outline.boundingRect(), QRectF(520, 140, 200, 120));
+        QCOMPARE(parts.at(7).outline.boundingRect(), QRectF(520, 290, 200, 120));
+        QCOMPARE(parts.at(5).outline.boundingRect(), QRectF(60, 280, 200, 60));
+        // The words, each with ink under it, in turn along their line.
+        const QImage image = deck->render(0, 1);
+        for (const int i : {0, 1, 2, 5, 6, 8, 9, 10}) {
+            const pptx::SlidePart& p = parts.at(i);
+            QCOMPARE(p.words.size(), p.text.split(QLatin1Char(' ')).size());
+            for (int w = 0; w < p.words.size(); ++w) {
+                QCOMPARE(p.words.at(w).first, p.text.split(QLatin1Char(' ')).at(w));
+                QVERIFY2(inked(image, p.words.at(w).second.boundingRect()) > 3, qPrintable(p.words.at(w).first));
+                if (w > 0 && i != 8)
+                    QVERIFY2(p.words.at(w - 1).second.boundingRect().right() <= p.words.at(w).second.boundingRect().left() + 0.01, qPrintable(p.words.at(w).first));
+            }
+        }
+        // Turned with its shape: the word down the slide.
+        const QRectF turned = parts.at(8).words.first().second.boundingRect();
+        QVERIFY2(turned.height() > 2 * turned.width() && QRectF(820, 270, 40, 160).contains(turned.center()), qPrintable(QStringLiteral("%1 %2 %3 %4").arg(turned.x()).arg(turned.y()).arg(turned.width()).arg(turned.height())));
+        // A text's ink, none of it outside its words (a point and a half more).
+        const auto outside = [&image](const QRectF& region, const QList<pptx::SlidePart>& of) {
+            int n = 0;
+            const QRect r = region.toRect().intersected(image.rect());
+            for (int y = r.top(); y <= r.bottom(); ++y)
+                for (int x = r.left(); x <= r.right(); ++x) {
+                    if (near(image.pixelColor(x, y), Qt::white, 40)) continue;
+                    bool under = false;
+                    for (const pptx::SlidePart& p : of)
+                        for (const auto& [word, at] : p.words) under = under || at.boundingRect().adjusted(-1.5, -1.5, 1.5, 1.5).contains(QPointF(x + 0.5, y + 0.5));
+                    if (!under) ++n;
+                }
+            return n;
+        };
+        // ... nor its words much broader than its ink: a word's box is its
+        // advance, its line's height.
+        const auto fits = [&image](const QRectF& region, const QList<pptx::SlidePart>& of) {
+            QRect ink;
+            const QRect r = region.toRect().intersected(image.rect());
+            for (int y = r.top(); y <= r.bottom(); ++y)
+                for (int x = r.left(); x <= r.right(); ++x)
+                    if (!near(image.pixelColor(x, y), Qt::white, 40)) ink |= QRect(x, y, 1, 1);
+            QRectF words;
+            for (const pptx::SlidePart& p : of)
+                for (const auto& [word, at] : p.words) words |= at.boundingRect();
+            return std::max(ink.width(), ink.height()) >= 0.8 * std::max(words.width(), words.height())
+                   && std::min(ink.width(), ink.height()) >= 0.5 * std::min(words.width(), words.height());
+        };
+        const std::pair<QRectF, QList<pptx::SlidePart>> texts[] = {{QRectF(48, 30, 864, 80), {parts.at(0)}},
+                                                                    {QRectF(60, 140, 400, 110), {parts.at(1), parts.at(2)}},
+                                                                    {QRectF(820, 270, 40, 160), {parts.at(8)}},
+                                                                    {QRectF(60, 380, 200, 100), {parts.at(9)}}};
+        for (const auto& [region, of] : texts) {
+            QCOMPARE(outside(region, of), 0);
+            QVERIFY2(fits(region, of), qPrintable(of.first().text));
+        }
+        // A bullet before its text, not one of its words.
+        QCOMPARE(parts.at(10).words.first().first, QStringLiteral("one"));
+    }
+
+    // What the user drew with the pen, as Claude's tools have it, with no
+    // picture: read_pptx's and show_pptx's tab, stroke by stroke - its
+    // slide, how it was drawn, its tool, colour and box in points from the
+    // slide's top left, what it marks (a ring round slide 2's title); and
+    // read_drawings, every open deck's and layout's with each stroke's
+    // points, or one document's, refused for one not open or not a deck or
+    // a layout. Its pictures too: screenshot's of a slide with it, and
+    // read_pptx's. show_pptx takes the pen up and puts it down, and clears
+    // the drawings; a 'pen' or 'drawings' of another kind is refused,
+    // nothing done.
+    void claudeSeesWhatThePenDrew()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        auto* control = app.findChild<QucsControl*>();
+        QVERIFY(control != nullptr);
+        const auto call = [control](const QString& tool, const QJsonObject& args) { return control->callNow(tool, args, 30000); };
+        const auto json = [](const QJsonObject& r) { return QJsonDocument::fromJson(QucsControl::textOf(r).section(QLatin1Char('\n'), 0, 0).toUtf8()).object(); };
+        const auto failed = [](const QJsonObject& r) { return r.value("isError").toBool(); };
+        const auto picture = [](const QJsonObject& r) {
+            for (const QJsonValue& v : r.value("content").toArray())
+                if (v.toObject().value("type").toString() == "image")
+                    return QImage::fromData(QByteArray::fromBase64(v.toObject().value("data").toString().toLatin1()), "PNG");
+            return QImage();
+        };
+        Deck d;
+        for (int i = 0; i < 3; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            d.slides << s;
+        }
+        const QString file = dir.filePath("workspace/drawn.pptx");
+        QVERIFY(write(file, d.build()));
+        QJsonObject o = json(call("show_pptx", {{"path", "drawn.pptx"}}));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QVERIFY(!o.contains("drawings") && !o.contains("pen"));
+        QVERIFY(json(call("read_drawings", {})).value("drawings").toString().contains(QStringLiteral("Nothing is drawn")));
+        QVERIFY(!control->inEveryTurn().contains("read_drawings"));
+        // A line and a ring round the title on slide 2, a highlighter's on
+        // slide 3.
+        markup::Stroke line;
+        line.on = QStringLiteral("2");
+        line.points = {QPointF(100, 100), QPointF(300, 150)};
+        line.color = QColor(0, 160, 0);
+        line.width = 8;
+        doc->view()->addStroke(line);
+        markup::Stroke ring;
+        ring.on = QStringLiteral("2");
+        ring.points = {QPointF(40, 20),  QPointF(480, 18),  QPointF(920, 20), QPointF(922, 70),
+                       QPointF(920, 120), QPointF(480, 122), QPointF(40, 120), QPointF(38, 40)};
+        ring.color = QColor(0xe0, 0x1b, 0x24);
+        ring.width = 3;
+        doc->view()->addStroke(ring);
+        markup::Stroke band = line;
+        band.on = QStringLiteral("3");
+        band.color = QColor(246, 211, 45, 102);
+        band.highlighter = true;
+        doc->view()->addStroke(band);
+        o = json(call("read_pptx", {{"path", "drawn.pptx"}, {"slides", 1}})).value("its tab").toObject();
+        const QJsonArray drawn = o.value("drawings").toArray();
+        QCOMPARE(drawn.size(), 3);
+        const QJsonObject first = drawn.at(0).toObject();
+        QCOMPARE(first.value("slide").toInt(), 2);
+        QCOMPARE(first.value("stroke").toInt(), 1);
+        QCOMPARE(first.value("drawn as").toString(), QStringLiteral("line"));
+        QCOMPARE(first.value("tool").toString(), QStringLiteral("pen"));
+        QCOMPARE(first.value("colour").toString(), QStringLiteral("#00a000"));
+        QCOMPARE(first.value("box").toArray(), (QJsonArray{96, 96, 304, 154}));
+        QVERIFY(!first.contains("points"));
+        QCOMPARE(drawn.at(1).toObject().value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(drawn.at(1).toObject().value("around").toArray(), (QJsonArray{QJsonObject{{"paragraph", "Slide 2"}}}));
+        QCOMPARE(drawn.at(2).toObject().value("slide").toInt(), 3);
+        QCOMPARE(drawn.at(2).toObject().value("tool").toString(), QStringLiteral("highlighter"));
+        QCOMPARE(drawn.at(2).toObject().value("colour").toString(), QStringLiteral("#f6d32d"));
+        // read_drawings: each stroke's points too, every deck's or this one's.
+        const QJsonArray documents = json(call("read_drawings", {})).value("documents").toArray();
+        QCOMPARE(documents.size(), 1);
+        QCOMPARE(documents.at(0).toObject().value("document").toString(), QStringLiteral("drawn.pptx"));
+        QVERIFY(documents.at(0).toObject().value("measures").toString().contains(QStringLiteral("points")));
+        const QJsonArray strokes = documents.at(0).toObject().value("strokes").toArray();
+        QCOMPARE(strokes.size(), 3);
+        QCOMPARE(strokes.at(0).toObject().value("points").toArray(), (QJsonArray{QJsonArray{100, 100}, QJsonArray{300, 150}}));
+        QCOMPARE(strokes.at(1).toObject().value("around"), drawn.at(1).toObject().value("around"));
+        const QJsonObject brief = json(call("read_drawings", {{"path", "drawn.pptx"}, {"points", false}}));
+        QCOMPARE(brief.value("documents").toArray().at(0).toObject().value("strokes").toArray().size(), 3);
+        QVERIFY(!brief.value("documents").toArray().at(0).toObject().value("strokes").toArray().at(0).toObject().contains("points"));
+        QVERIFY(failed(call("read_drawings", {{"path", "elsewhere.pptx"}})));
+        QVERIFY(control->inEveryTurn().contains("read_drawings"));
+        // What a prompt from the Claude Code panel tells of it: the
+        // drawing's revision, a stroke a line.
+        const auto [revision, told] = app.drawingsOf(doc->getDocName());
+        QVERIFY(revision > 0 && revision == doc->view()->drawing().revision());
+        QCOMPARE(told.count(QLatin1Char('\n')), 2);
+        QVERIFY2(told.section(QLatin1Char('\n'), 1, 1).startsWith(QStringLiteral("slide 2, stroke 2: a red pen ring around the paragraph \"Slide 2\"")), qPrintable(told));
+        QCOMPARE(app.drawingsOf(dir.filePath("workspace/elsewhere.pptx")), std::make_pair(quint64(0), QString()));
+        QCOMPARE(app.drawingsOf(doc->getDocName(), revision), std::make_pair(revision, QString()));   // (unchanged: not read)
+        // Its pictures with it: screenshot's of slide 2, read_pptx's.
+        const QJsonObject shot = call("screenshot", {{"slide", 2}});
+        QVERIFY(!failed(shot));
+        const QImage seen = picture(shot);
+        QVERIFY(!seen.isNull());
+        const qreal scale = seen.width() / 960.0;
+        QVERIFY(near(seen.pixelColor(QPointF(200 * scale, 125 * scale).toPoint()), QColor(0, 160, 0), 30));
+        QVERIFY(near(picture(call("screenshot", {{"slide", 1}})).pixelColor(QPointF(200 * scale, 125 * scale).toPoint()), Qt::white, 30));
+        const QImage read = picture(call("read_pptx", {{"path", "drawn.pptx"}, {"slides", 2}, {"image", true}}));
+        QVERIFY(near(read.pixelColor(QPointF(200 * read.width() / 960.0, 125 * read.width() / 960.0).toPoint()), QColor(0, 160, 0), 30));
+        // The pen taken up and put down; refused of another kind.
+        o = json(call("show_pptx", {{"pen", true}}));
+        QVERIFY(doc->view()->penActive() && doc->penButton()->isChecked());
+        QVERIFY(o.value("pen").toString().contains(QStringLiteral("taken up")));
+        QVERIFY(failed(call("show_pptx", {{"pen", "yes"}, {"slide", 3}})));
+        QCOMPARE(doc->currentSlide(), 0);
+        QVERIFY(failed(call("show_pptx", {{"drawings", "all"}})));
+        QCOMPARE(doc->view()->drawing().strokes().size(), 3);
+        o = json(call("show_pptx", {{"pen", false}, {"drawings", "clear"}}));
+        QVERIFY(!doc->view()->penActive() && doc->view()->drawing().isEmpty());
+        QVERIFY(!o.contains("drawings") && !o.contains("pen"));
+        QVERIFY2(o.value("done").toString().contains(QStringLiteral("taken away")), qPrintable(o.value("done").toString()));
+        QVERIFY(!control->inEveryTurn().contains("read_drawings"));
+        // Many strokes: a tab's answer has the latest 40, read_drawings the
+        // latest 200, the earlier counted.
+        for (int i = 0; i < 245; ++i) {
+            markup::Stroke dot = line;
+            dot.on = QStringLiteral("1");
+            dot.points = {QPointF(400 + i, 400)};
+            doc->view()->addStroke(dot);
+        }
+        o = json(call("read_pptx", {{"path", "drawn.pptx"}, {"slides", 1}})).value("its tab").toObject();
+        QCOMPARE(o.value("drawings").toArray().size(), 40);
+        QCOMPARE(o.value("drawings").toArray().first().toObject().value("stroke").toInt(), 206);
+        QVERIFY2(o.value("drawings left out").toString().startsWith(QStringLiteral("205 earlier")), qPrintable(o.value("drawings left out").toString()));
+        const QJsonObject many = json(call("read_drawings", {{"points", false}})).value("documents").toArray().at(0).toObject();
+        QCOMPARE(many.value("strokes").toArray().size(), 200);
+        QVERIFY2(many.value("left out").toString().startsWith(QStringLiteral("45 earlier")), qPrintable(many.value("left out").toString()));
+        // read_drawings of a document the pen does not draw on: refused.
+        const QString notes = dir.filePath("workspace/notes.txt");
+        QVERIFY(write(notes, "a note\n"));
+        QVERIFY(app.gotoPage(notes));
+        const QJsonObject refused = call("read_drawings", {{"path", "notes.txt"}});
+        QVERIFY2(failed(refused) && QucsControl::textOf(refused).contains(QStringLiteral("not a layout or a presentation")), qPrintable(QucsControl::textOf(refused)));
+        app.closeAllFiles();
+    }
+
     void showDeckGiven()
     {
         const QString file = qEnvironmentVariable("QUCS_PPTX_RENDER").section(QLatin1Char(';'), 0, 0);

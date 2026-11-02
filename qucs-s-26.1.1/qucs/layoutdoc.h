@@ -14,6 +14,7 @@
 
 #include "fem_materials.h"
 #include "layout.h"
+#include "markup.h"
 #include "qucsdoc.h"
 
 #include <QFrame>
@@ -51,8 +52,9 @@ class LayoutGpu;
  * a box dragged with the right button), panned with a drag or the arrow
  * keys. A click selects the shape under the pointer (again: the one under
  * it); in ruler mode a drag measures, snapped to the shapes' corners and
- * edges. Behind the layout a grid, when it is shown; the layers' colours
- * made to stand out from the canvas, light or dark.
+ * edges; in drawing mode a drag draws with the pen in hand (markup.h), and
+ * the middle button pans. Behind the layout a grid, when it is shown; the
+ * layers' colours made to stand out from the canvas, light or dark.
  */
 class LayoutView : public QWidget
 {
@@ -127,14 +129,38 @@ public:
     /// places things on the layout, two picking modes the view knows
     /// nothing more of: PickPoint, a click is picked() and a drag pans;
     /// PickBox, a drag draws a box, which is boxPicked(), and a click is
-    /// picked(). Escape goes back to Select.
-    enum class Mode { Select, Ruler, PickPoint, PickBox };
+    /// picked(). Draw: a drag draws with the pen in hand, or erases with
+    /// the eraser, and Ctrl+Z undoes. Escape goes back to Select.
+    enum class Mode { Select, Ruler, PickPoint, PickBox, Draw };
     Mode mode() const { return a_mode; }
     void setMode(Mode mode);
     /// The rulers, µm; the last one is being drawn while a drag lasts.
     const QList<QLineF>& rulers() const { return a_rulers; }
     void addRuler(const QLineF& ruler);
     void clearRulers();
+
+    /// What is drawn on the layout with the pen: strokes in µm, each on the
+    /// cell it was drawn on, by name - shown with that cell, and kept when
+    /// the file is read again. Not part of what the view reads: a
+    /// selection, a ruler and the stats are as without it.
+    const qucs_s::markup::Drawing& drawing() const { return a_drawing; }
+    /// What the strokes on the cell shown are kept on: its name (empty:
+    /// nothing shown).
+    QString drawingPart() const;
+    /// A stroke added as though it was drawn (Claude's tools, the tests).
+    void addStroke(const qucs_s::markup::Stroke& stroke);
+    /// The last change to the drawing undone; whether there was one.
+    bool undoDrawing();
+    /// The strokes on the cell shown taken away, or (\a all) every one;
+    /// whether there were any.
+    bool clearDrawing(bool all = false);
+    /// What is drawn, read as one would read it: each stroke, cell by cell
+    /// in the order drawn, how it was drawn (markup::gesturesOf()) and what
+    /// it marks - the shapes by layer, the texts and the placed cells a ring
+    /// is round, what a line or an arrow begins at and points at, what a
+    /// mark or a highlighter lies on, what a dot is on - of the layers shown,
+    /// to the depth drawn; with \a points, its points simplified, in µm.
+    QJsonArray readDrawing(bool points = false) const;
 
     /*!
      * Polygons another tab draws over the layout, in the µm of the cell
@@ -237,6 +263,8 @@ signals:
     void colorsChanged();
     /// G pressed: the grid shown, or hidden.
     void gridToggleRequested();
+    /// A stroke drawn, erased, undone or cleared.
+    void drawingChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -297,10 +325,14 @@ private:
 
     QList<QLineF> a_rulers;
     bool a_measuring = false;
+    qucs_s::markup::Drawing a_drawing;
+    qucs_s::markup::Stroke a_stroke;               // the one being drawn
+    QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
+    bool a_erased = false;
     std::optional<Found> a_selection;
     QPolygonF a_selectionOutline;   // µm, the cell shown's
 
-    enum class Drag { None, Pan, Zoom, Ruler, Box };
+    enum class Drag { None, Pan, Zoom, Ruler, Box, Ink, Erase };
     Drag a_drag = Drag::None;
     QPoint a_pressPos;
     QPoint a_lastPos;
@@ -410,6 +442,7 @@ public:
     QPushButton* cancelButton() const { return a_cancel; }
     QToolButton* menuButton() const { return a_menuButton; }
     QToolButton* gridButton() const { return a_gridButton; }
+    qucs_s::markup::PenButton* penButton() const { return a_penButton; }
     QWidget* sidebar() const;
 
 public slots:
@@ -450,6 +483,8 @@ private:
     /// \a apply to this tab and to every other layout tab.
     void everyLayoutTab(const std::function<void(LayoutDoc*)>& apply);
     void updateInfo();
+    /// The pen's menu as the drawing is.
+    void updatePen();
     void showProblem(const QString& text);
     QIcon swatch(const qucs_s::layout::LayerStyle& style) const;
     QString describe(const qucs_s::layout::Found& found) const;
@@ -474,6 +509,7 @@ private:
     QToolButton* a_zoomInButton = nullptr;
     QSpinBox* a_depthBox = nullptr;
     QToolButton* a_rulerButton = nullptr;
+    qucs_s::markup::PenButton* a_penButton = nullptr;
     QToolButton* a_labelsButton = nullptr;
     QToolButton* a_gridButton = nullptr;
     QToolButton* a_findButton = nullptr;

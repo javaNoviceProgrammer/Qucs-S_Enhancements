@@ -22,6 +22,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
@@ -60,6 +61,7 @@
 using qucs_s::pptx::Presentation;
 using qucs_s::pptx::SlideShow;
 using qucs_s::pptx::SlideView;
+namespace markup = qucs_s::markup;
 
 namespace {
 
@@ -217,6 +219,55 @@ void SlideView::restore(const ViewState& s)
 void SlideView::clearCache()
 {
     a_cache.clear();
+}
+
+void SlideView::setPenActive(bool active)
+{
+    if (active == a_pen) return;
+    a_pen = active;
+    // Put down mid-stroke: the stroke let go, what an eraser took kept.
+    if (!active && (a_inking || a_erasing)) {
+        if (a_erasing && a_erased) a_drawing.changed(a_beforeErase);
+        a_inking = a_erasing = a_erased = false;
+        a_stroke = markup::Stroke();
+        a_inkSlide = -1;
+        emit drawingChanged();
+    }
+    viewport()->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
+    viewport()->update();
+    emit penActiveChanged(active);
+}
+
+void SlideView::addStroke(const markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    a_drawing.add(stroke);
+    viewport()->update();
+    emit drawingChanged();
+}
+
+bool SlideView::undoDrawing()
+{
+    if (!a_drawing.undo()) return false;
+    viewport()->update();
+    emit drawingChanged();
+    return true;
+}
+
+bool SlideView::clearDrawing(int index)
+{
+    if (!a_drawing.clear(index < 0 ? QString() : partOf(index))) return false;
+    viewport()->update();
+    emit drawingChanged();
+    return true;
+}
+
+QPointF SlideView::toSlide(int index, QPointF pos) const
+{
+    // (In the slide as it is drawn: its image fills its rectangle.)
+    const QRectF r(slideRect(index));
+    const qreal scale = a_presentation != nullptr ? r.width() / a_presentation->slideSize().width() : 1;
+    return (pos - r.topLeft()) / scale;
 }
 
 QRectF SlideView::contentRect(int index) const
@@ -406,6 +457,18 @@ void SlideView::paintEvent(QPaintEvent*)
             continue;
         }
         p.drawImage(QRectF(r), image);
+        // What the pen drew on it, and the stroke being drawn there - no
+        // further than its edges.
+        QList<markup::Stroke> strokes = a_drawing.on(partOf(i));
+        if (a_inking && a_inkSlide == i) strokes << a_stroke;
+        if (!strokes.isEmpty()) {
+            const QRectF shown(r);
+            const qreal scale = shown.width() / a_presentation->slideSize().width();
+            p.save();
+            p.setClipRect(shown);
+            markup::paint(p, strokes, [&shown, scale](QPointF pt) { return shown.topLeft() + pt * scale; }, scale);
+            p.restore();
+        }
     }
     if (later) QTimer::singleShot(0, viewport(), qOverload<>(&QWidget::update));
 }
@@ -437,6 +500,22 @@ void SlideView::wheelEvent(QWheelEvent* event)
 
 void SlideView::keyPressEvent(QKeyEvent* event)
 {
+    if (a_pen && event->matches(QKeySequence::Undo)) {
+        undoDrawing();
+        return;
+    }
+    // One thing at a time: the stroke being drawn, then the pen.
+    if (event->key() == Qt::Key_Escape && event->modifiers() == Qt::NoModifier && (a_inking || a_pen)) {
+        if (a_inking) {
+            a_inking = false;
+            a_stroke = markup::Stroke();
+            a_inkSlide = -1;
+            viewport()->update();
+        } else {
+            setPenActive(false);
+        }
+        return;
+    }
     switch (event->key()) {
     case Qt::Key_PageDown:
     case Qt::Key_Space: goToSlide(a_current + 1); return;
@@ -454,10 +533,103 @@ void SlideView::contextMenuEvent(QContextMenuEvent* event)
     emit menuRequested(event->globalPos(), slideAt(event->pos()));
 }
 
+void SlideView::mousePressEvent(QMouseEvent* event)
+{
+    if (!a_pen || event->button() != Qt::LeftButton || a_presentation == nullptr || a_inking || a_erasing) {
+        QAbstractScrollArea::mousePressEvent(event);
+        return;
+    }
+    const int slide = slideAt(event->position().toPoint());
+    if (slide < 0) return;
+    setFocus();
+    a_inkSlide = slide;
+    const markup::Pen pen = markup::currentPen();
+    if (pen.tool == markup::Tool::Eraser) {
+        a_erasing = true;
+        a_erased = false;
+        a_beforeErase = a_drawing.strokes();
+        eraseAt(event->position());
+    } else {
+        const qreal scale = QRectF(slideRect(slide)).width() / a_presentation->slideSize().width();
+        a_stroke = markup::begin(pen, partOf(slide), toSlide(slide, event->position()), scale);
+        a_inking = true;
+        viewport()->update();
+    }
+    event->accept();
+}
+
+void SlideView::eraseAt(QPointF pos)
+{
+    const qreal scale = QRectF(slideRect(a_inkSlide)).width() / a_presentation->slideSize().width();
+    bool erased = false;
+    while (a_drawing.eraseAt(partOf(a_inkSlide), toSlide(a_inkSlide, pos), markup::EraserReach / scale)) erased = true;
+    if (erased) {
+        a_erased = true;
+        viewport()->update();
+        emit drawingChanged();
+    }
+}
+
+void SlideView::mouseMoveEvent(QMouseEvent* event)
+{
+    // The pen and the eraser follow every move, the least of them too; a
+    // stroke goes on past its slide's edge, drawn as far as the edge.
+    if (a_inking) {
+        const QRectF r(slideRect(a_inkSlide));
+        const qreal scale = r.width() / a_presentation->slideSize().width();
+        if (QLineF(r.topLeft() + a_stroke.points.last() * scale, event->position()).length() >= markup::LeastStep) {
+            a_stroke.points << toSlide(a_inkSlide, event->position());
+            viewport()->update();
+        }
+        return;
+    }
+    if (a_erasing) {
+        eraseAt(event->position());
+        return;
+    }
+    QAbstractScrollArea::mouseMoveEvent(event);
+}
+
+void SlideView::mouseReleaseEvent(QMouseEvent* event)
+{
+    if ((a_inking || a_erasing) && event->button() == Qt::LeftButton) {
+        if (a_inking) a_drawing.add(a_stroke);
+        else if (a_erased) a_drawing.changed(a_beforeErase);
+        a_stroke = markup::Stroke();
+        a_inking = a_erasing = a_erased = false;
+        a_beforeErase.clear();
+        a_inkSlide = -1;
+        viewport()->update();
+        emit drawingChanged();
+        return;
+    }
+    QAbstractScrollArea::mouseReleaseEvent(event);
+}
+
 void SlideView::mouseDoubleClickEvent(QMouseEvent* event)
 {
+    // With the pen up a double click is two presses of it, not the show.
+    if (a_pen) {
+        mousePressEvent(event);
+        return;
+    }
     const int slide = slideAt(event->position().toPoint());
     if (slide >= 0) emit slideDoubleClicked(slide);
+}
+
+bool SlideView::event(QEvent* event)
+{
+    // Escape is the window's too (it ends a schematic's mode): with the pen
+    // up, the view's. (Ctrl+Z reaches it as it is: the window's Undo is off
+    // while a presentation is in front.)
+    if (event->type() == QEvent::ShortcutOverride) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Escape && key->modifiers() == Qt::NoModifier && (a_pen || a_inking)) {
+            event->accept();
+            return true;
+        }
+    }
+    return QAbstractScrollArea::event(event);
 }
 
 bool SlideView::viewportEvent(QEvent* event)
@@ -727,6 +899,8 @@ void PptxDoc::buildUi()
     auto* zoomName = new QLabel(tr("Zoom"), a_toolbar);
     zoomName->setBuddy(a_zoomBox);
     zoomName->hide();
+    a_penButton = new markup::PenButton(tr("Slide"), a_toolbar);
+    a_penButton->setProperty("pptxTool", true);
     a_notesButton = toolButton(a_toolbar, glyph(Glyph::Notes), tr("The speaker notes of the slide in sight"));
     a_notesButton->setCheckable(true);
     a_playButton = toolButton(a_toolbar, glyph(Glyph::Play), tr("Play the slides full screen from the one in sight (F5 from the first)"));
@@ -748,6 +922,7 @@ void PptxDoc::buildUi()
     bar->addWidget(a_zoomBox);
     bar->addWidget(a_zoomInButton);
     bar->addStretch(1);
+    bar->addWidget(a_penButton);
     bar->addWidget(a_notesButton);
     bar->addWidget(a_playButton);
     bar->addWidget(a_findButton);
@@ -883,6 +1058,24 @@ void PptxDoc::buildUi()
     connect(a_view, &SlideView::zoomChanged, this, &PptxDoc::updateZoomBox);
     connect(a_view, &SlideView::menuRequested, this, &PptxDoc::showMenu);
     connect(a_view, &SlideView::slideDoubleClicked, this, [this](int slide) { startShow(slide); });
+    // The pen taken up and put down; its menu's undo and clearing.
+    connect(a_penButton, &QToolButton::toggled, this, [this](bool on) {
+        a_view->setPenActive(on);
+        a_view->setFocus();
+    });
+    connect(a_view, &SlideView::penActiveChanged, this, [this](bool on) {
+        const QSignalBlocker block(a_penButton);
+        a_penButton->setChecked(on);
+    });
+    a_penButton->setColorChooser([this](const QColor& now) {
+        const InADialog inADialog(this);   // (not freed under its own dialog)
+        return QColorDialog::getColor(now, this, tr("The Pen's Colour"));
+    });
+    connect(a_penButton, &markup::PenButton::undoRequested, this, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(a_view->currentSlide()); });
+    connect(a_penButton, &markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(-1); });
+    connect(a_view, &SlideView::drawingChanged, this, &PptxDoc::updatePen);
+    connect(a_view, &SlideView::currentSlideChanged, this, &PptxDoc::updatePen);
     connect(a_thumbnails, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0 && row != a_view->currentSlide()) a_view->goToSlide(row);
     });
@@ -1133,6 +1326,10 @@ void PptxDoc::showMenu(QPoint globalPos, int slide)
     if (slide >= 0 && slide != a_view->currentSlide()) a_view->goToSlide(slide);
     QMenu menu(this);
     fillMenu(&menu);
+    if (a_view->drawing().count(SlideView::partOf(a_view->currentSlide())) > 0) {
+        menu.addSeparator();
+        menu.addAction(tr("Clear the Drawings on This Slide"), this, [this] { a_view->clearDrawing(a_view->currentSlide()); });
+    }
     menu.exec(globalPos);
 }
 
@@ -1202,7 +1399,43 @@ void PptxDoc::lastSlide()
 
 QImage PptxDoc::slideImage(int index, qreal scale) const
 {
-    return a_presentation != nullptr ? a_presentation->render(index, scale) : QImage();
+    if (a_presentation == nullptr) return QImage();
+    QImage image = a_presentation->render(index, scale);
+    const QList<markup::Stroke> strokes = a_view->drawing().on(SlideView::partOf(index));
+    if (!image.isNull() && !strokes.isEmpty()) {
+        QPainter p(&image);
+        markup::paint(p, strokes, [scale](QPointF pt) { return pt * scale; }, scale);
+    }
+    return image;
+}
+
+QJsonArray PptxDoc::readDrawing(bool points) const
+{
+    QJsonArray out;
+    if (a_presentation == nullptr) return out;
+    const markup::Drawing& d = a_view->drawing();
+    for (const QString& part : d.parts()) {
+        bool numbered = false;
+        const int n = part.toInt(&numbered);
+        if (!numbered || n < 1 || n > a_presentation->slideCount()) continue;
+        QList<markup::Target> targets;
+        for (const qucs_s::pptx::SlidePart& p : a_presentation->parts(n - 1)) {
+            static const char* const kinds[] = {"paragraph", "cell", "picture", "chart", "shape"};
+            targets << markup::Target{QLatin1String(kinds[p.kind]), p.text, p.outline, p.words};
+        }
+        for (const QJsonValue& v : markup::readPage(d.on(part), targets, points)) {
+            QJsonObject o = v.toObject();
+            o.insert(QStringLiteral("slide"), n);
+            out.append(o);
+        }
+    }
+    return out;
+}
+
+void PptxDoc::updatePen()
+{
+    const markup::Drawing& d = a_view->drawing();
+    a_penButton->setDrawingState(d.canUndo(), d.count(SlideView::partOf(a_view->currentSlide())), int(d.strokes().size()));
 }
 
 bool PptxDoc::notesShown() const
@@ -1333,8 +1566,9 @@ void PptxDoc::startShow(int from)
 void PptxDoc::copySlide()
 {
     if (a_presentation == nullptr) return;
-    // As large as a slide is on a screen: 1920 pixels wide.
-    const QImage image = a_presentation->render(a_view->currentSlide(), 1920 / a_presentation->slideSize().width());
+    // As large as a slide is on a screen: 1920 pixels wide, with what the pen
+    // drew on it.
+    const QImage image = slideImage(a_view->currentSlide(), 1920 / a_presentation->slideSize().width());
     if (!image.isNull()) QApplication::clipboard()->setImage(image);
 }
 
@@ -1355,7 +1589,7 @@ void PptxDoc::exportSlide()
     const InADialog inADialog(this);   // (not freed under its own dialog)
     const QString file = QFileDialog::getSaveFileName(this, tr("Export the Slide"), suggested, tr("Pictures (*.png *.jpg *.jpeg *.bmp *.tiff *.webp)"));
     if (file.isEmpty()) return;
-    const QImage image = a_presentation->render(i, 1920 / a_presentation->slideSize().width());
+    const QImage image = slideImage(i, 1920 / a_presentation->slideSize().width());
     QSaveFile out(file);
     QImageWriter writer(&out, QFileInfo(file).suffix().toLower().toLatin1());
     if (!out.open(QIODevice::WriteOnly) || !writer.write(image) || !out.commit())
@@ -1450,5 +1684,9 @@ void PptxDoc::print(QPrinter* printer, QPainter* painter, bool printAll, bool)
         if (i > first) printer->newPage();
         const QRect area = painter->viewport();
         a_presentation->render(i, painter, QRectF(area));
+        // What the pen drew on it, where the slide landed.
+        const QRectF at = a_presentation->placed(QRectF(area));
+        const qreal scale = at.width() / a_presentation->slideSize().width();
+        markup::paint(*painter, a_view->drawing().on(SlideView::partOf(i)), [&at, scale](QPointF pt) { return at.topLeft() + pt * scale; }, scale);
     }
 }
