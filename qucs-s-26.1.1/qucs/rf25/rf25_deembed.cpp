@@ -479,13 +479,15 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
                              .arg(offset, 0, 'g', 4);
     }
     out.lines << tr("At %1 GHz: the line %2 Ohm, eps_eff %3, %4 dB/m; the port's own discontinuity %5 fF at its face and "
-                    "%6 pH at the port.")
+                    "%6 pH at the port%7.")
                      .arg(frequencies.at(last) / 1e9, 0, 'g', 4)
                      .arg(out.impedance.at(last).real(), 0, 'g', 4)
                      .arg(std::pow(out.gamma.at(last).imag() * c0 / w, 2), 0, 'g', 4)
                      .arg(20 / std::log(10.0) * out.gamma.at(last).real(), 0, 'g', 3)
                      .arg(out.discontinuity.at(last)[2].imag() / w * 1e15, 0, 'g', 3)
-                     .arg(out.discontinuity.at(last)[1].imag() / w * 1e12, 0, 'g', 3);
+                     .arg(out.discontinuity.at(last)[1].imag() / w * 1e12, 0, 'g', 3)
+                     .arg(out.residual.at(last) > kStripsAgree ? tr(" - neither to be trusted: the strips do not agree on one line there")
+                                                               : QString());
     if (offFrom == 0)
         out.lines << tr("The three agree on one line between two ends alike over the sweep: the third differs from it by "
                         "%1 at most, at %2 GHz.")
@@ -612,6 +614,10 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                     said.agreedTo = cal.agreedTo;
                     said.worst = cal.worst;
                     said.worstAt = cal.worstAt;
+                    for (int j = 0; j < cal.frequencies.size(); ++j)
+                        if (cal.residual.value(j) > kStripsAgree && (said.offFrom == 0 || cal.frequencies.at(j) < said.offFrom))
+                            said.offFrom = cal.frequencies.at(j);
+                    said.topAgrees = cal.residual.value(i) <= kStripsAgree;
                     said.strips = cal.tried;
                     said.third = 2 * cal.feed.offset() + cal.third;
                     said.reach = cal.reach;
@@ -681,9 +687,16 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                                                     "coupling past it, and which is moved along as losing nothing")
                                                      .arg(-20 / std::log(10.0) * gave.at(p), 0, 'g', 3)
                                                : QString();
+        // (Given at the top: where its strips do not agree there, said so.)
+        const QString untrusted = said.calibrated && !said.topAgrees
+                                      ? tr(" - %1 not to be trusted at %2 GHz: its strips do not agree on one line from %3 GHz")
+                                            .arg(said.givenLine || said.shift == 0 ? tr("its own discontinuity") : tr("its own discontinuity and the line"))
+                                            .arg(solved.frequencies.at(top) / 1e9, 0, 'g', 4)
+                                            .arg(said.offFrom / 1e9, 0, 'g', 4)
+                                      : QString();
         if (said.calibrated)
             out.lines << tr("%1 de-embedded: its own discontinuity, %2 fF at its face and %3 pH at the port at %4 GHz, taken "
-                            "out by two strips of its %5feed, %6 and %7 µm long; its reference plane %8%9%10.")
+                            "out by two strips of its %5feed, %6 and %7 µm long; its reference plane %8%9%10%11.")
                              .arg(solved.portNames.at(p))
                              .arg(said.shuntC * 1e15, 0, 'g', 3)
                              .arg(said.seriesL * 1e12, 0, 'g', 3)
@@ -691,7 +704,8 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                              .arg(said.coplanar ? tr("coplanar ") : QString())
                              .arg(said.length, 0, 'g', 4)
                              .arg(said.longer, 0, 'g', 4)
-                             .arg(plane, said.shift == 0 ? QString() : QStringLiteral(" ") + line, gaining);
+                             .arg(plane, said.shift == 0 ? QString() : QStringLiteral(" ") + line, gaining)
+                             .arg(untrusted);
         else
             out.lines << tr("%1's reference plane %2 %3; its own discontinuity left in, as solved.")
                              .arg(solved.portNames.at(p), plane, line);
@@ -705,14 +719,11 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
         const PortDeembedding& said = out.deembedding.at(p);
         const Calibration* cal = ports.at(p).calibration;
         if (!said.done || !said.calibrated || cal == nullptr) continue;
-        double from = 0;
-        for (int i = 0; i < cal->frequencies.size(); ++i)
-            if (cal->residual.value(i) > kStripsAgree && (from == 0 || cal->frequencies.at(i) < from)) from = cal->frequencies.at(i);
-        if (from > 0)
+        if (said.offFrom > 0)
             out.warnings << tr("%1's calibration strips do not agree on one line from %2 GHz - the third differs from the "
                                "line the other two read by up to %3, at %4 GHz: its de-embedding is not to be trusted there.")
                                 .arg(solved.portNames.at(p))
-                                .arg(from / 1e9, 0, 'g', 4)
+                                .arg(said.offFrom / 1e9, 0, 'g', 4)
                                 .arg(said.worst, 0, 'g', 2)
                                 .arg(said.worstAt / 1e9, 0, 'g', 4);
         if (said.reach > 0 && said.feedLength >= 0 && said.feedLength < said.reach)
