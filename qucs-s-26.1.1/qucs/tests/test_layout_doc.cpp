@@ -1380,6 +1380,73 @@ private slots:
         QVERIFY(!o.contains("drawings") && !o.contains("pen") && o.value("done").toString().contains(QStringLiteral("taken away")));
     }
 
+    // The pen drawn with as the user's mouse draws, through Claude's raw
+    // input (the check of G8, G9 and the pens of 2 November: "send_input
+    // has no target for a layout or slide view ... Wanted: a layout/slide
+    // target for send_input"): 'target' layout, its points µm on the cell
+    // shown - 'drag_through' a ring round the INV's output, out of sight
+    // and brought into view, drawn by the mouse's events and read in the
+    // answer as read_drawings reads it; 'pixels' the picture's; its keys to
+    // the view, Ctrl+Z undoing and Escape putting the pen down; a drag too
+    // long for the zoom, a layout not open and points that are none
+    // refused, nothing drawn.
+    void theRawInputDrawsOnALayout()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        doc->showCell(doc->layout()->cellIndex("TOP"));
+        LayoutView* view = doc->view();
+        doc->view()->clearDrawing(true);
+        QVERIFY(!failed(call("show_layout", {{"path", "sample.gds"}, {"pen", true}, {"region", QJsonArray{40, 40, 52, 51}}})));
+        const auto answer = [](const QJsonObject& r) {
+            return QJsonDocument::fromJson(text(r).section(QLatin1Char('\n'), 0, 0).toUtf8()).object();
+        };
+        QJsonArray ring;
+        for (int k = 1; k <= 24; ++k) ring.append(QJsonArray{11 + 1.8 * std::cos(2 * M_PI * k / 24), 0.5 + 1.8 * std::sin(2 * M_PI * k / 24)});
+        QJsonObject r = call("send_input", {{"target", "layout"}, {"click", QJsonArray{12.8, 0.5}}, {"drag_through", ring}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(view->visibleRegion().contains(QPointF(11, 0.5)), "brought into view");
+        QJsonObject o = answer(r);
+        QCOMPARE(o.value("on").toString(), QStringLiteral("the cell TOP of sample.gds"));
+        QVERIFY2(text(r).contains(QStringLiteral("µm, y up")), qPrintable(text(r)));
+        QCOMPARE(o.value("drawn").toArray().size(), 1);
+        const QJsonObject drawn = o.value("drawn").toArray().at(0).toObject();
+        QCOMPARE(drawn.value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(drawn.value("around").toObject(),
+                 (QJsonObject{{"shapes", QJsonObject{{"1/0", 1}, {"2/0", 1}}}, {"texts", QJsonArray{"OUT"}}, {"cells", QJsonObject{{"INV", 1}}}}));
+        QCOMPARE(json(call("read_drawings", {{"points", false}})).value("documents").toArray().at(0).toObject().value("strokes").toArray().at(0),
+                 QJsonValue(drawn));
+        // Where the mouse went: the stroke's points on the ring asked, to
+        // a pixel's worth of µm.
+        const markup::Stroke stroke = view->drawing().on(QStringLiteral("TOP")).first();
+        QVERIFY2(QLineF(stroke.points.first(), QPointF(12.8, 0.5)).length() <= 1 / view->scale(), "pressed where asked");
+        for (const QPointF& p : stroke.points)
+            QVERIFY2(std::abs(QLineF(p, QPointF(11, 0.5)).length() - 1.8) < 0.05, qPrintable(QStringLiteral("%1, %2").arg(p.x()).arg(p.y())));
+        // In the picture's pixels: a line.
+        const QPointF from = view->toPixel(QPointF(8, -3)), to = view->toPixel(QPointF(14, -3));
+        r = call("send_input", {{"target", "layout"}, {"click", QJsonArray{from.x(), from.y()}}, {"drag_to", QJsonArray{to.x(), to.y()}},
+                                {"pixels", true}});
+        QCOMPARE(answer(r).value("drawn").toArray().at(0).toObject().value("drawn as").toString(), QStringLiteral("line"));
+        QCOMPARE(view->drawing().count(QStringLiteral("TOP")), 2);
+        // Its keys: Ctrl+Z takes the line away; Escape puts the pen down.
+        r = call("send_input", {{"target", "layout"}, {"keys", "Ctrl+Z"}});
+        QVERIFY2(answer(r).value("taken away").toString().startsWith(QStringLiteral("1 of the pen's")), qPrintable(text(r)));
+        QCOMPARE(view->drawing().count(QStringLiteral("TOP")), 1);
+        QVERIFY(!failed(call("send_input", {{"target", "layout"}, {"keys", "Escape"}})));
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+        // Refused, nothing drawn: a drag longer than the view shows at this
+        // zoom, a layout not open, points that are none.
+        r = call("send_input", {{"target", "layout"}, {"click", QJsonArray{-5000, 0}}, {"drag_to", QJsonArray{5000, 0}}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("does not fit")), qPrintable(text(r)));
+        QVERIFY(failed(call("send_input", {{"target", "layout"}, {"path", "elsewhere.gds"}, {"click", QJsonArray{1, 1}}})));
+        QJsonArray none;   // (a list of one point, which is no point: appended, as a braced one is a copy on some compilers)
+        none.append(QJsonArray{2});
+        QCOMPARE(none.size(), 1);
+        QVERIFY(failed(call("send_input", {{"target", "layout"}, {"click", QJsonArray{1, 1}}, {"drag_through", none}})));
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        view->clearDrawing(true);
+    }
+
     // A ruler, dragged in ruler mode, snaps to the corners it comes near:
     // from (10, 0) to (12, 1), √5 µm; Shift keeps it across.
     void theRulerMeasuresFromCornerToCorner()

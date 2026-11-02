@@ -2751,6 +2751,80 @@ private slots:
         app.closeAllFiles();
     }
 
+    // The pen drawn with as the user's mouse draws, through Claude's raw
+    // input (the check of G8, G9 and the pens of 2 November: "send_input
+    // has no target for a layout or slide view ... Wanted: a layout/slide
+    // target for send_input"): 'target' slide, its points the slide's from
+    // its top left - 'drag_through' a ring round slide 2's title, drawn by
+    // the mouse's events and read in the answer as read_drawings reads it;
+    // 'drag_to' a line on slide 3, scrolled to; its keys to the slides,
+    // Ctrl+Z undoing and Escape putting the pen down; with the pen down a
+    // drag draws nothing; a slide that is none and two drags refused.
+    void theRawInputDrawsOnASlide()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        auto* control = app.findChild<QucsControl*>();
+        QVERIFY(control != nullptr);
+        const auto call = [control](const QString& tool, const QJsonObject& args) { return control->callNow(tool, args, 30000); };
+        const auto json = [](const QJsonObject& r) { return QJsonDocument::fromJson(QucsControl::textOf(r).section(QLatin1Char('\n'), 0, 0).toUtf8()).object(); };
+        const auto failed = [](const QJsonObject& r) { return r.value("isError").toBool(); };
+        Deck d;
+        for (int i = 0; i < 3; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            d.slides << s;
+        }
+        QVERIFY(write(dir.filePath("workspace/input.pptx"), d.build()));
+        QVERIFY(!failed(call("show_pptx", {{"path", "input.pptx"}, {"pen", true}})));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr && doc->view()->penActive());
+        QJsonArray ring;
+        for (int k = 1; k <= 36; ++k) ring.append(QJsonArray{480 + 450 * std::cos(2 * M_PI * k / 36), 70 + 56 * std::sin(2 * M_PI * k / 36)});
+        QJsonObject r = call("send_input", {{"target", "slide"}, {"slide", 2}, {"click", QJsonArray{930, 70}}, {"drag_through", ring}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        QJsonObject o = json(r);
+        QCOMPARE(o.value("on").toString(), QStringLiteral("slide 2 of input.pptx"));
+        QVERIFY2(QucsControl::textOf(r).contains(QStringLiteral("points of it, from its top left")), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(o.value("drawn").toArray().size(), 1);
+        const QJsonObject drawn = o.value("drawn").toArray().at(0).toObject();
+        QCOMPARE(drawn.value("slide").toInt(), 2);
+        QCOMPARE(drawn.value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(drawn.value("around").toArray(), (QJsonArray{QJsonObject{{"paragraph", "Slide 2"}}}));
+        // Where the mouse went: the stroke's points the ones asked, to a
+        // pixel's worth of the slide.
+        QCOMPARE(doc->view()->drawing().count(QStringLiteral("2")), 1);
+        const markup::Stroke stroke = doc->view()->drawing().on(QStringLiteral("2")).first();
+        const double pixel = 1.0 / doc->view()->zoom();
+        QVERIFY2(QLineF(stroke.points.first(), QPointF(930, 70)).length() <= pixel, qPrintable(QString::number(stroke.points.first().x())));
+        double far = 0;
+        for (const QPointF& p : stroke.points) far = std::max(far, std::abs(std::hypot((p.x() - 480) / 450, (p.y() - 70) / 56) - 1));
+        QVERIFY2(far < 0.05, qPrintable(QString::number(far)));
+        // A line on slide 3, which is scrolled to; Ctrl+Z takes it away.
+        r = call("send_input", {{"target", "slide"}, {"slide", 3}, {"click", QJsonArray{100, 300}}, {"drag_to", QJsonArray{500, 300}}});
+        QCOMPARE(json(r).value("drawn").toArray().at(0).toObject().value("drawn as").toString(), QStringLiteral("line"));
+        QCOMPARE(doc->view()->drawing().count(QStringLiteral("3")), 1);
+        r = call("send_input", {{"target", "slide"}, {"keys", "Ctrl+Z"}});
+        QVERIFY2(json(r).value("taken away").toString().startsWith(QStringLiteral("1 of the pen's")), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(doc->view()->drawing().count(QStringLiteral("3")), 0);
+        // Escape puts the pen down: a drag then draws nothing.
+        QVERIFY(!failed(call("send_input", {{"target", "slide"}, {"keys", "Escape"}})));
+        QVERIFY(!doc->view()->penActive());
+        r = call("send_input", {{"target", "slide"}, {"slide", 1}, {"click", QJsonArray{100, 300}}, {"drag_to", QJsonArray{500, 300}}});
+        QVERIFY2(!failed(r) && !json(r).contains("drawn"), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(doc->view()->drawing().strokes().size(), 1);
+        // Refused, nothing sent: a slide that is none, two drags at once.
+        r = call("send_input", {{"target", "slide"}, {"slide", 4}, {"click", QJsonArray{1, 1}}});
+        QVERIFY2(failed(r) && QucsControl::textOf(r).contains(QStringLiteral("'slide' is a slide's number, from 1 to 3")), qPrintable(QucsControl::textOf(r)));
+        QJsonArray one;   // (a list of one point: appended, as a braced one is a copy on some compilers)
+        one.append(QJsonArray{3, 3});
+        QCOMPARE(one.at(0).toArray().size(), 2);
+        QVERIFY(failed(call("send_input", {{"target", "slide"}, {"click", QJsonArray{1, 1}}, {"drag_to", QJsonArray{2, 2}}, {"drag_through", one}})));
+        app.closeAllFiles();
+    }
+
     void showDeckGiven()
     {
         const QString file = qEnvironmentVariable("QUCS_PPTX_RENDER").section(QLatin1Char(';'), 0, 0);

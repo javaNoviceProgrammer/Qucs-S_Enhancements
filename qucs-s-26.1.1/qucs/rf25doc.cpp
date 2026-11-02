@@ -1966,20 +1966,33 @@ QStringList RF25Doc::fullWaveSummary() const
         const QString plane = d.shift == 0 ? tr("at %1").arg(from)
                                            : tr("%1 µm %2 from %3").arg(std::abs(d.shift) * 1e6, 0, 'g', 4)
                                                  .arg(d.shift > 0 ? tr("in") : tr("out"), from);
+        // (Its strips' line and discontinuity, at the top: where the strips
+        //  do not agree on one line there, not to be trusted.)
+        const QString untrusted = d.calibrated && !d.topAgrees
+                                      ? tr(" - not to be trusted there: its strips do not agree on one line from %1 GHz")
+                                            .arg(d.offFrom / 1e9, 0, 'g', 4)
+                                      : QString();
         if (d.calibrated && !d.givenLine)
             out << tr("%1 de-embedded: its own discontinuity taken out, its reference plane %2; its feed a line of %3 Ohm, "
-                      "eps_eff %4 at %5 GHz.")
+                      "eps_eff %4 at %5 GHz%6.")
                        .arg(w.portNames.at(p), plane)
                        .arg(d.impedance.real(), 0, 'g', 4)
                        .arg(d.epsEff, 0, 'g', 4)
-                       .arg(w.frequencies.at(last) / 1e9, 0, 'g', 4);
+                       .arg(w.frequencies.at(last) / 1e9, 0, 'g', 4)
+                       .arg(untrusted);
         else
-            out << tr("%1 de-embedded: %2, its reference plane %3 along a given line of %4 Ohm, eps_eff %5.")
+            out << tr("%1 de-embedded: %2, its reference plane %3 along a given line of %4 Ohm, eps_eff %5%6.")
                        .arg(w.portNames.at(p),
                             d.calibrated ? tr("its own discontinuity taken out") : tr("its own discontinuity left in"),
                             plane)
                        .arg(d.impedance.real(), 0, 'g', 4)
-                       .arg(d.epsEff, 0, 'g', 4);
+                       .arg(d.epsEff, 0, 'g', 4)
+                       .arg(d.calibrated && !d.topAgrees
+                                ? tr(" - its own discontinuity, taken at %1 GHz, not to be trusted there: its strips do not agree on "
+                                     "one line from %2 GHz")
+                                      .arg(w.frequencies.at(last) / 1e9, 0, 'g', 4)
+                                      .arg(d.offFrom / 1e9, 0, 'g', 4)
+                                : QString());
     }
     // Whether the answer is what physics allows: the first sign of a bad port
     // or a mesh too coarse is that it is not. A de-embedding can leave a
