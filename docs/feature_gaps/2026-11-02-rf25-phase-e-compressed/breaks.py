@@ -5,7 +5,7 @@ blocks; GMRES; the system's terms (L's two kernels, A^T P A, the vias');
 the ports' Z taken variationally and GMRES's residual; the near field it
 is preconditioned with; the automatic choice and the memory bound; the
 oblique runs' cosine; and the mesh's, the tab's, the tools' and the
-model's parts - each built and its tests run. Sources are put back
+model's parts, and the runs' order - each built and its tests run. Sources are put back
 whatever happens.
 BRK_ONLY_CHECK=1 checks the anchors; BRK_ONLY=3,7 runs those alone;
 HUNT_RUNS=<dir> for logs."""
@@ -195,6 +195,11 @@ BREAKS = [
   [(QC, "        if (!fullWave) return errorResult(tr(\"'matrix' is the full-wave solve's: the quasi-static one is dense.\"));",
     "        (void)fullWave;")],
   [(TC, TOOL)]),
+
+ # ---- the runs' order (found by the DMG's drive, after 6c93e75)
+ ("the runs in a hash's order",
+  [(IN, "    std::sort(edges.begin(), edges.end());", "    (void)0;")],
+  [(TI, "theRunsOfCurrentAreTheCellsThatShareAnEdge")]),
 
  # ---- the model
  ("the study's Matrix shown for a quasi-static study too",

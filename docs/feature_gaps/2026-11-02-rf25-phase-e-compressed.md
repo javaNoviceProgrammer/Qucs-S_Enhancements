@@ -165,6 +165,12 @@ The 78 408 took 31 iterations at 10 MHz, 34 at 100 MHz and 48 at 60 GHz.
   than 32.
 - **A block of nought.** A via's potential correction is nothing in a stack of one medium. A cross approximation
   whose first row is nought tries others, eight across the block, before it takes the block for nought.
+- **The runs were numbered in a hash's order.** `runsOf()` made its runs by going through a `QHash` of the
+  edges two cells share, and Qt seeds a hash anew in every run of the program. The dense solve does not mind
+  the order but for its rounding; a compressed solve cuts its clusters from it, and the same line solved in two
+  runs of the packaged app came out 1e-8, 6e-5 and 2e-5 dB apart in S11. The runs now come in the order of the
+  cells they join (`std::is_sorted` of their ends, in test_rf25_inductance), and two runs of the app give the
+  same answer to the digit. Found by the DMG's own drive, after the first commit of this round (`6c93e75`).
 - **The strips of a port's feed.** Past the dense limit they were cut to a half and a quarter of their length.
   Unasked, they are now held compressed and solved whole: the test's strips of 1000 µm past a lowered limit give
   the dense solve's line to a part in 1e6. They are cut only for a dense solve asked, or past the memory.
@@ -207,7 +213,7 @@ but a preconditioner that holds a structure's global inductance - a coarse level
 
 ## Broken on purpose
 
-`docs/feature_gaps/2026-11-02-rf25-phase-e-compressed/breaks.py` holds thirty-three breaks. Each is built and the tests named for it run:
+`docs/feature_gaps/2026-11-02-rf25-phase-e-compressed/breaks.py` holds thirty-four breaks. Each is built and the tests named for it run:
 
 - **The cross approximation and the H-matrix:**
   - its row, and its column, without what is held already taken off;
@@ -245,10 +251,11 @@ but a preconditioner that holds a structure's global inductance - a coarse level
   - rf25_solve's 'matrix' not read;
   - the answer without what the compressed matrix kept;
   - 'matrix' let through for the quasi-static solve.
+- **The runs** in a hash's order, added after the DMG's drive found it.
 
 ## What the breaks taught
 
-- **Thirty-one of thirty-three were caught, after one test was tightened.**
+- **Thirty-two of thirty-four were caught, after one test was tightened.**
   - The first run held every structure to fewer than 80 iterations. The near field's P cut to its diagonal
     passed: its S was right, at about twice the iterations (a line 13 against 30, a via 10 against 18, the slant
     16 against 29).
