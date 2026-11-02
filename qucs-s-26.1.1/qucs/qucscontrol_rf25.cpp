@@ -126,6 +126,20 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                 if (d.gave < 0) de.insert(QStringLiteral("line dB/m as read"), 20 / std::log(10.0) * d.gave);
                 de.insert(QStringLiteral("shunt C"), d.shuntC);
                 de.insert(QStringLiteral("series L"), d.seriesL);
+                // Where they were taken - the top of the sweep - and, where
+                // its strips do not agree on one line there, that they are
+                // not to be trusted (the check of 2 November's G8: 166 Ohm,
+                // eps_eff 5.36 and 2374 dB/m at 100 GHz, the strips one line
+                // only to 58 GHz, printed as if they were).
+                const double top = *std::max_element(w.frequencies.begin(), w.frequencies.end());
+                de.insert(QStringLiteral("taken at"), top);
+                if (!d.topAgrees)
+                    de.insert(QStringLiteral("not to be trusted"),
+                              QCoreApplication::translate("QucsControl", "%1, taken at %2 GHz: its strips do not agree on one line from %3 GHz")
+                                  .arg(d.givenLine ? QCoreApplication::translate("QucsControl", "the shunt C and series L (the line is the one given)")
+                                                   : QCoreApplication::translate("QucsControl", "the line, the shunt C and the series L"))
+                                  .arg(top / 1e9, 0, 'g', 4)
+                                  .arg(d.offFrom / 1e9, 0, 'g', 4));
                 de.insert(QStringLiteral("calibration strip"), d.length * 1e-6);
                 de.insert(QStringLiteral("longer strip"), d.longer * 1e-6);
                 // The third strip, which checks the other two: up to where
