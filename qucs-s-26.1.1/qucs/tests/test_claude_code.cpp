@@ -3907,6 +3907,95 @@ private slots:
         QCOMPARE(first->title(), QStringLiteral("New conversation"));
     }
 
+    // What the pen drew on the document a prompt names goes with the
+    // prompt, read (setDrawingsProvider()) - once for each change: drawn,
+    // the next prompt has it; unchanged, the one after has not; changed,
+    // again; all taken away, said once. With the document chip off it is
+    // not said, and is at the next prompt that names the document. A new
+    // conversation is told afresh, and never that a drawing it was not told
+    // of went. It asks for a reading knowing the revision it last told, so
+    // that one unchanged is not read again.
+    void whatThePenDrewGoesWithThePrompt()
+    {
+        skipWithoutShell();
+        const QString work = fresh("drawn");
+        const QString deck = work + "/talk.pptx";
+        {
+            QFile f(deck);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+        }
+        quint64 revision = 0;
+        QString reading;
+        QList<quint64> known;   // what each prompt asked knowing
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(work);
+        tabs.setDocumentProvider([&deck] { return deck; });
+        tabs.setDrawingsProvider([&deck, &revision, &reading, &known](const QString& file, quint64 told) {
+            known << told;
+            return file == deck ? std::make_pair(revision, reading) : std::make_pair(quint64(0), QString());
+        });
+        tabs.resize(440, 700);
+        tabs.show();
+        ClaudeCodePanel* panel = tabs.current();
+        QFile::remove(dir.filePath("resumer-prompts"));
+        panel->session()->setProgram(script("resumer", kResumer));
+        int sent = 0;
+        // \a text sent, and what reached Claude of it.
+        const auto ask = [this, panel, &sent](const QString& text) {
+            panel->composer()->setPlainText(text);
+            panel->sendComposer();
+            QElapsedTimer t;
+            t.start();
+            QStringList lines;
+            do {
+                QTest::qWait(20);
+                lines = read(dir.filePath("resumer-prompts")).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            } while ((lines.size() <= sent || panel->session()->isBusy()) && t.elapsed() < 10000);
+            sent = int(lines.size());
+            return lines.isEmpty() ? QString() : lines.last();
+        };
+        QString got = ask("one");
+        QVERIFY2(got.contains("one") && got.contains("talk.pptx") && !got.contains("Drawn on it"), qPrintable(got));
+        revision = 4;
+        reading = "slide 1, stroke 1: a red pen ring around the paragraph \"Results\" (its box 10, 10 to 90, 40 points)";
+        got = ask("two");
+        QVERIFY2(got.contains("two") && got.contains("Drawn on it with the pen") && got.contains("ring around the paragraph"), qPrintable(got));
+        got = ask("three");
+        QVERIFY2(got.contains("three") && !got.contains("Drawn on it"), qPrintable(got));
+        QCOMPARE(known.last(), quint64(4));
+        revision = 5;
+        reading += "\nslide 1, stroke 2: a blue pen dot";
+        got = ask("four");
+        QVERIFY2(got.contains("four") && got.contains("stroke 2: a blue pen dot"), qPrintable(got));
+        revision = 6;
+        reading.clear();
+        got = ask("five");
+        QVERIFY2(got.contains("five") && got.contains("taken away"), qPrintable(got));
+        got = ask("six");
+        QVERIFY2(got.contains("six") && !got.contains("taken away") && !got.contains("Drawn on it"), qPrintable(got));
+        QCOMPARE(known.last(), quint64(0));
+        // The document chip off: no document, no drawing; on again, both.
+        revision = 7;
+        reading = "slide 2, stroke 1: a green pen line";
+        panel->attachButton()->setChecked(false);
+        got = ask("seven");
+        QVERIFY2(got.contains("seven") && !got.contains("talk.pptx") && !got.contains("Drawn on it"), qPrintable(got));
+        panel->attachButton()->setChecked(true);
+        got = ask("eight");
+        QVERIFY2(got.contains("eight") && got.contains("a green pen line"), qPrintable(got));
+        // A new conversation is told afresh; one told nothing is not told
+        // that it went.
+        panel->newConversation();
+        got = ask("nine");
+        QVERIFY2(got.contains("nine") && got.contains("a green pen line"), qPrintable(got));
+        panel->newConversation();
+        revision = 8;
+        reading.clear();
+        got = ask("ten");
+        QVERIFY2(got.contains("ten") && !got.contains("taken away") && !got.contains("Drawn on it"), qPrintable(got));
+        panel->session()->stop();
+    }
+
     // Pinning, the user's choice: not pinned at first (the prompts name
     // the document in front, as always); the pin by the composer pins the
     // schematic in front, ⋯ > Pin to a Schematic any open one; pinned, the
