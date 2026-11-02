@@ -18,6 +18,9 @@
  */
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
+#include "layoutdoc.h"
+#include "pptx.h"
+#include "pptxdoc.h"
 #include "qucs.h"
 #include "schematic.h"
 
@@ -80,6 +83,19 @@ void inView(QWidget* root)
     }
 }
 
+// Laid out as shown now, from the window down - a page brought forward
+// kept the size it had when it was hidden, a document just opened has its
+// layout still to come - so that the points are where its pixels will be
+// when the mouse's events come.
+void laidOut(QWidget* root)
+{
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    QList<QWidget*> up;
+    for (QWidget* w = root; w != nullptr; w = w->parentWidget()) up.prepend(w);
+    for (QWidget* w : std::as_const(up))
+        if (w->layout() != nullptr) w->layout()->activate();
+}
+
 // An action's text as the menu shows it.
 QString named(QString text)
 {
@@ -87,15 +103,18 @@ QString named(QString text)
     return text.trimmed();
 }
 
-bool xyOf(const QJsonValue& v, QPoint* p)
+bool xyOf(const QJsonValue& v, QPointF* p)
 {
     const QJsonArray a = v.toArray();
     if (a.size() != 2 || !a.at(0).isDouble() || !a.at(1).isDouble()) return false;
     // (Within reach of an int: 1e308 rounded into one was undefined.)
     if (!(std::abs(a.at(0).toDouble()) <= 1e7) || !(std::abs(a.at(1).toDouble()) <= 1e7)) return false;
-    *p = QPoint(qRound(a.at(0).toDouble()), qRound(a.at(1).toDouble()));
+    *p = QPointF(a.at(0).toDouble(), a.at(1).toDouble());
     return true;
 }
+
+// The most points a drag goes through ('drag_through').
+constexpr int MostDragged = 1000;
 
 void mouse(QWidget* w, QEvent::Type type, const QPoint& local, Qt::MouseButton button, Qt::MouseButtons held, Qt::KeyboardModifiers modifiers)
 {
@@ -133,11 +152,38 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         done(errorResult(tr("Give 'click' (and 'drag_to', 'double'), 'keys' or 'text' - what the mouse and keyboard do.")));
         return;
     }
-    QPoint click, dragTo;
-    const bool drag = args.contains(QLatin1String("drag_to"));
-    if ((hasClick && !xyOf(args.value(QLatin1String("click")), &click)) || (drag && !xyOf(args.value(QLatin1String("drag_to")), &dragTo))) {
+    // Where the mouse goes, in the target's measures: 'click', then a drag
+    // to 'drag_to', or through each of 'drag_through' in turn - a stroke's
+    // shape, on a layout or a slide with the pen taken up.
+    QPointF click, dragTo;
+    QList<QPointF> dragged;
+    const bool through = args.contains(QLatin1String("drag_through"));
+    const bool drag = args.contains(QLatin1String("drag_to")) || through;
+    if ((hasClick && !xyOf(args.value(QLatin1String("click")), &click))
+        || (args.contains(QLatin1String("drag_to")) && !xyOf(args.value(QLatin1String("drag_to")), &dragTo))) {
         done(errorResult(tr("'click' and 'drag_to' are [x, y], each within 10,000,000 of 0.")));
         return;
+    }
+    if (through && args.contains(QLatin1String("drag_to"))) {
+        done(errorResult(tr("'drag_to' or 'drag_through', not both: a drag through points ends at the last of them.")));
+        return;
+    }
+    if (through) {
+        const QJsonArray points = args.value(QLatin1String("drag_through")).toArray();
+        bool good = !points.isEmpty() && points.size() <= MostDragged;
+        for (const QJsonValue& v : points) {
+            QPointF p;
+            good = good && xyOf(v, &p);
+            dragged << p;
+        }
+        if (!good) {
+            done(errorResult(tr("'drag_through' is a list of [x, y] - one to %1 of them, each within 10,000,000 of 0 - that a drag "
+                                "from 'click' goes through in turn.").arg(MostDragged)));
+            return;
+        }
+        dragTo = dragged.last();
+    } else if (drag) {
+        dragged << dragTo;
     }
     if (drag && !hasClick) {
         done(errorResult(tr("'drag_to' is where a drag from 'click' ends: give 'click' too.")));
@@ -167,9 +213,14 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     const bool doubleClick = args.value(QLatin1String("double")).toBool();
     const bool pixels = args.value(QLatin1String("pixels")).toBool();
 
-    // Where: the canvas of a schematic, or a part of the window (not a
-    // console, not the Claude Code panel).
+    // Where: the canvas of a schematic, a layout's view or a presentation's
+    // slides, or a part of the window (not a console, not the Claude Code
+    // panel).
     QPointer<Schematic> sch;
+    QPointer<qucs_s::layout::LayoutView> layoutView;
+    QPointer<qucs_s::pptx::SlideView> slideView;
+    QPointer<PptxDoc> slides;    // whose they are
+    int slide = -1;              // the slide the points are on
     QPointer<QWidget> root;      // what the picture shows, what the points are in
     QString where;
     const bool intoDialog = target.compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
@@ -193,9 +244,71 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         a_app->showDocument(QucsApp::documentWidget(sch));
         root = sch->viewport();
         where = tr("the canvas of %1").arg(titleOf(sch));
+    } else if (target.compare(QLatin1String("layout"), Qt::CaseInsensitive) == 0) {
+        // An open layout's view: the points µm on the cell it shows, y up,
+        // as its pen's strokes and read_drawings have them.
+        LayoutDoc* doc = nullptr;
+        const QString file = args.value(QLatin1String("path")).toString().trimmed();
+        if (file.isEmpty()) {
+            doc = qobject_cast<LayoutDoc*>(a_app->DocumentTab->count() > 0 ? a_app->DocumentTab->currentWidget() : nullptr);
+        } else {
+            for (QucsDoc* d : a_app->allDocuments())
+                if (auto* l = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(d)); l != nullptr && sameFile(l->getDocName(), absolute(file)))
+                    doc = l;
+        }
+        if (doc == nullptr) {
+            done(errorResult(file.isEmpty() ? tr("Which layout? 'path' (the document in front is none): show_layout opens one.")
+                                            : tr("%1 is not open as a layout: show_layout opens it.").arg(file)));
+            return;
+        }
+        if (doc->isLoading() || !doc->layout() || doc->view()->drawingPart().isEmpty()) {
+            done(errorResult(doc->isLoading() ? tr("%1 is still being read: show_layout waits for it.").arg(titleOf(doc))
+                             : doc->problem().isEmpty() ? tr("%1 shows no cell.").arg(titleOf(doc))
+                                                        : doc->problem()));
+            return;
+        }
+        a_app->showDocument(doc);
+        layoutView = doc->view();
+        root = layoutView.data();
+        laidOut(root);
+        where = tr("the cell %1 of %2").arg(layoutView->drawingPart(), titleOf(doc));
+    } else if (target.compare(QLatin1String("slide"), Qt::CaseInsensitive) == 0) {
+        // An open presentation's slides: the points from the top left of
+        // 'slide' (the one in sight), as its pen's strokes and read_drawings
+        // have them.
+        QString error;
+        PptxDoc* deck = presentationFound(args, &error);
+        if (deck == nullptr || deck->presentation() == nullptr) {
+            done(errorResult(!error.isEmpty() ? error
+                             : deck != nullptr ? (deck->problem().isEmpty() ? tr("%1 shows nothing.").arg(titleOf(deck)) : deck->problem())
+                                               : tr("%1 is not open: show_pptx opens it.").arg(args.value(QLatin1String("path")).toString())));
+            return;
+        }
+        const int count = deck->presentation()->slideCount();
+        if (count == 0) {
+            done(errorResult(tr("%1 has no slides.").arg(titleOf(deck))));
+            return;
+        }
+        slide = deck->currentSlide();
+        if (args.contains(QLatin1String("slide"))) {
+            // (Judged first: toInt hands back its default for 2.5 or "2".)
+            const QJsonValue v = args.value(QLatin1String("slide"));
+            const double n = v.toDouble(-1);
+            if (!v.isDouble() || n != std::floor(n) || n < 1 || n > count) {
+                done(errorResult(tr("'slide' is a slide's number, from 1 to %1.").arg(count)));
+                return;
+            }
+            slide = int(n) - 1;
+        }
+        a_app->showDocument(deck);
+        slides = deck;
+        slideView = deck->view();
+        root = slideView->viewport();
+        laidOut(root);
+        where = tr("slide %1 of %2").arg(slide + 1).arg(titleOf(deck));
     } else if (target.compare(QLatin1String("tabs"), Qt::CaseInsensitive) == 0) {
-        done(errorResult(tr("send_input reaches a schematic's canvas, a dock or panel, a toolbar or the status bar: set_ui brings a tab "
-                            "forward, context_menu opens its menu.")));
+        done(errorResult(tr("send_input reaches a schematic's canvas, a layout's view, a presentation's slides, a dock or panel, a "
+                            "toolbar or the status bar: set_ui brings a tab forward, context_menu opens its menu.")));
         return;
     } else {
         QString name, error;
@@ -205,36 +318,61 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
             return;
         }
         inView(root);
-        // Laid out as shown now, from the window down (a page brought
-        // forward kept the size it had when it was hidden).
-        QList<QWidget*> up;
-        for (QWidget* w = root; w != nullptr; w = w->parentWidget()) up.prepend(w);
-        for (QWidget* w : std::as_const(up))
-            if (w->layout() != nullptr) w->layout()->activate();
+        laidOut(root);
         where = name;
     }
 
-    // The points, in the picture's pixels: from the schematic's
-    // coordinates on the canvas (brought into view when they are not).
-    QPoint at = click, to = dragTo;
-    if (sch && hasClick && !pixels) {
+    // The points, in the picture's pixels: from the schematic's coordinates
+    // on the canvas, a cell's µm on a layout, a slide's points on a slide -
+    // brought into view when they are not, the zoom as it is.
+    QList<QPointF> asked{click};
+    asked << dragged;
+    QList<QPoint> path;   // the click, then where the drag goes
+    if (hasClick && !pixels && (sch || layoutView || slideView)) {
+        const auto toPixel = [&sch, &layoutView, &slideView, slide](QPointF p) {
+            if (sch) return sch->modelToViewport(p.toPoint());
+            if (layoutView) return layoutView->toPixel(p).toPoint();
+            return slideView->toViewport(slide, p).toPoint();
+        };
         const QRect shown = root->rect().adjusted(4, 4, -4, -4);
-        if (!shown.contains(sch->modelToViewport(click)) || (drag && !shown.contains(sch->modelToViewport(dragTo)))) {
-            sch->centerOn(drag ? (click + dragTo) / 2 : click);
-            if (!shown.contains(sch->modelToViewport(click)) || (drag && !shown.contains(sch->modelToViewport(dragTo)))) {
-                done(errorResult(tr("The drag from %1, %2 to %3, %4 does not fit in the canvas at this zoom: zoom out first (zoom).")
-                                     .arg(click.x()).arg(click.y()).arg(dragTo.x()).arg(dragTo.y())));
+        const auto inSight = [&asked, &shown, &toPixel] {
+            for (const QPointF& p : std::as_const(asked))
+                if (!shown.contains(toPixel(p))) return false;
+            return true;
+        };
+        double x0 = click.x(), x1 = x0, y0 = click.y(), y1 = y0;
+        for (const QPointF& p : std::as_const(asked)) {
+            x0 = std::min(x0, p.x());
+            x1 = std::max(x1, p.x());
+            y0 = std::min(y0, p.y());
+            y1 = std::max(y1, p.y());
+        }
+        if (!inSight()) {
+            const QPointF middle((x0 + x1) / 2, (y0 + y1) / 2);
+            if (sch) sch->centerOn(middle.toPoint());
+            else if (layoutView) layoutView->setView(middle, layoutView->scale());
+            else slideView->centerOn(slide, middle);
+            if (!inSight()) {
+                done(errorResult(tr("%1 does not fit in %2 at this zoom: zoom out first (%3).")
+                                     .arg(drag ? tr("The drag from %1, %2 to %3, %4").arg(x0).arg(y0).arg(x1).arg(y1)
+                                               : tr("%1, %2").arg(click.x()).arg(click.y()),
+                                          where,
+                                          sch ? tr("zoom") : layoutView ? tr("show_layout's 'region'") : tr("show_pptx's 'zoom'"))));
                 return;
             }
         }
-        at = sch->modelToViewport(click);
-        to = sch->modelToViewport(dragTo);
-    } else if (hasClick && (!root->rect().contains(at) || (drag && !root->rect().contains(to)))) {
-        done(errorResult(tr("%1, %2 is outside %3, which is %4 x %5 pixels (its picture's).")
-                             .arg(root->rect().contains(at) ? to.x() : at.x()).arg(root->rect().contains(at) ? to.y() : at.y())
-                             .arg(where).arg(root->width()).arg(root->height())));
-        return;
+        for (const QPointF& p : std::as_const(asked)) path << toPixel(p);
+    } else if (hasClick) {
+        for (const QPointF& p : std::as_const(asked)) {
+            if (!root->rect().contains(p.toPoint())) {
+                done(errorResult(tr("%1, %2 is outside %3, which is %4 x %5 pixels (its picture's).")
+                                     .arg(p.x()).arg(p.y()).arg(where).arg(root->width()).arg(root->height())));
+                return;
+            }
+            path << p.toPoint();
+        }
     }
+    const QPoint at = path.value(0);
 
     // The keys: each as the user's keyboard gives it - the action whose
     // shortcut it is set off (refused, with nothing sent, when it is one
@@ -336,8 +474,9 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     run->dialogBefore = openDialog();
     QPointer<QWidget> receiver = root;
     if (hasClick) {
-        // On the widget under the point (a view's viewport, a button).
-        if (QWidget* under = sch ? nullptr : root->childAt(at)) receiver = under;
+        // On the widget under the point (a view's viewport, a button) - a
+        // canvas, a layout's view and slides taking their own.
+        if (QWidget* under = sch || layoutView || slideView ? nullptr : root->childAt(at)) receiver = under;
     }
     // (The status bar's Claude chip shows and hides the Claude Code panel:
     // the user's, as the panel is.)
@@ -346,33 +485,38 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                             "user's. Nothing was sent.").arg(click.x()).arg(click.y())));
         return;
     }
-    const QPoint local = receiver && receiver != root ? receiver->mapFrom(root, at) : at;
-    const QPoint localTo = receiver && receiver != root ? receiver->mapFrom(root, to) : to;
+    QList<QPoint> local;   // the path in the receiver's pixels
+    for (const QPoint& p : std::as_const(path)) local << (receiver && receiver != root ? receiver->mapFrom(root, p) : p);
     if (hasClick)
-        QTimer::singleShot(0, a_app, [run, receiver, local, localTo, drag, doubleClick, button, modifiers] {
+        QTimer::singleShot(0, a_app, [run, receiver, local, through, drag, doubleClick, button, modifiers] {
             const QtFileDialogs qt;
             if (!receiver) return;
-            mouse(receiver, QEvent::MouseMove, local, Qt::NoButton, Qt::NoButton, modifiers);
-            mouse(receiver, QEvent::MouseButtonPress, local, button, button, modifiers);
+            mouse(receiver, QEvent::MouseMove, local.first(), Qt::NoButton, Qt::NoButton, modifiers);
+            mouse(receiver, QEvent::MouseButtonPress, local.first(), button, button, modifiers);
             if (drag) {
                 // In steps, as a hand drags - the first where it was
                 // pressed (a canvas takes the first to set the move up,
-                // and moves nothing with it).
-                if (receiver) mouse(receiver, QEvent::MouseMove, local, Qt::NoButton, button, modifiers);
-                for (int i = 1; i <= 8 && receiver; ++i)
-                    mouse(receiver, QEvent::MouseMove, local + (localTo - local) * i / 8, Qt::NoButton, button, modifiers);
-                if (receiver) mouse(receiver, QEvent::MouseButtonRelease, localTo, button, Qt::NoButton, modifiers);
+                // and moves nothing with it); through points, a step every
+                // four pixels or so of each leg, as a pen's stroke has them.
+                if (receiver) mouse(receiver, QEvent::MouseMove, local.first(), Qt::NoButton, button, modifiers);
+                for (int k = 1; k < local.size() && receiver; ++k) {
+                    const QPoint from = local.at(k - 1), next = local.at(k);
+                    const int steps = through ? std::max(1, int(std::ceil(QLineF(from, next).length() / 4))) : 8;
+                    for (int i = 1; i <= steps && receiver; ++i)
+                        mouse(receiver, QEvent::MouseMove, from + (next - from) * i / steps, Qt::NoButton, button, modifiers);
+                }
+                if (receiver) mouse(receiver, QEvent::MouseButtonRelease, local.last(), button, Qt::NoButton, modifiers);
                 return;
             }
-            if (receiver) mouse(receiver, QEvent::MouseButtonRelease, local, button, Qt::NoButton, modifiers);
+            if (receiver) mouse(receiver, QEvent::MouseButtonRelease, local.first(), button, Qt::NoButton, modifiers);
             // (Focused, as a click focuses what takes it: the keys after go there.)
             if (receiver && (receiver->focusPolicy() & Qt::ClickFocus) == Qt::ClickFocus) {
                 receiver->setFocus(Qt::MouseFocusReason);
                 run->clicked = receiver;
             }
             if (doubleClick && receiver) {
-                mouse(receiver, QEvent::MouseButtonDblClick, local, button, button, modifiers);
-                if (receiver) mouse(receiver, QEvent::MouseButtonRelease, local, button, Qt::NoButton, modifiers);
+                mouse(receiver, QEvent::MouseButtonDblClick, local.first(), button, button, modifiers);
+                if (receiver) mouse(receiver, QEvent::MouseButtonRelease, local.first(), button, Qt::NoButton, modifiers);
             }
         });
     QPointer<Schematic> canvas = sch;
@@ -484,14 +628,28 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
 
     // Answered: what it opened, or a moment after it was all given - with a
     // picture of it.
+    // What the pen had drawn before, on a layout or slides - each part's
+    // strokes - to say after what the input drew, or took away.
+    QHash<QString, int> drawnBefore;
+    int strokesBefore = 0;
+    quint64 revisionBefore = 0;
+    if (layoutView || slideView) {
+        const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView->drawing();
+        for (const QString& part : drawing.parts()) drawnBefore.insert(part, drawing.count(part));
+        strokesBefore = int(drawing.strokes().size());
+        revisionBefore = drawing.revision();
+    }
     auto* watch = new QTimer(this);
     watch->setInterval(50);
     const QString clicked = hasClick ? tr("%1%2 %3 at %4, %5%6")
                                            .arg(doubleClick ? tr("double ") : QString(), buttonName, tr("click"))
                                            .arg(click.x()).arg(click.y())
-                                           .arg(drag ? tr(", dragged to %1, %2").arg(dragTo.x()).arg(dragTo.y()) : QString())
+                                           .arg(through  ? tr(", dragged through %1 point(s) to %2, %3").arg(dragged.size()).arg(dragTo.x()).arg(dragTo.y())
+                                                : drag ? tr(", dragged to %1, %2").arg(dragTo.x()).arg(dragTo.y())
+                                                       : QString())
                                      : QString();
-    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, where, clicked, sets, typed, intoDialog] {
+    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, layoutView, slideView, slides, slide, drawnBefore,
+                                            strokesBefore, revisionBefore, where, clicked, sets, typed, intoDialog] {
         if (run->answered) return;
         // (Each key as it went: an action, the field's, the list's.)
         const QStringList keysSaid = run->keys.isEmpty() ? sets : run->keys;
@@ -530,6 +688,23 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         // of its own, drawn into the picture where it is.)
         QAbstractItemView* list = openList();
         if (list != nullptr) o.insert(QStringLiteral("list"), listRead(list));
+        // (On a layout or slides: each stroke the pen drew, read as
+        //  read_drawings reads it - what it marks -, or how many went.)
+        if (layoutView || (slideView && slides)) {
+            const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView->drawing();
+            if (drawing.revision() != revisionBefore) {
+                QJsonArray drawn;
+                for (const QJsonValue& v : layoutView ? layoutView->readDrawing(false) : slides->readDrawing(false)) {
+                    const QJsonObject r = v.toObject();
+                    const QString part = layoutView ? r.value(QLatin1String("cell")).toString()
+                                                    : QString::number(r.value(QLatin1String("slide")).toInt());
+                    if (r.value(QLatin1String("stroke")).toInt() > drawnBefore.value(part)) drawn.append(r);
+                }
+                if (!drawn.isEmpty()) o.insert(QStringLiteral("drawn"), drawn);
+                if (drawing.strokes().size() < strokesBefore)
+                    o.insert(QStringLiteral("taken away"), tr("%1 of the pen's stroke(s)").arg(strokesBefore - drawing.strokes().size()));
+            }
+        }
         QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                        {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))}}};
         if (root && !closed) {
@@ -539,6 +714,17 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                 const QPoint topLeft = canvas->viewportToModel(QPoint(0, 0)), bottomRight = canvas->viewportToModel(QPoint(root->width(), root->height()));
                 how += tr(" - the schematic from %1, %2 to %3, %4 (a point there is 'click' as it is; with 'pixels', its pixel)")
                            .arg(topLeft.x()).arg(topLeft.y()).arg(bottomRight.x()).arg(bottomRight.y());
+            } else if (layoutView) {
+                const QPointF low = layoutView->toLayout(QPointF(0, root->height())), high = layoutView->toLayout(QPointF(root->width(), 0));
+                how += tr(" - the cell from %1, %2 to %3, %4 µm, y up (a point there is 'click' as it is; with 'pixels', its pixel)")
+                           .arg(low.x(), 0, 'g', 6).arg(low.y(), 0, 'g', 6).arg(high.x(), 0, 'g', 6).arg(high.y(), 0, 'g', 6);
+            } else if (slideView) {
+                const QPointF topLeft = slideView->toSlide(slide, QPointF(0, 0)),
+                              bottomRight = slideView->toSlide(slide, QPointF(root->width(), root->height()));
+                how += tr(" - slide %1 from %2, %3 to %4, %5 points of it, from its top left (a point there is 'click' as it is; with "
+                          "'pixels', its pixel)")
+                           .arg(slide + 1)
+                           .arg(topLeft.x(), 0, 'f', 1).arg(topLeft.y(), 0, 'f', 1).arg(bottomRight.x(), 0, 'f', 1).arg(bottomRight.y(), 0, 'f', 1);
             } else {
                 how += tr(" (a point of it is 'click' as it is)");
             }

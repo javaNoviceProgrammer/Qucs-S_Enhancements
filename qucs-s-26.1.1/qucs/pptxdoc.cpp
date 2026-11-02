@@ -270,6 +270,29 @@ QPointF SlideView::toSlide(int index, QPointF pos) const
     return (pos - r.topLeft()) / scale;
 }
 
+QPointF SlideView::toViewport(int index, QPointF point) const
+{
+    const QRectF r(slideRect(index));
+    const qreal scale = a_presentation != nullptr ? r.width() / a_presentation->slideSize().width() : 1;
+    return r.topLeft() + point * scale;
+}
+
+void SlideView::centerOn(int index, QPointF point)
+{
+    if (a_presentation == nullptr || a_presentation->slideCount() == 0) return;
+    index = std::clamp(index, 0, a_presentation->slideCount() - 1);
+    const QSize view = viewport()->size();
+    const QPointF at = contentRect(index).topLeft() + point * a_zoom;
+    horizontalScrollBar()->setValue(int(std::lround(at.x() - view.width() / 2.0)));
+    verticalScrollBar()->setValue(int(std::lround(at.y() - view.height() / 2.0)));
+    // (The slide shown is the one asked, wherever a third of the view is.)
+    if (a_current != index) {
+        a_current = index;
+        emit currentSlideChanged(index);
+    }
+    viewport()->update();
+}
+
 QRectF SlideView::contentRect(int index) const
 {
     if (a_presentation == nullptr) return QRectF();
