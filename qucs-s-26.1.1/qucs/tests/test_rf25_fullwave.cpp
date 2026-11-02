@@ -2153,6 +2153,43 @@ private slots:
         QVERIFY2(fw.gain <= 1e-6 && most < 1 && fw.asymmetry < 1e-9,
                  qPrintable(QStringLiteral("%1, gain %2, asymmetry %3").arg(most).arg(fw.gain).arg(fw.asymmetry)));
     }
+
+    // A stack's Green's functions are kept between solves (keepGreens()),
+    // and what a solve gives does not hang on what was solved before it: a
+    // line solved keeping nothing, and again after a line twice as long on
+    // the same stack has kept its tables, reads the same to the last digit -
+    // the second solve building nothing, its tables the first part of the
+    // longer one's - and so again. (At 1 and 2 GHz, where a grid begun at a
+    // thousandth of the farthest distance would have begun at 2 µm for the
+    // one and 4 for the other.)
+    void aSolveReadsTheSameWhateverWasSolvedBefore()
+    {
+        const bool slow = slowBuild();
+        const rf::Stack stack = grounded(9.8, 254e-6);
+        const QList<double> fs = slow ? QList<double>{1e9} : QList<double>{1e9, 2e9};
+        const auto solve = [&stack, &fs](double l) {
+            const QList<rf::Conductor> line = {strip(0, 0, l, 250)};
+            return rf::fullWaveOf(meshed(line, 2, 200e-6), line, stack,
+                                  {edgePort(QPointF(0, 125), QString(), QPointF(-1, 0)), edgePort(QPointF(l, 125), QString(), QPointF(1, 0))},
+                                  fs);
+        };
+        rf::keepGreens(0);
+        const rf::FullWave own = solve(2000), longOwn = solve(4000);
+        QVERIFY2(own.ok() && longOwn.ok(), qPrintable(why(own) + why(longOwn)));
+        QCOMPARE(rf::greensKept().tables, 0);
+        rf::keepGreens(256e6);
+        rf::forgetGreens();
+        const rf::FullWave longKept = solve(4000);
+        const long long built = rf::greensKept().built;
+        const rf::FullWave kept = solve(2000);
+        QVERIFY2(kept.ok() && longKept.ok(), qPrintable(why(kept) + why(longKept)));
+        QCOMPARE(rf::greensKept().built, built);
+        QVERIFY(rf::greensKept().reused > 0);
+        QVERIFY2(kept.z == own.z && longKept.z == longOwn.z, "to the last digit, kept or not");
+        const rf::FullWave again = solve(2000);
+        QVERIFY(again.z == own.z && rf::greensKept().built == built);
+        rf::forgetGreens();
+    }
 };
 
 QTEST_MAIN(TestRf25Fullwave)
