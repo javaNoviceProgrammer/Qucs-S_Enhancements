@@ -624,9 +624,10 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("grid"), tr("a point every %1 µm, stronger every %2 µm; a scale in the lower left")
                                                       .arg(micrometres(*layout, view->gridStep()), micrometres(*layout, view->gridMajorStep())));
         if (view->lastStats().incomplete) result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
-        // What the user drew with the pen, cell by cell - its box in µm -
-        // and whether the pen is taken up.
-        if (!view->drawing().isEmpty()) result.insert(QStringLiteral("drawings"), qucs_s::markup::describe(view->drawing(), QStringLiteral("cell")));
+        // What the user drew with the pen, read stroke by stroke - what each
+        // is and what it marks, its box in µm - the latest 40; and whether
+        // the pen is taken up.
+        if (!view->drawing().isEmpty()) insertDrawings(result, view->readDrawing(false));
         if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));
         if (cleared) result.insert(QStringLiteral("done"), tr("What the pen drew taken away (the pen's Undo gives it back)."));
         done(jsonResult(result));

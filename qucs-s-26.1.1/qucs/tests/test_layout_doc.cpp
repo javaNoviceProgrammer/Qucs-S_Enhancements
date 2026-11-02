@@ -1242,10 +1242,102 @@ private slots:
         markup::setCurrentPen(markup::Pen());
     }
 
+    // What the pen drew on a layout, read as one reads it
+    // (LayoutView::readDrawing()), in µm of the cell drawn on: a ring round
+    // the first INV holds its two shapes by layer, its text and the INV
+    // placed there; one round the VIA array its six squares and six VIAs;
+    // an arrow drawn at one go from the triangle points at the turned INV
+    // it stops short of; a highlighter over the row of squares lies on the
+    // four it passes; a dot on the mirrored INV's body is on it, in that
+    // INV; a line with its head drawn after it points at the first INV's
+    // body from above. A layer hidden is not read, nor the texts hidden,
+    // nor what is below the depth drawn; each stroke's points when asked;
+    // a reading in a sentence.
+    void whatThePenDrewOnALayoutIsRead()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        doc->showCell(doc->layout()->cellIndex("TOP"));
+        const auto stroke = [](const QPolygonF& points, double width = 0.1, bool highlighter = false) {
+            markup::Stroke s;
+            s.on = QStringLiteral("TOP");
+            s.points = points;
+            s.width = width;
+            s.highlighter = highlighter;
+            s.color = QColor(0x1c, 0x71, 0xd8);
+            return s;
+        };
+        QPolygonF circle, shaft;
+        for (int k = 0; k < 23; ++k) circle << QPointF(11, 0.5) + 1.8 * QPointF(std::cos(2 * M_PI * k / 24), std::sin(2 * M_PI * k / 24));
+        for (int k = 0; k <= 10; ++k) shaft << QPointF(2, 11) + (QPointF(18.6, 1) - QPointF(2, 11)) * (k / 10.0);
+        view->addStroke(stroke(circle));
+        view->addStroke(stroke({QPointF(-0.5, -0.5), QPointF(3, -0.5), QPointF(3, 2), QPointF(-0.5, 2), QPointF(-0.5, -0.3)}));
+        view->addStroke(stroke(shaft << QPointF(17.7, 1.9)));
+        view->addStroke(stroke({QPointF(2.5, 20.1), QPointF(6.7, 20.1)}, 0.3, true));
+        view->addStroke(stroke({QPointF(31, -0.25)}));
+        view->addStroke(stroke({QPointF(11, 8), QPointF(11, 1.55)}));
+        view->addStroke(stroke({QPointF(10.6, 2.15), QPointF(11, 1.55), QPointF(11.4, 2.15)}));
+        QJsonArray read = view->readDrawing(true);
+        QCOMPARE(read.size(), 7);
+        const auto r = [&read](int stroke) { return read.at(stroke - 1).toObject(); };
+        const auto on = [](const QJsonObject& shapes, const QJsonObject& cells = {}) {
+            QJsonObject o{{"shapes", shapes}};
+            if (!cells.isEmpty()) o.insert("cells", cells);
+            return o;
+        };
+        const QJsonObject inv{{"INV", 1}};
+        QCOMPARE(r(1).value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(r(1).value("cell").toString(), QStringLiteral("TOP"));
+        QCOMPARE(r(1).value("around").toObject(), (QJsonObject{{"shapes", QJsonObject{{"1/0", 1}, {"2/0", 1}}}, {"texts", QJsonArray{"OUT"}}, {"cells", inv}}));
+        QCOMPARE(r(2).value("around").toObject(), on({{"3/0", 6}}, {{"VIA", 6}}));
+        QCOMPARE(r(3).value("drawn as").toString(), QStringLiteral("arrow"));
+        QCOMPARE(r(3).value("from").toObject(), on({{"5/0", 1}}));
+        QCOMPARE(r(3).value("points at").toObject(), on({{"1/0", 1}}, inv));
+        QCOMPARE(r(4).value("tool").toString(), QStringLiteral("highlighter"));
+        QCOMPARE(r(4).value("drawn as").toString(), QStringLiteral("line"));
+        QCOMPARE(r(4).value("highlights").toObject(), on({{"4/0", 4}}));
+        QCOMPARE(r(5).value("drawn as").toString(), QStringLiteral("dot"));
+        QCOMPARE(r(5).value("on").toObject(), on({{"1/0", 1}}, inv));
+        QCOMPARE(r(6).value("drawn as").toString(), QStringLiteral("arrow"));
+        QCOMPARE(r(6).value("points at").toObject(), on({{"1/0", 1}}, inv));
+        QVERIFY(!r(6).contains("from"));
+        QCOMPARE(r(7).value("drawn as").toString(), QStringLiteral("arrowhead"));
+        QCOMPARE(r(7).value("of stroke").toInt(), 6);
+        QCOMPARE(r(6).value("points").toArray(), (QJsonArray{QJsonArray{11, 8}, QJsonArray{11, 1.55}}));
+        QVERIFY(!view->readDrawing(false).at(0).toObject().contains("points"));
+        // In a sentence.
+        const QString first = markup::sentencesOf(read, false).section(QLatin1Char('\n'), 0, 0);
+        QVERIFY2(first.startsWith(QStringLiteral("cell TOP, stroke 1: a blue pen ring around 1 shape(s) on 1/0, 1 shape(s) on 2/0, the text OUT, "
+                                                 "1 placement(s) of INV (its box "))
+                     && first.endsWith(QStringLiteral(" µm)")),
+                 qPrintable(first));
+        // 1/0 hidden: not read - the dot is in the INV, on nothing of it shown.
+        int metal = -1;
+        for (int i = 0; i < doc->layout()->layers.size(); ++i)
+            if (doc->layout()->layers.at(i).key.text() == QStringLiteral("1/0")) metal = i;
+        QVERIFY(metal >= 0);
+        doc->setLayerVisible(metal, false);
+        read = view->readDrawing(false);
+        QCOMPARE(r(1).value("around").toObject(), (QJsonObject{{"shapes", QJsonObject{{"2/0", 1}}}, {"texts", QJsonArray{"OUT"}}, {"cells", inv}}));
+        QCOMPARE(r(5).value("on").toObject(), (QJsonObject{{"cells", inv}}));
+        doc->setLayerVisible(metal, true);
+        // The texts hidden; then nothing below the cell drawn.
+        view->setLabelsShown(false);
+        QVERIFY(!view->readDrawing(false).at(0).toObject().value("around").toObject().contains("texts"));
+        view->setLabelsShown(true);
+        view->setDepth(0);
+        read = view->readDrawing(false);
+        QCOMPARE(r(1).value("around").toObject(), (QJsonObject{{"cells", inv}}));
+        QCOMPARE(r(2).value("around").toObject(), (QJsonObject{{"cells", QJsonObject{{"VIA", 6}}}}));
+        view->setDepth(1 << 20);
+    }
+
     // What the user drew with the pen on a layout, as show_layout has it:
-    // cell by cell, how many strokes, their box in µm, their colours. It
-    // takes the pen up and puts it down, and clears the drawings; a 'pen'
-    // or 'drawings' of another kind is refused.
+    // stroke by stroke, its cell, how it was drawn, its colour and its box
+    // in µm; read_drawings with its points too. show_layout takes the pen
+    // up and puts it down, and clears the drawings; a 'pen' or 'drawings'
+    // of another kind is refused.
     void claudeSeesWhatThePenDrewOnALayout()
     {
         LayoutDoc* doc = open(path("sample.gds"));
@@ -1264,10 +1356,22 @@ private slots:
         QVERIFY(doc->penButton()->isChecked() && o.value("pen").toString().contains(QStringLiteral("taken up")));
         const QJsonArray drawn = o.value("drawings").toArray();
         QCOMPARE(drawn.size(), 1);
-        QCOMPARE(drawn.at(0).toObject().value("cell").toString(), QStringLiteral("TOP"));
-        QCOMPARE(drawn.at(0).toObject().value("strokes").toInt(), 1);
-        QCOMPARE(drawn.at(0).toObject().value("box").toArray(), (QJsonArray{1.75, 2.75, 12.25, 8.25}));
-        QCOMPARE(drawn.at(0).toObject().value("colours").toArray(), QJsonArray{QStringLiteral("#00a000")});
+        const QJsonObject first = drawn.at(0).toObject();
+        QCOMPARE(first.value("cell").toString(), QStringLiteral("TOP"));
+        QCOMPARE(first.value("stroke").toInt(), 1);
+        QCOMPARE(first.value("drawn as").toString(), QStringLiteral("line"));
+        QCOMPARE(first.value("box").toArray(), (QJsonArray{1.75, 2.75, 12.25, 8.25}));
+        QCOMPARE(first.value("colour").toString(), QStringLiteral("#00a000"));
+        QVERIFY(!first.contains("points"));
+        const QJsonObject one = json(call("read_drawings", {})).value("documents").toArray().at(0).toObject();
+        QCOMPARE(one.value("document").toString(), QStringLiteral("sample.gds"));
+        QVERIFY(one.value("measures").toString().contains(QStringLiteral("µm")));
+        QCOMPARE(one.value("strokes").toArray().at(0).toObject().value("points").toArray(), (QJsonArray{QJsonArray{2, 3}, QJsonArray{12, 8}}));
+        // What a prompt from the Claude Code panel tells of it.
+        const auto [revision, told] = app->drawingsOf(doc->getDocName());
+        QVERIFY(revision > 0 && revision == doc->view()->drawing().revision());
+        QVERIFY2(told.startsWith(QStringLiteral("cell TOP, stroke 1: a #00a000 pen line (its box 1.75, 2.75 to 12.25, 8.25 µm)")), qPrintable(told));
+        QVERIFY(app->drawingsOf(doc->getDocName(), revision).second.isEmpty());   // (unchanged: not read)
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"pen", 1}})));
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"drawings", "undo"}})));
         QCOMPARE(doc->view()->drawing().strokes().size(), 1);

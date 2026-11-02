@@ -610,6 +610,11 @@ private:
     /// What \a deck's tab shows: the slide, the zoom, the panes, the find
     /// bar, the show.
     QJsonObject pptxView(PptxDoc* deck) const;
+    /// What the pen drew on the open layouts and presentations, read.
+    QJsonObject readDrawings(const QJsonObject& args);
+    /// \a readings as a tab's answer has them: the latest 40, the earlier
+    /// ones counted.
+    static void insertDrawings(QJsonObject& o, const QJsonArray& readings);
     /// screenshot of a presentation's 'slide' or 'region': drawn from the
     /// file, its tab left as it is.
     QJsonObject slidePicture(PptxDoc* deck, const QJsonObject& args);
