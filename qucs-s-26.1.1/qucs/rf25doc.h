@@ -270,6 +270,7 @@ public:
         double length = 0;      ///< m (0: the length that was solved)
         double impedance = 50;  ///< the ports' reference, Ohm
         bool version2 = false;  ///< Touchstone 2.0: each full-wave port into its own reference, a quasi-static solve's every port into impedance
+        bool mixed = false;     ///< a full-wave solve's differential pairs as their modes, Touchstone 2.0 with [Mixed-Mode Order]
     };
     /// The Touchstone file \a what asks for, as text. Empty and why in
     /// \a error where it cannot be made.

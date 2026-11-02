@@ -253,8 +253,10 @@ QList<NodeKind> makeKinds()
 
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
-         {QStringLiteral("rf_edge_port"), QStringLiteral("rf_internal_port")}, {}, true, true, QString(),
-         tr("Where the structure is driven. Their order is the order of the S matrix.")});
+         {QStringLiteral("rf_edge_port"), QStringLiteral("rf_internal_port"), QStringLiteral("rf_return")}, {}, true, true,
+         QString(),
+         tr("Where the structure is driven, and what its lines return through. The ports' order is the order of the "
+            "S matrix.")});
     add({QStringLiteral("rf_edge_port"), tr("Edge Port"), QStringLiteral("port"), QStringLiteral("port"), none,
          {text(QStringLiteral("conductor"), tr("On metal"), QString(), tr("A metal of the stack, by its name")),
           expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
@@ -268,8 +270,13 @@ QList<NodeKind> makeKinds()
                  QStringLiteral("ground"),
                  tr("Where its current comes back: up from the ground plane under its face, or - for a coplanar "
                     "line, as a probe's grounds touch it - through the conductors either side of it on the line of "
-                    "its edge, which must reach that edge too, tied together (full wave)")),
+                    "its edge, which must reach that edge too, tied together: the nearest return conductors, past "
+                    "any other (full wave)")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
+          text(QStringLiteral("pair"), tr("Pair with"), QString(),
+               tr("Another port, by its name: this one the pair's plus, that one its minus - a differential pair, as "
+                  "a GSSG's two signals are driven. The solve then gives its mixed-mode S too: the differential and "
+                  "common modes (full wave)")),
           boolean(QStringLiteral("calibrate"), tr("Take out its own discontinuity"), false,
                   tr("Solve two strips of its feed - a coplanar port's with its grounds and their vias - and take "
                      "the port's own discontinuity out of the answer: its reference plane is then at its edge (full "
@@ -301,11 +308,27 @@ QList<NodeKind> makeKinds()
                   "the one cell under the point (full wave)")),
           expr(QStringLiteral("height"), tr("Height"), QStringLiteral("m"), QStringLiteral("0"),
                tr("Across y, the same rectangle's")),
-          expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50"))},
+          expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
+          text(QStringLiteral("pair"), tr("Pair with"), QString(),
+               tr("Another port, by its name: this one the pair's plus, that one its minus - a differential pair, as "
+                  "a GSSG's two signals are driven. The solve then gives its mixed-mode S too: the differential and "
+                  "common modes (full wave)"))},
          {}, {}, false, false, QStringLiteral("p"),
          tr("A port between two metals, or between a metal and the ground: at a point, the one cell under it, or over "
             "a rectangle about the point, every cell of the metal in it driven together - as a rectangle drawn on "
             "the layout with the Internal Port tool makes it.")});
+
+    add({QStringLiteral("rf_return"), tr("Return Conductor"), QStringLiteral("port"), QStringLiteral("port"), none,
+         {text(QStringLiteral("conductor"), tr("On metal"), QString(),
+               tr("A metal of the stack, by its name; empty: whichever is there")),
+          expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
+          expr(QStringLiteral("y"), tr("At y"), QStringLiteral("m"), QStringLiteral("0"))},
+         {}, {}, false, false, QStringLiteral("g"),
+         tr("A conductor the lines return through, as a coplanar line's grounds: the one under its point. The "
+            "quasi-static solve holds it at nought with the ground and gives the lines of the rest, the signals, "
+            "against it - a symmetric pair's even and odd modes by name - and a coplanar port returns through the "
+            "nearest of them either side. With none, what a via joins to the ground is one, and with no ground plane "
+            "the two outermost conductors of a coplanar line are.")});
 
     // ---- the mesh, the study, the results ----
     add({QStringLiteral("rf_mesh"), tr("Mesh"), QString(), QStringLiteral("mesh"), none,
@@ -356,7 +379,13 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("version"), tr("Version"), {QStringLiteral("1.1"), QStringLiteral("2.0")},
                  {tr("1.1, every port into one reference"), tr("2.0, each port into its own")}, QStringLiteral("1.1"),
                  tr("1.1 is what a schematic's S-parameter file reads; 2.0 carries each full-wave port's own "
-                    "reference impedance"))},
+                    "reference impedance")),
+          choice(QStringLiteral("modes"), tr("Modes"), {QStringLiteral("single"), QStringLiteral("mixed")},
+                 {tr("Each port as it is"), tr("Mixed: each pair's differential and common modes")},
+                 QStringLiteral("single"),
+                 tr("Mixed writes a full-wave solve's differential pairs as their modes, in Touchstone 2.0 with its "
+                    "[Mixed-Mode Order]: each pair's differential mode, then each common mode, then the ports of no "
+                    "pair"))},
          {}, {}, false, false, QStringLiteral("ts"),
          tr("An .sNp file of the S parameters, at the study's own frequencies: a full-wave solve's ports, in their "
             "order under Ports; or of a quasi-static solve, one net as a line or every net as coupled lines - a "
@@ -1040,6 +1069,7 @@ Node Model::make(const QString& type) const
     else if (type == QLatin1String("rf_via")) n.label = numbered(QStringLiteral("V"));
     else if (type == QLatin1String("rf_edge_port") || type == QLatin1String("rf_internal_port"))
         n.label = numbered(QStringLiteral("P"));
+    else if (type == QLatin1String("rf_return")) n.label = numbered(QStringLiteral("G"));
     else if (!k->fixed) n.label = k->title;
     for (const QString& d : k->defaults) {
         Node c;

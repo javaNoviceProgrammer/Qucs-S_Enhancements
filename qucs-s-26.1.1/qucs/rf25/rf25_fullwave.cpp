@@ -172,14 +172,21 @@ struct Beside {
     /// from the face's own end.
     std::array<double, 2> near = {0, 0}, far = {0, 0};
     double inside = 0;                 ///< the side of the line the port's conductor is on: its sign
+    /// Each side's nearest cell of a conductor that is no return, where one
+    /// lies between the face and that side's return - passed over - or -1.
+    std::array<int, 2> passed = {-1, -1};
 };
 
 /// The faces beside an edge port's own on its edge's line - what a
 /// ground-signal-ground probe's grounds touch: either side of \a face, the
 /// nearest run of cells of \a reached on its layer with a side along that
 /// line (through \a on, along \a along) and inside on the same side of it
-/// as the port's own face. A side with none is empty.
-Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>& face, QPointF on, QPointF along)
+/// as the port's own face. A side with none is empty. Given \a netOf (a
+/// cell's net), never the face's own net; and given \a isReturn (a net's)
+/// with a return among them, only the returns' cells, a conductor that is
+/// no return passed over - a GSSG's other signal - and said (Beside::passed).
+Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>& face, QPointF on, QPointF along,
+                   const QHash<int, int>* netOf = nullptr, const QList<bool>* isReturn = nullptr)
 {
     Beside out;
     const double norm = std::hypot(along.x(), along.y());
@@ -221,14 +228,27 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
     out.hi = hi;
     out.inside = inside;
     QList<std::tuple<double, double, int>> below, above;   // (from the face out, the far end, the cell)
+    const int own = netOf != nullptr ? netOf->value(face.first(), -1) : -1;
+    const bool returns = isReturn != nullptr && isReturn->contains(true);
+    std::array<std::pair<double, int>, 2> other = {std::make_pair(0.0, -1), std::make_pair(0.0, -1)};
     for (const int c : reached) {
         if (mesh.cells.at(c).layer != layer || face.contains(c)) continue;
+        const int net = netOf != nullptr ? netOf->value(c, -1) : -1;
+        if (own >= 0 && net == own) continue;
         double t0 = 0, t1 = 0;
         if (!sideOn(c, &t0, &t1)) continue;
         const QPointF d = mesh.cells.at(c).centre - on;
         if ((d.x() * normal.x() + d.y() * normal.y()) * inside <= 0) continue;
-        if (t1 <= lo + tol) below << std::make_tuple(lo - t1, lo - t0, c);
-        else if (t0 >= hi - tol) above << std::make_tuple(t0 - hi, t1 - hi, c);
+        const bool lower = t1 <= lo + tol;
+        if (!lower && !(t0 >= hi - tol)) continue;
+        if (returns && !isReturn->value(net, false)) {
+            std::pair<double, int>& o = other[lower ? 0 : 1];
+            const double near = lower ? lo - t1 : t0 - hi;
+            if (o.second < 0 || near < o.first) o = std::make_pair(near, c);
+            continue;
+        }
+        if (lower) below << std::make_tuple(lo - t1, lo - t0, c);
+        else above << std::make_tuple(t0 - hi, t1 - hi, c);
     }
     // Of each side, the cells from the nearest outwards, each meeting the
     // last: the nearest conductor's face, the slot between left out.
@@ -244,6 +264,9 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
             reach = std::max(reach, far);
         }
         out.far[std::size_t(k)] = reach;
+        const std::pair<double, int>& o = other[std::size_t(k)];
+        if (o.second >= 0 && (out.cells[std::size_t(k)].isEmpty() || o.first < out.near[std::size_t(k)]))
+            out.passed[std::size_t(k)] = o.second;
         ++k;
     }
     return out;
@@ -1059,7 +1082,7 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
 
 FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, const Stack& givenStack,
                     const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre,
-                    const FullWaveControl* control)
+                    const FullWaveControl* control, const QList<ReturnMark>& returns)
 {
     FullWave out;
     // A metal solved as its two faces is two sheets and the walls that join
@@ -1103,11 +1126,66 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.problems << c.layers.problems;
         return out;
     }
+    // With no ground plane a port's current has nowhere to come back but
+    // the layout's own conductors: a coplanar edge port's, through those
+    // beside it, an internal port's from the metal under it - what goes in
+    // comes out, and the potential's nought, at infinity, drops out. One
+    // that returns through the ground would be driven against infinity.
     if (!c.layers.groundBelow) {
-        out.problems << tr("The full-wave solve refers its ports to a ground plane, and the stack has none: put a ground "
-                           "under it.");
-        return out;
+        QStringList grounded;
+        for (int p = 0; p < ports.size(); ++p) {
+            const FullWavePort& port = ports.at(p);
+            const bool fromGround = port.from.isEmpty() || port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0;
+            if (port.internal ? fromGround : !port.coplanar) grounded << out.portNames.at(p);
+        }
+        if (!grounded.isEmpty()) {
+            out.problems << tr("There is no ground plane under the stack, and %1 return(s) through the ground: with none, a "
+                               "port's current comes back through the conductors of the layout. Make an edge port return "
+                               "through the conductors beside it (its 'return'), drive an internal port from a metal (its "
+                               "'from'), or put a ground under the stack.")
+                                .arg(grounded.join(QStringLiteral(", ")));
+            return out;
+        }
     }
+    // The pairs, each its plus port's and its minus's: a pair named from
+    // both ends is one, the first its plus.
+    for (int p = 0; p < ports.size(); ++p) {
+        const QString partner = ports.at(p).pair.trimmed();
+        if (partner.isEmpty()) continue;
+        const QString& name = out.portNames.at(p);
+        const int q = out.portNames.indexOf(partner);
+        if (q < 0 || q == p) {
+            out.problems << (q < 0 ? tr("%1 is paired with %2, and the layout has no port called that.").arg(name, partner)
+                                   : tr("%1 is paired with itself: a pair is two ports.").arg(name));
+            return out;
+        }
+        if (ports.at(q).pair.trimmed() == name && q < p) continue;
+        for (const QPair<int, int>& known : std::as_const(out.pairs))
+            if (known.first == p || known.second == p || known.first == q || known.second == q) {
+                const int twice = known.first == p || known.second == p ? p : q;
+                out.problems << tr("%1 is in two pairs: a port is the plus or the minus of one pair at most.")
+                                    .arg(out.portNames.at(twice));
+                return out;
+            }
+        if (std::abs(out.references.at(p) - out.references.at(q)) > 1e-9 * out.references.at(p)) {
+            out.problems << tr("%1 and %2 are a pair, and their reference impedances differ (%3 and %4 Ohm): a pair's "
+                               "differential and common modes are of one reference for both.")
+                                .arg(name, partner)
+                                .arg(out.references.at(p), 0, 'g', 4)
+                                .arg(out.references.at(q), 0, 'g', 4);
+            return out;
+        }
+        out.pairs << qMakePair(p, q);
+    }
+    // The nets, and which are returns (returnNetsOf()): a coplanar port
+    // returns through the nearest return either side, past a conductor
+    // that is none - a GSSG's other signal.
+    const QList<Net> nets = netsOf(mesh, conductors, stack);
+    QString returnsSaid;
+    const QList<bool> isReturn = returnNetsOf(nets, mesh, conductors, stack, returns, &returnsSaid);
+    QHash<int, int> netOf;
+    for (int n = 0; n < nets.size(); ++n)
+        for (const int cell : nets.at(n).cells) netOf.insert(cell, n);
 
     // The runs in the plane, on the metals - runsOf joins a via's own cells
     // too, as a little sheet of their own, and makes its vias its own way -
@@ -1186,6 +1264,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     if (c.runs.isEmpty()) {
         out.problems << tr("No two cells of the mesh share an edge, so there is nowhere for a current to flow. Mesh the "
                            "layout more finely.");
+        return out;
+    }
+    if (grounded > 0 && !c.layers.groundBelow) {
+        out.problems << tr("%1 via(s) go down to the ground, and there is no ground plane under the stack: put one "
+                           "under it, or take them out.")
+                            .arg(grounded);
         return out;
     }
 
@@ -1267,6 +1351,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.faceWidths = QList<double>(np, 0.0);
     out.faceMetals = QStringList(QList<QString>(np));
     out.feeds = QList<Feed>(np);
+    // (Each port's own net, and the nets a coplanar port returns through.)
+    QList<int> ownNet(np, -1);
+    QList<QList<int>> returnsOf(np);
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -1295,6 +1382,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             }
             Eigen::VectorXcd column = Eigen::VectorXcd::Zero(nc);
             for (const auto& [cell, share] : to) column(nodeOf.value(cell)) += share;
+            ownNet[p] = netOf.value(to.first().first, -1);
             QString against = tr("the ground");
             if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
                 const QList<std::pair<int, double>> from = driven(toward(port.from, port.metal));
@@ -1325,6 +1413,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.problems << tr("%1, at %2, %3 µm, is on no cell a current reaches.").arg(name, x, y);
             return out;
         }
+        ownNet[p] = netOf.value(face.first(), -1);
         double faceWidth = 0;
         const QList<double> shares = sharesOf(mesh, face, on, along, &faceWidth);
         Eigen::VectorXcd own = Eigen::VectorXcd::Zero(nc);
@@ -1358,11 +1447,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             return out;
         }
         coplanar = true;
-        const Beside beside = besideFaces(mesh, cellOf, face, on, along);
+        const Beside beside = besideFaces(mesh, cellOf, face, on, along, &netOf, &isReturn);
         QList<int> counts;
+        QStringList through;
         int groundsTopped = 0;
         for (const QList<int>& ground : beside.cells) {
             if (ground.isEmpty()) continue;
+            through << nets.value(netOf.value(ground.first(), -1)).name;
+            returnsOf[p] << netOf.value(ground.first(), -1);
             const QList<double> back = sharesOf(mesh, ground, on, along);
             Eigen::VectorXcd column = own;
             for (int k = 0; k < ground.size(); ++k) put(column, ground.at(k), -back.at(k));
@@ -1390,6 +1482,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             feedVias(&feed, givenConductors, givenStack, on, unit, beside.inside < 0 ? -normal : normal, beside.lo,
                      2 * (8 * height + 2 * faceWidth));
         }
+        // Past a conductor that is no return, its feed is coupled lines,
+        // which strips of the one signal and its returns are not.
+        QStringList passed;
+        for (const int cell : beside.passed)
+            if (cell >= 0) passed << nets.value(netOf.value(cell, -1)).name;
+        if (!passed.isEmpty())
+            feed.unlike = tr("%1, no return, lies between it and its return, so its feed is coupled lines, which strips "
+                             "of it and its returns alone are not")
+                              .arg(passed.join(QStringLiteral(" and ")));
         if (counts.isEmpty()) {
             out.problems << tr("%1 returns through the conductors beside it, and on the line of its edge at %2, %3 µm there "
                                "is none either side of it: draw its grounds to the same edge, or return it through the "
@@ -1397,16 +1498,33 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                 .arg(name, x, y);
             return out;
         }
+        const QString past = passed.isEmpty() ? QString() : tr(", past %1, which is no return").arg(passed.join(QStringLiteral(" and ")));
         out.portsSaid << (counts.size() == 2
                               ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5 against the conductors beside it, "
-                                   "%6 and %7 cell(s) of their faces either side%8: the two tied, as a probe's grounds are.")
+                                   "%6 and %7 cell(s) of the faces of %8 either side%9%10: the two tied, as a probe's grounds "
+                                   "are.")
                                     .arg(name).arg(face.size()).arg(x, y, halved).arg(counts.at(0)).arg(counts.at(1))
+                                    .arg(through.join(QStringLiteral(" and ")), past)
                                     .arg(groundsTopped > 0 ? tr(", half on their top faces") : QString())
                               : tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5 against the conductor beside it "
-                                   "on one side, %6 cell(s) of its face%7: a ground-signal probe's.")
+                                   "on one side, %6 cell(s) of the face of %7%8%9: a ground-signal probe's.")
                                     .arg(name).arg(face.size()).arg(x, y, halved).arg(counts.at(0))
+                                    .arg(through.value(0), past)
                                     .arg(groundsTopped > 0 ? tr(", half on its top face") : QString()));
     }
+    // A coplanar port that returns through what another port drives - a
+    // GSSG's other signal, where no conductor is marked a return - ties the
+    // two signals together through each other.
+    for (int p = 0; p < np; ++p)
+        for (const int net : std::as_const(returnsOf.at(p)))
+            for (int q = 0; q < np; ++q)
+                if (q != p && net >= 0 && ownNet.at(q) == net) {
+                    out.problems << tr("%1 returns through %2, which %3 drives: mark the conductors the lines return "
+                                       "through (a Return Conductor under Ports on each), and it returns through the "
+                                       "nearest of them either side, past the other signals.")
+                                        .arg(out.portNames.at(p), nets.value(net).name, out.portNames.at(q));
+                    return out;
+                }
     for (int a = 0; a < columns.size(); ++a)
         for (int b = 0; b < a; ++b)
             if (portOf.at(a) != portOf.at(b) && (columns.at(a) - columns.at(b)).norm() < 1e-12) {
@@ -1548,12 +1666,29 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                              "its edges, where the current crowds as close as the thickness lets it (%1 run(s) along an "
                              "edge)")
                               .arg(alongEdges);
-    out.lines << (coplanar ? tr("The ground plane is taken as perfect, %1; an edge port's current as coming back through "
-                                "the ground, and a coplanar port's through the conductors beside it.")
-                                 .arg(sheet)
-                           : tr("The ground plane is taken as perfect, %1; an edge port's current as coming back through "
-                                "the ground.")
-                                 .arg(sheet));
+    if (!c.layers.groundBelow)
+        out.lines << tr("There is no ground plane: under the stack is air, as far down as it goes. %1; a coplanar port's "
+                        "current as coming back through the conductors beside it, and an internal port's through the "
+                        "metal it is driven from.")
+                         .arg(sheet.left(1).toUpper() + sheet.mid(1));
+    else
+        out.lines << (coplanar ? tr("The ground plane is taken as perfect, %1; an edge port's current as coming back "
+                                    "through the ground, and a coplanar port's through the conductors beside it.")
+                                     .arg(sheet)
+                               : tr("The ground plane is taken as perfect, %1; an edge port's current as coming back "
+                                    "through the ground.")
+                                     .arg(sheet));
+    if (coplanar && isReturn.contains(true)) out.lines << returnsSaid;
+    if (!out.pairs.isEmpty()) {
+        QStringList pairs;
+        for (const QPair<int, int>& pair : std::as_const(out.pairs))
+            pairs << tr("%1 and %2").arg(out.portNames.at(pair.first), out.portNames.at(pair.second));
+        out.lines << tr("Differential pairs, each its plus port first: %1. Their mixed-mode S is each pair's "
+                        "differential mode (its plus port's wave less its minus's, over the root of two, into twice the "
+                        "ports' reference) and common mode (the two's sum over the root of two, into half), then the "
+                        "ports of no pair as they are.")
+                         .arg(pairs.join(QStringLiteral("; ")));
+    }
     // The columns of a port side by side: one voltage, their currents
     // added. The ports' Z is (B^T Z^-1 B)^-1, B which port each column is
     // of, and an ampere into a port is Z^-1 B Z into the columns.
@@ -1763,9 +1898,9 @@ QString touchstoneOf(const FullWave& solved, double reference, const QStringList
     return touchstoneText(solved, s, comments, QStringLiteral("# Hz S RI R %1\n").arg(num(reference)), QString());
 }
 
-QString touchstone2Of(const FullWave& solved, const QStringList& comments)
+QString touchstone2Of(const FullWave& solved, const QStringList& comments, bool mixed)
 {
-    if (!solved.ok()) return {};
+    if (!solved.ok() || (mixed && solved.pairs.isEmpty())) return {};
     const int np = int(solved.portNames.size());
     QStringList references;
     for (const double r : solved.references) references << num(r);
@@ -1775,10 +1910,70 @@ QString touchstone2Of(const FullWave& solved, const QStringList& comments)
                            .arg(num(solved.references.value(0, 50)))
                            .arg(np);
     if (np == 2) keywords += QStringLiteral("[Two-Port Data Order] 21_12\n");
-    keywords += QStringLiteral("[Number of Frequencies] %1\n[Reference] %2\n[Network Data]\n")
+    keywords += QStringLiteral("[Number of Frequencies] %1\n[Reference] %2\n")
                     .arg(solved.frequencies.size())
                     .arg(references.join(QLatin1Char(' ')));
-    return touchstoneText(solved, solved.s, comments, keywords, QStringLiteral("[End]\n"));
+    if (!mixed) return touchstoneText(solved, solved.s, comments, keywords + QStringLiteral("[Network Data]\n"), QStringLiteral("[End]\n"));
+    // Mixed: the modes in the order [Mixed-Mode Order] says - D2,3 the
+    // differential mode of ports 2 and 3, 2 its plus; C2,3 their common
+    // mode; S4 port 4 as it is - each pair's ports of one reference, which
+    // its differential mode has twice of and its common mode half.
+    QList<QList<QList<Complex>>> modes;
+    QStringList order, of;
+    for (int k = 0; k < solved.frequencies.size(); ++k) modes << mixedModeOf(solved, k, &order, &of);
+    QStringList entries;
+    QList<bool> paired(np, false);
+    for (const QChar mode : {QLatin1Char('D'), QLatin1Char('C')})
+        for (const QPair<int, int>& pair : solved.pairs) {
+            entries << QStringLiteral("%1%2,%3").arg(mode).arg(pair.first + 1).arg(pair.second + 1);
+            paired[pair.first] = paired[pair.second] = true;
+        }
+    for (int p = 0; p < np; ++p)
+        if (!paired.at(p)) entries << QStringLiteral("S%1").arg(p + 1);
+    QStringList said = comments;
+    QStringList named;
+    for (int m = 0; m < order.size(); ++m) named << QStringLiteral("%1 %2").arg(entries.value(m), of.value(m));
+    said << tr("Mixed-mode S: %1; each differential mode into twice its ports' reference, each common mode into half")
+                .arg(named.join(QStringLiteral(", ")));
+    keywords += QStringLiteral("[Mixed-Mode Order] %1\n[Network Data]\n").arg(entries.join(QLatin1Char(' ')));
+    return touchstoneText(solved, modes, said, keywords, QStringLiteral("[End]\n"));
+}
+
+QList<QList<Complex>> mixedModeOf(const FullWave& solved, int k, QStringList* order, QStringList* of)
+{
+    if (order != nullptr) order->clear();
+    if (of != nullptr) of->clear();
+    const int np = int(solved.portNames.size());
+    if (solved.pairs.isEmpty() || k < 0 || k >= solved.s.size()) return {};
+    // T, a row a mode and orthogonal: each pair's differential mode, then
+    // each pair's common mode, then each port of no pair. S's waves are
+    // power waves into each port's own reference, a pair's two alike, so
+    // that the modes' are T's of them, into 2 r and r / 2: T S T'.
+    const double half = 1 / std::sqrt(2.0);
+    MatrixC t = MatrixC::Zero(np, np);
+    QList<bool> paired(np, false);
+    QStringList names, what;
+    int row = 0;
+    for (const double sign : {-1.0, 1.0})
+        for (int i = 0; i < solved.pairs.size(); ++i) {
+            const int plus = solved.pairs.at(i).first, minus = solved.pairs.at(i).second;
+            t(row, plus) = half;
+            t(row, minus) = sign * half;
+            ++row;
+            paired[plus] = paired[minus] = true;
+            names << QStringLiteral("%1%2").arg(sign < 0 ? QLatin1Char('D') : QLatin1Char('C')).arg(i + 1);
+            what << QStringLiteral("%1 %2 %3").arg(solved.portNames.at(plus), sign < 0 ? QStringLiteral("-") : QStringLiteral("+"),
+                                                   solved.portNames.at(minus));
+        }
+    for (int p = 0; p < np; ++p)
+        if (!paired.at(p)) {
+            t(row++, p) = 1;
+            names << solved.portNames.at(p);
+            what << solved.portNames.at(p);
+        }
+    if (order != nullptr) *order = names;
+    if (of != nullptr) *of = what;
+    return rowsOf(t * matrixOf(solved.s.at(k)) * t.transpose());
 }
 
 } // namespace qucs_s::rf25
