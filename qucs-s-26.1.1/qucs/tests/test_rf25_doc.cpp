@@ -2519,13 +2519,20 @@ private slots:
         QVERIFY2(doc->waitForSolved(300000), "the solve ended");
         QVERIFY(bar->isHidden());
 
-        // A port whose feed is calibrated: after the sweep, the strips'
-        // frequencies counted - two strips of one feed, at the sweep's and,
-        // where it starts too high for the shorter, one below it - and the
-        // bar's count is all they solve: allowed that many, the solve ends.
-        const QString p1 = doc->model().ports().children.front().tag;
-        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("deembed"), QStringLiteral("20[um]")); },
-                              QStringLiteral("de-embed")));
+        // Both ports de-embedded, each by strips of a length of its own: two
+        // calibrations after the sweep, each counted from nought - its three
+        // strips at the sweep's three frequencies (a length asked, no shorter
+        // ones beside them) - the bar saying which, and its count all that
+        // they solve: allowed that many, the solve ends.
+        const QString p1 = doc->model().ports().children.front().tag, p2 = doc->model().ports().children.back().tag;
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("deembed"), QStringLiteral("20[um]"));
+            n.props.insert(QStringLiteral("strips"), QStringLiteral("300[um]"));
+        }, QStringLiteral("de-embed P1")));
+        QVERIFY(doc->editNode(p2, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("deembed"), QStringLiteral("20[um]"));
+            n.props.insert(QStringLiteral("strips"), QStringLiteral("400[um]"));
+        }, QStringLiteral("de-embed P2")));
         QVERIFY(doc->waitForPrepared(60000));
         doc->allowFrequencies(3);
         doc->solve();
@@ -2535,21 +2542,29 @@ private slots:
         // (Busy while the first strip is meshed and set up; then counted.)
         QVERIFY2(QTest::qWaitFor([bar] { return bar->maximum() > 0; }, 120000), "the strips' frequencies not counted");
         QVERIFY(bar->isVisible());
-        QVERIFY2(bar->maximum() == 6 || bar->maximum() == 8, qPrintable(QString::number(bar->maximum())));
+        QCOMPARE(bar->maximum(), 9);
         QCOMPARE(bar->value(), 0);
-        const int strips = bar->maximum();
+        QVERIFY2(bar->toolTip().contains(QStringLiteral("(feed 1 of 2)")), qPrintable(bar->toolTip()));
         doc->allowFrequencies(1);
         QVERIFY2(QTest::qWaitFor([bar] { return bar->value() >= 1; }, 120000), "the strip's frequency allowed not counted");
         QCOMPARE(bar->value(), 1);
-        QCOMPARE(bar->maximum(), strips);
-        QVERIFY2(bar->toolTip().contains(QStringLiteral("1 of %1 frequencies of the strips").arg(strips)), qPrintable(bar->toolTip()));
-        doc->allowFrequencies(strips - 1);
+        QCOMPARE(bar->maximum(), 9);
+        QVERIFY2(bar->toolTip().contains(QStringLiteral("1 of 9 frequencies of the strips")), qPrintable(bar->toolTip()));
+        // The rest of the first: the second begins, from nought.
+        doc->allowFrequencies(8);
+        QVERIFY2(QTest::qWaitFor([bar] { return bar->toolTip().contains(QStringLiteral("(feed 2 of 2)")) && bar->maximum() > 0; },
+                                 120000),
+                 qPrintable(bar->toolTip()));
+        QCOMPARE(bar->maximum(), 9);
+        QCOMPARE(bar->value(), 0);
+        doc->allowFrequencies(9);
         QVERIFY2(doc->waitForSolved(120000), "the strips solved more than the bar counted");
         QVERIFY(bar->isHidden());
         doc->allowFrequencies(-1);
-        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok() && doc->fullWave()->deembedding.value(0).done,
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok() && doc->fullWave()->deembedding.value(0).done
+                     && doc->fullWave()->deembedding.value(1).done,
                  qPrintable(doc->solveProblem()));
-        QVERIFY2(says(doc->fullWave()->lines, "Two strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
+        QVERIFY2(says(doc->fullWave()->lines, "Three strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
     }
 
     void aSolveWithNothingToSolveOnIsRefused()

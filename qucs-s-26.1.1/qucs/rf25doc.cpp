@@ -423,12 +423,12 @@ struct RF25Doc::SolveJob {
     // The ports' de-embedding after it: the mesh's settings, so that the
     // strips of their feeds are meshed as the structure was, and whether
     // those strips are being solved; and how far they have got, for the
-    // bar - the feeds to calibrate, two strips each, the strips begun and
-    // the frequencies they have, and of those how many are solved.
+    // bar - the calibrations to make and begun, and of the one going on the
+    // strips begun, the frequencies they have and how many are solved.
     MeshSettings how;
     double top = 0;
     std::atomic_bool calibrating{false};
-    std::atomic_int feedsToCalibrate{0}, stripsBegun{0}, stripFrequencies{0}, calibrated{0};
+    std::atomic_int calibrations{0}, calibrationsBegun{0}, stripsBegun{0}, stripFrequencies{0}, calibrated{0};
     FullWaveControl::Matrix matrix = FullWaveControl::Matrix::Automatic;   ///< the study's
 
     // The tab's holdSolves() and allowFrequencies(), which a test holds it
@@ -1760,17 +1760,20 @@ void RF25Doc::solveWith(const SolveRequest& request)
                 counted->stripFrequencies += frequencies;
                 ++counted->stripsBegun;
             };
+            // (One calibration for feeds alike and strips asked alike.)
+            const auto keyOf = [](const Feed& feed, const FullWavePort& port) {
+                return feed.key() + QLatin1Char('|') + QString::number(port.strips, 'g', 9);
+            };
             {
-                // The feeds to calibrate - each once, however many ports
-                // share it - counted before the first is: the bar counts
-                // two strips of each.
+                // The calibrations to make, counted before the first is: the
+                // bar says which of them is going on.
                 QSet<QString> keys;
                 for (int p = 0; p < job->ports.size(); ++p) {
                     const FullWavePort& port = job->ports.at(p);
                     const Feed feed = job->wave->feeds.value(p);
-                    if (port.wantsStrips() && !port.internal && feed.width > 0) keys.insert(feed.key());
+                    if (port.wantsStrips() && !port.internal && feed.width > 0) keys.insert(keyOf(feed, port));
                 }
-                job->feedsToCalibrate = int(keys.size());
+                job->calibrations = int(keys.size());
             }
             QList<Deembedding> each(job->ports.size());
             QMap<QString, std::shared_ptr<Calibration>> feeds;
@@ -1788,10 +1791,15 @@ void RF25Doc::solveWith(const SolveRequest& request)
                                      "solved as it is.").arg(name);
                     continue;
                 }
-                // (One calibration for feeds alike and strips asked alike.)
-                std::shared_ptr<Calibration>& calibration = feeds[feed.key() + QLatin1Char('|') + QString::number(port.strips, 'g', 9)];
+                std::shared_ptr<Calibration>& calibration = feeds[keyOf(feed, port)];
                 if (!calibration) {
                     job->calibrating = true;
+                    // (The bar counts each calibration from nought: its
+                    //  strips begun first, so that it is busy meanwhile.)
+                    job->stripsBegun = 0;
+                    job->stripFrequencies = 0;
+                    job->calibrated = 0;
+                    ++job->calibrationsBegun;
                     calibration = std::make_shared<Calibration>(
                         calibrate(job->stack, job->how, job->top, feed, job->frequencies, 1e-6, &quiet, port.strips / 1e-6));
                 }
@@ -1880,16 +1888,18 @@ void RF25Doc::showProgress()
     int of = 0, done = 0;
     QString said = job != nullptr ? tr("Solving…") : tr("Solving once the shapes and the mesh of the last edit are made…");
     if (job != nullptr && job->fullWave && job->calibrating) {
-        // The ports' calibration: its strips' frequencies solved, of those
-        // of the strips begun and as many again for each strip still to
-        // begin - exact for one feed from its first strip, for several
-        // once the last has begun. Busy until the first has.
+        // A calibration: its strips of the first length, each at the
+        // frequencies the first begins with, counted from nought for each
+        // calibration. Busy until the first begins, and where those strips
+        // do not agree and shorter ones are solved too, which no count can
+        // foresee (calibrate()).
         const int begun = job->stripsBegun, planned = job->stripFrequencies;
-        if (begun > 0) of = planned + std::max(0, 2 * job->feedsToCalibrate - begun) * planned / begun;
+        if (begun > 0 && begun <= kStripsPerLength) of = kStripsPerLength * planned / begun;
         done = std::min(job->calibrated.load(), of);
         said = of > 0 ? tr("Taking out the ports' own discontinuities: %1 of %2 frequencies of the strips of their feeds solved")
                             .arg(done).arg(of)
                       : tr("Taking out the ports' own discontinuities: solving strips of their feeds…");
+        if (job->calibrations > 1) said += tr(" (feed %1 of %2)").arg(job->calibrationsBegun.load()).arg(job->calibrations.load());
     } else if (job != nullptr && job->fullWave) {
         of = frequenciesToSolve();
         done = std::min(frequenciesSolved(), of);

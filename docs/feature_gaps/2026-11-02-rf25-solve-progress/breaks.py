@@ -74,16 +74,23 @@ BREAKS = [
   [(T, BAR)]),
 
  ("the calibration busy throughout, its strips not counted",
-  [(D, "        if (begun > 0) of = planned", "        if (false) of = planned")],
+  [(D, "        if (begun > 0 && begun <= kStripsPerLength) of =", "        if (false) of =")],
   [(T, BAR)]),
 
- ("the calibration counted out of the strips begun alone",
-  [(D, "        if (begun > 0) of = planned + std::max(0, 2 * job->feedsToCalibrate - begun) * planned / begun;",
-    "        if (begun > 0) of = planned;")],
+ ("a calibration counted out of the strips begun alone",
+  [(D, "of = kStripsPerLength * planned / begun;", "of = planned;")],
   [(T, BAR)]),
 
- ("the feeds to calibrate not counted",
-  [(D, "                job->feedsToCalibrate = int(keys.size());\n", "")],
+ ("the calibrations to make not counted",
+  [(D, "                job->calibrations = int(keys.size());\n", "")],
+  [(T, BAR)]),
+
+ ("the calibrations begun not counted",
+  [(D, "                    ++job->calibrationsBegun;\n", "")],
+  [(T, BAR)]),
+
+ ("each calibration not counted from nought",
+  [(D, "                    job->stripsBegun = 0;\n                    job->stripFrequencies = 0;\n                    job->calibrated = 0;\n", "")],
   [(T, BAR)]),
 
  ("the strips' frequencies solved not counted",
