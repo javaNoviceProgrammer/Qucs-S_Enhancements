@@ -77,6 +77,12 @@ public:
     QRect slideRect(int index) const;
     /// The slide at \a pos (viewport), -1 where there is none.
     int slideAt(QPoint pos) const;
+    /// \a pos (viewport) in points of slide \a index; and back.
+    QPointF toSlide(int index, QPointF pos) const;
+    QPointF toViewport(int index, QPointF point) const;
+    /// Scrolls, the zoom as it is, till \a point of slide \a index is in the
+    /// view's middle, as near as it goes; that slide the one shown.
+    void centerOn(int index, QPointF point);
     /// The slides drawn since the start (for the tests).
     int slidesDrawn() const { return a_drawn; }
     /// The drawings kept dropped (the file read again).
@@ -139,8 +145,6 @@ protected:
     bool event(QEvent* event) override;
 
 private:
-    /// \a pos (viewport) in points of slide \a index.
-    QPointF toSlide(int index, QPointF pos) const;
     void eraseAt(QPointF pos);
     void relayout();
     void updateCurrent();
