@@ -154,6 +154,13 @@ public:
     /// The strokes on the cell shown taken away, or (\a all) every one;
     /// whether there were any.
     bool clearDrawing(bool all = false);
+    /// What is drawn, read as one would read it: each stroke, cell by cell
+    /// in the order drawn, how it was drawn (markup::gesturesOf()) and what
+    /// it marks - the shapes by layer, the texts and the placed cells a ring
+    /// is round, what a line or an arrow begins at and points at, what a
+    /// mark or a highlighter lies on, what a dot is on - of the layers shown,
+    /// to the depth drawn; with \a points, its points simplified, in µm.
+    QJsonArray readDrawing(bool points = false) const;
 
     /*!
      * Polygons another tab draws over the layout, in the µm of the cell

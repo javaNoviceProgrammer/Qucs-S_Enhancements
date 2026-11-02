@@ -660,6 +660,10 @@ const char* const kTools = R"JSON([
    "play": {"type": ["boolean", "string"], "description": "true: the slides played full screen from the one shown; \"first\": from the first; false: the slide show ended"},
    "reload": {"type": "boolean", "description": "Its file read again first (changed elsewhere)"}, "copy": {"type": "string", "enum": ["picture", "text"], "description": "The slide shown to the clipboard: a picture 1920 pixels wide, or its text with its notes"},
    "pen": {"type": "boolean", "description": "The user's pen taken up (true: a drag over a slide draws on it) or put down (false)"}, "drawings": {"type": "string", "enum": ["clear"], "description": "clear: what the pen drew on the slides taken away (the pen's Undo gives it back)"}}}},
+{"name": "read_drawings",
+ "description": "Reads what the user drew with the pen on open layouts and presentations - as one would read it, no picture needed. Each stroke: where (a slide; a layout's cell), how it was drawn (a ring, a line, an arrow - its head drawn with it or as a stroke of its own, which reads as its arrowhead - a mark, a dot), its tool (pen or highlighter), colour and box, and what it marks. On a slide: the paragraphs, table cells, pictures, charts and shapes a ring is round, or some of their words; the words a line underlines or strikes through; what a highlighter or a mark lies on; what a line or an arrow begins at and points at; what a dot is on. On a layout: the shapes by layer, the texts and the cells placed, of the layers shown to the depth drawn. With its points, simplified to a few dozen, in the slide's points from its top left or the layout's µm. 'path' one document, its file or its tab's title; every open one drawn on when not given. show_pptx and show_layout give the same readings without the points; screenshot shows the drawings as drawn; a prompt from the Claude Code panel brings what changed since the last.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "An open layout or presentation, its file or its tab's title; every one drawn on when not given"},
+   "points": {"type": "boolean", "description": "Each stroke's points, simplified (true by default)"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -989,6 +993,7 @@ const struct {
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "show a PDF's page in Qucs-S")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "read a presentation's slides in Qucs-S")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "drive a presentation's tab in Qucs-S")},
+    {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "read what was drawn with the pen in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -1079,7 +1084,7 @@ const struct {
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
-                                 "read_pdf", "read_pptx", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
+                                 "read_pdf", "read_pptx", "read_drawings", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
                                  "find_shapes", "git_status", "git_diff", "git_log", "git_show", "git_blame",
@@ -1178,6 +1183,7 @@ const struct {
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "Reads a PowerPoint presentation's slides - titles, text, tables' rows, notes, what is not drawn - and draws them with 'image'.")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Drives a presentation's tab: a slide (next, previous, by title), its find bar, the zoom or a region, its panes; plays it full screen and steps the show; reloads; copies a slide.")},
+    {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "Reads what the user drew with the pen on open layouts and slides - each stroke's gesture, what it marks, its points - without a picture.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -1339,6 +1345,7 @@ const struct {
     {"read_pdf", "datasheet pdf text read"},
     {"read_pptx", "powerpoint pptx presentation slides deck talk notes text read"},
     {"show_pptx", "powerpoint pptx presentation slide show play deck go to next previous find zoom region notes thumbnails reload copy clipboard"},
+    {"read_drawings", "pen drawing drawn draw marks markup annotation ink highlighter circle ring arrow underline sketch layout slide user"},
     {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
     {"edit_text", "text document tab edit change replace lines cir va verilog-a netlist script"},
     {"goto_line", "text document line cursor show error"},
@@ -3827,6 +3834,15 @@ QSet<QString> QucsControl::inEveryTurn() const
         for (const char* t : kPdf) out << QString::fromLatin1(t);
     if (deck)
         for (const char* t : kPptx) out << QString::fromLatin1(t);
+    // (While something is drawn on with the pen: its reading.)
+    for (QucsDoc* doc : a_app->allDocuments()) {
+        auto* layout = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc));
+        auto* drawn = dynamic_cast<PptxDoc*>(doc);
+        if ((layout != nullptr && !layout->view()->drawing().isEmpty()) || (drawn != nullptr && !drawn->view()->drawing().isEmpty())) {
+            out << QStringLiteral("read_drawings");
+            break;
+        }
+    }
     // (A project of models: its first prompt is often before one is open.)
     if (!model && !a_app->ProjName.isEmpty())
         model = !QDir(QucsSettings.QucsWorkDir.absolutePath()).entryList({QStringLiteral("*.qfem")}, QDir::Files).isEmpty();
@@ -4124,6 +4140,7 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
         else if (tool == QLatin1String("goto_line")) subject += tr(", line %1").arg(a.value(QLatin1String("line")).toInt());
     } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
     else if (tool == QLatin1String("read_pptx")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("read_drawings")) subject = s("path").isEmpty() ? tr("the pen's drawings") : tr("the pen's drawings on %1").arg(s("path"));
     else if (tool == QLatin1String("show_pptx"))
         subject = (s("path").isEmpty() ? tr("the presentation in front") : s("path"))
                   + (a.value(QLatin1String("play")).toBool() || s("play") == QLatin1String("first") ? tr(", played") : QString())
@@ -5087,7 +5104,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"), QStringLiteral("get_ui"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
-        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("read_pptx"), QStringLiteral("get_text"),
+        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("read_pptx"), QStringLiteral("read_drawings"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
         QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("git_status"),
@@ -5232,6 +5249,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("show_pdf")) return showPdf(args);
     if (tool == QLatin1String("read_pptx")) return readPptx(args);
     if (tool == QLatin1String("show_pptx")) return showPptx(args);
+    if (tool == QLatin1String("read_drawings")) return readDrawings(args);
     if (tool == QLatin1String("get_text")) return getText(args);
     if (tool == QLatin1String("edit_text")) return editText(args);
     if (tool == QLatin1String("goto_line")) return gotoLine(args);

@@ -28,6 +28,7 @@
 #include <memory>
 
 #include <functional>
+#include <utility>
 
 class ClaudeGitBar;
 class QAction;
@@ -93,6 +94,13 @@ public:
 
     /// What names the document in front (its file, empty for none).
     void setDocumentProvider(std::function<QString()> provider);
+    /// What the pen drew on a document (by its file): the revision of its
+    /// drawing, and - when that is not \a known, the revision last told -
+    /// the drawing read, a stroke a line.
+    using DrawingsProvider = std::function<std::pair<quint64, QString>(const QString& file, quint64 known)>;
+    /// A prompt that tells Claude of a document tells what is drawn on it
+    /// too, when it changed since the last it told.
+    void setDrawingsProvider(DrawingsProvider provider);
     /// The document in front changed.
     void refreshDocument();
     /// What names the open schematics a conversation can be pinned to
@@ -485,6 +493,8 @@ private:
     QString a_chosenDir;       // empty: the default
     QString a_projectDir;      // the project open in Qucs-S, or empty
     std::function<QString()> a_document;
+    DrawingsProvider a_drawings;
+    QHash<QString, quint64> a_drawingsTold;   // the revision of each document's drawing last read to Claude, this conversation
     std::function<QStringList()> a_schematics;
     std::function<QStringList()> a_files;   // the other documents open
     QString a_pinned;          // the document pinned (its file), or empty

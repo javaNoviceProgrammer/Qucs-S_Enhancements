@@ -1409,6 +1409,29 @@ QImage PptxDoc::slideImage(int index, qreal scale) const
     return image;
 }
 
+QJsonArray PptxDoc::readDrawing(bool points) const
+{
+    QJsonArray out;
+    if (a_presentation == nullptr) return out;
+    const markup::Drawing& d = a_view->drawing();
+    for (const QString& part : d.parts()) {
+        bool numbered = false;
+        const int n = part.toInt(&numbered);
+        if (!numbered || n < 1 || n > a_presentation->slideCount()) continue;
+        QList<markup::Target> targets;
+        for (const qucs_s::pptx::SlidePart& p : a_presentation->parts(n - 1)) {
+            static const char* const kinds[] = {"paragraph", "cell", "picture", "chart", "shape"};
+            targets << markup::Target{QLatin1String(kinds[p.kind]), p.text, p.outline, p.words};
+        }
+        for (const QJsonValue& v : markup::readPage(d.on(part), targets, points)) {
+            QJsonObject o = v.toObject();
+            o.insert(QStringLiteral("slide"), n);
+            out.append(o);
+        }
+    }
+    return out;
+}
+
 void PptxDoc::updatePen()
 {
     const markup::Drawing& d = a_view->drawing();

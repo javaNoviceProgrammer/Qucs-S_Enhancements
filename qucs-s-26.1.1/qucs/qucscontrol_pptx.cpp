@@ -17,6 +17,7 @@
 
 #include "misc.h"
 #include "pptx.h"
+#include "layoutdoc.h"
 #include "pptxdoc.h"
 #include "qucs.h"
 
@@ -404,6 +405,54 @@ QJsonObject QucsControl::readPptx(const QJsonObject& args)
     return jsonResult(result);
 }
 
+void QucsControl::insertDrawings(QJsonObject& o, const QJsonArray& readings)
+{
+    constexpr int most = 40;
+    QJsonArray kept;
+    for (int i = std::max(0, int(readings.size()) - most); i < readings.size(); ++i) kept.append(readings.at(i));
+    o.insert(QStringLiteral("drawings"), kept);
+    if (readings.size() > most)
+        o.insert(QStringLiteral("drawings left out"), tr("%1 earlier stroke(s): read_drawings has them all").arg(readings.size() - most));
+}
+
+QJsonObject QucsControl::readDrawings(const QJsonObject& args)
+{
+    // Every open layout and presentation, or the one asked.
+    const bool points = !args.contains(QLatin1String("points")) || args.value(QLatin1String("points")).toBool();
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    QList<QucsDoc*> docs;
+    if (!path.isEmpty()) {
+        QString error;
+        QucsDoc* doc = document(QJsonObject{{QStringLiteral("path"), path}}, &error);
+        if (doc == nullptr) return errorResult(error.isEmpty() ? tr("%1 is not open.").arg(path) : error);
+        if (qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc)) == nullptr && dynamic_cast<PptxDoc*>(doc) == nullptr)
+            return errorResult(tr("%1 is not a layout or a presentation: the pen draws on those.").arg(titleOf(doc)));
+        docs << doc;
+    } else {
+        docs = a_app->allDocuments();
+    }
+    constexpr int most = 200;
+    QJsonArray documents;
+    for (QucsDoc* doc : std::as_const(docs)) {
+        auto* layout = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc));
+        auto* deck = dynamic_cast<PptxDoc*>(doc);
+        if (layout == nullptr && deck == nullptr) continue;
+        const QJsonArray strokes = layout != nullptr ? layout->view()->readDrawing(points) : deck->readDrawing(points);
+        if (strokes.isEmpty() && path.isEmpty()) continue;
+        QJsonObject one{{QStringLiteral("document"), titleOf(doc)},
+                        {QStringLiteral("file"), QDir::toNativeSeparators(doc->getDocName())},
+                        {QStringLiteral("measures"), layout != nullptr ? tr("µm of the cell, y up") : tr("points from the slide's top left")}};
+        QJsonArray kept;
+        for (int i = std::max(0, int(strokes.size()) - most); i < strokes.size(); ++i) kept.append(strokes.at(i));
+        one.insert(QStringLiteral("strokes"), kept);
+        if (strokes.size() > most) one.insert(QStringLiteral("left out"), tr("%1 earlier stroke(s), %2 at most").arg(strokes.size() - most).arg(most));
+        documents.append(one);
+    }
+    if (documents.isEmpty())
+        return jsonResult(QJsonObject{{QStringLiteral("drawings"), tr("Nothing is drawn on an open layout or presentation: the pen is in each one's toolbar.")}});
+    return jsonResult(QJsonObject{{QStringLiteral("documents"), documents}});
+}
+
 QJsonObject QucsControl::pptxView(PptxDoc* deck) const
 {
     QJsonObject o;
@@ -426,10 +475,10 @@ QJsonObject QucsControl::pptxView(PptxDoc* deck) const
                                                                          : QStringLiteral("%1%").arg(qRound(deck->view()->zoom() * 100)));
     o.insert(QStringLiteral("notes shown"), deck->notesShown());
     o.insert(QStringLiteral("thumbnails shown"), deck->sidebarShown());
-    // What the user drew with the pen, slide by slide - its box in points
-    // from the slide's top left - and whether the pen is taken up.
-    if (!deck->view()->drawing().isEmpty())
-        o.insert(QStringLiteral("drawings"), qucs_s::markup::describe(deck->view()->drawing(), QStringLiteral("slide")));
+    // What the user drew with the pen, read stroke by stroke - what each is
+    // and what it marks, its box in points from the slide's top left - the
+    // latest 40; and whether the pen is taken up.
+    if (!deck->view()->drawing().isEmpty()) insertDrawings(o, deck->readDrawing(false));
     if (deck->view()->penActive()) o.insert(QStringLiteral("pen"), tr("taken up: a drag over a slide draws on it"));
     if (deck->findShown()) {
         QJsonObject f{{QStringLiteral("text"), deck->findText()}};
