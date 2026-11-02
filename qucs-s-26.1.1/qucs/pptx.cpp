@@ -4066,10 +4066,7 @@ QImage Presentation::render(int index, qreal scale) const
 void Presentation::render(int index, QPainter* painter, const QRectF& target) const
 {
     if (painter == nullptr || index < 0 || index >= d->slides.size() || target.isEmpty()) return;
-    // The slide's aspect, in the middle of the target.
-    const qreal fit = std::min(target.width() / d->size.width(), target.height() / d->size.height());
-    const QSizeF shown = d->size * fit;
-    const QRectF at(target.center().x() - shown.width() / 2, target.center().y() - shown.height() / 2, shown.width(), shown.height());
+    const QRectF at = placed(target);
     // As many pixels as the device has there.
     const QRectF device = painter->deviceTransform().mapRect(at);
     const qreal scale = std::clamp(device.width() / d->size.width(), 0.05, 12.0);
@@ -4078,6 +4075,14 @@ void Presentation::render(int index, QPainter* painter, const QRectF& target) co
     painter->setRenderHint(QPainter::SmoothPixmapTransform);
     painter->drawImage(at, image);
     painter->restore();
+}
+
+QRectF Presentation::placed(const QRectF& target) const
+{
+    // The slide's aspect, in the middle of the target.
+    const qreal fit = std::min(target.width() / d->size.width(), target.height() / d->size.height());
+    const QSizeF shown = d->size * fit;
+    return QRectF(target.center().x() - shown.width() / 2, target.center().y() - shown.height() / 2, shown.width(), shown.height());
 }
 
 QList<std::pair<int, int>> Presentation::find(const QString& text) const
