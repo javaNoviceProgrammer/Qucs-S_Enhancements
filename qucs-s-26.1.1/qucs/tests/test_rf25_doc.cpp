@@ -28,13 +28,16 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -2383,6 +2386,150 @@ private slots:
         doc->solve();
         QVERIFY(doc->waitForSolved(60000));
         QVERIFY2(doc->solveProblem().contains(QStringLiteral("driven at its ports")), qPrintable(doc->solveProblem()));
+    }
+
+    // A solve shows how far it has got, in a bar at the end of the status
+    // line, and none is there while nothing solves (the user's question of
+    // 2 November: why has RF 2.5D no progress bar while it solves?). Busy
+    // for the quasi-static extraction, which cannot count; the full-wave
+    // solve's frequencies solved of those to solve, then its ports'
+    // calibration strips'. It goes with a Stop, the button as it was, and
+    // stays where an edit's mesh starts the solve again. It asks the
+    // window for no width and moves nothing above it, and the status line
+    // says what it said.
+    void aSolveShowsHowFarItHasGot()
+    {
+        const QString file = fullWaveLine(QStringLiteral("progress.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QProgressBar* bar = doc->progressBar();
+        QVERIFY(bar != nullptr);
+        QVERIFY(bar->isHidden());
+        auto* splitter = doc->findChild<QSplitter*>(QStringLiteral("rfSplitter"));
+        QVERIFY(splitter != nullptr);
+        // (The tab's own layout: its layout() is the GDS file's.)
+        QLayout* tab = static_cast<QWidget*>(doc)->layout();
+        tab->activate();
+        QCoreApplication::processEvents();
+        const int wide = app->width(), high = splitter->height();
+
+        // The quasi-static extraction, held: busy, once it has taken a moment.
+        RF25Doc::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        doc->holdSolves(true);
+        doc->solveWith(quasi);
+        QVERIFY(doc->isSolving());
+        QVERIFY2(bar->isHidden(), "the bar flashed up at once");
+        // (What the tab and the window ask while it solves, before the bar
+        //  is shown: the button's Stop is narrower than its Solve, which its
+        //  bar of buttons takes in at its next layout request. Those alone
+        //  are sent - no timer's tick, which would show the bar.)
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        tab->activate();
+        QVERIFY(bar->isHidden());
+        const int least = doc->minimumSizeHint().width(), window = app->minimumSizeHint().width();
+        QTRY_VERIFY(bar->isVisible());
+        QCOMPARE(bar->minimum(), 0);
+        QCOMPARE(bar->maximum(), 0);
+        QVERIFY2(doc->statusLabel()->text().endsWith(QStringLiteral("; solving")), qPrintable(doc->statusLabel()->text()));
+        tab->activate();
+        QCoreApplication::processEvents();
+        QVERIFY2(bar->geometry().left() > doc->statusLabel()->geometry().right() && bar->geometry().right() < doc->width(),
+                 "the bar is not at the end of the status line");
+        QCOMPARE(doc->minimumSizeHint().width(), least);
+        QVERIFY2(app->minimumSizeHint().width() <= window && app->width() == wide,
+                 qPrintable(QStringLiteral("the window asks %1 px, was %2; is %3 wide, was %4")
+                                .arg(app->minimumSizeHint().width()).arg(window).arg(app->width()).arg(wide)));
+        QCOMPARE(splitter->height(), high);
+        doc->holdSolves(false);
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        QVERIFY(bar->isHidden());
+        QVERIFY2(doc->extraction() != nullptr && doc->extraction()->ok(), qPrintable(doc->solveProblem()));
+
+        // The full-wave solve, its frequencies allowed one at a time: the
+        // bar counts them, as the status line does.
+        doc->allowFrequencies(0);
+        doc->solveButton()->click();
+        QCOMPARE(doc->solveButton()->text(), QStringLiteral("Stop"));
+        QTRY_VERIFY(bar->isVisible());
+        QCOMPARE(bar->maximum(), 3);
+        QCOMPARE(bar->value(), 0);
+        // (The solver's waits bounded by qWaitFor: a QTRY that fails waits
+        //  twice as long again to say whether it would have passed later.)
+        doc->allowFrequencies(1);
+        QVERIFY2(QTest::qWaitFor([doc] { return doc->frequenciesSolved() >= 1; }, 120000), "the frequency allowed not solved");
+        QCOMPARE(doc->frequenciesSolved(), 1);
+        QTRY_COMPARE(bar->value(), 1);
+        QCOMPARE(bar->maximum(), 3);
+        QVERIFY2(doc->statusLabel()->text().endsWith(QStringLiteral("; solving 1 of 3 frequencies")),
+                 qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(bar->toolTip().contains(QStringLiteral("1 of 3")), qPrintable(bar->toolTip()));
+        doc->allowFrequencies(-1);
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        QVERIFY(bar->isHidden());
+        QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+
+        // Stopped: the bar goes with the solve at once.
+        doc->holdSolves(true);
+        doc->solveButton()->click();
+        QTRY_VERIFY(bar->isVisible());
+        doc->solveButton()->click();
+        QVERIFY(!doc->isSolving());
+        QVERIFY(bar->isHidden());
+        QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
+        QTest::qWait(500);
+        QVERIFY(bar->isHidden());
+
+        // An edit's mesh overtaking a solve going on starts it again on the
+        // mesh: the bar stays, rather than going and coming back a moment
+        // later.
+        doc->solve();
+        QTRY_VERIFY(bar->isVisible());
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("90[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->isSolving());
+        QVERIFY2(bar->isVisible(), "the bar went when the solve was started again");
+        doc->holdSolves(false);
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        QVERIFY(bar->isHidden());
+
+        // A port whose feed is calibrated: after the sweep, the strips'
+        // frequencies counted - two strips of one feed, at the sweep's and,
+        // where it starts too high for the shorter, one below it - and the
+        // bar's count is all they solve: allowed that many, the solve ends.
+        const QString p1 = doc->model().ports().children.front().tag;
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("deembed"), QStringLiteral("20[um]")); },
+                              QStringLiteral("de-embed")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->allowFrequencies(3);
+        doc->solve();
+        QVERIFY2(QTest::qWaitFor([doc] { return doc->statusLabel()->text().endsWith(QStringLiteral("; calibrating the ports")); },
+                                 120000),
+                 qPrintable(doc->statusLabel()->text()));
+        // (Busy while the first strip is meshed and set up; then counted.)
+        QVERIFY2(QTest::qWaitFor([bar] { return bar->maximum() > 0; }, 120000), "the strips' frequencies not counted");
+        QVERIFY(bar->isVisible());
+        QVERIFY2(bar->maximum() == 6 || bar->maximum() == 8, qPrintable(QString::number(bar->maximum())));
+        QCOMPARE(bar->value(), 0);
+        const int strips = bar->maximum();
+        doc->allowFrequencies(1);
+        QVERIFY2(QTest::qWaitFor([bar] { return bar->value() >= 1; }, 120000), "the strip's frequency allowed not counted");
+        QCOMPARE(bar->value(), 1);
+        QCOMPARE(bar->maximum(), strips);
+        QVERIFY2(bar->toolTip().contains(QStringLiteral("1 of %1 frequencies of the strips").arg(strips)), qPrintable(bar->toolTip()));
+        doc->allowFrequencies(strips - 1);
+        QVERIFY2(doc->waitForSolved(120000), "the strips solved more than the bar counted");
+        QVERIFY(bar->isHidden());
+        doc->allowFrequencies(-1);
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok() && doc->fullWave()->deembedding.value(0).done,
+                 qPrintable(doc->solveProblem()));
+        QVERIFY2(says(doc->fullWave()->lines, "Two strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
     }
 
     void aSolveWithNothingToSolveOnIsRefused()
