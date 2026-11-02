@@ -11,11 +11,15 @@
 #include "rf25_wave.h"
 
 #include <QCoreApplication>
+#include <QHash>
+#include <QMutex>
 #include <QVarLengthArray>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace qucs_s::rf25 {
@@ -376,7 +380,161 @@ void sommerfeld(double rho, double ellipse, double kMax, double decay, double re
     for (int c = 0; c < count; ++c) out[c] = (sum[c] + kJ / 2.0 * tail[c]) / (2 * M_PI);
 }
 
+// ------------------------------------------------------ The tables kept
+
+/// The bytes of what a kernel's table is made of: its key among those kept.
+struct KeyWriter {
+    QByteArray bytes;
+    template <typename T> void add(T v) { bytes.append(reinterpret_cast<const char*>(&v), sizeof v); }
+    KeyWriter(char kind, const Layers& layers, double frequency, double low, double most)
+    {
+        add(kind);
+        add(int(layers.slabs.size()));
+        for (const Layers::Slab& s : layers.slabs)
+            for (const double v : {s.z0, s.z1, s.epsr, s.tand, s.sigma}) add(v);
+        add(layers.groundBelow);
+        for (const double v : {layers.epsrBelow, layers.epsrAbove, frequency, low, most}) add(v);
+    }
+};
+
+/// A kept table: its distances, its values (so many a distance), when it
+/// was last used, and its own lock while it grows.
+struct Kept {
+    QMutex lock;
+    QList<double> rho;
+    QList<Complex> values;
+    qint64 used = 0;
+    double bytes = 0;   ///< under the store's lock
+};
+
+struct Store {
+    QMutex lock;
+    QHash<QByteArray, std::shared_ptr<Kept>> kept;
+    qint64 clock = 0;
+    double budget = 256e6, bytes = 0;
+    long long built = 0, reused = 0;
+};
+
+Store& store()
+{
+    static Store s;
+    return s;
+}
+
+/// Under the store's lock: the least lately used forgotten until what is
+/// kept is within the budget - all of them where it is nought - \a keep
+/// last of all.
+void trim(Store& s, const Kept* keep)
+{
+    while (s.bytes > s.budget || (s.budget <= 0 && !s.kept.isEmpty())) {
+        auto oldest = s.kept.end();
+        for (auto it = s.kept.begin(); it != s.kept.end(); ++it)
+            if (it.value().get() != keep && (oldest == s.kept.end() || it.value()->used < oldest.value()->used)) oldest = it;
+        if (oldest == s.kept.end()) break;
+        s.bytes -= oldest.value()->bytes;
+        s.kept.erase(oldest);
+    }
+    if (s.kept.isEmpty()) s.bytes = 0;
+}
+
+/*!
+ * The table of the kernel \a key to the first distance at or past \a far,
+ * eight distances at least: the distances into \a rho, the values - \a width
+ * a distance - into \a values. Those kept are handed over and the rest made
+ * by \a node(r, out) and kept in turn, the kernel's own lock held while they
+ * are, so that a second solve of it waits for the first rather than does it
+ * again. The distances are nought, \a low, then each the last times
+ * 10^(1/40) or plus \a most, whichever is the less: the same sequence
+ * however far it goes, so that what is handed over is the table this
+ * kernel would have made itself, to the last digit, and no more of it.
+ */
+void tableOf(const QByteArray& key, int width, double low, double most, double far,
+             const std::function<void(double, Complex*)>& node, QList<double>* rho, QList<Complex>* values)
+{
+    const double ratio = std::pow(10.0, 1.0 / 40);
+    QList<double> wanted{0.0};
+    for (double r = low;; r = std::min(r * ratio, r + most)) {
+        wanted << r;
+        if (r >= far && wanted.size() >= 8) break;
+    }
+    const int n = int(wanted.size());
+    Store& s = store();
+    std::shared_ptr<Kept> kept;
+    {
+        QMutexLocker held(&s.lock);
+        if (s.budget > 0) {
+            kept = s.kept.value(key);
+            if (!kept) {
+                kept = std::make_shared<Kept>();
+                s.kept.insert(key, kept);
+            }
+            kept->used = ++s.clock;
+        }
+    }
+    if (!kept) {
+        // Keeping nothing: made here, as wanted.
+        QList<Complex> made(n * width);
+        for (int i = 0; i < n; ++i) node(wanted.at(i), made.data() + i * width);
+        *rho = wanted;
+        *values = made;
+        QMutexLocker held(&s.lock);
+        s.built += n;
+        return;
+    }
+    QMutexLocker growing(&kept->lock);
+    const int had = int(kept->rho.size());
+    for (int i = had; i < n; ++i) {
+        kept->values.resize((i + 1) * width);
+        node(wanted.at(i), kept->values.data() + i * width);
+        kept->rho << wanted.at(i);
+    }
+    // (Copies of its own, never the kept lists shared: a kernel's table is
+    // read from many threads, and a list shared with the store is one a
+    // reader's non-const call would detach under the others.)
+    *rho = QList<double>(kept->rho.cbegin(), kept->rho.cbegin() + n);
+    *values = QList<Complex>(kept->values.cbegin(), kept->values.cbegin() + qsizetype(n) * width);
+    const double now = 8.0 * kept->rho.size() + 16.0 * kept->values.size();
+    QMutexLocker held(&s.lock);
+    s.built += std::max(0, n - had);
+    s.reused += std::min(had, n);
+    // (Unless forgotten meanwhile, its bytes counted and the rest trimmed.)
+    if (s.kept.value(key) == kept) {
+        s.bytes += now - kept->bytes;
+        kept->bytes = now;
+        trim(s, kept.get());
+    }
+}
+
 } // namespace
+
+GreensKept greensKept()
+{
+    Store& s = store();
+    QMutexLocker held(&s.lock);
+    GreensKept out;
+    out.tables = int(s.kept.size());
+    out.bytes = s.bytes;
+    out.built = s.built;
+    out.reused = s.reused;
+    return out;
+}
+
+void forgetGreens()
+{
+    Store& s = store();
+    QMutexLocker held(&s.lock);
+    s.kept.clear();
+    s.bytes = 0;
+    s.built = s.reused = 0;
+}
+
+void keepGreens(double bytes)
+{
+    Store& s = store();
+    QMutexLocker held(&s.lock);
+    s.budget = std::max(0.0, bytes);
+    trim(s, nullptr);
+}
 
 // -------------------------------------------------------------- The kernels
 
@@ -588,46 +746,63 @@ WaveGreen::Pair WaveGreen::integral(double rho, double ellipse) const
 void WaveGreen::prepare() const
 {
     if (!ok() || !a_rho.isEmpty()) return;
-    const double rhoMax = a_rhoMax;
     // From nought, then log-spaced from well inside the nearest image's
-    // distance - forty a decade - until the step reaches a sixtieth of
-    // the shortest wavelength, and evenly from there.
-    double low = std::min(1e-3 * rhoMax, 1e-3 / a_kMax);
+    // distance and a thousandth of the wavelength over 2 pi - forty a
+    // decade - until the step reaches a sixtieth of the shortest wavelength,
+    // and evenly from there: what the remainder changes over, not how far it
+    // is wanted, so that every extent is one sequence and its table kept
+    // between solves (tableOf()). (It began at a thousandth of the farthest
+    // distance too, which gave each layout's tables a grid of their own and
+    // nothing to share - finer there than the images ask: the remainder,
+    // read straight in rho^2 below the first distance, is within (rho/d)^4
+    // of itself, a part in 1e8 at a hundredth of the image's d.)
+    double low = 1e-3 / a_kMax;
     if (a_reach > 0) low = std::min(low, 0.01 * a_reach);
     const double most = 2 * M_PI / (60 * a_kMax);
-    const double ratio = std::pow(10.0, 1.0 / 40);
-    a_rho << 0.0;
-    for (double r = low;; r = std::min(r * ratio, r + most)) {
-        a_rho << r;
-        if (r >= rhoMax) break;
-    }
+    KeyWriter key('W', a_layers, a_frequency, low, most);
+    key.add(a_zField);
+    key.add(a_zSource);
+    QList<Complex> values;
+    tableOf(key.bytes, 2, low, most, a_rhoMax,
+            [this](double r, Complex* v) {
+                const Pair p = integral(r, 0);
+                v[0] = p.scalar;
+                v[1] = p.vector;
+            },
+            &a_rho, &values);
+    a_table.clear();
     a_table.reserve(a_rho.size());
-    for (const double r : std::as_const(a_rho)) a_table << integral(r, 0);
+    for (int i = 0; i < a_rho.size(); ++i) a_table << Pair{values.at(2 * i), values.at(2 * i + 1)};
 }
 
 WaveGreen::Pair WaveGreen::fromTable(double rho) const
 {
     prepare();
-    if (a_rho.size() < 8 || rho >= a_rho.last()) return integral(std::max(rho, 0.0), 0);
-    if (rho <= a_rho.at(1)) {
+    // Read through const views: the lists are mutable, and their non-const
+    // begin() or last() detaches a list that is shared - from many threads
+    // at once where a compressed solve fills its blocks, the heap's undoing.
+    const QList<double>& nodes = a_rho;
+    const QList<Pair>& table = a_table;
+    if (nodes.size() < 8 || rho >= nodes.last()) return integral(std::max(rho, 0.0), 0);
+    if (rho <= nodes.at(1)) {
         // The remainder is even in rho: straight in rho^2 to the first.
-        const double t = (rho / a_rho.at(1)) * (rho / a_rho.at(1));
-        const Pair& p0 = a_table.at(0);
-        const Pair& p1 = a_table.at(1);
+        const double t = (rho / nodes.at(1)) * (rho / nodes.at(1));
+        const Pair& p0 = table.at(0);
+        const Pair& p1 = table.at(1);
         return {p0.scalar + t * (p1.scalar - p0.scalar), p0.vector + t * (p1.vector - p0.vector)};
     }
     // A quintic through the six nodes about it, of rho times the value -
     // which tends to a constant where the value goes as 1/rho. (A cubic
     // left a part in 1e5 where the far field turns over a wavelength.)
-    const int i = int(std::upper_bound(a_rho.begin(), a_rho.end(), rho) - a_rho.begin()) - 1;
-    const int j = std::clamp(i - 2, 1, int(a_rho.size()) - 6);
+    const int i = int(std::upper_bound(nodes.begin(), nodes.end(), rho) - nodes.begin()) - 1;
+    const int j = std::clamp(i - 2, 1, int(nodes.size()) - 6);
     Pair out{Complex(0, 0), Complex(0, 0)};
     for (int p = j; p < j + 6; ++p) {
         double weight = 1;
         for (int q = j; q < j + 6; ++q)
-            if (q != p) weight *= (rho - a_rho.at(q)) / (a_rho.at(p) - a_rho.at(q));
-        out.scalar += weight * a_rho.at(p) * a_table.at(p).scalar;
-        out.vector += weight * a_rho.at(p) * a_table.at(p).vector;
+            if (q != p) weight *= (rho - nodes.at(q)) / (nodes.at(p) - nodes.at(q));
+        out.scalar += weight * nodes.at(p) * table.at(p).scalar;
+        out.vector += weight * nodes.at(p) * table.at(p).vector;
     }
     return {out.scalar / rho, out.vector / rho};
 }
@@ -972,25 +1147,33 @@ void ViaGreen::integral(double rho, double ellipse, Complex* out) const
 void ViaGreen::prepare() const
 {
     if (!ok() || !a_rho.isEmpty() || a_count == 0) return;
-    // From nought, then log-spaced from well inside the thinnest slab -
-    // forty a decade - until the step reaches a sixtieth of the shortest
-    // wavelength, and evenly from there: WaveGreen's table.
-    double low = std::min(1e-3 * a_rhoMax, 1e-3 / a_kMax);
+    // WaveGreen's table: from nought, then log-spaced from well inside the
+    // thinnest slab and a thousandth of the wavelength over 2 pi, and evenly
+    // from a sixtieth of the shortest - one sequence for every extent, kept
+    // between solves - its key the via's parts, the others' and the heights.
+    double low = 1e-3 / a_kMax;
     if (a_reach > 0) low = std::min(low, 0.01 * a_reach);
     const double most = 2 * M_PI / (60 * a_kMax);
-    const double ratio = std::pow(10.0, 1.0 / 40);
-    QList<double> rho{0.0};
-    for (double r = low;; r = std::min(r * ratio, r + most)) {
-        rho << r;
-        if (r >= a_rhoMax) break;
-    }
+    KeyWriter key('V', a_layers, a_frequency, low, most);
+    const auto parts = [&key](const QList<Segment>& segments) {
+        key.add(int(segments.size()));
+        for (const Segment& s : segments) {
+            key.add(s.slab);
+            key.add(s.z0);
+            key.add(s.z1);
+        }
+    };
+    parts(a_own);
+    key.add(int(a_others.size()));
+    for (const QList<Segment>& other : std::as_const(a_others)) parts(other);
+    key.add(int(a_heights.size()));
+    for (const double h : std::as_const(a_heights)) key.add(h);
+    QList<Complex> values;
+    QList<double> rho;
+    tableOf(key.bytes, a_count, low, most, a_rhoMax, [this](double r, Complex* v) { integral(r, 0, v); }, &rho, &values);
     QList<QList<Complex>> table;
     table.reserve(rho.size());
-    QVarLengthArray<Complex, 16> out(a_count);
-    for (const double r : std::as_const(rho)) {
-        integral(r, 0, out.data());
-        table << QList<Complex>(out.begin(), out.end());
-    }
+    for (int i = 0; i < rho.size(); ++i) table << values.mid(i * a_count, a_count);
     a_table = table;
     a_rho = rho;
 }
@@ -998,23 +1181,26 @@ void ViaGreen::prepare() const
 Complex ViaGreen::fromTable(int component, double rho) const
 {
     prepare();
-    if (a_rho.size() < 8 || rho >= a_rho.last()) {
+    // (Through const views, as WaveGreen's: never detaching from a reader.)
+    const QList<double>& nodes = a_rho;
+    const QList<QList<Complex>>& table = a_table;
+    if (nodes.size() < 8 || rho >= nodes.last()) {
         QVarLengthArray<Complex, 16> out(a_count);
         integral(std::max(rho, 0.0), 0, out.data());
         return out[component];
     }
-    if (rho <= a_rho.at(1)) {
-        const double t = (rho / a_rho.at(1)) * (rho / a_rho.at(1));
-        return a_table.at(0).at(component) + t * (a_table.at(1).at(component) - a_table.at(0).at(component));
+    if (rho <= nodes.at(1)) {
+        const double t = (rho / nodes.at(1)) * (rho / nodes.at(1));
+        return table.at(0).at(component) + t * (table.at(1).at(component) - table.at(0).at(component));
     }
-    const int i = int(std::upper_bound(a_rho.begin(), a_rho.end(), rho) - a_rho.begin()) - 1;
-    const int j = std::clamp(i - 2, 1, int(a_rho.size()) - 6);
+    const int i = int(std::upper_bound(nodes.begin(), nodes.end(), rho) - nodes.begin()) - 1;
+    const int j = std::clamp(i - 2, 1, int(nodes.size()) - 6);
     Complex out(0, 0);
     for (int p = j; p < j + 6; ++p) {
         double weight = 1;
         for (int q = j; q < j + 6; ++q)
-            if (q != p) weight *= (rho - a_rho.at(q)) / (a_rho.at(p) - a_rho.at(q));
-        out += weight * a_rho.at(p) * a_table.at(p).at(component);
+            if (q != p) weight *= (rho - nodes.at(q)) / (nodes.at(p) - nodes.at(q));
+        out += weight * nodes.at(p) * table.at(p).at(component);
     }
     return out / rho;
 }

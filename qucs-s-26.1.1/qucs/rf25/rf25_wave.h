@@ -61,7 +61,8 @@
  *     a vertical line, up and down, where it decays as exp(-t rho)
  *     however slowly the integrand dies along the real axis.
  *   - **A table over distance**, filled once per frequency and pair of
- *     heights and read by every pair of cells.
+ *     heights and read by every pair of cells - and kept between solves
+ *     (keepGreens()).
  *
  * A via's vertical current wants two more kernels of formulation C, which
  * ViaGreen below gives. What neither does yet is a metal lid over the
@@ -87,6 +88,35 @@ Complex besselJ0(Complex z);
 /// Hankel's H0 of the first (\a kind 1) or second (2) kind, for Re z > 0:
 /// J0 +- j Y0 by their series below |z| = 12, the asymptotic form above.
 Complex hankelH0(Complex z, int kind);
+
+/*!
+ * The kernels' tables, kept between solves. A stack's tables at a frequency
+ * are the same for every structure on it, and a calibration's three strips,
+ * the shorter ones beside them and a two-line pair each built them again -
+ * since a port's path up from the ground has a field, most of a solve under
+ * the sanitizers. A table's distances are a sequence of its own kernel's,
+ * however far it is wanted: from nought, then log-spaced from well inside
+ * the nearest image's distance and a thousandth of the wavelength over
+ * 2 pi, and evenly from a sixtieth of the shortest wavelength. So a table
+ * kept to a further distance holds a nearer one's nodes exactly, and each
+ * kernel is handed the nodes its own table would have had and no more: what
+ * it gives is the same to the last digit whatever was solved before it.
+ * Kept by the stack, the heights or spans, the frequency and the grid; the
+ * least lately used forgotten past a budget.
+ */
+struct GreensKept {
+    int tables = 0;          ///< kept now
+    double bytes = 0;        ///< what they hold
+    long long built = 0;     ///< distances integrated since forgetGreens()
+    long long reused = 0;    ///< distances handed over from a kept table
+};
+/// What is kept, and what was built and reused since forgetGreens().
+GreensKept greensKept();
+/// Forgets every kept table, and the counts.
+void forgetGreens();
+/// How much may be kept, bytes - 256 MB unless set; nought keeps nothing,
+/// every table built as it is wanted. What no longer fits is forgotten.
+void keepGreens(double bytes);
 
 /*!
  * The retarded Green's functions of \a layers at a frequency, between a
