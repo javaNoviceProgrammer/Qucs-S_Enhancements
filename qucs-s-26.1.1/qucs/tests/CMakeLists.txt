@@ -226,6 +226,7 @@ qucs_add_test(test_rf25_fullwave)
 set_tests_properties(test_rf25_fullwave PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_deembed)
 qucs_add_test(test_rf25_doc)
+qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics_view)
 # (The window's multiphysics end to end - every physics' examples solved:

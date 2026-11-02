@@ -214,7 +214,7 @@ SET(QUCS_SRCS
   imagewriter.cpp printerwriter.cpp projectView.cpp
   symbolwidget.cpp wire_planner.cpp
   qucsshortcutmanager.cpp globals.cpp settingsio.cpp textcodec.cpp links.cpp
-  autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp designedstyle.cpp statusbar.cpp erc.cpp
+  autosave.cpp crashhandler.cpp shellenvironment.cpp apptheme.cpp designedstyle.cpp statusbar.cpp elidedlabel.cpp erc.cpp
   embeddedimage.cpp componentsearch.cpp findbar.cpp biaslabels.cpp probe.cpp spectrum.cpp cursorvalues.cpp ltspiceimport.cpp ink.cpp levelofdetail.cpp valuereading.cpp
   systemopen.cpp oppoint.cpp workspace.cpp vamodule.cpp optimization.cpp ngoptimize.cpp
   ngstatistics.cpp ngsweep.cpp
@@ -268,6 +268,7 @@ shellenvironment.h
 apptheme.h
 designedstyle.h
 statusbar.h
+elidedlabel.h
 erc.h
 misc.h
 mnemo.h

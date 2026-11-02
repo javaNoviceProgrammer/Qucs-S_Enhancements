@@ -11,6 +11,7 @@
  */
 #include "githistory.h"
 
+#include "elidedlabel.h"
 #include "gitui.h"
 #include "ink.h"
 #include "misc.h"
@@ -593,7 +594,7 @@ HistoryView::HistoryView(const QString& root, const QString& path, QWidget* pare
     auto* bottom = new QHBoxLayout;
     a_more = new QPushButton(tr("Show More"), this);
     a_more->setObjectName(QStringLiteral("gitMoreCommits"));
-    a_status = new QLabel(this);
+    a_status = new ElidedLabel(this);
     a_status->setObjectName(QStringLiteral("gitHistoryStatus"));
     bottom->addWidget(a_more);
     bottom->addWidget(a_status, 1);
