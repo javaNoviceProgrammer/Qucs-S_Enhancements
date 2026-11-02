@@ -225,6 +225,11 @@ qucs_add_test(test_rf25_fullwave)
 # quarters of its 300 times 3.)
 set_tests_properties(test_rf25_fullwave PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_deembed)
+# (Each calibration solves three strips now, and shorter ones beside them
+# where they disagree - the phase E check of 2 November: 396 s sanitized
+# here, its heaviest function some 60 s; at CI's runner's twice, past three
+# quarters of 300 times 3.)
+set_tests_properties(test_rf25_deembed PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_doc)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)

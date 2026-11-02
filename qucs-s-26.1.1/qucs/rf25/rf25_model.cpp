@@ -278,9 +278,14 @@ QList<NodeKind> makeKinds()
                   "a GSSG's two signals are driven. The solve then gives its mixed-mode S too: the differential and "
                   "common modes (full wave)")),
           boolean(QStringLiteral("calibrate"), tr("Take out its own discontinuity"), false,
-                  tr("Solve two strips of its feed - a coplanar port's with its grounds and their vias - and take "
-                     "the port's own discontinuity out of the answer: its reference plane is then at its edge (full "
+                  tr("Solve strips of its feed - a coplanar port's with its grounds and their vias - and take the "
+                     "port's own discontinuity out of the answer: its reference plane is then at its edge (full "
                      "wave)")),
+          shownIf(expr(QStringLiteral("strips"), tr("Calibration strips"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("How long the shortest strip of its feed is: nought chooses - eight heights over the ground and "
+                          "twice its width, and shorter strips beside them where a third says those do not agree on one "
+                          "line. On a substrate thick beside the wavelength, shorter strips agree to a higher frequency")),
+                  "calibrate=true"),
           expr(QStringLiteral("deembed"), tr("De-embed"), QStringLiteral("m"), QStringLiteral("0"),
                tr("How far the reference plane is then moved in along the line (out, below nought)")),
           choice(QStringLiteral("along"), tr("Moved along"), {QStringLiteral("feed"), QStringLiteral("line")},
