@@ -54,6 +54,26 @@ using qucs_s::layout::LayoutView;
 
 namespace {
 
+/// How the study asks a full-wave solve to hold its system (its Matrix).
+FullWaveControl::Matrix studyMatrix(const Model& model)
+{
+    const Node* study = model.root.child(QStringLiteral("rf_study"));
+    const QString matrix = study != nullptr ? textOf(*study, QStringLiteral("matrix")) : QString();
+    if (matrix == QLatin1String("dense")) return FullWaveControl::Matrix::Dense;
+    if (matrix == QLatin1String("compressed")) return FullWaveControl::Matrix::Compressed;
+    return FullWaveControl::Matrix::Automatic;
+}
+
+/// Whether the model's mesh is for a full-wave solve held compressed - the
+/// study's Solver full wave, and its Matrix not dense: then the mesh may
+/// have as many cells as that holds (MeshSettings::compressed).
+bool meshedCompressed(const Model& model)
+{
+    const Node* study = model.root.child(QStringLiteral("rf_study"));
+    return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave")
+           && studyMatrix(model) != FullWaveControl::Matrix::Dense;
+}
+
 const char* const kShowProcessedKey = "RF25/showProcessed";
 const char* const kShowMeshKey = "RF25/showMesh";
 const char* const kShowCurrentsKey = "RF25/showCurrents";
@@ -395,6 +415,8 @@ struct RF25Doc::SolveJob {
     MeshSettings how;
     double top = 0;
     std::atomic_bool calibrating{false};
+    FullWaveControl::Matrix matrix = FullWaveControl::Matrix::Automatic;   ///< the study's
+
     // The tab's holdSolves(), which a test holds it back by.
     std::shared_ptr<std::atomic_bool> held;
 };
@@ -866,7 +888,9 @@ void RF25Doc::showProblems()
     // panel to show before a solve is ever started.
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
-        tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(chargeCostOf(int(a_mesh->cells.size())));
+        tail += tr("; %1 cell(s), %2")
+                    .arg(a_mesh->cells.size())
+                    .arg(meshedCompressed(a_model) ? a_mesh->cost.said : chargeCostOf(int(a_mesh->cells.size())));
     if (a_solveJob && a_solveJob->fullWave && a_solveJob->calibrating)
         tail += tr("; calibrating the ports");
     else if (a_solveJob && a_solveJob->fullWave)
@@ -1089,7 +1113,8 @@ void RF25Doc::prepare()
     QThread* thread = QThread::create([job] {
         job->processed = std::make_shared<Processed>(processRead(job->model, *job->layout, job->called));
         QStringList said;
-        const MeshSettings how = meshSettingsOf(job->model.mesh(), job->model.parameters(), &said);
+        MeshSettings how = meshSettingsOf(job->model.mesh(), job->model.parameters(), &said);
+        how.compressed = meshedCompressed(job->model);
         Mesh mesh = meshOf(job->processed->conductors, how, job->model.stack(), topFrequency(job->model));
         mesh.problems = said + mesh.problems;
         job->mesh = std::make_shared<Mesh>(std::move(mesh));
@@ -1631,6 +1656,11 @@ void RF25Doc::solveWith(const SolveRequest& request)
             return nothing(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
         QStringList said;
         job->how = meshSettingsOf(a_model.mesh(), a_model.parameters(), &said);
+        job->how.compressed = meshedCompressed(a_model);
+        job->matrix = request.matrix.isEmpty() ? studyMatrix(a_model)
+                      : request.matrix == QLatin1String("dense")    ? FullWaveControl::Matrix::Dense
+                      : request.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed
+                                                                      : FullWaveControl::Matrix::Automatic;
         job->top = topFrequency(a_model);
         const Node* study = a_model.root.child(QStringLiteral("rf_study"));
         if (request.frequencies.isEmpty() && study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool())
@@ -1678,6 +1708,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
             FullWaveControl control;
             control.stop = &job->stop;
             control.done = &job->done;
+            control.matrix = job->matrix;
             job->wave = std::make_shared<FullWave>(
                 fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control, job->returns));
             // The ports that asked: their own discontinuity taken out by
@@ -1687,6 +1718,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
             if (!job->wave->ok()) return;
             FullWaveControl quiet;
             quiet.stop = &job->stop;
+            quiet.matrix = job->matrix;
             QList<Deembedding> each(job->ports.size());
             QMap<QString, std::shared_ptr<Calibration>> feeds;
             bool asked = false;

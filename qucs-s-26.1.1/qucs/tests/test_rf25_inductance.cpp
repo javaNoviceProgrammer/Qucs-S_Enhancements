@@ -201,6 +201,62 @@ private slots:
         QVERIFY(rf::partialInductance(there, there) > forward);
     }
 
+    // The full-wave solve's L is the cosine between two runs times their
+    // aligned partial inductance (alignedInductance()), a kernel smooth in
+    // where they are - which a compressed matrix of it wants. Of two parallel
+    // runs it is partialInductance()'s, whichever way each points; it is the
+    // same either way round; and of two runs at 60 degrees, five of their
+    // lengths apart, the cosine times it is Neumann's double integral of
+    // dl.dl'/r along them, here by Gauss's rule (to the second order of
+    // their length over their distance, which is where the turned runs'
+    // geometry differs). partialInductance() of two oblique runs is as it was:
+    // as though parallel, without the cosine - the quasi-static extraction's.
+    void anObliquePairIsTheCosineTimesItsAlignedOne()
+    {
+        const double l = 100e-6, w = 1e-6;
+        const rf::Filament a = alongX(0, l, 0, w), b = alongX(l, 0, 30e-6, w), c = alongX(20e-6, 120e-6, 400e-6, w);
+        for (const rf::Filament* other : {&b, &c}) {
+            QCOMPARE(rf::alignedInductance(a, *other), std::abs(rf::partialInductance(a, *other)));
+            QCOMPARE(rf::alignedInductance(*other, a), rf::alignedInductance(a, *other));
+        }
+        QCOMPARE(rf::alignedInductance(a, a), rf::partialInductance(a, a));
+        // At 60 degrees, its middle 500 µm off.
+        const double angle = M_PI / 3;
+        rf::Filament slant;
+        slant.from = QPointF(200e-6, 500e-6);
+        slant.to = slant.from + QPointF(std::cos(angle), std::sin(angle)) * l;
+        slant.width = w;
+        const double aligned = rf::alignedInductance(a, slant);
+        QCOMPARE(rf::alignedInductance(slant, a), aligned);
+        // Neumann's: mu0/4pi Int Int dl.dl'/r, sixteen points along each.
+        static const double xg[8] = {-0.9602898564975363, -0.7966664774136267, -0.5255324099163290, -0.1834346424956498,
+                                     0.1834346424956498,  0.5255324099163290,  0.7966664774136267,  0.9602898564975363};
+        static const double wg[8] = {0.1012285362903763, 0.2223810344533745, 0.3137066458778873, 0.3626837833783620,
+                                     0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763};
+        double neumann = 0;
+        for (int half = 0; half < 2; ++half)
+            for (int i = 0; i < 8; ++i)
+                for (int hb = 0; hb < 2; ++hb)
+                    for (int j = 0; j < 8; ++j) {
+                        const double s = l * (0.25 * (2 * half + 1) + 0.25 * xg[i]);
+                        const double t = l * (0.25 * (2 * hb + 1) + 0.25 * xg[j]);
+                        const QPointF p(s, 0), q = slant.from + QPointF(std::cos(angle), std::sin(angle)) * t;
+                        neumann += 0.25 * wg[i] * wg[j] * 0.25 / std::hypot(p.x() - q.x(), p.y() - q.y());
+                    }
+        neumann *= kMu0 / (4 * M_PI) * l * l * std::cos(angle);
+        const double cosine = std::cos(angle) * aligned;
+        qWarning("60 degrees: cos x aligned %.6g pH, Neumann's %.6g pH; partialInductance %.6g pH", cosine * 1e12, neumann * 1e12,
+                 rf::partialInductance(a, slant) * 1e12);
+        QVERIFY2(std::abs(cosine / neumann - 1) < 5e-3, qPrintable(QStringLiteral("%1 vs %2").arg(cosine).arg(neumann)));
+        // As it was, without the cosine - and its start, not its middle,
+        // set along a's axis: 2.11 times Neumann's here.
+        QVERIFY2(rf::partialInductance(a, slant) > 1.8 * neumann, qPrintable(QString::number(rf::partialInductance(a, slant) / neumann)));
+        // At right angles its kernel is still a number, smooth in where they
+        // are, though nothing passes between them.
+        const double across = rf::alignedInductance(a, alongY(500e-6, 600e-6, 200e-6, w));
+        QVERIFY2(across > 0 && std::isfinite(across), qPrintable(QString::number(across)));
+    }
+
     // Two strips near enough that their breadth matters: the distance is
     // averaged across both widths, and that average is held to a fine
     // numerical one. Taken between their middles instead, it is wrong by

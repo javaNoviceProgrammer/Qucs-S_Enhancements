@@ -11,6 +11,10 @@
  */
 #include "rf25_fullwave.h"
 
+#include "rf25_fast.h"
+
+#include "multiphysics/fem_sparse.h"
+
 #include <QCoreApplication>
 #include <QHash>
 #include <QRectF>
@@ -18,6 +22,7 @@
 #include <QThread>
 
 #include <Eigen/Dense>
+#include <Eigen/SparseCore>
 
 #include <algorithm>
 #include <array>
@@ -45,6 +50,35 @@ const Complex kJ(0, 1);
 /// coplanar line eight cells across was more than that so (the recheck of
 /// 75ff6f9).
 constexpr int kMostUnknowns = 6000;
+/// The compressed solve (rf25_fast.h). Each low-rank block to a part in
+/// 1e5 of its own size; clusters of up to kLeaf unknowns; a pair of
+/// clusters low rank where the smaller is no wider than kEta times their
+/// distance. Measured against the dense solve on lines, a tee, two metals
+/// and a via, a coplanar line's fence of vias, a GSSG with no plane and a
+/// pad on 144 vias, from 10 MHz to 60 GHz: S within 2.6e-7 of it, and 1.8e-6
+/// on the fence's line 1.5 wavelengths long at 60 GHz (a part in 1e6, 3e-8
+/// and 3e-7; eta 2 a tenth less memory and five times the error). Its
+/// preconditioner the near field's sparse LU, of the pairs whose boxes are
+/// within kNear of the larger's longest side in the plane (the cells that
+/// touch, and the faces of a metal solved as its two). GMRES to a residual
+/// of kResidual, kRestart vectors at a time, kMostIterations in all; the
+/// ports' Z then from the currents variationally, its error the residual's
+/// square over what the system is near singular by - which at a low
+/// frequency is much: the pad on its vias at 100 MHz was 1e-3 out of the
+/// dense solve's S at a residual of 1e-6, and 2e-10 at 1e-10 (some 1.7
+/// times the iterations). Beyond kMostCompressed unknowns nothing is set
+/// up, whatever the memory.
+constexpr double kTolerance = 1e-5;
+constexpr int kLeaf = 32;
+constexpr double kEta = 1.5;
+constexpr double kNear = 0.5;
+constexpr double kResidual = 1e-10;
+constexpr int kRestart = 100;
+constexpr int kMostIterations = 3000;
+constexpr int kMostCompressed = 2000000;
+/// The rank a low-rank block is guessed at before it is filled, for the
+/// memory a solve will take: a guess, and said as one.
+constexpr double kGuessRank = 16;
 /// How small a charged cell must be beside the distance the stack's
 /// remainder changes over - the distance itself, or the remainder's reach,
 /// whichever is the longer - for its charge to be taken at its centre: its
@@ -526,6 +560,51 @@ struct ViaRun {
 };
 
 /*!
+ * The cells of a mesh in bins of the plane, layer by layer, each in every
+ * bin its box touches: what is near a point, without a search of every
+ * cell. The bins are as wide as the mesh's widest cell.
+ */
+class CellBins
+{
+public:
+    explicit CellBins(const Mesh& mesh)
+    {
+        for (const MeshCell& cell : mesh.cells) {
+            const QRectF box = cell.outline.boundingRect();
+            a_bin = std::max({a_bin, box.width(), box.height()});
+        }
+        if (!(a_bin > 0)) a_bin = 1;
+        for (int c = 0; c < mesh.cells.size(); ++c) {
+            const QRectF box = mesh.cells.at(c).outline.boundingRect();
+            QHash<qint64, QList<int>>& layer = a_layers[mesh.cells.at(c).layer];
+            for (qint64 i = binOf(box.left()); i <= binOf(box.right()); ++i)
+                for (qint64 j = binOf(box.top()); j <= binOf(box.bottom()); ++j) layer[key(i, j)] << c;
+        }
+    }
+    /// The cells of \a layer in the bins within \a reach of \a at, each once.
+    QList<int> near(const QString& layer, QPointF at, double reach) const
+    {
+        QList<int> out;
+        const auto found = a_layers.constFind(layer);
+        if (found == a_layers.constEnd()) return out;
+        for (qint64 i = binOf(at.x() - reach); i <= binOf(at.x() + reach); ++i)
+            for (qint64 j = binOf(at.y() - reach); j <= binOf(at.y() + reach); ++j) {
+                const auto bin = found->constFind(key(i, j));
+                if (bin != found->constEnd()) out << *bin;
+            }
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+
+private:
+    qint64 binOf(double v) const { return qint64(std::floor(v / a_bin)); }
+    static qint64 key(qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); }
+    double a_bin = 0;
+    QHash<QString, QHash<qint64, QList<int>>> a_layers;
+};
+
+/*!
  * The vias of \a mesh as runs of current in z, each from the cell of the
  * lower metal under it - or the ground - to the cell of the upper one. The
  * cells of a via that land on the same two cells are one run: their
@@ -543,25 +622,30 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
 {
     // The cell of metal \a metal under via cell \a v: the one whose outline
     // holds its centre, else the nearest whose box, grown by the via cell's
-    // own size, does; -1 where the via is over none of that metal.
-    const auto under = [&mesh](const QString& metal, const MeshCell& v) {
-        int best = -1;
-        double closest = 0;
+    // own size, does; -1 where the via is over none of that metal. (Of the
+    // metal's cells in the bins the grown box touches: every cell of the
+    // mesh for each of a via's cells was most of a large via farm's solve.)
+    const CellBins bins(mesh);
+    const auto under = [&mesh, &bins](const QString& metal, const MeshCell& v) {
         const QRectF box = v.outline.boundingRect();
         const double grow = std::hypot(box.width(), box.height()) / 2;
-        for (int c = 0; c < mesh.cells.size(); ++c) {
+        int best = -1, holding = -1;
+        double closest = 0;
+        for (const int c : bins.near(metal, v.centre, grow)) {
             const MeshCell& cell = mesh.cells.at(c);
-            if (cell.layer != metal) continue;
-            if (cell.outline.containsPoint(v.centre, Qt::OddEvenFill)) return c;
+            if (cell.outline.containsPoint(v.centre, Qt::OddEvenFill)) {
+                if (holding < 0 || c < holding) holding = c;
+                continue;
+            }
             if (!cell.outline.boundingRect().adjusted(-grow, -grow, grow, grow).contains(v.centre)) continue;
             const QPointF d = cell.centre - v.centre;
             const double far = d.x() * d.x() + d.y() * d.y();
-            if (best < 0 || far < closest) {
+            if (best < 0 || far < closest || (far == closest && c < best)) {
                 best = c;
                 closest = far;
             }
         }
-        return best;
+        return holding >= 0 ? holding : best;
     };
     struct Group {
         int span = 0, tail = -1, head = -1;
@@ -645,7 +729,14 @@ struct Context {
     QList<QPointF> centre;               ///< m
     QList<double> heights;               ///< the metals', m, from the lowest
     QList<int> hNode, hRun;              ///< which of them each charge and run in the plane is at
+    QList<double> cellZ;                 ///< each charge's height, m
     QList<double> dirX, dirY, midX, midY;
+    QList<Filament> mirrored;            ///< each run in the plane's image in the ground
+    /// A dense solve's static parts, made once for every frequency: each
+    /// pair of runs' aligned partial inductance (alignedInductance()),
+    /// direct and of the image, and each cell's static potential of a
+    /// charge spread over another. (A compressed solve makes the few it
+    /// wants as it goes.)
     Eigen::MatrixXd lDirect, lImage, pStatic;
     QList<Via> vias;
     QList<ViaGreen::Span> spans;         ///< each of the stack's vias that the mesh has
@@ -670,6 +761,12 @@ struct AtFrequency {
     MatrixC z;                           ///< ports x ports
     MatrixC current;                     ///< runs x ports
     double rcond = 1;
+    /// Compressed: what its matrices held, bytes, and their largest rank;
+    /// the most iterations a port's GMRES took, and the largest residual.
+    double bytes = 0;
+    int largestRank = 0;
+    int iterations = 0;
+    double residual = 0;
     QStringList problems;
 };
 
@@ -744,101 +841,231 @@ void faceImpedances(double sigma, double thickness, double frequency, Complex* o
     *across = zs * 2.0 * e / (1.0 - e * e);
 }
 
-AtFrequency solveAt(const Context& c, double f)
-{
-    AtFrequency out;
-    const double w = 2 * M_PI * f;
-    const Complex jw(0, w);
-    const int nr = c.nr, nc = c.nc, nh = c.nh;
-
-    // The retarded Green's functions of each pair of heights.
+/*!
+ * The Green's functions of one frequency, and the terms of the solve's
+ * matrices of them: shared by the dense solve and the compressed one, so
+ * that the two solve the one matrix - the dense one with the static parts
+ * it made once for every frequency, the compressed one making the few it
+ * wants as it goes.
+ */
+struct Kernels {
+    const Context& c;
+    double f = 0;
+    Complex jw;
     QList<WaveGreen> greens;
-    QList<int> pairOf(nh * nh, -1);
+    QList<int> pairOf;
+    QList<ViaGreen> viaGreens;
+    QStringList problems;
+
+    Kernels(const Context& context, double frequency);
+    const WaveGreen& green(int h0, int h1) const { return greens.at(pairOf.at(h0 * c.nh + h1)); }
+    /// The cosine between runs \a a and \a b in the plane.
+    double cosine(int a, int b) const { return c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b); }
+    /// The kernel of runs \a a and \a b in the plane, H, whose L is their
+    /// cosine times it: the static partial inductances, aligned (\a direct,
+    /// and of b's image in the ground, \a image), scaled as the vector
+    /// potential's singular terms are, and the rest at the middles - the
+    /// retardation of the source and of its image, and the stack's own
+    /// remainder.
+    Complex inductance(int a, int b, double direct, double image) const;
+    Complex inductance(int a, int b) const;
+    /// P(i, j): cell i's potential of a unit charge spread over cell j and
+    /// the other way round, averaged - each way's static part given
+    /// (rectanglePotential(), \a pij and \a pji) or made here.
+    Complex potential(int i, int j, double pij, double pji) const;
+    Complex potential(int i, int j) const;
+    /// Via \a v's potential at cell \a cell of a unit current up it.
+    Complex viaPotential(int v, int cell) const;
+    /// G_zz: via \a i's voltage of a unit current on via \a j.
+    Complex viaCoupling(int i, int j) const;
+};
+
+Kernels::Kernels(const Context& context, double frequency) : c(context), f(frequency), jw(0, 2 * M_PI * frequency)
+{
+    // The retarded Green's functions of each pair of heights.
+    const int nh = c.nh;
+    pairOf = QList<int>(nh * nh, -1);
     for (int i = 0; i < nh; ++i)
         for (int j = i; j < nh; ++j) {
             WaveGreen g(c.layers, c.heights.at(i), c.heights.at(j), f, c.rhoMax);
             if (!g.ok()) {
-                out.problems << g.problems();
-                return out;
+                problems << g.problems();
+                return;
             }
             g.prepare();
             pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
             greens << g;
         }
-
     // A via's kernels, one for each of the stack's vias the mesh has: its
     // coupling to every via, and its potential at every metal height.
-    QList<ViaGreen> viaGreens;
     for (const ViaGreen::Span& s : c.spans) {
         ViaGreen v(c.layers, s, c.spans, c.heights, f, c.rhoMax);
         if (!v.ok()) {
-            out.problems << v.problems();
-            return out;
+            problems << v.problems();
+            return;
         }
         v.prepare();
         viaGreens << v;
     }
+}
 
-    // jw L: the static partial inductances scaled as the vector
-    // potential's singular terms are, and the rest at the centres - the
-    // retardation of the source and of its image, and the stack's own
-    // remainder.
-    MatrixC m = MatrixC::Zero(nr, nr);
-    const int np0 = c.planar;
-    for (int a = 0; a < np0; ++a)
-        for (int b = a; b < np0; ++b) {
-            const double dot = c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b);
-            Complex l(0, 0);
-            if (std::abs(dot) >= 1e-9) {
-                const WaveGreen& g = greens.at(pairOf.at(c.hRun.at(a) * nh + c.hRun.at(b)));
-                const WaveGreen::Term direct = g.vectorTerm(), image = g.vectorImage();
-                const double rho = std::hypot(c.midX.at(a) - c.midX.at(b), c.midY.at(a) - c.midY.at(b));
-                l = 2.0 * direct.coefficient / kMu0 * c.lDirect(a, b) + 2.0 * image.coefficient / kMu0 * c.lImage(a, b);
-                const Complex smooth = direct.coefficient / (2 * M_PI) * retardation(direct.k, std::hypot(rho, direct.dz))
-                                       + image.coefficient / (2 * M_PI) * retardation(image.k, std::hypot(rho, image.dz))
-                                       + g.vectorRemainder(rho);
-                l += dot * c.runs.at(a).length() * c.runs.at(b).length() * smooth;
-            }
-            m(a, b) = m(b, a) = jw * l;
-        }
+Complex Kernels::inductance(int a, int b, double direct, double image) const
+{
+    const WaveGreen& g = green(c.hRun.at(a), c.hRun.at(b));
+    const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage();
+    const double rho = std::hypot(c.midX.at(a) - c.midX.at(b), c.midY.at(a) - c.midY.at(b));
+    const Complex l = 2.0 * d.coefficient / kMu0 * direct + 2.0 * i.coefficient / kMu0 * image;
+    const Complex smooth = d.coefficient / (2 * M_PI) * retardation(d.k, std::hypot(rho, d.dz))
+                           + i.coefficient / (2 * M_PI) * retardation(i.k, std::hypot(rho, i.dz)) + g.vectorRemainder(rho);
+    return l + c.runs.at(a).length() * c.runs.at(b).length() * smooth;
+}
 
-    // The vias. Between two: G_zz along both - the closed forms between
-    // their axes, statically in closed form and their retardation by
-    // Gauss's rule, and the table's rest - and the scalar correction of the
-    // one's current at the other's two cells, ended by the ground's nought
-    // for a via to it. Its potential is taken at the cells, as the node
-    // potentials are, so that what a via's current adds along the runs that
-    // carry it away cancels what it adds along the via itself; and the two
-    // ways round averaged, which differ by where a via stands in its cell.
+Complex Kernels::inductance(int a, int b) const
+{
+    return inductance(a, b, alignedInductance(c.runs.at(a), c.runs.at(b)), alignedInductance(c.runs.at(a), c.mirrored.at(b)));
+}
+
+Complex Kernels::potential(int i, int j, double pij, double pji) const
+{
+    // The static singular part over the cell in closed form, its
+    // retardation at the centres, and the remainder integrated over the
+    // charged cell - or at its centre where the cell is small beside the
+    // distance the remainder changes over. Made symmetric: a potential at a
+    // centre of a charge over a cell is not quite the other way round where
+    // the cells differ in size, and the port matrix is reciprocal only if P
+    // is.
+    const WaveGreen& g = green(c.hNode.at(i), c.hNode.at(j));
+    const WaveGreen::Term t = g.scalarTerm();
+    const double rho = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
+    const double scale = std::hypot(rho, g.reach());
+    const auto oneWay = [this, &g, &t, rho, scale](int to, int from, double stat) {
+        const Complex v = t.coefficient / (2 * M_PI) * (stat + retardation(t.k, std::hypot(rho, t.dz)));
+        const double longest = std::max(c.rect.at(from).width(), c.rect.at(from).height());
+        const bool centred = to != from && longest * longest < kCentreBound * scale * scale;
+        return v + (centred ? g.scalarRemainder(rho) : remainderOver(g, c.rect.at(from), c.centre.at(to), scale));
+    };
+    return i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
+}
+
+Complex Kernels::potential(int i, int j) const
+{
+    const double dz = std::abs(c.cellZ.at(i) - c.cellZ.at(j));
+    return potential(i, j, rectanglePotential(c.rect.at(j), c.centre.at(i), dz),
+                     i == j ? 0.0 : rectanglePotential(c.rect.at(i), c.centre.at(j), dz));
+}
+
+Complex Kernels::viaPotential(int v, int cell) const
+{
     // Nowhere nearer the via than its cross-section's mean distance with
     // itself: the dielectric's part of its own G_zz, taken across that
     // distance, is what its potential is there (to a part in a thousand
     // through 200 µm of 9.8, against 5 % at its axis), and the two must
     // cancel round a path for its inductance to be the vacuum's, as it is.
+    const Via& via = c.vias.at(v);
+    const double apart = std::hypot(c.centre.at(cell).x() - via.at.x(), c.centre.at(cell).y() - via.at.y());
+    return viaGreens.at(via.span).potential(c.hNode.at(cell), std::max(apart, via.gmd));
+}
+
+Complex Kernels::viaCoupling(int i, int j) const
+{
+    // G_zz along both - the closed forms between their axes, statically in
+    // closed form and their retardation by Gauss's rule - and the table's
+    // rest.
+    const Via& a = c.vias.at(i);
+    const Via& b = c.vias.at(j);
+    const ViaGreen& green = viaGreens.at(a.span);
+    const double apart = std::hypot(a.at.x() - b.at.x(), a.at.y() - b.at.y());
+    const double gmd = std::max(a.gmd, b.gmd);
+    Complex v(0, 0);
+    for (const ViaGreen::Term& t : green.couplingTerms(b.span)) {
+        if (t.coefficient == Complex(0, 0)) continue;
+        const double near = viaPair(t.a0, t.a1, t.b0, t.b1, apart, a.side, b.side, gmd);
+        const Complex late = retardedPair(t.k, t.a0, t.a1, t.b0, t.b1, std::max(apart, gmd));
+        v += t.coefficient * (near + late) / (2 * M_PI);
+    }
+    v += green.couplingRemainder(b.span, apart);
+    return v;
+}
+
+/*!
+ * What each run's own metal adds to the system at frequency \a f, each
+ * term as \a add(row, column, impedance): a sheet's surface impedance, and
+ * more along its edges; a face of a metal solved as its two, its own
+ * slab's and its twin's through the metal; a via's, round its four faces.
+ */
+template <typename Add> void ownImpedances(const Context& c, double f, Add add)
+{
+    for (int a = 0; a < c.planar; ++a) {
+        const Filament& run = c.runs.at(a);
+        if (!(run.width > 0)) continue;
+        const Complex sheet = sheetImpedance(run.sigma, run.thickness, f);
+        const double squares = run.length() / run.width;
+        const int twin = c.twin.value(a, -1);
+        const double crowd = crowding(run.width, run.thickness, run.sigma, c.freeSides.value(a), f, sheet, twin >= 0);
+        if (twin < 0) {
+            add(a, a, crowd * sheet * squares);
+            continue;
+        }
+        // A face of a metal solved as its two: its own slab's impedance,
+        // and its twin's current's through the metal (faceImpedances());
+        // and what an edge loses beyond its cells' average, of the two
+        // faces' current together - its walls' and corners', within the
+        // metal's thickness of the edge, where the two faces' current
+        // crowds as one - its reactance its resistance, a thick metal's.
+        Complex own, across;
+        faceImpedances(run.sigma, run.thickness, f, &own, &across);
+        const Complex edge = (crowd - 1) * sheet.real() * Complex(1, 1);
+        add(a, a, (own + edge) * squares);
+        add(a, twin, (across + edge) * squares);
+    }
+    // A via's own: a bar whose current runs on its four faces, each with the
+    // surface impedance of a quarter of its depth - 1/(sigma area) at direct
+    // current, (1 + j)/(sigma delta) round its perimeter once the skin is
+    // thinner.
+    for (const Via& v : c.vias) {
+        const Filament& run = c.runs.at(v.run);
+        if (v.side > 0 && run.sigma > 0) add(v.run, v.run, surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side));
+    }
+}
+
+AtFrequency solveAt(const Context& c, double f)
+{
+    AtFrequency out;
+    const Kernels k(c, f);
+    if (!k.problems.isEmpty()) {
+        out.problems << k.problems;
+        return out;
+    }
+    const Complex jw = k.jw;
+    const int nr = c.nr, nc = c.nc;
+
+    // jw L: each two runs' cosine times their kernel - nothing between
+    // runs at right angles, which is what makes an axis-aligned layout
+    // cheap.
+    MatrixC m = MatrixC::Zero(nr, nr);
+    const int np0 = c.planar;
+    for (int a = 0; a < np0; ++a)
+        for (int b = a; b < np0; ++b) {
+            const double dot = k.cosine(a, b);
+            if (std::abs(dot) < 1e-9) continue;
+            m(a, b) = m(b, a) = jw * (dot * k.inductance(a, b, c.lDirect(a, b), c.lImage(a, b)));
+        }
+
+    // The vias. Between two: G_zz along both, and the scalar correction of
+    // the one's current at the other's two cells, ended by the ground's
+    // nought for a via to it. Its potential is taken at the cells, as the
+    // node potentials are, so that what a via's current adds along the runs
+    // that carry it away cancels what it adds along the via itself; and the
+    // two ways round averaged, which differ by where a via stands in its
+    // cell.
     const int nv = int(c.vias.size());
-    const auto distance = [](QPointF p, QPointF q) { return std::hypot(p.x() - q.x(), p.y() - q.y()); };
-    const auto potentialOf = [&c, &viaGreens, &distance](const Via& v, int cell) {
-        return viaGreens.at(v.span).potential(c.hNode.at(cell), std::max(distance(c.centre.at(cell), v.at), v.gmd));
-    };
     MatrixC block(nv, nv);
     for (int i = 0; i < nv; ++i)
         for (int j = 0; j < nv; ++j) {
-            const Via& a = c.vias.at(i);
-            const Via& b = c.vias.at(j);
-            const ViaGreen& green = viaGreens.at(a.span);
-            const double apart = distance(a.at, b.at);
-            const double gmd = std::max(a.gmd, b.gmd);
-            Complex v(0, 0);
-            for (const ViaGreen::Term& t : green.couplingTerms(b.span)) {
-                if (t.coefficient == Complex(0, 0)) continue;
-                const double near = viaPair(t.a0, t.a1, t.b0, t.b1, apart, a.side, b.side, gmd);
-                const Complex late = retardedPair(t.k, t.a0, t.a1, t.b0, t.b1, std::max(apart, gmd));
-                v += t.coefficient * (near + late) / (2 * M_PI);
-            }
-            v += green.couplingRemainder(b.span, apart);
-            const int head = c.head.at(a.run), tail = c.tail.at(a.run);
-            v += potentialOf(b, head);
-            if (tail >= 0) v -= potentialOf(b, tail);
+            const int head = c.head.at(c.vias.at(i).run), tail = c.tail.at(c.vias.at(i).run);
+            Complex v = k.viaCoupling(i, j);
+            v += k.viaPotential(j, head);
+            if (tail >= 0) v -= k.viaPotential(j, tail);
             block(i, j) = v;
         }
     for (int i = 0; i < nv; ++i)
@@ -849,9 +1076,8 @@ AtFrequency solveAt(const Context& c, double f)
     // along the via (G_zx), by the formulation's reciprocity, both ways.
     for (int a = 0; a < np0; ++a)
         for (int j = 0; j < nv; ++j) {
-            const Via& b = c.vias.at(j);
-            const Complex v = potentialOf(b, c.head.at(a)) - potentialOf(b, c.tail.at(a));
-            m(a, b.run) = m(b.run, a) = v;
+            const Complex v = k.viaPotential(j, c.head.at(a)) - k.viaPotential(j, c.tail.at(a));
+            m(a, c.vias.at(j).run) = m(c.vias.at(j).run, a) = v;
         }
     // A port and a via: the via's potential at the port's cells, by their
     // shares. Along the runs a via's potential telescopes from the via to
@@ -865,31 +1091,12 @@ AtFrequency solveAt(const Context& c, double f)
     for (int q = 0; q < c.np; ++q)
         for (int i = 0; i < nc; ++i)
             if (c.drive(i, q) != Complex(0, 0))
-                for (int j = 0; j < nv; ++j) portVia(q, j) += c.drive(i, q) * potentialOf(c.vias.at(j), i);
+                for (int j = 0; j < nv; ++j) portVia(q, j) += c.drive(i, q) * k.viaPotential(j, i);
 
-    // P: each cell's potential of a unit charge spread over another - the
-    // static singular part over the cell in closed form, its retardation
-    // at the centres, and the remainder integrated over the charged cell,
-    // or at its centre where the cell is small beside the distance the
-    // remainder changes over. Made symmetric: a potential at a centre of a
-    // charge over a cell is not quite the other way round where the cells
-    // differ in size, and the port matrix is reciprocal only if P is.
+    // P: each cell's potential of a unit charge spread over another.
     MatrixC p(nc, nc);
-    const auto coefficient = [&c](int i, int j, const WaveGreen& g) {
-        const WaveGreen::Term t = g.scalarTerm();
-        const double rho = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
-        const Complex v = t.coefficient / (2 * M_PI) * (c.pStatic(i, j) + retardation(t.k, std::hypot(rho, t.dz)));
-        const double longest = std::max(c.rect.at(j).width(), c.rect.at(j).height());
-        const double scale = std::hypot(rho, g.reach());
-        const bool centred = i != j && longest * longest < kCentreBound * scale * scale;
-        return v + (centred ? g.scalarRemainder(rho) : remainderOver(g, c.rect.at(j), c.centre.at(i), scale));
-    };
     for (int i = 0; i < nc; ++i)
-        for (int j = i; j < nc; ++j) {
-            const WaveGreen& g = greens.at(pairOf.at(c.hNode.at(i) * nh + c.hNode.at(j)));
-            const Complex v = i == j ? coefficient(i, i, g) : 0.5 * (coefficient(i, j, g) + coefficient(j, i, g));
-            p(i, j) = p(j, i) = v;
-        }
+        for (int j = i; j < nc; ++j) p(i, j) = p(j, i) = k.potential(i, j, c.pStatic(i, j), c.pStatic(j, i));
 
     // The charge eliminated: M = Zs l/w + jw L + A^T P A / jw. (A via to the
     // ground has no tail: the ground takes its charge, at nought.)
@@ -899,37 +1106,7 @@ AtFrequency solveAt(const Context& c, double f)
             m(a, b) += (pAt(c.tail.at(a), c.tail.at(b)) - pAt(c.tail.at(a), c.head.at(b)) - pAt(c.head.at(a), c.tail.at(b))
                         + pAt(c.head.at(a), c.head.at(b)))
                        / jw;
-    for (int a = 0; a < np0; ++a) {
-        const Filament& run = c.runs.at(a);
-        if (!(run.width > 0)) continue;
-        const Complex sheet = sheetImpedance(run.sigma, run.thickness, f);
-        const double squares = run.length() / run.width;
-        const int twin = c.twin.value(a, -1);
-        const double crowd = crowding(run.width, run.thickness, run.sigma, c.freeSides.value(a), f, sheet, twin >= 0);
-        if (twin < 0) {
-            m(a, a) += crowd * sheet * squares;
-            continue;
-        }
-        // A face of a metal solved as its two: its own slab's impedance,
-        // and its twin's current's through the metal (faceImpedances());
-        // and what an edge loses beyond its cells' average, of the two
-        // faces' current together - its walls' and corners', within the
-        // metal's thickness of the edge, where the two faces' current
-        // crowds as one - its reactance its resistance, a thick metal's.
-        Complex own, across;
-        faceImpedances(run.sigma, run.thickness, f, &own, &across);
-        const Complex edge = (crowd - 1) * sheet.real() * Complex(1, 1);
-        m(a, a) += (own + edge) * squares;
-        m(a, twin) += (across + edge) * squares;
-    }
-    // A via's own: a bar whose current runs on its four faces, each with the
-    // surface impedance of a quarter of its depth - 1/(sigma area) at direct
-    // current, (1 + j)/(sigma delta) round its perimeter once the skin is
-    // thinner.
-    for (const Via& v : c.vias) {
-        const Filament& run = c.runs.at(v.run);
-        if (v.side > 0 && run.sigma > 0) m(v.run, v.run) += surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side);
-    }
+    ownImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
 
     // Each port driven by an ampere in turn: A^T P J / jw the drive.
     const MatrixC pDrive = p * c.drive;
@@ -960,6 +1137,362 @@ AtFrequency solveAt(const Context& c, double f)
     for (int j = 0; j < nv; ++j)
         for (int q = 0; q < c.np; ++q)
             for (int r = 0; r < c.np; ++r) out.z(r, q) += portVia(r, j) * out.current(c.vias.at(j).run, q);
+    return out;
+}
+
+/*!
+ * The pairs of \a a and \a b whose boxes are near: no further apart than
+ * \a reach times the longer of the two's longest sides in the plane. Of
+ * one list (\a b null), each pair once, the first no later than the
+ * second. Found by bins in the plane as wide as the widest box.
+ */
+QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach)
+{
+    const QList<Box>& other = b != nullptr ? *b : a;
+    QList<QPair<int, int>> out;
+    if (a.isEmpty() || other.isEmpty()) return out;
+    const auto size = [](const Box& x) { return std::max(x.side(0), x.side(1)); };
+    double widest = 0, lo[2] = {a.first().lo[0], a.first().lo[1]};
+    for (const QList<Box>* list : {&a, &other})
+        for (const Box& x : *list) {
+            widest = std::max(widest, size(x));
+            lo[0] = std::min(lo[0], x.lo[0]);
+            lo[1] = std::min(lo[1], x.lo[1]);
+        }
+    const double bin = widest > 0 ? widest : 1.0, grow = reach * widest;
+    const auto binOf = [&lo, bin](double v, int axis) { return qint64(std::floor((v - lo[axis]) / bin)); };
+    const auto key = [](qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); };
+    QHash<qint64, QList<int>> bins;
+    for (int j = 0; j < other.size(); ++j) {
+        const Box& x = other.at(j);
+        for (qint64 i0 = binOf(x.lo[0], 0); i0 <= binOf(x.hi[0], 0); ++i0)
+            for (qint64 i1 = binOf(x.lo[1], 1); i1 <= binOf(x.hi[1], 1); ++i1) bins[key(i0, i1)] << j;
+    }
+    std::vector<int> seen(std::size_t(other.size()), -1);
+    for (int i = 0; i < a.size(); ++i) {
+        const Box& x = a.at(i);
+        for (qint64 i0 = binOf(x.lo[0] - grow, 0); i0 <= binOf(x.hi[0] + grow, 0); ++i0)
+            for (qint64 i1 = binOf(x.lo[1] - grow, 1); i1 <= binOf(x.hi[1] + grow, 1); ++i1) {
+                const auto found = bins.constFind(key(i0, i1));
+                if (found == bins.constEnd()) continue;
+                for (const int j : found.value()) {
+                    if (seen[std::size_t(j)] == i) continue;
+                    seen[std::size_t(j)] = i;
+                    if (b == nullptr && j < i) continue;
+                    if (x.distance(other.at(j)) <= reach * std::max(size(x), size(other.at(j)))) out << qMakePair(i, j);
+                }
+            }
+    }
+    return out;
+}
+
+/*!
+ * What a compressed solve is made of that is the same at every frequency:
+ * the cluster trees and the shapes of the matrices over them, and the
+ * pairs near enough to precondition with. L is held as two kernels, of
+ * the runs with a part along x and of those with a part along y - an
+ * oblique run in both - each between the runs' cosines' halves:
+ *
+ *     L_ab = (x_a x_b + y_a y_b) K_ab   so   L I = X Kx X I + Y Ky Y I
+ *
+ * X and Y the runs' directions' parts. Neither kernel is nought between a
+ * pair of its runs, as L is between two at right angles - which a cross
+ * approximation, sampling a block a row at a time, would take for done
+ * when it was half done - and an axis-aligned layout's two kernels are
+ * half of L, the half between runs at right angles left out.
+ *
+ * Made in place, and never copied: the matrices point at the trees.
+ */
+struct Compression {
+    double tolerance = kTolerance;
+    ClusterTree xTree, yTree, cellTree, viaTree;
+    QList<int> xRun, yRun;                     ///< each kernel's runs, in the plane
+    HMatrix kx, ky, p, phi, g;                 ///< their shapes, unfilled
+    QList<QPair<int, int>> nearRuns, nearCells, nearViaCells, nearVias;
+    double estimate = 0;                       ///< bytes a frequency is guessed to take
+    double denseBytes = 0;                     ///< what the dense solve would take
+};
+
+/// The trees, shapes and near pairs of \a c's compressed solve, into \a z.
+void plan(Compression& z, const Context& c)
+{
+    const int nv = int(c.vias.size());
+    QList<Box> cells, runs, vias;
+    for (int i = 0; i < c.nc; ++i) {
+        const QRectF& r = c.rect.at(i);
+        cells << Box::of(r.left(), r.top(), c.cellZ.at(i), r.right(), r.bottom(), c.cellZ.at(i));
+    }
+    // A run covers the halves of its two cells it joins: from one centre
+    // to the other, as wide as the edge between them.
+    for (int a = 0; a < c.planar; ++a) {
+        const Filament& run = c.runs.at(a);
+        const double nx = -c.dirY.at(a) * run.width / 2, ny = c.dirX.at(a) * run.width / 2;
+        Box box = Box::of(run.from.x() - nx, run.from.y() - ny, run.z0, run.from.x() + nx, run.from.y() + ny, run.z0);
+        box = box.united(Box::of(run.to.x() - nx, run.to.y() - ny, run.z0, run.to.x() + nx, run.to.y() + ny, run.z0));
+        runs << box;
+    }
+    for (const Via& v : c.vias) {
+        const Filament& run = c.runs.at(v.run);
+        vias << Box::of(v.at.x() - v.side / 2, v.at.y() - v.side / 2, run.z0, v.at.x() + v.side / 2, v.at.y() + v.side / 2,
+                        run.z1);
+    }
+    QList<Box> xs, ys;
+    for (int a = 0; a < c.planar; ++a) {
+        if (std::abs(c.dirX.at(a)) > 1e-9) {
+            z.xRun << a;
+            xs << runs.at(a);
+        }
+        if (std::abs(c.dirY.at(a)) > 1e-9) {
+            z.yRun << a;
+            ys << runs.at(a);
+        }
+    }
+    z.xTree = ClusterTree(xs, kLeaf);
+    z.yTree = ClusterTree(ys, kLeaf);
+    z.cellTree = ClusterTree(cells, kLeaf);
+    z.viaTree = ClusterTree(vias, kLeaf);
+    z.kx = HMatrix(&z.xTree, &z.xTree, true, kEta);
+    z.ky = HMatrix(&z.yTree, &z.yTree, true, kEta);
+    z.p = HMatrix(&z.cellTree, &z.cellTree, true, kEta);
+    z.phi = HMatrix(&z.cellTree, &z.viaTree, false, kEta);
+    z.g = HMatrix(&z.viaTree, &z.viaTree, true, kEta);
+    // The near pairs: runs not at right angles, cells, a via and the cells
+    // beside it, two vias.
+    for (const QPair<int, int>& pair : nearPairs(runs, nullptr, kNear))
+        if (std::abs(c.dirX.at(pair.first) * c.dirX.at(pair.second) + c.dirY.at(pair.first) * c.dirY.at(pair.second)) >= 1e-9)
+            z.nearRuns << pair;
+    z.nearCells = nearPairs(cells, nullptr, kNear);
+    if (nv > 0) {
+        z.nearViaCells = nearPairs(vias, &cells, kNear);
+        z.nearVias = nearPairs(vias, nullptr, kNear);
+    }
+    // What a frequency will take: the matrices' dense blocks, their low-rank
+    // ones at a guessed rank, the near field and some ten times it for its
+    // LU, and GMRES's vectors.
+    double held = 0;
+    for (const HMatrix* h : {&z.kx, &z.ky, &z.p, &z.phi, &z.g}) held += h->denseBlockBytes() + 16 * kGuessRank * h->lowRankSpan();
+    // (And what the dense solve would take: the system and its LU, and P.)
+    z.denseBytes = 16.0 * (2.0 * double(c.nr) * c.nr + double(c.nc) * c.nc);
+    const double near = 16.0 * (2.0 * z.nearRuns.size() + 32.0 * z.nearCells.size() + 8.0 * z.nearViaCells.size()
+                                + 2.0 * z.nearVias.size() + 4.0 * c.nr);
+    z.estimate = held + 11 * near + 16.0 * c.nr * (kRestart + 8) + 32.0 * (c.nr + c.nc) * c.np + 1e7;
+}
+
+/// The system of a compressed solve, M = Zs l/w + jw L + A^T P A / jw and
+/// the vias' terms, multiplying a vector: what GMRES asks of it.
+struct System {
+    const Context& c;
+    const Compression& z;
+    const HMatrix& kx;
+    const HMatrix& ky;
+    const HMatrix& p;
+    const HMatrix& phi;
+    const HMatrix& g;
+    const Eigen::SparseMatrix<Complex>& own;
+    Complex jw;
+    void operator()(const VectorC& x, VectorC& y) const;
+};
+
+void System::operator()(const VectorC& x, VectorC& y) const
+{
+    y = own * x;
+    // jw L: each kernel between the runs' parts along its axis.
+    for (const bool alongX : {true, false}) {
+        const QList<int>& runs = alongX ? z.xRun : z.yRun;
+        const QList<double>& part = alongX ? c.dirX : c.dirY;
+        if (runs.isEmpty()) continue;
+        VectorC in(runs.size()), result = VectorC::Zero(runs.size());
+        for (int t = 0; t < runs.size(); ++t) in[t] = part.at(runs.at(t)) * x[runs.at(t)];
+        (alongX ? kx : ky).multiply(in, result);
+        for (int t = 0; t < runs.size(); ++t) y[runs.at(t)] += jw * (part.at(runs.at(t)) * result[t]);
+    }
+    // A^T P A / jw: the charge each cell is left (a via to the ground
+    // leaving its charge to the ground), its potentials, each run's drop.
+    VectorC q = VectorC::Zero(c.nc), v = VectorC::Zero(c.nc);
+    for (int a = 0; a < c.nr; ++a) {
+        if (c.tail.at(a) >= 0) q[c.tail.at(a)] += x[a];
+        q[c.head.at(a)] -= x[a];
+    }
+    p.multiply(q, v);
+    for (int a = 0; a < c.nr; ++a) y[a] += ((c.tail.at(a) >= 0 ? v[c.tail.at(a)] : Complex(0, 0)) - v[c.head.at(a)]) / jw;
+    // The vias: W = -A^T Phi, Phi each via's potential at each cell, is a
+    // run in the plane's coupling to a via both ways round, and half of it
+    // each way round between two vias, beside their G_zz.
+    const int nv = int(c.vias.size());
+    if (nv == 0) return;
+    VectorC xv(nv), u = VectorC::Zero(c.nc), s = VectorC::Zero(c.nc), t = VectorC::Zero(nv), gx = VectorC::Zero(nv);
+    for (int j = 0; j < nv; ++j) xv[j] = x[c.vias.at(j).run];
+    phi.multiply(xv, u);
+    for (int a = 0; a < c.planar; ++a) {
+        s[c.tail.at(a)] += x[a];
+        s[c.head.at(a)] -= x[a];
+    }
+    for (const Via& via : c.vias) {
+        if (c.tail.at(via.run) >= 0) s[c.tail.at(via.run)] += 0.5 * x[via.run];
+        s[c.head.at(via.run)] -= 0.5 * x[via.run];
+    }
+    phi.multiplyTransposed(s, t);
+    g.multiply(xv, gx);
+    for (int a = 0; a < c.planar; ++a) y[a] += u[c.head.at(a)] - u[c.tail.at(a)];
+    for (int j = 0; j < nv; ++j) {
+        const int run = c.vias.at(j).run, tail = c.tail.at(run), head = c.head.at(run);
+        y[run] += -0.5 * ((tail >= 0 ? u[tail] : Complex(0, 0)) - u[head]) - t[j] + gx[j];
+    }
+}
+
+/*!
+ * The near field of \a c's system at frequency \a f, sparse: the same
+ * terms as the whole system's between the near pairs alone, with the
+ * whole of A - so that a loop of current, which leaves no charge, is as
+ * free of P in it as in the system, and the two scales of a low frequency,
+ * jw L and P / jw, stand as they do there. What the compressed solve is
+ * preconditioned with, by its LU.
+ */
+Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, const Kernels& k,
+                                       const std::vector<Eigen::Triplet<Complex>>& own)
+{
+    const int nr = c.nr, nc = c.nc, nv = int(c.vias.size());
+    const Complex jw = k.jw;
+    std::vector<Eigen::Triplet<Complex>> near = own;
+    for (const QPair<int, int>& r : z.nearRuns) {
+        const Complex v = jw * (k.cosine(r.first, r.second) * k.inductance(r.first, r.second));
+        near.emplace_back(r.first, r.second, v);
+        if (r.first != r.second) near.emplace_back(r.second, r.first, v);
+    }
+    std::vector<Eigen::Triplet<Complex>> terms;
+    for (const QPair<int, int>& q : z.nearCells) {
+        const Complex v = k.potential(q.first, q.second);
+        terms.emplace_back(q.first, q.second, v);
+        if (q.first != q.second) terms.emplace_back(q.second, q.first, v);
+    }
+    Eigen::SparseMatrix<Complex> pNear(nc, nc);
+    pNear.setFromTriplets(terms.begin(), terms.end());
+    terms.clear();
+    for (int a = 0; a < nr; ++a) {
+        if (c.tail.at(a) >= 0) terms.emplace_back(c.tail.at(a), a, Complex(1, 0));
+        terms.emplace_back(c.head.at(a), a, Complex(-1, 0));
+    }
+    Eigen::SparseMatrix<Complex> incidence(nc, nr);
+    incidence.setFromTriplets(terms.begin(), terms.end());
+    const Eigen::SparseMatrix<Complex> transposed = incidence.transpose();
+    Eigen::SparseMatrix<Complex> charged = transposed * (pNear * incidence);
+    charged /= jw;
+    if (nv > 0) {
+        terms.clear();
+        for (const QPair<int, int>& q : z.nearViaCells) terms.emplace_back(q.second, q.first, k.viaPotential(q.first, q.second));
+        Eigen::SparseMatrix<Complex> phiNear(nc, nv);
+        phiNear.setFromTriplets(terms.begin(), terms.end());
+        const Eigen::SparseMatrix<Complex> w = transposed * phiNear;   // (-W)
+        for (int j = 0; j < w.outerSize(); ++j)
+            for (Eigen::SparseMatrix<Complex>::InnerIterator it(w, j); it; ++it) {
+                const int r = int(it.row()), run = c.vias.at(j).run;
+                const Complex v = (r < c.planar ? -1.0 : -0.5) * it.value();
+                near.emplace_back(r, run, v);
+                near.emplace_back(run, r, v);
+            }
+        for (const QPair<int, int>& q : z.nearVias) {
+            const Complex v = 0.5 * (k.viaCoupling(q.first, q.second) + k.viaCoupling(q.second, q.first));
+            const int ri = c.vias.at(q.first).run, rj = c.vias.at(q.second).run;
+            near.emplace_back(ri, rj, v);
+            if (ri != rj) near.emplace_back(rj, ri, v);
+        }
+    }
+    Eigen::SparseMatrix<Complex> m(nr, nr);
+    m.setFromTriplets(near.begin(), near.end());
+    m += charged;
+    m.makeCompressed();
+    return m;
+}
+
+/*!
+ * One frequency solved compressed: the matrices filled block by block,
+ * each low rank where it can be; the near field's LU; each port's column
+ * by GMRES, preconditioned by it; and the ports' Z from the currents
+ * variationally,
+ *
+ *     Z = C - (G^T I + I^T G - I^T M I)
+ *
+ * G the columns' drives (A^T P J / jw, less the vias' potential at the
+ * ports) and C their potential of their own charge, J^T P J / jw: the
+ * dense solve's C - G^T M^-1 G where I is M^-1 G, and its error the
+ * square of I's - symmetric, where M is.
+ */
+AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const std::atomic_bool* stop)
+{
+    AtFrequency out;
+    const Kernels k(c, f);
+    if (!k.problems.isEmpty()) {
+        out.problems << k.problems;
+        return out;
+    }
+    const Complex jw = k.jw;
+    const int nr = c.nr, nc = c.nc, nv = int(c.vias.size()), columns = c.np;
+    HMatrix kx = z.kx, ky = z.ky, p = z.p, phi = z.phi, g = z.g;
+    const bool filled = kx.fill([&k, &z](int a, int b) { return k.inductance(z.xRun.at(a), z.xRun.at(b)); }, z.tolerance, threads, stop)
+                        && ky.fill([&k, &z](int a, int b) { return k.inductance(z.yRun.at(a), z.yRun.at(b)); }, z.tolerance, threads,
+                                   stop)
+                        && p.fill([&k](int i, int j) { return k.potential(i, j); }, z.tolerance, threads, stop)
+                        && phi.fill([&k](int cell, int v) { return k.viaPotential(v, cell); }, z.tolerance, threads, stop)
+                        && g.fill([&k](int i, int j) { return 0.5 * (k.viaCoupling(i, j) + k.viaCoupling(j, i)); }, z.tolerance,
+                                  threads, stop);
+    if (!filled) return out;
+    out.bytes = kx.bytes() + ky.bytes() + p.bytes() + phi.bytes() + g.bytes();
+    out.largestRank = std::max({kx.largestRank(), ky.largestRank(), p.largestRank(), phi.largestRank(), g.largestRank()});
+
+    std::vector<Eigen::Triplet<Complex>> own;
+    ownImpedances(c, f, [&own](int a, int b, Complex v) { own.emplace_back(a, b, v); });
+    Eigen::SparseMatrix<Complex> d(nr, nr);
+    d.setFromTriplets(own.begin(), own.end());
+    const System system{c, z, kx, ky, p, phi, g, d, jw};
+    fem::SparseLu<Complex> lu;
+    lu.compute(nearField(c, z, k, own));
+    if (lu.info() != Eigen::Success) {
+        out.problems << tr("At %1 GHz the near field's LU, which the compressed solve is preconditioned with, failed: %2")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(QString::fromStdString(lu.lastErrorMessage()));
+        return out;
+    }
+    const Operator precondition = [&lu](const VectorC& x, VectorC& y) { y = lu.solve(x); };
+
+    // The drive: each column's potentials P J, and the vias' potential at
+    // its cells.
+    MatrixC pd(nc, columns), ph = MatrixC::Zero(nv, columns), rhs(nr, columns);
+    for (int q = 0; q < columns; ++q) {
+        const VectorC dq = c.drive.col(q);
+        VectorC t = VectorC::Zero(nc);
+        p.multiply(dq, t);
+        pd.col(q) = t;
+        if (nv == 0) continue;
+        VectorC u = VectorC::Zero(nv);
+        phi.multiplyTransposed(dq, u);
+        ph.col(q) = u;
+    }
+    for (int a = 0; a < nr; ++a)
+        for (int q = 0; q < columns; ++q)
+            rhs(a, q) = ((c.tail.at(a) >= 0 ? pd(c.tail.at(a), q) : Complex(0, 0)) - pd(c.head.at(a), q)) / jw;
+    for (int j = 0; j < nv; ++j)
+        for (int q = 0; q < columns; ++q) rhs(c.vias.at(j).run, q) -= ph(j, q);
+    MatrixC current(nr, columns), applied(nr, columns);
+    for (int q = 0; q < columns; ++q) {
+        VectorC x = VectorC::Zero(nr), mx;
+        const Gmres solved = gmres(system, precondition, rhs.col(q), x, kResidual, kRestart, kMostIterations, stop);
+        if (solved.stopped) return AtFrequency();
+        out.iterations = std::max(out.iterations, solved.iterations);
+        out.residual = std::max(out.residual, solved.residual);
+        current.col(q) = x;
+        system(x, mx);
+        applied.col(q) = mx;
+    }
+    if (out.residual > 1e3 * kResidual || !current.allFinite()) {
+        out.problems << tr("At %1 GHz the compressed solve did not converge: GMRES left a residual of %2 after %3 "
+                           "iterations. Solve it dense (the study's Matrix), or mesh it differently.")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(out.residual, 0, 'g', 2)
+                            .arg(out.iterations);
+        return out;
+    }
+    out.current = current;
+    out.z = c.drive.transpose() * pd / jw - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
     return out;
 }
 
@@ -1193,7 +1726,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     QList<QPair<int, int>> ends;
     {
         QList<QPair<int, int>> all;
-        const QList<Filament> runs = runsOf(mesh, conductors, stack, micrometre, &all);
+        const QList<Filament> runs = runsOf(mesh, conductors, stack, micrometre, &all, false);
         for (int i = 0; i < runs.size(); ++i) {
             if (runs.at(i).z0 != runs.at(i).z1) continue;
             const Layer* layer = stack.named(mesh.cells.at(all.at(i).first).layer);
@@ -1207,6 +1740,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // beyond the side, at the run's middle, on no shape of its layer
     // (shapes that touch are one conductor there).
     c.freeSides = QList<int>(c.planar, 0);
+    QHash<QString, QList<int>> shapesOn;   // (each layer's shapes: a via farm's are hundreds of other layers')
+    for (int s = 0; s < conductors.size(); ++s) shapesOn[conductors.at(s).layer] << s;
     for (int a = 0; a < c.planar; ++a) {
         const Filament& run = c.runs.at(a);
         const QString& layer = mesh.cells.at(ends.at(a).first).layer;
@@ -1218,12 +1753,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         for (const double side : {-1.0, 1.0}) {
             const QPointF probe = middle + side * reach * normal;
             bool inside = false;
-            for (const Conductor& shape : conductors)
-                if (shape.layer == layer && shape.outline.boundingRect().contains(probe)
-                    && shape.outline.containsPoint(probe, Qt::OddEvenFill)) {
+            for (const int s : shapesOn.value(layer)) {
+                const Conductor& shape = conductors.at(s);
+                if (shape.outline.boundingRect().contains(probe) && shape.outline.containsPoint(probe, Qt::OddEvenFill)) {
                     inside = true;
                     break;
                 }
+            }
             if (!inside) ++c.freeSides[a];
         }
     }
@@ -1294,13 +1830,27 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.np = np;
     out.runs = nr;
     out.cells = nc;
+    // Dense up to the limit, compressed past it - or as the control asks,
+    // a dense matrix past the limit refused as it was before there was a
+    // compressed one.
     const int most = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : kMostUnknowns;
-    if (nr + nc > most) {
+    const FullWaveControl::Matrix asked = control != nullptr ? control->matrix : FullWaveControl::Matrix::Automatic;
+    const bool compress = asked == FullWaveControl::Matrix::Compressed
+                          || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most);
+    if (!compress && nr + nc > most) {
         out.tooLarge = true;
         out.problems << tr("%1 runs of current over %2 cells is more than this build sets up a dense complex matrix for "
                            "(%3 in all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger "
-                           "largest cell.")
+                           "largest cell - or hold it compressed (the study's Matrix).")
                             .arg(nr).arg(nc).arg(most);
+        return out;
+    }
+    if (nr + nc > kMostCompressed) {
+        out.tooLarge = true;
+        out.problems << tr("%1 runs of current over %2 cells is more than this build sets up even compressed (%3 in "
+                           "all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
+                           "cell.")
+                            .arg(nr).arg(nc).arg(kMostCompressed);
         return out;
     }
     c.tail.resize(nr);
@@ -1564,63 +2114,96 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.nh = int(c.heights.size());
     c.hNode.resize(nc);
     c.hRun.resize(nr);
+    c.cellZ = zOf;
     for (int i = 0; i < nc; ++i) c.hNode[i] = heightIndex(zOf.at(i));
     for (int a = 0; a < nr; ++a) c.hRun[a] = a < c.planar ? heightIndex(c.runs.at(a).z0) : -1;
     // As far as any two points of the layout are apart, and a little more.
     c.rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
 
-    // What does not change with the frequency: the runs' static partial
-    // inductances, direct and of their images in the ground, and the
+    // What does not change with the frequency: each run's direction and
+    // middle, and its image in the ground; for a dense solve, the runs'
+    // static partial inductances, direct and of their images, and the
     // static potential of each cell's charge spread over it - the singular
-    // parts of the two kernels, in closed form.
-    c.lDirect = Eigen::MatrixXd::Zero(nr, nr);
-    c.lImage = Eigen::MatrixXd::Zero(nr, nr);
+    // parts of the two kernels, in closed form. The partial inductances are
+    // aligned (alignedInductance()), the cosine between two runs taken
+    // apart from them: of two runs neither parallel nor at right angles,
+    // the partial inductance was taken as though they were parallel and
+    // each as long as it is, without that cosine, where Neumann's formula
+    // has it - an oblique run is one between cells cut to a slanting
+    // outline, whose centres do not line up.
     c.dirX.resize(nr);
     c.dirY.resize(nr);
     c.midX.resize(nr);
     c.midY.resize(nr);
-    QList<Filament> mirrored = c.runs;
+    c.mirrored = c.runs;
     for (int a = 0; a < nr; ++a) {
         c.runs.at(a).direction(&c.dirX[a], &c.dirY[a], nullptr);
         c.runs.at(a).middle(&c.midX[a], &c.midY[a], nullptr);
-        mirrored[a].z0 = mirrored[a].z1 = -c.runs.at(a).z0;
+        c.mirrored[a].z0 = c.mirrored[a].z1 = -c.runs.at(a).z0;
     }
-    for (int a = 0; a < nr; ++a)
-        for (int b = a; b < nr; ++b) {
-            if (std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9) continue;
-            c.lDirect(a, b) = c.lDirect(b, a) = partialInductance(c.runs.at(a), c.runs.at(b));
-            c.lImage(a, b) = c.lImage(b, a) = partialInductance(c.runs.at(a), mirrored.at(b));
-        }
-    c.pStatic.resize(nc, nc);
-    for (int i = 0; i < nc; ++i)
-        for (int j = 0; j < nc; ++j)
-            c.pStatic(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
-
-    // The frequencies, side by side: each its own Green's functions and
-    // its own system, the static parts shared. As many threads as the
-    // machine has, and no more than the memory allows - a system and its
-    // LU and P are some 16 (2 nr^2 + nc^2) bytes a frequency.
     const int nf = int(frequencies.size());
-    const double perFrequency = 16.0 * (2.0 * double(nr) * nr + double(nc) * nc) + 1e6;
     int threads = control != nullptr && control->threads > 0 ? control->threads
                                                               : int(std::max(1u, std::thread::hardware_concurrency()));
-    threads = std::min({threads, nf, std::max(1, int(kSweepMemory / perFrequency))});
-    out.threads = threads;
+    // (Made in place, and pointed at by the matrices made from it.)
+    Compression z;
+    int side = 1;   // frequencies at a time
+    if (!compress) {
+        c.lDirect = Eigen::MatrixXd::Zero(nr, nr);
+        c.lImage = Eigen::MatrixXd::Zero(nr, nr);
+        for (int a = 0; a < nr; ++a)
+            for (int b = a; b < nr; ++b) {
+                if (std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9) continue;
+                c.lDirect(a, b) = c.lDirect(b, a) = alignedInductance(c.runs.at(a), c.runs.at(b));
+                c.lImage(a, b) = c.lImage(b, a) = alignedInductance(c.runs.at(a), c.mirrored.at(b));
+            }
+        c.pStatic.resize(nc, nc);
+        for (int i = 0; i < nc; ++i)
+            for (int j = 0; j < nc; ++j)
+                c.pStatic(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
+        // The frequencies side by side: each its own Green's functions and
+        // its own system, the static parts shared. As many threads as the
+        // machine has, and no more than the memory allows - a system and its
+        // LU and P are some 16 (2 nr^2 + nc^2) bytes a frequency.
+        const double perFrequency = 16.0 * (2.0 * double(nr) * nr + double(nc) * nc) + 1e6;
+        side = std::min({threads, nf, std::max(1, int(kSweepMemory / perFrequency))});
+    } else {
+        // Compressed: the trees and the shapes of the matrices, the same at
+        // every frequency, and what a frequency will take. As many
+        // frequencies at a time as the memory allows, the threads shared
+        // out between them to fill and multiply their matrices.
+        z.tolerance = control != nullptr && control->tolerance > 0 ? control->tolerance : kTolerance;
+        plan(z, c);
+        const double memory = physicalMemory();
+        const double budget = control != nullptr && control->mostBytes > 0 ? control->mostBytes
+                                                                            : (memory > 0 ? 0.5 * memory : 4e9);
+        if (z.estimate > budget) {
+            out.tooLarge = true;
+            out.problems << tr("%1 runs of current over %2 cells, held compressed, would take some %3 GB a frequency, more "
+                               "than the %4 GB a solve may take here. Mesh the layout more coarsely: fewer cells across a "
+                               "conductor, or a larger largest cell.")
+                                .arg(nr).arg(nc).arg(z.estimate / 1e9, 0, 'g', 3).arg(budget / 1e9, 0, 'g', 3);
+            return out;
+        }
+        side = std::min({threads, nf, std::max(1, int(budget / z.estimate))});
+    }
+    const int inner = std::max(1, threads / side);
+    out.threads = compress ? side * inner : side;
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
     std::atomic_int next{0};
     std::atomic_bool failed{false};
-    const auto work = [&c, &frequencies, &solved, &next, &failed, control, nf] {
+    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, control, nf, compress, inner] {
+        const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
         for (int k = next++; k < nf; k = next++) {
-            if (failed || (control != nullptr && control->stop != nullptr && control->stop->load())) return;
-            solved[std::size_t(k)] = solveAt(c, frequencies.at(k));
+            if (failed || (stop != nullptr && stop->load())) return;
+            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, stop) : solveAt(c, frequencies.at(k));
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
     };
     QList<QThread*> pool;
-    for (int t = 1; t < threads; ++t) {
+    for (int t = 1; t < side; ++t) {
         QThread* thread = QThread::create(work);
         thread->setStackSize(8u << 20);
         thread->start();
@@ -1648,7 +2231,31 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                      .arg(nr).arg(nc).arg(c.nh).arg(np).arg(nf)
                      .arg(*std::min_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
                      .arg(*std::max_element(frequencies.begin(), frequencies.end()) / 1e9, 0, 'g', 4)
-                     .arg(threads);
+                     .arg(side);
+    if (compress) {
+        // What the compressed matrices held, of the frequency that held the
+        // most, and how GMRES did over every frequency and port.
+        out.compressed = true;
+        out.tolerance = z.tolerance;
+        out.denseMemory = z.denseBytes;
+        for (const AtFrequency& a : std::as_const(solved)) {
+            out.memory = std::max(out.memory, a.bytes);
+            out.largestRank = std::max(out.largestRank, a.largestRank);
+            out.iterations = std::max(out.iterations, a.iterations);
+            out.residual = std::max(out.residual, a.residual);
+        }
+        const auto size = [](double bytes) {
+            return bytes >= 1e9 ? tr("%1 GB").arg(bytes / 1e9, 0, 'f', 2) : tr("%1 MB").arg(bytes / 1e6, 0, 'f', 1);
+        };
+        out.lines << tr("The system held compressed (%1 runs and cells, past the %2 a dense matrix is set up for, or as "
+                        "asked): its blocks between clusters of runs and cells apart beside their size each of low rank, "
+                        "to a part in %3 of its own size (rank %4 at most), the near ones dense - %5 where dense it would "
+                        "be %6, %7 thread(s) a frequency. Solved by GMRES, preconditioned by the near field's sparse LU: "
+                        "%8 iteration(s) at most, to a residual of %9; the ports' Z from the currents variationally.")
+                         .arg(nr + nc).arg(most).arg(1.0 / z.tolerance, 0, 'g', 3).arg(out.largestRank)
+                         .arg(size(out.memory), size(out.denseMemory)).arg(inner).arg(out.iterations)
+                         .arg(out.residual, 0, 'g', 2);
+    }
     out.lines << out.portsSaid;
     out.lines << thick.said;
     if (!walled.isEmpty())

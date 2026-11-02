@@ -130,6 +130,19 @@ double selfDistance(double width);
  */
 double partialInductance(const Filament& a, const Filament& b);
 
+/*!
+ * The partial inductance of runs \a a and \a b in the plane as though they
+ * were parallel, H, and positive: partialInductance() of the two, where
+ * they are parallel; else of the two each turned about its middle onto the
+ * direction halfway between theirs (the one made to point as the other
+ * does first). Neumann's formula is the cosine of the angle between two
+ * straight runs times the double line integral of 1/r along them, and
+ * this is the second of those - so that the full-wave solve's L is the
+ * cosine times one kernel smooth in where the two runs are, whichever way
+ * they point: what a compressed matrix of it wants, beside a dense one.
+ */
+double alignedInductance(const Filament& a, const Filament& b);
+
 /// The partial inductance matrix of \a runs, H: symmetric, and its
 /// diagonal each run's own.
 QList<QList<double>> partialInductances(const QList<Filament>& runs);
@@ -217,10 +230,10 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                         double micrometre = 1e-6, double frequency = 0);
 
 /// The runs of current the mesh of \a conductors makes: the pairs of
-/// cells that share an edge, and the vias that join one layer to
-/// another. Public because it is what the tests count.
+/// cells that share an edge, and - unless not \a vias - the vias that join
+/// one layer to another. Public because it is what the tests count.
 QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre = 1e-6,
-                       QList<QPair<int, int>>* ends = nullptr);
+                       QList<QPair<int, int>>* ends = nullptr, bool vias = true);
 
 } // namespace qucs_s::rf25
 

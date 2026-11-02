@@ -136,20 +136,20 @@ QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors, const St
         if (!n.layers.contains(conductors.at(i).layer)) n.layers << conductors.at(i).layer;
         n.area += conductors.at(i).area();
     }
-    // Their cells: the conductor a cell was cut from decides its net.
+    // Their cells: the conductor a cell was cut from decides its net. (Of
+    // the shapes on its own layer: a via farm's are hundreds of others.)
+    QHash<QString, QList<int>> shapesOn;
+    for (int i = 0; i < conductors.size(); ++i) shapesOn[conductors.at(i).layer] << i;
     for (int c = 0; c < mesh.cells.size(); ++c) {
         const MeshCell& cell = mesh.cells.at(c);
         const Layer* layer = stack.named(cell.layer);
         if (layer != nullptr && layer->kind == Layer::Via) continue;
+        const QList<int> on = shapesOn.value(cell.layer);
         int best = -1;
-        for (int i = 0; i < conductors.size() && best < 0; ++i) {
-            if (conductors.at(i).layer != cell.layer) continue;
-            if (conductors.at(i).outline.containsPoint(cell.centre, Qt::OddEvenFill)) best = i;
-        }
-        if (best < 0)
-            for (int i = 0; i < conductors.size() && best < 0; ++i)
-                if (conductors.at(i).layer == cell.layer && conductors.at(i).outline.boundingRect().contains(cell.centre))
-                    best = i;
+        for (int k = 0; k < on.size() && best < 0; ++k)
+            if (conductors.at(on.at(k)).outline.containsPoint(cell.centre, Qt::OddEvenFill)) best = on.at(k);
+        for (int k = 0; k < on.size() && best < 0; ++k)
+            if (conductors.at(on.at(k)).outline.boundingRect().contains(cell.centre)) best = on.at(k);
         if (best >= 0) nets[indexOf.value(rootOf(best))].cells << c;
     }
     // Named for what they are made of, and numbered where a layer has
