@@ -387,6 +387,56 @@ private slots:
         QVERIFY(!says(capped.lines, "across instead"));
     }
 
+    // Phase E: for a full-wave solve held compressed the mesh may have as
+    // many cells as that holds, 40 000, before fewer are put across - four
+    // of the strips at all of their ten across, some 24 000 cells, which the
+    // charge solve's 8000 put three across - its cost said compressed, and
+    // no charge solve's bound its problem; its Most cells, given, the bound
+    // either way. (The forty strips at ten across are some 240 000: three
+    // across even so.)
+    void aMeshForACompressedSolveHoldsMoreCells()
+    {
+        rf::Model m = stacked();
+        QList<rf::Conductor> many;
+        for (int i = 0; i < 40; ++i) many << on(QStringLiteral("M1"), 0, i * 30, 2000, 10);
+        const QList<rf::Conductor> four = many.mid(0, 4);
+        rf::MeshSettings how;
+        const rf::Mesh charges = rf::meshOf(four, how, m.stack(), 10e9);
+        QVERIFY2(says(charges.lines, "across instead") && charges.cells.size() <= rf::kMostCharges,
+                 qPrintable(charges.lines.join(" | ")));
+        how.compressed = true;
+        QCOMPARE(how.mostCells(), rf::kMostCompressedCells);
+        const rf::Mesh mesh = rf::meshOf(four, how, m.stack(), 10e9);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        QVERIFY2(mesh.cells.size() > rf::kMostCharges && mesh.cells.size() <= rf::kMostCompressedCells,
+                 qPrintable(QString::number(mesh.cells.size())));
+        QVERIFY2(!says(mesh.lines, "across instead"), qPrintable(mesh.lines.join(" | ")));
+        QVERIFY2(says(mesh.lines, "10 cell(s) across the narrowest conductor"), qPrintable(mesh.lines.join(" | ")));
+        QVERIFY2(mesh.cost.said.contains(QStringLiteral("held compressed")) && !mesh.cost.tooBig, qPrintable(mesh.cost.said));
+        QVERIFY2(says(mesh.lines, "a full-wave solve's") && says(mesh.lines, "held compressed"), qPrintable(mesh.lines.join(" | ")));
+        QVERIFY(!says(mesh.lines, "to solve the charge on"));
+        const rf::Mesh forty = rf::meshOf(many, how, m.stack(), 10e9);
+        QVERIFY2(says(forty.lines, "more than the 40000 this build solves: 3 across instead") && forty.cells.size() <= rf::kMostCompressedCells,
+                 qPrintable(forty.lines.join(" | ")));
+        // Its own bound, given: the charge solve's, or fewer.
+        how.most = 5000;
+        const rf::Mesh fewer = rf::meshOf(many, how, m.stack(), 10e9);
+        QVERIFY2(fewer.cells.size() <= 5000, qPrintable(QString::number(fewer.cells.size())));
+        QVERIFY2(says(fewer.lines, "more than the 5000 this build solves"), qPrintable(fewer.lines.join(" | ")));
+        // Read from the node, and none fewer than none.
+        rf::Node& node = m.mesh();
+        QStringList problems;
+        set(node, "most_cells", 12000);
+        QCOMPARE(rf::meshSettingsOf(node, m.parameters(), &problems).most, 12000);
+        QVERIFY(problems.isEmpty());
+        set(node, "most_cells", -1);
+        QCOMPARE(rf::meshSettingsOf(node, m.parameters(), &problems).most, 0);
+        QVERIFY2(says(problems, "the most cells cannot be fewer than none"), qPrintable(problems.join(" | ")));
+        QCOMPARE(rf::integerOf(rf::Model::blank().mesh(), QStringLiteral("most_cells")), 0);
+        // The quasi-static's, as it was.
+        QCOMPARE(rf::MeshSettings().mostCells(), rf::kMostCharges);
+    }
+
     // The two new settings read from the node, and what is no setting.
     void theCellsAcrossAndTheStretchAreRead()
     {

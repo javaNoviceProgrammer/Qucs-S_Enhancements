@@ -61,6 +61,17 @@ struct MeshSettings {
     /// may be along it: its charge hardly changes along a line, so the
     /// unknowns are better spent across it.
     double stretch = 4;
+    /// The most cells the mesh is cut into before fewer are put across a
+    /// conductor; 0: what the solver it is for holds - kMostCharges for the
+    /// quasi-static extraction's dense charge solve, kMostCompressedCells
+    /// for a full-wave solve held compressed.
+    int most = 0;
+    /// Whether it is for a full-wave solve held compressed (the study's
+    /// Solver and Matrix): its cost said so, and its cells not held to the
+    /// charge solve's bound. Not read from the node: the tab sets it.
+    bool compressed = false;
+    /// The most cells, as the solver has it.
+    int mostCells() const;
 };
 MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>& parameters, QStringList* problems);
 
@@ -68,11 +79,19 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
 /// dense matrix of: 8000 is half a gigabyte a matrix and some thirty
 /// seconds a solve on a desktop of 2026.
 constexpr int kMostCharges = 8000;
+/// How many cells a mesh for a full-wave solve held compressed is cut into
+/// before fewer are put across a conductor: some 120 000 unknowns, two to
+/// three gigabytes and ten seconds a frequency on a desktop of 2026 (the
+/// solve itself takes what the machine's memory allows).
+constexpr int kMostCompressedCells = 40000;
 
 /// What a mesh would cost a solver to hold.
 struct MeshCost {
-    int unknowns = 0;         ///< the edges two cells share: where current flows
-    double matrixBytes = 0;   ///< a dense complex matrix of that order
+    /// The edges two cells share: where current flows - and, for a mesh for
+    /// a full-wave solve held compressed, its cells too: that solve's
+    /// unknowns.
+    int unknowns = 0;
+    double matrixBytes = 0;   ///< a dense complex matrix of that order, or the compressed one's
     bool tooBig = false;      ///< beyond what this build will hold
     QString said;             ///< the count and the memory, for the panel
 };
@@ -101,8 +120,10 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             double micrometre = 1e-6);
 
 /// What a mesh of that many unknowns would cost, and whether this build
-/// will hold it (a dense matrix of complex doubles, both triangles).
-MeshCost costOf(int unknowns);
+/// will hold it: a dense matrix of complex doubles, both triangles - or,
+/// \a compressed, held compressed, some 20 kB an unknown as measured
+/// (rf25_fast.h).
+MeshCost costOf(int unknowns, bool compressed = false);
 
 /// What the charge solve of \a cells cells costs, said: one unknown a
 /// cell, a dense real matrix of them, and whether it is more than this

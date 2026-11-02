@@ -61,6 +61,22 @@
  * The frequencies are independent, and solved side by side on as many
  * threads as the machine has and the memory allows.
  *
+ * Past a few thousand runs and cells the system is not set up dense but
+ * held compressed (rf25_fast.h, phase E): L as two kernels, of the runs
+ * with a part along x and of those with a part along y, each between the
+ * runs' parts along its axis - L_ab = (x_a x_b + y_a y_b) K_ab, the cosine
+ * between two runs times a kernel smooth in where they are - and P, each
+ * via's potential at each cell and the vias' couplings, each an H-matrix
+ * whose blocks between clusters apart beside their size are of low rank.
+ * A is applied as it is, so a loop of current, which leaves no charge, is
+ * as free of P as in the dense solve. It is solved by GMRES, preconditioned
+ * by the sparse LU of the same system between the near pairs alone, and
+ * the ports' Z taken from the currents variationally, so that the
+ * iteration's error enters it squared; as the tolerances go to nought it
+ * is the dense solve. Some 310 000 unknowns, a patch of 2 mm in cells of
+ * 6.25 µm, take 25 s and 6 GB a frequency on a desktop of 2026, where the
+ * dense matrix would be 1.5 TB.
+ *
  * A metal is a sheet with the surface impedance of a slab whose current
  * runs on both its faces - and more in the cells along its edges, where
  * the current crowds as close as the metal's thickness lets it (or, thin
@@ -216,6 +232,17 @@ struct FullWaveControl {
     /// The most runs and cells it sets up a dense solve for; 0: the build's
     /// own. (Lower, a test meets the limit without a solve of thousands.)
     int mostUnknowns = 0;
+    /// How the system is held: dense up to mostUnknowns and compressed past
+    /// it (Automatic), or always the one asked - a dense solve past the
+    /// limit refused, as it was before there was a compressed one.
+    enum class Matrix { Automatic, Dense, Compressed };
+    Matrix matrix = Matrix::Automatic;
+    /// The compressed matrix's tolerance, each low-rank block's of its own
+    /// size; 0: the build's own (1e-5).
+    double tolerance = 0;
+    /// The most memory a frequency's compressed solve may take, bytes; 0:
+    /// half the machine's. (Lower, a test meets the bound.)
+    double mostBytes = 0;
 };
 
 /// What the full-wave solve found.
@@ -259,7 +286,19 @@ struct FullWave {
     /// own, beside what a de-embedding leaves.
     double solvedAsymmetry = 0, solvedGain = 0;
     int threads = 1;                 ///< how many it used
-    /// Refused as more runs and cells than a dense solve is set up for.
+    /// Held compressed and solved by iteration (rf25_fast.h), not dense: the
+    /// low-rank blocks' tolerance; what the matrices of the frequency that
+    /// took the most held, bytes, beside what they would dense; their
+    /// largest rank; and of every frequency and port, the most iterations
+    /// GMRES took and the largest residual it left.
+    bool compressed = false;
+    double tolerance = 0;
+    double memory = 0, denseMemory = 0;
+    int largestRank = 0;
+    int iterations = 0;
+    double residual = 0;
+    /// Refused as more runs and cells than a dense solve is set up for -
+    /// or, compressed, as more memory than a solve may take.
     bool tooLarge = false;
     QStringList portsSaid;           ///< what each port drives
     QStringList problems;

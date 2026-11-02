@@ -2676,6 +2676,29 @@ private slots:
                                                            {"frequency", "3[GHz]"}, {"brief", true}}, 300000)).toObject();
         QVERIFY(brief.contains("ports") && brief.contains("checks") && !brief.contains("sweep") && !brief.contains("z matrix"));
         QVERIFY(brief.value("s matrix").toObject().contains("dB") && !brief.value("s matrix").toObject().contains("re"));
+        // Held as the study's Matrix says - dense, for a line this small -
+        // or as 'matrix' asks for this solve: compressed, what that kept and
+        // how far GMRES went, its S the dense one's. A matrix that is none,
+        // and one asked of the quasi-static solve, are refused.
+        QCOMPARE(out.value("matrix").toObject().value("held").toString(), QStringLiteral("dense"));
+        QCOMPARE(brief.value("matrix").toObject().value("held").toString(), QStringLiteral("dense"));
+        const QJsonObject held = json(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "full_wave"},
+                                                          {"frequency", "3[GHz]"}, {"matrix", "compressed"}}, 300000)).toObject();
+        const QJsonObject kept = held.value("matrix").toObject();
+        QCOMPARE(kept.value("held").toString(), QStringLiteral("compressed"));
+        QCOMPARE(kept.value("tolerance").toDouble(), 1e-5);
+        QVERIFY2(kept.value("memory MB").toDouble() > 0 && kept.value("iterations").toInt() > 0 && kept.value("residual").toDouble() <= 1e-10,
+                 qPrintable(QJsonDocument(kept).toJson()));
+        const QJsonArray denseDb = s.value("dB").toArray(), heldDb = held.value("s matrix").toObject().value("dB").toArray();
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                QVERIFY2(std::abs(heldDb.at(i).toArray().at(j).toDouble() - denseDb.at(i).toArray().at(j).toDouble()) < 1e-4,
+                         qPrintable(QStringLiteral("S%1%2").arg(i + 1).arg(j + 1)));
+        QVERIFY(!doc->undoStack()->canUndo());
+        const QJsonObject none = call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "full_wave"}, {"matrix", "sparse"}}, 60000);
+        QVERIFY2(failed(none) && text(none).contains(QStringLiteral("'matrix' is")), qPrintable(text(none)));
+        const QJsonObject quasi = call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"matrix", "dense"}}, 60000);
+        QVERIFY2(failed(quasi) && text(quasi).contains(QStringLiteral("the quasi-static one is dense")), qPrintable(text(quasi)));
 
         // The Touchstone of the ports, after the full-wave solve.
         const QJsonObject wrote = json(call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave.s2p"}}, 120000)).toObject();

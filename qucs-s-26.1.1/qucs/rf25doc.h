@@ -204,6 +204,7 @@ public:
     struct SolveRequest {
         QString solver;              ///< "quasi_static" or "full_wave"; empty: the study's
         QList<double> frequencies;   ///< a full-wave solve's, Hz; empty: the study's sweep
+        QString matrix;              ///< "automatic", "dense" or "compressed"; empty: the study's Matrix
     };
     /// solve(), as \a request says.
     void solveWith(const SolveRequest& request);

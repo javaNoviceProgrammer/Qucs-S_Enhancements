@@ -206,7 +206,20 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         }
         if (!brief) mixed.insert(QStringLiteral("sweep"), sweep);
     }
+    // How the system was held: dense, or compressed and solved by iteration
+    // - what that kept, and how far GMRES went.
+    QJsonObject matrix;
+    matrix.insert(QStringLiteral("held"), w.compressed ? QStringLiteral("compressed") : QStringLiteral("dense"));
+    if (w.compressed) {
+        matrix.insert(QStringLiteral("tolerance"), w.tolerance);
+        matrix.insert(QStringLiteral("memory MB"), std::round(w.memory / 1e5) / 10);
+        matrix.insert(QStringLiteral("dense MB"), std::round(w.denseMemory / 1e5) / 10);
+        matrix.insert(QStringLiteral("largest rank"), w.largestRank);
+        matrix.insert(QStringLiteral("iterations"), w.iterations);
+        matrix.insert(QStringLiteral("residual"), w.residual);
+    }
     if (brief) {
+        out.insert(QStringLiteral("matrix"), matrix);
         QJsonObject few;
         few.insert(QStringLiteral("frequency"), w.frequencies.at(k));
         few.insert(QStringLiteral("dB"), s.value(QStringLiteral("dB")));
@@ -244,6 +257,7 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     unknowns.insert(QStringLiteral("runs of current"), w.runs);
     unknowns.insert(QStringLiteral("cells"), w.cells);
     out.insert(QStringLiteral("unknowns"), unknowns);
+    out.insert(QStringLiteral("matrix"), matrix);
     out.insert(QStringLiteral("threads"), w.threads);
     QJsonArray said;
     for (const QString& line : model.preparedLines()) said.append(line);
@@ -304,6 +318,16 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
             return errorResult(tr("'solver' is \"quasi_static\" or \"full_wave\"; %1 is neither.").arg(request.solver));
     }
     const bool fullWave = request.solver.isEmpty() ? model->studyIsFullWave() : request.solver == QLatin1String("full_wave");
+    // How a full-wave solve holds its system: the one named, else the
+    // study's Matrix.
+    if (args.contains(QLatin1String("matrix"))) {
+        request.matrix = args.value(QLatin1String("matrix")).toString().trimmed();
+        if (request.matrix != QLatin1String("automatic") && request.matrix != QLatin1String("dense")
+            && request.matrix != QLatin1String("compressed"))
+            return errorResult(tr("'matrix' is \"automatic\", \"dense\" or \"compressed\"; %1 is none of them.")
+                                   .arg(request.matrix));
+        if (!fullWave) return errorResult(tr("'matrix' is the full-wave solve's: the quasi-static one is dense."));
+    }
     // The frequency asked after: of the losses for the quasi-static solve,
     // and for the full-wave one the one frequency solved.
     double asked = 0;
