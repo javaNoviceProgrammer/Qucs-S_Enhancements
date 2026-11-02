@@ -2102,7 +2102,7 @@ private slots:
         QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("against the conductors beside it")),
                  qPrintable(w->portsSaid.join(" | ")));
         const QString said = w->lines.join(QStringLiteral(" | "));
-        QVERIFY2(said.contains(QStringLiteral("Two strips of the coplanar feed")) && said.contains(QStringLiteral("no vias"))
+        QVERIFY2(said.contains(QStringLiteral("Three strips of the coplanar feed")) && said.contains(QStringLiteral("no vias"))
                      && said.contains(QStringLiteral("P1 de-embedded")),
                  qPrintable(said));
         QVERIFY(w->deembedding.value(0).done && w->deembedding.value(0).calibrated && w->deembedding.value(0).coplanar);
@@ -2308,7 +2308,7 @@ private slots:
         QVERIFY(doc->fullWave()->deembedding.value(0).done && !doc->fullWave()->deembedding.value(1).done);
         QCOMPARE(doc->fullWave()->deembedding.value(0).shift, 20e-6);
         QCOMPARE(doc->fullWave()->zSolved.size(), doc->fullWave()->z.size());
-        QVERIFY2(says(doc->fullWave()->lines, "Two strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
+        QVERIFY2(says(doc->fullWave()->lines, "Three strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
         {
             QString why;
             const QString text = doc->exportText(RF25Doc::ExportRequest(), &why);
@@ -2324,6 +2324,26 @@ private slots:
             QVERIFY(doc->exportRequest(ts, &asked, &why) && asked.version2);
             QVERIFY2(doc->exportText(asked, &why).contains(QStringLiteral("[Reference] 50 50")), qPrintable(why));
         }
+        // Strips of a length asked - shorter than eight heights, as for a
+        // substrate thick beside the wavelength - solved as asked; a length
+        // that is none, refused.
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("strips"), QStringLiteral("300[um]")); },
+                              QStringLiteral("strips")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        QCOMPARE(doc->fullWave()->deembedding.value(0).length, 300.0);
+        QCOMPARE(doc->fullWave()->deembedding.value(0).strips.size(), 1);
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("strips"), QStringLiteral("-1[um]")); },
+                              QStringLiteral("no strips")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("calibration strips are no length")), qPrintable(doc->solveProblem()));
+        QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("strips"), QStringLiteral("0")); },
+                              QStringLiteral("strips chosen")));
+        QVERIFY(doc->waitForPrepared(60000));
         // Moved along a line given instead: no strips solved, the port's own
         // discontinuity left in, and said; a line that is none, refused.
         QVERIFY(doc->editNode(p1, [](rf::Node& n) {
@@ -2337,7 +2357,7 @@ private slots:
         QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
         QVERIFY2(says(doc->fullWaveSummary(), "along a given line of 50 Ohm") && says(doc->fullWaveSummary(), "discontinuity left in"),
                  qPrintable(doc->fullWaveSummary().join(" | ")));
-        QVERIFY2(!says(doc->fullWave()->lines, "Two strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
+        QVERIFY2(!says(doc->fullWave()->lines, "Three strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
         QVERIFY(doc->editNode(p1, [](rf::Node& n) { n.props.insert(QStringLiteral("line_eps"), QStringLiteral("0.5")); },
                               QStringLiteral("no line")));
         QVERIFY(doc->waitForPrepared(60000));

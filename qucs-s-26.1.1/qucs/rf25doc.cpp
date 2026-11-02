@@ -166,6 +166,14 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
                 return {};
             }
             p.calibrate = flagOf(port, QStringLiteral("calibrate"));
+            bool okStrips = true;
+            p.strips = numberOf(port, QStringLiteral("strips"), model, 0, &okStrips);
+            if (!okStrips || !(p.strips >= 0)) {
+                *problem = QCoreApplication::translate("RF25Doc", "%1's calibration strips are no length: nought, to have "
+                                                                  "them chosen, or above.")
+                               .arg(p.name);
+                return {};
+            }
             p.coplanar = textOf(port, QStringLiteral("return")) == QLatin1String("beside");
             if (textOf(port, QStringLiteral("along")) == QLatin1String("line")) {
                 bool okZ = true, okE = true;
@@ -1736,11 +1744,12 @@ void RF25Doc::solveWith(const SolveRequest& request)
                                      "solved as it is.").arg(name);
                     continue;
                 }
-                std::shared_ptr<Calibration>& calibration = feeds[feed.key()];
+                // (One calibration for feeds alike and strips asked alike.)
+                std::shared_ptr<Calibration>& calibration = feeds[feed.key() + QLatin1Char('|') + QString::number(port.strips, 'g', 9)];
                 if (!calibration) {
                     job->calibrating = true;
                     calibration = std::make_shared<Calibration>(
-                        calibrate(job->stack, job->how, job->top, feed, job->frequencies, 1e-6, &quiet));
+                        calibrate(job->stack, job->how, job->top, feed, job->frequencies, 1e-6, &quiet, port.strips / 1e-6));
                 }
                 if (job->stop.load()) {
                     job->wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
@@ -1985,6 +1994,14 @@ QStringList RF25Doc::fullWaveSummary() const
                       .arg(matrix).arg(w.asymmetry, 0, 'g', 2));
     if (w.gain <= 1e-6)
         out << tr("Passive: of a wave in at any port, at most %1 % comes back out over the sweep.").arg(100 * (1 + w.gain), 0, 'f', 2);
+    else if (w.secondWave > 0 && w.gainAt >= w.secondWave)
+        // (Past a stack's second surface wave the solve itself does not hold
+        //  power to account - fullWaveOf().)
+        out << tr("Not passive: at %1 GHz it gives back %2 % more than it is given - past %3 GHz, where the stack carries "
+                  "a second surface wave this solve does not yet hold to account.")
+                   .arg(w.gainAt / 1e9, 0, 'g', 4)
+                   .arg(100 * w.gain, 0, 'g', 3)
+                   .arg(w.secondWave / 1e9, 0, 'g', 4);
     else if (deembedded && w.solvedGain <= 1e-6)
         // (A thru that passes all of a wave and reflects a little more
         //  gives back twice that reflection: the recheck's 0.12 % was -64
@@ -1995,8 +2012,8 @@ QStringList RF25Doc::fullWaveSummary() const
                    .arg(100 * w.gain, 0, 'g', 3)
                    .arg(20 * std::log10(std::max(1e-15, w.gain / 2)), 0, 'f', 0);
     else
-        out << tr("Not passive: at one frequency it gives back %1 % more than it is given - look at the ports and the "
-                  "mesh.")
+        out << tr("Not passive: at %1 GHz it gives back %2 % more than it is given - look at the ports and the mesh.")
+                   .arg(w.gainAt / 1e9, 0, 'g', 4)
                    .arg(100 * w.gain, 0, 'g', 3);
     return out;
 }
