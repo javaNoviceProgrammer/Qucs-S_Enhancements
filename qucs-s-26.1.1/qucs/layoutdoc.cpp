@@ -73,6 +73,7 @@
 #include <cmath>
 
 using namespace qucs_s::layout;
+namespace markup = qucs_s::markup;
 
 namespace {
 
@@ -572,6 +573,17 @@ void LayoutView::setMode(Mode mode)
     if (mode == a_mode) return;
     a_mode = mode;
     a_measuring = false;
+    // A stroke being drawn is let go; what an eraser took is kept, for Undo.
+    if (a_drag == Drag::Ink) {
+        a_drag = Drag::None;
+        a_stroke = markup::Stroke();
+        update();
+    } else if (a_drag == Drag::Erase) {
+        a_drag = Drag::None;
+        if (a_erased) a_drawing.changed(a_beforeErase);
+        a_erased = false;
+        emit drawingChanged();
+    }
     if (a_drag == Drag::Box) {
         a_drag = Drag::None;
         a_zoomBox = QRect();
@@ -599,6 +611,36 @@ void LayoutView::addRuler(const QLineF& ruler)
     a_rulers.append(ruler);
     update();
     emit rulersChanged();
+}
+
+QString LayoutView::drawingPart() const
+{
+    return a_layout && a_cell >= 0 && a_cell < a_layout->cells.size() ? a_layout->cells.at(a_cell).name : QString();
+}
+
+void LayoutView::addStroke(const markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    a_drawing.add(stroke);
+    update();
+    emit drawingChanged();
+}
+
+bool LayoutView::undoDrawing()
+{
+    if (!a_drawing.undo()) return false;
+    update();
+    emit drawingChanged();
+    return true;
+}
+
+bool LayoutView::clearDrawing(bool all)
+{
+    if (!all && drawingPart().isEmpty()) return false;
+    if (!a_drawing.clear(all ? QString() : drawingPart())) return false;
+    update();
+    emit drawingChanged();
+    return true;
 }
 
 void LayoutView::clearRulers()
@@ -829,6 +871,12 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
             p.drawText(at, Qt::AlignCenter, text);
         }
     }
+    // What the pen drew on the cell shown, and the stroke being drawn.
+    if (a_layout && a_cell >= 0 && (!a_drawing.isEmpty() || a_drag == Drag::Ink)) {
+        QList<markup::Stroke> strokes = a_drawing.on(drawingPart());
+        if (a_drag == Drag::Ink) strokes << a_stroke;
+        markup::paint(p, strokes, [this](QPointF pt) { return toPixel(pt); }, a_scale);
+    }
     if ((a_drag == Drag::Zoom || a_drag == Drag::Box) && !a_zoomBox.isNull()) {
         p.setPen(QPen(c.highlight, a_drag == Drag::Box ? 1.5 : 1, a_drag == Drag::Box ? Qt::SolidLine : Qt::DashLine));
         QColor tint = c.highlight;
@@ -1046,8 +1094,29 @@ void LayoutView::wheelEvent(QWheelEvent* event)
 void LayoutView::mousePressEvent(QMouseEvent* event)
 {
     setFocus();
+    // (Another button pressed while a stroke is drawn changes nothing.)
+    if (a_drag == Drag::Ink || a_drag == Drag::Erase) return;
     a_pressPos = a_lastPos = event->position().toPoint();
     a_moved = false;
+    if (event->button() == Qt::LeftButton && a_mode == Mode::Draw && !drawingPart().isEmpty()) {
+        const markup::Pen pen = markup::currentPen();
+        const QPointF at = toLayout(event->position());
+        if (pen.tool == markup::Tool::Eraser) {
+            a_beforeErase = a_drawing.strokes();
+            a_erased = false;
+            a_drag = Drag::Erase;
+            while (a_drawing.eraseAt(drawingPart(), at, markup::EraserReach / a_scale)) a_erased = true;
+            if (a_erased) {
+                update();
+                emit drawingChanged();
+            }
+        } else {
+            a_stroke = markup::begin(pen, drawingPart(), at, a_scale);
+            a_drag = Drag::Ink;
+            update();
+        }
+        return;
+    }
     if (event->button() == Qt::LeftButton && a_mode == Mode::Ruler && a_layout) {
         const QPointF start = snap(*a_layout, queryHere(), toLayout(event->position()), tolerance() * 1.5);
         a_rulers.append(QLineF(start, start));
@@ -1066,6 +1135,24 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
     const QPoint pos = event->position().toPoint();
     emit pointerMoved(toLayout(event->position()), true);
     if (a_drag == Drag::None) return;
+    // The pen and the eraser follow every move, the least of them too.
+    if (a_drag == Drag::Ink) {
+        if (QLineF(toPixel(a_stroke.points.last()), event->position()).length() >= markup::LeastStep) {
+            a_stroke.points << toLayout(event->position());
+            update();
+        }
+        return;
+    }
+    if (a_drag == Drag::Erase) {
+        bool erased = false;
+        while (a_drawing.eraseAt(drawingPart(), toLayout(event->position()), markup::EraserReach / a_scale)) erased = true;
+        if (erased) {
+            a_erased = true;
+            update();
+            emit drawingChanged();
+        }
+        return;
+    }
     if (!a_moved && (pos - a_pressPos).manhattanLength() >= 4) a_moved = true;
     if (!a_moved) return;
     switch (a_drag) {
@@ -1077,6 +1164,8 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
         emit viewChanged();
         break;
     }
+    case Drag::Ink:
+    case Drag::Erase: break;
     case Drag::Zoom:
     case Drag::Box:
         // The box between the two points, whichever way it is dragged: Qt 6's
@@ -1108,8 +1197,22 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
 void LayoutView::mouseReleaseEvent(QMouseEvent* event)
 {
     const Drag drag = a_drag;
+    // (A stroke ends with the button that began it.)
+    if ((drag == Drag::Ink || drag == Drag::Erase) && event->button() != Qt::LeftButton) return;
     a_drag = Drag::None;
     switch (drag) {
+    case Drag::Ink:
+        a_drawing.add(a_stroke);
+        a_stroke = markup::Stroke();
+        update();
+        emit drawingChanged();
+        break;
+    case Drag::Erase:
+        if (a_erased) a_drawing.changed(a_beforeErase);
+        a_beforeErase.clear();
+        a_erased = false;
+        emit drawingChanged();
+        break;
     case Drag::Pan:
         if (!a_moved && event->button() == Qt::LeftButton) {
             if (a_mode == Mode::PickPoint || a_mode == Mode::PickBox) emit picked(toLayout(event->position()));
@@ -1192,9 +1295,13 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
         emit gridToggleRequested();
         break;
     case Qt::Key_Escape:
-        // One thing at a time: the ruler being drawn, the selection, the
-        // rulers, ruler mode.
-        if (a_measuring && !a_rulers.isEmpty()) {
+        // One thing at a time: the stroke or the ruler being drawn, the
+        // selection, the rulers, the mode.
+        if (a_drag == Drag::Ink) {
+            a_drag = Drag::None;
+            a_stroke = markup::Stroke();
+            update();
+        } else if (a_measuring && !a_rulers.isEmpty()) {
             a_rulers.removeLast();
             a_measuring = false;
             a_drag = Drag::None;
@@ -1210,7 +1317,13 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
             event->ignore();
         }
         return;
-    default: QWidget::keyPressEvent(event); return;
+    default:
+        if (a_mode == Mode::Draw && event->matches(QKeySequence::Undo)) {
+            undoDrawing();
+            break;
+        }
+        QWidget::keyPressEvent(event);
+        return;
     }
     event->accept();
 }
@@ -1318,6 +1431,8 @@ void LayoutDoc::buildUi()
     depthLabel->setBuddy(a_depthBox);
     a_rulerButton = toolButton(a_toolbar, glyph(GlyphIcon::Ruler), tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"));
     a_rulerButton->setCheckable(true);
+    a_penButton = new markup::PenButton(tr("Cell"), a_toolbar);
+    a_penButton->setProperty("layoutTool", true);
     a_labelsButton = toolButton(a_toolbar, glyph(GlyphIcon::Text), tr("Show the texts"));
     a_labelsButton->setCheckable(true);
     a_gridButton = toolButton(a_toolbar, glyph(GlyphIcon::Grid), tr("Show the grid (G, or View > Show Grid)"));
@@ -1390,6 +1505,7 @@ void LayoutDoc::buildUi()
     bar->addWidget(a_depthBox);
     bar->addSpacing(12);
     bar->addWidget(a_rulerButton);
+    bar->addWidget(a_penButton);
     bar->addWidget(a_labelsButton);
     bar->addWidget(a_gridButton);
     bar->addStretch(1);
@@ -1544,9 +1660,23 @@ void LayoutDoc::buildUi()
         a_view->setMode(on ? LayoutView::Mode::Ruler : LayoutView::Mode::Select);
         a_view->setFocus();
     });
+    // The pen taken up and put down; its menu's undo and clearing.
+    connect(a_penButton, &QToolButton::toggled, this, [this](bool on) {
+        a_view->setMode(on ? LayoutView::Mode::Draw : LayoutView::Mode::Select);
+        a_view->setFocus();
+    });
+    a_penButton->setColorChooser([this](const QColor& now) {
+        const InADialog inADialog(this);   // (not freed under its own dialog)
+        return QColorDialog::getColor(now, this, tr("The Pen's Colour"));
+    });
+    connect(a_penButton, &markup::PenButton::undoRequested, this, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(); });
+    connect(a_penButton, &markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(true); });
+    connect(a_view, &LayoutView::drawingChanged, this, &LayoutDoc::updatePen);
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
-        const QSignalBlocker block(a_rulerButton);
+        const QSignalBlocker block(a_rulerButton), blockPen(a_penButton);
         a_rulerButton->setChecked(mode == LayoutView::Mode::Ruler);
+        a_penButton->setChecked(mode == LayoutView::Mode::Draw);
     });
     connect(a_findButton, &QToolButton::clicked, this, [this] { a_searchBar->isVisible() ? hideSearch() : showSearch(); });
     connect(a_findField, &QLineEdit::textChanged, this, [this](const QString& text) { find(text); });
@@ -1628,9 +1758,14 @@ void LayoutDoc::buildUi()
         QAction* ruler = menu.addAction(tr("Ruler"), this, [this](bool on) { a_rulerButton->setChecked(on); });
         ruler->setCheckable(true);
         ruler->setChecked(a_view->mode() == LayoutView::Mode::Ruler);
+        QAction* pen = menu.addAction(tr("Pen"), this, [this](bool on) { a_penButton->setChecked(on); });
+        pen->setCheckable(true);
+        pen->setChecked(a_view->mode() == LayoutView::Mode::Draw);
         QAction* grid = menu.addAction(tr("Grid"), this, [this](bool on) { setGridShown(on); });
         grid->setCheckable(true);
         grid->setChecked(a_view->gridShown());
+        if (a_view->drawing().count(a_view->drawingPart()) > 0)
+            menu.addAction(tr("Clear the Drawings on This Cell"), this, [this] { a_view->clearDrawing(); });
         if (!a_view->rulers().isEmpty()) {
             menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
             menu.addAction(tr("Cross-Section to Multiphysics…"), this, &LayoutDoc::crossSectionFromRuler);
@@ -1866,6 +2001,13 @@ void LayoutDoc::showCell(int cell, bool fit)
         if (f.bold()) a_cells->setCurrentItem(item);
     }
     updateInfo();
+    updatePen();
+}
+
+void LayoutDoc::updatePen()
+{
+    const markup::Drawing& d = a_view->drawing();
+    a_penButton->setDrawingState(d.canUndo(), d.count(a_view->drawingPart()), int(d.strokes().size()));
 }
 
 int LayoutDoc::depth() const
@@ -2335,6 +2477,8 @@ void LayoutDoc::print(QPrinter*, QPainter* painter, bool, bool)
     o.text = Qt::black;
     if (a_view->colorsAdapted()) o.background = Qt::white;
     qucs_s::layout::render(*painter, *a_layout, o);
+    // What the pen drew on it, as the view has it.
+    markup::paint(*painter, a_view->drawing().on(a_view->drawingPart()), [&o](QPointF pt) { return o.toDevice.map(pt); }, scale);
     painter->restore();
 }
 

@@ -37,6 +37,7 @@
 #include <QLineEdit>
 #include <QPainter>
 #include <QPdfWriter>
+#include <QPrinter>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -75,6 +76,7 @@
 #include "settings.h"
 
 using namespace qucs_s::layout;
+namespace markup = qucs_s::markup;
 
 // gdstk's Vec2 is a union of {x, y} and others: {1, 2} is one, braces or not.
 #pragma GCC diagnostic ignored "-Wmissing-braces"
@@ -1102,6 +1104,176 @@ private slots:
         // Nothing there: nothing selected.
         click(view, view->toPixel(QPointF(12.8, 1.8)));
         QVERIFY(!view->selection().has_value());
+    }
+
+    // The pen on a layout (markup.h). Taken up from the toolbar, a drag
+    // draws on the cell shown in the pen's colour: in µm, so that it pans
+    // and zooms with the layout, as broad as the pen was at the zoom it was
+    // drawn at. Another cell shown, it is not there; the cell shown again,
+    // it is. Ctrl+Z undoes it, pressed; the eraser takes it away and Ctrl+Z
+    // gives it back; the middle button pans and draws nothing. Printed with
+    // the cell; Escape puts the pen down; kept when the file is read again;
+    // the pen's menu clears it.
+    void aPenDrawsOnTheCellShown()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr && doc->penButton() != nullptr);
+        LayoutView* view = doc->view();
+        const int top = doc->layout()->cellIndex("TOP"), inv = doc->layout()->cellIndex("INV");
+        doc->showCell(top);
+        QApplication::processEvents();
+        const QColor green(0, 170, 0);
+        const auto near = [](const QColor& a, const QColor& b, int tolerance = 40) {
+            return std::abs(a.red() - b.red()) <= tolerance && std::abs(a.green() - b.green()) <= tolerance
+                   && std::abs(a.blue() - b.blue()) <= tolerance;
+        };
+        const auto colourAt = [view](QPointF pixel) {
+            const QImage im = view->picture();
+            return im.pixelColor((pixel * im.devicePixelRatio()).toPoint());
+        };
+        const auto greens = [view, &near, &green](const QImage& im) {
+            int n = 0;
+            for (int y = 0; y < im.height(); y += 2)
+                for (int x = 0; x < im.width(); x += 2)
+                    if (near(im.pixelColor(x, y), green, 30)) ++n;
+            return n;
+        };
+        markup::Pen pen;
+        pen.color = green;
+        pen.width = 6;
+        markup::setCurrentPen(pen);
+        doc->penButton()->click();
+        QCOMPARE(view->mode(), LayoutView::Mode::Draw);
+        const QPointF from(view->width() * 0.3, view->height() * 0.4), to(view->width() * 0.6, view->height() * 0.5);
+        drag(view, from, to);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        const markup::Stroke s = view->drawing().strokes().first();
+        QCOMPARE(s.on, QStringLiteral("TOP"));
+        QVERIFY(QLineF(s.points.first(), view->toLayout(from)).length() < 1e-9 && QLineF(s.points.last(), view->toLayout(to)).length() < 1e-9);
+        QVERIFY(std::abs(s.width * view->scale() - 6) < 1e-9);
+        // In its colour where it was drawn: 3 pixels either side and no more.
+        const QPointF mid = (from + to) / 2, across = QPointF(-(to - from).y(), (to - from).x()) / QLineF(from, to).length();
+        QVERIFY(near(colourAt(mid), green));
+        QVERIFY(!near(colourAt(mid + 5 * across), green));
+        // Zoomed twice about its middle: where it was on the layout, twice
+        // as broad; panned, it went with the layout.
+        const QPointF onLayout = view->toLayout(mid);
+        view->zoomBy(2, mid);
+        QVERIFY(QLineF(view->toPixel(onLayout), mid).length() < 1e-6);
+        QVERIFY(near(colourAt(mid), green));
+        QVERIFY(near(colourAt(mid + 4.5 * across), green));
+        QVERIFY(!near(colourAt(mid + 8 * across), green));
+        view->setView(view->center() + QPointF(40 / view->scale(), 0), view->scale());
+        QVERIFY(QLineF(view->toPixel(onLayout), mid - QPointF(40, 0)).length() < 1e-6);
+        QVERIFY(near(colourAt(view->toPixel(onLayout)), green));
+        // Zoomed far out it is still drawn, a pixel broad.
+        {
+            const double scale = view->scale();
+            view->zoomBy(0.01, view->toPixel(onLayout));
+            const QImage far = view->picture();
+            int greenish = 0;
+            for (int y = 0; y < far.height(); ++y)
+                for (int x = 0; x < far.width(); ++x) {
+                    const QColor c = far.pixelColor(x, y);
+                    if (c.green() > c.red() + 60 && c.green() > c.blue() + 60) ++greenish;
+                }
+            QVERIFY2(greenish > 0, "a stroke under a pixel broad drawn at one");
+            view->setView(view->center(), scale);
+        }
+        // Another cell: not drawn there, where it would be (its place on TOP
+        // framed); TOP again, it is.
+        doc->showCell(inv);
+        view->showRegion(s.bounds());
+        QApplication::processEvents();
+        QCOMPARE(greens(view->picture()), 0);
+        doc->showCell(top);
+        QApplication::processEvents();
+        QVERIFY(greens(view->picture()) > 0);
+        // Ctrl+Z, pressed: the window's Undo does not take it.
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QVERIFY(view->drawing().isEmpty());
+        // Drawn again; the middle button pans and draws nothing.
+        drag(view, from, to);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        const QPointF centre = view->center();
+        const auto send = [view](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, at, view->mapToGlobal(at), button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(view, &e);
+        };
+        send(QEvent::MouseButtonPress, from, Qt::MiddleButton, Qt::MiddleButton);
+        for (int i = 1; i <= 5; ++i) send(QEvent::MouseMove, from + QPointF(12 * i, 0), Qt::NoButton, Qt::MiddleButton);
+        send(QEvent::MouseButtonRelease, from + QPointF(60, 0), Qt::MiddleButton, Qt::NoButton);
+        QVERIFY(QLineF(view->center(), centre).length() > 0);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // The eraser across it, and the erasing undone.
+        pen.tool = markup::Tool::Eraser;
+        markup::setCurrentPen(pen);
+        const markup::Stroke t = view->drawing().strokes().first();
+        const QPointF on = view->toPixel((t.points.first() + t.points.last()) / 2);
+        drag(view, on - 12 * across, on + 12 * across);
+        QVERIFY(view->drawing().isEmpty());
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // Printed with the cell.
+        {
+            QPrinter printer;
+            QImage page(800, 600, QImage::Format_ARGB32_Premultiplied);
+            page.fill(Qt::white);
+            QPainter painter(&page);
+            doc->print(&printer, &painter, false, true);
+            painter.end();
+            QVERIFY(greens(page) > 0);
+        }
+        // Escape puts the pen down.
+        pen.tool = markup::Tool::Pen;
+        markup::setCurrentPen(pen);
+        QTest::keyClick(view, Qt::Key_Escape);
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+        QVERIFY(!doc->penButton()->isChecked());
+        // Kept when the file is read again.
+        QVERIFY(doc->reload());
+        QVERIFY(doc->waitForLoaded());
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QCOMPARE(view->drawing().strokes().first().on, QStringLiteral("TOP"));
+        // The pen's menu clears it.
+        for (QAction* a : doc->penButton()->penMenu()->actions())
+            if (a->text() == QStringLiteral("Clear All the Drawings")) a->trigger();
+        QVERIFY(view->drawing().isEmpty());
+        markup::setCurrentPen(markup::Pen());
+    }
+
+    // What the user drew with the pen on a layout, as show_layout has it:
+    // cell by cell, how many strokes, their box in µm, their colours. It
+    // takes the pen up and puts it down, and clears the drawings; a 'pen'
+    // or 'drawings' of another kind is refused.
+    void claudeSeesWhatThePenDrewOnALayout()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        doc->showCell(doc->layout()->cellIndex("TOP"));
+        QJsonObject o = json(call("show_layout", {{"path", "sample.gds"}}));
+        QVERIFY(!o.contains("drawings") && !o.contains("pen"));
+        markup::Stroke line;
+        line.on = QStringLiteral("TOP");
+        line.points = {QPointF(2, 3), QPointF(12, 8)};
+        line.color = QColor(0, 160, 0);
+        line.width = 0.5;
+        doc->view()->addStroke(line);
+        o = json(call("show_layout", {{"path", "sample.gds"}, {"pen", true}}));
+        QCOMPARE(doc->view()->mode(), LayoutView::Mode::Draw);
+        QVERIFY(doc->penButton()->isChecked() && o.value("pen").toString().contains(QStringLiteral("taken up")));
+        const QJsonArray drawn = o.value("drawings").toArray();
+        QCOMPARE(drawn.size(), 1);
+        QCOMPARE(drawn.at(0).toObject().value("cell").toString(), QStringLiteral("TOP"));
+        QCOMPARE(drawn.at(0).toObject().value("strokes").toInt(), 1);
+        QCOMPARE(drawn.at(0).toObject().value("box").toArray(), (QJsonArray{1.75, 2.75, 12.25, 8.25}));
+        QCOMPARE(drawn.at(0).toObject().value("colours").toArray(), QJsonArray{QStringLiteral("#00a000")});
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"pen", 1}})));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"drawings", "undo"}})));
+        QCOMPARE(doc->view()->drawing().strokes().size(), 1);
+        o = json(call("show_layout", {{"path", "sample.gds"}, {"pen", false}, {"drawings", "clear"}}));
+        QVERIFY(doc->view()->drawing().isEmpty() && doc->view()->mode() == LayoutView::Mode::Select);
+        QVERIFY(!o.contains("drawings") && !o.contains("pen") && o.value("done").toString().contains(QStringLiteral("taken away")));
     }
 
     // A ruler, dragged in ruler mode, snaps to the corners it comes near:
