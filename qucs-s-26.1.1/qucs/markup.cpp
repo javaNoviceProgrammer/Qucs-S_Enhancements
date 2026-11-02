@@ -23,11 +23,21 @@
 #include <QPalette>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <limits>
+#include <tuple>
 
 namespace qucs_s::markup {
 
 namespace {
+
+/// Every drawing's revisions, from one count: none is had twice.
+quint64 nextRevision()
+{
+    static std::atomic<quint64> last{0};
+    return ++last;
+}
 
 const char* const kToolKey = "Viewers/penTool";
 const char* const kColorKey = "Viewers/penColor";
@@ -186,6 +196,7 @@ void Drawing::remember()
 {
     a_undo << a_strokes;
     if (a_undo.size() > MostUndone) a_undo.removeFirst();
+    a_revision = nextRevision();
 }
 
 void Drawing::add(const Stroke& stroke)
@@ -204,6 +215,7 @@ bool Drawing::eraseAt(const QString& part, QPointF point, double reach)
         for (int k = 1; k < s.points.size() && !hit; ++k) hit = distance(point, s.points.at(k - 1), s.points.at(k)) <= near;
         if (hit) {
             a_strokes.removeAt(i);
+            a_revision = nextRevision();
             return true;
         }
     }
@@ -231,35 +243,8 @@ bool Drawing::undo()
 {
     if (a_undo.isEmpty()) return false;
     a_strokes = a_undo.takeLast();
+    a_revision = nextRevision();
     return true;
-}
-
-QJsonArray describe(const Drawing& drawing, const QString& key)
-{
-    const auto rounded = [](double v) { return std::round(v * 1000) / 1000; };
-    QJsonArray out;
-    for (const QString& part : drawing.parts()) {
-        QRectF box;
-        bool first = true;
-        QStringList shades;
-        int strokes = 0;
-        for (const Stroke& s : drawing.strokes()) {
-            if (s.on != part) continue;
-            ++strokes;
-            box = first ? s.bounds() : box.united(s.bounds());
-            first = false;
-            const QString shade = s.highlighter ? QApplication::translate("Markup", "%1 highlighter").arg(s.color.name(QColor::HexRgb))
-                                                : s.color.name(QColor::HexRgb);
-            if (!shades.contains(shade)) shades << shade;
-        }
-        bool numbered = false;
-        const int number = part.toInt(&numbered);
-        out.append(QJsonObject{{key, numbered ? QJsonValue(number) : QJsonValue(part)},
-                               {QStringLiteral("strokes"), strokes},
-                               {QStringLiteral("box"), QJsonArray{rounded(box.left()), rounded(box.top()), rounded(box.right()), rounded(box.bottom())}},
-                               {QStringLiteral("colours"), QJsonArray::fromStringList(shades)}});
-    }
-    return out;
 }
 
 void paint(QPainter& p, const QList<Stroke>& strokes, const std::function<QPointF(QPointF)>& toPixel, double pixelsPerUnit)
@@ -297,6 +282,465 @@ Stroke begin(const Pen& pen, const QString& part, QPointF point, double pixelsPe
     if (s.highlighter) s.color.setAlphaF(s.color.alphaF() * HighlighterCover);
     s.width = pen.drawingWidth() / std::max(pixelsPerUnit, 1e-300);
     return s;
+}
+
+// ----------------------------------------------------------------------
+// Reading what was drawn
+
+namespace {
+
+double lengthOf(const QPolygonF& p, int from = 0, int to = -1)
+{
+    if (to < 0) to = int(p.size()) - 1;
+    double l = 0;
+    for (int i = from + 1; i <= to; ++i) l += QLineF(p.at(i - 1), p.at(i)).length();
+    return l;
+}
+
+/// The furthest any point of \a p between \a from and \a to lies from the
+/// segment between those two.
+double bulge(const QPolygonF& p, int from, int to)
+{
+    double most = 0;
+    for (int i = from + 1; i < to; ++i) most = std::max(most, distance(p.at(i), p.at(from), p.at(to)));
+    return most;
+}
+
+/// The area the closed outline \a p holds.
+double areaOf(const QPolygonF& p)
+{
+    double a = 0;
+    for (int i = 0; i < p.size(); ++i) {
+        const QPointF& u = p.at(i);
+        const QPointF& v = p.at((i + 1) % p.size());
+        a += u.x() * v.y() - v.x() * u.y();
+    }
+    return std::abs(a) / 2;
+}
+
+double sizeOf(const QPolygonF& p)
+{
+    const QRectF b = p.boundingRect();
+    return std::hypot(b.width(), b.height());
+}
+
+/// The points along \a p every \a step, its own among them.
+QPolygonF sampledOf(const QPolygonF& p, double step)
+{
+    if (p.size() < 2 || !(step > 0)) return p;
+    QPolygonF out{p.first()};
+    for (int i = 1; i < p.size(); ++i) {
+        const QLineF seg(p.at(i - 1), p.at(i));
+        const int n = int(std::ceil(seg.length() / step));
+        for (int k = 1; k <= n; ++k) out << seg.pointAt(double(k) / n);
+    }
+    return out;
+}
+
+QString shortened(const QString& text, int most = 160)
+{
+    const QString t = text.simplified();
+    return t.size() <= most ? t : t.left(most - 1) + QChar(0x2026);
+}
+
+double rounded(double v)
+{
+    return std::round(v * 1000) / 1000;
+}
+
+QJsonArray boxJson(const QRectF& b)
+{
+    return {rounded(b.left()), rounded(b.top()), rounded(b.right()), rounded(b.bottom())};
+}
+
+/// A target, or some of its words (in order), as a reading names it.
+QJsonObject refOf(const Target& t, const QList<int>& words = {})
+{
+    if (words.isEmpty() || words.size() == t.words.size()) return QJsonObject{{t.kind, shortened(t.text)}};
+    QStringList said;
+    for (const int w : words) said << t.words.at(w).first;
+    return QJsonObject{{QStringLiteral("words"), said.join(QLatin1Char(' '))}, {QStringLiteral("in ") + t.kind, shortened(t.text)}};
+}
+
+/// What is at \a point: the word under it and its target, else the target
+/// under it - the uppermost - else nothing (-1).
+std::pair<int, int> under(const QList<Target>& targets, QPointF point)
+{
+    for (int t = int(targets.size()) - 1; t >= 0; --t)
+        for (int w = 0; w < targets.at(t).words.size(); ++w)
+            if (targets.at(t).words.at(w).second.containsPoint(point, Qt::OddEvenFill)) return {t, w};
+    for (int t = int(targets.size()) - 1; t >= 0; --t)
+        if (targets.at(t).outline.containsPoint(point, Qt::OddEvenFill)) return {t, -1};
+    return {-1, -1};
+}
+
+/// What a stroke reaching \a end points at: what is there, else the first
+/// thing on ahead of it - \a along, within \a ahead - else the nearest
+/// within \a reach of its end.
+QJsonObject pointedAt(const QList<Target>& targets, QPointF end, QPointF along, double ahead, double reach)
+{
+    auto [t, w] = under(targets, end);
+    for (int k = 1; t < 0 && ahead > 0 && k <= 16; ++k) std::tie(t, w) = under(targets, end + along * (ahead * k / 16));
+    if (t < 0) {
+        double best = reach;
+        for (int i = 0; i < targets.size(); ++i) {
+            const QPolygonF& o = targets.at(i).outline;
+            for (int k = 1; k < o.size(); ++k)
+                if (const double d = distance(end, o.at(k - 1), o.at(k)); d < best) {
+                    best = d;
+                    t = i;
+                }
+        }
+    }
+    if (t < 0) return {};
+    return refOf(targets.at(t), w >= 0 ? QList<int>{w} : QList<int>{});
+}
+
+/// What \a s lies on: the words its middle line passes through, and the
+/// other targets it crosses.
+QJsonArray coveredBy(const QList<Target>& targets, const Stroke& s)
+{
+    const QPolygonF along = alongOf(s);
+    QJsonArray out;
+    for (const Target& t : targets) {
+        if (!t.words.isEmpty()) {
+            QList<int> on;
+            for (int w = 0; w < t.words.size(); ++w)
+                for (const QPointF& pt : along)
+                    if (t.words.at(w).second.containsPoint(pt, Qt::OddEvenFill)) {
+                        on << w;
+                        break;
+                    }
+            if (!on.isEmpty()) out.append(refOf(t, on));
+            continue;
+        }
+        for (const QPointF& pt : along)
+            if (t.outline.containsPoint(pt, Qt::OddEvenFill)) {
+                out.append(refOf(t));
+                break;
+            }
+    }
+    return out;
+}
+
+/// The words a line along a line of text underlines (\a below) or strikes
+/// through: as long as half a word over it, just under its foot or across
+/// its middle.
+QJsonArray alongText(const QList<Target>& targets, const Stroke& s, bool below)
+{
+    const QPointF a = s.points.first(), b = s.points.last();
+    const double dx = b.x() - a.x(), dy = b.y() - a.y();
+    QJsonArray out;
+    if (dx == 0 || std::abs(dy) > 0.3 * std::abs(dx)) return out;
+    const double left = std::min(a.x(), b.x()), right = std::max(a.x(), b.x());
+    for (const Target& t : targets) {
+        QList<int> picked;
+        for (int w = 0; w < t.words.size(); ++w) {
+            const QRectF r = t.words.at(w).second.boundingRect();
+            const double over = std::min(right, r.right()) - std::max(left, r.left());
+            if (!(r.width() > 0) || over < 0.5 * r.width()) continue;
+            const double y = a.y() + dy * ((r.center().x() - a.x()) / dx), h = r.height();
+            const bool foot = y >= r.bottom() - 0.2 * h && y <= r.bottom() + 0.6 * h;
+            const bool middle = y >= r.top() + 0.3 * h && y < r.bottom() - 0.2 * h;
+            if (below ? foot : middle) picked << w;
+        }
+        if (!picked.isEmpty()) out.append(refOf(t, picked));
+    }
+    return out;
+}
+
+/// A colour as a reading says it: its name among the pen's, else its code.
+QString colourNamed(const QString& code)
+{
+    for (const auto& [color, name] : colors())
+        if (color.name(QColor::HexRgb) == code) return name.toLower();
+    return code;
+}
+
+/// What a reading's field names, in words.
+QString said(const QJsonValue& v)
+{
+    if (v.isArray()) {
+        QStringList parts;
+        for (const QJsonValue& one : v.toArray()) parts << said(one);
+        return parts.join(QStringLiteral("; "));
+    }
+    const QJsonObject o = v.toObject();
+    QStringList parts;
+    if (o.contains(QStringLiteral("words"))) {
+        for (auto it = o.begin(); it != o.end(); ++it)
+            if (it.key().startsWith(QLatin1String("in ")))
+                parts << QStringLiteral("\"%1\" in the %2 \"%3\"").arg(o.value(QStringLiteral("words")).toString(), it.key().mid(3), it.value().toString());
+        return parts.join(QStringLiteral(", "));
+    }
+    // A layout's: the shapes by layer, the texts, the cells placed.
+    if (o.contains(QStringLiteral("shapes")) || o.contains(QStringLiteral("texts")) || o.contains(QStringLiteral("cells"))) {
+        const QJsonObject shapes = o.value(QStringLiteral("shapes")).toObject();
+        for (auto it = shapes.begin(); it != shapes.end(); ++it)
+            parts << QStringLiteral("%1 shape(s) on %2").arg(it.value().toInt()).arg(it.key());
+        for (const QJsonValue& t : o.value(QStringLiteral("texts")).toArray()) parts << QStringLiteral("the text %1").arg(t.toString());
+        const QJsonObject cells = o.value(QStringLiteral("cells")).toObject();
+        for (auto it = cells.begin(); it != cells.end(); ++it)
+            parts << QStringLiteral("%1 placement(s) of %2").arg(it.value().toInt()).arg(it.key());
+        return parts.isEmpty() ? QStringLiteral("nothing") : parts.join(QStringLiteral(", "));
+    }
+    for (auto it = o.begin(); it != o.end(); ++it)
+        parts << (it.value().toString().isEmpty() ? QStringLiteral("a %1").arg(it.key())
+                                                  : QStringLiteral("the %1 \"%2\"").arg(it.key(), it.value().toString()));
+    return parts.join(QStringLiteral(", "));
+}
+
+} // namespace
+
+QString nameOf(Gesture gesture)
+{
+    switch (gesture) {
+    case Gesture::Dot: return QStringLiteral("dot");
+    case Gesture::Ring: return QStringLiteral("ring");
+    case Gesture::Line: return QStringLiteral("line");
+    case Gesture::Arrow: return QStringLiteral("arrow");
+    case Gesture::Arrowhead: return QStringLiteral("arrowhead");
+    case Gesture::Mark: break;
+    }
+    return QStringLiteral("mark");
+}
+
+Gesture gestureOf(const Stroke& stroke, QPointF* tip)
+{
+    const QPolygonF& p = stroke.points;
+    if (tip != nullptr) *tip = p.isEmpty() ? QPointF() : p.last();
+    const double size = sizeOf(p);
+    if (p.size() < 2 || size <= std::max(2.5 * stroke.width, 1e-12)) return Gesture::Dot;
+    const int last = int(p.size()) - 1;
+    const QRectF box = p.boundingRect();
+    const double chord = QLineF(p.first(), p.last()).length();
+    // A ring: back near where it began, round a fair share of its box.
+    if (chord <= 0.25 * size && areaOf(p) >= 0.2 * box.width() * box.height()) return Gesture::Ring;
+    // An arrow drawn at one go: straight out to the point furthest from
+    // where it began, its head what comes back from there - a little, but
+    // more than the pen's wobble as it lifts.
+    int far = 0;
+    double reach = 0;
+    for (int k = 1; k <= last; ++k)
+        if (const double d = QLineF(p.first(), p.at(k)).length(); d > reach) {
+            reach = d;
+            far = k;
+        }
+    const double back = lengthOf(p, far, last);
+    if (far > 0 && far < last && reach >= 0.6 * size && bulge(p, 0, far) <= 0.1 * reach && back >= std::max(0.05 * reach, 2 * stroke.width)
+        && back <= 0.6 * reach) {
+        if (tip != nullptr) *tip = p.at(far);
+        return Gesture::Arrow;
+    }
+    // A line: nowhere further from its chord than a tenth of it.
+    if (chord > 0 && bulge(p, 0, last) <= 0.1 * chord) return Gesture::Line;
+    return Gesture::Mark;
+}
+
+QList<Gesture> gesturesOf(const QList<Stroke>& strokes, QList<QPointF>* tips, QList<int>* headOf)
+{
+    const int n = int(strokes.size());
+    QList<Gesture> out(n);
+    QList<QPointF> tip(n);
+    QList<int> head(n, -1);
+    for (int i = 0; i < n; ++i) out[i] = gestureOf(strokes.at(i), &tip[i]);
+    // One or two short strokes just after a line, at one of its ends, are
+    // its head: an arrow pointing there. (Not a dot: a pin at its end.)
+    for (int i = 0; i < n; ++i) {
+        if (out.at(i) != Gesture::Line) continue;
+        const QPolygonF& shaft = strokes.at(i).points;
+        const double length = QLineF(shaft.first(), shaft.last()).length();
+        for (int j = i + 1; j < std::min(n, i + 3); ++j) {
+            if (out.at(j) != Gesture::Line && out.at(j) != Gesture::Mark) continue;
+            const QPolygonF& h = strokes.at(j).points;
+            if (h.isEmpty() || sizeOf(h) > 0.45 * length) continue;
+            const auto nearest = [&h](QPointF end) {
+                double d = std::numeric_limits<double>::infinity();
+                for (const QPointF& q : h) d = std::min(d, QLineF(q, end).length());
+                return d;
+            };
+            const double toEnd = nearest(shaft.last()), toStart = nearest(shaft.first());
+            if (std::min(toEnd, toStart) > 0.2 * length) continue;
+            if (out.at(i) == Gesture::Line) tip[i] = toEnd <= toStart ? shaft.last() : shaft.first();
+            out[i] = Gesture::Arrow;
+            out[j] = Gesture::Arrowhead;
+            head[j] = i;
+        }
+    }
+    if (tips != nullptr) *tips = tip;
+    if (headOf != nullptr) *headOf = head;
+    return out;
+}
+
+QPolygonF simplified(const QPolygonF& points, double tolerance)
+{
+    if (points.size() < 3) return points;
+    QList<bool> keep(points.size(), false);
+    keep.first() = keep.last() = true;
+    QList<std::pair<int, int>> todo{{0, int(points.size()) - 1}};
+    while (!todo.isEmpty()) {
+        const auto [a, b] = todo.takeLast();
+        int far = -1;
+        double most = tolerance;
+        for (int i = a + 1; i < b; ++i)
+            if (const double d = distance(points.at(i), points.at(a), points.at(b)); d > most) {
+                most = d;
+                far = i;
+            }
+        if (far >= 0) {
+            keep[far] = true;
+            todo << std::make_pair(a, far) << std::make_pair(far, b);
+        }
+    }
+    QPolygonF out;
+    for (int i = 0; i < points.size(); ++i)
+        if (keep.at(i)) out << points.at(i);
+    return out;
+}
+
+double insideShare(const QPolygonF& ring, const QRectF& box)
+{
+    if (ring.size() < 3) return 0;
+    if (!(box.width() > 0) || !(box.height() > 0)) return ring.containsPoint(box.center(), Qt::OddEvenFill) ? 1 : 0;
+    constexpr int n = 5;
+    int in = 0;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            if (ring.containsPoint(QPointF(box.left() + box.width() * (i + 0.5) / n, box.top() + box.height() * (j + 0.5) / n), Qt::OddEvenFill)) ++in;
+    return double(in) / (n * n);
+}
+
+QPolygonF alongOf(const Stroke& stroke)
+{
+    return sampledOf(stroke.points, std::max(stroke.width / 2, lengthOf(stroke.points) / 400 + 1e-12));
+}
+
+double reachOf(const Stroke& stroke)
+{
+    return std::max(1.5 * stroke.width, 0.06 * sizeOf(stroke.points));
+}
+
+QJsonObject readingOf(const Stroke& stroke, int number, Gesture gesture, bool points)
+{
+    QJsonObject o{{QStringLiteral("stroke"), number},
+                  {QStringLiteral("drawn as"), nameOf(gesture)},
+                  {QStringLiteral("tool"), stroke.highlighter ? QStringLiteral("highlighter") : QStringLiteral("pen")},
+                  {QStringLiteral("colour"), stroke.color.name(QColor::HexRgb)},
+                  {QStringLiteral("box"), boxJson(stroke.bounds())}};
+    if (points && !stroke.points.isEmpty()) {
+        // A few dozen points at most: its shape, not its every wobble.
+        double tolerance = std::max(stroke.width / 2, 0.01 * sizeOf(stroke.points));
+        QPolygonF few = simplified(stroke.points, tolerance);
+        while (few.size() > 32) few = simplified(stroke.points, tolerance *= 1.6);
+        QJsonArray list;
+        for (const QPointF& pt : few) list.append(QJsonArray{rounded(pt.x()), rounded(pt.y())});
+        o.insert(QStringLiteral("points"), list);
+    }
+    return o;
+}
+
+QJsonArray readPage(const QList<Stroke>& strokes, const QList<Target>& targets, bool points)
+{
+    QJsonArray out;
+    QList<QPointF> tips;
+    QList<int> heads;
+    const QList<Gesture> gestures = gesturesOf(strokes, &tips, &heads);
+    for (int i = 0; i < strokes.size(); ++i) {
+        const Stroke& s = strokes.at(i);
+        const Gesture g = gestures.at(i);
+        QJsonObject o = readingOf(s, i + 1, g, points);
+        if (s.points.isEmpty()) continue;
+        const double reach = reachOf(s);
+        switch (g) {
+        case Gesture::Arrowhead: o.insert(QStringLiteral("of stroke"), heads.at(i) + 1); break;
+        case Gesture::Dot:
+            if (const QJsonObject on = pointedAt(targets, s.points.first(), QPointF(), 0, reach); !on.isEmpty())
+                o.insert(QStringLiteral("on"), on);
+            break;
+        case Gesture::Ring: {
+            // Round each target whole, or some of its words: three fifths
+            // of a word inside it, half of a target with none.
+            QPolygonF ring = s.points;
+            ring << ring.first();
+            QJsonArray around;
+            for (const Target& t : targets) {
+                if (t.words.isEmpty()) {
+                    if (insideShare(ring, t.outline.boundingRect()) >= 0.5) around.append(refOf(t));
+                    continue;
+                }
+                QList<int> in;
+                for (int w = 0; w < t.words.size(); ++w)
+                    if (insideShare(ring, t.words.at(w).second.boundingRect()) >= 0.6) in << w;
+                if (!in.isEmpty()) around.append(refOf(t, in));
+            }
+            if (!around.isEmpty()) o.insert(QStringLiteral("around"), around);
+            break;
+        }
+        case Gesture::Line:
+        case Gesture::Arrow:
+        case Gesture::Mark: {
+            // A highlighter's stroke, or a mark: what it lies on.
+            if (s.highlighter || g == Gesture::Mark) {
+                if (const QJsonArray on = coveredBy(targets, s); !on.isEmpty())
+                    o.insert(s.highlighter ? QStringLiteral("highlights") : QStringLiteral("on"), on);
+                if (g != Gesture::Arrow) break;
+            }
+            // A line along a line of text: under its words, or through them.
+            if (g == Gesture::Line) {
+                const QJsonArray foot = alongText(targets, s, true), middle = alongText(targets, s, false);
+                if (!foot.isEmpty()) o.insert(QStringLiteral("underlines"), foot);
+                if (!middle.isEmpty()) o.insert(QStringLiteral("strikes through"), middle);
+                if (!foot.isEmpty() || !middle.isEmpty()) break;
+            }
+            // Else from something, to what it points at.
+            const QPointF start = s.points.first(), end = tips.at(i);
+            const double length = QLineF(start, end).length();
+            const QPointF along = length > 0 ? (end - start) / length : QPointF();
+            if (const QJsonObject from = pointedAt(targets, start, -along, 0, reach); !from.isEmpty()) o.insert(QStringLiteral("from"), from);
+            if (const QJsonObject to = pointedAt(targets, end, along, 0.3 * length, reach); !to.isEmpty())
+                o.insert(QStringLiteral("points at"), to);
+            break;
+        }
+        }
+        out.append(o);
+    }
+    return out;
+}
+
+QString sentenceOf(const QJsonObject& reading, const QString& where, const QString& unit)
+{
+    const QString drawn = reading.value(QStringLiteral("drawn as")).toString();
+    const QString colour = colourNamed(reading.value(QStringLiteral("colour")).toString());
+    QString s = QStringLiteral("%1, stroke %2: %3 %4 %5 %6")
+                    .arg(where)
+                    .arg(reading.value(QStringLiteral("stroke")).toInt())
+                    .arg(QStringLiteral("aeiou").contains(colour.left(1)) ? QStringLiteral("an") : QStringLiteral("a"), colour,
+                         reading.value(QStringLiteral("tool")).toString(), drawn);
+    if (drawn == QLatin1String("arrowhead")) return s + QStringLiteral(" of stroke %1").arg(reading.value(QStringLiteral("of stroke")).toInt());
+    const std::pair<const char*, const char*> fields[] = {{"around", "around"},       {"underlines", "under"}, {"strikes through", "through"},
+                                                          {"highlights", "over"},     {"on", "on"},            {"from", "from"},
+                                                          {"points at", "pointing at"}};
+    for (const auto& [key, words] : fields)
+        if (reading.contains(QLatin1String(key))) s += QStringLiteral(" %1 %2").arg(QLatin1String(words), said(reading.value(QLatin1String(key))));
+    const QJsonArray b = reading.value(QStringLiteral("box")).toArray();
+    if (b.size() == 4)
+        s += QStringLiteral(" (its box %1, %2 to %3, %4 %5)")
+                 .arg(b.at(0).toDouble()).arg(b.at(1).toDouble()).arg(b.at(2).toDouble()).arg(b.at(3).toDouble()).arg(unit);
+    return s;
+}
+
+QString sentencesOf(const QJsonArray& readings, bool slides, int most)
+{
+    QStringList lines;
+    const int from = std::max(0, int(readings.size()) - most);
+    if (from > 0) lines << QStringLiteral("(%1 earlier stroke(s) left out: read_drawings has them all)").arg(from);
+    for (int i = from; i < readings.size(); ++i) {
+        const QJsonObject r = readings.at(i).toObject();
+        lines << sentenceOf(r, slides ? QStringLiteral("slide %1").arg(r.value(QStringLiteral("slide")).toInt())
+                                      : QStringLiteral("cell %1").arg(r.value(QStringLiteral("cell")).toString()),
+                            slides ? QStringLiteral("points") : QStringLiteral("µm"));
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 
 QList<std::pair<QColor, QString>> colors()

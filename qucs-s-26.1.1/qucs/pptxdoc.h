@@ -242,6 +242,11 @@ public:
     /// Slide \a index drawn \a scale pixels a point, with what the pen drew
     /// on it.
     QImage slideImage(int index, qreal scale) const;
+    /// What is drawn on the slides, read as one would read it
+    /// (markup::readPage()): each stroke, slide by slide in the order drawn,
+    /// how it was drawn and what of the slide it marks; with \a points, its
+    /// points simplified, in points from the slide's top left.
+    QJsonArray readDrawing(bool points = false) const;
 
     /// Searches the slides' text and notes for \a text: the first slide
     /// with it from the one in sight on shown (unless \a go is false). The

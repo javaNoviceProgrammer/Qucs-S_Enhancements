@@ -15,6 +15,7 @@
 
 #include <QColor>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QPolygonF>
 #include <QString>
@@ -88,6 +89,10 @@ public:
     /// The last change undone; whether there was one.
     bool undo();
     bool canUndo() const { return !a_undo.isEmpty(); }
+    /// Moves on at each change, to a number no drawing has had (nought
+    /// before the first): whatever was told of the drawing at one revision
+    /// is told again only when it has moved on.
+    quint64 revision() const { return a_revision; }
 
     static constexpr int MostUndone = 100;
 
@@ -95,12 +100,8 @@ private:
     void remember();
     QList<Stroke> a_strokes;
     QList<QList<Stroke>> a_undo;   // what the strokes were before each change
+    quint64 a_revision = 0;
 };
-
-/// \a drawing as Claude's tools say it: for each part drawn on (\a key
-/// names it - a slide by its number, a cell by its name), how many
-/// strokes, their box [x1, y1, x2, y2] in its measures, their colours.
-QJsonArray describe(const Drawing& drawing, const QString& key);
 
 /// Draws \a strokes: \a toPixel takes a point of theirs to the painter's,
 /// \a pixelsPerUnit pixels a measure of theirs. None under a pixel broad.
@@ -113,6 +114,63 @@ Stroke begin(const Pen& pen, const QString& part, QPointF point, double pixelsPe
 constexpr double EraserReach = 6;
 /// The least move, pixels, a stroke takes a new point at.
 constexpr double LeastStep = 1.5;
+
+// ----------------------------------------------------------------------
+// Reading what was drawn - for Claude, without a picture
+
+/// How a stroke was drawn, as one reading it takes it: a dot; a ring round
+/// something, back near where it began; a line, straight or nearly; an
+/// arrow, a line with its head drawn at its end (in the stroke itself, or
+/// as a short stroke of its own beside it); or a mark of another shape - a
+/// tick, a cross, a scribble.
+enum class Gesture { Dot, Ring, Line, Arrow, Mark, Arrowhead };
+QString nameOf(Gesture gesture);
+/// \a stroke's gesture, alone; an arrow's tip in \a tip (a line's end).
+Gesture gestureOf(const Stroke& stroke, QPointF* tip = nullptr);
+/// The gestures of \a strokes, drawn on one part in that order: a line
+/// with a short stroke at one of its ends drawn just after it is an arrow
+/// pointing there, the short one its head (\a headOf: the arrow's index,
+/// else -1); \a tips each one's tip.
+QList<Gesture> gesturesOf(const QList<Stroke>& strokes, QList<QPointF>* tips, QList<int>* headOf);
+/// \a points simplified to within \a tolerance (Douglas and Peucker's): a
+/// ring's few dozen points, a line's two.
+QPolygonF simplified(const QPolygonF& points, double tolerance);
+/// How much of \a box lies inside the closed polygon \a ring, 0 to 1.
+double insideShare(const QPolygonF& ring, const QRectF& box);
+/// The points along \a stroke's middle line, close enough together - half
+/// its width, or a 400th of its length - that nothing it lies on is missed
+/// between them.
+QPolygonF alongOf(const Stroke& stroke);
+
+/// What a stroke can mark on a page, where it is drawn: a paragraph or a
+/// table's cell and each of its words, a picture, a chart, a shape.
+struct Target {
+    QString kind;                                  ///< "paragraph", "cell", "picture", "chart", "shape"
+    QString text;                                  ///< its text; a picture's alt text or name, a chart's title
+    QPolygonF outline;
+    QList<std::pair<QString, QPolygonF>> words;    ///< a paragraph's or cell's, each where it is drawn
+};
+
+/// The strokes drawn on one page (a slide: y down) read against what is on
+/// it, \a targets: for each, in the order drawn, its number, how it was
+/// drawn (gesturesOf()), its tool, colour and box, and what it marks - what
+/// a ring is round (whole, or some of its words), the words a line
+/// underlines or strikes through, what a highlighter or a mark lies on,
+/// what a line or an arrow begins at and points at, what a dot is on - and,
+/// \a points, its points simplified.
+QJsonArray readPage(const QList<Stroke>& strokes, const QList<Target>& targets, bool points);
+/// What every reading has: the stroke's number on its part, how it was
+/// drawn, its tool, colour and box, and (\a points) its points simplified.
+QJsonObject readingOf(const Stroke& stroke, int number, Gesture gesture, bool points);
+/// How near a stroke's own ends something must be to be what it points at
+/// or begins at, in its measures.
+double reachOf(const Stroke& stroke);
+/// A reading in a sentence, for a prompt; \a where says on what ("slide 2",
+/// "cell TOP"), \a unit its measures ("points", "µm").
+QString sentenceOf(const QJsonObject& reading, const QString& where, const QString& unit);
+/// Readings (a presentation's, \a slides; else a layout's) a sentence each,
+/// a line each - the latest \a most of them, the earlier ones counted.
+QString sentencesOf(const QJsonArray& readings, bool slides, int most = 30);
 
 /// The colours the pen's menu offers, and their names.
 QList<std::pair<QColor, QString>> colors();

@@ -552,6 +552,22 @@ void QucsApp::applyLook()
 /**
  * @brief QucsApp::initView Setup the layour of all widgets
  */
+std::pair<quint64, QString> QucsApp::drawingsOf(const QString &file, quint64 known) const
+{
+  for (QucsDoc *doc : allDocuments()) {
+    if (doc->getDocName() != file) continue;
+    if (auto *layout = qobject_cast<LayoutDoc *>(documentWidget(doc))) {
+      const quint64 revision = layout->view()->drawing().revision();
+      return {revision, revision == known ? QString() : qucs_s::markup::sentencesOf(layout->view()->readDrawing(false), false)};
+    }
+    if (auto *deck = dynamic_cast<PptxDoc *>(doc)) {
+      const quint64 revision = deck->view()->drawing().revision();
+      return {revision, revision == known ? QString() : qucs_s::markup::sentencesOf(deck->readDrawing(false), true)};
+    }
+  }
+  return {0, QString()};
+}
+
 void QucsApp::initView()
 {
   // set application icon
@@ -912,6 +928,8 @@ void QucsApp::initView()
     QucsDoc *doc = DocumentTab != nullptr && DocumentTab->count() > 0 ? getDoc() : nullptr;
     return doc != nullptr ? doc->getDocName() : QString();
   });
+  // What the pen drew on a layout or a presentation, read for a prompt.
+  claudeTabs->setDrawingsProvider([this](const QString &file, quint64 known) { return drawingsOf(file, known); });
   claudeDock = new QDockWidget(tr("Claude Code"), this);
   claudeDock->setObjectName(QStringLiteral("ClaudeCodeDock"));
   claudeDock->setWidget(claudeTabs);
