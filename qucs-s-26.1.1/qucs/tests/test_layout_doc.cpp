@@ -1171,6 +1171,26 @@ private slots:
         click(view, view->toPixel(QPointF(12, 0.5)));
         QCOMPARE(points.size(), 2);
         QCOMPARE(boxes.size(), 1);
+        // Whichever way it is dragged, the box between the two points, pixel
+        // for pixel: Qt 6's QRect::normalized() moves a swapped corner in by
+        // a pixel, and a box dragged up or to the left came out two short.
+        {
+            const QPoint a = view->toPixel(QPointF(10.2, 0.3)).toPoint(), b = view->toPixel(QPointF(11.6, 0.9)).toPoint();
+            const QList<std::pair<QPoint, QPoint>> ways{
+                {a, b}, {b, a}, {QPoint(a.x(), b.y()), QPoint(b.x(), a.y())}, {QPoint(b.x(), a.y()), QPoint(a.x(), b.y())}};
+            for (const auto& [from, to] : ways) {
+                drag(view, from, to);
+                const QRectF picked = boxes.last().first().toRectF();
+                const QPointF low = view->toPixel(picked.bottomLeft()), high = view->toPixel(picked.topRight());
+                QVERIFY2(std::abs(std::abs(high.x() - low.x()) - std::abs(b.x() - a.x())) < 0.01
+                             && std::abs(std::abs(high.y() - low.y()) - std::abs(b.y() - a.y())) < 0.01,
+                         qPrintable(QStringLiteral("from %1, %2 to %3, %4: %5 by %6 pixels, not %7 by %8")
+                                        .arg(from.x()).arg(from.y()).arg(to.x()).arg(to.y())
+                                        .arg(std::abs(high.x() - low.x())).arg(std::abs(high.y() - low.y()))
+                                        .arg(std::abs(b.x() - a.x())).arg(std::abs(b.y() - a.y()))));
+            }
+            QCOMPARE(boxes.size(), 5);
+        }
         QTest::keyClick(view, Qt::Key_Escape);
         QCOMPARE(view->mode(), LayoutView::Mode::Select);
         QCOMPARE(view->cursor().shape(), Qt::ArrowCursor);

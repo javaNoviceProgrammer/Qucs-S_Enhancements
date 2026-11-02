@@ -12,6 +12,7 @@
  */
 #include "layoutdoc.h"
 
+#include "elidedlabel.h"
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
 #include "layoutviewgpu.h"
@@ -1078,7 +1079,11 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
     }
     case Drag::Zoom:
     case Drag::Box:
-        a_zoomBox = QRect(a_pressPos, pos).normalized();
+        // The box between the two points, whichever way it is dragged: Qt 6's
+        // QRect::normalized() moves a swapped corner in by a pixel, and a box
+        // dragged up or to the left came out two pixels short.
+        a_zoomBox = QRect(QPoint(std::min(a_pressPos.x(), pos.x()), std::min(a_pressPos.y(), pos.y())),
+                          QPoint(std::max(a_pressPos.x(), pos.x()), std::max(a_pressPos.y(), pos.y())));
         update();
         break;
     case Drag::Ruler:
@@ -1300,7 +1305,8 @@ void LayoutDoc::buildUi()
     bar->setSpacing(2);
     a_sidebarButton = toolButton(a_toolbar, glyph(GlyphIcon::Sidebar), tr("Show or hide the cells and the layers"));
     a_sidebarButton->setCheckable(true);
-    a_cellLabel = new QLabel(a_toolbar);
+    a_cellLabel = new ElidedLabel(a_toolbar);
+    a_cellLabel->setObjectName(QStringLiteral("layoutCell"));
     a_cellLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_fitButton = toolButton(a_toolbar, glyph(GlyphIcon::Fit), tr("Show the whole cell (F)"));
     a_zoomOutButton = toolButton(a_toolbar, glyph(GlyphIcon::Minus), tr("Zoom out (-)"));
@@ -1451,7 +1457,8 @@ void LayoutDoc::buildUi()
     infoRow->setContentsMargins(6, 2, 6, 2);
     // What is selected or measured (else what the layout has), and at the
     // right where the pointer is: the first takes the room there is.
-    a_info = new QLabel(infoBar);
+    a_info = new ElidedLabel(infoBar);
+    a_info->setObjectName(QStringLiteral("layoutInfoText"));
     a_info->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_info->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     a_position = new QLabel(infoBar);

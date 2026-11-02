@@ -11,6 +11,7 @@
 
 #include "pptxdoc.h"
 
+#include "elidedlabel.h"
 #include "links.h"
 #include "main.h"
 #include "misc.h"
@@ -804,7 +805,7 @@ void PptxDoc::buildUi()
     auto* notesLayout = new QVBoxLayout(a_notesPane);
     notesLayout->setContentsMargins(8, 4, 8, 4);
     notesLayout->setSpacing(2);
-    a_notesTitle = new QLabel(a_notesPane);
+    a_notesTitle = new ElidedLabel(a_notesPane);
     a_notesTitle->setObjectName(QStringLiteral("pptxNotesTitle"));
     a_notes = new QTextBrowser(a_notesPane);
     a_notes->setObjectName(QStringLiteral("pptxNotes"));

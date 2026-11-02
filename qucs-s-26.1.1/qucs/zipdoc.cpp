@@ -10,6 +10,7 @@
  */
 #include "zipdoc.h"
 
+#include "elidedlabel.h"
 #include "links.h"
 #include "main.h"
 #include "misc.h"
@@ -217,7 +218,7 @@ ZipDoc::ZipDoc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
     });
     all->addWidget(a_view, 1);
 
-    a_status = new QLabel(this);
+    a_status = new ElidedLabel(this);
     a_status->setObjectName(QStringLiteral("zipStatus"));
     a_status->setContentsMargins(6, 2, 6, 3);
     all->addWidget(a_status);

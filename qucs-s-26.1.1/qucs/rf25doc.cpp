@@ -10,6 +10,7 @@
  */
 #include "rf25doc.h"
 
+#include "elidedlabel.h"
 #include "main.h"
 #include "misc.h"
 #include "multiphysics/fem_expr.h"
@@ -585,7 +586,7 @@ void RF25Doc::buildUi()
         else solve();
     });
     row->addSpacing(10);
-    a_layoutLabel = new QLabel(bar);
+    a_layoutLabel = new ElidedLabel(bar);
     a_layoutLabel->setObjectName(QStringLiteral("rfLayoutLabel"));
     a_layoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     row->addWidget(a_layoutLabel, 1);
@@ -636,7 +637,7 @@ void RF25Doc::buildUi()
     a_splitter->setSizes({560, 150});
     all->addWidget(a_splitter, 1);
 
-    a_status = new QLabel(this);
+    a_status = new ElidedLabel(this);
     a_status->setObjectName(QStringLiteral("rfStatus"));
     a_status->setContentsMargins(8, 2, 8, 2);
     a_status->setTextInteractionFlags(Qt::TextSelectableByMouse);

@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "gitui.h"
+#include "elidedlabel.h"
 #include "githistory.h"
 #include "schematicdiff.h"
 
@@ -171,7 +172,7 @@ CommitDialog::CommitDialog(const QString& root, QWidget* parent) : QDialog(paren
     setObjectName(QStringLiteral("gitCommitDialog"));
     setWindowTitle(tr("Commit — %1").arg(QFileInfo(root).fileName()));
     auto* layout = new QVBoxLayout(this);
-    a_header = new QLabel(this);
+    a_header = new ElidedLabel(this, Qt::ElideMiddle);
     a_header->setObjectName(QStringLiteral("gitCommitHeader"));
     a_header->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(a_header);

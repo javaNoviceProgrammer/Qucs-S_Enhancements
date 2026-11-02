@@ -11,6 +11,7 @@
  */
 #include "xmldoc.h"
 
+#include "elidedlabel.h"
 #include "filebrowser.h"
 #include "misc.h"
 #include "settings.h"
@@ -300,7 +301,7 @@ XmlDoc::XmlDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     row->addWidget(a_format);
     row->addWidget(a_minify);
     row->addSpacing(10);
-    a_status = new QLabel(a_bar);
+    a_status = new ElidedLabel(a_bar);
     a_status->setObjectName(QStringLiteral("xmlStatus"));
     a_status->setTextFormat(Qt::RichText);
     row->addWidget(a_status);
