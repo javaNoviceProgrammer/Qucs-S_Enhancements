@@ -203,6 +203,11 @@ struct PortDeembedding {
     /// \a agreedTo, Hz, within a percent at every frequency; at most they
     /// differ by \a worst, at \a worstAt (Hz). Nought where not calibrated.
     double agreedTo = 0, worst = 0, worstAt = 0;
+    /// Hz: the lowest frequency they do not agree at (nought: none); and
+    /// whether they agree at the top, which the line and the discontinuity
+    /// above are given at - where they do not, those are not to be trusted.
+    double offFrom = 0;
+    bool topAgrees = true;
     QList<double> strips;      ///< the shorter strips' lengths, the layout's units, longest first
     double third = 0;          ///< the third strip's, which checks the other two
     /// How far its feed runs straight from its face before the structure

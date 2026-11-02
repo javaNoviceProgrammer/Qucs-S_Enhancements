@@ -731,6 +731,7 @@ private slots:
         for (const double r : thin.residual) QVERIFY2(r > 1e-7 && r < 3e-3, qPrintable(QString::number(r)));
         QCOMPARE(thin.agreedTo, 20e9);
         QVERIFY2(thin.lines.join(' ').contains(QStringLiteral("The three agree on one line")), qPrintable(thin.lines.join(" | ")));
+        QVERIFY2(!thin.lines.join(' ').contains(QStringLiteral("neither to be trusted")), qPrintable(thin.lines.join(" | ")));
 
         const rf::Stack thick = grounded(9.8, 254e-6);
         const rf::MeshSettings how = meshing(3, slow ? 200 : 100);
@@ -743,6 +744,12 @@ private slots:
         QCOMPARE(fixed.tried.size(), 1);
         QCOMPARE(fixed.tried.first(), 2532.0);
         QVERIFY2(fixed.residual.last() > rf::kStripsAgree, "eight heights' strips do not agree at the top");
+        // The line and the discontinuity they read there said not to be
+        // trusted, where they are given (the check of 2 November's G8).
+        QVERIFY2(fixed.lines.join(' ').contains(QStringLiteral("at the port - neither to be trusted: the strips do not agree on one "
+                                                               "line there.")),
+                 qPrintable(fixed.lines.join(" | ")));
+        QCOMPARE(chosen.lines.join(' ').contains(QStringLiteral("neither to be trusted")), chosen.residual.last() > rf::kStripsAgree);
         QVERIFY2(chosen.tried.size() > 1 && chosen.tried.at(1) < chosen.tried.at(0), "shorter strips solved beside them");
         QVERIFY2(chosen.residual.last() < 0.5 * fixed.residual.last(), "and they agree the better there");
         QVERIFY2(chosen.agreedTo >= fixed.agreedTo, "as far up at least");
@@ -859,6 +866,59 @@ private slots:
         lossy.discontinuity = {{Complex(1, 0), Complex(0, 0), Complex(0, 0), Complex(1, 0)}};
         const rf::FullWave plain = rf::deembedded(raw, {{&lossy, 0}, {&lossy, 0}});
         QVERIFY2(!plain.warnings.join(' ').contains(QStringLiteral("de-embedding's")), qPrintable(plain.warnings.join(" | ")));
+    }
+
+    // What a port's de-embedding gives at the top of the sweep - its feed's
+    // line and its own discontinuity - is said not to be trusted where its
+    // strips do not agree on one line there, from where they first do not
+    // (the check of G8, G9 and the pens of 2 November: "the port's reported
+    // line (166 Ω, eps_eff 5.36, 2374 dB/m at 100 GHz) is still printed as
+    // if valid"); not where they agree at the top though not below it -
+    // the warning says where -, nor where they agree throughout.
+    void whatItsStripsDoNotAgreeOnAtTheTopIsNotToBeTrusted()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<double> fs = {5e9, 10e9};
+        const QList<rf::Conductor> line = {strip(0, 0, 2000, 100)};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, meshing(2, 100), stack, 0), line, stack,
+                                                {edgePort(QPointF(0, 50), QPointF(-1, 0)), edgePort(QPointF(2000, 50), QPointF(1, 0))}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        rf::Calibration cal;
+        cal.metal = QStringLiteral("M1");
+        cal.width = 100;
+        cal.frequencies = fs;
+        const std::array<Complex, 4> through{Complex(1, 0), Complex(0, 0), Complex(0, 0), Complex(1, 0)};
+        cal.discontinuity = {through, through};
+        cal.gamma = {Complex(0, 200), Complex(0, 400)};
+        cal.impedance = {Complex(50, 0), Complex(50, 0)};
+        // Not one line from 5 GHz, nor at the top: the first port's plane
+        // moved along its feed's line, the second's at its face.
+        cal.residual = {0.02, 0.05};
+        rf::FullWave d = rf::deembedded(raw, {{&cal, 50e-6}, {&cal, 0}});
+        QVERIFY2(d.ok(), qPrintable(why(d)));
+        QVERIFY(!d.deembedding.value(0).topAgrees && !d.deembedding.value(1).topAgrees);
+        QCOMPARE(d.deembedding.value(0).offFrom, 5e9);
+        const QString lines = d.lines.join(QStringLiteral(" | "));
+        QVERIFY2(lines.contains(QStringLiteral("along a line of 50 Ohm, eps_eff 3.643 - its own discontinuity and the line not to be "
+                                               "trusted at 10 GHz: its strips do not agree on one line from 5 GHz.")),
+                 qPrintable(lines));
+        QVERIFY2(lines.contains(QStringLiteral("its reference plane at its face - its own discontinuity not to be trusted at 10 GHz")),
+                 qPrintable(lines));
+        QVERIFY2(d.warnings.join(' ').contains(QStringLiteral("do not agree on one line from 5 GHz")), qPrintable(d.warnings.join(" | ")));
+        // One line at the top, though not below it: the values there stand,
+        // and where they do not agree is warned of all the same.
+        cal.residual = {0.02, 0.001};
+        d = rf::deembedded(raw, {{&cal, 50e-6}, {&cal, 0}});
+        QVERIFY(d.deembedding.value(0).topAgrees);
+        QCOMPARE(d.deembedding.value(0).offFrom, 5e9);
+        QVERIFY2(!d.lines.join(' ').contains(QStringLiteral("not to be trusted at 10 GHz")), qPrintable(d.lines.join(" | ")));
+        QVERIFY2(d.warnings.join(' ').contains(QStringLiteral("do not agree on one line from 5 GHz")), qPrintable(d.warnings.join(" | ")));
+        // One line throughout: nothing said.
+        cal.residual = {0.001, 0.001};
+        d = rf::deembedded(raw, {{&cal, 50e-6}, {&cal, 0}});
+        QVERIFY(d.deembedding.value(0).topAgrees);
+        QCOMPARE(d.deembedding.value(0).offFrom, 0.0);
+        QVERIFY2(!d.lines.join(' ').contains(QStringLiteral("not to be trusted")) && d.warnings.isEmpty(), qPrintable(d.lines.join(" | ")));
     }
 
     void whatCannotBeCalibratedIsSaid()

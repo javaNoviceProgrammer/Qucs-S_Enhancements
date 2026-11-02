@@ -2761,6 +2761,35 @@ private slots:
                      && std::abs(in.value("its field reaches").toDouble() - 450e-6) < 1e-9,
                  qPrintable(QString::fromUtf8(QJsonDocument(in).toJson(QJsonDocument::Compact))));
         QVERIFY(!de.contains("warnings"));
+        // Where its line and discontinuity were taken; one line there, so
+        // nothing said of them.
+        QCOMPARE(in.value("taken at").toDouble(), 3e9);
+        QVERIFY(!in.contains("not to be trusted"));
+        // Strips that are not one line where the line and the discontinuity
+        // are taken - a millimetre of them on 635 µm of alumina at 42 GHz,
+        // 18 % from it - and those said not to be trusted where they are
+        // given: in the port's answer (the brief one's is the same) and in
+        // the tab's account of the solve (the check of 2 November's G8: 166
+        // Ohm, eps_eff 5.36 and 2374 dB/m at 100 GHz printed as if good).
+        qucs_s::rf25::Model loose = calibrated;
+        for (qucs_s::rf25::Node& n : loose.stackNode().children)
+            if (n.type == QLatin1String("rf_substrate")) n.props.insert(QStringLiteral("thickness"), QStringLiteral("635[um]"));
+        loose.ports().children.front().props.insert(QStringLiteral("strips"), QStringLiteral("1000[um]"));
+        QVERIFY(put(ws + "/rf/wave6.qrf25", loose.toJson()));
+        const QJsonObject apart = json(call("rf25_solve", {{"path", ws + "/rf/wave6.qrf25"}, {"solver", "full_wave"},
+                                                           {"frequency", "42[GHz]"}}, 300000)).toObject();
+        const QJsonObject of = apart.value("ports").toArray().at(0).toObject().value("de-embedded").toObject();
+        QCOMPARE(of.value("taken at").toDouble(), 42e9);
+        QVERIFY2(of.value("strips differ by at most").toDouble() > 0.05
+                     && of.value("not to be trusted").toString() == QStringLiteral("the line, the shunt C and the series L, taken at 42 GHz: "
+                                                                                   "its strips do not agree on one line from 42 GHz"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(of).toJson(QJsonDocument::Compact))));
+        bool told = false;
+        for (const QJsonValue& v : apart.value("what it did").toArray())
+            told = told || (v.toString().startsWith(QStringLiteral("In de-embedded: its own discontinuity taken out"))
+                            && v.toString().endsWith(QStringLiteral(" at 42 GHz - not to be trusted there: its strips do not agree on one line "
+                                                                    "from 42 GHz.")));
+        QVERIFY2(told, qPrintable(QString::fromUtf8(QJsonDocument(apart.value("what it did").toArray()).toJson())));
         // On 635 µm of alumina at 42 GHz, past where the stack carries a
         // second surface wave - the top of a microstrip's band on it - the
         // brief answer passive with nothing to warn of (what gave power back
@@ -8604,6 +8633,10 @@ private slots:
 #endif
         QVERIFY(control->irreversible("send_input", {{"keys", "Delete"}}));
         QVERIFY(control->subjectOf("send_input", {{"click", QJsonArray{100, 100}}, {"keys", "Delete"}}).contains("keys Delete"));
+        // (A drag through points on a slide: how many, and on which.)
+        const QString through = control->subjectOf("send_input", {{"target", "slide"}, {"slide", 2}, {"click", QJsonArray{10, 10}},
+                                                                  {"drag_through", QJsonArray{QJsonArray{20, 20}, QJsonArray{30, 10}}}});
+        QVERIFY2(through.contains("dragged through 2 point(s) on slide 2"), qPrintable(through));
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
         Schematic* sch = front();
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
