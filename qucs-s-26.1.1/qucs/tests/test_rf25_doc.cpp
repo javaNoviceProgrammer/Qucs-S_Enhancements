@@ -1860,7 +1860,7 @@ private slots:
             doc->view()->showRegion(QRectF(QPointF(-200, -400), QPointF(1200, 400)));
             const QImage frame = doc->view()->grab().toImage();
             const double dpr = frame.devicePixelRatio();
-            const auto inkAlong = [&](QPointF from, QPointF to) {
+            const auto inkAlong = [doc, &frame, &ink, dpr](QPointF from, QPointF to) {
                 int hits = 0;
                 for (int i = 1; i < 20; ++i) {
                     const QPointF at = doc->view()->toPixel(from + (to - from) * (i / 20.0)) * dpr;

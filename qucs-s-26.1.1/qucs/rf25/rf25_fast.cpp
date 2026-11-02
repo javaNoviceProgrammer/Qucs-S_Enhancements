@@ -22,8 +22,12 @@
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #elif defined(_WIN32)
+// Lean: the whole of <windows.h> brings rpcndr.h, whose macro small is char.
 #ifndef NOMINMAX
 #define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 #else
@@ -362,7 +366,7 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
     std::vector<VectorC> us, vs;
     std::vector<char> used(std::size_t(m), 0);
     double held = 0;   // the Frobenius norm squared of the sum so far
-    int row = m / 2, misses = 0, small = 0;
+    int row = m / 2, misses = 0, slight = 0;
     VectorC r(n), c(m);
     while (true) {
         // The row's residual: what the sum so far leaves of it.
@@ -414,9 +418,9 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
         // row's residual is not (a block of two clusters at different
         // heights, its rows of one cluster's half).
         if (nu * nv <= tolerance * tolerance * held) {
-            if (++small >= 2) break;
+            if (++slight >= 2) break;
         } else {
-            small = 0;
+            slight = 0;
         }
         if (int(us.size()) >= most) return false;
         // The next row: where this column's residual is largest, of the rows

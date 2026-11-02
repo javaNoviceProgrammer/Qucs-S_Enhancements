@@ -299,6 +299,46 @@ Accelerate:
 CI's runner is about twice this machine there. That puts the full wave near 900 s against its 900 s limit
 times the Linux job's scale of three, and its heaviest function near 170 s against QtTest's 900 s.
 
+## Before the push
+
+The eight unpushed commits, this round's and the GSSG round's, were checked against what CI builds with and
+this Mac does not have:
+
+- **Windows: a macro named small.** `rf25_fast.cpp` reads the machine's memory through `<windows.h>`. The whole
+  header brings `rpcndr.h` (through `ole2.h` and `objbase.h`), whose `#define small char` made the cross
+  approximation's count of small outer products `int ... char = 0`. CI's Windows build (MSYS2's GCC) would have
+  stopped there. The header is now taken lean (`WIN32_LEAN_AND_MEAN`, which leaves `ole2.h` out), and the count
+  is named `slight`. Every macro of the 179 mingw-w64 headers `<windows.h>` reaches, whole or lean, was set
+  against the file's words after it. `small` was the only one besides `min` and `max`, which `NOMINMAX` keeps
+  out; the file calls `std::min` and `std::max`.
+- **GCC 12 and 13: a long `[&]` lambda.** Of the commits' lambdas that capture by reference without naming what
+  they capture, one was fifteen lines or more: the ports test's `inkAlong` (16 lines, from `5fd0097`). It now
+  names its captures.
+- **Headers and Qt.** Every `std::` name the commits add has its header included by its file, by the project
+  headers it includes, or by Qt's or Eigen's. No Qt API is new to them; CI builds with Qt 6.10.3, this Mac with
+  6.11.2.
+- **The sanitized suites at the last commit.** The runs' new order (`b2e47b2`) came after the timings above, so
+  every suite the commits change was run whole again, four at a time, with Eigen's sparse LU:
+
+| Suite | Time, four at a time | QtTest's totals (with init and cleanup) |
+|---|---|---|
+| test_rf25_fast | 19 s | 7 passed |
+| test_rf25_inductance | 33 s | 15 passed |
+| test_rf25_mesh | 9 s | 13 passed |
+| test_rf25_model | 4 s | 13 passed |
+| test_rf25_static | 153 s | 23 passed |
+| test_rf25_sparams | 43 s | 14 passed |
+| test_rf25_deembed | 244 s | 14 passed |
+| test_rf25_fullwave | 485 s | 25 passed |
+| test_rf25_doc | 135 s | 37 passed |
+| test_layout_doc | 29 s | 32 passed, 6 skipped (the GPU's, with no GPU offscreen, and the fuzz) |
+| test_qucs_control | 271 s | 213 passed, 1 failed |
+
+The one failure is `aNetlistBecomesASchematic`: ngspice's child died inside `fork()` before its exec. That is macOS
+ASan's lock in a forked child, not the commits. Its crash report says "crashed on child side of fork pre-exec",
+with `os_unfair_lock is corrupt` in `_notify_fork_child`, and four sanitized suites were forking at once. Run
+alone, the function passed three times out of three. Linux and Release builds do not have the lock.
+
 ## Not done
 
 - **A preconditioner that holds the global inductance.** See the via-shorted pads above: 150 to 250 iterations
