@@ -128,6 +128,23 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                 de.insert(QStringLiteral("series L"), d.seriesL);
                 de.insert(QStringLiteral("calibration strip"), d.length * 1e-6);
                 de.insert(QStringLiteral("longer strip"), d.longer * 1e-6);
+                // The third strip, which checks the other two: up to where
+                // they agree on one line within a percent, the most they
+                // differ and where, and the shorter strips solved beside
+                // them where they did not.
+                de.insert(QStringLiteral("third strip"), d.third * 1e-6);
+                de.insert(QStringLiteral("strips agree to"), d.agreedTo);
+                de.insert(QStringLiteral("strips differ by at most"), d.worst);
+                de.insert(QStringLiteral("strips differ most at"), d.worstAt);
+                if (d.strips.size() > 1) {
+                    QJsonArray strips;
+                    for (const double l : d.strips) strips.append(l * 1e-6);
+                    de.insert(QStringLiteral("shorter strips solved"), strips);
+                }
+                // How far its feed runs straight before the structure begins,
+                // beside how far its own field reaches along it.
+                if (d.feedLength >= 0) de.insert(QStringLiteral("feed straight for"), d.feedLength * 1e-6);
+                if (d.reach > 0) de.insert(QStringLiteral("its field reaches"), d.reach * 1e-6);
                 // A coplanar feed's strips are its grounds and vias too; with
                 // rows of vias, the line begins at the first.
                 if (d.coplanar) {
@@ -160,6 +177,11 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         checks.insert(QStringLiteral("passive as solved"), w.solvedGain <= 1e-6);
         checks.insert(QStringLiteral("reciprocal as solved"), w.solvedAsymmetry <= 1e-9);
     }
+    // What makes it, or part of it, not to be trusted - the brief answer
+    // too; and where the stack carries a second surface wave.
+    if (!w.warnings.isEmpty()) out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(w.warnings));
+    if (w.secondWave > 0) out.insert(QStringLiteral("second surface wave from"), w.secondWave);
+    if (w.gain > 1e-6) checks.insert(QStringLiteral("most returned at"), w.gainAt);
     // The differential pairs' modes (mixedModeOf()): each pair's
     // differential mode, then each common mode, then the ports of no pair,
     // into twice, half and their own reference.

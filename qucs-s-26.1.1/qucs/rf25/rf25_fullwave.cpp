@@ -307,6 +307,39 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
 }
 
 /*!
+ * How far a port's feed runs straight in from its face, the layout's units:
+ * the face \a width wide from \a lo along \a unit from \a on, in along
+ * \a inward, on \a metal of \a conductors - until its metal reaches out
+ * past the face's ends (by more than \a beyond) or no longer holds the
+ * face's middle, or another conductor, a metal's or a via's, lies over or
+ * under it. \a window at most; looked at a quarter of the width at a time,
+ * or a twentieth of the window where that is less.
+ */
+double feedLength(const QList<Conductor>& conductors, const QString& metal, QPointF on, QPointF unit, QPointF inward,
+                  double lo, double width, double window, double beyond)
+{
+    if (!(width > 0) || !(window > 0)) return 0;
+    QList<const QPolygonF*> own, others;
+    for (const Conductor& c : conductors) (c.layer == metal ? own : others) << &c.outline;
+    const auto in = [](const QList<const QPolygonF*>& set, QPointF at) {
+        for (const QPolygonF* outline : set)
+            if (outline->containsPoint(at, Qt::OddEvenFill)) return true;
+        return false;
+    };
+    const double step = std::min(width / 4, window / 20);
+    const int across = 16;
+    for (double d = 0.5 * step; d < window; d += step) {
+        const QPointF row = on + inward * d;
+        const auto at = [row, unit](double t) { return row + unit * t; };
+        if (!in(own, at(lo + width / 2)) || in(own, at(lo - beyond)) || in(own, at(lo + width + beyond)))
+            return std::max(0.0, d - 0.5 * step);
+        for (int i = 1; i < across; ++i)
+            if (in(others, at(lo + width * i / across))) return std::max(0.0, d - 0.5 * step);
+    }
+    return window;
+}
+
+/*!
  * The vias down a coplanar feed's grounds, into \a feed: of \a conductors
  * on the stack's vias that land on its metal, those over a ground beside
  * the face and within \a window (the layout's units) of it, in the port's
@@ -1613,6 +1646,64 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
     return fullWaveOf(mesh, conductors, stack, defined, frequencies, micrometre);
 }
 
+double secondSurfaceWave(const Stack& stack, double most)
+{
+    const Layers layers = layersOf(stack);
+    if (!layers.ok() || !(most > 0)) return 0;
+    // At its cutoff a surface wave grazes the half-space over the stack, its
+    // kz there nought and its TE line open; in each slab kz = k0 (eps - eps
+    // above)^1/2. The TE chain matrix from the bottom up, [A, jB; jC, D]
+    // (A and D real, B and C real once their j is out): over a ground, V
+    // nought at the bottom and I at the top, A nought - a quarter wave in
+    // one slab; with none, I nought at both ends, C nought past the TE0 that
+    // has no cutoff - a half wave. (With something denser below than above
+    // the wave grazes that, which this does not follow.)
+    const double above = layers.epsrAbove;
+    if (!layers.groundBelow && layers.epsrBelow > above + 1e-9) return 0;
+    const double c0 = 1.0 / std::sqrt(kMu0 * kEps0);
+    double rate = 0;   // d(sum of kz h)/df
+    for (const Layers::Slab& slab : layers.slabs)
+        rate += 2 * M_PI / c0 * std::sqrt(std::max(0.0, slab.epsr - above)) * (slab.z1 - slab.z0);
+    if (!(rate > 0)) return 0;
+    const bool grounded = layers.groundBelow;
+    const auto resonance = [&layers, above, grounded, c0](double f) {
+        const double k0 = 2 * M_PI * f / c0, w = 2 * M_PI * f;
+        double a = 1, b = 0, c = 0, d = 1;
+        for (const Layers::Slab& slab : layers.slabs) {
+            const double kz = k0 * std::sqrt(std::max(0.0, slab.epsr - above)), h = slab.z1 - slab.z0, angle = kz * h;
+            const double cosine = std::cos(angle);
+            const double series = kz > 0 ? w * kMu0 / kz * std::sin(angle) : w * kMu0 * h;
+            const double shunt = kz > 0 ? std::sin(angle) * kz / (w * kMu0) : 0;
+            const double na = a * cosine - b * shunt, nb = a * series + b * cosine;
+            const double nc = c * cosine + d * shunt, nd = d * cosine - c * series;
+            a = na;
+            b = nb;
+            c = nc;
+            d = nd;
+        }
+        return grounded ? a : c;
+    };
+    // Stepped a twentieth of a radian of the whole stack at a time, then
+    // halved down to the root.
+    const double step = 0.05 / rate;
+    double lo = step, before = resonance(lo);
+    for (double f = 2 * step; f <= most; f += step) {
+        const double now = resonance(f);
+        if ((before > 0) != (now > 0)) {
+            double hi = f;
+            for (int i = 0; i < 60; ++i) {
+                const double mid = 0.5 * (lo + hi);
+                if ((resonance(mid) > 0) == (before > 0)) lo = mid;
+                else hi = mid;
+            }
+            return 0.5 * (lo + hi);
+        }
+        lo = f;
+        before = now;
+    }
+    return 0;
+}
+
 FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, const Stack& givenStack,
                     const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre,
                     const FullWaveControl* control, const QList<ReturnMark>& returns)
@@ -1980,6 +2071,19 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.faceMetals[p] = mesh.cells.at(face.first()).layer;
             out.feeds[p].metal = out.faceMetals.at(p);
             out.feeds[p].width = faceWidth;
+            // How far its feed runs straight in from the face: where its own
+            // field reaches past that, what strips of the feed find of the
+            // port is not what it has here (rf25_deembed.h). A coplanar
+            // feed's grounds are no widening: what is looked past its ends
+            // is short of their gaps.
+            const Beside span = besideFaces(mesh, cellOf, face, on, along);
+            const QPointF unit = along / std::hypot(along.x(), along.y()), normal(-unit.y(), unit.x());
+            double beyond = faceWidth / 24;
+            for (std::size_t k = 0; k < 2; ++k)
+                if (!span.cells[k].isEmpty() && span.near[k] > 0) beyond = std::min(beyond, 0.5 * span.near[k]);
+            const double height = std::max(0.0, metalHeight(givenStack, out.faceMetals.at(p))) / micrometre;
+            out.feeds[p].length = feedLength(givenConductors, out.faceMetals.at(p), on, unit, span.inside < 0 ? -normal : normal,
+                                             span.lo, faceWidth, 2 * (8 * height + 2 * faceWidth), beyond);
         }
         if (!port.coplanar) {
             columns << own;
@@ -2333,7 +2437,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         if (largest > 0) out.asymmetry = std::max(out.asymmetry, (a.z - a.z.transpose()).cwiseAbs().maxCoeff() / largest);
         const MatrixC s = matrixOf(out.s.last());
         const Eigen::SelfAdjointEigenSolver<MatrixC> eig(s.adjoint() * s);
-        if (eig.info() == Eigen::Success) out.gain = std::max(out.gain, eig.eigenvalues().maxCoeff() - 1);
+        if (eig.info() == Eigen::Success && eig.eigenvalues().maxCoeff() - 1 > out.gain) {
+            out.gain = eig.eigenvalues().maxCoeff() - 1;
+            out.gainAt = frequencies.at(k);
+        }
         if (a.rcond < 1e-14)
             out.lines << tr("At %1 GHz the system is nearly singular (a reciprocal condition of %2): the answer there may "
                             "be rounding.")
@@ -2341,6 +2448,23 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     out.solvedAsymmetry = out.asymmetry;
     out.solvedGain = out.gain;
+    out.solvedGainAt = out.gainAt;
+    // Past a stack's second surface wave this solve does not hold power to
+    // account: a strip alone on 300 µm of silicon gave back up to six times
+    // what it was given from 77 to 82 GHz, its TE1 from 75.7, and on 635 µm
+    // of alumina twice from 40.8, its TE1 from 39.8 - below both, passive.
+    // (Sixteen arcs of the ellipse or sixty-four alike: not the integral's
+    // steps. The phase E check of 2 November, docs/feature_gaps.)
+    const double top = *std::max_element(frequencies.begin(), frequencies.end());
+    out.secondWave = secondSurfaceWave(givenStack, 2 * top);
+    if (out.secondWave > 0 && top >= out.secondWave) {
+        const QString past = tr("From %1 GHz the stack carries a second surface wave, its TE1, which a strip launches, and "
+                                "this solve does not yet hold the power it carries to account: a strip alone gives back more "
+                                "than it is given past it. What it gives from %1 GHz is not to be trusted.")
+                                 .arg(out.secondWave / 1e9, 0, 'g', 4);
+        out.lines << past;
+        out.warnings << past;
+    }
     out.geometry = c.runs;
     out.ends = ends;
     // As the caller meshed it: a top face's run in its bottom's - the

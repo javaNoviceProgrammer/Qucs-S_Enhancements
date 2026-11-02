@@ -1928,6 +1928,71 @@ private slots:
                                        1e-6, &asDense),
                         "more than this build"));
     }
+
+    // Where a stack begins to carry a second surface wave (the phase E check
+    // of 2 November): over a ground, its TE1's cutoff - a quarter wave of
+    // k0 (eps - 1)^1/2 through one slab, 39.79 GHz through 635 µm of
+    // alumina; through two where tan(kz1 h1) tan(kz2 h2) = kz1/kz2; with no
+    // ground, the slab's half wave. None up to the frequency asked: nought.
+    void theSecondSurfaceWaveIsTE1sCutoff()
+    {
+        const double one = rf::secondSurfaceWave(grounded(9.8, 635e-6), 1e12);
+        QVERIFY2(std::abs(one / (kC0 / (4 * 635e-6 * std::sqrt(8.8))) - 1) < 1e-9, qPrintable(QString::number(one)));
+        QCOMPARE(rf::secondSurfaceWave(grounded(9.8, 635e-6), 30e9), 0.0);
+        // Silicon under 20 µm of oxide: the root of the two slabs' own
+        // equation, found apart.
+        rf::Stack two = grounded(11.9, 300e-6);
+        rf::Layer oxide;
+        oxide.kind = rf::Layer::Dielectric;
+        oxide.name = QStringLiteral("OX");
+        oxide.tag = QStringLiteral("ox");
+        oxide.thickness = 20e-6;
+        oxide.epsr = 3.9;
+        two.layers.insert(2, oxide);
+        const double silicon = kC0 / (4 * 300e-6 * std::sqrt(10.9));
+        const auto rest = [](double f) {
+            const double k0 = 2 * M_PI * f / kC0, k1 = k0 * std::sqrt(10.9), k2 = k0 * std::sqrt(2.9);
+            return std::tan(k1 * 300e-6) * std::tan(k2 * 20e-6) - k1 / k2;
+        };
+        double lo = 0.8 * silicon, hi = silicon * (1 - 1e-9);
+        for (int i = 0; i < 100; ++i) (rest(0.5 * (lo + hi)) < 0 ? lo : hi) = 0.5 * (lo + hi);
+        const double both = rf::secondSurfaceWave(two, 1e12);
+        qWarning().noquote() << QStringLiteral("TE1: silicon alone %1 GHz, under oxide %2 (its own root %3)")
+                                    .arg(silicon / 1e9, 0, 'f', 4).arg(both / 1e9, 0, 'f', 4).arg(lo / 1e9, 0, 'f', 4);
+        QVERIFY2(std::abs(both / lo - 1) < 1e-6 && both < silicon, qPrintable(QString::number(both)));
+        // No ground: a half wave.
+        rf::Stack free = grounded(9.8, 635e-6);
+        free.layers.removeFirst();
+        const double half = rf::secondSurfaceWave(free, 1e12);
+        QVERIFY2(std::abs(half / (kC0 / (2 * 635e-6 * std::sqrt(8.8))) - 1) < 1e-9, qPrintable(QString::number(half)));
+    }
+
+    // Past it this solve does not hold power to account: a strip alone on
+    // 635 µm of alumina gave back twice what it was given at 40.8 GHz, just
+    // past its TE1, and was passive below. A sweep that reaches it is said
+    // not to be trusted from there - among the warnings, kept apart - and
+    // one below it says nothing of it.
+    void pastTheSecondSurfaceWaveItIsSaid()
+    {
+        const bool slow = slowBuild();
+        const rf::Stack stack = grounded(9.8, 635e-6);
+        const double l = slow ? 2500 : 5000;
+        const QList<rf::Conductor> line = {strip(0, 0, l, 600)};
+        const rf::Mesh mesh = meshed(line, 2, slow ? 400e-6 : 200e-6);
+        const QList<rf::FullWavePort> ports = {edgePort(QPointF(0, 300), QString(), QPointF(-1, 0)),
+                                               edgePort(QPointF(l, 300), QString(), QPointF(1, 0))};
+        const rf::FullWave below = rf::fullWaveOf(mesh, line, stack, ports, {36e9});
+        QVERIFY2(below.ok(), qPrintable(below.problems.join(" | ")));
+        QVERIFY2(below.warnings.isEmpty(), qPrintable(below.warnings.join(" | ")));
+        QVERIFY2(below.secondWave > 39.7e9 && below.secondWave < 39.9e9, qPrintable(QString::number(below.secondWave)));
+        const rf::FullWave past = rf::fullWaveOf(mesh, line, stack, ports, {36e9, 42e9});
+        QVERIFY2(past.ok(), qPrintable(past.problems.join(" | ")));
+        QCOMPARE(past.warnings.size(), 1);
+        QVERIFY2(past.warnings.first().contains(QStringLiteral("From 39.79 GHz the stack carries a second surface wave")),
+                 qPrintable(past.warnings.first()));
+        QVERIFY(past.lines.contains(past.warnings.first()));
+        qWarning() << "past it: gives back" << past.gain << "at" << past.gainAt;
+    }
 };
 
 QTEST_MAIN(TestRf25Fullwave)

@@ -2752,6 +2752,28 @@ private slots:
                  qPrintable(QString::fromUtf8(QJsonDocument(de.value("ports").toArray()).toJson(QJsonDocument::Compact))));
         QVERIFY(!de.value("ports").toArray().at(1).toObject().contains("de-embedded"));
         QVERIFY(de.value("checks").toObject().contains("passive as solved"));
+        // What its strips said - the third, which checks the other two, and
+        // up to where they agree - and how far its feed runs straight beside
+        // how far its own field reaches (the phase E check of 2 November).
+        QVERIFY2(in.value("third strip").toDouble() > in.value("calibration strip").toDouble()
+                     && in.value("strips agree to").toDouble() == 3e9 && in.value("strips differ by at most").toDouble() < 1e-2
+                     && std::abs(in.value("feed straight for").toDouble() - 1000e-6) < 30e-6
+                     && std::abs(in.value("its field reaches").toDouble() - 450e-6) < 1e-9,
+                 qPrintable(QString::fromUtf8(QJsonDocument(in).toJson(QJsonDocument::Compact))));
+        QVERIFY(!de.contains("warnings"));
+        // On 635 µm of alumina at 42 GHz, past where the stack carries a
+        // second surface wave: said among the warnings, the brief answer's too.
+        qucs_s::rf25::Model thick = m;
+        for (qucs_s::rf25::Node& n : thick.stackNode().children)
+            if (n.type == QLatin1String("rf_substrate")) n.props.insert(QStringLiteral("thickness"), QStringLiteral("635[um]"));
+        QVERIFY(put(ws + "/rf/wave5.qrf25", thick.toJson()));
+        const QJsonObject past = json(call("rf25_solve", {{"path", ws + "/rf/wave5.qrf25"}, {"solver", "full_wave"},
+                                                          {"frequency", "42[GHz]"}, {"brief", true}}, 300000)).toObject();
+        const QJsonArray warned = past.value("warnings").toArray();
+        QVERIFY2(warned.size() == 1 && warned.at(0).toString().contains(QStringLiteral("second surface wave")),
+                 qPrintable(QString::fromUtf8(QJsonDocument(past).toJson(QJsonDocument::Compact))));
+        QVERIFY2(std::abs(past.value("second surface wave from").toDouble() - 39.79e9) < 0.01e9,
+                 qPrintable(QString::number(past.value("second surface wave from").toDouble())));
         // A port that returns through the conductors beside it - a coplanar
         // line's - on a lone strip: none either side, said through the tool
         // (the phase C check of 1 November, F6).
