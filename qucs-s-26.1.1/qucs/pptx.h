@@ -71,9 +71,12 @@ public:
     /// on its own background. A null image for a slide that is not there.
     QImage render(int index, qreal scale) const;
     /// Slide \a index drawn by \a painter into \a target (in its
-    /// coordinates; the slide's aspect kept, in the middle): through an
-    /// image at the resolution \a painter's device has there.
+    /// coordinates; the slide's aspect kept, in the middle - placed()):
+    /// through an image at the resolution \a painter's device has there.
     void render(int index, QPainter* painter, const QRectF& target) const;
+    /// Where a slide drawn into \a target lands: its aspect kept, in the
+    /// middle.
+    QRectF placed(const QRectF& target) const;
 
     /// The slides whose text has \a text (case aside), and how often each.
     QList<std::pair<int, int>> find(const QString& text) const;

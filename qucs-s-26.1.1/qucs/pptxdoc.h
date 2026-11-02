@@ -13,6 +13,7 @@
 #ifndef QUCS_PPTXDOC_H
 #define QUCS_PPTXDOC_H
 
+#include "markup.h"
 #include "qucsdoc.h"
 
 #include <QAbstractScrollArea>
@@ -40,7 +41,9 @@ namespace qucs_s::pptx {
 class Presentation;
 
 /// The slides, one under the other, as large as the zoom says: each drawn
-/// when it comes in sight, kept for the zoom it was drawn at.
+/// when it comes in sight, kept for the zoom it was drawn at. With the pen
+/// taken up, a drag over a slide draws on it with the pen in hand
+/// (markup.h), or erases.
 class SlideView : public QAbstractScrollArea
 {
     Q_OBJECT
@@ -79,6 +82,23 @@ public:
     /// The drawings kept dropped (the file read again).
     void clearCache();
 
+    /// The pen taken up: a drag over a slide draws on it with the pen in
+    /// hand, or erases with the eraser; Ctrl+Z undoes, Escape puts it down.
+    bool penActive() const { return a_pen; }
+    void setPenActive(bool active);
+    /// What is drawn on the slides: strokes in points from a slide's top
+    /// left, each on its slide (partOf()), kept when the file is read again.
+    const qucs_s::markup::Drawing& drawing() const { return a_drawing; }
+    /// What slide \a index's strokes are kept on: its number, from 1.
+    static QString partOf(int index) { return QString::number(index + 1); }
+    /// A stroke added as though it was drawn (Claude's tools, the tests).
+    void addStroke(const qucs_s::markup::Stroke& stroke);
+    /// The last change to the drawing undone; whether there was one.
+    bool undoDrawing();
+    /// The strokes on slide \a index taken away, or (-1) every one; whether
+    /// there were any.
+    bool clearDrawing(int index);
+
     /// Where the view is: its fit or zoom, the slide in sight, how far down
     /// it the view's top is (a fraction of it), how far across (of what
     /// can be scrolled).
@@ -100,6 +120,9 @@ signals:
     void zoomChanged(qreal zoom);
     void menuRequested(QPoint globalPos, int slide);
     void slideDoubleClicked(int slide);
+    void penActiveChanged(bool active);
+    /// A stroke drawn, erased, undone or cleared.
+    void drawingChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -108,10 +131,17 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     bool viewportEvent(QEvent* event) override;
+    bool event(QEvent* event) override;
 
 private:
+    /// \a pos (viewport) in points of slide \a index.
+    QPointF toSlide(int index, QPointF pos) const;
+    void eraseAt(QPointF pos);
     void relayout();
     void updateCurrent();
     QImage drawn(int index, qreal scale, bool* fresh);
@@ -125,6 +155,12 @@ private:
     QCache<QString, QImage> a_cache;
     int a_drawn = 0;
     bool a_relaying = false;
+    bool a_pen = false;
+    qucs_s::markup::Drawing a_drawing;
+    qucs_s::markup::Stroke a_stroke;               // the one being drawn
+    int a_inkSlide = -1;                           // the slide a drag draws or erases on (-1: none)
+    bool a_inking = false, a_erasing = false, a_erased = false;
+    QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
 };
 
 /// The slides played full screen, one at a time on black: on with a
@@ -203,7 +239,8 @@ public:
     QString problem() const { return a_problem; }
     /// Reads the file again, the slide and the zoom kept.
     bool reload();
-    /// Slide \a index drawn \a scale pixels a point.
+    /// Slide \a index drawn \a scale pixels a point, with what the pen drew
+    /// on it.
     QImage slideImage(int index, qreal scale) const;
 
     /// Searches the slides' text and notes for \a text: the first slide
@@ -239,6 +276,7 @@ public:
     QLabel* searchLabel() const { return a_searchLabel; }
     QTextBrowser* notesView() const { return a_notes; }
     QComboBox* zoomBox() const { return a_zoomBox; }
+    qucs_s::markup::PenButton* penButton() const { return a_penButton; }
 
 public slots:
     void nextSlide();
@@ -275,6 +313,8 @@ private:
     void updateSlideField();
     void updateZoomBox();
     void updateNotes();
+    /// The pen's menu as the drawing is.
+    void updatePen();
     void showMenu(QPoint globalPos, int slide);
     void fillMenu(QMenu* menu);
 
@@ -300,6 +340,7 @@ private:
     QToolButton* a_zoomInButton = nullptr;
     QComboBox* a_zoomBox = nullptr;
     QToolButton* a_notesButton = nullptr;
+    qucs_s::markup::PenButton* a_penButton = nullptr;
     QToolButton* a_playButton = nullptr;
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;

@@ -106,18 +106,27 @@ bool slideRegion(const QJsonValue& v, QSizeF size, QRectF* out, QString* error)
 /// Slide \a index, or \a region of it (points; empty: all of it), drawn
 /// sharp enough to read: a whole slide's longer side 2000 pixels at most,
 /// a region's some 1600 (1 to 8 a point); \a scale what it was drawn at.
-QImage drawnToRead(const Presentation& deck, int index, const QRectF& region, qreal* scale)
+/// With \a strokes over it: what the pen drew on it in its tab.
+QImage drawnToRead(const Presentation& deck, int index, const QRectF& region, qreal* scale, const QList<qucs_s::markup::Stroke>& strokes = {})
 {
     const QSizeF size = deck.slideSize();
+    const auto inked = [&strokes, scale](QImage image) {
+        if (!image.isNull() && !strokes.isEmpty()) {
+            QPainter p(&image);
+            const qreal s = *scale;
+            qucs_s::markup::paint(p, strokes, [s](QPointF pt) { return pt * s; }, s);
+        }
+        return image;
+    };
     if (region.isEmpty()) {
         *scale = std::clamp(2000.0 / std::max(size.width(), size.height()), 0.25, 4.0);
-        return deck.render(index, *scale);
+        return inked(deck.render(index, *scale));
     }
     // (The whole slide is drawn, the region cut from it: kept to 40
     // million pixels.)
     *scale = std::clamp(1600.0 / std::max(region.width(), region.height()), 1.0, 8.0);
     *scale = std::min(*scale, std::sqrt(40e6 / std::max(1.0, size.width() * size.height())));
-    const QImage whole = deck.render(index, *scale);
+    const QImage whole = inked(deck.render(index, *scale));
     if (whole.isNull()) return whole;
     const QRect part = QRectF(region.left() * *scale, region.top() * *scale, region.width() * *scale, region.height() * *scale).toAlignedRect();
     return whole.copy(part.intersected(whole.rect()));
@@ -378,7 +387,9 @@ QJsonObject QucsControl::readPptx(const QJsonObject& args)
         for (int n : slides) {
             if (drawn.size() >= 4) break;
             qreal scale = 1;
-            const QImage image = drawnToRead(*deck, n - 1, region, &scale);
+            const QImage image = drawnToRead(*deck, n - 1, region, &scale,
+                                             open != nullptr ? open->view()->drawing().on(qucs_s::pptx::SlideView::partOf(n - 1))
+                                                             : QList<qucs_s::markup::Stroke>());
             if (image.isNull()) continue;
             content.append(pngContent(fitted(image)));
             drawn << QString::number(n);
@@ -415,6 +426,11 @@ QJsonObject QucsControl::pptxView(PptxDoc* deck) const
                                                                          : QStringLiteral("%1%").arg(qRound(deck->view()->zoom() * 100)));
     o.insert(QStringLiteral("notes shown"), deck->notesShown());
     o.insert(QStringLiteral("thumbnails shown"), deck->sidebarShown());
+    // What the user drew with the pen, slide by slide - its box in points
+    // from the slide's top left - and whether the pen is taken up.
+    if (!deck->view()->drawing().isEmpty())
+        o.insert(QStringLiteral("drawings"), qucs_s::markup::describe(deck->view()->drawing(), QStringLiteral("slide")));
+    if (deck->view()->penActive()) o.insert(QStringLiteral("pen"), tr("taken up: a drag over a slide draws on it"));
     if (deck->findShown()) {
         QJsonObject f{{QStringLiteral("text"), deck->findText()}};
         QJsonArray hits;
@@ -468,6 +484,12 @@ bool QucsControl::viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* 
     const QString copy = args.value(QLatin1String("copy")).toString().trimmed().toLower();
     if (args.contains(QLatin1String("copy")) && copy != QLatin1String("picture") && copy != QLatin1String("text")) {
         *error = tr("'copy' is picture (the slide shown, 1920 pixels wide) or text (its text and notes): to the clipboard.");
+        return false;
+    }
+    const QJsonValue pen = args.value(QLatin1String("pen"));
+    const QString drawings = args.value(QLatin1String("drawings")).toString().trimmed().toLower();
+    if (args.contains(QLatin1String("drawings")) && drawings != QLatin1String("clear")) {
+        *error = tr("'drawings' is clear: what the pen drew on the slides taken away (the pen's Undo gives it back).");
         return false;
     }
     const QJsonValue zoom = args.value(QLatin1String("zoom"));
@@ -604,6 +626,13 @@ bool QucsControl::viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* 
         deck->copySlideText();
         done << tr("Slide %1's text copied, its notes after it.").arg(deck->currentSlide() + 1);
     }
+    // The pen taken up or put down, and what it drew taken away.
+    if (pen.isBool()) {
+        deck->penButton()->setChecked(pen.toBool());
+        done << (pen.toBool() ? tr("The pen taken up: a drag over a slide draws on it.") : tr("The pen put down."));
+    }
+    if (drawings == QLatin1String("clear"))
+        done << (deck->view()->clearDrawing(-1) ? tr("What the pen drew taken away (the pen's Undo gives it back).") : tr("Nothing was drawn."));
     if (args.value(QLatin1String("reload")).toBool()) done.prepend(tr("Read again from its file."));
     const QJsonObject view = pptxView(deck);
     for (auto it = view.begin(); it != view.end(); ++it) out->insert(it.key(), it.value());
@@ -637,7 +666,7 @@ QJsonObject QucsControl::slidePicture(PptxDoc* deck, const QJsonObject& args)
     if (args.contains(QLatin1String("region")) && !slideRegion(args.value(QLatin1String("region")), presentation->slideSize(), &region, &error))
         return errorResult(error);
     qreal scale = 1;
-    const QImage image = drawnToRead(*presentation, slide - 1, region, &scale);
+    const QImage image = drawnToRead(*presentation, slide - 1, region, &scale, deck->view()->drawing().on(qucs_s::pptx::SlideView::partOf(slide - 1)));
     if (image.isNull()) return errorResult(tr("Slide %1 of %2 could not be drawn.").arg(slide).arg(titleOf(deck)));
     const QString what = region.isEmpty() ? tr("slide %1 of %2").arg(slide).arg(count) : tr("slide %1 of %2, %3").arg(slide).arg(count).arg(regionText(region));
     return {{QStringLiteral("content"),

@@ -493,6 +493,12 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
     const bool textsGiven = args.contains(QLatin1String("texts"));
     const bool texts = args.value(QLatin1String("texts")).toBool();
     const QJsonValue grid = args.value(QLatin1String("grid"));
+    const QJsonValue pen = args.value(QLatin1String("pen"));
+    const QString drawings = args.value(QLatin1String("drawings")).toString().trimmed().toLower();
+    if (args.contains(QLatin1String("drawings")) && drawings != QLatin1String("clear")) {
+        done(errorResult(tr("'drawings' is clear: what the pen drew on the layout taken away (the pen's Undo gives it back).")));
+        return;
+    }
 
     // An RF 2.5D model's own layout, framed in its own tab: it was refused
     // as "could not be opened as a layout", so the model's view could only
@@ -514,7 +520,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (model != nullptr) {
             // Which cell, and which layers, are the model's to say - its
             // Layout node and its layer map - and are not set from here.
-            for (const char* key : {"cell", "layers", "depth"})
+            for (const char* key : {"cell", "layers", "depth", "pen", "drawings"})
                 if (args.contains(QLatin1String(key))) {
                     done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
                                         "its layers are its layer map's. 'region', 'texts', 'grid', 'processed' and "
@@ -590,6 +596,9 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         else if (depth.toString() == QLatin1String("all")) doc->setDepth(-1);
         if (textsGiven) view->setLabelsShown(texts);
         if (grid.isBool()) doc->setGridShown(grid.toBool());
+        // The pen taken up or put down, and what it drew taken away.
+        if (pen.isBool()) doc->penButton()->setChecked(pen.toBool());
+        const bool cleared = drawings == QLatin1String("clear") && view->clearDrawing(true);
         if (region.size() == 4) {
             const QRectF r = QRectF(QPointF(region.at(0).toDouble(), region.at(1).toDouble()), QPointF(region.at(2).toDouble(), region.at(3).toDouble()))
                                  .normalized();
@@ -615,6 +624,11 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("grid"), tr("a point every %1 µm, stronger every %2 µm; a scale in the lower left")
                                                       .arg(micrometres(*layout, view->gridStep()), micrometres(*layout, view->gridMajorStep())));
         if (view->lastStats().incomplete) result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
+        // What the user drew with the pen, cell by cell - its box in µm -
+        // and whether the pen is taken up.
+        if (!view->drawing().isEmpty()) result.insert(QStringLiteral("drawings"), qucs_s::markup::describe(view->drawing(), QStringLiteral("cell")));
+        if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));
+        if (cleared) result.insert(QStringLiteral("done"), tr("What the pen drew taken away (the pen's Undo gives it back)."));
         done(jsonResult(result));
     }, done);
 }
