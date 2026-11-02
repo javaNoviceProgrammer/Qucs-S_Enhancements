@@ -10,6 +10,8 @@
  */
 #include <QtTest>
 
+#include <algorithm>
+
 #include "rf25/rf25_inductance.h"
 
 #include <cmath>
@@ -404,6 +406,10 @@ private slots:
         const QList<rf::Filament> runs = rf::runsOf(mesh, line, stack, 1e-6, &ends);
         QVERIFY2(!runs.isEmpty(), "no run of current was found in a meshed strip");
         QCOMPARE(ends.size(), runs.size());
+        // In the order of the cells they join, not of a hash, which Qt seeds
+        // anew in every run of the program: a compressed solve's clusters are
+        // cut from this order, and the same model solved twice was 1e-7 apart.
+        QVERIFY(std::is_sorted(ends.begin(), ends.end()));
         // A chain of n cells has n-1 runs between them; a grid has more.
         QVERIFY2(runs.size() >= mesh.cells.size() - 1, qPrintable(QStringLiteral("%1 runs of %2 cells").arg(runs.size()).arg(mesh.cells.size())));
         for (const rf::Filament& f : runs) {

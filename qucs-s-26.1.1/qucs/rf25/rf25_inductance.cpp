@@ -274,9 +274,16 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     QMap<QString, double> height;
     for (const QString& layer : mesh.byLayer().keys()) height.insert(layer, heightOf(stack, layer));
 
-    for (auto it = shared.constBegin(); it != shared.constEnd(); ++it) {
-        if (it.value().size() != 2) continue;
-        const int a = it.value().at(0), b = it.value().at(1);
+    // In the order of the cells they join: a hash's order is its own and
+    // changes from one run of the program to the next (Qt seeds it at
+    // random), and the runs' order is what a compressed solve's clusters
+    // are cut from - the same model solved twice was some 1e-7 apart.
+    QList<QPair<QPair<int, int>, QString>> edges;
+    for (auto it = shared.constBegin(); it != shared.constEnd(); ++it)
+        if (it.value().size() == 2) edges << qMakePair(qMakePair(it.value().at(0), it.value().at(1)), it.key());
+    std::sort(edges.begin(), edges.end());
+    for (const QPair<QPair<int, int>, QString>& joined : std::as_const(edges)) {
+        const int a = joined.first.first, b = joined.first.second;
         const MeshCell& ca = mesh.cells.at(a);
         const MeshCell& cb = mesh.cells.at(b);
         const double z = height.value(ca.layer, -1);
@@ -286,7 +293,7 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         double edge = 0;
         for (int i = 0, n = int(ca.outline.size()); i < n; ++i) {
             const QPointF p = ca.outline.at(i), q = ca.outline.at((i + 1) % n);
-            if (edgeKey(p, q) != it.key().section(QLatin1Char('|'), 1)) continue;
+            if (edgeKey(p, q) != joined.second.section(QLatin1Char('|'), 1)) continue;
             edge = std::hypot(q.x() - p.x(), q.y() - p.y());
             break;
         }
