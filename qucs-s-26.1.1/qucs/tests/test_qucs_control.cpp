@@ -2762,15 +2762,17 @@ private slots:
                  qPrintable(QString::fromUtf8(QJsonDocument(in).toJson(QJsonDocument::Compact))));
         QVERIFY(!de.contains("warnings"));
         // On 635 µm of alumina at 42 GHz, past where the stack carries a
-        // second surface wave: said among the warnings, the brief answer's too.
+        // second surface wave - the top of a microstrip's band on it - the
+        // brief answer passive with nothing to warn of (what gave power back
+        // there was the ports' own paths up from the ground, without a field
+        // then: G9 of the phase E check), and where that wave begins given.
         qucs_s::rf25::Model thick = m;
         for (qucs_s::rf25::Node& n : thick.stackNode().children)
             if (n.type == QLatin1String("rf_substrate")) n.props.insert(QStringLiteral("thickness"), QStringLiteral("635[um]"));
         QVERIFY(put(ws + "/rf/wave5.qrf25", thick.toJson()));
         const QJsonObject past = json(call("rf25_solve", {{"path", ws + "/rf/wave5.qrf25"}, {"solver", "full_wave"},
                                                           {"frequency", "42[GHz]"}, {"brief", true}}, 300000)).toObject();
-        const QJsonArray warned = past.value("warnings").toArray();
-        QVERIFY2(warned.size() == 1 && warned.at(0).toString().contains(QStringLiteral("second surface wave")),
+        QVERIFY2(!past.contains("warnings") && past.value("checks").toObject().value("passive").toBool(),
                  qPrintable(QString::fromUtf8(QJsonDocument(past).toJson(QJsonDocument::Compact))));
         QVERIFY2(std::abs(past.value("second surface wave from").toDouble() - 39.79e9) < 0.01e9,
                  qPrintable(QString::number(past.value("second surface wave from").toDouble())));

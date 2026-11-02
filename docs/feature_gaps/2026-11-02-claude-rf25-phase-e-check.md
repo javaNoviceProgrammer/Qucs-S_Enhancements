@@ -6,6 +6,9 @@ two-port, written into `2026-11-01-claude-rf25-gssg-coupled-modes.md` the same d
 compressed alike to 6e-7, a patch of 78 000 unknowns in 53 s, the GSSG's even and odd modes and the two-face
 metal as the reviewer's own reductions have them. What was left open:
 
+> **Corrected the same day** (`2026-11-02-rf25-port-paths.md`): G9 was the ports' own paths up from the ground, as
+> the reviewer said, and not the second surface wave. What follows of G9 below is withdrawn.
+
 | Feedback | Now |
 |---|---|
 | **G8 (major)**: on a feed over 305 µm, the calibration line reads eps_eff 8.38, 211 Ohm and 1982 dB/m at 100 GHz, the port's discontinuity +197 pH, and the de-embedded two-port gives back 16.8 times what it is given - the raw one is passive; and the answer says nothing | The strips are checked by a **third**: where they are not one line between two ends alike it is said, from where, and by how much. Where they are not, **shorter strips** are solved beside them and each frequency taken from the longest that agree. A port's **feed shorter than its own field reaches** is said, and a de-embedding that **gives back where the structure does not** is said to be the de-embedding's. All in the answer's new `warnings`, the brief one too, and on each port. On the reviewer's MOM: the strips agree to 48.8 GHz (the chosen ones alone to 23.8), the de-embedded two-port gives back 1.40 at most (16.8), and six warnings say why it is still not to be trusted - first that its 50 µm feeds are far shorter than the 1230 µm their ports' field reaches |
@@ -89,7 +92,7 @@ On the reviewer's validated lines nothing that was right moved: the 1 mm GCPW ca
 the digit. The GCPW's three strips agree within 0.3 % over its sweep. A calibration costs a third strip more: the
 GCPW 117 s, 103 before.
 
-## G9: past the stack's second surface wave
+## G9: past the stack's second surface wave (withdrawn: `2026-11-02-rf25-port-paths.md`)
 
 The reviewer put the raw two-port's giving back at 100 GHz down to the ports' path through the ground, which the
 solve gives no field. A strip with nothing on it says otherwise. The calibration's own third strip on the MOM's
@@ -173,8 +176,8 @@ past three quarters of its 300 s times three: it has 900 s, as the other RF suit
 
 ## Not done
 
-- **G9's cause.** Past a stack's second surface wave the solve gives back power; it is said, not cured. The
-  Green's functions near the TE1 pole as it leaves the branch point are where to look.
+- **G9's cause.** Found the same day, and not where this said to look: the ports' own paths up from the ground
+  (`2026-11-02-rf25-port-paths.md`).
 - **The coarse-level preconditioner** for via-stitched structures, from phase E's own list; the reviewer's MOM took
   573 iterations at three cells per finger.
 - **A coplanar port's reach.** The feed-length check holds a ground-referenced port to four heights and its

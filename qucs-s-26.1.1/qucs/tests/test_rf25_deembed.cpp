@@ -317,8 +317,11 @@ private slots:
     // the anchor below says how many turns. The feed's effective
     // permittivity is then the line's - near its quasi-static 6.5, rising,
     // and all but lossless - and a line de-embedded half way is a thru. (On
-    // 254 µm of alumina the strips' ports couple through the substrate's
-    // surface wave from 20 GHz, and the line comes out with gain: said.)
+    // 635 µm of alumina at 30 GHz the strips' ports reach one another past
+    // the line through the substrate's surface wave, the shorter strips' too:
+    // said. On 254 µm they did from 20 GHz, and the line came out with gain,
+    // while the ports' paths up from the ground had no field - G9 of the
+    // phase E check, addPortPaths(); with it they agree there.)
     void aLongStripsPhaseIsFollowedFromBelow()
     {
         const double h = 100e-6, w = 100, l = 6000;
@@ -351,8 +354,8 @@ private slots:
             QVERIFY2(std::abs(thru.s.at(k).at(1).at(0) - 1.0) < 1e-2 && std::abs(thru.s.at(k).at(0).at(0)) < 1e-2,
                      qPrintable(QStringLiteral("%1 GHz: S21 %2 %3").arg(fs.at(k) / 1e9).arg(thru.s.at(k).at(1).at(0).real())
                                     .arg(thru.s.at(k).at(1).at(0).imag())));
-        // The alumina's: the line given back more than given, and said.
-        const rf::Calibration thick = rf::calibrate(grounded(9.8, 254e-6), meshing(3, 100), 0, QStringLiteral("M1"), 250, {26e9});
+        // The thick alumina's: the strips not one line, and said.
+        const rf::Calibration thick = rf::calibrate(grounded(9.8, 635e-6), meshing(3, 200), 0, QStringLiteral("M1"), 600, {30e9});
         QVERIFY2(thick.ok(), qPrintable(thick.problems.join(" | ")));
         QVERIFY2(thick.lines.join(' ').contains(QStringLiteral("surface wave")), qPrintable(thick.lines.join(" | ")));
         QVERIFY2(!cal.lines.join(' ').contains(QStringLiteral("surface wave")), qPrintable(cal.lines.join(" | ")));
@@ -706,10 +709,12 @@ private slots:
     // A third strip checks the other two (the phase E check of 2 November):
     // on 100 µm of alumina they are one line between two ends alike over
     // the sweep, and only the strips asked are solved. On 254 µm the strips
-    // of eight heights stop agreeing past some 12 GHz - their ends reach one
-    // another past the line through the surface wave - and shorter strips,
-    // solved beside them, agree further; each frequency is taken from the
-    // longest that agree, said, and a length given is solved as given.
+    // of eight heights stop agreeing at 26 GHz - their ends reach one another
+    // past the line through the surface wave - and shorter strips, solved
+    // beside them, agree further; each frequency is taken from the longest
+    // that agree, said, and a length given is solved as given. (They stopped
+    // at 12 GHz while the ports' paths up from the ground had no field - G9
+    // of the phase E check, addPortPaths().)
     void aThirdStripSaysWhereTheStripsAreOneLine()
     {
         const bool slow = slowBuild();
@@ -729,7 +734,7 @@ private slots:
 
         const rf::Stack thick = grounded(9.8, 254e-6);
         const rf::MeshSettings how = meshing(3, slow ? 200 : 100);
-        const QList<double> fs = slow ? QList<double>{6e9, 20e9} : QList<double>{6e9, 12e9, 16e9, 20e9};
+        const QList<double> fs = slow ? QList<double>{6e9, 26e9} : QList<double>{6e9, 12e9, 20e9, 26e9};
         const rf::Calibration chosen = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, fs);
         const rf::Calibration fixed = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, fs, 1e-6, nullptr, 8 * 254 + 2 * 250);
         QVERIFY2(chosen.ok() && fixed.ok(), qPrintable(chosen.problems.join(" | ") + fixed.problems.join(" | ")));

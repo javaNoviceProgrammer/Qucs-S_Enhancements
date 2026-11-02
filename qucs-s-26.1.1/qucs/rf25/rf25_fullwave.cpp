@@ -582,6 +582,22 @@ struct Via {
     double gmd = 0;           ///< its cross-section's mean distance with itself, m
 };
 
+/*!
+ * A port's own path to a cell it drives, up from the ground - or from the
+ * metal an internal port is driven from - as a via whose current the port
+ * sets rather than the solve: \a current of its column's ampere up it, its
+ * ends \a ends, each cell's potential added in with its weight (+ at its
+ * top, - at its bottom; none for the ground, at nought). It stands at the
+ * cell's centre, where its current enters the metal, as a via to the
+ * ground does.
+ */
+struct PortPath {
+    Via via;                         ///< run -1: no unknown of the solve
+    int column = -1;
+    double current = 0;
+    QList<QPair<int, double>> ends;
+};
+
 /// A via run as the mesh makes it, before the solve numbers its cells.
 struct ViaRun {
     Filament run;
@@ -778,6 +794,10 @@ struct Context {
     /// coplanar one a column against each conductor beside it.
     MatrixC drive;
     QList<int> portOf;                   ///< which port each column is
+    /// The ports' own paths to the cells they drive (PortPath): none for a
+    /// coplanar port, whose current comes back beside it. Their spans are
+    /// among the vias'.
+    QList<PortPath> paths;
     /// How many of each run in the plane's two sides are its conductor's
     /// edge, where the current crowds inside the cells (crowding()).
     QList<int> freeSides;
@@ -908,9 +928,12 @@ struct Kernels {
     Complex potential(int i, int j, double pij, double pji) const;
     Complex potential(int i, int j) const;
     /// Via \a v's potential at cell \a cell of a unit current up it.
-    Complex viaPotential(int v, int cell) const;
+    Complex viaPotential(int v, int cell) const { return potentialOf(c.vias.at(v), cell); }
     /// G_zz: via \a i's voltage of a unit current on via \a j.
-    Complex viaCoupling(int i, int j) const;
+    Complex viaCoupling(int i, int j) const { return couplingOf(c.vias.at(i), c.vias.at(j)); }
+    /// The same of any two vias - a port's path among them.
+    Complex potentialOf(const Via& via, int cell) const;
+    Complex couplingOf(const Via& a, const Via& b) const;
 };
 
 Kernels::Kernels(const Context& context, double frequency) : c(context), f(frequency), jw(0, 2 * M_PI * frequency)
@@ -987,25 +1010,22 @@ Complex Kernels::potential(int i, int j) const
                      i == j ? 0.0 : rectanglePotential(c.rect.at(i), c.centre.at(j), dz));
 }
 
-Complex Kernels::viaPotential(int v, int cell) const
+Complex Kernels::potentialOf(const Via& via, int cell) const
 {
     // Nowhere nearer the via than its cross-section's mean distance with
     // itself: the dielectric's part of its own G_zz, taken across that
     // distance, is what its potential is there (to a part in a thousand
     // through 200 µm of 9.8, against 5 % at its axis), and the two must
     // cancel round a path for its inductance to be the vacuum's, as it is.
-    const Via& via = c.vias.at(v);
     const double apart = std::hypot(c.centre.at(cell).x() - via.at.x(), c.centre.at(cell).y() - via.at.y());
     return viaGreens.at(via.span).potential(c.hNode.at(cell), std::max(apart, via.gmd));
 }
 
-Complex Kernels::viaCoupling(int i, int j) const
+Complex Kernels::couplingOf(const Via& a, const Via& b) const
 {
     // G_zz along both - the closed forms between their axes, statically in
     // closed form and their retardation by Gauss's rule - and the table's
     // rest.
-    const Via& a = c.vias.at(i);
-    const Via& b = c.vias.at(j);
     const ViaGreen& green = viaGreens.at(a.span);
     const double apart = std::hypot(a.at.x() - b.at.x(), a.at.y() - b.at.y());
     const double gmd = std::max(a.gmd, b.gmd);
@@ -1059,6 +1079,52 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add add)
         const Filament& run = c.runs.at(v.run);
         if (v.side > 0 && run.sigma > 0) add(v.run, v.run, surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side));
     }
+}
+
+/*!
+ * What the ports' own paths add at \a k's frequency (PortPath), each a via
+ * whose current is its port's: to the runs' drive \a rhs, each path's
+ * potential along every run in the plane - its head's less its tail's,
+ * which by the formulation's reciprocity is also what the run's vector
+ * potential does along the path (G_zx) - and every via's G_zz along the
+ * path; and to \a own, the columns' own impedances, each two paths' G_zz
+ * and their potentials at each other's ends, the two ways round averaged.
+ * Between a via and a path the coupling is the one way round whole: the
+ * via's G_zz along the path and its potential at the path's ends, which
+ * the drive has already (portVia). G_zz goes as 1/eps of its source's slab,
+ * and only with the other's potential is it the same both ways - half the
+ * G_zz each way and the potential one way gave back 1e-6 of a wave at 5
+ * GHz, a via between two dielectrics and a port's path through the other.
+ * Without them a port's charge had its potential but the current that
+ * brings it up had no field, and the scalar potential alone takes a
+ * vertical current's radiation the wrong way: a strip on 635 µm of alumina
+ * gave back twice what it was given at 41.5 GHz, one over vacuum 3.9 times
+ * at 64 GHz (G9 of the phase E check).
+ */
+void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own)
+{
+    const int count = int(c.paths.size());
+    VectorC at(c.nc);
+    for (const PortPath& path : c.paths) {
+        for (int i = 0; i < c.nc; ++i) at[i] = k.potentialOf(path.via, i);
+        for (int a = 0; a < c.planar; ++a) rhs(a, path.column) -= path.current * (at[c.head.at(a)] - at[c.tail.at(a)]);
+        for (const Via& via : c.vias) rhs(via.run, path.column) -= path.current * k.couplingOf(path.via, via);
+    }
+    // (Path \a from's potential at path \a to's ends.)
+    const auto along = [&c, &k](int from, int to) {
+        Complex sum(0, 0);
+        for (const QPair<int, double>& end : c.paths.at(to).ends) sum += end.second * k.potentialOf(c.paths.at(from).via, end.first);
+        return sum;
+    };
+    for (int i = 0; i < count; ++i)
+        for (int j = i; j < count; ++j) {
+            const PortPath& a = c.paths.at(i);
+            const PortPath& b = c.paths.at(j);
+            const Complex v = a.current * b.current * 0.5
+                              * (k.couplingOf(a.via, b.via) + k.couplingOf(b.via, a.via) + along(i, j) + along(j, i));
+            own(a.column, b.column) += v;
+            if (i != j) own(b.column, a.column) += v;
+        }
 }
 
 AtFrequency solveAt(const Context& c, double f)
@@ -1149,6 +1215,8 @@ AtFrequency solveAt(const Context& c, double f)
         for (int q = 0; q < c.np; ++q) rhs(a, q) = (driveAt(c.tail.at(a), q) - driveAt(c.head.at(a), q)) / jw;
     for (int j = 0; j < nv; ++j)
         for (int q = 0; q < c.np; ++q) rhs(c.vias.at(j).run, q) -= portVia(q, j);
+    MatrixC pathZ = MatrixC::Zero(c.np, c.np);
+    addPortPaths(c, k, rhs, pathZ);
     const Eigen::PartialPivLU<MatrixC> lu(m);
     out.current = lu.solve(rhs);
     out.rcond = lu.rcond();
@@ -1157,19 +1225,11 @@ AtFrequency solveAt(const Context& c, double f)
         return out;
     }
 
-    // The charges it leaves, (J - A I)/jw; their potentials; and each
-    // port's voltage, its cells' potentials by the same shares.
-    MatrixC charge = c.drive;
-    for (int a = 0; a < nr; ++a)
-        for (int q = 0; q < c.np; ++q) {
-            if (c.tail.at(a) >= 0) charge(c.tail.at(a), q) -= out.current(a, q);
-            charge(c.head.at(a), q) += out.current(a, q);
-        }
-    charge /= jw;
-    out.z = c.drive.transpose() * (p * charge);
-    for (int j = 0; j < nv; ++j)
-        for (int q = 0; q < c.np; ++q)
-            for (int r = 0; r < c.np; ++r) out.z(r, q) += portVia(r, j) * out.current(c.vias.at(j).run, q);
+    // Each port's voltage: its cells' potentials by the same shares, of its
+    // own charge, J^T P J / jw, and of the charges the currents leave, with
+    // what the vias' and the paths' currents add along its path - the
+    // drive's coupling the other way round, by reciprocity.
+    out.z = c.drive.transpose() * pDrive / jw + pathZ - rhs.transpose() * out.current;
     return out;
 }
 
@@ -1446,7 +1506,8 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
  *     Z = C - (G^T I + I^T G - I^T M I)
  *
  * G the columns' drives (A^T P J / jw, less the vias' potential at the
- * ports) and C their potential of their own charge, J^T P J / jw: the
+ * ports and the ports' paths' coupling, addPortPaths()) and C their
+ * potential of their own charge, J^T P J / jw, and their paths' own: the
  * dense solve's C - G^T M^-1 G where I is M^-1 G, and its error the
  * square of I's - symmetric, where M is.
  */
@@ -1505,6 +1566,8 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             rhs(a, q) = ((c.tail.at(a) >= 0 ? pd(c.tail.at(a), q) : Complex(0, 0)) - pd(c.head.at(a), q)) / jw;
     for (int j = 0; j < nv; ++j)
         for (int q = 0; q < columns; ++q) rhs(c.vias.at(j).run, q) -= ph(j, q);
+    MatrixC pathZ = MatrixC::Zero(columns, columns);
+    addPortPaths(c, k, rhs, pathZ);
     MatrixC current(nr, columns), applied(nr, columns);
     for (int q = 0; q < columns; ++q) {
         VectorC x = VectorC::Zero(nr), mx;
@@ -1525,7 +1588,8 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         return out;
     }
     out.current = current;
-    out.z = c.drive.transpose() * pd / jw - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
+    out.z = c.drive.transpose() * pd / jw + pathZ
+            - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
     return out;
 }
 
@@ -1961,6 +2025,17 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // solve shares the current out between them.
     QList<Eigen::VectorXcd> columns;
     QList<int> portOf;
+    // Each column's cells its port's own path goes to (PortPath), by node,
+    // with the path's cross-section there - its side and its mean distance
+    // with itself, m: an edge port's a ribbon as wide as the face the cell
+    // has, an internal port's the cell's box. None for a coplanar port.
+    QList<QMap<int, QPair<double, double>>> shapes;
+    const auto ribbon = [micrometre](double width) {
+        return qMakePair(width * micrometre, 0.2235 * width * micrometre);   // (Rosa's, a thin strip's)
+    };
+    const auto boxOf = [micrometre](const QRectF& box) {
+        return qMakePair(std::sqrt(box.width() * box.height()) * micrometre, 0.2235 * (box.width() + box.height()) * micrometre);
+    };
     bool coplanar = false;
     // A share of a port's current into a cell: of a metal solved as its two
     // faces, half into the cell and half into its top's - the face of a
@@ -2022,7 +2097,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return out;
             }
             Eigen::VectorXcd column = Eigen::VectorXcd::Zero(nc);
-            for (const auto& [cell, share] : to) column(nodeOf.value(cell)) += share;
+            QMap<int, QPair<double, double>> shape;
+            for (const auto& [cell, share] : to) {
+                column(nodeOf.value(cell)) += share;
+                const QRectF box = mesh.cells.at(cell).outline.boundingRect();
+                shape.insert(nodeOf.value(cell), boxOf(over ? box.intersected(rect) : box));
+            }
             ownNet[p] = netOf.value(to.first().first, -1);
             QString against = tr("the ground");
             if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
@@ -2041,6 +2121,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             }
             columns << column;
             portOf << p;
+            shapes << shape;
             out.portsSaid << (over ? tr("%1 drives the %2 cell(s) of %3 under its %4 by %5 µm rectangle at %6, %7 µm "
                                         "against %8.")
                                          .arg(name).arg(to.size()).arg(shown(mesh.cells.at(to.first().first).layer), w, h, x, y, against)
@@ -2086,8 +2167,20 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                              span.lo, faceWidth, 2 * (8 * height + 2 * faceWidth), beyond);
         }
         if (!port.coplanar) {
+            // Its path up from the ground to each cell of the face (and of
+            // its top, where the metal is solved as its two faces).
+            QMap<int, QPair<double, double>> shape;
+            for (int k = 0; k < face.size(); ++k) {
+                const auto across = along != QPointF(0, 0) && shares.at(k) * faceWidth > 0
+                                        ? ribbon(shares.at(k) * faceWidth)
+                                        : boxOf(mesh.cells.at(face.at(k)).outline.boundingRect());
+                shape.insert(nodeOf.value(face.at(k)), across);
+                const int top = thick.topOf.value(face.at(k), -1);
+                if (top >= 0 && nodeOf.contains(top)) shape.insert(nodeOf.value(top), across);
+            }
             columns << own;
             portOf << p;
+            shapes << shape;
             if (along != QPointF(0, 0))
                 out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5.").arg(name).arg(face.size()).arg(x, y, halved);
             else
@@ -2118,6 +2211,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             }
             columns << column;
             portOf << p;
+            shapes << QMap<int, QPair<double, double>>();
             counts << int(ground.size());
         }
         // Its feed as calibration strips of it are made: the grounds' gaps
@@ -2221,6 +2315,45 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.cellZ = zOf;
     for (int i = 0; i < nc; ++i) c.hNode[i] = heightIndex(zOf.at(i));
     for (int a = 0; a < nr; ++a) c.hRun[a] = a < c.planar ? heightIndex(c.runs.at(a).z0) : -1;
+    // Each port's own path to the cells it drives (PortPath): up from the
+    // ground, or from the cells of the metal an internal port is driven
+    // from, shared out between them as the port shares its current; its
+    // span one more of the vias' where it is none of theirs.
+    for (int k = 0; k < c.np; ++k) {
+        QList<QPair<int, double>> from;
+        double fromWeight = 0, zFrom = 0;
+        for (int i = 0; i < nc; ++i)
+            if (c.drive(i, k).real() < 0) {
+                from << qMakePair(i, -c.drive(i, k).real());
+                fromWeight -= c.drive(i, k).real();
+                zFrom = zOf.at(i);
+            }
+        for (auto it = shapes.at(k).cbegin(); it != shapes.at(k).cend(); ++it) {
+            const int node = it.key();
+            const double share = c.drive(node, k).real(), zTo = zOf.at(node);
+            if (!(share > 0) || std::abs(zTo - zFrom) <= tol) continue;
+            const bool up = zTo > zFrom;
+            const double z0 = std::min(zFrom, zTo), z1 = std::max(zFrom, zTo);
+            int span = -1;
+            for (int s = 0; s < c.spans.size() && span < 0; ++s)
+                if (std::abs(c.spans.at(s).z0 - z0) <= tol && std::abs(c.spans.at(s).z1 - z1) <= tol) span = s;
+            if (span < 0) {
+                span = int(c.spans.size());
+                c.spans.append({z0, z1});
+            }
+            PortPath path;
+            path.column = k;
+            path.via.span = span;
+            path.via.at = c.centre.at(node);
+            path.via.side = it.value().first;
+            path.via.gmd = it.value().second;
+            path.current = up ? share : -share;
+            path.ends << qMakePair(node, up ? 1.0 : -1.0);
+            for (const QPair<int, double>& end : std::as_const(from))
+                path.ends << qMakePair(end.first, (up ? -1.0 : 1.0) * end.second / fromWeight);
+            c.paths << path;
+        }
+    }
     // As far as any two points of the layout are apart, and a little more.
     c.rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
 
@@ -2370,6 +2503,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.lines << tr("%1 of the runs are vias, %2 of them to the ground: a via's current runs up it from the cell "
                         "under it to the cell over it, entering each at its centre.")
                          .arg(c.vias.size() - walled.size()).arg(grounded);
+    if (!c.paths.isEmpty())
+        out.lines << tr("The ports' currents come up to the cells they drive by %1 path(s) of their own, each from the "
+                        "ground or from the metal an internal port is driven from, with the field a via's current has: "
+                        "part of each port's own discontinuity.")
+                         .arg(c.paths.size());
     out.lines << viaSaid;
     int alongEdges = 0;
     for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
@@ -2449,22 +2587,19 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.solvedAsymmetry = out.asymmetry;
     out.solvedGain = out.gain;
     out.solvedGainAt = out.gainAt;
-    // Past a stack's second surface wave this solve does not hold power to
-    // account: a strip alone on 300 µm of silicon gave back up to six times
-    // what it was given from 77 to 82 GHz, its TE1 from 75.7, and on 635 µm
-    // of alumina twice from 40.8, its TE1 from 39.8 - below both, passive.
-    // (Sixteen arcs of the ellipse or sixty-four alike: not the integral's
-    // steps. The phase E check of 2 November, docs/feature_gaps.)
+    // Where the stack begins to carry a second surface wave - TE1 over a
+    // ground - which a strip launches beside the TM0 of every frequency: the
+    // top of a microstrip's band on it, said where the sweep passes it.
+    // (Taken in the phase E check of 2 November for what gave power back
+    // past it, which was the ports' own paths, then without a field:
+    // addPortPaths().)
     const double top = *std::max_element(frequencies.begin(), frequencies.end());
     out.secondWave = secondSurfaceWave(givenStack, 2 * top);
-    if (out.secondWave > 0 && top >= out.secondWave) {
-        const QString past = tr("From %1 GHz the stack carries a second surface wave, its TE1, which a strip launches, and "
-                                "this solve does not yet hold the power it carries to account: a strip alone gives back more "
-                                "than it is given past it. What it gives from %1 GHz is not to be trusted.")
-                                 .arg(out.secondWave / 1e9, 0, 'g', 4);
-        out.lines << past;
-        out.warnings << past;
-    }
+    if (out.secondWave > 0 && top >= out.secondWave)
+        out.lines << tr("From %1 GHz the stack carries a second surface wave, its TE1, which a strip launches beside the "
+                        "TM0 of every frequency: the top of a microstrip's band on it, past which a line gives more of "
+                        "what it carries to the substrate.")
+                         .arg(out.secondWave / 1e9, 0, 'g', 4);
     out.geometry = c.runs;
     out.ends = ends;
     // As the caller meshed it: a top face's run in its bottom's - the

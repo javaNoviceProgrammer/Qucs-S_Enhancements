@@ -1994,14 +1994,6 @@ QStringList RF25Doc::fullWaveSummary() const
                       .arg(matrix).arg(w.asymmetry, 0, 'g', 2));
     if (w.gain <= 1e-6)
         out << tr("Passive: of a wave in at any port, at most %1 % comes back out over the sweep.").arg(100 * (1 + w.gain), 0, 'f', 2);
-    else if (w.secondWave > 0 && w.gainAt >= w.secondWave)
-        // (Past a stack's second surface wave the solve itself does not hold
-        //  power to account - fullWaveOf().)
-        out << tr("Not passive: at %1 GHz it gives back %2 % more than it is given - past %3 GHz, where the stack carries "
-                  "a second surface wave this solve does not yet hold to account.")
-                   .arg(w.gainAt / 1e9, 0, 'g', 4)
-                   .arg(100 * w.gain, 0, 'g', 3)
-                   .arg(w.secondWave / 1e9, 0, 'g', 4);
     else if (deembedded && w.solvedGain <= 1e-6)
         // (A thru that passes all of a wave and reflects a little more
         //  gives back twice that reflection: the recheck's 0.12 % was -64
