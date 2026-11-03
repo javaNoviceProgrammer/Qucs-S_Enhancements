@@ -380,7 +380,7 @@ QList<NodeKind> makeKinds()
                        "ports' S at each frequency, whether it is reciprocal and passive, and the currents drawn on "
                        "the layout.")});
     add({QStringLiteral("rf_exports"), tr("Exports"), QString(), QStringLiteral("exports"), none, {},
-         {QStringLiteral("rf_touchstone")}, {}, true, true, QString(), tr("What is written out of a solution.")});
+         {QStringLiteral("rf_touchstone"), QStringLiteral("rf_circuit")}, {}, true, true, QString(), tr("What is written out of a solution.")});
     add({QStringLiteral("rf_touchstone"), tr("Touchstone"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
           choice(QStringLiteral("of"), tr("Of"), {QStringLiteral("line"), QStringLiteral("coupled")},
@@ -405,6 +405,14 @@ QList<NodeKind> makeKinds()
          tr("An .sNp file of the S parameters, at the study's own frequencies: a full-wave solve's ports, in their "
             "order under Ports; or of a quasi-static solve, one net as a line or every net as coupled lines - a "
             "2N-port, the near ends first, then the far ends.")});
+    add({QStringLiteral("rf_circuit"), tr("Equivalent circuit"), QStringLiteral("export"), QStringLiteral("export"), none,
+         {file(QStringLiteral("file"), tr("File")),
+          text(QStringLiteral("name"), tr("Name"), QString(), tr("The SPICE subcircuit's name (empty: the model's)"))},
+         {}, {}, false, false, QStringLiteral("ec"),
+         tr("A lumped circuit fitted to a full-wave solve of one or two ports: a pi of R, L and C - between the ports, "
+            "and from each to the ground - each branch the form that fits it best, written as a Qucs-S schematic to "
+            "place as a part (.sch) or as a SPICE subcircuit (.cir, .sp, .lib), with how far its S is from the "
+            "solve's: it holds only while what it stands for is short beside the wavelength.")});
     return k;
 }
 

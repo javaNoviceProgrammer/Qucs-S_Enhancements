@@ -854,6 +854,12 @@ QJsonArray LayoutView::readDrawing(bool points) const
                 if (const QJsonObject on = gatheredAt(layout, base, s.points.first(), QPointF(), 0, close, reach); !on.isEmpty())
                     o.insert(QStringLiteral("on"), on);
                 break;
+            case markup::Gesture::Corner:
+                // What its point is at.
+                if (const QJsonObject at = gatheredAt(layout, base, tips.at(i), QPointF(), 0, close, reach); !at.isEmpty())
+                    o.insert(QStringLiteral("at"), at);
+                o.insert(QStringLiteral("point"), QJsonArray{std::round(tips.at(i).x() * 1000) / 1000, std::round(tips.at(i).y() * 1000) / 1000});
+                break;
             case markup::Gesture::Ring: {
                 QPolygonF ring = s.points;
                 ring << ring.first();

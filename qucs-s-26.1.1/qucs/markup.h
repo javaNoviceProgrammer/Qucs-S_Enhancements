@@ -120,12 +120,15 @@ constexpr double LeastStep = 1.5;
 
 /// How a stroke was drawn, as one reading it takes it: a dot; a ring round
 /// something, back near where it began; a line, straight or nearly; an
-/// arrow, a line with its head drawn at its end (in the stroke itself, or
-/// as a short stroke of its own beside it); or a mark of another shape - a
-/// tick, a cross, a scribble.
-enum class Gesture { Dot, Ring, Line, Arrow, Mark, Arrowhead };
+/// arrow, a line with its head drawn at its end (in the stroke itself - a
+/// V's one side or both, a triangle - or as a short stroke of its own
+/// beside it); a corner, two straight arms at an angle - an L, a V, a
+/// caret -, which marks what is at its point; or a mark of another shape -
+/// a tick, a cross, a scribble.
+enum class Gesture { Dot, Ring, Line, Arrow, Mark, Arrowhead, Corner };
 QString nameOf(Gesture gesture);
-/// \a stroke's gesture, alone; an arrow's tip in \a tip (a line's end).
+/// \a stroke's gesture, alone; an arrow's tip in \a tip (a line's end, a
+/// corner's point).
 Gesture gestureOf(const Stroke& stroke, QPointF* tip = nullptr);
 /// The gestures of \a strokes, drawn on one part in that order: a line
 /// with a short stroke at one of its ends drawn just after it is an arrow
