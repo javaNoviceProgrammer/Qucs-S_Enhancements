@@ -35,6 +35,8 @@
 #include <QDir>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QPointer>
+#include <QScopeGuard>
 
 using namespace qucs_s::rf25;
 using namespace qucs_s::control;
@@ -341,6 +343,15 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     const int timeout = args.contains(QLatin1String("timeout"))
                             ? qBound(1, args.value(QLatin1String("timeout")).toInt(300), 3600)
                             : 300;
+    // Cancelled by its client while it waits (the user stopped Claude): its
+    // solve stopped, or not begun.
+    QPointer<RF25Doc> solving(model);
+    auto cancelled = std::make_shared<bool>(false);
+    const int stop = stoppable(running(), [solving, cancelled] {
+        *cancelled = true;
+        if (solving) solving->stopSolving();
+    });
+    const auto over = qScopeGuard([this, stop] { stopped(stop); });
     // The shapes and the cells first: the tab makes them at every edit,
     // and a solve is of them as they stand.
     if (!model->waitForLayout(timeout * 1000))
@@ -377,6 +388,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     }
     if (fullWave && asked > 0) request.frequencies = {asked};
 
+    if (*cancelled || !solving) return errorResult(tr("Cancelled by the client before it was solved."));
     model->solveWith(request);
     if (!model->waitForSolved(timeout * 1000)) {
         model->stopSolving();

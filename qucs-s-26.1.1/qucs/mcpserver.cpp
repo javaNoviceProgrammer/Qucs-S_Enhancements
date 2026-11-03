@@ -470,6 +470,19 @@ void Server::handle(const QJsonObject& message, const Reply& reply)
         reply(failure(QJsonValue(QJsonValue::Null), -32600, QStringLiteral("Invalid Request: 'id' is a string or a number")));
         return;
     }
+    if (method == QLatin1String("notifications/cancelled")) {
+        // A call of the client's it cancelled (the user stopped Claude): the
+        // host stops what it waits on, and it is not answered. (Ignored, a
+        // solve went on for minutes after its turn was stopped.)
+        const QString key = idKey(message.value(QLatin1String("params")).toObject().value(QLatin1String("requestId")));
+        if (const auto it = a_calls.constFind(key); it != a_calls.cend() && !a_cancelled.contains(key)) {
+            const QString tool = it.value();
+            a_cancelled.insert(key);
+            a_host->cancelCall(a_caller, tool);
+        }
+        reply(response(id, QJsonObject()));
+        return;
+    }
     if (isNotification(message) || method == QLatin1String("ping")) {
         reply(response(id, QJsonObject()));
         return;
@@ -502,9 +515,15 @@ void Server::handle(const QJsonObject& message, const Reply& reply)
                 return;
             }
         }
+        const QString key = idKey(id);
+        a_calls.insert(key, tool);
         QPointer<Server> self(this);
-        auto done = [self, id, reply, most](const QJsonObject& result) {
-            if (self) reply(response(id, self->callResult(most > 0 ? trimmedTo(result, most) : result)));
+        auto done = [self, id, key, reply, most](const QJsonObject& result) {
+            if (!self) return;
+            self->a_calls.remove(key);
+            // (Cancelled: nothing sent - its carrier told it is over.)
+            if (self->a_cancelled.remove(key)) return reply(QJsonObject());
+            reply(response(id, self->callResult(most > 0 ? trimmedTo(result, most) : result)));
         };
         if (a_call) a_call(tool, arguments, done);
         else a_host->callTool(tool, arguments, done);

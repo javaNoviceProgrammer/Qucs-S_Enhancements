@@ -91,7 +91,11 @@ public:
     /// Takes one message. A request is answered through \a reply, now or
     /// later; a notification or a response to one of the server's own
     /// requests is answered at once with an empty result (a stream that
-    /// needs an answer to everything takes it; stdio drops it).
+    /// needs an answer to everything takes it; stdio drops it). A tool's
+    /// call the client cancels (notifications/cancelled) is told to the host
+    /// (ToolHost::cancelCall()) and answered, when it ends, with an empty
+    /// object: nothing is sent for it (MCP: a cancelled request is not
+    /// answered), its carrier only told it is over.
     void handle(const QJsonObject& message, const Reply& reply);
     /// Whether \a message is a JSON-RPC notification (nothing to answer).
     static bool isNotification(const QJsonObject& message);
@@ -124,6 +128,8 @@ private:
     QTimer* a_poll = nullptr;
     int a_nextRequest = 1;
     QHash<QString, std::function<void(const QJsonObject&)>> a_pending;   // the server's requests: by id
+    QHash<QString, QString> a_calls;   // the client's tools/call requests under way: their tools, by id
+    QSet<QString> a_cancelled;         // ... of them, those the client cancelled: not answered
 };
 
 } // namespace qucs_s::mcp

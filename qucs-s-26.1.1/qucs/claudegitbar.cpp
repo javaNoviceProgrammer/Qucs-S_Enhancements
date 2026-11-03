@@ -10,6 +10,8 @@
  */
 #include "claudegitbar.h"
 
+#include "elidedlabel.h"
+
 #include "apptheme.h"
 #include "ink.h"
 #include "settings.h"
@@ -170,12 +172,17 @@ ClaudeGitBar::ClaudeGitBar(QWidget* parent)
     layout->setContentsMargins(10, 3, 4, 3);
     layout->setSpacing(10);
 
-    a_folder = new QLabel(this);
+    // (The names whole, cut as they are drawn where the bar is narrow: cut
+    // to 200 and 220 pixels beforehand, they made the dock 600 pixels wide
+    // at the least. As wide as that at the most, as before.)
+    a_folder = new ElidedLabel(this, Qt::ElideRight);
     a_folder->setObjectName(QStringLiteral("claudeGitFolder"));
     a_folder->setTextFormat(Qt::PlainText);
-    a_branch = new QLabel(this);
+    a_folder->setMaximumWidth(200);
+    a_branch = new ElidedLabel(this, Qt::ElideMiddle);
     a_branch->setObjectName(QStringLiteral("claudeGitBranch"));
     a_branch->setTextFormat(Qt::PlainText);
+    a_branch->setMaximumWidth(220);
     QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     mono.setPointSizeF(font().pointSizeF());
     a_branch->setFont(mono);
@@ -371,7 +378,7 @@ void ClaudeGitBar::updateBar()
     const Status& s = a_status;
     if (s.repository) {
         const QString name = QFileInfo(s.root).fileName();
-        a_folder->setText(a_folder->fontMetrics().elidedText(name, Qt::ElideRight, 200));
+        a_folder->setText(name);
         a_folder->setToolTip(tr("The git repository %1").arg(native(s.root)));
 
         QString branch = s.branch.isEmpty()
@@ -379,7 +386,7 @@ void ClaudeGitBar::updateBar()
                              : s.branch;
         if (s.ahead > 0) branch += QStringLiteral(" ↑%1").arg(s.ahead);
         if (s.behind > 0) branch += QStringLiteral(" ↓%1").arg(s.behind);
-        a_branch->setText(a_branch->fontMetrics().elidedText(branch, Qt::ElideMiddle, 220));
+        a_branch->setText(branch);
         QStringList tip;
         if (s.branch.isEmpty()) {
             tip << (s.head.isEmpty() ? tr("The repository has no commit yet.") : tr("HEAD is detached, at %1.").arg(s.head));
