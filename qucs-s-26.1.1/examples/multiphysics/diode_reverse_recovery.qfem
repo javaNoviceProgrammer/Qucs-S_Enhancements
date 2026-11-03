@@ -34,7 +34,7 @@
     "results": {
         "plots": [
             {"type": "plotgroup1d", "label": "Anode current", "plots": [
-                {"type": "globalgraph", "expression": "semi.I_a", "unit": "mA", "solutions": "all"}
+                {"type": "globalgraph", "expression": "semi.I_a", "unit": "mA"}
             ]},
             {"type": "cutline", "tag": "cln1", "label": "Along the diode", "start": ["0", "0.5"], "end": ["10", "0.5"]},
             {"type": "plotgroup1d", "label": "Holes", "plots": [

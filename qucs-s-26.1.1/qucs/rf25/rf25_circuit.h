@@ -78,6 +78,12 @@ EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& freq
 
 /// \a value as Qucs-S writes one: four figures and a prefix, "117.3 pH".
 QString valueSaid(double value, const QString& unit);
+/// Whether \a value of element \a element (R, L, C...) is an open at any
+/// frequency a lumped circuit stands for: an R past 1e15 Ohm.
+bool isOpenInEffect(const QString& element, double value);
+/// Element \a element of \a value as the answers write it: "C 17.17 fF",
+/// "R 8.518e+24 Ohm (an open)".
+QString elementSaid(const QString& element, double value);
 /// It as a SPICE subcircuit named \a name, its ports then the reference
 /// ("ref") as its pins; \a comment, lines put before it.
 QString spiceOf(const EquivalentCircuit& circuit, const QString& name, const QStringList& comment);

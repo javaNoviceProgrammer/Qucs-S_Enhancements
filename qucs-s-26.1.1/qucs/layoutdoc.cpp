@@ -2460,6 +2460,12 @@ void LayoutDoc::setColorsAdapted(bool adapted)
     everyLayoutTab([adapted](LayoutDoc* doc) { doc->a_view->setColorsAdapted(adapted); });
 }
 
+void LayoutDoc::setLabelsShown(bool shown)
+{
+    // (The button's toggle draws and keeps it.)
+    a_labelsButton->setChecked(shown);
+}
+
 void LayoutDoc::setGridShown(bool shown)
 {
     QucsSettingsFile().setValue(QLatin1String(kGridKey), shown);

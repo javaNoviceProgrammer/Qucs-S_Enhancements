@@ -414,6 +414,9 @@ public:
     void setColorsAdapted(bool adapted);
     void setGridShown(bool shown);
     void setGridStyle(qucs_s::layout::LayoutView::GridStyle style);
+    /// Texts drawn or not, as the tab's Texts button does it - kept for the
+    /// next tab (it was the canvas's alone, the button left as it was).
+    void setLabelsShown(bool shown);
 
     /// The cells whose names have \a text (a wildcard: * ?) listed in the
     /// cell panel; the first shown.
@@ -458,6 +461,7 @@ public:
     QPushButton* cancelButton() const { return a_cancel; }
     QToolButton* menuButton() const { return a_menuButton; }
     QToolButton* gridButton() const { return a_gridButton; }
+    QToolButton* labelsButton() const { return a_labelsButton; }
     qucs_s::markup::PenButton* penButton() const { return a_penButton; }
     QWidget* sidebar() const;
 
