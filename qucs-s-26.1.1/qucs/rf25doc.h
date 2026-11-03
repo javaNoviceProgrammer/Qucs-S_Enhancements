@@ -24,6 +24,7 @@
 #include "rf25/rf25_static.h"
 #include "rf25/rf25_model.h"
 
+#include <QElapsedTimer>
 #include <QFrame>
 #include <QWidget>
 
@@ -33,6 +34,7 @@
 
 class QLabel;
 class QPlainTextEdit;
+class QProgressBar;
 class QSplitter;
 class QTimer;
 class QToolButton;
@@ -224,6 +226,12 @@ public:
     /// a solve going on, an edit's mesh overtaking it or a Stop, is seen in
     /// any build, not only of a solve slow enough to be caught at it.
     void holdSolves(bool held) { a_solvesHeld->store(held); }
+    /// Tests: a full-wave solve begins only \a count more of its
+    /// frequencies - its sweep's, then its calibration strips' - and waits
+    /// until it is allowed more; below nought, as many as it has, as it
+    /// does unless told. How far a solve has got, seen part way in any
+    /// build.
+    void allowFrequencies(int count) { a_frequenciesAllowed->store(count); }
     /// Why there is no capacitance: what the extraction refused, or what
     /// stood in the way of starting it. Empty when there is one.
     QString solveProblem() const { return a_solveProblem; }
@@ -347,6 +355,12 @@ public:
     qucs_s::rf25::StackView* stackView() const { return a_stack; }
     QPlainTextEdit* problemsText() const { return a_problemsText; }
     QLabel* statusLabel() const { return a_status; }
+    /// How far a solve has got, beside the status line: hidden while none
+    /// goes on; busy where it cannot be counted - the quasi-static
+    /// extraction, a solve waiting for its mesh -, else the full-wave
+    /// solve's frequencies solved of those to solve, then its ports'
+    /// calibration strips'.
+    QProgressBar* progressBar() const { return a_progressBar; }
     /// Shows what node \a tag is about: a layer marked in the stack, the
     /// layout fitted. The node the panel chose.
     void focusNode(const QString& tag);
@@ -385,6 +399,12 @@ private:
     void buildUi();
     void prepareDone();
     void solveDone();
+    /// stopSolving() but for the bar: a solve let go to be started again at
+    /// once - on an edit's mesh, or as solveWith() asks - keeps it.
+    void letSolveGo();
+    /// The bar as the solve now is, and the timer that keeps it so running
+    /// while one goes on.
+    void showProgress();
     /// The processed shapes and the mesh over the layout, as the two
     /// buttons have them.
     void showOverlays();
@@ -418,7 +438,8 @@ private:
     std::shared_ptr<const qucs_s::rf25::FullWave> a_fullWave;
     QStringList a_waveNotes;       ///< what reading the ports said (a de-embedding not done...)
     SolveRequest a_solveRequest;   ///< the last asked for, for one waiting for the mesh
-    QTimer* a_progress = nullptr;  ///< a full-wave solve's frequencies counted while it runs
+    QTimer* a_progress = nullptr;  ///< a solve's bar, and a full-wave one's frequencies, counted while it runs
+    QElapsedTimer a_solvingSince;  ///< since a solve was asked for; invalid while none goes on
     std::shared_ptr<const qucs_s::rf25::Inductance> a_inductance;
     bool a_lastChangeRead = false;
     QString a_portsSaid;
@@ -430,6 +451,8 @@ private:
     bool a_solveWhenPrepared = false;
     /// holdSolves(): each solve job holds it too, so it outlives the tab.
     std::shared_ptr<std::atomic_bool> a_solvesHeld = std::make_shared<std::atomic_bool>(false);
+    /// allowFrequencies(): held by each solve job, as that is.
+    std::shared_ptr<std::atomic_int> a_frequenciesAllowed = std::make_shared<std::atomic_int>(-1);
     bool a_showProcessed = true;
     bool a_showMesh = false;
     bool a_showCurrents = false;
@@ -450,6 +473,7 @@ private:
     qucs_s::layout::LayoutView* a_view = nullptr;
     QPlainTextEdit* a_problemsText = nullptr;
     QLabel* a_status = nullptr;
+    QProgressBar* a_progressBar = nullptr;
 };
 
 #endif // QUCS_RF25DOC_H
