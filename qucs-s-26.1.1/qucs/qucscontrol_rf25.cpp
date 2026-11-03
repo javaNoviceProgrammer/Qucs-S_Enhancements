@@ -695,6 +695,11 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_circuit fits a circuit to the full-wave solve of one.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // Its shapes and its mesh first: a solution kept beside the model is
+    // taken once they are made, a moment after the model is opened.
+    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    if (!model->waitForPrepared(300000))
+        return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
     // Where it goes, if anywhere: the file given, else an Equivalent circuit
     // node's own; with neither, the fit alone.
     const QString node = args.value(QLatin1String("node")).toString().trimmed();
@@ -872,6 +877,15 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_export writes the S parameters of one.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // Its shapes and its mesh first: a solution kept beside the model is
+    // taken once they are made, a moment after the model is opened.
+    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    if (!model->waitForPrepared(300000))
+        return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
+    // (An equivalent circuit is fitted, not written as S: its own tool.)
+    const QString node = args.value(QLatin1String("node")).toString().trimmed();
+    if (const Node* n = model->model().root.find(node); !node.isEmpty() && n != nullptr && n->type == QLatin1String("rf_circuit"))
+        return errorResult(tr("%1 is an Equivalent circuit export: rf25_circuit fits and writes it (its 'node').").arg(node));
     const std::shared_ptr<const FullWave> wave = model->fullWave();
     const bool full = wave && wave->ok();
     if (!full && (!model->extraction() || !model->extraction()->ok()))
@@ -881,11 +895,7 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
 
     // What to write: the export node named, else what the arguments say.
     RF25Doc::ExportRequest what;
-    const QString node = args.value(QLatin1String("node")).toString().trimmed();
     if (!node.isEmpty()) {
-        // (An equivalent circuit is fitted, not written as S: its own tool.)
-        if (const Node* n = model->model().root.find(node); n != nullptr && n->type == QLatin1String("rf_circuit"))
-            return errorResult(tr("%1 is an Equivalent circuit export: rf25_circuit fits and writes it (its 'node').").arg(node));
         QString why;
         if (!model->exportRequest(node, &what, &why)) return errorResult(why);
     }

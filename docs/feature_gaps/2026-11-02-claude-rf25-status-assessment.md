@@ -202,7 +202,7 @@ preconditioner would help.
 | `theSolutionIsKeptBesideTheModel` (new) | A solve written beside the model, its stamps the model's, the layout file's, the cells' and the build's; written back, the same bytes. Opened again: shown with no solve and said, its account, Touchstone, S, Z, currents and checks the solve's to the last bit; a solve again says nothing of it. An export added leaves the solve standing, and kept. An edit saved with no solve, the layout written again, a mesh of other cells, another format, a damaged file: not taken, and why said. A quasi-static solve kept and shown alike; an unsaved model's solve kept once it is saved, not before |
 | `anEquivalentCircuitIsWrittenFromTheSolve` (new) | Nothing before a full-wave solve, and why; the line fitted as a pi within 0.05 of its S; written as a part Qucs-S loads and netlists, its Y between p1 and p2 the circuit's to a part in a thousand at 1, 3 and 5 GHz; an export's file named leaving the solve standing; a SPICE subcircuit of the name asked, a space made an underscore, its Y the circuit's; the panel's Write saying where and how well |
 | `test_rf25_sparams`: `aPiOfKnownBranchesIsFoundAgain`, `aOnePortIsOneBranch`, `aSlightlyLossyCapacitorIsACapacitor`, `aLongLineIsSaidToBeNoLumpedCircuit`, `whatIsNoCircuitIsSaid`, `theSpiceSubcircuitIsTheCircuit` (new) | A pi of R+L+C, C+(R\|\|C) and R\|\|C found again from its S over 0.5 to 64 GHz, each form and value to 1e-3, its S to 1e-6; a series resonator as a one-port; a capacitor of Q in the thousands a capacitor; a half-wave line still fitted and said far, its 10 GHz left out and said; three ports, nothing solved, a thru and ten micro-ohms between two ports refused; the SPICE subcircuit's lines read back as the circuit's Y to 1e-9; values as a part writes them |
-| `anRf25ModelIsSolvedFullWaveThroughItsTool` (`test_qucs_control`, extended) | `kept beside the model` said, and the file there; `rf25_circuit`: three branches, between what, its fit error, its part and SPICE files where asked, its node's file, a node that is no circuit refused; `rf25_export` given a circuit node pointing to `rf25_circuit` |
+| `anRf25ModelIsSolvedFullWaveThroughItsTool` (`test_qucs_control`, extended) | `kept beside the model` said, and the file there; `rf25_circuit`: three branches, between what, its fit error, its part and SPICE files where asked, its node's file, a node that is no circuit refused; `rf25_export` given a circuit node pointing to `rf25_circuit`, before any solve and after; the model closed and opened again by `rf25_circuit` and by `rf25_export`, each using the solution kept beside it |
 | `anRf25ModelIsSolvedThroughItsTool` (extended) | A quasi-static solve's answer says where it is kept |
 | `strokesAreReadAsDrawn` (`test_pptx_doc`, extended) | Both sides of a V and a closed triangle drawn at one go are arrows, their tip at the point; a long-sided V and an L corners, their point the bend; a hairpin and a bend of 150 degrees marks; a caret drawn after a line a corner; a corner on a word: at that word, its point given, in its sentence |
 | `theRawInputDrawsOnALayout` (`test_layout_doc`, extended) | An L dragged on a layout through `send_input` read as a corner at the shapes and the cell under its bend, its point to 0.1 µm |
@@ -210,7 +210,7 @@ preconditioner would help.
 
 ## Broken on purpose
 
-`docs/feature_gaps/2026-11-02-claude-rf25-status-assessment/breaks.py` holds forty-five:
+`docs/feature_gaps/2026-11-02-claude-rf25-status-assessment/breaks.py` holds forty-eight:
 
 - **The time left and the Stop:** the time left left out of the notes, the status line and the bar's tool tip, in
   turn; seconds not rounded to five; hours said as minutes; the Stop beside the bar never shown, and stopping
@@ -223,7 +223,9 @@ preconditioner would help.
   no Y fitted all the same; two ports joined by a wire fitted; the SPICE subcircuit without its reference; the part
   without its ground; a subcircuit's name taken as given, a space and all; a circuit node's file by default a SPICE
   one; no Equivalent circuit among the exports; the panel's Write not for a circuit; the tool not writing the file
-  asked, not saying how far its S is; `rf25_export` taking a circuit node for a Touchstone one.
+  asked, not saying how far its S is; `rf25_circuit` and `rf25_export` looking for a solve before the model's mesh
+  is made; `rf25_export` taking a circuit node for a Touchstone one, and pointing it to `rf25_circuit` only once
+  the model is solved.
 - **The pen:** both sides of a V drawn at one go not an arrow; an arrow's head as far from the point as its shaft;
   no corners; a tick a corner; a hairpin a corner; a bend of 150 degrees a corner; a corner not taken for an arrow's
   head; a corner's point not said on a page, what it is at not in its sentence; a corner's point and what it is at
@@ -231,7 +233,7 @@ preconditioner would help.
 - **The physics the measured line checks:** the substrate's permittivity taken 6 % higher; a two-faced metal's own
   impedance halved.
 
-All forty-five are caught. Of the first run's forty-three, four got past - each a check no test made, now made:
+All forty-eight are caught. Of the first run's forty-three, four got past - each a check no test made, now made:
 
 - **The quasi-static answer's `kept beside the model`**: the tool's test read only the full-wave answer's. The
   quasi-static test now holds it too, and the two are broken apart.
@@ -256,7 +258,7 @@ Built Debug with ASan and UBSan, as CI's Linux job is, and solved with Eigen's s
 | test_rf25_doc `theTimeLeftIsSaidRoundly` | 1 s |
 | test_rf25_doc `aSolveShowsHowFarItHasGot` | 17 s |
 | test_rf25_sparams, the fitter's functions | 0 to 7 s each |
-| test_qucs_control `anRf25ModelIsSolvedFullWaveThroughItsTool` | 37 s (31 s at 934b0de: six calls of `rf25_circuit` and `rf25_export` added) |
+| test_qucs_control `anRf25ModelIsSolvedFullWaveThroughItsTool` | 30 s, with the model reopened by the tools (31 s at 934b0de, before the circuit's calls) |
 | test_qucs_control `theToolsAreListed` | 1 s |
 | test_pptx_doc `strokesAreReadAsDrawn` | 4 s |
 | test_layout_doc `theRawInputDrawsOnALayout` | 10 s |
@@ -264,6 +266,18 @@ Built Debug with ASan and UBSan, as CI's Linux job is, and solved with Eigen's s
 
 Whole, test_rf25_doc took 159 s of its 900 (145 before this round) and test_rf25_sparams 44 s of its 900; on CI's
 Linux runner, about twice as slow, both have room.
+
+## Found by the DMG's check
+
+Driving the tools as the DMG's check does, before the DMG was built: a full-wave model solved through `rf25_solve`,
+closed, then opened again by `rf25_circuit` or `rf25_export`, was refused - "Nothing is solved full-wave yet:
+rf25_solve it first" - though its solution was kept beside it. The two looked for a solve as soon as the model was
+open, and a kept solution is taken only once the model's mesh is made, a moment later. Both now wait for the
+model's shapes and mesh first, as `rf25_solve` and `rf25_inductance` already did. And `rf25_export` given an
+Equivalent circuit node now points to `rf25_circuit` whether the model is solved or not; it said nothing was solved
+first. The tool's test holds both - the model closed and opened again by each tool, the node refused before the
+solve - and three breaks more (each tool's wait, and the refusal's order) are caught. Its whole suite, 214
+functions, green in Release.
 
 ## Not done
 
