@@ -642,6 +642,12 @@ private:
     void getLayout(const QJsonObject& args, const Done& done);
     void findShapes(const QJsonObject& args, const Done& done);
     void showLayout(const QJsonObject& args, const Done& done);
+    void findPlacements(const QJsonObject& args, const Done& done);
+    /// export_image of a layout: whether args name one (its tab, a layout's
+    /// file, or the tab in front), and its tab's view written as it shows
+    /// it - a picture of 'scale' times its pixels, an SVG or a PDF.
+    bool isLayoutExport(const QJsonObject& args) const;
+    QJsonObject exportLayout(const QJsonObject& args);
     QJsonObject undoHistory(const QJsonObject& args);
     QJsonObject newProject(const QJsonObject& args);
     QJsonObject openProject(const QJsonObject& args);

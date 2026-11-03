@@ -138,6 +138,10 @@ public:
     const QList<QLineF>& rulers() const { return a_rulers; }
     void addRuler(const QLineF& ruler);
     void clearRulers();
+    /// \a point (µm) snapped as a ruler's drag snaps it: to the nearest
+    /// corner, else edge, of a shape shown within a few pixels at the zoom
+    /// shown; on the database grid where there is none.
+    QPointF snapped(QPointF point) const;
 
     /// What is drawn on the layout with the pen: strokes in µm, each on the
     /// cell it was drawn on, by name - shown with that cell, and kept when
@@ -228,6 +232,12 @@ public:
     int renders() const { return a_renders; }
     /// The view drawn now, as the screen shows it.
     QImage picture();
+    /// The view as it stands - the grid, the layout, what is selected, the
+    /// overlays, the rulers, what the pen drew - drawn afresh onto
+    /// \a painter in the view's own pixels, at its device's resolution (an
+    /// export's picture of more pixels, a PDF, an SVG); the canvas's
+    /// background first unless \a background is false. Nothing is cached.
+    void paintOnto(QPainter& painter, bool background = true);
 
     /// Drawn by the GPU (layoutviewgpu.h): its canvas over the view, the
     /// layers from buffers made once. The setting (Settings… > Viewers:
@@ -281,6 +291,9 @@ protected:
 private:
     friend class LayoutGpu;
     void invalidate();
+    /// What is drawn over the layout's picture: the scale, the selection,
+    /// the overlays and their legend, the rulers, the pen's strokes.
+    void paintOver(QPainter& p, const Colors& c);
     void paintGrid(QPainter& p, const Colors& c) const;
     void paintLabels(QPainter& p, const Colors& c, const Overlay& overlay) const;
     void paintScale(QPainter& p, const Colors& c) const;
@@ -387,6 +400,9 @@ public:
     int depth() const;
     void setDepth(int depth);
     void setLayerVisible(int layer, bool visible);
+    /// A layer drawn in \a colour, its frame and fill, as the layer list's
+    /// Colour… does (until other layer properties are loaded).
+    void setLayerColour(int layer, const QColor& colour);
     /// The .lyp the colours come from, or empty (the palette).
     QString layerPropertiesFile() const { return a_lypFile; }
     bool loadLayerProperties(const QString& path, QString* error = nullptr);

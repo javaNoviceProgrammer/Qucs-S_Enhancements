@@ -506,6 +506,8 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
         if (!(tool == QLatin1String("fem_model") && action == QLatin1String("new") && qstrcmp(key, "path") == 0)) read(text(key));
     if (tool == QLatin1String("describe_component_type")) read(text("type"));   // (a Verilog-A module's file)
     if (tool == QLatin1String("open_project")) read(text("name"));             // (a project's folder)
+    if (tool == QLatin1String("show_layout") && text("layer_properties").compare(QLatin1String("palette"), Qt::CaseInsensitive) != 0)
+        read(text("layer_properties"));   // (a KLayout .lyp, beside the layout or anywhere)
 
     // Written: where each tool writes, as it resolves it.
     const QString saveAs = text("save_as");

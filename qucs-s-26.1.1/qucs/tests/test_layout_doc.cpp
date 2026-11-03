@@ -2916,6 +2916,299 @@ private slots:
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"grid", "yes"}})));
     }
 
+    // find_shapes by what a text says: a part of it, or * and ?, in any case.
+    void find_shapesFindsTextsByWhatTheySay()
+    {
+        QJsonObject j = json(call("find_shapes", {{"path", "sample.gds"}, {"text", "OUT"}}));
+        QCOMPARE(j.value("found").toInt(), 3);
+        QCOMPARE(j.value("shapes").toArray().at(0).toObject().value("kind").toString(), QString("text"));
+        QCOMPARE(json(call("find_shapes", {{"path", "sample.gds"}, {"text", "o?t"}})).value("found").toInt(), 3);
+        QCOMPARE(json(call("find_shapes", {{"path", "sample.gds"}, {"text", "U"}})).value("found").toInt(), 3);
+        QCOMPARE(json(call("find_shapes", {{"path", "sample.gds"}, {"text", "IN"}})).value("found").toInt(), 0);
+        // With a region: the one there.
+        QCOMPARE(json(call("find_shapes", {{"path", "sample.gds"}, {"text", "OUT"}, {"region", QJsonArray{11, 0, 13, 1}}})).value("found").toInt(), 1);
+        QVERIFY(failed(call("find_shapes", {{"path", "sample.gds"}, {"text", ""}})));
+        QVERIFY(failed(call("find_shapes", {{"path", "sample.gds"}, {"text", "OUT"}, {"texts", false}})));
+    }
+
+    // find_placements: where a cell is placed - each placement's origin, turn,
+    // mirror and bounds in the cell searched, every copy of an array, the
+    // cells it is placed through; in a region, to a depth; a cycle and an
+    // array of 65535 by 65535 cut short; a cell placed nowhere, one that is
+    // none.
+    void find_placementsFindsWhereACellIsPlaced()
+    {
+        QJsonObject r = call("find_placements", {{"path", "sample.gds"}, {"cell", "INV"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject j = json(r);
+        QCOMPARE(j.value("in").toString(), QString("TOP"));
+        QCOMPARE(j.value("found").toInt(), 3);
+        QHash<QString, QJsonObject> at;   // by origin
+        for (const QJsonValue& v : j.value("placements").toArray()) {
+            const QJsonArray o = v.toObject().value("origin").toArray();
+            at.insert(QStringLiteral("%1,%2").arg(o.at(0).toDouble()).arg(o.at(1).toDouble()), v.toObject());
+        }
+        QCOMPARE(at.value("10,0").value("rotation").toDouble(), 0.0);
+        QVERIFY(!at.value("10,0").contains("mirrored"));
+        QCOMPARE(at.value("10,0").value("bounds").toArray(), QJsonArray({10, 0, 12, 1}));
+        QCOMPARE(at.value("10,0").value("in").toString(), QString("TOP"));
+        QCOMPARE(at.value("20,0").value("rotation").toDouble(), 90.0);
+        QCOMPARE(at.value("20,0").value("bounds").toArray(), QJsonArray({19, 0, 20, 2}));
+        QCOMPARE(at.value("30,0").value("rotation").toDouble(), 0.0);
+        QVERIFY(at.value("30,0").value("mirrored").toBool());
+        QCOMPARE(at.value("30,0").value("bounds").toArray(), QJsonArray({30, -1, 32, 0}));
+        // An array's copies, each its own; in a region, the one there.
+        j = json(call("find_placements", {{"path", "sample.gds"}, {"cell", "VIA"}}));
+        QCOMPARE(j.value("found").toInt(), 6);
+        bool oneOne = false;
+        for (const QJsonValue& v : j.value("placements").toArray())
+            if (v.toObject().value("origin").toArray() == QJsonArray({1, 1})) oneOne = v.toObject().value("copy").toString() == QString("5 of 6");
+        QVERIFY2(oneOne, qPrintable(text(call("find_placements", {{"path", "sample.gds"}, {"cell", "VIA"}}))));
+        j = json(call("find_placements", {{"path", "sample.gds"}, {"cell", "VIA"}, {"region", QJsonArray{1.8, -0.5, 3, 0.4}}}));
+        QCOMPARE(j.value("found").toInt(), 1);
+        QCOMPARE(j.value("placements").toArray().at(0).toObject().value("origin").toArray(), QJsonArray({2, 0}));
+        // Not in this cell; a cell that is none; 'limit'.
+        j = json(call("find_placements", {{"path", "sample.gds"}, {"cell", "VIA"}, {"in", "INV"}}));
+        QCOMPARE(j.value("found").toInt(), 0);
+        QVERIFY2(j.value("note").toString().contains("VIA is not placed in INV"), qPrintable(j.value("note").toString()));
+        const QJsonObject none = call("find_placements", {{"path", "sample.gds"}, {"cell", "NOPE"}});
+        QVERIFY(failed(none) && text(none).contains("top cells: TOP"));
+        j = json(call("find_placements", {{"path", "sample.gds"}, {"cell", "VIA"}, {"limit", 2}}));
+        QCOMPARE(j.value("placements").toArray().size(), 2);
+        QVERIFY(j.value("note").toString().contains("2 listed of 6"));
+        QVERIFY(failed(call("find_placements", {{"path", "sample.gds"}})));
+        QVERIFY(failed(call("find_placements", {{"path", "sample.gds"}, {"cell", "VIA"}, {"limit", 0}})));
+        // Down a chain: through the cells between, its origin every level's
+        // together; deep enough or not.
+        writeHierarchy(path("chain.gds"), false, 3, false, false);
+        j = json(call("find_placements", {{"path", "chain.gds"}, {"cell", "LEAF"}, {"in", "C2"}}));
+        QCOMPARE(j.value("found").toInt(), 1);
+        QCOMPARE(j.value("placements").toArray().at(0).toObject().value("via").toString(), QString("C2 > C1 > C0"));
+        QCOMPARE(j.value("placements").toArray().at(0).toObject().value("in").toString(), QString("C0"));
+        QCOMPARE(j.value("placements").toArray().at(0).toObject().value("origin").toArray(), QJsonArray({1.5, 1.5}));
+        QCOMPARE(json(call("find_placements", {{"path", "chain.gds"}, {"cell", "LEAF"}, {"in", "C2"}, {"depth", 1}})).value("found").toInt(), 0);
+        QCOMPARE(json(call("find_placements", {{"path", "chain.gds"}, {"cell", "LEAF"}, {"in", "C2"}, {"depth", 2}})).value("found").toInt(), 1);
+        // A cycle, cut where the reader cuts it (and warns): PING placed in C2,
+        // PONG no longer placed in PING; an array of 65535 by 65535 counted
+        // to 100000.
+        writeHierarchy(path("cycle.gds"), false, 3, true, false);
+        r = call("find_placements", {{"path", "cycle.gds"}, {"cell", "PING"}, {"in", "C2"}});
+        QVERIFY2(!failed(r) && json(r).value("found").toInt() == 1, qPrintable(text(r)));
+        QCOMPARE(json(call("find_placements", {{"path", "cycle.gds"}, {"cell", "PONG"}, {"in", "C2"}})).value("found").toInt(), 0);
+        // (In OASIS: a GDSII array's counts are 16 bits, and this one reads as
+        // a single copy there.)
+        writeHierarchy(path("array.oas"), true, 2, false, true);
+        r = call("find_placements", {{"path", "array.oas"}, {"cell", "LEAF"}, {"in", "C1"}});
+        QVERIFY2(!failed(r) && json(r).value("found").toString() == QString("100000 or more"), qPrintable(text(r)));
+    }
+
+    // show_layout selects as a click does and measures as the ruler does:
+    // what is selected and the rulers - Claude's and the user's - in its
+    // answer and get_layout's.
+    void show_layoutSelectsAndMeasures()
+    {
+        // The INV at (10, 0): at (11, 0.5) its path and its rectangle - the
+        // smaller first; at the same point again, the next.
+        QJsonObject r = call("show_layout", {{"path", "sample.gds"}, {"cell", "TOP"}, {"layers", "all"}, {"depth", "all"},
+                                             {"region", QJsonArray{9, -1, 13, 2}}, {"select", QJsonArray{11, 0.5}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* doc = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QJsonObject selected = json(r).value("selected").toObject();
+        QCOMPARE(selected.value("kind").toString(), QString("path"));
+        QCOMPARE(selected.value("via").toString(), QString("TOP > INV"));
+        QVERIFY(doc->view()->selection().has_value());
+        r = call("show_layout", {{"path", "sample.gds"}, {"select", QJsonArray{11, 0.5}}});
+        selected = json(r).value("selected").toObject();
+        QCOMPARE(selected.value("kind").toString(), QString("polygon"));
+        QCOMPARE(selected.value("points").toArray(), QJsonArray({QJsonArray{10, 0}, QJsonArray{12, 0}, QJsonArray{12, 1}, QJsonArray{10, 1}}));
+        QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("selected").toObject().value("kind").toString(),
+                 QString("polygon"));
+        // Nothing there: said, and nothing selected.
+        r = call("show_layout", {{"path", "sample.gds"}, {"select", QJsonArray{50, 50}}});
+        QVERIFY2(json(r).contains("not selected") && !json(r).contains("selected"), qPrintable(text(r)));
+        QVERIFY(!doc->view()->selection());
+        // The user's own click, read; none, cleared.
+        QVERIFY(doc->view()->selectAt(doc->view()->toPixel(QPointF(11, 0.2))));
+        QCOMPARE(json(call("show_layout", {{"path", "sample.gds"}})).value("selected").toObject().value("kind").toString(), QString("polygon"));
+        r = call("show_layout", {{"path", "sample.gds"}, {"select", "none"}});
+        QVERIFY(!doc->view()->selection() && !json(r).contains("selected"));
+        // Out of sight: brought into view, at the zoom shown - the mirrored
+        // INV's path, the smaller of the two there.
+        const double scale = doc->view()->scale();
+        r = call("show_layout", {{"path", "sample.gds"}, {"select", QJsonArray{31, -0.5}}});
+        QVERIFY2(json(r).value("selected").toObject().value("bounds").toArray() == QJsonArray({30, -0.6, 32, -0.4}), qPrintable(text(r)));
+        QVERIFY(doc->view()->visibleRegion().contains(QPointF(31, -0.5)));
+        QCOMPARE(doc->view()->scale(), scale);
+        // Rulers: each end snapped to the corner near it, as a drag snaps it.
+        // (Lists of one list built by append: braced, a newer clang copies it.)
+        const auto oneRuler = [](const QJsonArray& ends) {
+            QJsonArray list;
+            list.append(ends);
+            return list;
+        };
+        QCOMPARE(oneRuler(QJsonArray{1, 2, 3, 4}).size(), 1);
+        r = call("show_layout", {{"path", "sample.gds"}, {"select", "none"}, {"region", QJsonArray{9, -1, 13, 2}},
+                                 {"rulers", oneRuler(QJsonArray{10.01, 0.005, 12.01, 0.99})}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject ruler = json(r).value("rulers").toArray().at(0).toObject();
+        QCOMPARE(ruler.value("from").toArray(), QJsonArray({10, 0}));
+        QCOMPARE(ruler.value("to").toArray(), QJsonArray({12, 1}));
+        QCOMPARE(ruler.value("across").toDouble(), 2.0);
+        QCOMPARE(ruler.value("up").toDouble(), 1.0);
+        QCOMPARE(ruler.value("length").toDouble(), 2.236);
+        QVERIFY2(std::abs(ruler.value("angle").toDouble() - 26.565) < 1e-3, qPrintable(text(r)));
+        QCOMPARE(doc->view()->rulers().size(), 1);
+        QCOMPARE(doc->view()->rulers().at(0), QLineF(10, 0, 12, 1));
+        // Far from any shape: where it was asked, on the database grid.
+        r = call("show_layout", {{"path", "sample.gds"}, {"rulers", oneRuler(QJsonArray{50.0004, 50, 51, 50})}});
+        QCOMPARE(json(r).value("rulers").toArray().size(), 2);
+        QCOMPARE(json(r).value("rulers").toArray().at(1).toObject().value("from").toArray(), QJsonArray({50, 50}));
+        // The user's own, read; clear, gone.
+        doc->view()->addRuler(QLineF(0, 0, 0, 3));
+        QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("rulers").toArray().size(), 3);
+        r = call("show_layout", {{"path", "sample.gds"}, {"rulers", "clear"}});
+        QVERIFY(doc->view()->rulers().isEmpty() && !json(r).contains("rulers"));
+        // What is not right: refused.
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"select", QJsonArray{1}}})));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"select", "all"}})));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"rulers", oneRuler(QJsonArray{1, 2, 3})}})));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"rulers", "some"}})));
+        QVERIFY(doc->view()->rulers().isEmpty());
+    }
+
+    // show_layout colours the layers - one by one, from a .lyp beside the
+    // layout, the palette again -, sets the canvas light or dark, the
+    // colours' contrast and the grid's style, and reads the file again.
+    void show_layoutColoursTheLayersAndTheCanvas()
+    {
+        QJsonObject r = call("show_layout", {{"path", "sample.gds"}, {"colours", QJsonObject{{"1/0", "#ff8000"}, {"3", "navy"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* doc = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        const int metal = doc->layout()->layerIndex({1, 0}), via = doc->layout()->layerIndex({3, 0});
+        QCOMPARE(doc->view()->styles().at(metal).frame, QColor("#ff8000"));
+        QCOMPARE(doc->view()->styles().at(metal).fill, QColor("#ff8000"));
+        QCOMPARE(doc->view()->styles().at(via).frame, QColor("navy"));
+        QString colour;
+        for (const QJsonValue& v : json(call("get_layout", {{"path", "sample.gds"}})).value("layers").toArray())
+            if (v.toObject().value("layer").toString() == QString("1/0")) colour = v.toObject().value("colour").toString();
+        QCOMPARE(colour, QString("#ff8000"));
+        // A colour or a layer that is none: refused, none changed.
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"colours", QJsonObject{{"1/0", "notacolour"}}}})));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"colours", QJsonObject{{"1/0", "red"}, {"99/0", "red"}}}})));
+        QCOMPARE(doc->view()->styles().at(metal).frame, QColor("#ff8000"));
+        // A .lyp beside the layout; the palette again; one that is none.
+        QVERIFY(write(path("props.lyp"),
+                      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<layer-properties>\n"
+                      " <properties><frame-color>#123456</frame-color><fill-color>#123456</fill-color>"
+                      "<visible>true</visible><name>M1</name><source>1/0@1</source></properties>\n"
+                      "</layer-properties>\n"));
+        r = call("show_layout", {{"path", "sample.gds"}, {"layer_properties", "props.lyp"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("layer properties").toString(), QDir::toNativeSeparators(path("props.lyp")));
+        QCOMPARE(doc->layerPropertiesFile(), path("props.lyp"));
+        QCOMPARE(doc->view()->styles().at(metal).frame, QColor("#123456"));
+        r = call("show_layout", {{"path", "sample.gds"}, {"layer_properties", "palette"}});
+        QVERIFY(doc->layerPropertiesFile().isEmpty());
+        QCOMPARE(json(r).value("layer properties").toString(), QString("the palette"));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"layer_properties", "nowhere.lyp"}})));
+        // A .lyp named alone, beside a layout in a folder of its own (two
+        // there, so that neither is taken when it opens).
+        writeSample(path("lyp/chip.gds"), false);
+        const char* lypText = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<layer-properties>\n"
+                              " <properties><frame-color>#654321</frame-color><fill-color>#654321</fill-color>"
+                              "<visible>true</visible><source>1/0@1</source></properties>\n</layer-properties>\n";
+        QVERIFY(write(path("lyp/colours.lyp"), lypText) && write(path("lyp/other.lyp"), lypText));
+        r = call("show_layout", {{"path", "lyp/chip.gds"}, {"layer_properties", "colours.lyp"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* chip = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QCOMPARE(chip->layerPropertiesFile(), path("lyp/colours.lyp"));
+        QCOMPARE(chip->view()->styles().at(chip->layout()->layerIndex({1, 0})).frame, QColor("#654321"));
+        // The canvas: dark, the colours as they are, the grid's lines.
+        r = call("show_layout", {{"path", "sample.gds"}, {"theme", "dark"}, {"contrast", false}, {"grid", true}, {"grid_style", "lines"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(doc->view()->theme(), LayoutView::Theme::Dark);
+        QVERIFY(!doc->view()->colorsAdapted());
+        QCOMPARE(doc->view()->gridStyle(), LayoutView::GridStyle::Lines);
+        QCOMPARE(json(r).value("theme").toString(), QString("dark"));
+        QCOMPARE(json(r).value("colours in contrast").toBool(true), false);
+        QCOMPARE(json(r).value("grid style").toString(), QString("lines"));
+        QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("theme").toString(), QString("dark"));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"theme", "blue"}})));
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"grid_style", "stars"}})));
+        r = call("show_layout", {{"path", "sample.gds"}, {"theme", "application"}, {"contrast", true}, {"grid_style", "dots"}});
+        QCOMPARE(doc->view()->theme(), LayoutView::Theme::Application);
+        QVERIFY(doc->view()->colorsAdapted() && !json(r).contains("theme") && !json(r).contains("colours in contrast"));
+        // Read again: the cell kept, what the file has now shown.
+        writeSample(path("again.gds"), false);
+        r = call("show_layout", {{"path", "again.gds"}, {"cell", "TOP"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* again = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QCOMPARE(again->layout()->cells.size(), 3);
+        QTest::qWait(1100);   // (a file time of another second)
+        writeSample(path("again.gds"), false, 0, true);
+        r = call("show_layout", {{"path", "again.gds"}, {"reload", true}});
+        QVERIFY2(!failed(r) && json(r).value("read again").toBool(), qPrintable(text(r)));
+        QCOMPARE(again->layout()->cells.size(), 4);
+        QCOMPARE(json(r).value("cell").toString(), QString("TOP"));
+    }
+
+    // export_image writes a layout's view as its tab shows it: a picture of
+    // twice its pixels (or 'scale's) the same as the view's own, an SVG and a
+    // PDF as vectors, a transparent PNG; what is a schematic's refused.
+    void export_imageWritesTheLayoutsView()
+    {
+        QJsonObject r = call("show_layout", {{"path", "sample.gds"}, {"cell", "TOP"}, {"layers", "all"}, {"depth", "all"},
+                                             {"region", QJsonArray{9, -1, 13, 2}}, {"grid", false}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* doc = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        const QSize view = doc->view()->size();
+        r = call("export_image", {{"path", "sample.gds"}, {"save_as", path("view.png")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("pixels").toArray(), QJsonArray({view.width() * 2, view.height() * 2}));
+        QCOMPARE(json(r).value("cell").toString(), QString("TOP"));
+        QCOMPARE(QImage(path("view.png")).size(), view * 2);
+        // At its own pixels, the view's own picture.
+        r = call("export_image", {{"path", "sample.gds"}, {"save_as", path("view1.png")}, {"scale", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QImage written = QImage(path("view1.png")).convertToFormat(QImage::Format_ARGB32);
+        const QImage shown = doc->view()->picture().convertToFormat(QImage::Format_ARGB32);
+        QCOMPARE(written.size(), shown.size());
+        int differ = 0, inked = 0;
+        const QRgb canvas = doc->view()->colors().background.rgb();
+        for (int y = 0; y < written.height(); ++y)
+            for (int x = 0; x < written.width(); ++x) {
+                const QRgb a = written.pixel(x, y), b = shown.pixel(x, y);
+                if (std::abs(qRed(a) - qRed(b)) > 8 || std::abs(qGreen(a) - qGreen(b)) > 8 || std::abs(qBlue(a) - qBlue(b)) > 8) ++differ;
+                if ((a & 0xffffff) != (canvas & 0xffffff)) ++inked;
+            }
+        QVERIFY2(differ <= written.width() * written.height() / 100, qPrintable(QString::number(differ)));
+        QVERIFY2(inked > written.width() * written.height() / 50, "the layout not drawn");
+        // An SVG and a PDF: vectors.
+        r = call("export_image", {{"path", "sample.gds"}, {"save_as", path("view.svg")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(read(path("view.svg")).contains("<svg"));
+        QCOMPARE(json(r).value("size").toArray(), QJsonArray({view.width(), view.height()}));
+        r = call("export_image", {{"path", "sample.gds"}, {"save_as", path("view.pdf")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(read(path("view.pdf")).startsWith("%PDF"));
+        // Transparent: the canvas left out; a JPEG cannot be, and says so.
+        r = call("export_image", {{"path", "sample.gds"}, {"save_as", path("clear.png")}, {"transparent", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(qAlpha(QImage(path("clear.png")).pixel(1, 1)), 0);
+        r = call("export_image", {{"path", "sample.gds"}, {"save_as", path("view.jpg")}, {"transparent", true}});
+        QVERIFY2(!failed(r) && json(r).value("note").toString().contains("cannot be transparent"), qPrintable(text(r)));
+        // What is a schematic's: refused.
+        const QJsonObject eps = call("export_image", {{"path", "sample.gds"}, {"save_as", path("view.eps")}});
+        QVERIFY2(failed(eps) && text(eps).contains("png, jpeg, bmp, tiff, webp, svg or pdf"), qPrintable(text(eps)));
+        QVERIFY(failed(call("export_image", {{"path", "sample.gds"}, {"save_as", path("v.pdf_tex")}, {"format", "pdf_tex"}})));
+        QVERIFY(failed(call("export_image", {{"path", "sample.gds"}, {"save_as", path("d.png")}, {"diagram", 1}})));
+        QVERIFY(failed(call("export_image", {{"path", "sample.gds"}, {"save_as", path("g.png")}, {"colours", "grayscale"}})));
+        QVERIFY(call("show_layout", {{"path", "sample.gds"}, {"grid", true}}).value("isError").toBool() == false);
+    }
+
     // The layouts' fuzzer (QUCS_LAYOUT_FUZZ seconds, QUCS_LAYOUT_FUZZ_SEED):
     // the sample as GDSII and OASIS (compressed or not), a chain of cells
     // thousands deep, cells placing each other and themselves, an array of
