@@ -178,7 +178,7 @@
             {
                 "plots": [
                     {
-                        "dataset": "cpt1",
+                        "data": "cpt1",
                         "expression": "sqrt(x^2+y^2)*u",
                         "tag": "ptgr1",
                         "type": "pointgraph"

@@ -74,6 +74,7 @@
 #include "dataset.h"
 #include "datasetfile.h"
 #include "qucscontrol.h"
+#include "rf25/rf25_circuit.h"
 #include "rf25/rf25_model.h"
 #include "multiphysics/fem_model.h"
 #include "schematic.h"
@@ -2671,6 +2672,18 @@ private slots:
             QCOMPARE(branches.at(0).toObject().value("between").toArray(), (QJsonArray{"In", "Out"}));
             QCOMPARE(branches.at(1).toObject().value("between").toArray(), (QJsonArray{"In", "ground"}));
             QVERIFY(!branches.at(0).toObject().value("form").toString().isEmpty());
+            // Each branch's values as written as the fit's lines write them:
+            // an R no current takes "(an open)", no prefix with an exponent
+            // (the check of 3 November, 5).
+            for (const QJsonValue& b : branches) {
+                const QJsonObject values = b.toObject().value("values").toObject();
+                QStringList want;
+                for (auto it = values.begin(); it != values.end(); ++it) want << qucs_s::rf25::elementSaid(it.key(), it.value().toDouble());
+                QStringList got = b.toObject().value("as written").toString().split(", ", Qt::SkipEmptyParts);
+                want.sort();
+                got.sort();
+                QCOMPARE(got, want);
+            }
             QVERIFY2(fit.value("S differs by at most").isDouble() && fit.value("S differs by at most").toDouble() < 0.05,
                      qPrintable(QString::fromUtf8(QJsonDocument(fit).toJson())));
             QCOMPARE(fit.value("frequencies").toInt(), 1);
@@ -9841,6 +9854,54 @@ private slots:
         QCOMPARE(untitled, 2);
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
+    // Untitled documents named apart keep their names while they are open:
+    // closing "untitled" made "untitled (2)" "untitled" at once, so a
+    // batch's close of "untitled (2)" after it found nothing (the check of
+    // 3 November, 3). The close says which it closed; a tab's words name the
+    // one tab that has them, and several are refused, named (4).
+    void untitledDocumentsKeepTheirNames()
+    {
+        const auto titles = [this] {
+            QStringList out;
+            for (const QJsonValue& v : json(call("get_state")).toObject().value("documents").toArray())
+                if (v.toObject().value("path").toString().isEmpty())
+                    out << v.toObject().value("title").toString() + "|" + v.toObject().value("tab").toString();
+            return out;
+        };
+        const auto closing = [](const QString& path) {
+            return QJsonObject{{"tool", "close_document"}, {"arguments", QJsonObject{{"path", path}, {"unsaved", "discard"}}}};
+        };
+        for (int i = 0; i < 3; ++i) QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        QCOMPARE(titles(), (QStringList{"untitled|", "untitled (2)|untitled", "untitled (3)|untitled"}));
+        QJsonObject r = call("batch", {{"calls", QJsonArray{closing("untitled"), closing("untitled (2)")}}});
+        QVERIFY2(!failed(r) && text(r).contains("untitled (2) is closed"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("untitled is closed: the text of the tabs titled untitled. Still open, each under its name: "
+                                  "untitled (2) (text), untitled (3) (text)."),
+                 qPrintable(text(r)));
+        QCOMPARE(titles(), QStringList{"untitled (3)|untitled"});
+        // Alone, its tab's words name it; a new one takes the lowest free
+        // number, and is "untitled".
+        QVERIFY2(!failed(call("show_document", {{"path", "untitled"}})), "the one tab saying untitled");
+        QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        QCOMPARE(titles(), (QStringList{"untitled (3)|untitled", "untitled|"}));
+        QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        QVERIFY(!failed(call("close_document", {{"path", "untitled"}, {"unsaved", "discard"}})));
+        QCOMPARE(titles(), (QStringList{"untitled (3)|untitled", "untitled (2)|untitled"}));
+        // Two tabs say "untitled", neither is named so: refused, both named.
+        const int open = app->DocumentTab->count();
+        r = call("close_document", {{"path", "untitled"}, {"unsaved", "discard"}});
+        QVERIFY2(failed(r) && text(r).contains("untitled is the tab of 2 documents without a file") && text(r).contains("untitled (3) (text)")
+                     && text(r).contains("untitled (2) (text)"),
+                 qPrintable(text(r)));
+        QCOMPARE(app->DocumentTab->count(), open);
+        r = call("close_document", {{"path", "untitled (5)"}, {"unsaved", "discard"}});
+        QVERIFY2(failed(r) && text(r).contains("untitled (5) is not open; open without a file: untitled (3) (text), untitled (2) (text)"),
+                 qPrintable(text(r)));
+        QVERIFY(!failed(call("batch", {{"calls", QJsonArray{closing("untitled (2)"), closing("untitled (3)")}}})));
+        // (The last closed, Qucs-S opens an untitled schematic.)
+        for (QucsDoc* doc : app->allDocuments()) QVERIFY(qobject_cast<TextDoc*>(QucsApp::documentWidget(doc)) == nullptr);
     }
 
     // A script's 'return' at the top level gives its result, as its last

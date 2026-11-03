@@ -889,6 +889,50 @@ private slots:
         QVERIFY(c.worstAt > 1e9);
         // (At 10 GHz, half a wave long, it has no Y: left out, and said.)
         QVERIFY2(c.lines.join(' ').contains(QStringLiteral("At 10 GHz its Y-parameters are none")), qPrintable(c.lines.join(" | ")));
+        // Its misfits as a person writes them: 100 % was "1e+02 %" (the
+        // check of 3 November, 5).
+        const QString said = c.lines.join(' ');
+        static const QRegularExpression within(QStringLiteral("within ([^ ]+) %"));
+        int percents = 0, large = 0;
+        for (auto it = within.globalMatch(said); it.hasNext(); ++percents) {
+            const QString p = it.next().captured(1);
+            QVERIFY2(!p.contains(QLatin1Char('e')), qPrintable(said));
+            if (p.toDouble() >= 10) ++large;
+        }
+        QVERIFY2(percents == 3 && large > 0, qPrintable(said));
+    }
+
+    // Nothing between the ports but a resistance no current takes - the
+    // UWB filter's pi, 8.5e24 Ohm - written as a number, not "8.518e+12
+    // TOhm", and said to be an open (the check of 3 November, 5).
+    void anOpenBetweenThePortsIsWrittenPlainly()
+    {
+        // (A susceptance between them that turns its sign at every
+        // frequency, as a distributed filter's does: no R, L or C fits it,
+        // and R's best is a conductance of nought - the fit's R, where its
+        // search stops, 65.6/b: 2.6e15 Ohm of 2.5e-8 S, which is still more
+        // than the 1e-6 of 50 Ohm's below which a branch is no branch.)
+        const QList<double> f = logSweep(1e9, 5e9, 9);
+        QList<QList<QList<std::complex<double>>>> s;
+        for (int i = 0; i < f.size(); ++i) {
+            const std::complex<double> b(0, i % 2 == 0 ? 2.5e-8 : -2.5e-8), g(0, 2 * M_PI * f.at(i) * 17.17e-15);
+            Eigen::Matrix2cd y;
+            y << g + b, -b, -b, g + b;
+            const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
+            const Eigen::Matrix2cd sm = (one - 50.0 * y) * (one + 50.0 * y).inverse();
+            s << QList<QList<std::complex<double>>>{{sm(0, 0), sm(0, 1)}, {sm(1, 0), sm(1, 1)}};
+        }
+        const rf::EquivalentCircuit c = rf::fitCircuit({QStringLiteral("P1"), QStringLiteral("P2")}, f, s, {50, 50});
+        QVERIFY2(c.ok(), qPrintable(c.problems.join(" | ")));
+        const QString said = c.lines.join(' ');
+        QCOMPARE(c.between.form, QStringLiteral("R"));
+        QVERIFY2(c.between.value(QStringLiteral("R")) >= 1e15, qPrintable(said));
+        static const QRegularExpression prefixedExponent(QStringLiteral("e[+-]\\d+ [TGMkmunpfa](Ohm|H|F)"));
+        QVERIFY2(!said.contains(prefixedExponent), qPrintable(said));
+        static const QRegularExpression open(QStringLiteral("between P1 and P2 R: R [0-9.]+e\\+\\d+ Ohm \\(an open\\)"));
+        QVERIFY2(said.contains(open), qPrintable(said));
+        // (Its misfit, near all of it: "within 100 %", not "1e+02 %".)
+        QVERIFY2(c.between.error > 0.5 && !said.contains(QStringLiteral("e+02 %")), qPrintable(said));
     }
 
     // A capacitor with a little loss - a Q of some thousands across the band
@@ -961,6 +1005,19 @@ private slots:
         QCOMPARE(rf::valueSaid(1500, QStringLiteral("Ohm")), QStringLiteral("1.5 kOhm"));
         QCOMPARE(rf::valueSaid(2.25e-13, QStringLiteral("F")), QStringLiteral("225 fF"));
         QCOMPARE(rf::valueSaid(4.7e-6, QStringLiteral("H")), QStringLiteral("4.7 uH"));
+        // Past the prefixes a number alone, and nought plain: 8.5e24 Ohm was
+        // "8.518e+12 TOhm", 0 "0 aH" (the check of 3 November, 5).
+        QCOMPARE(rf::valueSaid(8.517874532301212e+24, QStringLiteral("Ohm")), QStringLiteral("8.518e+24 Ohm"));
+        QCOMPARE(rf::valueSaid(999.9e12, QStringLiteral("Ohm")), QStringLiteral("999.9 TOhm"));
+        QCOMPARE(rf::valueSaid(-2.5e-21, QStringLiteral("F")), QStringLiteral("-2.5e-21 F"));
+        QCOMPARE(rf::valueSaid(1e-18, QStringLiteral("F")), QStringLiteral("1 aF"));
+        QCOMPARE(rf::valueSaid(0, QStringLiteral("H")), QStringLiteral("0 H"));
+        QVERIFY(rf::isOpenInEffect(QStringLiteral("R"), 8.5e24) && rf::isOpenInEffect(QStringLiteral("Rsub"), 1e15));
+        QVERIFY(!rf::isOpenInEffect(QStringLiteral("R"), 1e12) && !rf::isOpenInEffect(QStringLiteral("C"), 1e20));
+        // An element as rf25_circuit's "as written" and the fit's lines give it.
+        QCOMPARE(rf::elementSaid(QStringLiteral("R"), 8.517874532301212e+24), QStringLiteral("R 8.518e+24 Ohm (an open)"));
+        QCOMPARE(rf::elementSaid(QStringLiteral("Cox"), 46e-15), QStringLiteral("Cox 46 fF"));
+        QCOMPARE(rf::elementSaid(QStringLiteral("L"), 2e-9), QStringLiteral("L 2 nH"));
     }
 };
 

@@ -4240,6 +4240,107 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("3D model"), qPrintable(text(r)));
     }
 
+    // A model's own keys checked as its nodes' properties are: {"bogus": 1}
+    // and a "space": "3D" put at the top, not in its component, made a 2D
+    // model in silence (the check of 3 November, 1). Every example, and
+    // what fem_describe gives of a model, still taken whole.
+    void aModelsUnknownKeysAreRefused()
+    {
+        const auto tabs = [this] { return app->DocumentTab->count(); };
+        const QJsonObject blank = QJsonDocument::fromJson(Model::blank().toJson()).object();
+        const int before = tabs();
+        QJsonObject spaced = blank;
+        spaced.insert("space", "3D");
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"model", spaced}});
+        QVERIFY2(failed(r) && text(r).contains("space is its component's") && text(r).contains("Multiphysics 3D")
+                     && text(r).contains("Nothing was made"),
+                 qPrintable(text(r)));
+        QJsonObject bogus = blank;
+        bogus.insert("bogus", 1);
+        r = call("fem_model", {{"action", "new"}, {"model", bogus}});
+        QVERIFY2(failed(r) && text(r).contains("the model has no bogus") && text(r).contains("its keys: format"), qPrintable(text(r)));
+        // A near name said; in its component and its results too.
+        QJsonObject typo = blank;
+        typo.insert("compnents", typo.take("components"));
+        r = call("fem_model", {{"action", "new"}, {"model", typo}});
+        QVERIFY2(failed(r) && text(r).contains("no compnents - meant components?"), qPrintable(text(r)));
+        QJsonObject inComponent = blank;
+        QJsonArray components = inComponent.value("components").toArray();
+        QJsonObject first = components.at(0).toObject();
+        first.insert("materal", QJsonArray());
+        components.replace(0, first);
+        inComponent.insert("components", components);
+        r = call("fem_model", {{"action", "new"}, {"model", inComponent}});
+        QVERIFY2(failed(r) && text(r).contains("its component has no materal - meant materials?"), qPrintable(text(r)));
+        QJsonObject inResults = blank;
+        inResults.insert("results", QJsonObject{{"plot", QJsonArray()}});
+        r = call("fem_model", {{"action", "new"}, {"model", inResults}});
+        QVERIFY2(failed(r) && text(r).contains("its results have no plot - meant plots?"), qPrintable(text(r)));
+        QCOMPARE(tabs(), before);
+        // set: refused, the model as it was.
+        QVERIFY(!failed(call("fem_model", {{"action", "new"}})));
+        auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        r = call("fem_model", {{"action", "set"}, {"model", bogus}});
+        QVERIFY2(failed(r) && text(r).contains("The model is unchanged"), qPrintable(text(r)));
+        QVERIFY(!doc->undoStack()->canUndo());
+        // Each example as its file has it, and as fem_describe gives it back.
+        // (Two had a key their node has not, found so: the reverse recovery's
+        // global graph its "solutions", the point source's point graph a
+        // "dataset" for its "data".)
+        const QStringList files = QDir(examples()).entryList({QStringLiteral("*.qfem")}, QDir::Files);
+        QVERIFY(files.size() > 10);
+        QStringList refused;
+        for (const QString& name : files) {
+            QFile f(examples() + name);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            const QJsonObject model = QJsonDocument::fromJson(f.readAll()).object();
+            r = call("fem_model", {{"action", "set"}, {"model", model}});
+            if (failed(r)) {
+                refused << name + ": " + text(r);
+                continue;
+            }
+            const QJsonObject again = QJsonDocument::fromJson(doc->model().toJson()).object();
+            r = call("fem_model", {{"action", "set"}, {"model", again}});
+            if (failed(r)) refused << name + " again: " + text(r);
+        }
+        QVERIFY2(refused.isEmpty(), qPrintable(refused.join("\n")));
+    }
+
+    // The fem_ tools given a 3D model - its file, or its tab - say it is one,
+    // Multiphysics 3D's: it was "copy3d.qfem3d is not a multiphysics model"
+    // (the check of 3 November, 2).
+    void aThreeDModelsFileIsSaidToBeOne()
+    {
+        const QString file = path(QStringLiteral("copy3d.qfem3d"));
+        QFile::remove(file);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics3d/chip_heater.qfem3d"), file));
+        QFile(file).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        const auto said = [](const QJsonObject& r) {
+            return failed(r) && text(r).contains("copy3d.qfem3d is a 3D multiphysics model") && text(r).contains("Multiphysics 3D tab")
+                   && !text(r).contains("is not a multiphysics model");
+        };
+        QJsonObject r = call("fem_edit", {{"path", file}, {"action", "set"}, {"tag", "comp1"}, {"props", QJsonObject{}}});
+        QVERIFY2(said(r), qPrintable(text(r)));
+        r = call("fem_describe", {{"path", file}});
+        QVERIFY2(said(r), qPrintable(text(r)));
+        // Open, by its tab's title.
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        r = call("fem_edit", {{"path", "copy3d.qfem3d"}, {"action", "set"}, {"tag", "comp1"}, {"props", QJsonObject{}}});
+        QVERIFY2(said(r), qPrintable(text(r)));
+        r = call("fem_solve", {{"path", "copy3d.qfem3d"}});
+        QVERIFY2(said(r), qPrintable(text(r)));
+        // (Another kind still "not a multiphysics model".)
+        QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        QString front;
+        for (const QJsonValue& d : json(call("get_state")).value("documents").toArray())
+            if (d.toObject().value("in front").toBool()) front = d.toObject().value("title").toString();
+        QVERIFY(front.startsWith("untitled"));
+        r = call("fem_describe", {{"path", front}});
+        QVERIFY2(failed(r) && text(r).contains("is not a multiphysics model") && !text(r).contains("3D"), qPrintable(text(r)));
+        QVERIFY(!failed(call("close_document", {{"path", "copy3d.qfem3d"}, {"unsaved", "discard"}})));
+    }
+
     void savingTheModelItsPathNames()
     {
         auto read = [](const QString& file) {

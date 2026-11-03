@@ -260,6 +260,9 @@ QString prefixed(double value)
     } prefixes[] = {{1e12, "T"}, {1e9, "G"}, {1e6, "M"}, {1e3, "k"}, {1, ""}, {1e-3, "m"}, {1e-6, "u"},
                     {1e-9, "n"}, {1e-12, "p"}, {1e-15, "f"}, {1e-18, "a"}};
     const double a = std::abs(value);
+    // (Past the prefixes, a number alone: 8.5e24 Ohm was "8.518e+12 TOhm",
+    // and nought "0 a" - the check of 3 November, 5.)
+    if (!std::isfinite(a) || a >= 999.95e12 || a < 0.99995e-18) return QString::number(value, 'g', 4) + QStringLiteral(" ");
     for (const auto& p : prefixes)
         if (a >= p.scale * 0.99995 || p.scale == 1e-18)
             return QString::number(value / p.scale, 'g', 4) + QStringLiteral(" ") + QLatin1String(p.prefix);
@@ -271,13 +274,11 @@ QString sayBranch(const CircuitBranch& b)
     if (b.form == QLatin1String("open")) return tr("nothing");
     if (b.form == QLatin1String("short")) return tr("a wire");
     QStringList values;
-    for (const auto& [name, value] : b.values) {
-        const QString unit = name.startsWith(QLatin1Char('R')) ? QStringLiteral("Ohm")
-                             : name.startsWith(QLatin1Char('L')) ? QStringLiteral("H")
-                                                                 : QStringLiteral("F");
-        values << QStringLiteral("%1 %2").arg(name, valueSaid(value, unit));
-    }
-    return tr("%1: %2 (fitting its own share within %3 %)").arg(b.form, values.join(QStringLiteral(", "))).arg(100 * b.error, 0, 'g', 2);
+    for (const auto& [name, value] : b.values) values << elementSaid(name, value);
+    // (100 % was "1e+02 %".)
+    const double percent = 100 * b.error;
+    return tr("%1: %2 (fitting its own share within %3 %)")
+        .arg(b.form, values.join(QStringLiteral(", ")), percent >= 10 ? QString::number(std::round(percent), 'f', 0) : QString::number(percent, 'g', 2));
 }
 
 Eigen::MatrixXcd yOf(const EquivalentCircuit& c, double w)
@@ -458,6 +459,20 @@ EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& freq
 QString valueSaid(double value, const QString& unit)
 {
     return prefixed(value) + unit;
+}
+
+bool isOpenInEffect(const QString& element, double value)
+{
+    // (Under a femtosiemens: a femtofarad's at 1 GHz is six million times it.)
+    return element.startsWith(QLatin1Char('R')) && std::abs(value) >= 1e15;
+}
+
+QString elementSaid(const QString& element, double value)
+{
+    const QString unit = element.startsWith(QLatin1Char('R')) ? QStringLiteral("Ohm")
+                         : element.startsWith(QLatin1Char('L')) ? QStringLiteral("H")
+                                                                : QStringLiteral("F");
+    return QStringLiteral("%1 %2").arg(element, valueSaid(value, unit)) + (isOpenInEffect(element, value) ? tr(" (an open)") : QString());
 }
 
 namespace {

@@ -2914,6 +2914,27 @@ private slots:
         QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("grid").toString(),
                  micrometres(*doc->layout(), doc->view()->gridStep()) + " µm");
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"grid", "yes"}})));
+        // 'texts' as the tab's Texts button: the button set with the canvas,
+        // and kept - it was the canvas's alone. Texts in the file and none
+        // drawn: the answer says why, the check of 3 November, 6, reading
+        // "texts: 0" of a file with texts while the button was off.
+        r = call("show_layout", {{"path", "sample.gds"}, {"texts", false}});
+        QVERIFY(!doc->view()->labelsShown() && !doc->labelsButton()->isChecked());
+        QCOMPARE(json(r).value("drawn").toObject().value("texts").toInt(-1), 0);
+        QVERIFY2(json(r).value("texts hidden").toString().contains(QString("the file's cells hold %1 texts").arg(doc->layout()->labelCount))
+                     && json(r).value("texts hidden").toString().contains("'texts': true"),
+                 qPrintable(text(r)));
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/labels", true).toBool(), false);
+        r = call("show_layout", {{"path", "sample.gds"}});
+        QVERIFY2(json(r).contains("texts hidden"), qPrintable(text(r)));
+        doc->labelsButton()->click();   // (the user's: it draws them)
+        QVERIFY(doc->view()->labelsShown());
+        r = call("show_layout", {{"path", "sample.gds"}, {"texts", false}});
+        QVERIFY(!doc->labelsButton()->isChecked());
+        r = call("show_layout", {{"path", "sample.gds"}, {"texts", true}});
+        QVERIFY(doc->view()->labelsShown() && doc->labelsButton()->isChecked());
+        QVERIFY2(json(r).value("drawn").toObject().value("texts").toInt() > 0 && !json(r).contains("texts hidden"), qPrintable(text(r)));
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/labels", false).toBool(), true);
     }
 
     // find_shapes by what a text says: a part of it, or * and ?, in any case.
@@ -3134,6 +3155,12 @@ private slots:
         QCOMPARE(json(r).value("theme").toString(), QString("dark"));
         QCOMPARE(json(r).value("colours in contrast").toBool(true), false);
         QCOMPARE(json(r).value("grid style").toString(), QString("lines"));
+        // (The grid said as drawn: it said "a point every" of lines too -
+        // the check of 3 November, 6.)
+        const QString step = micrometres(*doc->layout(), doc->view()->gridStep());
+        QVERIFY2(json(r).value("grid").toString().startsWith(QString("a line every %1 µm across and up").arg(step)), qPrintable(text(r)));
+        r = call("show_layout", {{"path", "sample.gds"}, {"grid_style", "crosses"}});
+        QVERIFY2(json(r).value("grid").toString().startsWith(QString("a cross every %1 µm").arg(step)), qPrintable(text(r)));
         QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("theme").toString(), QString("dark"));
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"theme", "blue"}})));
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"grid_style", "stars"}})));
