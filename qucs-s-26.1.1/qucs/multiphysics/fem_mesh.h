@@ -113,6 +113,11 @@ struct MeshSizes {
 /// The sizes \a model's mesh node asks for on \a topology: its preset,
 /// customized, and its Size and Distribution features. Errors in \a error.
 MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const Topology& topology, QString* error);
+/// The sizes for the whole of a geometry \a extent long (its largest side, in
+/// its unit, \a unitScale metres) that \a model's mesh node asks for: its
+/// preset's, customized - none of its features' (a 3D model's swept mesh, its
+/// extent its height's too). Errors in \a error.
+MeshSizes globalMeshSizes(const Model& model, const ParameterScope& parameters, double extent, double unitScale, QString* error);
 
 /// A mesh built, or why not.
 struct MeshBuild {

@@ -1,0 +1,29 @@
+{
+    "format": "qucs-s multiphysics 3d 1",
+    "title": "A ring on a plate",
+    "description": "A sketch of two circles, one cut out of the other, extruded into a ring standing on a plate: an Extrude's sketch is 2D features, built as a 2D geometry's are; each object it ends with a solid of its name. The ring's wall is a curved face, its rims closed edges.",
+    "parameters": [
+        {"name": "r", "expression": "10", "description": "the ring's outer radius (mm)"},
+        {"name": "wall", "expression": "3", "description": "its wall's thickness"},
+        {"name": "h", "expression": "4", "description": "its height"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "space": "3D",
+        "geometry": [
+            {"type": "box", "label": "plate", "base": "center", "position": ["0", "0"], "size": ["3*r", "3*r"], "z": "-1", "height": "1"},
+            {"type": "extrude", "label": "ring", "z": "0", "height": "h", "features": [
+                {"type": "circle", "label": "outer", "radius": "r"},
+                {"type": "circle", "label": "inner", "radius": "r - wall"},
+                {"type": "difference", "label": "band", "input": ["outer"], "tools": ["inner"]}
+            ]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Aluminium", "selection": {"all": true}}
+        ],
+        "mesh": {"size": "normal"}
+    }],
+    "studies": [],
+    "results": {"plots": [], "derived": []}
+}

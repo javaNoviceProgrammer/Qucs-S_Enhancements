@@ -1479,7 +1479,7 @@ void Mesh::computeStatistics()
 
 // ------------------------------------------------------------------ Sizes
 
-MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const Topology& topology, QString* error)
+MeshSizes globalMeshSizes(const Model& model, const ParameterScope& parameters, double extent, double unitScale, QString* error)
 {
     MeshSizes s;
     QStringList problems;
@@ -1488,7 +1488,7 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
     const Preset* p = &Presets[4];
     for (const Preset& candidate : Presets)
         if (preset == QLatin1String(candidate.name)) p = &candidate;
-    const double L = std::max({topology.bounds.width(), topology.bounds.height(), 1e-300});
+    const double L = std::max(extent, 1e-300);
     s.hmax = p->hmax * L;
     s.hmin = p->hmin * L;
     s.growth = p->growth;
@@ -1498,7 +1498,7 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
         if (text.trimmed().isEmpty()) return fallback;
         // In the geometry's unit, as its features' lengths are.
         Expression::Options options;
-        options.lengthUnit = topology.unitScale;
+        options.lengthUnit = unitScale;
         options.numbersAreLengths = true;
         const Expression e = Expression::compile(text, parameters.scope, options);
         if (!e.isValid() || !e.isConstant()) {
@@ -1544,6 +1544,35 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
                             .arg(m.name(), unused.join(QStringLiteral(", ")), QString::fromLatin1(p->name));
     }
     s.hmin = std::min(s.hmin, s.hmax);
+    if (error) *error = problems.join(QLatin1String("; "));
+    return s;
+}
+
+MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const Topology& topology, QString* error)
+{
+    QStringList problems;
+    QString global;
+    MeshSizes s = globalMeshSizes(model, parameters, std::max(topology.bounds.width(), topology.bounds.height()), topology.unitScale, &global);
+    if (!global.isEmpty()) problems << global;
+    const Node& m = model.mesh();
+    auto length = [&](const QString& text, const QString& what, double fallback) {
+        if (text.trimmed().isEmpty()) return fallback;
+        // In the geometry's unit, as its features' lengths are.
+        Expression::Options options;
+        options.lengthUnit = topology.unitScale;
+        options.numbersAreLengths = true;
+        const Expression e = Expression::compile(text, parameters.scope, options);
+        if (!e.isValid() || !e.isConstant()) {
+            problems << tr("%1: %2").arg(what, e.isValid() ? tr("not a constant") : e.error());
+            return fallback;
+        }
+        const double v = e.constant();
+        if (!(v > 0)) {
+            problems << tr("%1 must be more than 0").arg(what);
+            return fallback;
+        }
+        return v;
+    };
     s.domainMax.assign(topology.domains.size(), Infinity);
     s.boundaryMax.assign(topology.boundaries.size(), Infinity);
     s.pointMax.assign(topology.points.size(), Infinity);

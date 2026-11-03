@@ -165,6 +165,19 @@ struct GeometryBuild {
 GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters, const QString& upTo = {},
                             const std::function<bool(double fraction, const QString& what)>& progress = {});
 
+/// \a model's objects as its features make them, not made one: a topology of
+/// no domains - its objects, curves, names and bounds alone (a 3D model's
+/// sketch, made one with every other solid's outline).
+GeometryBuild buildObjects(const Model& model, const ParameterScope& parameters);
+
+/// Form Union of \a objects alone, their edges on \a curves, as buildGeometry
+/// makes a model's objects one - for objects made elsewhere: a 3D model's plan,
+/// every solid's outline. \a tolerance relative to their extent. Null where it
+/// fails, and why in \a why; else \a why a warning (an object lost to the
+/// tolerance), or empty.
+std::shared_ptr<Topology> formUnion(const std::vector<GObject>& objects, const std::vector<Curve>& curves, double unitScale,
+                                    const QString& unitName, double tolerance, QString* why = nullptr);
+
 /*!
  * A selection resolved: the domains, boundaries or points of \a level that
  * \a rule picks in \a topology. A rule:

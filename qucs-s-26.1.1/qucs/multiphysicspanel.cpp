@@ -126,6 +126,31 @@ QIcon glyph(const QString& icon)
         p.setBrush(QColor(green.red(), green.green(), green.blue(), 60));
         p.drawRect(QRectF(1.5, 5.5, 8, 8));
         p.drawEllipse(QRectF(6.5, 1.5, 8, 8));
+    } else if (icon == QLatin1String("box")) {
+        // (A 3D model's solids: multiphysics3dpanel.cpp.) A box seen from a
+        // corner.
+        p.setPen(pen);
+        p.setBrush(QColor(green.red(), green.green(), green.blue(), 60));
+        p.drawPolygon(QPolygonF{QPointF(2, 6), QPointF(6, 2.5), QPointF(14, 2.5), QPointF(14, 10), QPointF(10, 13.5), QPointF(2, 13.5)});
+        p.drawPolyline(QPolygonF{QPointF(2, 6), QPointF(10, 6), QPointF(14, 2.5)});
+        p.drawLine(QPointF(10, 6), QPointF(10, 13.5));
+    } else if (icon == QLatin1String("cylinder")) {
+        p.setPen(pen);
+        p.setBrush(QColor(green.red(), green.green(), green.blue(), 60));
+        p.drawRect(QRectF(3, 4, 10, 8.5));
+        p.drawEllipse(QRectF(3, 10, 10, 4));
+        p.setBrush(QColor(green.red(), green.green(), green.blue(), 110));
+        p.drawEllipse(QRectF(3, 2, 10, 4));
+    } else if (icon == QLatin1String("extrude")) {
+        // A shape and its copy above it, joined.
+        p.setPen(pen);
+        p.setBrush(QColor(green.red(), green.green(), green.blue(), 60));
+        p.drawPolygon(QPolygonF{QPointF(2, 14), QPointF(4, 9), QPointF(10, 9), QPointF(8, 14)});
+        p.setPen(QPen(green, 1, Qt::DashLine));
+        p.drawLine(QPointF(4, 9), QPointF(8, 2));
+        p.drawLine(QPointF(10, 9), QPointF(14, 2));
+        p.setPen(QPen(orange, 1.6));
+        p.drawLine(QPointF(8, 2), QPointF(14, 2));
     } else if (icon == QLatin1String("move")) letters(QStringLiteral("→"), green);
     else if (icon == QLatin1String("rotate")) letters(QStringLiteral("↻"), green);
     else if (icon == QLatin1String("scale")) letters(QStringLiteral("⤢"), green);
@@ -315,6 +340,7 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("parameters") || icon == QLatin1String("definitions")) letters(QStringLiteral("Pi"), gray);
     else if (icon == QLatin1String("function")) letters(QStringLiteral("f"), gray);
     else if (icon == QLatin1String("component")) letters(QStringLiteral("2D"), blue);
+    else if (icon == QLatin1String("component3d")) letters(QStringLiteral("3D"), blue);
     else if (icon == QLatin1String("model")) letters(QStringLiteral("◆"), blue);
     else if (icon == QLatin1String("selection")) letters(QStringLiteral("S"), gray);
     else if (icon == QLatin1String("ground")) {
@@ -931,7 +957,8 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
             menu->addAction(glyph(QStringLiteral("material")), tr("Blank Material"), this, [this, tag] { addNode(tag, QStringLiteral("material")); });
         } else if (!k->children.isEmpty()) {
             QMenu* add = n->type == QLatin1String("model") ? menu : menu->addMenu(tr("Add"));
-            for (const QString& type : k->children) {
+            // (The kinds of this model's space: not a 3D model's Box.)
+            for (const QString& type : childKinds(*n, a_doc->model().spaceUnder(*n))) {
                 const NodeKind* ck = nodeKind(type);
                 if (!ck || ck->fixed) continue;
                 if (ck->unique && n->child(type)) continue;
@@ -1418,7 +1445,10 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
     case PropertyDef::Choice: {
         auto* box = new QComboBox(a_form);
         box->setObjectName(QStringLiteral("mpEdit_") + key);
-        for (int i = 0; i < p.choices.size(); ++i) box->addItem(p.choiceLabels.value(i, p.choices[i]), p.choices[i]);
+        // (The choices of this model's space: not a 3D selection's edges.)
+        const unsigned space = a_doc->model().space();
+        for (int i = 0; i < p.choices.size(); ++i)
+            if (p.choiceIn(i, space) || node.text(key) == p.choices[i]) box->addItem(p.choiceLabels.value(i, p.choices[i]), p.choices[i]);
         box->setCurrentIndex(std::max(0, box->findData(node.text(key))));
         connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toString()); });
         return box;
