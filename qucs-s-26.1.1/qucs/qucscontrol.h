@@ -105,6 +105,22 @@ public:
     /// As callToolFor(); \a waited: one that waited its turn, run now.
     void callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
                      std::function<void(const QJsonObject&)> done, bool waited);
+    /// A call cancelled by its client: one waiting its turn taken out; one
+    /// under way stopped where it waits - a model's solve or build, an RF
+    /// 2.5D solve, a simulation, wait_for, a script, and those of a batch -,
+    /// its answer then going nowhere.
+    void cancelCall(quint64 caller, const QString& tool) override;
+    /// A call by a conversation (callToolFor()'s), as it began.
+    struct Running {
+        quint64 caller = 0;
+        QString tool;
+    };
+    Running running() const { return a_running; }
+    /// \a tool called as a part of \a call, later than it began - a batch's
+    /// next call, a convergence's next solve -: what it waits on stopped
+    /// when \a call is cancelled.
+    void callToolWithin(const Running& call, const QString& tool, const QJsonObject& arguments,
+                        std::function<void(const QJsonObject&)> done);
     /// The tools that take the document they act on as 'path' (the one in
     /// front when not given) are given \a document, and get_state names
     /// it; open_document and show_document name theirs, reload_data
@@ -429,7 +445,22 @@ private:
     };
     QList<Waiting> a_waiting;
     int a_alone = 0;   // calls that run alone, under way
+    bool a_lookedOnDisk = false;   // callToolFor() has just read the files changed on disk: callTool() need not
     void runWaiting();
+    // The call under way (callToolFor's: its caller and tool), and how what
+    // each call waits on is stopped when its client cancels it: a tool that
+    // waits says so (stoppable(), with running() taken as it began), and
+    // that it is over (stopped()).
+    Running a_running;
+    struct Stopper {
+        Running call;
+        int id;
+        std::function<void()> stop;
+    };
+    QList<Stopper> a_stoppers;
+    int a_lastStopper = 0;
+    int stoppable(const Running& call, std::function<void()> stop);
+    void stopped(int id);
     bool a_headless = false;
     int a_activationWait = 500;   // ms (setActivationWait)
     // Event loops a call runs while it waits (a script's call of a
@@ -557,6 +588,8 @@ public:
 
 private:
     void stopSimulation(const QJsonObject& args, const Done& done);
+    /// The run going now stopped, as Simulation > Stop Simulation stops it.
+    void stopRunningSimulation();
     /// wait_for: done once the event has happened, or at its timeout.
     void waitFor(const QJsonObject& args, const Done& done);
     // Raw input (qucscontrol_input.cpp): a click, a drag, keys.

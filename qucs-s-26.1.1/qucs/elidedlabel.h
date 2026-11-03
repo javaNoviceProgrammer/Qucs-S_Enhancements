@@ -15,6 +15,8 @@
 #include <QLabel>
 #include <QToolButton>
 
+class QTextLayout;
+
 /// A label of one line that asks its layout for the width of a few
 /// characters, not of its whole text. A plain QLabel asks for all of it, and
 /// its layouts pass that on to the window: a tab's status of some hundred
@@ -51,6 +53,41 @@ private:
     QString plain() const;
     /// Where the text is drawn: the contents less the margin and indent.
     QRect room() const;
+};
+
+/// A label of wrapped lines whose words may be longer than a line: a path, a
+/// URL, a command, a run of letters with no break. QLabel's word wrap breaks
+/// lines between words only and asks its layout for its longest word's
+/// width, which the layouts pass on to the window: a permission for a file
+/// of a long path made the Claude Code dock a thousand pixels wide and more,
+/// a question with a long URL in it too (the panel's fuzz, 3 November 2026).
+///
+/// This one asks for the width of a few characters, and a word too long for
+/// its line is broken where it must be. A text whose words fit is drawn as
+/// QLabel draws it, its selection with it. Plain text; text() stays whole.
+class WrappedLabel : public QLabel
+{
+public:
+    explicit WrappedLabel(QWidget* parent = nullptr);
+    explicit WrappedLabel(const QString& text, QWidget* parent = nullptr);
+
+    /// Whether a word of the text is longer than a line at the width the
+    /// label has: drawn broken.
+    bool broken() const;
+
+    QSize minimumSizeHint() const override;
+    QSize sizeHint() const override;
+    int heightForWidth(int width) const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    /// What is around the text: the frame, the contents' margins, the margin.
+    QSize chrome() const;
+    /// The height of the text in lines of \a width, a word too long for a
+    /// line broken (laid out in \a layout, when given).
+    qreal linesHeight(qreal width, QTextLayout* layout = nullptr) const;
 };
 
 /// A tool button whose text, a file's name, gives way as ElidedLabel's does:

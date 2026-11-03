@@ -61,6 +61,7 @@
 #include <QSaveFile>
 #include <QScopedValueRollback>
 #include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QStyle>
 #include <QTextBlock>
@@ -794,18 +795,18 @@ void ClaudeCodePanel::buildPermissionCard()
     layout->setContentsMargins(12, 10, 12, 10);
     layout->setSpacing(6);
     auto* top = new QHBoxLayout;
-    a_cardTitle = new QLabel(a_card);
+    // (Its title and subject wrapped where a word is longer than a line - a
+    // path, a URL, a command: a QLabel asks for its longest word's width,
+    // which widened the dock and the window.)
+    a_cardTitle = new WrappedLabel(a_card);
     a_cardTitle->setObjectName(QStringLiteral("claudeCardTitle"));
-    a_cardTitle->setWordWrap(true);
     a_cardCount = new QLabel(a_card);
     a_cardCount->setObjectName(QStringLiteral("claudeMuted"));
     top->addWidget(a_cardTitle, 1);
     top->addWidget(a_cardCount);
     layout->addLayout(top);
-    a_cardSubject = new QLabel(a_card);
+    a_cardSubject = new WrappedLabel(a_card);
     a_cardSubject->setObjectName(QStringLiteral("claudeCardSubject"));
-    a_cardSubject->setWordWrap(true);
-    a_cardSubject->setTextFormat(Qt::PlainText);
     a_cardSubject->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_cardSubject->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     layout->addWidget(a_cardSubject);
@@ -821,11 +822,15 @@ void ClaudeCodePanel::buildPermissionCard()
     a_deny->setObjectName(QStringLiteral("claudeDeny"));
     a_deny->setText(tr("Deny"));
     a_deny->setToolTip(tr("Claude is told no and goes on without it"));
-    a_allowEdits = new QToolButton(a_card);
+    // (The two long ones cut where the row is narrower than the four: side by
+    // side whole, they made the dock some 700 pixels wide at the least.)
+    a_allowEdits = new ElidedToolButton(a_card, Qt::ElideRight);
+    a_allowEdits->setToolButtonStyle(Qt::ToolButtonTextOnly);
     a_allowEdits->setObjectName(QStringLiteral("claudeAllowEdits"));
     a_allowEdits->setText(tr("Allow All Edits"));
     a_allowEdits->setToolTip(tr("Allow this, and file changes without asking for the rest of the conversation"));
-    a_allowTools = new QToolButton(a_card);
+    a_allowTools = new ElidedToolButton(a_card, Qt::ElideRight);
+    a_allowTools->setToolButtonStyle(Qt::ToolButtonTextOnly);
     a_allowTools->setObjectName(QStringLiteral("claudeAllowTools"));
     a_allowTools->setText(tr("Allow Qucs-S Control"));
     a_allowTools->setToolTip(tr("Allow this, and Claude's use of the Qucs-S window without asking for the rest of the "
@@ -867,7 +872,9 @@ void ClaudeCodePanel::showNextAsk()
     while (QLayoutItem* item = layout->takeAt(0)) {
         if (QWidget* w = item->widget()) w->deleteLater();
         if (QLayout* l = item->layout()) {
-            while (QLayoutItem* inner = l->takeAt(0)) {
+            // (While it has any: an empty form's takeAt(0) warns.)
+            while (l->count() > 0) {
+                QLayoutItem* inner = l->takeAt(0);
                 if (inner->widget() != nullptr) inner->widget()->deleteLater();
                 delete inner;
             }
@@ -879,16 +886,19 @@ void ClaudeCodePanel::showNextAsk()
         return;
     }
     const Ask ask = a_asks.first();
-    auto* title = new QLabel(ask.message, a_askCard);
+    auto* title = new WrappedLabel(ask.message, a_askCard);
     title->setObjectName(QStringLiteral("claudeCardTitle"));
-    title->setWordWrap(true);
     layout->addWidget(title);
     auto* buttons = new QHBoxLayout;
     buttons->setSpacing(6);
     buttons->addStretch(1);
+    // (An option's name, which the question gives, cut where it does not fit:
+    // whole in its tool tip.)
     const auto button = [&](const QString& text, const QString& name, std::function<void()> act) {
-        auto* b = new QToolButton(a_askCard);
+        auto* b = new ElidedToolButton(a_askCard, Qt::ElideRight);
+        b->setToolButtonStyle(Qt::ToolButtonTextOnly);
         b->setText(text);
+        b->setToolTip(text);
         b->setObjectName(name);
         connect(b, &QToolButton::clicked, this, act);
         buttons->addWidget(b);
@@ -924,6 +934,9 @@ void ClaudeCodePanel::showNextAsk()
                 editor = box;
             } else if (p.contains(QLatin1String("enum"))) {
                 auto* combo = new QComboBox(a_askCard);
+                // (A few characters, not its longest choice once shown.)
+                combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                combo->setMinimumContentsLength(8);
                 for (const QJsonValue& v : p.value(QLatin1String("enum")).toArray()) combo->addItem(v.toString());
                 editor = combo;
             } else {
@@ -933,7 +946,7 @@ void ClaudeCodePanel::showNextAsk()
             }
             editor->setObjectName(QStringLiteral("claudeAskField_") + it.key());
             editor->setToolTip(p.value(QLatin1String("description")).toString());
-            form->addRow(label, editor);
+            form->addRow(new WrappedLabel(label, a_askCard), editor);
             editors.insert(it.key(), editor);
         }
         layout->addLayout(form);
@@ -971,12 +984,22 @@ void ClaudeCodePanel::buildComposer()
     layout->setContentsMargins(8, 6, 6, 6);
     layout->setSpacing(4);
     // The images attached to the next prompt: a small picture of each, its
-    // × taking it off.
-    a_imageStrip = new QWidget(a_composer);
-    a_imageStrip->setObjectName(QStringLiteral("claudeImages"));
-    auto* strip = new QHBoxLayout(a_imageStrip);
-    strip->setContentsMargins(0, 0, 0, 0);
-    strip->setSpacing(6);
+    // × taking it off - in a row that scrolls when they are wider than it
+    // (side by side, a few of them widened the dock and the window).
+    auto* strip = new QScrollArea(a_composer);
+    strip->setObjectName(QStringLiteral("claudeImages"));
+    strip->setFrameShape(QFrame::NoFrame);
+    strip->setWidgetResizable(true);
+    strip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    strip->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    strip->viewport()->setAutoFillBackground(false);
+    a_imageRow = new QWidget;
+    a_imageRow->setAutoFillBackground(false);
+    auto* pictures = new QHBoxLayout(a_imageRow);
+    pictures->setContentsMargins(0, 0, 0, 0);
+    pictures->setSpacing(6);
+    strip->setWidget(a_imageRow);
+    a_imageStrip = strip;
     a_imageStrip->hide();
     layout->addWidget(a_imageStrip);
     a_input = new QPlainTextEdit(a_composer);
@@ -1381,6 +1404,24 @@ bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
         } else if (event->type() == QEvent::Drop) {
             auto* drop = static_cast<QDropEvent*>(event);
             if (attachImages(drop->mimeData())) {
+                drop->acceptProposedAction();
+                focusComposer();
+                return true;
+            }
+            // Anything else on the composer: put in where it was dropped, a
+            // file as its path (not its URL). By the panel, not by the box:
+            // Qt's own drop puts its text in inside an edit block and reads
+            // the cursor's line from the layout of before - a dropped URL
+            // crashed Qucs-S there (the dock's fuzz).
+            if (watched == a_input->viewport()) {
+                const QString text = droppedText(drop->mimeData());
+                if (text.isEmpty()) return true;
+                // (Its caret of the drag taken away first.)
+                QDragLeaveEvent leave;
+                QCoreApplication::sendEvent(a_input->viewport(), &leave);
+                QTextCursor at = a_input->cursorForPosition(drop->position().toPoint());
+                at.insertText(text);
+                a_input->setTextCursor(at);
                 drop->acceptProposedAction();
                 focusComposer();
                 return true;
@@ -1931,6 +1972,19 @@ QStringList ClaudeCodePanel::imageFilesIn(const QMimeData* data)
     return files;
 }
 
+QString ClaudeCodePanel::droppedText(const QMimeData* data)
+{
+    if (data == nullptr) return {};
+    if (data->hasUrls()) {
+        // Files as their paths, one a line; other links as they are.
+        QStringList lines;
+        for (const QUrl& url : data->urls()) lines << (url.isLocalFile() ? QDir::toNativeSeparators(url.toLocalFile()) : url.toString());
+        lines.removeAll(QString());
+        if (!lines.isEmpty()) return lines.join(QLatin1Char('\n'));
+    }
+    return data->hasText() ? data->text() : QString();
+}
+
 bool ClaudeCodePanel::attachImages(const QMimeData* data)
 {
     if (data == nullptr) return false;
@@ -1984,14 +2038,14 @@ void ClaudeCodePanel::removeAttachedImage(qsizetype index)
 
 void ClaudeCodePanel::updateImageStrip()
 {
-    auto* strip = static_cast<QHBoxLayout*>(a_imageStrip->layout());
+    auto* strip = static_cast<QHBoxLayout*>(a_imageRow->layout());
     while (QLayoutItem* item = strip->takeAt(0)) {
         delete item->widget();
         delete item;
     }
     const qreal dpr = devicePixelRatioF();
     for (const QString& path : std::as_const(a_images)) {
-        auto* box = new QFrame(a_imageStrip);
+        auto* box = new QFrame(a_imageRow);
         box->setObjectName(QStringLiteral("claudeImage"));
         box->setToolTip(QDir::toNativeSeparators(path));
         auto* row = new QHBoxLayout(box);
@@ -2022,6 +2076,10 @@ void ClaudeCodePanel::updateImageStrip()
         strip->addWidget(box);
     }
     strip->addStretch(1);
+    // As tall as its pictures, and a scroll bar where one takes room of its own.
+    const QScrollBar* bar = static_cast<QScrollArea*>(a_imageStrip)->horizontalScrollBar();
+    const bool over = a_imageStrip->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, bar) != 0;
+    a_imageStrip->setFixedHeight(a_imageRow->sizeHint().height() + (over ? 0 : bar->sizeHint().height()));
     a_imageStrip->setVisible(!a_images.isEmpty());
 }
 
@@ -2695,9 +2753,12 @@ void ClaudeCodePanel::fitImages()
     // going as they shrink moving nothing), its height in proportion.
     if (a_fitting) return;
     a_fitting = true;
+    // (From the transcript's own width, not its viewport's: a bar just shown
+    // had not narrowed the viewport yet in a render that drew all afresh, and
+    // an image came out a bar too wide - the dock's fuzz.)
     const QScrollBar* bar = a_view->verticalScrollBar();
     const bool over = a_view->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, bar) != 0;
-    const int width = a_view->viewport()->width() - (bar->isVisible() || over ? 0 : bar->sizeHint().width());
+    const int width = a_view->contentsRect().width() - (over ? 0 : bar->sizeHint().width());   // (no viewport margins)
     qucs_s::markdown::fitImages(a_view->document(), width);
     a_fitting = false;
 }

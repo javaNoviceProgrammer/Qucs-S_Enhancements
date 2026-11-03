@@ -434,6 +434,32 @@ private slots:
         QVERIFY(bar.statLabel()->text().contains("−2"));
     }
 
+    // A long folder's name and a long branch's: the bar gives way, and the
+    // dock is no wider at its least than with no bar at all.
+    void longNamesLeaveTheDockNarrow()
+    {
+        const QString deep = dir.filePath("a folder of a very long name for a repository of filters and amplifiers");
+        QVERIFY(makeRepo(deep));
+        QVERIFY(!gitIn(deep, {"checkout", "-q", "-b", "feature/a-branch-of-a-very-long-name-for-the-work-on-the-filters"}).isNull());
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(plain);
+        panel.resize(420, 600);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QVERIFY(settled(panel.gitBar()));
+        QVERIFY(panel.gitBar()->isHidden());
+        const int least = panel.minimumSizeHint().width();
+        panel.setProjectDirectory(deep);
+        QVERIFY(settled(panel.gitBar()));
+        QVERIFY(!panel.gitBar()->isHidden());
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        QVERIFY2(panel.minimumSizeHint().width() <= least, qPrintable(QStringLiteral("%1 pixels at the least with the bar, %2 without; the bar %3")
+                                                                          .arg(panel.minimumSizeHint().width()).arg(least)
+                                                                          .arg(panel.gitBar()->minimumSizeHint().width())));
+        // Its names whole where they are read.
+        QVERIFY(panel.gitBar()->folderLabel()->toolTip().contains("amplifiers") || panel.gitBar()->folderLabel()->text().contains("amplifiers"));
+    }
+
     // In the dock: about the folder chosen for Claude, else the project's,
     // else the workspace; a prompt from the bar leaves the composer be.
     void inThePanel()
