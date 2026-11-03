@@ -23,6 +23,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
@@ -32,12 +33,18 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMimeData>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QRandomGenerator>
 #include <QScrollBar>
+#include <QStackedWidget>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextBrowser>
@@ -45,10 +52,12 @@
 #include <QTextFrame>
 #include <QTextList>
 #include <QTimer>
+#include <optional>
 #include <QToolButton>
 
 #include "claudecode.h"
 #include "claudecodepanel.h"
+#include "claudecodetabs.h"
 #include "isolated_settings.h"
 
 namespace {
@@ -89,6 +98,127 @@ public:
     bool chance(double p) { return r.generateDouble() < p; }
     template <typename T> const T& pick(const QList<T>& list) { return list.at(below(int(list.size()))); }
     QString pickText(const QStringList& list) { return list.at(below(int(list.size()))); }
+};
+
+// The tools the dock's conversations are given: answered at once, later
+// (by a step of the fuzz), or after a question to the user; with a text, a
+// long text, JSON, an image, an error. Some only look, some are allowed in
+// auto mode, one cannot be undone, one is asked about each time.
+class FuzzHost : public qucs_s::claude::ToolHost
+{
+public:
+    explicit FuzzHost(Draw& draw, QString picture) : d(draw), a_picture(std::move(picture)) {}
+    static QStringList names()
+    {
+        return {"look", "change", "wipe", "type", "slow", "ask", "picture", "big", "fail", "json"};
+    }
+    QString serverName() const override { return QStringLiteral("qucs-s"); }
+    QJsonArray tools() const override
+    {
+        QJsonArray out;
+        for (const QString& n : names())
+            out.append(QJsonObject{{"name", n}, {"description", "Does " + n}, {"inputSchema", QJsonObject{{"type", "object"}}}});
+        return out;
+    }
+    QStringList readOnlyTools() const override { return {"look", "picture", "big", "json"}; }
+    QStringList autonomousTools() const override { return {"change", "slow", "ask", "fail"}; }
+    QString actionOf(const QString& tool) const override { return "use " + tool; }
+    QString subjectOf(const QString&, const QJsonObject& a) const override
+    {
+        return QString::fromUtf8(QJsonDocument(a).toJson(QJsonDocument::Compact)).left(300);
+    }
+    QString instructions() const override { return QStringLiteral("The fuzz's tools."); }
+    bool irreversible(const QString& tool, const QJsonObject& a) const override
+    {
+        return tool == QLatin1String("wipe") || a.value("what").toString() == QLatin1String("wipe");
+    }
+    QString askedEachTime(const QString& tool, const QJsonObject& a) const override
+    {
+        return tool == QLatin1String("type") || a.value("what").toString() == QLatin1String("type")
+                   ? QStringLiteral("What is typed runs with your rights.")
+                   : QString();
+    }
+    QJsonObject forDocument(const QString& tool, const QJsonObject& a, const QString& document) const override
+    {
+        if (tool != QLatin1String("change")) return a;
+        QJsonObject with = a;
+        with.insert("document", document);
+        return with;
+    }
+    void setAsker(quint64 caller, Asker asker) override
+    {
+        if (asker) askers.insert(caller, std::move(asker));
+        else askers.remove(caller);
+    }
+    void callTool(const QString& tool, const QJsonObject& a, std::function<void(const QJsonObject&)> done) override
+    {
+        callToolFor(0, tool, a, std::move(done));
+    }
+    void callToolFor(quint64 caller, const QString& tool, const QJsonObject&, std::function<void(const QJsonObject&)> done) override
+    {
+        ++calls;
+        if (tool == QLatin1String("slow") || d.chance(0.1)) {
+            waiting.append({tool, std::move(done)});
+            return;
+        }
+        if (tool == QLatin1String("ask")) {
+            if (const Asker asker = askers.value(caller)) {
+                ++asked;
+                asker(QStringLiteral("Write over x.sch?"),
+                      QJsonObject{{"type", "object"}, {"properties", QJsonObject{{"confirm", QJsonObject{{"type", "boolean"}}}}}},
+                      [done](const QJsonObject& r) { done(text("asked: " + r.value("action").toString(), false)); });
+                return;
+            }
+        }
+        done(result(tool));
+    }
+    // A call cancelled: stopped now and then (answered at once, as a stopped
+    // solve answers), else left to end in its time.
+    void cancelCall(quint64, const QString& tool) override
+    {
+        ++cancels;
+        for (qsizetype i = 0; i < waiting.size(); ++i)
+            if (waiting.at(i).first == tool && d.chance(0.6)) {
+                auto [name, done] = waiting.takeAt(i);
+                done(text("Stopped: " + name, true));
+                return;
+            }
+    }
+    // A waiting call answered: one, or all of them.
+    void answer(bool all)
+    {
+        while (!waiting.isEmpty()) {
+            auto [tool, done] = waiting.takeAt(d.below(int(waiting.size())));
+            done(result(tool));
+            if (!all) return;
+        }
+    }
+    static QJsonObject text(const QString& t, bool error)
+    {
+        return {{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", t}}}}, {"isError", error}};
+    }
+    QJsonObject result(const QString& tool)
+    {
+        if (tool == QLatin1String("fail") || d.chance(0.05)) return text("It failed: " + tool, true);
+        if (tool == QLatin1String("big")) return text(QString(d.below(300000) + 1, QLatin1Char('b')), false);
+        if (tool == QLatin1String("json"))
+            return text(QStringLiteral("{\"a\": [1, 2, {\"b\": \"%1\"}], \"n\": %2}").arg(QString(d.below(2000), QLatin1Char('j'))).arg(d.below(9)), false);
+        if (tool == QLatin1String("picture")) {
+            QFile f(a_picture);
+            const QByteArray data = d.chance(0.8) && f.open(QIODevice::ReadOnly) ? f.readAll().toBase64() : QByteArrayLiteral("bm90IGFuIGltYWdl");
+            return {{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "A picture"}},
+                                           QJsonObject{{"type", "image"}, {"mimeType", "image/png"}, {"data", QString::fromLatin1(data)}}}}};
+        }
+        if (d.chance(0.05)) return QJsonObject{{"content", QJsonArray{}}};
+        return text("Done: " + tool, false);
+    }
+    Draw& d;
+    QHash<quint64, Asker> askers;
+    QList<std::pair<QString, std::function<void(const QJsonObject&)>>> waiting;
+    int calls = 0, asked = 0, cancels = 0;
+
+private:
+    QString a_picture;
 };
 
 } // namespace
@@ -448,6 +578,149 @@ class TestClaudeFuzz : public QObject
         } else m.insert(key, anyValue(d));
     }
 
+    // One of Claude Code's messages about the dock's own tools (FuzzHost):
+    // their MCP traffic - calls, the handshake, answers to the server's
+    // questions -, permission asked for one, a use of one and its result,
+    // the turn's end, a request taken back. Its request ids are "fz<n>",
+    // counted in what the dock writes back.
+    int requests = 0;
+    QJsonObject hostMessage(Draw& d)
+    {
+        const QString id = QStringLiteral("fz%1").arg(++requests);
+        const auto tool = [this, &d] { return d.chance(0.9) ? d.pickText(FuzzHost::names()) : word(d); };
+        const auto arguments = [this, &d] {
+            QJsonObject a{{"what", d.pickText({"x", "wipe", "type", "overwrite", word(d)})}};
+            if (d.chance(0.1)) a.insert("max_chars", d.chance(0.5) ? QJsonValue(300) : QJsonValue(word(d)));
+            if (d.chance(0.1)) a.insert(word(d), anyValue(d));
+            return a;
+        };
+        const auto mcp = [&d, &id](const QJsonObject& rpc) {
+            return QJsonObject{{"type", "control_request"},
+                               {"request_id", id},
+                               {"request", QJsonObject{{"subtype", "mcp_message"},
+                                                       {"server_name", d.chance(0.95) ? QStringLiteral("qucs-s") : QStringLiteral("other")},
+                                                       {"message", rpc}}}};
+        };
+        switch (d.below(12)) {
+        case 0:
+        case 1:
+        case 2:
+        case 3: {
+            QJsonObject params{{"name", tool()}, {"arguments", arguments()}};
+            if (d.chance(0.8)) params.insert("_meta", QJsonObject{{"claudecode/toolUseId", toolId(d)}});
+            return mcp({{"jsonrpc", "2.0"}, {"id", requests}, {"method", "tools/call"}, {"params", params}});
+        }
+        case 4: {
+            QJsonObject params{{"protocolVersion", "2025-06-18"}};
+            if (d.chance(0.7)) params.insert("capabilities", QJsonObject{{"elicitation", QJsonObject{}}});
+            return mcp({{"jsonrpc", "2.0"}, {"id", requests}, {"method", "initialize"}, {"params", params}});
+        }
+        case 5:
+            return mcp({{"jsonrpc", "2.0"}, {"id", requests},
+                        {"method", d.pickText({"tools/list", "ping", "resources/list", "resources/templates/list"})}});
+        case 6:
+            // (Now and then a call of a moment ago cancelled: the turn stopped.)
+            if (d.chance(0.5))
+                return mcp({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"},
+                            {"params", QJsonObject{{"requestId", std::max(1, requests - d.below(4))}, {"reason", "AbortError"}}}});
+            return mcp({{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}});
+        case 7: {
+            // The answer to a question of the server's (qucs-ask-<n>).
+            QJsonObject rpc{{"jsonrpc", "2.0"}, {"id", QStringLiteral("qucs-ask-%1").arg(d.below(40) + 1)}};
+            if (d.chance(0.8))
+                rpc.insert("result", QJsonObject{{"action", d.pickText({"accept", "decline", "cancel"})},
+                                                 {"content", QJsonObject{{"confirm", d.chance(0.5)}}}});
+            else rpc.insert("error", QJsonObject{{"code", -1}, {"message", "no"}});
+            return mcp(rpc);
+        }
+        case 8:
+            return {{"type", "control_request"},
+                    {"request_id", id},
+                    {"request", QJsonObject{{"subtype", "can_use_tool"}, {"tool_name", "mcp__qucs-s__" + tool()}, {"input", arguments()}}}};
+        case 9:
+            return {{"type", "assistant"},
+                    {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_use"}, {"id", toolId(d)},
+                                                                               {"name", "mcp__qucs-s__" + tool()}, {"input", arguments()}}}}}}};
+        case 10:
+            return {{"type", "user"},
+                    {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_result"}, {"tool_use_id", toolId(d)},
+                                                                               {"content", word(d)}}}}}}};
+        default:
+            if (d.chance(0.5))
+                return {{"type", "result"}, {"subtype", "success"}, {"is_error", false}, {"result", word(d)},
+                        {"session_id", QStringLiteral("s-%1").arg(d.below(3))}};
+            return {{"type", "control_cancel_request"}, {"request_id", QStringLiteral("fz%1").arg(std::max(1, requests - d.below(5)))}};
+        }
+    }
+
+    // What a paste or a drop brings: files (images among them), an image,
+    // text, HTML, or several.
+    QMimeData* someMime(Draw& d)
+    {
+        auto* mime = new QMimeData;
+        if (d.chance(0.5)) {
+            QList<QUrl> urls;
+            for (int i = 0, k = d.below(4) + 1; i < k; ++i)
+                urls << (d.chance(0.9) ? QUrl::fromLocalFile(d.pickText(files)) : QUrl(QStringLiteral("https://example.com/x.png")));
+            mime->setUrls(urls);
+        }
+        if (d.chance(0.3)) {
+            QImage image(d.below(300) + 1, d.below(300) + 1, QImage::Format_ARGB32);
+            image.fill(QColor::fromRgb(d.r.generate()));
+            mime->setImageData(image);
+        }
+        if (d.chance(0.4)) mime->setText(reply(d, false, nullptr));
+        if (d.chance(0.2)) mime->setHtml(QStringLiteral("<table><tr><td>%1</td></tr></table>").arg(word(d)));
+        return mime;
+    }
+
+    // What makes \a w as wide as it is at least: the deepest shown widget of
+    // its that is past \a most on its own, its class, name and text.
+    static QString widest(QWidget* w, int most)
+    {
+        const auto least = [](QWidget* x) { return std::max(x->minimumSizeHint().width(), x->minimumWidth()); };
+        QWidget* child = nullptr;
+        for (QWidget* c : w->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) {
+            if (c->isWindow() || (c->isHidden() && qobject_cast<QStackedWidget*>(w) == nullptr)) continue;
+            if (least(c) > most && (child == nullptr || least(c) > least(child))) child = c;
+        }
+        if (child == nullptr) return {};
+        const QString inner = widest(child, most);
+        if (!inner.isEmpty()) return inner;
+        QString text = child->property("text").toString();
+        if (text.isEmpty()) text = child->property("title").toString();
+        // (None of its own as wide: its children's widths, and its layout's least.)
+        if (text.isEmpty()) {
+            QStringList parts;
+            for (QWidget* c : child->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+                if (!c->isHidden() && !c->isWindow() && least(c) > 40)
+                    parts << QStringLiteral("%1 %2 %3").arg(QString::fromLatin1(c->metaObject()->className()), c->objectName()).arg(least(c));
+            if (child->layout() != nullptr) parts << QStringLiteral("layout %1").arg(child->layout()->minimumSize().width());
+            text = parts.join(QStringLiteral("; "));
+        }
+        return QStringLiteral("%1 %2%3 (%4): %5 characters, %6")
+            .arg(QString::fromLatin1(child->metaObject()->className()), child->objectName(),
+                 child->isHidden() ? QStringLiteral(" (a hidden page)") : QString())
+            .arg(least(child))
+            .arg(text.size())
+            .arg(text.left(400));
+    }
+
+    // A transcript's place on a picture, when it shows one.
+    static std::optional<QPoint> pictureIn(QTextBrowser* view)
+    {
+        QTextDocument* doc = view->document();
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().charFormat().isImageFormat()) {
+                    QTextCursor c(doc);
+                    c.setPosition(it.fragment().position());
+                    const QRect r = view->cursorRect(c);
+                    return QPoint(r.right() + 3, r.center().y());
+                }
+        return std::nullopt;
+    }
+
     // ---- the user's side ---------------------------------------------------
 
     static QStringList anchorsOf(QTextDocument* doc)
@@ -468,6 +741,9 @@ class TestClaudeFuzz : public QObject
         const auto props = [](const QTextFormat& f) {
             QMap<int, QVariant> p = f.properties();
             p.remove(QTextFormat::ObjectIndex);
+            // (An image's own size, kept on its format once fitted: kept or
+            // not by whether it was fitted yet - markdowndoc.cpp's kOwnWidth.)
+            for (int k = 0; k < 4; ++k) p.remove(QTextFormat::UserProperty + 0x4D44 + k);
             return p;
         };
         QString out;
@@ -481,6 +757,20 @@ class TestClaudeFuzz : public QObject
             for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) dbg << "\n  " << it.fragment().text() << props(it.fragment().charFormat());
         }
         return out;
+    }
+
+    // Where two transcripts as drawn() first differ: the line, the one
+    // before it, each side about the place.
+    static QString difference(const QString& part, const QString& whole)
+    {
+        const QStringList a = part.split(QLatin1Char('\n')), b = whole.split(QLatin1Char('\n'));
+        qsizetype i = 0;
+        while (i < a.size() && i < b.size() && a.at(i) == b.at(i)) ++i;
+        const QString x = a.value(i), y = b.value(i);
+        qsizetype k = 0;
+        while (k < x.size() && k < y.size() && x.at(k) == y.at(k)) ++k;
+        const qsizetype at = std::max<qsizetype>(0, k - 120);
+        return QStringLiteral("line %1 (%2):\n  %3\n  %4").arg(i).arg(a.value(i - 1).left(160), x.mid(at, 300), y.mid(at, 300));
     }
 
     static QList<QToolButton*> shownButtons(QWidget* in)
@@ -623,6 +913,7 @@ private slots:
                 // Drawn in part, drawn whole: the same transcript.
                 if (d.chance(0.3)) {
                     const QString part = drawn(panel->transcript()->document());
+                    const qsizetype from = panel->renderedFrom();
                     panel->renderNow(true);
                     const QString whole = drawn(panel->transcript()->document());
                     if (part != whole) {
@@ -632,15 +923,7 @@ private slots:
                             if (fa.open(QIODevice::WriteOnly)) fa.write(part.toUtf8());
                             if (fb.open(QIODevice::WriteOnly)) fb.write(whole.toUtf8());
                         }
-                        const QStringList a = part.split(QLatin1Char('\n')), b = whole.split(QLatin1Char('\n'));
-                        qsizetype i = 0;
-                        while (i < a.size() && i < b.size() && a.at(i) == b.at(i)) ++i;
-                        const QString x = a.value(i), y = b.value(i);
-                        qsizetype k = 0;
-                        while (k < x.size() && k < y.size() && x.at(k) == y.at(k)) ++k;
-                        const qsizetype at = std::max<qsizetype>(0, k - 120);
-                        found(n, QStringLiteral("drawn in part (from part %1) not as drawn whole, line %2 (%3):\n  %4\n  %5")
-                                     .arg(panel->renderedFrom()).arg(i).arg(a.value(i - 1).left(160), x.mid(at, 300), y.mid(at, 300)));
+                        found(n, QStringLiteral("drawn in part (from part %1) not as drawn whole, %2").arg(from).arg(difference(part, whole)));
                     }
                 }
                 slowest = std::max(slowest, ms);
@@ -787,6 +1070,446 @@ private slots:
         }
         watch.stop();
         qInfo("%d lines fed; the slowest render %lld ms; %lld dialogs closed: %s; %lld links opened", lines, slowest, qint64(dialogs.size()),
+              qPrintable(QStringList(dialogs.mid(0, 5)).join(QLatin1String("; "))), qint64(opened.urls.size()));
+        for (const QString& f : findings) qWarning("%s", qPrintable(f));
+        for (const char* scheme : {"http", "https", "mailto", "file"}) QDesktopServices::unsetUrlHandler(QString::fromLatin1(scheme));
+        QVERIFY2(findings.isEmpty(), qPrintable(QStringLiteral("%1 findings, the first: %2").arg(findings.size()).arg(findings.value(0))));
+    }
+
+    // The whole dock fuzzed: its tabs of conversations with Qucs-S's tools
+    // (FuzzHost) and a program that is running - what the dock writes to it
+    // kept in a file. The program's side as above, and Claude Code's MCP
+    // traffic for the dock's tools (hostMessage()): calls answered at once,
+    // later or after a question, held for the dock's own question, sent to
+    // the background. The user's side as above, and tabs opened, closed,
+    // shown, renamed (through the editor) and through their menu, the
+    // conversations kept and brought back, /resume's list, every menu's
+    // actions (modes, models, the guards, pins, usage, exports), the
+    // transcript's own menu (Open in Viewer), the composer's keys, pastes
+    // and drops of files, images, text, the document in front and what the
+    // pen drew on it, a document renamed, the dock hidden, its font.
+    //
+    // After each step: the tabs as many as their conversations, no tab's
+    // title over a line, the dock's least width bounded (a long text never
+    // widens the window); at a render, what fuzzThePanel checks of the
+    // conversation in front. At the end: each of the program's requests
+    // answered once at most, and every line the dock wrote JSON.
+    void fuzzTheDock()
+    {
+        const quint32 seed = quint32(qEnvironmentVariableIntValue("QUCS_FUZZ_SEED")) + (qEnvironmentVariableIsSet("QUCS_FUZZ_SEED") ? 0 : 1);
+        const int seconds = qEnvironmentVariableIntValue("QUCS_FUZZ_SECONDS");
+        const int steps = seconds > 0 ? std::numeric_limits<int>::max()
+                                      : (qEnvironmentVariableIsSet("QUCS_FUZZ_STEPS") ? qEnvironmentVariableIntValue("QUCS_FUZZ_STEPS") : 400);
+        Draw d(seed + 7919);
+        QFile trace(qEnvironmentVariableIsSet("QUCS_FUZZ_TRACE") ? qEnvironmentVariable("QUCS_FUZZ_TRACE") + QStringLiteral(".dock")
+                                                                 : dir.filePath(QStringLiteral("trace-dock.txt")));
+        QVERIFY(trace.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        auto step = [&trace](int n, const QString& what) {
+            trace.write(QStringLiteral("%1 %2\n").arg(n).arg(what.left(300).replace(QLatin1Char('\n'), QLatin1String("\\n"))).toUtf8());
+            trace.flush();
+        };
+        QStringList findings;
+        auto found = [&findings, &step](int n, const QString& what) {
+            if (findings.size() < 200) findings << QStringLiteral("step %1: %2").arg(n).arg(what);
+            step(n, QStringLiteral("FINDING ") + what);
+        };
+        Opened opened;
+        for (const char* scheme : {"http", "https", "mailto", "file"}) QDesktopServices::setUrlHandler(QString::fromLatin1(scheme), &opened, "open");
+        QStringList dialogs;
+        QTimer watch;
+        watch.setInterval(20);
+        connect(&watch, &QTimer::timeout, this, [&dialogs] {
+            if (QWidget* modal = QApplication::activeModalWidget()) {
+                dialogs << modal->windowTitle() + QLatin1Char(':') + QString::fromLatin1(modal->metaObject()->className());
+                if (auto* dialog = qobject_cast<QDialog*>(modal)) dialog->reject();
+                else modal->close();
+            }
+            if (QWidget* popup = QApplication::activePopupWidget()) popup->close();
+        });
+        watch.start();
+
+        // A program that runs and keeps what the dock writes to it (each one
+        // in a file of its own: written-<its pid>.jsonl).
+        for (const QString& old : QDir(dir.path()).entryList({QStringLiteral("written-*.jsonl")}, QDir::Files)) QFile::remove(dir.filePath(old));
+        const QString alive = dir.filePath(QStringLiteral("alive.sh"));
+        {
+            QFile f(alive);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("#!/bin/sh\nexec cat > \"$QUCS_FAKE_DIR/written-$$.jsonl\"\n");
+            f.close();
+            QVERIFY(f.setPermissions(f.permissions() | QFileDevice::ExeOwner));
+        }
+        const QStringList programs = {alive, alive, alive, QStringLiteral("/nonexistent/claude"), QStringLiteral("/bin/false")};
+        // Documents to have in front, open, pinned, renamed.
+        QStringList documents;
+        for (const QString& name : {QStringLiteral("a.sch"), QStringLiteral("b.sch"), QStringLiteral("model.qfem"), QStringLiteral("notes.md"),
+                                    QStringLiteral("ünï cødé.sch")}) {
+            QFile f(dir.filePath(QStringLiteral("work/") + name));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("x\n");
+            documents << f.fileName();
+        }
+        documents << QString() << dir.filePath(QStringLiteral("work/gone.sch"));
+        QString front = documents.first();
+        QStringList schematics = documents.mid(0, 2), others = documents.mid(2, 2);
+        quint64 drawingRevision = 0;
+        QString drawing;
+
+        FuzzHost host(d, files.first());
+        auto tabs = std::make_unique<ClaudeCodeTabs>();
+        tabs->setDefaultDirectory(dir.filePath(QStringLiteral("work")));
+        tabs->setToolHost(&host);
+        tabs->setDocumentProvider([&front] { return front; });
+        tabs->setSchematicsProvider([&schematics] { return schematics; });
+        tabs->setFilesProvider([&others] { return others; });
+        tabs->setDrawingsProvider([&drawingRevision, &drawing](const QString&, quint64) { return std::make_pair(drawingRevision, drawing); });
+        tabs->resize(440, 700);
+        tabs->show();
+        QVERIFY(QTest::qWaitForWindowExposed(tabs.get()));
+        if (tabs->count() == 0) tabs->newConversation();
+        const int leastWidth = tabs->minimumSizeHint().width();
+        const qreal charWidth = QFontMetricsF(QApplication::font()).averageCharWidth();
+
+        QElapsedTimer clock;
+        clock.start();
+        qint64 slowest = 0;
+        QString pendingToken;   // a plain reply's, to be found in its conversation once rendered
+        QPointer<ClaudeCodePanel> tokenOf;
+        int lines = 0;
+        for (int n = 0; n < steps; ++n) {
+            if (seconds > 0 && clock.elapsed() > qint64(seconds) * 1000) break;
+            if (n % (seconds > 0 ? 2000 : 100) == 0)
+                qInfo("step %d, %lld s, %d lines fed, %d tabs, %d tool calls, %lld findings", n, clock.elapsed() / 1000, lines, tabs->count(),
+                      host.calls, qint64(findings.size()));
+            if (tabs->count() == 0) {
+                step(n, QStringLiteral("(a tab: none was left)"));
+                tabs->newConversation();
+            }
+            const QList<ClaudeCodePanel*> panels = tabs->panels();
+            ClaudeCodePanel* panel = tabs->current();
+            if (panel == nullptr) {
+                found(n, QStringLiteral("%1 tabs and none in front").arg(tabs->count()));
+                break;
+            }
+            // (QUCS_FUZZ_DUMP=<step>: the panel in front as it is then.)
+            if (n == qEnvironmentVariableIntValue("QUCS_FUZZ_DUMP") && n > 0) {
+                QPlainTextEdit* box = panel->composer();
+                qInfo("step %d: composer %dx%d visible %d viewport %dx%d, font %s, %lld blocks, editing %d, commands shown %d, text %s", n,
+                      box->width(), box->height(), int(box->isVisible()), box->viewport()->width(), box->viewport()->height(),
+                      qPrintable(box->font().toString()), qint64(box->document()->blockCount()), int(panel->isEditing()),
+                      int(panel->commandList()->isVisible()), QJsonDocument(QJsonArray{box->toPlainText()}).toJson(QJsonDocument::Compact).constData());
+            }
+            const int action = d.below(100);
+            if (action < 38) {
+                // A line of the program's: to the conversation in front, now
+                // and then another.
+                ClaudeCodePanel* to = d.chance(0.85) ? panel : panels.at(d.below(int(panels.size())));
+                QString token;
+                QJsonObject m = d.chance(0.5) ? hostMessage(d) : message(d, false, &token);
+                if (d.chance(0.06)) mutate(d, m);
+                QByteArray line = QJsonDocument(m).toJson(QJsonDocument::Compact);
+                if (d.chance(0.02)) line = line.left(d.below(int(line.size())));
+                step(n, QStringLiteral("line to %1: %2").arg(panels.indexOf(to)).arg(QString::fromUtf8(line)));
+                to->session()->handleLine(line);
+                ++lines;
+                if (to == panel && !token.isEmpty()) {
+                    const QJsonObject fed = QJsonDocument::fromJson(line).object();
+                    bool has = false;
+                    for (const QJsonValue& v : fed.value(QLatin1String("message")).toObject().value(QLatin1String("content")).toArray())
+                        has = has || v.toObject().value(QLatin1String("text")).toString().contains(token);
+                    if (fed.value(QLatin1String("type")).toString() == QLatin1String("assistant")
+                        && fed.value(QLatin1String("parent_tool_use_id")).toString().isEmpty() && has)
+                        pendingToken = token;
+                        tokenOf = panel;
+                }
+            } else if (action < 48) {
+                step(n, QStringLiteral("render"));
+                QScrollBar* bar = panel->transcript()->verticalScrollBar();
+                QElapsedTimer t;
+                t.start();
+                panel->renderNow();
+                const qint64 ms = t.elapsed();
+                slowest = std::max(slowest, ms);
+                if (!slowBuild() && ms > 1500) found(n, QStringLiteral("a render took %1 ms").arg(ms));
+                if (d.chance(0.3)) {
+                    const QString part = drawn(panel->transcript()->document());
+                    const qsizetype from = panel->renderedFrom();
+                    panel->renderNow(true);
+                    const QString whole = drawn(panel->transcript()->document());
+                    if (part != whole)
+                        found(n, QStringLiteral("drawn in part (from part %1) not as drawn whole, %2").arg(from).arg(difference(part, whole)));
+                }
+                QTest::qWait(d.below(10));
+                const QString shown = panel->transcriptText();
+                if (!pendingToken.isEmpty() && tokenOf == panel && !shown.contains(pendingToken))
+                    found(n, QStringLiteral("a plain reply's end, %1, not in the transcript").arg(pendingToken));
+                pendingToken.clear();
+                for (QChar c : shown)
+                    if (c.unicode() >= 0xE000 && c.unicode() < 0xE000 + 0x1800) {
+                        found(n, QStringLiteral("a formula's mark left in the transcript"));
+                        break;
+                    }
+                const bool drew = panel->renderedAt() < panel->transcript()->document()->characterCount() - 1;
+                if (panel->followsTheEnd() && bar->value() < bar->maximum() - (drew ? 2 : 16))
+                    found(n, QStringLiteral("not at the conversation's end: %1 of %2").arg(bar->value()).arg(bar->maximum()));
+            } else if (action < 51) {
+                const QSize size(d.chance(0.3) ? d.below(160) + 40 : d.below(1100) + 100, d.below(900) + 100);
+                step(n, QStringLiteral("resize %1x%2").arg(size.width()).arg(size.height()));
+                tabs->resize(size);
+                QTest::qWait(1);
+            } else if (action < 55) {
+                const bool all = d.chance(0.3);
+                step(n, QStringLiteral("the host answers %1 of %2 waiting").arg(all ? QStringLiteral("all") : QStringLiteral("one")).arg(host.waiting.size()));
+                host.answer(all);
+            } else if (action < 58) {
+                step(n, QStringLiteral("new tab"));
+                tabs->newConversation();
+                pendingToken.clear();
+            } else if (action < 60) {
+                ClaudeCodePanel* which = panels.at(d.below(int(panels.size())));
+                const bool ask = d.chance(0.3);
+                step(n, QStringLiteral("close tab %1%2").arg(panels.indexOf(which)).arg(ask ? QStringLiteral(" (asked)") : QString()));
+                if (which == panel) pendingToken.clear();
+                tabs->closeConversation(which, ask);
+            } else if (action < 62) {
+                ClaudeCodePanel* which = panels.at(d.below(int(panels.size())));
+                step(n, QStringLiteral("show tab %1").arg(panels.indexOf(which)));
+                if (which != panel) pendingToken.clear();
+                tabs->showConversation(which);
+            } else if (action < 64) {
+                ClaudeCodePanel* which = panels.at(d.below(int(panels.size())));
+                step(n, QStringLiteral("rename tab %1").arg(panels.indexOf(which)));
+                tabs->renameConversation(which);
+                if (QLineEdit* editor = tabs->renameEditor()) {
+                    editor->setText(d.chance(0.1) ? QString() : reply(d, false, nullptr));
+                    switch (d.below(5)) {
+                    case 0: QTest::keyClick(editor, Qt::Key_Return); break;
+                    case 1: QTest::keyClick(editor, Qt::Key_Escape); break;
+                    case 2: panel->composer()->setFocus(); break;
+                    case 3: tabs->closeConversation(which, false); break;
+                    default: tabs->newConversation(); break;
+                    }
+                }
+            } else if (action < 65) {
+                const int index = d.below(tabs->count());
+                std::unique_ptr<QMenu> menu(tabs->tabMenu(index));
+                const QList<QAction*> actions = menu ? menu->actions() : QList<QAction*>();
+                if (actions.isEmpty()) continue;
+                QAction* a = actions.at(d.below(int(actions.size())));
+                step(n, QStringLiteral("tab %1's menu: %2").arg(index).arg(a->text()));
+                if (a->isEnabled() && !a->isSeparator()) a->trigger();
+                pendingToken.clear();   // (renamed, or closed: another in front)
+                if (QLineEdit* editor = tabs->renameEditor()) QTest::keyClick(editor, d.chance(0.5) ? Qt::Key_Return : Qt::Key_Escape);
+            } else if (action < 68) {
+                // One of the panel's menus' actions (the ⋯ menu and its own).
+                QList<QMenu*> menus = panel->findChildren<QMenu*>();
+                if (menus.isEmpty()) continue;
+                QMenu* menu = menus.at(d.below(int(menus.size())));
+                emit menu->aboutToShow();
+                QList<QAction*> actions;
+                for (QAction* a : menu->actions())
+                    if (a->isEnabled() && !a->isSeparator() && a->menu() == nullptr) actions << a;
+                if (actions.isEmpty()) continue;
+                QAction* a = actions.at(d.below(int(actions.size())));
+                step(n, QStringLiteral("menu %1: %2").arg(menu->title(), a->text()));
+                a->trigger();
+                pendingToken.clear();   // (another folder: another conversation)
+            } else if (action < 70) {
+                // The transcript's own menu: at a picture, now and then.
+                const std::optional<QPoint> picture = d.chance(0.5) ? pictureIn(panel->transcript()) : std::nullopt;
+                const QPoint at = picture ? *picture
+                                          : QPoint(d.below(panel->transcript()->viewport()->width() + 1),
+                                                   d.below(panel->transcript()->viewport()->height() + 1));
+                std::unique_ptr<QMenu> menu = panel->transcriptMenu(at);
+                const QList<QAction*> actions = menu ? menu->actions() : QList<QAction*>();
+                QList<QAction*> usable;
+                for (QAction* a : actions)
+                    if (a->isEnabled() && !a->isSeparator()) usable << a;
+                if (usable.isEmpty()) continue;
+                QAction* a = usable.at(d.below(int(usable.size())));
+                step(n, QStringLiteral("transcript menu at %1,%2: %3").arg(at.x()).arg(at.y()).arg(a->text()));
+                a->trigger();
+            } else if (action < 74) {
+                QString text;
+                const QList<ClaudeCodePanel::Command> commands = panel->commands();
+                if (d.chance(0.3) && !commands.isEmpty()) {
+                    const ClaudeCodePanel::Command& c = d.pick(commands);
+                    text = QLatin1Char('/') + c.name + (d.chance(0.5) ? QLatin1Char(' ') + word(d) : QString());
+                } else {
+                    text = reply(d, false, nullptr);
+                }
+                const QString program = d.pickText(programs);
+                panel->session()->setProgram(program);
+                step(n, QStringLiteral("send (%1) %2").arg(QFileInfo(program).fileName(), text));
+                if (text.startsWith(QLatin1Char('/'))) pendingToken.clear();
+                panel->composer()->setPlainText(text);
+                panel->sendComposer();
+            } else if (action < 77) {
+                // The composer's keys; a paste of what the clipboard holds.
+                static const QList<std::pair<int, Qt::KeyboardModifiers>> keys = {
+                    {Qt::Key_Up, Qt::NoModifier},     {Qt::Key_Down, Qt::NoModifier},       {Qt::Key_Escape, Qt::NoModifier},
+                    {Qt::Key_Return, Qt::NoModifier}, {Qt::Key_Return, Qt::ShiftModifier}, {Qt::Key_Tab, Qt::NoModifier},
+                    {Qt::Key_V, Qt::ControlModifier}, {Qt::Key_Slash, Qt::NoModifier},     {Qt::Key_Backspace, Qt::NoModifier},
+                    {Qt::Key_A, Qt::NoModifier}};
+                const auto& [key, modifiers] = keys.at(d.below(int(keys.size())));
+                if (key == Qt::Key_V) QApplication::clipboard()->setMimeData(someMime(d));
+                step(n, QStringLiteral("key %1").arg(QKeySequence(QKeyCombination(modifiers, Qt::Key(key))).toString()));
+                panel->composer()->setFocus();
+                QTest::keyClick(panel->composer(), Qt::Key(key), modifiers);
+                if (key == Qt::Key_Return && !(modifiers & Qt::ShiftModifier)) pendingToken.clear();
+            } else if (action < 79) {
+                // A drop on the composer or the transcript.
+                std::unique_ptr<QMimeData> mime(someMime(d));
+                QWidget* target = d.chance(0.5) ? panel->composer()->viewport() : panel->transcript()->viewport();
+                QStringList urls;
+                for (const QUrl& u : mime->urls()) urls << QFileInfo(u.path()).fileName();
+                step(n, QStringLiteral("drop %1 on the %2 (urls %3; text %4, html %5 characters)")
+                            .arg(mime->formats().join(QLatin1Char(',')),
+                                 target == panel->composer()->viewport() ? QStringLiteral("composer") : QStringLiteral("transcript"),
+                                 urls.join(QLatin1Char(' ')))
+                            .arg(mime->hasText() && mime->hasFormat(QStringLiteral("text/plain")) ? mime->text().size() : -1)
+                            .arg(mime->hasHtml() ? mime->html().size() : -1));
+                QDragEnterEvent enter(QPoint(4, 4), Qt::CopyAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &enter);
+                QDropEvent drop(QPointF(4, 4), Qt::CopyAction, mime.get(), Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(target, &drop);
+            } else if (action < 83) {
+                QList<QToolButton*> buttons = shownButtons(panel->permissionCard()) + shownButtons(panel->askCard());
+                if (buttons.isEmpty()) continue;
+                for (QLineEdit* e : panel->askCard()->findChildren<QLineEdit*>()) e->setText(word(d));
+                for (QCheckBox* b : panel->askCard()->findChildren<QCheckBox*>()) b->setChecked(d.chance(0.5));
+                QToolButton* b = buttons.at(d.below(int(buttons.size())));
+                step(n, QStringLiteral("press %1 (%2)").arg(b->objectName(), b->text()));
+                b->click();
+            } else if (action < 85) {
+                const QString pin = d.pickText(documents);
+                step(n, QStringLiteral("pin %1").arg(pin));
+                panel->pinDocument(pin);
+            } else if (action < 87) {
+                // What is in front and open, and what the pen drew.
+                front = d.pickText(documents);
+                if (d.chance(0.5)) schematics = d.chance(0.8) ? documents.mid(d.below(3), 2) : QStringList();
+                if (d.chance(0.5)) others = documents.mid(d.below(5), d.below(3));
+                if (d.chance(0.6)) {
+                    ++drawingRevision;
+                    drawing = d.chance(0.2) ? QString() : QStringLiteral("a ring at (%1, %2); ").arg(d.below(99)).arg(d.below(99)) + reply(d, false, nullptr);
+                }
+                step(n, QStringLiteral("front %1, drawing %2").arg(front).arg(drawingRevision));
+                tabs->refreshDocument();
+            } else if (action < 89) {
+                if (d.chance(0.5)) {
+                    step(n, QStringLiteral("keep the conversations"));
+                    tabs->saveConversations();
+                } else {
+                    step(n, QStringLiteral("bring the conversations back"));
+                    tabs->restoreConversations();
+                    pendingToken.clear();
+                }
+            } else if (action < 90) {
+                const QString query = d.chance(0.5) ? QString() : (d.chance(0.5) ? word(d) : panel->conversationId());
+                step(n, QStringLiteral("resume %1").arg(query));
+                tabs->showResume(panel, query);
+                pendingToken.clear();
+            } else if (action < 92) {
+                step(n, QStringLiteral("stop / background"));
+                if (d.chance(0.5)) panel->stopTurn();
+                else panel->sendToBackground();
+            } else if (action < 93) {
+                const qsizetype i = qsizetype(d.below(12)) - 2;
+                step(n, QStringLiteral("edit %1").arg(i));
+                if (panel->editPrompt(i)) pendingToken.clear();
+                if (d.chance(0.5)) panel->cancelEdit();
+            } else if (action < 94) {
+                const QStringList anchors = anchorsOf(panel->transcript()->document());
+                if (anchors.isEmpty()) continue;
+                const QString href = d.pickText(anchors);
+                step(n, QStringLiteral("click %1").arg(href));
+                if (href.startsWith(QLatin1String("edit:"))) pendingToken.clear();
+                emit panel->transcript()->anchorClicked(QUrl(href));
+            } else if (action < 95) {
+                step(n, QStringLiteral("scroll"));
+                QScrollBar* bar = panel->transcript()->verticalScrollBar();
+                bar->setValue(d.below(bar->maximum() + 1));
+            } else if (action < 96) {
+                step(n, QStringLiteral("a theme and a font"));
+                QPalette p = QApplication::palette();
+                p.setColor(QPalette::Window, d.chance(0.5) ? QColor(30, 30, 30) : QColor(240, 240, 240));
+                p.setColor(QPalette::Base, p.color(QPalette::Window));
+                p.setColor(QPalette::Text, d.chance(0.5) ? Qt::white : Qt::black);
+                QApplication::setPalette(p);
+                QFont f = QApplication::font();
+                f.setPointSize(d.below(14) + 8);
+                QApplication::setFont(f);
+            } else if (action < 97) {
+                const QString from = d.chance(0.6) ? panel->pinnedDocument() : d.pickText(documents);
+                const QString to = d.pickText(documents);
+                step(n, QStringLiteral("renamed %1 to %2").arg(from, to));
+                tabs->documentRenamed(from, to);
+            } else if (action < 98) {
+                step(n, QStringLiteral("hidden and shown"));
+                tabs->hide();
+                QTest::qWait(d.below(5));
+                tabs->show();
+            } else {
+                step(n, QStringLiteral("attach"));
+                QStringList some;
+                for (int i = 0, k = d.below(3) + 1; i < k; ++i) some << d.pickText(files);
+                panel->attachImageFiles(some);
+            }
+            QCoreApplication::processEvents();
+            // (Kept to a size that renders in moderate time.)
+            if (n % 300 == 299) {
+                step(n, QStringLiteral("new conversation (size)"));
+                if (ClaudeCodePanel* p = tabs->current()) p->newConversation();
+                pendingToken.clear();
+            }
+            while (tabs->count() > 8) tabs->closeConversation(tabs->panels().constFirst(), false);
+            // The tabs as they should be.
+            if (tabs->tabWidget()->count() != int(tabs->panels().size()))
+                found(n, QStringLiteral("%1 tabs for %2 conversations").arg(tabs->tabWidget()->count()).arg(tabs->panels().size()));
+            for (int i = 0; i < tabs->tabWidget()->count(); ++i) {
+                const QString title = tabs->tabWidget()->tabText(i);
+                if (title.contains(QLatin1Char('\n')) || title.size() > 120)
+                    found(n, QStringLiteral("tab %1's title: %2 characters, %3").arg(i).arg(title.size()).arg(title.left(60)));
+            }
+            const int least = tabs->minimumSizeHint().width();
+            // (In proportion to the font: a step changes it.)
+            const qreal grown = std::max<qreal>(1, QFontMetricsF(QApplication::font()).averageCharWidth() / charWidth);
+            if (least > grown * std::max(2 * leastWidth, 480))
+                found(n, QStringLiteral("the dock's least width %1 (%2 at first), by %3").arg(least).arg(leastWidth).arg(widest(tabs.get(), int(grown * 480))));
+        }
+        watch.stop();
+        // Everything closed, then the calls still waiting answered.
+        step(steps, QStringLiteral("closing"));
+        tabs.reset();
+        host.answer(true);
+        QCoreApplication::processEvents();
+
+        // What the dock wrote: JSON lines, each request answered once at most.
+        QHash<QString, int> answers;
+        int writes = 0;
+        for (const QString& name : QDir(dir.path()).entryList({QStringLiteral("written-*.jsonl")}, QDir::Files)) {
+            QFile out(dir.filePath(name));
+            if (!out.open(QIODevice::ReadOnly)) continue;
+            for (const QByteArray& line : out.readAll().split('\n')) {
+                if (line.isEmpty()) continue;
+                ++writes;
+                QJsonParseError error{};
+                const QJsonObject m = QJsonDocument::fromJson(line, &error).object();
+                if (error.error != QJsonParseError::NoError) {
+                    found(steps, QStringLiteral("the dock wrote a line that is not JSON: %1").arg(QString::fromUtf8(line.left(200))));
+                    continue;
+                }
+                if (m.value(QLatin1String("type")).toString() != QLatin1String("control_response")) continue;
+                const QString id = m.value(QLatin1String("response")).toObject().value(QLatin1String("request_id")).toString();
+                if (id.startsWith(QLatin1String("fz"))) ++answers[id];
+            }
+        }
+        for (auto it = answers.cbegin(); it != answers.cend(); ++it)
+            if (it.value() > 1) found(steps, QStringLiteral("request %1 answered %2 times").arg(it.key()).arg(it.value()));
+        qInfo("%d lines fed; %d tool calls, %d asked, %d cancelled; %d lines written, %lld requests answered; the slowest render %lld ms; "
+              "%lld dialogs closed: %s; %lld links opened",
+              lines, host.calls, host.asked, host.cancels, writes, qint64(answers.size()), slowest, qint64(dialogs.size()),
               qPrintable(QStringList(dialogs.mid(0, 5)).join(QLatin1String("; "))), qint64(opened.urls.size()));
         for (const QString& f : findings) qWarning("%s", qPrintable(f));
         for (const char* scheme : {"http", "https", "mailto", "file"}) QDesktopServices::unsetUrlHandler(QString::fromLatin1(scheme));

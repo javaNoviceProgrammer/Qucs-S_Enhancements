@@ -774,6 +774,117 @@ private slots:
         callTool("close_document", {{"unsaved", "discard"}});
     }
 
+    // A call its client cancels (notifications/cancelled: the user stopped
+    // Claude; Claude Code 2.1.309 sends it at once) is stopped where it waits
+    // - a wait, a script with the call it waits on, a model's solve - and
+    // its answer goes nowhere: its carrier is handed an empty object, which
+    // it does not send. (Ignored, a solve went on for minutes after.)
+    void aCancelledCallStopsAndIsNotAnswered()
+    {
+        using Answer = std::shared_ptr<std::optional<QJsonObject>>;
+        const auto begin = [this](int id, const QString& tool, const QJsonObject& arguments) {
+            Answer answer = std::make_shared<std::optional<QJsonObject>>();
+            server->handle({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/call"},
+                            {"params", QJsonObject{{"name", tool}, {"arguments", arguments}}}},
+                           [answer](const QJsonObject& r) { *answer = r; });
+            return answer;
+        };
+        const auto cancel = [this](int id) {
+            server->handle({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", QJsonObject{{"requestId", id}, {"reason", "test"}}}},
+                           [](const QJsonObject&) {});
+        };
+        // A wait: over at once.
+        Answer answer = begin(9001, "wait_for", {{"event", "file_written"}, {"path", "never.txt"}, {"timeout", 60}});
+        QTest::qWait(300);
+        QVERIFY(!answer->has_value());
+        QElapsedTimer clock;
+        clock.start();
+        cancel(9001);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 10000);
+        QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
+        QVERIFY2(clock.elapsed() < 5000, qPrintable(QString::number(clock.elapsed())));
+        // One not under way (answered, or never asked): nothing happens.
+        cancel(9001);
+        cancel(424242);
+        QVERIFY(!callTool("get_state").value("isError").toBool());
+
+        // A model's long transient: stopped at its next step, the model free.
+        QFile example(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/heater_transient.qfem"));
+        QVERIFY(example.open(QIODevice::ReadOnly));
+        QByteArray text = example.readAll();
+        QVERIFY(text.contains("range(0, 2[s], 60[s])"));
+        text.replace("range(0, 2[s], 60[s])", "range(0, 0.5[s], 100000[s])");
+        const QString model = write("long_transient.qfem", text);
+        QVERIFY(!callTool("open_document", {{"path", model}}).value("isError").toBool());
+        QVERIFY(!callTool("fem_build", {{"path", model}, {"what", "mesh"}}).value("isError").toBool());
+        answer = begin(9003, "fem_solve", {{"path", model}, {"timeout", 600}});
+        QTest::qWait(700);
+        QVERIFY2(!answer->has_value(), "solved before it was cancelled: the test's transient is too short");
+        clock.restart();
+        cancel(9003);
+        // (Stopped at its next step: within a second here, a few under the
+        // sanitizers - never the transient's minutes.)
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
+        qInfo("the solve ended %lld ms after it was cancelled", clock.elapsed());
+        QVERIFY2(clock.elapsed() < 20000, "the solve went on after it was cancelled");
+        // (Nothing under way: fem_stop has nothing to stop.)
+        const auto idle = [this, &model] { return !structured(callTool("fem_stop", {{"path", model}})).value("stopped").toBool(true); };
+        QVERIFY(idle());
+
+        // A script waiting on its first call of that solve: both stopped,
+        // and its second never made.
+        if (QucsControl::scriptingBuilt()) {
+            QTimer::singleShot(700, this, [cancel, &clock] {
+                clock.restart();
+                cancel(9004);
+            });
+            const QString quoted = QString::fromUtf8(QJsonDocument(QJsonArray{model}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+            // (Each call's failure caught: a solve begun while the one stopped
+            // ends fails at once - "the work it waited behind was stopped" -,
+            // and the third then solves the whole transient, unless the
+            // script is stopped.)
+            answer = begin(9004, "run_script",
+                           {{"script", QStringLiteral("for (let i = 0; i < 3; i++) { try { qucs.call('fem_solve', {path: %1, timeout: 600}); } catch (e) {} }")
+                                           .arg(quoted)},
+                            {"timeout", 600}});
+            QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+            QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
+            qInfo("the script ended %lld ms after it was cancelled", clock.elapsed());
+            // (A script runs within its call: its answer is there before any wait for it.)
+            QVERIFY2(clock.elapsed() < 20000, "the script went on after it was cancelled");
+            QVERIFY(idle());
+        }
+
+        // A batch whose solve began after its first call: that solve stopped
+        // (the batch's, though begun later), none after it - and a call
+        // waiting its turn behind the batch, cancelled, taken out at once.
+        // (Going on past failures: a second solve fails as the first ends, a
+        // third would solve the whole transient.)
+        answer = begin(9005, "batch", {{"keep_going", true},
+                                       {"calls", QJsonArray{QJsonObject{{"tool", "get_state"}},
+                                                            QJsonObject{{"tool", "fem_solve"}, {"arguments", QJsonObject{{"path", model}}}},
+                                                            QJsonObject{{"tool", "fem_solve"}, {"arguments", QJsonObject{{"path", model}}}},
+                                                            QJsonObject{{"tool", "fem_solve"}, {"arguments", QJsonObject{{"path", model}}}}}}});
+        QTest::qWait(700);
+        QVERIFY(!answer->has_value());
+        const Answer queued = begin(9006, "get_state", {});
+        QTest::qWait(100);
+        QVERIFY(!queued->has_value());
+        cancel(9006);
+        QTRY_VERIFY_WITH_TIMEOUT(queued->has_value(), 5000);
+        QVERIFY(queued->value().isEmpty());
+        QVERIFY(!answer->has_value());   // (the batch still under way)
+        clock.restart();
+        cancel(9005);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
+        qInfo("the batch ended %lld ms after it was cancelled", clock.elapsed());
+        QVERIFY2(clock.elapsed() < 20000, "the batch went on after it was cancelled");
+        QVERIFY(idle());
+        callTool("close_document", {{"path", model}, {"unsaved", "discard"}});
+    }
+
     // Over stdio, against the program itself: qucs-s --mcp-server answers
     // initialize, lists the tools, builds a schematic and reads its netlist
     // map, with no window on screen.
@@ -894,8 +1005,42 @@ private slots:
         }
         QCOMPARE(batch.value("error").toObject().value("code").toInt(), -32600);
         QVERIFY2(!batch.value("error").toObject().value("message").toString().contains("no error"), qPrintable(QJsonDocument(batch).toJson()));
+        // A call cancelled (notifications/cancelled): not answered, and the
+        // server still ends with its input (its count of open requests
+        // closed all the same) - a ping after it answered.
+        p.write(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 11}, {"method", "tools/call"},
+                                          {"params", QJsonObject{{"name", "wait_for"},
+                                                                 {"arguments", QJsonObject{{"event", "file_written"}, {"path", home.filePath("never")},
+                                                                                           {"timeout", 60}}}}}})
+                    .toJson(QJsonDocument::Compact) + '\n'
+                + QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", QJsonObject{{"requestId", 11}}}})
+                      .toJson(QJsonDocument::Compact) + '\n'
+                + QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 12}, {"method", "ping"}}).toJson(QJsonDocument::Compact) + '\n');
+        t.restart();
+        QByteArrayList stray;   // lines that are no JSON-RPC message (an empty answer written)
+        while (!answers.contains(12) && t.elapsed() < 30000) {
+            p.waitForReadyRead(200);
+            while (p.canReadLine()) {
+                const QByteArray line = p.readLine();
+                const QJsonObject a = QJsonDocument::fromJson(line).object();
+                if (!a.contains("jsonrpc")) stray << line;
+                if (a.contains("id")) answers.insert(a.value("id").toInt(), a);
+            }
+        }
+        QVERIFY(answers.contains(12));
+        QVERIFY2(stray.isEmpty(), stray.join().constData());
+        t.restart();
         p.closeWriteChannel();   // (the server ends with its input)
         QVERIFY(p.waitForFinished(30000));
+        QVERIFY2(t.elapsed() < 20000, qPrintable(QString::number(t.elapsed())));   // (not the wait's 60 s)
+        while (p.canReadLine()) {
+            const QByteArray line = p.readLine();
+            const QJsonObject a = QJsonDocument::fromJson(line).object();
+            if (!a.contains("jsonrpc")) stray << line;
+            if (a.contains("id")) answers.insert(a.value("id").toInt(), a);
+        }
+        QVERIFY2(!answers.contains(11), qPrintable(QJsonDocument(answers.value(11)).toJson()));
+        QVERIFY2(stray.isEmpty(), stray.join().constData());   // (the wait's end, written as an empty answer)
         QCOMPARE(p.exitCode(), 0);
         QVERIFY(answers.value(1).value("result").toObject().value("capabilities").toObject().contains("resources"));
         QVERIFY(answers.value(2).value("result").toObject().value("tools").toArray().size() >= 60);

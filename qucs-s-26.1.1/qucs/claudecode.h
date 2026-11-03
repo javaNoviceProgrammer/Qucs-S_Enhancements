@@ -194,6 +194,15 @@ public:
         Q_UNUSED(caller);
         callTool(tool, arguments, std::move(done));
     }
+    /// The client cancelled the conversation \a caller's call of \a tool
+    /// (MCP's notifications/cancelled: the user stopped Claude while it ran,
+    /// Claude Code 2.1.309 sends it at once): what it waits on may be stopped
+    /// - a solve, a simulation, a script, a wait. Its answer is not sent.
+    virtual void cancelCall(quint64 caller, const QString& tool)
+    {
+        Q_UNUSED(caller);
+        Q_UNUSED(tool);
+    }
     /// \a arguments for a conversation pinned to \a document (a file;
     /// empty: none): a tool that acts on the document in front when it is
     /// given none is given that one. As they are, unless the host says

@@ -451,6 +451,9 @@ private:
     /// The image files a drop or a paste holds, and whether it holds an
     /// image's data instead.
     static QStringList imageFilesIn(const QMimeData* data);
+    /// What a drop on the composer puts in that is not an image: files' paths,
+    /// links, text.
+    static QString droppedText(const QMimeData* data);
     void updateImageStrip();
     void updateState();
     void updateDirectory();
@@ -515,7 +518,8 @@ private:
     QString a_draft;
     QStringList a_draftImages;   // the composer's images while a prompt is edited
     QStringList a_images;        // attached to the next prompt
-    QWidget* a_imageStrip = nullptr;
+    QWidget* a_imageStrip = nullptr;   // a scroll area of a_imageRow
+    QWidget* a_imageRow = nullptr;     // the attached images' pictures, side by side
     bool a_editStopped = false;
     bool a_rewinding = false;
     qsizetype a_rewindIndex = -1;

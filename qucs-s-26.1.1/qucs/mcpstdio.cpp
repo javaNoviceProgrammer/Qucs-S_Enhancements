@@ -174,7 +174,8 @@ int runStdio(QApplication& app, QucsApp* window, QTimer* startupCloser)
         if (answered) ++pending->open;
         server->handle(message, [write, answered, pending, finish](const QJsonObject& response) {
             if (!answered) return;
-            write(response);
+            // (Empty: a call the client cancelled - over, not answered.)
+            if (!response.isEmpty()) write(response);
             --pending->open;
             finish();
         });
