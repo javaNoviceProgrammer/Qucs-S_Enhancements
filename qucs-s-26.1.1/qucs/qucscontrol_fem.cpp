@@ -505,6 +505,20 @@ QString formatText()
 
 } // namespace
 
+namespace {
+
+/// Why the fem_ tools refuse the 3D model \a name: Multiphysics 3D's, as
+/// fem_model's refusal says (it was "not a multiphysics model" - the check
+/// of 3 November, 2).
+QString notA2DModel(const QString& name)
+{
+    return QObject::tr("%1 is a 3D multiphysics model (.qfem3d), Multiphysics 3D's: the fem_ tools act on 2D models (.qfem). "
+                       "It is worked in its Multiphysics 3D tab (open_document opens it there).")
+        .arg(name);
+}
+
+} // namespace
+
 MultiphysicsDoc* QucsControl::femDocument(const QJsonObject& args, QString* error)
 {
     const QString given = args.value(QLatin1String("path")).toString().trimmed();
@@ -514,6 +528,10 @@ MultiphysicsDoc* QucsControl::femDocument(const QJsonObject& args, QString* erro
             const QString file = absolute(given);
             if (!QFileInfo(file).isFile()) {
                 *error = tr("There is no model %1.").arg(QDir::toNativeSeparators(file));
+                return nullptr;
+            }
+            if (QucsApp::isMultiphysics3DFile(file)) {
+                *error = notA2DModel(QFileInfo(file).fileName());
                 return nullptr;
             }
             if (!QucsApp::isMultiphysicsFile(file)) {
@@ -528,7 +546,9 @@ MultiphysicsDoc* QucsControl::femDocument(const QJsonObject& args, QString* erro
             doc = document(QJsonObject{{QStringLiteral("path"), file}}, error);
         }
         auto* model = dynamic_cast<MultiphysicsDoc*>(doc);
-        if (model == nullptr && doc != nullptr) *error = tr("%1 is not a multiphysics model.").arg(titleOf(doc));
+        if (model == nullptr && doc != nullptr)
+            *error = QucsApp::isMultiphysics3DDocument(QucsApp::documentWidget(doc)) ? notA2DModel(titleOf(doc))
+                                                                                     : tr("%1 is not a multiphysics model.").arg(titleOf(doc));
         if (model != nullptr) a_lastModel = model;
         return model;
     }
@@ -914,6 +934,50 @@ QStringList unknownPropertiesOf(const FNode& node)
     return out;
 }
 
+/// The keys of a model given as JSON (\a model) that Model::fromJson does
+/// not read - at its top, in its component, in its results - each as "the
+/// model has no x (it has ...)". They were dropped in silence: {"bogus": 1}
+/// made a model, and a "space": "3D" put at the top, not in the component
+/// where the 3D check reads it, made a 2D one (the check of 3 November, 1).
+QStringList unknownModelKeysOf(const QJsonObject& model)
+{
+    static const QStringList top{QStringLiteral("format"),     QStringLiteral("title"),      QStringLiteral("description"),
+                                 QStringLiteral("parameters"), QStringLiteral("functions"),  QStringLiteral("components"),
+                                 QStringLiteral("studies"),    QStringLiteral("results")};
+    static const QStringList component{QStringLiteral("tag"),       QStringLiteral("label"),      QStringLiteral("unit"),
+                                       QStringLiteral("thickness"), QStringLiteral("space"),      QStringLiteral("selections"),
+                                       QStringLiteral("geometry"),  QStringLiteral("materials"),  QStringLiteral("physics"),
+                                       QStringLiteral("mesh")};
+    static const QStringList results{QStringLiteral("plots"), QStringLiteral("derived"), QStringLiteral("exports")};
+    QStringList out;
+    // (\a passed: keys said otherwise, not as unknown.)
+    // (\a has: "the model has no", "its results have no".)
+    const auto check = [&out](const QJsonObject& o, const QStringList& keys, const QString& has, const QStringList& passed = {}) {
+        QStringList unknown;
+        for (auto it = o.begin(); it != o.end(); ++it)
+            if (!keys.contains(it.key()) && !passed.contains(it.key())) unknown << it.key();
+        if (unknown.isEmpty()) return;
+        const QStringList near = nearNamesOf(unknown, keys);
+        out << QObject::tr("%1 %2%3 (its keys: %4)")
+                   .arg(has, unknown.join(QStringLiteral(", ")),
+                        near.isEmpty() ? QString() : QObject::tr(" - meant %1?").arg(near.join(QObject::tr(" or "))),
+                        keys.join(QStringLiteral(", ")));
+    };
+    // (A component's own keys put at the top: said where they go, below.)
+    QStringList ownsComponent = component;
+    ownsComponent.removeAll(QStringLiteral("tag"));
+    check(model, top, QObject::tr("the model has no"), ownsComponent);
+    for (const QString& key : component)
+        if (key != QLatin1String("tag") && model.contains(key))
+            out << QObject::tr("%1 is its component's: \"components\": [{\"%1\": ...}]%2")
+                       .arg(key, key == QLatin1String("space") ? QObject::tr(" (2D or axisymmetric here; a 3D model is Multiphysics 3D's)")
+                                                                : QString());
+    const QJsonArray components = model.value(QLatin1String("components")).toArray();
+    for (const QJsonValue& c : components) check(c.toObject(), component, QObject::tr("its component has no"));
+    check(model.value(QLatin1String("results")).toObject(), results, QObject::tr("its results have no"));
+    return out;
+}
+
 } // namespace
 
 QJsonObject QucsControl::femModel(const QJsonObject& args)
@@ -940,6 +1004,9 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         std::optional<Model> m;
         if (args.contains(QLatin1String("model"))) {
             QString why;
+            if (const QStringList unknown = unknownModelKeysOf(args.value(QLatin1String("model")).toObject()); !unknown.isEmpty())
+                return errorResult(tr("'model': %1. Nothing was made (fem_describe what=format gives a model's form).")
+                                       .arg(unknown.join(QStringLiteral("; "))));
             m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
             if (!m) return errorResult(tr("'model': %1").arg(why));
             if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty())
@@ -1138,6 +1205,9 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
     if (action == QLatin1String("set")) {
         if (doc == nullptr) return errorResult(error);
         QString why;
+        if (const QStringList unknown = unknownModelKeysOf(args.value(QLatin1String("model")).toObject()); !unknown.isEmpty())
+            return errorResult(tr("'model': %1. The model is unchanged (fem_describe what=format gives a model's form).")
+                                   .arg(unknown.join(QStringLiteral("; "))));
         std::optional<Model> m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
         if (!m) return errorResult(tr("'model': %1").arg(why));
         if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty())

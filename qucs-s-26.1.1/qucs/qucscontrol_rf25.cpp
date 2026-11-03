@@ -748,10 +748,7 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
         QStringList said;
         for (const auto& [element, value] : b.values) {
             values.insert(element, value);
-            const QString unit = element.startsWith(QLatin1Char('R')) ? QStringLiteral("Ohm")
-                                 : element.startsWith(QLatin1Char('L')) ? QStringLiteral("H")
-                                                                        : QStringLiteral("F");
-            said << QStringLiteral("%1 %2").arg(element, valueSaid(value, unit));
+            said << elementSaid(element, value);
         }
         if (!b.values.isEmpty()) {
             o.insert(QStringLiteral("values"), values);

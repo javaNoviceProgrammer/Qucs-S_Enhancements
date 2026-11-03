@@ -270,6 +270,27 @@ QString gridStyleName(LayoutView::GridStyle style)
     return QStringLiteral("dots");
 }
 
+/// The grid as \a view draws it: points, lines or crosses - it said "a
+/// point every" of lines too (the check of 3 November, 6) - and the stronger
+/// ones where it has them.
+QString gridSaid(const Layout& layout, const LayoutView* view)
+{
+    const double step = view->gridStep(), major = view->gridMajorStep();
+    const QString each = micrometres(layout, step);
+    QString what;
+    switch (view->gridStyle()) {
+    case LayoutView::GridStyle::Lines: what = QObject::tr("a line every %1 µm across and up").arg(each); break;
+    case LayoutView::GridStyle::Crosses: what = QObject::tr("a cross every %1 µm").arg(each); break;
+    case LayoutView::GridStyle::Dots: what = QObject::tr("a point every %1 µm").arg(each); break;
+    }
+    // (None stronger when the step is the database unit and that is not 1, 2
+    // or 5 of a power of ten: LayoutView::paintGrid.)
+    const double ratio = major / step;
+    if (std::abs(ratio - std::round(ratio)) < 1e-6 && std::llround(ratio) > 1)
+        what += QObject::tr(", stronger every %1 µm").arg(micrometres(layout, major));
+    return what + QObject::tr("; a scale in the lower left");
+}
+
 } // namespace
 
 // ----------------------------------------------------------------------
@@ -687,9 +708,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                                                                      {QStringLiteral("too small to see, as dots"), double(view->lastStats().dots)},
                                                                      {QStringLiteral("texts"), double(view->lastStats().labels)}}},
                                {QStringLiteral("note"), tr("screenshot shows the tab as the user sees it.")}};
-            if (view->gridShown())
-                result.insert(QStringLiteral("grid"), tr("a point every %1 µm, stronger every %2 µm; a scale in the lower left")
-                                                          .arg(micrometres(*layout, view->gridStep()), micrometres(*layout, view->gridMajorStep())));
+            if (view->gridShown()) result.insert(QStringLiteral("grid"), gridSaid(*layout, view));
             if (view->lastStats().incomplete)
                 result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
             done(jsonResult(result));
@@ -771,7 +790,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         }
         if (depth.isDouble()) doc->setDepth(depth.toInt());
         else if (depth.toString() == QLatin1String("all")) doc->setDepth(-1);
-        if (textsGiven) view->setLabelsShown(texts);
+        if (textsGiven) doc->setLabelsShown(texts);
         if (grid.isBool()) doc->setGridShown(grid.toBool());
         // The pen taken up or put down, and what it drew taken away.
         if (pen.isBool()) doc->penButton()->setChecked(pen.toBool());
@@ -815,9 +834,14 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                                                                  {QStringLiteral("cells as frames"), double(view->lastStats().frames)},
                                                                  {QStringLiteral("texts"), double(view->lastStats().labels)}}},
                            {QStringLiteral("note"), tr("screenshot shows the tab as the user sees it.")}};
-        if (view->gridShown())
-            result.insert(QStringLiteral("grid"), tr("a point every %1 µm, stronger every %2 µm; a scale in the lower left")
-                                                      .arg(micrometres(*layout, view->gridStep()), micrometres(*layout, view->gridMajorStep())));
+        if (view->gridShown()) result.insert(QStringLiteral("grid"), gridSaid(*layout, view));
+        // (Texts in the file, none drawn: the tab's Texts button, which is
+        // kept from one session to the next, is off - the check of 3
+        // November, 6, read "texts: 0" of a file with texts.)
+        if (!view->labelsShown() && layout->labelCount > 0)
+            result.insert(QStringLiteral("texts hidden"), tr("the file's cells hold %1 texts; the tab's Texts button is off (the user's choice, "
+                                                             "kept for the next tab) - 'texts': true shows them")
+                                                              .arg(layout->labelCount));
         if (view->lastStats().incomplete) result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
         // What the user drew with the pen, read stroke by stroke - what each
         // is and what it marks, its box in µm - the latest 40; and whether

@@ -5426,15 +5426,35 @@ QString QucsControl::titleOf(QucsDoc* doc) const
     if (!doc->getDocName().isEmpty()) return QFileInfo(doc->getDocName()).fileName();
     const QString title = cleanText(pane->tabText(pane->indexOf(w)));
     // Two without a file of one title (an untitled schematic and an
-    // untitled text): the second "untitled (2)", each named apart.
-    int before = 0;
+    // untitled text): the second "untitled (2)", each named apart - and
+    // each keeps its number while it is open, the lowest free one given to
+    // one first seen. It was its place among them: closing "untitled" made
+    // the second "untitled" at once, and a batch's close of "untitled (2)"
+    // after it found nothing (the check of 3 November, 3).
+    static const char* const kTitle = "qucsControlTitle";
+    static const char* const kNumber = "qucsControlNumber";
+    QList<QWidget*> same;
     for (QucsDoc* other : a_app->allDocuments()) {
-        if (other == doc) break;
         QWidget* ow = QucsApp::documentWidget(other);
         const QTabWidget* op = a_app->paneOf(ow);
-        if (other->getDocName().isEmpty() && op != nullptr && cleanText(op->tabText(op->indexOf(ow))) == title) ++before;
+        if (other->getDocName().isEmpty() && op != nullptr && cleanText(op->tabText(op->indexOf(ow))) == title) same << ow;
     }
-    return before == 0 ? title : QStringLiteral("%1 (%2)").arg(title).arg(before + 1);
+    QSet<int> taken;
+    QList<QWidget*> unnumbered;
+    for (QWidget* ow : std::as_const(same)) {
+        const int n = ow->property(kTitle).toString() == title ? ow->property(kNumber).toInt() : 0;
+        if (n > 0 && !taken.contains(n)) taken.insert(n);
+        else unnumbered << ow;
+    }
+    for (QWidget* ow : std::as_const(unnumbered)) {
+        int n = 1;
+        while (taken.contains(n)) ++n;
+        taken.insert(n);
+        ow->setProperty(kTitle, title);
+        ow->setProperty(kNumber, n);
+    }
+    const int n = w->property(kNumber).toInt();
+    return n <= 1 ? title : QStringLiteral("%1 (%2)").arg(title).arg(n);
 }
 
 QString QucsControl::shownTitleOf(QucsDoc* doc) const
@@ -5547,6 +5567,23 @@ QucsDoc* QucsControl::document(const QJsonObject& args, QString* error) const
     // As its tab shows it, a long name cut ("a_very_long_na….sch").
     for (QucsDoc* doc : a_app->allDocuments())
         if (!doc->getDocName().isEmpty() && shownTitleOf(doc) == path) return doc;
+    // One without a file by its tab's words, when one tab has them: an
+    // "untitled (2)" keeps its name when "untitled" closes, its tab still
+    // "untitled". Several, none named so: asked apart, not one of them
+    // taken (the check of 3 November, 4).
+    QList<QucsDoc*> tabbed;
+    for (QucsDoc* doc : a_app->allDocuments())
+        if (doc->getDocName().isEmpty() && shownTitleOf(doc) == path) tabbed << doc;
+    if (tabbed.size() == 1) return tabbed.first();
+    const auto listed = [this](const QList<QucsDoc*>& docs) {
+        QStringList said;
+        for (QucsDoc* doc : docs) said << tr("%1 (%2)").arg(titleOf(doc), kindOf(doc));
+        return said.join(QStringLiteral(", "));
+    };
+    if (tabbed.size() > 1) {
+        *error = tr("%1 is the tab of %2 documents without a file: name one of them - %3.").arg(path).arg(tabbed.size()).arg(listed(tabbed));
+        return nullptr;
+    }
     // A file's name alone (amp.sch), when one open document has it.
     if (!path.contains(QLatin1Char('/')) && !path.contains(QLatin1Char('\\'))) {
         QList<QucsDoc*> named;
@@ -5557,6 +5594,17 @@ QucsDoc* QucsControl::document(const QJsonObject& args, QString* error) const
             QStringList paths;
             for (QucsDoc* doc : std::as_const(named)) paths << QDir::toNativeSeparators(doc->getDocName());
             *error = tr("%1 names %2 open documents: give its path (%3).").arg(path).arg(named.size()).arg(paths.join(QStringLiteral(", ")));
+            return nullptr;
+        }
+    }
+    // ("untitled (2)" after it was closed: the ones there are now.)
+    static const QRegularExpression numbered(QStringLiteral("^(.+) \\(\\d+\\)$"));
+    if (const QRegularExpressionMatch m = numbered.match(path); m.hasMatch()) {
+        QList<QucsDoc*> others;
+        for (QucsDoc* doc : a_app->allDocuments())
+            if (doc->getDocName().isEmpty() && shownTitleOf(doc) == m.captured(1)) others << doc;
+        if (!others.isEmpty()) {
+            *error = tr("%1 is not open; open without a file: %2.").arg(path, listed(others));
             return nullptr;
         }
     }
@@ -5715,6 +5763,10 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
                       {QStringLiteral("unsaved changes"), doc->getDocChanged()},
                       {QStringLiteral("in front"), doc == front},
                       {QStringLiteral("revision"), qint64(doc->revision())}};
+        // (An "untitled (2)" whose tab says "untitled": the tab's own words
+        // too, which the user reads - the check of 3 November, 3.)
+        if (doc->getDocName().isEmpty() && shownTitleOf(doc) != d.value(QLatin1String("title")).toString())
+            d.insert(QStringLiteral("tab"), shownTitleOf(doc));
         if (panes.size() > 1)
             d.insert(QStringLiteral("pane"), int(panes.indexOf(a_app->paneOf(QucsApp::documentWidget(doc)))) + 1);
         // Who changed it last: "you" only for this conversation's calls.
@@ -6439,10 +6491,21 @@ QJsonObject QucsControl::closeDocument(const QJsonObject& args)
             }
         }
     }
+    // Which one, when its tab's title is another's too (an untitled
+    // schematic and an untitled model): its kind, and the others' names,
+    // which they keep (the check of 3 November, 4).
+    const QString kind = kindOf(doc), tab = shownTitleOf(doc);
+    QStringList others;
+    if (doc->getDocName().isEmpty())
+        for (QucsDoc* other : a_app->allDocuments())
+            if (other != doc && other->getDocName().isEmpty() && shownTitleOf(other) == tab)
+                others << tr("%1 (%2)").arg(titleOf(other), kindOf(other));
     QWidget* w = QucsApp::documentWidget(doc);
     a_app->showDocument(w);
     a_app->slotFileClose(a_app->DocumentTab->indexOf(w));
-    return textResult(tr("%1 is closed.").arg(title));
+    if (others.isEmpty()) return textResult(tr("%1 is closed.").arg(title));
+    return textResult(tr("%1 is closed: the %2 of the tabs titled %3. Still open, each under its name: %4.")
+                          .arg(title, kind, tab, others.join(QStringLiteral(", "))));
 }
 
 // ----------------------------------------------------------------------
