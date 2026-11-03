@@ -2194,6 +2194,8 @@ private slots:
         QVERIFY2(!failed(solved), qPrintable(text(solved)));
         const QJsonObject out = json(solved).toObject();
         QCOMPARE(out.value("model").toString(), QStringLiteral("line.qrf25"));
+        // (A quasi-static solve is kept beside the model as a full-wave one is.)
+        QCOMPARE(out.value("kept beside the model").toString(), QStringLiteral("line.qrf25.solution"));
         QVERIFY(out.value("unknowns").toInt() > 0);
         const QJsonArray nets = out.value("nets").toArray();
         QVERIFY2(!nets.isEmpty(), qPrintable(text(solved)));
@@ -2631,6 +2633,11 @@ private slots:
             port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
             QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
         }
+        // An equivalent circuit to write, by its node.
+        qucs_s::rf25::Node circuitNode = m.make(QStringLiteral("rf_circuit"));
+        circuitNode.props.insert(QStringLiteral("file"), QStringLiteral("wave_node.sch"));
+        const QString circuitTag = circuitNode.tag;
+        QVERIFY(m.add(QStringLiteral("exports"), circuitNode) != nullptr);
         const auto put = [](const QString& where, const QByteArray& what) {
             QFile f(where);
             return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
@@ -2645,6 +2652,41 @@ private slots:
         QCOMPARE(out.value("solver").toString(), QStringLiteral("full wave"));
         QCOMPARE(out.value("frequencies").toInt(), 1);
         QCOMPARE(out.value("to").toDouble(), 3e9);
+        // Kept beside the model, said where (the assessment of 2 November).
+        QCOMPARE(out.value("kept beside the model").toString(), QStringLiteral("wave.qrf25.solution"));
+        QVERIFY(QFileInfo::exists(ws + "/rf/wave.qrf25.solution"));
+        // An equivalent circuit of it: a pi's three branches, each its form
+        // and values, how far its S is from the solve's; written as a part
+        // or a SPICE subcircuit only where asked; refused for an export node
+        // that is no circuit.
+        {
+            const QJsonObject fit = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}}, 120000)).toObject();
+            const QJsonArray branches = fit.value("branches").toArray();
+            QVERIFY2(branches.size() == 3 && !fit.contains("file"), qPrintable(QString::fromUtf8(QJsonDocument(fit).toJson())));
+            QCOMPARE(branches.at(0).toObject().value("between").toArray(), (QJsonArray{"In", "Out"}));
+            QCOMPARE(branches.at(1).toObject().value("between").toArray(), (QJsonArray{"In", "ground"}));
+            QVERIFY(!branches.at(0).toObject().value("form").toString().isEmpty());
+            QVERIFY2(fit.value("S differs by at most").isDouble() && fit.value("S differs by at most").toDouble() < 0.05,
+                     qPrintable(QString::fromUtf8(QJsonDocument(fit).toJson())));
+            QCOMPARE(fit.value("frequencies").toInt(), 1);
+            const QJsonObject part = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave_part.sch"}}, 120000)).toObject();
+            QCOMPARE(part.value("file").toString(), ws + "/rf/wave_part.sch");
+            QFile sch(ws + "/rf/wave_part.sch");
+            QVERIFY(sch.open(QIODevice::ReadOnly));
+            QVERIFY(sch.readAll().startsWith("<Qucs Schematic "));
+            const QJsonObject spice = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave.cir"}}, 120000)).toObject();
+            QFile cir(ws + "/rf/wave.cir");
+            QVERIFY(cir.open(QIODevice::ReadOnly));
+            QVERIFY2(QString::fromUtf8(cir.readAll()).contains(QStringLiteral(".subckt wave p1 p2 ref")), qPrintable(spice.value("file").toString()));
+            QVERIFY(failed(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"node", "nothing"}}, 60000)));
+            // By its node: where the node says. rf25_export, given it, says
+            // which tool writes it.
+            const QJsonObject byNode = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"node", circuitTag}}, 120000)).toObject();
+            QCOMPARE(byNode.value("file").toString(), ws + "/rf/wave_node.sch");
+            QVERIFY(QFileInfo::exists(ws + "/rf/wave_node.sch"));
+            const QJsonObject asS = call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"node", circuitTag}}, 60000);
+            QVERIFY2(failed(asS) && text(asS).contains(QStringLiteral("rf25_circuit fits and writes it")), qPrintable(text(asS)));
+        }
         const QJsonArray ports = out.value("ports").toArray();
         QCOMPARE(ports.size(), 2);
         QCOMPARE(ports.at(0).toObject().value("name").toString(), QStringLiteral("In"));

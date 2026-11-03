@@ -83,6 +83,13 @@ QString misc::getWindowTitle()
 }
 
 
+QString misc::buildName()
+{
+    const QString hash = QStringLiteral(QUCS_COMMIT);
+    return hash.isEmpty() ? QStringLiteral(PACKAGE_VERSION) : QStringLiteral("%1 (%2)").arg(PACKAGE_VERSION, hash);
+}
+
+
 bool misc::isDarkTheme()
 {
     // The application's palette: the platform's, or the theme setting's.

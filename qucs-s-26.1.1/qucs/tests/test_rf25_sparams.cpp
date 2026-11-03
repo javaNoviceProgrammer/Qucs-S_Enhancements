@@ -11,7 +11,11 @@
 #include <QtTest>
 
 #include "multiphysics/fem_export.h"
+#include "rf25/rf25_circuit.h"
 #include "rf25/rf25_sparams.h"
+
+#include <Eigen/Dense>
+#include <QRegularExpression>
 
 #include <cmath>
 
@@ -21,6 +25,112 @@ namespace fem = qucs_s::fem;
 using cd = std::complex<double>;
 
 namespace {
+
+// A branch of \a form of \a values, by its elements' names.
+rf::CircuitBranch branch(const QString& form, const QList<std::pair<QString, double>>& values)
+{
+    rf::CircuitBranch b;
+    b.form = form;
+    b.values = values;
+    return b;
+}
+
+// \a n frequencies from \a from to \a to, evenly in their logarithm.
+QList<double> logSweep(double from, double to, int n)
+{
+    QList<double> f;
+    for (int k = 0; k < n; ++k) f << from * std::pow(to / from, double(k) / (n - 1));
+    return f;
+}
+
+// The S of circuit \a c at each of \a f.
+QList<QList<QList<std::complex<double>>>> sOf(const rf::EquivalentCircuit& c, const QList<double>& f)
+{
+    QList<QList<QList<std::complex<double>>>> s;
+    for (const double x : f) s << c.sAt(x);
+    return s;
+}
+
+// A SPICE number: digits, then a scale (f p n u m k meg g t) and a unit,
+// as a netlist writes one ("117.3p", "1.2k", "4.6e-14").
+double spiceNumber(QString t)
+{
+    t = t.trimmed().toLower();
+    static const QRegularExpression number(QStringLiteral("^([-+]?[0-9]*\\.?[0-9]+(?:e[-+]?[0-9]+)?)(meg|[fpnumkgt])?"));
+    const QRegularExpressionMatch m = number.match(t);
+    if (!m.hasMatch()) return std::nan("");
+    double v = m.captured(1).toDouble();
+    const QString scale = m.captured(2);
+    if (scale == QLatin1String("f")) v *= 1e-15;
+    else if (scale == QLatin1String("p")) v *= 1e-12;
+    else if (scale == QLatin1String("n")) v *= 1e-9;
+    else if (scale == QLatin1String("u")) v *= 1e-6;
+    else if (scale == QLatin1String("m")) v *= 1e-3;
+    else if (scale == QLatin1String("k")) v *= 1e3;
+    else if (scale == QLatin1String("meg")) v *= 1e6;
+    else if (scale == QLatin1String("g")) v *= 1e9;
+    else if (scale == QLatin1String("t")) v *= 1e12;
+    return v;
+}
+
+// What a netlist's R, L and C lines make between nodes \a pins, the node
+// \a reference held at nought, at \a w: their Y, the other nodes taken out
+// (Schur's complement) - a netlist read as a circuit, whatever wrote it.
+Eigen::MatrixXcd yOfNetlist(const QString& text, const QStringList& pins, const QString& reference, double w, int* elements)
+{
+    QStringList nodes = pins;
+    struct Element {
+        QChar kind;
+        QString a, b;
+        double value;
+    };
+    QList<Element> list;
+    for (QString line : text.split(QLatin1Char('\n'))) {
+        line = line.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('*')) || line.startsWith(QLatin1Char('.'))) continue;
+        const QChar kind = line.at(0).toUpper();
+        if (kind != QLatin1Char('R') && kind != QLatin1Char('L') && kind != QLatin1Char('C')) continue;
+        const QStringList f = line.split(QRegularExpression(QStringLiteral("\\s+")));
+        if (f.size() < 4) continue;
+        list << Element{kind, f.at(1), f.at(2), spiceNumber(f.at(3))};
+        for (const QString& n : {f.at(1), f.at(2)})
+            if (n != reference && !nodes.contains(n)) nodes << n;
+    }
+    *elements = int(list.size());
+    const int n = int(nodes.size());
+    Eigen::MatrixXcd y = Eigen::MatrixXcd::Zero(n, n);
+    for (const Element& e : std::as_const(list)) {
+        const std::complex<double> g = e.kind == QLatin1Char('R') ? std::complex<double>(1.0 / e.value)
+                                       : e.kind == QLatin1Char('L') ? 1.0 / std::complex<double>(0, w * e.value)
+                                                                    : std::complex<double>(0, w * e.value);
+        const int i = e.a == reference ? -1 : int(nodes.indexOf(e.a)), j = e.b == reference ? -1 : int(nodes.indexOf(e.b));
+        if (i >= 0) y(i, i) += g;
+        if (j >= 0) y(j, j) += g;
+        if (i >= 0 && j >= 0) {
+            y(i, j) -= g;
+            y(j, i) -= g;
+        }
+    }
+    const int p = int(pins.size()), m = n - p;
+    if (m == 0) return y;
+    const Eigen::MatrixXcd a = y.topLeftCorner(p, p), b = y.topRightCorner(p, m), c = y.bottomLeftCorner(m, p), d = y.bottomRightCorner(m, m);
+    return a - b * d.inverse() * c;
+}
+
+// Circuit \a c's own Y at \a w, from its S.
+Eigen::MatrixXcd yOfCircuit(const rf::EquivalentCircuit& c, double w)
+{
+    const QList<QList<std::complex<double>>> s = c.sAt(w / (2 * M_PI));
+    const int n = c.ports;
+    Eigen::MatrixXcd m(n, n);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) m(i, j) = s.at(i).at(j);
+    const Eigen::MatrixXcd one = Eigen::MatrixXcd::Identity(n, n);
+    Eigen::MatrixXcd y = (one - m) * (one + m).inverse();
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) y(i, j) /= std::sqrt(c.references.at(i) * c.references.at(j));
+    return y;
+}
 
 /// A stack of a substrate of \a epsr and \a height (m) on a ground plane,
 /// with one metal on top of it and air above. \a tand and \a sigma give
@@ -708,6 +818,149 @@ private slots:
         QVERIFY(was > 0);
         QVERIFY(fem::coupledModes(again, 2 * M_PI * 1e10));
         QCOMPARE(int(again.modes.size()), was);
+    }
+
+    // An equivalent circuit (the assessment of 2 November: "the Touchstone ->
+    // lumped RLC fit done by hand for the MOM would be a natural built-in"):
+    // the S of a pi of known branches - the reviewer's MOM's own forms, a
+    // series R, L and C between the ports, a capacitor over a lossy
+    // substrate from one, R beside C from the other - fitted again: each
+    // branch's form and values found to a part in a thousand, its S to a
+    // millionth, and said.
+    void aPiOfKnownBranchesIsFoundAgain()
+    {
+        rf::EquivalentCircuit truth;
+        truth.ports = 2;
+        truth.portNames = {QStringLiteral("P1"), QStringLiteral("P2")};
+        truth.references = {50, 50};
+        truth.between = branch(QStringLiteral("R+L+C"), {{QStringLiteral("R"), 1.2}, {QStringLiteral("L"), 117e-12}, {QStringLiteral("C"), 225e-15}});
+        truth.toGround[0] = branch(QStringLiteral("C+(R||C)"),
+                                   {{QStringLiteral("Cox"), 46e-15}, {QStringLiteral("Rsub"), 608}, {QStringLiteral("Csub"), 17.5e-15}});
+        truth.toGround[1] = branch(QStringLiteral("R||C"), {{QStringLiteral("R"), 5e3}, {QStringLiteral("C"), 30e-15}});
+        const QList<double> f = logSweep(0.5e9, 64e9, 21);
+        const rf::EquivalentCircuit c = rf::fitCircuit(truth.portNames, f, sOf(truth, f), truth.references);
+        QVERIFY2(c.ok(), qPrintable(c.problems.join(" | ")));
+        QCOMPARE(c.between.form, truth.between.form);
+        QCOMPARE(c.toGround[0].form, truth.toGround[0].form);
+        QCOMPARE(c.toGround[1].form, truth.toGround[1].form);
+        for (const rf::CircuitBranch* pair : {&c.between, &c.toGround[0], &c.toGround[1]}) {
+            const rf::CircuitBranch& want = pair == &c.between ? truth.between : pair == &c.toGround[0] ? truth.toGround[0] : truth.toGround[1];
+            for (const auto& [element, value] : want.values)
+                QVERIFY2(std::abs(pair->value(element) / value - 1) < 1e-3,
+                         qPrintable(QStringLiteral("%1 %2: %3, was %4").arg(pair->form, element).arg(pair->value(element)).arg(value)));
+        }
+        QVERIFY2(c.worst < 1e-6 && c.rms <= c.worst, qPrintable(QString::number(c.worst)));
+        QVERIFY2(c.lines.join(' ').contains(QStringLiteral("between P1 and P2 R+L+C: R 1.2 Ohm, L 117 pH, C 225 fF")),
+                 qPrintable(c.lines.join(" | ")));
+        QVERIFY2(c.lines.last().startsWith(QStringLiteral("Its S differs from the solve's by ")), qPrintable(c.lines.last()));
+    }
+
+    // A one-port is one branch to the reference, of whichever form fits:
+    // a series resonator's R, L and C through its resonance.
+    void aOnePortIsOneBranch()
+    {
+        rf::EquivalentCircuit truth;
+        truth.ports = 1;
+        truth.portNames = {QStringLiteral("P1")};
+        truth.references = {50};
+        truth.toGround[0] = branch(QStringLiteral("R+L+C"), {{QStringLiteral("R"), 2}, {QStringLiteral("L"), 1e-9}, {QStringLiteral("C"), 1e-12}});
+        const QList<double> f = logSweep(0.5e9, 20e9, 15);
+        const rf::EquivalentCircuit c = rf::fitCircuit(truth.portNames, f, sOf(truth, f), truth.references);
+        QVERIFY2(c.ok(), qPrintable(c.problems.join(" | ")));
+        QCOMPARE(c.toGround[0].form, QStringLiteral("R+L+C"));
+        for (const auto& [element, value] : truth.toGround[0].values) QVERIFY(std::abs(c.toGround[0].value(element) / value - 1) < 1e-3);
+        QVERIFY2(c.worst < 1e-6, qPrintable(QString::number(c.worst)));
+    }
+
+    // What no lumped circuit stands for - a line half a wavelength long at
+    // the top of the sweep - is still fitted, and how far its S is from the
+    // line's said: far.
+    void aLongLineIsSaidToBeNoLumpedCircuit()
+    {
+        const QList<double> f = logSweep(1e9, 10e9, 19);
+        QList<QList<QList<std::complex<double>>>> s;
+        for (const double x : f) {
+            const std::complex<double> t = std::exp(std::complex<double>(0, -M_PI * x / 10e9));
+            s << QList<QList<std::complex<double>>>{{0.0, t}, {t, 0.0}};
+        }
+        const rf::EquivalentCircuit c = rf::fitCircuit({QStringLiteral("P1"), QStringLiteral("P2")}, f, s, {50, 50});
+        QVERIFY2(c.ok(), qPrintable(c.problems.join(" | ")));
+        QVERIFY2(c.worst > 0.05, qPrintable(QString::number(c.worst)));
+        QVERIFY(c.worstAt > 1e9);
+        // (At 10 GHz, half a wave long, it has no Y: left out, and said.)
+        QVERIFY2(c.lines.join(' ').contains(QStringLiteral("At 10 GHz its Y-parameters are none")), qPrintable(c.lines.join(" | ")));
+    }
+
+    // A capacitor with a little loss - a Q of some thousands across the band
+    // - is a capacitor: R||C fits it to the last digit, but C to within the
+    // fit's 2e-3, and has the fewer values.
+    void aSlightlyLossyCapacitorIsACapacitor()
+    {
+        rf::EquivalentCircuit truth;
+        truth.ports = 1;
+        truth.portNames = {QStringLiteral("P1")};
+        truth.references = {50};
+        truth.toGround[0] = branch(QStringLiteral("R||C"), {{QStringLiteral("R"), 200e3}, {QStringLiteral("C"), 1e-12}});
+        const QList<double> f = logSweep(0.5e9, 20e9, 15);
+        const rf::EquivalentCircuit c = rf::fitCircuit(truth.portNames, f, sOf(truth, f), truth.references);
+        QVERIFY2(c.ok(), qPrintable(c.problems.join(" | ")));
+        QCOMPARE(c.toGround[0].form, QStringLiteral("C"));
+        QVERIFY2(std::abs(c.toGround[0].value(QStringLiteral("C")) / 1e-12 - 1) < 1e-3, qPrintable(c.lines.join(" | ")));
+        QVERIFY2(c.toGround[0].error < 2e-3, qPrintable(QString::number(c.toGround[0].error)));
+    }
+
+    // What is not fitted, and said: three ports, nothing solved, two ports
+    // joined by a wire.
+    void whatIsNoCircuitIsSaid()
+    {
+        const QList<double> f = {1e9};
+        const QList<QList<QList<std::complex<double>>>> three = {{{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}};
+        rf::EquivalentCircuit c = rf::fitCircuit({QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C")}, f, three, {50, 50, 50});
+        QVERIFY(!c.ok() && c.problems.join(' ').contains(QStringLiteral("one or two ports; this has 3")));
+        c = rf::fitCircuit({QStringLiteral("A")}, {}, {}, {50});
+        QVERIFY(!c.ok() && c.problems.join(' ').contains(QStringLiteral("nothing solved")));
+        const QList<QList<QList<std::complex<double>>>> thru = {{{0.0, 1.0}, {1.0, 0.0}}, {{0.0, 1.0}, {1.0, 0.0}}};
+        c = rf::fitCircuit({QStringLiteral("A"), QStringLiteral("B")}, {1e9, 2e9}, thru, {50, 50});
+        QVERIFY2(!c.ok() && c.problems.join(' ').contains(QStringLiteral("no more than a wire")), qPrintable(c.problems.join(" | ")));
+        // Nor one of ten micro-ohms between them, which has a Y - too much of
+        // it to be a branch.
+        rf::EquivalentCircuit wire;
+        wire.ports = 2;
+        wire.portNames = {QStringLiteral("A"), QStringLiteral("B")};
+        wire.references = {50, 50};
+        wire.between = branch(QStringLiteral("R"), {{QStringLiteral("R"), 1e-5}});
+        c = rf::fitCircuit(wire.portNames, {1e9, 2e9}, sOf(wire, {1e9, 2e9}), wire.references);
+        QVERIFY2(!c.ok() && c.problems.join(' ').contains(QStringLiteral("no circuit between them to fit")), qPrintable(c.problems.join(" | ")));
+    }
+
+    // Written as a SPICE subcircuit, read back by its R, L and C lines as a
+    // circuit: the same Y as the circuit's own at every frequency. And a
+    // value as a part writes it.
+    void theSpiceSubcircuitIsTheCircuit()
+    {
+        rf::EquivalentCircuit c;
+        c.ports = 2;
+        c.portNames = {QStringLiteral("In"), QStringLiteral("Out")};
+        c.references = {50, 50};
+        c.between = branch(QStringLiteral("(R+L)||C"), {{QStringLiteral("R"), 0.8}, {QStringLiteral("L"), 2e-9}, {QStringLiteral("C"), 40e-15}});
+        c.toGround[0] = branch(QStringLiteral("C+(R||C)"), {{QStringLiteral("Cox"), 46e-15}, {QStringLiteral("Rsub"), 608}, {QStringLiteral("Csub"), 17.5e-15}});
+        c.toGround[1] = branch(QStringLiteral("R+C"), {{QStringLiteral("R"), 3}, {QStringLiteral("C"), 80e-15}});
+        const QString text = rf::spiceOf(c, QStringLiteral("mom"), {QStringLiteral("a test")});
+        QVERIFY2(text.contains(QStringLiteral(".subckt mom p1 p2 ref\n")) && text.contains(QStringLiteral(".ends mom")) && text.startsWith(QStringLiteral("* a test")),
+                 qPrintable(text));
+        QVERIFY2(text.contains(QStringLiteral("* p1: In")) && text.contains(QStringLiteral("* p2: Out")), qPrintable(text));
+        for (const double f : {0.3e9, 3e9, 30e9}) {
+            int elements = 0;
+            const Eigen::MatrixXcd got = yOfNetlist(text, {QStringLiteral("p1"), QStringLiteral("p2")}, QStringLiteral("ref"), 2 * M_PI * f, &elements);
+            QCOMPARE(elements, 8);
+            const Eigen::MatrixXcd want = yOfCircuit(c, 2 * M_PI * f);
+            QVERIFY2((got - want).norm() < 1e-9 * want.norm(), qPrintable(QStringLiteral("%1 GHz").arg(f / 1e9)));
+        }
+        QCOMPARE(rf::valueSaid(1.173e-10, QStringLiteral("H")), QStringLiteral("117.3 pH"));
+        QCOMPARE(rf::valueSaid(607.9, QStringLiteral("Ohm")), QStringLiteral("607.9 Ohm"));
+        QCOMPARE(rf::valueSaid(1500, QStringLiteral("Ohm")), QStringLiteral("1.5 kOhm"));
+        QCOMPARE(rf::valueSaid(2.25e-13, QStringLiteral("F")), QStringLiteral("225 fF"));
+        QCOMPARE(rf::valueSaid(4.7e-6, QStringLiteral("H")), QStringLiteral("4.7 uH"));
     }
 };
 

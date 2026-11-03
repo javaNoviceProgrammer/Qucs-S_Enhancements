@@ -269,6 +269,8 @@ namespace misc {
   /// (ink::on()).
   QColor gridColor(const QColor& setting);
   QString getWindowTitle();
+  /// This build, as what it made says it: its version and commit, "27.0.5 (934b0de)".
+  QString buildName();
   QString wildcardToRegularExpression(const QString &wc_str, const bool enableEscaping);
 
   bool simulatorExists(const QString &exe_file);

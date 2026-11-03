@@ -1422,16 +1422,31 @@ private slots:
         QVERIFY2(QLineF(stroke.points.first(), QPointF(12.8, 0.5)).length() <= 1 / view->scale(), "pressed where asked");
         for (const QPointF& p : stroke.points)
             QVERIFY2(std::abs(QLineF(p, QPointF(11, 0.5)).length() - 1.8) < 0.05, qPrintable(QStringLiteral("%1, %2").arg(p.x()).arg(p.y())));
-        // In the picture's pixels: a line.
+        // An L dragged through its bend (the RF 2.5D assessment of 2
+        // November: "an L read as a ring"): a corner, at what its bend is on.
+        QJsonArray ell;
+        ell.append(QJsonArray{31, -0.25});
+        ell.append(QJsonArray{32.5, -0.25});
+        ell.append(QJsonArray{34, -0.25});
+        r = call("send_input", {{"target", "layout"}, {"click", QJsonArray{31, 2.75}}, {"drag_through", ell}});
+        const QJsonObject bent = answer(r).value("drawn").toArray().at(0).toObject();
+        QCOMPARE(bent.value("drawn as").toString(), QStringLiteral("corner"));
+        QCOMPARE(bent.value("at").toObject(), (QJsonObject{{"shapes", QJsonObject{{"1/0", 1}}}, {"cells", QJsonObject{{"INV", 1}}}}));
+        const QJsonArray point = bent.value("point").toArray();
+        QVERIFY2(point.size() == 2 && std::abs(point.at(0).toDouble() - 31) < 0.1 && std::abs(point.at(1).toDouble() + 0.25) < 0.1,
+                 qPrintable(QString::fromUtf8(QJsonDocument(bent).toJson(QJsonDocument::Compact))));
+        // In the picture's pixels: a line (the view on it again - the L, out
+        // of sight, was brought into view).
+        view->showRegion(QRectF(QPointF(5, -5), QPointF(17, 6)));
         const QPointF from = view->toPixel(QPointF(8, -3)), to = view->toPixel(QPointF(14, -3));
         r = call("send_input", {{"target", "layout"}, {"click", QJsonArray{from.x(), from.y()}}, {"drag_to", QJsonArray{to.x(), to.y()}},
                                 {"pixels", true}});
         QCOMPARE(answer(r).value("drawn").toArray().at(0).toObject().value("drawn as").toString(), QStringLiteral("line"));
-        QCOMPARE(view->drawing().count(QStringLiteral("TOP")), 2);
+        QCOMPARE(view->drawing().count(QStringLiteral("TOP")), 3);
         // Its keys: Ctrl+Z takes the line away; Escape puts the pen down.
         r = call("send_input", {{"target", "layout"}, {"keys", "Ctrl+Z"}});
         QVERIFY2(answer(r).value("taken away").toString().startsWith(QStringLiteral("1 of the pen's")), qPrintable(text(r)));
-        QCOMPARE(view->drawing().count(QStringLiteral("TOP")), 1);
+        QCOMPARE(view->drawing().count(QStringLiteral("TOP")), 2);
         QVERIFY(!failed(call("send_input", {{"target", "layout"}, {"keys", "Escape"}})));
         QCOMPARE(view->mode(), LayoutView::Mode::Select);
         // Refused, nothing drawn: a drag longer than the view shows at this
@@ -1443,7 +1458,7 @@ private slots:
         none.append(QJsonArray{2});
         QCOMPARE(none.size(), 1);
         QVERIFY(failed(call("send_input", {{"target", "layout"}, {"click", QJsonArray{1, 1}}, {"drag_through", none}})));
-        QCOMPARE(view->drawing().strokes().size(), 1);
+        QCOMPARE(view->drawing().strokes().size(), 2);
         view->clearDrawing(true);
     }
 

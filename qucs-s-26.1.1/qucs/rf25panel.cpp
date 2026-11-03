@@ -687,23 +687,30 @@ void RF25Panel::showSettings()
             }
         }
     v->addLayout(form);
-    // An export writes: the button that does it, and what it said.
-    if (n->type == QLatin1String("rf_touchstone")) {
+    // An export writes: the button that does it, and what it said - an
+    // equivalent circuit's values and how well it fits too.
+    if (n->type == QLatin1String("rf_touchstone") || n->type == QLatin1String("rf_circuit")) {
+        const bool circuit = n->type == QLatin1String("rf_circuit");
         auto* write = new QPushButton(tr("Write"), a_form);
         write->setObjectName(QStringLiteral("rfWriteExport"));
-        write->setToolTip(tr("Writes the file at the study's own frequencies. The model must be solved first."));
+        write->setToolTip(circuit ? tr("Fits a lumped circuit to the full-wave solve of the ports and writes it. The model "
+                                       "must be solved full-wave first.")
+                                  : tr("Writes the file at the study's own frequencies. The model must be solved first."));
         auto* said = new QLabel(a_form);
         said->setObjectName(QStringLiteral("rfExportSaid"));
         said->setWordWrap(true);
         said->setTextInteractionFlags(Qt::TextSelectableByMouse);
         said->hide();
         const QString tag = n->tag;
-        connect(write, &QPushButton::clicked, this, [this, tag, said] {
+        connect(write, &QPushButton::clicked, this, [this, tag, said, circuit] {
             if (a_doc == nullptr) return;
             QString why;
             const QString path = a_doc->writeExport(tag, &why);
             if (path.isEmpty()) {
                 said->setText(tr("It could not be written: %1").arg(why));
+            } else if (circuit) {
+                const std::optional<qucs_s::rf25::EquivalentCircuit> fitted = a_doc->equivalentCircuit();
+                said->setText(tr("Written to %1. %2").arg(path, fitted ? fitted->lines.join(QLatin1Char(' ')) : QString()));
             } else {
                 said->setText(tr("Written to %1.").arg(path));
             }

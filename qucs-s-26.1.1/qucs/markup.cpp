@@ -500,6 +500,7 @@ QString nameOf(Gesture gesture)
     case Gesture::Line: return QStringLiteral("line");
     case Gesture::Arrow: return QStringLiteral("arrow");
     case Gesture::Arrowhead: return QStringLiteral("arrowhead");
+    case Gesture::Corner: return QStringLiteral("corner");
     case Gesture::Mark: break;
     }
     return QStringLiteral("mark");
@@ -517,8 +518,11 @@ Gesture gestureOf(const Stroke& stroke, QPointF* tip)
     // A ring: back near where it began, round a fair share of its box.
     if (chord <= 0.25 * size && areaOf(p) >= 0.2 * box.width() * box.height()) return Gesture::Ring;
     // An arrow drawn at one go: straight out to the point furthest from
-    // where it began, its head what comes back from there - a little, but
-    // more than the pen's wobble as it lifts.
+    // where it began, its head what comes back from there - more than the
+    // pen's wobble as it lifts, and close by the point: one side of a V, or
+    // both drawn out and back, or a triangle - never out as far as half the
+    // shaft. (Held to its length, at most three fifths of the shaft, a V of
+    // both sides drawn at one go read as a mark: the check of 2 November.)
     int far = 0;
     double reach = 0;
     for (int k = 1; k <= last; ++k)
@@ -527,13 +531,27 @@ Gesture gestureOf(const Stroke& stroke, QPointF* tip)
             far = k;
         }
     const double back = lengthOf(p, far, last);
+    double away = 0;   // how far the head goes from the point
+    for (int k = far + 1; k <= last; ++k) away = std::max(away, QLineF(p.at(far), p.at(k)).length());
     if (far > 0 && far < last && reach >= 0.6 * size && bulge(p, 0, far) <= 0.1 * reach && back >= std::max(0.05 * reach, 2 * stroke.width)
-        && back <= 0.6 * reach) {
+        && away <= 0.45 * reach && back <= 2 * reach) {
         if (tip != nullptr) *tip = p.at(far);
         return Gesture::Arrow;
     }
     // A line: nowhere further from its chord than a tenth of it.
     if (chord > 0 && bulge(p, 0, last) <= 0.1 * chord) return Gesture::Line;
+    // A corner: two straight arms at an angle of 45 to 135 degrees, the
+    // shorter two fifths of the longer at least (a tick's is less) - an L,
+    // a V, a caret.
+    const QPolygonF arms = simplified(p, std::max(0.06 * size, stroke.width));
+    if (arms.size() == 3) {
+        const QLineF a(arms.at(1), arms.at(0)), b(arms.at(1), arms.at(2));
+        const double angle = std::min(a.angleTo(b), 360 - a.angleTo(b));
+        if (std::min(a.length(), b.length()) >= 0.4 * std::max(a.length(), b.length()) && angle >= 45 && angle <= 135) {
+            if (tip != nullptr) *tip = arms.at(1);
+            return Gesture::Corner;
+        }
+    }
     return Gesture::Mark;
 }
 
@@ -551,7 +569,7 @@ QList<Gesture> gesturesOf(const QList<Stroke>& strokes, QList<QPointF>* tips, QL
         const QPolygonF& shaft = strokes.at(i).points;
         const double length = QLineF(shaft.first(), shaft.last()).length();
         for (int j = i + 1; j < std::min(n, i + 3); ++j) {
-            if (out.at(j) != Gesture::Line && out.at(j) != Gesture::Mark) continue;
+            if (out.at(j) != Gesture::Line && out.at(j) != Gesture::Mark && out.at(j) != Gesture::Corner) continue;
             const QPolygonF& h = strokes.at(j).points;
             if (h.isEmpty() || sizeOf(h) > 0.45 * length) continue;
             const auto nearest = [&h](QPointF end) {
@@ -657,6 +675,11 @@ QJsonArray readPage(const QList<Stroke>& strokes, const QList<Target>& targets, 
             if (const QJsonObject on = pointedAt(targets, s.points.first(), QPointF(), 0, reach); !on.isEmpty())
                 o.insert(QStringLiteral("on"), on);
             break;
+        case Gesture::Corner:
+            // What its point is at.
+            if (const QJsonObject at = pointedAt(targets, tips.at(i), QPointF(), 0, reach); !at.isEmpty()) o.insert(QStringLiteral("at"), at);
+            o.insert(QStringLiteral("point"), QJsonArray{rounded(tips.at(i).x()), rounded(tips.at(i).y())});
+            break;
         case Gesture::Ring: {
             // Round each target whole, or some of its words: three fifths
             // of a word inside it, half of a target with none.
@@ -719,7 +742,7 @@ QString sentenceOf(const QJsonObject& reading, const QString& where, const QStri
     if (drawn == QLatin1String("arrowhead")) return s + QStringLiteral(" of stroke %1").arg(reading.value(QStringLiteral("of stroke")).toInt());
     const std::pair<const char*, const char*> fields[] = {{"around", "around"},       {"underlines", "under"}, {"strikes through", "through"},
                                                           {"highlights", "over"},     {"on", "on"},            {"from", "from"},
-                                                          {"points at", "pointing at"}};
+                                                          {"points at", "pointing at"}, {"at", "at"}};
     for (const auto& [key, words] : fields)
         if (reading.contains(QLatin1String(key))) s += QStringLiteral(" %1 %2").arg(QLatin1String(words), said(reading.value(QLatin1String(key))));
     const QJsonArray b = reading.value(QStringLiteral("box")).toArray();

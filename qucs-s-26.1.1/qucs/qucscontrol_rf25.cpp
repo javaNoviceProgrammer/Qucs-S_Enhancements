@@ -97,6 +97,8 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     QJsonObject out;
     out.insert(QStringLiteral("model"), QFileInfo(model.getDocName()).fileName());
     out.insert(QStringLiteral("solver"), QStringLiteral("full wave"));
+    // (Kept beside the model, where it is saved: shown when it is opened again.)
+    if (!model.keptFile().isEmpty()) out.insert(QStringLiteral("kept beside the model"), QFileInfo(model.keptFile()).fileName());
     const int np = int(w.portNames.size()), nf = int(w.frequencies.size());
     QJsonArray ports;
     for (int p = 0; p < np; ++p) {
@@ -416,6 +418,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
 
     QJsonObject out;
     out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
+    if (!model->keptFile().isEmpty()) out.insert(QStringLiteral("kept beside the model"), QFileInfo(model->keptFile()).fileName());
     QJsonArray nets;
     for (int i = 0; i < e->names.size(); ++i) {
         QJsonObject net;
@@ -676,6 +679,99 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     return jsonResult(out);
 }
 
+QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
+{
+    // The model, as rf25_export finds it: the one named, else in front.
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_circuit fits a circuit to the full-wave solve of one.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // Where it goes, if anywhere: the file given, else an Equivalent circuit
+    // node's own; with neither, the fit alone.
+    const QString node = args.value(QLatin1String("node")).toString().trimmed();
+    QString name = args.value(QLatin1String("name")).toString().trimmed();
+    QString where = args.value(QLatin1String("file")).toString().trimmed();
+    if (!node.isEmpty()) {
+        const Node* n = model->model().root.find(node);
+        if (n == nullptr || n->type != QLatin1String("rf_circuit"))
+            return errorResult(tr("%1 is no Equivalent circuit node of %2 (Exports > Equivalent circuit).")
+                                   .arg(node, QFileInfo(model->getDocName()).fileName()));
+        if (where.isEmpty()) where = model->exportPath(node);
+        if (name.isEmpty()) name = n->props.value(QStringLiteral("name")).toString().trimmed();
+    }
+    if (!where.isEmpty() && QFileInfo(where).isRelative()) {
+        const QString file = model->getDocName();
+        const QDir dir = file.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(file).absoluteDir();
+        where = QDir::cleanPath(dir.absoluteFilePath(where));
+    }
+    QString why;
+    const std::optional<EquivalentCircuit> c = model->equivalentCircuit(&why);
+    if (!c) return errorResult(model->fullWave() ? why : tr("Nothing is solved full-wave yet: rf25_solve it first (solver full_wave)."));
+
+    QJsonObject out;
+    out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
+    out.insert(QStringLiteral("ports"), QJsonArray::fromStringList(c->portNames));
+    out.insert(QStringLiteral("circuit"), c->ports == 2 ? QStringLiteral("a pi: a branch between the ports, one from each to the ground")
+                                                        : QStringLiteral("one branch to the ground"));
+    // Each branch: between what, its form, its values (SI, and as a part
+    // writes them) and how well it fits its own share.
+    QJsonArray branches;
+    const auto branchOf = [](const CircuitBranch& b, const QString& from, const QString& to) {
+        QJsonObject o{{QStringLiteral("between"), QJsonArray{from, to}}, {QStringLiteral("form"), b.form}};
+        QJsonObject values;
+        QStringList said;
+        for (const auto& [element, value] : b.values) {
+            values.insert(element, value);
+            const QString unit = element.startsWith(QLatin1Char('R')) ? QStringLiteral("Ohm")
+                                 : element.startsWith(QLatin1Char('L')) ? QStringLiteral("H")
+                                                                        : QStringLiteral("F");
+            said << QStringLiteral("%1 %2").arg(element, valueSaid(value, unit));
+        }
+        if (!b.values.isEmpty()) {
+            o.insert(QStringLiteral("values"), values);
+            o.insert(QStringLiteral("as written"), said.join(QStringLiteral(", ")));
+            o.insert(QStringLiteral("its own misfit"), b.error);
+        }
+        return o;
+    };
+    if (c->ports == 2) branches.append(branchOf(c->between, c->portNames.at(0), c->portNames.at(1)));
+    for (int i = 0; i < c->ports; ++i) branches.append(branchOf(c->toGround[i], c->portNames.at(i), QStringLiteral("ground")));
+    out.insert(QStringLiteral("branches"), branches);
+    out.insert(QStringLiteral("S differs by at most"), c->worst);
+    out.insert(QStringLiteral("most at"), c->worstAt);
+    out.insert(QStringLiteral("S differs by rms"), c->rms);
+    out.insert(QStringLiteral("fitted from"), *std::min_element(c->frequencies.begin(), c->frequencies.end()));
+    out.insert(QStringLiteral("fitted to"), *std::max_element(c->frequencies.begin(), c->frequencies.end()));
+    out.insert(QStringLiteral("frequencies"), int(c->frequencies.size()));
+    out.insert(QStringLiteral("what it did"), QJsonArray::fromStringList(c->lines));
+    if (!where.isEmpty()) {
+        const QString text = model->circuitText(*c, where, name);
+        QFile file(where);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+            return errorResult(tr("%1 could not be written: %2.").arg(where, file.errorString()));
+        file.write(text.toUtf8());
+        file.close();
+        out.insert(QStringLiteral("file"), where);
+        out.insert(QStringLiteral("written as"), QFileInfo(where).suffix().compare(QLatin1String("sch"), Qt::CaseInsensitive) == 0
+                                                     ? QStringLiteral("a Qucs-S part: a schematic's Subcircuit, its File this one, places it")
+                                                     : QStringLiteral("a SPICE subcircuit: its ports, then the reference (ref)"));
+    }
+    out.insert(QStringLiteral("note"),
+               QCoreApplication::translate("QucsControl", "A lumped circuit holds while what it stands for is short beside the "
+                                                          "wavelength: where S differs by more than a few hundredths, solve the "
+                                                          "model over a lower band or use its Touchstone (rf25_export)."));
+    return jsonResult(out);
+}
+
 QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
 {
     QucsDoc* doc = nullptr;
@@ -787,6 +883,9 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     RF25Doc::ExportRequest what;
     const QString node = args.value(QLatin1String("node")).toString().trimmed();
     if (!node.isEmpty()) {
+        // (An equivalent circuit is fitted, not written as S: its own tool.)
+        if (const Node* n = model->model().root.find(node); n != nullptr && n->type == QLatin1String("rf_circuit"))
+            return errorResult(tr("%1 is an Equivalent circuit export: rf25_circuit fits and writes it (its 'node').").arg(node));
         QString why;
         if (!model->exportRequest(node, &what, &why)) return errorResult(why);
     }
