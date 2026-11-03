@@ -124,6 +124,7 @@
 #include <QStringList>
 
 #include <atomic>
+#include <functional>
 
 namespace qucs_s::rf25 {
 
@@ -265,6 +266,15 @@ struct Feed {
 struct FullWaveControl {
     std::atomic_bool* stop = nullptr;
     std::atomic_int* done = nullptr;
+    /// Told, as a solve begins its frequencies - its setup done - how many
+    /// they are: with done, how far several solves under one control have
+    /// got, a calibration's two strips (rf25_deembed.h).
+    std::function<void(int)> begins;
+    /// Tests: how many frequencies more may begin, each taking one, the
+    /// next waiting while there are none; below nought, any number, as with
+    /// none given. A sweep held part way is seen part way in any build, not
+    /// only in one slow enough to be caught at it.
+    std::atomic_int* allowed = nullptr;
     int threads = 0;           ///< 0: as many as the machine has and the memory allows
     /// The most runs and cells it sets up a dense solve for; 0: the build's
     /// own. (Lower, a test meets the limit without a solve of thousands.)
