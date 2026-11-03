@@ -2390,14 +2390,45 @@ private slots:
         lifted.points << QPointF(198, 1.5);
         QCOMPARE(markup::gestureOf(lifted), markup::Gesture::Line);
         QCOMPARE(markup::gestureOf(stroke({QPointF(0, 50), QPointF(20, 80), QPointF(70, 0)})), markup::Gesture::Mark);
+        // One-stroke arrows of the other ways a hand draws them (the RF 2.5D
+        // assessment of 2 November: "one-stroke arrows as marks"): both sides
+        // of the V out and back from the point, a closed triangle - each its
+        // tip at the point. A V of long sides is no arrow but a corner, its
+        // point where its sides meet; an L a corner, its point the bend.
+        markup::Stroke bothSides = line(QPointF(0, 0), QPointF(200, 0));
+        bothSides.points << QPointF(160, 30) << QPointF(200, 0) << QPointF(160, -30);
+        QCOMPARE(markup::gestureOf(bothSides, &tip), markup::Gesture::Arrow);
+        QCOMPARE(tip, QPointF(200, 0));
+        markup::Stroke triangle = line(QPointF(0, 0), QPointF(0, 200));
+        triangle.points << QPointF(-25, 160) << QPointF(25, 160) << QPointF(0, 200);
+        QCOMPARE(markup::gestureOf(triangle, &tip), markup::Gesture::Arrow);
+        QCOMPARE(tip, QPointF(0, 200));
+        markup::Stroke vee = line(QPointF(0, 0), QPointF(50, 100));
+        vee.points << QPointF(75, 50) << QPointF(100, 0);
+        QCOMPARE(markup::gestureOf(vee, &tip), markup::Gesture::Corner);
+        QCOMPARE(tip, QPointF(50, 100));
+        markup::Stroke ell = line(QPointF(0, 0), QPointF(0, 100));
+        ell.points << QPointF(30, 100) << QPointF(60, 100);
+        QCOMPARE(markup::gestureOf(ell, &tip), markup::Gesture::Corner);
+        QCOMPARE(tip, QPointF(0, 100));
+        // Neither a hairpin, its arms 10 degrees apart (the shorter ending
+        // far from where it began, or it is a ring), nor a bend of 150
+        // degrees: marks.
+        markup::Stroke hairpin = line(QPointF(0, 0), QPointF(100, 0));
+        hairpin.points << QPointF(70.46, 5.21) << QPointF(40.91, 10.42);
+        QCOMPARE(markup::gestureOf(hairpin), markup::Gesture::Mark);
+        markup::Stroke open = line(QPointF(0, 0), QPointF(100, 0));
+        open.points << QPointF(143.3, 25) << QPointF(186.6, 50);
+        QCOMPARE(markup::gestureOf(open), markup::Gesture::Mark);
         // A head drawn after its line, at its end; a short stroke far from
-        // either end of the next line, a stroke of its own.
+        // either end of the next line, a stroke of its own - a caret, a
+        // corner.
         const QList<markup::Stroke> four{line(QPointF(0, 0), QPointF(200, 0)), stroke({QPointF(185, -12), QPointF(200, 0), QPointF(185, 12)}),
                                          line(QPointF(0, 50), QPointF(200, 50)), stroke({QPointF(90, 40), QPointF(100, 50), QPointF(90, 60)})};
         QList<QPointF> tips;
         QList<int> heads;
         QCOMPARE(markup::gesturesOf(four, &tips, &heads),
-                 (QList<markup::Gesture>{markup::Gesture::Arrow, markup::Gesture::Arrowhead, markup::Gesture::Line, markup::Gesture::Mark}));
+                 (QList<markup::Gesture>{markup::Gesture::Arrow, markup::Gesture::Arrowhead, markup::Gesture::Line, markup::Gesture::Corner}));
         QCOMPARE(tips.at(0), QPointF(200, 0));
         QCOMPARE(heads, (QList<int>{-1, 0, -1, -1}));
         // A dot at a line's end: a pin, not its head.
@@ -2495,6 +2526,16 @@ private slots:
         QCOMPARE(latest.size(), 4);
         QVERIFY2(latest.at(0).contains("6 earlier stroke(s) left out"), qPrintable(latest.at(0)));
         QVERIFY(latest.at(1).startsWith("slide 3, stroke 7:"));
+        // A corner, its point on a word: at that word, and its point given.
+        markup::Stroke bend = line(QPointF(240, 60), QPointF(240, 115));
+        bend.points << QPointF(265, 115) << QPointF(290, 115);
+        QJsonObject corner = markup::readPage({bend}, page, false).at(0).toObject();
+        QCOMPARE(corner.value("drawn as").toString(), QStringLiteral("corner"));
+        QCOMPARE(corner.value("at").toObject(), some("rises"));
+        QCOMPARE(corner.value("point").toArray(), (QJsonArray{240, 115}));
+        corner.insert("slide", 3);
+        const QString said = markup::sentencesOf(QJsonArray{corner}, true);
+        QVERIFY2(said.contains("a red pen corner at \"rises\" in the paragraph \"The gain rises with frequency\""), qPrintable(said));
     }
 
     // A slide's parts where they are drawn (Presentation::parts()), what a

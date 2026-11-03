@@ -26,6 +26,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QRegularExpression>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -396,6 +397,9 @@ struct RF25Doc::PrepareJob {
 /// stand, and the stack read out of the model, all copied so that an edit
 /// while it runs changes nothing under it.
 struct RF25Doc::SolveJob {
+    // What it solves, stamped as it starts - the model's JSON and the
+    // layout file's bytes - for the solution kept beside the model.
+    QByteArray modelStamp, layoutStamp;
     Mesh mesh;
     QList<Conductor> conductors;
     Stack stack;
@@ -668,6 +672,19 @@ void RF25Doc::buildUi()
     a_progressBar->setMaximumHeight(a_status->fontMetrics().height() + 4);
     a_progressBar->hide();
     statusRow->addWidget(a_progressBar);
+    // Its Stop beside it, as the multiphysics tab's row has its Cancel - the
+    // Solve button's Stop, where the bar is - and no taller than the line.
+    a_progressStop = new QToolButton(this);
+    a_progressStop->setObjectName(QStringLiteral("rfProgressStop"));
+    a_progressStop->setText(tr("Stop"));
+    a_progressStop->setToolTip(tr("Stop the solve, as the Solve button's Stop does"));
+    a_progressStop->setAutoRaise(true);
+    a_progressStop->setFixedHeight(a_status->fontMetrics().height() + 4);
+    a_progressStop->hide();
+    connect(a_progressStop, &QToolButton::clicked, this, [this] {
+        if (isSolving()) stopSolving();
+    });
+    statusRow->addWidget(a_progressStop);
     all->addLayout(statusRow);
 }
 
@@ -704,6 +721,7 @@ bool RF25Doc::load()
     a_undo->setClean();
     setDocChanged(false);
     stampedAs(asRead);
+    readKeptSolution();
     refreshLayout();
     return true;
 }
@@ -724,6 +742,7 @@ bool RF25Doc::reload()
     emit signalFileChanged(false);
     stampedAs(asRead);
     if (!focus.isEmpty() && a_model.find(focus) != nullptr) focusNode(focus);
+    readKeptSolution();
     refreshLayout();
     return true;
 }
@@ -744,6 +763,8 @@ int RF25Doc::save()
     a_undo->setClean();
     setDocChanged(false);
     emit signalFileChanged(false);
+    // The solution shown, where it is of the model as saved, beside it.
+    keepSolution();
     // The date and size the file itself has, not the clock's reading of
     // this moment: the two differ by a little, and changedOnDisk() would
     // then take the file this just wrote for another program's.
@@ -878,11 +899,14 @@ void RF25Doc::showProblems()
         for (const QString& line : did) lines << QStringLiteral("  • ") + line;
     }
     // The solve: what it found, or that it is running, or why it is not.
+    // (And how long it should take yet, where that can be said.)
+    const QString left = timeLeft();
     if (a_solveJob) {
         lines << (!a_solveJob->fullWave       ? tr("Solving…")
                   : a_solveJob->calibrating ? tr("Taking out the ports' own discontinuities: solving strips of their feeds…")
                                             : tr("Solving full-wave: %1 of %2 frequencies…")
-                                                  .arg(frequenciesSolved()).arg(frequenciesToSolve()));
+                                                  .arg(frequenciesSolved()).arg(frequenciesToSolve()))
+                     + (left.isEmpty() ? QString() : tr(" (%1)").arg(left));
     } else if (a_solveWhenPrepared) {
         lines << tr("Solving once the shapes and the mesh of the last edit are made…");
     } else if (a_fullWave && a_fullWave->ok()) {
@@ -895,6 +919,8 @@ void RF25Doc::showProblems()
         for (const QString& line : lineSummary()) lines << QStringLiteral("  • ") + line;
         for (const QString& line : inductanceSummary()) lines << QStringLiteral("  • ") + line;
     }
+    // What became of the solution kept beside the model: shown, or why not.
+    if (!a_keptSaid.isEmpty()) lines << a_keptSaid;
     QStringList cannot;
     if (a_processed) cannot += a_processed->problems;
     if (a_mesh) cannot += a_mesh->problems;
@@ -920,9 +946,10 @@ void RF25Doc::showProblems()
                     .arg(a_mesh->cells.size())
                     .arg(meshedCompressed(a_model) ? a_mesh->cost.said : chargeCostOf(int(a_mesh->cells.size())));
     if (a_solveJob && a_solveJob->fullWave && a_solveJob->calibrating)
-        tail += tr("; calibrating the ports");
+        tail += tr("; calibrating the ports") + (left.isEmpty() ? QString() : tr(", %1 for this feed").arg(left));
     else if (a_solveJob && a_solveJob->fullWave)
-        tail += tr("; solving %1 of %2 frequencies").arg(frequenciesSolved()).arg(frequenciesToSolve());
+        tail += tr("; solving %1 of %2 frequencies").arg(frequenciesSolved()).arg(frequenciesToSolve())
+                + (left.isEmpty() ? QString() : tr(", %1").arg(left));
     else if (a_solveJob) tail += tr("; solving");
     else if (a_fullWave && a_fullWave->ok())
         tail += tr("; full wave, %1 port(s) at %2 frequencies").arg(a_fullWave->portNames.size()).arg(a_fullWave->frequencies.size());
@@ -1172,16 +1199,66 @@ void RF25Doc::prepareDone()
     // under it is no reason to give it up and say nothing.
     const bool wanted = a_solveJob != nullptr || a_solveWhenPrepared;
     letSolveGo();
-    a_extraction.reset();
-    a_fullWave.reset();
-    a_waveNotes.clear();
-    a_inductance.reset();
-    a_portsSaid.clear();
-    a_solvedLength = 0;
-    a_solveProblem.clear();
+    // An edit that changes nothing the solver is given - an export added,
+    // its file named - leaves what was solved standing: the same model to
+    // solve and the same layout make the same mesh.
+    const bool unchanged = (a_fullWave || a_extraction) && !a_solvedModel.isEmpty() && solveStampOf(a_model) == a_solvedModel
+                           && layoutStamp() == a_solvedLayout && a_mesh && int(a_mesh->cells.size()) == a_solvedCells;
+    if (!unchanged) {
+        a_extraction.reset();
+        a_fullWave.reset();
+        a_waveNotes.clear();
+        a_inductance.reset();
+        a_portsSaid.clear();
+        a_solvedLength = 0;
+        a_solveProblem.clear();
+        a_showsKept = false;
+        a_solvedModel.clear();
+        a_keptFile.clear();
+    }
+    // The solution kept beside the model, read with it: taken once the mesh
+    // it was solved on is made again - the same cells; not where a solve
+    // is wanted all the same, or the shapes are still to come (no mesh, the
+    // layout not read yet) or are to be made again.
+    if (a_kept && !a_prepareAgain && a_mesh && !a_mesh->cells.isEmpty()) {
+        const qucs_s::rf25::KeptSolution kept = *a_kept;
+        a_kept.reset();
+        if (wanted) {
+            a_keptSaid.clear();
+        } else if (solveStampOf(a_model) != kept.modelHash || layoutStamp() != kept.layoutHash) {
+            // (Edited, or its layout written again, before the mesh came.)
+            a_keptSaid = tr("The solution kept beside the model is of another version of it: it is to be solved again.");
+        } else if (int(a_mesh->cells.size()) != kept.cells) {
+            a_keptSaid = tr("The solution kept beside the model was solved on a mesh of %1 cell(s), and its mesh is made of %2 "
+                            "now: it is to be solved again.")
+                             .arg(kept.cells)
+                             .arg(a_mesh->cells.size());
+        } else {
+            a_fullWave = kept.fullWave;
+            a_waveNotes = kept.waveNotes;
+            a_extraction = kept.extraction;
+            a_inductance = kept.inductance;
+            a_portsSaid = kept.portsSaid;
+            a_solvedLength = kept.solvedLength;
+            a_solvedModel = kept.modelHash;
+            a_solvedLayout = kept.layoutHash;
+            a_solvedCells = kept.cells;
+            a_solvedBy = kept.solvedBy;
+            a_solvedAt = kept.solvedAt;
+            a_showsKept = true;
+            a_keptFile = solutionPathOf(a_DocName);
+            a_keptSaid = tr("The solution kept beside the model is shown: solved by Qucs-S %1 on %2 UTC. Solve to solve it again.")
+                             .arg(kept.solvedBy, kept.solvedAt.toUTC().toString(QStringLiteral("yyyy-MM-dd hh:mm")));
+            if (a_fullWave && a_fullWave->ok()) {
+                if (a_currentsPort >= a_fullWave->portNames.size()) a_currentsPort = 0;
+                if (a_currentsFrequency >= a_fullWave->frequencies.size()) a_currentsFrequency = -1;
+            }
+        }
+    }
     showOverlays();
     showProblems();
     emit preparedChanged();
+    if (a_showsKept) emit solvedChanged();
     // It changed while that run went on: again, on what it is now - and a
     // solve wanted waits for that one.
     if (a_prepareAgain) {
@@ -1633,6 +1710,8 @@ void RF25Doc::solveWith(const SolveRequest& request)
         a_inductance.reset();
         a_portsSaid.clear();
         a_solvedLength = 0;
+        a_showsKept = false;
+        a_keptFile.clear();
         a_solveProblem = why;
         showOverlays();
         showProblems();
@@ -1657,6 +1736,8 @@ void RF25Doc::solveWith(const SolveRequest& request)
         return nothing(tr("There is no mesh to solve on: give the model a layout and a layer map first."));
     if (!a_processed) return nothing(tr("The layout has not been processed."));
     auto job = std::make_shared<SolveJob>();
+    job->modelStamp = solveStampOf(a_model);
+    job->layoutStamp = layoutStamp();
     job->mesh = *a_mesh;
     job->conductors = a_processed->conductors;
     job->stack = a_model.stack();
@@ -1872,21 +1953,13 @@ void RF25Doc::letSolveGo()
     emit solvedChanged();
 }
 
-void RF25Doc::showProgress()
+RF25Doc::Count RF25Doc::countNow() const
 {
-    if (!isSolving()) {
-        a_progress->stop();
-        a_progressBar->hide();
-        a_solvingSince.invalidate();
-        return;
-    }
-    if (!a_solvingSince.isValid()) a_solvingSince.start();
-    if (!a_progress->isActive()) a_progress->start();
     // Nought of nought is busy: the quasi-static extraction, which cannot
     // say how far it has got, and a solve waiting for its mesh.
     const SolveJob* job = a_solveJob.get();
-    int of = 0, done = 0;
-    QString said = job != nullptr ? tr("Solving…") : tr("Solving once the shapes and the mesh of the last edit are made…");
+    Count c;
+    c.said = job != nullptr ? tr("Solving…") : tr("Solving once the shapes and the mesh of the last edit are made…");
     if (job != nullptr && job->fullWave && job->calibrating) {
         // A calibration: its strips of the first length, each at the
         // frequencies the first begins with, counted from nought for each
@@ -1894,23 +1967,74 @@ void RF25Doc::showProgress()
         // do not agree and shorter ones are solved too, which no count can
         // foresee (calibrate()).
         const int begun = job->stripsBegun, planned = job->stripFrequencies;
-        if (begun > 0 && begun <= kStripsPerLength) of = kStripsPerLength * planned / begun;
-        done = std::min(job->calibrated.load(), of);
-        said = of > 0 ? tr("Taking out the ports' own discontinuities: %1 of %2 frequencies of the strips of their feeds solved")
-                            .arg(done).arg(of)
-                      : tr("Taking out the ports' own discontinuities: solving strips of their feeds…");
-        if (job->calibrations > 1) said += tr(" (feed %1 of %2)").arg(job->calibrationsBegun.load()).arg(job->calibrations.load());
+        if (begun > 0 && begun <= kStripsPerLength) c.of = kStripsPerLength * planned / begun;
+        c.done = std::min(job->calibrated.load(), c.of);
+        c.said = c.of > 0 ? tr("Taking out the ports' own discontinuities: %1 of %2 frequencies of the strips of their feeds solved")
+                                .arg(c.done).arg(c.of)
+                          : tr("Taking out the ports' own discontinuities: solving strips of their feeds…");
+        if (job->calibrations > 1) c.said += tr(" (feed %1 of %2)").arg(job->calibrationsBegun.load()).arg(job->calibrations.load());
+        c.key = QStringLiteral("feed %1").arg(job->calibrationsBegun.load());
     } else if (job != nullptr && job->fullWave) {
-        of = frequenciesToSolve();
-        done = std::min(frequenciesSolved(), of);
-        said = tr("Solving full-wave: %1 of %2 frequencies…").arg(done).arg(of);
+        c.of = frequenciesToSolve();
+        c.done = std::min(frequenciesSolved(), c.of);
+        c.said = tr("Solving full-wave: %1 of %2 frequencies…").arg(c.done).arg(c.of);
+        c.key = QStringLiteral("sweep");
     }
-    a_progressBar->setRange(0, of);
-    a_progressBar->setValue(done);
-    a_progressBar->setToolTip(said);
+    return c;
+}
+
+QString RF25Doc::timeLeft() const
+{
+    // At the rate it has gone since its count began: what is left of it,
+    // each counted one having taken as long as those before it on the
+    // whole. Said once one is counted and a second has gone - a guess from
+    // less is a wild one.
+    const Count c = countNow();
+    if (!isSolving() || c.key.isEmpty() || c.key != a_countKey || !a_countSince.isValid() || c.done <= 0 || c.done >= c.of)
+        return QString();
+    const qint64 gone = a_countSince.elapsed();
+    if (gone < 1000) return QString();
+    return leftSaid(double(gone) * (c.of - c.done) / c.done / 1000);
+}
+
+QString RF25Doc::leftSaid(double seconds)
+{
+    if (seconds < 10) return tr("a few seconds left");
+    if (seconds < 90) return tr("about %1 s left").arg(5 * qRound(seconds / 5));
+    if (seconds < 90 * 60) return tr("about %1 min left").arg(qRound(seconds / 60));
+    const int minutes = qRound(seconds / 60);
+    return tr("about %1 h %2 min left").arg(minutes / 60).arg(minutes % 60);
+}
+
+void RF25Doc::showProgress()
+{
+    if (!isSolving()) {
+        a_progress->stop();
+        a_progressBar->hide();
+        a_progressStop->hide();
+        a_solvingSince.invalidate();
+        a_countSince.invalidate();
+        a_countKey.clear();
+        return;
+    }
+    if (!a_solvingSince.isValid()) a_solvingSince.start();
+    if (!a_progress->isActive()) a_progress->start();
+    const Count c = countNow();
+    // Each count's clock from its start: the sweep's, each feed's strips'.
+    if (c.key != a_countKey) {
+        a_countKey = c.key;
+        a_countSince.start();
+    }
+    a_progressBar->setRange(0, c.of);
+    a_progressBar->setValue(c.done);
+    const QString left = timeLeft();
+    a_progressBar->setToolTip(left.isEmpty() ? c.said : tr("%1 - %2").arg(c.said, left));
     // Shown once the solve has taken a quarter of a second, it never
     // flashes up and away: a coarse mesh solves in a few milliseconds.
-    if (a_progressBar->isHidden() && a_solvingSince.elapsed() >= 250) a_progressBar->show();
+    if (a_progressBar->isHidden() && a_solvingSince.elapsed() >= 250) {
+        a_progressBar->show();
+        a_progressStop->show();
+    }
 }
 
 void RF25Doc::solveDone()
@@ -1943,10 +2067,79 @@ void RF25Doc::solveDone()
                              : job->length;
         a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
     }
+    // What it was solved from and by; kept beside the model at once where
+    // the model on disk is the one solved, else when it is saved.
+    a_showsKept = false;
+    a_keptSaid.clear();
+    a_keptFile.clear();
+    a_kept.reset();
+    a_solvedModel = job->modelStamp;
+    a_solvedLayout = job->layoutStamp;
+    a_solvedCells = int(job->mesh.cells.size());
+    a_solvedBy = misc::buildName();
+    a_solvedAt = QDateTime::currentDateTimeUtc();
+    if (!getDocChanged()) keepSolution();
     showOverlays();
     showProblems();
     showProgress();
     emit solvedChanged();
+}
+
+QByteArray RF25Doc::layoutStamp() const
+{
+    const QString path = layoutFile();
+    if (path.isEmpty()) return QByteArray();
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? stampOf(file.readAll()) : QByteArray();
+}
+
+void RF25Doc::readKeptSolution()
+{
+    a_kept.reset();
+    a_keptSaid.clear();
+    a_showsKept = false;
+    if (a_DocName.isEmpty()) return;
+    const QString path = solutionPathOf(a_DocName);
+    if (!QFileInfo::exists(path)) return;
+    QString why;
+    std::optional<KeptSolution> kept = readSolution(path, &why);
+    if (!kept)
+        a_keptSaid = tr("The solution beside the model was not read: %1").arg(why);
+    else if (kept->modelHash != solveStampOf(a_model))
+        a_keptSaid = tr("The solution kept beside the model is of another version of it: it is to be solved again.");
+    else if (kept->layoutHash != layoutStamp())
+        a_keptSaid = tr("The solution kept beside the model was solved on another version of its layout file: it is to be "
+                        "solved again.");
+    else
+        a_kept = std::move(kept);   // (taken once its mesh is made: prepareDone())
+}
+
+void RF25Doc::keepSolution()
+{
+    // Beside a model that is a file, the solution shown of it as it is - an
+    // edit since the solve leaves none shown, or another model's stamp.
+    const bool wave = a_fullWave && a_fullWave->ok(), quasi = !a_fullWave && a_extraction && a_extraction->ok();
+    if (a_DocName.isEmpty() || (!wave && !quasi) || a_solvedModel.isEmpty() || solveStampOf(a_model) != a_solvedModel) return;
+    KeptSolution kept;
+    kept.modelHash = a_solvedModel;
+    kept.layoutHash = a_solvedLayout;
+    kept.cells = a_solvedCells;
+    kept.solvedBy = a_solvedBy;
+    kept.solvedAt = a_solvedAt;
+    if (wave) {
+        kept.fullWave = a_fullWave;
+        kept.waveNotes = a_waveNotes;
+    } else {
+        kept.extraction = a_extraction;
+        kept.inductance = a_inductance;
+        kept.portsSaid = a_portsSaid;
+        kept.solvedLength = a_solvedLength;
+    }
+    QString error;
+    if (writeSolution(solutionPathOf(a_DocName), kept, &error))
+        a_keptFile = solutionPathOf(a_DocName);
+    else
+        a_keptSaid = tr("The solution could not be kept beside the model: %1").arg(error);
 }
 
 bool RF25Doc::waitForSolved(int ms)
@@ -2237,13 +2430,29 @@ const Node* touchstoneNode(const qucs_s::rf25::Model& model, const QString& tag)
     return node;
 }
 
+/// The Equivalent circuit export of \a model known by \a tag, or null.
+const Node* circuitNode(const qucs_s::rf25::Model& model, const QString& tag)
+{
+    const Node* node = model.root.find(tag);
+    if (node == nullptr || node->type != QLatin1String("rf_circuit")) return nullptr;
+    return node;
+}
+
 } // namespace
 
 QString RF25Doc::exportPath(const QString& tag) const
 {
+    const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
+    const QString stem = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
+    // An equivalent circuit: the node's file, else a part beside the model.
+    if (const Node* circuit = circuitNode(a_model, tag)) {
+        const QString named = textOf(*circuit, QStringLiteral("file")).trimmed();
+        if (named.isEmpty()) return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.sch").arg(stem, tag)));
+        const QFileInfo info(named);
+        return info.isAbsolute() ? info.absoluteFilePath() : QDir::cleanPath(dir.absoluteFilePath(named));
+    }
     const Node* node = touchstoneNode(a_model, tag);
     if (node == nullptr) return {};
-    const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
     const QString named = textOf(*node, QStringLiteral("file")).trimmed();
     if (!named.isEmpty()) {
         const QFileInfo info(named);
@@ -2256,7 +2465,6 @@ QString RF25Doc::exportPath(const QString& tag) const
     const int ports = a_fullWave && a_fullWave->ok() ? int(a_fullWave->portNames.size())
                       : coupled                       ? 2 * std::max(1, lines)
                                                       : 2;
-    const QString stem = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
     return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.s%3p").arg(stem, tag).arg(ports)));
 }
 
@@ -2318,9 +2526,44 @@ QString touchstone2From(const QString& text, int ports, int frequencies)
 
 QString RF25Doc::exportText(const QString& tag, QString* error) const
 {
+    if (const Node* node = circuitNode(a_model, tag)) {
+        const std::optional<EquivalentCircuit> circuit = equivalentCircuit(error);
+        if (!circuit) return {};
+        if (error != nullptr) error->clear();
+        return circuitText(*circuit, exportPath(tag), textOf(*node, QStringLiteral("name")).trimmed());
+    }
     ExportRequest what;
     if (!exportRequest(tag, &what, error)) return {};
     return exportText(what, error);
+}
+
+std::optional<EquivalentCircuit> RF25Doc::equivalentCircuit(QString* error) const
+{
+    const auto none = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return std::optional<EquivalentCircuit>();
+    };
+    if (!a_fullWave || !a_fullWave->ok())
+        return none(tr("An equivalent circuit is fitted to a full-wave solve of the ports: solve the model full-wave first."));
+    EquivalentCircuit c = fitCircuit(a_fullWave->portNames, a_fullWave->frequencies, a_fullWave->s, a_fullWave->references);
+    if (!c.ok()) return none(c.problems.join(QLatin1Char(' ')));
+    return c;
+}
+
+QString RF25Doc::circuitText(const EquivalentCircuit& circuit, const QString& path, const QString& name) const
+{
+    // What it is, of what, by what, and how well - in its comment.
+    const QString model = a_DocName.isEmpty() ? tr("an RF 2.5D model") : QFileInfo(a_DocName).fileName();
+    QStringList comment;
+    comment << tr("An equivalent circuit of %1, fitted to its full-wave solve by Qucs-S %2.").arg(model, misc::buildName());
+    comment << circuit.lines;
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QLatin1String("sch")) return schematicOf(circuit, comment);
+    // (A SPICE name: letters, digits and underscores.)
+    QString sub = name.isEmpty() ? (a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName()) : name;
+    sub.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_]")), QStringLiteral("_"));
+    if (sub.isEmpty() || sub.at(0).isDigit()) sub.prepend(QLatin1Char('x'));
+    return spiceOf(circuit, sub, comment);
 }
 
 QString RF25Doc::exportText(const ExportRequest& what, QString* error) const

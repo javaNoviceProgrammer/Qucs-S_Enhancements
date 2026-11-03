@@ -17,8 +17,10 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "qucsdoc.h"
+#include "rf25/rf25_circuit.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_inductance.h"
+#include "rf25/rf25_kept.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_static.h"
@@ -31,6 +33,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QLabel;
 class QPlainTextEdit;
@@ -235,6 +238,17 @@ public:
     /// Why there is no capacitance: what the extraction refused, or what
     /// stood in the way of starting it. Empty when there is one.
     QString solveProblem() const { return a_solveProblem; }
+    /// What became of the solution kept beside the model, "<model>.solution"
+    /// (rf25_kept.h): shown - solved by what build and when -, or why not
+    /// (another version of the model or its layout, a mesh made otherwise);
+    /// empty where none was, and once the model is solved again.
+    QString keptSaid() const { return a_keptSaid; }
+    /// Whether the solution shown is the one kept beside the model.
+    bool showsKeptSolution() const { return a_showsKept; }
+    /// Where the solution shown is kept beside the model - written after
+    /// its solve or its save, or read when it was opened -; empty where it
+    /// is kept nowhere.
+    QString keptFile() const { return a_keptFile; }
     /// What the solve said it did, for the Results node and the notes.
     QStringList solvedLines() const;
     /// One net as a line: its capacitance per metre, its effective
@@ -288,8 +302,16 @@ public:
     /// \a error where there is no such node or it says something that is
     /// no number.
     bool exportRequest(const QString& tag, ExportRequest* what, QString* error = nullptr) const;
-    /// The Touchstone file the export node \a tag asks for, as text.
+    /// The file the export node \a tag asks for, as text: a Touchstone
+    /// node's .sNp, or an Equivalent circuit node's part or subcircuit.
     QString exportText(const QString& tag, QString* error = nullptr) const;
+    /// A lumped circuit fitted to the full-wave solve shown (rf25_circuit.h):
+    /// its one or two ports'; none and why in \a error where it has none.
+    std::optional<qucs_s::rf25::EquivalentCircuit> equivalentCircuit(QString* error = nullptr) const;
+    /// \a circuit as \a path asks: a Qucs-S part for .sch, else a SPICE
+    /// subcircuit named \a name (empty: the model's) - what it was fitted
+    /// to, by what, and how well said with it.
+    QString circuitText(const qucs_s::rf25::EquivalentCircuit& circuit, const QString& path, const QString& name) const;
     /// That text written to the file the node names - or, where it names
     /// none, to model_<tag>.sNp beside the model. The path written, or
     /// empty and why in \a error.
@@ -361,6 +383,15 @@ public:
     /// solve's frequencies solved of those to solve, then its ports'
     /// calibration strips'.
     QProgressBar* progressBar() const { return a_progressBar; }
+    /// Beside the bar, shown with it: stops the solve, as Solve's Stop does.
+    QToolButton* progressStop() const { return a_progressStop; }
+    /// How long the solve's count should take yet, at the rate it has gone
+    /// so far - "about 40 s left" -, once it has counted one and run a
+    /// second; empty where it cannot be said (busy, nothing counted yet).
+    QString timeLeft() const;
+    /// \a seconds left, as the tab says them: "a few seconds left", "about
+    /// 40 s left" (to five), "about 7 min left", "about 1 h 30 min left".
+    static QString leftSaid(double seconds);
     /// Shows what node \a tag is about: a layer marked in the stack, the
     /// layout fitted. The node the panel chose.
     void focusNode(const QString& tag);
@@ -405,6 +436,23 @@ private:
     /// The bar as the solve now is, and the timer that keeps it so running
     /// while one goes on.
     void showProgress();
+    /// The solution kept beside the model, read with it: held until its
+    /// mesh is made, and taken then where it is the one solved on.
+    void readKeptSolution();
+    /// The solution shown kept beside the model, where it is of the model
+    /// as it is on disk: after a solve of it, and when it is saved.
+    void keepSolution();
+    /// SHA-1 of the layout file's bytes; empty where it names none.
+    QByteArray layoutStamp() const;
+    /// What the bar counts now: of how many, how many done (nought of
+    /// nought: busy), what it is in words, and which count it is - the
+    /// sweep's frequencies, or one feed's calibration strips -, whose clock
+    /// starts again when it changes.
+    struct Count {
+        int of = 0, done = 0;
+        QString said, key;
+    };
+    Count countNow() const;
     /// The processed shapes and the mesh over the layout, as the two
     /// buttons have them.
     void showOverlays();
@@ -440,6 +488,18 @@ private:
     SolveRequest a_solveRequest;   ///< the last asked for, for one waiting for the mesh
     QTimer* a_progress = nullptr;  ///< a solve's bar, and a full-wave one's frequencies, counted while it runs
     QElapsedTimer a_solvingSince;  ///< since a solve was asked for; invalid while none goes on
+    QElapsedTimer a_countSince;    ///< since the count the bar shows began (Count::key)
+    std::optional<qucs_s::rf25::KeptSolution> a_kept;   ///< read with the model, till its mesh is made
+    QString a_keptSaid;
+    QString a_keptFile;
+    bool a_showsKept = false;
+    // What the solution shown was solved from and by - its stamps, the
+    // build, when - for keeping it beside the model.
+    QByteArray a_solvedModel, a_solvedLayout;
+    int a_solvedCells = 0;
+    QString a_solvedBy;
+    QDateTime a_solvedAt;
+    QString a_countKey;
     std::shared_ptr<const qucs_s::rf25::Inductance> a_inductance;
     bool a_lastChangeRead = false;
     QString a_portsSaid;
@@ -474,6 +534,7 @@ private:
     QPlainTextEdit* a_problemsText = nullptr;
     QLabel* a_status = nullptr;
     QProgressBar* a_progressBar = nullptr;
+    QToolButton* a_progressStop = nullptr;
 };
 
 #endif // QUCS_RF25DOC_H

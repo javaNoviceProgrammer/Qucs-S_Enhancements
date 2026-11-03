@@ -42,11 +42,13 @@
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QRegularExpression>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
 
 #include "config.h"
+#include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -56,6 +58,7 @@
 #include "layoutdoc.h"
 #include "rf25doc.h"
 #include "rf25panel.h"
+#include "schematic.h"
 #include "rf25/rf25_sparams.h"
 
 #include <gdstk/gdstk.hpp>
@@ -157,6 +160,82 @@ QJsonArray row(const QStringList& cells)
     QJsonArray out;
     for (const QString& c : cells) out.append(c);
     return out;
+}
+
+// A SPICE number as a netlist writes one ("117.3p", "1.2k", "4.6e-14").
+double spiceNumber(QString t)
+{
+    t = t.trimmed().toLower();
+    static const QRegularExpression number(QStringLiteral("^([-+]?[0-9]*\\.?[0-9]+(?:e[-+]?[0-9]+)?)(meg|[fpnumkgt])?"));
+    const QRegularExpressionMatch m = number.match(t);
+    if (!m.hasMatch()) return std::nan("");
+    static const QHash<QString, double> scales{{QStringLiteral("f"), 1e-15}, {QStringLiteral("p"), 1e-12}, {QStringLiteral("n"), 1e-9},
+                                               {QStringLiteral("u"), 1e-6},  {QStringLiteral("m"), 1e-3},  {QStringLiteral("k"), 1e3},
+                                               {QStringLiteral("meg"), 1e6}, {QStringLiteral("g"), 1e9},   {QStringLiteral("t"), 1e12}};
+    return m.captured(1).toDouble() * scales.value(m.captured(2), 1.0);
+}
+
+// What a netlist's R, L and C lines make between nodes \a pins, node
+// \a reference held at nought, at \a w: their Y, the other nodes taken out
+// - the netlist read as a circuit, whatever wrote it.
+QList<QList<std::complex<double>>> yOfNetlist(const QString& text, const QStringList& pins, const QString& reference, double w,
+                                              int* elements)
+{
+    QStringList nodes = pins;
+    struct Element {
+        QChar kind;
+        QString a, b;
+        double value;
+    };
+    QList<Element> list;
+    for (QString line : text.split(QLatin1Char('\n'))) {
+        line = line.trimmed();
+        if (line.isEmpty()) continue;
+        const QChar kind = line.at(0).toUpper();
+        if (kind != QLatin1Char('R') && kind != QLatin1Char('L') && kind != QLatin1Char('C')) continue;
+        const QStringList f = line.split(QRegularExpression(QStringLiteral("\\s+")));
+        if (f.size() < 4 || !std::isfinite(spiceNumber(f.at(3)))) continue;
+        list << Element{kind, f.at(1), f.at(2), spiceNumber(f.at(3))};
+        for (const QString& n : {f.at(1), f.at(2)})
+            if (n != reference && !nodes.contains(n)) nodes << n;
+    }
+    *elements = int(list.size());
+    const int n = int(nodes.size()), p = int(pins.size());
+    std::vector<std::vector<std::complex<double>>> y(n, std::vector<std::complex<double>>(n));
+    for (const Element& e : std::as_const(list)) {
+        const std::complex<double> g = e.kind == QLatin1Char('R') ? std::complex<double>(1.0 / e.value)
+                                       : e.kind == QLatin1Char('L') ? 1.0 / std::complex<double>(0, w * e.value)
+                                                                    : std::complex<double>(0, w * e.value);
+        const int i = e.a == reference ? -1 : int(nodes.indexOf(e.a)), j = e.b == reference ? -1 : int(nodes.indexOf(e.b));
+        if (i >= 0) y[i][i] += g;
+        if (j >= 0) y[j][j] += g;
+        if (i >= 0 && j >= 0) {
+            y[i][j] -= g;
+            y[j][i] -= g;
+        }
+    }
+    // Each inner node eliminated in turn, the last first (Gauss).
+    for (int k = n - 1; k >= p; --k)
+        for (int i = 0; i < k; ++i)
+            for (int j = 0; j < k; ++j) y[i][j] -= y[i][k] * y[k][j] / y[k][k];
+    QList<QList<std::complex<double>>> out(p, QList<std::complex<double>>(p));
+    for (int i = 0; i < p; ++i)
+        for (int j = 0; j < p; ++j) out[i][j] = y[i][j];
+    return out;
+}
+
+// Circuit \a c's Y at \a w, from its S.
+QList<QList<std::complex<double>>> yOfCircuit(const rf::EquivalentCircuit& c, double w)
+{
+    const QList<QList<std::complex<double>>> s = c.sAt(w / (2 * M_PI));
+    // (A two-port's Y from S into equal references: 1/Z0 (1 - S)(1 + S)^-1.)
+    const std::complex<double> one(1, 0);
+    const std::complex<double> a = one + s[0][0], b = s[0][1], cc = s[1][0], d = one + s[1][1];
+    const std::complex<double> det = a * d - b * cc;
+    const std::complex<double> i00 = d / det, i01 = -b / det, i10 = -cc / det, i11 = a / det;
+    const std::complex<double> m00 = one - s[0][0], m01 = -s[0][1], m10 = -s[1][0], m11 = one - s[1][1];
+    const double r = c.references.at(0);
+    return {{(m00 * i00 + m01 * i10) / r, (m00 * i01 + m01 * i11) / r}, {(m10 * i00 + m11 * i10) / r, (m10 * i01 + m11 * i11) / r}};
 }
 
 QJsonArray rowsOf(const QList<QStringList>& rows)
@@ -2417,6 +2496,319 @@ private slots:
     // stays where an edit's mesh starts the solve again. It asks the
     // window for no width and moves nothing above it, and the status line
     // says what it said.
+    // The solution kept beside the model (the assessment of 2 November: "the
+    // solution is not kept with the model"). A full-wave solve of a model on
+    // disk writes "<model>.solution", stamped with the model and its layout;
+    // opened again, the model shows it once its mesh is made - no solve -
+    // and says so: its account, its Touchstone, its currents and every term
+    // of it those of the solve, and written back the same bytes. Edited and
+    // saved, its layout written again, the file damaged: not taken, and why
+    // said. A quasi-static solve is kept as well; an unsaved model's solve
+    // only once it is saved.
+    void theSolutionIsKeptBesideTheModel()
+    {
+        const QString file = fullWaveLine(QStringLiteral("kept.qrf25"));
+        QVERIFY(!file.isEmpty());
+        const QString kept = rf::solutionPathOf(file);
+        QCOMPARE(kept, file + QStringLiteral(".solution"));
+        QFile::remove(kept);
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(!QFileInfo::exists(kept) && doc->keptSaid().isEmpty() && !doc->showsKeptSolution(), "kept before a solve");
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(QFileInfo::exists(kept), "the solve not kept beside the model");
+        const rf::FullWave solved = *doc->fullWave();
+        const QStringList account = doc->fullWaveSummary();
+        RF25Doc::ExportRequest asked;
+        QString why;
+        const QString touchstone = doc->exportText(asked, &why);
+        QVERIFY2(why.isEmpty() && !touchstone.isEmpty(), qPrintable(why));
+        // Its stamps: the model's JSON, the layout file's bytes, the mesh's
+        // cells, the build.
+        const std::optional<rf::KeptSolution> read = rf::readSolution(kept, &why);
+        QVERIFY2(read.has_value(), qPrintable(why));
+        QCOMPARE(read->modelHash, rf::solveStampOf(doc->model()));
+        QFile layout(path(QStringLiteral("strip.gds")));
+        QVERIFY(layout.open(QIODevice::ReadOnly));
+        QCOMPARE(read->layoutHash, rf::stampOf(layout.readAll()));
+        layout.close();
+        QCOMPARE(read->cells, int(doc->mesh()->cells.size()));
+        QCOMPARE(read->solvedBy, misc::buildName());
+        QVERIFY2(read->solvedBy.startsWith(QStringLiteral(PACKAGE_VERSION)), qPrintable(read->solvedBy));
+        QVERIFY(read->fullWave != nullptr && read->extraction == nullptr);
+        // Written back, the same bytes: what is read is what was written.
+        QFile first(kept);
+        QVERIFY(first.open(QIODevice::ReadOnly));
+        const QByteArray bytes = first.readAll();
+        first.close();
+        const QString again = path(QStringLiteral("again.solution"));
+        QVERIFY2(rf::writeSolution(again, *read, &why), qPrintable(why));
+        QFile second(again);
+        QVERIFY(second.open(QIODevice::ReadOnly));
+        QVERIFY2(second.readAll() == bytes, "written back, other bytes");
+        second.close();
+
+        // Opened again: shown with no solve, and said so - the account, the
+        // Touchstone, the currents and every term the solve's.
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->showsKeptSolution() && !doc->isSolving(), qPrintable(doc->keptSaid()));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), "nothing shown");
+        QVERIFY2(doc->keptSaid().startsWith(QStringLiteral("The solution kept beside the model is shown: solved by Qucs-S "))
+                     && doc->keptSaid().endsWith(QStringLiteral("UTC. Solve to solve it again.")),
+                 qPrintable(doc->keptSaid()));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(doc->keptSaid()), qPrintable(doc->problemsText()->toPlainText()));
+        QCOMPARE(doc->fullWaveSummary(), account);
+        QCOMPARE(doc->exportText(asked, &why), touchstone);
+        const rf::FullWave& shown = *doc->fullWave();
+        QCOMPARE(shown.frequencies, solved.frequencies);
+        QCOMPARE(shown.s, solved.s);
+        QCOMPARE(shown.z, solved.z);
+        QCOMPARE(shown.currents, solved.currents);
+        QCOMPARE(shown.portNames, solved.portNames);
+        QCOMPARE(shown.references, solved.references);
+        QCOMPARE(shown.lines, solved.lines);
+        QCOMPARE(shown.warnings, solved.warnings);
+        QCOMPARE(shown.portsSaid, solved.portsSaid);
+        QCOMPARE(shown.viaCells, solved.viaCells);
+        QCOMPARE(shown.ends, solved.ends);
+        QCOMPARE(shown.geometry.size(), solved.geometry.size());
+        for (int i = 0; i < solved.geometry.size(); ++i)
+            QVERIFY(shown.geometry.at(i).from == solved.geometry.at(i).from && shown.geometry.at(i).to == solved.geometry.at(i).to
+                    && shown.geometry.at(i).z0 == solved.geometry.at(i).z0 && shown.geometry.at(i).width == solved.geometry.at(i).width);
+        QCOMPARE(shown.runs, solved.runs);
+        QCOMPARE(shown.cells, solved.cells);
+        QVERIFY(shown.asymmetry == solved.asymmetry && shown.gain == solved.gain && shown.secondWave == solved.secondWave);
+        // A solve again is a solve, and says nothing of what was kept.
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY(!doc->showsKeptSolution() && doc->keptSaid().isEmpty());
+        // An export added changes nothing the solver is given: the solve
+        // stands, and once saved is still the one kept beside the model.
+        {
+            rf::Model m = doc->model();
+            QVERIFY(m.add(QStringLiteral("exports"), m.make(QStringLiteral("rf_circuit"))) != nullptr);
+            QVERIFY(doc->setModel(m, QStringLiteral("an export")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), "an export added cleared the solve");
+        QCOMPARE(doc->save(), 0);
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(doc->showsKeptSolution(), qPrintable(doc->keptSaid()));
+
+        // Edited and saved with no solve after: not taken, and why said.
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("90[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->fullWave() == nullptr);
+        QCOMPARE(doc->save(), 0);
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(!doc->showsKeptSolution() && doc->fullWave() == nullptr
+                     && doc->keptSaid().contains(QStringLiteral("is of another version of it")),
+                 qPrintable(doc->keptSaid()));
+        // Solved again (kept), its layout then written again: not taken.
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY(rf::readSolution(kept, &why).has_value());
+        app->closeAllFiles();
+        QVERIFY(writeStrip(path(QStringLiteral("strip.gds")), 1000, 60));
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(!doc->showsKeptSolution() && doc->keptSaid().contains(QStringLiteral("another version of its layout file")),
+                 qPrintable(doc->keptSaid()));
+        app->closeAllFiles();
+        QVERIFY(writeStrip(path(QStringLiteral("strip.gds")), 1000, 50));
+        // Solved on a mesh of other cells - a newer mesher's, the model and
+        // its layout the same: not taken, and why said.
+        {
+            std::optional<rf::KeptSolution> other = rf::readSolution(kept, &why);
+            QVERIFY2(other.has_value(), qPrintable(why));
+            other->cells += 1;
+            // (The layout written again is other bytes - its date.)
+            QFile now(path(QStringLiteral("strip.gds")));
+            QVERIFY(now.open(QIODevice::ReadOnly));
+            other->layoutHash = rf::stampOf(now.readAll());
+            QVERIFY2(rf::writeSolution(kept, *other, &why), qPrintable(why));
+        }
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(!doc->showsKeptSolution() && doc->keptSaid().contains(QStringLiteral("was solved on a mesh of")),
+                 qPrintable(doc->keptSaid()));
+        app->closeAllFiles();
+        // Of another format - a later build's: not read, and why said.
+        {
+            QFile later(kept);
+            QVERIFY(later.open(QIODevice::WriteOnly));
+            QDataStream s(&later);
+            s.setVersion(QDataStream::Qt_6_0);
+            s.writeRawData("QRF25SOL", 8);
+            s << quint32(2) << QByteArray("a later build's");
+        }
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(!doc->showsKeptSolution() && doc->keptSaid().contains(QStringLiteral("a solution of another version of Qucs-S")),
+                 qPrintable(doc->keptSaid()));
+        app->closeAllFiles();
+        // Damaged: not read, and why said.
+        QFile broken(kept);
+        QVERIFY(broken.open(QIODevice::WriteOnly));
+        broken.write("QRF25SOL then nothing a solve wrote");
+        broken.close();
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(!doc->showsKeptSolution() && doc->keptSaid().startsWith(QStringLiteral("The solution beside the model was not read:")),
+                 qPrintable(doc->keptSaid()));
+
+        // A quasi-static solve is kept the same way, its extraction shown again.
+        RF25Doc::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        doc->solveWith(quasi);
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->extraction() != nullptr && doc->extraction()->ok(), qPrintable(doc->solveProblem()));
+        const QStringList lines = doc->lineSummary();
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(doc->showsKeptSolution() && doc->extraction() != nullptr && doc->fullWave() == nullptr, qPrintable(doc->keptSaid()));
+        QCOMPARE(doc->lineSummary(), lines);
+
+        // An unsaved model's solve: kept once it is saved, not before.
+        const QByteArray before = rf::readSolution(kept, &why)->modelHash;
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("80[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY(doc->fullWave() != nullptr && doc->fullWave()->ok());
+        QCOMPARE(rf::readSolution(kept, &why)->modelHash, before);   // (the model on disk is not the one solved)
+        QCOMPARE(doc->save(), 0);
+        QCOMPARE(rf::readSolution(kept, &why)->modelHash, rf::solveStampOf(doc->model()));
+        QVERIFY(rf::readSolution(kept, &why)->fullWave != nullptr);
+        app->closeAllFiles();
+    }
+
+    // An equivalent circuit written from the solve (the assessment of 2
+    // November: "one-click equivalent-circuit export (Touchstone -> RLC
+    // subcircuit, its fit error said)"): an Equivalent circuit node of the
+    // line's full-wave solve writes a Qucs-S part beside the model, which
+    // Qucs-S reads as a schematic and netlists - its R, L and C between its
+    // ports' nets the circuit's own Y -; as a SPICE subcircuit the same; the
+    // panel's Write says where and how well; nothing before a full-wave solve.
+    void anEquivalentCircuitIsWrittenFromTheSolve()
+    {
+        const QString file = fullWaveLine(QStringLiteral("circuit.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        rf::Node node = doc->model().make(QStringLiteral("rf_circuit"));
+        const QString tag = node.tag;
+        {
+            rf::Model m = doc->model();
+            QVERIFY(m.add(QStringLiteral("exports"), node) != nullptr);
+            QVERIFY(doc->setModel(m, QStringLiteral("an equivalent circuit")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        QString why;
+        QVERIFY(doc->exportText(tag, &why).isEmpty());
+        QVERIFY2(why.contains(QStringLiteral("solve the model full-wave first")), qPrintable(why));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        const std::optional<rf::EquivalentCircuit> circuit = doc->equivalentCircuit(&why);
+        QVERIFY2(circuit.has_value() && circuit->ports == 2, qPrintable(why));
+        // (A millimetre of line at 1 to 5 GHz is short: a pi holds.)
+        QVERIFY2(circuit->worst < 0.05, qPrintable(circuit->lines.join(" | ")));
+        qWarning().noquote() << circuit->lines.join(QStringLiteral(" | "));
+
+        // A part beside the model, read by Qucs-S and netlisted: between its
+        // ports' nets, p1 and p2, the circuit's Y to its four figures.
+        const QString part = doc->writeExport(tag, &why);
+        QVERIFY2(part == path(QStringLiteral("circuit_%1.sch").arg(tag)), qPrintable(part + why));
+        Schematic sch(nullptr, part);
+        QVERIFY(sch.load());
+        QVERIFY(QDir().mkpath(path(QStringLiteral("kernel"))));
+        Ngspice kernel(&sch);
+        kernel.setWorkdir(path(QStringLiteral("kernel")));
+        kernel.SaveNetlist(path(QStringLiteral("kernel/net.cir")), false);
+        QFile net(path(QStringLiteral("kernel/net.cir")));
+        QVERIFY(net.open(QIODevice::ReadOnly));
+        const QString netlist = QString::fromUtf8(net.readAll());
+        int elements = 0;
+        for (const double f : {1e9, 3e9, 5e9}) {
+            const auto got = yOfNetlist(netlist, {QStringLiteral("p1"), QStringLiteral("p2")}, QStringLiteral("0"), 2 * M_PI * f, &elements);
+            const auto want = yOfCircuit(*circuit, 2 * M_PI * f);
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j)
+                    QVERIFY2(std::abs(got[i][j] - want[i][j]) <= 1e-3 * std::abs(want[i][j]),
+                             qPrintable(QStringLiteral("Y%1%2 at %3 GHz: %4 vs %5; the netlist:\n%6")
+                                            .arg(i + 1).arg(j + 1).arg(f / 1e9).arg(std::abs(got[i][j])).arg(std::abs(want[i][j])).arg(netlist)));
+        }
+        QVERIFY2(elements >= 3, qPrintable(netlist));
+
+        // A SPICE subcircuit, its name as asked: the same circuit.
+        {
+            rf::Model m = doc->model();
+            m.find(tag)->props.insert(QStringLiteral("file"), QStringLiteral("circuit.cir"));
+            m.find(tag)->props.insert(QStringLiteral("name"), QStringLiteral("line one"));
+            QVERIFY(doc->setModel(m, QStringLiteral("its file")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        // (An export's file named changes nothing the solver is given: what
+        //  was solved stands.)
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), "an export's file named cleared the solve");
+        const QString spice = doc->writeExport(tag, &why);
+        QVERIFY2(spice == path(QStringLiteral("circuit.cir")), qPrintable(spice + why));
+        QFile cir(spice);
+        QVERIFY(cir.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(cir.readAll());
+        QVERIFY2(text.contains(QStringLiteral(".subckt line_one p1 p2 ref")) && text.contains(QStringLiteral("An equivalent circuit of circuit.qrf25")),
+                 qPrintable(text));
+        const auto got = yOfNetlist(text, {QStringLiteral("p1"), QStringLiteral("p2")}, QStringLiteral("ref"), 2 * M_PI * 3e9, &elements);
+        const auto want = yOfCircuit(*doc->equivalentCircuit(), 2 * M_PI * 3e9);
+        QVERIFY2(std::abs(got[0][1] - want[0][1]) <= 1e-5 * std::abs(want[0][1]), qPrintable(text));
+
+        // The panel's Write: where, and how well.
+        panel()->selectNode(tag);
+        auto* write = panel()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"));
+        QVERIFY(write != nullptr);
+        write->click();
+        auto* said = panel()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
+        QVERIFY(said != nullptr);
+        QVERIFY2(said->text().startsWith(QStringLiteral("Written to ")) && said->text().contains(QStringLiteral("differs from the solve's")),
+                 qPrintable(said->text()));
+        // (Saved: closed with no question of saving waiting.)
+        QCOMPARE(doc->save(), 0);
+        app->closeAllFiles();
+    }
+
+    // How the time a solve should take yet is said: to five seconds under a
+    // minute and a half, in minutes under an hour and a half, else hours and
+    // minutes; a few seconds under ten.
+    void theTimeLeftIsSaidRoundly()
+    {
+        QCOMPARE(RF25Doc::leftSaid(0.4), QStringLiteral("a few seconds left"));
+        QCOMPARE(RF25Doc::leftSaid(9.9), QStringLiteral("a few seconds left"));
+        QCOMPARE(RF25Doc::leftSaid(10), QStringLiteral("about 10 s left"));
+        QCOMPARE(RF25Doc::leftSaid(42), QStringLiteral("about 40 s left"));
+        QCOMPARE(RF25Doc::leftSaid(88), QStringLiteral("about 90 s left"));
+        QCOMPARE(RF25Doc::leftSaid(90), QStringLiteral("about 2 min left"));
+        QCOMPARE(RF25Doc::leftSaid(400), QStringLiteral("about 7 min left"));
+        QCOMPARE(RF25Doc::leftSaid(5399), QStringLiteral("about 90 min left"));
+        QCOMPARE(RF25Doc::leftSaid(5400), QStringLiteral("about 1 h 30 min left"));
+        QCOMPARE(RF25Doc::leftSaid(4 * 3600 + 5 * 60), QStringLiteral("about 4 h 5 min left"));
+    }
+
     void aSolveShowsHowFarItHasGot()
     {
         const QString file = fullWaveLine(QStringLiteral("progress.qrf25"));
@@ -2484,25 +2876,47 @@ private slots:
         QCOMPARE(doc->frequenciesSolved(), 1);
         QTRY_COMPARE(bar->value(), 1);
         QCOMPARE(bar->maximum(), 3);
-        QVERIFY2(doc->statusLabel()->text().endsWith(QStringLiteral("; solving 1 of 3 frequencies")),
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("; solving 1 of 3 frequencies")),
                  qPrintable(doc->statusLabel()->text()));
         QVERIFY2(bar->toolTip().contains(QStringLiteral("1 of 3")), qPrintable(bar->toolTip()));
+        // How long it should take yet, at the rate it has gone, once a
+        // second has gone (the assessment of 2 November: "no ... time
+        // estimate"): in the status line, the notes and the bar's tool tip.
+        // Its Stop beside the bar, shown with it.
+        QVERIFY(doc->progressStop()->isVisible());
+        QTest::qWait(1100);
+        QTRY_VERIFY2(!doc->timeLeft().isEmpty(), "no time left said");
+        const QRegularExpression said(QStringLiteral("^(a few seconds left|about \\d+ s left|about \\d+ min left|about \\d+ h \\d+ min left)$"));
+        QVERIFY2(said.match(doc->timeLeft()).hasMatch(), qPrintable(doc->timeLeft()));
+        QTRY_VERIFY2(doc->statusLabel()->text().contains(QStringLiteral("; solving 1 of 3 frequencies, ")
+                                                         + doc->timeLeft().section(QLatin1Char(' '), 0, 0)),
+                     qPrintable(doc->statusLabel()->text()));
+        QTRY_VERIFY2(bar->toolTip().contains(QStringLiteral(" left")), qPrintable(bar->toolTip()));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral(" left)")), qPrintable(doc->problemsText()->toPlainText()));
         doc->allowFrequencies(-1);
         QVERIFY2(doc->waitForSolved(300000), "the solve ended");
         QVERIFY(bar->isHidden());
         QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
         QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
 
-        // Stopped: the bar goes with the solve at once.
+        // Stopped: the bar goes with the solve at once - by the Solve
+        // button's Stop, and by the Stop beside the bar, which goes with it.
         doc->holdSolves(true);
         doc->solveButton()->click();
         QTRY_VERIFY(bar->isVisible());
         doc->solveButton()->click();
         QVERIFY(!doc->isSolving());
-        QVERIFY(bar->isHidden());
+        QVERIFY(bar->isHidden() && doc->progressStop()->isHidden());
         QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
         QTest::qWait(500);
         QVERIFY(bar->isHidden());
+        doc->solveButton()->click();
+        QTRY_VERIFY(bar->isVisible() && doc->progressStop()->isVisible());
+        QVERIFY2(doc->progressStop()->height() <= doc->statusLabel()->fontMetrics().height() + 4, "the Stop is taller than the line");
+        doc->progressStop()->click();
+        QVERIFY(!doc->isSolving());
+        QVERIFY(bar->isHidden() && doc->progressStop()->isHidden());
+        QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
 
         // An edit's mesh overtaking a solve going on starts it again on the
         // mesh: the bar stays, rather than going and coming back a moment
