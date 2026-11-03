@@ -945,6 +945,13 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty())
                 return errorResult(tr("'model': %1 Nothing was made (fem_describe what=format lists what each kind of node takes).")
                                        .arg(unknown.join(QStringLiteral("; "))));
+            // A 3D model is Multiphysics 3D's, in a .qfem3d of its own: the
+            // 2D tab refuses one read from a file, and one given here too
+            // (else a 2D tab held it, built it as a plan and saved a .qfem
+            // that tab will not read again).
+            if (m->is3D())
+                return errorResult(tr("'model' is a 3D model (its format or its space): Multiphysics 3D opens it, as a .qfem3d - "
+                                      "fem_model makes 2D models. Nothing was made."));
         }
         QString file;
         MultiphysicsDoc* open = nullptr;
@@ -1136,6 +1143,9 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty())
             return errorResult(tr("'model': %1 The model is unchanged (fem_describe what=format lists what each kind of node takes).")
                                    .arg(unknown.join(QStringLiteral("; "))));
+        if (m->is3D())
+            return errorResult(tr("'model' is a 3D model (its format or its space): Multiphysics 3D opens it, as a .qfem3d - "
+                                  "fem_model sets 2D models. The model is unchanged."));
         doc->setModel(*m, tr("Model"));
         const QString built = doc->geometryAfterChange();
         QJsonObject o{{QStringLiteral("set"), tr("the whole model, one step of Undo")},
@@ -1332,6 +1342,10 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     } else {
         return errorResult(tr("'action' is add, set, delete, move or parameters."));
     }
+    // (Nor a 2D model's space made 3D: its choices are 2D and axisymmetric.)
+    if (m.is3D())
+        return errorResult(tr("A 2D model's space is 2D or axisymmetric: a 3D model is Multiphysics 3D's, in a .qfem3d of its own. "
+                              "The model is unchanged."));
     doc->setModel(m, what);
     // The geometry built at once: its errors said with the change. (A
     // process flow's in the background, not waited for: the hunt of 22

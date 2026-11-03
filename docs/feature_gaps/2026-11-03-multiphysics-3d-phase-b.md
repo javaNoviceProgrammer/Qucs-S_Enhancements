@@ -147,6 +147,7 @@ triangles. The via's small circle refines the plan in every slab - the swept mes
 | `test_fem3_mesh` (new, 6 functions) | Divisions by size, by count (over the size too), graded from a thin slab at the rate, from a level asked fine; a box's prisms through its divisions; counts across a domain, shared among the slabs it spans; a thin film's neighbours graded to it; a domain's size refining the plan through every slab and its slab in z; curved walls swept; what is refused and said. **Every node its plan node at its height, every prism over its plan triangle, every face turned and each domain's closed, each domain's volume its cells' exactly** |
 | `test_multiphysics3d_doc` (new, 7 functions) | The dock tab after Multiphysics and its page name, the menu after Multiphysics', the file kind, the examples listed; a new model's tree (no study, no results), what its geometry may hold, a named selection's level with edges; the 2D panel's geometry offering no 3D kind and its selections no edges; solids added and edited through the panel, the geometry built after each, Undo and Redo, a sketch object's solid drawn, a failure marked; the examples opened, built (4 domains, 2), meshed and drawn, a material's selection drawn, written as read; a 2D model refused as 3D and a 3D one as 2D; the view's presets, the frontmost face under the pointer, the cut, the zoom and View All |
 | `claudesFormatOfAGroup` (`test_multiphysics_doc`) | `fem_describe` format marks a 3D model's kinds `"space": "3D"` |
+| `aThreeDModelIsRefusedByTheTwoDTools` (`test_multiphysics_doc`), `theWorkspaceIsListed` (`test_qucs_control`), `filesAreKnownByKind` (`test_file_browser`) | Added by the DMG's check (below): the 2D tools refusing a 3D model; a `.qfem3d` listed, filtered, opened and saved as a 3D multiphysics model; the Files panel's name for it |
 
 ## Broken on purpose
 
@@ -212,6 +213,31 @@ Built Debug with ASan and UBSan, as CI's Linux job is, each function alone (the 
 
 No sanitizer said anything.
 
+## Found by the DMG's check
+
+Preparing the drive of the packaged app's tools, after the merge into main: where Claude's tools tell documents
+apart, the 3D model was not there. `open_document` of a `.qfem3d` opened it in its tab, and said "(schematic)";
+`list_documents` left `.qfem3d` files out altogether, since a file whose kind it cannot name is not listed, and
+refused the kind as a filter; `save_document` of a 3D model `as` a name without a suffix wrote `copy.sch`, and
+refused `copy.qfem3d` as a schematic's wrong suffix; the Files panel called a `.qfem3d` a "QFEM3D file" and hid it
+under its Qucs-only filter. The RF 2.5D model had been missing from the same tables once, and the test that found
+it says so. Each now knows a "3D multiphysics model": `kindOf()` and `kindOfFile()`, `list_documents`' kinds and its
+schema's, the Files panel's row (tag 3D), and `save_document` adds `.qfem3d` to a name without a suffix, as Save
+As does, and refuses another.
+
+And the 2D tools took a 3D model: the 2D tab refused one read from a file, but `fem_model` new or set with a 3D
+model's JSON (its format, or a 2D format with the space 3D) put it in a 2D tab - which could not build its solids
+("box is not a geometry feature") and wrote it to a `.qfem` in a 3D model's format, a file no tab opens - and
+`fem_edit` set the component's space to 3D, which no choice check stopped. All three are refused now, and nothing
+is made or changed.
+
+`theWorkspaceIsListed` (`test_qucs_control`) lists, filters, opens and saves a 3D model; `filesAreKnownByKind`
+(`test_file_browser`) names its file; `aThreeDModelIsRefusedByTheTwoDTools` (`test_multiphysics_doc`) holds the
+refusals, the axisymmetric space still taken and a Box still refused. Ten breaks more (54 to 63 in
+`breaks.py`, which now runs on main's checkout): nine caught on their first run. The tenth, `list_documents`'
+schema without the 3D kind, was not - no test compared the kinds its schema offers with the kinds it takes -
+and `theWorkspaceIsListed` now does; caught when run again.
+
 ## What phase B still lacks
 
 - **The Layout feature of the proposal** - a layout's layers through RF 2.5D's layer map and processing (merge vias,
@@ -219,8 +245,9 @@ No sanitizer said anything.
   viewer - and an RF 2.5D model's stack read in place of rows. The Layer Stack reads a layout's layers as they are.
 - **Extrude 2D Model** (a `.qfem`'s domains extruded), **wall angles**, revolving an axisymmetric model.
 - **Picking** in the 3D view (its `idAt()` is there), and the selection editor's pick button.
-- **The `fem_*` tools on 3D models** (`fem_model` new with space 3D, the geometry and mesh answers), and
-  `open_document` of a `.qfem3d` - Claude reads the kinds' 3D marks in `fem_describe` meanwhile.
+- **The `fem_*` tools on 3D models** (`fem_model` new with space 3D, the geometry and mesh answers): they refuse a
+  3D model meanwhile, and Claude opens, lists, pictures and saves one through the document tools and reads the
+  kinds' 3D marks in `fem_describe`.
 - **The GPU view** (opt-in, as every viewer's since 8d85227).
 - A union's interior faces kept; a sketch's open curves as sheets; edge-level mesh sizes; a box or a cylinder moved or
   turned off z.
