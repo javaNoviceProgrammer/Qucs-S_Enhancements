@@ -1,7 +1,8 @@
 /*
  * multiphysics3ddoc.h - a 3D multiphysics model (.qfem3d) in a tab of
  *                       Qucs-S: its geometry and swept mesh, built in the
- *                       background, drawn in a 3D view; each change one step
+ *                       background, and its solution - heat, electrostatics,
+ *                       currents -, drawn in a 3D view; each change one step
  *                       of Undo. The Multiphysics 3D panel shows its tree.
  *
  * This file is part of Qucs-S.
@@ -16,6 +17,7 @@
 
 #include "fem3_geometry.h"
 #include "fem3_mesh.h"
+#include "fem3_solver.h"
 #include "qucsdoc.h"
 #include "view3d.h"
 
@@ -96,6 +98,13 @@ public:
     /// Builds the mesh in the background, the geometry first where it is
     /// stale; shown when made.
     void buildMesh();
+    /// Solves its first study in the background - its geometry and mesh first
+    /// where they are stale -; shown when solved.
+    void compute();
+    std::shared_ptr<const qucs_s::fem::Solution3> solution() const { return a_solution; }
+    /// Whether the solution is of the model as it was before an edit.
+    bool solutionStale() const { return a_solutionStale; }
+    bool solving() const;
     /// Lets the work going on go.
     void cancel();
     bool isBusy() const { return a_job != nullptr; }
@@ -104,10 +113,18 @@ public:
     bool waitForIdle(int ms = 120000);
 
     // What is shown.
-    enum class Show { Geometry, Mesh };
+    enum class Show { Geometry, Mesh, Solution };
     Show show() const { return a_show; }
     void showGeometry();
     void showMesh();
+    void showSolution();
+    /// What the solution is coloured by: an expression of its variables
+    /// (empty: its first field's own, ht.T or V); its faces, and the cut's
+    /// slice where there is one.
+    QString plotExpression() const;
+    void setPlotExpression(const QString& text);
+    /// The values coloured now, least and greatest (SI): the legend's.
+    std::pair<double, double> plotRange() const { return a_plotRange; }
     /// The node the panel chose: its selection (a feature's: its solids)
     /// shown.
     void focusNode(const QString& tag);
@@ -135,7 +152,9 @@ private:
     void buildUi();
     void applyModel(const qucs_s::fem::Model& model, bool read = false);
     void say(const QString& text, bool error = false);
-    void startJob(bool mesh);
+    void startJob(bool mesh, bool solve = false);
+    void sayFinished(const qucs_s::fem::StudyResult3& result, qint64 ms);
+    void fillPlotChoices();
     void jobFinished();
     void updateScene(bool fit = false);
     void updateHighlight();
@@ -157,6 +176,19 @@ private:
     std::shared_ptr<Job> a_job;
     bool a_geometryWanted = false;   // a build asked while another worked
     bool a_meshWanted = false;
+    bool a_solveWanted = false;
+    std::shared_ptr<const qucs_s::fem::Solution3> a_solution;
+    bool a_solutionStale = true;
+    QString a_plot;
+    std::pair<double, double> a_plotRange{0, 0};
+    // The plot's values at the nodes, of the solution and expression they are
+    // of: a redraw - a turn of the view, a focus - not reading them again.
+    struct PlotCache {
+        std::shared_ptr<const qucs_s::fem::Solution3> solution;
+        QString text;
+        std::vector<double> nodal;
+    };
+    PlotCache a_plotCache;
     bool a_closed = false;
 
     Show a_show = Show::Geometry;
@@ -168,7 +200,9 @@ private:
     View3D* a_view = nullptr;
     QToolButton* a_buildGeometry = nullptr;
     QToolButton* a_buildMesh = nullptr;
+    QToolButton* a_compute = nullptr;
     QComboBox* a_showBox = nullptr;
+    QComboBox* a_plotBox = nullptr;
     QComboBox* a_clipBox = nullptr;
     QSlider* a_clipSlider = nullptr;
     QProgressBar* a_progress = nullptr;

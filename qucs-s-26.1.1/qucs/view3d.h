@@ -21,6 +21,8 @@
 #include <QImage>
 #include <QWidget>
 
+class QPainter;
+
 #include <array>
 #include <vector>
 
@@ -33,6 +35,10 @@ public:
         std::array<qucs_s::fem::Vec3, 3> p;
         QColor color;
         int id = -1;     ///< what it is of (a face): picked as such
+        /// Its corners' colours, blended across it (a field's values):
+        /// where \a shaded, in place of \a color.
+        std::array<QColor, 3> colors;
+        bool shaded = false;
     };
     struct Line {
         qucs_s::fem::Vec3 a, b;
@@ -52,11 +58,20 @@ public:
         std::vector<Dot> dots;
         qucs_s::fem::Box3 bounds;   ///< what Fit frames (empty: the triangles')
     };
+    /// A colour bar at the right: its table from \a low (the bottom) to \a
+    /// high, said as given, under its title.
+    struct Legend {
+        QString title, low, high;
+        std::vector<QRgb> table;
+        bool shown = false;
+    };
 
     explicit View3D(QWidget* parent = nullptr);
 
     /// What it draws; the camera kept, or (\a fit) framing it.
     void setScene(Scene scene, bool fit = false);
+    void setLegend(Legend legend);
+    const Legend& legend() const { return a_legend; }
     const Scene& scene() const { return a_scene; }
     /// A word in the middle where there is nothing to draw.
     void setEmptyText(const QString& text);
@@ -77,6 +92,8 @@ public:
     /// away - \a at a share of the scene's extent along it, 0 to 1.
     void setClip(int axis, double at);
     int clipAxis() const { return a_clipAxis; }
+    /// Where the cut is along its axis (the geometry's unit).
+    double clipValue() const;
     /// The view as it is drawn, at \a scale times its pixels.
     QImage picture(double scale = 1);
     /// The scene's id at a point of the widget - the frontmost triangle's
@@ -110,9 +127,13 @@ private:
     qucs_s::fem::Vec3 project(const qucs_s::fem::Vec3& q, const Camera& c, double w, double h, double dpr) const;
     /// Draws the scene into \a image, its ids into \a ids where given.
     void render(QImage& image, std::vector<int>* ids) const;
+    /// What is drawn over it: a word where it is empty, the axes, the cut,
+    /// the legend.
+    void paintOverlay(QPainter& p, const QSizeF& size) const;
     void invalidate();
 
     Scene a_scene;
+    Legend a_legend;
     QString a_emptyText;
     double a_azimuth = -55, a_elevation = 30;
     qucs_s::fem::Vec3 a_center;

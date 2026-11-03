@@ -1,0 +1,73 @@
+/*
+ * fem_amg.h - algebraic multigrid for the multiphysics solver: conjugate
+ *             gradients preconditioned by AMGCL's smoothed aggregation
+ *             (third_party/amgcl), for the 3D models' symmetric positive
+ *             definite systems, the incomplete Cholesky's the fallback
+ *
+ * This file is part of Qucs-S.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ */
+#ifndef QUCS_FEM_AMG_H
+#define QUCS_FEM_AMG_H
+
+#include <Eigen/SparseCore>
+
+#include <QString>
+
+#include <cstddef>
+#include <memory>
+
+namespace qucs_s::fem {
+
+/// How an iterative solve went.
+struct IterativeReport {
+    int iterations = 0;
+    double residual = 0;      ///< relative: |b - A x| / |b|
+    bool converged = false;
+    bool fallback = false;    ///< multigrid did not converge: the incomplete Cholesky's
+};
+
+/*!
+ * A symmetric positive definite system A x = b solved by conjugate gradients
+ * preconditioned by algebraic multigrid - AMGCL's smoothed aggregation with
+ * an ILU(0) smoother, measured on 3D Laplacians to a million unknowns and on
+ * copper beside oxide: 11 to 15 iterations at every size, where an
+ * incomplete Cholesky's grow from 92 to 368; and on a layered chip's thin
+ * films, order 2 too (docs/feature_gaps of 3 November). Set up once (compute), solved for as many right-hand sides as
+ * wanted, each from the x given. Where it does not converge, conjugate
+ * gradients with an incomplete Cholesky try instead (the report says so).
+ */
+class AmgSolver
+{
+public:
+    AmgSolver();
+    ~AmgSolver();
+    AmgSolver(const AmgSolver&) = delete;
+    AmgSolver& operator=(const AmgSolver&) = delete;
+
+    /// The relative residual it stops at (1e-9).
+    void setTolerance(double tolerance);
+    /// Its iterations at most (500; the fallback's ten times as many).
+    void setMaxIterations(int iterations);
+    /// Sets matrix \a a up - its hierarchy; false and why when it cannot.
+    bool compute(const Eigen::SparseMatrix<double>& a, QString* error);
+    /// Solves for \a b from \a x as it is (zeros: none known); false and why
+    /// when neither method converged (x the last iterate then).
+    bool solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, IterativeReport* report, QString* error);
+    /// The memory its hierarchy takes (bytes; 0: none set up).
+    std::size_t bytes() const;
+    /// The size of the matrix set up.
+    int size() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> a_impl;
+};
+
+} // namespace qucs_s::fem
+
+#endif // QUCS_FEM_AMG_H

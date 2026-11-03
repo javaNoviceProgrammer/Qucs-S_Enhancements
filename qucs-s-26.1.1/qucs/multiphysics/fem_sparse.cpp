@@ -737,6 +737,7 @@ template class SparseLu<std::complex<double>>;
 
 struct SparseCholesky::Impl {
     bool accelerate = false;
+    Ordering ordering = Ordering::Default;
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     // Singular to rounding (not: not positive definite), and why.
     bool singular = false;
@@ -783,6 +784,11 @@ struct SparseCholesky::Impl {
 SparseCholesky::SparseCholesky() : a_impl(std::make_unique<Impl>()) {}
 SparseCholesky::~SparseCholesky() = default;
 
+void SparseCholesky::setOrdering(Ordering ordering)
+{
+    a_impl->ordering = ordering;
+}
+
 void SparseCholesky::analyzePattern(const Matrix& a)
 {
     Impl& d = *a_impl;
@@ -796,7 +802,9 @@ void SparseCholesky::analyzePattern(const Matrix& a)
         d.starts.assign(d.lower.outerIndexPtr(), d.lower.outerIndexPtr() + d.lower.cols() + 1);
         accelerateError.clear();
         if (d.n > 0) {
-            d.symbolic = SparseFactor(SparseFactorizationCholesky, d.structure(), symbolicOptions());
+            SparseSymbolicFactorOptions o = symbolicOptions();
+            if (d.ordering == Ordering::Metis) o.orderMethod = SparseOrderMetis;
+            d.symbolic = SparseFactor(SparseFactorizationCholesky, d.structure(), o);
             d.analysed = d.symbolic.status == SparseStatusOK;
             if (!d.analysed) SparseCleanup(d.symbolic);
         }

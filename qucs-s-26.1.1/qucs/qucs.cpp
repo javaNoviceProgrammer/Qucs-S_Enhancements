@@ -5005,9 +5005,8 @@ void QucsApp::slotSimulate(QWidget *w)
                                   "what it holds."), 5000);
       return;
   }
-  if (isMultiphysics3DDocument(w)) {
-      statusBar()->showMessage(tr("A 3D model is not solved yet: its geometry and its mesh are what it holds (Multiphysics 3D > "
-                                  "Build Mesh)."), 5000);
+  if (auto *model3 = qobject_cast<Multiphysics3DDoc *>(w)) {
+      model3->compute();   // its first study (Multiphysics 3D > Compute)
       return;
   }
   if (isImageDocument(w)) {

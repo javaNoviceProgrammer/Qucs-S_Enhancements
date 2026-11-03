@@ -65,10 +65,12 @@ enable_testing()
 # gdstk, which reads GDSII and OASIS layouts for the layout viewer
 # (third_party/gdstk/README.qucs.md).
 add_subdirectory( third_party/gdstk )
-# Eigen and CDT, header-only, for the multiphysics solver
-# (third_party/eigen/README.qucs.md, third_party/cdt/README.qucs.md).
+# Eigen, CDT and AMGCL, header-only, for the multiphysics solver
+# (third_party/eigen/README.qucs.md, third_party/cdt/README.qucs.md,
+# third_party/amgcl/README.qucs.md).
 add_subdirectory( third_party/eigen )
 add_subdirectory( third_party/cdt )
+add_subdirectory( third_party/amgcl )
 add_subdirectory( qucs )
 #add_subdirectory( converter )
 add_subdirectory( qucs-activefilter )

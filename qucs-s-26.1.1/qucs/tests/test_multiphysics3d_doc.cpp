@@ -19,6 +19,7 @@
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QJsonArray>
+#include <QLabel>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
@@ -201,7 +202,7 @@ private slots:
         QCOMPARE(panel()->exampleList()->count(), 2);
     }
 
-    /// A new 3D model: a tab, the tree a 3D model's - no study, no results;
+    /// A new 3D model: a tab, the tree a 3D model's - its study, no results;
     /// the component a 3D one.
     void aNewModel()
     {
@@ -216,7 +217,8 @@ private slots:
                      && shown.contains(QStringLiteral("Geometry")) && shown.contains(QStringLiteral("Form Union"))
                      && shown.contains(QStringLiteral("Materials")) && shown.contains(QStringLiteral("Mesh")),
                  qPrintable(shown.join(QStringLiteral(", "))));
-        QVERIFY(!shown.contains(QStringLiteral("Results")) && !shown.contains(QStringLiteral("Study 1")));
+        QVERIFY2(!shown.contains(QStringLiteral("Results")) && shown.contains(QStringLiteral("Study 1")) && shown.contains(QStringLiteral("Stationary")),
+                 qPrintable(shown.join(QStringLiteral(", "))));
         // Nothing to build yet: not built.
         QVERIFY(doc->waitForIdle());
         QVERIFY(!doc->geometry().topology);
@@ -370,6 +372,114 @@ private slots:
         QCOMPARE(int(ring->geometry().topology->domains.size()), 2);
     }
 
+    /// The chip heater solved through its tab (Compute; F2): the solution
+    /// shown, its faces coloured by ht.T under its legend, its heat the
+    /// heater's power, its globals said, none colder than its back; another
+    /// plot, the cut's slice; an edit leaves it stale, said, and twice the
+    /// power a little more than twice the rise - silicon's k falls as it
+    /// warms.
+    void aModelSolvedInItsTab()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        auto* compute = doc->findChild<QToolButton*>(QStringLiteral("mp3Compute"));
+        QVERIFY(compute);
+        compute->click();
+        QVERIFY(doc->waitForIdle(300000));
+        QVERIFY2(doc->solution() && !doc->solutionStale(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        QCOMPARE(doc->show(), Multiphysics3DDoc::Show::Solution);
+        const Solution3& s = *doc->solution();
+        const double P = s.global(QStringLiteral("ht.P")).value_or(0);
+        QVERIFY2(std::abs(P - 10e-3) < 1e-9, qPrintable(s.globalText(QStringLiteral("ht.P"))));
+        const double rise = s.global(QStringLiteral("ht.Tmax")).value_or(0) - 293.15;
+        QVERIFY2(rise > 0.1 && rise < 100, qPrintable(s.globalText(QStringLiteral("ht.Tmax"))));
+        QVERIFY(s.global(QStringLiteral("ht.Tmin")).value_or(0) >= 293.15 - 1e-9);
+        const QString said = doc->messages().join(QStringLiteral("\n"));
+        QVERIFY2(said.contains(QStringLiteral("ht.Tmax = ")) && said.contains(QStringLiteral("algebraic multigrid")), qPrintable(said));
+        // Its faces coloured by their values, under a legend of ht.T.
+        int shaded = 0;
+        for (const View3D::Triangle& t : doc->view()->scene().triangles) shaded += t.shaded ? 1 : 0;
+        QVERIFY(shaded > 100);
+        QVERIFY(doc->view()->legend().shown);
+        QVERIFY2(doc->view()->legend().title.startsWith(QStringLiteral("ht.T")), qPrintable(doc->view()->legend().title));
+        QVERIFY(std::abs(doc->plotRange().second - s.global(QStringLiteral("ht.Tmax")).value_or(0)) < 1e-9 * 300);
+        QVERIFY(drawn(doc->view()->picture()) > 100);
+        // Another plot; a bad one said, the last good one's range kept.
+        doc->setPlotExpression(QStringLiteral("ht.normq"));
+        QVERIFY(doc->view()->legend().title.startsWith(QStringLiteral("ht.normq")));
+        QVERIFY(doc->plotRange().second > 1e3);
+        doc->setPlotExpression(QStringLiteral("ht.nothing"));
+        QVERIFY(doc->messages().last().contains(QStringLiteral("ht.nothing")));
+        doc->setPlotExpression(QStringLiteral("ht.T"));
+        // Cut across z through the oxide: the slice's triangles too.
+        const int before = int(doc->view()->scene().triangles.size());
+        auto* clip = doc->findChild<QComboBox*>(QStringLiteral("mp3Clip"));
+        auto* at = doc->findChild<QSlider*>(QStringLiteral("mp3ClipAt"));
+        QVERIFY(clip && at);
+        clip->setCurrentIndex(3);
+        emit clip->activated(3);
+        at->setValue(90);
+        QVERIFY2(int(doc->view()->scene().triangles.size()) > before, qPrintable(QStringLiteral("%1, then %2").arg(before).arg(doc->view()->scene().triangles.size())));
+        clip->setCurrentIndex(0);
+        emit clip->activated(0);
+        // An edit: stale, said beside the bar; twice the power, twice the rise
+        // (F2 as Compute).
+        Model m = doc->model();
+        QList<Model::Parameter> ps = m.parameters();
+        for (Model::Parameter& p : ps)
+            if (p.name == QLatin1String("P")) p.expression = QStringLiteral("20[mW]");
+        m.setParameters(ps);
+        QVERIFY(doc->setModel(m, QStringLiteral("power")));
+        QVERIFY(doc->solutionStale());
+        const QLabel* stage = doc->findChild<QLabel*>(QStringLiteral("mp3Stage"));
+        QVERIFY(stage && stage->isVisible() && stage->text().contains(QStringLiteral("Compute again")));
+        app->slotSimulate(doc);
+        QVERIFY(doc->waitForIdle(300000));
+        QVERIFY2(doc->solution() && !doc->solutionStale(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        const double rise2 = doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0) - 293.15;
+        QVERIFY2(rise2 > 2 * rise && rise2 < 2.05 * rise, qPrintable(QStringLiteral("%1, then %2").arg(rise).arg(rise2)));
+        QVERIFY(!stage->isVisible());
+    }
+
+    /// A 3D model's physics through the panel: heat, electrostatics and
+    /// currents offered on its component (no solid mechanics, no
+    /// semiconductor); its study's step without the plane's adaptive
+    /// refinement, its nonlinear methods without Newton's.
+    void physicsThroughThePanel()
+    {
+        Multiphysics3DDoc* doc = app->newMultiphysics3DModel();
+        const QStringList adds = addsOf(panel()->menuFor(doc->model().component().tag));
+        QVERIFY2(adds.contains(QStringLiteral("Heat Transfer in Solids")) && adds.contains(QStringLiteral("Electrostatics"))
+                     && adds.contains(QStringLiteral("Electric Currents")) && !adds.contains(QStringLiteral("Solid Mechanics"))
+                     && !adds.contains(QStringLiteral("Semiconductor")),
+                 qPrintable(adds.join(QStringLiteral(", "))));
+        const QString ht = panel()->addNode(doc->model().component().tag, QStringLiteral("heat"));
+        QVERIFY(!ht.isEmpty());
+        QCOMPARE(doc->model().find(ht)->text(QStringLiteral("order")), QStringLiteral("1"));
+        const QStringList features = addsOf(panel()->menuFor(ht));
+        QVERIFY2(features.contains(QStringLiteral("Temperature")) && features.contains(QStringLiteral("Heat Flux")), qPrintable(features.join(QStringLiteral(", "))));
+        QString step;
+        for (const FNode& c : doc->model().root.children)
+            if (c.type == QLatin1String("study"))
+                for (const FNode& st : c.children) step = st.tag;
+        QVERIFY(!step.isEmpty());
+        panel()->selectNode(step);
+        QVERIFY(panel()->editorFor(QStringLiteral("solver")) != nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("adaptive")) == nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("lightloop")) == nullptr);
+        const QStringList methods = valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("nonlinear"))));
+        QVERIFY2(methods.contains(QStringLiteral("picard")) && !methods.contains(QStringLiteral("newton")), qPrintable(methods.join(QStringLiteral(", "))));
+        QVERIFY(qobject_cast<QListWidget*>(panel()->editorFor(QStringLiteral("physics"))) != nullptr);
+        // A heat model's solid of the user's k: its anisotropy the plane's
+        // alone offered isotropic.
+        QString solid;
+        for (const FNode& c : doc->model().find(ht)->children)
+            if (c.type == QLatin1String("heat/solid")) solid = c.tag;
+        doc->editNode(solid, [](FNode& n) { n.props.insert(QStringLiteral("source"), QStringLiteral("user")); }, QStringLiteral("user"));
+        panel()->selectNode(solid);
+        QCOMPARE(valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("anisotropy")))), QStringList{QStringLiteral("isotropic")});
+    }
+
     /// A 2D model is not opened as a 3D one, nor a 3D one as a 2D one.
     void eachItsOwn()
     {
@@ -393,9 +503,25 @@ private slots:
         }
     }
 
-    /// The view: presets, fit, the cut, a picture, what is under a point.
+    /// The view: presets, fit, the cut, a picture, what is under a point; a
+    /// shaded triangle its corners' colours blended across it.
     void theView()
     {
+        {
+            View3D lone;
+            lone.resize(200, 200);
+            View3D::Scene scene;
+            View3D::Triangle t{{Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}}, QColor(Qt::black), 1};
+            t.shaded = true;
+            t.colors = {QColor(255, 0, 0), QColor(0, 255, 0), QColor(0, 0, 255)};
+            scene.triangles.push_back(t);
+            lone.setScene(scene, true);
+            lone.viewFrom(View3D::Preset::Top);
+            const QImage image = lone.picture();
+            // (Its middle - the centroid - a mix of all three.)
+            const QColor mid = image.pixelColor(image.width() / 2 - image.width() / 12, image.height() / 2 + image.height() / 12);
+            QVERIFY2(mid.red() > 20 && mid.green() > 20 && mid.blue() > 20, qPrintable(mid.name()));
+        }
         Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("extruded_ring.qfem3d")));
         QVERIFY(doc && doc->waitForIdle());
         View3D* view = doc->view();

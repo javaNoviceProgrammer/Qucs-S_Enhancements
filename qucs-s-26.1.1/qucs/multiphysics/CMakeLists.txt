@@ -2,7 +2,9 @@
 # (drawings imported too; Lumerical's MQW projects, through a reader of
 # HDF5), mesh, elements, solver - its scalar physics and solid mechanics -
 # results and materials - Qt Core only, no widgets;
-# on Eigen and CDT (header-only, third_party/) and the Clipper inside gdstk.
+# on Eigen, CDT and AMGCL (header-only, third_party/) and the Clipper inside
+# gdstk. In 3D (fem3_*.cpp): layered geometry, the swept mesh, prisms, and
+# heat, electrostatics and currents solved by multigrid (fem_amg.cpp).
 # The window's part (the Multiphysics panel, a model's tab) is in qucs-core.
 
 set(FEM_SRCS
@@ -14,9 +16,14 @@ set(FEM_SRCS
   fem3_mesh.cpp
   fem_modeprofile.cpp
   fem_fe.cpp
+  fem3_fe.cpp
   fem_solver.cpp
+  fem3_solver.cpp
   fem_sparse.cpp
+  fem_amg.cpp
   fem_scalar.cpp
+  fem3_scalar.cpp
+  fem3_results.cpp
   fem_elastic.cpp
   fem_magnetic.cpp
   fem_edge.cpp
@@ -51,7 +58,7 @@ target_compile_features(fem PUBLIC cxx_std_20)
 target_include_directories(fem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # (Clipper 6.4.2, built into gdstk: its header from there.)
 target_include_directories(fem SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/gdstk/external)
-target_link_libraries(fem PUBLIC Qt6::Core eigen cdt PRIVATE gdstk)
+target_link_libraries(fem PUBLIC Qt6::Core eigen cdt PRIVATE gdstk amgcl)
 # M_PI and its kin in <cmath> under -std=c++20 with MinGW and MSVC too.
 target_compile_definitions(fem PUBLIC _USE_MATH_DEFINES)
 # The sparse direct factorizations (fem_sparse.cpp): on macOS Accelerate's -
