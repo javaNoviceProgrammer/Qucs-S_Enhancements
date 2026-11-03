@@ -945,10 +945,17 @@ QList<NodeKind> makeKinds()
     auto planeTensor = [](const QString& key, const QString& symbol, const QString& unit, const QString& def) {
         const QString user = QStringLiteral("source=user&anisotropy!=isotropic");
         return QList<P>{
-            shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")},
-                           {tr("Isotropic"), tr("Diagonal (x, y)"), tr("Symmetric (xx, yy, xy)")}, QStringLiteral("isotropic"),
-                           tr("In the model's axes (r and z about an axis); a material's tensor is its own, turned by its orientation")),
-                    QStringLiteral("source=user")),
+            [] {
+                // (A 3D model's user value is isotropic: these tensors are the
+                // plane's.)
+                P a = shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"),
+                                     {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")},
+                                     {tr("Isotropic"), tr("Diagonal (x, y)"), tr("Symmetric (xx, yy, xy)")}, QStringLiteral("isotropic"),
+                                     tr("In the model's axes (r and z about an axis); a material's tensor is its own, turned by its orientation")),
+                              QStringLiteral("source=user"));
+                a.choiceSpaces = {Spaces::All, Spaces::TwoD, Spaces::TwoD};
+                return a;
+            }(),
             shownIf(spatial(key + QStringLiteral("xx"), symbol + QStringLiteral(", xx"), unit, def), user),
             shownIf(spatial(key + QStringLiteral("yy"), symbol + QStringLiteral(", yy"), unit, def), user),
             shownIf(spatial(key + QStringLiteral("xy"), symbol + QStringLiteral(", xy"), unit, QStringLiteral("0")),
@@ -3728,9 +3735,25 @@ QList<NodeKind> makeKinds()
         QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
     const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
                                   QStringLiteral("mesh/zdistribution")};
+    // Solved in 3D too: heat, electrostatics and currents with their
+    // features, and a study's Stationary step - its adaptive refinement and
+    // its light loop the plane's, its nonlinear method Picard's in turn.
+    auto solvedIn3D = [](const QString& type) {
+        for (const char* p : {"heat", "electrostatics", "currents"})
+            if (type == QLatin1String(p) || type.startsWith(QLatin1String(p) + QLatin1Char('/'))) return true;
+        return type == QLatin1String("study") || type == QLatin1String("stationary");
+    };
     for (NodeKind& kind : k) {
-        if (shared.contains(kind.type)) kind.spaces = Spaces::All;
+        if (shared.contains(kind.type) || solvedIn3D(kind.type)) kind.spaces = Spaces::All;
         else if (threeD.contains(kind.type)) kind.spaces = Spaces::ThreeD;
+        if (kind.type != QLatin1String("stationary")) continue;
+        for (P& p : kind.properties) {
+            if (QStringList{QStringLiteral("adaptive"), QStringLiteral("adaptsteps"), QStringLiteral("adaptphysics"), QStringLiteral("lightloop"),
+                            QStringLiteral("lighttol"), QStringLiteral("lightmax")}
+                    .contains(p.key))
+                p.spaces = Spaces::TwoD;
+            if (p.key == QLatin1String("nonlinear")) p.choiceSpaces = {Spaces::All, Spaces::TwoD, Spaces::All};
+        }
     }
     return k;
 }
@@ -4027,6 +4050,9 @@ Model Model::blank3d()
 {
     Model m;
     m.component().props.insert(QStringLiteral("space"), QStringLiteral("3D"));
+    // (A study at rest, as a 2D model's: its physics solved by Compute.)
+    Node study = m.make(QStringLiteral("study"));
+    m.add(QStringLiteral("model"), study);
     return m;
 }
 
@@ -4187,6 +4213,9 @@ Node Model::make(const QString& type) const
         c.isDefault = k->group == QLatin1String("physics");
         n.children.push_back(c);
     }
+    // (A 3D model's physics of order 1: a quadratic prism has some eight
+    // times as many unknowns - order 2 its own choice.)
+    if (k->group == QLatin1String("physics") && is3D() && k->property(QStringLiteral("order"))) n.props.insert(QStringLiteral("order"), QStringLiteral("1"));
     return n;
 }
 
@@ -4721,6 +4750,12 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     m.root.children.push_back(results);
 
     m.normalise(&problems);
+    // A 3D model's physics without an order: order 1, as one made in it.
+    if (m.is3D())
+        for (Node& c : m.component().children)
+            if (c.kind() && c.kind()->group == QLatin1String("physics") && c.kind()->property(QStringLiteral("order"))
+                && !c.props.contains(QStringLiteral("order")))
+                c.props.insert(QStringLiteral("order"), QStringLiteral("1"));
     if (error) *error = problems.join(QLatin1String("; "));
     return m;
 }

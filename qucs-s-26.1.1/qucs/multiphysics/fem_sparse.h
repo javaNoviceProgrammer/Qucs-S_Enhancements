@@ -141,6 +141,12 @@ public:
     SparseCholesky(const SparseCholesky&) = delete;
     SparseCholesky& operator=(const SparseCholesky&) = delete;
 
+    /// The fill-reducing ordering of Accelerate's analysis: its default, or
+    /// METIS's - a 3D model's: at a million unknowns of a 3D Laplacian 2.6
+    /// times less memory and 3.7 times quicker (the proposal of 2
+    /// November). Before analyzePattern(); Eigen's takes its own (AMD).
+    enum class Ordering { Default, Metis };
+    void setOrdering(Ordering ordering);
     void analyzePattern(const Matrix& a);
     /// Fails where the matrix is not positive definite - or is singular to
     /// rounding (a potential left floating: its pivots no better than

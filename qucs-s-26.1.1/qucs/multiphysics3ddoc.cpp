@@ -1,6 +1,6 @@
 /*
  * multiphysics3ddoc.cpp - a 3D multiphysics model in a tab: its file, its
- *                         Undo, its geometry and mesh built in the
+ *                         Undo, its geometry, mesh and solution made in the
  *                         background, the 3D view of them
  *
  * This file is part of Qucs-S.
@@ -12,8 +12,10 @@
  */
 #include "multiphysics3ddoc.h"
 
+#include "fem3_results.h"
 #include "ink.h"
 #include "misc.h"
+#include "multiphysicsview.h"
 #include "qucs.h"
 
 #include <QApplication>
@@ -27,6 +29,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLocale>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -43,7 +46,10 @@
 #include <QUndoStack>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <limits>
 
 using namespace qucs_s::fem;
 
@@ -99,6 +105,9 @@ const QColor Highlight(31, 111, 235);
 
 struct Multiphysics3DDoc::Job {
     bool mesh = false;                       ///< a mesh asked (its geometry first, when none given)
+    bool solve = false;                      ///< a solve asked (its mesh first, when none given)
+    std::shared_ptr<const Mesh3> givenMesh;  ///< the mesh a solve is on (none: made by it)
+    StudyResult3 study;
     Model model;
     std::shared_ptr<ParameterScope> parameters;
     std::shared_ptr<Topology3> topology;     ///< the geometry a mesh is of (given: not built again)
@@ -206,16 +215,29 @@ void Multiphysics3DDoc::buildUi()
         requestGeometry();
     });
     connect(a_buildMesh, &QToolButton::clicked, this, &Multiphysics3DDoc::buildMesh);
+    a_compute = button(tr("Compute"), tr("Solve the model's study (its geometry and mesh first, where they changed)"), "mp3Compute");
+    connect(a_compute, &QToolButton::clicked, this, &Multiphysics3DDoc::compute);
     row->addSpacing(8);
     row->addWidget(new QLabel(tr("Show:"), bar));
     a_showBox = new QComboBox(bar);
     a_showBox->setObjectName(QStringLiteral("mp3Show"));
-    a_showBox->addItems({tr("Geometry"), tr("Mesh")});
+    a_showBox->addItems({tr("Geometry"), tr("Mesh"), tr("Solution")});
     row->addWidget(a_showBox);
     connect(a_showBox, &QComboBox::activated, this, [this](int index) {
-        if (index == 1) showMesh();
+        if (index == 2) showSolution();
+        else if (index == 1) showMesh();
         else showGeometry();
     });
+    row->addWidget(new QLabel(tr("Plot:"), bar));
+    a_plotBox = new QComboBox(bar);
+    a_plotBox->setObjectName(QStringLiteral("mp3Plot"));
+    a_plotBox->setEditable(true);
+    a_plotBox->setMinimumContentsLength(10);
+    a_plotBox->setToolTip(tr("What the solution is coloured by: a variable (ht.T, es.normE, ec.Qrh...) or an expression of them"));
+    a_plotBox->setEnabled(false);
+    row->addWidget(a_plotBox);
+    connect(a_plotBox, &QComboBox::activated, this, [this](int) { setPlotExpression(a_plotBox->currentText()); });
+    connect(a_plotBox->lineEdit(), &QLineEdit::editingFinished, this, [this] { setPlotExpression(a_plotBox->currentText()); });
     row->addSpacing(8);
     struct Preset {
         const char* name;
@@ -255,6 +277,8 @@ void Multiphysics3DDoc::buildUi()
         const int axis = a_clipBox->currentData().toInt();
         a_clipSlider->setEnabled(axis >= 0);
         a_view->setClip(axis, a_clipSlider->value() / 100.0);
+        // (A solution's slice at the cut.)
+        if (a_show == Show::Solution) updateScene();
     };
     connect(a_clipBox, &QComboBox::activated, this, clip);
     connect(a_clipSlider, &QSlider::valueChanged, this, clip);
@@ -469,6 +493,7 @@ void Multiphysics3DDoc::applyModel(const Model& model, bool read)
     a_model.fileName = a_DocName;
     ++a_revision;
     const bool geometry = read || before.geometry != after.geometry;
+    if (a_solution) a_solutionStale = true;
     if (geometry) {
         a_geometryStale = true;
         a_meshStale = true;
@@ -476,6 +501,12 @@ void Multiphysics3DDoc::applyModel(const Model& model, bool read)
     } else if (before.mesh != after.mesh) {
         a_meshStale = true;
         if (a_show == Show::Mesh) showGeometry();
+    }
+    // (Read from its file: what was solved is of another model.)
+    if (read) {
+        a_solution.reset();
+        a_plotCache = {};
+        if (a_show == Show::Solution) a_show = Show::Geometry;
     }
     if (!a_focus.isEmpty() && !a_model.find(a_focus)) a_focus.clear();
     updateHighlight();
@@ -502,7 +533,22 @@ bool Multiphysics3DDoc::geometryBeingBuilt() const
 
 bool Multiphysics3DDoc::meshBeingMade() const
 {
-    return a_job && a_job->mesh;
+    return a_job && (a_job->mesh || (a_job->solve && !a_job->givenMesh));
+}
+
+bool Multiphysics3DDoc::solving() const
+{
+    return a_job && a_job->solve;
+}
+
+void Multiphysics3DDoc::compute()
+{
+    if (a_closed) return;
+    if (a_job) {
+        a_solveWanted = true;
+        return;
+    }
+    startJob(false, true);
 }
 
 void Multiphysics3DDoc::requestGeometry()
@@ -530,6 +576,7 @@ void Multiphysics3DDoc::cancel()
 {
     a_geometryWanted = false;
     a_meshWanted = false;
+    a_solveWanted = false;
     if (a_job) a_job->cancel = true;
 }
 
@@ -537,23 +584,25 @@ bool Multiphysics3DDoc::waitForIdle(int ms)
 {
     QElapsedTimer t;
     t.start();
-    while ((a_job || a_geometryTimer->isActive() || a_geometryWanted || a_meshWanted) && t.elapsed() < ms) {
+    while ((a_job || a_geometryTimer->isActive() || a_geometryWanted || a_meshWanted || a_solveWanted) && t.elapsed() < ms) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QThread::msleep(2);
     }
-    return !a_job && !a_geometryTimer->isActive() && !a_geometryWanted && !a_meshWanted;
+    return !a_job && !a_geometryTimer->isActive() && !a_geometryWanted && !a_meshWanted && !a_solveWanted;
 }
 
-void Multiphysics3DDoc::startJob(bool mesh)
+void Multiphysics3DDoc::startJob(bool mesh, bool solve)
 {
     auto job = std::make_shared<Job>();
     job->mesh = mesh;
+    job->solve = solve;
     job->model = a_model;
     job->parameters = parameters();
     job->revision = a_revision;
     if (!a_geometryStale && a_geometry.ok()) job->topology = a_geometry.topology;
+    if (solve && job->topology && a_mesh && !a_meshStale) job->givenMesh = a_mesh;
     a_job = job;
-    a_stage->setText(mesh ? tr("Building the mesh") : tr("Building the geometry"));
+    a_stage->setText(solve ? tr("Solving") : mesh ? tr("Building the mesh") : tr("Building the geometry"));
     a_progress->setValue(0);
     a_stage->show();
     a_progress->show();
@@ -565,9 +614,19 @@ void Multiphysics3DDoc::startJob(bool mesh)
             if (!job->geometry.ok() || job->cancel) return;
             job->topology = job->geometry.topology;
         }
-        if (job->mesh)
-            job->meshBuild = buildMesh3(job->model, *job->parameters, job->topology, [job](double fraction, const QString&) {
-                job->permille = int(1000 * fraction);
+        // (A solve's mesh made first, where it has none: its first part.)
+        const double meshShare = job->solve ? 0.3 : 1.0;
+        if ((job->mesh || job->solve) && !job->givenMesh) {
+            job->meshBuild = buildMesh3(job->model, *job->parameters, job->topology, [job, meshShare](double fraction, const QString&) {
+                job->permille = int(1000 * meshShare * fraction);
+                return !job->cancel.load();
+            });
+            if (!job->meshBuild.mesh || job->cancel) return;
+            job->givenMesh = job->meshBuild.mesh;
+        }
+        if (job->solve)
+            job->study = solveStudy3(job->model, job->parameters, job->givenMesh, QString(), [job, meshShare](double fraction, const QString&) {
+                job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
                 return !job->cancel.load();
             });
     });
@@ -622,7 +681,7 @@ void Multiphysics3DDoc::jobFinished()
             }
             fit = !a_firstShown && a_geometry.topology && !a_geometry.topology->domains.empty();
         }
-        if (job->mesh) {
+        if (job->mesh || (job->solve && job->meshBuild.mesh)) {
             for (const QString& w : job->meshBuild.warnings) say(tr("Mesh: %1").arg(w));
             if (job->meshBuild.mesh) {
                 a_mesh = job->meshBuild.mesh;
@@ -636,11 +695,19 @@ void Multiphysics3DDoc::jobFinished()
                         .arg(m.minAngle, 0, 'f', 1)
                         .arg(m.maxStretch, 0, 'g', 3)
                         .arg(job->started.elapsed()));
-                a_show = Show::Mesh;
+                if (!job->solve) a_show = Show::Mesh;
             } else if (!job->built || job->geometry.ok()) {
                 say(tr("Mesh: %1").arg(job->meshBuild.error.isEmpty() ? tr("not made") : job->meshBuild.error), true);
             }
         }
+        if (job->solve) {
+            if (job->built && !job->geometry.ok()) say(tr("Not solved: the geometry is not built"), true);
+            else if (!job->givenMesh) {
+                if (job->meshBuild.error.isEmpty() && !job->meshBuild.mesh) say(tr("Not solved: there is no mesh"), true);
+            } else sayFinished(job->study, job->started.elapsed());
+        }
+    } else if (job->solve) {
+        say(tr("Not solved: the model changed while it was - Compute again"), true);
     }
     if (fit) a_firstShown = true;
     updateHighlight();
@@ -648,9 +715,12 @@ void Multiphysics3DDoc::jobFinished()
     // What was asked meanwhile, or the model changed under it.
     const bool geometryAgain = a_geometryWanted || (a_geometryStale && !job->cancel);
     const bool meshAgain = a_meshWanted;
+    const bool solveAgain = a_solveWanted;
     a_geometryWanted = false;
     a_meshWanted = false;
-    if (meshAgain) startJob(true);
+    a_solveWanted = false;
+    if (solveAgain) startJob(false, true);
+    else if (meshAgain) startJob(true);
     else if (geometryAgain) startJob(false);
     updateState();
 }
@@ -669,7 +739,14 @@ void Multiphysics3DDoc::watchFiles()
 
 void Multiphysics3DDoc::updateState()
 {
-    a_showBox->setCurrentIndex(a_show == Show::Mesh ? 1 : 0);
+    a_showBox->setCurrentIndex(a_show == Show::Solution ? 2 : a_show == Show::Mesh ? 1 : 0);
+    a_plotBox->setEnabled(a_solution != nullptr);
+    // (A solution shown as it was before an edit: said beside the bar.)
+    if (!a_job) {
+        const bool stale = a_show == Show::Solution && a_solution && a_solutionStale;
+        a_stage->setText(stale ? tr("The solution is of the model before its last change: Compute again") : QString());
+        a_stage->setVisible(stale);
+    }
     emit stateChanged();
 }
 
@@ -693,6 +770,81 @@ void Multiphysics3DDoc::showMesh()
     a_show = Show::Mesh;
     updateScene();
     updateState();
+}
+
+void Multiphysics3DDoc::showSolution()
+{
+    if (!a_solution) {
+        say(tr("Not solved yet: Compute first"), true);
+        updateState();
+        return;
+    }
+    a_show = Show::Solution;
+    updateScene();
+    updateState();
+}
+
+QString Multiphysics3DDoc::plotExpression() const
+{
+    if (!a_plot.isEmpty()) return a_plot;
+    if (a_solution && !a_solution->fields().empty()) {
+        const Field3& f = a_solution->fields().front();
+        return f.tag + QLatin1Char('.') + f.variable;
+    }
+    return {};
+}
+
+void Multiphysics3DDoc::setPlotExpression(const QString& text)
+{
+    const QString t = text.trimmed();
+    if (t == a_plot) return;
+    a_plot = t;
+    if (a_solution && !t.isEmpty()) {
+        const Expression e = Expression::compile(t, a_solution->scope());
+        if (!e.isValid()) say(tr("Plot %1: %2").arg(t, e.error()), true);
+    }
+    if (a_plotBox && a_plotBox->currentText() != plotExpression()) a_plotBox->setEditText(plotExpression());
+    if (a_show == Show::Solution) updateScene();
+}
+
+void Multiphysics3DDoc::fillPlotChoices()
+{
+    if (!a_plotBox || !a_solution) return;
+    const QString now = plotExpression();
+    a_plotBox->clear();
+    for (const Field3& f : a_solution->fields()) {
+        const QString p = f.tag + QLatin1Char('.');
+        a_plotBox->addItem(p + f.variable);
+        if (f.type == QLatin1String("heat")) a_plotBox->addItem(p + QStringLiteral("normq"));
+        else if (f.type == QLatin1String("electrostatics")) {
+            a_plotBox->addItem(p + QStringLiteral("normE"));
+            a_plotBox->addItem(p + QStringLiteral("normD"));
+        } else if (f.type == QLatin1String("currents")) {
+            a_plotBox->addItem(p + QStringLiteral("normJ"));
+            a_plotBox->addItem(p + QStringLiteral("Qrh"));
+            a_plotBox->addItem(p + QStringLiteral("normE"));
+        }
+    }
+    // (What was plotted kept, where the solution still reads it.)
+    if (!a_plot.isEmpty() && !Expression::compile(a_plot, a_solution->scope()).isValid()) a_plot.clear();
+    a_plotBox->setEditText(a_plot.isEmpty() ? plotExpression() : now);
+}
+
+void Multiphysics3DDoc::sayFinished(const StudyResult3& r, qint64 ms)
+{
+    for (const QString& line : r.log) say(line);
+    if (!r.solution) {
+        say(tr("Not solved: %1").arg(r.error), true);
+        return;
+    }
+    a_solution = r.solution;
+    a_solutionStale = false;
+    for (const Variable& g : a_solution->globals())
+        say(tr("%1 = %2%3").arg(g.name, a_solution->globalText(g.name),
+                                g.description.isEmpty() ? QString() : QStringLiteral(" (") + g.description + QLatin1Char(')')));
+    say(tr("Shown: %1 (%2 ms in all)").arg(plotExpression()).arg(ms));
+    fillPlotChoices();
+    a_show = Show::Solution;
 }
 
 void Multiphysics3DDoc::focusNode(const QString& tag)
@@ -736,6 +888,7 @@ void Multiphysics3DDoc::updateScene(bool fit)
 {
     if (!a_view) return;
     View3D::Scene scene;
+    View3D::Legend legend;
     const Topology3* t = a_geometry.topology.get();
     const QColor text = palette().color(QPalette::Text);
     const bool dark = qucs_s::ink::isDark(palette().color(QPalette::Base));
@@ -754,7 +907,83 @@ void Multiphysics3DDoc::updateScene(bool fit)
         const Topology3::Face& face = t->faces[std::size_t(f)];
         return domainColor(std::max(face.back, face.front));
     };
-    if (a_show == Show::Mesh && a_mesh && !a_meshStale && a_mesh->topology) {
+    if (a_show == Show::Solution && a_solution) {
+        // Its faces coloured by the expression at their nodes, and the cut's
+        // slice of it where the view is cut.
+        const Solution3& sol = *a_solution;
+        const Mesh3& m = sol.mesh();
+        t = m.topology.get();
+        const QString text = plotExpression();
+        const Expression e = Expression::compile(text, sol.scope());
+        const std::vector<QRgb>& table = colorTable(QStringLiteral("rainbow"));
+        std::vector<double> nodal(m.nodes.size(), std::numeric_limits<double>::quiet_NaN());
+        std::vector<SliceTriangle> cut;
+        if (e.isValid()) {
+            if (a_plotCache.solution != a_solution || a_plotCache.text != text) a_plotCache = {a_solution, text, nodalValues(sol, e)};
+            nodal = a_plotCache.nodal;
+            const int axis = a_clipBox->currentData().toInt();
+            if (axis >= 0 && t) {
+                const Box3& b = t->bounds;
+                const double lo = axis == 0 ? b.x0 : axis == 1 ? b.y0 : b.z0, hi = axis == 0 ? b.x1 : axis == 1 ? b.y1 : b.z1;
+                cut = slice(sol, e, axis, lo + (hi - lo) * a_clipSlider->value() / 100.0);
+            }
+        }
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (double v : nodal)
+            if (std::isfinite(v)) {
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+        for (const SliceTriangle& st : cut)
+            for (double v : st.value)
+                if (std::isfinite(v)) {
+                    lo = std::min(lo, v);
+                    hi = std::max(hi, v);
+                }
+        if (!(hi >= lo)) lo = hi = 0;
+        a_plotRange = {lo, hi};
+        const QColor none(190, 190, 190);
+        auto colourOf = [&table, lo, hi, none](double v) {
+            if (!std::isfinite(v)) return none;
+            const double u = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+            return QColor::fromRgb(table[std::size_t(std::clamp(int(u * double(table.size() - 1) + 0.5), 0, int(table.size()) - 1))]);
+        };
+        for (const Mesh3::Face& f : m.faces) {
+            const int n0 = f.nodes[0], n1 = f.nodes[1], n2 = f.nodes[2];
+            View3D::Triangle a{{m.nodes[std::size_t(n0)], m.nodes[std::size_t(n1)], m.nodes[std::size_t(n2)]}, none, f.face};
+            a.shaded = true;
+            a.colors = {colourOf(nodal[std::size_t(n0)]), colourOf(nodal[std::size_t(n1)]), colourOf(nodal[std::size_t(n2)])};
+            scene.triangles.push_back(a);
+            if (f.quad) {
+                const int n3 = f.nodes[3];
+                View3D::Triangle b{{m.nodes[std::size_t(n0)], m.nodes[std::size_t(n2)], m.nodes[std::size_t(n3)]}, none, f.face};
+                b.shaded = true;
+                b.colors = {colourOf(nodal[std::size_t(n0)]), colourOf(nodal[std::size_t(n2)]), colourOf(nodal[std::size_t(n3)])};
+                scene.triangles.push_back(b);
+            }
+        }
+        for (const SliceTriangle& st : cut) {
+            View3D::Triangle c{st.p, none, -1};
+            c.shaded = true;
+            c.colors = {colourOf(st.value[0]), colourOf(st.value[1]), colourOf(st.value[2])};
+            scene.triangles.push_back(c);
+        }
+        if (t) {
+            for (int edge = 0; edge < int(t->edges.size()); ++edge) {
+                const std::vector<Vec3> line = t->edgePolyline(edge);
+                for (std::size_t i = 0; i + 1 < line.size(); ++i) scene.lines.push_back({line[i], line[i + 1], edgeColor, 1, edge});
+            }
+            scene.bounds = t->bounds;
+        }
+        if (e.isValid()) {
+            const QString unit = unitName(e.dim()).isEmpty() ? (e.dim().isNone() ? QString() : dimName(e.dim())) : unitName(e.dim());
+            legend.title = unit.isEmpty() ? text : QStringLiteral("%1 (%2)").arg(text, unit);
+            legend.low = formatQuantity(lo, e.dim());
+            legend.high = formatQuantity(hi, e.dim());
+            legend.table = table;
+            legend.shown = true;
+        }
+    } else if (a_show == Show::Mesh && a_mesh && !a_meshStale && a_mesh->topology) {
         const Mesh3& m = *a_mesh;
         t = m.topology.get();
         for (const Mesh3::Face& f : m.faces) {
@@ -797,5 +1026,6 @@ void Multiphysics3DDoc::updateScene(bool fit)
                          : a_geometryStale && a_job ? tr("Building the geometry…")
                                                     : tr("No solids yet: add a Box, a Cylinder, an Extrude of a sketch or a Layer Stack to "
                                                          "the Geometry (the Multiphysics 3D panel's tree)."));
+    a_view->setLegend(std::move(legend));
     a_view->setScene(std::move(scene), fit);
 }
