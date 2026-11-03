@@ -1,0 +1,30 @@
+{
+    "format": "qucs-s multiphysics 3d 1",
+    "title": "A heater on a chip's oxide",
+    "description": "A layer stack - a silicon substrate under its oxide - with an aluminium heater on the oxide and a via down through it: layered solids made one into domains, faces, edges and points, and a mesh of prisms swept from the plan's triangles. The via in the oxide is a domain of its own, as where any two solids meet.",
+    "parameters": [
+        {"name": "w", "expression": "40[um]", "description": "the heater's length"},
+        {"name": "d", "expression": "10[um]", "description": "its width"},
+        {"name": "t", "expression": "0.5[um]", "description": "its thickness"}
+    ],
+    "components": [{
+        "unit": "um",
+        "space": "3D",
+        "geometry": [
+            {"type": "stack", "label": "chip", "window": "box", "from": ["0", "0"], "to": ["100", "60"],
+             "stack": [["substrate", "", "0", "20"], ["oxide", "", "20", "4"]]},
+            {"type": "box", "label": "heater", "base": "center", "position": ["50", "30"], "size": ["w", "d"], "z": "24", "height": "t"},
+            {"type": "cylinder", "label": "via", "center": ["50", "30"], "radius": "2", "z": "20", "height": "4"},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"layer": ["substrate"]}},
+            {"material": "Silicon dioxide", "selection": {"layer": ["oxide"]}},
+            {"material": "Aluminium", "selection": {"only": ["heater", "via"]}}
+        ],
+        "mesh": {"size": "normal",
+                 "features": [{"type": "zdistribution", "selection": {"only": ["heater"]}, "count": 2}]}
+    }],
+    "studies": [],
+    "results": {"plots": [], "derived": []}
+}

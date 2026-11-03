@@ -547,6 +547,11 @@ bool MultiphysicsDoc::load()
         misc::reportError(tr("Cannot read %1:\n%2").arg(a_DocName, why));
         return false;
     }
+    // (A 3D model's file: Multiphysics 3D's, a .qfem3d.)
+    if (m->is3D()) {
+        misc::reportError(tr("Cannot read %1:\nit is a 3D model - Multiphysics 3D opens it (as a .qfem3d)").arg(a_DocName));
+        return false;
+    }
     if (!why.isEmpty()) say(tr("Read with notes: %1").arg(why));
     a_readNotes = why;
     m->fileName = a_DocName;
@@ -580,7 +585,7 @@ bool MultiphysicsDoc::reload()
     if (!file.open(QIODevice::ReadOnly)) return false;
     QString why;
     std::optional<Model> m = Model::fromJson(file.readAll(), &why);
-    if (!m) return false;
+    if (!m || m->is3D()) return false;
     a_readNotes = why;
     m->fileName = a_DocName;
     const QString focus = a_focus;

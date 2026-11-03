@@ -684,6 +684,8 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             if (k->selection != Level::None) ko.insert(QStringLiteral("selects"), levelName(k->selection));
             if (!props.isEmpty()) ko.insert(QStringLiteral("properties"), props);
             if (!k->children.isEmpty()) ko.insert(QStringLiteral("children"), QJsonArray::fromStringList(k->children));
+            // (A 3D model's own kinds - a .qfem3d's, Multiphysics 3D's - said so.)
+            if (!(k->spaces & Spaces::TwoD)) ko.insert(QStringLiteral("space"), QStringLiteral("3D"));
             if (!k->help.isEmpty()) ko.insert(QStringLiteral("help"), k->help);
             kinds.append(ko);
         }

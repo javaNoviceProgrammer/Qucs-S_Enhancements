@@ -9,7 +9,9 @@ set(FEM_SRCS
   fem_expr.cpp
   fem_model.cpp
   fem_geometry.cpp
+  fem3_geometry.cpp
   fem_mesh.cpp
+  fem3_mesh.cpp
   fem_modeprofile.cpp
   fem_fe.cpp
   fem_solver.cpp

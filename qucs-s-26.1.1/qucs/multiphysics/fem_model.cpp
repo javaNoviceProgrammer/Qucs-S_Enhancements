@@ -32,6 +32,8 @@ QString tr(const char* text)
 }
 
 const QString FormatName = QStringLiteral("qucs-s multiphysics 1");
+/// A 3D model's (a .qfem3d's): the 2D file's shape, its component's space 3D.
+const QString FormatName3D = QStringLiteral("qucs-s multiphysics 3d 1");
 
 } // namespace
 
@@ -41,6 +43,7 @@ QString levelName(Level level)
     case Level::Domain: return QStringLiteral("domain");
     case Level::Boundary: return QStringLiteral("boundary");
     case Level::Point: return QStringLiteral("point");
+    case Level::Edge: return QStringLiteral("edge");
     case Level::None: break;
     }
     return {};
@@ -52,6 +55,7 @@ QString levelNames(Level level)
     case Level::Domain: return QStringLiteral("domains");
     case Level::Boundary: return QStringLiteral("boundaries");
     case Level::Point: return QStringLiteral("points");
+    case Level::Edge: return QStringLiteral("edges");
     case Level::None: break;
     }
     return {};
@@ -62,6 +66,7 @@ Level levelOf(const QString& name)
     if (name.startsWith(QLatin1String("domain"))) return Level::Domain;
     if (name.startsWith(QLatin1String("boundar"))) return Level::Boundary;
     if (name.startsWith(QLatin1String("point"))) return Level::Point;
+    if (name.startsWith(QLatin1String("edge"))) return Level::Edge;
     return Level::None;
 }
 
@@ -71,6 +76,11 @@ Dim PropertyDef::dim() const
     if (unit.isEmpty() || unit == QLatin1String("angle")) return Dim();
     const std::optional<Unit> u = parseUnit(unit);
     return u ? u->dim : Dim();
+}
+
+bool PropertyDef::choiceIn(int index, unsigned space) const
+{
+    return index < 0 || index >= choiceSpaces.size() || (choiceSpaces.at(index) & space) != 0;
 }
 
 const PropertyDef* NodeKind::property(const QString& key) const
@@ -270,11 +280,14 @@ QList<NodeKind> makeKinds()
              tr("A function given by a table: of one argument, linear between its points; of two, on a grid of every x with "
                 "every y, bilinear between them (an imported optical generation map); constant beyond them.")});
     }
+    // (A 3D model's component is one too, its space 3D: not a choice of the
+    // 2D panel's, and not shown in the 3D one.)
     add({QStringLiteral("component"), tr("Component (2D)"), QString(), QStringLiteral("component"), Level::None,
-         {choice(QStringLiteral("space"), tr("Space"), {QStringLiteral("2D"), QStringLiteral("axisymmetric")},
-                 {tr("2D, in the plane"), tr("2D axisymmetric: about the y axis (r, z)")}, QStringLiteral("2D"),
-                 tr("Axisymmetric: x is the distance r from the axis, y is z along it; what is integrated is integrated "
-                    "round the axis (2πr)")),
+         {shownIf(choice(QStringLiteral("space"), tr("Space"), {QStringLiteral("2D"), QStringLiteral("axisymmetric")},
+                         {tr("2D, in the plane"), tr("2D axisymmetric: about the y axis (r, z)")}, QStringLiteral("2D"),
+                         tr("Axisymmetric: x is the distance r from the axis, y is z along it; what is integrated is integrated "
+                            "round the axis (2πr)")),
+                  QStringLiteral("space!=3D")),
           choice(QStringLiteral("unit"), tr("Length unit"),
                  {QStringLiteral("m"), QStringLiteral("cm"), QStringLiteral("mm"), QStringLiteral("um"), QStringLiteral("nm"),
                   QStringLiteral("in"), QStringLiteral("mil")},
@@ -289,18 +302,25 @@ QList<NodeKind> makeKinds()
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
-    add({QStringLiteral("selection"), tr("Selection"), QStringLiteral("selection"), QStringLiteral("selection"), Level::Domain,
-         {choice(QStringLiteral("level"), tr("Level"), {QStringLiteral("domain"), QStringLiteral("boundary"), QStringLiteral("point")},
-                 {tr("Domains"), tr("Boundaries"), tr("Points")}, QStringLiteral("domain")),
-          selectionProp(none)},
-         {}, {}, false, false, QStringLiteral("sel"), tr("A named selection: {\"named\": \"its name\"} in a rule.")});
+    {
+        P level = choice(QStringLiteral("level"), tr("Level"),
+                         {QStringLiteral("domain"), QStringLiteral("boundary"), QStringLiteral("point"), QStringLiteral("edge")},
+                         {tr("Domains"), tr("Boundaries"), tr("Points"), tr("Edges")}, QStringLiteral("domain"),
+                         tr("In a 3D model a boundary is a face, and an edge where faces meet"));
+        level.choiceSpaces = {Spaces::All, Spaces::All, Spaces::All, Spaces::ThreeD};
+        add({QStringLiteral("selection"), tr("Selection"), QStringLiteral("selection"), QStringLiteral("selection"), Level::Domain,
+             {level, selectionProp(none)},
+             {}, {}, false, false, QStringLiteral("sel"), tr("A named selection: {\"named\": \"its name\"} in a rule.")});
+    }
 
     // Geometry.
     const QStringList geometryFeatures = {
         QStringLiteral("rectangle"), QStringLiteral("circle"), QStringLiteral("ellipse"), QStringLiteral("polygon"),
         QStringLiteral("point"), QStringLiteral("move"), QStringLiteral("rotate"), QStringLiteral("scale"),
         QStringLiteral("mirror"), QStringLiteral("array"), QStringLiteral("union"), QStringLiteral("difference"),
-        QStringLiteral("intersection"), QStringLiteral("import"), QStringLiteral("crosssection"), QStringLiteral("process")};
+        QStringLiteral("intersection"), QStringLiteral("import"), QStringLiteral("crosssection"), QStringLiteral("process"),
+        // (A 3D model's: layered solids.)
+        QStringLiteral("stack"), QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude")};
     add({QStringLiteral("geometry"), tr("Geometry"), QString(), QStringLiteral("geometry"), Level::None, {}, geometryFeatures,
          {QStringLiteral("form union")}, true, true, QString(),
          tr("A sequence of features, built in order: each makes objects of the parameters. Form Union makes them one: "
@@ -728,6 +748,68 @@ QList<NodeKind> makeKinds()
                tr("Relative to the geometry's size: points nearer than this are one"))},
          {}, {}, true, true, QStringLiteral("fin"),
          tr("Every object's edges, split where they cross: the domains they close, the boundaries and points.")});
+    // A 3D model's solids: layered, each a region of the plan from a bottom z
+    // up through a height, made one slab by slab (fem3_geometry.h).
+    {
+        const P bottom = expr(QStringLiteral("z"), tr("Bottom z"), QStringLiteral("length"), QStringLiteral("0"));
+        const P height = expr(QStringLiteral("height"), tr("Height"), QStringLiteral("length"), QStringLiteral("1"),
+                              tr("Up from its bottom, along z"));
+        add({QStringLiteral("box"), tr("Box"), QStringLiteral("geometry"), QStringLiteral("box"), Level::None,
+             {choice(QStringLiteral("base"), tr("Position at"), {QStringLiteral("corner"), QStringLiteral("center")},
+                     {tr("Corner"), tr("Center")}, QStringLiteral("corner"), tr("Of its footprint, in x and y")),
+              pair(QStringLiteral("position"), tr("Position (x, y)"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
+              pair(QStringLiteral("size"), tr("Width, depth"), QStringLiteral("length"), QStringLiteral("1"), QStringLiteral("1")),
+              bottom, height, rotation},
+             {}, {}, false, false, QStringLiteral("blk"),
+             tr("A box along z: a rectangle of the plan (turned about z by its rotation) from its bottom up through its height.")});
+        add({QStringLiteral("cylinder"), tr("Cylinder"), QStringLiteral("geometry"), QStringLiteral("cylinder"), Level::None,
+             {pair(QStringLiteral("center"), tr("Center (x, y)"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
+              expr(QStringLiteral("radius"), tr("Radius"), QStringLiteral("length"), QStringLiteral("1")), bottom, height},
+             {}, {}, false, false, QStringLiteral("cyl"),
+             tr("A cylinder along z: a circle of the plan from its bottom up through its height.")});
+        const QStringList sketchFeatures = {
+            QStringLiteral("rectangle"), QStringLiteral("circle"), QStringLiteral("ellipse"), QStringLiteral("polygon"),
+            QStringLiteral("move"), QStringLiteral("rotate"), QStringLiteral("scale"), QStringLiteral("mirror"), QStringLiteral("array"),
+            QStringLiteral("union"), QStringLiteral("difference"), QStringLiteral("intersection"), QStringLiteral("import")};
+        add({QStringLiteral("extrude"), tr("Extrude"), QStringLiteral("geometry"), QStringLiteral("extrude"), Level::None,
+             {bottom, height}, sketchFeatures, {}, false, false, QStringLiteral("ext"),
+             tr("A sketch of the plan - rectangles, circles, ellipses, polygons, a drawing's or a layout's shapes imported, moved, "
+                "turned, arrayed, united, cut - extruded along z from its bottom up through its height: each object the sketch ends "
+                "with a solid of its name, the extrude's name all of them. Its features use its own objects alone.")});
+        P layout;
+        layout.key = QStringLiteral("file");
+        layout.label = tr("Layout");
+        layout.kind = P::File;
+        layout.defaultValue = QString();
+        layout.tooltip = tr("A GDSII or OASIS layout whose layers rows may name, its path relative to the model's folder (empty: "
+                            "every row across the window)");
+        P rows;
+        rows.key = QStringLiteral("stack");
+        rows.label = tr("Layers");
+        rows.kind = P::Rows;
+        rows.choiceLabels = {tr("Name"), tr("Layer"), tr("z (µm)"), tr("Thickness (µm)")};
+        rows.defaultValue = QJsonArray();
+        rows.tooltip = tr("Each row a solid of that name from z up through its thickness: where the layout draws its layer (as 1/0) "
+                          "in the window, or with no layer across the whole window (a substrate, an oxide, air). µm, or with units - "
+                          "a Layout Cross-Section's stack");
+        add({QStringLiteral("stack"), tr("Layer Stack"), QStringLiteral("geometry"), QStringLiteral("stack"), Level::None,
+             {rows, layout,
+              shownIf(text(QStringLiteral("cell"), tr("Cell"), QString(), tr("Flattened (empty: its largest top cell)")), QStringLiteral("file!=")),
+              choice(QStringLiteral("window"), tr("Window"), {QStringLiteral("auto"), QStringLiteral("box")},
+                     {tr("Round the other solids and the layout's shapes"), tr("A box")}, QStringLiteral("auto")),
+              shownIf(expr(QStringLiteral("margin"), tr("Margin (µm)"), QString(), QStringLiteral("0"),
+                           tr("Beyond what the window is round, on each side: µm, or with units")),
+                      QStringLiteral("window=auto")),
+              shownIf(pair(QStringLiteral("from"), tr("Window from (x, y)"), QString(), QStringLiteral("0"), QStringLiteral("0"),
+                           tr("In the plan: µm, or with units (a layout's coordinates)")),
+                      QStringLiteral("window=box")),
+              shownIf(pair(QStringLiteral("to"), tr("Window to (x, y)"), QString(), QStringLiteral("100"), QStringLiteral("100")),
+                      QStringLiteral("window=box"))},
+             {}, {}, false, false, QStringLiteral("stk"),
+             tr("A chip's layers from the bottom up: each row a solid of its name from its z up through its thickness, across a window "
+                "of the plan - or, its layer named, where a layout draws that layer in the window. Where rows meet (a trace in its "
+                "oxide) the overlap is a domain of its own, as where any solids meet. The stack's name all of its rows.")});
+    }
 
     // Materials.
     add({QStringLiteral("materials"), tr("Materials"), QString(), QStringLiteral("materials"), Level::None, {},
@@ -2719,7 +2801,8 @@ QList<NodeKind> makeKinds()
                        tr("An element on a curve at most this times its radius")), QStringLiteral("custom=true")),
           shownIf(expr(QStringLiteral("narrow"), tr("Resolution of narrow regions"), QString(), QString(),
                        tr("Elements across a gap between boundaries, at least")), QStringLiteral("custom=true"))},
-         {QStringLiteral("mesh/size"), QStringLiteral("mesh/distribution"), QStringLiteral("mesh/layered")}, {}, true, true, QString(),
+         {QStringLiteral("mesh/size"), QStringLiteral("mesh/distribution"), QStringLiteral("mesh/layered"), QStringLiteral("mesh/zdistribution")},
+         {}, true, true, QString(),
          tr("Triangles, Delaunay, refined till their angles are good and their sizes as asked.")});
     add({QStringLiteral("mesh/size"), tr("Size"), QStringLiteral("mesh"), QStringLiteral("meshsize"), Level::Domain,
          {choice(QStringLiteral("level"), tr("Level"), {QStringLiteral("domain"), QStringLiteral("boundary"), QStringLiteral("point")},
@@ -2745,6 +2828,13 @@ QList<NodeKind> makeKinds()
          tr("A stack of thin layers - an MQW's wells and barriers, each a rectangle - as a grid of stretched triangles: so many "
             "across each layer, the lateral size along them; not refined, its sides never split. Forty 6 nm layers under a 2 µm "
             "mesa some 6400 triangles, not the 200 000 isotropic ones they force.")});
+    add({QStringLiteral("mesh/zdistribution"), tr("Distribution in z"), QStringLiteral("mesh"), QStringLiteral("meshdistribution"),
+         Level::Domain,
+         {selectionProp(none), integer(QStringLiteral("count"), tr("Elements across"), 4,
+                                       tr("Prisms across each domain's height, shared among the slabs it spans by their thickness"))},
+         {}, {}, false, false, QStringLiteral("zd"),
+         tr("A 3D model's swept mesh: so many prisms across its domains' height. Elsewhere the element size says, graded from thin "
+            "layers at the growth rate.")});
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
@@ -3628,6 +3718,20 @@ QList<NodeKind> makeKinds()
                 "gain and index and saves them (model_tag_mqw.ldf; a study's fields swept, model_tag_mqw_1.ldf... each). A study's sweep of the "
                 "carrier density is mqwindex's densities.")});
     }
+    // The kinds a 3D model shares with 2D ones (a union of solids, of a
+    // sketch's objects; a material, a mesh's size), and its own.
+    const QSet<QString> shared = {
+        QStringLiteral("model"), QStringLiteral("definitions"), QStringLiteral("parameters"), QStringLiteral("analytic"),
+        QStringLiteral("interpolation"), QStringLiteral("component"), QStringLiteral("selections"), QStringLiteral("selection"),
+        QStringLiteral("geometry"), QStringLiteral("union"), QStringLiteral("difference"), QStringLiteral("intersection"),
+        QStringLiteral("form union"), QStringLiteral("materials"), QStringLiteral("material"), QStringLiteral("mesh"),
+        QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
+    const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
+                                  QStringLiteral("mesh/zdistribution")};
+    for (NodeKind& kind : k) {
+        if (shared.contains(kind.type)) kind.spaces = Spaces::All;
+        else if (threeD.contains(kind.type)) kind.spaces = Spaces::ThreeD;
+    }
     return k;
 }
 
@@ -3659,6 +3763,18 @@ QList<const NodeKind*> nodeKinds()
     QList<const NodeKind*> list;
     for (const NodeKind& k : kinds()) list << &k;
     return list;
+}
+
+QStringList childKinds(const Node& parent, unsigned space)
+{
+    QStringList out;
+    const NodeKind* k = parent.kind();
+    if (!k) return out;
+    for (const QString& type : k->children) {
+        const NodeKind* ck = nodeKind(type);
+        if (ck && (ck->spaces & space)) out << type;
+    }
+    return out;
 }
 
 QStringList physicsTypes()
@@ -3907,6 +4023,25 @@ Model Model::blank()
     return m;
 }
 
+Model Model::blank3d()
+{
+    Model m;
+    m.component().props.insert(QStringLiteral("space"), QStringLiteral("3D"));
+    return m;
+}
+
+unsigned Model::space() const
+{
+    const QString s = component().text(QStringLiteral("space"));
+    return s == QLatin1String("3D") ? Spaces::ThreeD : s == QLatin1String("axisymmetric") ? Spaces::Axisymmetric : Spaces::Plane;
+}
+
+unsigned Model::spaceUnder(const Node& parent) const
+{
+    // (An Extrude's sketch is of the plan.)
+    return parent.type == QLatin1String("extrude") ? unsigned(Spaces::Plane) : space();
+}
+
 Node& Model::definitions()
 {
     return *root.child(QStringLiteral("definitions"));
@@ -4072,6 +4207,17 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
         if (error) *error = tr("a %1 may not go under %2").arg(k->title, parent->name());
         return nullptr;
     }
+    // Of the space it goes in: a box a 3D model's, a rectangle a 2D one's
+    // (or a 3D Extrude's sketch's).
+    if (!(k->spaces & spaceUnder(*parent))) {
+        if (error) {
+            if (!(k->spaces & Spaces::TwoD)) *error = tr("a %1 is a 3D model's, not a 2D one's").arg(k->title);
+            else if (is3D() && parent->type == QLatin1String("geometry") && (k->spaces & Spaces::Plane))
+                *error = tr("a %1 is of the plan: in a 3D model it goes in an Extrude's sketch").arg(k->title);
+            else *error = tr("a %1 is not a 3D model's (not yet)").arg(k->title);
+        }
+        return nullptr;
+    }
     if (k->unique && parent->child(node.type)) {
         if (error) *error = tr("%1 has a %2 already").arg(parent->name(), k->title);
         return nullptr;
@@ -4190,6 +4336,21 @@ void namesIn(const Node& geometry, const QString& before, QStringList& out)
         if (f.type == QLatin1String("process")) {
             for (const QString& name : processObjectNames(f))
                 if (!out.contains(name)) out << name;
+            continue;
+        }
+        // (A 3D Extrude's sketch's objects, each a solid of its name, and a
+        // Layer Stack's rows; the feature's name all of them.)
+        if (f.type == QLatin1String("extrude") || f.type == QLatin1String("stack")) {
+            if (!f.label.isEmpty() && !out.contains(f.label)) out << f.label;
+            for (const Node& c : f.children) {
+                if (!before.isEmpty() && c.tag == before) return;
+                if (!c.label.isEmpty() && !out.contains(c.label)) out << c.label;
+            }
+            for (const QJsonValue& v : f.value(QStringLiteral("stack")).toArray()) {
+                const QJsonValue cell = v.toArray().at(0);
+                const QString name = cell.isDouble() ? formatNumber(cell.toDouble(), 15) : cell.toString().trimmed();
+                if (!name.isEmpty() && !out.contains(name)) out << name;
+            }
             continue;
         }
         if (f.type == QLatin1String("form union") || f.label.isEmpty()) continue;
@@ -4472,11 +4633,20 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     comp.label = c.value(QStringLiteral("label")).toString();
     for (const char* key : {"unit", "thickness"})
         if (c.contains(QString::fromLatin1(key))) comp.props.insert(QString::fromLatin1(key), c.value(QString::fromLatin1(key)));
+    // A 3D model's format says so ("qucs-s multiphysics 3d 1"), and its space.
+    const bool format3D = format.startsWith(QLatin1String("qucs-s multiphysics 3d"));
     if (c.contains(QStringLiteral("space"))) {
-        // "2D", or about an axis: "axisymmetric" ("2D axisymmetric", "2Daxi").
+        // "2D", or about an axis: "axisymmetric" ("2D axisymmetric", "2Daxi"),
+        // or "3D".
         const QString space = c.value(QStringLiteral("space")).toString().trimmed().toLower();
         if (space.contains(QLatin1String("axi"))) comp.props.insert(QStringLiteral("space"), QStringLiteral("axisymmetric"));
-        else if (space != QLatin1String("2d")) problems << tr("the space %1 is not built yet: 2D and 2D axisymmetric are").arg(space);
+        else if (space == QLatin1String("3d")) comp.props.insert(QStringLiteral("space"), QStringLiteral("3D"));
+        else if (space != QLatin1String("2d")) problems << tr("the space %1 is not built: 2D, 2D axisymmetric and 3D are").arg(space);
+    }
+    if (format3D && comp.props.value(QStringLiteral("space")).toString() != QLatin1String("3D")) {
+        if (c.contains(QStringLiteral("space")))
+            problems << tr("its format is a 3D model's and its space %1: read as 3D").arg(c.value(QStringLiteral("space")).toString());
+        comp.props.insert(QStringLiteral("space"), QStringLiteral("3D"));
     }
     Node selections;
     selections.type = QStringLiteral("selections");
@@ -4558,7 +4728,7 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
 QJsonObject Model::toObject() const
 {
     QJsonObject o;
-    o.insert(QStringLiteral("format"), FormatName);
+    o.insert(QStringLiteral("format"), is3D() ? FormatName3D : FormatName);
     if (!root.label.isEmpty()) o.insert(QStringLiteral("title"), root.label);
     if (root.props.contains(QStringLiteral("description")))
         o.insert(QStringLiteral("description"), root.props.value(QStringLiteral("description")));

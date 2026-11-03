@@ -29,13 +29,20 @@
 
 namespace qucs_s::fem {
 
-/// What a selection picks: domains, boundaries or points.
-enum class Level { None, Domain, Boundary, Point };
-QString levelName(Level level);   // "domain", "boundary", "point"
+/// What a selection picks: domains, boundaries or points - and in a 3D model
+/// edges, where a boundary is a face.
+enum class Level { None, Domain, Boundary, Point, Edge };
+QString levelName(Level level);   // "domain", "boundary", "point", "edge"
 /// Their plural, where a message speaks of more than one: an "s" added to
 /// levelName() made "boundarys" (the hunt of 23 October, N1).
-QString levelNames(Level level);   // "domains", "boundaries", "points"
+QString levelNames(Level level);   // "domains", "boundaries", "points", "edges"
 Level levelOf(const QString& name);
+
+/// The spaces a model is of, and those a node kind (a choice) applies in, as
+/// a mask: a 2D model's plane, a 2D axisymmetric one's, a 3D model's.
+namespace Spaces {
+enum : unsigned { Plane = 1, Axisymmetric = 2, ThreeD = 4, TwoD = Plane | Axisymmetric, All = Plane | Axisymmetric | ThreeD };
+}
 
 /// One of a node kind's properties: what it is, how it is entered.
 struct PropertyDef {
@@ -78,8 +85,13 @@ struct PropertyDef {
     /// A Choice that takes a value of its unit in its place too (Absorption
     /// per: a length) - its step reads and checks it.
     bool orValue = false;
+    /// By choice, the spaces it is offered in (empty: every choice in every
+    /// space) - a selection's edges, a 3D model's.
+    QList<unsigned> choiceSpaces;
 
     Dim dim() const;
+    /// Whether choice \a index is offered in \a space (Spaces).
+    bool choiceIn(int index, unsigned space) const;
 };
 
 /// A kind of node: a rectangle, a material, a terminal, a surface plot.
@@ -96,6 +108,9 @@ struct NodeKind {
     bool unique = false;        ///< one at most under its parent
     QString prefix;             ///< of its tags: "r" for r1, r2...
     QString help;
+    /// The spaces it applies in (Spaces): a rectangle a 2D model's (and a 3D
+    /// Extrude's sketch's), a box a 3D model's, a material each one's.
+    unsigned spaces = Spaces::TwoD;
 
     const PropertyDef* property(const QString& key) const;
 };
@@ -103,6 +118,10 @@ struct NodeKind {
 /// The node kinds, by type; null for one unknown.
 const NodeKind* nodeKind(const QString& type);
 QList<const NodeKind*> nodeKinds();
+struct Node;
+/// The kinds that may go under \a parent in \a space (Spaces): its kind's
+/// children that apply there.
+QStringList childKinds(const Node& parent, unsigned space);
 /// The physics interfaces' kinds, and the defaults of their tags.
 QStringList physicsTypes();
 
@@ -169,6 +188,9 @@ public:
     Model();
     /// A new model: the tree's parts, a study, empty.
     static Model blank();
+    /// A new 3D model (a .qfem3d's): the tree's parts, its component's space
+    /// 3D; no study (none solves in 3D yet).
+    static Model blank3d();
     static std::optional<Model> fromJson(const QByteArray& json, QString* error = nullptr);
     QByteArray toJson() const;
     QJsonObject toObject() const;
@@ -196,6 +218,13 @@ public:
     std::vector<const Node*> physics() const;
     /// About an axis (2D axisymmetric): x is r, y is z.
     bool axisymmetric() const { return component().text(QStringLiteral("space")) == QLatin1String("axisymmetric"); }
+    /// A 3D model's: its component's space 3D (a .qfem3d, "qucs-s multiphysics 3d 1").
+    bool is3D() const { return component().text(QStringLiteral("space")) == QLatin1String("3D"); }
+    /// Its space (Spaces::Plane, Axisymmetric or ThreeD).
+    unsigned space() const;
+    /// The space of the nodes under \a parent: the model's - a 2D one under a
+    /// 3D Extrude, its sketch.
+    unsigned spaceUnder(const Node& parent) const;
     std::vector<const Node*> studies() const;
 
     Node* find(const QString& tag);
