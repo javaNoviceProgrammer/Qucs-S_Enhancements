@@ -4189,6 +4189,13 @@ private slots:
         // The library's materials with a group of materials.
         r = call("fem_describe", {{"what", "format"}, {"group", "material"}});
         QVERIFY(json(r).contains("materials"));
+        // A 3D model's kinds said to be its own.
+        r = call("fem_describe", {{"what", "format"}, {"group", "geometry"}, {"text", "none"}});
+        QStringList threeD, plane;
+        for (const QJsonValue& k : json(r).value("kinds").toArray())
+            (k.toObject().value("space").toString() == QLatin1String("3D") ? threeD : plane) << k.toObject().value("type").toString();
+        QVERIFY2(threeD.contains("box") && threeD.contains("stack") && plane.contains("rectangle") && plane.contains("union"),
+                 qPrintable(threeD.join(", ")));
     }
 
     void savingTheModelItsPathNames()

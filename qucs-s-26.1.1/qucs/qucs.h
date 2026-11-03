@@ -74,6 +74,8 @@ class MultiphysicsDoc;
 class MultiphysicsPanel;
 class RF25Doc;
 class RF25Panel;
+class Multiphysics3DDoc;
+class Multiphysics3DPanel;
 class StatusPanel;
 
 class QLabel;
@@ -324,7 +326,7 @@ public:
   /// page added before another moved every jump to the wrong panel - and
   /// the number a session kept meant another page the next time; each is
   /// looked up by page now.
-  enum class SidePage { Workspaces, Projects, Content, Components, Libraries, FileBrowser, Multiphysics, Rf25 };
+  enum class SidePage { Workspaces, Projects, Content, Components, Libraries, FileBrowser, Multiphysics, Rf25, Multiphysics3D };
   /// Where \a page is in the dock, or -1 when this build has it not.
   int sidePage(SidePage page) const;
   /// Shows \a page; false when it is not there.
@@ -354,6 +356,9 @@ public:
   /// The RF 2.5D tab of the left dock (rf25panel.h).
   RF25Panel *rf25Panel() const { return a_rf25Panel; }
   QMenu *rf25Menu() const { return a_rf25Menu; }
+  /// The Multiphysics 3D tab of the left dock (multiphysics3dpanel.h).
+  Multiphysics3DPanel *multiphysics3DPanel() const { return a_multiphysics3DPanel; }
+  QMenu *multiphysics3DMenu() const { return a_multiphysics3DMenu; }
   QDockWidget *claudeDockWidget() const { return claudeDock; }
   /// The dock the tuner is shown in while tuning is on (made the first time).
   QDockWidget *tunerDockWidget() const { return tunerDock; }
@@ -595,6 +600,14 @@ public:
   RF25Doc *newRf25Model();
   /// The left dock's RF 2.5D tab brought to the front.
   void showRf25Panel();
+  /// Whether \a w is a 3D multiphysics model in a tab (multiphysics3ddoc.h).
+  static bool isMultiphysics3DDocument(QWidget *);
+  /// Whether a file of that name is a 3D multiphysics model (.qfem3d).
+  static bool isMultiphysics3DFile(const QString &name);
+  /// A new 3D multiphysics model in a tab, untitled; its panel shown.
+  Multiphysics3DDoc *newMultiphysics3DModel();
+  /// The left dock's Multiphysics 3D tab brought to the front.
+  void showMultiphysics3DPanel();
   /// Opens \a path in the text editor whatever its kind - an SVG's text -
   /// in place of its picture's tab when that is open. False when it could
   /// not be read.
@@ -1015,10 +1028,14 @@ private:
   QMenu *a_multiphysicsMenu = nullptr;
   RF25Panel *a_rf25Panel = nullptr;                   // the left dock's RF 2.5D tab
   QMenu *a_rf25Menu = nullptr;
+  Multiphysics3DPanel *a_multiphysics3DPanel = nullptr;   // the left dock's Multiphysics 3D tab
+  QMenu *a_multiphysics3DMenu = nullptr;
   void initMultiphysics();   // its tab and menu (qucs_multiphysics.cpp)
   void updateMultiphysicsMenu();
   void initRf25();           // its tab and menu (qucs_rf25.cpp)
   void updateRf25Menu();
+  void initMultiphysics3D(); // its tab and menu (qucs_multiphysics3d.cpp)
+  void updateMultiphysics3DMenu();
   PythonPlotsPane *a_pythonPlots = nullptr;
   QDockWidget *a_pythonPlotsDock = nullptr;
   PythonVariablesPane *a_pythonVariables = nullptr;

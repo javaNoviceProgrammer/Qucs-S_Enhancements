@@ -69,6 +69,8 @@
 #include "layoutdoc.h"
 #include "multiphysicsdoc.h"
 #include "rf25doc.h"
+#include "multiphysics3ddoc.h"
+#include "multiphysics3dpanel.h"
 #include "multiphysicspanel.h"
 #include "rf25panel.h"
 #include "imagedoc.h"
@@ -246,6 +248,7 @@ QucsApp::QucsApp(bool netlist2Console) :
   initGitMenu();
   initMultiphysics();
   initRf25();
+  initMultiphysics3D();
   fillSimulatorsComboBox();
   initToolBar();
   initStatusBar();
@@ -3012,6 +3015,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     d = model;
     i = addDocumentTab(model, Info.fileName());
   }
+  else if (isMultiphysics3DFile(Name)) {
+    // A 3D multiphysics model: its 3D view, its tree in the Multiphysics 3D
+    // panel (multiphysics3ddoc.h).
+    auto *model = new Multiphysics3DDoc(this, Name);
+    d = model;
+    i = addDocumentTab(model, Info.fileName());
+  }
   else if (isLayoutFile(Name)) {
     // A GDSII or OASIS layout, read in the background (layoutdoc.h).
     auto *layout = new LayoutDoc(this, Name);
@@ -3094,6 +3104,8 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   if (isMultiphysicsDocument(documentWidget(d))) showMultiphysicsPanel();
   // An RF 2.5D model: its own.
   if (isRf25Document(documentWidget(d))) showRf25Panel();
+  // A 3D model: the Multiphysics 3D panel.
+  if (isMultiphysics3DDocument(documentWidget(d))) showMultiphysics3DPanel();
   if (Info.suffix() == "sym") {
     // We dealing with a file containing *only* a symbol definition.
     // Because of that we want to switch straight to symbol editing mode
@@ -3276,6 +3288,9 @@ bool QucsApp::saveAs()
     } else if (isRf25Document (w)) {
       Filter = tr("RF 2.5D models") + " (*.qrf25)";
       selfilter = Filter;
+    } else if (isMultiphysics3DDocument (w)) {
+      Filter = tr("3D multiphysics models") + " (*.qfem3d)";
+      selfilter = Filter;
     } else if (isPresentationDocument (w)) {
       // A copy, of its kind.
       const QString own = Info.suffix().toLower();
@@ -3348,6 +3363,9 @@ bool QucsApp::saveAs()
     }
     else if (isRf25Document (w)) {
       if (ext.compare("qrf25", Qt::CaseInsensitive) != 0) s += ".qrf25";
+    }
+    else if (isMultiphysics3DDocument (w)) {
+      if (ext.compare("qfem3d", Qt::CaseInsensitive) != 0) s += ".qfem3d";
     }
     else if (isPresentationDocument (w)) {
       // A copy of the file: of its kind.
@@ -3829,6 +3847,8 @@ void QucsApp::slotChangeView()
   if (a_multiphysicsPanel != nullptr) a_multiphysicsPanel->setDocument(qobject_cast<MultiphysicsDoc *>(w));
   // The RF 2.5D panel: the same, for a model of its own.
   if (a_rf25Panel != nullptr) a_rf25Panel->setDocument(qobject_cast<RF25Doc *>(w));
+  // The Multiphysics 3D panel: a 3D model's.
+  if (a_multiphysics3DPanel != nullptr) a_multiphysics3DPanel->setDocument(qobject_cast<Multiphysics3DDoc *>(w));
   QucsDoc * Doc = docIn(w);
   if(w==nullptr || Doc==nullptr)return;
   // for text documents
@@ -3849,7 +3869,8 @@ void QucsApp::slotChangeView()
   // width; for spreadsheets: cells; for a picture: Copy as Image copies
   // it, Print Fit prints it as large as the page goes
   else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-           || isImageDocument (w) || isMultiphysicsDocument (w) || isRf25Document (w) || isPresentationDocument (w)) {
+           || isImageDocument (w) || isMultiphysicsDocument (w) || isRf25Document (w) || isMultiphysics3DDocument (w)
+           || isPresentationDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -3906,7 +3927,8 @@ void QucsApp::slotFileSettings ()
 
   QWidget * w = DocumentTab->currentWidget ();
   if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-      || isImageDocument (w) || isMultiphysicsDocument (w) || isRf25Document (w) || isPresentationDocument (w)) return;   // nothing to set
+      || isImageDocument (w) || isMultiphysicsDocument (w) || isRf25Document (w) || isMultiphysics3DDocument (w)
+      || isPresentationDocument (w)) return;   // nothing to set
   if (qobject_cast<PythonDoc *> (w)) {
     statusBar()->showMessage(tr("A Python script has no document settings: the Python toolbar chooses the Python it "
                                 "runs with."), 5000);
@@ -4260,6 +4282,8 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     loaded = model->reload();   // (its view kept; the steps of Undo gone)
   } else if (auto *rf = dynamic_cast<RF25Doc *>(doc)) {
     loaded = rf->reload();      // (the node chosen kept; the steps of Undo gone)
+  } else if (auto *model3 = dynamic_cast<Multiphysics3DDoc *>(doc)) {
+    loaded = model3->reload();  // (its view kept; the steps of Undo gone)
   } else if (auto *layout = dynamic_cast<LayoutDoc *>(doc)) {
     loaded = layout->reload();   // (in the background, the cell and view kept)
   } else if (auto *image = dynamic_cast<ImageDoc *>(doc)) {
@@ -4981,6 +5005,11 @@ void QucsApp::slotSimulate(QWidget *w)
                                   "what it holds."), 5000);
       return;
   }
+  if (isMultiphysics3DDocument(w)) {
+      statusBar()->showMessage(tr("A 3D model is not solved yet: its geometry and its mesh are what it holds (Multiphysics 3D > "
+                                  "Build Mesh)."), 5000);
+      return;
+  }
   if (isImageDocument(w)) {
       statusBar()->showMessage(tr("A picture is not simulated."), 3000);
       return;
@@ -5298,7 +5327,8 @@ void QucsApp::slotToPage()
       || isLayoutDocument(DocumentTab->currentWidget())
       || isImageDocument(DocumentTab->currentWidget())
       || isPresentationDocument(DocumentTab->currentWidget())
-      || isMultiphysicsDocument(DocumentTab->currentWidget())) return;   // no data display
+      || isMultiphysicsDocument(DocumentTab->currentWidget())
+      || isMultiphysics3DDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -5405,7 +5435,8 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // imagedoc.h), whatever the text editor of the settings.
   if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath) || qucs_s::xml::isXmlFile(absolutePath)
       || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)
-      || isMultiphysicsFile(absolutePath) || isRf25File(absolutePath) || isPresentationFile(absolutePath)) {
+      || isMultiphysicsFile(absolutePath) || isRf25File(absolutePath) || isMultiphysics3DFile(absolutePath)
+      || isPresentationFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -5644,7 +5675,7 @@ void QucsApp::openDroppedFile(const QString &file)
   const bool known = ext == "sch" || ext == "dpl" || ext == "sym" || ext == "dat"
                      || textDocumentSuffixes().contains(ext) || textFileSuffixes().contains(ext)
                      || isImageFile(file)   // (an SVG is text: its picture all the same)
-                     || isMultiphysicsFile(file) || isRf25File(file)   // (JSON, read as a model and not as text)
+                     || isMultiphysicsFile(file) || isRf25File(file) || isMultiphysics3DFile(file)   // (JSON, read as a model and not as text)
                      || isPresentationFile(file)
                      || !userProgramFor(ext).isEmpty();
   if (known || !misc::isTextFile(info.absoluteFilePath()))

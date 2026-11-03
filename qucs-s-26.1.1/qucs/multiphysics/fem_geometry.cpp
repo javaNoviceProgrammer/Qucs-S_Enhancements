@@ -346,6 +346,8 @@ public:
     }
     /// A process flow's progress told to it; false from it stops the flow.
     void setProgress(const std::function<bool(double, const QString&)>& progress) { a_progress = progress; }
+    /// Its objects alone made, not made one (buildObjects).
+    void setObjectsOnly(bool only) { a_objectsOnly = only; }
 
     GeometryBuild build(const QString& upTo)
     {
@@ -381,6 +383,20 @@ public:
                 break;
             }
             if (!upTo.isEmpty() && (f.tag == upTo || inside)) break;
+        }
+        if (a_objectsOnly) {
+            // (Its objects as made, before Form Union: a 3D model's sketch.)
+            auto t = std::make_shared<Topology>();
+            t->objects = a_objects;
+            t->curves = a_curves;
+            t->unitScale = a_scale;
+            t->unitName = a_unitName;
+            for (const GObject& o : a_objects) {
+                t->objectNames << o.name;
+                t->bounds = t->bounds.isNull() ? o.bounds() : t->bounds.united(o.bounds());
+            }
+            out.topology = t;
+            return out;
         }
         QString why;
         out.topology = formUnion(tolerance, &why);
@@ -1228,6 +1244,7 @@ private:
     QString a_until;  // a process flow's step the build stops after
     std::shared_ptr<ProcessRun> a_processRun;   // a process flow's, run by the feature
     std::function<bool(double, const QString&)> a_progress;   // told to its flow
+    bool a_objectsOnly = false;
     std::vector<Curve> a_curves;
     std::vector<GObject> a_objects;
 };
@@ -1276,23 +1293,26 @@ private:
     std::unordered_map<unsigned long long, std::vector<int>> a_cells;
 };
 
-std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
+/// Form Union of \a objects, their edges on \a curves (Builder::formUnion, and a 3D
+/// model's plan).
+std::shared_ptr<Topology> formUnionOf(const std::vector<GObject>& objects, const std::vector<Curve>& curves, double unitScale,
+                                      const QString& unitName, double relTolerance, QString* why)
 {
     auto topo = std::make_shared<Topology>();
-    topo->unitScale = a_scale;
-    topo->unitName = a_unitName;
+    topo->unitScale = unitScale;
+    topo->unitName = unitName;
     QRectF box;
-    for (const GObject& o : a_objects) {
+    for (const GObject& o : objects) {
         topo->objectNames << o.name;
         const QRectF b = o.bounds();
         box = box.isNull() ? b : box.united(b);
     }
-    topo->objects = a_objects;
-    if (a_objects.empty() || box.isNull()) {
+    topo->objects = objects;
+    if (objects.empty() || box.isNull()) {
         // Nothing to make one: no domains.
-        topo->curves = a_curves;
+        topo->curves = curves;
         topo->bounds = box;
-        if (a_objects.empty()) *why = tr("the geometry has no objects");
+        if (objects.empty()) *why = tr("the geometry has no objects");
         return topo;
     }
     const double diag = std::max(std::hypot(box.width(), box.height()), 1e-300);
@@ -1303,18 +1323,18 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
     // triangulation's words, "#1 is a duplicate of #4294967295": the fuzz
     // of 21 October.)
     QStringList lost;
-    for (const GObject& o : a_objects) {
+    for (const GObject& o : objects) {
         const QRectF b = o.bounds();
         if (o.solid() && !(std::min(b.width(), b.height()) >= 2 * eps)) lost << o.name;
     }
     const QString lostText = lost.isEmpty() ? QString()
         : tr("%1: thinner than the union's tolerance, %2 %3 (%4 of the geometry's extent, %5 %3), lost to it - a position far off, or a smaller tolerance (Form Union's)")
               .arg(lost.size() <= 3 ? lost.join(QStringLiteral(", ")) : lost.mid(0, 3).join(QStringLiteral(", ")) + tr(" and %1 more").arg(lost.size() - 3),
-                   formatNumber(eps, 3), a_unitName, formatNumber(relTolerance, 3), formatNumber(diag, 3));
+                   formatNumber(eps, 3), unitName, formatNumber(relTolerance, 3), formatNumber(diag, 3));
     VertexPool pool(eps);
     std::vector<RawSegment> segs;
-    for (int oi = 0; oi < int(a_objects.size()); ++oi) {
-        const GObject& o = a_objects[std::size_t(oi)];
+    for (int oi = 0; oi < int(objects.size()); ++oi) {
+        const GObject& o = objects[std::size_t(oi)];
         auto addEdge = [&](const GEdge& e) {
             const int v0 = pool.add(e.a), v1 = pool.add(e.b);
             if (v0 == v1) return;
@@ -1475,7 +1495,7 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
                 const RawSegment& r = segs[std::size_t(original)];
                 s.curve = r.curve;
                 s.objects = r.objects;
-                const Curve& c = a_curves[std::size_t(r.curve)];
+                const Curve& c = curves[std::size_t(r.curve)];
                 if (a == r.v0 && b == r.v1) {
                     s.t0 = r.t0;
                     s.t1 = r.t1;
@@ -1521,9 +1541,10 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
         }
     }
     // Each object's area, for a domain's owner.
-    std::vector<double> objectArea(a_objects.size(), 0);
-    for (std::size_t oi = 0; oi < a_objects.size(); ++oi)
-        for (const auto& loop : a_objects[oi].loops) objectArea[oi] += signedArea(loop);
+    std::vector<double> objectArea(objects.size(), 0);
+    for (std::size_t oi = 0; oi < objects.size(); ++oi)
+        for (const auto& loop : objects[oi].loops)
+            for (const GEdge& e : loop) objectArea[oi] += cross(e.a, e.b) / 2;
     // Each part a domain when an object holds it.
     struct Found {
         Topology::Domain domain;
@@ -1545,8 +1566,8 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
         }
         Topology::Domain d;
         double ownerArea = INFINITY;
-        for (int oi = 0; oi < int(a_objects.size()); ++oi)
-            if (a_objects[std::size_t(oi)].solid() && a_objects[std::size_t(oi)].contains(inside)) {
+        for (int oi = 0; oi < int(objects.size()); ++oi)
+            if (objects[std::size_t(oi)].solid() && objects[std::size_t(oi)].contains(inside)) {
                 d.objects.insert(oi);
                 // Its owner: the smallest object that holds it (of two
                 // alike, the later).
@@ -1750,7 +1771,7 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
         pointVertices.push_back(b.start);
         pointVertices.push_back(b.end);
     }
-    for (const GObject& o : a_objects)
+    for (const GObject& o : objects)
         for (QPointF p : o.points) {
             // (the vertex the pool made of it)
             int best = -1;
@@ -1786,16 +1807,21 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
             p.objects.unite(bd.objects);
         }
     }
-    for (int oi = 0; oi < int(a_objects.size()); ++oi)
-        for (QPointF q : a_objects[std::size_t(oi)].points) {
+    for (int oi = 0; oi < int(objects.size()); ++oi)
+        for (QPointF q : objects[std::size_t(oi)].points) {
             const int pi = topo->pointAt(q, eps * 2);
             if (pi >= 0) topo->points[std::size_t(pi)].objects.insert(oi);
         }
-    topo->curves = a_curves;
+    topo->curves = curves;
     topo->bounds = box;
     if (!lostText.isEmpty()) *why = lostText;
     else if (topo->domains.empty()) *why = tr("the geometry has no domains: no solid object");
     return topo;
+}
+
+std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
+{
+    return formUnionOf(a_objects, a_curves, a_scale, a_unitName, relTolerance, why);
 }
 
 } // namespace
@@ -1806,6 +1832,22 @@ GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters
     Builder builder(model, parameters);
     builder.setProgress(progress);
     return builder.build(upTo);
+}
+
+GeometryBuild buildObjects(const Model& model, const ParameterScope& parameters)
+{
+    Builder builder(model, parameters);
+    builder.setObjectsOnly(true);
+    return builder.build({});
+}
+
+std::shared_ptr<Topology> formUnion(const std::vector<GObject>& objects, const std::vector<Curve>& curves, double unitScale,
+                                    const QString& unitName, double tolerance, QString* why)
+{
+    QString said;
+    std::shared_ptr<Topology> topology = formUnionOf(objects, curves, unitScale, unitName, tolerance > 0 ? tolerance : 1e-6, &said);
+    if (why) *why = said;
+    return topology;
 }
 
 // ------------------------------------------------------------------ Selections
@@ -1849,6 +1891,7 @@ int count(const Topology& t, Level level)
     case Level::Domain: return int(t.domains.size());
     case Level::Boundary: return int(t.boundaries.size());
     case Level::Point: return int(t.points.size());
+    case Level::Edge:   // (a 3D model's: fem3_geometry.h)
     case Level::None: break;
     }
     return 0;

@@ -88,6 +88,8 @@ function(qucs_add_fem_test name)
 endfunction()
 
 qucs_add_fem_test(test_fem_engine)
+qucs_add_fem_test(test_fem3_geometry)
+qucs_add_fem_test(test_fem3_mesh)
 qucs_add_fem_test(test_fem_sparse)
 qucs_add_fem_test(test_fem_physics)
 qucs_add_fem_test(test_fem_magnetics)
@@ -259,6 +261,7 @@ qucs_add_test(test_rf25_measured)
 set_tests_properties(test_rf25_measured PROPERTIES TIMEOUT 1200)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)
+qucs_add_test(test_multiphysics3d_doc)
 qucs_add_test(test_multiphysics_view)
 # (The window's multiphysics end to end - every physics' examples solved:
 # five minutes and more under the sanitizers on CI's runners, as the
