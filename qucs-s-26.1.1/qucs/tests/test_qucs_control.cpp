@@ -2643,6 +2643,10 @@ private slots:
             return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
         };
         QVERIFY(put(ws + "/rf/wave.qrf25", m.toJson()));
+        // (rf25_export given the circuit's node says which tool writes it,
+        //  solved or not.)
+        const QJsonObject unsolved = call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"node", circuitTag}}, 60000);
+        QVERIFY2(failed(unsolved) && text(unsolved).contains(QStringLiteral("rf25_circuit fits and writes it")), qPrintable(text(unsolved)));
 
         // The study says quasi-static; the tool asks for the full wave at 3 GHz alone.
         const QJsonObject solved =
@@ -2686,6 +2690,16 @@ private slots:
             QVERIFY(QFileInfo::exists(ws + "/rf/wave_node.sch"));
             const QJsonObject asS = call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"node", circuitTag}}, 60000);
             QVERIFY2(failed(asS) && text(asS).contains(QStringLiteral("rf25_circuit fits and writes it")), qPrintable(text(asS)));
+            // Closed, and opened again by the tools themselves: the solution
+            // kept beside the model is taken once its mesh is made, before
+            // they look for a solve (the DMG's check of 2 November found both
+            // saying nothing was solved).
+            QVERIFY(!failed(call("close_document", {{"path", ws + "/rf/wave.qrf25"}, {"unsaved", "discard"}})));
+            const QJsonObject again = call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}}, 120000);
+            QVERIFY2(!failed(again) && json(again).toObject().value("branches").toArray().size() == 3, qPrintable(text(again)));
+            QVERIFY(!failed(call("close_document", {{"path", ws + "/rf/wave.qrf25"}, {"unsaved", "discard"}})));
+            const QJsonObject exported = call("rf25_export", {{"path", ws + "/rf/wave.qrf25"}, {"file", "reopened.s2p"}}, 120000);
+            QVERIFY2(!failed(exported) && QFileInfo::exists(ws + "/rf/reopened.s2p"), qPrintable(text(exported)));
         }
         const QJsonArray ports = out.value("ports").toArray();
         QCOMPARE(ports.size(), 2);
