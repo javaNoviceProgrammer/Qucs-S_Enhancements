@@ -211,6 +211,7 @@ namespace {
 constexpr int kOwnWidth = QTextFormat::UserProperty + 0x4D44;
 constexpr int kOwnHeight = kOwnWidth + 1;
 constexpr int kAuthorWidth = kOwnWidth + 2;
+constexpr int kAuthorHeight = kOwnWidth + 3;   // (with its width: kept where the image is at that width)
 
 QSizeF ownSize(QTextDocument* document, const QString& name)
 {
@@ -442,11 +443,15 @@ bool fitImages(QTextDocument* document, qreal width)
             f.setProperty(kOwnWidth, own.width());
             f.setProperty(kOwnHeight, own.height());
             f.setProperty(kAuthorWidth, given);
+            f.setProperty(kAuthorHeight, given > 0 && f.hasProperty(QTextFormat::ImageWidth) && f.hasProperty(QTextFormat::ImageHeight) ? f.height() : 0.0);
         }
         const qreal ownWidth = f.doubleProperty(kOwnWidth), ownHeight = f.doubleProperty(kOwnHeight);
         const qreal wanted = f.doubleProperty(kAuthorWidth) > 0 ? f.doubleProperty(kAuthorWidth) : ownWidth;
         const qreal w = std::max(1.0, std::min(wanted, std::floor(im.room)));
-        const qreal h = w * ownHeight / ownWidth;
+        // (At the width its author gave with a height: that height - a
+        // thumbnail's whole pixels, not its own size's proportion to a
+        // hundredth of one, which drew it otherwise once it had been narrower.)
+        const qreal h = w == wanted && f.doubleProperty(kAuthorHeight) > 0 ? f.doubleProperty(kAuthorHeight) : w * ownHeight / ownWidth;
         if (f.hasProperty(QTextFormat::ImageWidth) && std::abs(f.width() - w) < 0.5 && std::abs(f.height() - h) < 0.5) continue;
         f.setWidth(w);
         f.setHeight(h);

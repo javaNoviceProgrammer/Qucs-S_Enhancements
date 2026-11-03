@@ -216,6 +216,13 @@ bool simulationRunning(QucsApp* app)
 
 } // namespace
 
+void QucsControl::stopRunningSimulation()
+{
+    if (SimulationConsole* console = a_app->simulationConsole(); console != nullptr && console->isRunning()) console->stopAction()->trigger();
+    for (SimMessage* m : a_app->findChildren<SimMessage*>())
+        if (m->SimProcess.state() != QProcess::NotRunning) stopProcess(m);
+}
+
 void QucsControl::stopSimulation(const QJsonObject& args, const Done& done)
 {
     SimRun* run = nullptr;
@@ -245,13 +252,8 @@ void QucsControl::stopSimulation(const QJsonObject& args, const Done& done)
     if (run != nullptr) run->stoppedBy = QStringLiteral("stop_simulation");
     // Its own process; else what runs now (it began a moment ago, or is the
     // user's): Simulation > Stop Simulation, Qucsator's Abort.
-    if (process) {
-        stopProcess(process);
-    } else {
-        if (SimulationConsole* console = a_app->simulationConsole(); console != nullptr && console->isRunning()) console->stopAction()->trigger();
-        for (SimMessage* m : a_app->findChildren<SimMessage*>())
-            if (m->SimProcess.state() != QProcess::NotRunning) stopProcess(m);
-    }
+    if (process) stopProcess(process);
+    else stopRunningSimulation();
     // Its end, told (a moment: the simulator is ended, its output read).
     auto clock = std::make_shared<QElapsedTimer>();
     clock->start();
@@ -456,11 +458,19 @@ void QucsControl::waitFor(const QJsonObject& args, const Done& done)
     clock->start();
     auto* watch = new QTimer(this);
     watch->setInterval(100);
-    connect(watch, &QTimer::timeout, this, [watch, clock, happened, done, what, event, timeout] {
-        std::optional<QJsonObject> now = happened();
-        if (!now && clock->elapsed() < qint64(timeout) * 1000) return;
+    // Cancelled by its client: the wait ended at the next look.
+    auto cancelled = std::make_shared<bool>(false);
+    const int stop = stoppable(running(), [cancelled] { *cancelled = true; });
+    connect(watch, &QTimer::timeout, this, [this, watch, clock, happened, done, what, event, timeout, cancelled, stop] {
+        std::optional<QJsonObject> now = *cancelled ? std::nullopt : happened();
+        if (!now && !*cancelled && clock->elapsed() < qint64(timeout) * 1000) return;
         watch->stop();
         watch->deleteLater();
+        stopped(stop);
+        if (*cancelled) {
+            done(errorResult(tr("Cancelled by the client.")));
+            return;
+        }
         if (!now) {
             done(jsonResult(QJsonObject{{QStringLiteral("event"), event},
                                         {QStringLiteral("happened"), false},
