@@ -88,6 +88,9 @@ struct PropertyDef {
     /// By choice, the spaces it is offered in (empty: every choice in every
     /// space) - a selection's edges, a 3D model's.
     QList<unsigned> choiceSpaces;
+    /// The spaces it is shown and read in (Spaces): a Stationary step's
+    /// adaptive refinement is the plane's, not a 3D model's.
+    unsigned spaces = Spaces::All;
 
     Dim dim() const;
     /// Whether choice \a index is offered in \a space (Spaces).

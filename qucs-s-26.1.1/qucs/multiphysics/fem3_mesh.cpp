@@ -297,10 +297,13 @@ Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std:
             Mesh3::Face f;
             f.nodes = {at(tri[0], j), at(tri[1], j), at(tri[2], j), -1};
             f.face = face;
+            f.plan = int(tr3);
+            f.height = j;
             mesh->faces.push_back(f);
         }
     }
-    for (const Mesh::Edge& e : m2.edges) {
+    for (std::size_t ei = 0; ei < m2.edges.size(); ++ei) {
+        const Mesh::Edge& e = m2.edges[ei];
         if (e.boundary < 0) continue;
         const Topology::Boundary& bd = plan.boundaries[std::size_t(e.boundary)];
         for (int k = 0; k < K; ++k) {
@@ -313,6 +316,8 @@ Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std:
                 Mesh3::Face f;
                 f.quad = true;
                 f.face = face;
+                f.plan = int(ei);
+                f.height = j;
                 if (!turned) f.nodes = {at(e.a, j), at(e.b, j), at(e.b, j + 1), at(e.a, j + 1)};
                 else f.nodes = {at(e.a, j), at(e.a, j + 1), at(e.b, j + 1), at(e.b, j)};
                 mesh->faces.push_back(f);

@@ -80,6 +80,11 @@ void QucsApp::initMultiphysics3D()
     if (Multiphysics3DDoc *doc = model()) doc->buildMesh();
   });
   mesh->setObjectName(QStringLiteral("mp3BuildMeshAction"));
+  QAction *compute = a_multiphysics3DMenu->addAction(tr("Compute"), this, [model] {
+    if (Multiphysics3DDoc *doc = model()) doc->compute();
+  });
+  compute->setObjectName(QStringLiteral("mp3ComputeAction"));
+  compute->setStatusTip(tr("Solve the 3D model's study: heat, electrostatics, electric currents"));
   a_multiphysics3DMenu->addSeparator();
   a_multiphysics3DMenu->addAction(tr("Show the Multiphysics 3D Panel"), this, [this] { showMultiphysics3DPanel(); });
   connect(a_multiphysics3DMenu, &QMenu::aboutToShow, this, &QucsApp::updateMultiphysics3DMenu);
@@ -97,7 +102,8 @@ void QucsApp::updateMultiphysics3DMenu()
 {
   auto *doc = qobject_cast<Multiphysics3DDoc *>(DocumentTab->currentWidget());
   for (QAction *a : a_multiphysics3DMenu->actions())
-    if (a->objectName() == QLatin1String("mp3BuildGeometryAction") || a->objectName() == QLatin1String("mp3BuildMeshAction"))
+    if (a->objectName() == QLatin1String("mp3BuildGeometryAction") || a->objectName() == QLatin1String("mp3BuildMeshAction")
+        || a->objectName() == QLatin1String("mp3ComputeAction"))
       a->setEnabled(doc != nullptr);
 }
 
@@ -109,7 +115,7 @@ Multiphysics3DDoc *QucsApp::newMultiphysics3DModel()
   DocumentTab->setCurrentIndex(i);
   showMultiphysics3DPanel();
   statusBar()->showMessage(tr("A new 3D model: its solids first (right-click the panel's Geometry: Add > Box, Cylinder, Extrude, "
-                              "Layer Stack)."),
+                              "Layer Stack), then its physics (right-click the Component) and Compute."),
                            6000);
   return doc;
 }

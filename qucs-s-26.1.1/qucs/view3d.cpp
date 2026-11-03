@@ -187,8 +187,12 @@ void View3D::render(QImage& image, std::vector<int>* ids) const
         const double area = edgeFunction(s0, s1, s2.x, s2.y);
         if (!(std::abs(area) > 1e-12)) continue;
         const Vec3 n = (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).normalized();
-        const double light = 0.38 + 0.62 * std::abs(n.dot(c.toward));
+        // (A field's colours lit less: its values are what they say.)
+        const double light = t.shaded ? 0.72 + 0.28 * std::abs(n.dot(c.toward)) : 0.38 + 0.62 * std::abs(n.dot(c.toward));
         const QRgb rgb = qRgb(clampByte(t.color.red() * light), clampByte(t.color.green() * light), clampByte(t.color.blue() * light));
+        const double cr[3] = {t.colors[0].red() * light, t.colors[1].red() * light, t.colors[2].red() * light};
+        const double cg[3] = {t.colors[0].green() * light, t.colors[1].green() * light, t.colors[2].green() * light};
+        const double cb[3] = {t.colors[0].blue() * light, t.colors[1].blue() * light, t.colors[2].blue() * light};
         const int x0 = std::max(0, int(std::floor(std::min({s0.x, s1.x, s2.x}))));
         const int x1 = std::min(W - 1, int(std::ceil(std::max({s0.x, s1.x, s2.x}))));
         const int y0 = std::max(0, int(std::floor(std::min({s0.y, s1.y, s2.y}))));
@@ -207,7 +211,9 @@ void View3D::render(QImage& image, std::vector<int>* ids) const
                 float& d = depth[std::size_t(y) * std::size_t(W) + std::size_t(x)];
                 if (z <= d) continue;
                 d = z;
-                row[x] = rgb;
+                row[x] = !t.shaded ? rgb
+                                   : qRgb(clampByte(w0 * cr[0] + w1 * cr[1] + w2 * cr[2]), clampByte(w0 * cg[0] + w1 * cg[1] + w2 * cg[2]),
+                                          clampByte(w0 * cb[0] + w1 * cb[1] + w2 * cb[2]));
                 if (ids) (*ids)[std::size_t(y) * std::size_t(W) + std::size_t(x)] = t.id;
             }
         }
@@ -268,15 +274,20 @@ void View3D::paintEvent(QPaintEvent*)
     }
     QPainter p(this);
     p.drawImage(QPointF(0, 0), a_cache);
+    paintOverlay(p, QSizeF(size()));
+}
+
+void View3D::paintOverlay(QPainter& p, const QSizeF& size) const
+{
     p.setRenderHint(QPainter::Antialiasing);
     const QColor text = palette().color(QPalette::Text);
     if (a_scene.triangles.empty() && a_scene.lines.empty() && !a_emptyText.isEmpty()) {
         p.setPen(palette().color(QPalette::Disabled, QPalette::Text));
-        p.drawText(rect().adjusted(20, 20, -20, -20), Qt::AlignCenter | Qt::TextWordWrap, a_emptyText);
+        p.drawText(QRectF(QPointF(0, 0), size).adjusted(20, 20, -20, -20), Qt::AlignCenter | Qt::TextWordWrap, a_emptyText);
     }
     // The axes as the camera turns them, at the bottom left.
     const Camera c = camera();
-    const QPointF origin(34, height() - 34);
+    const QPointF origin(34, size.height() - 34);
     struct Axis {
         Vec3 v;
         QColor color;
@@ -294,9 +305,25 @@ void View3D::paintEvent(QPaintEvent*)
     }
     if (a_clipAxis >= 0) {
         p.setPen(text);
-        p.drawText(QRectF(8, 6, width() - 16, 18), Qt::AlignRight | Qt::AlignVCenter,
+        p.drawText(QRectF(8, 6, size.width() - 16, 18), Qt::AlignRight | Qt::AlignVCenter,
                    tr("Cut at %1 of %2").arg(QStringLiteral("%1 %").arg(qRound(a_clipAt * 100)),
                                              a_clipAxis == 0 ? QStringLiteral("x") : a_clipAxis == 1 ? QStringLiteral("y") : QStringLiteral("z")));
+    }
+    // The legend: a colour bar at the right, its values at its ends.
+    if (a_legend.shown && !a_legend.table.empty()) {
+        const double barH = std::max(60.0, size.height() - 110), top = 40;
+        const QRectF bar(size.width() - 30, top, 14, barH);
+        const int n = int(a_legend.table.size());
+        for (int i = 0; i < n; ++i) {
+            const double y0 = bar.bottom() - barH * (i + 1) / n, y1 = bar.bottom() - barH * i / n;
+            p.fillRect(QRectF(bar.left(), y0, bar.width(), y1 - y0 + 0.5), QColor::fromRgb(a_legend.table[std::size_t(i)]));
+        }
+        p.setPen(text);
+        p.drawRect(bar);
+        const QRectF labels(8, 0, size.width() - 44, 0);
+        p.drawText(QRectF(labels.left(), bar.top() - 2, labels.width(), 16), Qt::AlignRight | Qt::AlignVCenter, a_legend.high);
+        p.drawText(QRectF(labels.left(), bar.bottom() - 14, labels.width(), 16), Qt::AlignRight | Qt::AlignVCenter, a_legend.low);
+        p.drawText(QRectF(8, top - 22, size.width() - 16, 16), Qt::AlignRight | Qt::AlignVCenter, a_legend.title);
     }
 }
 
@@ -306,7 +333,25 @@ QImage View3D::picture(double scale)
     QImage image((QSizeF(size()) * k).toSize(), QImage::Format_RGB32);
     image.setDevicePixelRatio(k);
     render(image, nullptr);
+    // (The axes and the legend too: a picture of what the tab shows.)
+    QPainter p(&image);
+    paintOverlay(p, QSizeF(size()));
     return image;
+}
+
+void View3D::setLegend(Legend legend)
+{
+    a_legend = std::move(legend);
+    update();
+}
+
+double View3D::clipValue() const
+{
+    const Box3& b = a_scene.bounds;
+    if (a_clipAxis < 0 || b.isEmpty()) return 0;
+    const double lo = a_clipAxis == 0 ? b.x0 : a_clipAxis == 1 ? b.y0 : b.z0;
+    const double hi = a_clipAxis == 0 ? b.x1 : a_clipAxis == 1 ? b.y1 : b.z1;
+    return lo + (hi - lo) * a_clipAt;
 }
 
 int View3D::idAt(QPoint at)

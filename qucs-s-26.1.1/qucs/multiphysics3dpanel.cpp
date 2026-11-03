@@ -63,11 +63,11 @@ QString cellText(const QJsonValue& v)
     return v.toString();
 }
 
-/// The tree's parts a 3D model leaves out: none solves yet, so its studies
-/// and results have nothing to hold.
+/// The tree's parts a 3D model leaves out: its results (a solution is shown
+/// in its tab: Show, Plot, the cut).
 bool hidden(const Node& node)
 {
-    return node.type == QLatin1String("results") || node.type == QLatin1String("study");
+    return node.type == QLatin1String("results");
 }
 
 QString levelText(Level level)
@@ -648,7 +648,9 @@ void Multiphysics3DPanel::showSettings()
     }
     if (k)
         for (const PropertyDef& p : k->properties) {
-            if (!propertyVisible(*n, p, k)) continue;
+            // (A property of the plane's alone - a step's adaptive refinement
+            // - not shown.)
+            if (!(p.spaces & a_doc->model().space()) || !propertyVisible(*n, p, k)) continue;
             QWidget* editor = makeEditor(*n, p);
             if (!editor) continue;
             if (editor->toolTip().isEmpty()) editor->setToolTip(p.tooltip);
@@ -859,7 +861,29 @@ QWidget* Multiphysics3DPanel::makeEditor(const Node& node, const PropertyDef& p)
     }
     default: break;
     }
-    // (The kinds a 3D model has no node of yet - a study's, a result's.)
+    // (A step's physics: those of the model, each checked to be solved.)
+    if (p.kind == PropertyDef::Physics && a_doc) {
+        auto* list = new QListWidget(a_form);
+        list->setObjectName(QStringLiteral("mp3Edit_") + key);
+        const QStringList chosen = node.list(key);
+        for (const Node* ph : a_doc->model().physics()) {
+            auto* item = new QListWidgetItem(QStringLiteral("%1 (%2)").arg(ph->name(), ph->tag), list);
+            item->setData(Qt::UserRole, ph->tag);
+            item->setCheckState(chosen.isEmpty() || chosen.contains(ph->tag) ? Qt::Checked : Qt::Unchecked);
+        }
+        list->setMaximumHeight(std::min(120, 22 * (list->count() + 1)));
+        connect(list, &QListWidget::itemChanged, this, [this, key, list] {
+            QStringList on;
+            bool all = true;
+            for (int i = 0; i < list->count(); ++i) {
+                if (list->item(i)->checkState() == Qt::Checked) on << list->item(i)->data(Qt::UserRole).toString();
+                else all = false;
+            }
+            commit(key, all ? QJsonArray() : QJsonArray::fromStringList(on));
+        });
+        return list;
+    }
+    // (A kind of value no editor above takes: its text.)
     auto* edit = new QLineEdit(node.text(key), a_form);
     edit->setObjectName(QStringLiteral("mp3Edit_") + key);
     connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });

@@ -1,11 +1,12 @@
 {
     "format": "qucs-s multiphysics 3d 1",
     "title": "A heater on a chip's oxide",
-    "description": "A layer stack - a silicon substrate under its oxide - with an aluminium heater on the oxide and a via down through it: layered solids made one into domains, faces, edges and points, and a mesh of prisms swept from the plan's triangles. The via in the oxide is a domain of its own, as where any two solids meet.",
+    "description": "A layer stack - a silicon substrate under its oxide - with an aluminium heater on the oxide and a via down through it: layered solids made one into domains, faces, edges and points, a mesh of prisms swept from the plan's triangles, and the heat the heater makes solved - its P spread through it, the substrate's back held at 20 °C. The via in the oxide is a domain of its own, as where any two solids meet; it carries the heat down past the oxide.",
     "parameters": [
         {"name": "w", "expression": "40[um]", "description": "the heater's length"},
         {"name": "d", "expression": "10[um]", "description": "its width"},
-        {"name": "t", "expression": "0.5[um]", "description": "its thickness"}
+        {"name": "t", "expression": "0.5[um]", "description": "its thickness"},
+        {"name": "P", "expression": "10[mW]", "description": "the heater's power"}
     ],
     "components": [{
         "unit": "um",
@@ -22,9 +23,16 @@
             {"material": "Silicon dioxide", "selection": {"layer": ["oxide"]}},
             {"material": "Aluminium", "selection": {"only": ["heater", "via"]}}
         ],
+        "physics": [
+            {"type": "heat", "tag": "ht", "order": "1",
+             "features": [
+                 {"type": "source", "label": "The heater", "kind": "power", "P0": "P", "selection": {"only": ["heater"]}},
+                 {"type": "temperature", "label": "The substrate's back", "T0": "293.15[K]", "selection": {"of": ["substrate"], "side": "bottom"}}
+             ]}
+        ],
         "mesh": {"size": "normal",
                  "features": [{"type": "zdistribution", "selection": {"only": ["heater"]}, "count": 2}]}
     }],
-    "studies": [],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
     "results": {"plots": [], "derived": []}
 }

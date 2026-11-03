@@ -45,6 +45,8 @@ struct Mesh3 {
         std::array<int, 4> nodes{{-1, -1, -1, -1}};
         bool quad = false;                         ///< a wall's: four nodes, else a floor's three
         int face = -1;                             ///< the geometry's face
+        int plan = -1;                             ///< a floor's plan triangle; a wall's plan edge (Mesh::edges)
+        int height = -1;                           ///< a floor's height; a wall's bottom's
     };
     std::vector<Face> faces;
     std::vector<int> pointNode;                    ///< each point of the geometry's node

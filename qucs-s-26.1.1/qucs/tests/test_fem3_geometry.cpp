@@ -208,6 +208,13 @@ QByteArray gdsOf(const std::vector<std::array<double, 6>>& boxes)
     return bytes;
 }
 
+/// A 2D model's heat order as made: its kind's default (2).
+QString flatOrder()
+{
+    Model flat = Model::blank();
+    return flat.make(QStringLiteral("heat")).text(QStringLiteral("order"));
+}
+
 } // namespace
 
 class TestFem3Geometry : public QObject
@@ -222,7 +229,10 @@ private slots:
         Model m = model3d();
         QVERIFY(m.is3D());
         QCOMPARE(m.space(), unsigned(Spaces::ThreeD));
-        QVERIFY(m.studies().empty());
+        // (A study at rest, as a 2D model's: its physics solved by Compute.)
+        QCOMPARE(int(m.studies().size()), 1);
+        QCOMPARE(m.studies().front()->children.size(), std::size_t(1));
+        QCOMPARE(m.studies().front()->children.front().type, QStringLiteral("stationary"));
         const QJsonObject o = m.toObject();
         QCOMPARE(o.value(QStringLiteral("format")).toString(), QStringLiteral("qucs-s multiphysics 3d 1"));
         QCOMPARE(o.value(QStringLiteral("components")).toArray().at(0).toObject().value(QStringLiteral("space")).toString(), QStringLiteral("3D"));
@@ -242,9 +252,20 @@ private slots:
         QVERIFY(!kinds3.contains(QStringLiteral("rectangle")) && !kinds3.contains(QStringLiteral("process")));
         const QStringList sketch = childKinds(*m.find(extTag), m.spaceUnder(*m.find(extTag)));
         QVERIFY(sketch.contains(QStringLiteral("rectangle")) && sketch.contains(QStringLiteral("union")) && !sketch.contains(QStringLiteral("box")));
-        // No physics nor study in 3D yet; a 2D model's kinds as they were.
-        QVERIFY(childKinds(m.component(), m.space()).isEmpty());
-        QVERIFY(childKinds(m.root, m.space()).isEmpty());
+        // Its physics heat, electrostatics and currents alone (phase C); a
+        // study; a 2D model's kinds as they were.
+        QStringList physics3 = childKinds(m.component(), m.space());
+        physics3.sort();
+        QCOMPARE(physics3, (QStringList{QStringLiteral("currents"), QStringLiteral("electrostatics"), QStringLiteral("heat")}));
+        QCOMPARE(childKinds(m.root, m.space()), QStringList{QStringLiteral("study")});
+        QVERIFY(!m.add(m.component().tag, m.make(QStringLiteral("solid")), -1, &why));
+        // A physics of order 1 in 3D: made so, and read so where a file gives
+        // none.
+        QCOMPARE(m.make(QStringLiteral("heat")).text(QStringLiteral("order")), QStringLiteral("1"));
+        QCOMPARE(flatOrder(), QStringLiteral("2"));
+        const std::optional<Model> read = Model::fromJson(QByteArray(R"({"format": "qucs-s multiphysics 3d 1", "components": [{"unit": "mm", "space": "3D", "physics": [{"type": "heat", "tag": "ht"}]}]})"));
+        QVERIFY(read && read->is3D());
+        QCOMPARE(read->find(QStringLiteral("ht"))->text(QStringLiteral("order")), QStringLiteral("1"));
         Model flat = Model::blank();
         QVERIFY(!flat.is3D());
         QVERIFY(!flat.add(flat.geometry().tag, flat.make(QStringLiteral("box")), -1, &why));
