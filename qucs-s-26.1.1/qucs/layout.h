@@ -299,6 +299,26 @@ struct Query {
 /// returns false.
 void search(const Layout& layout, const Query& query, const std::function<bool(const Found&)>& each);
 
+/// A placement of a cell found in a cell, or in a cell it places: whose
+/// placement it is, and how it is placed in the cell searched.
+struct Placement {
+    int parent = -1;            ///< the cell it is a placement in
+    int instance = -1;          ///< its Cell::instances' index in the parent
+    quint64 copy = 0;           ///< which copy of its repetition (0: the first, or the only one)
+    QTransform transform;       ///< the placed cell's coordinates to the searched cell's
+    QVector<int> via;           ///< the cells from the searched one down to the parent
+};
+
+/// Calls \a each with every placement of the cell \a placed in
+/// \a query.cell, and in the cells it places to the query's depth, whose
+/// copy meets the query's region, until it returns false. Only cells that
+/// place it somewhere below them are looked into. (The query's layers and
+/// texts are not read.)
+void placements(const Layout& layout, const Query& query, int placed, const std::function<bool(const Placement&)>& each);
+
+/// Which copy of \a repetition the one at \a offset is (its index).
+quint64 copyAt(const Repetition& repetition, QPointF offset);
+
 /// \a found's outline (a text: its origin), in the searched cell's µm.
 QPolygonF outlineOf(const Layout& layout, const Found& found);
 /// Its spine, for a path; empty otherwise.

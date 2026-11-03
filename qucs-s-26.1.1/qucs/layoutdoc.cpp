@@ -913,6 +913,12 @@ double LayoutView::tolerance() const
     return 4.0 / a_scale;
 }
 
+QPointF LayoutView::snapped(QPointF point) const
+{
+    if (!a_layout || a_cell < 0) return point;
+    return snap(*a_layout, queryHere(), point, tolerance() * 1.5);
+}
+
 Query LayoutView::queryHere() const
 {
     Query q;
@@ -1009,6 +1015,11 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
         a_dirty = false;
     }
     if (!drawn) p.drawImage(QPointF(0, 0), a_cache);
+    paintOver(p, c);
+}
+
+void LayoutView::paintOver(QPainter& p, const Colors& c)
+{
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
     if (a_grid && a_layout && a_cell >= 0) paintScale(p, c);
@@ -1134,6 +1145,20 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
         p.drawRect(a_zoomBox);
     }
     p.restore();
+}
+
+void LayoutView::paintOnto(QPainter& p, bool background)
+{
+    // As paintFrame() draws it, the layout drawn afresh rather than its
+    // cached picture: at the device's own resolution, as vectors on one
+    // that has them.
+    const Colors c = colors();
+    if (background) p.fillRect(QRectF(rect()), c.background);
+    if (a_layout && a_cell >= 0) {
+        if (a_grid) paintGrid(p, c);
+        qucs_s::layout::render(p, *a_layout, renderOptions());
+    }
+    paintOver(p, c);
 }
 
 void LayoutView::paintLabels(QPainter& p, const Colors& c, const Overlay& overlay) const
@@ -1367,7 +1392,7 @@ void LayoutView::mousePressEvent(QMouseEvent* event)
         return;
     }
     if (event->button() == Qt::LeftButton && a_mode == Mode::Ruler && a_layout) {
-        const QPointF start = snap(*a_layout, queryHere(), toLayout(event->position()), tolerance() * 1.5);
+        const QPointF start = snapped(toLayout(event->position()));
         a_rulers.append(QLineF(start, start));
         a_measuring = true;
         a_drag = Drag::Ruler;
@@ -1426,7 +1451,7 @@ void LayoutView::mouseMoveEvent(QMouseEvent* event)
         break;
     case Drag::Ruler:
         if (!a_rulers.isEmpty() && a_layout) {
-            QPointF end = snap(*a_layout, queryHere(), toLayout(event->position()), tolerance() * 1.5);
+            QPointF end = snapped(toLayout(event->position()));
             // With Shift: across or up only.
             if (event->modifiers() & Qt::ShiftModifier) {
                 const QPointF start = a_rulers.last().p1();
@@ -1972,10 +1997,7 @@ void LayoutDoc::buildUi()
             menu.addAction(tr("Colour…"), this, [this, layer] {
                 QVector<LayerStyle> styles = a_view->styles();
                 const QColor c = QColorDialog::getColor(styles[layer].frame, this, tr("The Colour of %1").arg(a_layout->layers.at(layer).key.text()));
-                if (!c.isValid()) return;
-                styles[layer].frame = styles[layer].fill = c;
-                a_view->setStyles(styles);
-                updateLayerItem(layer);
+                if (c.isValid()) setLayerColour(layer, c);
             });
         }
         menu.addSeparator();
@@ -2378,6 +2400,15 @@ void LayoutDoc::setLayerVisible(int layer, bool visible)
     QVector<LayerStyle> styles = a_view->styles();
     if (layer < 0 || layer >= styles.size()) return;
     styles[layer].visible = visible;
+    a_view->setStyles(styles);
+    updateLayerItem(layer);
+}
+
+void LayoutDoc::setLayerColour(int layer, const QColor& colour)
+{
+    QVector<LayerStyle> styles = a_view->styles();
+    if (layer < 0 || layer >= styles.size() || !colour.isValid()) return;
+    styles[layer].frame = styles[layer].fill = colour;
     a_view->setStyles(styles);
     updateLayerItem(layer);
 }
