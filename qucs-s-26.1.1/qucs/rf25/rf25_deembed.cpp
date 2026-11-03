@@ -169,8 +169,9 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
     // feed's grounds beside the signal as at the port, and their vias as far
     // in from each end as the feed's first, a period apart. The longest
     // first, which is the one too large if any is.
-    const double lines[3] = {between, 2 * between, out.third};
-    QList<Chain> chains[3];
+    static_assert(kStripsPerLength == 3, "the strips here are the shorter, the longer and the third");
+    const double lines[kStripsPerLength] = {between, 2 * between, out.third};
+    QList<Chain> chains[kStripsPerLength];
     for (const int i : {1, 2, 0}) {
         const double l = 2 * offset + lines[i];
         QList<Conductor> parts;

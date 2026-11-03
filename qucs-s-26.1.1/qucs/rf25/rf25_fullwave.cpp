@@ -1618,6 +1618,23 @@ QString num(double v)
     return QString::number(v, 'g', 12);
 }
 
+/// A frequency taken from a test's allowance (FullWaveControl::allowed),
+/// waiting while it has none: false where the solve is stopped meanwhile.
+bool allowedOne(const FullWaveControl* control)
+{
+    std::atomic_int* allowed = control != nullptr ? control->allowed : nullptr;
+    if (allowed == nullptr) return true;
+    for (int n = allowed->load();; n = allowed->load()) {
+        if (n < 0) return true;
+        if (n > 0) {
+            if (allowed->compare_exchange_weak(n, n - 1)) return true;
+            continue;
+        }
+        if (control->stop != nullptr && control->stop->load()) return false;
+        QThread::msleep(2);
+    }
+}
+
 } // namespace
 
 double metalHeight(const Stack& stack, const QString& name)
@@ -2425,6 +2442,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     const int inner = std::max(1, threads / side);
     out.threads = compress ? side * inner : side;
+    if (control != nullptr && control->begins) control->begins(nf);
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
@@ -2434,6 +2452,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
         for (int k = next++; k < nf; k = next++) {
             if (failed || (stop != nullptr && stop->load())) return;
+            if (!allowedOne(control)) return;
             solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, stop) : solveAt(c, frequencies.at(k));
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
