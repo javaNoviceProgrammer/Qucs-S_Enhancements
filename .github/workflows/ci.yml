@@ -72,6 +72,21 @@ jobs:
       - name: The shaders are compiled
         run: python3 scripts/ci/check-shaders.py
 
+      # Room on the disk: some runners have no spare disk at /mnt and 12 GB
+      # free on their root, where the swap below took 8 of them and the build
+      # ran out of space at its 661st step of 2362 ("No space left on
+      # device", 934b0de's run of 2 November). The image's SDKs this job
+      # never uses go first - Android's, .NET's, Haskell's, Swift's and
+      # CodeQL's (the Python install-qt-action sets up is in the same tool
+      # cache, and stays) -, how much that frees said by the disk before and
+      # after.
+      - name: Room on the disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -96,18 +111,35 @@ jobs:
       # (21 October) at the same point - "the runner has received a shutdown
       # signal", mid-build, four compilers at once (a sanitized Debug
       # qcustomplot.cpp among them) while the tests linked -, as a runner
-      # out of memory is. An 8 GB swap file on the spare disk (/mnt, else
-      # the root's), beside the image's own; the memory and disks said.
+      # out of memory is. Up to 8 GB of swap beside the image's own, on the
+      # spare disk where the runner has one - /mnt, a filesystem of its own
+      # - else on the root, past 15 GB kept there for the build and the tests
+      # (the build 7.4 GB, then the tests' and smoke tests' output); none
+      # where the disk cannot spare 1 GB. The memory and disks said.
       - name: Swap for the build
         run: |
           free -h
           df -h / /mnt 2>/dev/null || true
           target=/swapfile-ci
-          if [ -d /mnt ] && [ "$(df --output=avail -BG /mnt | tail -1 | tr -dc 0-9)" -gt 20 ]; then target=/mnt/swapfile-ci; fi
-          sudo fallocate -l 8G "$target"
-          sudo chmod 600 "$target"
-          sudo mkswap "$target" > /dev/null
-          sudo swapon "$target"
+          disk=/
+          reserve=15
+          if [ -d /mnt ] && [ "$(stat -c %d /mnt)" != "$(stat -c %d /)" ]; then
+            target=/mnt/swapfile-ci
+            disk=/mnt
+            reserve=0
+          fi
+          avail=$(df --output=avail -BG "$disk" | tail -1 | tr -dc 0-9)
+          size=$(( avail - reserve ))
+          if [ "$size" -gt 8 ]; then size=8; fi
+          if [ "$size" -ge 1 ]; then
+            echo "${size} GB of swap at $target (${avail} GB free on $disk)"
+            sudo fallocate -l "${size}G" "$target"
+            sudo chmod 600 "$target"
+            sudo mkswap "$target" > /dev/null
+            sudo swapon "$target"
+          else
+            echo "No swap added: ${avail} GB free on $disk, ${reserve} GB of it the build's"
+          fi
           free -h
 
       # The tests share one library of the core (QUCS_SHARED_TEST_CORE):
