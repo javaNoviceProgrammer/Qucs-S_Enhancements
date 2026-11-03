@@ -9,7 +9,7 @@ happens. BRK_ONLY_CHECK=1 checks the anchors; BRK_ONLY=3,7 runs those alone;
 HUNT_RUNS=<dir> for logs."""
 import os, subprocess, sys
 
-W = "/Users/meisam/git/Qucs-S_Enhancements/.claude/worktrees/chat-mcp"
+W = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../.."))   # (the checkout it is in)
 Q = W + "/qucs-s-26.1.1/qucs/"
 B = W + "/build"
 RUNS = os.environ.get("HUNT_RUNS", "/tmp/dock-fuzz-breaks")
