@@ -75,6 +75,7 @@
 #include "datasetfile.h"
 #include "qucscontrol.h"
 #include "rf25/rf25_model.h"
+#include "multiphysics/fem_model.h"
 #include "schematic.h"
 #include "simulationconsole.h"
 #include "valuereading.h"
@@ -3183,19 +3184,22 @@ private slots:
         // left out of the listing altogether, so a kind missing from the
         // table is a document Claude cannot see at all.
         QVERIFY(write(ws + "/amp_prj/planar.qrf25", qucs_s::rf25::Model::blank().toJson(), 1));
+        QVERIFY(write(ws + "/amp_prj/block.qfem3d", qucs_s::fem::Model::blank3d().toJson(), 2));
         const auto paths = [](const QJsonObject& listed) {
             QStringList list;
             for (const QJsonValue& v : listed.value("files").toArray()) list << v.toObject().value("path").toString();
             return list;
         };
         QJsonObject listed = json(call("list_documents", {{"folder", "amp"}})).toObject();
-        QCOMPARE(paths(listed), (QStringList{"planar.qrf25", "sub/notes.md", "amp.dat.ngspice", "amp.sch", "amp.dat.xyce", "data.csv"}));
+        QCOMPARE(paths(listed), (QStringList{"planar.qrf25", "block.qfem3d", "sub/notes.md", "amp.dat.ngspice", "amp.sch", "amp.dat.xyce", "data.csv"}));
         const QJsonObject onlyRf = call("list_documents", {{"folder", "amp"}, {"kind", "RF 2.5D model"}});
         QVERIFY2(paths(json(onlyRf).toObject()) == QStringList{"planar.qrf25"}, qPrintable(text(onlyRf)));
         // Asked for in any case: this kind is the first with capitals in
         // it, and the ones before it were all lowercase by chance.
         const QJsonObject lower = call("list_documents", {{"folder", "amp"}, {"kind", "rf 2.5d model"}});
         QVERIFY2(paths(json(lower).toObject()) == QStringList{"planar.qrf25"}, qPrintable(text(lower)));
+        const QJsonObject only3d = call("list_documents", {{"folder", "amp"}, {"kind", "3d multiphysics model"}});
+        QVERIFY2(paths(json(only3d).toObject()) == QStringList{"block.qfem3d"}, qPrintable(text(only3d)));
         // (By path, not by place in the list: a file added to the folder
         // above would otherwise move every one of these.)
         const auto entry = [](const QJsonObject& all, const QString& path) {
@@ -3210,15 +3214,30 @@ private slots:
         QVERIFY(dataset.value("changed").toString().contains('T'));
         QCOMPARE(entry(listed, QStringLiteral("amp.sch")).value("kind").toString(), QStringLiteral("schematic"));
         QCOMPARE(entry(listed, QStringLiteral("planar.qrf25")).value("kind").toString(), QStringLiteral("RF 2.5D model"));
+        QCOMPARE(entry(listed, QStringLiteral("block.qfem3d")).value("kind").toString(), QStringLiteral("3D multiphysics model"));
         QCOMPARE(paths(json(call("list_documents", {{"folder", "amp_prj"}, {"kind", "dataset"}})).toObject()),
                  (QStringList{"amp.dat.ngspice", "amp.dat.xyce"}));
         QCOMPARE(paths(json(call("list_documents", {{"folder", ws + "/amp_prj"}, {"search", "AMP.s"}})).toObject()), (QStringList{"amp.sch"}));
         QCOMPARE(paths(json(call("list_documents", {{"folder", "amp"}, {"sort", "name"}})).toObject()),
-                 (QStringList{"amp.dat.ngspice", "amp.dat.xyce", "amp.sch", "data.csv", "planar.qrf25", "sub/notes.md"}));
+                 (QStringList{"amp.dat.ngspice", "amp.dat.xyce", "amp.sch", "block.qfem3d", "data.csv", "planar.qrf25", "sub/notes.md"}));
         // And opened, it is said to be what it is, not a schematic.
         const QString saidOpen = text(call("open_document", {{"path", "amp_prj/planar.qrf25"}}));
         QVERIFY2(saidOpen.contains(QStringLiteral("RF 2.5D model")), qPrintable(saidOpen));
         QVERIFY(QucsApp::isRf25Document(QucsApp::documentWidget(app->getDoc())));
+        // A 3D model too; and saved as another, given its own suffix as Save
+        // As gives it - not a schematic's (.sch was added to it), and not
+        // one the 2D model's tab would take.
+        const QString said3d = text(call("open_document", {{"path", "amp_prj/block.qfem3d"}}));
+        QVERIFY2(said3d.contains(QStringLiteral("3D multiphysics model")), qPrintable(said3d));
+        QVERIFY(QucsApp::isMultiphysics3DDocument(QucsApp::documentWidget(app->getDoc())));
+        const QJsonObject wrongSuffix = call("save_document", {{"path", "amp_prj/block.qfem3d"}, {"as", "amp_prj/copy.qfem"}});
+        QVERIFY2(failed(wrongSuffix) && text(wrongSuffix).contains(QStringLiteral(".qfem3d")), qPrintable(text(wrongSuffix)));
+        QVERIFY(!QFileInfo::exists(ws + "/amp_prj/copy.qfem"));
+        const QJsonObject savedAs = call("save_document", {{"path", "amp_prj/block.qfem3d"}, {"as", "amp_prj/copy"}});
+        QVERIFY2(!failed(savedAs) && QFileInfo::exists(ws + "/amp_prj/copy.qfem3d"), qPrintable(text(savedAs)));
+        QVERIFY(!QFileInfo::exists(ws + "/amp_prj/copy.sch") && !QFileInfo::exists(ws + "/amp_prj/copy"));
+        QVERIFY(!failed(call("close_document", {{"path", "amp_prj/copy.qfem3d"}})));
+        QVERIFY(QFile::remove(ws + "/amp_prj/copy.qfem3d"));
         // The workspace: its projects, and the files in them.
         QVERIFY(!failed(call("open_document", {{"path", "amp_prj/amp.sch"}})));
         listed = json(call("list_documents")).toObject();
@@ -3230,7 +3249,19 @@ private slots:
         QVERIFY2(project && open, qPrintable(QJsonDocument(listed).toJson()));
         QVERIFY(!failed(call("close_document")));
         QVERIFY(failed(call("list_documents", {{"folder", "nope"}})));
-        QVERIFY(failed(call("list_documents", {{"kind", "movie"}})));
+        const QJsonObject movie = call("list_documents", {{"kind", "movie"}});
+        QVERIFY(failed(movie));
+        // The kinds its schema offers are the kinds it takes: none offered
+        // that it refuses, none taken that Claude is not offered (the 3D
+        // model's was in neither, then in the tool's alone).
+        const QStringList taken = text(movie).section(QStringLiteral("one of: "), 1).chopped(1).split(QStringLiteral(", "));
+        QStringList offered;
+        for (const QJsonValue& v : control->tools())
+            if (v.toObject().value("name").toString() == QLatin1String("list_documents"))
+                for (const QJsonValue& k : v.toObject().value("inputSchema").toObject().value("properties").toObject().value("kind").toObject().value("enum").toArray())
+                    offered << k.toString();
+        QCOMPARE(offered, taken);
+        QVERIFY(taken.contains(QStringLiteral("3D multiphysics model")));
         QVERIFY(failed(call("list_documents", {{"sort", "size"}})));
         QVERIFY(json(call("list_documents", {{"folder", "amp"}, {"search", "zzz"}})).toObject().contains("note"));
     }

@@ -4198,6 +4198,48 @@ private slots:
                  qPrintable(threeD.join(", ")));
     }
 
+    // A 3D model is Multiphysics 3D's: the 2D tab refuses one read from a
+    // file, and Claude's tools one given whole (fem_model new or set) or a
+    // 2D one's space made 3D (fem_edit) - they put a 3D model in a 2D tab,
+    // which could not build its solids and wrote a .qfem no tab opens
+    // (the DMG's check of 58c0fd7).
+    void aThreeDModelIsRefusedByTheTwoDTools()
+    {
+        const QJsonObject solid = QJsonDocument::fromJson(Model::blank3d().toJson()).object();
+        const auto tabs = [this] { return app->DocumentTab->count(); };
+        const int before = tabs();
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"model", solid}});
+        QVERIFY2(failed(r) && text(r).contains("Multiphysics 3D") && text(r).contains("Nothing was made"), qPrintable(text(r)));
+        QCOMPARE(tabs(), before);
+        // (A 2D format with the space 3D is one too.)
+        QJsonObject spaced = QJsonDocument::fromJson(Model::blank().toJson()).object();
+        QVERIFY(spaced.value("format").toString().startsWith("qucs-s multiphysics 1"));
+        QJsonArray components = spaced.value("components").toArray();
+        QVERIFY(!components.isEmpty());
+        QJsonObject first = components.at(0).toObject();
+        first.insert("space", "3D");
+        components.replace(0, first);
+        spaced.insert("components", components);
+        r = call("fem_model", {{"action", "new"}, {"model", spaced}});
+        QVERIFY2(failed(r) && text(r).contains("Multiphysics 3D"), qPrintable(text(r)));
+        QCOMPARE(tabs(), before);
+        QVERIFY2(!failed(call("fem_model", {{"action", "new"}})), "a 2D model is made");
+        auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        r = call("fem_model", {{"action", "set"}, {"model", solid}});
+        QVERIFY2(failed(r) && text(r).contains("The model is unchanged"), qPrintable(text(r)));
+        QVERIFY(!doc->model().is3D());
+        r = call("fem_edit", {{"action", "set"}, {"tag", "comp1"}, {"props", QJsonObject{{"space", "3D"}}}});
+        QVERIFY2(failed(r) && text(r).contains("Multiphysics 3D"), qPrintable(text(r)));
+        QVERIFY(!doc->model().is3D());
+        QVERIFY(!doc->undoStack()->canUndo());
+        // Its own spaces still taken, and a 3D model's solid still refused.
+        r = call("fem_edit", {{"action", "set"}, {"tag", "comp1"}, {"props", QJsonObject{{"space", "axisymmetric"}}}});
+        QVERIFY2(!failed(r) && doc->model().space() == qucs_s::fem::Spaces::Axisymmetric, qPrintable(text(r)));
+        r = call("fem_edit", {{"action", "add"}, {"parent", "geometry"}, {"type", "box"}});
+        QVERIFY2(failed(r) && text(r).contains("3D model"), qPrintable(text(r)));
+    }
+
     void savingTheModelItsPathNames()
     {
         auto read = [](const QString& file) {

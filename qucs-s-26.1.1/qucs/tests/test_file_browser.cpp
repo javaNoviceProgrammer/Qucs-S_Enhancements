@@ -109,6 +109,9 @@ private slots:
         QCOMPARE(kind("sparams.s2p").tag, QStringLiteral("S2P"));
         QVERIFY(kind("bjt.va").qucs);
         QVERIFY(kind("netlist.cir").qucs);
+        QCOMPARE(kind("block.qfem3d").name, QStringLiteral("Qucs-S 3D multiphysics model"));
+        QCOMPARE(kind("block.qfem3d").tag, QStringLiteral("3D"));
+        QVERIFY(kind("block.qfem3d").qucs);
         QVERIFY(!kind("notes.txt").qucs);
         QCOMPARE(kind("mystery.xyz").name, QStringLiteral("XYZ file"));
         QCOMPARE(kind("mystery.xyz").tag, QStringLiteral("XYZ"));

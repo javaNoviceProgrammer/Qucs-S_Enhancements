@@ -6,14 +6,16 @@ Form Union (cells, domains joined by the solids that hold them, faces joined
 on one surface, edges broken where they meet, numbering, normals), the
 selections in 3D, the layer stack over a layout (µm, its window, the clip),
 booleans, the swept mesh (divisions in z, counts, sizes, faces, nodes), and
-the document, panel, view and window - each built and its tests run. Sources
-are put back whatever happens.
+the document, panel, view and window, and what the DMG's check of 58c0fd7
+found (the document tools and the Files panel knowing a 3D model, the 2D
+tools refusing one) - each built and its tests run. Sources are put back
+whatever happens.
 BRK_ONLY_CHECK=1 checks the anchors; BRK_ONLY=3,7 runs those alone;
 HUNT_RUNS=<dir> for logs."""
 import os, subprocess, sys
 
-Q = "/Users/meisam/git/Qucs-S_Enhancements/.claude/worktrees/pen-markers/qucs-s-26.1.1/qucs/"
-B = "/Users/meisam/git/Qucs-S_Enhancements/.claude/worktrees/pen-markers/build"
+Q = "/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/"
+B = "/Users/meisam/git/Qucs-S_Enhancements/build"
 RUNS = os.environ.get("HUNT_RUNS", "/tmp/multiphysics3d-breaks")
 CACHE = os.path.join(RUNS, "cache")
 os.makedirs(CACHE, exist_ok=True)
@@ -22,6 +24,8 @@ FM, FG3, FM3 = "multiphysics/fem_model.cpp", "multiphysics/fem3_geometry.cpp", "
 DOC, PAN, VIEW, WIN = "multiphysics3ddoc.cpp", "multiphysics3dpanel.cpp", "view3d.cpp", "qucs_multiphysics3d.cpp"
 DOC2, QF = "multiphysicsdoc.cpp", "qucscontrol_fem.cpp"
 DOC2P = "multiphysicspanel.cpp"
+QC, FB = "qucscontrol.cpp", "filebrowser.cpp"
+TC, TFB = "test_qucs_control", "test_file_browser"
 TG, TM, TD, T2 = "test_fem3_geometry", "test_fem3_mesh", "test_multiphysics3d_doc", "test_multiphysics_doc"
 
 BREAKS = [
@@ -265,6 +269,52 @@ BREAKS = [
  ("the 3D panel's selections without edges",
   [(PAN, "            if (p.choiceIn(i, space) || node.text(key) == p.choices[i]) box->addItem(", "            if ((p.choiceIn(i, space) && i < 3) || node.text(key) == p.choices[i]) box->addItem(")],
   [(TD, "aNewModel")]),
+
+ # ---- the DMG's check of 58c0fd7
+ ("a 3D model's tab said to be a schematic",
+  [(QC, '    if (QucsApp::isMultiphysics3DDocument(QucsApp::documentWidget(doc))) return QStringLiteral("3D multiphysics model");\n', '')],
+  [(TC, "theWorkspaceIsListed")]),
+
+ (".qfem3d files left out of list_documents",
+  [(QC, '        {QStringLiteral("qfem3d"), QStringLiteral("3D multiphysics model")},\n', '')],
+  [(TC, "theWorkspaceIsListed")]),
+
+ ("the 3D kind refused as list_documents' filter",
+  [(QC, '                                   QStringLiteral("3D multiphysics model"), QStringLiteral("presentation")};',
+    '                                   QStringLiteral("presentation")};')],
+  [(TC, "theWorkspaceIsListed")]),
+
+ ("a 3D model saved as a name without its suffix",
+  [(QC, '                                                   {QStringLiteral("3D multiphysics model"), QStringLiteral(".qfem3d")}};',
+    '                                                   };')],
+  [(TC, "theWorkspaceIsListed")]),
+
+ ("a 3D model saved under the 2D model's suffix",
+  [(QC, ',\n                                                      {QStringLiteral("3D multiphysics model"), QStringLiteral("qfem3d")}};', '};')],
+  [(TC, "theWorkspaceIsListed")]),
+
+ ("the Files panel not knowing a .qfem3d",
+  [(FB, '    {"qfem3d", QT_TRANSLATE_NOOP("FileBrowser", "Qucs-S 3D multiphysics model"), "3D", 0x6a3fa8, Kind::Mesh, true},\n', '')],
+  [(TFB, "filesAreKnownByKind")]),
+
+ ("fem_model new makes a 2D tab of a 3D model",
+  [(QF, '            if (m->is3D())\n                return errorResult(', '            if (false)\n                return errorResult(')],
+  [(T2, "aThreeDModelIsRefusedByTheTwoDTools")]),
+
+ ("fem_model set puts a 3D model in a 2D tab",
+  [(QF, '        if (m->is3D())\n            return errorResult(tr("\'model\' is a 3D model (its format or its space): Multiphysics 3D opens it, as a .qfem3d - "\n'
+        '                                  "fem_model sets',
+    '        if (false)\n            return errorResult(tr("\'model\' is a 3D model (its format or its space): Multiphysics 3D opens it, as a .qfem3d - "\n'
+        '                                  "fem_model sets')],
+  [(T2, "aThreeDModelIsRefusedByTheTwoDTools")]),
+
+ ("fem_edit makes a 2D model's space 3D",
+  [(QF, '    if (m.is3D())\n        return errorResult(tr("A 2D model', '    if (false)\n        return errorResult(tr("A 2D model')],
+  [(T2, "aThreeDModelIsRefusedByTheTwoDTools")]),
+
+ ("list_documents' schema without the 3D kind",
+  [(QC, '"RF 2.5D model", "3D multiphysics model", "presentation"]', '"RF 2.5D model", "presentation"]')],
+  [(TC, "theWorkspaceIsListed")]),
 ]
 
 
