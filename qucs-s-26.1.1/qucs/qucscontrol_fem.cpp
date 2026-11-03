@@ -1396,15 +1396,24 @@ void QucsControl::femGeometryThen(MultiphysicsDoc* doc, const QDeadlineTimer& de
     });
 }
 
-void QucsControl::femBuild(const QJsonObject& args, const Done& done)
+void QucsControl::femBuild(const QJsonObject& args, const Done& given)
 {
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
-    if (doc == nullptr) return done(errorResult(error));
-    if (!args.value(QLatin1String("until")).toString().trimmed().isEmpty()) return done(femBuilt(doc, args));
+    if (doc == nullptr) return given(errorResult(error));
+    if (!args.value(QLatin1String("until")).toString().trimmed().isEmpty()) return given(femBuilt(doc, args));
     const int timeout = waitsFor(QStringLiteral("fem_build"), args);
     const QDeadlineTimer deadline(qint64(timeout) * 1000);
     QPointer<MultiphysicsDoc> d(doc);
+    // Cancelled by its client: the build it waits for stopped, as Cancel
+    // stops it.
+    const int stop = stoppable(running(), [d] {
+        if (d) d->cancelJob();
+    });
+    const Done done = [this, stop, given](const QJsonObject& r) {
+        stopped(stop);
+        given(r);
+    };
     femGeometryThen(doc, deadline, timeout, true, [this, d, args, done, deadline, timeout](const QString& stopped) {
         if (!stopped.isEmpty()) return done(errorResult(stopped));
         if (!d) return done(errorResult(tr("The model was closed.")));
@@ -1547,18 +1556,31 @@ static QString modeAsked(const SolutionSet& set, int mode)
     return QString();
 }
 
-void QucsControl::femSolve(const QJsonObject& args, const Done& done)
+void QucsControl::femSolve(const QJsonObject& args, const Done& given)
 {
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
-    if (doc == nullptr) return done(errorResult(error));
+    if (doc == nullptr) return given(errorResult(error));
     const QString study = args.value(QLatin1String("study")).toString();
     const int timeout = waitsFor(QStringLiteral("fem_solve"), args);
     QPointer<MultiphysicsDoc> d(doc);
+    // Cancelled by its client (the user stopped Claude): its solve stopped,
+    // as fem_stop stops it - or not begun, where it waits behind another's.
+    auto begun = std::make_shared<int>(0);   // 1: its solve begun, -1: cancelled first
+    const int stop = stoppable(running(), [d, begun] {
+        if (*begun == 1 && d) d->cancelJob();
+        else *begun = -1;
+    });
+    const Done done = [this, stop, given](const QJsonObject& r) {
+        stopped(stop);
+        given(r);
+    };
     // (Waited for without a loop of its own: whenJobEnds - the hunt of 21
     // October, B6.)
-    const auto solve = [this, d, study, timeout, args, done] {
+    const auto solve = [this, d, study, timeout, args, done, begun] {
         if (!d) return done(errorResult(tr("The model was closed.")));
+        if (*begun == -1) return done(errorResult(tr("Cancelled by the client before it began.")));
+        *begun = 1;
         d->compute(study);
         d->whenJobEnds(timeout * 1000, [this, d, study, timeout, args, done](bool ended) {
             if (!d) return done(errorResult(tr("The model was closed.")));
@@ -2334,9 +2356,14 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
         QJsonObject sizes;        // the sizes the last refinement set, by name
         QJsonArray steps;
         Done done;
+        QucsControl::Running call;   // the convergence, as it began: its solves its own
+        bool cancelled = false;       // by its client: no mesh after the one solved
+        int stop = 0;
     };
     const auto run = std::make_shared<Run>();
     run->control = this;
+    run->call = running();
+    run->stop = stoppable(run->call, [run] { run->cancelled = true; });
     run->doc = doc;
     run->study = args.value(QLatin1String("study")).toString();
     run->watched = watched;
@@ -2358,12 +2385,14 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
             // (The model holds what it held: as unsaved as it was before.)
             run->doc->setDocChanged(run->wasChanged);
         }
+        run->control->stopped(run->stop);
         run->done(answer);
     });
     // One step: mesh i (0: as it is), solved, the values read, then i + 1.
     const auto step = std::make_shared<std::function<void(int)>>();
     *step = [run, step, finish](int i) {
         if (!run->doc) return (*finish)(errorResult(tr("The model was closed.")));
+        if (run->cancelled) return (*finish)(errorResult(tr("Cancelled by the client.")));
         MultiphysicsDoc* d = run->doc;
         const double factor = i == 0 ? 1.0 : run->finer.at(i - 1);
         const double h = run->h0 / factor;
@@ -2379,7 +2408,7 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
         }
         QJsonObject solve{{QStringLiteral("path"), d->getDocName()}, {QStringLiteral("timeout"), run->timeout}};
         if (!run->study.isEmpty()) solve.insert(QStringLiteral("study"), run->study);
-        run->control->callTool(QStringLiteral("fem_solve"), solve, [run, step, finish, i, h, factor](const QJsonObject& solved) {
+        run->control->callToolWithin(run->call, QStringLiteral("fem_solve"), solve, [run, step, finish, i, h, factor](const QJsonObject& solved) {
             if (!run->doc) return (*finish)(errorResult(tr("The model was closed.")));
             const QJsonObject report = QJsonDocument::fromJson(textOf(solved).toUtf8()).object();
             if (solved.value(QLatin1String("isError")).toBool())

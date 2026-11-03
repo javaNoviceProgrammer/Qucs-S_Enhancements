@@ -25,7 +25,9 @@
 #include <QTextList>
 #include <QTextBlock>
 #include <QTextBrowser>
+#include <QTextCursor>
 #include <QTextDocument>
+#include <QTextImageFormat>
 #include <QTextTable>
 #include <QWindow>
 
@@ -631,6 +633,35 @@ private slots:
         doc.drawContents(&p);
         p.end();
         QVERIFY(picture.size() > 0);
+    }
+
+    // An image given a width and a height (the Claude panel's thumbnails, in
+    // whole pixels), fitted narrower and then back to that width: the height
+    // given, not its own size's proportion - 179.92 for 180 drew it
+    // otherwise in part and whole (the dock's fuzz, 3 November).
+    void aGivenHeightIsKeptAtItsWidth()
+    {
+        QImage own(129, 242, QImage::Format_RGB32);
+        own.fill(Qt::darkCyan);
+        QTextDocument doc;
+        doc.setDocumentMargin(0);
+        doc.addResource(QTextDocument::ImageResource, QUrl("thumb.png"), own);
+        QTextCursor c(&doc);
+        QTextImageFormat given;
+        given.setName("thumb.png");
+        given.setWidth(96);
+        given.setHeight(180);
+        c.insertImage(given);
+        const auto shown = [&doc] { return doc.begin().begin().fragment().charFormat().toImageFormat(); };
+        qucs_s::markdown::fitImages(&doc, 400);
+        QCOMPARE(shown().width(), 96.0);
+        QCOMPARE(shown().height(), 180.0);
+        qucs_s::markdown::fitImages(&doc, 48);
+        QCOMPARE(shown().width(), 48.0);
+        QVERIFY(qAbs(shown().height() - 48.0 * 242 / 129) < 0.01);
+        qucs_s::markdown::fitImages(&doc, 400);
+        QCOMPARE(shown().width(), 96.0);
+        QCOMPARE(shown().height(), 180.0);   // (not 96 * 242 / 129, 180.09)
     }
 
     // The rendering's paper and ink: black on white under the platform's
