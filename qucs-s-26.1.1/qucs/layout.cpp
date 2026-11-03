@@ -1267,24 +1267,8 @@ void search(const Layout& layout, const Query& query, const std::function<bool(c
                 continue;
             }
             const Repetition& r = cell.repetitions.at(sh.repetition);
-            quint64 copy = 0;
             r.forEach(sh.bounds, everywhere ? QRectF() : vis, [&](QPointF off) {
-                // (which copy: its offset's place in the repetition)
-                if (r.type == Repetition::Type::Explicit) copy = quint64(r.offsets.indexOf(off));
-                else {
-                    const double det = r.v1.x() * r.v2.y() - r.v1.y() * r.v2.x();
-                    if (det != 0) {
-                        const quint64 col = quint64(std::llround((off.x() * r.v2.y() - off.y() * r.v2.x()) / det));
-                        const quint64 row = quint64(std::llround((r.v1.x() * off.y() - r.v1.y() * off.x()) / det));
-                        copy = row * r.columns + col;
-                    } else {
-                        const QPointF v = r.rows == 1 ? r.v1 : r.v2;
-                        const double len = std::hypot(v.x(), v.y());
-                        copy = len > 0 ? quint64(std::llround(std::hypot(off.x(), off.y()) / len)) : 0;
-                        if (r.rows != 1) copy *= r.columns;
-                    }
-                }
-                going = each(Found{c, i, -1, copy, QTransform::fromTranslate(off.x(), off.y()) * T, via});
+                going = each(Found{c, i, -1, copyAt(r, off), QTransform::fromTranslate(off.x(), off.y()) * T, via});
                 return going;
             });
         }
@@ -1317,6 +1301,89 @@ void search(const Layout& layout, const Query& query, const std::function<bool(c
                 if (inst.repetition < 0) down(QPointF());
                 else cell.repetitions.at(inst.repetition).forEach(one, everywhere ? QRectF() : vis, down);
             }
+        }
+        via.removeLast();
+    };
+    visit(query.cell, QTransform(), 0);
+}
+
+quint64 copyAt(const Repetition& r, QPointF off)
+{
+    // (its offset's place in the repetition)
+    if (r.type == Repetition::Type::Explicit) return quint64(std::max<qsizetype>(0, r.offsets.indexOf(off)));
+    const double det = r.v1.x() * r.v2.y() - r.v1.y() * r.v2.x();
+    if (det != 0) {
+        const quint64 col = quint64(std::llround((off.x() * r.v2.y() - off.y() * r.v2.x()) / det));
+        const quint64 row = quint64(std::llround((r.v1.x() * off.y() - r.v1.y() * off.x()) / det));
+        return row * r.columns + col;
+    }
+    const QPointF v = r.rows == 1 ? r.v1 : r.v2;
+    const double len = std::hypot(v.x(), v.y());
+    const quint64 copy = len > 0 ? quint64(std::llround(std::hypot(off.x(), off.y()) / len)) : 0;
+    return r.rows != 1 ? copy * r.columns : copy;
+}
+
+void placements(const Layout& layout, const Query& query, int placed, const std::function<bool(const Placement&)>& each)
+{
+    const int n = int(layout.cells.size());
+    if (query.cell < 0 || query.cell >= n || placed < 0 || placed >= n) return;
+    // The cells that place it somewhere below them, found up from it: the
+    // others are not looked into, so an array of a million cells that place
+    // it nowhere costs nothing - and a cycle cannot hide one.
+    QVector<QVector<int>> parents(n);
+    for (int c = 0; c < n; ++c)
+        for (const Instance& inst : layout.cells.at(c).instances)
+            if (inst.cell >= 0 && inst.cell < n) parents[inst.cell].append(c);
+    QVector<bool> holds(n, false);
+    QVector<int> queue{placed};
+    while (!queue.isEmpty()) {
+        const int d = queue.takeLast();
+        for (const int p : std::as_const(parents.at(d)))
+            if (!holds.at(p)) {
+                holds[p] = true;
+                queue.append(p);
+            }
+    }
+    if (!holds.at(query.cell)) return;
+    const bool everywhere = !query.region.isValid() && query.region.isNull();
+    bool going = true;
+    QVector<int> via;
+    // (Its captures named: GCC 12 and 13 fall over a long lambda that takes
+    // everything by reference.)
+    std::function<void(int, const QTransform&, int)> visit;
+    visit = [&layout, &query, &holds, &each, &going, &via, &visit, n, placed, everywhere](int c, const QTransform& T, int level) {
+        const Cell& cell = layout.cells.at(c);
+        via.append(c);
+        QRectF vis;   // the region in this cell's coordinates; invalid: everywhere
+        if (!everywhere) {
+            bool ok = false;
+            const QTransform inverse = T.inverted(&ok);
+            if (!ok) {
+                via.removeLast();
+                return;
+            }
+            vis = inverse.mapRect(query.region);
+        }
+        for (int i = 0; going && i < cell.instances.size(); ++i) {
+            const Instance& inst = cell.instances.at(i);
+            if (inst.cell < 0 || inst.cell >= n) continue;
+            const bool here = inst.cell == placed;
+            const bool below = level < std::min(query.depth, MaxLevels) && holds.at(inst.cell);
+            if ((!here && !below) || (!everywhere && !meets(inst.bounds, vis))) continue;
+            const QTransform it = inst.transform();
+            const QRectF one = it.mapRect(layout.cells.at(inst.cell).bounds);
+            const auto at = [&](QPointF off, quint64 copy) {
+                const QTransform M = it * QTransform::fromTranslate(off.x(), off.y()) * T;
+                if (here) going = each(Placement{c, i, copy, M, via});
+                if (going && below) visit(inst.cell, M, level + 1);
+                return going;
+            };
+            if (inst.repetition < 0) {
+                at(QPointF(), 0);
+                continue;
+            }
+            const Repetition& r = cell.repetitions.at(inst.repetition);
+            r.forEach(one, everywhere ? QRectF() : vis, [&](QPointF off) { return at(off, copyAt(r, off)); });
         }
         via.removeLast();
     };
