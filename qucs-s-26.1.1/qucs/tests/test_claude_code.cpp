@@ -11,6 +11,7 @@
 #include <QScrollBar>
 #include <QFrame>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QListWidget>
 #include <QPushButton>
@@ -54,6 +55,7 @@
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QTextFormat>
+#include <QTextLayout>
 #include <QToolButton>
 
 #include <algorithm>
@@ -456,6 +458,9 @@ public:
     // What the session told it of the guards and of its mode.
     void setGuards(const qucs_s::claude::Guards& g) override { guards = g; }
     void setAsking(quint64 caller, bool on) override { asking.insert(caller, on); }
+    // The calls the program cancelled.
+    void cancelCall(quint64, const QString& tool) override { cancelled << tool; }
+    QStringList cancelled;
     QStringList calls;
     QList<QJsonObject> arguments;
     qucs_s::claude::Guards guards{false, false};
@@ -2088,6 +2093,66 @@ private slots:
     // a file - asked by the dock itself, made once allowed, answered as not
     // allowed else. Out of auto mode they go: the program started again
     // without them, and meanwhile asked as the new mode says.
+    // A call of the host's tools the program cancels (notifications/
+    // cancelled, as Claude Code 2.1.309 sends it when its turn is stopped):
+    // one under way told to the host, its answer not written when it comes;
+    // one waiting on the dock's own question taken away, the question with
+    // it (its card stayed, asking about a call no one waited for), never
+    // made.
+    void aCancelledCallIsNeitherAnsweredNorAsked()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("cancel-in"));
+        SlowHost slow;
+        Session s;
+        s.setProgram(script("cancelling", "#!/bin/sh\nexec cat > \"$QUCS_FAKE_DIR/cancel-in\"\n"));
+        s.setWorkingDirectory(fresh("cancelwork"));
+        s.setToolHost(&slow);
+        QSignalSpy asks(&s, &Session::permissionRequested);
+        QSignalSpy withdrawn(&s, &Session::permissionWithdrawn);
+        QVERIFY(s.send("Go on"));
+        QTRY_VERIFY(read(dir.filePath("cancel-in")).contains("Go on"));
+        const auto mcp = [&s](const QString& request, const QString& message) {
+            s.handleLine(QStringLiteral(R"({"type":"control_request","request_id":"%1","request":{"subtype":"mcp_message","server_name":"fake","message":%2}})")
+                             .arg(request, message).toUtf8());
+        };
+        // Under way: the host told; its answer, when it comes, not written.
+        mcp("k1", R"({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"look","arguments":{"what":"x"},"_meta":{"claudecode/toolUseId":"tu31"}}})");
+        QTRY_COMPARE(slow.calls, QStringList{"look"});
+        mcp("k2", R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":31,"reason":"AbortError"}})");
+        QCOMPARE(slow.cancelled, QStringList{"look"});
+        slow.waiting(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "looked"}}}}});
+        QTest::qWait(200);
+        QVERIFY2(!read(dir.filePath("cancel-in")).contains("\"k1\""), qPrintable(read(dir.filePath("cancel-in"))));
+        QVERIFY(read(dir.filePath("cancel-in")).contains("\"k2\""));   // (the notification's, as every message's)
+        QCOMPARE(s.canSendToBackground(), false);   // (nothing of the host's left under way)
+        // One with no tool use's id (an older Claude Code's): not written either.
+        mcp("k5", R"({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"look","arguments":{"what":"y"}}})");
+        QTRY_COMPARE(slow.calls.size(), 2);
+        mcp("k6", R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":33}})");
+        slow.waiting(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "looked"}}}}});
+        QTest::qWait(200);
+        QVERIFY2(!read(dir.filePath("cancel-in")).contains("\"k5\""), qPrintable(read(dir.filePath("cancel-in"))));
+        // Waiting on the dock's question (a file written over): the question
+        // taken away, the call never made.
+        AutoHost asking;
+        s.setToolHost(&asking);
+        mcp("k3", R"({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"look","arguments":{"what":"overwrite"}}})");
+        QCOMPARE(asks.count(), 1);
+        const QString held = asks.last().at(0).value<PermissionRequest>().id;
+        QCOMPARE(s.state(), State::Waiting);
+        mcp("k4", R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":32}})");
+        QCOMPARE(withdrawn.count(), 1);
+        QCOMPARE(withdrawn.last().at(0).toString(), held);
+        QVERIFY(s.state() != State::Waiting);
+        s.answer(held, true);   // (too late: nothing to make)
+        QTest::qWait(100);
+        QVERIFY(asking.calls.isEmpty());
+        QVERIFY(!read(dir.filePath("cancel-in")).contains("\"k3\""));
+        s.setToolHost(nullptr);
+        s.stop();
+    }
+
     void autoModeAllowsTheUndoableTools()
     {
         skipWithoutShell();
@@ -5185,6 +5250,190 @@ private slots:
         panel.session()->reset();
 #endif
         qunsetenv("QUCS_CACHE_DIR");
+    }
+
+    // What is dropped on the composer that is not an image goes in where it
+    // was dropped: a file as its path, not its URL; a link as it is; text as
+    // it is - again and again, nothing else between. (Put in by the panel:
+    // Qt's own insertion of a dropped URL read a line it had not laid out, in
+    // a box whose scroll bar had just come - the dock's fuzz, seed 300, step
+    // 217, at an 18-point font; a crash this test does not reproduce, its
+    // geometry being the fonts'.)
+    void filesDroppedOnTheComposerAreTheirPaths()
+    {
+        const QString work = fresh("dropped");
+        QFile notes(work + "/notes.txt");
+        QVERIFY(notes.open(QIODevice::WriteOnly));
+        notes.write("text\n");
+        notes.close();
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.resize(420, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        const auto dropped = [&panel](const QMimeData& data) {
+            QDragEnterEvent enter(QPoint(4, 4), Qt::CopyAction, &data, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(panel.composer()->viewport(), &enter);
+            QDropEvent drop(QPointF(4, 4), Qt::CopyAction, &data, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(panel.composer()->viewport(), &drop);
+            QCoreApplication::processEvents();
+            return drop.isAccepted();
+        };
+        QMimeData files;
+        files.setUrls({QUrl::fromLocalFile(work + "/notes.txt"), QUrl::fromLocalFile(work), QUrl("https://example.com/page")});
+        const QString expected = QDir::toNativeSeparators(work + "/notes.txt") + "\n" + QDir::toNativeSeparators(work) + "\nhttps://example.com/page";
+        for (int i = 0; i < 3; ++i) {
+            panel.composer()->clear();
+            QVERIFY(dropped(files));
+            QCOMPARE(panel.composer()->toPlainText(), expected);
+        }
+        QVERIFY(panel.attachedImages().isEmpty());
+        // Text as it is, where it was dropped (the box's start).
+        panel.composer()->setPlainText("after");
+        QMimeData words;
+        words.setText("before ");
+        QVERIFY(dropped(words));
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("before after"));
+    }
+
+    // Long texts the dock is given - a permission for a file of a long path,
+    // its four buttons, a question with a long URL in it, long choices and a
+    // field's long title, six images attached - leave it as narrow at its
+    // least as with none of them. (A QLabel asks for its longest word's width
+    // and a row for all its buttons' and pictures': the dock fuzzed on 3
+    // November was up to 8,741 pixels wide at its least.)
+    void longTextsLeaveTheDockNarrow()
+    {
+        const QString work = fresh("narrow");
+        FakeHost host;
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.session()->setToolHost(&host);
+        panel.resize(420, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        // (Widgets put in a card already shown are shown by a queued call: a
+        // hidden one takes no room.)
+        const auto least = [&panel] {
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            return panel.minimumSizeHint().width();
+        };
+        const int alone = least();
+        const int hinted = panel.sizeHint().width();   // (what a dock never sized takes)
+        const auto feed = [&panel](const QJsonObject& m) { panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact)); };
+        const QString path = work + "/" + QString(40, 'n') + "/" + QString(120, 'x') + ".sch";
+
+        // A permission of one of the host's tools, about a long path, that
+        // edits may be allowed for: all four buttons.
+        feed({{"type", "control_request"}, {"request_id", "p1"},
+              {"request", QJsonObject{{"subtype", "can_use_tool"}, {"tool_name", "mcp__fake__change"}, {"input", QJsonObject{{"what", path}}},
+                                      {"permission_suggestions", QJsonArray{QJsonObject{{"type", "setMode"}, {"mode", "acceptEdits"},
+                                                                                        {"destination", "session"}}}}}}});
+        QTRY_VERIFY(panel.permissionCard()->isVisible());
+        for (QToolButton* b : {panel.allowButton(), panel.allowEditsButton(), panel.allowToolsButton(), panel.denyButton()}) QVERIFY(b->isVisible());
+        auto* subject = panel.permissionCard()->findChild<QLabel*>("claudeCardSubject");
+        QVERIFY(subject != nullptr && subject->text().contains(path));   // (whole, for what reads it)
+        QVERIFY2(least() <= alone, qPrintable(QStringLiteral("%1 at the least with the permission, %2 without").arg(least()).arg(alone)));
+        // (Its four buttons whole in it, not the path.)
+        QVERIFY2(panel.sizeHint().width() <= 2 * hinted, qPrintable(QStringLiteral("a size hint of %1, %2 without").arg(panel.sizeHint().width()).arg(hinted)));
+        // Its path wrapped where it must be, every character drawn: as tall as
+        // its text laid out so at its width (a QLabel's height for a width
+        // holds the long word in one line: 75 pixels for 105), ink from its
+        // first line to its last (QLabel draws the word as one line, cut).
+        QTextLayout wrapped(subject->text(), subject->font());
+        QTextOption anywhere;
+        anywhere.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        wrapped.setTextOption(anywhere);
+        qreal needed = 0;
+        int lines = 0;
+        wrapped.beginLayout();
+        for (QTextLine l = wrapped.createLine(); l.isValid(); l = wrapped.createLine(), ++lines) {
+            l.setLineWidth(subject->contentsRect().width());
+            needed += l.height() + subject->fontMetrics().leading();
+        }
+        wrapped.endLayout();
+        QVERIFY2(lines >= 3 && subject->height() >= int(needed),
+                 qPrintable(QStringLiteral("%1 pixels high for %2 lines, %3 pixels").arg(subject->height()).arg(lines).arg(needed)));
+        const QImage shot = subject->grab().toImage();
+        const auto inked = [&shot](int from, int to) {
+            for (int y = from; y < to; ++y)
+                for (int x = 0; x < shot.width(); ++x)
+                    if (shot.pixel(x, y) != shot.pixel(0, 0)) return true;
+            return false;
+        };
+        const int line = subject->fontMetrics().height() * shot.height() / subject->height();
+        QVERIFY(inked(0, line));
+        QVERIFY(inked(shot.height() - line, shot.height()));
+        // Narrowed to its least: the buttons cut, none hidden.
+        panel.resize(alone, 700);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        QVERIFY(panel.allowToolsButton()->width() < panel.allowToolsButton()->sizeHint().width());
+        QCOMPARE(panel.allowToolsButton()->text(), QStringLiteral("Allow Qucs-S Control"));
+        panel.resize(420, 700);
+        panel.denyButton()->click();
+        QTRY_VERIFY(!panel.permissionCard()->isVisible());
+        // Another server's tool of a long name, in the card's title ("Claude
+        // wants to use mcp__…").
+        const QString tool = "mcp__github-enterprise-server__create_or_update_pull_request_review_comment_reply";
+        feed({{"type", "control_request"}, {"request_id", "p2"},
+              {"request", QJsonObject{{"subtype", "can_use_tool"}, {"tool_name", tool}, {"input", QJsonObject{{"body", "x"}}}}}});
+        QTRY_VERIFY(panel.permissionCard()->isVisible());
+        QVERIFY(panel.permissionCard()->findChild<QLabel*>("claudeCardTitle")->text().contains(tool));
+        QVERIFY2(least() <= alone, qPrintable(QStringLiteral("%1 at the least with the tool's name, %2 without").arg(least()).arg(alone)));
+        panel.denyButton()->click();
+        QTRY_VERIFY(!panel.permissionCard()->isVisible());
+
+        // A question with a long URL, then choices of long names, then a
+        // form with a long title and a choice of long names.
+        const QString url = "https://example.com/" + QString(300, 'u');
+        const QString longChoice = "a choice of a name long enough to fill a line of the dock on its own";
+        feed({{"type", "control_request"}, {"request_id", "e1"},
+              {"request", QJsonObject{{"subtype", "elicitation"}, {"mcp_server_name", "fake"}, {"message", "Open " + url + "?"},
+                                      {"requested_schema", QJsonObject{{"type", "object"},
+                                                                       {"properties", QJsonObject{{"pick", QJsonObject{{"type", "string"},
+                                                                                                                        {"enum", QJsonArray{longChoice, longChoice + " too", "short"}}}}}}}}}}});
+        QTRY_VERIFY(panel.askCard()->isVisible());
+        auto* question = panel.askCard()->findChild<QLabel*>("claudeCardTitle");
+        QVERIFY(question != nullptr && question->text().contains(url));
+        QVERIFY2(least() <= alone, qPrintable(QStringLiteral("%1 at the least with the question, %2 without").arg(least()).arg(alone)));
+        QList<QToolButton*> choices = panel.askCard()->findChildren<QToolButton*>("claudeAskOption");
+        QCOMPARE(choices.size(), 3);
+        QCOMPARE(choices.first()->text(), longChoice);
+        feed({{"type", "control_request"}, {"request_id", "e2"},
+              {"request", QJsonObject{{"subtype", "elicitation"}, {"mcp_server_name", "fake"}, {"message", "Settings"},
+                                      {"requested_schema",
+                                       QJsonObject{{"type", "object"},
+                                                   {"properties", QJsonObject{{"name", QJsonObject{{"type", "string"}, {"title", QString(200, 't')}}},
+                                                                              {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{longChoice, "x"}}}}}}}}}}});
+        choices.first()->click();
+        QTRY_VERIFY(panel.askCard()->findChild<QComboBox*>("claudeAskField_kind") != nullptr);
+        QVERIFY2(least() <= alone, qPrintable(QStringLiteral("%1 at the least with the form, %2 without").arg(least()).arg(alone)));
+        // A form of no fields, put away after it: no warning of a layout
+        // emptied (QFormLayout::takeAt(0) of an empty one warns).
+        QTest::failOnWarning(QRegularExpression("takeAt"));
+        feed({{"type", "control_request"}, {"request_id", "e3"},
+              {"request", QJsonObject{{"subtype", "elicitation"}, {"mcp_server_name", "fake"}, {"message", "Go on?"},
+                                      {"requested_schema", QJsonObject{{"type", "object"}, {"properties", QJsonObject()}}}}}});
+        panel.askCard()->findChild<QToolButton*>("claudeAskSubmit")->click();
+        QTRY_VERIFY(panel.askCard()->findChild<QComboBox*>("claudeAskField_kind") == nullptr);
+        QTRY_VERIFY(panel.askCard()->findChild<QToolButton*>("claudeAskSubmit") != nullptr);
+        panel.askCard()->findChild<QToolButton*>("claudeAskSubmit")->click();
+        QTRY_VERIFY(!panel.askCard()->isVisible());
+
+        // Six images attached: in a row that scrolls.
+        QStringList images;
+        for (int i = 0; i < 6; ++i) {
+            QImage image(96, 56, QImage::Format_RGB32);
+            image.fill(QColor::fromHsv(i * 50, 200, 200));
+            images << work + QStringLiteral("/i%1.png").arg(i);
+            QVERIFY(image.save(images.last()));
+        }
+        QVERIFY(panel.attachImageFiles(images));
+        QCOMPARE(panel.imageStrip()->findChildren<QFrame*>("claudeImage").size(), 6);
+        QVERIFY(panel.imageStrip()->isVisible());
+        QVERIFY2(least() <= alone, qPrintable(QStringLiteral("%1 at the least with six images, %2 without").arg(least()).arg(alone)));
+        panel.session()->setToolHost(nullptr);
     }
 
     // QUCS_CHAT_FUZZ=<seconds> (QUCS_CHAT_FUZZ_SEED): image files of every

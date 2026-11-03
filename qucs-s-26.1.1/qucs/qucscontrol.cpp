@@ -4398,7 +4398,9 @@ void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, st
     bool async = false;
     // Errors are told to Claude, not shown in message boxes.
     misc::ErrorCapture capture;
-    readAnyFileChangedOnDisk();
+    // (Once a call: callToolFor() has just looked - every open document's
+    // file looked at again was 42 % of a cheap call with 40 open.)
+    if (!std::exchange(a_lookedOnDisk, false)) readAnyFileChangedOnDisk();
     // What a tool did beside what was asked, after its result.
     const auto withNotes = [this](QJsonObject result) {
         // An input read under another name, or that had no effect: in the
@@ -4442,7 +4444,12 @@ void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, st
         result.insert(QStringLiteral("content"), content);
         return result;
     };
+    // (Called by itself, outside any call: the tool under way, for what it
+    // waits on - cancelCall().)
+    const Running outer = a_running;
+    if (a_running.tool.isEmpty()) a_running.tool = tool;
     QJsonObject result = call(tool, arguments, [done, withNotes](const QJsonObject& r) { done(withNotes(r)); }, async);
+    a_running = outer;
     if (async) return;
     result = withNotes(result);
     const QStringList errors = capture.errors();
@@ -4459,6 +4466,43 @@ bool QucsControl::runsAlone(const QString& tool, const QJsonObject& arguments)
 {
     return tool == QLatin1String("batch") || tool == QLatin1String("run_script") || tool == QLatin1String("tune")
            || arguments.value(QLatin1String("preview")).toBool();
+}
+
+void QucsControl::cancelCall(quint64 caller, const QString& tool)
+{
+    // Waiting its turn behind one that runs alone: taken out (the answer
+    // goes nowhere).
+    for (qsizetype i = 0; i < a_waiting.size(); ++i)
+        if (a_waiting.at(i).caller == caller && a_waiting.at(i).tool == tool) {
+            const Waiting w = a_waiting.takeAt(i);
+            w.done(errorResult(tr("Cancelled by the client before it began.")));
+            return;
+        }
+    // Under way: what it waits on, stopped - a batch's call, a script's,
+    // with it. (A copy: a stop may end its call at once, which takes its
+    // stopper out.)
+    const QList<Stopper> stoppers = a_stoppers;
+    for (const Stopper& s : stoppers)
+        if (s.call.caller == caller && s.call.tool == tool) s.stop();
+}
+
+void QucsControl::callToolWithin(const Running& call, const QString& tool, const QJsonObject& arguments,
+                                 std::function<void(const QJsonObject&)> done)
+{
+    const Running outer = std::exchange(a_running, call);
+    callTool(tool, arguments, std::move(done));
+    a_running = outer;
+}
+
+int QucsControl::stoppable(const Running& call, std::function<void()> stop)
+{
+    a_stoppers.append({call, ++a_lastStopper, std::move(stop)});
+    return a_lastStopper;
+}
+
+void QucsControl::stopped(int id)
+{
+    a_stoppers.removeIf([id](const Stopper& s) { return s.id == id; });
 }
 
 void QucsControl::runWaiting()
@@ -4509,7 +4553,9 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         a_driving.append(guard);
     }
     const CallGuard before = std::exchange(a_callGuard, guard);
+    const Running outerCall = std::exchange(a_running, Running{caller, tool});
     auto over = std::make_shared<bool>(false), released = std::make_shared<bool>(false);
+    a_lookedOnDisk = true;   // (above: callTool() need not look again)
     callTool(tool, arguments, [this, caller, changes, done, alone, over, released, before, id = guard.id](const QJsonObject& r) {
         *over = true;
         if (alone) a_callGuard = before;
@@ -4531,6 +4577,7 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         done(result);
     });
     if (!alone) a_callGuard = before;
+    a_running = outerCall;
     // A call that only waits (wait_for; a console's line running; a run
     // simulated) edits nothing while it waits: what is edited meanwhile is
     // the user's - or another call's -, not its caller's. (A run's own
@@ -12115,7 +12162,7 @@ public:
     BatchRun(QucsControl* control, QucsApp* app, const QJsonArray& calls, bool keepGoing, bool atomic,
              const QList<Schematic*>& schematics, std::function<void(const QJsonObject&)> done)
         : QObject(control), a_control(control), a_app(app), a_calls(calls), a_keepGoing(keepGoing && !atomic), a_atomic(atomic),
-          a_done(std::move(done))
+          a_done(std::move(done)), a_call(control->running())
     {
         if (atomic)
             for (Schematic* sch : schematics) a_before.append(Before{QPointer<Schematic>(sch), sch->snapshotAll(), sch->revision()});
@@ -12126,6 +12173,9 @@ public:
     /// changed, not its whole answer (those that fail, and those that only
     /// look, in full).
     void setBrief(bool brief) { a_brief = brief; }
+
+    /// Cancelled by its client: no call after the one under way.
+    void cancel() { a_stopped = true; }
 
     void next()
     {
@@ -12171,7 +12221,7 @@ public:
         else if (badMost) answered(errorResult(qucs_s::mcp::maxCharsRefusal(given)));
         // (A use the guards name that the batch came to after it began.)
         else if (const QString no = a_control->unaskedWithin(tool, arguments); !no.isEmpty()) answered(errorResult(no));
-        else a_control->callTool(tool, arguments, after);
+        else a_control->callToolWithin(a_call, tool, arguments, after);   // (the batch's: cancelled with it)
     }
 
 private:
@@ -12340,6 +12390,7 @@ private:
     int a_succeeded = 0;
     int a_failed = 0;
     bool a_stopped = false;
+    QucsControl::Running a_call;   // the batch, as it began
 };
 
 } // namespace
@@ -12356,7 +12407,17 @@ void QucsControl::runBatch(const QJsonObject& args, const Done& done)
     if (atomic)
         for (QucsDoc* doc : a_app->allDocuments())
             if (auto* sch = dynamic_cast<Schematic*>(doc)) schematics << sch;
-    auto* run = new BatchRun(this, a_app, calls, args.value(QLatin1String("keep_going")).toBool(), atomic, schematics, done);
+    // Cancelled by its client: the call under way stopped (by its own
+    // stopper, the batch's), and none after it.
+    auto stop = std::make_shared<int>(0);
+    const Done finished = [this, stop, done](const QJsonObject& r) {
+        stopped(*stop);
+        done(r);
+    };
+    auto* run = new BatchRun(this, a_app, calls, args.value(QLatin1String("keep_going")).toBool(), atomic, schematics, finished);
+    *stop = stoppable(running(), [run = QPointer<BatchRun>(run)] {
+        if (run) run->cancel();
+    });
     run->setBrief(args.value(QLatin1String("brief")).toBool());
     run->next();
 }
@@ -14052,12 +14113,20 @@ QString stillRunning(int timeout, int id)
 
 } // namespace
 
-void QucsControl::simulate(const QJsonObject& args, const Done& given)
+void QucsControl::simulate(const QJsonObject& args, const Done& givenToCaller)
 {
     // Followed by an id - begun with 'background', or still running at its
     // 'timeout' -: its outcome kept (simulation_status, wait_for) once it
     // has ended, not answered (the answer went).
     const bool background = args.value(QLatin1String("background")).toBool();
+    // Cancelled by its client while it waits for its run (the user stopped
+    // Claude): the run stopped, as Simulation > Stop Simulation stops it.
+    // (Answered - begun in the background, or past its timeout -: no more.)
+    const int stop = background ? 0 : stoppable(running(), [this] { stopRunningSimulation(); });
+    const Done given = [this, stop, givenToCaller](const QJsonObject& r) {
+        if (stop != 0) stopped(stop);
+        givenToCaller(r);
+    };
     auto followed = std::make_shared<int>(0);
     const Done doneGiven = [this, given, followed](const QJsonObject& r) {
         if (*followed == 0) given(r);

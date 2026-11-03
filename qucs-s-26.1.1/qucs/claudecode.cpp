@@ -1591,6 +1591,7 @@ void Session::handleMcpMessage(const QString& requestId, const QJsonObject& requ
     const QJsonObject message = request.value(QLatin1String("message")).toObject();
     const QString server = request.value(QLatin1String("server_name")).toString();
     const auto reply = [this, requestId](const QJsonObject& rpc) {
+        if (rpc.isEmpty()) return;   // (a call the program cancelled: not answered)
         write({{QStringLiteral("type"), QStringLiteral("control_response")},
                {QStringLiteral("response"),
                 QJsonObject{{QStringLiteral("subtype"), QStringLiteral("success")},
@@ -1604,6 +1605,21 @@ void Session::handleMcpMessage(const QString& requestId, const QJsonObject& requ
                {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), -32601},
                                                      {QStringLiteral("message"), QStringLiteral("No server %1 here").arg(server)}}}});
         return;
+    }
+    // A call the program cancelled (the turn stopped) that waits on the
+    // dock's own question: the question taken away - its card was left
+    // asking about a call no one waited for.
+    if (message.value(QLatin1String("method")).toString() == QLatin1String("notifications/cancelled")) {
+        const QJsonValue cancelled = message.value(QLatin1String("params")).toObject().value(QLatin1String("requestId"));
+        for (auto it = a_held.begin(); it != a_held.end(); ++it) {
+            if (it->message.value(QLatin1String("id")) != cancelled) continue;
+            const QString id = it.key();
+            a_held.erase(it);
+            a_pending.remove(id);
+            emit permissionWithdrawn(id);
+            if (a_busy) setState(a_pending.isEmpty() ? State::Thinking : State::Waiting, a_pending.isEmpty() ? QString() : a_pending.cbegin().value().tool);
+            break;
+        }
     }
     // A call the program let through by a rule that the dock asks about
     // itself: made once allowed.
@@ -1693,6 +1709,10 @@ void Session::callHost(const QJsonObject& message, const std::function<void(cons
     QPointer<Session> self(this);
     a_mcp->handle(message, [self, toolUse, reply](const QJsonObject& rpc) {
         if (!self) return;
+        if (rpc.isEmpty()) {   // (cancelled by the program: over, not answered)
+            self->a_hostCalls.remove(toolUse);
+            return;
+        }
         const auto it = self->a_hostCalls.find(toolUse);
         if (it == self->a_hostCalls.end() || !it->background) {
             if (it != self->a_hostCalls.end()) self->a_hostCalls.erase(it);

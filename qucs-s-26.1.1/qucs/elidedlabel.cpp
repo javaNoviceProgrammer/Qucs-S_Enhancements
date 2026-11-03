@@ -18,9 +18,11 @@
 #include <QStylePainter>
 #include <QTextDocument>
 #include <QTextDocumentFragment>
+#include <QTextLayout>
 #include <QToolTip>
 
 #include <algorithm>
+#include <cmath>
 
 ElidedLabel::ElidedLabel(QWidget* parent, Qt::TextElideMode mode) : QLabel(parent), a_mode(mode) {}
 
@@ -104,6 +106,101 @@ void ElidedLabel::paintEvent(QPaintEvent* event)
     drawFrame(&painter);
     const Qt::Alignment align = QStyle::visualAlignment(layoutDirection(), alignment());
     style()->drawItemText(&painter, room(), int(align) | Qt::TextSingleLine, palette(), isEnabled(), shown(), foregroundRole());
+}
+
+// ----------------------------------------------------------------------
+
+WrappedLabel::WrappedLabel(QWidget* parent) : WrappedLabel(QString(), parent) {}
+
+WrappedLabel::WrappedLabel(const QString& text, QWidget* parent) : QLabel(text, parent)
+{
+    setTextFormat(Qt::PlainText);
+    setWordWrap(true);
+}
+
+QSize WrappedLabel::chrome() const
+{
+    // (Whatever the label's size now: its width less its contents' is the
+    // frame and the contents' margins.)
+    return QSize(width() - contentsRect().width(), height() - contentsRect().height()) + QSize(2 * margin(), 2 * margin());
+}
+
+bool WrappedLabel::broken() const
+{
+    // QLabel's least width wrapped is its longest word's, as it draws it.
+    return !text().isEmpty() && QLabel::minimumSizeHint().width() > width();
+}
+
+qreal WrappedLabel::linesHeight(qreal width, QTextLayout* into) const
+{
+    QString text = this->text();
+    text.replace(QLatin1Char('\n'), QChar::LineSeparator);
+    QTextLayout own;
+    QTextLayout& layout = into != nullptr ? *into : own;
+    layout.setText(text);
+    layout.setFont(font());
+    QTextOption option(QStyle::visualAlignment(layoutDirection(), alignment()) & Qt::AlignHorizontal_Mask);
+    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    layout.setTextOption(option);
+    const qreal leading = QFontMetricsF(font()).leading();
+    qreal y = 0;
+    layout.beginLayout();
+    for (QTextLine line = layout.createLine(); line.isValid(); line = layout.createLine()) {
+        line.setLineWidth(std::max<qreal>(1, width));
+        line.setPosition(QPointF(0, y));
+        y += line.height() + leading;
+    }
+    layout.endLayout();
+    return y;
+}
+
+int WrappedLabel::heightForWidth(int width) const
+{
+    if (QLabel::minimumSizeHint().width() <= width) return QLabel::heightForWidth(width);
+    return int(std::ceil(linesHeight(width - chrome().width()))) + chrome().height();
+}
+
+QSize WrappedLabel::minimumSizeHint() const
+{
+    // Room for a few characters, and what is around them: never more than
+    // the whole text asks.
+    const QSize whole = QLabel::minimumSizeHint();
+    return QSize(std::min(whole.width(), chrome().width() + fontMetrics().averageCharWidth() * 8), whole.height());
+}
+
+QSize WrappedLabel::sizeHint() const
+{
+    // (QLabel's is as wide as the longest word too: a dock never sized
+    // takes its contents' size hints.)
+    const QSize whole = QLabel::sizeHint();
+    const int most = chrome().width() + fontMetrics().averageCharWidth() * 40;
+    if (whole.width() <= most) return whole;
+    return QSize(most, heightForWidth(most));
+}
+
+void WrappedLabel::paintEvent(QPaintEvent* event)
+{
+    if (!broken()) {
+        QLabel::paintEvent(event);
+        return;
+    }
+    QPainter painter(this);
+    drawFrame(&painter);
+    const QRect room = contentsRect().adjusted(margin(), margin(), -margin(), -margin());
+    QTextLayout layout;
+    linesHeight(room.width(), &layout);
+    // (Its selection, by mouse, drawn as QLabel draws it.)
+    QList<QTextLayout::FormatRange> selections;
+    if (hasSelectedText()) {
+        QTextLayout::FormatRange selected;
+        selected.start = selectionStart();
+        selected.length = int(selectedText().size());
+        selected.format.setBackground(palette().brush(QPalette::Highlight));
+        selected.format.setForeground(palette().brush(QPalette::HighlightedText));
+        selections << selected;
+    }
+    painter.setPen(palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled, foregroundRole()));
+    layout.draw(&painter, room.topLeft(), selections, room);
 }
 
 // ----------------------------------------------------------------------

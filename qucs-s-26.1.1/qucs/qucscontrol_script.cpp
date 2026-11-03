@@ -25,6 +25,7 @@
 #include <QElapsedTimer>
 #include <QJSEngine>
 #include <QJSValue>
+#include <QScopeGuard>
 
 #include <chrono>
 #include <condition_variable>
@@ -160,6 +161,10 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     bool finished = false, stopped = false;
     QElapsedTimer clock;
     clock.start();
+    // Cancelled by its client (the user stopped Claude): stopped as at its
+    // timeout, and the call of it under way with it (a solve, a run).
+    const int stop = stoppable(running(), [&engine] { engine.setInterrupted(true); });
+    const auto unstop = qScopeGuard([this, stop] { this->stopped(stop); });
     // The user's time is not the script's: while a call of it waits for an
     // answer to a card (askUser()), its clock stands still - the script was
     // "stopped after 60 s" where the user had taken that long to answer
