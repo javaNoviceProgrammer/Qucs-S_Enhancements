@@ -83,7 +83,8 @@ struct AmgSolver::Impl {
         gs.reset();
         ilu0.reset();
     }
-    std::pair<std::size_t, double> operator()(const std::vector<double>& rhs, std::vector<double>& x) const
+    // (AMGCL's own tuple: libstdc++ makes no pair of a tuple, as libc++ does.)
+    std::tuple<std::size_t, double> operator()(const std::vector<double>& rhs, std::vector<double>& x) const
     {
         return spai0 ? (*spai0)(rhs, x) : gs ? (*gs)(rhs, x) : (*ilu0)(rhs, x);
     }
