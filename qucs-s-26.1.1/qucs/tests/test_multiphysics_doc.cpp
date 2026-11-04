@@ -4199,18 +4199,30 @@ private slots:
     }
 
     // A 3D model is Multiphysics 3D's: the 2D tab refuses one read from a
-    // file, and Claude's tools one given whole (fem_model new or set) or a
-    // 2D one's space made 3D (fem_edit) - they put a 3D model in a 2D tab,
-    // which could not build its solids and wrote a .qfem no tab opens
-    // (the DMG's check of 58c0fd7).
+    // file, and Claude's tools never put one in a 2D tab - which could not
+    // build its solids and wrote a .qfem no tab opens (the DMG's check of
+    // 58c0fd7). One given whole (fem_model new) is made in a Multiphysics
+    // 3D tab, as the tools take 3D models since phase C; a 2D tab's model
+    // is not replaced by one (set), nor made 3D (fem_edit).
     void aThreeDModelIsRefusedByTheTwoDTools()
     {
         const QJsonObject solid = QJsonDocument::fromJson(Model::blank3d().toJson()).object();
         const auto tabs = [this] { return app->DocumentTab->count(); };
+        // (Its 3D tabs: the window's last tab closed, it opens an untitled
+        // schematic, so the tabs alone do not say.)
+        const auto threeD = [this] {
+            int n = 0;
+            for (QucsDoc* d : app->allDocuments()) n += QucsApp::isMultiphysics3DDocument(QucsApp::documentWidget(d)) ? 1 : 0;
+            return n;
+        };
         const int before = tabs();
+        QCOMPARE(threeD(), 0);
         QJsonObject r = call("fem_model", {{"action", "new"}, {"model", solid}});
-        QVERIFY2(failed(r) && text(r).contains("Multiphysics 3D") && text(r).contains("Nothing was made"), qPrintable(text(r)));
-        QCOMPARE(tabs(), before);
+        QVERIFY2(!failed(r) && json(r).value("space").toString() == QLatin1String("3D"), qPrintable(text(r)));
+        QCOMPARE(tabs(), before + 1);
+        QVERIFY(QucsApp::isMultiphysics3DDocument(app->DocumentTab->currentWidget()));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QCOMPARE(threeD(), 0);
         // (A 2D format with the space 3D is one too.)
         QJsonObject spaced = QJsonDocument::fromJson(Model::blank().toJson()).object();
         QVERIFY(spaced.value("format").toString().startsWith("qucs-s multiphysics 1"));
@@ -4221,8 +4233,10 @@ private slots:
         components.replace(0, first);
         spaced.insert("components", components);
         r = call("fem_model", {{"action", "new"}, {"model", spaced}});
-        QVERIFY2(failed(r) && text(r).contains("Multiphysics 3D"), qPrintable(text(r)));
-        QCOMPARE(tabs(), before);
+        QVERIFY2(!failed(r) && json(r).value("space").toString() == QLatin1String("3D"), qPrintable(text(r)));
+        QVERIFY(QucsApp::isMultiphysics3DDocument(app->DocumentTab->currentWidget()));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+        QCOMPARE(threeD(), 0);
         QVERIFY2(!failed(call("fem_model", {{"action", "new"}})), "a 2D model is made");
         auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
         QVERIFY(doc != nullptr);
@@ -4307,29 +4321,26 @@ private slots:
         QVERIFY2(refused.isEmpty(), qPrintable(refused.join("\n")));
     }
 
-    // The fem_ tools given a 3D model - its file, or its tab - say it is one,
-    // Multiphysics 3D's: it was "copy3d.qfem3d is not a multiphysics model"
-    // (the check of 3 November, 2).
+    // The fem_ tools given a 3D model - its file, or its tab - act on it in
+    // its Multiphysics 3D tab (phase C; they said "copy3d.qfem3d is not a
+    // multiphysics model" - the check of 3 November, 2 - and then that it
+    // was a 3D one), and what acts on 2D models alone says it is one.
     void aThreeDModelsFileIsSaidToBeOne()
     {
         const QString file = path(QStringLiteral("copy3d.qfem3d"));
         QFile::remove(file);
         QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics3d/chip_heater.qfem3d"), file));
         QFile(file).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        const auto said = [](const QJsonObject& r) {
-            return failed(r) && text(r).contains("copy3d.qfem3d is a 3D multiphysics model") && text(r).contains("Multiphysics 3D tab")
-                   && !text(r).contains("is not a multiphysics model");
-        };
-        QJsonObject r = call("fem_edit", {{"path", file}, {"action", "set"}, {"tag", "comp1"}, {"props", QJsonObject{}}});
-        QVERIFY2(said(r), qPrintable(text(r)));
-        r = call("fem_describe", {{"path", file}});
-        QVERIFY2(said(r), qPrintable(text(r)));
-        // Open, by its tab's title.
-        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        QJsonObject r = call("fem_describe", {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value("space").toString() == QLatin1String("3D"), qPrintable(text(r)));
+        QVERIFY(QucsApp::isMultiphysics3DDocument(app->DocumentTab->currentWidget()));
+        // By its tab's title.
         r = call("fem_edit", {{"path", "copy3d.qfem3d"}, {"action", "set"}, {"tag", "comp1"}, {"props", QJsonObject{}}});
-        QVERIFY2(said(r), qPrintable(text(r)));
-        r = call("fem_solve", {{"path", "copy3d.qfem3d"}});
-        QVERIFY2(said(r), qPrintable(text(r)));
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_build", {{"path", "copy3d.qfem3d"}});
+        QVERIFY2(!failed(r) && json(r).value("domains").toInt() > 1, qPrintable(text(r)));
+        r = call("fem_converge", {{"path", "copy3d.qfem3d"}, {"values", QJsonArray{QStringLiteral("ht.Tmax"), QStringLiteral("ht.P")}}});
+        QVERIFY2(failed(r) && text(r).contains("2D models alone") && !text(r).contains("is not a multiphysics model"), qPrintable(text(r)));
         // (Another kind still "not a multiphysics model".)
         QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
         QString front;
