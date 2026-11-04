@@ -4,8 +4,8 @@ held to what is published, multigrid in any unit and with a symmetric smoother
 - undone on purpose, one piece at a time: send_input's points mapped as its
 events go, an export's Write said again when its form is made again, the
 right-hand side scaled to a norm of one, the smoother, a right-hand side not
-finite, a terminal on a face between two solved domains, order 2's curved
-floors, and the device examples. Each built and its tests run; sources and
+finite, a terminal on a face between two solved domains, the 2D group index's
+dispersion, order 2's curved floors, and the device examples. Each built and its tests run; sources and
 examples put back whatever happens.
 BRK_ONLY_CHECK=1 checks the anchors; BRK_ONLY=3,7 runs those alone;
 HUNT_RUNS=<dir> for logs. It works on the checkout it is in, and its Release
@@ -21,6 +21,7 @@ os.makedirs(CACHE, exist_ok=True)
 
 INPUT, PANEL = "qucscontrol_input.cpp", "rf25panel.cpp"
 AMG, SC, FE = "multiphysics/fem_amg.cpp", "multiphysics/fem3_scalar.cpp", "multiphysics/fem3_fe.cpp"
+WAVES = "multiphysics/fem_waves.cpp"
 EX = "../examples/multiphysics3d/"
 TPP, TRF, TAMG, TDEV = "test_pptx_doc", "test_rf25_doc", "test_fem_amg", "test_fem3_devices"
 
@@ -49,6 +50,9 @@ BREAKS = [
     "                                               && f.domains[std::size_t(topo.faces[std::size_t(b)].back)] && f.domains[std::size_t(topo.faces[std::size_t(b)].front)]))\n"
     "                    a_conditions[std::size_t(b)] = c;")],
   [(TDEV, "photodiodeFingers")]),
+ ("the 2D group index without the media's own dispersion",
+  [(WAVES, "            dev.setFrequency(w / (2 * M_PI));", "            dev.setFrequency(omega / (2 * M_PI));")],
+  [(TDEV, "heaterOverARing")]),
  ("order 2's floors weighed as straight triangles",
   [(FE, "            fp.weight = q[2] * std::abs(p.det);",
     "            const auto c0 = a_plan->map(face.plan, 0, 0).x, c1 = a_plan->map(face.plan, 1, 0).x, c2 = a_plan->map(face.plan, 0, 1).x;\n"
@@ -60,6 +64,10 @@ BREAKS = [
   [(TDEV, "theExamples")]),
  ("the photodiode example's electrode on its comb's top",
   [(EX + "msm_photodiode.qfem3d", '"selection": {"of": ["combA"], "side": "bottom"}', '"selection": {"of": ["combA"], "side": "top"}')],
+  [(TDEV, "theExamples")]),
+ ("the ring heater example's power in one heater",
+  [(EX + "ring_heater.qfem3d", '"P0": "2*P",\n                            "selection": {"only": ["heater1", "heater2"]}',
+    '"P0": "2*P",\n                            "selection": {"only": ["heater1"]}')],
   [(TDEV, "theExamples")]),
  ("the VCSEL example's heat on the middle VCSEL alone",
   [(EX + "vcsel_array.qfem3d", '"selection": {"of": ["vcsel11", "vcsel12", "vcsel13", "vcsel21", "vcsel22", "vcsel23", "vcsel31", "vcsel32", "vcsel33"], "side": "top"}',
