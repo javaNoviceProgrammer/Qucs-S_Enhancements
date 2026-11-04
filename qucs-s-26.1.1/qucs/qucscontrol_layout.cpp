@@ -711,6 +711,25 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             if (view->gridShown()) result.insert(QStringLiteral("grid"), gridSaid(*layout, view));
             if (view->lastStats().incomplete)
                 result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
+            // What is drawn over the layout, each by its name - the processed
+            // shapes, the cells, the currents, the ports and their returns -,
+            // with how many shapes and the names it labels: the ports', the
+            // terminals' (a port's lines to its returns among them).
+            QJsonArray over;
+            QStringList order;
+            QHash<QString, QPair<int, QStringList>> drawn;
+            for (const LayoutView::Overlay& o : view->overlays()) {
+                if (!drawn.contains(o.name)) order << o.name;
+                QPair<int, QStringList>& d = drawn[o.name];
+                d.first += int(o.shapes.size());
+                for (const LayoutView::Overlay::Label& l : o.labels) d.second << l.text;
+            }
+            for (const QString& name : std::as_const(order)) {
+                QJsonObject o{{QStringLiteral("name"), name}, {QStringLiteral("shapes"), drawn.value(name).first}};
+                if (!drawn.value(name).second.isEmpty()) o.insert(QStringLiteral("labels"), QJsonArray::fromStringList(drawn.value(name).second));
+                over.append(o);
+            }
+            if (!over.isEmpty()) result.insert(QStringLiteral("overlays"), over);
             done(jsonResult(result));
             return;
         }

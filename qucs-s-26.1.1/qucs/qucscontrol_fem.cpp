@@ -24,6 +24,8 @@
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
 #include "qucs.h"
+#include "rf25/rf25_model.h"
+#include "rf25doc.h"
 
 #include <QPointer>
 #include <QDir>
@@ -527,6 +529,99 @@ QString formatText3D()
         "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z).");
 }
 
+/// A property of a kind as fem_describe's format lists it, a line each -
+/// "Eg: Band gap Eg [eV] = 1.12[eV]; when source=user" -, not an object of
+/// named fields: a group's kinds were two thirds JSON's names and marks
+/// (semi's 194 properties 34 thousand characters, 22 so). \a names says a
+/// list of names (an RF 2.5D port's returns) as that, not as objects.
+QString propertyLine(const PropertyDef& p, bool names = false)
+{
+    // (As PropertyDef::Kind has them, in its order.)
+    static const char* kindNames[] = {"expression", "pair", "text", "choice", "bool", "integer", "selection", "objects",
+                                      "points", "physics", "study", "rows", "terminal", "file", "time or frequency",
+                                      "sweep point", "dataset", "node tag"};
+    const int ki = int(p.kind);
+    QString line = p.key + QStringLiteral(": ") + p.label;
+    if (!p.unit.isEmpty()) line += QStringLiteral(" [%1]").arg(p.unit);
+    if (names && p.kind == PropertyDef::Objects) line += QStringLiteral(" (names: a list of texts)");
+    else if (p.kind != PropertyDef::Expression && p.kind != PropertyDef::Choice)
+        line += QStringLiteral(" (%1)").arg(ki >= 0 && ki < int(std::size(kindNames)) ? QString::fromLatin1(kindNames[ki]) : QStringLiteral("value"));
+    const QJsonValue d = p.defaultValue;
+    const bool emptyList = d.isArray() && d.toArray().isEmpty();
+    if (!d.isUndefined() && !(d.isString() && d.toString().isEmpty()) && !emptyList) {
+        line += QStringLiteral(" = ")
+                + (d.isString() ? d.toString()
+                   : d.isBool() ? (d.toBool() ? QStringLiteral("true") : QStringLiteral("false"))
+                   : d.isDouble() ? formatNumber(d.toDouble(), 15)
+                   : QString::fromUtf8(d.isArray() ? QJsonDocument(d.toArray()).toJson(QJsonDocument::Compact)
+                                                   : QJsonDocument(d.toObject()).toJson(QJsonDocument::Compact)));
+    }
+    if (!p.choices.isEmpty()) line += QStringLiteral("; one of ") + p.choices.join(QStringLiteral(", "));
+    if (p.kind == PropertyDef::Rows && !p.choiceLabels.isEmpty()) line += QStringLiteral("; columns ") + p.choiceLabels.join(QStringLiteral(", "));
+    if (!p.showIf.isEmpty()) line += QStringLiteral("; when ") + p.showIf;
+    if (p.spatial) line += QStringLiteral("; may use x, y, fields");
+    return line;
+}
+
+/// An RF 2.5D model's file (fem_describe what=format of one): its layout,
+/// its numbers, and how its ports and terminals return - a paragraph each.
+QString formatTextRf25()
+{
+    return QStringLiteral(
+        "An RF 2.5D model (.qrf25) is JSON: {\"format\": \"qucs-s rf 2.5d 1\", \"tree\": {\"type\": \"rf_model\", "
+        "\"children\": [...]}}. Each node has its \"type\", a \"tag\" of its own (how the tools name it), a \"label\" - its "
+        "name, which the layer map, the vias and the ports call a layer by, and a port's returns a terminal or port by -, "
+        "\"enabled\" false to leave it out, \"properties\" (those set; the rest are their defaults) and \"children\". The tree's "
+        "parts are fixed: rf_parameters, rf_stack, rf_layout (with rf_layer_map and rf_processing), rf_ports, rf_mesh, "
+        "rf_study, rf_results and rf_exports.\n"
+        "A number is an expression in SI, its unit in brackets, of the parameters' names: \"20[um]\", \"10[GHz]\", "
+        "\"w/2\". A place - a port's or a terminal's x and y - is the layout's coordinate in metres: \"30[um]\".\n"
+        "rf_stack's children are its layers from the bottom up: rf_ground (\"kind\" perfect, metal, impedance or open), "
+        "rf_substrate, rf_dielectric, rf_metal (its label its name), rf_via (\"from\" and \"to\" metals, or \"ground\") and "
+        "rf_cover. rf_layout names its GDSII or OASIS \"file\" (beside the model) and \"cell\"; rf_layer_map's \"rows\" are "
+        "[layer, datatype, stack layer].\n"
+        "rf_ports holds the ports, in the order of the S matrix - rf_edge_port on a conductor's face (\"conductor\", x, y, "
+        "\"facing\") and rf_internal_port over the cells of a metal (\"to\", x, y, \"width\", \"height\"; 0 x 0 the one cell "
+        "under the point) - and what they return through. An edge port's \"return\" is ground, beside (the conductors "
+        "either side of it on its edge's line, tied) or terminals; an internal port's from (its \"from\" metal, or ground, "
+        "under it) or terminals. A port whose \"return\" is terminals returns through those its \"returns\" names, a list "
+        "of texts: [\"T1\", \"T2\"], each an rf_terminal or another port. An rf_terminal is the cells of a \"metal\" under a "
+        "rectangle about its x, y (\"width\", \"height\"; 0 x 0 the one cell under it) or, with \"face\" auto, +x, -x, +y or "
+        "-y, the face of the conductor at its point, as an edge port's; it drives nothing by itself and is no port of the S "
+        "matrix. A port named among another's returns is in series with it: its cells are that one's return, and it a "
+        "port of its own. A port's returns are tied - one voltage, the solve sharing the current out between them as a "
+        "probe's ground tips do: rf25_solve gives each one's share -, wherever they are and on whichever metal; it is a "
+        "source between its own cells and theirs, with no path up to them (its reference plane at those cells, a probe's "
+        "own loop not in it), wants no ground plane, and is not calibrated (\"calibrate\" false: de-embed it after the "
+        "solve, or move its plane along a given line). A return on its own conductor, a terminal on no cell or on another "
+        "port's cells, an empty list and ports that return through each other round a loop are refused, by name. "
+        "rf_return marks a conductor the lines return through: the quasi-static solve's, and a coplanar edge port's.\n"
+        "rf_mesh: \"cells_across\", \"maximum\" (the largest cell), \"per_wavelength\", \"edges\", \"stretch\". rf_study: "
+        "\"kind\" quasi_static or full_wave, \"from\", \"to\", \"points\", \"scale\" linear or log, \"matrix\". rf_exports: "
+        "rf_touchstone and rf_circuit.");
+}
+
+/// The RF 2.5D kinds, each with its properties as propertyLine() says them -
+/// of \a group alone where it is given (its group, as port or stack, or a
+/// kind's own type).
+QJsonArray kindsRf25(const QString& group)
+{
+    QJsonArray kinds;
+    for (const qucs_s::fem::NodeKind* k : qucs_s::rf25::nodeKinds()) {
+        if (k->fixed && k->properties.isEmpty()) continue;
+        if (!group.isEmpty() && k->group != group && k->type != group) continue;
+        QJsonArray props;
+        for (const PropertyDef& p : k->properties) props.append(propertyLine(p, true));
+        QJsonObject ko{{QStringLiteral("type"), k->type}, {QStringLiteral("title"), k->title}};
+        if (!k->group.isEmpty()) ko.insert(QStringLiteral("group"), k->group);
+        if (!props.isEmpty()) ko.insert(QStringLiteral("properties"), props);
+        if (!k->children.isEmpty()) ko.insert(QStringLiteral("children"), QJsonArray::fromStringList(k->children));
+        if (!k->help.isEmpty()) ko.insert(QStringLiteral("help"), k->help);
+        kinds.append(ko);
+    }
+    return kinds;
+}
+
 } // namespace
 
 namespace {
@@ -700,9 +795,28 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
     }
     if (what == QLatin1String("format")) {
         // The kinds of node, each with its properties - a 3D model's alone
-        // where one is named, in front, or 'space' says 3D.
+        // where one is named, in front, or 'space' says 3D; an RF 2.5D
+        // model's, its own table, where 'space' says RF 2.5D or one (.qrf25)
+        // is named or in front.
         QString none;
         const QString space = args.value(QLatin1String("space")).toString();
+        {
+            const QString path = args.value(QLatin1String("path")).toString().trimmed();
+            QucsDoc* named = path.isEmpty() ? nullptr : document(QJsonObject{{QStringLiteral("path"), path}}, &none);
+            const bool rf25 = space == QLatin1String("RF 2.5D")
+                              || (space.isEmpty()
+                                  && (path.endsWith(QLatin1String(".qrf25"), Qt::CaseInsensitive) || dynamic_cast<RF25Doc*>(named) != nullptr
+                                      || (path.isEmpty() && dynamic_cast<RF25Doc*>(a_app->getDoc()) != nullptr)));
+            if (rf25) {
+                const QString group = args.value(QLatin1String("group")).toString();
+                QJsonObject out{{QStringLiteral("kinds"), kindsRf25(group)},
+                                {QStringLiteral("properties as"),
+                                 tr("key: label [unit] (its kind, where no expression or choice) = default; one of its choices; "
+                                    "columns of rows; when it is shown (another property's value)")}};
+                if (args.value(QLatin1String("text")).toString() != QLatin1String("none")) out.insert(QStringLiteral("format"), formatTextRf25());
+                return jsonResult(out);
+            }
+        }
         const bool three = space == QLatin1String("3D") || (space.isEmpty() && fem3DocumentFor(args, &none) != nullptr);
         QJsonArray kinds;
         const QString group = args.value(QLatin1String("group")).toString();
@@ -717,34 +831,8 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             if (!group.isEmpty() && k->group != group && k->type != group && !k->type.startsWith(group + QLatin1Char('/'))) continue;
             QJsonArray props;
             for (const PropertyDef& p : k->properties) {
-                // A line each - "Eg: Band gap Eg [eV] = 1.12[eV]; when
-                // source=user" -, not an object of named fields: a group's
-                // kinds were two thirds JSON's names and marks (semi's 194
-                // properties 34 thousand characters, 22 so).
-                // (As PropertyDef::Kind has them, in its order.)
-                static const char* kindNames[] = {"expression", "pair", "text", "choice", "bool", "integer", "selection", "objects",
-                                                  "points", "physics", "study", "rows", "terminal", "file", "time or frequency",
-                                                  "sweep point", "dataset", "node tag"};
                 if (three && !(p.spaces & Spaces::ThreeD)) continue;
-                const int ki = int(p.kind);
-                QString line = p.key + QStringLiteral(": ") + p.label;
-                if (!p.unit.isEmpty()) line += QStringLiteral(" [%1]").arg(p.unit);
-                if (p.kind != PropertyDef::Expression && p.kind != PropertyDef::Choice)
-                    line += QStringLiteral(" (%1)").arg(ki >= 0 && ki < int(std::size(kindNames)) ? QString::fromLatin1(kindNames[ki]) : QStringLiteral("value"));
-                if (!p.defaultValue.isUndefined() && !(p.defaultValue.isString() && p.defaultValue.toString().isEmpty())) {
-                    const QJsonValue d = p.defaultValue;
-                    line += QStringLiteral(" = ")
-                            + (d.isString() ? d.toString()
-                               : d.isBool() ? (d.toBool() ? QStringLiteral("true") : QStringLiteral("false"))
-                               : d.isDouble() ? formatNumber(d.toDouble(), 15)
-                               : QString::fromUtf8(d.isArray() ? QJsonDocument(d.toArray()).toJson(QJsonDocument::Compact)
-                                                               : QJsonDocument(d.toObject()).toJson(QJsonDocument::Compact)));
-                }
-                if (!p.choices.isEmpty()) line += QStringLiteral("; one of ") + p.choices.join(QStringLiteral(", "));
-                if (p.kind == PropertyDef::Rows && !p.choiceLabels.isEmpty()) line += QStringLiteral("; columns ") + p.choiceLabels.join(QStringLiteral(", "));
-                if (!p.showIf.isEmpty()) line += QStringLiteral("; when ") + p.showIf;
-                if (p.spatial) line += QStringLiteral("; may use x, y, fields");
-                props.append(line);
+                props.append(propertyLine(p));
             }
             QJsonObject ko{{QStringLiteral("type"), k->type}, {QStringLiteral("title"), k->title}};
             if (!k->group.isEmpty()) ko.insert(QStringLiteral("group"), k->group);

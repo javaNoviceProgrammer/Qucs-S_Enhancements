@@ -32,6 +32,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSet>
 #include <QSpinBox>
@@ -549,8 +550,12 @@ bool RF25Panel::renameNode(const QString& tag, const QString& label)
                 rebuildTree();
                 return false;
             }
+    // (A port or a terminal is named by the ports' returns and pairs: they
+    // follow it.)
+    const QString oldName = portName(*n);
     n->label = name == (k != nullptr ? k->title : QString()) ? QString() : name;
     if (layer) m.renameLayer(old, n->label);
+    if (k != nullptr && k->group == QLatin1String("port")) m.renamePort(oldName, portName(*n));
     a_doc->setModel(m, tr("Rename"));
     return true;
 }
@@ -871,8 +876,9 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
         auto* edit = new QLineEdit(textOf(node, key), a_form);
         edit->setObjectName(QStringLiteral("rfEdit_") + key);
         // A layer of the stack by name (a via's metals, a port's
-        // conductor): those of the stack offered.
-        if (key == QLatin1String("conductor") || key == QLatin1String("from") || key == QLatin1String("to")) {
+        // conductor, a terminal's metal): those of the stack offered.
+        if (key == QLatin1String("conductor") || key == QLatin1String("from") || key == QLatin1String("to")
+            || key == QLatin1String("metal")) {
             auto* w = new QWidget(a_form);
             auto* h = new QHBoxLayout(w);
             h->setContentsMargins(0, 0, 0, 0);
@@ -882,7 +888,7 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
             pick->setPopupMode(QToolButton::InstantPopup);
             auto* menu = new QMenu(pick);
             QStringList names = a_doc ? a_doc->model().stack().conductors() : QStringList();
-            if (key != QLatin1String("conductor")) names << QStringLiteral("ground");
+            if (key != QLatin1String("conductor") && key != QLatin1String("metal")) names << QStringLiteral("ground");
             for (const QString& name : names)
                 menu->addAction(name, this, [this, key, edit, name] {
                     edit->setText(name);
@@ -923,6 +929,55 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
         return spin;
     }
     case PropertyDef::Rows: return rowsEditor(node, p);
+    case PropertyDef::Objects: {
+        // A list of names - a port's returns: typed, apart by commas, or
+        // each of the model's terminals and other ports taken in or out from
+        // its menu, the terminals first.
+        auto* w = new QWidget(a_form);
+        auto* h = new QHBoxLayout(w);
+        h->setContentsMargins(0, 0, 0, 0);
+        auto* edit = new QLineEdit(namesOf(node, key).join(QStringLiteral(", ")), w);
+        edit->setObjectName(QStringLiteral("rfEdit_") + key);
+        edit->setPlaceholderText(tr("terminals and ports, by name: T1, T2"));
+        auto* pick = new QToolButton(w);
+        pick->setText(QStringLiteral("…"));
+        pick->setObjectName(QStringLiteral("rfPick_") + key);
+        pick->setPopupMode(QToolButton::InstantPopup);
+        auto* menu = new QMenu(pick);
+        const QString self = portName(node);
+        const QStringList chosen = namesOf(node, key);
+        QList<QPair<QString, bool>> offered;   // (each name, and whether it is a port's)
+        if (a_doc)
+            for (const bool ports : {false, true})
+                for (const Node& n : a_doc->model().ports().children) {
+                    if (!n.enabled || portName(n) == self) continue;
+                    const bool port = n.type == QLatin1String("rf_edge_port") || n.type == QLatin1String("rf_internal_port");
+                    if (ports ? port : n.type == QLatin1String("rf_terminal")) offered << qMakePair(portName(n), port);
+                }
+        for (const auto& [name, port] : std::as_const(offered)) {
+            QAction* a = menu->addAction(port ? tr("%1 (a port, in series)").arg(name) : name);
+            a->setData(name);
+            a->setCheckable(true);
+            a->setChecked(chosen.contains(name));
+            connect(a, &QAction::toggled, this, [this, key, name](bool on) {
+                const Node* now = a_doc ? a_doc->model().find(a_shownTag) : nullptr;
+                if (now == nullptr) return;
+                QStringList list = namesOf(*now, key);
+                if (on && !list.contains(name)) list << name;
+                if (!on) list.removeAll(name);
+                commit(key, QJsonArray::fromStringList(list));
+            });
+        }
+        if (offered.isEmpty()) menu->addAction(tr("No terminal or other port to name: add a Terminal under Ports"))->setEnabled(false);
+        pick->setMenu(menu);
+        h->addWidget(edit, 1);
+        h->addWidget(pick);
+        connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] {
+            commit(key, QJsonArray::fromStringList(edit->text().split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts)));
+        });
+        a_editors.insert(key, edit);   // (the line, not the row: the tests type into it)
+        return w;
+    }
     case PropertyDef::File: {
         auto* w = new QWidget(a_form);
         auto* h = new QHBoxLayout(w);

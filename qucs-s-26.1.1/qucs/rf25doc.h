@@ -378,7 +378,9 @@ public:
     /// that edge, facing out of it; with the Internal Port tool a rectangle
     /// dragged over a metal puts an internal port there, driving its cells
     /// in the rectangle against the ground - a click, the one cell under
-    /// it. Escape, or the tool's button again, puts it down.
+    /// it -, and one dragged with Shift a terminal among the returns of the
+    /// port put last (placeTerminal()). Escape, or the tool's button again,
+    /// puts it down.
     enum class Placing { None, EdgePort, InternalPort };
     Placing placing() const { return a_placing; }
     void setPlacing(Placing placing);
@@ -394,6 +396,12 @@ public:
     /// the topmost metal with a shape under it, from the ground. Its tag,
     /// or empty and why.
     QString placeInternalPort(const QRectF& box, QString* why = nullptr);
+    /// A terminal over \a box (µm) - a point where it is empty - on the
+    /// topmost metal with a shape under it, among the returns of the port
+    /// put on the layout last: that port then returns through the terminals
+    /// it names, this one added - one edit, undone together. Its tag, or
+    /// empty and why: no port put yet, no metal under it.
+    QString placeTerminal(const QRectF& box, QString* why = nullptr);
 
     // What is shown.
     qucs_s::layout::LayoutView* view() const { return a_view; }
@@ -479,6 +487,9 @@ private:
     /// The processed shapes and the mesh over the layout, as the two
     /// buttons have them.
     void showOverlays();
+    /// The topmost metal with a processed shape under \a box (µm): under its
+    /// point where it is empty, else overlapping it; empty where none is.
+    QString metalUnder(const QRectF& box) const;
     /// The model in place: \a read, its file's content (no edit), else an edit.
     void applyModel(const qucs_s::rf25::Model& model, bool read = false);
     void showProblems();
@@ -501,6 +512,7 @@ private:
     bool a_showPorts = true;
     QToolButton* a_showPortsButton = nullptr;
     Placing a_placing = Placing::None;
+    QString a_lastPlaced;          ///< the port put on the layout last: a Shift-drag's terminal returns it
     QToolButton* a_edgePortButton = nullptr;
     QToolButton* a_internalPortButton = nullptr;
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;

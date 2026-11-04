@@ -2036,23 +2036,66 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.problems << c.layers.problems;
         return out;
     }
+    // A port that names its returns names some, each once and not itself;
+    // and it is an ideal source between its cells and theirs, which strips
+    // of a feed - a line between two edge ports, returning as it does - do
+    // not have, so its own discontinuity is not taken out by them.
+    for (int p = 0; p < ports.size(); ++p) {
+        const FullWavePort& port = ports.at(p);
+        if (!port.terminals) continue;
+        const QString& name = out.portNames.at(p);
+        if (port.returns.isEmpty()) {
+            out.problems << tr("%1 returns through the terminals and ports it names, and names none: name them (its "
+                               "'returns' - a Terminal under Ports, or another port), or return it another way.")
+                                .arg(name);
+            return out;
+        }
+        QStringList named;
+        for (const PortTerminal& t : port.returns) {
+            if (t.port && t.name == name) {
+                out.problems << tr("%1 returns through itself: a port's return is a terminal or another port.").arg(name);
+                return out;
+            }
+            if (named.contains(t.name)) {
+                out.problems << tr("%1 names %2 twice among its returns.").arg(name, t.name);
+                return out;
+            }
+            named << t.name;
+            if (t.port && !out.portNames.contains(t.name)) {
+                out.problems << tr("%1 returns through %2, and there is no port called that.").arg(name, t.name);
+                return out;
+            }
+        }
+        if (port.wantsStrips()) {
+            out.problems << tr("%1 returns through the terminals it names (%2), and its own discontinuity cannot be taken "
+                               "out by strips of a feed: they are a line between two edge ports, and it is a source "
+                               "between its own cells and its returns'. Take 'calibrate' off - its reference plane is then "
+                               "at those cells - and de-embed after the solve (L-2L, TRL or open-short), or move its plane "
+                               "along a given line ('along' line).")
+                                .arg(name, named.join(QStringLiteral(", ")));
+            return out;
+        }
+    }
     // With no ground plane a port's current has nowhere to come back but
     // the layout's own conductors: a coplanar edge port's, through those
-    // beside it, an internal port's from the metal under it - what goes in
-    // comes out, and the potential's nought, at infinity, drops out. One
-    // that returns through the ground would be driven against infinity.
+    // beside it, an internal port's from the metal under it, and one that
+    // names its returns through those - what goes in comes out, and the
+    // potential's nought, at infinity, drops out. One that returns through
+    // the ground would be driven against infinity.
     if (!c.layers.groundBelow) {
         QStringList grounded;
         for (int p = 0; p < ports.size(); ++p) {
             const FullWavePort& port = ports.at(p);
             const bool fromGround = port.from.isEmpty() || port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0;
+            if (port.terminals) continue;
             if (port.internal ? fromGround : !port.coplanar) grounded << out.portNames.at(p);
         }
         if (!grounded.isEmpty()) {
             out.problems << tr("There is no ground plane under the stack, and %1 return(s) through the ground: with none, a "
                                "port's current comes back through the conductors of the layout. Make an edge port return "
                                "through the conductors beside it (its 'return'), drive an internal port from a metal (its "
-                               "'from'), or put a ground under the stack.")
+                               "'from'), name a port's returns (terminals, or other ports), or put a ground under the "
+                               "stack.")
                                 .arg(grounded.join(QStringLiteral(", ")));
             return out;
         }
@@ -2290,13 +2333,28 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.faceWidths = QList<double>(np, 0.0);
     out.faceMetals = QStringList(QList<QString>(np));
     out.feeds = QList<Feed>(np);
+    out.portsSaid = QStringList(QList<QString>(np));
+    out.returnsOf = QList<QList<PortReturn>>(np);
+    out.namesReturns = QList<bool>(np, false);
     // (Each port's own net, and the nets a coplanar port returns through.)
     QList<int> ownNet(np, -1);
-    QList<QList<int>> returnsOf(np);
+    QList<QList<int>> returnNets(np);
+    // Each port's own cells, what it drives, as its column's shares before
+    // anything it returns through - a port that names its returns, or
+    // another's that names it, is a column against each return -, and how
+    // many there are; which of its port's returns each column is (-1: its
+    // one); and the ports that name their returns, with what each drives,
+    // their columns made once every port's own cells are known.
+    QList<Eigen::VectorXcd> owns(np);
+    QList<int> ownCount(np, 0);
+    QList<int> columnReturn;
+    QList<int> naming;
+    QStringList drivesSaid = QStringList(QList<QString>(np));
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
         const QString x = QString::number(port.at.x(), 'g', 4), y = QString::number(port.at.y(), 'g', 4);
+        out.namesReturns[p] = port.terminals;
         if (port.internal) {
             // The one cell under its point - or, over a rectangle about it,
             // every cell of its metal the rectangle overlaps, each by its
@@ -2310,7 +2368,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return one < 0 ? QList<std::pair<int, double>>() : QList<std::pair<int, double>>{std::make_pair(one, 1.0)};
             };
             const QString w = QString::number(port.size.width(), 'g', 4), h = QString::number(port.size.height(), 'g', 4);
-            const QList<std::pair<int, double>> to = driven(toward(port.metal, port.from));
+            // (One that names its returns stands on both faces of a metal
+            //  solved as its two, half each, as its returns do and an edge
+            //  port's face does: with no path up from below, nothing makes
+            //  one face its own.)
+            const QList<std::pair<int, double>> to = driven(port.terminals ? port.metal : toward(port.metal, port.from));
             if (to.isEmpty()) {
                 out.problems << (over ? tr("%1's %2 by %3 µm rectangle at %4, %5 µm is over no cell of %6 that a current "
                                            "reaches.")
@@ -2322,11 +2384,26 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             Eigen::VectorXcd column = Eigen::VectorXcd::Zero(nc);
             QMap<int, QPair<double, double>> shape;
             for (const auto& [cell, share] : to) {
-                column(nodeOf.value(cell)) += share;
+                if (port.terminals) put(column, cell, share);
+                else column(nodeOf.value(cell)) += share;
                 const QRectF box = mesh.cells.at(cell).outline.boundingRect();
                 shape.insert(nodeOf.value(cell), boxOf(over ? box.intersected(rect) : box));
             }
             ownNet[p] = netOf.value(to.first().first, -1);
+            owns[p] = column;
+            ownCount[p] = int(to.size());
+            if (port.terminals) {
+                const QString layer = shown(mesh.cells.at(to.first().first).layer);
+                int topped = 0;
+                for (const auto& [cell, share] : to)
+                    if (thick.topOf.contains(cell) && nodeOf.contains(thick.topOf.value(cell))) ++topped;
+                const QString halved = topped > 0 ? tr(", half of it on %1's top face").arg(layer) : QString();
+                drivesSaid[p] = over ? tr("%1 drives the %2 cell(s) of %3 under its %4 by %5 µm rectangle at %6, %7 µm%8")
+                                           .arg(name).arg(to.size()).arg(layer, w, h, x, y, halved)
+                                     : tr("%1 drives the cell at %2, %3 µm on %4%5").arg(name, x, y, layer, halved);
+                naming << p;
+                continue;
+            }
             QString against = tr("the ground");
             if (!port.from.isEmpty() && port.from.compare(QLatin1String("ground"), Qt::CaseInsensitive) != 0) {
                 const QList<std::pair<int, double>> from = driven(toward(port.from, port.metal));
@@ -2345,11 +2422,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             columns << column;
             portOf << p;
             shapes << shape;
-            out.portsSaid << (over ? tr("%1 drives the %2 cell(s) of %3 under its %4 by %5 µm rectangle at %6, %7 µm "
-                                        "against %8.")
-                                         .arg(name).arg(to.size()).arg(shown(mesh.cells.at(to.first().first).layer), w, h, x, y, against)
-                                   : tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
-                                         .arg(name, x, y, shown(mesh.cells.at(to.first().first).layer), against));
+            columnReturn << -1;
+            out.portsSaid[p] = over ? tr("%1 drives the %2 cell(s) of %3 under its %4 by %5 µm rectangle at %6, %7 µm "
+                                         "against %8.")
+                                          .arg(name).arg(to.size()).arg(shown(mesh.cells.at(to.first().first).layer), w, h, x, y, against)
+                                    : tr("%1 drives the cell at %2, %3 µm on %4 against %5.")
+                                          .arg(name, x, y, shown(mesh.cells.at(to.first().first).layer), against);
             continue;
         }
         QPointF on, along;
@@ -2389,6 +2467,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.feeds[p].length = feedLength(givenConductors, out.faceMetals.at(p), on, unit, span.inside < 0 ? -normal : normal,
                                              span.lo, faceWidth, 2 * (8 * height + 2 * faceWidth), beyond);
         }
+        owns[p] = own;
+        ownCount[p] = int(face.size());
+        if (port.terminals) {
+            drivesSaid[p] = along != QPointF(0, 0)
+                                ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5").arg(name).arg(face.size()).arg(x, y, halved)
+                                : tr("%1 is on no face, and drives the one cell nearest %2, %3 µm").arg(name, x, y);
+            naming << p;
+            continue;
+        }
         if (!port.coplanar) {
             // Its path up from the ground to each cell of the face (and of
             // its top, where the metal is solved as its two faces).
@@ -2404,10 +2491,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             columns << own;
             portOf << p;
             shapes << shape;
+            columnReturn << -1;
             if (along != QPointF(0, 0))
-                out.portsSaid << tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5.").arg(name).arg(face.size()).arg(x, y, halved);
+                out.portsSaid[p] = tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5.").arg(name).arg(face.size()).arg(x, y, halved);
             else
-                out.portsSaid << tr("%1 is on no face, and drives the one cell nearest %2, %3 µm.").arg(name, x, y);
+                out.portsSaid[p] = tr("%1 is on no face, and drives the one cell nearest %2, %3 µm.").arg(name, x, y);
             continue;
         }
         if (along == QPointF(0, 0)) {
@@ -2424,7 +2512,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         for (const QList<int>& ground : beside.cells) {
             if (ground.isEmpty()) continue;
             through << nets.value(netOf.value(ground.first(), -1)).name;
-            returnsOf[p] << netOf.value(ground.first(), -1);
+            returnNets[p] << netOf.value(ground.first(), -1);
             const QList<double> back = sharesOf(mesh, ground, on, along);
             Eigen::VectorXcd column = own;
             for (int k = 0; k < ground.size(); ++k) put(column, ground.at(k), -back.at(k));
@@ -2435,6 +2523,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             columns << column;
             portOf << p;
             shapes << QMap<int, QPair<double, double>>();
+            out.returnsOf[p] << PortReturn{through.last(), int(ground.size()), Complex(0, 0)};
+            columnReturn << int(out.returnsOf.at(p).size()) - 1;
             counts << int(ground.size());
         }
         // Its feed as calibration strips of it are made: the grounds' gaps
@@ -2470,7 +2560,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             return out;
         }
         const QString past = passed.isEmpty() ? QString() : tr(", past %1, which is no return").arg(passed.join(QStringLiteral(" and ")));
-        out.portsSaid << (counts.size() == 2
+        out.portsSaid[p] = (counts.size() == 2
                               ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5 against the conductors beside it, "
                                    "%6 and %7 cell(s) of the faces of %8 either side%9%10: the two tied, as a probe's grounds "
                                    "are.")
@@ -2483,11 +2573,127 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                     .arg(through.value(0), past)
                                     .arg(groundsTopped > 0 ? tr(", half on its top face") : QString()));
     }
+    // The ports that name their returns, now that every port's own cells
+    // are known: a column against each return - the port's cells less the
+    // return's, each by its share, both faces of a metal solved as its two
+    // half each (put()) - side by side as a coplanar port's, so that the
+    // returns are tied and the solve shares the current out between them.
+    // No path of its own up to them: an ideal source between the cells.
+    // A return is not on the port's own conductor, which would short the
+    // source; and a terminal is not on another port's cells, unless that
+    // port is named - then its cells are the return, and the two ports are
+    // in series, each a port of its own.
+    const auto netsUnder = [&](const Eigen::VectorXcd& column) {
+        QSet<int> under;
+        for (int i = 0; i < nc; ++i)
+            if (column(i) != Complex(0, 0)) under.insert(netOf.value(thick.bottomOf.value(cellOf.at(i), cellOf.at(i)), -1));
+        under.remove(-1);
+        return under;
+    };
+    for (const int p : std::as_const(naming)) {
+        const FullWavePort& port = ports.at(p);
+        const QString& name = out.portNames.at(p);
+        const QSet<int> own = netsUnder(owns.at(p));
+        QStringList against;
+        for (const PortTerminal& t : port.returns) {
+            const QString x = QString::number(t.at.x(), 'g', 4), y = QString::number(t.at.y(), 'g', 4);
+            const QString metal = t.metal.isEmpty() ? tr("any metal") : t.metal;
+            Eigen::VectorXcd back = Eigen::VectorXcd::Zero(nc);
+            int cells = 0;
+            if (t.port) {
+                const int q = int(out.portNames.indexOf(t.name));
+                back = owns.at(q);
+                cells = ownCount.at(q);
+            } else if (t.face) {
+                QPointF on, along;
+                const QList<int> face = faceCells(mesh, conductors, cellOf, t.at, &on, &along, t.metal, t.facing);
+                if (face.isEmpty() || along == QPointF(0, 0)) {
+                    out.problems << tr("%1's return %2, at %3, %4 µm, is on no face of %5 that a current reaches.")
+                                        .arg(name, t.name, x, y, metal);
+                    return out;
+                }
+                const QList<double> shares = sharesOf(mesh, face, on, along);
+                for (int k = 0; k < face.size(); ++k) put(back, face.at(k), shares.at(k));
+                cells = int(face.size());
+            } else {
+                const bool over = t.size.width() > 0 && t.size.height() > 0;
+                const QList<int>& among = t.metal.isEmpty() ? bottoms : cellOf;
+                // (The one cell under a point is the nearest's where the point
+                //  is in none: a point off the metal is said, not taken so.)
+                if (!over) {
+                    bool onShape = false;
+                    for (const Conductor& shape : conductors) {
+                        const Layer* layer = stack.named(shape.layer);
+                        if (layer == nullptr || layer->kind != Layer::Metal || layer->face == Layer::Top) continue;
+                        if (!t.metal.isEmpty() && shape.layer != t.metal) continue;
+                        const QRectF box = shape.outline.boundingRect();
+                        const double reach = 1e-6 * std::max(1.0, std::max(box.width(), box.height()));
+                        for (const QPointF nudge : {QPointF(0, 0), QPointF(reach, 0), QPointF(-reach, 0), QPointF(0, reach), QPointF(0, -reach)})
+                            onShape = onShape || shape.outline.containsPoint(t.at + nudge, Qt::OddEvenFill);
+                        if (onShape) break;
+                    }
+                    if (!onShape) {
+                        out.problems << tr("%1's return %2, at %3, %4 µm, is on no shape of %5.").arg(name, t.name, x, y, metal);
+                        return out;
+                    }
+                }
+                QList<std::pair<int, double>> under;
+                if (over) {
+                    under = cellsUnder(mesh, among, QRectF(t.at - QPointF(t.size.width(), t.size.height()) / 2, t.size), t.metal);
+                } else if (const int one = cellUnder(mesh, among, t.at, t.metal); one >= 0) {
+                    under << std::make_pair(one, 1.0);
+                }
+                if (under.isEmpty()) {
+                    out.problems << (over ? tr("%1's return %2, a %3 by %4 µm rectangle at %5, %6 µm, is over no cell of %7 "
+                                               "that a current reaches.")
+                                                .arg(name, t.name)
+                                                .arg(t.size.width(), 0, 'g', 4)
+                                                .arg(t.size.height(), 0, 'g', 4)
+                                                .arg(x, y, metal)
+                                          : tr("%1's return %2, at %3, %4 µm, is over no cell of %5 that a current reaches.")
+                                                .arg(name, t.name, x, y, metal));
+                    return out;
+                }
+                for (const auto& [cell, share] : under) put(back, cell, share);
+                cells = int(under.size());
+            }
+            for (const int net : netsUnder(back))
+                if (own.contains(net)) {
+                    out.problems << tr("%1's return %2 is on the same conductor as %1 (%3): it would short the source. Put "
+                                       "it on a conductor the port returns through - a ground beside it, a pad of its own.")
+                                        .arg(name, t.name, nets.value(net).name);
+                    return out;
+                }
+            if (!t.port)
+                for (int q = 0; q < np; ++q) {
+                    if (q == p || owns.at(q).size() != nc) continue;
+                    for (int i = 0; i < nc; ++i)
+                        if (back(i) != Complex(0, 0) && owns.at(q)(i) != Complex(0, 0)) {
+                            out.problems << tr("%1's return %2 is on the cells %3 drives: name %3 itself among %1's "
+                                               "returns, if %1 is to return through what %3 drives (the two in series), "
+                                               "or put %2 elsewhere.")
+                                                .arg(name, t.name, out.portNames.at(q));
+                            return out;
+                        }
+                }
+            out.returnsOf[p] << PortReturn{t.name, cells, Complex(0, 0)};
+            columns << Eigen::VectorXcd(owns.at(p) - back);
+            portOf << p;
+            shapes << QMap<int, QPair<double, double>>();
+            columnReturn << int(out.returnsOf.at(p).size()) - 1;
+            against << tr("%1 (%2 cell(s))").arg(t.name).arg(cells);
+        }
+        const int n = int(against.size());
+        const QString list = n == 1 ? against.first() : tr("%1 and %2").arg(against.mid(0, n - 1).join(QStringLiteral(", ")), against.last());
+        out.portsSaid[p] = n == 1   ? tr("%1 against %2: a ground-signal probe's.").arg(drivesSaid.at(p), list)
+                           : n == 2 ? tr("%1 against %2, tied: a ground-signal-ground probe's.").arg(drivesSaid.at(p), list)
+                                    : tr("%1 against %2, all tied.").arg(drivesSaid.at(p), list);
+    }
     // A coplanar port that returns through what another port drives - a
     // GSSG's other signal, where no conductor is marked a return - ties the
     // two signals together through each other.
     for (int p = 0; p < np; ++p)
-        for (const int net : std::as_const(returnsOf.at(p)))
+        for (const int net : std::as_const(returnNets.at(p)))
             for (int q = 0; q < np; ++q)
                 if (q != p && net >= 0 && ownNet.at(q) == net) {
                     out.problems << tr("%1 returns through %2, which %3 drives: mark the conductors the lines return "
@@ -2503,6 +2709,36 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                     .arg(out.portNames.at(portOf.at(b)), out.portNames.at(portOf.at(a)));
                 return out;
             }
+    // And no current into the ports that drives nothing: ports that return
+    // through each other round a loop - two named each other's return,
+    // three round a ring - would drive no cell between them, and their Z be
+    // singular. Of the columns' Gram matrix (columns x columns, of their
+    // rank), each combination of columns that comes to nothing, where it is
+    // a current into a port, names the ports. (One that is none - a current
+    // round the ties of two ports that return through the same two
+    // conductors, a GSSG's two signals' - changes nothing any port sees, and
+    // the reduction below takes it as it has always taken it.)
+    {
+        const int n = int(columns.size());
+        Eigen::MatrixXd gram(n, n);
+        for (int a = 0; a < n; ++a)
+            for (int b = 0; b <= a; ++b) gram(a, b) = gram(b, a) = columns.at(a).real().dot(columns.at(b).real());
+        const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(gram);
+        QStringList involved;
+        for (int e = 0; eig.info() == Eigen::Success && e < n && eig.eigenvalues()(e) <= 1e-12 * eig.eigenvalues()(n - 1); ++e) {
+            QList<double> intoPort(np, 0.0);
+            for (int k = 0; k < n; ++k) intoPort[portOf.at(k)] += eig.eigenvectors()(k, e);
+            for (int q = 0; q < np; ++q)
+                if (std::abs(intoPort.at(q)) > 1e-6 && !involved.contains(out.portNames.at(q))) involved << out.portNames.at(q);
+        }
+        if (!involved.isEmpty()) {
+            out.problems << tr("%1 drive no cell between them: their own cells and their returns' come round to nothing (a "
+                               "port that returns through another, and that one through it). Give each a return of its "
+                               "own.")
+                                .arg(involved.join(QStringLiteral(", ")));
+            return out;
+        }
+    }
     c.drive = MatrixC(nc, columns.size());
     for (int k = 0; k < columns.size(); ++k) c.drive.col(k) = columns.at(k);
     c.np = int(columns.size());
@@ -2541,8 +2777,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // Each port's own path to the cells it drives (PortPath): up from the
     // ground, or from the cells of the metal an internal port is driven
     // from, shared out between them as the port shares its current; its
-    // span one more of the vias' where it is none of theirs.
-    for (int k = 0; k < c.np; ++k) {
+    // span one more of the vias' where it is none of theirs. (None for a
+    // port that names its returns, or a coplanar port; and none at all
+    // where a test asks for none.)
+    for (int k = 0; k < c.np && (control == nullptr || control->portPaths); ++k) {
         QList<QPair<int, double>> from;
         double fromWeight = 0, zFrom = 0;
         for (int i = 0; i < nc; ++i)
@@ -2719,6 +2957,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         }
     }
     out.lines << out.portsSaid;
+    if (!naming.isEmpty())
+        out.lines << tr("%1 port(s) return through the terminals and ports they name, each port's returns tied as a "
+                        "probe's tips are: a source between its own cells and theirs, with no path up to them, so that "
+                        "its reference plane is at those cells and the probe's own loop is not in the answer.")
+                         .arg(naming.size());
     out.lines << thick.said;
     if (!walled.isEmpty())
         out.lines << tr("%1 of the runs are the walls of the metals solved as their two faces, each from a cell along an "
@@ -2766,8 +3009,17 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // The columns of a port side by side: one voltage, their currents
     // added. The ports' Z is (B^T Z^-1 B)^-1, B which port each column is
     // of, and an ampere into a port is Z^-1 B Z into the columns.
+    // Each return's share of its port's current at the top frequency: the
+    // current into its column with an ampere into the port, the others open
+    // - the whole of it where the port has one column.
     MatrixC ofPort = MatrixC::Zero(c.np, np);
     for (int k = 0; k < c.np; ++k) ofPort(k, c.portOf.at(k)) = 1;
+    const int topAt = int(std::max_element(frequencies.begin(), frequencies.end()) - frequencies.begin());
+    const auto shareOut = [&out, &c, &columnReturn](const MatrixC& intoColumns) {
+        for (int k = 0; k < c.np; ++k)
+            if (columnReturn.at(k) >= 0)
+                out.returnsOf[c.portOf.at(k)][columnReturn.at(k)].share = intoColumns(k, c.portOf.at(k));
+    };
     for (int k = 0; k < nf; ++k) {
         AtFrequency a = solved[std::size_t(k)];
         if (c.np != np) {
@@ -2775,13 +3027,16 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             const MatrixC y = ofPort.transpose() * x;
             const MatrixC z = Eigen::PartialPivLU<MatrixC>(y).solve(MatrixC::Identity(np, np));
             if (!z.allFinite()) {
-                out.problems << tr("At %1 GHz the coplanar ports' grounds could not be tied: their columns came out "
-                                   "singular.")
+                out.problems << tr("At %1 GHz the returns of the ports that have more than one could not be tied: their "
+                                   "columns came out singular.")
                                     .arg(frequencies.at(k) / 1e9, 0, 'g', 4);
                 return out;
             }
+            if (k == topAt) shareOut(x * z);
             a.current = a.current * (x * z);
             a.z = z;
+        } else if (k == topAt) {
+            shareOut(ofPort);
         }
         const QList<QList<Complex>> zRows = rowsOf(a.z);
         out.frequencies << frequencies.at(k);
@@ -2812,6 +3067,31 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.solvedAsymmetry = out.asymmetry;
     out.solvedGain = out.gain;
     out.solvedGainAt = out.gainAt;
+    out.lines << returnSharesOf(out);
+    // A port that names its returns is an ideal source between its cells and
+    // theirs: the current a probe carries from them to it has no field
+    // here. Over a ground plane its image takes that field's radiation away
+    // (a ground-signal probe 125 µm from its tip, lossless, gave back
+    // nothing to 60 GHz); with none it would radiate, and S can give back a
+    // little - most where the returns are on one side of the port, as its
+    // dipole, little where they lie alike either side (on lossless quartz at
+    // 60 GHz: 4.7e-3 and 2.3e-5, the coplanar port's own 1.5e-5 - its
+    // current across its gaps has none either). Gold's loss covers the GSG's,
+    // not the one-sided probes' (5.8e-4 at 40 GHz on it).
+    if (!naming.isEmpty() && !c.layers.groundBelow && out.gain > 1e-6) {
+        QStringList named;
+        for (const int p : std::as_const(naming)) named << out.portNames.at(p);
+        const QString said = tr("At %1 GHz S gives back %2 more than it is given: with no ground plane, %3 - returning through "
+                                "the terminals and ports named, an ideal source between its cells and theirs - has none of "
+                                "the field its own current, from its returns to its cells as a probe carries it, would "
+                                "radiate; most where its returns lie on one side of it, little where they lie alike either "
+                                "side. Returns either side, nearer, or a ground plane under the stack make it less.")
+                                 .arg(out.gainAt / 1e9, 0, 'g', 4)
+                                 .arg(out.gain, 0, 'g', 2)
+                                 .arg(named.join(QStringLiteral(", ")));
+        out.warnings << said;
+        out.lines << said;
+    }
     // Where the stack begins to carry a second surface wave - TE1 over a
     // ground - which a strip launches beside the TM0 of every frequency: the
     // top of a microstrip's band on it, said where the sweep passes it.
@@ -2866,6 +3146,24 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     out.lines << tr("The Green's functions of %1 pair(s) of heights, tabulated to %2 mm at each frequency.")
                      .arg(c.nh * (c.nh + 1) / 2).arg(c.rhoMax * 1e3, 0, 'g', 3);
+    return out;
+}
+
+QStringList returnSharesOf(const FullWave& solved)
+{
+    QStringList out;
+    if (solved.frequencies.isEmpty()) return out;
+    const double top = *std::max_element(solved.frequencies.begin(), solved.frequencies.end());
+    for (int p = 0; p < solved.returnsOf.size() && p < solved.portNames.size(); ++p) {
+        if (solved.returnsOf.at(p).size() < 2) continue;
+        QStringList each;
+        for (const PortReturn& r : solved.returnsOf.at(p)) {
+            const double degrees = std::arg(r.share) * 180 / M_PI;
+            each << (std::abs(degrees) >= 0.05 ? tr("%1 % through %2 (at %3°)").arg(100 * std::abs(r.share), 0, 'f', 1).arg(r.name).arg(degrees, 0, 'f', 1)
+                                               : tr("%1 % through %2").arg(100 * std::abs(r.share), 0, 'f', 1).arg(r.name));
+        }
+        out << tr("At %1 GHz %2's current comes back %3.").arg(top / 1e9, 0, 'g', 4).arg(solved.portNames.at(p), each.join(QStringLiteral(", ")));
+    }
     return out;
 }
 

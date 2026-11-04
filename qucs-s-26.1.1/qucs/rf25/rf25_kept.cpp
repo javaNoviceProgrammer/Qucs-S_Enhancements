@@ -27,9 +27,11 @@ namespace {
 QString tr(const char* text) { return QCoreApplication::translate("RF25Kept", text); }
 
 // The file: "QRF25SOL", the format's version, the head - the stamps, by
-// what and when, which answer it is - and the answer compressed.
+// what and when, which answer it is - and the answer compressed. Format 2
+// adds a full-wave answer's ports' returns and shares (FullWave::returnsOf,
+// namesReturns) after its notes; a file of format 1 is read without them.
 const QByteArray kMagic = QByteArrayLiteral("QRF25SOL");
-constexpr quint32 kFormat = 1;
+constexpr quint32 kFormat = 2;
 // A list longer than this is a damaged file's, not a solve's.
 constexpr qint64 kMostItems = qint64(1) << 28;
 
@@ -46,6 +48,7 @@ void put(QDataStream& s, const Filament& v);
 void put(QDataStream& s, const Feed::Via& v);
 void put(QDataStream& s, const Feed& v);
 void put(QDataStream& s, const PortDeembedding& v);
+void put(QDataStream& s, const PortReturn& v);
 template <typename A, typename B>
 void put(QDataStream& s, const QPair<A, B>& v);
 template <typename T>
@@ -74,6 +77,7 @@ bool get(QDataStream& s, Filament& v);
 bool get(QDataStream& s, Feed::Via& v);
 bool get(QDataStream& s, Feed& v);
 bool get(QDataStream& s, PortDeembedding& v);
+bool get(QDataStream& s, PortReturn& v);
 template <typename A, typename B>
 bool get(QDataStream& s, QPair<A, B>& v);
 template <typename T>
@@ -222,6 +226,18 @@ bool get(QDataStream& s, PortDeembedding& v)
            && get(s, v.epsEff) && get(s, v.alpha) && get(s, v.shuntC) && get(s, v.seriesL) && get(s, v.agreedTo)
            && get(s, v.worst) && get(s, v.worstAt) && get(s, v.offFrom) && get(s, v.topAgrees) && get(s, v.strips)
            && get(s, v.third) && get(s, v.feedLength) && get(s, v.reach);
+}
+
+void put(QDataStream& s, const PortReturn& v)
+{
+    put(s, v.name);
+    put(s, v.cells);
+    put(s, v.share);
+}
+
+bool get(QDataStream& s, PortReturn& v)
+{
+    return get(s, v.name) && get(s, v.cells) && get(s, v.share);
 }
 
 void put(QDataStream& s, const FullWave& v)
@@ -390,6 +406,8 @@ bool writeSolution(const QString& path, const KeptSolution& kept, QString* error
         if (kept.fullWave) {
             put(s, *kept.fullWave);
             put(s, kept.waveNotes);
+            put(s, kept.fullWave->returnsOf);
+            put(s, kept.fullWave->namesReturns);
         } else {
             put(s, *kept.extraction);
             put(s, bool(kept.inductance));
@@ -427,8 +445,8 @@ std::optional<KeptSolution> readSolution(const QString& path, QString* why)
         return none(tr("%1 is no solution of an RF 2.5D model.").arg(path));
     quint32 format = 0;
     s >> format;
-    if (format != kFormat)
-        return none(tr("%1 is a solution of another version of Qucs-S (its format %2; this build reads %3).")
+    if (format < 1 || format > kFormat)
+        return none(tr("%1 is a solution of another version of Qucs-S (its format %2; this build reads 1 to %3).")
                         .arg(path).arg(format).arg(kFormat));
     KeptSolution kept;
     qint32 cells = 0;
@@ -444,6 +462,8 @@ std::optional<KeptSolution> readSolution(const QString& path, QString* why)
     if (kind == Wave) {
         auto wave = std::make_shared<FullWave>();
         if (!get(b, *wave) || !get(b, kept.waveNotes)) return none(tr("%1 is damaged.").arg(path));
+        if (format >= 2 && (!get(b, wave->returnsOf) || !get(b, wave->namesReturns)))
+            return none(tr("%1 is damaged.").arg(path));
         kept.fullWave = wave;
     } else {
         auto extraction = std::make_shared<Extraction>();
