@@ -38,6 +38,7 @@
 #include <QPrinter>
 #include <QProgressBar>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QSet>
 #include <QSplitter>
 #include <QThread>
@@ -71,6 +72,12 @@ FullWaveControl::Matrix studyMatrix(const Model& model)
 /// Whether the model's mesh is for a full-wave solve held compressed - the
 /// study's Solver full wave, and its Matrix not dense: then the mesh may
 /// have as many cells as that holds (MeshSettings::compressed).
+bool studyFullWave(const Model& model)
+{
+    const Node* study = model.root.child(QStringLiteral("rf_study"));
+    return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave");
+}
+
 bool meshedCompressed(const Model& model)
 {
     const Node* study = model.root.child(QStringLiteral("rf_study"));
@@ -434,6 +441,9 @@ struct RF25Doc::SolveJob {
     std::atomic_bool calibrating{false};
     std::atomic_int calibrations{0}, calibrationsBegun{0}, stripsBegun{0}, stripFrequencies{0}, calibrated{0};
     FullWaveControl::Matrix matrix = FullWaveControl::Matrix::Automatic;   ///< the study's
+    // A quasi-static extraction's: its step, how far into it, and the images
+    // of the Green's function it built last (ExtractControl).
+    std::atomic_int step{ExtractControl::Starting}, stepDone{0}, stepAll{0}, images{0};
 
     // The tab's holdSolves() and allowFrequencies(), which a test holds it
     // back by.
@@ -469,7 +479,8 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     a_progress->setInterval(400);
     connect(a_progress, &QTimer::timeout, this, [this] {
         showProgress();
-        if (!a_solveJob || !a_solveJob->fullWave) return;
+        // (A quasi-static solve's too, now that it says what it is doing.)
+        if (!a_solveJob) return;
         showProblems();
         emit solvedChanged();
     });
@@ -902,7 +913,7 @@ void RF25Doc::showProblems()
     // (And how long it should take yet, where that can be said.)
     const QString left = timeLeft();
     if (a_solveJob) {
-        lines << (!a_solveJob->fullWave       ? tr("Solving…")
+        lines << (!a_solveJob->fullWave       ? countNow().said
                   : a_solveJob->calibrating ? tr("Taking out the ports' own discontinuities: solving strips of their feeds…")
                                             : tr("Solving full-wave: %1 of %2 frequencies…")
                                                   .arg(frequenciesSolved()).arg(frequenciesToSolve()))
@@ -942,15 +953,22 @@ void RF25Doc::showProblems()
     // panel to show before a solve is ever started.
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
+        // (The charges the solve has, which the log counts: a metal solved
+        //  as its two faces has each cell twice. The line said its own
+        //  cells "to solve the charge on" - 924 where the solve had 1848,
+        //  a quarter of the matrix it filled.)
         tail += tr("; %1 cell(s), %2")
                     .arg(a_mesh->cells.size())
-                    .arg(meshedCompressed(a_model) ? a_mesh->cost.said : chargeCostOf(int(a_mesh->cells.size())));
+                    .arg(meshedCompressed(a_model) ? a_mesh->cost.said
+                                                   : chargeCostOf(a_mesh->charges > 0 ? a_mesh->charges : int(a_mesh->cells.size())));
     if (a_solveJob && a_solveJob->fullWave && a_solveJob->calibrating)
         tail += tr("; calibrating the ports") + (left.isEmpty() ? QString() : tr(", %1 for this feed").arg(left));
     else if (a_solveJob && a_solveJob->fullWave)
         tail += tr("; solving %1 of %2 frequencies").arg(frequenciesSolved()).arg(frequenciesToSolve())
                 + (left.isEmpty() ? QString() : tr(", %1").arg(left));
-    else if (a_solveJob) tail += tr("; solving");
+    else if (a_solveJob)
+        tail += tr("; %1").arg(extractStepSaid(a_solveJob->step.load(), a_solveJob->stepDone.load(), a_solveJob->stepAll.load(),
+                                               a_solveJob->images.load()));
     else if (a_fullWave && a_fullWave->ok())
         tail += tr("; full wave, %1 port(s) at %2 frequencies").arg(a_fullWave->portNames.size()).arg(a_fullWave->frequencies.size());
     else if (a_inductance && a_inductance->ok()) tail += tr("; the loop is %1 nH").arg(a_inductance->l * 1e9, 0, 'g', 4);
@@ -1170,6 +1188,10 @@ void RF25Doc::prepare()
         QStringList said;
         MeshSettings how = meshSettingsOf(job->model.mesh(), job->model.parameters(), &said);
         how.compressed = meshedCompressed(job->model);
+        // (Narrow gaps graded for the quasi-static charge solve, where its
+        //  capacitance is: a coplanar line's 6 µm gaps on four cells across
+        //  left it 10 % short.)
+        how.gaps = !studyFullWave(job->model);
         Mesh mesh = meshOf(job->processed->conductors, how, job->model.stack(), topFrequency(job->model));
         mesh.problems = said + mesh.problems;
         job->mesh = std::make_shared<Mesh>(std::move(mesh));
@@ -1811,7 +1833,10 @@ void RF25Doc::solveWith(const SolveRequest& request)
     job->held = a_solvesHeld;
     job->allowed = a_frequenciesAllowed;
     a_solveJob = job;
-    QThread* thread = QThread::create([job] {
+    ++*a_solvesAtWork;
+    ++a_solvesBegun;
+    QThread* thread = QThread::create([job, atWork = a_solvesAtWork] {
+        const auto counted = qScopeGuard([&atWork] { --*atWork; });
         // Held by a test, until it lets go; and a solve let go before it
         // computes anything - overtaken by an edit's mesh, or stopped - has
         // nothing to compute.
@@ -1901,7 +1926,18 @@ void RF25Doc::solveWith(const SolveRequest& request)
                 if (c->ok()) job->wave->lines << c->lines;
             return;
         }
-        job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack, 1e-6, job->returns));
+        // Told to stop, it stops: let go and left to run, an extraction whose
+        // stack's Green's function would not end held a core and gigabytes
+        // until Qucs-S was killed, and the next solve ran beside it.
+        ExtractControl control;
+        control.stop = &job->stop;
+        control.step = &job->step;
+        control.done = &job->stepDone;
+        control.all = &job->stepAll;
+        control.images = &job->images;
+        job->result =
+            std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack, 1e-6, job->returns, &control));
+        if (job->stop.load()) return;
         if (job->loop)
             job->inductance = std::make_shared<Inductance>(
                 inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency));
@@ -1953,6 +1989,41 @@ void RF25Doc::letSolveGo()
     emit solvedChanged();
 }
 
+bool RF25Doc::solvingAlike(const SolveRequest& request) const
+{
+    if (!isSolving()) return false;
+    const auto solverOf = [this](const SolveRequest& r) {
+        return r.solver.isEmpty() ? (studyIsFullWave() ? QStringLiteral("full_wave") : QStringLiteral("quasi_static")) : r.solver;
+    };
+    if (solverOf(a_solveRequest) != solverOf(request)) return false;
+    if (solverOf(request) == QLatin1String("quasi_static")) return true;
+    const auto matrixOf = [this](const SolveRequest& r) {
+        return r.matrix.isEmpty() ? studyMatrix(a_model)
+               : r.matrix == QLatin1String("dense")      ? FullWaveControl::Matrix::Dense
+               : r.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed
+                                                         : FullWaveControl::Matrix::Automatic;
+    };
+    return a_solveRequest.frequencies == request.frequencies && matrixOf(a_solveRequest) == matrixOf(request);
+}
+
+QString RF25Doc::solvingSaid() const
+{
+    return isSolving() ? countNow().said : QString();
+}
+
+int RF25Doc::quasiStaticStep() const
+{
+    return a_solveJob && !a_solveJob->fullWave ? a_solveJob->step.load() : -1;
+}
+
+bool RF25Doc::waitForSolvesToEnd(int ms)
+{
+    QElapsedTimer t;
+    t.start();
+    while (a_solvesAtWork->load() > 0 && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return a_solvesAtWork->load() == 0;
+}
+
 RF25Doc::Count RF25Doc::countNow() const
 {
     // Nought of nought is busy: the quasi-static extraction, which cannot
@@ -1979,6 +2050,17 @@ RF25Doc::Count RF25Doc::countNow() const
         c.done = std::min(frequenciesSolved(), c.of);
         c.said = tr("Solving full-wave: %1 of %2 frequencies…").arg(c.done).arg(c.of);
         c.key = QStringLiteral("sweep");
+    } else if (job != nullptr) {
+        // The quasi-static extraction: what it is at, counted where it can
+        // count - the stack's Green's functions, the lossy layers - and busy
+        // where it cannot, a matrix being filled and factored.
+        const int step = job->step.load(), done = job->stepDone.load(), all = job->stepAll.load();
+        c.said = tr("Solving quasi-statically: %1…").arg(extractStepSaid(step, done, all, job->images.load()));
+        if (all > 0) {
+            c.of = all;
+            c.done = std::min(done, all);
+            c.key = QStringLiteral("static %1").arg(step);
+        }
     }
     return c;
 }
