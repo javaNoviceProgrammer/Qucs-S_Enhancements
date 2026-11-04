@@ -13,6 +13,7 @@
 #include <QThread>
 #include <QSet>
 
+#include "rf25/rf25_dense.h"
 #include "rf25/rf25_sparams.h"
 #include "rf25/rf25_static.h"
 
@@ -27,6 +28,24 @@ namespace {
 
 /// A stack of a substrate of \a epsr and \a height (m) on a ground plane,
 /// with one metal on top of it and air above.
+/// The dense LU's overrides (rf25/rf25_dense.h: QUCS_RF25_LU, and
+/// QUCS_FEM_SOLVER=eigen) away while a test chooses its LU, and back after.
+struct LuOverridesAway {
+    const bool hadLu = qEnvironmentVariableIsSet("QUCS_RF25_LU"), hadFem = qEnvironmentVariableIsSet("QUCS_FEM_SOLVER");
+    const QByteArray lu = qgetenv("QUCS_RF25_LU"), fem = qgetenv("QUCS_FEM_SOLVER");
+    LuOverridesAway()
+    {
+        qunsetenv("QUCS_RF25_LU");
+        qunsetenv("QUCS_FEM_SOLVER");
+    }
+    ~LuOverridesAway()
+    {
+        rf::setDenseLu(rf::DenseLu::Automatic);
+        if (hadLu) qputenv("QUCS_RF25_LU", lu);
+        if (hadFem) qputenv("QUCS_FEM_SOLVER", fem);
+    }
+};
+
 rf::Stack grounded(double epsr, double height)
 {
     rf::Stack s;
@@ -688,6 +707,45 @@ private slots:
                          qPrintable(QStringLiteral("gap %1 µm: mutual %2 F, was %3 F at the narrower gap").arg(gap).arg(mutual).arg(previous)));
             previous = mutual;
         }
+    }
+
+    // The charges solved by Accelerate's LAPACK where the build and the
+    // macOS have it, by Eigen's elsewhere and as asked (rf25_dense.h): every
+    // net at once, the same Maxwell matrices to rounding either way, one
+    // factorization a solve.
+    void theChargesAreSolvedAlikeEitherWay()
+    {
+        const LuOverridesAway away;
+        const rf::Stack stack = grounded(4.1, 10e-6);
+        const QList<rf::Conductor> three{strip(0, 0, 20, 200), strip(25, 0, 20, 200), strip(60, 0, 30, 200)};
+        const rf::Mesh mesh = meshed(three, 10);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        rf::setDenseLu(rf::DenseLu::Eigen);
+        const long long eigenBefore = rf::eigenLuCount(), acceleratedBefore = rf::accelerateLuCount();
+        const rf::Extraction eigen = rf::extract(mesh, three, stack);
+        QVERIFY2(eigen.ok(), qPrintable(eigen.problems.join(" | ")));
+        QCOMPARE(rf::eigenLuCount() - eigenBefore, (long long)eigen.solves);
+        QCOMPARE(rf::accelerateLuCount(), acceleratedBefore);
+        rf::setDenseLu(rf::DenseLu::Automatic);
+        const long long eigenThen = rf::eigenLuCount();
+        const rf::Extraction automatic = rf::extract(mesh, three, stack);
+        QVERIFY2(automatic.ok(), qPrintable(automatic.problems.join(" | ")));
+        QCOMPARE(automatic.solves, eigen.solves);
+        QCOMPARE(rf::accelerateLuCount() - acceleratedBefore, rf::accelerateLuHere() ? (long long)automatic.solves : 0LL);
+        QCOMPARE(rf::eigenLuCount() - eigenThen, rf::accelerateLuHere() ? 0LL : (long long)automatic.solves);
+        QCOMPARE(eigen.names.size(), 3);
+        double apart = 0, largest = 0;
+        for (const auto& [a, b] : {std::pair(&eigen.maxwell, &automatic.maxwell), std::pair(&eigen.maxwell0, &automatic.maxwell0)})
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) {
+                    apart = std::max(apart, std::abs(a->at(i).at(j) - b->at(i).at(j)));
+                    largest = std::max(largest, std::abs(a->at(i).at(j)));
+                }
+        QVERIFY2(apart <= 1e-12 * largest, qPrintable(QStringLiteral("%1 F apart, of %2 F").arg(apart).arg(largest)));
+        // The coefficients' diagonal's spread, taken before they are
+        // factorized where they are.
+        QVERIFY2(std::isfinite(eigen.conditionHint) && eigen.conditionHint >= 1 && automatic.conditionHint == eigen.conditionHint,
+                 qPrintable(QStringLiteral("%1 and %2").arg(eigen.conditionHint).arg(automatic.conditionHint)));
     }
 
     // Two plates facing each other across a dielectric: the capacitance

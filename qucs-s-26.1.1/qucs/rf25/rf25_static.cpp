@@ -11,6 +11,8 @@
 
 #include "rf25_static.h"
 
+#include "rf25_dense.h"
+
 #include <QCoreApplication>
 #include <QHash>
 
@@ -844,16 +846,20 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
                            QList<QList<double>>* matrix, QList<double>* crowd = nullptr) {
-        const Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control);
+        Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control);
         if (control != nullptr && control->stopped()) return 1.0;
         ++out.solves;
-        const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
+        const double hint = p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
+        // Each net held at a volt and the others at nought, every net at
+        // once; p factorized where it is.
+        Eigen::MatrixXd held = Eigen::MatrixXd::Zero(n, nets.size());
+        for (int i = 0; i < n; ++i) held(i, netOf.at(i)) = 1.0;
+        const DenseFactors<double> lu(std::move(p));
+        const Eigen::MatrixXd charges = lu.solve(held);
         matrix->clear();
         if (crowd != nullptr) crowd->clear();
         for (int net = 0; net < nets.size(); ++net) {
-            Eigen::VectorXd v = Eigen::VectorXd::Zero(n);
-            for (int i = 0; i < n; ++i) v(i) = netOf.at(i) == net ? 1.0 : 0.0;
-            const Eigen::VectorXd q = lu.solve(v);
+            const Eigen::VectorXd q = charges.col(net);
             QList<double> column;
             for (int other = 0; other < nets.size(); ++other) {
                 double sum = 0;
@@ -880,7 +886,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 crowd->append(total != 0 ? square / (total * total) : 0.0);
             }
         }
-        return p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
+        return hint;
     };
 
     if (control != nullptr) control->at(ExtractControl::Charge);

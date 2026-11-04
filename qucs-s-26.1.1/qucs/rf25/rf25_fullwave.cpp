@@ -11,11 +11,13 @@
  */
 #include "rf25_fullwave.h"
 
+#include "rf25_dense.h"
 #include "rf25_fast.h"
 
 #include "multiphysics/fem_sparse.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QRectF>
 #include <QSet>
@@ -814,6 +816,11 @@ struct AtFrequency {
     MatrixC z;                           ///< ports x ports
     MatrixC current;                     ///< runs x ports
     double rcond = 1;
+    /// Dense: the seconds its fill took (the Green's functions, the system
+    /// and P, up to its LU) and its LU (the factors, the solve, rcond), and
+    /// whether Accelerate's LAPACK made them (rf25_dense.h).
+    double fillSeconds = 0, luSeconds = 0;
+    bool accelerated = false;
     /// Compressed: what its matrices held, bytes, and their largest rank;
     /// the most iterations a port's GMRES took, and the largest residual.
     double bytes = 0;
@@ -1130,6 +1137,8 @@ void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own
 AtFrequency solveAt(const Context& c, double f)
 {
     AtFrequency out;
+    QElapsedTimer clock;
+    clock.start();
     const Kernels k(c, f);
     if (!k.problems.isEmpty()) {
         out.problems << k.problems;
@@ -1217,9 +1226,13 @@ AtFrequency solveAt(const Context& c, double f)
         for (int q = 0; q < c.np; ++q) rhs(c.vias.at(j).run, q) -= portVia(q, j);
     MatrixC pathZ = MatrixC::Zero(c.np, c.np);
     addPortPaths(c, k, rhs, pathZ);
-    const Eigen::PartialPivLU<MatrixC> lu(m);
+    out.fillSeconds = double(clock.nsecsElapsed()) * 1e-9;
+    // (m factorized where it is: it is not needed past here.)
+    const DenseFactors<Complex> lu(std::move(m));
     out.current = lu.solve(rhs);
     out.rcond = lu.rcond();
+    out.accelerated = lu.accelerated();
+    out.luSeconds = double(clock.nsecsElapsed()) * 1e-9 - out.fillSeconds;
     if (!out.current.allFinite()) {
         out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
         return out;
@@ -2511,6 +2524,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                          .arg(nr + nc).arg(most).arg(1.0 / z.tolerance, 0, 'g', 3).arg(out.largestRank)
                          .arg(size(out.memory), size(out.denseMemory)).arg(inner).arg(out.iterations)
                          .arg(out.residual, 0, 'g', 2);
+    } else {
+        for (const AtFrequency& a : std::as_const(solved)) {
+            out.fillSeconds += a.fillSeconds;
+            out.luSeconds += a.luSeconds;
+            out.accelerated = out.accelerated || a.accelerated;
+        }
     }
     out.lines << out.portsSaid;
     out.lines << thick.said;
