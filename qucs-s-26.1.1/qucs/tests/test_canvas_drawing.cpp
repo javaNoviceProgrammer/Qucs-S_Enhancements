@@ -572,14 +572,20 @@ private slots:
         MainGuard guard(&app);
         Schematic* s = open(app, write(QStringLiteral("large.sch"), chain(16000)));
         QVERIFY(s != nullptr);
-        s->showNoZoom();
-        s->centerOn(QPoint(400, 300));
-        pump();
-        const qint64 corner = repaint(s);
-
-        s->showAll();
-        pump();
-        const qint64 whole = repaint(s);
+        // A corner at 1:1 and the whole zoomed out, timed in turn, the best
+        // of each: back to back, a busy runner's slow stretch fell on one
+        // (CI's macOS, 25a6d4f: a corner 12.2 ms - 1.5 here - beside a
+        // whole of 31.2).
+        qint64 corner = std::numeric_limits<qint64>::max(), whole = corner;
+        for (int round = 0; round < 3; ++round) {
+            s->showNoZoom();
+            s->centerOn(QPoint(400, 300));
+            pump();
+            corner = std::min(corner, repaint(s));
+            s->showAll();
+            pump();
+            whole = std::min(whole, repaint(s));
+        }
         const QPoint from = s->modelToViewport(QPoint(-40, -60));
         QTest::mousePress(s->viewport(), Qt::LeftButton, Qt::NoModifier, from);
         pump();

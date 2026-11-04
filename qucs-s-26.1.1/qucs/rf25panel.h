@@ -115,6 +115,7 @@ private:
     QWidget* a_form = nullptr;
     QHash<QString, QWidget*> a_editors;
     QString a_shownTag;
+    QString a_exportSaid;   // what the shown export's Write said, kept when its form is made again
     QString a_focusKey;
     bool a_rebuilding = false;
     bool a_settingsPending = false;

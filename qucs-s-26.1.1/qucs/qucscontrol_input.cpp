@@ -45,6 +45,7 @@
 #include <QTimer>
 
 #include <cmath>
+#include <functional>
 #include <memory>
 
 using namespace qucs_s::control;
@@ -328,11 +329,17 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QList<QPointF> asked{click};
     asked << dragged;
     QList<QPoint> path;   // the click, then where the drag goes
+    // (Mapped now, to bring them into view, and again as the events are
+    // given: what comes between moves them - Qt shows a scroll bar by a
+    // queued call, and slides fitted to the width are fitted again to the
+    // narrower viewport it leaves: a stroke drawn 23 points off its click,
+    // on CI's Linux.)
+    std::function<QList<QPoint>()> mapped;
     if (hasClick && !pixels && (sch || layoutView || slideView)) {
-        const auto toPixel = [&sch, &layoutView, &slideView, slide](QPointF p) {
+        const auto toPixel = [sch, layoutView, slideView, slide](QPointF p) {
             if (sch) return sch->modelToViewport(p.toPoint());
             if (layoutView) return layoutView->toPixel(p).toPoint();
-            return slideView->toViewport(slide, p).toPoint();
+            return slideView ? slideView->toViewport(slide, p).toPoint() : p.toPoint();
         };
         const QRect shown = root->rect().adjusted(4, 4, -4, -4);
         const auto inSight = [&asked, &shown, &toPixel] {
@@ -361,7 +368,12 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                 return;
             }
         }
-        for (const QPointF& p : std::as_const(asked)) path << toPixel(p);
+        mapped = [toPixel, asked] {
+            QList<QPoint> out;
+            for (const QPointF& p : asked) out << toPixel(p);
+            return out;
+        };
+        path = mapped();
     } else if (hasClick) {
         for (const QPointF& p : std::as_const(asked)) {
             if (!root->rect().contains(p.toPoint())) {
@@ -485,12 +497,14 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                             "user's. Nothing was sent.").arg(click.x()).arg(click.y())));
         return;
     }
-    QList<QPoint> local;   // the path in the receiver's pixels
-    for (const QPoint& p : std::as_const(path)) local << (receiver && receiver != root ? receiver->mapFrom(root, p) : p);
+    QList<QPoint> asGiven;   // the path in the receiver's pixels
+    for (const QPoint& p : std::as_const(path)) asGiven << (receiver && receiver != root ? receiver->mapFrom(root, p) : p);
     if (hasClick)
-        QTimer::singleShot(0, a_app, [run, receiver, local, through, drag, doubleClick, button, modifiers] {
+        QTimer::singleShot(0, a_app, [run, receiver, asGiven, mapped, through, drag, doubleClick, button, modifiers] {
             const QtFileDialogs qt;
             if (!receiver) return;
+            // (A view's points where it shows them now: it is the receiver.)
+            const QList<QPoint> local = mapped ? mapped() : asGiven;
             mouse(receiver, QEvent::MouseMove, local.first(), Qt::NoButton, Qt::NoButton, modifiers);
             mouse(receiver, QEvent::MouseButtonPress, local.first(), button, button, modifiers);
             if (drag) {
