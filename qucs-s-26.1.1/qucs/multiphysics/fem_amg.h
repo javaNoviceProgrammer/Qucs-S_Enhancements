@@ -56,6 +56,10 @@ public:
     void setTolerance(double tolerance);
     /// Its iterations at most (500; the fallback's ten times as many).
     void setMaxIterations(int iterations);
+    /// A matrix that is not symmetric (Newton's method's): BiCGStab with the
+    /// same multigrid over its rows, an incomplete LU's BiCGStab the
+    /// fallback. Before compute().
+    void setNonsymmetric(bool nonsymmetric);
     /// Sets matrix \a a up - its hierarchy; false and why when it cannot.
     bool compute(const Eigen::SparseMatrix<double>& a, QString* error);
     /// Solves for \a b from \a x as it is (zeros: none known); false and why

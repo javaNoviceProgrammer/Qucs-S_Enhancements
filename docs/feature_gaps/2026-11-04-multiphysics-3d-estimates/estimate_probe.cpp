@@ -3,7 +3,10 @@
 // solved at an order by a solver; its estimate, its seconds, and its peak
 // footprint over the footprint before (sampled every 5 ms).
 //
-//   estimate_probe <hmax mm> <order 1|2> <solver auto|iterative|direct>
+//   estimate_probe <hmax mm> <order 1|2> <solver auto|iterative|direct> [parts]
+//
+// (parts: the assembly's, setAssemblyParts' - 1 for one thread; as the size
+// has them when not given.)
 //
 // Built against the engine (build/qucs/multiphysics/libfem.a) as
 // test_fem3_solve is; one size a process, so each peak is its own.
@@ -20,6 +23,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 using namespace qucs_s::fem;
@@ -37,6 +41,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     if (argc < 4) return 2;
     const QString hmax = QString::fromLatin1(argv[1]), order = QString::fromLatin1(argv[2]), solver = QString::fromLatin1(argv[3]);
+    if (argc > 4) setAssemblyParts(std::atoi(argv[4]));
     Model m = Model::blank3d();
     m.component().props.insert(QStringLiteral("unit"), QStringLiteral("mm"));
     Node box = m.make(QStringLiteral("box"));

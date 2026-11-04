@@ -955,22 +955,28 @@ QList<NodeKind> makeKinds()
     // plane - its xx, yy and xy, the model's axes.)
     auto planeTensor = [](const QString& key, const QString& symbol, const QString& unit, const QString& def) {
         const QString user = QStringLiteral("source=user&anisotropy!=isotropic");
+        // (A 3D model's z, and its cross terms with z: its own.)
+        auto inThreeD = [](P p) {
+            p.spaces = Spaces::ThreeD;
+            return p;
+        };
         return QList<P>{
-            [] {
-                // (A 3D model's user value is isotropic: these tensors are the
-                // plane's.)
-                P a = shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"),
-                                     {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")},
-                                     {tr("Isotropic"), tr("Diagonal (x, y)"), tr("Symmetric (xx, yy, xy)")}, QStringLiteral("isotropic"),
-                                     tr("In the model's axes (r and z about an axis); a material's tensor is its own, turned by its orientation")),
-                              QStringLiteral("source=user"));
-                a.choiceSpaces = {Spaces::All, Spaces::TwoD, Spaces::TwoD};
-                return a;
-            }(),
+            shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"),
+                           {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")},
+                           {tr("Isotropic"), tr("Diagonal: xx, yy (zz in 3D)"), tr("Symmetric: xx, yy, xy (zz, xz, yz in 3D)")},
+                           QStringLiteral("isotropic"),
+                           tr("In the model's axes (r and z about an axis; x, y and z in 3D); a material's tensor is its own, turned by "
+                              "its orientation")),
+                    QStringLiteral("source=user")),
             shownIf(spatial(key + QStringLiteral("xx"), symbol + QStringLiteral(", xx"), unit, def), user),
             shownIf(spatial(key + QStringLiteral("yy"), symbol + QStringLiteral(", yy"), unit, def), user),
+            inThreeD(shownIf(spatial(key + QStringLiteral("zz"), symbol + QStringLiteral(", zz"), unit, def), user)),
             shownIf(spatial(key + QStringLiteral("xy"), symbol + QStringLiteral(", xy"), unit, QStringLiteral("0")),
-                    QStringLiteral("source=user&anisotropy=symmetric"))};
+                    QStringLiteral("source=user&anisotropy=symmetric")),
+            inThreeD(shownIf(spatial(key + QStringLiteral("xz"), symbol + QStringLiteral(", xz"), unit, QStringLiteral("0")),
+                             QStringLiteral("source=user&anisotropy=symmetric"))),
+            inThreeD(shownIf(spatial(key + QStringLiteral("yz"), symbol + QStringLiteral(", yz"), unit, QStringLiteral("0")),
+                             QStringLiteral("source=user&anisotropy=symmetric")))};
     };
     const P source = choice(QStringLiteral("source"), tr("From"), {QStringLiteral("material"), QStringLiteral("user")},
                             {tr("Material"), tr("User defined")}, QStringLiteral("material"));
@@ -3843,8 +3849,8 @@ QList<NodeKind> makeKinds()
     // Solved in 3D too: heat, electrostatics and currents with their
     // features, and a study's Stationary and Time Dependent steps and its
     // Parametric Sweep - the first's adaptive refinement and light loop the
-    // plane's, their nonlinear method Picard's in turn, the sweep's points
-    // one after another.
+    // plane's, a field that reads itself by Newton's method (or Picard's),
+    // physics in turn, the sweep's points one after another.
     auto solvedIn3D = [](const QString& type) {
         for (const char* p : {"heat", "electrostatics", "currents"})
             if (type == QLatin1String(p) || type.startsWith(QLatin1String(p) + QLatin1Char('/'))) return true;
@@ -3854,9 +3860,6 @@ QList<NodeKind> makeKinds()
     for (NodeKind& kind : k) {
         if (shared.contains(kind.type) || solvedIn3D(kind.type)) kind.spaces = Spaces::All;
         else if (threeD.contains(kind.type)) kind.spaces = Spaces::ThreeD;
-        if (kind.type == QLatin1String("transient"))
-            for (P& p : kind.properties)
-                if (p.key == QLatin1String("nonlinear")) p.choiceSpaces = {Spaces::All, Spaces::TwoD, Spaces::All};
         if (kind.type == QLatin1String("sweep"))
             for (P& p : kind.properties)
                 if (p.key == QLatin1String("parallel")) p.spaces = Spaces::TwoD;
@@ -3889,7 +3892,6 @@ QList<NodeKind> makeKinds()
                             QStringLiteral("lighttol"), QStringLiteral("lightmax")}
                     .contains(p.key))
                 p.spaces = Spaces::TwoD;
-            if (p.key == QLatin1String("nonlinear")) p.choiceSpaces = {Spaces::All, Spaces::TwoD, Spaces::All};
         }
     }
     return k;

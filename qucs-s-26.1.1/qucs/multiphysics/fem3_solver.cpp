@@ -420,7 +420,15 @@ bool PointEvaluator3::field(int f, double& u, double g[3])
         u += s.n[i] * v;
         for (int k = 0; k < 3; ++k) g[k] += gi[k] * v;
     }
+    if (f == a_perturbed) u += a_perturbation;
     return true;
+}
+
+void PointEvaluator3::perturb(int f, double du)
+{
+    a_perturbed = du != 0 ? f : -1;
+    a_perturbation = du;
+    std::fill(a_known.begin(), a_known.end(), char(0));
 }
 
 double PointEvaluator3::value(int slot)
@@ -489,12 +497,35 @@ double PointEvaluator3::eval(const Expression& e)
 namespace detail3 {
 
 bool System3::factorize(const Eigen::SparseMatrix<double>& a, const QString& solver, int rhs, double tolerance, const QString& name,
-                        QStringList* log, QString* error)
+                        QStringList* log, QString* error, bool symmetric)
 {
     a_amg.reset();
     a_chol.reset();
+    a_lu.reset();
+    a_symmetric = symmetric;
     a_n = int(a.rows());
     a_tolerance = std::min(tolerance > 0 ? tolerance : 1e-9, 1e-9);
+    if (!symmetric) {
+        // A Newton's matrix: an LU where direct is asked, else BiCGStab with
+        // multigrid (one right-hand side a step: no factorization pays).
+        if (solver == QLatin1String("direct")) {
+            a_lu = std::make_unique<SparseLu<double>>();
+            a_lu->compute(a);
+            if (a_lu->info() == Eigen::Success) {
+                if (log) *log << tr("%1: %2 unknowns, %3 LU (Newton's matrix)").arg(name).arg(a_n).arg(a_lu->accelerated() ? tr("Accelerate's") : tr("Eigen's"));
+                return true;
+            }
+            if (error) *error = tr("%1: Newton's matrix could not be factorized (%2)").arg(name, QString::fromStdString(a_lu->lastErrorMessage()));
+            a_lu.reset();
+            return false;
+        }
+        a_amg = std::make_unique<AmgSolver>();
+        a_amg->setTolerance(a_tolerance);
+        a_amg->setNonsymmetric(true);
+        QString why;
+        if (!a_amg->compute(a, &why) && log) *log << tr("%1: %2 - the incomplete LU's BiCGStab instead").arg(name, why);
+        return true;
+    }
     // (Where a factorization pays: more right-hand sides than about 6 + n /
     // 20,000 - multigrid's set-up and solves against the METIS-ordered
     // Cholesky's, measured: even at 6 for 28,830 unknowns, 9 for 130,050, 17
@@ -537,6 +568,10 @@ bool System3::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, const QString&
         x = a_chol->solve(b);
         return x.allFinite();
     }
+    if (a_lu) {
+        x = a_lu->solve(b);
+        return x.allFinite();
+    }
     if (!a_amg) {
         if (error) *error = tr("%1: no system to solve").arg(name);
         return false;
@@ -544,7 +579,14 @@ bool System3::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, const QString&
     IterativeReport r;
     const bool ok = a_amg->solve(b, x, &r, error);
     if (log) {
-        if (r.fallback)
+        if (!a_symmetric)
+            *log << tr("%1: %2 unknowns, %3 (Newton's matrix): %4 iterations, residual %5")
+                        .arg(name)
+                        .arg(a_n)
+                        .arg(r.fallback ? tr("multigrid did not converge - the incomplete LU's BiCGStab") : tr("BiCGStab with algebraic multigrid"))
+                        .arg(r.iterations)
+                        .arg(r.residual, 0, 'g', 2);
+        else if (r.fallback)
             *log << tr("%1: %2 unknowns, multigrid did not converge - the incomplete Cholesky's conjugate gradients: %3 iterations, "
                        "residual %4")
                         .arg(name)
@@ -668,6 +710,7 @@ detail3::Options3 stepOptions(const Node& step, const Scope& scope)
 {
     detail3::Options3 o;
     o.solver = step.text(QStringLiteral("solver"));
+    if (const QString n = step.text(QStringLiteral("nonlinear")); !n.isEmpty()) o.nonlinear = n;
     if (const std::optional<double> t = evaluateConstant(step.text(QStringLiteral("tolerance")), scope, Dim()); t && *t > 0) o.tolerance = *t;
     o.maxIterations = std::clamp(step.integer(QStringLiteral("maxiter")), 1, 1000);
     o.sweep = step.type == QLatin1String("stationary") && step.flag(QStringLiteral("sweep"));

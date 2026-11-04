@@ -216,9 +216,15 @@ public:
     /// Field \a f's value here and its gradient (m^-1 times its unit); false
     /// where it is not solved here.
     bool field(int f, double& u, double g[3]);
+    /// Field \a f's value here taken as \a du more (0: as it is), every value
+    /// read of it found again: a coefficient's derivative in its field, as
+    /// Newton's method takes it.
+    void perturb(int f, double du);
 
 private:
     const Solution3& a_s;
+    int a_perturbed = -1;
+    double a_perturbation = 0;
     int a_prism = -1, a_domain = -1;
     double a_xi = 0, a_eta = 0, a_zeta = 0;
     Vec3 a_x;
@@ -284,6 +290,13 @@ StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> paramete
 /// The variables a 3D model's physics give its expressions (x, y, z, t, dom,
 /// es.V, ht.T...): for a menu, a completer and Claude.
 QList<Variable> modelVariables3(const Model& model);
+
+/// The parts a 3D assembly's elements are made in, each on a thread of its
+/// own and joined in the elements' order (0, as it is unless set: one for
+/// each 2,000 elements, 64 at most; 1: one, the calling thread's) - for a
+/// test of the matrix's being the same, bit for bit, whatever the parts.
+void setAssemblyParts(int parts);
+int assemblyParts();
 
 /// The physics a 3D model solves (heat, electrostatics, currents): those of
 /// its enabled physics that are not, by type.

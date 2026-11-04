@@ -3517,9 +3517,20 @@ QJsonObject QucsControl::fem3Evaluate(Multiphysics3DDoc* doc, const QJsonObject&
         if (!s) continue;
         const QString label = all ? in.label : QString();
         const double k = s->mesh().unitScale;
+        // (Several split by ';', each named if wanted - as the plane's are.)
+        QList<NamedExpression> items;
+        for (const QString& part : expression.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+            NamedExpression item = namedExpression(part);
+            item.name = item.name.trimmed();
+            item.expression = item.expression.trimmed();
+            if (!item.expression.isEmpty()) items << item;
+        }
         if (!points.isEmpty() || !along.isEmpty()) {
-            const Expression e = Expression::compile(expression, s->scope());
-            if (!e.isValid()) return errorResult(tr("%1: %2").arg(expression, e.error()));
+            std::vector<Expression> compiled;
+            for (const NamedExpression& item : std::as_const(items)) {
+                compiled.push_back(Expression::compile(item.expression, s->scope()));
+                if (!compiled.back().isValid()) return errorResult(tr("%1: %2").arg(item.expression, compiled.back().error()));
+            }
             std::vector<Vec3> where;
             auto read = [](const QJsonValue& v, Vec3* p) {
                 const QJsonArray c = v.toArray();
@@ -3543,15 +3554,16 @@ QJsonObject QucsControl::fem3Evaluate(Multiphysics3DDoc* doc, const QJsonObject&
                     where.push_back(p);
                 }
             }
-            for (const Vec3& p : where) {
-                const QString name = tr("%1 at (%2, %3, %4)").arg(expression, formatNumber(p.x, 6), formatNumber(p.y, 6), formatNumber(p.z, 6));
-                const std::optional<double> v = evaluateAt3(*s, e, Vec3{p.x * k, p.y * k, p.z * k});
-                if (!v) {
-                    errors << tr("%1: in no domain where it is defined").arg(name);
-                    continue;
+            for (const Vec3& p : where)
+                for (int i = 0; i < int(items.size()); ++i) {
+                    const QString name = tr("%1 at (%2, %3, %4)").arg(items[i].name, formatNumber(p.x, 6), formatNumber(p.y, 6), formatNumber(p.z, 6));
+                    const std::optional<double> v = evaluateAt3(*s, compiled[std::size_t(i)], Vec3{p.x * k, p.y * k, p.z * k});
+                    if (!v) {
+                        errors << tr("%1: in no domain where it is defined").arg(name);
+                        continue;
+                    }
+                    add(label, name, *v, compiled[std::size_t(i)].dim(), items[i].expression, s->scope());
                 }
-                add(label, name, *v, e.dim(), expression, s->scope());
-            }
             continue;
         }
         if (!over.isEmpty()) {
@@ -3561,20 +3573,23 @@ QJsonObject QucsControl::fem3Evaluate(Multiphysics3DDoc* doc, const QJsonObject&
             const QString kind = args.value(QLatin1String("kind")).toString(QStringLiteral("integral"));
             if (kind != QLatin1String("integral") && kind != QLatin1String("average") && kind != QLatin1String("maximum") && kind != QLatin1String("minimum"))
                 return errorResult(tr("'kind' is integral, average, maximum or minimum"));
-            FNode node = doc->model().make(kind);
-            node.props.insert(QStringLiteral("level"), over);
             QJsonObject selection = args.value(QLatin1String("selection")).toObject();
             if (selection.isEmpty()) selection = QJsonObject{{QStringLiteral("all"), true}};
-            node.props.insert(QStringLiteral("selection"), selection);
-            node.props.insert(QStringLiteral("expression"), expression);
-            node.props.insert(QStringLiteral("unit"), unitText);
-            const DerivedResult r = evaluateDerived3(*s, node);
-            for (const DerivedValue& v : r.values) {
-                QJsonObject one{{QStringLiteral("name"), (label.isEmpty() ? QString() : label + QStringLiteral(": ")) + tr("%1 of %2 over %3").arg(kind, v.name, over)}};
-                insertValue(&one, v.text, v.value);
-                values.append(one);
+            for (const NamedExpression& item : std::as_const(items)) {
+                FNode node = doc->model().make(kind);
+                node.props.insert(QStringLiteral("level"), over);
+                node.props.insert(QStringLiteral("selection"), selection);
+                node.props.insert(QStringLiteral("expression"), item.expression);
+                node.props.insert(QStringLiteral("unit"), unitText);
+                const DerivedResult r = evaluateDerived3(*s, node);
+                for (const DerivedValue& v : r.values) {
+                    const QString name = item.name != item.expression ? item.name : tr("%1 of %2 over %3").arg(kind, v.name, over);
+                    QJsonObject one{{QStringLiteral("name"), (label.isEmpty() ? QString() : label + QStringLiteral(": ")) + name}};
+                    insertValue(&one, v.text, v.value);
+                    values.append(one);
+                }
+                if (!r.error.isEmpty()) errors << r.error;
             }
-            if (!r.error.isEmpty()) errors << r.error;
             continue;
         }
         // Globals (several split by ';', each named if wanted), or a Derived
