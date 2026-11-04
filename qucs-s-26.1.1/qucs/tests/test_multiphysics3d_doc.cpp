@@ -26,9 +26,11 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -202,8 +204,8 @@ private slots:
         QCOMPARE(panel()->exampleList()->count(), 6);
     }
 
-    /// A new 3D model: a tab, the tree a 3D model's - its study, no results;
-    /// the component a 3D one.
+    /// A new 3D model: a tab, the tree a 3D model's - its study, its results'
+    /// derived values and exports; the component a 3D one.
     void aNewModel()
     {
         Multiphysics3DDoc* doc = app->newMultiphysics3DModel();
@@ -217,7 +219,8 @@ private slots:
                      && shown.contains(QStringLiteral("Geometry")) && shown.contains(QStringLiteral("Form Union"))
                      && shown.contains(QStringLiteral("Materials")) && shown.contains(QStringLiteral("Mesh")),
                  qPrintable(shown.join(QStringLiteral(", "))));
-        QVERIFY2(!shown.contains(QStringLiteral("Results")) && shown.contains(QStringLiteral("Study 1")) && shown.contains(QStringLiteral("Stationary")),
+        QVERIFY2(shown.contains(QStringLiteral("Results")) && shown.contains(QStringLiteral("Derived Values")) && shown.contains(QStringLiteral("Study 1"))
+                     && shown.contains(QStringLiteral("Stationary")),
                  qPrintable(shown.join(QStringLiteral(", "))));
         // Nothing to build yet: not built.
         QVERIFY(doc->waitForIdle());
@@ -441,6 +444,174 @@ private slots:
         QVERIFY(!stage->isVisible());
     }
 
+    /// A step in time computed in the tab: its output times in the Time box,
+    /// the last shown; an earlier one chosen, the plot, its range and the
+    /// globals are of that time. A model at rest shows no Time box.
+    void aModelInTime()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        auto* times = doc->findChild<QComboBox*>(QStringLiteral("mp3Time"));
+        QVERIFY(times && !times->isVisibleTo(doc));
+        Model m = doc->model();
+        for (FNode& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                c.children.clear();
+                FNode t = m.make(QStringLiteral("transient"));
+                t.props.insert(QStringLiteral("times"), QStringLiteral("range(0, 5[ms], 10[ms])"));
+                t.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                t.props.insert(QStringLiteral("dt"), QStringLiteral("2.5[ms]"));
+                c.children.push_back(t);
+            }
+        QVERIFY(doc->setModel(m, QStringLiteral("in time")));
+        doc->compute();
+        QVERIFY(doc->waitForIdle(300000));
+        const QString said = doc->messages().join(QStringLiteral("\n"));
+        QVERIFY2(doc->solution() && !doc->solutionStale(), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("output times")) && said.contains(QStringLiteral("At t = 10 ms")), qPrintable(said));
+        QVERIFY(times->isVisibleTo(doc));
+        QCOMPARE(times->count(), 3);
+        QCOMPARE(times->currentIndex(), 2);
+        QCOMPARE(doc->shownTime(), 2);
+        const double hot = doc->plotRange().second, tmax = doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0);
+        QVERIFY2(hot > 293.15 + 0.1 && std::abs(hot - tmax) < 1e-9 * hot, qPrintable(QStringLiteral("%1, %2").arg(hot).arg(tmax)));
+        times->setCurrentIndex(1);
+        emit times->activated(1);
+        QCOMPARE(doc->shownTime(), 1);
+        QVERIFY(std::abs(doc->solution()->time() - 5e-3) < 1e-12);
+        const double warm = doc->plotRange().second, tmax1 = doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0);
+        QVERIFY2(warm < hot && warm > 293.15 && std::abs(warm - tmax1) < 1e-9 * warm, qPrintable(QStringLiteral("%1, then %2").arg(hot).arg(warm)));
+        // The start: every temperature its initial one.
+        doc->setShownTime(0);
+        QVERIFY2(std::abs(doc->plotRange().second - 293.15) < 1e-9 && std::abs(doc->plotRange().first - 293.15) < 1e-9,
+                 qPrintable(QStringLiteral("%1 to %2").arg(doc->plotRange().first).arg(doc->plotRange().second)));
+        QCOMPARE(times->currentIndex(), 0);
+    }
+
+    /// A Parametric Sweep computed in the tab: its points in the Point box,
+    /// the last shown; the first chosen, its rise half the last's (twice the
+    /// power, a little more than twice the rise: silicon's k falls as it
+    /// warms).
+    void aSweptModel()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        auto* points = doc->findChild<QComboBox*>(QStringLiteral("mp3Point"));
+        QVERIFY(points && !points->isVisibleTo(doc));
+        Model m = doc->model();
+        for (FNode& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                FNode sw = m.make(QStringLiteral("sweep"));
+                QJsonArray rows;
+                rows.append(QJsonArray{QStringLiteral("P"), QStringLiteral("10, 20"), QStringLiteral("mW")});
+                sw.props.insert(QStringLiteral("parameters"), rows);
+                c.children.push_back(sw);
+            }
+        QVERIFY(doc->setModel(m, QStringLiteral("swept")));
+        doc->compute();
+        QVERIFY(doc->waitForIdle(300000));
+        const QString said = doc->messages().join(QStringLiteral("\n"));
+        QVERIFY2(doc->solution() && doc->solutions().size() == 2, qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("2 points of P")), qPrintable(said));
+        QVERIFY(points->isVisibleTo(doc));
+        QCOMPARE(points->count(), 2);
+        QCOMPARE(points->currentIndex(), 1);
+        QCOMPARE(points->itemText(0), QStringLiteral("P = 10 mW"));
+        QCOMPARE(doc->shownPoint(), 1);
+        const double hot = doc->plotRange().second - 293.15;
+        points->setCurrentIndex(0);
+        emit points->activated(0);
+        QCOMPARE(doc->shownPoint(), 0);
+        const double warm = doc->plotRange().second - 293.15;
+        QVERIFY2(hot > 2 * warm && hot < 2.05 * warm, qPrintable(QStringLiteral("%1 K, then %2 K").arg(warm).arg(hot)));
+        QVERIFY(std::abs(doc->solution()->global(QStringLiteral("ht.P")).value_or(0) - 10e-3) < 1e-12);
+    }
+
+    /// Derived values in the tab: the kinds a 3D model evaluates offered
+    /// (not the plane's line parameters), one added through the panel and
+    /// evaluated by its button - its row in the table, ht.Tmax's value; a
+    /// point evaluation's coordinates x, y and z; in time, a row an output
+    /// time, each named by it.
+    void derivedValuesInTheTab()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        QString derived;
+        for (const FNode& c : doc->model().root.children)
+            if (c.type == QLatin1String("results"))
+                for (const FNode& g : c.children)
+                    if (g.type == QLatin1String("derived")) derived = g.tag;
+        QVERIFY(!derived.isEmpty());
+        const QStringList kinds = addsOf(panel()->menuFor(derived));
+        QVERIFY2(kinds.contains(QStringLiteral("Global Evaluation")) && kinds.contains(QStringLiteral("Integration")) && kinds.contains(QStringLiteral("Maximum"))
+                     && kinds.contains(QStringLiteral("Point Evaluation")) && !kinds.contains(QStringLiteral("Line Parameters")),
+                 qPrintable(kinds.join(QStringLiteral(", "))));
+        const QString mx = panel()->addNode(derived, QStringLiteral("maximum"));
+        QVERIFY(!mx.isEmpty());
+        doc->editNode(mx, [](FNode& n) {
+            n.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+            n.props.insert(QStringLiteral("expression"), QStringLiteral("ht.T"));
+        }, QStringLiteral("max"));
+        panel()->selectNode(mx);
+        // (Before a solve: said.)
+        QVERIFY(doc->evaluate(mx).error.contains(QStringLiteral("not computed yet")));
+        doc->compute();
+        QVERIFY(doc->waitForIdle(300000));
+        QVERIFY2(doc->solution(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        // (A derived value added after the solve: the solution is of the model
+        // still - its results alone changed.)
+        QVERIFY(!doc->solutionStale());
+        QVERIFY(!panel()->addNode(derived, QStringLiteral("global")).isEmpty());
+        QVERIFY(!doc->solutionStale());
+        panel()->selectNode(mx);
+        // (The form made after a turn of the event loop.)
+        QTRY_VERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mp3EvaluateButton")) != nullptr);
+        // (Over a 3D model's edges too.)
+        const QStringList levels = valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("level"))));
+        QVERIFY2(levels.contains(QStringLiteral("edge")) && levels.contains(QStringLiteral("boundary")), qPrintable(levels.join(QStringLiteral(", "))));
+        panel()->findChild<QPushButton*>(QStringLiteral("mp3EvaluateButton"))->click();
+        QTableWidget* table = doc->table();
+        QVERIFY(table && table->isVisibleTo(doc));
+        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->item(0, 1)->text(), QStringLiteral("ht.T"));
+        const double tmax = doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0);
+        const DerivedResult r = doc->evaluate(mx);
+        QVERIFY2(r.values.size() == 1 && std::abs(r.values.front().value - tmax) < 1e-6, qPrintable(r.error));
+        QCOMPARE(table->rowCount(), 1);
+        // A point evaluation: three columns.
+        const QString pe = panel()->addNode(derived, QStringLiteral("pointeval"));
+        panel()->selectNode(pe);
+        QTRY_VERIFY(panel()->findChild<QTableWidget*>(QStringLiteral("mp3Points")) != nullptr);
+        auto* points = panel()->findChild<QTableWidget*>(QStringLiteral("mp3Points"));
+        QCOMPARE(points->columnCount(), 3);
+        QCOMPARE(points->horizontalHeaderItem(2)->text(), QStringLiteral("z"));
+        // In time: a row an output time.
+        Model m = doc->model();
+        for (FNode& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                c.children.clear();
+                FNode t = m.make(QStringLiteral("transient"));
+                t.props.insert(QStringLiteral("times"), QStringLiteral("range(0, 5[ms], 10[ms])"));
+                t.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                t.props.insert(QStringLiteral("dt"), QStringLiteral("5[ms]"));
+                c.children.push_back(t);
+            }
+        QVERIFY(doc->setModel(m, QStringLiteral("in time")));
+        doc->compute();
+        QVERIFY(doc->waitForIdle(300000));
+        // (The time shown, the second, shown still after.)
+        doc->setShownTime(1);
+        const double shownTmax = doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0);
+        const DerivedResult inTime = doc->evaluate(mx);
+        QVERIFY2(inTime.values.size() == 3, qPrintable(inTime.error));
+        QCOMPARE(inTime.values.front().name, QStringLiteral("t = 0 s: ht.T"));
+        QVERIFY(std::abs(inTime.values.front().value - 293.15) < 1e-9);
+        QVERIFY(std::abs(inTime.values[1].value - shownTmax) < 1e-6);
+        QCOMPARE(table->rowCount(), 3);
+        QCOMPARE(doc->shownTime(), 1);
+        QCOMPARE(doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0), shownTmax);
+    }
+
     /// A 3D model's physics through the panel: heat, electrostatics and
     /// currents offered on its component (no solid mechanics, no
     /// semiconductor); its study's step without the plane's adaptive
@@ -458,11 +629,24 @@ private slots:
         QCOMPARE(doc->model().find(ht)->text(QStringLiteral("order")), QStringLiteral("1"));
         const QStringList features = addsOf(panel()->menuFor(ht));
         QVERIFY2(features.contains(QStringLiteral("Temperature")) && features.contains(QStringLiteral("Heat Flux")), qPrintable(features.join(QStringLiteral(", "))));
-        QString step;
+        QString step, study;
         for (const FNode& c : doc->model().root.children)
-            if (c.type == QLatin1String("study"))
+            if (c.type == QLatin1String("study")) {
+                study = c.tag;
                 for (const FNode& st : c.children) step = st.tag;
+            }
         QVERIFY(!step.isEmpty());
+        // Its study's steps: at rest and in time, not the plane's others.
+        const QStringList steps = addsOf(panel()->menuFor(study));
+        QVERIFY2(steps.contains(QStringLiteral("Stationary")) && steps.contains(QStringLiteral("Time Dependent"))
+                     && !steps.contains(QStringLiteral("Frequency Domain")) && !steps.contains(QStringLiteral("Mode Analysis")),
+                 qPrintable(steps.join(QStringLiteral(", "))));
+        const QString inTime = panel()->addNode(study, QStringLiteral("transient"));
+        QVERIFY(!inTime.isEmpty());
+        panel()->selectNode(inTime);
+        QVERIFY(panel()->editorFor(QStringLiteral("times")) != nullptr);
+        const QStringList timeMethods = valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("nonlinear"))));
+        QVERIFY2(!timeMethods.contains(QStringLiteral("newton")), qPrintable(timeMethods.join(QStringLiteral(", "))));
         panel()->selectNode(step);
         QVERIFY(panel()->editorFor(QStringLiteral("solver")) != nullptr);
         QVERIFY(panel()->editorFor(QStringLiteral("adaptive")) == nullptr);

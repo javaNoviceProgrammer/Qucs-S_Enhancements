@@ -153,11 +153,26 @@ Node& stationary(Model& m)
     return none;
 }
 
+/// The first study's steps one Time Dependent step of \a props.
+Node& inTime(Model& m, const QJsonObject& props)
+{
+    for (Node& c : m.root.children)
+        if (c.type == QLatin1String("study")) {
+            c.children.clear();
+            Node t = m.make(QStringLiteral("transient"));
+            for (auto it = props.begin(); it != props.end(); ++it) t.props.insert(it.key(), it.value());
+            c.children.push_back(t);
+            return c.children.back();
+        }
+    static Node none;
+    return none;
+}
+
 struct Solved {
     std::shared_ptr<const Mesh3> mesh;
     StudyResult3 r;
     QString error;
-    const Solution3& s() const { return *r.solution; }
+    Solution3& s() const { return *r.solution; }
 };
 
 Solved solve(const Model& m)
@@ -192,6 +207,22 @@ double valueAt(const Solution3& s, const QString& text, double x, double y, doub
 double global(const Solution3& s, const QString& name)
 {
     return s.global(name).value_or(std::nan(""));
+}
+
+/// ∫ \a text dV over the solution's prisms (its first field's), SI.
+double integral(const Solution3& s, const QString& text)
+{
+    const Expression e = Expression::compile(text, s.scope());
+    const Space3& sp = *s.fields().front().space;
+    PointEvaluator3 ev(s);
+    double sum = 0;
+    for (int el = 0; el < sp.elements(); ++el)
+        for (const auto& q : prismRule(4, 3).points) {
+            const Space3::Map m = sp.map(el, q[0], q[1], q[2]);
+            ev.at(el, q[0], q[1], q[2], m.x);
+            sum += q[3] * std::abs(m.det) * ev.eval(e);
+        }
+    return sum;
 }
 
 /// The L2 norm of \a text less \a exact (of x, y, z in m) over the solution.
@@ -674,6 +705,438 @@ private slots:
     // What cannot be solved is said: a field held nowhere, a domain without
     // its material, a user's tensor of the plane, a step in time, a physics
     // of the plane's alone.
+    // A model uniform in z in time, as at rest: at every output time every
+    // degree of freedom is the 2D model's of its plan - its ρ Cp consistent
+    // in the plane, as the triangles' are, its factor along z lumped - and
+    // so is ht.Tmax: orders 1 and 2, BDF2's fixed steps, a source of t, a
+    // held face, a film.
+    void heatInTimeInvariantInZ()
+    {
+        for (int order : {1, 2}) {
+            Model m3 = model3d(0.3);
+            addBox(m3, QStringLiteral("blk1"), 0, 0, 0, 1, 1, 0.5);
+            addBox(m3, QStringLiteral("blk2"), 1, 0, 0, 1, 1, 0.5);
+            Model m2 = Model::blank();
+            m2.component().props.insert(QStringLiteral("thickness"), QStringLiteral("0.5[mm]"));
+            const QJsonObject propsA{{QStringLiteral("k"), QStringLiteral("1[W/(m*K)]")},
+                                     {QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]")},
+                                     {QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]")}};
+            const QJsonObject propsB{{QStringLiteral("k"), QStringLiteral("3[W/(m*K)]")},
+                                     {QStringLiteral("rho"), QStringLiteral("2000[kg/m^3]")},
+                                     {QStringLiteral("Cp"), QStringLiteral("700[J/(kg*K)]")}};
+            addMaterial(m3, QStringLiteral("A"), propsA, objects(QStringLiteral("blk1")));
+            addMaterial(m3, QStringLiteral("B"), propsB, objects(QStringLiteral("blk2")));
+            addMaterial(m2, QStringLiteral("A"), propsA, boxRule2(-0.01, -0.01, 1.01, 1.01));
+            addMaterial(m2, QStringLiteral("B"), propsB, boxRule2(0.99, -0.01, 2.01, 1.01));
+            const QJsonObject left3 = ofSide(QStringLiteral("blk1"), QStringLiteral("left")), right3 = ofSide(QStringLiteral("blk2"), QStringLiteral("right"));
+            const QJsonObject left2 = boxRule2(-0.01, -0.01, 0.01, 1.01), right2 = boxRule2(1.99, -0.01, 2.01, 1.01);
+            const QJsonObject step{{QStringLiteral("times"), QStringLiteral("range(0, 0.1[s], 0.6[s])")},
+                                   {QStringLiteral("stepping"), QStringLiteral("fixed")},
+                                   {QStringLiteral("dt"), QStringLiteral("0.025[s]")},
+                                   {QStringLiteral("solver"), QStringLiteral("direct")}};
+            for (Model* m : {&m3, &m2}) {
+                const bool three = m == &m3;
+                const QString ht = addPhysics(*m, QStringLiteral("heat"), order);
+                addFeature(*m, ht, QStringLiteral("heat/temperature"), three ? left3 : left2, QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K]")}});
+                addFeature(*m, ht, QStringLiteral("heat/flux"), three ? right3 : right2,
+                           QJsonObject{{QStringLiteral("kind"), QStringLiteral("convective")}, {QStringLiteral("h"), QStringLiteral("5e3[W/(m^2*K)]")}, {QStringLiteral("Text"), QStringLiteral("320[K]")}});
+                addFeature(*m, ht, QStringLiteral("heat/source"), three ? objects(QStringLiteral("blk1")) : boxRule2(-0.01, -0.01, 1.01, 1.01),
+                           QJsonObject{{QStringLiteral("Q0"), QStringLiteral("1e8[W/m^3]*t/1[s]")}});
+                inTime(*m, step);
+            }
+            const Solved s3 = solve(m3);
+            QVERIFY2(s3.error.isEmpty(), qPrintable(s3.error));
+            const StudyResult r2 = solveStudy(m2, evaluateParameters(m2), s3.mesh->plan, QString());
+            QVERIFY2(r2.error.isEmpty() && r2.solution, qPrintable(r2.error));
+            Solution& two = *r2.solution;
+            Solution3& three = s3.s();
+            QVERIFY(three.timeDependent);
+            QCOMPARE(three.snapshotCount(), 7);
+            QCOMPARE(two.snapshotCount(), 7);
+            for (int i = 0; i < 7; ++i) {
+                two.select(i);
+                three.select(i);
+                QCOMPARE(three.time(), two.time());
+                const Field3& f3 = three.fields().front();
+                const Field& f2 = two.fields().front();
+                double worst = 0, scale = 0;
+                for (int dof = 0; dof < f3.space->size(); ++dof) {
+                    const double v2 = f2.values[std::size_t(f3.space->origin(dof).first)];
+                    worst = std::max(worst, std::abs(f3.values[std::size_t(dof)] - v2));
+                    scale = std::max(scale, std::abs(v2));
+                }
+                QVERIFY2(worst <= 1e-9 * scale, qPrintable(QStringLiteral("order %1, t = %2 s: %3 K off").arg(order).arg(three.time()).arg(worst)));
+                const double a = global(three, QStringLiteral("ht.Tmax")), b = two.global(QStringLiteral("ht.Tmax")).value_or(std::nan(""));
+                QVERIFY2(std::abs(a - b) <= 1e-9 * b, qPrintable(QStringLiteral("order %1, t = %2 s: ht.Tmax 3D %3, 2D %4").arg(order).arg(three.time()).arg(a, 0, 'g', 12).arg(b, 0, 'g', 12)));
+            }
+            // (The series of a global, as a graph over time reads it.)
+            Dim dim;
+            QString why;
+            const std::vector<double> tmax = three.globalSeries(QStringLiteral("ht.Tmax"), &dim, &why);
+            QVERIFY2(tmax.size() == 7 && dim == Dim::temperature(), qPrintable(why));
+            QVERIFY(tmax.back() > tmax.front());
+        }
+    }
+
+    // An insulated block heated by 2 mW from t = 0: its heat ∫ ρ Cp (T - T0)
+    // dV is P t at every output time to rounding - backward Euler and BDF2
+    // on adaptive steps and the implicit midpoint rule on fixed ones each
+    // hold a straight line exactly -, at order 1 and 2; ht.P the 2 mW.
+    void energyInTime()
+    {
+        struct Method {
+            const char* method;
+            const char* stepping;
+        };
+        for (const Method& how : {Method{"euler", "adaptive"}, Method{"bdf2", "adaptive"}, Method{"midpoint", "fixed"}})
+            for (int order : {1, 2}) {
+                Model m = model3d(0.4);
+                addBox(m, QStringLiteral("heater"), 0, 0, 0, 1, 1, 1);
+                addBox(m, QStringLiteral("body"), 1, 0, 0, 1, 1, 1);
+                addMaterial(m, QStringLiteral("A"),
+                            QJsonObject{{QStringLiteral("k"), QStringLiteral("2[W/(m*K)]")},
+                                        {QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]")},
+                                        {QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]")}},
+                            rule(R"({"all": true})"));
+                const QString ht = addPhysics(m, QStringLiteral("heat"), order);
+                addFeature(m, ht, QStringLiteral("heat/source"), objects(QStringLiteral("heater")),
+                           QJsonObject{{QStringLiteral("kind"), QStringLiteral("power")}, {QStringLiteral("P0"), QStringLiteral("2[mW]")}});
+                QJsonObject step{{QStringLiteral("times"), QStringLiteral("range(0, 0.25[s], 1[s])")},
+                                 {QStringLiteral("method"), QString::fromLatin1(how.method)},
+                                 {QStringLiteral("stepping"), QString::fromLatin1(how.stepping)},
+                                 {QStringLiteral("solver"), QStringLiteral("direct")}};
+                if (QLatin1String(how.stepping) == QLatin1String("fixed")) step.insert(QStringLiteral("dt"), QStringLiteral("0.05[s]"));
+                inTime(m, step);
+                const Solved sv = solve(m);
+                QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+                Solution3& s = sv.s();
+                QCOMPARE(s.snapshotCount(), 5);
+                // (At the start too, before a step: what its source makes.)
+                s.select(0);
+                QVERIFY2(std::abs(global(s, QStringLiteral("ht.P")) - 2e-3) < 1e-12, qPrintable(s.globalText(QStringLiteral("ht.P"))));
+                for (int i = 1; i < s.snapshotCount(); ++i) {
+                    s.select(i);
+                    const double heat = integral(s, QStringLiteral("1e6[J/(m^3*K)]*(ht.T - 293.15[K])")), made = 2e-3 * s.time();
+                    QVERIFY2(std::abs(heat - made) <= 1e-9 * made,
+                             qPrintable(QStringLiteral("%1, order %2, t = %3 s: %4 J, P t %5 J").arg(how.method).arg(order).arg(s.time()).arg(heat, 0, 'g', 12).arg(made, 0, 'g', 12)));
+                    QVERIFY2(std::abs(global(s, QStringLiteral("ht.P")) - 2e-3) < 1e-12, qPrintable(s.globalText(QStringLiteral("ht.P"))));
+                }
+            }
+    }
+
+    // A slab 1 mm thick, its top held at 310 K from t = 0, insulated
+    // elsewhere, from 300 K: its bottom's temperature is the series T1 + (T0 -
+    // T1) Σ 4(-1)^n/((2n+1)π) exp(-(2n+1)² π² α t / 4L²) (Carslaw and
+    // Jaeger's slab), adaptive BDF2 at order 2 within 0.005 K of its 10 K, order
+    // 1 within 0.05 K.
+    void slabInTime()
+    {
+        const double L = 1e-3, alpha = 1e-6, T0 = 300, T1 = 310;
+        auto exact = [&](double t) {
+            double sum = 0;
+            for (int n = 0; n < 60; ++n) sum += 4 * (n % 2 ? -1 : 1) / ((2 * n + 1) * M_PI) * std::exp(-std::pow((2 * n + 1) * M_PI, 2) * alpha * t / (4 * L * L));
+            return T1 + (T0 - T1) * sum;
+        };
+        for (int order : {1, 2}) {
+            Model m = model3d(0.1);
+            addBox(m, QStringLiteral("slab"), 0, 0, 0, 0.3, 0.3, 1);
+            const QString ht = addPhysics(m, QStringLiteral("heat"), order, QStringLiteral("1[W/(m*K)]"));
+            for (Node& c : m.find(ht)->children)
+                if (c.type == QLatin1String("heat/solid")) {
+                    c.props.insert(QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]"));
+                    c.props.insert(QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]"));
+                } else if (c.type == QLatin1String("heat/init")) {
+                    c.props.insert(QStringLiteral("T0"), QStringLiteral("300[K]"));
+                }
+            addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("slab"), QStringLiteral("top")), QJsonObject{{QStringLiteral("T0"), QStringLiteral("310[K]")}});
+            inTime(m, QJsonObject{{QStringLiteral("times"), QStringLiteral("0, 0.05[s], 0.1[s], 0.2[s], 0.4[s]")},
+                                  {QStringLiteral("rtol"), QStringLiteral("1e-4")},
+                                  {QStringLiteral("solver"), QStringLiteral("direct")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            Solution3& s = sv.s();
+            QCOMPARE(s.snapshotCount(), 5);
+            double worst = 0;
+            QString said;
+            for (int i = 1; i < s.snapshotCount(); ++i) {
+                s.select(i);
+                const double t = s.time(), got = valueAt(s, QStringLiteral("ht.T"), 0.15, 0.15, 0), want = exact(t);
+                said += QStringLiteral(" t = %1 s: %2 K, the series %3 K;").arg(t).arg(got, 0, 'f', 5).arg(want, 0, 'f', 5);
+                worst = std::max(worst, std::abs(got - want));
+            }
+            QVERIFY2(worst < (order == 2 ? 0.005 : 0.05), qPrintable(QStringLiteral("order %1:%2").arg(order).arg(said)));
+        }
+    }
+
+    // A slab of one layer of tall prisms, its top held 10 K above where it
+    // starts, its steps short (1 ms against its 4 s): no temperature under its
+    // start's or over the top's, at order 1 - the capacity's factor along z
+    // lumped. (Consistent, the bottom's row couples the two levels the wrong
+    // way, m/h - k/hz > 0: the bottom falls some 5 K at the first step.)
+    void tallPrismsInTime()
+    {
+        Model m = model3d(0.25);
+        addBox(m, QStringLiteral("slab"), 0, 0, 0, 0.5, 0.5, 2);
+        Node zd = m.make(QStringLiteral("mesh/zdistribution"));
+        zd.props.insert(QStringLiteral("selection"), rule(R"({"all": true})"));
+        zd.props.insert(QStringLiteral("count"), 1);
+        m.add(m.mesh().tag, zd);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+        for (Node& c : m.find(ht)->children)
+            if (c.type == QLatin1String("heat/solid")) {
+                c.props.insert(QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]"));
+                c.props.insert(QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]"));
+            } else if (c.type == QLatin1String("heat/init")) {
+                c.props.insert(QStringLiteral("T0"), QStringLiteral("300[K]"));
+            }
+        addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("slab"), QStringLiteral("top")), QJsonObject{{QStringLiteral("T0"), QStringLiteral("310[K]")}});
+        inTime(m, QJsonObject{{QStringLiteral("times"), QStringLiteral("0, 1[ms], 2[ms]")},
+                              {QStringLiteral("stepping"), QStringLiteral("fixed")},
+                              {QStringLiteral("dt"), QStringLiteral("1[ms]")},
+                              {QStringLiteral("solver"), QStringLiteral("direct")}});
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+        QCOMPARE(int(sv.mesh->heights.size()), 2);
+        Solution3& s = sv.s();
+        for (int i = 1; i < s.snapshotCount(); ++i) {
+            s.select(i);
+            const Field3& f = s.fields().front();
+            const auto [lo, hi] = std::minmax_element(f.values.begin(), f.values.end());
+            QVERIFY2(*lo >= 300 - 1e-9 && *hi <= 310 + 1e-9, qPrintable(QStringLiteral("t = %1 s: %2 to %3 K").arg(s.time()).arg(*lo, 0, 'f', 6).arg(*hi, 0, 'f', 6)));
+        }
+    }
+
+    // A bar's terminal driven in time, V0 = 1 mV t/s, its current a step's at
+    // rest at each output time: ec.I_a V/R and ec.P V²/R exactly; its Joule
+    // heat warming it in turn, ∫ ρ Cp (T - T0) dV is ∫ V²/R dt = V'² t³ / 3R
+    // within 0.1 % on BDF2's fixed steps of 2.5 ms (0.35 % at 10 ms: its error, as h²).
+    void terminalInTime()
+    {
+        Model m = model3d(0.5);
+        addBox(m, QStringLiteral("bar"), 0, 0, 0, 4, 1, 1);
+        addMaterial(m, QStringLiteral("metal"),
+                    QJsonObject{{QStringLiteral("sigma"), QStringLiteral("1e6[S/m]")},
+                                {QStringLiteral("k"), QStringLiteral("100[W/(m*K)]")},
+                                {QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]")},
+                                {QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]")}},
+                    rule(R"({"all": true})"));
+        const QString ec = addPhysics(m, QStringLiteral("currents"), 1);
+        addFeature(m, ec, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("left")),
+                   QJsonObject{{QStringLiteral("name"), QStringLiteral("a")}, {QStringLiteral("V0"), QStringLiteral("1[mV]*t/1[s]")}});
+        addFeature(m, ec, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("right")));
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1);
+        addFeature(m, ht, QStringLiteral("heat/source"), rule(R"({"all": true})"), QJsonObject{{QStringLiteral("Q0"), QStringLiteral("ec.Qrh")}});
+        inTime(m, QJsonObject{{QStringLiteral("times"), QStringLiteral("range(0, 0.25[s], 1[s])")},
+                              {QStringLiteral("stepping"), QStringLiteral("fixed")},
+                              {QStringLiteral("dt"), QStringLiteral("2.5[ms]")},
+                              {QStringLiteral("solver"), QStringLiteral("direct")}});
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+        Solution3& s = sv.s();
+        QCOMPARE(s.snapshotCount(), 5);
+        const double R = 4e-3 / (1e6 * 1e-6);
+        for (int i = 1; i < s.snapshotCount(); ++i) {
+            s.select(i);
+            const double t = s.time(), V = 1e-3 * t;
+            QVERIFY2(std::abs(global(s, QStringLiteral("ec.V_a")) - V) <= 1e-12, qPrintable(s.globalText(QStringLiteral("ec.V_a"))));
+            QVERIFY2(std::abs(std::abs(global(s, QStringLiteral("ec.I_a"))) - V / R) <= 1e-6 * V / R, qPrintable(s.globalText(QStringLiteral("ec.I_a"))));
+            QVERIFY2(std::abs(global(s, QStringLiteral("ec.P")) - V * V / R) <= 1e-6 * V * V / R, qPrintable(s.globalText(QStringLiteral("ec.P"))));
+            const double heat = integral(s, QStringLiteral("1e6[J/(m^3*K)]*(ht.T - 293.15[K])")), made = 1e-6 * t * t * t / (3 * R);
+            QVERIFY2(std::abs(heat - made) <= 1e-3 * made, qPrintable(QStringLiteral("t = %1 s: %2 J, ∫ V²/R dt %3 J").arg(t).arg(heat, 0, 'g', 8).arg(made, 0, 'g', 8)));
+        }
+    }
+
+    // A Parametric Sweep: a bar's length L swept, each point's geometry and
+    // mesh its own, ec.R L/(σA) at each (order 1's linear field, exactly);
+    // its conductivity swept, one mesh for all; a point refused after the
+    // first stops the sweep there, the point before kept and where said.
+    void aSweep()
+    {
+        auto bar = [](const QString& sweepOf, const QString& values, const QString& unit) {
+            Model m = model3d(0.5);
+            QList<Model::Parameter> ps = m.parameters();
+            ps << Model::Parameter{QStringLiteral("L"), QStringLiteral("4[mm]"), QString()}
+               << Model::Parameter{QStringLiteral("s"), QStringLiteral("1e6[S/m]"), QString()};
+            m.setParameters(ps);
+            Node n = m.make(QStringLiteral("box"));
+            n.label = QStringLiteral("bar");
+            n.props.insert(QStringLiteral("position"), pairOf(0, 0));
+            n.props.insert(QStringLiteral("size"), QJsonArray{QStringLiteral("L"), QStringLiteral("1")});
+            n.props.insert(QStringLiteral("z"), QStringLiteral("0"));
+            n.props.insert(QStringLiteral("height"), QStringLiteral("1"));
+            m.add(m.geometry().tag, n);
+            const QString ec = addPhysics(m, QStringLiteral("currents"), 1, QStringLiteral("s"));
+            addFeature(m, ec, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("left")), QJsonObject{{QStringLiteral("name"), QStringLiteral("a")}});
+            addFeature(m, ec, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("right")));
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    Node sw = m.make(QStringLiteral("sweep"));
+                    QJsonArray rows;
+                    rows.append(QJsonArray{sweepOf, values, unit});
+                    sw.props.insert(QStringLiteral("parameters"), rows);
+                    c.children.push_back(sw);
+                }
+            return m;
+        };
+        // The length: a mesh each.
+        Model m = bar(QStringLiteral("L"), QStringLiteral("2, 4, 6"), QStringLiteral("mm"));
+        StudyRun3 run = runStudy3(m, evaluateParameters(m), nullptr, nullptr);
+        QVERIFY2(run.ok(), qPrintable(run.error));
+        QCOMPARE(run.swept, QStringList{QStringLiteral("L")});
+        QCOMPARE(int(run.solutions.size()), 3);
+        for (int k = 0; k < 3; ++k) {
+            const Solution3& s = *run.solutions[std::size_t(k)];
+            const double L = 2e-3 * (k + 1), want = L / (1e6 * 1e-6);
+            QVERIFY2(std::abs(global(s, QStringLiteral("ec.R")) - want) <= 1e-9 * want, qPrintable(s.label + QStringLiteral(": ") + s.globalText(QStringLiteral("ec.R"))));
+            QCOMPARE(s.label, QStringLiteral("L = %1 mm").arg(2 * (k + 1)));
+            QCOMPARE(s.sweptValues.value(QStringLiteral("L")), L);
+        }
+        QVERIFY(run.solutions[0]->meshPtr() != run.solutions[1]->meshPtr());
+        // The conductivity: one mesh.
+        m = bar(QStringLiteral("s"), QStringLiteral("1e6, 2e6"), QStringLiteral("S/m"));
+        run = runStudy3(m, evaluateParameters(m), nullptr, nullptr);
+        QVERIFY2(run.ok(), qPrintable(run.error));
+        QCOMPARE(int(run.solutions.size()), 2);
+        QVERIFY(run.solutions[0]->meshPtr() == run.solutions[1]->meshPtr());
+        QVERIFY(std::abs(global(*run.solutions[1], QStringLiteral("ec.R")) - 2e-3) <= 1e-12);
+        // A point refused: the sweep stopped there.
+        m = bar(QStringLiteral("s"), QStringLiteral("1e6, 0"), QStringLiteral("S/m"));
+        run = runStudy3(m, evaluateParameters(m), nullptr, nullptr);
+        QVERIFY2(run.ok() && run.solutions.size() == 1, qPrintable(run.error));
+        QVERIFY2(run.stopped.contains(QStringLiteral("point 2 of 2")) && run.stopped.contains(QStringLiteral("its point before kept")), qPrintable(run.stopped));
+    }
+
+    // Derived values of a 3D solution, on a linear temperature held on two
+    // boxes' faces (order 1's exactly): over a domain ∫ 1 its volume, ∫ x its
+    // centroid's x times it, the average of T T at its centroid; T's maximum
+    // and minimum over both its corners' (ht.Tmax, ht.Tmin); T at a point; over
+    // a face ∫ 1 its area, T's average its middle's; over an edge ∫ 1 its
+    // length, T's average its middle's; a global of two named. Then a
+    // cylinder's surface 2πr(r + h) on order 2's arcs within 1e-4, a bar's
+    // ∫ ec.Qrh dV its ec.P, and an insulated block's average T over its
+    // output times T0 + P t/(ρ Cp V) - each instance, its label.
+    void derivedValues()
+    {
+        auto value = [](const DerivedResult& r) {
+            return r.values.isEmpty() || !r.error.isEmpty() ? std::nan("") : r.values.front().value;
+        };
+        auto node = [](Model& m, const QString& type, const QJsonObject& props) {
+            Node n = m.make(type);
+            for (auto it = props.begin(); it != props.end(); ++it) n.props.insert(it.key(), it.value());
+            return n;
+        };
+        Model m = model3d(0.4);
+        addBox(m, QStringLiteral("left"), 0, 0, 0, 1, 1, 1);
+        addBox(m, QStringLiteral("right"), 1, 0, 0, 1, 1, 1);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("2[W/(m*K)]"));
+        addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K] + 1e4[K/m]*(x + 2*y + 3*z)")}});
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+        const Solution3& s = sv.s();
+        const QJsonObject left = objects(QStringLiteral("left")), all = rule(R"({"all": true})");
+        struct Case {
+            const char* what;
+            QString type;
+            QJsonObject props;
+            double want;
+            double tolerance;
+        };
+        const QJsonObject edgeX = boxRule(-0.01, -0.01, -0.01, 2.01, 0.01, 0.01);
+        const QList<Case> cases = {
+            {"the left box's volume", QStringLiteral("integral"), {{QStringLiteral("selection"), left}, {QStringLiteral("expression"), QStringLiteral("1")}}, 1e-9, 1e-12},
+            {"∫ x dV over both", QStringLiteral("integral"), {{QStringLiteral("selection"), all}, {QStringLiteral("expression"), QStringLiteral("x")}}, 2e-12, 1e-10},
+            {"T's average over the left box", QStringLiteral("average"), {{QStringLiteral("selection"), left}, {QStringLiteral("expression"), QStringLiteral("ht.T")}}, 330, 1e-10},
+            {"T's maximum", QStringLiteral("maximum"), {{QStringLiteral("selection"), all}, {QStringLiteral("expression"), QStringLiteral("ht.T")}}, 370, 1e-10},
+            {"T's minimum", QStringLiteral("minimum"), {{QStringLiteral("selection"), all}, {QStringLiteral("expression"), QStringLiteral("ht.T")}}, 300, 1e-10},
+            {"the left box's top's area", QStringLiteral("integral"),
+             {{QStringLiteral("level"), QStringLiteral("boundary")}, {QStringLiteral("selection"), ofSide(QStringLiteral("left"), QStringLiteral("top"))}, {QStringLiteral("expression"), QStringLiteral("1")}}, 1e-6, 1e-12},
+            {"T's average over the right face", QStringLiteral("average"),
+             {{QStringLiteral("level"), QStringLiteral("boundary")}, {QStringLiteral("selection"), ofSide(QStringLiteral("right"), QStringLiteral("right"))}, {QStringLiteral("expression"), QStringLiteral("ht.T")}}, 345, 1e-10},
+            {"the edge along x's length", QStringLiteral("integral"),
+             {{QStringLiteral("level"), QStringLiteral("edge")}, {QStringLiteral("selection"), edgeX}, {QStringLiteral("expression"), QStringLiteral("1")}}, 2e-3, 1e-12},
+            {"T's average along it", QStringLiteral("average"),
+             {{QStringLiteral("level"), QStringLiteral("edge")}, {QStringLiteral("selection"), edgeX}, {QStringLiteral("expression"), QStringLiteral("ht.T")}}, 310, 1e-10},
+        };
+        for (const Case& c : cases) {
+            Model mm = m;
+            const DerivedResult r = evaluateDerived3(s, node(mm, c.type, c.props));
+            const double got = value(r);
+            QVERIFY2(std::abs(got - c.want) <= c.tolerance * std::abs(c.want),
+                     qPrintable(QStringLiteral("%1: %2, not %3 (%4)").arg(QString::fromUtf8(c.what)).arg(got, 0, 'g', 15).arg(c.want).arg(r.error)));
+        }
+        QCOMPARE(value(evaluateDerived3(s, node(m, QStringLiteral("maximum"), {{QStringLiteral("selection"), all}, {QStringLiteral("expression"), QStringLiteral("ht.T")}}))),
+                 global(s, QStringLiteral("ht.Tmax")));
+        // At a point; at points of the geometry (its corners, its T's).
+        QJsonArray at;
+        // (A coordinate with a unit: 250 µm is 0.25 of the geometry's mm.)
+        at.append(QJsonArray{QStringLiteral("250[um]"), QStringLiteral("0.5"), QStringLiteral("0.75")});
+        at.append(QJsonArray{QStringLiteral("5"), QStringLiteral("5"), QStringLiteral("5")});
+        DerivedResult r = evaluateDerived3(s, node(m, QStringLiteral("pointeval"), {{QStringLiteral("where"), QStringLiteral("coordinates")}, {QStringLiteral("coordinates3"), at}, {QStringLiteral("expression"), QStringLiteral("ht.T")}, {QStringLiteral("unit"), QStringLiteral("degC")}}));
+        QVERIFY2(r.values.size() == 1 && std::abs(r.values.front().value - 335) < 1e-9, qPrintable(r.error));
+        QVERIFY2(r.values.front().name == QStringLiteral("ht.T at (0.25, 0.5, 0.75)") && r.values.front().text.endsWith(QStringLiteral("degC")),
+                 qPrintable(r.values.front().name + QStringLiteral(" = ") + r.values.front().text));
+        QVERIFY2(r.error.contains(QStringLiteral("(5, 5, 5)")), qPrintable(r.error));
+        r = evaluateDerived3(s, node(m, QStringLiteral("global"), {{QStringLiteral("expression"), QStringLiteral("dT = ht.Tmax - ht.Tmin; ht.Tmax")}}));
+        QVERIFY2(r.values.size() == 2 && r.values[0].name == QStringLiteral("dT") && std::abs(r.values[0].value - 70) < 1e-9, qPrintable(r.error));
+        r = evaluateDerived3(s, node(m, QStringLiteral("global"), {{QStringLiteral("expression"), QStringLiteral("ht.T")}}));
+        QVERIFY2(r.error.contains(QStringLiteral("varies over the model")), qPrintable(r.error));
+        // A cylinder's surface on order 2's arcs.
+        {
+            Model c = model3d(0.1);
+            addCylinder(c, QStringLiteral("cyl"), 0.3, 0.5);
+            const QString h2 = addPhysics(c, QStringLiteral("heat"), 2, QStringLiteral("1[W/(m*K)]"));
+            addFeature(c, h2, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"));
+            const Solved cv = solve(c);
+            QVERIFY2(cv.error.isEmpty(), qPrintable(cv.error));
+            const double area = value(evaluateDerived3(cv.s(), node(c, QStringLiteral("integral"),
+                {{QStringLiteral("level"), QStringLiteral("boundary")}, {QStringLiteral("selection"), rule(R"({"exterior": true})")}, {QStringLiteral("expression"), QStringLiteral("1")}})));
+            const double want = 2 * M_PI * 0.3e-3 * (0.3e-3 + 0.5e-3);
+            QVERIFY2(std::abs(area - want) < 1e-4 * want, qPrintable(QStringLiteral("%1 m², 2πr(r + h) %2 m²").arg(area).arg(want)));
+        }
+        // A bar's Joule heat.
+        {
+            Model b = model3d(0.5);
+            addBox(b, QStringLiteral("bar"), 0, 0, 0, 4, 1, 1);
+            const QString ec = addPhysics(b, QStringLiteral("currents"), 1, QStringLiteral("1e6[S/m]"));
+            addFeature(b, ec, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("left")),
+                       QJsonObject{{QStringLiteral("name"), QStringLiteral("a")}, {QStringLiteral("V0"), QStringLiteral("1[mV]")}});
+            addFeature(b, ec, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("right")));
+            const Solved bv = solve(b);
+            QVERIFY2(bv.error.isEmpty(), qPrintable(bv.error));
+            const double joule = value(evaluateDerived3(bv.s(), node(b, QStringLiteral("integral"), {{QStringLiteral("selection"), rule(R"({"all": true})")}, {QStringLiteral("expression"), QStringLiteral("ec.Qrh")}})));
+            QVERIFY2(std::abs(joule - global(bv.s(), QStringLiteral("ec.P"))) <= 1e-9 * joule, qPrintable(QStringLiteral("%1 W, ec.P %2 W").arg(joule).arg(global(bv.s(), QStringLiteral("ec.P")))));
+        }
+        // An insulated block's average temperature at each output time.
+        {
+            Model t = model3d(0.5);
+            addBox(t, QStringLiteral("block"), 0, 0, 0, 2, 1, 1);
+            addMaterial(t, QStringLiteral("A"),
+                        QJsonObject{{QStringLiteral("k"), QStringLiteral("2[W/(m*K)]")}, {QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]")}, {QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]")}},
+                        rule(R"({"all": true})"));
+            const QString h = addPhysics(t, QStringLiteral("heat"), 1);
+            addFeature(t, h, QStringLiteral("heat/source"), rule(R"({"all": true})"),
+                       QJsonObject{{QStringLiteral("kind"), QStringLiteral("power")}, {QStringLiteral("P0"), QStringLiteral("2[mW]")}});
+            inTime(t, QJsonObject{{QStringLiteral("times"), QStringLiteral("range(0, 0.5[s], 1[s])")}, {QStringLiteral("solver"), QStringLiteral("direct")}});
+            const Solved tv = solve(t);
+            QVERIFY2(tv.error.isEmpty(), qPrintable(tv.error));
+            const Solutions3 set{tv.r.solution};
+            const std::vector<Instance3> each = instances3(set, true);
+            QCOMPARE(int(each.size()), 3);
+            const Node avg = node(t, QStringLiteral("average"), {{QStringLiteral("selection"), rule(R"({"all": true})")}, {QStringLiteral("expression"), QStringLiteral("ht.T")}});
+            for (const Instance3& in : each) {
+                Solution3* at = select3(set, in);
+                QVERIFY(at);
+                const double want = 293.15 + 2e-3 * in.time / (1e6 * 2e-9);
+                const double got = value(evaluateDerived3(*at, avg));
+                QVERIFY2(std::abs(got - want) < 1e-9, qPrintable(QStringLiteral("%1: %2 K, not %3 K").arg(in.label).arg(got, 0, 'g', 12).arg(want, 0, 'g', 12)));
+            }
+            QCOMPARE(each[1].label, QStringLiteral("t = 500 ms"));
+            const std::vector<Instance3> asked = instances3(set, false, 0, QStringLiteral("0.4[s]"));
+            QVERIFY(asked.size() == 1 && asked.front().snapshot == 1 && asked.front().label.isEmpty());
+        }
+    }
+
     void refusals()
     {
         auto base = [] {
@@ -710,10 +1173,30 @@ private slots:
         addFeature(m, ht3, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"));
         for (Node& c : m.root.children)
             if (c.type == QLatin1String("study")) {
-                Node t = m.make(QStringLiteral("transient"));
+                Node t = m.make(QStringLiteral("frequency"));
                 c.children.push_back(t);
             }
         why = refused(m, QStringLiteral("not solved in 3D yet"));
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        // A step in time where a domain has no ρ and Cp.
+        m = base();
+        const QString ht4 = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+        addFeature(m, ht4, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"));
+        for (Node& c : m.find(ht4)->children)
+            if (c.type == QLatin1String("heat/solid")) {
+                c.props.insert(QStringLiteral("rho"), QString());
+                c.props.insert(QStringLiteral("Cp"), QString());
+            }
+        inTime(m, QJsonObject{{QStringLiteral("times"), QStringLiteral("0, 1[s]")}});
+        why = refused(m, QStringLiteral("has no density and heat capacity"));
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        // A terminal of x.
+        m = base();
+        const QString ec = addPhysics(m, QStringLiteral("currents"), 1, QStringLiteral("1[S/m]"));
+        addFeature(m, ec, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("cube"), QStringLiteral("left")),
+                   QJsonObject{{QStringLiteral("name"), QStringLiteral("a")}, {QStringLiteral("V0"), QStringLiteral("1[V/m]*x")}});
+        addFeature(m, ec, QStringLiteral("currents/ground"), ofSide(QStringLiteral("cube"), QStringLiteral("right")));
+        why = refused(m, QStringLiteral("must be a constant, or of t alone"));
         QVERIFY2(why.isEmpty(), qPrintable(why));
         m = base();
         Node solid = m.make(QStringLiteral("solid"));

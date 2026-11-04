@@ -12,6 +12,7 @@
  */
 #include "fem3_problem.h"
 
+#include "fem3_mesh.h"
 #include "fem_problem.h"
 #include "fem_results.h"
 
@@ -240,6 +241,82 @@ QString Solution3::globalText(const QString& name, int digits) const
     auto it = a_globals.find(name);
     if (it == a_globals.end()) return {};
     return formatQuantity(it->second.value, it->second.dim, digits);
+}
+
+Solution3::Snapshot Solution3::snapshotNow() const
+{
+    Snapshot s;
+    s.time = a_time;
+    for (const Field3& f : a_fields) {
+        s.values.push_back(f.values);
+        s.terminals.push_back(f.terminals);
+        s.matrices.push_back(f.matrix);
+    }
+    s.globals = a_globals;
+    return s;
+}
+
+void Solution3::addSnapshot()
+{
+    a_snapshots.push_back(snapshotNow());
+    a_selected = int(a_snapshots.size()) - 1;
+}
+
+void Solution3::replaceLastSnapshot()
+{
+    if (a_snapshots.empty()) return;
+    a_snapshots.back() = snapshotNow();
+    a_selected = int(a_snapshots.size()) - 1;
+}
+
+void Solution3::select(int i)
+{
+    if (a_snapshots.empty()) return;
+    if (i < 0 || i >= int(a_snapshots.size())) i = int(a_snapshots.size()) - 1;
+    if (i == a_selected) return;
+    const Snapshot& s = a_snapshots[std::size_t(i)];
+    for (std::size_t f = 0; f < a_fields.size() && f < s.values.size(); ++f) {
+        a_fields[f].values = s.values[f];
+        a_fields[f].terminals = s.terminals[f];
+        a_fields[f].matrix = s.matrices[f];
+    }
+    for (const auto& [name, g] : s.globals) {
+        a_globals[name] = g;
+        a_globalScope->setConstant(name, g.value, g.dim);
+    }
+    a_time = s.time;
+    a_selected = i;
+}
+
+int Solution3::snapshotAt(double t) const
+{
+    int best = -1;
+    for (int i = 0; i < int(a_snapshots.size()); ++i)
+        if (best < 0 || std::abs(a_snapshots[std::size_t(i)].time - t) < std::abs(a_snapshots[std::size_t(best)].time - t)) best = i;
+    return best;
+}
+
+std::vector<double> Solution3::globalSeries(const QString& text, Dim* dim, QString* why) const
+{
+    // (Each snapshot's globals into the scope - its constants, the expression
+    // compiled again at each -, those of the one the fields are of again
+    // after.) At rest: the globals as they are, once.
+    std::vector<double> out;
+    const std::size_t n = std::max<std::size_t>(a_snapshots.size(), 1);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!a_snapshots.empty())
+            for (const auto& [name, g] : a_snapshots[i].globals) a_globalScope->setConstant(name, g.value, g.dim);
+        const Expression e = Expression::compile(text, *a_globalScope);
+        if (!e.isValid() || !e.isConstant()) {
+            if (why) *why = e.isValid() ? tr("%1 varies over the model: a global, or an integral as one").arg(text) : e.error();
+            out.clear();
+            break;
+        }
+        if (dim) *dim = e.dim();
+        out.push_back(e.constant());
+    }
+    for (const auto& [name, g] : a_globals) a_globalScope->setConstant(name, g.value, g.dim);
+    return out;
 }
 
 // ------------------------------------------------------------ PointEvaluator3
@@ -544,16 +621,19 @@ QStringList unsolvedPhysics3(const Model& model)
 
 namespace {
 
+using Problems3 = std::vector<std::unique_ptr<detail3::Problem3>>;
+
 /// The physics \a subset of the problems solved in turn till they agree
 /// (the relative change of every field under the tolerance): once, where
-/// none reads another's field.
-bool solveTogether(std::vector<std::unique_ptr<detail3::Problem3>>& problems, const std::vector<int>& subset, const detail3::Options3& o,
+/// none reads another's field. Each solved with its options (\a optionsOf).
+bool solveTogether(Problems3& problems, const std::vector<int>& subset, const std::function<detail3::Options3(int)>& optionsOf,
                    Solution3& s, const QString& stepName, QString* error)
 {
     bool coupled = false;
     for (int i : subset)
         for (int j : subset)
             if (i != j && problems[std::size_t(i)]->reads(j)) coupled = true;
+    const detail3::Options3 o = optionsOf(subset.front());
     const int rounds = coupled ? o.maxIterations : 1;
     for (int it = 0; it < rounds; ++it) {
         double change = 0;
@@ -564,7 +644,7 @@ bool solveTogether(std::vector<std::unique_ptr<detail3::Problem3>>& problems, co
             }
             Field3& f = s.fields()[std::size_t(i)];
             const std::vector<double> before = f.values;
-            if (!problems[std::size_t(i)]->solve(o, error)) return false;
+            if (!problems[std::size_t(i)]->solve(optionsOf(i), error)) return false;
             double num = 0, den = 0;
             for (std::size_t k = 0; k < f.values.size() && k < before.size(); ++k) {
                 const double d = f.values[k] - before[k];
@@ -579,6 +659,269 @@ bool solveTogether(std::vector<std::unique_ptr<detail3::Problem3>>& problems, co
     }
     *error = tr("%1: the coupled physics did not converge in %2 iterations").arg(stepName).arg(o.maxIterations);
     return false;
+}
+
+/// A step's options from its node: its linear solver, its nonlinear
+/// iterations' tolerance and most, and (a Stationary one's) its terminal
+/// sweep.
+detail3::Options3 stepOptions(const Node& step, const Scope& scope)
+{
+    detail3::Options3 o;
+    o.solver = step.text(QStringLiteral("solver"));
+    if (const std::optional<double> t = evaluateConstant(step.text(QStringLiteral("tolerance")), scope, Dim()); t && *t > 0) o.tolerance = *t;
+    o.maxIterations = std::clamp(step.integer(QStringLiteral("maxiter")), 1, 1000);
+    o.sweep = step.type == QLatin1String("stationary") && step.flag(QStringLiteral("sweep"));
+    return o;
+}
+
+/// Each problem's globals that a step solved, or an earlier one.
+void setSolvedGlobals(Problems3& problems, const std::vector<int>& subset)
+{
+    for (int i = 0; i < int(problems.size()); ++i)
+        if (problems[std::size_t(i)]->field().solved || std::find(subset.begin(), subset.end(), i) != subset.end())
+            problems[std::size_t(i)]->setGlobals();
+}
+
+/*!
+ * A Time Dependent step, as the 2D solver's: its physics that change in
+ * time (heat, its ρ Cp ∂T/∂t) by BDF of order 2 - backward Euler for its
+ * first steps, or alone; the implicit midpoint rule on fixed steps -, the
+ * others at rest at each step, from the fields as they are (their initial
+ * values, or a step's before); adaptive steps by Milne's device (the
+ * solution against a predictor of its order) to the relative tolerance of
+ * how much the fields have changed; the fields and globals kept at each
+ * output time, its first included. \a tell is told how far (0 to 1) and
+ * cancels with false.
+ */
+bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& base, const std::vector<int>& subset,
+                    const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("times")), s.parameters().scope, &dim, &why);
+    if (!listed) {
+        *error = tr("%1: the output times: %2").arg(node.name(), why);
+        return false;
+    }
+    std::vector<double> times = *listed;
+    if (!dim.isNone() && !(dim == Dim::of(0, 0, 1))) {
+        *error = tr("%1: the output times are in %2, not in seconds").arg(node.name(), dimName(dim));
+        return false;
+    }
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    if (times.size() < 2) {
+        *error = tr("%1: give two output times at least (a start and an end)").arg(node.name());
+        return false;
+    }
+    const double t0 = times.front(), range = times.back() - t0;
+    std::vector<int> stepped, quasi;
+    for (int i : subset) (problems[std::size_t(i)]->hasMass() ? stepped : quasi).push_back(i);
+    if (stepped.empty())
+        *warnings << tr("%1: none of its physics changes in time (heat does): each output time is solved at rest").arg(node.name());
+    double rtol = 1e-3;
+    if (const std::optional<double> r = evaluateConstant(node.text(QStringLiteral("rtol")), s.parameters().scope, Dim()); r && *r > 0) rtol = *r;
+    const bool euler = node.text(QStringLiteral("method")) == QLatin1String("euler");
+    // The implicit midpoint rule (order 2, no damping): backward Euler over
+    // half the step to v, then u(t + h) = 2v - u(t). It takes fixed steps.
+    const bool midpoint = node.text(QStringLiteral("method")) == QLatin1String("midpoint");
+    const bool fixed = node.text(QStringLiteral("stepping")) == QLatin1String("fixed");
+    if (midpoint && !fixed) {
+        *error = tr("%1: the implicit midpoint rule takes fixed steps: set Steps to Fixed (and its time step)").arg(node.name());
+        return false;
+    }
+    double h = 0;
+    if (!node.text(QStringLiteral("dt")).trimmed().isEmpty()) {
+        const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("dt")), s.parameters().scope, Dim::of(0, 0, 1), &why);
+        if (!d || !(*d > 0)) {
+            *error = tr("%1: the time step: %2").arg(node.name(), d ? tr("it must be more than 0") : why);
+            return false;
+        }
+        h = *d;
+    } else if (fixed) {
+        *error = tr("%1: a fixed step needs its time step").arg(node.name());
+        return false;
+    } else {
+        h = 1e-3 * (times[1] - times[0]);
+    }
+    const double fixedStep = h;
+    const double hmin = 1e-12 * range;
+    auto atRest = [&base](int) { return base; };
+    // The start: the fields as they are; what is at rest solved with them.
+    s.setTime(t0);
+    if (!quasi.empty() && !solveTogether(problems, quasi, atRest, s, node.name(), error)) return false;
+    for (int i : quasi) s.fields()[std::size_t(i)].solved = true;
+    setSolvedGlobals(problems, subset);
+    s.addSnapshot();
+    s.timeDependent = true;
+    // History of the stepped fields: (time, values) newest first.
+    struct History {
+        std::vector<double> t;
+        std::vector<std::vector<double>> u;
+    };
+    std::vector<History> hist(problems.size());
+    std::vector<std::vector<double>> u0(problems.size());
+    for (int i : stepped) {
+        hist[std::size_t(i)].t.push_back(t0);
+        hist[std::size_t(i)].u.push_back(s.fields()[std::size_t(i)].values);
+        u0[std::size_t(i)] = s.fields()[std::size_t(i)].values;
+    }
+    double t = t0, hPrev = 0;
+    int accepted = 0, rejected = 0;
+    std::size_t out = 1;
+    std::vector<std::vector<double>> histories(problems.size());
+    std::vector<double> masses(problems.size(), 0);
+    const int maxSteps = 1000000;
+    while (out < times.size()) {
+        if (accepted + rejected > maxSteps) {
+            *error = tr("%1: more than a million steps; stopped at t = %2").arg(node.name(), formatQuantity(t, Dim::of(0, 0, 1)));
+            return false;
+        }
+        const double target = times[out];
+        if (fixed) h = fixedStep;
+        // To the output time exactly, no sliver left before it: what is left
+        // of it taken in one step, or in two halves.
+        if (t + h >= target - 1e-9 * range) h = target - t;
+        else if (target - (t + h) < 0.2 * h) h = (target - t) / 2;
+        const int order = euler || midpoint || accepted < 2 ? 1 : 2;
+        const double omega = hPrev > 0 ? h / hPrev : 1;
+        // (Backward Euler's step: the whole, or the midpoint rule's half.)
+        const double hb = midpoint ? h / 2 : h;
+        std::vector<std::vector<double>> saved;
+        for (const Field3& f : s.fields()) saved.push_back(f.values);
+        s.setTime(t + hb);
+        for (int i : stepped) {
+            const History& hi = hist[std::size_t(i)];
+            const std::vector<double>& un = hi.u[0];
+            std::vector<double>& hv = histories[std::size_t(i)];
+            hv.resize(un.size());
+            if (order == 1) {
+                masses[std::size_t(i)] = 1 / hb;
+                for (std::size_t k = 0; k < un.size(); ++k) hv[k] = un[k] / hb;
+            } else {
+                const std::vector<double>& um = hi.u[1];
+                masses[std::size_t(i)] = (1 + 2 * omega) / ((1 + omega) * h);
+                const double a1 = (1 + omega), a2 = omega * omega / (1 + omega);
+                for (std::size_t k = 0; k < un.size(); ++k) hv[k] = (a1 * un[k] - a2 * um[k]) / h;
+            }
+        }
+        QString failed;
+        const bool ok = solveTogether(problems, subset, [&](int i) {
+            detail3::Options3 o = base;
+            if (problems[std::size_t(i)]->hasMass()) {
+                o.mass = masses[std::size_t(i)];
+                o.history = &histories[std::size_t(i)];
+            }
+            return o;
+        }, s, node.name(), &failed);
+        auto restore = [&] {
+            for (std::size_t f = 0; f < saved.size(); ++f) s.fields()[f].values = saved[f];
+            s.setTime(t);
+        };
+        if (!ok) {
+            if (!fixed && h > 4 * hmin && failed.contains(QLatin1String("did not converge"))) {
+                restore();
+                ++rejected;
+                h /= 4;
+                continue;
+            }
+            *error = failed;
+            return false;
+        }
+        if (midpoint) {
+            // From the midpoint to the step's end: 2v - u(t); the physics at
+            // rest solved there.
+            for (int i : stepped) {
+                std::vector<double>& v = s.fields()[std::size_t(i)].values;
+                const std::vector<double>& un = hist[std::size_t(i)].u[0];
+                for (std::size_t k = 0; k < v.size() && k < un.size(); ++k) v[k] = 2 * v[k] - un[k];
+            }
+            s.setTime(t + h);
+            if (!quasi.empty() && !solveTogether(problems, quasi, atRest, s, node.name(), error)) return false;
+        }
+        // The error of the step: the solution against a predictor of its
+        // order (Milne's device).
+        double err = 0;
+        if (!fixed && accepted >= 1) {
+            for (int i : stepped) {
+                const History& hi = hist[std::size_t(i)];
+                const std::vector<double>& uc = s.fields()[std::size_t(i)].values;
+                const double h1 = hi.t[0] - hi.t[1];
+                double ratio = 0;
+                std::vector<double> pred(uc.size());
+                if (order == 1 || hi.u.size() < 3) {
+                    // Linear through the last two; backward Euler's error
+                    // h/(2h + h1) of the gap.
+                    const double w = h / h1;
+                    for (std::size_t k = 0; k < uc.size(); ++k) pred[k] = hi.u[0][k] + w * (hi.u[0][k] - hi.u[1][k]);
+                    ratio = order == 1 ? h / (2 * h + h1) : 1.0 / 3;
+                } else {
+                    // Quadratic through the last three (Lagrange's at t + h).
+                    const double ta = hi.t[0], tb = hi.t[1], tc = hi.t[2], x = t + h;
+                    const double la = (x - tb) * (x - tc) / ((ta - tb) * (ta - tc));
+                    const double lb = (x - ta) * (x - tc) / ((tb - ta) * (tb - tc));
+                    const double lc = (x - ta) * (x - tb) / ((tc - ta) * (tc - tb));
+                    for (std::size_t k = 0; k < uc.size(); ++k) pred[k] = la * hi.u[0][k] + lb * hi.u[1][k] + lc * hi.u[2][k];
+                    // BDF2's error constant over the predictor's and its own.
+                    const double h2 = hi.t[1] - hi.t[2];
+                    const double cc = (1 + omega) * (1 + omega) / (6 * omega * (1 + 2 * omega));
+                    const double cp = (h + h1) * (h + h1 + h2) / (6 * h * h);
+                    ratio = cc / (cp + cc);
+                }
+                double gap = 0, change = 0, size = 0;
+                const std::vector<double>& first = u0[std::size_t(i)];
+                for (std::size_t k = 0; k < uc.size(); ++k) {
+                    gap = std::max(gap, std::abs(uc[k] - pred[k]));
+                    change = std::max(change, std::abs(uc[k] - first[k]));
+                    size = std::max(size, std::abs(uc[k]));
+                }
+                const double scale = std::max(change, 1e-9 * size + 1e-300);
+                err = std::max(err, ratio * gap / (rtol * scale));
+            }
+        }
+        if (!fixed && err > 1 && h > 4 * hmin) {
+            restore();
+            ++rejected;
+            h *= std::max(0.1, 0.9 * std::pow(err, -1.0 / (order + 1)));
+            continue;
+        }
+        // Taken.
+        for (int i : stepped) {
+            History& hi = hist[std::size_t(i)];
+            hi.t.insert(hi.t.begin(), t + h);
+            hi.u.insert(hi.u.begin(), s.fields()[std::size_t(i)].values);
+            if (hi.t.size() > 3) {
+                hi.t.pop_back();
+                hi.u.pop_back();
+            }
+        }
+        t += h;
+        hPrev = h;
+        ++accepted;
+        if (std::abs(t - target) <= 1e-9 * range) {
+            t = target;
+            s.setTime(t);
+            for (int i : subset) s.fields()[std::size_t(i)].solved = true;
+            setSolvedGlobals(problems, subset);
+            s.addSnapshot();
+            ++out;
+        }
+        if (!fixed) h *= err > 0 ? std::clamp(0.9 * std::pow(err, -1.0 / (order + 1)), 0.2, 2.0) : 2.0;
+        if (h < hmin) {
+            *error = tr("%1: the time step became too small at t = %2").arg(node.name(), formatQuantity(t, Dim::of(0, 0, 1)));
+            return false;
+        }
+        if (!tell((t - t0) / range, tr("%1: t = %2").arg(node.name(), formatQuantity(t, Dim::of(0, 0, 1))))) {
+            *error = tr("cancelled");
+            return false;
+        }
+    }
+    s.log << tr("%1: %2 steps taken, %3 taken again with a smaller one; %4 output times")
+                 .arg(node.name())
+                 .arg(accepted)
+                 .arg(rejected)
+                 .arg(times.size());
+    return true;
 }
 
 } // namespace
@@ -648,23 +991,23 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     }
     for (auto& p : problems) p->initialize();
     int steps = 0;
-    const int stepCount = int(std::count_if(study->children.begin(), study->children.end(), [](const Node& n) { return n.enabled; }));
+    // (A Parametric Sweep is the run's, not a step: runStudy3.)
+    const int stepCount = int(std::count_if(study->children.begin(), study->children.end(),
+                                            [](const Node& n) { return n.enabled && n.type != QLatin1String("sweep"); }));
     for (const Node& step : study->children) {
-        if (!step.enabled) continue;
-        if (step.type != QLatin1String("stationary")) {
-            out.error = tr("%1: a %2 step is not solved in 3D yet - a Stationary one is")
+        if (!step.enabled || step.type == QLatin1String("sweep")) continue;
+        const bool inTime = step.type == QLatin1String("transient");
+        if (step.type != QLatin1String("stationary") && !inTime) {
+            out.error = tr("%1: a %2 step is not solved in 3D yet - a Stationary or a Time Dependent one is")
                             .arg(step.name(), step.kind() ? step.kind()->title : step.type);
             out.log = s->log;
             return out;
         }
-        detail3::Options3 o;
-        o.solver = step.text(QStringLiteral("solver"));
-        if (const std::optional<double> t = evaluateConstant(step.text(QStringLiteral("tolerance")), parameters->scope, Dim()); t && *t > 0)
-            o.tolerance = *t;
-        o.maxIterations = std::clamp(step.integer(QStringLiteral("maxiter")), 1, 1000);
-        o.sweep = step.flag(QStringLiteral("sweep"));
+        detail3::Options3 o = stepOptions(step, parameters->scope);
         const double from = double(steps) / stepCount, span = 1.0 / stepCount;
-        o.cancelled = [progress, from, span, &step] { return progress && !progress(from + 0.5 * span, step.name()); };
+        // (How far it is, as last told: what a solve's check of Cancel says.)
+        auto at = std::make_shared<std::pair<double, QString>>(from + 0.5 * span, step.name());
+        o.cancelled = [progress, at] { return progress && !progress(at->first, at->second); };
         if (progress && !progress(from, step.name())) {
             out.error = tr("cancelled");
             return out;
@@ -679,10 +1022,28 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             return out;
         }
         QString why;
-        if (!solveTogether(problems, subset, o, *s, step.name(), &why)) {
-            out.error = why;
-            out.log = s->log;
-            return out;
+        if (inTime) {
+            auto tell = [progress, at, from, span](double f, const QString& what) {
+                *at = {from + span * std::clamp(f, 0.0, 1.0), what};
+                return !progress || progress(at->first, at->second);
+            };
+            if (!transientStep3(problems, *s, step, o, subset, tell, &out.warnings, &why)) {
+                out.error = why;
+                out.log = s->log;
+                return out;
+            }
+        } else {
+            if (!solveTogether(problems, subset, [&o](int) { return o; }, *s, step.name(), &why)) {
+                out.error = why;
+                out.log = s->log;
+                return out;
+            }
+            // (After a step in time: its last output time the fields at rest.)
+            if (s->snapshotCount() > 0) {
+                for (int i : subset) s->fields()[std::size_t(i)].solved = true;
+                setSolvedGlobals(problems, subset);
+                s->replaceLastSnapshot();
+            }
         }
         for (int i : subset) s->fields()[std::size_t(i)].solved = true;
         ++steps;
@@ -691,13 +1052,137 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         out.error = tr("%1 has no step to solve: add a Stationary step").arg(study->name());
         return out;
     }
-    for (auto& p : problems)
-        if (p->field().solved) p->setGlobals();
+    // The globals: those of the last output time, kept, or of the fields at
+    // rest.
+    if (s->snapshotCount() > 0) s->select(s->snapshotCount() - 1);
+    else
+        for (auto& p : problems)
+            if (p->field().solved) p->setGlobals();
     s->seconds = timer.elapsed() / 1000.0;
     s->log << tr("Solved in %1 s").arg(s->seconds, 0, 'f', 2);
     out.solution = s;
     out.log = s->log;
     return out;
+}
+
+StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology3> topology,
+                    std::shared_ptr<const Mesh3> mesh, const QString& studyTag, const Progress& progress)
+{
+    StudyRun3 run;
+    run.mesh = mesh;
+    if (!parameters) parameters = evaluateParameters(model);
+    const Node* study = nullptr;
+    for (const Node& c : model.root.children)
+        if (c.type == QLatin1String("study") && (studyTag.isEmpty() || c.tag == studyTag)) {
+            study = &c;
+            break;
+        }
+    if (!study) {
+        run.error = studyTag.isEmpty() ? tr("the model has no study") : tr("there is no study %1").arg(studyTag);
+        return run;
+    }
+    const Node* sweep = nullptr;
+    for (const Node& c : study->children)
+        if (c.type == QLatin1String("sweep") && c.enabled) sweep = &c;
+    auto meshOf = [&model, &run](const ParameterScope& ps, std::shared_ptr<const Topology3> topo, const Progress& p,
+                                 std::shared_ptr<const Mesh3>* out) {
+        if (!topo) {
+            const GeometryBuild3 g = buildGeometry3(model, ps);
+            if (!g.ok()) {
+                const Node* n = model.find(g.failedAt);
+                run.error = tr("the geometry: %1: %2").arg(n ? n->name() : g.failedAt, g.errors.value(g.failedAt));
+                return false;
+            }
+            topo = g.topology;
+        }
+        const Mesh3Build m = buildMesh3(model, ps, topo, p);
+        if (!m.mesh) {
+            run.error = tr("the mesh: %1").arg(m.error);
+            return false;
+        }
+        for (const QString& w : m.warnings)
+            if (!run.warnings.contains(w)) run.warnings << w;
+        *out = m.mesh;
+        return true;
+    };
+    if (!sweep) {
+        const Progress meshing = [&progress](double f, const QString& w) { return !progress || progress(0.3 * f, w); };
+        if (!run.mesh && !meshOf(*parameters, topology, meshing, &run.mesh)) return run;
+        const double from = mesh ? 0 : 0.3;
+        StudyResult3 r = solveStudy3(model, parameters, run.mesh, study->tag,
+                                     [&progress, from](double f, const QString& w) { return !progress || progress(from + (1 - from) * f, w); });
+        run.warnings << r.warnings;
+        run.log = r.log;
+        if (!r.solution) {
+            run.error = r.error;
+            return run;
+        }
+        run.solutions.push_back(r.solution);
+        return run;
+    }
+    const std::optional<SweepPlan> plan = sweepPlan(model, *sweep, *parameters, &run.error);
+    if (!plan) return run;
+    run.swept = plan->swept;
+    const std::size_t n = plan->points.size();
+    // A point that finds no solution - cancelled, a step that fails, its
+    // geometry or mesh not made -: after the first, the sweep stops there,
+    // its points before kept and where and why said.
+    auto stopAt = [&run, n, sweep](std::size_t k, const QString& where, const QString& why) {
+        if (run.solutions.empty()) {
+            run.error = tr("%1: %2").arg(where, why);
+            return false;
+        }
+        const QString kept = run.solutions.size() == 1 ? tr("its point before kept") : tr("its %1 points before kept").arg(run.solutions.size());
+        run.stopped = tr("%1 stopped at %2 (point %3 of %4): %5 - %6").arg(sweep->name(), where).arg(k + 1).arg(n).arg(why, kept);
+        run.error.clear();
+        return true;
+    };
+    std::shared_ptr<const Mesh3> base = mesh;
+    for (std::size_t k = 0; k < n; ++k) {
+        const QString where = plan->labels.at(int(k));
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model, plan->overrides[k]);
+        if (!ps->errors.isEmpty()) {
+            QStringList list;
+            for (auto it = ps->errors.cbegin(); it != ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
+            if (stopAt(k, where, tr("the parameters: %1").arg(list.join(QLatin1String("; "))))) break;
+            return run;
+        }
+        // The parameters it changes, and whether they shape the geometry.
+        QSet<QString> changed;
+        for (auto it = ps->values.cbegin(); it != ps->values.cend(); ++it)
+            if (!parameters->values.contains(it.key()) || parameters->values.value(it.key()) != it.value()) changed.insert(it.key());
+        const double from = double(k) / double(n), span = 1.0 / double(n);
+        const QString told = tr("%1 (point %2 of %3)").arg(where).arg(k + 1).arg(n);
+        auto sub = [&progress, from, span, told](double a, double b) {
+            return Progress([&progress, from, span, told, a, b](double f, const QString& w) {
+                return !progress || progress(from + span * (a + (b - a) * f), QStringLiteral("%1: %2").arg(told, w));
+            });
+        };
+        std::shared_ptr<const Mesh3> m;
+        if (plan->reshapes(changed)) {
+            if (!meshOf(*ps, nullptr, sub(0, 0.3), &m)) {
+                if (stopAt(k, where, run.error)) break;
+                return run;
+            }
+        } else {
+            if (!base && !meshOf(*parameters, topology, sub(0, 0.3), &base)) return run;
+            run.mesh = base;
+            m = base;
+        }
+        StudyResult3 r = solveStudy3(model, ps, m, study->tag, sub(0.3, 1));
+        for (const QString& w : r.warnings)
+            if (!run.warnings.contains(w)) run.warnings << w;
+        if (!r.solution) {
+            if (stopAt(k, where, r.error)) break;
+            return run;
+        }
+        r.solution->label = where;
+        r.solution->sweptValues = plan->values[k];
+        run.log << QStringLiteral("%1: %2").arg(where, r.log.join(QLatin1String("; ")));
+        run.solutions.push_back(r.solution);
+    }
+    if (!run.mesh) run.mesh = base;
+    return run;
 }
 
 QList<Variable> modelVariables3(const Model& model)

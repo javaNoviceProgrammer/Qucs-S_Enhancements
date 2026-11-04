@@ -101,13 +101,16 @@ public:
     void initialize() override;
     bool solve(const Options3& o, QString* error) override;
     void setGlobals() override;
+    bool hasMass() const override { return a_heat; }
 
 private:
     void buildEquations(bool sweep, Equations& q) const;
     /// Each fixed dof's value: its condition's, or (a sweep's terminal \a
     /// sweepTerminal, from 0) 1 on that terminal and 0 elsewhere.
     std::vector<double> fixedValues(const Equations& q, int sweepTerminal) const;
-    void assemble(const Equations& q, bool withSources, Assembled& out);
+    /// The system, and (a step in time's, \a mass not 0) its capacity's term
+    /// C (mass u - history): mass C in the matrix, C history in the vector.
+    void assemble(const Equations& q, bool withSources, Assembled& out, double mass = 0, const std::vector<double>* history = nullptr);
     double evalAt(const Expression& e, const Vec3& x) const;
     /// Each terminal's reaction: what flows into the domain from its fixed
     /// dofs (charge, current).
@@ -124,6 +127,7 @@ private:
     bool a_self = false;
     bool a_converged = true;
     double a_made = 0;
+    bool a_assembled = false;   // a_made of a system assembled (not at a step in time's start)
     double a_sink = NaN;
 };
 
@@ -162,6 +166,7 @@ bool ScalarProblem3::setup(QString* error)
     coef.isotropic.assign(D, 1);
     coef.sources.assign(D, {});
     coef.sourceScale.assign(D, 1.0);
+    coef.capacity.assign(D, Expression());
     a_conditions.assign(F, Condition());
     a_natural.assign(F, {});
     a_terminals.clear();
@@ -248,7 +253,14 @@ bool ScalarProblem3::setup(QString* error)
                                 || (t == QLatin1String("currents/terminal") && feature.text(QStringLiteral("drive")) == QLatin1String("current"));
                 const QString key = !term.floating ? QStringLiteral("V0") : a_es ? QStringLiteral("Q0") : QStringLiteral("I0");
                 term.value = compile(feature.text(key), feature, key, false);
-                if (term.value.isValid() && !term.value.isConstant()) problem(tr("%1 of %2 must be a constant").arg(key, feature.name()));
+                // (One value over its faces: a constant, or of t alone - a
+                // step in time's terminal driven.)
+                if (term.value.isValid())
+                    for (int slot : term.value.variables())
+                        if (a_s.definitions()[std::size_t(slot)].kind != Solution3::VariableDef::Time) {
+                            problem(tr("%1 of %2 must be a constant, or of t alone").arg(key, feature.name()));
+                            break;
+                        }
                 c.terminal = int(a_terminals.size());
                 if (term.floating) {
                     c.kind = Condition::Group;
@@ -375,6 +387,23 @@ bool ScalarProblem3::setup(QString* error)
             const Expression& e = c[std::size_t(4 * i)];
             if (e.isValid() && e.isConstant() && !(e.constant() > 0) && !(a_es && e.constant() != 0))
                 problem(tr("domain %1: its %2 must be more than 0").arg(d + 1).arg(propertyName));
+        }
+        if (a_heat) {
+            // ρ Cp, for a step in time (said only then: at rest neither is
+            // needed).
+            const Node* r = user ? feat : m;
+            QString rho, cp;
+            if (r) {
+                rho = user ? feat->text(QStringLiteral("rho")) : detail::Problem::materialText(*m, QStringLiteral("rho"), &params);
+                cp = user ? feat->text(QStringLiteral("Cp")) : detail::Problem::materialText(*m, QStringLiteral("Cp"), &params);
+            }
+            if (!rho.trimmed().isEmpty() && !cp.trimmed().isEmpty()) {
+                const Expression er = compile(rho, *r, QStringLiteral("rho"));
+                const Expression ec = compile(cp, *r, QStringLiteral("Cp"));
+                if (er.isValid() && ec.isValid())
+                    coef.capacity[std::size_t(d)] = Expression::compile(QStringLiteral("(") + rho + QStringLiteral(")*(") + cp + QLatin1Char(')'),
+                                                                       a_s.pointScope());
+            }
         }
     }
     a_self = a_reads.contains(a_fi);
@@ -506,7 +535,7 @@ std::vector<double> ScalarProblem3::fixedValues(const Equations& q, int sweepTer
 
 // --------------------------------------------------------------- Assembly
 
-void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& out)
+void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& out, double mass, const std::vector<double>* history)
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const Space3& sp = *f.space;
@@ -552,6 +581,7 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
     const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
     std::vector<int> dofs(static_cast<std::size_t>(per));
     std::vector<double> K(static_cast<std::size_t>(per * per)), Fe(static_cast<std::size_t>(per));
+    std::vector<double> Me(mass != 0 ? static_cast<std::size_t>(per * per) : 0);
     std::vector<double> grads(static_cast<std::size_t>(per) * 3);
     for (int e = 0; e < sp.elements(); ++e) {
         const int d = mesh.domain[std::size_t(e)];
@@ -565,8 +595,13 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
         }
         const std::vector<Expression>& sources = coef.sources[std::size_t(d)];
         const bool sourced = withSources && !sources.empty();
+        // (A step in time's capacity, ρ Cp.)
+        const bool massed = mass != 0 && coef.capacity[std::size_t(d)].isValid();
+        const Expression& cap = coef.capacity[std::size_t(d)];
+        double capv = massed && cap.isConstant() ? cap.constant() : 0;
         std::fill(K.begin(), K.end(), 0.0);
         std::fill(Fe.begin(), Fe.end(), 0.0);
+        std::fill(Me.begin(), Me.end(), 0.0);
         const int* ed = sp.dofs(e);
         for (int i = 0; i < per; ++i) dofs[std::size_t(i)] = ed[i];
         for (const auto& qp : rule.points) {
@@ -575,9 +610,10 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
             PrismShape s;
             prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
             for (int i = 0; i < per; ++i) Space3::gradient(m, s.dxi[i], s.deta[i], s.dzeta[i], &grads[std::size_t(3 * i)]);
-            if (!constant || sourced) ev.at(e, qp[0], qp[1], qp[2], m.x);
+            if (!constant || sourced || (massed && !cap.isConstant())) ev.at(e, qp[0], qp[1], qp[2], m.x);
             if (!constant)
                 for (int k = 0; k < 9; ++k) C[k] = c[std::size_t(k)].isConstant() ? c[std::size_t(k)].constant() : ev.eval(c[std::size_t(k)]);
+            if (massed && !cap.isConstant()) capv = ev.eval(cap);
             if (sp.order() == 1) {
                 // A linear prism lumped: its in-plane term's factor along z,
                 // ∫ L_k L_l dz, and its vertical term's in the plane, ∫ T_a
@@ -607,6 +643,11 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
                         v += (gT[a][0] * C[2] + gT[a][1] * C[5]) * L[k] * t.n[b] * dL[l];
                         v += t.n[a] * dL[k] * (C[6] * gT[b][0] + C[7] * gT[b][1]) * L[l];
                         K[std::size_t(i * per + j)] += w * a_scale * v;
+                        // The capacity's: consistent in the plane, as the
+                        // triangles' in 2D, its factor along z lumped as the
+                        // in-plane term's is - a tall prism's two levels
+                        // otherwise coupled the wrong way at a short step.
+                        if (massed && k == l) Me[std::size_t(i * per + j)] += w * capv * t.n[a] * t.n[b] * L[k];
                     }
                 }
             } else {
@@ -617,6 +658,7 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
                     for (int i = 0; i < per; ++i) {
                         const double* gi = &grads[std::size_t(3 * i)];
                         K[std::size_t(i * per + j)] += w * a_scale * (gi[0] * cg[0] + gi[1] * cg[1] + gi[2] * cg[2]);
+                        if (massed) Me[std::size_t(i * per + j)] += w * capv * s.n[i] * s.n[j];
                     }
                 }
             }
@@ -629,6 +671,13 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
                 out.made += w * value;
             }
         }
+        if (massed)
+            for (int i = 0; i < per; ++i)
+                for (int j = 0; j < per; ++j) {
+                    const double v = Me[std::size_t(i * per + j)];
+                    K[std::size_t(i * per + j)] += mass * v;
+                    if (history) Fe[std::size_t(i)] += v * (*history)[std::size_t(dofs[std::size_t(j)])];
+                }
         scatter(dofs, K, Fe);
     }
     // The faces' fluxes and films.
@@ -695,6 +744,19 @@ std::vector<double> ScalarProblem3::reactions(const Equations& q, const Assemble
 bool ScalarProblem3::solve(const Options3& o, QString* error)
 {
     Field3& f = field();
+    const bool inTime = o.mass != 0 && a_heat;
+    if (inTime) {
+        const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+        for (int d = 0; d < int(f.domains.size()); ++d)
+            if (f.domains[std::size_t(d)] && !coef.capacity[std::size_t(d)].isValid()) {
+                const Topology3& topo = a_s.topology();
+                *error = tr("%1: domain %2 (%3) has no density and heat capacity (rho, Cp): a step in time needs them")
+                             .arg(a_node->name())
+                             .arg(d + 1)
+                             .arg(topo.objectNames.value(topo.domains[std::size_t(d)].owner));
+                return false;
+            }
+    }
     Equations q;
     buildEquations(false, q);
     const std::vector<double> fixedList = fixedValues(q, -1);
@@ -712,8 +774,8 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
             return false;
         }
         Assembled a;
-        assemble(q, true, a);
-        if (it == 0 && q.fixedDof.empty() && !a.robin) {
+        assemble(q, true, a, inTime ? o.mass : 0.0, inTime ? o.history : nullptr);
+        if (it == 0 && q.fixedDof.empty() && !a.robin && !inTime) {
             *error = a_heat ? tr("%1 holds the temperature nowhere: a Temperature, a convective Heat Flux or Radiation on a face is "
                                  "needed")
                                   .arg(name)
@@ -724,7 +786,7 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
         Eigen::VectorXd b = a.F;
         if (ud.size() > 0) b -= a.Kc * ud;
         for (std::size_t t = 0; t < a_terminals.size(); ++t)
-            if (a_terminals[t].floating && q.groupEq[t] >= 0) b(q.groupEq[t]) += a_terminals[t].value.isConstant() ? a_terminals[t].value.constant() : 0.0;
+            if (a_terminals[t].floating && q.groupEq[t] >= 0) b(q.groupEq[t]) += evalAt(a_terminals[t].value, Vec3{});
         System3 sys;
         if (!sys.factorize(a.A, o.solver, 1, o.tolerance, name, &a_s.log, error)) return false;
         if (!sys.solve(b, x, name, &a_s.log, error)) return false;
@@ -735,6 +797,7 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
             else if (q.fixed[dof] >= 0) f.values[dof] = ud(q.fixed[dof]);
         }
         a_made = a.made;
+        a_assembled = true;
         // Its terminals: their potentials and what flows from them.
         const std::vector<double> flow = reactions(q, a, x, ud);
         f.terminals.clear();
@@ -744,9 +807,9 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
             term.floating = a_terminals[t].floating;
             if (term.floating) {
                 term.potential = q.groupEq[t] >= 0 ? x(q.groupEq[t]) : NaN;
-                term.charge = a_terminals[t].value.isConstant() ? a_terminals[t].value.constant() : NaN;
+                term.charge = evalAt(a_terminals[t].value, Vec3{});
             } else {
-                term.potential = a_terminals[t].value.isConstant() ? a_terminals[t].value.constant() : NaN;
+                term.potential = evalAt(a_terminals[t].value, Vec3{});
                 term.charge = flow[t];
             }
             f.terminals.push_back(term);
@@ -886,6 +949,15 @@ void ScalarProblem3::setGlobals()
         else s.setGlobal(p + QStringLiteral("P"), energy, Dim::power(), tr("power dissipated"));
     }
     if (a_heat) {
+        if (!a_assembled) {
+            // (A step in time's start, before a step: what its sources make
+            // there.)
+            Equations q;
+            buildEquations(false, q);
+            Assembled a;
+            assemble(q, true, a);
+            a_made = a.made;
+        }
         double tmax = -INFINITY, tmin = INFINITY;
         for (int e = 0; e < sp.elements(); ++e) {
             const int d = mesh.domain[std::size_t(e)];

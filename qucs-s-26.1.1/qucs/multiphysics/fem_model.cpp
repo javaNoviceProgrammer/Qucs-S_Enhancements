@@ -3403,8 +3403,10 @@ QList<NodeKind> makeKinds()
                 "20 log10(Hn/H1) in dBc and THD = √(ΣHn²)/H1 - a photodiode's harmonics under strong modulated light. Once a "
                 "point of a sweep, of all its times. Its compression is not computed: along a sweep of the light's power, plot H1 "
                 "against the power - 1 dB where H1 falls 1 dB below the low power's H1 times the power's ratio.")});
-        const P level = choice(QStringLiteral("level"), tr("Over"), {QStringLiteral("domain"), QStringLiteral("boundary")},
-                               {tr("Domains"), tr("Boundaries")}, QStringLiteral("domain"));
+        // (A 3D model's edges too.)
+        P level = choice(QStringLiteral("level"), tr("Over"), {QStringLiteral("domain"), QStringLiteral("boundary"), QStringLiteral("edge")},
+                         {tr("Domains"), tr("Boundaries"), tr("Edges")}, QStringLiteral("domain"));
+        level.choiceSpaces = {Spaces::All, Spaces::All, Spaces::ThreeD};
         const QStringList over = {QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"), QStringLiteral("minimum")};
         const QStringList overTitles = {tr("Integration"), tr("Average"), tr("Maximum"), tr("Minimum")};
         const QStringList overPrefix = {QStringLiteral("int"), QStringLiteral("av"), QStringLiteral("max"), QStringLiteral("min")};
@@ -3424,6 +3426,16 @@ QList<NodeKind> makeKinds()
         origin.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
         coordinates.defaultValue = origin;
         coordinates.showIf = QStringLiteral("where=coordinates");
+        coordinates.spaces = Spaces::TwoD;
+        // (A 3D model's: x, y and z - its editor's columns its choices.)
+        P coordinates3 = coordinates;
+        coordinates3.key = QStringLiteral("coordinates3");
+        coordinates3.label = tr("Coordinates (x, y, z)");
+        QJsonArray origin3;
+        origin3.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0"), QStringLiteral("0")});
+        coordinates3.defaultValue = origin3;
+        coordinates3.choices = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")};
+        coordinates3.spaces = Spaces::ThreeD;
         {
             P modes;
             modes.key = QStringLiteral("physics");
@@ -3502,7 +3514,7 @@ QList<NodeKind> makeKinds()
              {study,
               choice(QStringLiteral("where"), tr("At"), {QStringLiteral("points"), QStringLiteral("coordinates")},
                      {tr("Points of the geometry"), tr("Coordinates")}, QStringLiteral("coordinates")),
-              shownIf(selectionProp(none), QStringLiteral("where=points")), coordinates,
+              shownIf(selectionProp(none), QStringLiteral("where=points")), coordinates, coordinates3,
               spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit, solutions},
              {}, {}, false, false, QStringLiteral("pev"), QString()});
         P terminal;
@@ -3736,16 +3748,35 @@ QList<NodeKind> makeKinds()
     const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
                                   QStringLiteral("mesh/zdistribution")};
     // Solved in 3D too: heat, electrostatics and currents with their
-    // features, and a study's Stationary step - its adaptive refinement and
-    // its light loop the plane's, its nonlinear method Picard's in turn.
+    // features, and a study's Stationary and Time Dependent steps and its
+    // Parametric Sweep - the first's adaptive refinement and light loop the
+    // plane's, their nonlinear method Picard's in turn, the sweep's points
+    // one after another.
     auto solvedIn3D = [](const QString& type) {
         for (const char* p : {"heat", "electrostatics", "currents"})
             if (type == QLatin1String(p) || type.startsWith(QLatin1String(p) + QLatin1Char('/'))) return true;
-        return type == QLatin1String("study") || type == QLatin1String("stationary");
+        return type == QLatin1String("study") || type == QLatin1String("stationary") || type == QLatin1String("transient")
+               || type == QLatin1String("sweep");
     };
     for (NodeKind& kind : k) {
         if (shared.contains(kind.type) || solvedIn3D(kind.type)) kind.spaces = Spaces::All;
         else if (threeD.contains(kind.type)) kind.spaces = Spaces::ThreeD;
+        if (kind.type == QLatin1String("transient"))
+            for (P& p : kind.properties)
+                if (p.key == QLatin1String("nonlinear")) p.choiceSpaces = {Spaces::All, Spaces::TwoD, Spaces::All};
+        if (kind.type == QLatin1String("sweep"))
+            for (P& p : kind.properties)
+                if (p.key == QLatin1String("parallel")) p.spaces = Spaces::TwoD;
+        // Derived values of a 3D solution: globals, integrals, averages and
+        // extrema over its domains, faces or edges, values at points - an
+        // axisymmetric model's revolution the plane's.
+        if (QStringList{QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
+                        QStringLiteral("minimum"), QStringLiteral("pointeval")}
+                .contains(kind.type)) {
+            kind.spaces = Spaces::All;
+            for (P& p : kind.properties)
+                if (p.key == QLatin1String("revolved")) p.spaces = Spaces::TwoD;
+        }
         if (kind.type != QLatin1String("stationary")) continue;
         for (P& p : kind.properties) {
             if (QStringList{QStringLiteral("adaptive"), QStringLiteral("adaptsteps"), QStringLiteral("adaptphysics"), QStringLiteral("lightloop"),

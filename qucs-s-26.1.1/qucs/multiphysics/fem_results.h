@@ -67,6 +67,13 @@ struct DisplayUnit {
 /// \a text for values of \a dim: empty, SI's own; one not of that unit,
 /// SI and why in \a warning.
 DisplayUnit displayUnit(const QString& text, const Dim& dim, QString* warning = nullptr);
+/// \a si (SI) as it is shown: in \a unit where it has a name, else in
+/// SI with a prefix.
+QString shown(double si, const Dim& dim, const DisplayUnit& unit);
+/// A quotient's unit as it is written - semi.I_k/semi.Pin in A/W, not
+/// s³·A/(m²·kg) - when its dimension has no name of its own and each side's
+/// has; else none.
+DisplayUnit quotientUnit(const QString& text, const Dim& dim, const Scope& scope);
 /// The unit a value of \a expression is shown in, \a text asked: as
 /// displayUnit, and for a global of a unit its dimension cannot say
 /// (emw.loss, dB/m) its own when none is asked, or that unit over another
