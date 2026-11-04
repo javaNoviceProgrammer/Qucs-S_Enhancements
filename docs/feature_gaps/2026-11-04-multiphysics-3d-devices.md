@@ -15,8 +15,8 @@ resistance. This round takes up those devices first: they test the solver everyt
 | A VCSEL array | One VCSEL of a 3 x 3 array heated: its rise at its middle and over its disc, and its neighbours' (the cross-resistances), are Carslaw and Jaeger's disc on a half-space with the substrate's bottom and walls as images, order 2 within 0.005 % (its disc's mean 0.1 %) |
 | A TSV | Its resistance Katti et al.'s ρh/(πa²), its copper's thermal resistance h/(kπa²) and its liner's ln(b/a)/(2πkh), order 2 within 0.002 % |
 | Found by them | **An electrostatics in µm was not solved at all**: multigrid took its right-hand side, some 1e-17, for nought, and the capacitance came out 7 to 21 times too large. **Multigrid's ILU(0) smoother stalled** on order 2's stretched prisms (a VCSEL array's 1.2 million unknowns, the chip heater's 55,272): it is Gauss-Seidel now |
-| Examples | A VCSEL array, an MSM photodiode's fingers and a TSV, each solved by a test beside its formula |
-| The heater over a ring | Not done: no publication with the whole of its geometry and a number to hold could be read here (below) |
+| The heater over a ring | C. L. Manganelli et al.'s double racetrack (IEEE Photon. Technol. Lett. 2018): 20.65 mW per FSR per ring at order 2, 20.86 at order 1 - their 3D simulation 21.2, their measurement 20 to 22 -, the ring's length from its FSR with the strip's group index by the 2D mode solver |
+| Examples | A VCSEL array, an MSM photodiode's fingers, a TSV and the heater over a ring, each solved by a test beside its formula |
 
 ## CI first
 
@@ -165,21 +165,56 @@ with 27 % less memory, and converging where it does not. In the solver: the VCSE
 iterations (34 s, where it was 236 s), the chip heater's 97, 55 and 16. `QUCS_FEM_AMG_RELAX` still picks
 ILU(0) or SPAI-0 for measuring.
 
-## The heater over a ring: not done
+## The heater over a ring
 
-Decision 8 asks for published results. The heater over a ring needs a publication that gives the whole
-geometry - the heater's width, thickness and height over the ring, the oxides above and below, the substrate -
-and a number to hold: a temperature per mW, a thermal resistance, or a tuning per mW with the waveguide's
-thermo-optic coefficient. Searched here: phase shifters' thermal studies (Krause and Malka, Sensors 2023, a
-2D cross-section 8 x 3.5 µm with no substrate to sink its heat; Jacques et al., Opt. Express 2019, whose
-geometry this search did not reach), and a double-ring filter of Sant'Anna Pisa (IEEE Photonics Technol.
-Lett. 2018, a 3D thermo-electrical simulation within its measurement, 21.2 mW per free spectral range) whose
-open manuscript is offered only as a download. A choice for the user (the wrap-up asks): that manuscript, a
-paper they name, their own measurements - or the proposal's own chain test against 2D (phase D).
+**The publication.** C. L. Manganelli, P. Velha, P. Pintus, F. Gambini, O. Lemonnier, L. Adelmini, C. Kopp, S.
+Faralli, F. Di Pasquale, C. Wenger and C. J. Oton, *Low-power-consumption integrated tunable filters for WDM
+switching applications in silicon photonics*, IEEE Photon. Technol. Lett. 30, 1601-1604 (2018) - its open
+manuscript at Sant'Anna Pisa's repository, downloaded at the user's word (`ptl18.pdf`, 1,065,847 bytes,
+SHA-256 a46cc566...dcc2). Two coupled racetracks with Bezier bends, a strip 410 x 220 nm on 2 µm of buried
+oxide, an FSR of 2.4 THz (19.2 nm); over each a Ti/TiN heater loop 120 nm thick (110 nm TiN on 10 nm Ti),
+434 nm wide, 600 nm of silica above the waveguide and 320 nm over the metal. Its 3D thermo-electrical
+simulation, with a thermo-optic coefficient of 1.8e-4 /K, took **21.2 mW per FSR per ring**; measured, **22
+and 20 mW** (vias 7 and 6 µm from the rings), and 0.95 nm/mW.
+
+**What one FSR takes.** Δλ = λ ΔT dn/dT / n_g and FSR = λ²/(n_g L), so one FSR is ΔT = λ/(L dn/dT) whatever
+the group index. L is the racetrack's length, c/(n_g FSR): the strip's TE0 by Qucs-S's own 2D mode solver,
+the library's dispersive silicon and silica, has n_eff 2.2552 and n_g 4.3717, so L = 28.573 µm and one FSR
+is 301.4 K - 14.2 K per mW at the paper's 21.2.
+
+**The model.** Two stadium racetracks of 3 µm bends at that length, 250 nm apart, both heaters at 1 mW; a
+silicon substrate 100 µm deep held at 300 K below, 80 µm across, its top insulated; silicon 148, silica
+1.38, Ti/TiN 29 W/(m·K). Each racetrack's mean rise:
+
+| | order 1 | order 2 |
+|---|---|---|
+| edges of 0.3 µm (150,000 prisms) | 14.444 K/mW, 20.86 mW/FSR | 14.597 K/mW, 20.65 mW/FSR |
+| edges of 0.15 µm | 14.498, 20.79 | 14.603, 20.64 |
+| edges of 0.075 µm | 14.536, 20.73 | |
+
+Converged, 20.64 mW per FSR per ring: 2.6 % under the paper's simulation, within its measurements.
+
+**What the paper does not say**, each tried (order 1, edges of 0.3 µm, 20.86 mW/FSR as drawn):
+
+| | | mW/FSR |
+|---|---|---|
+| the bends' radius, the racetrack's length kept | 2.5 / 3.5 µm | 19.77 / 21.79 |
+| the gap between the racetracks | 0.2 / 0.35 µm | 20.78 / 21.03 |
+| the substrate's depth | 50 / 300 µm | 21.02 / 20.27 |
+| the chip's width | 60 / 160 µm | 20.68 / 21.02 |
+| a whole chip: 725 µm deep, 1 mm across | | 21.01 |
+| the heater 434 nm wide, as the paper's (3 million prisms) | | 20.77 |
+
+The bends move it most, 5 % either way; nothing else 3 %. The loops are drawn as wide as their waveguides:
+the paper's 434 nm against 410 leaves 12 nm slivers between their edges in the one plan every layer is swept
+from, a mesh twenty times the size for 0.1 %. The leads and pads, which the paper draws and this model leaves
+out, are why its Fig. 2 has the heaters some 60 K over the racetracks where this model's loops peak at twice
+their racetracks' rise: they draw heat from the loops' tips. With one heater alone, the other racetrack rises
+36 % of the heated one's (the example's break below).
 
 ## Examples
 
-`examples/multiphysics3d` has three more, each solved by `theExamples` (`test_fem3_devices`) beside its
+`examples/multiphysics3d` has four more, each solved by `theExamples` (`test_fem3_devices`) beside its
 formula:
 
 - **`vcsel_array.qfem3d`**: the array of the test, all nine heated, GaAs of the library (its k falling as it
@@ -188,6 +223,9 @@ formula:
 - **`msm_photodiode.qfem3d`**: two combs of four fingers, 12 µm long, on GaAs, the electrodes their outlines:
   7.0 fF, the seven gaps' share by the formula 4.7 fF - the bus bars, the fingers' tips and the outer
   fingers' sides add the rest, and order 1 on this mesh some 5 %. 1.07 million prisms, 4.4 s.
+- **`ring_heater.qfem3d`**: the double racetrack of the test, the library's silicon and silica (k of their
+  temperature), 1 mW in each heater: its racetracks 14.32 K per mW, 21.04 mW per FSR per ring. 150,000
+  prisms, 2.5 s.
 - **`tsv.qfem3d`**: the TSV in a silicon die, currents on the via alone and heat from a pad on its top, order
   2: 21.23 mΩ (Katti's for the library's copper, to six digits), and 1332 K/W where its copper alone would be
   3183: the silicon beside it carries more than half the heat down.
@@ -196,14 +234,14 @@ formula:
 
 | Test | What it holds |
 |---|---|
-| `test_fem3_devices` (new, 4 functions) | `photodiodeFingers`, `vcselArray`, `tsv` as above (order 2's VCSEL also that multigrid converged, not its fallback; the heat made the flux over its disc: order 1's polygon 0.7 % short); `theExamples` |
+| `test_fem3_devices` (new, 5 functions) | `photodiodeFingers`, `vcselArray`, `tsv`, `heaterOverARing` as above (order 2's VCSEL also that multigrid converged, not its fallback; the heat made the flux over its disc: order 1's polygon 0.7 % short); `theExamples` |
 | `test_fem_amg` | `solvesAtAnyScale` (new); `fallsBack` refuses a right-hand side not finite |
-| `test_multiphysics3d_doc` | Five examples on the start page |
+| `test_multiphysics3d_doc` | Six examples on the start page |
 | `test_pptx_doc`, `test_rf25_doc` | A zoom queued before `send_input`; a rebuild pending at Write's click |
 
 ## Broken on purpose
 
-`2026-11-04-multiphysics-3d-devices/breaks.py` holds ten, each built and its tests run, the sources and the
+`2026-11-04-multiphysics-3d-devices/breaks.py` holds twelve, each built and its tests run, the sources and the
 examples put back:
 
 - **CI's fixes:** `send_input`'s points as mapped before its events go (the ring on slide 2: nothing
@@ -213,13 +251,15 @@ examples put back:
   "multigrid did not converge" in its log, four minutes on); a right-hand side not finite taken
   (`fallsBack`: a residual of nan, not why).
 - **What the devices lean on:** a terminal on a face between two solved domains not held (the photodiode's
-  zero-thickness electrodes: "holds the potential nowhere"); order 2's floors weighed as straight
+  zero-thickness electrodes: "holds the potential nowhere"); the 2D group index without the media's own
+  dispersion (the strip's n_g 4.2276, the racetrack 3 % longer); order 2's floors weighed as straight
   triangles (the VCSEL's middle 0.31 % low: its heated disc a polygon).
 - **The examples:** the TSV's currents on every domain (the die's silicon has no conductivity: refused);
   the photodiode's electrode on its comb's top, 0.25 µm over the GaAs (2.8 fF, under its gaps' share); the
-  VCSEL array's heat on its middle VCSEL alone (9.9 mW made).
+  ring heater's power in one heater (its racetracks 21.1 and 7.5 K); the VCSEL array's heat on its middle
+  VCSEL alone (9.9 mW made).
 
-All ten caught. An eleventh was written and caught by nothing: the system itself scaled to a mean diagonal
+All twelve caught. A thirteenth was written and caught by nothing: the system itself scaled to a mean diagonal
 of one, beside its right-hand side. With the right-hand side's normalisation every solve is of the matrix's
 scale alone, so the system's was taken out, and its break with it. Until then the right-hand side's own
 break was caught by `solvesAtAnyScale` alone - the system's scaling had covered the photodiode's cell - and
@@ -234,13 +274,14 @@ Built Debug with ASan and UBSan, as CI's Linux job is, each function alone (the 
 | test_fem3_devices `photodiodeFingers` (order 1 on three meshes, order 2 on the coarsest) | 29 s |
 | test_fem3_devices `vcselArray` (order 1 alone: order 2's 585,000 unknowns are Release's) | 29 s |
 | test_fem3_devices `tsv` | 43 s |
-| test_fem3_devices `theExamples` (the TSV alone: the array's and the photodiode's ran past 300 s) | 70 s |
+| test_fem3_devices `heaterOverARing` (the 2D mode on a coarser core, order 1 alone) | 30 s |
+| test_fem3_devices `theExamples` (the TSV alone: the array's and the photodiode's ran past 300 s) | 69 s |
 | test_fem_amg (`solvesAtAnyScale` among it) | 24 s |
 | test_fem3_solve | 28 s |
 | test_multiphysics3d_doc | 39 s |
 | test_pptx_doc, test_rf25_doc | 17 s, 104 s (its coplanar feed 6 s, where it was 60) |
 
-No sanitizer said anything. In Release `test_fem3_devices` takes 28 s.
+No sanitizer said anything. In Release `test_fem3_devices` takes 44 s.
 
 The full ctest, 160 tests at eight at once, 6 minutes: 158 passed. The two that did not,
 `test_rf25_green` (`whatTheTruncationDroppedIsCounted`) and `test_rf25_doc` (`aSolveShowsHowFarItHasGot`'s
@@ -250,7 +291,8 @@ lints green; nothing written to the real cache.
 
 ## What is left
 
-- **The heater over a ring**, against a publication the user chooses (above).
+- **The heater over a ring's chain**: the proposal's own test, the 3D cut handed to a 2D mode analysis for
+  n_eff(T) - phase D's bridge; here the paper's conversion (dn/dT 1.8e-4) stands in for it.
 - **Of phase C**: the `fem_*` tools on 3D models; heat in time and sweeps; results nodes (3D derived values,
   plot groups with slices, isosurfaces and clips, VTU, Field on a Grid in 3D, Interpolation of three
   arguments); estimates and a limit before a solve; a user's anisotropic tensor; Newton's method; parallel
