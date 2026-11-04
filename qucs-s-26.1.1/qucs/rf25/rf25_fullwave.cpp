@@ -797,11 +797,11 @@ struct Context {
     QList<double> cellZ;                 ///< each charge's height, m
     QList<double> dirX, dirY, midX, midY;
     QList<Filament> mirrored;            ///< each run in the plane's image in the ground
-    /// A dense solve's static parts, made once for every frequency: each
-    /// pair of runs' aligned partial inductance (alignedInductance()),
-    /// direct and of the image, and each cell's static potential of a
-    /// charge spread over another. (A compressed solve makes the few it
-    /// wants as it goes.)
+    /// A dense solve's static parts, made once for every frequency and on
+    /// every thread (makeStatics()): each pair of runs' aligned partial
+    /// inductance (alignedInductance()), direct and of the image, and each
+    /// cell's static potential of a charge spread over another. (A
+    /// compressed solve makes the few it wants as it goes.)
     Eigen::MatrixXd lDirect, lImage, pStatic;
     QList<Via> vias;
     QList<ViaGreen::Span> spans;         ///< each of the stack's vias that the mesh has
@@ -927,6 +927,9 @@ void faceImpedances(double sigma, double thickness, double frequency, Complex* o
     *across = zs * 2.0 * e / (1.0 - e * e);
 }
 
+/// What fillShared() counts.
+std::atomic<long long> sharedGreens{0}, sharedColumns{0}, sharedStatics{0};
+
 /*!
  * The Green's functions of one frequency, and the terms of the solve's
  * matrices of them: shared by the dense solve and the compressed one, so
@@ -943,7 +946,8 @@ struct Kernels {
     QList<ViaGreen> viaGreens;
     QStringList problems;
 
-    Kernels(const Context& context, double frequency);
+    /// Made on as many as \a threads threads, one Green's function each.
+    Kernels(const Context& context, double frequency, int threads = 1);
     const WaveGreen& green(int h0, int h1) const { return greens.at(pairOf.at(h0 * c.nh + h1)); }
     /// The cosine between runs \a a and \a b in the plane.
     double cosine(int a, int b) const { return c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b); }
@@ -969,32 +973,57 @@ struct Kernels {
     Complex couplingOf(const Via& a, const Via& b) const;
 };
 
-Kernels::Kernels(const Context& context, double frequency) : c(context), f(frequency), jw(0, 2 * M_PI * frequency)
+Kernels::Kernels(const Context& context, double frequency, int threads)
+    : c(context), f(frequency), jw(0, 2 * M_PI * frequency)
 {
-    // The retarded Green's functions of each pair of heights.
+    // The retarded Green's functions of each pair of heights; and a via's
+    // kernels, one for each of the stack's vias the mesh has - its coupling
+    // to every via, and its potential at every metal height. Each made on
+    // one of the threads as they come free, where its tables are not kept
+    // from an earlier solve (a coplanar line's at 10 GHz: its walls' via's
+    // 0.46 s, its three pairs' 0.14 to 0.21), and taken in the order one
+    // thread made them in, the first of them that cannot be made said.
     const int nh = c.nh;
-    pairOf = QList<int>(nh * nh, -1);
+    QList<QPair<int, int>> heightPairs;
     for (int i = 0; i < nh; ++i)
-        for (int j = i; j < nh; ++j) {
-            WaveGreen g(c.layers, c.heights.at(i), c.heights.at(j), f, c.rhoMax);
-            if (!g.ok()) {
-                problems << g.problems();
-                return;
+        for (int j = i; j < nh; ++j) heightPairs << qMakePair(i, j);
+    const int pairs = int(heightPairs.size()), count = pairs + int(c.spans.size());
+    // (Vectors, not QLists: the threads write to them side by side.)
+    std::vector<WaveGreen> waves(static_cast<std::size_t>(pairs));
+    std::vector<ViaGreen> vias(static_cast<std::size_t>(c.spans.size()));
+    std::atomic_int next{0};
+    onThreads(std::clamp(threads, 1, std::max(1, count)), [this, &heightPairs, &waves, &vias, &next, pairs, count](int t) {
+        for (int w = next++; w < count; w = next++) {
+            if (t > 0) ++sharedGreens;
+            if (w < pairs) {
+                const QPair<int, int>& ij = heightPairs.at(w);
+                WaveGreen& g = waves[std::size_t(w)];
+                g = WaveGreen(c.layers, c.heights.at(ij.first), c.heights.at(ij.second), f, c.rhoMax);
+                g.prepare();
+            } else {
+                ViaGreen& v = vias[std::size_t(w - pairs)];
+                v = ViaGreen(c.layers, c.spans.at(w - pairs), c.spans, c.heights, f, c.rhoMax);
+                v.prepare();
             }
-            g.prepare();
-            pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
-            greens << g;
         }
-    // A via's kernels, one for each of the stack's vias the mesh has: its
-    // coupling to every via, and its potential at every metal height.
-    for (const ViaGreen::Span& s : c.spans) {
-        ViaGreen v(c.layers, s, c.spans, c.heights, f, c.rhoMax);
+    });
+    pairOf = QList<int>(nh * nh, -1);
+    for (int w = 0; w < pairs; ++w) {
+        WaveGreen& g = waves[std::size_t(w)];
+        if (!g.ok()) {
+            problems << g.problems();
+            return;
+        }
+        const int i = heightPairs.at(w).first, j = heightPairs.at(w).second;
+        pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
+        greens << std::move(g);
+    }
+    for (ViaGreen& v : vias) {
         if (!v.ok()) {
             problems << v.problems();
             return;
         }
-        v.prepare();
-        viaGreens << v;
+        viaGreens << std::move(v);
     }
 }
 
@@ -1160,59 +1189,187 @@ void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own
         }
 }
 
-AtFrequency solveAt(const Context& c, double f)
+/// \a job(i) for each i below \a count, each on one of \a threads threads,
+/// as they come free, and on no other: in turn from nought. Each done on a
+/// thread other than the caller's is counted in \a counted (fillShared()).
+void sharedOut(int count, int threads, const std::function<void(int)>& job,
+               std::atomic<long long>& counted = sharedColumns)
+{
+    std::atomic_int next{0};
+    onThreads(std::clamp(threads, 1, std::max(1, count)), [&next, &job, &counted, count](int t) {
+        for (int i = next++; i < count; i = next++) {
+            if (t > 0) ++counted;
+            job(i);
+        }
+    });
+}
+
+/*!
+ * Column \a b of a frequency's system M, its part above the diagonal and on
+ * it, the charges' part apart (chargeColumn()): a run in the plane's jw L
+ * with the runs in the plane before it; a via's coupling to every run in
+ * the plane and to the vias up to itself. (A via's run is the runs in the
+ * plane's count and its own index: fullWaveOf() numbers them so.)
+ */
+void systemColumn(const Context& c, const Kernels& k, MatrixC& m, int b)
+{
+    const int np0 = c.planar;
+    if (b < np0) {
+        // jw L: each two runs' cosine times their kernel - nothing between
+        // runs at right angles, which is what makes an axis-aligned layout
+        // cheap.
+        for (int a = 0; a <= b; ++a) {
+            const double dot = k.cosine(a, b);
+            m(a, b) = std::abs(dot) < 1e-9 ? Complex(0, 0) : k.jw * (dot * k.inductance(a, b, c.lDirect(a, b), c.lImage(a, b)));
+        }
+        return;
+    }
+    const int j = b - np0;
+    Q_ASSERT(c.vias.at(j).run == b);
+    // A run in the plane and a via: the via's potential at the run's head
+    // less at its tail - which is also what the run's vector potential does
+    // along the via (G_zx), by the formulation's reciprocity, both ways.
+    for (int a = 0; a < np0; ++a) m(a, b) = k.viaPotential(j, c.head.at(a)) - k.viaPotential(j, c.tail.at(a));
+    // Between two vias: G_zz along both, and the scalar correction of the
+    // one's current at the other's two cells, ended by the ground's nought
+    // for a via to it. Its potential is taken at the cells, as the node
+    // potentials are, so that what a via's current adds along the runs that
+    // carry it away cancels what it adds along the via itself; and the two
+    // ways round averaged, which differ by where a via stands in its cell.
+    const auto onto = [&c, &k](int i, int from) {
+        const int head = c.head.at(c.vias.at(i).run), tail = c.tail.at(c.vias.at(i).run);
+        Complex v = k.viaCoupling(i, from);
+        v += k.viaPotential(from, head);
+        if (tail >= 0) v -= k.viaPotential(from, tail);
+        return v;
+    };
+    for (int i = 0; i <= j; ++i) {
+        const Complex ij = onto(i, j);
+        m(c.vias.at(i).run, b) = 0.5 * (ij + (i == j ? ij : onto(j, i)));
+    }
+}
+
+/// Column \a j of P, its part above the diagonal and on it: each cell's
+/// potential of a unit charge spread over another.
+void potentialColumn(const Context& c, const Kernels& k, MatrixC& p, int j)
+{
+    for (int i = 0; i <= j; ++i) p(i, j) = k.potential(i, j, c.pStatic(i, j), c.pStatic(j, i));
+}
+
+/// The columns a thread makes below the diagonal at a time
+/// (mirrorColumns()): each of their rows above is read in one piece.
+constexpr int kMirrorBlock = 16;
+
+/// A symmetric matrix's columns from \a b0 to before \a b1, below their
+/// diagonal, made their rows' above it.
+template <typename Matrix> void mirrorColumns(Matrix& x, int b0, int b1)
+{
+    for (int a = b0 + 1; a < x.rows(); ++a)
+        for (int b = b0; b < std::min(b1, a); ++b) x(a, b) = x(b, a);
+}
+
+/// Column \a b of M: the charges eliminated, A^T P A / jw. (A via to the
+/// ground has no tail: the ground takes its charge, at nought.)
+void chargeColumn(const Context& c, const MatrixC& p, Complex jw, MatrixC& m, int b)
+{
+    const auto pAt = [&p](int i, int j) { return i < 0 || j < 0 ? Complex(0, 0) : p(i, j); };
+    const int tail = c.tail.at(b), head = c.head.at(b);
+    for (int a = 0; a < c.nr; ++a)
+        m(a, b) += (pAt(c.tail.at(a), tail) - pAt(c.tail.at(a), head) - pAt(c.head.at(a), tail) + pAt(c.head.at(a), head)) / jw;
+}
+
+/// Column \a b of a dense solve's static partial inductances, direct and of
+/// the images (Context::lDirect and lImage), its part above the diagonal and
+/// on it: each run's with the runs before it, nought at right angles.
+void staticInductanceColumn(const Context& c, Eigen::MatrixXd& direct, Eigen::MatrixXd& image, int b)
+{
+    for (int a = 0; a <= b; ++a) {
+        const bool crossed = std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9;
+        direct(a, b) = crossed ? 0.0 : alignedInductance(c.runs.at(a), c.runs.at(b));
+        image(a, b) = crossed ? 0.0 : alignedInductance(c.runs.at(a), c.mirrored.at(b));
+    }
+}
+
+/// Column \a j of a dense solve's static potentials (Context::pStatic),
+/// whole: each cell's of a unit charge spread over cell j - not cell j's of
+/// one spread over it, where the two differ in size.
+void staticPotentialColumn(const Context& c, Eigen::MatrixXd& p, int j)
+{
+    for (int i = 0; i < c.nc; ++i)
+        p(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
+}
+
+/*!
+ * A dense solve's static parts (Context::lDirect, lImage and pStatic), made
+ * once before its frequencies and shared out among \a threads threads a
+ * column at a time as they come free, each column written by its own thread
+ * alone, as solveAt() fills a frequency's: first the potentials' columns,
+ * each whole, and the inductances' above the diagonal and on it, the
+ * longest first, so that the threads end together; then the inductances'
+ * part below from the others' above, a block of columns at a time. Each
+ * term is made by the expression that made it on one thread, so the parts
+ * are the same to the last digit on any number of threads.
+ */
+void makeStatics(Context& c, int threads)
+{
+    const int nr = c.nr, nc = c.nc;
+    c.lDirect.resize(nr, nr);
+    c.lImage.resize(nr, nr);
+    c.pStatic.resize(nc, nc);
+    sharedOut(nc + nr, threads, [&c, nr, nc](int i) {
+        if (i < nc)
+            staticPotentialColumn(c, c.pStatic, i);
+        else
+            staticInductanceColumn(c, c.lDirect, c.lImage, nr - 1 - (i - nc));
+    }, sharedStatics);
+    const int blocks = (nr + kMirrorBlock - 1) / kMirrorBlock;
+    sharedOut(2 * blocks, threads, [&c, blocks](int i) {
+        Eigen::MatrixXd& x = i < blocks ? c.lDirect : c.lImage;
+        const int b0 = (i < blocks ? i : i - blocks) * kMirrorBlock;
+        mirrorColumns(x, b0, std::min(int(x.cols()), b0 + kMirrorBlock));
+    }, sharedStatics);
+}
+
+AtFrequency solveAt(const Context& c, double f, int threads)
 {
     AtFrequency out;
     QElapsedTimer clock;
     clock.start();
-    const Kernels k(c, f);
+    const Kernels k(c, f, threads);
     if (!k.problems.isEmpty()) {
         out.problems << k.problems;
         return out;
     }
     const Complex jw = k.jw;
-    const int nr = c.nr, nc = c.nc;
+    const int nr = c.nr, nc = c.nc, nv = int(c.vias.size());
 
-    // jw L: each two runs' cosine times their kernel - nothing between
-    // runs at right angles, which is what makes an axis-aligned layout
-    // cheap.
-    MatrixC m = MatrixC::Zero(nr, nr);
-    const int np0 = c.planar;
-    for (int a = 0; a < np0; ++a)
-        for (int b = a; b < np0; ++b) {
-            const double dot = k.cosine(a, b);
-            if (std::abs(dot) < 1e-9) continue;
-            m(a, b) = m(b, a) = jw * (dot * k.inductance(a, b, c.lDirect(a, b), c.lImage(a, b)));
-        }
+    // M = Zs l/w + jw L + A^T P A / jw, the charge eliminated, and P, each
+    // cell's potential of a unit charge spread over another: both
+    // symmetric, and each column held in one piece (Eigen's order), so a
+    // column is its row. Shared out among the frequency's threads a column
+    // at a time as they come free, each column written by its own thread
+    // alone: first each one's part above the diagonal and on it, the
+    // longest first, so that the threads end together; then the part below
+    // from the others' above, a block of columns at a time; then M's
+    // charges, which read P whole. Each term is made as one thread made it,
+    // in the same order, so the system is the same to the last digit on any
+    // number of threads.
+    MatrixC m(nr, nr), p(nc, nc);
+    sharedOut(nr + nc, threads, [&c, &k, &m, &p, nr, nc](int i) {
+        if (i < nr)
+            systemColumn(c, k, m, nr - 1 - i);
+        else
+            potentialColumn(c, k, p, nc - 1 - (i - nr));
+    });
+    const int mBlocks = (nr + kMirrorBlock - 1) / kMirrorBlock, pBlocks = (nc + kMirrorBlock - 1) / kMirrorBlock;
+    sharedOut(mBlocks + pBlocks, threads, [&m, &p, mBlocks](int i) {
+        MatrixC& x = i < mBlocks ? m : p;
+        const int b0 = (i < mBlocks ? i : i - mBlocks) * kMirrorBlock;
+        mirrorColumns(x, b0, std::min(int(x.cols()), b0 + kMirrorBlock));
+    });
+    sharedOut(nr, threads, [&c, &p, &m, jw](int b) { chargeColumn(c, p, jw, m, b); });
+    ownImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
 
-    // The vias. Between two: G_zz along both, and the scalar correction of
-    // the one's current at the other's two cells, ended by the ground's
-    // nought for a via to it. Its potential is taken at the cells, as the
-    // node potentials are, so that what a via's current adds along the runs
-    // that carry it away cancels what it adds along the via itself; and the
-    // two ways round averaged, which differ by where a via stands in its
-    // cell.
-    const int nv = int(c.vias.size());
-    MatrixC block(nv, nv);
-    for (int i = 0; i < nv; ++i)
-        for (int j = 0; j < nv; ++j) {
-            const int head = c.head.at(c.vias.at(i).run), tail = c.tail.at(c.vias.at(i).run);
-            Complex v = k.viaCoupling(i, j);
-            v += k.viaPotential(j, head);
-            if (tail >= 0) v -= k.viaPotential(j, tail);
-            block(i, j) = v;
-        }
-    for (int i = 0; i < nv; ++i)
-        for (int j = i; j < nv; ++j)
-            m(c.vias.at(i).run, c.vias.at(j).run) = m(c.vias.at(j).run, c.vias.at(i).run) = 0.5 * (block(i, j) + block(j, i));
-    // A run in the plane and a via: the via's potential at the run's head
-    // less at its tail - which is also what the run's vector potential does
-    // along the via (G_zx), by the formulation's reciprocity, both ways.
-    for (int a = 0; a < np0; ++a)
-        for (int j = 0; j < nv; ++j) {
-            const Complex v = k.viaPotential(j, c.head.at(a)) - k.viaPotential(j, c.tail.at(a));
-            m(a, c.vias.at(j).run) = m(c.vias.at(j).run, a) = v;
-        }
     // A port and a via: the via's potential at the port's cells, by their
     // shares. Along the runs a via's potential telescopes from the via to
     // the port, and a port's current comes up to its cells from the ground
@@ -1226,21 +1383,6 @@ AtFrequency solveAt(const Context& c, double f)
         for (int i = 0; i < nc; ++i)
             if (c.drive(i, q) != Complex(0, 0))
                 for (int j = 0; j < nv; ++j) portVia(q, j) += c.drive(i, q) * k.viaPotential(j, i);
-
-    // P: each cell's potential of a unit charge spread over another.
-    MatrixC p(nc, nc);
-    for (int i = 0; i < nc; ++i)
-        for (int j = i; j < nc; ++j) p(i, j) = p(j, i) = k.potential(i, j, c.pStatic(i, j), c.pStatic(j, i));
-
-    // The charge eliminated: M = Zs l/w + jw L + A^T P A / jw. (A via to the
-    // ground has no tail: the ground takes its charge, at nought.)
-    const auto pAt = [&p](int i, int j) { return i < 0 || j < 0 ? Complex(0, 0) : p(i, j); };
-    for (int a = 0; a < nr; ++a)
-        for (int b = 0; b < nr; ++b)
-            m(a, b) += (pAt(c.tail.at(a), c.tail.at(b)) - pAt(c.tail.at(a), c.head.at(b)) - pAt(c.head.at(a), c.tail.at(b))
-                        + pAt(c.head.at(a), c.head.at(b)))
-                       / jw;
-    ownImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
 
     // Each port driven by an ampere in turn: A^T P J / jw the drive.
     const MatrixC pDrive = p * c.drive;
@@ -1553,7 +1695,7 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
 AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const std::atomic_bool* stop)
 {
     AtFrequency out;
-    const Kernels k(c, f);
+    const Kernels k(c, f, threads);
     if (!k.problems.isEmpty()) {
         out.problems << k.problems;
         return out;
@@ -1706,6 +1848,15 @@ double sweepMemory()
 {
     const double set = sweepMemorySet.load();
     return set > 0 ? set : automaticSweepMemory();
+}
+
+FillShared fillShared()
+{
+    FillShared out;
+    out.greens = sharedGreens.load();
+    out.columns = sharedColumns.load();
+    out.statics = sharedStatics.load();
+    return out;
 }
 
 double metalHeight(const Stack& stack, const QString& name)
@@ -2450,7 +2601,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // middle, and its image in the ground; for a dense solve, the runs'
     // static partial inductances, direct and of their images, and the
     // static potential of each cell's charge spread over it - the singular
-    // parts of the two kernels, in closed form. The partial inductances are
+    // parts of the two kernels, in closed form, made on every thread before
+    // the frequencies are (makeStatics()). The partial inductances are
     // aligned (alignedInductance()), the cosine between two runs taken
     // apart from them: of two runs neither parallel nor at right angles,
     // the partial inductance was taken as though they were parallel and
@@ -2474,24 +2626,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     Compression z;
     int side = 1;   // frequencies at a time
     if (!compress) {
-        c.lDirect = Eigen::MatrixXd::Zero(nr, nr);
-        c.lImage = Eigen::MatrixXd::Zero(nr, nr);
-        for (int a = 0; a < nr; ++a)
-            for (int b = a; b < nr; ++b) {
-                if (std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9) continue;
-                c.lDirect(a, b) = c.lDirect(b, a) = alignedInductance(c.runs.at(a), c.runs.at(b));
-                c.lImage(a, b) = c.lImage(b, a) = alignedInductance(c.runs.at(a), c.mirrored.at(b));
-            }
-        c.pStatic.resize(nc, nc);
-        for (int i = 0; i < nc; ++i)
-            for (int j = 0; j < nc; ++j)
-                c.pStatic(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
+        makeStatics(c, threads);
         // The frequencies side by side: each its own Green's functions and
-        // its own system, the static parts shared. As many threads as the
-        // machine has, and no more than the memory allows - a system,
+        // its own system, the static parts shared. As many at a time as the
+        // machine has threads, and no more than the memory allows - a system,
         // factorized where it is, and P are some 16 (nr^2 + nc^2) bytes a
         // frequency (measured in the app: 258 MB at 3588 runs over 1800
-        // cells, 266 each of three at once).
+        // cells, 266 each of three at once) -, the threads they leave shared
+        // out between them to fill their systems.
         const double perFrequency = 16.0 * (double(nr) * nr + double(nc) * nc) + 1e6;
         side = std::min({threads, nf, std::max(1, int(sweepMemory() / perFrequency))});
     } else {
@@ -2515,7 +2657,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         side = std::min({threads, nf, std::max(1, int(budget / z.estimate))});
     }
     const int inner = std::max(1, threads / side);
-    out.threads = compress ? side * inner : side;
+    out.threads = side * inner;
     if (control != nullptr && control->begins) control->begins(nf);
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
@@ -2527,7 +2669,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         for (int k = next++; k < nf; k = next++) {
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
-            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, stop) : solveAt(c, frequencies.at(k));
+            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, stop)
+                                                : solveAt(c, frequencies.at(k), inner);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }

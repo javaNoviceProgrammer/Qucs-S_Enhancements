@@ -398,6 +398,18 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
                     const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre = 1e-6,
                     const FullWaveControl* control = nullptr, const QList<ReturnMark>& returns = {});
 
+/// What solves' frequencies have had made on threads other than their own
+/// since the process began, for tests. A frequency is given the threads
+/// that the frequencies at a time leave (FullWaveControl::threads), and its
+/// Green's functions are made side by side on them; a dense solve's
+/// matrices, a column (or a block of columns) to a thread. The dense
+/// solve's static parts, made once before its frequencies, are shared out
+/// alike among all of the solve's threads (statics).
+struct FillShared {
+    long long greens = 0, columns = 0, statics = 0;
+};
+FillShared fillShared();
+
 /*!
  * The mixed-mode S of frequency \a k of \a solved: each differential
  * pair's (FullWave::pairs) differential and common mode, then each port of
