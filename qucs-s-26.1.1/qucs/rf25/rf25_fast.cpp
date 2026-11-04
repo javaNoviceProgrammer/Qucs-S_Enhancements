@@ -36,10 +36,6 @@
 
 namespace qucs_s::rf25 {
 
-namespace {
-
-/// \a job(t) on \a threads threads, t from nought, the caller's own the
-/// first; back when all are done.
 void onThreads(int threads, const std::function<void(int)>& job)
 {
     QList<QThread*> pool;
@@ -55,8 +51,6 @@ void onThreads(int threads, const std::function<void(int)>& job)
         delete thread;
     }
 }
-
-} // namespace
 
 Box Box::of(double x0, double y0, double z0, double x1, double y1, double z1)
 {

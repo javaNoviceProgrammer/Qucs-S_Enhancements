@@ -65,6 +65,11 @@ namespace qucs_s::rf25 {
 using Complex = std::complex<double>;
 using VectorC = Eigen::VectorXcd;
 
+/// \a job(t) on \a threads threads, t from nought, the caller's own the
+/// first; back when all are done. (The compressed matrices' fill and
+/// products, and the dense solve's fill, rf25_fullwave.cpp.)
+void onThreads(int threads, const std::function<void(int)>& job);
+
 /// An axis-aligned box, m: what an unknown of the solve covers.
 struct Box {
     double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
