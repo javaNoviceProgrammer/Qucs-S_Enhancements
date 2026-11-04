@@ -18,6 +18,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <set>
 #include <functional>
@@ -269,16 +270,26 @@ QList<NodeKind> makeKinds()
         grid.choiceLabels = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("f")};
         grid.defaultValue = QJsonArray();
         grid.tooltip = tr("Every point of a rectilinear grid: each x with each y");
+        P grid3;
+        grid3.key = QStringLiteral("grid3");
+        grid3.label = tr("Table (x, y, z, f(x, y, z))");
+        grid3.kind = P::Rows;
+        grid3.choiceLabels = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z"), QStringLiteral("f")};
+        grid3.defaultValue = QJsonArray();
+        grid3.tooltip = tr("Every point of a rectilinear grid: each x with each y with each z");
         add({QStringLiteral("interpolation"), tr("Interpolation"), QStringLiteral("function"), QStringLiteral("function"), Level::None,
              {text(QStringLiteral("name"), tr("Function name"), QStringLiteral("int")),
-              choice(QStringLiteral("dimension"), tr("Arguments"), {QStringLiteral("1"), QStringLiteral("2")},
-                     {tr("One: f(x)"), tr("Two: f(x, y) on a grid")}, QStringLiteral("1")),
+              choice(QStringLiteral("dimension"), tr("Arguments"), {QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3")},
+                     {tr("One: f(x)"), tr("Two: f(x, y) on a grid"), tr("Three: f(x, y, z) on a grid")}, QStringLiteral("1")),
               shownIf(rows, QStringLiteral("dimension=1")), shownIf(grid, QStringLiteral("dimension=2")),
-              text(QStringLiteral("argunit"), tr("Arguments' units"), QString(), tr("Two split by a comma for f(x, y): um, um")),
+              shownIf(grid3, QStringLiteral("dimension=3")),
+              text(QStringLiteral("argunit"), tr("Arguments' units"), QString(),
+                   tr("Split by commas, one each: um, um for f(x, y); um, um, um for f(x, y, z)")),
               text(QStringLiteral("unit"), tr("Function's unit"), QString())},
              {}, {}, false, false, QStringLiteral("ip"),
              tr("A function given by a table: of one argument, linear between its points; of two, on a grid of every x with "
-                "every y, bilinear between them (an imported optical generation map); constant beyond them.")});
+                "every y, bilinear between them (an imported optical generation map); of three, on a grid of every x, y and z, "
+                "trilinear (a 3D map); constant beyond them.")});
     }
     // (A 3D model's component is one too, its space 3D: not a choice of the
     // 2D panel's, and not shown in the 3D one.)
@@ -3617,7 +3628,8 @@ QList<NodeKind> makeKinds()
         // Exports.
         add({QStringLiteral("exports"), tr("Export"), QString(), QStringLiteral("exports"), Level::None, {},
              {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart"), QStringLiteral("fieldexport"),
-              QStringLiteral("modeprofile"), QStringLiteral("lumericalmode"), QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw")},
+              QStringLiteral("modeprofile"), QStringLiteral("lumericalmode"), QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw"),
+              QStringLiteral("vtu")},
              {}, true, true, QString(),
              tr("Results as files and parts of circuits: a line's S-parameters (Touchstone), SPICE subcircuits, a Qucs "
                 "subcircuit, fields on a grid (CSV, NumPy), a mode's profile (MATLAB, NumPy, CSV) - each written beside the model "
@@ -3705,6 +3717,19 @@ QList<NodeKind> makeKinds()
                   shownIf(pair(QStringLiteral("to"), tr("Upper right corner"), QStringLiteral("length"), QString(), QString()), QStringLiteral("where=grid")),
                   shownIf(integer(QStringLiteral("nx"), tr("Points along x"), 101), QStringLiteral("where=grid")),
                   shownIf(integer(QStringLiteral("ny"), tr("Points along y"), 101), QStringLiteral("where=grid")),
+                  // (A 3D model's grid: its z too.)
+                  [&] {
+                      P z = shownIf(pair(QStringLiteral("zrange"), tr("From z to z"), QStringLiteral("length"), QString(), QString(),
+                                         tr("In the geometry's unit; empty: the model's extent")),
+                                    QStringLiteral("where=grid"));
+                      z.spaces = Spaces::ThreeD;
+                      return z;
+                  }(),
+                  [&] {
+                      P nz = shownIf(integer(QStringLiteral("nz"), tr("Points along z"), 21), QStringLiteral("where=grid"));
+                      nz.spaces = Spaces::ThreeD;
+                      return nz;
+                  }(),
                   choice(QStringLiteral("format"), tr("Format"), {QStringLiteral("csv"), QStringLiteral("npy"), QStringLiteral("dat")},
                          {tr("CSV (a row per point: x, y, values)"), tr("NumPy .npy (a grid: [solution,] expression, y, x)"),
                           tr("Columns, # comments, a blank line after each grid row (gnuplot)")},
@@ -3714,6 +3739,19 @@ QList<NodeKind> makeKinds()
                  tr("Expressions of the solution on a regular grid or at the mesh's nodes, for a contour outside Qucs-S: "
                     "CSV, NumPy or columns - x and y in the geometry's unit, the values in SI, NaN outside the domains; one "
                     "solution (a point, time, frequency or mode), each, or each point's chosen mode.")});
+            add({QStringLiteral("vtu"), tr("VTU (ParaView)"), QStringLiteral("export"), QStringLiteral("vtu"), Level::None,
+                 {study, which, shownIf(point, one), shownIf(time, one),
+                  text(QStringLiteral("expressions"), tr("Expressions"), QStringLiteral("ht.T"),
+                       tr("Split by ';', each named if wanted: T = ht.T; es.normE - in SI")),
+                  choice(QStringLiteral("order"), tr("Cells"), {QStringLiteral("auto"), QStringLiteral("linear"), QStringLiteral("quadratic")},
+                         {tr("Automatic: quadratic where a field is of order 2"), tr("Wedges (6 points)"),
+                          tr("Quadratic wedges (15 points: the edges' middles read too)")},
+                         QStringLiteral("auto")),
+                  file},
+                 {}, {}, false, false, QStringLiteral("vtu"),
+                 tr("The solution for ParaView: a VTK unstructured grid (.vtu) of the mesh's prisms, each expression at their points, each "
+                    "prism's domain (dom); its points in the geometry's unit. Of each output time and point: a .pvd collection of them, a "
+                    ".vtu each beside it.")});
             P modes;
             modes.key = QStringLiteral("physics");
             modes.label = tr("Mode analysis");
@@ -3822,6 +3860,13 @@ QList<NodeKind> makeKinds()
         if (kind.type == QLatin1String("sweep"))
             for (P& p : kind.properties)
                 if (p.key == QLatin1String("parallel")) p.spaces = Spaces::TwoD;
+        // A 3D model's exports: VTU, its alone; Field on a Grid, its z too.
+        if (kind.type == QLatin1String("vtu")) kind.spaces = Spaces::ThreeD;
+        if (kind.type == QLatin1String("fieldexport")) {
+            kind.spaces = Spaces::All;
+            for (P& p : kind.properties)
+                if (p.key == QLatin1String("frequency") || p.key == QLatin1String("mode")) p.spaces = Spaces::TwoD;
+        }
         // A 3D model's plot groups and their plots (surfaces and the mesh as
         // the plane's are).
         if (kind.type == QLatin1String("plotgroup3d") || kind.type == QLatin1String("slice") || kind.type == QLatin1String("isosurface")
@@ -4979,6 +5024,47 @@ std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHa
             Scope::Function fn;
             fn.arguments << QStringLiteral("x") << QStringLiteral("y");
             fn.argumentDims << (xu ? xu->dim : Dim()) << (vu ? vu->dim : Dim());
+            fn.table = table;
+            fn.dim = fu ? fu->dim : Dim();
+            ps->scope.setFunction(name, fn);
+        } else if (f.type == QLatin1String("interpolation") && f.text(QStringLiteral("dimension")) == QLatin1String("3")) {
+            // Its grid: the x's, y's and z's of its rows, each triple's value.
+            auto table = std::make_shared<Expression::Table>();
+            const QStringList units = f.text(QStringLiteral("argunit")).split(QLatin1Char(','));
+            std::optional<Unit> au[3];
+            for (int k = 0; k < 3; ++k) au[k] = parseUnit(units.value(k).trimmed());
+            const std::optional<Unit> fu = parseUnit(f.text(QStringLiteral("unit")));
+            auto number = [](const QJsonValue& v) { return v.isDouble() ? v.toDouble() : v.toString().toDouble(); };
+            std::map<std::array<double, 3>, double> at;
+            std::set<double> axis[3];
+            for (const QJsonValue& row : f.value(QStringLiteral("grid3")).toArray()) {
+                const QJsonArray r = row.toArray();
+                if (r.size() < 4) continue;
+                std::array<double, 3> c;
+                for (int k = 0; k < 3; ++k) {
+                    c[std::size_t(k)] = number(r.at(k)) * (au[k] ? au[k]->scale : 1) + (au[k] ? au[k]->offset : 0);
+                    axis[k].insert(c[std::size_t(k)]);
+                }
+                at[c] = number(r.at(3)) * (fu ? fu->scale : 1) + (fu ? fu->offset : 0);
+            }
+            table->x.assign(axis[0].begin(), axis[0].end());
+            table->grid.assign(axis[1].begin(), axis[1].end());
+            table->grid3.assign(axis[2].begin(), axis[2].end());
+            if (table->x.empty() || at.size() != axis[0].size() * axis[1].size() * axis[2].size()) {
+                ps->errors.insert(name, tr("%1: its table is not a grid of every x with every y and every z (%2 points for %3 x %4 x %5)")
+                                            .arg(name)
+                                            .arg(at.size())
+                                            .arg(axis[0].size())
+                                            .arg(axis[1].size())
+                                            .arg(axis[2].size()));
+                continue;
+            }
+            for (double x : table->x)
+                for (double y : table->grid)
+                    for (double z : table->grid3) table->z.push_back(at.at({x, y, z}));
+            Scope::Function fn;
+            fn.arguments << QStringLiteral("x") << QStringLiteral("y") << QStringLiteral("z");
+            for (int k = 0; k < 3; ++k) fn.argumentDims << (au[k] ? au[k]->dim : Dim());
             fn.table = table;
             fn.dim = fu ? fu->dim : Dim();
             ps->scope.setFunction(name, fn);

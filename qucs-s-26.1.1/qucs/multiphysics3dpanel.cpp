@@ -706,6 +706,14 @@ void Multiphysics3DPanel::showSettings()
             if (a_doc) a_doc->evaluate(tag);
         });
         v->addWidget(evaluate);
+    } else if (k && k->group == QLatin1String("export")) {
+        auto* run = new QPushButton(tr("Export"), a_form);
+        run->setObjectName(QStringLiteral("mp3ExportButton"));
+        const QString tag = n->tag;
+        connect(run, &QPushButton::clicked, this, [this, tag] {
+            if (a_doc) a_doc->runExport(tag);
+        });
+        v->addWidget(run);
     } else if (n->type == QLatin1String("plotgroup3d")) {
         auto* plot = new QPushButton(tr("Plot"), a_form);
         plot->setObjectName(QStringLiteral("mp3PlotButton"));

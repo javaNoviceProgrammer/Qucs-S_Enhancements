@@ -18,13 +18,17 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include "fem3_export.h"
 #include "fem3_results.h"
 #include "fem3_solver.h"
 
 #include <QJsonDocument>
+#include <QRegularExpression>
+#include <QXmlStreamReader>
 #include <QtTest>
 
 #include <cmath>
+#include <set>
 
 using namespace qucs_s::fem;
 
@@ -1237,6 +1241,221 @@ private slots:
                 QVERIFY2(std::abs(a.v.x + 1e3) < 1e-6 && std::abs(a.v.y) < 1e-6 && std::abs(a.v.z) < 1e-6, qPrintable(QStringLiteral("%1, %2, %3").arg(a.v.x).arg(a.v.y).arg(a.v.z)));
             QCOMPARE(arrows.front().at.x, 0.25);
         }
+    }
+
+    // A 3D model's exports, read back. A VTU of a linear field (order 1): its
+    // points the mesh's nodes, ht.T at each the field's there, each cell a
+    // wedge whose floor's normal points away from its top (VTK's), its
+    // domain from 1. Of an order 2 field quadratic wedges: each edge's middle
+    // where its corners' middle is, the quadratic field's value there. A
+    // series in time a PVD of its output times, a VTU each. Field on a Grid in
+    // 3D: a CSV of every grid point, the linear field at each and nan beyond
+    // the model; a NumPy grid of shape (1, nz, ny, nx), its points' x, y, z
+    // beside it; columns with a blank line after each row of x.
+    void exports()
+    {
+        // A VTU's arrays by name (its points' "", none named), as numbers.
+        auto arrays = [](const QByteArray& xml) {
+            QHash<QString, std::vector<double>> out;
+            QXmlStreamReader r(xml);
+            while (!r.atEnd()) {
+                r.readNext();
+                if (!r.isStartElement() || r.name() != QLatin1String("DataArray")) continue;
+                const QString name = r.attributes().value(QStringLiteral("Name")).toString();
+                const QString text = r.readElementText();
+                std::vector<double>& v = out[name];
+                for (const QString& t : text.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts))
+                    v.push_back(t == QLatin1String("nan") ? std::nan("") : t.toDouble());
+            }
+            return out;
+        };
+        auto node = [](Model& m, const QString& type, const QJsonObject& props) {
+            Node n = m.make(type);
+            for (auto it = props.begin(); it != props.end(); ++it) n.props.insert(it.key(), it.value());
+            return n;
+        };
+        auto T = [](double x, double y, double z) { return 300 + 10 * (x + 2 * y + 3 * z); };   // mm
+        {
+            Model m = model3d(0.4);
+            addBox(m, QStringLiteral("left"), 0, 0, 0, 1, 1, 1);
+            addBox(m, QStringLiteral("right"), 1, 0, 0, 1, 1, 1);
+            const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("2[W/(m*K)]"));
+            addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"),
+                       QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K] + 1e4[K/m]*(x + 2*y + 3*z)")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const Solutions3 set{sv.r.solution};
+            const Export3 vtu = export3(set, node(m, QStringLiteral("vtu"), {{QStringLiteral("expressions"), QStringLiteral("ht.T")}}), QStringLiteral("box"));
+            QVERIFY2(vtu.main.error.isEmpty() && vtu.main.suffix == QLatin1String("vtu") && vtu.parts.empty(), qPrintable(vtu.main.error));
+            const auto a = arrays(vtu.main.data);
+            const std::vector<double>& points = a.value(QString()), &t = a.value(QStringLiteral("ht.T"));
+            const std::vector<double>& cells = a.value(QStringLiteral("connectivity")), &types = a.value(QStringLiteral("types"));
+            const Mesh3& mesh = sv.s().mesh();
+            QCOMPARE(points.size(), 3 * mesh.nodes.size());
+            QCOMPARE(t.size(), mesh.nodes.size());
+            QCOMPARE(cells.size(), 6 * mesh.prisms.size());
+            QVERIFY(std::all_of(types.begin(), types.end(), [](double v) { return v == 13; }));
+            QCOMPARE(a.value(QStringLiteral("dom")).size(), mesh.prisms.size());
+            double worst = 0;
+            for (std::size_t i = 0; i < t.size(); ++i) worst = std::max(worst, std::abs(t[i] - T(points[3 * i], points[3 * i + 1], points[3 * i + 2])));
+            QVERIFY2(worst < 1e-8, qPrintable(QStringLiteral("%1 K off").arg(worst)));
+            int inward = 0;
+            for (std::size_t c = 0; c < mesh.prisms.size(); ++c) {
+                auto at = [&](int k) {
+                    const std::size_t p = std::size_t(cells[6 * c + std::size_t(k)]);
+                    return Vec3{points[3 * p], points[3 * p + 1], points[3 * p + 2]};
+                };
+                const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3), p4 = at(4), p5 = at(5);
+                const Vec3 u{p1.x - p0.x, p1.y - p0.y, p1.z - p0.z}, v{p2.x - p0.x, p2.y - p0.y, p2.z - p0.z};
+                const Vec3 n{u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x};
+                const Vec3 up{(p3.x + p4.x + p5.x - p0.x - p1.x - p2.x) / 3, (p3.y + p4.y + p5.y - p0.y - p1.y - p2.y) / 3, (p3.z + p4.z + p5.z - p0.z - p1.z - p2.z) / 3};
+                inward += n.x * up.x + n.y * up.y + n.z * up.z < 0 ? 0 : 1;
+            }
+            QVERIFY2(inward == 0, qPrintable(QStringLiteral("%1 wedges with their floor's normal toward their top").arg(inward)));
+            // Field on a Grid: a CSV over and beyond the model.
+            const QJsonObject grid{{QStringLiteral("expressions"), QStringLiteral("ht.T")},
+                                   {QStringLiteral("from"), QJsonArray{QStringLiteral("-0.5"), QStringLiteral("-0.5")}},
+                                   {QStringLiteral("to"), QJsonArray{QStringLiteral("2.5"), QStringLiteral("1.5")}},
+                                   {QStringLiteral("zrange"), QJsonArray{QStringLiteral("0.25"), QStringLiteral("750[um]")}},
+                                   {QStringLiteral("nx"), 7}, {QStringLiteral("ny"), 5}, {QStringLiteral("nz"), 3}};
+            QJsonObject csvProps = grid;
+            csvProps.insert(QStringLiteral("format"), QStringLiteral("csv"));
+            const Export3 csv = export3(set, node(m, QStringLiteral("fieldexport"), csvProps), QStringLiteral("box"));
+            QVERIFY2(csv.main.error.isEmpty() && csv.main.suffix == QLatin1String("csv"), qPrintable(csv.main.error));
+            const QStringList lines = csv.main.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            QCOMPARE(lines.size(), 1 + 7 * 5 * 3);
+            QCOMPARE(lines.front(), QStringLiteral("x (mm),y (mm),z (mm),ht.T (K)"));
+            int inside = 0, beyond = 0;
+            std::set<double> zs;
+            for (int i = 1; i < lines.size(); ++i) {
+                const QStringList c = lines[i].split(QLatin1Char(','));
+                const double x = c[0].toDouble(), y = c[1].toDouble(), z = c[2].toDouble();
+                zs.insert(z);
+                const bool in = x >= 0 && x <= 2 && y >= 0 && y <= 1;
+                if (in) {
+                    ++inside;
+                    QVERIFY2(std::abs(c[3].toDouble() - T(x, y, z)) < 1e-8, qPrintable(lines[i]));
+                } else {
+                    ++beyond;
+                    QCOMPARE(c[3], QStringLiteral("nan"));
+                }
+            }
+            QVERIFY(inside > 0 && beyond > 0);
+            // (Its z from 0.25 to 750 µm, as given: the model's own is 0 to 1.)
+            QVERIFY2(zs == (std::set<double>{0.25, 0.5, 0.75}), qPrintable(lines[1]));
+            QJsonObject npyProps = grid;
+            npyProps.insert(QStringLiteral("format"), QStringLiteral("npy"));
+            const Export3 np = export3(set, node(m, QStringLiteral("fieldexport"), npyProps), QStringLiteral("box"));
+            QVERIFY2(np.main.error.isEmpty() && np.main.suffix == QLatin1String("npy"), qPrintable(np.main.error));
+            QVERIFY2(np.main.data.contains("'shape': (1, 3, 5, 7)") && np.main.coordinates.contains("'shape': (3, 3, 5, 7)"), np.main.data.left(120).constData());
+            QCOMPARE(np.main.data.size() - np.main.data.indexOf('\n') - 1, qsizetype(8 * 105));
+            QJsonObject datProps = grid;
+            datProps.insert(QStringLiteral("format"), QStringLiteral("dat"));
+            const Export3 dat = export3(set, node(m, QStringLiteral("fieldexport"), datProps), QStringLiteral("box"));
+            QVERIFY2(dat.main.error.isEmpty() && dat.main.text.count(QStringLiteral("\n\n\n")) == 3 && dat.main.text.startsWith(QStringLiteral("# x (mm) y (mm) z (mm)")),
+                     qPrintable(dat.main.text.left(200)));
+        }
+        {
+            // Order 2: quadratic wedges.
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("box"), 0, 0, 0, 1, 1, 1);
+            const QString ht = addPhysics(m, QStringLiteral("heat"), 2, QStringLiteral("2[W/(m*K)]"));
+            addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"),
+                       QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K] + 1e7[K/m^2]*x^2 + 2e6[K/m^2]*y*z")}});
+            addFeature(m, ht, QStringLiteral("heat/source"), rule(R"({"all": true})"), QJsonObject{{QStringLiteral("Q0"), QStringLiteral("-4e7[W/m^3]")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const Export3 vtu = export3(Solutions3{sv.r.solution}, node(m, QStringLiteral("vtu"), {{QStringLiteral("expressions"), QStringLiteral("T = ht.T")}}), QStringLiteral("q"));
+            QVERIFY2(vtu.main.error.isEmpty(), qPrintable(vtu.main.error));
+            const auto a = arrays(vtu.main.data);
+            const std::vector<double>& points = a.value(QString()), &t = a.value(QStringLiteral("T")), &cells = a.value(QStringLiteral("connectivity"));
+            QCOMPARE(cells.size(), 15 * sv.s().mesh().prisms.size());
+            QVERIFY(a.value(QStringLiteral("types")).front() == 26);
+            double worst = 0, off = 0;
+            static const int edge[9][2] = {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5}, {5, 3}, {0, 3}, {1, 4}, {2, 5}};
+            for (std::size_t c = 0; c < sv.s().mesh().prisms.size(); ++c)
+                for (int k = 0; k < 9; ++k) {
+                    const std::size_t m0 = std::size_t(cells[15 * c + std::size_t(6 + k)]), a0 = std::size_t(cells[15 * c + std::size_t(edge[k][0])]),
+                                      b0 = std::size_t(cells[15 * c + std::size_t(edge[k][1])]);
+                    for (int d = 0; d < 3; ++d) off = std::max(off, std::abs(points[3 * m0 + std::size_t(d)] - 0.5 * (points[3 * a0 + std::size_t(d)] + points[3 * b0 + std::size_t(d)])));
+                    const double x = points[3 * m0], y = points[3 * m0 + 1], z = points[3 * m0 + 2];
+                    worst = std::max(worst, std::abs(t[m0] - (300 + 10 * x * x + 2 * y * z)));
+                }
+            QVERIFY2(off < 1e-12 && worst < 1e-7, qPrintable(QStringLiteral("middles %1 mm off, %2 K off").arg(off).arg(worst)));
+        }
+        {
+            // A series in time: a PVD of its three output times.
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("block"), 0, 0, 0, 2, 1, 1);
+            addMaterial(m, QStringLiteral("A"),
+                        QJsonObject{{QStringLiteral("k"), QStringLiteral("2[W/(m*K)]")}, {QStringLiteral("rho"), QStringLiteral("1000[kg/m^3]")}, {QStringLiteral("Cp"), QStringLiteral("1000[J/(kg*K)]")}},
+                        rule(R"({"all": true})"));
+            const QString ht = addPhysics(m, QStringLiteral("heat"), 1);
+            addFeature(m, ht, QStringLiteral("heat/source"), rule(R"({"all": true})"),
+                       QJsonObject{{QStringLiteral("kind"), QStringLiteral("power")}, {QStringLiteral("P0"), QStringLiteral("2[mW]")}});
+            inTime(m, QJsonObject{{QStringLiteral("times"), QStringLiteral("range(0, 0.5[s], 1[s])")}, {QStringLiteral("solver"), QStringLiteral("direct")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const Export3 pvd = export3(Solutions3{sv.r.solution},
+                                        node(m, QStringLiteral("vtu"), {{QStringLiteral("expressions"), QStringLiteral("ht.T")}, {QStringLiteral("solutions"), QStringLiteral("all")}}),
+                                        QStringLiteral("block_vtu1"));
+            QVERIFY2(pvd.main.error.isEmpty() && pvd.main.suffix == QLatin1String("pvd") && pvd.parts.size() == 3, qPrintable(pvd.main.error));
+            QVERIFY2(pvd.main.data.contains("timestep=\"0.5\"") && pvd.main.data.contains("file=\"block_vtu1_0002.vtu\""), pvd.main.data.constData());
+            QCOMPARE(pvd.parts[2].first, QStringLiteral("_0002.vtu"));
+            const std::vector<double> last = arrays(pvd.parts[2].second).value(QStringLiteral("ht.T"));
+            QVERIFY(!last.empty() && std::abs(last.front() - (293.15 + 1.0)) < 1e-6);
+        }
+    }
+
+    // A function of three arguments by its table - f(x, y, z) = x + 2y + 3z on
+    // a 2 x 3 x 2 grid - trilinear, so exact for it: at a point inside, and
+    // constant beyond the grid; a heat source of it, ht.P its integral; a
+    // table that is not a whole grid refused, said.
+    void interpolationOfThree()
+    {
+        auto withTable = [](bool whole) {
+            Model m = model3d(0.5);
+            Node f = m.make(QStringLiteral("interpolation"));
+            f.props.insert(QStringLiteral("name"), QStringLiteral("f3"));
+            f.props.insert(QStringLiteral("dimension"), QStringLiteral("3"));
+            f.props.insert(QStringLiteral("argunit"), QStringLiteral("mm, mm, mm"));
+            f.props.insert(QStringLiteral("unit"), QStringLiteral("W/m^3"));
+            QJsonArray rows;
+            for (double x : {0.0, 2.0})
+                for (double y : {0.0, 0.5, 1.0})
+                    for (double z : {0.0, 1.0}) {
+                        if (!whole && x == 2.0 && y == 1.0 && z == 1.0) continue;
+                        rows.append(QJsonArray{x, y, z, x + 2 * y + 3 * z});
+                    }
+            f.props.insert(QStringLiteral("grid3"), rows);
+            m.add(m.root.child(QStringLiteral("definitions"))->tag, f);
+            return m;
+        };
+        Model m = withTable(true);
+        bool added = false;
+        for (const Node& d : m.root.child(QStringLiteral("definitions"))->children) added = added || d.type == QLatin1String("interpolation");
+        QVERIFY(added);
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+        QVERIFY2(ps->errors.isEmpty(), qPrintable(ps->errors.values().join(QStringLiteral("; "))));
+        const Expression inside = Expression::compile(QStringLiteral("f3(0.5[mm], 0.8[mm], 0.25[mm])"), ps->scope);
+        QVERIFY2(inside.isValid() && inside.isConstant(), qPrintable(inside.error()));
+        QVERIFY2(std::abs(inside.constant() - (0.5 + 1.6 + 0.75)) < 1e-12, qPrintable(QString::number(inside.constant(), 'g', 17)));
+        const Expression beyond = Expression::compile(QStringLiteral("f3(10[mm], 0.8[mm], -3[mm])"), ps->scope);
+        QVERIFY(beyond.isConstant() && std::abs(beyond.constant() - (2 + 1.6 + 0)) < 1e-12);
+        QVERIFY(!Expression::compile(QStringLiteral("f3(1[mm], 2[mm])"), ps->scope).isValid());
+        // A heat source of it, read at each point: ht.P its integral, V (x̄ + 2ȳ + 3z̄).
+        addBox(m, QStringLiteral("box"), 0, 0, 0, 2, 1, 1);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+        addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"));
+        addFeature(m, ht, QStringLiteral("heat/source"), rule(R"({"all": true})"), QJsonObject{{QStringLiteral("Q0"), QStringLiteral("1e9*f3(x, y, z)")}});
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+        const double want = 1e9 * 2e-9 * (1 + 2 * 0.5 + 3 * 0.5);
+        QVERIFY2(std::abs(global(sv.s(), QStringLiteral("ht.P")) - want) < 1e-9 * want, qPrintable(sv.s().globalText(QStringLiteral("ht.P"))));
+        // Not a whole grid: refused.
+        const std::shared_ptr<ParameterScope> broken = evaluateParameters(withTable(false));
+        QVERIFY2(broken->errors.value(QStringLiteral("f3")).contains(QStringLiteral("not a grid of every x with every y and every z")),
+                 qPrintable(broken->errors.values().join(QStringLiteral("; "))));
     }
 
     void refusals()

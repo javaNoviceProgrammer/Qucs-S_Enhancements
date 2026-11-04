@@ -121,6 +121,12 @@ public:
     qucs_s::fem::DerivedResult evaluate(const QString& tag);
     /// The derived values' table: a node, a value's name, the value.
     QTableWidget* table() const { return a_table; }
+    /// Runs export \a tag (VTU, Field on a Grid) on the solution: written
+    /// where its File says (relative to the model's folder) or beside the
+    /// model as model_tag (in the cache while the model has no file), a
+    /// collection's parts and a grid's coordinates beside it. Its path, or
+    /// empty and why.
+    QString runExport(const QString& tag, QString* error = nullptr);
     bool solving() const;
     /// Lets the work going on go.
     void cancel();
