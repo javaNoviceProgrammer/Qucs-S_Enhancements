@@ -34,12 +34,15 @@ struct IterativeReport {
 /*!
  * A symmetric positive definite system A x = b solved by conjugate gradients
  * preconditioned by algebraic multigrid - AMGCL's smoothed aggregation with
- * an ILU(0) smoother, measured on 3D Laplacians to a million unknowns and on
- * copper beside oxide: 11 to 15 iterations at every size, where an
- * incomplete Cholesky's grow from 92 to 368; and on a layered chip's thin
- * films, order 2 too (docs/feature_gaps of 3 November). Set up once (compute), solved for as many right-hand sides as
- * wanted, each from the x given. Where it does not converge, conjugate
- * gradients with an incomplete Cholesky try instead (the report says so).
+ * a symmetric Gauss-Seidel smoother, measured on 3D Laplacians to a million
+ * unknowns and on copper beside oxide: some 11 to 15 iterations at every
+ * size, where an incomplete Cholesky's grow from 92 to 368; and on order 2's
+ * stretched prisms, a chip's thin films and a VCSEL array's (docs/feature_gaps
+ * of 3 and 4 November). Each right-hand side is scaled to a norm of one, so
+ * that a system of any unit solves alike. Set up once (compute), solved for
+ * as many right-hand sides as wanted, each from the x given. Where it does not
+ * converge, conjugate gradients with an incomplete Cholesky try instead (the
+ * report says so).
  */
 class AmgSolver
 {
