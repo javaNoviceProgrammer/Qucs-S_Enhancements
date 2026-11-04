@@ -19,6 +19,7 @@
 #include <amgcl/relaxation/gauss_seidel.hpp>
 #include <amgcl/relaxation/ilu0.hpp>
 #include <amgcl/relaxation/spai0.hpp>
+#include <amgcl/solver/bicgstab.hpp>
 #include <amgcl/solver/cg.hpp>
 
 #include <Eigen/IterativeLinearSolvers>
@@ -43,6 +44,10 @@ using SolverOf = amgcl::make_solver<amgcl::amg<Backend, amgcl::coarsening::smoot
 using Spai0 = SolverOf<amgcl::relaxation::spai0>;
 using GaussSeidel = SolverOf<amgcl::relaxation::gauss_seidel>;
 using Ilu0 = SolverOf<amgcl::relaxation::ilu0>;
+// (A matrix not symmetric: BiCGStab, its smoother ILU(0) - no cycle need be
+// symmetric for it.)
+using Bicg = amgcl::make_solver<amgcl::amg<Backend, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::ilu0>, amgcl::solver::bicgstab<Backend>>;
+using FallbackLu = Eigen::BiCGSTAB<Eigen::SparseMatrix<double>, Eigen::IncompleteLUT<double>>;
 
 /// The smoother: Gauss-Seidel, forward before the coarse level and backward
 /// after, so that the cycle conjugate gradients are preconditioned by is
@@ -76,25 +81,29 @@ QString tr(const char* text)
 struct AmgSolver::Impl {
     double tolerance = 1e-9;
     int maxIterations = 500;
+    bool nonsymmetric = false;
     // (The matrix kept: the fallback's, and the residual's.)
     Eigen::SparseMatrix<double> a;
-    // (One of them, by the smoother.)
+    // (One of them, by the smoother; a matrix not symmetric BiCGStab's.)
     std::unique_ptr<Spai0> spai0;
     std::unique_ptr<GaussSeidel> gs;
     std::unique_ptr<Ilu0> ilu0;
-    bool ready() const { return spai0 || gs || ilu0; }
+    std::unique_ptr<Bicg> bicg;
+    bool ready() const { return spai0 || gs || ilu0 || bicg; }
     void reset()
     {
         spai0.reset();
         gs.reset();
         ilu0.reset();
+        bicg.reset();
     }
     // (AMGCL's own tuple: libstdc++ makes no pair of a tuple, as libc++ does.)
     std::tuple<std::size_t, double> operator()(const std::vector<double>& rhs, std::vector<double>& x) const
     {
-        return spai0 ? (*spai0)(rhs, x) : gs ? (*gs)(rhs, x) : (*ilu0)(rhs, x);
+        return bicg ? (*bicg)(rhs, x) : spai0 ? (*spai0)(rhs, x) : gs ? (*gs)(rhs, x) : (*ilu0)(rhs, x);
     }
     std::unique_ptr<Fallback> ic;
+    std::unique_ptr<FallbackLu> ilut;
     std::size_t bytes = 0;
 };
 
@@ -109,6 +118,11 @@ void AmgSolver::setTolerance(double tolerance)
 void AmgSolver::setMaxIterations(int iterations)
 {
     if (iterations > 0) a_impl->maxIterations = iterations;
+}
+
+void AmgSolver::setNonsymmetric(bool nonsymmetric)
+{
+    a_impl->nonsymmetric = nonsymmetric;
 }
 
 std::size_t AmgSolver::bytes() const
@@ -126,15 +140,25 @@ bool AmgSolver::compute(const Eigen::SparseMatrix<double>& a, QString* error)
     Impl& d = *a_impl;
     d.reset();
     d.ic.reset();
+    d.ilut.reset();
     d.bytes = 0;
     d.a = a;
     d.a.makeCompressed();
     if (d.a.rows() == 0) return true;
-    // (Symmetric: its compressed columns are its rows.)
+    // (Symmetric: its compressed columns are its rows. Not: its rows, made -
+    // read as rows, a column-major matrix is its transpose.)
+    Eigen::SparseMatrix<double, Eigen::RowMajor> rows;
+    if (d.nonsymmetric) {
+        rows = d.a;
+        rows.makeCompressed();
+    }
     const ptrdiff_t n = d.a.rows();
-    auto ptr = amgcl::make_iterator_range(d.a.outerIndexPtr(), d.a.outerIndexPtr() + n + 1);
-    auto col = amgcl::make_iterator_range(d.a.innerIndexPtr(), d.a.innerIndexPtr() + d.a.nonZeros());
-    auto val = amgcl::make_iterator_range(d.a.valuePtr(), d.a.valuePtr() + d.a.nonZeros());
+    const int* outer = d.nonsymmetric ? rows.outerIndexPtr() : d.a.outerIndexPtr();
+    const int* inner = d.nonsymmetric ? rows.innerIndexPtr() : d.a.innerIndexPtr();
+    const double* values = d.nonsymmetric ? rows.valuePtr() : d.a.valuePtr();
+    auto ptr = amgcl::make_iterator_range(outer, outer + n + 1);
+    auto col = amgcl::make_iterator_range(inner, inner + d.a.nonZeros());
+    auto val = amgcl::make_iterator_range(values, values + d.a.nonZeros());
     const auto matrix = std::make_tuple(n, ptr, col, val);
     try {
         // (Each smoother's solver its own type: the same parameters.)
@@ -146,11 +170,13 @@ bool AmgSolver::compute(const Eigen::SparseMatrix<double>& a, QString* error)
             solver = std::make_unique<S>(matrix, prm);
             d.bytes = solver->precond().bytes();
         };
-        switch (relaxation()) {
-        case 0: make(d.spai0); break;
-        case 1: make(d.gs); break;
-        default: make(d.ilu0); break;
-        }
+        if (d.nonsymmetric) make(d.bicg);
+        else
+            switch (relaxation()) {
+            case 0: make(d.spai0); break;
+            case 1: make(d.gs); break;
+            default: make(d.ilu0); break;
+            }
     } catch (const std::exception& e) {
         // (A hierarchy that cannot be built - a zero on the diagonal: a
         // degree of freedom no element holds - is the fallback's.)
@@ -202,8 +228,26 @@ bool AmgSolver::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, IterativeRep
         } catch (const std::exception&) {
         }
     }
-    // The incomplete Cholesky's conjugate gradients, from x as given.
+    // The incomplete Cholesky's conjugate gradients, from x as given (a
+    // matrix not symmetric: an incomplete LU's BiCGStab).
     r.fallback = true;
+    if (d.nonsymmetric) {
+        if (!d.ilut) {
+            d.ilut = std::make_unique<FallbackLu>();
+            d.ilut->setTolerance(d.tolerance);
+            d.ilut->setMaxIterations(10 * d.maxIterations);
+            d.ilut->compute(d.a);
+        }
+        const Eigen::VectorXd guess = x / norm;
+        x = d.ilut->solveWithGuess(bn, guess) * norm;
+        r.iterations += int(d.ilut->iterations());
+        r.residual = d.ilut->error();
+        r.converged = d.ilut->info() == Eigen::Success && x.allFinite();
+        if (report) *report = r;
+        if (!r.converged && error)
+            *error = tr("the iterative solve did not converge: a relative residual of %1 after %2 iterations").arg(r.residual, 0, 'g', 3).arg(r.iterations);
+        return r.converged;
+    }
     if (!d.ic) {
         d.ic = std::make_unique<Fallback>();
         d.ic->setTolerance(d.tolerance);

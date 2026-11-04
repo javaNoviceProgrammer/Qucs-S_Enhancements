@@ -38,6 +38,9 @@ struct Options3 {
     /// - C (mass u - history) + K u = F. 0: at rest.
     double mass = 0;
     const std::vector<double>* history = nullptr;
+    /// A physics that reads its own field: by Newton's method (auto, newton)
+    /// or Picard's iterations (picard).
+    QString nonlinear = QStringLiteral("auto");
     std::function<bool()> cancelled;
 };
 
@@ -53,16 +56,20 @@ struct Options3 {
 class System3
 {
 public:
+    /// \a a factorized, or set up for its iterations; \a symmetric false (a
+    /// Newton's matrix): by an LU (direct) or BiCGStab with multigrid.
     bool factorize(const Eigen::SparseMatrix<double>& a, const QString& solver, int rhs, double tolerance, const QString& name,
-                   QStringList* log, QString* error);
+                   QStringList* log, QString* error, bool symmetric = true);
     /// Solves for \a b, from \a x as it is (an iterative solve's guess).
     bool solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, const QString& name, QStringList* log, QString* error);
-    bool direct() const { return a_chol != nullptr; }
+    bool direct() const { return a_chol != nullptr || a_lu != nullptr; }
     int size() const { return a_n; }
 
 private:
     std::unique_ptr<AmgSolver> a_amg;
     std::unique_ptr<SparseCholesky> a_chol;
+    std::unique_ptr<SparseLu<double>> a_lu;
+    bool a_symmetric = true;
     int a_n = 0;
     double a_tolerance = 1e-9;
 };

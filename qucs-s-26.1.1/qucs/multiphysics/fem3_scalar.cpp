@@ -21,8 +21,11 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <thread>
 
 namespace qucs_s::fem::detail3 {
 
@@ -72,6 +75,7 @@ struct Assembled {
     Eigen::SparseMatrix<double> R;    // fixed x neq
     Eigen::SparseMatrix<double> Rd;   // fixed x fixed
     Eigen::VectorXd F, Fd;
+    Eigen::SparseMatrix<double> J;    // Newton's: the rest of its matrix (neq x neq), of the derivatives
     double made = 0;                  // what the sources make
     bool robin = false;
 };
@@ -93,6 +97,44 @@ TensorText inThreeD(const TensorText& t)
     return out;
 }
 
+/// The triplets of several lists in turn, as their concatenation: a
+/// matrix made of parts' triplets, without copying them into one.
+class ChainedTriplets
+{
+public:
+    using T = Eigen::Triplet<double>;
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const T*;
+    using reference = const T&;
+    ChainedTriplets(const std::vector<const std::vector<T>*>* lists, std::size_t list) : a_lists(lists), a_list(list) { skip(); }
+    reference operator*() const { return (*(*a_lists)[a_list])[a_at]; }
+    pointer operator->() const { return &**this; }
+    ChainedTriplets& operator++()
+    {
+        ++a_at;
+        skip();
+        return *this;
+    }
+    bool operator==(const ChainedTriplets& o) const { return a_list == o.a_list && a_at == o.a_at; }
+    bool operator!=(const ChainedTriplets& o) const { return !(*this == o); }
+
+private:
+    // (Past a list's end, or an empty one: the next list's first.)
+    void skip()
+    {
+        while (a_list < a_lists->size() && a_at >= (*a_lists)[a_list]->size()) {
+            ++a_list;
+            a_at = 0;
+        }
+    }
+    const std::vector<const std::vector<T>*>* a_lists;
+    std::size_t a_list = 0, a_at = 0;
+};
+
+std::atomic<int> g_assemblyParts{0};
+
 class ScalarProblem3 : public Problem3
 {
 public:
@@ -110,7 +152,10 @@ private:
     std::vector<double> fixedValues(const Equations& q, int sweepTerminal) const;
     /// The system, and (a step in time's, \a mass not 0) its capacity's term
     /// C (mass u - history): mass C in the matrix, C history in the vector.
-    void assemble(const Equations& q, bool withSources, Assembled& out, double mass = 0, const std::vector<double>* history = nullptr);
+    /// \a jacobian: Newton's matrix's rest too (out.J) - the coefficients',
+    /// sources' and films' derivatives in the field, found numerically.
+    void assemble(const Equations& q, bool withSources, Assembled& out, double mass = 0, const std::vector<double>* history = nullptr,
+                  bool jacobian = false);
     double evalAt(const Expression& e, const Vec3& x) const;
     /// Each terminal's reaction: what flows into the domain from its fixed
     /// dofs (charge, current).
@@ -159,6 +204,8 @@ bool ScalarProblem3::setup(QString* error)
     const std::vector<const Node*> material = materials();
     const QString modelFeature = a_es ? QStringLiteral("electrostatics/charge") : a_ec ? QStringLiteral("currents/conservation") : QStringLiteral("heat/solid");
     const QString property = a_es ? QStringLiteral("epsilonr") : a_ec ? QStringLiteral("sigma") : QStringLiteral("k");
+    // (A user's tensor's keys: epsxx..., sigmaxx..., kxx...)
+    const QString tensorPrefix = a_es ? QStringLiteral("eps") : property;
     const QString propertyName = a_es ? tr("relative permittivity") : a_ec ? tr("electrical conductivity") : tr("thermal conductivity");
     std::vector<const Node*> modelOf(D, nullptr);
     Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
@@ -334,15 +381,28 @@ bool ScalarProblem3::setup(QString* error)
         const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
         TensorText t;
         const Node* where = feat;
+        QString keys[3][3];
+        for (auto& row : keys)
+            for (QString& k : row) k = property;
         if (user) {
+            // Its own value, or a tensor in the model's axes: xx, yy, zz and
+            // (symmetric) xy, xz, yz - each read by its own key.
             const QString aniso = feat->text(QStringLiteral("anisotropy"));
-            if (aniso == QLatin1String("diagonal") || aniso == QLatin1String("symmetric"))
-                problem(tr("%1: a user's %2 is isotropic in 3D (its tensor's choices are the plane's) - a crystal's tensor is its "
-                           "material's")
-                            .arg(feat->name(), propertyName));
             t.items = 1;
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j) t.c[i][j] = i == j ? feat->text(property) : QStringLiteral("0");
+            if (aniso == QLatin1String("diagonal") || aniso == QLatin1String("symmetric")) {
+                static const char axes[] = "xyz";
+                const bool full = aniso == QLatin1String("symmetric");
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) {
+                        if (i != j && !full) continue;
+                        const QString key = tensorPrefix + QLatin1Char(axes[std::min(i, j)]) + QLatin1Char(axes[std::max(i, j)]);
+                        keys[i][j] = key;
+                        t.c[i][j] = feat->text(key);
+                    }
+                t.items = full ? 6 : 3;
+            }
         } else if (!m) {
             problem(tr("domain %1 (%2) has no material: its %3 is needed").arg(d + 1).arg(object, propertyName));
             continue;
@@ -378,7 +438,7 @@ bool ScalarProblem3::setup(QString* error)
                     continue;
                 }
                 c[std::size_t(3 * i + j)] = i != j && text == QLatin1String("0") ? Expression::compile(QStringLiteral("0"), a_s.pointScope())
-                                                                                  : compile(text, *where, property);
+                                                                                  : compile(text, *where, keys[i][j]);
                 if (i != j && text != QLatin1String("0")) isotropic = false;
                 if (i == j && text != t.c[0][0]) isotropic = false;
             }
@@ -535,7 +595,8 @@ std::vector<double> ScalarProblem3::fixedValues(const Equations& q, int sweepTer
 
 // --------------------------------------------------------------- Assembly
 
-void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& out, double mass, const std::vector<double>* history)
+void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& out, double mass, const std::vector<double>* history,
+                              bool jacobian)
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const Space3& sp = *f.space;
@@ -543,14 +604,13 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
     const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     const int nfix = int(q.fixedDof.size());
     using T = Eigen::Triplet<double>;
-    std::vector<T> ta, tc, tr, td;
+    std::vector<T> ta, tc, tr, td, tj;
     out.F = Eigen::VectorXd::Zero(q.neq);
     out.Fd = Eigen::VectorXd::Zero(nfix);
     out.made = 0;
     out.robin = false;
     const int per = sp.perElement();
-    ta.reserve(std::size_t(sp.elements()) * std::size_t(per) * std::size_t(per));
-    // (An element's matrix and vector into the system: its free rows' and its
+    // (A face's matrix and vector into the system: its free rows' and its
     // fixed rows'.)
     auto scatter = [&q, &out, &ta, &tc, &tr, &td](const std::vector<int>& dofs, const std::vector<double>& K, const std::vector<double>& Fe) {
         const int m = int(dofs.size());
@@ -577,109 +637,220 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
             }
         }
     };
-    PointEvaluator3 ev(a_s);
-    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
-    std::vector<int> dofs(static_cast<std::size_t>(per));
-    std::vector<double> K(static_cast<std::size_t>(per * per)), Fe(static_cast<std::size_t>(per));
-    std::vector<double> Me(mass != 0 ? static_cast<std::size_t>(per * per) : 0);
-    std::vector<double> grads(static_cast<std::size_t>(per) * 3);
-    for (int e = 0; e < sp.elements(); ++e) {
-        const int d = mesh.domain[std::size_t(e)];
-        if (d < 0 || !f.domains[std::size_t(d)]) continue;
-        const std::array<Expression, 9>& c = coef.c[std::size_t(d)];
-        bool constant = true;
-        double C[9];
-        for (int k = 0; k < 9; ++k) {
-            constant = constant && c[std::size_t(k)].isConstant();
-            C[k] = c[std::size_t(k)].isConstant() ? c[std::size_t(k)].constant() : 0;
+    // The elements in parts on threads, each its own evaluator, triplets and
+    // record of what it adds to F, Fd and the power made - joined in the
+    // elements' order, so the matrix and vectors are one thread's, bit for
+    // bit, whatever the threads (the triplets read in turn, not copied: the
+    // assembly's memory as one thread's).
+    struct Part {
+        std::vector<T> ta, tc, tr, td, tj;
+        std::vector<std::pair<int, double>> f, fd;
+        std::vector<double> made;
+    };
+    // (Newton's: where the field reads itself - its coefficient, its source.)
+    const bool newton = jacobian && a_self;
+    const auto scatterInto = [&q](Part& p, const std::vector<int>& dofs, const std::vector<double>& K, const std::vector<double>& Fe) {
+        const int m = int(dofs.size());
+        for (int i = 0; i < m; ++i) {
+            const int di = dofs[std::size_t(i)];
+            if (di < 0) continue;
+            const int ei = q.eq[std::size_t(di)], fi = q.fixed[std::size_t(di)];
+            if (ei >= 0) p.f.emplace_back(ei, Fe[std::size_t(i)]);
+            else if (fi >= 0) p.fd.emplace_back(fi, Fe[std::size_t(i)]);
+            else continue;
+            for (int j = 0; j < m; ++j) {
+                const int dj = dofs[std::size_t(j)];
+                if (dj < 0) continue;
+                const double v = K[std::size_t(i * m + j)];
+                if (v == 0) continue;
+                const int ej = q.eq[std::size_t(dj)], fj = q.fixed[std::size_t(dj)];
+                if (ei >= 0) {
+                    if (ej >= 0) p.ta.emplace_back(ei, ej, v);
+                    else if (fj >= 0) p.tc.emplace_back(ei, fj, v);
+                } else {
+                    if (ej >= 0) p.tr.emplace_back(fi, ej, v);
+                    else if (fj >= 0) p.td.emplace_back(fi, fj, v);
+                }
+            }
         }
-        const std::vector<Expression>& sources = coef.sources[std::size_t(d)];
-        const bool sourced = withSources && !sources.empty();
-        // (A step in time's capacity, ρ Cp.)
-        const bool massed = mass != 0 && coef.capacity[std::size_t(d)].isValid();
-        const Expression& cap = coef.capacity[std::size_t(d)];
-        double capv = massed && cap.isConstant() ? cap.constant() : 0;
-        std::fill(K.begin(), K.end(), 0.0);
-        std::fill(Fe.begin(), Fe.end(), 0.0);
-        std::fill(Me.begin(), Me.end(), 0.0);
-        const int* ed = sp.dofs(e);
-        for (int i = 0; i < per; ++i) dofs[std::size_t(i)] = ed[i];
-        for (const auto& qp : rule.points) {
-            const Space3::Map m = sp.map(e, qp[0], qp[1], qp[2]);
-            const double w = qp[3] * std::abs(m.det);
-            PrismShape s;
-            prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
-            for (int i = 0; i < per; ++i) Space3::gradient(m, s.dxi[i], s.deta[i], s.dzeta[i], &grads[std::size_t(3 * i)]);
-            if (!constant || sourced || (massed && !cap.isConstant())) ev.at(e, qp[0], qp[1], qp[2], m.x);
-            if (!constant)
-                for (int k = 0; k < 9; ++k) C[k] = c[std::size_t(k)].isConstant() ? c[std::size_t(k)].constant() : ev.eval(c[std::size_t(k)]);
-            if (massed && !cap.isConstant()) capv = ev.eval(cap);
-            if (sp.order() == 1) {
-                // A linear prism lumped: its in-plane term's factor along z,
-                // ∫ L_k L_l dz, and its vertical term's in the plane, ∫ T_a
-                // T_b dA, each as its row's sum. A thin layer's prisms - far
-                // wider than tall - otherwise couple neighbours in the plane
-                // the wrong way (positive), and a field undershoots where it
-                // falls steeply in z: the chip heater's oxide top, far from its
-                // cold back, 0.72 K under it. Linear fields and a field uniform
-                // in z stay exact; the tensor's cross terms (xz, yz) as they
-                // are.
-                Shape t;
-                shapeAt(1, qp[0], qp[1], t);
-                const double L[2] = {1 - qp[2], qp[2]}, dL[2] = {-m.invDz, m.invDz};
-                double gT[3][2];
-                for (int a = 0; a < 3; ++a) {
-                    gT[a][0] = m.invT[0][0] * t.dxi[a] + m.invT[0][1] * t.deta[a];
-                    gT[a][1] = m.invT[1][0] * t.dxi[a] + m.invT[1][1] * t.deta[a];
-                }
-                for (int i = 0; i < 6; ++i) {
-                    const int a = i % 3, k = i / 3;
-                    for (int j = 0; j < 6; ++j) {
-                        const int b = j % 3, l = j / 3;
-                        double v = 0;
-                        if (k == l)
-                            v += L[k] * (gT[a][0] * (C[0] * gT[b][0] + C[1] * gT[b][1]) + gT[a][1] * (C[3] * gT[b][0] + C[4] * gT[b][1]));
-                        if (a == b) v += C[8] * t.n[a] * dL[k] * dL[l];
-                        v += (gT[a][0] * C[2] + gT[a][1] * C[5]) * L[k] * t.n[b] * dL[l];
-                        v += t.n[a] * dL[k] * (C[6] * gT[b][0] + C[7] * gT[b][1]) * L[l];
-                        K[std::size_t(i * per + j)] += w * a_scale * v;
-                        // The capacity's: consistent in the plane, as the
-                        // triangles' in 2D, its factor along z lumped as the
-                        // in-plane term's is - a tall prism's two levels
-                        // otherwise coupled the wrong way at a short step.
-                        if (massed && k == l) Me[std::size_t(i * per + j)] += w * capv * t.n[a] * t.n[b] * L[k];
+    };
+    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    const int E = sp.elements();
+    const int asked = assemblyParts();
+    const int partCount = std::clamp(asked > 0 ? asked : E / 2000, 1, asked > 0 ? std::max(1, E) : 64);
+    std::vector<Part> parts(static_cast<std::size_t>(partCount));
+    // (Its captures named: a long lambda's [&] crashed CI's GCC, d7ae967.)
+    const auto assemblePart = [this, &parts, &sp, &mesh, &f, &coef, &rule, &scatterInto, &q, E, partCount, per, mass, withSources, history,
+                               newton](int k) {
+        Part& part = parts[std::size_t(k)];
+        const int from = int(qint64(E) * k / partCount), to = int(qint64(E) * (k + 1) / partCount);
+        part.ta.reserve(std::size_t(to - from) * std::size_t(per) * std::size_t(per));
+        PointEvaluator3 ev(a_s);
+        std::vector<int> dofs(static_cast<std::size_t>(per));
+        std::vector<double> K(static_cast<std::size_t>(per * per)), Fe(static_cast<std::size_t>(per));
+        std::vector<double> Me(mass != 0 ? static_cast<std::size_t>(per * per) : 0);
+        std::vector<double> grads(static_cast<std::size_t>(per) * 3);
+        std::vector<double> Je(newton ? static_cast<std::size_t>(per * per) : 0);
+        for (int e = from; e < to; ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            const std::array<Expression, 9>& c = coef.c[std::size_t(d)];
+            bool constant = true;
+            double C[9];
+            for (int k = 0; k < 9; ++k) {
+                constant = constant && c[std::size_t(k)].isConstant();
+                C[k] = c[std::size_t(k)].isConstant() ? c[std::size_t(k)].constant() : 0;
+            }
+            const std::vector<Expression>& sources = coef.sources[std::size_t(d)];
+            const bool sourced = withSources && !sources.empty();
+            // (A step in time's capacity, ρ Cp.)
+            const bool massed = mass != 0 && coef.capacity[std::size_t(d)].isValid();
+            const Expression& cap = coef.capacity[std::size_t(d)];
+            double capv = massed && cap.isConstant() ? cap.constant() : 0;
+            std::fill(K.begin(), K.end(), 0.0);
+            std::fill(Fe.begin(), Fe.end(), 0.0);
+            std::fill(Me.begin(), Me.end(), 0.0);
+            std::fill(Je.begin(), Je.end(), 0.0);
+            // (Its coefficient or source of the field: their derivatives.)
+            const bool derived = newton && (!constant || sourced);
+            const int* ed = sp.dofs(e);
+            for (int i = 0; i < per; ++i) dofs[std::size_t(i)] = ed[i];
+            for (const auto& qp : rule.points) {
+                const Space3::Map m = sp.map(e, qp[0], qp[1], qp[2]);
+                const double w = qp[3] * std::abs(m.det);
+                PrismShape s;
+                prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
+                for (int i = 0; i < per; ++i) Space3::gradient(m, s.dxi[i], s.deta[i], s.dzeta[i], &grads[std::size_t(3 * i)]);
+                if (!constant || sourced || (massed && !cap.isConstant())) ev.at(e, qp[0], qp[1], qp[2], m.x);
+                // Newton's: the coefficient's and the source's derivatives in
+                // the field here, by a perturbation of its value - ∂(c ∇u)/∂u_j
+                // = c ∇φ_j + c' φ_j ∇u, and -Q' φ_j.
+                if (derived) {
+                    double u = 0, g[3] = {0, 0, 0};
+                    ev.field(a_fi, u, g);
+                    double c0[9], q0 = 0;
+                    for (int k = 0; k < 9; ++k) c0[k] = c[std::size_t(k)].isConstant() ? c[std::size_t(k)].constant() : ev.eval(c[std::size_t(k)]);
+                    if (sourced)
+                        for (const Expression& src : sources) q0 += ev.eval(src);
+                    const double du = 1e-7 * (std::abs(u) + 1);
+                    ev.perturb(a_fi, du);
+                    double dc[9], dq = 0;
+                    for (int k = 0; k < 9; ++k) dc[k] = c[std::size_t(k)].isConstant() ? 0 : (ev.eval(c[std::size_t(k)]) - c0[k]) / du;
+                    if (sourced) {
+                        double q1 = 0;
+                        for (const Expression& src : sources) q1 += ev.eval(src);
+                        dq = (q1 - q0) / du * coef.sourceScale[std::size_t(d)];
                     }
-                }
-            } else {
-                for (int j = 0; j < per; ++j) {
-                    const double* gj = &grads[std::size_t(3 * j)];
-                    const double cg[3] = {C[0] * gj[0] + C[1] * gj[1] + C[2] * gj[2], C[3] * gj[0] + C[4] * gj[1] + C[5] * gj[2],
-                                          C[6] * gj[0] + C[7] * gj[1] + C[8] * gj[2]};
+                    ev.perturb(a_fi, 0);
+                    const double dcg[3] = {dc[0] * g[0] + dc[1] * g[1] + dc[2] * g[2], dc[3] * g[0] + dc[4] * g[1] + dc[5] * g[2],
+                                           dc[6] * g[0] + dc[7] * g[1] + dc[8] * g[2]};
                     for (int i = 0; i < per; ++i) {
                         const double* gi = &grads[std::size_t(3 * i)];
-                        K[std::size_t(i * per + j)] += w * a_scale * (gi[0] * cg[0] + gi[1] * cg[1] + gi[2] * cg[2]);
-                        if (massed) Me[std::size_t(i * per + j)] += w * capv * s.n[i] * s.n[j];
+                        const double flux = gi[0] * dcg[0] + gi[1] * dcg[1] + gi[2] * dcg[2];
+                        for (int j = 0; j < per; ++j)
+                            Je[std::size_t(i * per + j)] += w * (a_scale * flux * s.n[j] - (std::isfinite(dq) ? dq : 0) * s.n[i] * s.n[j]);
                     }
                 }
-            }
-            if (sourced) {
-                double value = 0;
-                for (const Expression& src : sources) value += ev.eval(src);
-                value *= coef.sourceScale[std::size_t(d)];
-                if (!std::isfinite(value)) value = 0;
-                for (int i = 0; i < per; ++i) Fe[std::size_t(i)] += w * value * s.n[i];
-                out.made += w * value;
-            }
-        }
-        if (massed)
-            for (int i = 0; i < per; ++i)
-                for (int j = 0; j < per; ++j) {
-                    const double v = Me[std::size_t(i * per + j)];
-                    K[std::size_t(i * per + j)] += mass * v;
-                    if (history) Fe[std::size_t(i)] += v * (*history)[std::size_t(dofs[std::size_t(j)])];
+                if (!constant)
+                    for (int k = 0; k < 9; ++k) C[k] = c[std::size_t(k)].isConstant() ? c[std::size_t(k)].constant() : ev.eval(c[std::size_t(k)]);
+                if (massed && !cap.isConstant()) capv = ev.eval(cap);
+                if (sp.order() == 1) {
+                    // A linear prism lumped: its in-plane term's factor along z,
+                    // ∫ L_k L_l dz, and its vertical term's in the plane, ∫ T_a
+                    // T_b dA, each as its row's sum. A thin layer's prisms - far
+                    // wider than tall - otherwise couple neighbours in the plane
+                    // the wrong way (positive), and a field undershoots where it
+                    // falls steeply in z: the chip heater's oxide top, far from its
+                    // cold back, 0.72 K under it. Linear fields and a field uniform
+                    // in z stay exact; the tensor's cross terms (xz, yz) as they
+                    // are.
+                    Shape t;
+                    shapeAt(1, qp[0], qp[1], t);
+                    const double L[2] = {1 - qp[2], qp[2]}, dL[2] = {-m.invDz, m.invDz};
+                    double gT[3][2];
+                    for (int a = 0; a < 3; ++a) {
+                        gT[a][0] = m.invT[0][0] * t.dxi[a] + m.invT[0][1] * t.deta[a];
+                        gT[a][1] = m.invT[1][0] * t.dxi[a] + m.invT[1][1] * t.deta[a];
+                    }
+                    for (int i = 0; i < 6; ++i) {
+                        const int a = i % 3, k = i / 3;
+                        for (int j = 0; j < 6; ++j) {
+                            const int b = j % 3, l = j / 3;
+                            double v = 0;
+                            if (k == l)
+                                v += L[k] * (gT[a][0] * (C[0] * gT[b][0] + C[1] * gT[b][1]) + gT[a][1] * (C[3] * gT[b][0] + C[4] * gT[b][1]));
+                            if (a == b) v += C[8] * t.n[a] * dL[k] * dL[l];
+                            v += (gT[a][0] * C[2] + gT[a][1] * C[5]) * L[k] * t.n[b] * dL[l];
+                            v += t.n[a] * dL[k] * (C[6] * gT[b][0] + C[7] * gT[b][1]) * L[l];
+                            K[std::size_t(i * per + j)] += w * a_scale * v;
+                            // The capacity's: consistent in the plane, as the
+                            // triangles' in 2D, its factor along z lumped as the
+                            // in-plane term's is - a tall prism's two levels
+                            // otherwise coupled the wrong way at a short step.
+                            if (massed && k == l) Me[std::size_t(i * per + j)] += w * capv * t.n[a] * t.n[b] * L[k];
+                        }
+                    }
+                } else {
+                    for (int j = 0; j < per; ++j) {
+                        const double* gj = &grads[std::size_t(3 * j)];
+                        const double cg[3] = {C[0] * gj[0] + C[1] * gj[1] + C[2] * gj[2], C[3] * gj[0] + C[4] * gj[1] + C[5] * gj[2],
+                                              C[6] * gj[0] + C[7] * gj[1] + C[8] * gj[2]};
+                        for (int i = 0; i < per; ++i) {
+                            const double* gi = &grads[std::size_t(3 * i)];
+                            K[std::size_t(i * per + j)] += w * a_scale * (gi[0] * cg[0] + gi[1] * cg[1] + gi[2] * cg[2]);
+                            if (massed) Me[std::size_t(i * per + j)] += w * capv * s.n[i] * s.n[j];
+                        }
+                    }
                 }
-        scatter(dofs, K, Fe);
+                if (sourced) {
+                    double value = 0;
+                    for (const Expression& src : sources) value += ev.eval(src);
+                    value *= coef.sourceScale[std::size_t(d)];
+                    if (!std::isfinite(value)) value = 0;
+                    for (int i = 0; i < per; ++i) Fe[std::size_t(i)] += w * value * s.n[i];
+                    part.made.push_back(w * value);
+                }
+            }
+            if (massed)
+                for (int i = 0; i < per; ++i)
+                    for (int j = 0; j < per; ++j) {
+                        const double v = Me[std::size_t(i * per + j)];
+                        K[std::size_t(i * per + j)] += mass * v;
+                        if (history) Fe[std::size_t(i)] += v * (*history)[std::size_t(dofs[std::size_t(j)])];
+                    }
+            scatterInto(part, dofs, K, Fe);
+            if (derived)
+                for (int i = 0; i < per; ++i) {
+                    const int ei = dofs[std::size_t(i)] >= 0 ? q.eq[std::size_t(dofs[std::size_t(i)])] : -1;
+                    if (ei < 0) continue;
+                    for (int j = 0; j < per; ++j) {
+                        const int ej = dofs[std::size_t(j)] >= 0 ? q.eq[std::size_t(dofs[std::size_t(j)])] : -1;
+                        const double v = Je[std::size_t(i * per + j)];
+                        if (ej >= 0 && v != 0) part.tj.emplace_back(ei, ej, v);
+                    }
+                }
+        }
+    };
+    if (partCount == 1) assemblePart(0);
+    else {
+        const int threads = std::clamp(int(std::thread::hardware_concurrency()), 1, std::min(16, partCount));
+        std::atomic<int> next{0};
+        detail::Threads pool;
+        for (int t = 0; t < threads; ++t)
+            pool.start([&next, &assemblePart, partCount] {
+                for (int k = next++; k < partCount; k = next++) assemblePart(k);
+            });
+        pool.join();
     }
+    for (Part& p : parts) {
+        for (const auto& [i, v] : p.f) out.F(i) += v;
+        for (const auto& [i, v] : p.fd) out.Fd(i) += v;
+        for (double v : p.made) out.made += v;
+        p.f = {};
+        p.fd = {};
+        p.made = {};
+    }
+    PointEvaluator3 ev(a_s);
     // The faces' fluxes and films.
     const int degree = sp.order() == 1 ? 2 : 4;
     for (int fi = 0; fi < int(mesh.faces.size()); ++fi) {
@@ -696,9 +867,25 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
         const std::vector<Space3::FacePoint> points = sp.facePoints(fi, degree, side);
         const int m = int(fd.size());
         std::vector<double> Kf(static_cast<std::size_t>(m * m), 0.0), Ff(static_cast<std::size_t>(m), 0.0);
+        std::vector<double> Jf(newton ? static_cast<std::size_t>(m * m) : 0, 0.0);
         for (const Natural& nat : list) {
             for (const Space3::FacePoint& fp : points) {
                 if (fp.prism >= 0) ev.at(fp.prism, fp.xi, fp.eta, fp.zeta, fp.x);
+                // Newton's: a film of the field's own (radiation's h, its g)
+                // - the derivative of h u - g in u, h' u - g'.
+                if (newton && fp.prism >= 0 && ((nat.q.isValid() && !nat.q.isConstant()) || (withSources && nat.g.isValid() && !nat.g.isConstant()))) {
+                    double u = 0, g[3];
+                    ev.field(a_fi, u, g);
+                    const double h0 = nat.q.isValid() ? ev.eval(nat.q) : 0, g0 = withSources && nat.g.isValid() ? ev.eval(nat.g) : 0;
+                    const double du = 1e-7 * (std::abs(u) + 1);
+                    ev.perturb(a_fi, du);
+                    const double h1 = nat.q.isValid() ? ev.eval(nat.q) : 0, g1 = withSources && nat.g.isValid() ? ev.eval(nat.g) : 0;
+                    ev.perturb(a_fi, 0);
+                    const double d = ((h1 - h0) * u - (g1 - g0)) / du;
+                    if (std::isfinite(d))
+                        for (int i = 0; i < m; ++i)
+                            for (int j = 0; j < m; ++j) Jf[std::size_t(i * m + j)] += fp.weight * d * fp.n[i] * fp.n[j];
+                }
                 if (nat.q.isValid()) {
                     const double h = nat.q.isConstant() ? nat.q.constant() : ev.eval(nat.q);
                     if (std::isfinite(h) && h != 0) {
@@ -716,15 +903,35 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
             }
         }
         scatter(fd, Kf, Ff);
+        if (newton)
+            for (int i = 0; i < m; ++i) {
+                const int ei = fd[std::size_t(i)] >= 0 ? q.eq[std::size_t(fd[std::size_t(i)])] : -1;
+                if (ei < 0) continue;
+                for (int j = 0; j < m; ++j) {
+                    const int ej = fd[std::size_t(j)] >= 0 ? q.eq[std::size_t(fd[std::size_t(j)])] : -1;
+                    const double v = Jf[std::size_t(i * m + j)];
+                    if (ej >= 0 && v != 0) tj.emplace_back(ei, ej, v);
+                }
+            }
     }
+    const auto matrix = [&parts](Eigen::SparseMatrix<double>& into, std::vector<T> Part::*member, const std::vector<T>& faces) {
+        std::vector<const std::vector<T>*> lists;
+        for (const Part& p : parts) lists.push_back(&(p.*member));
+        lists.push_back(&faces);
+        into.setFromTriplets(ChainedTriplets(&lists, 0), ChainedTriplets(&lists, lists.size()));
+    };
     out.A.resize(q.neq, q.neq);
-    out.A.setFromTriplets(ta.begin(), ta.end());
+    matrix(out.A, &Part::ta, ta);
     out.Kc.resize(q.neq, nfix);
-    out.Kc.setFromTriplets(tc.begin(), tc.end());
+    matrix(out.Kc, &Part::tc, tc);
     out.R.resize(nfix, q.neq);
-    out.R.setFromTriplets(tr.begin(), tr.end());
+    matrix(out.R, &Part::tr, tr);
     out.Rd.resize(nfix, nfix);
-    out.Rd.setFromTriplets(td.begin(), td.end());
+    matrix(out.Rd, &Part::td, td);
+    if (newton) {
+        out.J.resize(q.neq, q.neq);
+        matrix(out.J, &Part::tj, tj);
+    }
 }
 
 std::vector<double> ScalarProblem3::reactions(const Equations& q, const Assembled& a, const Eigen::VectorXd& x, const Eigen::VectorXd& ud) const
@@ -763,6 +970,9 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
     const Eigen::VectorXd ud = Eigen::Map<const Eigen::VectorXd>(fixedList.data(), Eigen::Index(fixedList.size()));
     const QString name = a_node->name();
     const int rounds = a_self ? o.maxIterations : 1;
+    // (A field that reads itself: by Newton's method, unless Picard's is
+    // asked - its steps converge in a few where Picard's take many.)
+    const bool newton = a_self && o.nonlinear != QLatin1String("picard");
     a_converged = !a_self;
     Eigen::VectorXd x = Eigen::VectorXd::Zero(q.neq);
     // (The field as it is: an iterative solve's guess.)
@@ -774,7 +984,7 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
             return false;
         }
         Assembled a;
-        assemble(q, true, a, inTime ? o.mass : 0.0, inTime ? o.history : nullptr);
+        assemble(q, true, a, inTime ? o.mass : 0.0, inTime ? o.history : nullptr, newton);
         if (it == 0 && q.fixedDof.empty() && !a.robin && !inTime) {
             *error = a_heat ? tr("%1 holds the temperature nowhere: a Temperature, a convective Heat Flux or Radiation on a face is "
                                  "needed")
@@ -788,8 +998,19 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
         for (std::size_t t = 0; t < a_terminals.size(); ++t)
             if (a_terminals[t].floating && q.groupEq[t] >= 0) b(q.groupEq[t]) += evalAt(a_terminals[t].value, Vec3{});
         System3 sys;
-        if (!sys.factorize(a.A, o.solver, 1, o.tolerance, name, &a_s.log, error)) return false;
-        if (!sys.solve(b, x, name, &a_s.log, error)) return false;
+        if (newton) {
+            // Newton's step: (A + J) δ = b - A x, from the field as it is -
+            // its matrix not symmetric.
+            const Eigen::VectorXd r = b - a.A * x;
+            const Eigen::SparseMatrix<double> jm = a.A + a.J;
+            Eigen::VectorXd delta = Eigen::VectorXd::Zero(q.neq);
+            if (!sys.factorize(jm, o.solver, 1, o.tolerance, name, &a_s.log, error, false)) return false;
+            if (!sys.solve(r, delta, name, &a_s.log, error)) return false;
+            x += delta;
+        } else {
+            if (!sys.factorize(a.A, o.solver, 1, o.tolerance, name, &a_s.log, error)) return false;
+            if (!sys.solve(b, x, name, &a_s.log, error)) return false;
+        }
         // The field: each dof's equation's value, or its fixed one.
         const std::vector<double> before = f.values;
         for (std::size_t dof = 0; dof < f.values.size(); ++dof) {
@@ -822,14 +1043,19 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
             den += f.values[k] * f.values[k];
         }
         const double change = den > 0 ? std::sqrt(num / den) : std::sqrt(num);
-        a_s.log << tr("%1, Picard's iteration %2: relative change %3").arg(name).arg(it + 1).arg(change, 0, 'g', 3);
+        a_s.log << (newton ? tr("%1, Newton's step %2: relative change %3") : tr("%1, Picard's iteration %2: relative change %3"))
+                       .arg(name)
+                       .arg(it + 1)
+                       .arg(change, 0, 'g', 3);
         if (change < o.tolerance) {
             a_converged = true;
             break;
         }
     }
     if (!a_converged) {
-        *error = tr("%1: Picard's iterations did not converge in %2").arg(name).arg(o.maxIterations);
+        *error = (newton ? tr("%1: Newton's method did not converge in %2 steps") : tr("%1: Picard's iterations did not converge in %2"))
+                     .arg(name)
+                     .arg(o.maxIterations);
         return false;
     }
     f.solved = true;
@@ -985,3 +1211,17 @@ std::unique_ptr<Problem3> makeScalarProblem3(Solution3& solution, int field)
 }
 
 } // namespace qucs_s::fem::detail3
+
+namespace qucs_s::fem {
+
+void setAssemblyParts(int parts)
+{
+    detail3::g_assemblyParts = std::max(0, parts);
+}
+
+int assemblyParts()
+{
+    return detail3::g_assemblyParts;
+}
+
+} // namespace qucs_s::fem
