@@ -1751,6 +1751,10 @@ void QucsControl::femSolve(const QJsonObject& args, const Done& given)
     // (A 3D model's: Multiphysics 3D's.)
     if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Solve(three, args, given);
     if (!error.isEmpty()) return given(errorResult(error));
+    for (const char* key : {"solver", "force"})
+        if (args.contains(QLatin1String(key)))
+            return given(errorResult(tr("'%1' is a 3D model's: a 2D model's direct solver is Multiphysics > Settings', and it has no memory "
+                                        "limit.").arg(QLatin1String(key))));
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return given(errorResult(error));
     const QString study = args.value(QLatin1String("study")).toString();
@@ -3084,6 +3088,30 @@ QString geometry3Said(Multiphysics3DDoc* doc)
         .arg(g.topology->points.size());
 }
 
+/// A 3D solve's estimates into \a o: each physics' unknowns, nonzeros, and
+/// memory and time by each solver, the limit and whether it is past it.
+void estimatesInto(QJsonObject& o, const std::vector<Estimate3>& estimates)
+{
+    if (estimates.empty()) return;
+    const auto secondsOf = [](double s) { return QStringLiteral("%1 s").arg(formatNumber(s, 2)); };
+    QJsonArray list;
+    for (const Estimate3& e : estimates)
+        list.append(QJsonObject{{QStringLiteral("physics"), e.physics},
+                                {QStringLiteral("order"), e.order},
+                                {QStringLiteral("unknowns"), double(e.unknowns)},
+                                {QStringLiteral("nonzeros"), double(e.nonzeros)},
+                                {QStringLiteral("iterative"), QJsonObject{{QStringLiteral("memory"), bytesText(e.iterativeBytes)},
+                                                                          {QStringLiteral("time"), secondsOf(e.iterativeSeconds)}}},
+                                {QStringLiteral("direct"), QJsonObject{{QStringLiteral("memory"), bytesText(e.directBytes)},
+                                                                       {QStringLiteral("time"), secondsOf(e.directSeconds)}}},
+                                {QStringLiteral("solved by"), e.method == QLatin1String("auto") ? QStringLiteral("auto (multigrid, or a Cholesky for many right-hand sides)")
+                                                                                                  : e.method}});
+    o.insert(QStringLiteral("estimates"), list);
+    const double limit = Multiphysics3DDoc::memoryLimit();
+    o.insert(QStringLiteral("memory limit"), limit > 0 ? QucsControl::tr("%1 (Multiphysics 3D > Settings)").arg(bytesText(limit)) : QucsControl::tr("none"));
+    if (const QString past = pastTheLimit(estimates, limit); !past.isEmpty()) o.insert(QStringLiteral("past the limit"), past);
+}
+
 /// What a 3D model's messages said since \a before: a tool's log of its call.
 QJsonArray saidSince(const QStringList& messages, qsizetype before)
 {
@@ -3319,6 +3347,7 @@ void QucsControl::fem3Build(Multiphysics3DDoc* doc, const QJsonObject& args, con
                       {QStringLiteral("smallest angle"), QStringLiteral("%1°").arg(m->minAngle, 0, 'f', 1)},
                       {QStringLiteral("worst stretch"), formatNumber(m->maxStretch, 3)},
                       {QStringLiteral("shown"), tr("in the model's tab (screenshot takes a picture)")}};
+        estimatesInto(o, d->estimates());
         done(jsonResult(o));
     });
 }
@@ -3343,6 +3372,10 @@ void QucsControl::fem3Stop(Multiphysics3DDoc* doc, const QJsonObject& args, cons
 
 void QucsControl::fem3Solve(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& given)
 {
+    const QString solver = args.value(QLatin1String("solver")).toString();
+    if (!solver.isEmpty() && solver != QLatin1String("auto") && solver != QLatin1String("direct") && solver != QLatin1String("iterative"))
+        return given(errorResult(tr("'solver' is auto, direct or iterative")));
+    const bool force = args.value(QLatin1String("force")).toBool();
     const QString study = args.value(QLatin1String("study")).toString();
     if (!study.isEmpty()) {
         const FNode* s = doc->model().find(study);
@@ -3359,25 +3392,28 @@ void QucsControl::fem3Solve(Multiphysics3DDoc* doc, const QJsonObject& args, con
         stopped(stop);
         given(r);
     };
-    const auto solve = [this, d, study, timeout, args, done, begun] {
+    const auto solve = [this, d, study, solver, force, timeout, args, done, begun] {
         if (!d) return done(errorResult(tr("The model was closed.")));
         if (*begun == -1) return done(errorResult(tr("Cancelled by the client before it began.")));
         *begun = 1;
         const qsizetype before = d->messages().size();
-        d->compute(study);
+        d->compute(study, solver, force);
         d->whenJobEnds(timeout * 1000, [this, d, timeout, args, done, before](bool ended) {
             if (!d) return done(errorResult(tr("The model was closed.")));
             if (!ended)
                 return done(errorResult(tr("Still solving after %1 s, %2: it goes on (fem_describe says how far; fem_stop stops it).").arg(timeout).arg(d->jobProgress())));
+            // (Why not, as the tab said it - before the solution there is,
+            // which may be an earlier solve's: one refused past the memory
+            // limit leaves it.)
+            const QJsonArray said = saidSince(d->messages(), before);
+            QStringList lines;
+            for (const QJsonValue& v : said)
+                if (v.toString().startsWith(tr("Not solved"))) lines << v.toString();
+            if (!lines.isEmpty()) return done(errorResult(lines.join(QLatin1Char('\n'))));
             QJsonObject r = fem3Solved(d, args);
-            if (r.value(QLatin1String("isError")).toBool()) {
-                // (Why not, as the tab said it.)
-                const QJsonArray said = saidSince(d->messages(), before);
-                QStringList lines;
+            if (r.value(QLatin1String("isError")).toBool())
                 for (const QJsonValue& v : said)
-                    if (v.toString().startsWith(tr("Not solved")) || v.toString().contains(tr("stopped"))) lines << v.toString();
-                if (!lines.isEmpty()) return done(errorResult(lines.join(QLatin1Char('\n'))));
-            }
+                    if (v.toString().contains(tr("stopped"))) return done(errorResult(v.toString()));
             done(r);
         });
     };
@@ -3411,6 +3447,7 @@ QJsonObject QucsControl::fem3Solved(Multiphysics3DDoc* doc, const QJsonObject& a
         return g;
     };
     o.insert(QStringLiteral("globals"), globalsOf(*s));
+    estimatesInto(o, doc->estimates());
     if (s->timeDependent && s->snapshotCount() > 0)
         o.insert(QStringLiteral("output times"), QJsonObject{{QStringLiteral("count"), s->snapshotCount()},
                                                              {QStringLiteral("first"), formatQuantity(s->snapshotTime(0), Dim::of(0, 0, 1))},
