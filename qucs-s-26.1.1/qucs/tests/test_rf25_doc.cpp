@@ -78,6 +78,21 @@ QString examples()
     return QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
 }
 
+/// Whether this build is one whose dense solves are many times slower - a
+/// sanitized one, as CI's Linux job is (QUCS_TEST_SLOW: its path in any).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
 /// A GDSII file of one strip \a length by \a width µm on layer 1/0, in
 /// cell TOP: a line, as plain as a layout can be.
 bool writeStrip(const QString& path, double length, double width)
@@ -1375,11 +1390,17 @@ private slots:
         panel()->selectNode(tag);
         auto* write = panel()->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"));
         QVERIFY2(write != nullptr, "the export node has no Write button");
+        // The form made again after the click - the solve's end, deferred,
+        // came then on CI's slow Linux runner (d7facd8) - still says it.
+        const QPointer<QLabel> before = panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
+        emit doc->solvedChanged();
         write->click();
         QCoreApplication::processEvents();
+        QVERIFY2(before.isNull(), "the form was not made again");
         auto* said = panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
         QVERIFY(said != nullptr);
         QVERIFY2(said->text().contains(QStringLiteral("Written to")), qPrintable(said->text()));
+        QVERIFY(said->isVisibleTo(panel()));
         QVERIFY2(QFile::exists(path), qPrintable(path));
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
@@ -2163,7 +2184,13 @@ private slots:
             for (rf::Node& port : m.ports().children) {
                 port.props.insert(QStringLiteral("y"), QStringLiteral("0"));
                 port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
-                if (port.label == QLatin1String("P1")) port.props.insert(QStringLiteral("calibrate"), true);
+                if (port.label != QLatin1String("P1")) continue;
+                port.props.insert(QStringLiteral("calibrate"), true);
+                // (Its strips' length given under the sanitizers: chosen - eight
+                // heights and twice the feed, and shorter ones tried - their
+                // dense solves took 60 s here and past the 300 s waited for on
+                // CI's Linux, d7facd8.)
+                if (slowBuild()) port.props.insert(QStringLiteral("strips"), QStringLiteral("400[um]"));
             }
             rf::Node* study = m.root.child(QStringLiteral("rf_study"));
             QVERIFY(study != nullptr);

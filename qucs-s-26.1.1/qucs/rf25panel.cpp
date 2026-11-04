@@ -631,6 +631,7 @@ void RF25Panel::showSettings()
     if (editingHere && (qobject_cast<QLineEdit*>(focused) != nullptr || qobject_cast<QTableWidget*>(focused) != nullptr
                         || focused->parent()->inherits("QTableWidget")))
         return;   // (its commit rebuilds the form when it has ended)
+    if (tag != a_shownTag) a_exportSaid.clear();
     a_shownTag = tag;
     a_editors.clear();
     delete a_form;
@@ -700,20 +701,25 @@ void RF25Panel::showSettings()
         said->setObjectName(QStringLiteral("rfExportSaid"));
         said->setWordWrap(true);
         said->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        said->hide();
+        // (Said again when the form is made again - a solve's end, a state
+        // changed: deferred, that came after the click on a slow runner and
+        // took what it said away, CI of d7facd8.)
+        said->setText(a_exportSaid);
+        said->setVisible(!a_exportSaid.isEmpty());
         const QString tag = n->tag;
         connect(write, &QPushButton::clicked, this, [this, tag, said, circuit] {
             if (a_doc == nullptr) return;
             QString why;
             const QString path = a_doc->writeExport(tag, &why);
             if (path.isEmpty()) {
-                said->setText(tr("It could not be written: %1").arg(why));
+                a_exportSaid = tr("It could not be written: %1").arg(why);
             } else if (circuit) {
                 const std::optional<qucs_s::rf25::EquivalentCircuit> fitted = a_doc->equivalentCircuit();
-                said->setText(tr("Written to %1. %2").arg(path, fitted ? fitted->lines.join(QLatin1Char(' ')) : QString()));
+                a_exportSaid = tr("Written to %1. %2").arg(path, fitted ? fitted->lines.join(QLatin1Char(' ')) : QString());
             } else {
-                said->setText(tr("Written to %1.").arg(path));
+                a_exportSaid = tr("Written to %1.").arg(path);
             }
+            said->setText(a_exportSaid);
             said->show();
         });
         v->addWidget(write);
