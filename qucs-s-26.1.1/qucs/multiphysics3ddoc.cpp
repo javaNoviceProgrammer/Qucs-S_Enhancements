@@ -12,6 +12,7 @@
  */
 #include "multiphysics3ddoc.h"
 
+#include "fem3_export.h"
 #include "fem3_results.h"
 #include "ink.h"
 #include "misc.h"
@@ -20,6 +21,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFile>
@@ -1028,6 +1030,62 @@ DerivedResult Multiphysics3DDoc::evaluate(const QString& tag)
     if (!out.error.isEmpty()) say(tr("%1: %2").arg(n->name(), out.error), out.values.isEmpty());
     else if (!out.note.isEmpty()) say(tr("%1: %2").arg(n->name(), out.note));
     return out;
+}
+
+QString Multiphysics3DDoc::runExport(const QString& tag, QString* error)
+{
+    auto fail = [this, error](const QString& why) {
+        if (error) *error = why;
+        say(why, true);
+        return QString();
+    };
+    const Node* n = a_model.find(tag);
+    if (!n || !n->kind() || n->kind()->group != QLatin1String("export")) return fail(tr("there is no export %1").arg(tag));
+    if (a_solutions.empty()) return fail(tr("%1: the model is not computed yet - Compute first").arg(n->name()));
+    // Where: its File (relative to the model's folder), else beside the
+    // model (in the cache while it has no file) as model_tag.
+    QString path = n->text(QStringLiteral("file")).trimmed();
+    QString dir, base;
+    if (path.isEmpty()) {
+        if (getDocName().isEmpty()) {
+            dir = misc::cacheDir() + QStringLiteral("/multiphysics3d");
+            QDir().mkpath(dir);
+            base = QStringLiteral("untitled_") + tag;
+        } else {
+            dir = QFileInfo(getDocName()).absolutePath();
+            base = QFileInfo(getDocName()).completeBaseName() + QLatin1Char('_') + tag;
+        }
+    } else {
+        if (QFileInfo(path).isRelative()) {
+            if (getDocName().isEmpty()) return fail(tr("%1: %2 is relative to the model's folder - save the model first").arg(n->name(), path));
+            path = QFileInfo(getDocName()).absoluteDir().absoluteFilePath(path);
+        }
+        dir = QFileInfo(path).absolutePath();
+        base = QFileInfo(path).completeBaseName();
+    }
+    const int shown = shownTime();
+    const Export3 out = export3(a_solutions, *n, base);
+    for (const auto& s : a_solutions)
+        if (s->snapshotCount() > 0) s->select(s->snapshotCount() - 1);
+    if (a_solution && shown >= 0) a_solution->select(shown);
+    if (!out.main.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), out.main.error));
+    if (path.isEmpty()) path = QDir(dir).filePath(base + QLatin1Char('.') + out.main.suffix);
+    if (!QFileInfo(dir).isDir() && !QDir().mkpath(dir))
+        return fail(tr("%1: the folder %2 cannot be made, so %3 is not written").arg(n->name(), QDir::toNativeSeparators(dir), QFileInfo(path).fileName()));
+    auto write = [&fail, n](const QString& to, const QByteArray& bytes) {
+        QSaveFile file(to);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) < 0 || !file.commit()) {
+            fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(to), file.errorString()));
+            return false;
+        }
+        return true;
+    };
+    if (!write(path, out.main.data.isEmpty() ? out.main.text.toUtf8() : out.main.data)) return QString();
+    if (!out.main.coordinates.isEmpty() && !write(QDir(dir).filePath(base + QStringLiteral("_xy.npy")), out.main.coordinates)) return QString();
+    for (const auto& [end, bytes] : out.parts)
+        if (!write(QDir(dir).filePath(base + end), bytes)) return QString();
+    say(tr("%1: %2 written - %3").arg(n->name(), QFileInfo(path).fileName(), out.main.summary));
+    return path;
 }
 
 void Multiphysics3DDoc::fillPointChoices()

@@ -1108,6 +1108,29 @@ private:
         // The model's functions first: an analytic one is its body with
         // the arguments put in; a table is looked up.
         if (const Scope::Function* f = a_scope.function(ast->name)) {
+            if (f->table && f->table->threeD()) {
+                if (ast->args.size() != 3) return failed(tr("%1 takes three arguments").arg(ast->name));
+                std::vector<Value> args;
+                for (const AstPtr& arg : ast->args) {
+                    std::optional<Value> a = compile(arg, depth + 1);
+                    if (!a) return a;
+                    args.push_back(*a);
+                }
+                for (int k = 0; k < 3; ++k)
+                    if (k < f->argumentDims.size() && !(args[std::size_t(k)].dim == f->argumentDims[k]) && !args[std::size_t(k)].dim.isNone())
+                        warn(tr("%1 expects %2 for its argument %3, not %4").arg(ast->name, dimName(f->argumentDims[k])).arg(k + 1).arg(dimName(args[std::size_t(k)].dim)));
+                if (args[0].constant && args[1].constant && args[2].constant) {
+                    Value v;
+                    v.value = f->table->at(args[0].value, args[1].value, args[2].value);
+                    v.dim = f->dim;
+                    return v;
+                }
+                Value v = join(args);
+                v.code.push_back({Expression::Op::Table3, 0, int(a_out.a_tables.size())});
+                a_out.a_tables.push_back(f->table);
+                v.dim = f->dim;
+                return v;
+            }
             if (f->table && f->table->twoD()) {
                 if (ast->args.size() != 2) return failed(tr("%1 takes two arguments").arg(ast->name));
                 std::vector<Value> args;
@@ -1419,7 +1442,7 @@ Expression Expression::compile(const QString& text, const Scope& scope, const Op
             switch (in.op) {
             case Op::Const: case Op::Var: ++depth; break;
             case Op::Neg: case Op::Not: case Op::Fn1: case Op::Table: break;
-            case Op::If: depth -= 2; break;
+            case Op::If: case Op::Table3: depth -= 2; break;
             default: --depth; break;
             }
             most = std::max(most, depth);
@@ -1456,6 +1479,7 @@ double Expression::eval(const double* values) const
         case Op::If: sp -= 2; st[sp] = st[sp] != 0 ? st[sp + 1] : st[sp + 2]; break;
         case Op::Table: st[sp] = a_tables[std::size_t(in.index)]->at(st[sp]); break;
         case Op::Table2: --sp; st[sp] = a_tables[std::size_t(in.index)]->at(st[sp], st[sp + 1]); break;
+        case Op::Table3: sp -= 2; st[sp] = a_tables[std::size_t(in.index)]->at(st[sp], st[sp + 1], st[sp + 2]); break;
         default: --sp; st[sp] = ExprCompiler::binaryValue(in.op, st[sp], st[sp + 1]); break;
         }
     }
@@ -1516,6 +1540,17 @@ Expression::Linearity Expression::linearity(const std::function<SlotKind(int)>& 
             if (st.back().deg > 0) st.back() = nonlinear(st.back().var);
             else st.back() = V{0, false, st.back().var, false, 0};
             break;
+        case Op::Table3: {
+            // (Of the unknowns: not linear; else what it reads.)
+            bool deg = false, var = false;
+            for (int k = 0; k < 3; ++k) {
+                deg = deg || st.back().deg > 0;
+                var = var || st.back().var;
+                st.pop_back();
+            }
+            st.push_back(deg ? nonlinear(var) : V{0, false, var, false, 0});
+            break;
+        }
         case Op::If: {
             const V b = st.back();
             st.pop_back();
@@ -1622,6 +1657,39 @@ double Expression::Table::at(double u, double v) const
     const std::size_t i1 = std::min(i + 1, nx - 1), j1 = std::min(j + 1, ny - 1);
     auto at = [&](std::size_t a, std::size_t b) { return z[a * ny + b]; };
     return (1 - s) * ((1 - t) * at(i, j) + t * at(i, j1)) + s * ((1 - t) * at(i1, j) + t * at(i1, j1));
+}
+
+double Expression::Table::at(double u, double v, double w) const
+{
+    const std::size_t nx = x.size(), ny = grid.size(), nz = grid3.size();
+    if (nx == 0 || ny == 0 || nz == 0 || z.size() < nx * ny * nz || std::isnan(u) || std::isnan(v) || std::isnan(w)) return std::nan("");
+    // Each axis: its cell and the share across it, clamped to the grid.
+    auto locate = [](const std::vector<double>& g, double c, std::size_t* i, double* t) {
+        if (g.size() == 1 || c <= g.front()) {
+            *i = 0;
+            *t = 0;
+            return;
+        }
+        if (c >= g.back()) {
+            *i = g.size() - 2;
+            *t = 1;
+            return;
+        }
+        const std::size_t k = std::size_t(std::upper_bound(g.begin(), g.end(), c) - g.begin());
+        *i = k - 1;
+        *t = (c - g[k - 1]) / (g[k] - g[k - 1]);
+    };
+    std::size_t i = 0, j = 0, l = 0;
+    double r = 0, s = 0, t = 0;
+    locate(x, u, &i, &r);
+    locate(grid, v, &j, &s);
+    locate(grid3, w, &l, &t);
+    const std::size_t i1 = std::min(i + 1, nx - 1), j1 = std::min(j + 1, ny - 1), l1 = std::min(l + 1, nz - 1);
+    auto at = [&](std::size_t a, std::size_t b, std::size_t c) { return z[(a * ny + b) * nz + c]; };
+    auto plane = [&](std::size_t a) {
+        return (1 - s) * ((1 - t) * at(a, j, l) + t * at(a, j, l1)) + s * ((1 - t) * at(a, j1, l) + t * at(a, j1, l1));
+    };
+    return (1 - r) * plane(i) + r * plane(i1);
 }
 
 double Expression::Table::at(double v) const

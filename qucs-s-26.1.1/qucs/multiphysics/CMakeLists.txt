@@ -24,6 +24,7 @@ set(FEM_SRCS
   fem_scalar.cpp
   fem3_scalar.cpp
   fem3_results.cpp
+  fem3_export.cpp
   fem_elastic.cpp
   fem_magnetic.cpp
   fem_edge.cpp

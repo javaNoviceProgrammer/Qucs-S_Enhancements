@@ -146,7 +146,7 @@ public:
     Linearity linearity(const std::function<SlotKind(int)>& slot) const;
 
     enum class Op : std::uint8_t {
-        Const, Var, Neg, Not, Add, Sub, Mul, Div, Pow, Lt, Le, Gt, Ge, Eq, Ne, And, Or, Fn1, Fn2, If, Table, Table2
+        Const, Var, Neg, Not, Add, Sub, Mul, Div, Pow, Lt, Le, Gt, Ge, Eq, Ne, And, Or, Fn1, Fn2, If, Table, Table2, Table3
     };
     struct Instr {
         Op op;
@@ -156,13 +156,17 @@ public:
     /// A function of one variable given by a table, linear between its
     /// points and constant beyond them; or of two, on a grid (\a x by \a
     /// grid, the values \a z by x then y: z[i * grid.size() + j]), bilinear
-    /// between and constant beyond.
+    /// between and constant beyond; or of three (\a x by \a grid by \a
+    /// grid3, z[(i * grid.size() + j) * grid3.size() + l]), trilinear.
     struct Table {
         std::vector<double> x, y;
         std::vector<double> grid, z;
-        bool twoD() const { return !grid.empty(); }
+        std::vector<double> grid3;
+        bool twoD() const { return !grid.empty() && grid3.empty(); }
+        bool threeD() const { return !grid3.empty(); }
         double at(double v) const;
         double at(double u, double v) const;
+        double at(double u, double v, double w) const;
     };
 
 private:
