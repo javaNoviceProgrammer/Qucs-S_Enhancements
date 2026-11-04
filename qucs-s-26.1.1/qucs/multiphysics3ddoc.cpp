@@ -116,6 +116,7 @@ struct Multiphysics3DDoc::Job {
     bool solve = false;                      ///< a solve asked (its mesh first, when none given)
     std::shared_ptr<const Mesh3> givenMesh;  ///< the mesh a solve is on (none: made by it)
     StudyRun3 study;
+    QString studyTag;                        ///< the study solved (empty: the first)
     Model model;
     std::shared_ptr<ParameterScope> parameters;
     std::shared_ptr<Topology3> topology;     ///< the geometry a mesh is of (given: not built again)
@@ -195,6 +196,10 @@ Multiphysics3DDoc::~Multiphysics3DDoc()
         delete a_job->thread;
         a_job->thread = nullptr;
     }
+    // (Calls waiting for its work told it ended without them - after it has
+    // gone: their pointers to it null by then.)
+    for (const auto& w : a_waiting) QTimer::singleShot(0, qApp, [then = w->then] { then(false); });
+    a_waiting.clear();
 }
 
 void Multiphysics3DDoc::buildUi()
@@ -225,7 +230,7 @@ void Multiphysics3DDoc::buildUi()
     });
     connect(a_buildMesh, &QToolButton::clicked, this, &Multiphysics3DDoc::buildMesh);
     a_compute = button(tr("Compute"), tr("Solve the model's study (its geometry and mesh first, where they changed)"), "mp3Compute");
-    connect(a_compute, &QToolButton::clicked, this, &Multiphysics3DDoc::compute);
+    connect(a_compute, &QToolButton::clicked, this, [this] { compute(); });
     row->addSpacing(8);
     row->addWidget(new QLabel(tr("Show:"), bar));
     a_showBox = new QComboBox(bar);
@@ -600,9 +605,10 @@ bool Multiphysics3DDoc::solving() const
     return a_job && a_job->solve;
 }
 
-void Multiphysics3DDoc::compute()
+void Multiphysics3DDoc::compute(const QString& study)
 {
     if (a_closed) return;
+    a_study = study;
     if (a_job) {
         a_solveWanted = true;
         return;
@@ -633,10 +639,57 @@ void Multiphysics3DDoc::buildMesh()
 
 void Multiphysics3DDoc::cancel()
 {
+    ++a_stops;
     a_geometryWanted = false;
     a_meshWanted = false;
     a_solveWanted = false;
     if (a_job) a_job->cancel = true;
+}
+
+bool Multiphysics3DDoc::idle() const
+{
+    return !a_job && !a_geometryTimer->isActive() && !a_geometryWanted && !a_meshWanted && !a_solveWanted;
+}
+
+QString Multiphysics3DDoc::jobProgress() const
+{
+    if (!a_job) return {};
+    return tr("%1, %2 %").arg(a_stage->text()).arg(a_job->permille.load() / 10);
+}
+
+void Multiphysics3DDoc::whenJobEnds(int ms, std::function<void(bool)> then)
+{
+    if (a_closed) {
+        QTimer::singleShot(0, qApp, [then] { then(false); });
+        return;
+    }
+    if (idle()) {
+        then(true);
+        return;
+    }
+    auto w = std::make_shared<Waiting>();
+    w->then = std::move(then);
+    w->timer = new QTimer(this);
+    w->timer->setSingleShot(true);
+    connect(w->timer, &QTimer::timeout, this, [this, w] {
+        a_waiting.erase(std::remove(a_waiting.begin(), a_waiting.end(), w), a_waiting.end());
+        w->timer->deleteLater();
+        w->then(false);
+    });
+    w->timer->start(std::max(1, ms));
+    a_waiting.push_back(w);
+}
+
+void Multiphysics3DDoc::wakeWaiting()
+{
+    if (!idle() || a_waiting.empty()) return;
+    const std::vector<std::shared_ptr<Waiting>> ready = std::move(a_waiting);
+    a_waiting.clear();
+    for (const auto& w : ready) {
+        w->timer->stop();
+        w->timer->deleteLater();
+    }
+    for (const auto& w : ready) w->then(true);
 }
 
 bool Multiphysics3DDoc::waitForIdle(int ms)
@@ -655,6 +708,7 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
     auto job = std::make_shared<Job>();
     job->mesh = mesh;
     job->solve = solve;
+    job->studyTag = a_study;
     job->model = a_model;
     job->parameters = parameters();
     job->revision = a_solvedRevision;
@@ -684,7 +738,7 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
             job->givenMesh = job->meshBuild.mesh;
         }
         if (job->solve)
-            job->study = runStudy3(job->model, job->parameters, job->topology, job->givenMesh, QString(), [job, meshShare](double fraction, const QString&) {
+            job->study = runStudy3(job->model, job->parameters, job->topology, job->givenMesh, job->studyTag, [job, meshShare](double fraction, const QString&) {
                 job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
                 return !job->cancel.load();
             });
@@ -782,6 +836,7 @@ void Multiphysics3DDoc::jobFinished()
     else if (meshAgain) startJob(true);
     else if (geometryAgain) startJob(false);
     updateState();
+    wakeWaiting();
 }
 
 void Multiphysics3DDoc::watchFiles()
@@ -1032,7 +1087,7 @@ DerivedResult Multiphysics3DDoc::evaluate(const QString& tag)
     return out;
 }
 
-QString Multiphysics3DDoc::runExport(const QString& tag, QString* error)
+QString Multiphysics3DDoc::runExport(const QString& tag, QString* error, const std::function<QString(const QString&)>& beforeWrite)
 {
     auto fail = [this, error](const QString& why) {
         if (error) *error = why;
@@ -1072,7 +1127,12 @@ QString Multiphysics3DDoc::runExport(const QString& tag, QString* error)
     if (path.isEmpty()) path = QDir(dir).filePath(base + QLatin1Char('.') + out.main.suffix);
     if (!QFileInfo(dir).isDir() && !QDir().mkpath(dir))
         return fail(tr("%1: the folder %2 cannot be made, so %3 is not written").arg(n->name(), QDir::toNativeSeparators(dir), QFileInfo(path).fileName()));
-    auto write = [&fail, n](const QString& to, const QByteArray& bytes) {
+    auto write = [&fail, &beforeWrite, n](const QString& to, const QByteArray& bytes) {
+        if (beforeWrite)
+            if (const QString no = beforeWrite(to); !no.isEmpty()) {
+                fail(no);
+                return false;
+            }
         QSaveFile file(to);
         if (!file.open(QIODevice::WriteOnly) || file.write(bytes) < 0 || !file.commit()) {
             fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(to), file.errorString()));
@@ -1474,6 +1534,7 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
         legend.high = shown(first->hi, first->e.dim(), first->unit);
         legend.table = *first->table;
         legend.shown = true;
+        a_plotRange = {first->lo, first->hi};
         // The clip's cut face, as the first coloured plot is.
         if (*clipAxis >= 0)
             for (const SliceTriangle& st : slice(*sol, first->e, *clipAxis, clipAt)) {

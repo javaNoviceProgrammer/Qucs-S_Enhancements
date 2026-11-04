@@ -20,6 +20,7 @@
 #include "fem_process_results.h"
 #include "main.h"
 #include "misc.h"
+#include "multiphysics3ddoc.h"
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
 #include "qucs.h"
@@ -503,18 +504,50 @@ QString formatText()
         .replace(QLatin1String("%CONSTANTS%"), constantsText());
 }
 
+/// A 3D model's file, beside the plane's (fem_describe what=format of a 3D
+/// model): one paragraph, its solids, selections, mesh and results.
+QString formatText3D()
+{
+    return QStringLiteral(
+        "A 3D model (.qfem3d, Multiphysics 3D's) is the same JSON, its \"format\" \"qucs-s multiphysics 3d 1\" and its "
+        "component's \"space\" \"3D\". Its geometry is of solids along z: \"box\" (\"position\" x, y of its \"base\" corner or "
+        "center, \"size\" its width and depth, \"z\" its bottom, \"height\", \"rotation\" about z), \"cylinder\" (\"center\", "
+        "\"radius\", \"z\", \"height\"), \"extrude\" (a sketch of the plan's features - rectangle, circle, polygon, import... - "
+        "drawn up from \"z\" through \"height\", each object it ends with a solid of its name) and \"stack\" (\"stack\" rows of "
+        "name, layout layer, z and thickness in µm, a layout's \"file\" and \"cell\"); \"union\", \"difference\" and "
+        "\"intersection\" of solids, \"form union\" last; where solids meet, the overlap is a domain of its own. Selections at the "
+        "levels domain, boundary (a face: a floor, normal along z, or a wall), edge and point: {\"of\": [\"blk1\"], \"side\": "
+        "\"top\"} - top, bottom, left, right, front (-y), back -, {\"only\": [...]}, {\"numbers\": [...]}, {\"box\": ...}. Its "
+        "mesh: the plan's triangles (\"size\", mesh/size) drawn up as prisms in layers, \"mesh/zdistribution\" (\"count\" prisms "
+        "across its domains' height). Physics: heat, electrostatics and currents with their features, as a 2D model's; a study's "
+        "\"stationary\" and \"transient\" steps and a \"sweep\". At a point x, y, z, T, V, ht.qz, es.Ez, ec.Jz...; globals as a 2D "
+        "model's. Results: \"plotgroup3d\" (\"clip\" x, y or z at \"clipat\") of \"surface\" (the boundaries coloured), "
+        "\"slice\", \"isosurface\", \"arrowvolume\" and \"meshplot\"; derived values \"global\", \"integral\", \"average\", "
+        "\"maximum\" and \"minimum\" (\"level\" domain, boundary or edge) and \"pointeval\" (\"coordinates3\" rows of x, y, z); "
+        "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z).");
+}
+
 } // namespace
 
 namespace {
 
-/// Why the fem_ tools refuse the 3D model \a name: Multiphysics 3D's, as
-/// fem_model's refusal says (it was "not a multiphysics model" - the check
-/// of 3 November, 2).
+/// Why what acts on 2D models alone refuses the 3D model \a name:
+/// Multiphysics 3D's (it was "not a multiphysics model" - the check of 3
+/// November, 2).
 QString notA2DModel(const QString& name)
 {
-    return QObject::tr("%1 is a 3D multiphysics model (.qfem3d), Multiphysics 3D's: the fem_ tools act on 2D models (.qfem). "
-                       "It is worked in its Multiphysics 3D tab (open_document opens it there).")
-        .arg(name);
+    return QObject::tr("%1 is a 3D multiphysics model (.qfem3d), Multiphysics 3D's: this acts on 2D models (.qfem) alone.").arg(name);
+}
+
+/// Whether fem_model's new makes a 3D model: 'space' 3D, a 3D 'model' (its
+/// format's or its component's space), or a .qfem3d 'path'.
+bool newIs3D(const QJsonObject& args)
+{
+    const QJsonObject mo = args.value(QLatin1String("model")).toObject();
+    const QJsonObject first = mo.value(QStringLiteral("components")).toArray().first().toObject();
+    return args.value(QLatin1String("space")).toString() == QLatin1String("3D")
+           || args.value(QLatin1String("path")).toString().trimmed().endsWith(QLatin1String(".qfem3d"), Qt::CaseInsensitive)
+           || mo.value(QStringLiteral("format")).toString().contains(QLatin1String(" 3d ")) || first.value(QStringLiteral("space")).toString() == QLatin1String("3D");
 }
 
 } // namespace
@@ -594,13 +627,16 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             node = materialNode(Model::blank(), *e);
             parameters = evaluateParameters(Model::blank());
         } else {
+            // (A model's: a 2D one's or a 3D one's.)
             QString error;
-            MultiphysicsDoc* doc = femDocument(args, &error);
-            if (doc == nullptr) return errorResult(tr("The library has no material %1, and %2").arg(name, error));
-            for (const FNode& m : doc->model().materials().children)
+            const Model* model = nullptr;
+            if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) model = &three->model();
+            else if (MultiphysicsDoc* doc = error.isEmpty() ? femDocument(args, &error) : nullptr) model = &doc->model();
+            if (model == nullptr) return errorResult(tr("The library has no material %1, and %2").arg(name, error));
+            for (const FNode& m : model->materials().children)
                 if (m.tag == name || m.name().compare(name, Qt::CaseInsensitive) == 0) node = m;
             if (!node) return errorResult(tr("Neither the library nor the model has a material %1.").arg(name));
-            parameters = evaluateParameters(doc->model());
+            parameters = evaluateParameters(*model);
         }
         MaterialSweep sweep;
         sweep.variable = args.value(QLatin1String("vs")).toString(QStringLiteral("T"));
@@ -663,11 +699,21 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         return jsonResult(out);
     }
     if (what == QLatin1String("format")) {
-        // The kinds of node, each with its properties.
+        // The kinds of node, each with its properties - a 3D model's alone
+        // where one is named, in front, or 'space' says 3D.
+        QString none;
+        const QString space = args.value(QLatin1String("space")).toString();
+        const bool three = space == QLatin1String("3D") || (space.isEmpty() && fem3DocumentFor(args, &none) != nullptr);
         QJsonArray kinds;
         const QString group = args.value(QLatin1String("group")).toString();
+        // (An Extrude's sketch: the plan's kinds, in a 3D model too.)
+        QSet<QString> sketch;
+        for (const NodeKind* k : nodeKinds())
+            if (three && (k->spaces & Spaces::ThreeD) && k->type == QLatin1String("extrude"))
+                for (const QString& c : k->children) sketch.insert(c);
         for (const NodeKind* k : nodeKinds()) {
             if (k->fixed && k->properties.isEmpty()) continue;
+            if (three && !(k->spaces & Spaces::ThreeD) && !sketch.contains(k->type)) continue;
             if (!group.isEmpty() && k->group != group && k->type != group && !k->type.startsWith(group + QLatin1Char('/'))) continue;
             QJsonArray props;
             for (const PropertyDef& p : k->properties) {
@@ -679,6 +725,7 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
                 static const char* kindNames[] = {"expression", "pair", "text", "choice", "bool", "integer", "selection", "objects",
                                                   "points", "physics", "study", "rows", "terminal", "file", "time or frequency",
                                                   "sweep point", "dataset", "node tag"};
+                if (three && !(p.spaces & Spaces::ThreeD)) continue;
                 const int ki = int(p.kind);
                 QString line = p.key + QStringLiteral(": ") + p.label;
                 if (!p.unit.isEmpty()) line += QStringLiteral(" [%1]").arg(p.unit);
@@ -704,8 +751,10 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             if (k->selection != Level::None) ko.insert(QStringLiteral("selects"), levelName(k->selection));
             if (!props.isEmpty()) ko.insert(QStringLiteral("properties"), props);
             if (!k->children.isEmpty()) ko.insert(QStringLiteral("children"), QJsonArray::fromStringList(k->children));
-            // (A 3D model's own kinds - a .qfem3d's, Multiphysics 3D's - said so.)
+            // (A 3D model's own kinds - a .qfem3d's, Multiphysics 3D's - said so,
+            // and in a 3D model's an Extrude's sketch.)
             if (!(k->spaces & Spaces::TwoD)) ko.insert(QStringLiteral("space"), QStringLiteral("3D"));
+            else if (three && !(k->spaces & Spaces::ThreeD)) ko.insert(QStringLiteral("space"), QStringLiteral("an Extrude's sketch (the plan's)"));
             if (!k->help.isEmpty()) ko.insert(QStringLiteral("help"), k->help);
             kinds.append(ko);
         }
@@ -723,6 +772,7 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         // its kinds or their tags ("text": "all" all the same, "none" none).
         const QString textWanted = args.value(QLatin1String("text")).toString();
         QString text = formatText();
+        if (three) text.prepend(formatText3D() + QLatin1Char('\n'));
         QString textNote;
         if (textWanted == QLatin1String("none")) {
             textNote = tr("the format's text left out ('text' none)");
@@ -765,6 +815,9 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         return jsonResult(out);
     }
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Describe(three, args);
+    if (!error.isEmpty()) return errorResult(error);
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
     const Model& m = doc->model();
@@ -857,33 +910,48 @@ QStringList QucsControl::femFilesWritten(const QString& tool, const QJsonObject&
 {
     const QString action = args.value(QLatin1String("action")).toString();
     const QString given = args.value(QLatin1String("path")).toString().trimmed();
-    const auto qfem = [](QString file) { return QucsApp::isMultiphysicsFile(file) ? file : file + QStringLiteral(".qfem"); };
+    const auto qfem = [](QString file, bool three) {
+        if (three) return file.endsWith(QLatin1String(".qfem3d"), Qt::CaseInsensitive) ? file : file + QStringLiteral(".qfem3d");
+        return QucsApp::isMultiphysicsFile(file) ? file : file + QStringLiteral(".qfem");
+    };
     // The model named, or each it may be (femDocument(): the one in front,
-    // else one of those open).
-    QList<MultiphysicsDoc*> models;
+    // else one of those open) - a 2D one's or a 3D one's.
+    struct Open {
+        QString file;
+        const Model* model;
+        bool three;
+    };
+    const auto of = [](QucsDoc* d) -> std::optional<Open> {
+        if (auto* m = dynamic_cast<MultiphysicsDoc*>(d)) return Open{m->getDocName(), &m->model(), false};
+        if (auto* m = dynamic_cast<Multiphysics3DDoc*>(d)) return Open{m->getDocName(), &m->model(), true};
+        return std::nullopt;
+    };
+    QList<Open> models;
     QString none;
     if (!given.isEmpty()) {
-        if (auto* m = dynamic_cast<MultiphysicsDoc*>(document(QJsonObject{{QStringLiteral("path"), given}}, &none))) models << m;
+        if (const auto m = of(document(QJsonObject{{QStringLiteral("path"), given}}, &none))) models << *m;
     } else {
         for (QucsDoc* doc : a_app->allDocuments())
-            if (auto* m = dynamic_cast<MultiphysicsDoc*>(doc)) models << m;
+            if (const auto m = of(doc)) models << *m;
         if (a_app->DocumentTab->count() > 0)
-            if (auto* front = qobject_cast<MultiphysicsDoc*>(a_app->DocumentTab->currentWidget())) models = {front};
+            if (const auto front = of(dynamic_cast<QucsDoc*>(a_app->DocumentTab->currentWidget()))) models = {*front};
     }
     QStringList files;
     if (tool == QLatin1String("fem_model")) {
         const QString as = args.value(QLatin1String("as")).toString().trimmed();
-        if (action == QLatin1String("new") && !given.isEmpty()) files << qfem(absolute(given));
+        // (Saved: as the model saved is, 2D or 3D.)
+        const bool three = models.isEmpty() ? given.endsWith(QLatin1String(".qfem3d"), Qt::CaseInsensitive) : models.first().three;
+        if (action == QLatin1String("new") && !given.isEmpty()) files << qfem(absolute(given), newIs3D(args));
         else if (action == QLatin1String("import") && !given.isEmpty()) {
             const QString to = args.value(QLatin1String("to")).toString().trimmed();
             const QString source = absolute(given);
             files << (to.isEmpty() ? QFileInfo(source).dir().filePath(QFileInfo(source).completeBaseName() + QStringLiteral(".qfem")) : absolute(to));
         } else if (action == QLatin1String("save")) {
-            if (!as.isEmpty()) files << qfem(absolute(as));
-            else if (!given.isEmpty() && models.isEmpty()) files << qfem(absolute(given));   // (the untitled model saved as it)
+            if (!as.isEmpty()) files << qfem(absolute(as), three);
+            else if (!given.isEmpty() && models.isEmpty()) files << qfem(absolute(given), three);   // (the untitled model saved as it)
             else
-                for (MultiphysicsDoc* m : std::as_const(models))
-                    if (!m->getDocName().isEmpty()) files << m->getDocName();
+                for (const Open& m : std::as_const(models))
+                    if (!m.file.isEmpty()) files << m.file;
         }
         return files;
     }
@@ -891,12 +959,13 @@ QStringList QucsControl::femFilesWritten(const QString& tool, const QJsonObject&
     // else beside the model; the clipboard writes nothing.
     if (args.value(QLatin1String("copy")).toBool()) return files;
     const QString tag = args.value(QLatin1String("export")).toString().trimmed();
-    for (MultiphysicsDoc* m : std::as_const(models)) {
-        const FNode* n = m->model().find(tag);
+    for (const Open& m : std::as_const(models)) {
+        const FNode* n = m.model->find(tag);
         if (n == nullptr) continue;
-        const QString folder = m->getDocName().isEmpty() ? misc::cacheDir() + QStringLiteral("/multiphysics") : QFileInfo(m->getDocName()).absolutePath();
+        const QString folder = m.file.isEmpty() ? misc::cacheDir() + (m.three ? QStringLiteral("/multiphysics3d") : QStringLiteral("/multiphysics"))
+                                                : QFileInfo(m.file).absolutePath();
         const QString file = n->text(QStringLiteral("file")).trimmed();
-        if (file.isEmpty()) files << QDir(folder).filePath(QFileInfo(m->getDocName()).completeBaseName() + QLatin1Char('_') + tag);
+        if (file.isEmpty()) files << QDir(folder).filePath(QFileInfo(m.file).completeBaseName() + QLatin1Char('_') + tag);
         else files << (QFileInfo(file).isRelative() ? QDir::cleanPath(QDir(folder).filePath(file)) : QDir::cleanPath(file));
     }
     return files;
@@ -984,6 +1053,28 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
 {
     const QString action = args.value(QLatin1String("action")).toString();
     const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    // A 3D model's (Multiphysics 3D's): one made as 3D ('space' 3D, a 3D
+    // 'model', a .qfem3d), a .qfem3d opened, or one saved or set.
+    {
+        bool three = false;
+        if (action == QLatin1String("new")) {
+            three = newIs3D(args);
+        } else if (action == QLatin1String("open")) {
+            QString none;
+            three = given.endsWith(QLatin1String(".qfem3d"), Qt::CaseInsensitive)
+                    || dynamic_cast<Multiphysics3DDoc*>(document(QJsonObject{{QStringLiteral("path"), given}}, &none)) != nullptr;
+        }
+        if (three) return fem3Model(args, nullptr);
+        if (action == QLatin1String("save") || action == QLatin1String("set")) {
+            QString error;
+            if (Multiphysics3DDoc* d = fem3DocumentFor(args, &error)) return fem3Model(args, d);
+            if (!error.isEmpty()) return errorResult(error);
+            // (Saved as a file not yet there: the model in front, a 3D one.)
+            QString none;
+            if (action == QLatin1String("save") && !given.isEmpty() && !document(QJsonObject{{QStringLiteral("path"), given}}, &none))
+                if (Multiphysics3DDoc* front = fem3DocumentFor(QJsonObject(), &none)) return fem3Model(args, front);
+        }
+    }
     // A file open in a tab that 'new' or 'import' writes over ('replace'):
     // that tab takes the new model - one tab of the file, the tools on it
     // (a second tab of it, the tools found the first: its old model solved,
@@ -1015,10 +1106,11 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             // A 3D model is Multiphysics 3D's, in a .qfem3d of its own: the
             // 2D tab refuses one read from a file, and one given here too
             // (else a 2D tab held it, built it as a plan and saved a .qfem
-            // that tab will not read again).
+            // that tab will not read again). One given as 3D is made in a
+            // Multiphysics 3D tab before this (newIs3D).
             if (m->is3D())
-                return errorResult(tr("'model' is a 3D model (its format or its space): Multiphysics 3D opens it, as a .qfem3d - "
-                                      "fem_model makes 2D models. Nothing was made."));
+                return errorResult(tr("'model' is a 3D model (its format or its space): it is made in a Multiphysics 3D tab, as a "
+                                      ".qfem3d, never a 2D one's. Nothing was made."));
         }
         QString file;
         MultiphysicsDoc* open = nullptr;
@@ -1214,8 +1306,8 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             return errorResult(tr("'model': %1 The model is unchanged (fem_describe what=format lists what each kind of node takes).")
                                    .arg(unknown.join(QStringLiteral("; "))));
         if (m->is3D())
-            return errorResult(tr("'model' is a 3D model (its format or its space): Multiphysics 3D opens it, as a .qfem3d - "
-                                  "fem_model sets 2D models. The model is unchanged."));
+            return errorResult(tr("'model' is a 3D model (its format or its space): a 2D tab's model is not replaced by one - "
+                                  "fem_model new makes it in a Multiphysics 3D tab (.qfem3d). The model is unchanged."));
         doc->setModel(*m, tr("Model"));
         const QString built = doc->geometryAfterChange();
         QJsonObject o{{QStringLiteral("set"), tr("the whole model, one step of Undo")},
@@ -1228,11 +1320,16 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
 
 QJsonObject QucsControl::femEdit(const QJsonObject& args)
 {
+    // A 2D model's, or a 3D one's (Multiphysics 3D's): its nodes changed
+    // alike.
     QString error;
-    MultiphysicsDoc* doc = femDocument(args, &error);
-    if (doc == nullptr) return errorResult(error);
+    Multiphysics3DDoc* three = fem3DocumentFor(args, &error);
+    if (three == nullptr && !error.isEmpty()) return errorResult(error);
+    MultiphysicsDoc* doc = three ? nullptr : femDocument(args, &error);
+    if (three == nullptr && doc == nullptr) return errorResult(error);
+    const std::shared_ptr<ParameterScope> scope = three ? three->parameters() : doc->parameters();
     const QString action = args.value(QLatin1String("action")).toString();
-    Model m = doc->model();
+    Model m = three ? three->model() : doc->model();
     const QJsonObject props = args.value(QLatin1String("props")).toObject();
     // Properties set: only those its kind has (a material: and what a
     // library entry gives one - its semiconductor models' parameters too).
@@ -1286,7 +1383,7 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
                     };
                     gather(v);
                     for (const QString& text : std::as_const(written)) {
-                        const Expression e = Expression::compile(text, doc->parameters()->scope);
+                        const Expression e = Expression::compile(text, scope->scope);
                         // A number that is no number: refused here, whatever
                         // the unit. A rectangle of 1e308 by 1e308, or of
                         // nan, was taken without a word and broke the
@@ -1312,7 +1409,7 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
                 if (def != nullptr && def->kind == PropertyDef::Expression && !def->unit.isEmpty()
                     && def->unit != QLatin1String("length") && def->unit != QLatin1String("angle") && v.isString())
                     if (const std::optional<qucs_s::fem::Unit> unit = qucs_s::fem::parseUnit(def->unit); unit) {
-                        const Expression e = Expression::compile(v.toString(), doc->parameters()->scope);
+                        const Expression e = Expression::compile(v.toString(), scope->scope);
                         if (e.isValid() && e.isConstant() && e.dim().isNone())
                             if (const QString why = outsideItsScale(e.constant(), unit->dim); !why.isEmpty())
                                 checked << tr("%1: %2").arg(it.key(), why);
@@ -1412,6 +1509,22 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     } else {
         return errorResult(tr("'action' is add, set, delete, move or parameters."));
     }
+    if (three) {
+        // A 3D model stays one; its geometry built again in the background
+        // (fem_build waits for it, and says its domains).
+        if (!m.is3D()) return errorResult(tr("A 3D model stays 3D: a 2D one is the Multiphysics tab's, a .qfem. The model is unchanged."));
+        three->setModel(m, what);
+        if (three->geometryStale()) {
+            three->requestGeometry();
+            answer.insert(QStringLiteral("geometry"), tr("being built again (fem_build waits for it and gives its domains, faces and edges)"));
+        } else if (const auto& t = three->geometry().topology) {
+            answer.insert(QStringLiteral("geometry"), tr("%1 domains, %2 faces, %3 edges, %4 points").arg(t->domains.size()).arg(t->faces.size()).arg(t->edges.size()).arg(t->points.size()));
+        }
+        checked.removeDuplicates();
+        if (!checked.isEmpty()) answer.insert(QStringLiteral("check"), QJsonArray::fromStringList(checked));
+        answer.insert(QStringLiteral("undo"), tr("one step of Edit > Undo; not saved (fem_model save)"));
+        return jsonResult(answer);
+    }
     // (Nor a 2D model's space made 3D: its choices are 2D and axisymmetric.)
     if (m.is3D())
         return errorResult(tr("A 2D model's space is 2D or axisymmetric: a 3D model is Multiphysics 3D's, in a .qfem3d of its own. "
@@ -1469,6 +1582,9 @@ void QucsControl::femGeometryThen(MultiphysicsDoc* doc, const QDeadlineTimer& de
 void QucsControl::femBuild(const QJsonObject& args, const Done& given)
 {
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Build(three, args, given);
+    if (!error.isEmpty()) return given(errorResult(error));
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return given(errorResult(error));
     if (!args.value(QLatin1String("until")).toString().trimmed().isEmpty()) return given(femBuilt(doc, args));
@@ -1582,6 +1698,9 @@ void QucsControl::femStop(const QJsonObject& args, const Done& done)
     // stops at its next check (a time step, a frequency, a sweep's point, a
     // coupled loop's iteration, a semiconductor's Newton step).
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Stop(three, args, done);
+    if (!error.isEmpty()) return done(errorResult(error));
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return done(errorResult(error));
     if (!doc->isBusy() && !doc->building())
@@ -1629,6 +1748,9 @@ static QString modeAsked(const SolutionSet& set, int mode)
 void QucsControl::femSolve(const QJsonObject& args, const Done& given)
 {
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Solve(three, args, given);
+    if (!error.isEmpty()) return given(errorResult(error));
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return given(errorResult(error));
     const QString study = args.value(QLatin1String("study")).toString();
@@ -1973,6 +2095,9 @@ QJsonArray valuesAgainst(const QJsonArray& values, const QJsonObject& reference,
 QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
 {
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Evaluate(three, args);
+    if (!error.isEmpty()) return errorResult(error);
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
     const QString study = args.value(QLatin1String("study")).toString();
@@ -2246,39 +2371,50 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     found.errors.removeDuplicates();
     if (!found.errors.isEmpty()) o.insert(QStringLiteral("error"), found.errors.join(QLatin1String("; ")));
     if (found.values.isEmpty()) return errorResult(found.errors.join(QLatin1String("; ")));
-    // Measured against reference numbers, where some are given: each
-    // value's reference, the difference and the difference in per cent
-    // (MCP wishlist N8).
+    // Measured against reference numbers, where some are given (MCP
+    // wishlist N8).
     if (args.contains(QLatin1String("reference"))) {
-        QJsonObject want;
         QString why;
-        const QString beside = doc->getDocName().isEmpty() ? QucsSettings.QucsWorkDir.absolutePath()
-                                                           : QFileInfo(doc->getDocName()).absolutePath();
-        if (!referenceNumbers(args.value(QLatin1String("reference")), beside, &want, &why)) return errorResult(why);
-        double worst = 0;
-        QString worstName;
-        int matched = 0;
-        QStringList unmatched;
-        o.insert(QStringLiteral("values"), valuesAgainst(found.values, want, expression, &worst, &worstName, &matched, &unmatched));
-        QJsonObject against{{QStringLiteral("references"), want.size()}, {QStringLiteral("values measured"), matched}};
-        // Each reference row left over, by name, where some did match: the
-        // answer said only how many (the check of 23 October, 4).
-        if (matched > 0)
-            for (const QString& name : std::as_const(unmatched))
-                if (!name.isEmpty())
-                    ignoredForCall(name, tr("a reference no value of this call answers to (its values: %1)")
-                                             .arg(namesOfValues(found.values, expression)));
-        if (matched == 0)
-            against.insert(QStringLiteral("none matched"),
-                           tr("No value's name is among the references (%1): a value is named by 'name = expression', a Derived "
-                              "Values node names its own, and one number alone is taken for one value whatever it is named.")
-                               .arg(QStringList(want.keys()).join(QStringLiteral(", "))));
-        else if (!worstName.isEmpty())
-            against.insert(QStringLiteral("largest difference"),
-                           tr("%1, %2 % of its reference").arg(worstName).arg(worst * 100, 0, 'g', 4));
-        o.insert(QStringLiteral("against the reference"), against);
+        if (!femAgainstReference(o, found.values, expression, args.value(QLatin1String("reference")), doc->getDocName(), &why)) return errorResult(why);
     }
     return jsonResult(o);
+}
+
+bool QucsControl::femAgainstReference(QJsonObject& o, const QJsonArray& values, const QString& expression, const QJsonValue& reference,
+                                      const QString& model, QString* error)
+{
+    // Each value's reference, the difference and the difference in per
+    // cent; the largest of them; references nothing answered to, said.
+    QJsonObject want;
+    QString why;
+    const QString beside = model.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : QFileInfo(model).absolutePath();
+    if (!referenceNumbers(reference, beside, &want, &why)) {
+        *error = why;
+        return false;
+    }
+    double worst = 0;
+    QString worstName;
+    int matched = 0;
+    QStringList unmatched;
+    o.insert(QStringLiteral("values"), valuesAgainst(values, want, expression, &worst, &worstName, &matched, &unmatched));
+    QJsonObject against{{QStringLiteral("references"), want.size()}, {QStringLiteral("values measured"), matched}};
+    // Each reference row left over, by name, where some did match: the
+    // answer said only how many (the check of 23 October, 4).
+    if (matched > 0)
+        for (const QString& name : std::as_const(unmatched))
+            if (!name.isEmpty())
+                ignoredForCall(name, tr("a reference no value of this call answers to (its values: %1)")
+                                         .arg(namesOfValues(values, expression)));
+    if (matched == 0)
+        against.insert(QStringLiteral("none matched"),
+                       tr("No value's name is among the references (%1): a value is named by 'name = expression', a Derived "
+                          "Values node names its own, and one number alone is taken for one value whatever it is named.")
+                           .arg(QStringList(want.keys()).join(QStringLiteral(", "))));
+    else if (!worstName.isEmpty())
+        against.insert(QStringLiteral("largest difference"),
+                       tr("%1, %2 % of its reference").arg(worstName).arg(worst * 100, 0, 'g', 4));
+    o.insert(QStringLiteral("against the reference"), against);
+    return true;
 }
 
 namespace {
@@ -2374,6 +2510,9 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
                                    "%1 waits for none, which is no convergence study.")
                                     .arg(args.value(QLatin1String("timeout")).toInt(-1))));
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (fem3DocumentFor(args, &error) != nullptr || !error.isEmpty())
+        return done(errorResult(error.isEmpty() ? tr("fem_converge checks 2D models alone yet: a 3D model's mesh is refined by its Size and Distribution nodes (fem_edit), and solved again.") : error));
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return done(errorResult(error));
     QStringList watched;
@@ -2600,6 +2739,9 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
 QJsonObject QucsControl::femPlot(const QJsonObject& args)
 {
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Plot(three, args);
+    if (!error.isEmpty()) return errorResult(error);
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
     a_app->DocumentTab->setCurrentWidget(doc);
@@ -2782,6 +2924,9 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
 QJsonObject QucsControl::femExport(const QJsonObject& args)
 {
     QString error;
+    // (A 3D model's: Multiphysics 3D's.)
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Export(three, args);
+    if (!error.isEmpty()) return errorResult(error);
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
     const QString tag = args.value(QLatin1String("export")).toString().trimmed();
@@ -2818,4 +2963,795 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
         }
     }
     return jsonResult(QJsonObject{{QStringLiteral("written"), QDir::toNativeSeparators(path)}, {QStringLiteral("begins"), head}});
+}
+
+// ------------------------------------------------------------- 3D models
+//
+// A 3D model (.qfem3d, Multiphysics 3D's) by the same tools: its tree, its
+// geometry's domains, faces and edges, its mesh, its studies in time and
+// over a sweep, values at points (x, y, z), over domains, faces or edges and
+// along a line, its 3D plot groups and its exports.
+
+Multiphysics3DDoc* QucsControl::fem3DocumentFor(const QJsonObject& args, QString* error)
+{
+    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    if (!given.isEmpty()) {
+        QString none;
+        QucsDoc* doc = document(QJsonObject{{QStringLiteral("path"), given}}, &none);
+        if (doc == nullptr) {
+            const QString file = absolute(given);
+            if (!QFileInfo(file).isFile() || !QucsApp::isMultiphysics3DFile(file)) return nullptr;
+            misc::ErrorCapture said;
+            if (!a_app->gotoPage(file)) {
+                if (error) *error = tr("%1 could not be opened: %2").arg(QDir::toNativeSeparators(file), said.errors().join(QLatin1Char(' ')));
+                return nullptr;
+            }
+            doc = document(QJsonObject{{QStringLiteral("path"), file}}, &none);
+        }
+        return dynamic_cast<Multiphysics3DDoc*>(doc);
+    }
+    if (a_app->DocumentTab->count() > 0) return qobject_cast<Multiphysics3DDoc*>(a_app->DocumentTab->currentWidget());
+    return nullptr;
+}
+
+namespace {
+
+QJsonArray triple(const Vec3& v)
+{
+    return QJsonArray{formatNumber(v.x, 6), formatNumber(v.y, 6), formatNumber(v.z, 6)};
+}
+
+QJsonArray boxOf(const Box3& b)
+{
+    return QJsonArray{formatNumber(b.x0, 6), formatNumber(b.y0, 6), formatNumber(b.z0, 6), formatNumber(b.x1, 6), formatNumber(b.y1, 6), formatNumber(b.z1, 6)};
+}
+
+/// A 3D geometry for a tool: its counts, unit and objects, and its domains,
+/// faces and edges - each by its number from 1 - to \a most of each.
+QJsonObject topology3Json(const Topology3& t, int most)
+{
+    QJsonObject o{{QStringLiteral("domains"), int(t.domains.size())},
+                  {QStringLiteral("faces"), int(t.faces.size())},
+                  {QStringLiteral("edges"), int(t.edges.size())},
+                  {QStringLiteral("points"), int(t.points.size())},
+                  {QStringLiteral("unit"), t.unitName},
+                  {QStringLiteral("bounds"), boxOf(t.bounds)},
+                  {QStringLiteral("objects"), QJsonArray::fromStringList(t.objectNames)}};
+    auto names = [&t](const QSet<int>& objects) {
+        QStringList out;
+        for (int oi : objects) out << t.objectNames.value(oi);
+        out.sort();
+        return QJsonArray::fromStringList(out);
+    };
+    QJsonArray domains;
+    for (int d = 0; d < int(t.domains.size()) && d < most; ++d) {
+        const Topology3::Domain& dm = t.domains[std::size_t(d)];
+        domains.append(QJsonObject{{QStringLiteral("number"), d + 1},
+                                   {QStringLiteral("object"), t.objectNames.value(dm.owner)},
+                                   {QStringLiteral("in objects"), names(dm.objects)},
+                                   {QStringLiteral("volume"), formatNumber(dm.volume, 6)},
+                                   {QStringLiteral("bounds"), boxOf(dm.bounds)},
+                                   {QStringLiteral("a point in it"), triple(dm.inside)}});
+    }
+    o.insert(QStringLiteral("domain list"), domains);
+    QJsonArray faces;
+    for (int f = 0; f < int(t.faces.size()) && f < most; ++f) {
+        const Topology3::Face& fc = t.faces[std::size_t(f)];
+        QJsonArray between;
+        if (fc.back >= 0) between.append(fc.back + 1);
+        if (fc.front >= 0) between.append(fc.front + 1);
+        QJsonObject fo{{QStringLiteral("number"), f + 1},
+                       {QStringLiteral("between domains"), between},
+                       {QStringLiteral("of objects"), names(fc.objects)},
+                       {QStringLiteral("area"), formatNumber(fc.area, 6)},
+                       {QStringLiteral("kind"), fc.floor ? QStringLiteral("floor") : QStringLiteral("wall")},
+                       {QStringLiteral("bounds"), boxOf(fc.bounds)}};
+        if (fc.planar) fo.insert(QStringLiteral("normal"), triple(fc.normal));
+        faces.append(fo);
+    }
+    o.insert(QStringLiteral("face list"), faces);
+    QJsonArray edges;
+    for (int e = 0; e < int(t.edges.size()) && e < most; ++e) {
+        const Topology3::Edge& ed = t.edges[std::size_t(e)];
+        QJsonArray of;
+        for (int f : ed.faces) of.append(f + 1);
+        edges.append(QJsonObject{{QStringLiteral("number"), e + 1},
+                                 {QStringLiteral("of faces"), of},
+                                 {QStringLiteral("length"), formatNumber(ed.length, 6)},
+                                 {QStringLiteral("middle"), triple(ed.middle)}});
+    }
+    o.insert(QStringLiteral("edge list"), edges);
+    if (int(std::max({t.domains.size(), t.faces.size(), t.edges.size()})) > most)
+        o.insert(QStringLiteral("more"), QStringLiteral("only the first %1 of each are listed ('max' lists more)").arg(most));
+    return o;
+}
+
+/// A 3D model's geometry as a tool says it: its counts, being built, or
+/// where it stopped.
+QString geometry3Said(Multiphysics3DDoc* doc)
+{
+    if (doc->geometryStale() || doc->geometryBeingBuilt()) return QucsControl::tr("being built (fem_build waits for it)");
+    const GeometryBuild3& g = doc->geometry();
+    if (!g.ok()) {
+        const FNode* n = doc->model().find(g.failedAt);
+        return QucsControl::tr("stopped at %1: %2").arg(n ? n->name() : g.failedAt, g.errors.value(g.failedAt));
+    }
+    if (!g.topology || g.topology->domains.empty()) return QucsControl::tr("no solids yet");
+    return QucsControl::tr("%1 domains, %2 faces, %3 edges, %4 points")
+        .arg(g.topology->domains.size())
+        .arg(g.topology->faces.size())
+        .arg(g.topology->edges.size())
+        .arg(g.topology->points.size());
+}
+
+/// What a 3D model's messages said since \a before: a tool's log of its call.
+QJsonArray saidSince(const QStringList& messages, qsizetype before)
+{
+    QJsonArray out;
+    for (qsizetype i = std::clamp<qsizetype>(before, 0, messages.size()); i < messages.size(); ++i) out.append(messages.at(i));
+    return out;
+}
+
+} // namespace
+
+QJsonObject QucsControl::fem3Describe(Multiphysics3DDoc* doc, const QJsonObject& args)
+{
+    const QString what = args.value(QLatin1String("what")).toString(QStringLiteral("model"));
+    const Model& m = doc->model();
+    if (what == QLatin1String("geometry")) {
+        const GeometryBuild3& g = doc->geometry();
+        if (doc->geometryStale() || !g.topology)
+            return errorResult(tr("%1's geometry is not current (%2): fem_build builds it and waits.").arg(titleOf(doc), geometry3Said(doc)));
+        if (!g.ok()) return errorResult(tr("%1's geometry %2").arg(titleOf(doc), geometry3Said(doc)));
+        const int most = std::clamp(args.value(QLatin1String("max")).toInt(100), 1, 5000);
+        QJsonObject o = topology3Json(*g.topology, most);
+        if (args.contains(QLatin1String("selection"))) {
+            const Level level = levelOf(args.value(QLatin1String("level")).toString(QStringLiteral("domain")));
+            QString why;
+            const QVector<int> picked = resolveSelection3(*g.topology, m, level, args.value(QLatin1String("selection")).toObject(), &why);
+            if (!why.isEmpty()) return errorResult(why);
+            o.insert(QStringLiteral("selection picks"), QJsonObject{{QStringLiteral("level"), levelName(level)}, {QStringLiteral("numbers"), numbers(picked)}});
+        }
+        return jsonResult(o);
+    }
+    if (what == QLatin1String("variables")) {
+        QJsonArray vars;
+        for (const Variable& v : modelVariables3(m))
+            vars.append(QJsonObject{{QStringLiteral("name"), v.name}, {QStringLiteral("unit"), dimName(v.dim)}, {QStringLiteral("description"), v.description}});
+        QJsonObject o{{QStringLiteral("variables"), vars}};
+        const QString study = args.value(QLatin1String("study")).toString();
+        if (const auto s = doc->solution(); s && !study.isEmpty() && study != s->studyTag) {
+            o.insert(QStringLiteral("globals"), tr("none of %1: the study solved is %2").arg(study, s->studyTag));
+        } else if (const auto s = doc->solution()) {
+            QJsonArray globals;
+            for (const Variable& g : s->globals())
+                globals.append(QJsonObject{{QStringLiteral("name"), g.name}, {QStringLiteral("value"), s->globalText(g.name)}, {QStringLiteral("description"), g.description}});
+            o.insert(QStringLiteral("globals"), globals);
+        } else {
+            o.insert(QStringLiteral("globals"), tr("none until the study is solved (fem_solve)"));
+        }
+        return jsonResult(o);
+    }
+    if (what != QLatin1String("model")) return errorResult(tr("'what' is model, geometry, variables, format or material."));
+    const int depth = std::clamp(args.value(QLatin1String("depth")).toInt(8), 1, 16);
+    QJsonObject o{{QStringLiteral("model"), titleOf(doc)},
+                  {QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
+                  {QStringLiteral("space"), QStringLiteral("3D")},
+                  {QStringLiteral("tree"), nodeJson(m.root, depth)}};
+    const std::shared_ptr<ParameterScope> ps = doc->parameters();
+    QJsonArray parameters;
+    for (const Model::Parameter& p : m.parameters()) {
+        QJsonObject po{{QStringLiteral("name"), p.name}, {QStringLiteral("expression"), p.expression}};
+        if (ps->errors.contains(p.name)) po.insert(QStringLiteral("error"), ps->errors.value(p.name));
+        else po.insert(QStringLiteral("value"), formatQuantity(ps->values.value(p.name), ps->dims.value(p.name)));
+        parameters.append(po);
+    }
+    o.insert(QStringLiteral("parameters"), parameters);
+    o.insert(QStringLiteral("geometry"), geometry3Said(doc));
+    if (const auto mesh = doc->mesh(); mesh && !doc->meshStale())
+        o.insert(QStringLiteral("mesh"), tr("%1 prisms, %2 nodes, %3 layers").arg(mesh->prisms.size()).arg(mesh->nodes.size()).arg(mesh->heights.size() > 1 ? mesh->heights.size() - 1 : 0));
+    else
+        o.insert(QStringLiteral("mesh"), tr("not made yet, or of the model before its last change (fem_build what=mesh makes it)"));
+    if (const auto s = doc->solution()) {
+        QJsonObject so{{QStringLiteral("study"), s->studyTag}, {QStringLiteral("seconds"), s->seconds}};
+        if (doc->solutionStale()) so.insert(QStringLiteral("stale"), tr("of the model before its last change: fem_solve again"));
+        if (s->timeDependent) so.insert(QStringLiteral("output times"), s->snapshotCount());
+        if (doc->solutions().size() > 1) so.insert(QStringLiteral("sweep points"), int(doc->solutions().size()));
+        o.insert(QStringLiteral("solved"), so);
+    } else {
+        o.insert(QStringLiteral("solved"), tr("not yet (fem_solve)"));
+    }
+    if (!doc->idle()) o.insert(QStringLiteral("at work"), doc->jobProgress().isEmpty() ? tr("a build is waiting to start") : doc->jobProgress());
+    return jsonResult(o);
+}
+
+QJsonObject QucsControl::fem3Model(const QJsonObject& args, Multiphysics3DDoc* doc)
+{
+    const QString action = args.value(QLatin1String("action")).toString();
+    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    // A whole model given: read as a 3D one, its keys and properties checked.
+    auto modelOf = [&args](QString* why) -> std::optional<Model> {
+        const QJsonObject mo = args.value(QLatin1String("model")).toObject();
+        if (const QStringList unknown = unknownModelKeysOf(mo); !unknown.isEmpty()) {
+            *why = tr("'model': %1 (fem_describe what=format space=3D gives a model's form).").arg(unknown.join(QStringLiteral("; ")));
+            return std::nullopt;
+        }
+        std::optional<Model> m = Model::fromJson(QJsonDocument(mo).toJson(), why);
+        if (!m) {
+            *why = tr("'model': %1").arg(*why);
+            return std::nullopt;
+        }
+        if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty()) {
+            *why = tr("'model': %1 (fem_describe what=format lists what each kind of node takes).").arg(unknown.join(QStringLiteral("; ")));
+            return std::nullopt;
+        }
+        if (!m->is3D()) {
+            *why = tr("'model' is a 2D one: the Multiphysics tab's, a .qfem (its format 'qucs-s multiphysics 3d 1' for a 3D one).");
+            return std::nullopt;
+        }
+        return m;
+    };
+    auto withSuffix = [](QString file) {
+        if (!file.endsWith(QLatin1String(".qfem3d"), Qt::CaseInsensitive)) file += QStringLiteral(".qfem3d");
+        return file;
+    };
+    if (action == QLatin1String("new")) {
+        std::optional<Model> m = Model::blank3d();
+        if (args.contains(QLatin1String("model"))) {
+            QString why;
+            m = modelOf(&why);
+            if (!m) return errorResult(why + tr(" Nothing was made."));
+        }
+        QString file;
+        if (!given.isEmpty()) {
+            file = withSuffix(absolute(given));
+            if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
+                return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+            if (const QString no = unaskedWrite(file); !no.isEmpty()) return errorResult(no);
+            for (QucsDoc* other : a_app->allDocuments())
+                if (!other->getDocName().isEmpty() && sameFile(other->getDocName(), file))
+                    return errorResult(tr("%1 is open: close it first.").arg(QDir::toNativeSeparators(file)));
+            if (const QString folder = QFileInfo(file).absolutePath(); !QFileInfo(folder).isDir() && !QDir().mkpath(folder))
+                return errorResult(tr("The folder %1 cannot be made: the model is not written.").arg(QDir::toNativeSeparators(folder)));
+        }
+        Multiphysics3DDoc* made = a_app->newMultiphysics3DModel();
+        if (made == nullptr) return errorResult(tr("No 3D model could be made."));
+        made->setModel(*m, tr("Model"));
+        made->undoStack()->clear();
+        if (!file.isEmpty()) {
+            made->setName(file);
+            if (made->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+            a_app->titleDocumentTab(made);
+        }
+        if (made->geometryStale()) made->requestGeometry();
+        return jsonResult(QJsonObject{{QStringLiteral("file"), made->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(made->getDocName())},
+                                      {QStringLiteral("title"), titleOf(made)},
+                                      {QStringLiteral("space"), QStringLiteral("3D")},
+                                      {QStringLiteral("geometry"), geometry3Said(made)}});
+    }
+    if (action == QLatin1String("open")) {
+        const QString file = absolute(given);
+        if (!QFileInfo(file).isFile()) return errorResult(tr("There is no model %1.").arg(QDir::toNativeSeparators(file)));
+        QString error;
+        Multiphysics3DDoc* opened = fem3DocumentFor(QJsonObject{{QStringLiteral("path"), file}}, &error);
+        if (opened == nullptr) return errorResult(error.isEmpty() ? tr("%1 is not a 3D multiphysics model.").arg(QFileInfo(file).fileName()) : error);
+        QJsonObject o{{QStringLiteral("opened"), QDir::toNativeSeparators(file)},
+                      {QStringLiteral("title"), titleOf(opened)},
+                      {QStringLiteral("space"), QStringLiteral("3D")},
+                      {QStringLiteral("geometry"), geometry3Said(opened)}};
+        if (!opened->readNotes().isEmpty()) o.insert(QStringLiteral("read"), opened->readNotes());
+        return jsonResult(o);
+    }
+    if (doc == nullptr) return errorResult(tr("There is no 3D model to %1.").arg(action));
+    if (action == QLatin1String("save")) {
+        const QString was = titleOf(doc);
+        QString file = doc->getDocName();
+        QString as = args.value(QLatin1String("as")).toString().trimmed();
+        if (as.isEmpty() && !given.isEmpty() && doc->getDocName().isEmpty()) {
+            QString none;
+            if (!document(QJsonObject{{QStringLiteral("path"), given}}, &none)) as = given;
+        }
+        if (!as.isEmpty()) {
+            file = withSuffix(absolute(as));
+            const bool own = !doc->getDocName().isEmpty() && sameFile(doc->getDocName(), file);
+            if (!own && QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
+                return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+            for (QucsDoc* other : a_app->allDocuments())
+                if (other != doc && !other->getDocName().isEmpty() && sameFile(other->getDocName(), file))
+                    return errorResult(tr("%1 is open: another document's file.").arg(QDir::toNativeSeparators(file)));
+        }
+        if (file.isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(was));
+        if (const QString no = unaskedWrite(file); !no.isEmpty()) return errorResult(no);
+        doc->setName(file);
+        if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+        a_app->titleDocumentTab(doc);
+        return jsonResult(QJsonObject{{QStringLiteral("saved"), QDir::toNativeSeparators(file)}, {QStringLiteral("model"), was}});
+    }
+    if (action == QLatin1String("set")) {
+        QString why;
+        const std::optional<Model> m = modelOf(&why);
+        if (!m) return errorResult(why + tr(" The model is unchanged."));
+        doc->setModel(*m, tr("Model"));
+        if (doc->geometryStale()) doc->requestGeometry();
+        return jsonResult(QJsonObject{{QStringLiteral("set"), tr("the whole model, one step of Undo")}, {QStringLiteral("geometry"), geometry3Said(doc)}});
+    }
+    return errorResult(tr("A 3D model is made (new), opened, saved or set; 'import' and 'materials' are the 2D models'."));
+}
+
+void QucsControl::fem3Build(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& given)
+{
+    if (args.contains(QLatin1String("until")))
+        return given(errorResult(tr("'until' builds a 2D model's geometry up to a feature or a process flow's step; a 3D model's is built whole.")));
+    const int timeout = waitsFor(QStringLiteral("fem_build"), args);
+    const bool mesh = args.value(QLatin1String("what")).toString(QStringLiteral("geometry")) == QLatin1String("mesh");
+    const int most = std::clamp(args.value(QLatin1String("max")).toInt(100), 1, 5000);
+    QPointer<Multiphysics3DDoc> d(doc);
+    const int stop = stoppable(running(), [d] {
+        if (d) d->cancel();
+    });
+    const Done done = [this, stop, given](const QJsonObject& r) {
+        stopped(stop);
+        given(r);
+    };
+    const qsizetype before = doc->messages().size();
+    if (mesh) doc->buildMesh();
+    else if (doc->geometryStale()) doc->requestGeometry();
+    doc->whenJobEnds(timeout * 1000, [d, done, mesh, most, timeout, before](bool ended) {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (!ended)
+            return done(errorResult(tr("Still building after %1 s, %2: it goes on (fem_build again waits more; fem_stop stops it).").arg(timeout).arg(d->jobProgress())));
+        const GeometryBuild3& g = d->geometry();
+        if (!g.ok() || !g.topology) return done(errorResult(tr("The geometry %1.").arg(geometry3Said(d))));
+        if (!mesh) {
+            QJsonObject o = topology3Json(*g.topology, most);
+            o.insert(QStringLiteral("shown"), tr("in the model's tab (screenshot takes a picture)"));
+            return done(jsonResult(o));
+        }
+        const auto m = d->mesh();
+        if (!m || d->meshStale()) {
+            const QJsonArray said = saidSince(d->messages(), before);
+            return done(errorResult(tr("The mesh was not made: %1").arg(said.isEmpty() ? tr("stopped") : said.last().toString())));
+        }
+        QJsonObject o{{QStringLiteral("prisms"), int(m->prisms.size())},
+                      {QStringLiteral("nodes"), int(m->nodes.size())},
+                      {QStringLiteral("plan triangles"), int(m->plan ? m->plan->triangles.size() : 0)},
+                      {QStringLiteral("layers"), m->heights.size() > 1 ? int(m->heights.size()) - 1 : 0},
+                      {QStringLiteral("smallest angle"), QStringLiteral("%1°").arg(m->minAngle, 0, 'f', 1)},
+                      {QStringLiteral("worst stretch"), formatNumber(m->maxStretch, 3)},
+                      {QStringLiteral("shown"), tr("in the model's tab (screenshot takes a picture)")}};
+        done(jsonResult(o));
+    });
+}
+
+void QucsControl::fem3Stop(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& done)
+{
+    if (doc->idle())
+        return done(jsonResult(QJsonObject{{QStringLiteral("stopped"), false}, {QStringLiteral("note"), tr("Nothing is being built or solved in %1.").arg(titleOf(doc))}}));
+    const qsizetype before = doc->messages().size();
+    doc->cancel();
+    const int timeout = waitsFor(QStringLiteral("fem_stop"), args);
+    QPointer<Multiphysics3DDoc> d(doc);
+    doc->whenJobEnds(timeout * 1000, [d, done, before, timeout](bool ended) {
+        if (!d) return done(jsonResult(QJsonObject{{QStringLiteral("stopped"), true}, {QStringLiteral("note"), tr("The model was closed.")}}));
+        if (!ended) return done(errorResult(tr("Asked to stop, still at work after %1 s: it stops at its next check (fem_stop again waits more).").arg(timeout)));
+        QJsonObject o{{QStringLiteral("stopped"), true}};
+        const QJsonArray said = saidSince(d->messages(), before);
+        if (!said.isEmpty()) o.insert(QStringLiteral("log"), said);
+        done(jsonResult(o));
+    });
+}
+
+void QucsControl::fem3Solve(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& given)
+{
+    const QString study = args.value(QLatin1String("study")).toString();
+    if (!study.isEmpty()) {
+        const FNode* s = doc->model().find(study);
+        if (!s || s->type != QLatin1String("study")) return given(errorResult(tr("There is no study %1.").arg(study)));
+    }
+    const int timeout = waitsFor(QStringLiteral("fem_solve"), args);
+    QPointer<Multiphysics3DDoc> d(doc);
+    auto begun = std::make_shared<int>(0);   // 1: its solve begun, -1: cancelled first
+    const int stop = stoppable(running(), [d, begun] {
+        if (*begun == 1 && d) d->cancel();
+        else *begun = -1;
+    });
+    const Done done = [this, stop, given](const QJsonObject& r) {
+        stopped(stop);
+        given(r);
+    };
+    const auto solve = [this, d, study, timeout, args, done, begun] {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (*begun == -1) return done(errorResult(tr("Cancelled by the client before it began.")));
+        *begun = 1;
+        const qsizetype before = d->messages().size();
+        d->compute(study);
+        d->whenJobEnds(timeout * 1000, [this, d, timeout, args, done, before](bool ended) {
+            if (!d) return done(errorResult(tr("The model was closed.")));
+            if (!ended)
+                return done(errorResult(tr("Still solving after %1 s, %2: it goes on (fem_describe says how far; fem_stop stops it).").arg(timeout).arg(d->jobProgress())));
+            QJsonObject r = fem3Solved(d, args);
+            if (r.value(QLatin1String("isError")).toBool()) {
+                // (Why not, as the tab said it.)
+                const QJsonArray said = saidSince(d->messages(), before);
+                QStringList lines;
+                for (const QJsonValue& v : said)
+                    if (v.toString().startsWith(tr("Not solved")) || v.toString().contains(tr("stopped"))) lines << v.toString();
+                if (!lines.isEmpty()) return done(errorResult(lines.join(QLatin1Char('\n'))));
+            }
+            done(r);
+        });
+    };
+    if (doc->idle()) return solve();
+    const quint64 stops = doc->stops();
+    doc->whenJobEnds(1000, [d, done, solve, stops](bool ended) {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (!ended) return done(errorResult(tr("It is busy building or solving; fem_solve again in a while.")));
+        if (d->stops() != stops)
+            return done(errorResult(tr("Not solved: the work it waited behind was stopped (fem_stop, Cancel); fem_solve again to solve.")));
+        solve();
+    });
+}
+
+QJsonObject QucsControl::fem3Solved(Multiphysics3DDoc* doc, const QJsonObject& args)
+{
+    Q_UNUSED(args);
+    const auto s = doc->solution();
+    if (!s || doc->solutionStale()) return errorResult(tr("Not solved: %1").arg(doc->messages().isEmpty() ? tr("see the model's messages") : doc->messages().last()));
+    int unknowns = 0;
+    for (const Field3& f : s->fields())
+        if (f.space) unknowns += f.space->size();
+    QJsonObject o{{QStringLiteral("model"), titleOf(doc)}, {QStringLiteral("seconds"), s->seconds}, {QStringLiteral("unknowns"), unknowns}};
+    QJsonArray log;
+    const QStringList& lines = s->log;
+    for (qsizetype i = std::max<qsizetype>(0, lines.size() - 40); i < lines.size(); ++i) log.append(lines.at(i));
+    o.insert(QStringLiteral("log"), log);
+    auto globalsOf = [](const Solution3& one) {
+        QJsonObject g;
+        for (const Variable& v : one.globals()) g.insert(v.name, one.globalText(v.name));
+        return g;
+    };
+    o.insert(QStringLiteral("globals"), globalsOf(*s));
+    if (s->timeDependent && s->snapshotCount() > 0)
+        o.insert(QStringLiteral("output times"), QJsonObject{{QStringLiteral("count"), s->snapshotCount()},
+                                                             {QStringLiteral("first"), formatQuantity(s->snapshotTime(0), Dim::of(0, 0, 1))},
+                                                             {QStringLiteral("last"), formatQuantity(s->snapshotTime(s->snapshotCount() - 1), Dim::of(0, 0, 1))},
+                                                             {QStringLiteral("globals at"), tr("the last")}});
+    if (doc->solutions().size() > 1) {
+        QJsonArray points;
+        for (const auto& one : doc->solutions()) points.append(QJsonObject{{QStringLiteral("point"), one->label}, {QStringLiteral("globals"), globalsOf(*one)}});
+        o.insert(QStringLiteral("sweep"), points);
+    }
+    // Every Derived Values node's values.
+    QJsonArray derived;
+    if (const FNode* group = doc->model().results().child(QStringLiteral("derived")))
+        for (const FNode& n : group->children) {
+            if (!n.enabled) continue;
+            const DerivedResult r = doc->evaluate(n.tag);
+            QJsonObject one{{QStringLiteral("tag"), n.tag}, {QStringLiteral("name"), n.name()}};
+            QJsonArray values;
+            for (const DerivedValue& v : r.values) values.append(QJsonObject{{QStringLiteral("name"), v.name}, {QStringLiteral("value"), v.text}});
+            one.insert(QStringLiteral("values"), values);
+            if (!r.error.isEmpty()) one.insert(QStringLiteral("error"), r.error);
+            derived.append(one);
+        }
+    if (!derived.isEmpty()) o.insert(QStringLiteral("derived values"), derived);
+    const FNode* shown = doc->show() == Multiphysics3DDoc::Show::Plot ? doc->model().find(doc->plotGroup()) : nullptr;
+    o.insert(QStringLiteral("shown"), shown ? shown->name() : tr("the solution, %1 (fem_plot shows a 3D plot group)").arg(doc->plotExpression()));
+    return jsonResult(o);
+}
+
+QJsonObject QucsControl::fem3Evaluate(Multiphysics3DDoc* doc, const QJsonObject& args)
+{
+    const QString expression = args.value(QLatin1String("expression")).toString().trimmed();
+    if (expression.isEmpty()) return errorResult(tr("'expression': what is evaluated (ht.T, es.normE, ht.Tmax...)"));
+    for (const char* key : {"step", "x", "frequency", "mode", "state"})
+        if (args.contains(QLatin1String(key)))
+            return errorResult(tr("'%1' is a 2D model's: a 3D model's studies are at rest, in time and swept.").arg(QLatin1String(key)));
+    const Solutions3& set = doc->solutions();
+    if (set.empty() || !doc->solution()) return errorResult(tr("The study is not solved yet: fem_solve solves it."));
+    if (const QString study = args.value(QLatin1String("study")).toString(); !study.isEmpty() && study != doc->solution()->studyTag)
+        return errorResult(tr("The study solved is %1: fem_solve study=%2 first.").arg(doc->solution()->studyTag, study));
+    const bool all = args.value(QLatin1String("all")).toBool();
+    QString why;
+    const QJsonValue timeArg = args.value(QLatin1String("time"));
+    const QString time = timeArg.isDouble() ? formatNumber(timeArg.toDouble(), 15) : timeArg.toString();
+    const std::vector<Instance3> at = all ? instances3(set, true) : instances3(set, false, args.value(QLatin1String("point")).toInt(0), time, &why);
+    if (at.empty()) return errorResult(why.isEmpty() ? tr("There is no such solution.") : why);
+    if (!all && args.value(QLatin1String("point")).toInt(0) > int(set.size()))
+        return errorResult(tr("'point' %1: the sweep has %2 points (from 1)").arg(args.value(QLatin1String("point")).toInt()).arg(set.size()));
+    const QString unitText = args.value(QLatin1String("unit")).toString();
+    const int shownWas = doc->shownTime();
+    QJsonArray values;
+    QStringList errors;
+    auto add = [&values, &errors, &unitText](const QString& label, const QString& name, double v, const Dim& dim, const QString& expr, const Scope& scope) {
+        QString warning;
+        DisplayUnit u = displayUnit(unitText, dim, &warning);
+        if (u.name.isEmpty() && unitText.trimmed().isEmpty()) u = quotientUnit(expr, dim, scope);
+        QJsonObject one{{QStringLiteral("name"), label.isEmpty() ? name : label + QStringLiteral(": ") + name}};
+        insertValue(&one, shown(v, dim, u), v);
+        values.append(one);
+        if (!warning.isEmpty()) errors << warning;
+    };
+    const QJsonArray points = args.value(QLatin1String("at")).toArray();
+    const QString over = args.value(QLatin1String("over")).toString();
+    const QJsonObject along = args.value(QLatin1String("along")).toObject();
+    for (const Instance3& in : at) {
+        Solution3* s = select3(set, in);
+        if (!s) continue;
+        const QString label = all ? in.label : QString();
+        const double k = s->mesh().unitScale;
+        if (!points.isEmpty() || !along.isEmpty()) {
+            const Expression e = Expression::compile(expression, s->scope());
+            if (!e.isValid()) return errorResult(tr("%1: %2").arg(expression, e.error()));
+            std::vector<Vec3> where;
+            auto read = [](const QJsonValue& v, Vec3* p) {
+                const QJsonArray c = v.toArray();
+                if (c.size() != 3) return false;
+                *p = Vec3{c[0].toDouble(), c[1].toDouble(), c[2].toDouble()};
+                return true;
+            };
+            if (!along.isEmpty()) {
+                Vec3 a, b;
+                if (!read(along.value(QLatin1String("from")), &a) || !read(along.value(QLatin1String("to")), &b))
+                    return errorResult(tr("'along': {\"from\": [x, y, z], \"to\": [x, y, z], \"points\": n} in the geometry's unit"));
+                const int n = std::clamp(along.value(QLatin1String("points")).toInt(11), 2, 2001);
+                for (int i = 0; i < n; ++i) {
+                    const double t = double(i) / (n - 1);
+                    where.push_back(Vec3{a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z)});
+                }
+            } else {
+                for (const QJsonValue& pv : points) {
+                    Vec3 p;
+                    if (!read(pv, &p)) return errorResult(tr("'at': points [[x, y, z], ...] in the geometry's unit"));
+                    where.push_back(p);
+                }
+            }
+            for (const Vec3& p : where) {
+                const QString name = tr("%1 at (%2, %3, %4)").arg(expression, formatNumber(p.x, 6), formatNumber(p.y, 6), formatNumber(p.z, 6));
+                const std::optional<double> v = evaluateAt3(*s, e, Vec3{p.x * k, p.y * k, p.z * k});
+                if (!v) {
+                    errors << tr("%1: in no domain where it is defined").arg(name);
+                    continue;
+                }
+                add(label, name, *v, e.dim(), expression, s->scope());
+            }
+            continue;
+        }
+        if (!over.isEmpty()) {
+            // As a Derived Values node of its kind evaluates it.
+            if (over != QLatin1String("domain") && over != QLatin1String("boundary") && over != QLatin1String("edge"))
+                return errorResult(tr("'over' is domain, boundary or edge"));
+            const QString kind = args.value(QLatin1String("kind")).toString(QStringLiteral("integral"));
+            if (kind != QLatin1String("integral") && kind != QLatin1String("average") && kind != QLatin1String("maximum") && kind != QLatin1String("minimum"))
+                return errorResult(tr("'kind' is integral, average, maximum or minimum"));
+            FNode node = doc->model().make(kind);
+            node.props.insert(QStringLiteral("level"), over);
+            QJsonObject selection = args.value(QLatin1String("selection")).toObject();
+            if (selection.isEmpty()) selection = QJsonObject{{QStringLiteral("all"), true}};
+            node.props.insert(QStringLiteral("selection"), selection);
+            node.props.insert(QStringLiteral("expression"), expression);
+            node.props.insert(QStringLiteral("unit"), unitText);
+            const DerivedResult r = evaluateDerived3(*s, node);
+            for (const DerivedValue& v : r.values) {
+                QJsonObject one{{QStringLiteral("name"), (label.isEmpty() ? QString() : label + QStringLiteral(": ")) + tr("%1 of %2 over %3").arg(kind, v.name, over)}};
+                insertValue(&one, v.text, v.value);
+                values.append(one);
+            }
+            if (!r.error.isEmpty()) errors << r.error;
+            continue;
+        }
+        // Globals (several split by ';', each named if wanted), or a Derived
+        // Values node's: its tag (each of its values) or tag.name (one).
+        for (const QString& raw : expression.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+            const NamedExpression item = namedExpression(raw);
+            const QString text = item.expression.trimmed();
+            const QString tag = text.section(QLatin1Char('.'), 0, 0), wanted = text.section(QLatin1Char('.'), 1);
+            const FNode* node = doc->model().find(tag);
+            if (node && node->kind() && node->kind()->group == QLatin1String("derived")) {
+                const DerivedResult r = evaluateDerived3(*s, *node);
+                for (const DerivedValue& v : r.values) {
+                    if (!wanted.isEmpty() && v.name != wanted) continue;
+                    QJsonObject one{{QStringLiteral("name"), (label.isEmpty() ? QString() : label + QStringLiteral(": ")) + tag + QLatin1Char('.') + v.name}};
+                    insertValue(&one, v.text, v.value);
+                    values.append(one);
+                }
+                if (!r.error.isEmpty()) errors << r.error;
+                continue;
+            }
+            const Expression e = Expression::compile(text, s->scope());
+            if (!e.isValid()) {
+                errors << tr("%1: %2").arg(text, e.error());
+                continue;
+            }
+            if (!e.isConstant()) {
+                errors << tr("%1 varies over the model: give 'at' points, 'over' domains, faces or edges, or 'along' a line").arg(text);
+                continue;
+            }
+            add(label, item.name, e.constant(), e.dim(), text, s->scope());
+        }
+    }
+    // (The time the tab shows, shown again.)
+    if (shownWas >= 0) doc->setShownTime(shownWas);
+    errors.removeDuplicates();
+    if (values.isEmpty()) return errorResult(errors.isEmpty() ? tr("No value.") : errors.join(QLatin1String("; ")));
+    QJsonObject o{{QStringLiteral("expression"), expression}, {QStringLiteral("values"), values}};
+    if (!errors.isEmpty()) o.insert(QStringLiteral("error"), errors.join(QLatin1String("; ")));
+    if (args.contains(QLatin1String("reference"))) {
+        QString refused;
+        if (!femAgainstReference(o, values, expression, args.value(QLatin1String("reference")), doc->getDocName(), &refused)) return errorResult(refused);
+    }
+    return jsonResult(o);
+}
+
+QJsonObject QucsControl::fem3Plot(Multiphysics3DDoc* doc, const QJsonObject& args)
+{
+    for (const char* key : {"step", "sims", "x", "depth", "species", "active", "measured", "contours", "frequency", "mode"})
+        if (args.contains(QLatin1String(key)))
+            return errorResult(tr("'%1' is a 2D model's: a 3D model's plots are its 3D Plot Groups' (surfaces, slices, isosurfaces).")
+                                   .arg(QLatin1String(key)));
+    if (const QString study = args.value(QLatin1String("study")).toString(); !study.isEmpty() && (!doc->solution() || study != doc->solution()->studyTag))
+        return errorResult(tr("%1 is not the study solved: fem_solve study=%1 first.").arg(study));
+    // The time and point shown: those asked.
+    if (args.contains(QLatin1String("point")) && doc->solutions().size() > 1) {
+        const int point = args.value(QLatin1String("point")).toInt();
+        if (point > int(doc->solutions().size())) return errorResult(tr("'point' %1: the sweep has %2 points (from 1)").arg(point).arg(doc->solutions().size()));
+        doc->setShownPoint(point <= 0 ? int(doc->solutions().size()) - 1 : point - 1);
+    }
+    if (args.contains(QLatin1String("time")) && doc->solution() && doc->solution()->snapshotCount() > 0) {
+        const QJsonValue v = args.value(QLatin1String("time"));
+        const QString text = v.isDouble() ? formatNumber(v.toDouble(), 15) : v.toString();
+        if (text.trimmed().isEmpty()) doc->setShownTime(doc->solution()->snapshotCount() - 1);
+        else {
+            QString why;
+            const std::optional<double> t = evaluateConstant(text, doc->parameters()->scope, Dim::of(0, 0, 1), &why);
+            if (!t) return errorResult(tr("'time' %1: %2").arg(text, why));
+            doc->setShownTime(doc->solution()->snapshotAt(*t));
+        }
+    }
+    QString shownWhat;
+    const QString show = args.value(QLatin1String("show")).toString();
+    QString group = args.value(QLatin1String("plot")).toString().trimmed();
+    if (!show.isEmpty()) {
+        if (show == QLatin1String("geometry")) doc->showGeometry();
+        else if (show == QLatin1String("mesh")) doc->showMesh();
+        else if (show == QLatin1String("solution")) doc->showSolution();
+        else return errorResult(tr("'show' is geometry, mesh or solution"));
+        shownWhat = show;
+    } else if (args.contains(QLatin1String("expression"))) {
+        // A 3D plot group of it made: its surface (unless 'surface' false),
+        // its slices, isosurfaces and clip - one step of Undo.
+        if (!doc->solution()) return errorResult(tr("Not solved yet: fem_solve first."));
+        const QString expression = args.value(QLatin1String("expression")).toString().trimmed();
+        const Expression e = Expression::compile(expression, doc->solution()->scope());
+        if (!e.isValid()) return errorResult(tr("%1: %2").arg(expression, e.error()));
+        Model m = doc->model();
+        FNode g = m.make(QStringLiteral("plotgroup3d"));
+        g.label = args.value(QLatin1String("title")).toString(expression).trimmed();
+        const QJsonObject clip = args.value(QLatin1String("clip")).toObject();
+        for (const char* axis : {"x", "y", "z"})
+            if (clip.contains(QLatin1String(axis))) {
+                g.props.insert(QStringLiteral("clip"), QString::fromLatin1(axis));
+                const QJsonValue at = clip.value(QLatin1String(axis));
+                g.props.insert(QStringLiteral("clipat"), at.isDouble() ? formatNumber(at.toDouble(), 15) : at.toString());
+            }
+        const FNode* added = m.add(m.results().tag, g);
+        if (!added) return errorResult(tr("No plot group could be made."));
+        const QString tag = added->tag;
+        auto plot = [&m, &args, &expression, &tag](const QString& type, const QJsonObject& props) {
+            FNode p = m.make(type);
+            p.props.insert(QStringLiteral("expression"), expression);
+            if (args.contains(QLatin1String("unit"))) p.props.insert(QStringLiteral("unit"), args.value(QLatin1String("unit")).toString());
+            if (args.contains(QLatin1String("colors"))) p.props.insert(QStringLiteral("colors"), args.value(QLatin1String("colors")).toString());
+            for (auto it = props.begin(); it != props.end(); ++it) p.props.insert(it.key(), it.value());
+            m.add(tag, p);
+        };
+        if (args.value(QLatin1String("surface")).toBool(true)) plot(QStringLiteral("surface"), {});
+        // Slices: [{"z": 1.5}, {"x": [0, 2]}] - at coordinates of the
+        // geometry's unit.
+        for (const QJsonValue& sv : args.value(QLatin1String("slices")).toArray()) {
+            const QJsonObject so = sv.toObject();
+            for (const char* axis : {"x", "y", "z"}) {
+                if (!so.contains(QLatin1String(axis))) continue;
+                const QJsonValue at = so.value(QLatin1String(axis));
+                QStringList list;
+                if (at.isArray())
+                    for (const QJsonValue& one : at.toArray()) list << (one.isDouble() ? formatNumber(one.toDouble(), 15) : one.toString());
+                else list << (at.isDouble() ? formatNumber(at.toDouble(), 15) : at.toString());
+                plot(QStringLiteral("slice"), {{QStringLiteral("plane"), QString::fromLatin1(axis)}, {QStringLiteral("entry"), QStringLiteral("values")},
+                                               {QStringLiteral("at"), list.join(QStringLiteral(", "))}});
+            }
+        }
+        // Isosurfaces: a number of levels, or their values (in the unit shown).
+        const QJsonValue iso = args.value(QLatin1String("isosurfaces"));
+        if (iso.isDouble()) plot(QStringLiteral("isosurface"), {{QStringLiteral("entry"), QStringLiteral("count")}, {QStringLiteral("levels"), std::clamp(iso.toInt(), 1, 100)}});
+        else if (iso.isArray()) {
+            QStringList list;
+            for (const QJsonValue& one : iso.toArray()) list << (one.isDouble() ? formatNumber(one.toDouble(), 15) : one.toString());
+            plot(QStringLiteral("isosurface"), {{QStringLiteral("entry"), QStringLiteral("values")}, {QStringLiteral("values"), list.join(QStringLiteral(", "))}});
+        }
+        doc->setModel(m, tr("Plot %1").arg(expression));
+        group = tag;
+    }
+    if (!group.isEmpty()) {
+        QString why;
+        if (!doc->showPlotGroup(group, &why)) return errorResult(why);
+        if (const FNode* g = doc->model().find(group)) shownWhat = g->name();
+    }
+    // The camera: a preset, or a direction (degrees) and a zoom.
+    const QString camera = args.value(QLatin1String("camera")).toString();
+    if (!camera.isEmpty()) {
+        static const QHash<QString, View3D::Preset> presets{{QStringLiteral("top"), View3D::Preset::Top},
+                                                            {QStringLiteral("front"), View3D::Preset::Front},
+                                                            {QStringLiteral("side"), View3D::Preset::Side},
+                                                            {QStringLiteral("iso"), View3D::Preset::Iso}};
+        if (!presets.contains(camera)) return errorResult(tr("'camera' is top, front, side or iso"));
+        doc->view()->viewFrom(presets.value(camera));
+    }
+    if (args.contains(QLatin1String("azimuth")) || args.contains(QLatin1String("elevation")))
+        doc->view()->setDirection(args.value(QLatin1String("azimuth")).toDouble(doc->view()->azimuth()),
+                                  args.value(QLatin1String("elevation")).toDouble(doc->view()->elevation()));
+    if (args.contains(QLatin1String("zoom"))) {
+        const double z = args.value(QLatin1String("zoom")).toDouble(1);
+        if (!(z > 0)) return errorResult(tr("'zoom' is a factor more than 0 (2: twice as near)"));
+        doc->view()->fit();
+        doc->view()->zoomBy(z);
+    }
+    if (shownWhat.isEmpty()) {
+        if (camera.isEmpty() && !args.contains(QLatin1String("azimuth")) && !args.contains(QLatin1String("elevation")) && !args.contains(QLatin1String("zoom"))
+            && !args.contains(QLatin1String("time")) && !args.contains(QLatin1String("point"))) {
+            QStringList groups;
+            for (const FNode& c : doc->model().results().children)
+                if (c.type == QLatin1String("plotgroup3d")) groups << QStringLiteral("%1 (%2)").arg(c.tag, c.name());
+            return errorResult(tr("What to show: 'plot' a 3D plot group (%1), 'expression' one made of it, or 'show' geometry, mesh or solution.")
+                                   .arg(groups.isEmpty() ? tr("none yet") : groups.join(QStringLiteral(", "))));
+        }
+        shownWhat = doc->show() == Multiphysics3DDoc::Show::Plot ? doc->model().find(doc->plotGroup())->name()
+                    : doc->show() == Multiphysics3DDoc::Show::Solution ? tr("the solution")
+                    : doc->show() == Multiphysics3DDoc::Show::Mesh ? tr("the mesh") : tr("the geometry");
+    }
+    QJsonObject o{{QStringLiteral("shown"), shownWhat},
+                  {QStringLiteral("camera"), QJsonObject{{QStringLiteral("azimuth"), doc->view()->azimuth()}, {QStringLiteral("elevation"), doc->view()->elevation()}}},
+                  {QStringLiteral("picture"), tr("screenshot takes a picture of it")}};
+    if (doc->show() == Multiphysics3DDoc::Show::Plot) o.insert(QStringLiteral("plot group"), doc->plotGroup());
+    if (doc->view()->legend().shown)
+        o.insert(QStringLiteral("legend"), QJsonObject{{QStringLiteral("title"), doc->view()->legend().title},
+                                                       {QStringLiteral("from"), doc->view()->legend().low},
+                                                       {QStringLiteral("to"), doc->view()->legend().high},
+                                                       {QStringLiteral("SI"), QJsonArray{doc->plotRange().first, doc->plotRange().second}}});
+    if (doc->solution() && doc->solution()->snapshotCount() > 0)
+        o.insert(QStringLiteral("time"), formatQuantity(doc->solution()->time(), Dim::of(0, 0, 1)));
+    if (doc->solutions().size() > 1 && doc->solution()) o.insert(QStringLiteral("point"), doc->solution()->label);
+    if (!doc->plotProblems().isEmpty()) o.insert(QStringLiteral("problems"), QJsonArray::fromStringList(doc->plotProblems()));
+    return jsonResult(o);
+}
+
+QJsonObject QucsControl::fem3Export(Multiphysics3DDoc* doc, const QJsonObject& args)
+{
+    if (args.contains(QLatin1String("copy"))) return errorResult(tr("'copy' is a 2D line's Qucs part; a 3D model exports VTU and Field on a Grid."));
+    const QString tag = args.value(QLatin1String("export")).toString().trimmed();
+    const FNode* exports = doc->model().results().child(QStringLiteral("exports"));
+    if (tag.isEmpty()) {
+        QStringList list;
+        if (exports)
+            for (const FNode& e : exports->children) list << QStringLiteral("%1 (%2)").arg(e.name(), e.tag);
+        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (vtu, fieldexport).")
+                               .arg(list.isEmpty() ? tr("none yet") : list.join(QStringLiteral(", "))));
+    }
+    QString why;
+    const QString path = doc->runExport(tag, &why, [this](const QString& file) { return unaskedWrite(file); });
+    if (path.isEmpty()) return errorResult(why);
+    QFile f(path);
+    QString head;
+    if (f.open(QIODevice::ReadOnly)) {
+        const QByteArray bytes = f.read(1500);
+        if (bytes.startsWith("\x93NUMPY") && bytes.size() > 10) {
+            const int length = quint8(bytes[8]) | (quint8(bytes[9]) << 8);
+            head = QString::fromLatin1(bytes.mid(10, length)).trimmed();
+        } else {
+            head = QString::fromUtf8(bytes);
+        }
+    }
+    QJsonObject o{{QStringLiteral("written"), QDir::toNativeSeparators(path)}, {QStringLiteral("begins"), head}};
+    if (!doc->messages().isEmpty()) o.insert(QStringLiteral("said"), doc->messages().last());
+    return jsonResult(o);
 }

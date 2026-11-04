@@ -41,6 +41,7 @@ class Schematic;
 class TextDoc;
 class LayoutDoc;
 class MultiphysicsDoc;
+class Multiphysics3DDoc;
 class PdfDoc;
 class PptxDoc;
 namespace qucs_s::pptx {
@@ -761,11 +762,31 @@ private:
     void femGeometryThen(MultiphysicsDoc* doc, const QDeadlineTimer& deadline, int timeout, bool first,
                          std::function<void(const QString& stopped)> then);
     QJsonObject femEvaluate(const QJsonObject& args);
+    /// An answer's \a values measured against \a reference (one number,
+    /// {name: number} or a table's file beside \a model): each value's
+    /// reference, difference and per cent into \a o, the largest said. False
+    /// and why where the reference does not read.
+    bool femAgainstReference(QJsonObject& o, const QJsonArray& values, const QString& expression, const QJsonValue& reference,
+                             const QString& model, QString* error);
     /// A study solved at the mesh as it is and at finer ones, and how far
     /// the values watched moved between them (MCP wishlist N7).
     void femConverge(const QJsonObject& args, const Done& done);
     QJsonObject femPlot(const QJsonObject& args);
     QJsonObject femExport(const QJsonObject& args);
+    // A 3D model's (.qfem3d, Multiphysics 3D's): the same tools.
+    /// The 3D model a fem_ tool's 'path' names - open, or its file opened -,
+    /// or with no 'path' the one in front; null where it names none (a 2D
+    /// model's tool then), and why where one named could not be opened.
+    Multiphysics3DDoc* fem3DocumentFor(const QJsonObject& args, QString* error);
+    QJsonObject fem3Describe(Multiphysics3DDoc* doc, const QJsonObject& args);
+    QJsonObject fem3Model(const QJsonObject& args, Multiphysics3DDoc* doc);
+    void fem3Build(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& done);
+    void fem3Solve(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& done);
+    void fem3Stop(Multiphysics3DDoc* doc, const QJsonObject& args, const Done& done);
+    QJsonObject fem3Solved(Multiphysics3DDoc* doc, const QJsonObject& args);
+    QJsonObject fem3Evaluate(Multiphysics3DDoc* doc, const QJsonObject& args);
+    QJsonObject fem3Plot(Multiphysics3DDoc* doc, const QJsonObject& args);
+    QJsonObject fem3Export(Multiphysics3DDoc* doc, const QJsonObject& args);
     /// A path a git tool names: relative, from the open project's folder,
     /// the workspace, the document's folder or the File Browser's - the
     /// first where it is, else the first in a repository.
