@@ -130,11 +130,21 @@ public:
     bool waitForIdle(int ms = 120000);
 
     // What is shown.
-    enum class Show { Geometry, Mesh, Solution };
+    enum class Show { Geometry, Mesh, Solution, Plot };
     Show show() const { return a_show; }
     void showGeometry();
     void showMesh();
     void showSolution();
+    /// 3D Plot Group \a tag shown: its plots over the solution - at the
+    /// tab's time and point, or the group's own -, its first coloured one's
+    /// legend, its clip. False and why where there is no such group or no
+    /// solution.
+    bool showPlotGroup(const QString& tag, QString* error = nullptr);
+    /// The plot group shown (Show::Plot), or the last.
+    QString plotGroup() const { return a_plotGroup; }
+    /// What drawing the plot group last said (an expression that does not
+    /// read, a unit not of its value), one line a plot; empty: nothing.
+    QStringList plotProblems() const { return a_plotProblems; }
     /// What the solution is coloured by: an expression of its variables
     /// (empty: its first field's own, ht.T or V); its faces, and the cut's
     /// slice where there is one.
@@ -174,6 +184,17 @@ private:
     void fillPlotChoices();
     void fillPointChoices();
     void fillTimeChoices();
+    /// The Show box's items: the geometry, the mesh, the solution, and each
+    /// 3D Plot Group by name.
+    void fillShowChoices();
+    /// After a solve, a model without a 3D Plot Group: two for each physics -
+    /// its variable on the boundaries, and on a slice through the middle
+    /// across x.
+    void addDefaultPlots();
+    /// Plot group \a group's plots over \a solution into \a scene and \a
+    /// legend; its clip's axis (-1: none) and share across the model.
+    void plotGroupScene(const qucs_s::fem::Node& group, qucs_s::fem::Solution3& solution, View3D::Scene& scene, View3D::Legend& legend,
+                        int* clipAxis, double* clipShare);
     void jobFinished();
     void updateScene(bool fit = false);
     void updateHighlight();
@@ -215,6 +236,8 @@ private:
     bool a_closed = false;
 
     Show a_show = Show::Geometry;
+    QString a_plotGroup;
+    QStringList a_plotProblems;
     QString a_focus;
     qucs_s::fem::Level a_highlightLevel = qucs_s::fem::Level::None;
     QVector<int> a_highlighted;

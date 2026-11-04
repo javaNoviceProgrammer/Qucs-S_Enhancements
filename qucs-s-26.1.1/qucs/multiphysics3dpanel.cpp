@@ -706,6 +706,14 @@ void Multiphysics3DPanel::showSettings()
             if (a_doc) a_doc->evaluate(tag);
         });
         v->addWidget(evaluate);
+    } else if (n->type == QLatin1String("plotgroup3d")) {
+        auto* plot = new QPushButton(tr("Plot"), a_form);
+        plot->setObjectName(QStringLiteral("mp3PlotButton"));
+        const QString tag = n->tag;
+        connect(plot, &QPushButton::clicked, this, [this, tag] {
+            if (a_doc) a_doc->showPlotGroup(tag);
+        });
+        v->addWidget(plot);
     }
     v->addStretch(1);
     a_scroll->setWidget(a_form);
