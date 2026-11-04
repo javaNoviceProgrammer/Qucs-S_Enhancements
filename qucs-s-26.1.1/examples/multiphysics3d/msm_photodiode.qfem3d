@@ -1,0 +1,124 @@
+{
+    "format": "qucs-s multiphysics 3d 1",
+    "title": "An MSM photodiode's fingers",
+    "description": "Two combs of fingers 1 µm wide and 1 µm apart on GaAs, interdigitated - a metal-semiconductor-metal photodiode's electrodes -, one at 1 V and the other grounded: their capacitance es.C11, the bus bars and the fingers' ends with it. The electrodes are no thicker than their faces, as the formula has them: a thin box of air over each comb draws its outline on the GaAs, and its bottom is the terminal. Over the fingers' area A it is about A/(w + s)·ε0(1 + εr)K(k)/K(k'), k = tan²(πw/4(w + s)) - C. Lim and R. Moore's conformal map of alternately charged strips (1968), as J. B. D. Soole and H. Schumacher give it for MSM photodetectors (1991): 0.0615 fF per µm of each gap, 4.7 fF for the seven gaps' 11 µm of overlap here. The model's 7.0 fF has the bus bars, the fingers' tips and the outer fingers' sides as well, and order 1 on this mesh some 5 % over. Qucs-S's tests hold one gap of the endless array to the formula: the error halving with the mesh, as it does at a strip's edge, and within 0.3 % extrapolated.",
+    "parameters": [
+        {"name": "w", "expression": "1[um]", "description": "a finger's width"},
+        {"name": "s", "expression": "1[um]", "description": "the gap between fingers"},
+        {"name": "L", "expression": "12[um]", "description": "a finger's length"},
+        {"name": "N", "expression": "4", "description": "fingers in each comb"},
+        {"name": "H", "expression": "8[um]", "description": "the GaAs below them and the air above, each"},
+        {"name": "t", "expression": "0.25[um]", "description": "the thin box that draws a comb's outline"}
+    ],
+    "components": [
+        {
+            "unit": "um",
+            "space": "3D",
+            "geometry": [
+                {
+                    "type": "box",
+                    "label": "substrate",
+                    "position": ["-5[um]", "-7[um]"],
+                    "size": ["(2*N - 1)*(w + s) + w + 10[um]", "L + s + 18[um]"],
+                    "z": "0",
+                    "height": "H"
+                },
+                {
+                    "type": "box",
+                    "label": "air",
+                    "position": ["-5[um]", "-7[um]"],
+                    "size": ["(2*N - 1)*(w + s) + w + 10[um]", "L + s + 18[um]"],
+                    "z": "H",
+                    "height": "H"
+                },
+                {
+                    "type": "extrude",
+                    "label": "combA",
+                    "z": "H",
+                    "height": "t",
+                    "features": [
+                        {
+                            "type": "rectangle",
+                            "label": "barA",
+                            "position": ["0", "-2[um]"],
+                            "size": ["(2*N - 1)*(w + s) + w", "2[um]"]
+                        },
+                        {"type": "rectangle", "label": "fingerA", "position": ["0", "0"], "size": ["w", "L"]},
+                        {"type": "array", "label": "fingersA", "input": ["fingerA"], "count": ["N", "1"], "displacement": ["2*(w + s)", "0"]}
+                    ]
+                },
+                {
+                    "type": "extrude",
+                    "label": "combB",
+                    "z": "H",
+                    "height": "t",
+                    "features": [
+                        {
+                            "type": "rectangle",
+                            "label": "barB",
+                            "position": ["0", "L + s"],
+                            "size": ["(2*N - 1)*(w + s) + w", "2[um]"]
+                        },
+                        {"type": "rectangle", "label": "fingerB", "position": ["w + s", "s"], "size": ["w", "L"]},
+                        {"type": "array", "label": "fingersB", "input": ["fingerB"], "count": ["N", "1"], "displacement": ["2*(w + s)", "0"]}
+                    ]
+                },
+                {"type": "form union"}
+            ],
+            "materials": [
+                {
+                    "material": "Gallium arsenide",
+                    "selection": {"only": ["substrate"]}
+                },
+                {
+                    "material": "Air",
+                    "selection": {"only": ["air", "combA", "combB"]}
+                }
+            ],
+            "physics": [
+                {
+                    "type": "electrostatics",
+                    "tag": "es",
+                    "order": "1",
+                    "features": [
+                        {
+                            "type": "terminal",
+                            "label": "Comb A",
+                            "name": "1",
+                            "selection": {"of": ["combA"], "side": "bottom"}
+                        },
+                        {
+                            "type": "ground",
+                            "label": "Comb B",
+                            "selection": {"of": ["combB"], "side": "bottom"}
+                        }
+                    ]
+                }
+            ],
+            "mesh": {
+                "size": "normal",
+                "custom": true,
+                "hmax": "2",
+                "growth": "1.3",
+                "features": [
+                    {
+                        "type": "size",
+                        "level": "edge",
+                        "selection": {"of": ["combA", "combB"]},
+                        "hmax": "0.1"
+                    }
+                ]
+            }
+        }
+    ],
+    "studies": [
+        {
+            "type": "study",
+            "label": "Study 1",
+            "steps": [
+                {"type": "stationary"}
+            ]
+        }
+    ],
+    "results": {"plots": [], "derived": []}
+}

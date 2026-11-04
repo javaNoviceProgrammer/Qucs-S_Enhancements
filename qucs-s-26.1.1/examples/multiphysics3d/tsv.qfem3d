@@ -1,0 +1,109 @@
+{
+    "format": "qucs-s multiphysics 3d 1",
+    "title": "A through-silicon via",
+    "description": "A copper via 5 µm across and 25 µm deep through a silicon die, in its oxide liner: its resistance between its ends (ec.R) and the heat a hot pad on its top sends down it and, through the liner, into the silicon beside it (ht.Rth), the die's back held at 20 °C. Its resistance is ρh/(πa²), as G. Katti, M. Stucchi, K. De Meyer and W. Dehaene give it (IEEE Trans. Electron Devices 57, 256, 2010): 21.2 mΩ here, order 2 on its arcs within 0.1 %. Its copper alone would hold the heat at h/(kπa²), 3183 K/W; the silicon beside it carries part of it down, past the liner's ln(b/a)/(2πkh): 1332 K/W. Qucs-S's tests hold all three to their formulas.",
+    "parameters": [
+        {"name": "a", "expression": "2.5[um]", "description": "the via's radius"},
+        {"name": "tl", "expression": "0.2[um]", "description": "its liner's thickness"},
+        {"name": "h", "expression": "25[um]", "description": "its depth: the die's thickness"},
+        {"name": "P", "expression": "1[mW]", "description": "the heat into its top"}
+    ],
+    "components": [
+        {
+            "unit": "um",
+            "space": "3D",
+            "geometry": [
+                {
+                    "type": "box",
+                    "label": "die",
+                    "base": "center",
+                    "position": ["0", "0"],
+                    "size": ["20[um]", "20[um]"],
+                    "z": "0",
+                    "height": "h"
+                },
+                {"type": "cylinder", "label": "liner", "center": ["0", "0"], "radius": "a + tl", "z": "0", "height": "h"},
+                {"type": "cylinder", "label": "via", "center": ["0", "0"], "radius": "a", "z": "0", "height": "h"},
+                {"type": "form union"}
+            ],
+            "materials": [
+                {
+                    "material": "Silicon",
+                    "selection": {"only": ["die"]}
+                },
+                {
+                    "material": "Silicon dioxide",
+                    "selection": {"only": ["liner"]}
+                },
+                {
+                    "material": "Copper",
+                    "selection": {"only": ["via"]}
+                }
+            ],
+            "physics": [
+                {
+                    "type": "currents",
+                    "tag": "ec",
+                    "order": "2",
+                    "selection": {"only": ["via"]},
+                    "features": [
+                        {
+                            "type": "terminal",
+                            "label": "Its top",
+                            "name": "1",
+                            "selection": {"of": ["via"], "side": "top"}
+                        },
+                        {
+                            "type": "ground",
+                            "label": "Its bottom",
+                            "selection": {"of": ["via"], "side": "bottom"}
+                        }
+                    ]
+                },
+                {
+                    "type": "heat",
+                    "tag": "ht",
+                    "order": "2",
+                    "features": [
+                        {
+                            "type": "flux",
+                            "label": "The pad's heat",
+                            "kind": "general",
+                            "q0": "P/(pi*a^2)",
+                            "selection": {"of": ["via"], "side": "top"}
+                        },
+                        {
+                            "type": "temperature",
+                            "label": "The die's back",
+                            "T0": "293.15[K]",
+                            "selection": {"of": ["die", "liner", "via"], "side": "bottom"}
+                        }
+                    ]
+                }
+            ],
+            "mesh": {
+                "size": "normal",
+                "custom": true,
+                "hmax": "2",
+                "growth": "1.3",
+                "features": [
+                    {
+                        "type": "zdistribution",
+                        "selection": {"all": true},
+                        "count": 6
+                    }
+                ]
+            }
+        }
+    ],
+    "studies": [
+        {
+            "type": "study",
+            "label": "Study 1",
+            "steps": [
+                {"type": "stationary"}
+            ]
+        }
+    ],
+    "results": {"plots": [], "derived": []}
+}
