@@ -2824,7 +2824,16 @@ private slots:
         QVERIFY(doc != nullptr && doc->view()->penActive());
         QJsonArray ring;
         for (int k = 1; k <= 36; ++k) ring.append(QJsonArray{480 + 450 * std::cos(2 * M_PI * k / 36), 70 + 56 * std::sin(2 * M_PI * k / 36)});
+        // The view changed after the points are mapped and before the
+        // mouse's events go - as on Linux, where Qt shows the scroll bar by
+        // a queued call and the slides, fitted to the width, are fitted
+        // again to the narrower viewport (CI of d7facd8: the stroke's first
+        // point at 953 for 930): they go where the points are then.
+        qucs_s::pptx::SlideView* view = doc->view();
+        const qreal before = view->zoom();
+        QMetaObject::invokeMethod(view, [view] { view->setZoom(view->zoom() * 0.8); }, Qt::QueuedConnection);
         QJsonObject r = call("send_input", {{"target", "slide"}, {"slide", 2}, {"click", QJsonArray{930, 70}}, {"drag_through", ring}});
+        QVERIFY2(view->zoom() < 0.9 * before, qPrintable(QStringLiteral("%1 then %2").arg(before).arg(view->zoom())));
         QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
         QJsonObject o = json(r);
         QCOMPARE(o.value("on").toString(), QStringLiteral("slide 2 of input.pptx"));
