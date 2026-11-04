@@ -1085,6 +1085,149 @@ private slots:
         QVERIFY(!c.ok() && c.z.isEmpty() && says(c.problems, "Stopped, 0 of 3"));
     }
 
+    // A frequency's fill shared out among the threads the frequencies at a
+    // time leave it - its Green's functions side by side, its system's
+    // columns and P's - is the same to the last digit as on one thread: a
+    // copper line solved as its two faces (each face's twin, the walls'
+    // vias between them), shorted to the ground by a via at its far end,
+    // driven at its edge and at its middle (the ports' paths up from the
+    // ground), its runs along it and across it. (A sanitized build solves
+    // it as a sheet, at one frequency, on one thread and four, and leaves
+    // out the compressed solve: the faces' three pairs of heights and two
+    // vias' kernels, made afresh for each solve, were 101 s of it here.)
+    void aFrequencysFillIsTheSameOnAnyNumberOfThreads()
+    {
+        const bool slow = slowBuild();
+        rf::Stack stack = withVia(grounded(9.8, 100e-6, 0, 3e-6, 5.8e7), QStringLiteral("V0"), QStringLiteral("ground"),
+                                  QStringLiteral("M1"));
+        stack.layers[2].twoSheets = !slow;
+        const QList<rf::Conductor> shorted = {strip(0, 0, 1000, 100), on(QStringLiteral("V0"), 900, 0, 100, 100)};
+        const rf::Mesh mesh = meshed(shorted, 2, 200e-6);
+        const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 50)), internalPort(QPointF(500, 50), QStringLiteral("M1"))};
+        const QList<double> fs = slow ? QList<double>{6e9} : QList<double>{2e9, 9e9};
+        const auto solve = [&mesh, &shorted, &stack, &ports, &fs](int threads) {
+            // (Its Green's functions made afresh, as many a solve's first
+            //  frequencies' are: kept from the solve before, each is made
+            //  sooner than a thread starts.)
+            rf::forgetGreens();
+            rf::FullWaveControl control;
+            control.threads = threads;
+            return rf::fullWaveOf(mesh, shorted, stack, ports, fs, 1e-6, &control);
+        };
+        const rf::FillShared before = rf::fillShared();
+        const rf::FullWave alone = solve(1);
+        QVERIFY2(alone.ok(), qPrintable(why(alone)));
+        QCOMPARE(alone.threads, 1);
+        QCOMPARE(rf::fillShared().greens, before.greens);
+        QCOMPARE(rf::fillShared().columns, before.columns);
+        QVERIFY2(!alone.compressed && (slow || says(alone.lines, "walls of the metals solved as their two faces"))
+                     && says(alone.lines, "of them to the ground") && says(alone.lines, "path(s) of their own"),
+                 qPrintable(alone.lines.join(" | ")));
+        // On four threads, each frequency its own share of them, and on
+        // seven - more than share out evenly.
+        for (const int threads : slow ? QList<int>{4} : QList<int>{4, 7}) {
+            const rf::FillShared was = rf::fillShared();
+            const rf::FullWave shared = solve(threads);
+            QVERIFY2(shared.ok(), qPrintable(why(shared)));
+            const int side = int(fs.size());
+            QCOMPARE(shared.threads, side * (threads / side));
+            QVERIFY2(rf::fillShared().greens > was.greens && rf::fillShared().columns > was.columns,
+                     qPrintable(QStringLiteral("%1 Green's functions and %2 columns made on other threads")
+                                    .arg(rf::fillShared().greens - was.greens).arg(rf::fillShared().columns - was.columns)));
+            QVERIFY2(shared.z == alone.z && shared.s == alone.s, qPrintable(QStringLiteral("on %1 threads").arg(threads)));
+            QVERIFY2(shared.currents == alone.currents, qPrintable(QStringLiteral("on %1 threads").arg(threads)));
+        }
+        // What cannot be made is said as on one thread: of a metal right on
+        // the ground plane, the first of its pairs of heights that cannot,
+        // and once.
+        rf::Stack low = grounded(9.8, 100e-6);
+        rf::Layer m0 = low.layers.at(2);
+        m0.name = QStringLiteral("M0");
+        m0.tag = QStringLiteral("m0");
+        low.layers.insert(1, m0);
+        const QList<rf::Conductor> two = {on(QStringLiteral("M0"), 0, 0, 1000, 100), strip(0, 200, 1000, 100)};
+        QStringList said;
+        for (const int threads : {1, 4}) {
+            rf::FullWaveControl control;
+            control.threads = threads;
+            const rf::FullWave fw = rf::fullWaveOf(meshed(two, 2, 200e-6), two, low, {edgePort(QPointF(0, 250), QStringLiteral("M1"))},
+                                                   {1e9}, 1e-6, &control);
+            QVERIFY2(!fw.ok() && fw.problems.size() == 1 && says(fw.problems, "shorted to it"), qPrintable(why(fw)));
+            if (threads == 1)
+                said = fw.problems;
+            else
+                QCOMPARE(fw.problems, said);
+        }
+        // Held compressed, its Green's functions shared out alike, and its S
+        // the dense one's. (Its products are summed a thread at a time, the
+        // last digits as the threads fall.)
+        if (slow) return;
+        rf::forgetGreens();
+        rf::FullWaveControl held;
+        held.threads = 4;
+        held.matrix = rf::FullWaveControl::Matrix::Compressed;
+        const rf::FillShared was = rf::fillShared();
+        const rf::FullWave compressed = rf::fullWaveOf(mesh, shorted, stack, ports, fs, 1e-6, &held);
+        QVERIFY2(compressed.ok() && compressed.compressed, qPrintable(why(compressed)));
+        QVERIFY(rf::fillShared().greens > was.greens);
+        QCOMPARE(rf::fillShared().columns, was.columns);
+        double apart = 0;
+        for (int k = 0; k < fs.size(); ++k)
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) apart = std::max(apart, std::abs(compressed.s.at(k).at(i).at(j) - alone.s.at(k).at(i).at(j)));
+        QVERIFY2(apart < 1e-5, qPrintable(QStringLiteral("S %1 from the dense solve's").arg(apart)));
+    }
+
+    // The static parts a dense solve makes once - each two runs' aligned
+    // partial inductances, direct and of the images, and each two cells'
+    // static potentials -, shared out among all of its threads before its
+    // frequencies, are the same to the last digit as on one thread, and a
+    // compressed solve makes none: the compressed solve's strip at a slant,
+    // whose runs between cells cut to its outline are oblique and whose
+    // cells differ in size - 517 runs over 306 cells, their static parts
+    // some 50 ms on one thread here, so that the other threads take their
+    // share however late a loaded machine starts them (the copper line of
+    // the test above has 1.6 ms of them).
+    void theStaticPartsAreTheSameOnAnyNumberOfThreads()
+    {
+        const QString m1 = QStringLiteral("M1");
+        rf::Conductor slant;
+        slant.layer = m1;
+        slant.outline = QPolygonF({QPointF(0, 0), QPointF(1500, 866), QPointF(1500, 966), QPointF(0, 100)});
+        const QList<rf::Conductor> one{slant};
+        const rf::Mesh mesh = meshed(one, 3, 100e-6);
+        const rf::Stack stack = grounded(9.8, 100e-6, 0, 2e-6, 5.8e7);
+        const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 50), m1, QPointF(-1, 0)),
+                                            edgePort(QPointF(1500, 916), m1, QPointF(1, 0))};
+        const auto solve = [&mesh, &one, &stack, &ports](int threads, rf::FullWaveControl::Matrix matrix) {
+            rf::FullWaveControl control;
+            control.threads = threads;
+            control.matrix = matrix;
+            return rf::fullWaveOf(mesh, one, stack, ports, {5e9}, 1e-6, &control);
+        };
+        const rf::FillShared before = rf::fillShared();
+        const rf::FullWave alone = solve(1, rf::FullWaveControl::Matrix::Dense);
+        QVERIFY2(alone.ok() && !alone.compressed, qPrintable(why(alone)));
+        QCOMPARE(rf::fillShared().statics, before.statics);
+        int oblique = 0;
+        for (const rf::Filament& f : alone.geometry)
+            oblique += std::abs(f.to.x() - f.from.x()) > 1e-12 && std::abs(f.to.y() - f.from.y()) > 1e-12 ? 1 : 0;
+        QVERIFY2(oblique > 10, qPrintable(QString::number(oblique)));
+        const rf::FillShared was = rf::fillShared();
+        const rf::FullWave shared = solve(4, rf::FullWaveControl::Matrix::Dense);
+        QVERIFY2(shared.ok(), qPrintable(why(shared)));
+        QCOMPARE(shared.threads, 4);
+        const long long others = rf::fillShared().statics - was.statics;
+        qWarning("%d runs (%d oblique) over %d cells: %lld of the static parts' columns and blocks made on other threads",
+                 alone.runs, oblique, alone.cells, others);
+        QVERIFY(others > 0);
+        QVERIFY(shared.z == alone.z && shared.s == alone.s && shared.currents == alone.currents);
+        const rf::FillShared held = rf::fillShared();
+        const rf::FullWave compressed = solve(4, rf::FullWaveControl::Matrix::Compressed);
+        QVERIFY2(compressed.ok() && compressed.compressed, qPrintable(why(compressed)));
+        QCOMPARE(rf::fillShared().statics, held.statics);
+    }
+
     // The current density drawn on the layout, and the Touchstone written,
     // are of the solve.
     void theCurrentDensityAndTheTouchstoneAreOfTheSolve()
