@@ -181,10 +181,22 @@ public:
     /// share is made its own.
     void normalise();
     /// A layer renamed wherever the model names it: the vias that join it,
-    /// the ports on it, and the rows of the layer map that send shapes to
-    /// it. Nothing happens for an empty name or one that is not a layer's.
+    /// the ports and terminals on it, and the rows of the layer map that
+    /// send shapes to it. Nothing happens for an empty name or one that is
+    /// not a layer's.
     void renameLayer(const QString& from, const QString& to);
+    /// A port or a terminal renamed wherever the model names it: the ports'
+    /// returns (a port's "returns") and pairs.
+    void renamePort(const QString& from, const QString& to);
 };
+
+/// The names a node's list of them holds (a port's "returns"): a list of
+/// texts, or a text of them apart by commas or spaces, as a file written by
+/// hand may give them.
+QStringList namesOf(const Node& node, const QString& key);
+/// What a port or a terminal is called where another names it: its label,
+/// else its tag.
+QString portName(const Node& node);
 
 /// \a node read as a stack (its children in order). Numbers are
 /// expressions of \a parameters, as everywhere else in a model.

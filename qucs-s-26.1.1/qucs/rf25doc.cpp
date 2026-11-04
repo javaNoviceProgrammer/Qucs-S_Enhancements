@@ -149,6 +149,83 @@ QList<ReturnMark> returnMarksOf(const Model& model, QString* problem)
     return out;
 }
 
+/// A way a face is said ("+x"), as a direction; nought for "auto" or none.
+QPointF facingOf(const QString& facing)
+{
+    if (facing == QLatin1String("+x")) return QPointF(1, 0);
+    if (facing == QLatin1String("-x")) return QPointF(-1, 0);
+    if (facing == QLatin1String("+y")) return QPointF(0, 1);
+    if (facing == QLatin1String("-y")) return QPointF(0, -1);
+    return QPointF();
+}
+
+/// The returns a port names (its "returns"), as the full-wave solve takes
+/// them: each a terminal of the model - its point, metal and rectangle, or
+/// its face - or another port, by its name. One that is neither, an empty
+/// list, or a terminal whose numbers are none is \a problem.
+QList<PortTerminal> returnsOf(const Node& port, const Model& model, QString* problem)
+{
+    QList<PortTerminal> out;
+    const QString name = portName(port);
+    const QStringList named = namesOf(port, QStringLiteral("returns"));
+    if (named.isEmpty()) {
+        *problem = QCoreApplication::translate("RF25Doc", "%1 returns through the terminals and ports it names, and names "
+                                                          "none: name them (its Returns - a Terminal under Ports, or "
+                                                          "another port), or return it another way.")
+                       .arg(name);
+        return {};
+    }
+    for (const QString& r : named) {
+        // (A terminal by that name before a port: the model says where the
+        //  two share one.)
+        const Node* terminal = nullptr;
+        const Node* other = nullptr;
+        for (const Node& n : model.ports().children) {
+            if (!n.enabled || portName(n) != r) continue;
+            if (n.type == QLatin1String("rf_terminal") && terminal == nullptr) terminal = &n;
+            else if ((n.type == QLatin1String("rf_edge_port") || n.type == QLatin1String("rf_internal_port")) && other == nullptr)
+                other = &n;
+        }
+        const Node* found = terminal != nullptr ? terminal : other;
+        const bool isPort = terminal == nullptr && other != nullptr;
+        if (found == nullptr) {
+            *problem = QCoreApplication::translate("RF25Doc", "%1 returns through %2, which is no terminal or port of the "
+                                                              "model (or it is disabled).")
+                           .arg(name, r);
+            return {};
+        }
+        PortTerminal t;
+        t.name = r;
+        t.port = isPort;
+        if (!isPort) {
+            bool okX = true, okY = true, okW = true, okH = true;
+            const double x = numberOf(*found, QStringLiteral("x"), model, 0, &okX);
+            const double y = numberOf(*found, QStringLiteral("y"), model, 0, &okY);
+            const double w = numberOf(*found, QStringLiteral("width"), model, 0, &okW);
+            const double h = numberOf(*found, QStringLiteral("height"), model, 0, &okH);
+            if (!okX || !okY) {
+                *problem = QCoreApplication::translate("RF25Doc", "%1's %2 is not a number.").arg(r, !okX ? QStringLiteral("x") : QStringLiteral("y"));
+                return {};
+            }
+            if (!okW || !okH || w < 0 || h < 0) {
+                *problem = QCoreApplication::translate("RF25Doc", "%1's rectangle is none: its width and height are lengths "
+                                                                  "of nought or more.")
+                               .arg(r);
+                return {};
+            }
+            // (The terminals are in metres; the cells are in the layout's own.)
+            t.at = QPointF(x, y) / 1e-6;
+            t.metal = textOf(*found, QStringLiteral("metal")).trimmed();
+            const QString face = textOf(*found, QStringLiteral("face"));
+            t.face = !face.isEmpty() && face != QLatin1String("none");
+            t.facing = facingOf(face);
+            if (!t.face) t.size = QSizeF(w, h) / 1e-6;
+        }
+        out << t;
+    }
+    return out;
+}
+
 QList<FullWavePort> portsOf(const Model& model, QString* problem)
 {
     QList<FullWavePort> out;
@@ -171,13 +248,15 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
         // (The ports are in metres; the cells are in the layout's own.)
         p.at = QPointF(x, y) / 1e-6;
         p.pair = textOf(port, QStringLiteral("pair")).trimmed();
+        // Through the terminals and ports it names, wherever they are.
+        if (textOf(port, QStringLiteral("return")) == QLatin1String("terminals")) {
+            p.terminals = true;
+            p.returns = returnsOf(port, model, problem);
+            if (p.returns.isEmpty()) return {};
+        }
         if (edge) {
             p.metal = textOf(port, QStringLiteral("conductor")).trimmed();
-            const QString facing = textOf(port, QStringLiteral("facing"));
-            if (facing == QLatin1String("+x")) p.facing = QPointF(1, 0);
-            else if (facing == QLatin1String("-x")) p.facing = QPointF(-1, 0);
-            else if (facing == QLatin1String("+y")) p.facing = QPointF(0, 1);
-            else if (facing == QLatin1String("-y")) p.facing = QPointF(0, -1);
+            p.facing = facingOf(textOf(port, QStringLiteral("facing")));
             // Its own discontinuity taken out after the solve, by strips of
             // its feed, and its reference plane moved along the line - asked
             // for, or implied by a move.
@@ -224,7 +303,7 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
             }
             p.size = QSizeF(w, h) / 1e-6;
             const QString from = textOf(port, QStringLiteral("from")).trimmed();
-            p.from = from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0 ? QString() : from;
+            p.from = p.terminals || from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0 ? QString() : from;
         }
         out << p;
     }
@@ -607,7 +686,8 @@ void RF25Doc::buildUi()
     });
     a_internalPortButton = button(tr("Internal Port"),
                                   tr("Put an internal port on a metal: drag a rectangle over the cells it is to drive, or "
-                                     "click for the one cell under the point (Escape to stop)"),
+                                     "click for the one cell under the point; then Shift-drag the terminals it returns "
+                                     "through, as a probe's ground tips (Escape to stop)"),
                                   "rfPlaceInternalPort");
     a_internalPortButton->setCheckable(true);
     connect(a_internalPortButton, &QToolButton::toggled, this, [this](bool on) {
@@ -643,17 +723,22 @@ void RF25Doc::buildUi()
     connect(a_view, &LayoutView::pointerMoved, this, &RF25Doc::pointerMoved);
     // A port placed where the pointer picks, by the tool in hand; the view
     // back in its own mode (Escape) puts the tool down.
+    // (With the Internal Port tool, Shift puts a terminal among the returns
+    //  of the port it drew last: its signal's rectangle, then its grounds'.)
     connect(a_view, &LayoutView::picked, this, [this](QPointF at) {
         QString why;
-        const QString tag = a_placing == Placing::EdgePort       ? placeEdgePortAt(at, 0, &why)
-                            : a_placing == Placing::InternalPort ? placeInternalPort(QRectF(at, QSizeF(0, 0)), &why)
-                                                                 : QString();
+        const bool shift = a_view->pickModifiers().testFlag(Qt::ShiftModifier);
+        const QString tag = a_placing == Placing::EdgePort ? placeEdgePortAt(at, 0, &why)
+                            : a_placing == Placing::InternalPort
+                                ? (shift ? placeTerminal(QRectF(at, QSizeF(0, 0)), &why) : placeInternalPort(QRectF(at, QSizeF(0, 0)), &why))
+                                : QString();
         if (tag.isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::boxPicked, this, [this](QRectF box) {
         if (a_placing != Placing::InternalPort) return;
         QString why;
-        if (placeInternalPort(box, &why).isEmpty() && !why.isEmpty()) a_status->setText(why);
+        const bool shift = a_view->pickModifiers().testFlag(Qt::ShiftModifier);
+        if ((shift ? placeTerminal(box, &why) : placeInternalPort(box, &why)).isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
         if (mode == LayoutView::Mode::Select && a_placing != Placing::None) setPlacing(Placing::None);
@@ -1418,6 +1503,7 @@ QString RF25Doc::placeEdgePortAt(QPointF at, double reach, QString* why)
     QString error;
     if (m.add(QStringLiteral("ports"), port, -1, &error) == nullptr) return fail(error);
     if (!setModel(m, tr("an edge port"))) return fail(tr("The port could not be added."));
+    a_lastPlaced = tag;
     focusNode(tag);
     a_status->setText(tr("%1 put on the edge of %2 from %3, %4 to %5, %6 µm, facing %7.")
                           .arg(label, metal)
@@ -1429,15 +1515,11 @@ QString RF25Doc::placeEdgePortAt(QPointF at, double reach, QString* why)
     return tag;
 }
 
-QString RF25Doc::placeInternalPort(const QRectF& box, QString* why)
+QString RF25Doc::metalUnder(const QRectF& box) const
 {
-    const auto fail = [why](const QString& text) {
-        if (why != nullptr) *why = text;
-        return QString();
-    };
-    if (!a_processed) return fail(tr("The layout has not been processed: there are no shapes to put a port on."));
     // The topmost metal with a shape under it: under the point, or one that
     // the rectangle overlaps.
+    if (!a_processed) return {};
     const Stack stack = a_model.stack();
     const QRectF r = box.normalized();
     const bool point = !(r.width() > 0 && r.height() > 0);
@@ -1455,6 +1537,72 @@ QString RF25Doc::placeInternalPort(const QRectF& box, QString* why)
             metal = c.layer;
         }
     }
+    return metal;
+}
+
+QString RF25Doc::placeTerminal(const QRectF& box, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return QString();
+    };
+    if (!a_processed) return fail(tr("The layout has not been processed: there are no shapes to put a terminal on."));
+    // Among the returns of the port drawn last - an internal port's, as the
+    // tool's own drag drew it.
+    const Node* port = a_lastPlaced.isEmpty() ? nullptr : a_model.find(a_lastPlaced);
+    if (port == nullptr || (port->type != QLatin1String("rf_internal_port") && port->type != QLatin1String("rf_edge_port")))
+        return fail(tr("A Shift-drag puts a return of the port drawn last, and there is none: drag the port's own rectangle "
+                       "first, then Shift-drag its returns."));
+    const QRectF r = box.normalized();
+    const bool point = !(r.width() > 0 && r.height() > 0);
+    const QString metal = metalUnder(r);
+    if (metal.isEmpty()) return fail(tr("No shape of a metal is under it to put a terminal on."));
+    Model m = a_model;
+    Node terminal = m.make(QStringLiteral("rf_terminal"));
+    terminal.props.insert(QStringLiteral("metal"), metal);
+    terminal.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(r.center().x(), 0, 'g', 9));
+    terminal.props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(r.center().y(), 0, 'g', 9));
+    if (!point) {
+        terminal.props.insert(QStringLiteral("width"), QStringLiteral("%1[um]").arg(r.width(), 0, 'g', 9));
+        terminal.props.insert(QStringLiteral("height"), QStringLiteral("%1[um]").arg(r.height(), 0, 'g', 9));
+    }
+    const QString tag = terminal.tag, name = terminal.label, owner = portName(*port);
+    QString error;
+    if (m.add(QStringLiteral("ports"), terminal, -1, &error) == nullptr) return fail(error);
+    // The port returns through the terminals it names, this one among them
+    // - one edit, undone together.
+    Node* named = m.find(a_lastPlaced);
+    const bool before = textOf(*named, QStringLiteral("return")) == QLatin1String("terminals");
+    QStringList returns = before ? namesOf(*named, QStringLiteral("returns")) : QStringList();
+    returns << name;
+    named->props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
+    named->props.insert(QStringLiteral("returns"), QJsonArray::fromStringList(returns));
+    if (!setModel(m, tr("a return terminal"))) return fail(tr("The terminal could not be added."));
+    a_status->setText(point ? tr("%1 put on %2 at %3, %4 µm, the one cell under the point: %5 returns through %6.")
+                                  .arg(name, metal)
+                                  .arg(r.center().x(), 0, 'g', 6)
+                                  .arg(r.center().y(), 0, 'g', 6)
+                                  .arg(owner, returns.join(QStringLiteral(", ")))
+                            : tr("%1 put on %2 over %3 by %4 µm at %5, %6 µm: %7 returns through %8.")
+                                  .arg(name, metal)
+                                  .arg(r.width(), 0, 'g', 6)
+                                  .arg(r.height(), 0, 'g', 6)
+                                  .arg(r.center().x(), 0, 'g', 6)
+                                  .arg(r.center().y(), 0, 'g', 6)
+                                  .arg(owner, returns.join(QStringLiteral(", "))));
+    return tag;
+}
+
+QString RF25Doc::placeInternalPort(const QRectF& box, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return QString();
+    };
+    if (!a_processed) return fail(tr("The layout has not been processed: there are no shapes to put a port on."));
+    const QRectF r = box.normalized();
+    const bool point = !(r.width() > 0 && r.height() > 0);
+    const QString metal = metalUnder(r);
     if (metal.isEmpty()) return fail(tr("No shape of a metal is under it to put an internal port on."));
     Model m = a_model;
     Node port = m.make(QStringLiteral("rf_internal_port"));
@@ -1471,6 +1619,7 @@ QString RF25Doc::placeInternalPort(const QRectF& box, QString* why)
     QString error;
     if (m.add(QStringLiteral("ports"), port, -1, &error) == nullptr) return fail(error);
     if (!setModel(m, tr("an internal port"))) return fail(tr("The port could not be added."));
+    a_lastPlaced = tag;
     focusNode(tag);
     a_status->setText(point ? tr("%1 put on %2 at %3, %4 µm, from the ground: the one cell under the point.")
                                   .arg(label, metal)
@@ -1660,6 +1809,9 @@ void RF25Doc::showOverlays()
                 }
             }
         }
+        // (Where each port and terminal is drawn, by its name: what a line
+        //  from a port to its returns joins.)
+        QHash<QString, QPointF> placeOf;
         for (const Node& node : a_model.ports().children) {
             if (!node.enabled) continue;
             const bool edge = node.type == QLatin1String("rf_edge_port");
@@ -1671,23 +1823,20 @@ void RF25Doc::showOverlays()
             if (!okX || !okY) continue;
             const QPointF at = QPointF(x, y) / 1e-6;
             if (edge) {
-                const QString facing = textOf(node, QStringLiteral("facing"));
-                const QPointF way = facing == QLatin1String("+x")   ? QPointF(1, 0)
-                                    : facing == QLatin1String("-x") ? QPointF(-1, 0)
-                                    : facing == QLatin1String("+y") ? QPointF(0, 1)
-                                    : facing == QLatin1String("-y") ? QPointF(0, -1)
-                                                                    : QPointF();
+                const QPointF way = facingOf(textOf(node, QStringLiteral("facing")));
                 QLineF face;
                 QPointF outward;
                 QString layer;
                 if (faceEdge(shapes, at, textOf(node, QStringLiteral("conductor")).trimmed(), way, &face, &outward, &layer)) {
                     faces.shapes << QPolygonF(QList<QPointF>{face.p1(), face.p2()});
                     faces.labels << LayoutView::Overlay::Label{face.center(), name, outward};
+                    placeOf.insert(name, face.center());
                     if (textOf(node, QStringLiteral("return")) == QLatin1String("beside"))
                         for (const QLineF& g : besideEdges(shapes, face, outward, layer, shapeReturns.isEmpty() ? nullptr : &shapeReturns))
                             if (!g.isNull()) grounds.shapes << QPolygonF(QList<QPointF>{g.p1(), g.p2()});
                 } else {
                     faces.labels << LayoutView::Overlay::Label{at, name, QPointF()};
+                    placeOf.insert(name, at);
                 }
                 continue;
             }
@@ -1696,6 +1845,50 @@ void RF25Doc::showOverlays()
             const double h = numberOf(node, QStringLiteral("height"), a_model, 0, &okH) / 1e-6;
             if (okW && okH && w > 0 && h > 0) regions.shapes << QPolygonF(QRectF(at - QPointF(w, h) / 2, QSizeF(w, h)));
             faces.labels << LayoutView::Overlay::Label{at, name, QPointF()};
+            placeOf.insert(name, at);
+        }
+        // The terminals, each by its name: its rectangle's outline, its
+        // face, or its name alone at the point whose cell it is; and a line
+        // from each port that names its returns to each of them, thin.
+        LayoutView::Overlay terminals, links;
+        terminals.line = ink;
+        terminals.width = 2;
+        terminals.name = tr("the terminals");
+        QColor faint = ink;
+        faint.setAlpha(150);
+        links.line = faint;
+        links.width = 1;
+        links.name = tr("the ports' lines to their returns");
+        for (const Node& node : a_model.ports().children) {
+            if (!node.enabled || node.type != QLatin1String("rf_terminal")) continue;
+            bool okX = true, okY = true, okW = true, okH = true;
+            const double x = numberOf(node, QStringLiteral("x"), a_model, 0, &okX);
+            const double y = numberOf(node, QStringLiteral("y"), a_model, 0, &okY);
+            const double w = numberOf(node, QStringLiteral("width"), a_model, 0, &okW) / 1e-6;
+            const double h = numberOf(node, QStringLiteral("height"), a_model, 0, &okH) / 1e-6;
+            if (!okX || !okY) continue;
+            const QPointF at = QPointF(x, y) / 1e-6;
+            QPointF place = at;
+            const QString face = textOf(node, QStringLiteral("face"));
+            if (!face.isEmpty() && face != QLatin1String("none")) {
+                QLineF edge;
+                if (faceEdge(shapes, at, textOf(node, QStringLiteral("metal")).trimmed(), facingOf(face), &edge)) {
+                    terminals.shapes << QPolygonF(QList<QPointF>{edge.p1(), edge.p2()});
+                    place = edge.center();
+                }
+            } else if (okW && okH && w > 0 && h > 0) {
+                terminals.shapes << QPolygonF(QRectF(at - QPointF(w, h) / 2, QSizeF(w, h)));
+            }
+            terminals.labels << LayoutView::Overlay::Label{place, portName(node), QPointF()};
+            if (!placeOf.contains(portName(node))) placeOf.insert(portName(node), place);
+        }
+        for (const Node& node : a_model.ports().children) {
+            if (!node.enabled || textOf(node, QStringLiteral("return")) != QLatin1String("terminals")) continue;
+            if (node.type != QLatin1String("rf_edge_port") && node.type != QLatin1String("rf_internal_port")) continue;
+            const QString name = portName(node);
+            if (!placeOf.contains(name)) continue;
+            for (const QString& r : namesOf(node, QStringLiteral("returns")))
+                if (r != name && placeOf.contains(r)) links.shapes << QPolygonF(QList<QPointF>{placeOf.value(name), placeOf.value(r)});
         }
         // The return conductors, each by its name at its point.
         for (const Node& node : a_model.ports().children) {
@@ -1707,7 +1900,7 @@ void RF25Doc::showOverlays()
                 returns.labels << LayoutView::Overlay::Label{QPointF(x, y) / 1e-6, node.label.isEmpty() ? node.tag : node.label,
                                                              QPointF()};
         }
-        for (const LayoutView::Overlay* o : {&regions, &grounds, &returns, &faces})
+        for (const LayoutView::Overlay* o : {&regions, &grounds, &returns, &links, &terminals, &faces})
             if (!o->shapes.isEmpty() || !o->labels.isEmpty()) overlays << *o;
     }
     a_view->setOverlays(overlays);
@@ -2672,6 +2865,7 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
         comments << tr("Full wave: the mixed-potential integral equation on the mesh, the retarded Green's functions of "
                        "the stack");
         for (const QString& line : a_fullWave->portsSaid) comments << line;
+        comments << returnSharesOf(*a_fullWave);
         // Where each reference plane is - a port's definition is where
         // comparisons with other solvers go wrong.
         QStringList planes;
@@ -2681,7 +2875,13 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
             const QString along = d.givenLine ? tr("along a given line of %1 Ohm, eps_eff %2")
                                                     .arg(d.impedance.real(), 0, 'g', 4).arg(d.epsEff, 0, 'g', 4)
                                               : tr("along its feed");
-            if (!d.done)
+            // (One that names its returns is a source between its cells and
+            //  theirs: a probe's own loop, its tips up to it, is not in it.)
+            if (!d.done && a_fullWave->namesReturns.value(p))
+                planes << tr("%1's at the cells it drives and those it returns through, a source between them: the probe's "
+                             "own loop not in it")
+                              .arg(name);
+            else if (!d.done)
                 planes << tr("%1's at the centres of the cells it drives").arg(name);
             else if (!d.calibrated)
                 planes << tr("%1's %2 µm %3 from the centres of the cells it drives, %4, its own discontinuity left in")

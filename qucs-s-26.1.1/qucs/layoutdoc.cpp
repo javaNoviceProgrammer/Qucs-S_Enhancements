@@ -1474,6 +1474,7 @@ void LayoutView::mouseReleaseEvent(QMouseEvent* event)
     // (A stroke ends with the button that began it.)
     if ((drag == Drag::Ink || drag == Drag::Erase) && event->button() != Qt::LeftButton) return;
     a_drag = Drag::None;
+    a_pickModifiers = event->modifiers();
     switch (drag) {
     case Drag::Ink:
         a_drawing.add(a_stroke);

@@ -2714,6 +2714,123 @@ private slots:
         closeUnder(ws + "/rfjoin");
     }
 
+    // A port's returns given as a list (the feature request of 4 November)
+    // through the tools: a model written as Claude writes one - terminals
+    // under Ports, an internal port's Return "terminals" and its Returns -
+    // solved by rf25_solve, each port with what it drives, what it returns
+    // through and each return's share of its current; a return that is on
+    // the port's own conductor refused by name; and fem_describe's format
+    // of an RF 2.5D model, its kinds the terminal's among them.
+    void anRf25PortsReturnsAreNamedThroughTheTools()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rf"));
+        QVERIFY(writeBoxes(ws + "/rf/gsg.gds", {QRectF(QPointF(0, -25), QPointF(600, 25)), QRectF(QPointF(0, 50), QPointF(600, 200)),
+                                                QRectF(QPointF(0, -200), QPointF(600, -50))}));
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("gsg.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        QCOMPARE(rows.size(), 1);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("cells_across"), 3);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+        const auto square = [](qucs_s::rf25::Node& n, const QString& x, const QString& y) {
+            n.props.insert(QStringLiteral("x"), x);
+            n.props.insert(QStringLiteral("y"), y);
+            n.props.insert(QStringLiteral("width"), QStringLiteral("20[um]"));
+            n.props.insert(QStringLiteral("height"), QStringLiteral("20[um]"));
+        };
+        for (const QString& x : {QStringLiteral("40[um]"), QStringLiteral("560[um]")}) {
+            qucs_s::rf25::Node port = m.make(QStringLiteral("rf_internal_port"));
+            port.props.insert(QStringLiteral("to"), QStringLiteral("M1"));
+            port.props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
+            square(port, x, QStringLiteral("0"));
+            const int first = x.startsWith(QLatin1Char('4')) ? 1 : 3;
+            port.props.insert(QStringLiteral("returns"),
+                              QJsonArray::fromStringList({QStringLiteral("T%1").arg(first), QStringLiteral("T%1").arg(first + 1)}));
+            QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+        }
+        for (const QString& x : {QStringLiteral("40[um]"), QStringLiteral("560[um]")})
+            for (const QString& y : {QStringLiteral("125[um]"), QStringLiteral("-125[um]")}) {
+                qucs_s::rf25::Node t = m.make(QStringLiteral("rf_terminal"));
+                t.props.insert(QStringLiteral("metal"), QStringLiteral("M1"));
+                square(t, x, y);
+                QVERIFY(m.add(QStringLiteral("ports"), t) != nullptr);
+            }
+        const auto put = [](const QString& where, const QByteArray& what) {
+            QFile f(where);
+            return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
+        };
+        QVERIFY(put(ws + "/rf/gsg.qrf25", m.toJson()));
+        const QJsonObject solved = call("rf25_solve", {{"path", ws + "/rf/gsg.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"}}, 300000);
+        QVERIFY2(!failed(solved), qPrintable(text(solved)));
+        const QJsonArray ports = json(solved).toObject().value("ports").toArray();
+        QCOMPARE(ports.size(), 2);
+        const QJsonObject p1 = ports.at(0).toObject();
+        QVERIFY2(p1.value("drives").toString().contains(QStringLiteral("against T1 (")) && p1.value("drives").toString().contains(QStringLiteral("tied")),
+                 qPrintable(p1.value("drives").toString()));
+        QCOMPARE(p1.value("returns through").toString(), QStringLiteral("the terminals and ports it names"));
+        QCOMPARE(p1.value("shares at").toDouble(), 10e9);
+        const QJsonArray returns = p1.value("returns").toArray();
+        QCOMPARE(returns.size(), 2);
+        QCOMPARE(returns.at(0).toObject().value("name").toString(), QStringLiteral("T1"));
+        QVERIFY(returns.at(0).toObject().value("cells").toInt() > 0);
+        for (const QJsonValue& r : returns)
+            QVERIFY2(std::abs(r.toObject().value("share").toDouble() - 0.5) < 1e-5, qPrintable(QString::fromUtf8(QJsonDocument(returns).toJson())));
+        // show_layout draws the terminals and each port's lines to its
+        // returns, and says so.
+        const QJsonObject shown = json(call("show_layout", {{"path", ws + "/rf/gsg.qrf25"}}, 60000)).toObject();
+        QJsonObject terminals, lines;
+        for (const QJsonValue& o : shown.value("overlays").toArray()) {
+            if (o.toObject().value("name").toString() == QLatin1String("the terminals")) terminals = o.toObject();
+            if (o.toObject().value("name").toString() == QLatin1String("the ports' lines to their returns")) lines = o.toObject();
+        }
+        QVERIFY2(terminals.value("labels").toArray() == QJsonArray::fromStringList({"T1", "T2", "T3", "T4"}) && terminals.value("shapes").toInt() == 4
+                     && lines.value("shapes").toInt() == 4,
+                 qPrintable(QString::fromUtf8(QJsonDocument(shown).toJson(QJsonDocument::Compact))));
+        // The brief answer keeps them.
+        const QJsonObject brief = json(call("rf25_solve", {{"path", ws + "/rf/gsg.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"},
+                                                           {"brief", true}}, 300000)).toObject();
+        QCOMPARE(brief.value("ports").toArray().at(1).toObject().value("returns").toArray().size(), 2);
+        // A return on the port's own conductor: refused by name.
+        qucs_s::rf25::Model shorted = m;
+        for (qucs_s::rf25::Node& n : shorted.ports().children)
+            if (n.label == QLatin1String("T1")) n.props.insert(QStringLiteral("y"), QStringLiteral("0"));
+        // (Its own signal, in from P1's patch.)
+        for (qucs_s::rf25::Node& n : shorted.ports().children)
+            if (n.label == QLatin1String("T1")) n.props.insert(QStringLiteral("x"), QStringLiteral("300[um]"));
+        QVERIFY(put(ws + "/rf/gsg_short.qrf25", shorted.toJson()));
+        const QJsonObject refused = call("rf25_solve", {{"path", ws + "/rf/gsg_short.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"}}, 300000);
+        QVERIFY(failed(refused));
+        QVERIFY2(text(refused).contains(QStringLiteral("P1's return T1 is on the same conductor as P1")), qPrintable(text(refused)));
+        // fem_describe's format of an RF 2.5D model: by 'space', or of one named.
+        for (const QJsonObject& asked : {QJsonObject{{"what", "format"}, {"space", "RF 2.5D"}},
+                                         QJsonObject{{"what", "format"}, {"path", ws + "/rf/gsg.qrf25"}}}) {
+            const QJsonObject format = json(call("fem_describe", asked, 60000)).toObject();
+            const QJsonArray kinds = format.value("kinds").toArray();
+            QJsonObject terminal;
+            for (const QJsonValue& k : kinds)
+                if (k.toObject().value("type").toString() == QLatin1String("rf_terminal")) terminal = k.toObject();
+            QVERIFY2(!terminal.isEmpty(), qPrintable(QString::fromUtf8(QJsonDocument(format).toJson()).left(2000)));
+            QVERIFY(terminal.value("properties").toArray().contains(QJsonValue(QStringLiteral("height: Height [m] = 0; when face=none"))));
+            bool returnsLine = false;
+            for (const QJsonValue& k : kinds)
+                if (k.toObject().value("type").toString() == QLatin1String("rf_internal_port"))
+                    for (const QJsonValue& line : k.toObject().value("properties").toArray())
+                        returnsLine = returnsLine || line.toString() == QLatin1String("returns: Returns (names: a list of texts); when return=terminals");
+            QVERIFY(returnsLine);
+            QVERIFY2(format.value("format").toString().contains(QStringLiteral("\"returns\" names, a list of texts: [\"T1\", \"T2\"]")),
+                     qPrintable(format.value("format").toString()));
+            // (None of the multiphysics kinds.)
+            for (const QJsonValue& k : kinds) QVERIFY(k.toObject().value("type").toString().startsWith(QLatin1String("rf_")));
+        }
+    }
+
     // rf25_solve's full-wave solver, asked for by the tool for one solve
     // alone: the ports' S and Z, the sweep and the checks; rf25_export of
     // the ports after it; and rf25_inductance's loop found whatever the

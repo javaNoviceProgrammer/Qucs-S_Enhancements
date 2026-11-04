@@ -109,6 +109,26 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         port.insert(QStringLiteral("name"), w.portNames.at(p));
         port.insert(QStringLiteral("reference impedance"), w.references.at(p));
         port.insert(QStringLiteral("drives"), w.portsSaid.value(p));
+        // What it returns through, where that is more than the ground or the
+        // metal under it - a coplanar port's conductors beside it, or the
+        // terminals and ports it names -: each return's cells, and its share
+        // of the port's current at the top of the sweep (an ampere in, the
+        // other ports open), which a symmetric GSG shares half and half.
+        if (!w.returnsOf.value(p).isEmpty()) {
+            QJsonArray returns;
+            for (const PortReturn& r : w.returnsOf.at(p)) {
+                QJsonObject back;
+                back.insert(QStringLiteral("name"), r.name);
+                back.insert(QStringLiteral("cells"), r.cells);
+                back.insert(QStringLiteral("share"), std::round(std::abs(r.share) * 1e6) / 1e6);
+                back.insert(QStringLiteral("phase degrees"), std::round(std::arg(r.share) * 180 / M_PI * 1e3) / 1e3);
+                returns.append(back);
+            }
+            port.insert(QStringLiteral("returns through"), w.namesReturns.value(p) ? QStringLiteral("the terminals and ports it names")
+                                                                                  : QStringLiteral("the conductors beside it"));
+            port.insert(QStringLiteral("returns"), returns);
+            port.insert(QStringLiteral("shares at"), *std::max_element(w.frequencies.begin(), w.frequencies.end()));
+        }
         // Its own discontinuity taken out, at the top of the sweep: where
         // its reference plane is, the line of its feed, and the
         // discontinuity as a shunt C at its face and a series L at the port.
@@ -320,7 +340,9 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
                    "each frequency. Each port drives the face of the conductor it is on (an edge port, its current "
                    "back through the ground - or, a coplanar one, through the nearest return conductors beside it, tied as a probe's "
                    "grounds are) or the cells under it (an internal port: its rectangle's, or the one under its point), its reference plane at the centres of the "
-                   "cells it drives, and its S is into its own reference impedance (Kurokawa's power waves). The "
+                   "cells it drives; or, one that names its returns, against the terminals and ports it names, tied, a source between "
+                   "its cells and theirs with no path up to them (the probe's own loop not in it). Its S is into its own reference "
+                   "impedance (Kurokawa's power waves). The "
                    "ground plane, where there is one, is taken as perfect - with none, every port returns through the "
                    "layout's conductors - and a metal as a sheet, its edges losing as its thickness lets the current "
                    "crowd there. A pair's mixed-mode S is its differential mode into twice the ports' reference and "

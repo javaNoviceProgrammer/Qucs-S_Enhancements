@@ -110,6 +110,15 @@
  * the stack a port's current comes back through the layout's own
  * conductors: a coplanar port's through those beside it, an internal
  * port's through the metal it is driven from.
+ *
+ * Or a port names what it returns through: terminals - the cells of a
+ * metal under a rectangle, or a conductor's face - and other ports, whose
+ * own cells are then its return too. Each return is a column of its own,
+ * the port's cells less the return's, and the columns of a port are tied
+ * as a coplanar port's two grounds are; an ideal source between its cells
+ * and theirs, with no path up to them, as a probe's tips land on its pads.
+ * Its columns and every other port's must be independent: two ports that
+ * return through each other round a loop are one.
  */
 #ifndef QUCS_RF25_FULLWAVE_H
 #define QUCS_RF25_FULLWAVE_H
@@ -132,6 +141,29 @@ namespace qucs_s::rf25 {
 /// it summed, the ground at nought wherever the tree lists it. -1 where it
 /// is no conductor of the stack.
 double metalHeight(const Stack& stack, const QString& name);
+
+/*!
+ * What a port returns through where it names it (FullWavePort::terminals):
+ * a terminal of the model - the cells of a metal under a rectangle about a
+ * point, the one cell under the point, or the face of the conductor at the
+ * point as an edge port's - or another port, whose own cells, what it
+ * drives, are then this one's return as well, and it a port of its own.
+ */
+struct PortTerminal {
+    QString name;              ///< what it is called: "T1", or the other port's "P2"
+    /// Another port's own cells, by its name, rather than a terminal's.
+    bool port = false;
+    QPointF at;                ///< the layout's units
+    QString metal;             ///< empty: whichever is there
+    /// A rectangle about the point, the layout's units, its cells each by
+    /// its share of the area; empty: the one cell under the point.
+    QSizeF size;
+    /// The face of the conductor at the point instead, its cells each by
+    /// its share of the face's length, as an edge port's; \a facing its
+    /// outward direction (nought: the face nearest the point).
+    bool face = false;
+    QPointF facing;
+};
 
 /// A port of the full-wave solve, as the model's Ports say it.
 struct FullWavePort {
@@ -158,6 +190,16 @@ struct FullWavePort {
     /// phase C check of 1 November, F6). The grounds either side are tied
     /// together, and the solve shares the current out between them.
     bool coplanar = false;
+    /// A port, edge or internal, that returns through the terminals and the
+    /// ports it names (\a returns) rather than the ground, the metal under it
+    /// or the conductors beside it - a GSG probe's tips landing on its pads,
+    /// the ground ring round a pad -, all of them tied: one voltage, the
+    /// current shared out between them by the solve, as a coplanar port's
+    /// two grounds are. An ideal source between its own cells and theirs,
+    /// with no path of its own up to them, so that the probe's own loop is
+    /// not in the answer; and no ground plane wanted.
+    bool terminals = false;
+    QList<PortTerminal> returns;
     /// An edge port's partner in a differential pair, by its name: this port
     /// its plus and that one its minus, as a probe's two signals drive a
     /// GSSG - the pair's mixed-mode S given beside the single-ended
@@ -290,6 +332,11 @@ struct FullWaveControl {
     /// The most memory a frequency's compressed solve may take, bytes; 0:
     /// half the machine's. (Lower, a test meets the bound.)
     double mostBytes = 0;
+    /// Tests: false leaves the ports' own paths up to their cells out
+    /// (PortPath), each port an ideal source between its cells as one that
+    /// names its returns is - a port from a metal then the same columns as
+    /// one returning through a terminal of that metal under it.
+    bool portPaths = true;
 };
 
 /// RF 2.5D > Settings…, for the process: the most runs and cells a dense
@@ -306,6 +353,19 @@ double sweepMemory();
 /// (rf25_dense.h); and a quarter of the machine's memory, 1.5 GB at least.
 int automaticDenseLimit();
 double automaticSweepMemory();
+
+/*!
+ * A return of a port as solved: of a coplanar port, each conductor beside
+ * it; of one that names its returns, each terminal and port named - how
+ * many cells of it the port drives against, and its share of the port's
+ * current at the top frequency, an ampere into the port and the other
+ * ports open (the shares add up to one; a symmetric GSG's are a half each).
+ */
+struct PortReturn {
+    QString name;
+    int cells = 0;
+    Complex share;
+};
 
 /// What the full-wave solve found.
 struct FullWave {
@@ -334,6 +394,13 @@ struct FullWave {
     QList<PortDeembedding> deembedding;
     /// The differential pairs: each its plus port's index and its minus's.
     QList<QPair<int, int>> pairs;
+    /// Each port's returns, where it has more than the ground or a metal
+    /// under it (PortReturn): a coplanar port's conductors beside it, and
+    /// the terminals and ports a port names. Whether each port names its
+    /// returns (FullWavePort::terminals): its reference plane is then at its
+    /// own cells and theirs, an ideal source between them.
+    QList<QList<PortReturn>> returnsOf;
+    QList<bool> namesReturns;
     QList<Filament> geometry;        ///< the runs themselves, beside the currents: in the plane, then the vias
     /// The cells of the mesh each run goes from and to; -1 from: the ground
     /// a via stands on.
@@ -441,6 +508,13 @@ QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, double refere
 /// The same, each port into its own of \a references (real, above nought):
 /// Kurokawa's power waves, R^-1/2 (Z - R)(Z + R)^-1 R^1/2.
 QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, const QList<double>& references);
+
+/// How each port of \a solved with more than one return shares its current
+/// out between them at the top frequency (FullWave::returnsOf), a line a
+/// port: "At 60 GHz P1's current comes back 50.0 % through T1, 50.0 %
+/// through T2." - a share's phase where it is a twentieth of a degree or
+/// more. Empty where none has more than one.
+QStringList returnSharesOf(const FullWave& solved);
 
 /// The surface current density on each cell of the mesh, A/m (its size;
 /// the cells by their index in the mesh), at frequency \a k with port

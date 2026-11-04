@@ -1977,10 +1977,10 @@ private slots:
     // which is said rather than solved.
     // A press, a few moves and a release of the left button in \a view, at
     // its pixels: a drag, or where \a from and \a to are one, a click.
-    static void drag(QWidget* view, QPointF from, QPointF to)
+    static void drag(QWidget* view, QPointF from, QPointF to, Qt::KeyboardModifiers keys = Qt::NoModifier)
     {
-        const auto send = [view](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons held) {
-            QMouseEvent e(type, at, view->mapToGlobal(at), button, held, Qt::NoModifier);
+        const auto send = [view, keys](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, at, view->mapToGlobal(at), button, held, keys);
             QCoreApplication::sendEvent(view, &e);
         };
         send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
@@ -2281,6 +2281,203 @@ private slots:
         const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
         QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
         QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("cell(s) of M1 under its")), qPrintable(w->portsSaid.join(" | ")));
+    }
+
+    // A port's returns given as a list (the feature request of 4 November):
+    // terminals under Ports - a ground pad's patch each - and the ports'
+    // Return "terminals" with their names, as a list in one and a text in
+    // the other. Read by the solve, the terminals drawn with a line from each
+    // port to each of its returns, what each drives said and its tips' shares
+    // of its current, the Touchstone saying where its reference plane is, and
+    // the solve kept beside the model with its returns. A terminal renamed is
+    // renamed among the returns; the panel's Returns list offers the
+    // terminals and the other ports; with the Internal Port tool a Shift-drag
+    // puts a terminal among the returns of the port drawn last, one step of
+    // Undo; a return that is not there is refused, by name.
+    void aPortReturnsThroughTheTerminalsItNames()
+    {
+        QVERIFY(writeRectangles(path(QStringLiteral("gsgtips.gds")),
+                                {QRectF(QPointF(0, -25), QPointF(600, 25)), QRectF(QPointF(0, 50), QPointF(600, 200)),
+                                 QRectF(QPointF(0, -200), QPointF(600, -50))}));
+        const QString model = fullWaveLine(QStringLiteral("gsgtips.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.layout().props.insert(QStringLiteral("file"), QStringLiteral("gsgtips.gds"));
+            m.ports().children.clear();
+            const auto square = [](rf::Node& n, const char* x, const char* y) {
+                n.props.insert(QStringLiteral("x"), QLatin1String(x));
+                n.props.insert(QStringLiteral("y"), QLatin1String(y));
+                n.props.insert(QStringLiteral("width"), QStringLiteral("20[um]"));
+                n.props.insert(QStringLiteral("height"), QStringLiteral("20[um]"));
+            };
+            for (const auto& [x, label] : {std::make_pair("40[um]", "P1"), std::make_pair("560[um]", "P2")}) {
+                rf::Node port = m.make(QStringLiteral("rf_internal_port"));
+                port.label = QLatin1String(label);
+                port.props.insert(QStringLiteral("to"), QStringLiteral("M1"));
+                port.props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
+                square(port, x, "0");
+                if (port.label == QLatin1String("P1"))
+                    port.props.insert(QStringLiteral("returns"), QJsonArray::fromStringList({QStringLiteral("T1"), QStringLiteral("T2")}));
+                else
+                    port.props.insert(QStringLiteral("returns"), QStringLiteral("T3, T4"));
+                QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+            }
+            for (const auto& [x, y] : {std::make_pair("40[um]", "125[um]"), std::make_pair("40[um]", "-125[um]"),
+                                       std::make_pair("560[um]", "125[um]"), std::make_pair("560[um]", "-125[um]")}) {
+                rf::Node t = m.make(QStringLiteral("rf_terminal"));
+                t.props.insert(QStringLiteral("metal"), QStringLiteral("M1"));
+                square(t, x, y);
+                QVERIFY(m.add(QStringLiteral("ports"), t) != nullptr);
+            }
+            QCOMPARE(m.ports().children.back().label, QStringLiteral("T4"));
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            QVERIFY(study != nullptr);
+            study->props.insert(QStringLiteral("from"), QStringLiteral("10[GHz]"));
+            study->props.insert(QStringLiteral("to"), QStringLiteral("10[GHz]"));
+            study->props.insert(QStringLiteral("points"), 1);
+            QVERIFY2(m.problems().filter(QStringLiteral("port")).isEmpty(), qPrintable(m.problems().join(" | ")));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        LayoutView* view = doc->view();
+        const auto overlay = [view](const QString& name) -> const LayoutView::Overlay* {
+            for (const LayoutView::Overlay& o : view->overlays())
+                if (o.name == name) return &o;
+            return nullptr;
+        };
+        // The terminals' squares by their names, and a line from each port
+        // to each of its returns.
+        const LayoutView::Overlay* terminals = overlay(QStringLiteral("the terminals"));
+        const LayoutView::Overlay* links = overlay(QStringLiteral("the ports' lines to their returns"));
+        QVERIFY(terminals != nullptr && links != nullptr);
+        QStringList named;
+        for (const LayoutView::Overlay::Label& l : terminals->labels) named << l.text;
+        QCOMPARE(named, (QStringList{"T1", "T2", "T3", "T4"}));
+        QCOMPARE(terminals->shapes.size(), 4);
+        QCOMPARE(terminals->shapes.first().boundingRect(), QRectF(QPointF(30, 115), QPointF(50, 135)));
+        QCOMPARE(links->shapes.size(), 4);
+        QCOMPARE(links->shapes.first(), QPolygonF(QList<QPointF>{QPointF(40, 0), QPointF(40, 125)}));
+
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(w->portsSaid.value(0).contains(QStringLiteral("against T1 (")) && w->portsSaid.value(1).contains(QStringLiteral("and T4 ("))
+                     && w->portsSaid.value(0).contains(QStringLiteral("tied: a ground-signal-ground probe's")),
+                 qPrintable(w->portsSaid.join(" | ")));
+        QVERIFY(w->namesReturns.value(0) && w->namesReturns.value(1));
+        QVERIFY2(std::abs(std::abs(w->returnsOf.value(0).value(0).share) - 0.5) < 1e-6, qPrintable(QString::number(std::abs(w->returnsOf.value(0).value(0).share))));
+        // The Touchstone's comments: what each drives, its tips' shares and
+        // where its reference plane is.
+        RF25Doc::ExportRequest what;
+        QVERIFY(doc->exportRequest(doc->model().root.child(QStringLiteral("rf_exports"))->children.front().tag, &what));
+        QString error;
+        const QString touchstone = doc->exportText(what, &error);
+        QVERIFY2(!touchstone.isEmpty(), qPrintable(error));
+        QVERIFY2(touchstone.contains(QStringLiteral("! At 10 GHz P1's current comes back 50.0 % through T1, 50.0 % through T2."))
+                     && touchstone.contains(QStringLiteral("P1's at the cells it drives and those it returns through, a source between them: the probe's own loop not in it")),
+                 qPrintable(touchstone.left(3000)));
+        // Kept beside the model with its returns, and read back with them.
+        QString why;
+        const std::optional<rf::KeptSolution> kept = rf::readSolution(rf::solutionPathOf(model), &why);
+        QVERIFY2(kept && kept->fullWave, qPrintable(why));
+        QCOMPARE(kept->fullWave->namesReturns, w->namesReturns);
+        QCOMPARE(kept->fullWave->returnsOf.size(), 2);
+        QCOMPARE(kept->fullWave->returnsOf.at(1).at(1).name, QStringLiteral("T4"));
+        QCOMPARE(kept->fullWave->returnsOf.at(0).at(0).share, w->returnsOf.at(0).at(0).share);
+        QCOMPARE(kept->fullWave->returnsOf.at(0).at(0).cells, w->returnsOf.at(0).at(0).cells);
+
+        // A terminal renamed is renamed where a port names it.
+        const QString t1 = doc->model().ports().children.at(2).tag;
+        QVERIFY(panel()->renameNode(t1, QStringLiteral("G1")));
+        QCOMPARE(rf::namesOf(doc->model().ports().children.at(0), QStringLiteral("returns")), (QStringList{"G1", "T2"}));
+        doc->undo();
+        QCOMPARE(rf::namesOf(doc->model().ports().children.at(0), QStringLiteral("returns")), (QStringList{"T1", "T2"}));
+        // The panel's Returns: the list as a text, and a menu of the
+        // terminals and the other port, each in or out.
+        const QString p1 = doc->model().ports().children.at(0).tag;
+        panel()->selectNode(p1);
+        auto* returns = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("returns")));
+        QVERIFY(returns != nullptr);
+        QCOMPARE(returns->text(), QStringLiteral("T1, T2"));
+        QVERIFY(panel()->editorFor(QStringLiteral("from")) == nullptr);   // (hidden: it returns through its list)
+        auto* pick = panel()->findChild<QToolButton*>(QStringLiteral("rfPick_returns"));
+        QVERIFY(pick != nullptr && pick->menu() != nullptr);
+        QStringList offered;
+        QAction* t2 = nullptr;
+        QAction* p2 = nullptr;
+        for (QAction* a : pick->menu()->actions()) {
+            offered << a->text();
+            if (a->data().toString() == QLatin1String("T2")) t2 = a;
+            if (a->data().toString() == QLatin1String("P2")) p2 = a;
+        }
+        QCOMPARE(offered, (QStringList{"T1", "T2", "T3", "T4", "P2 (a port, in series)"}));
+        QVERIFY(t2 != nullptr && t2->isChecked() && p2 != nullptr && !p2->isChecked());
+        t2->setChecked(false);
+        QCOMPARE(rf::namesOf(*doc->model().find(p1), QStringLiteral("returns")), (QStringList{"T1"}));
+        doc->undo();
+        QCOMPARE(rf::namesOf(*doc->model().find(p1), QStringLiteral("returns")), (QStringList{"T1", "T2"}));
+        panel()->selectNode(p1);
+        returns = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("returns")));
+        QVERIFY(returns != nullptr);
+        returns->setText(QStringLiteral("T1 T9"));
+        emit returns->editingFinished();
+        QCOMPARE(rf::namesOf(*doc->model().find(p1), QStringLiteral("returns")), (QStringList{"T1", "T9"}));
+        QVERIFY2(doc->model().problems().join(' ').contains(QStringLiteral("The port P1 returns through T9, which is no terminal or port of the model")),
+                 qPrintable(doc->model().problems().join(" | ")));
+        // Solved so, it is refused by name.
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("P1 returns through T9, which is no terminal or port of the model")),
+                 qPrintable(doc->solveProblem()));
+        doc->undo();
+
+        // The Internal Port tool: its rectangle, then a Shift-drag its tip.
+        view->showRegion(QRectF(QPointF(-100, -250), QPointF(700, 250)));
+        view->repaint();
+        const int before = int(doc->model().ports().children.size());
+        doc->internalPortButton()->click();
+        QCOMPARE(view->mode(), LayoutView::Mode::PickBox);
+        drag(view, view->toPixel(QPointF(290, -10)), view->toPixel(QPointF(310, 10)));
+        QCOMPARE(int(doc->model().ports().children.size()), before + 1);
+        const rf::Node drawn = doc->model().ports().children.back();
+        QCOMPARE(drawn.type, QStringLiteral("rf_internal_port"));
+        drag(view, view->toPixel(QPointF(290, 115)), view->toPixel(QPointF(310, 135)), Qt::ShiftModifier);
+        QCOMPARE(int(doc->model().ports().children.size()), before + 2);
+        const rf::Node tip = doc->model().ports().children.back();
+        QCOMPARE(tip.type, QStringLiteral("rf_terminal"));
+        QCOMPARE(tip.label, QStringLiteral("T5"));
+        QCOMPARE(tip.props.value(QStringLiteral("metal")).toString(), QStringLiteral("M1"));
+        QVERIFY2(std::abs(micrometres(tip, "y") - 125) < 4 && std::abs(micrometres(tip, "width") - 20) < 4,
+                 qPrintable(QStringLiteral("%1, %2").arg(micrometres(tip, "y")).arg(micrometres(tip, "width"))));
+        const rf::Node* owner = doc->model().find(drawn.tag);
+        QVERIFY(owner != nullptr);
+        QCOMPARE(rf::textOf(*owner, QStringLiteral("return")), QStringLiteral("terminals"));
+        QCOMPARE(rf::namesOf(*owner, QStringLiteral("returns")), (QStringList{"T5"}));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("returns through T5")), qPrintable(doc->statusLabel()->text()));
+        // A second tip, and one step of Undo takes it - and only it - away.
+        drag(view, view->toPixel(QPointF(290, -135)), view->toPixel(QPointF(310, -115)), Qt::ShiftModifier);
+        QCOMPARE(rf::namesOf(*doc->model().find(drawn.tag), QStringLiteral("returns")), (QStringList{"T5", "T6"}));
+        doc->undo();
+        QCOMPARE(int(doc->model().ports().children.size()), before + 2);
+        QCOMPARE(rf::namesOf(*doc->model().find(drawn.tag), QStringLiteral("returns")), (QStringList{"T5"}));
+        doc->undo();
+        QCOMPARE(int(doc->model().ports().children.size()), before + 1);
+        QCOMPARE(rf::textOf(*doc->model().find(drawn.tag), QStringLiteral("return")), QStringLiteral("from"));
+        QTest::keyClick(view, Qt::Key_Escape);
+        QCOMPARE(doc->placing(), RF25Doc::Placing::None);
     }
 
     void aCoplanarPortIsReadAndItsFeedCalibrated()
@@ -2807,7 +3004,7 @@ private slots:
             QDataStream s(&later);
             s.setVersion(QDataStream::Qt_6_0);
             s.writeRawData("QRF25SOL", 8);
-            s << quint32(2) << QByteArray("a later build's");
+            s << quint32(3) << QByteArray("a later build's");
         }
         doc = open(file);
         QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));

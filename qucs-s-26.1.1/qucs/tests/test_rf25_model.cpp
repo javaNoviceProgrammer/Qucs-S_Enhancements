@@ -580,6 +580,81 @@ private slots:
         m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), oneRow);
         QVERIFY2(m.problems().isEmpty(), qPrintable(m.problems().join(" | ")));
     }
+
+    // A port's returns given as a list (the feature request of 4 November):
+    // a Terminal under Ports - a metal's cells under a rectangle about a
+    // point, or a face - named T1, T2..., and both kinds of port's Return
+    // "terminals" with the names it returns through, as a list of texts or
+    // a text of them. What they name is there, a terminal and a port do not
+    // share a name, and a renamed port or terminal is renamed where it is
+    // named; a terminal's metal is a layer's, and follows its rename.
+    void aPortsReturnsAreTheTerminalsAndPortsItNames()
+    {
+        const rf::NodeKind* terminal = rf::nodeKind(QStringLiteral("rf_terminal"));
+        QVERIFY(terminal != nullptr);
+        QVERIFY(rf::nodeKind(QStringLiteral("rf_ports"))->children.contains(QStringLiteral("rf_terminal")));
+        for (const char* key : {"metal", "x", "y", "width", "height", "face"}) QVERIFY2(terminal->property(QLatin1String(key)) != nullptr, key);
+        QCOMPARE(terminal->property(QStringLiteral("face"))->choices,
+                 (QStringList{"none", "auto", "+x", "-x", "+y", "-y"}));
+        for (const char* type : {"rf_edge_port", "rf_internal_port"}) {
+            const rf::NodeKind* port = rf::nodeKind(QLatin1String(type));
+            QVERIFY2(port->property(QStringLiteral("return"))->choices.contains(QStringLiteral("terminals")), type);
+            QCOMPARE(port->property(QStringLiteral("returns"))->kind, rf::PropertyDef::Objects);
+            QCOMPARE(port->property(QStringLiteral("returns"))->showIf, QStringLiteral("return=terminals"));
+        }
+        // (An internal port's From is its other return: hidden for the list.)
+        QCOMPARE(rf::nodeKind(QStringLiteral("rf_internal_port"))->property(QStringLiteral("from"))->showIf, QStringLiteral("return!=terminals"));
+        QCOMPARE(rf::nodeKind(QStringLiteral("rf_internal_port"))->property(QStringLiteral("return"))->defaultValue.toString(), QStringLiteral("from"));
+
+        rf::Model m = twoMetals();
+        QCOMPARE(m.make(QStringLiteral("rf_terminal")).label, QStringLiteral("T1"));
+        set(add(m.ports(), "rf_terminal", QStringLiteral("t1"), QStringLiteral("T1")), "metal", QStringLiteral("M1"));
+        QCOMPARE(m.make(QStringLiteral("rf_terminal")).label, QStringLiteral("T2"));
+        add(m.ports(), "rf_terminal", QStringLiteral("t2"), QStringLiteral("T2"));
+        add(m.ports(), "rf_internal_port", QStringLiteral("p1"), QStringLiteral("P1"));
+        // (Each by its tag: a node added after it moves the others.)
+        const auto node = [&m](const char* tag) -> rf::Node& { return *m.find(QLatin1String(tag)); };
+        set(node("p1"), "to", QStringLiteral("M2"));
+        set(node("p1"), "from", QStringLiteral("M9"));   // (unread once it names its returns)
+        set(node("p1"), "return", QStringLiteral("terminals"));
+        node("p1").props.insert(QStringLiteral("returns"), QJsonArray::fromStringList({QStringLiteral("T1"), QStringLiteral("T2")}));
+        QCOMPARE(rf::namesOf(node("p1"), QStringLiteral("returns")), (QStringList{"T1", "T2"}));
+        QVERIFY2(!says(m.problems(), "P1"), qPrintable(m.problems().join(" | ")));
+        // A text of them, as a file written by hand gives it.
+        set(node("p1"), "returns", QStringLiteral("T1, T2;P2"));
+        QCOMPARE(rf::namesOf(node("p1"), QStringLiteral("returns")), (QStringList{"T1", "T2", "P2"}));
+        QVERIFY2(says(m.problems(), "The port P1 returns through P2, which is no terminal or port of the model"), qPrintable(m.problems().join(" | ")));
+        set(add(m.ports(), "rf_edge_port", QStringLiteral("p2"), QStringLiteral("P2")), "conductor", QStringLiteral("M1"));
+        QVERIFY2(!says(m.problems(), "P1"), qPrintable(m.problems().join(" | ")));
+        set(node("p1"), "returns", QString());
+        QVERIFY2(says(m.problems(), "The port P1 returns through the terminals and ports it names, and names none"), qPrintable(m.problems().join(" | ")));
+        set(node("p1"), "returns", QStringLiteral("P1"));
+        QVERIFY2(says(m.problems(), "The port P1 returns through itself"), qPrintable(m.problems().join(" | ")));
+        node("p1").props.insert(QStringLiteral("returns"), QJsonArray::fromStringList({QStringLiteral("T1"), QStringLiteral("P2")}));
+        // A terminal's metal that is no layer, and a name a port has too.
+        set(node("t1"), "metal", QStringLiteral("M7"));
+        QVERIFY2(says(m.problems(), "The terminal T1 names M7, which is no layer of the stack"), qPrintable(m.problems().join(" | ")));
+        set(node("t1"), "metal", QStringLiteral("M1"));
+        node("t2").label = QStringLiteral("P2");
+        QVERIFY2(says(m.problems(), "P2 is the name of a terminal and of a port"), qPrintable(m.problems().join(" | ")));
+        node("t2").label = QStringLiteral("T2");
+        QVERIFY2(m.problems().filter(QStringLiteral("P1")).isEmpty() && m.problems().filter(QStringLiteral("T1")).isEmpty(),
+                 qPrintable(m.problems().join(" | ")));
+        // Renamed: a terminal and a port where they are named; a layer in a
+        // terminal's metal.
+        set(node("p2"), "pair", QStringLiteral("P1"));
+        m.renamePort(QStringLiteral("T1"), QStringLiteral("G1"));
+        m.renamePort(QStringLiteral("P1"), QStringLiteral("S1"));
+        QCOMPARE(rf::namesOf(node("p1"), QStringLiteral("returns")), (QStringList{"G1", "P2"}));
+        QCOMPARE(rf::textOf(node("p2"), QStringLiteral("pair")), QStringLiteral("S1"));
+        m.renameLayer(QStringLiteral("M1"), QStringLiteral("Au"));
+        QCOMPARE(rf::textOf(node("t1"), QStringLiteral("metal")), QStringLiteral("Au"));
+        // Written and read as a list of texts.
+        const std::optional<rf::Model> back = rf::Model::fromJson(m.toJson());
+        QVERIFY(back.has_value());
+        QCOMPARE(back->find(QStringLiteral("p1"))->props.value(QStringLiteral("returns")).toArray().size(), 2);
+        QCOMPARE(rf::namesOf(*back->find(QStringLiteral("p1")), QStringLiteral("returns")), (QStringList{"G1", "P2"}));
+    }
 };
 
 QTEST_MAIN(TestRf25Model)
