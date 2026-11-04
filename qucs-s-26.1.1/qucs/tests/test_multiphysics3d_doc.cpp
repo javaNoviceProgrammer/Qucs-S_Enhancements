@@ -713,6 +713,54 @@ private slots:
         QCOMPARE(show->count(), 4);
     }
 
+    /// Exports in the tab: a 3D model's Export offers VTU and Field on a Grid,
+    /// not the plane's; a VTU node's Export button writes model_tag.vtu beside
+    /// the model, said; a NumPy grid its .npy and its _xy.npy; before a solve,
+    /// refused.
+    void exportsInTheTab()
+    {
+        const QString file = copyOf(QStringLiteral("chip_heater.qfem3d"));
+        Multiphysics3DDoc* doc = open(file);
+        QVERIFY(doc && doc->waitForIdle());
+        QString exports;
+        for (const FNode& c : doc->model().results().children)
+            if (c.type == QLatin1String("exports")) exports = c.tag;
+        QVERIFY(!exports.isEmpty());
+        const QStringList offered = addsOf(panel()->menuFor(exports));
+        QVERIFY2(offered.contains(QStringLiteral("VTU (ParaView)")) && offered.contains(QStringLiteral("Field on a Grid"))
+                     && !offered.contains(QStringLiteral("Touchstone File")) && !offered.contains(QStringLiteral("Mode Profile")),
+                 qPrintable(offered.join(QStringLiteral(", "))));
+        const QString vtu = panel()->addNode(exports, QStringLiteral("vtu"));
+        QVERIFY(!vtu.isEmpty());
+        QVERIFY(doc->runExport(vtu).isEmpty());
+        QVERIFY(doc->messages().last().contains(QStringLiteral("not computed yet")));
+        doc->compute();
+        QVERIFY(doc->waitForIdle(300000));
+        QVERIFY2(doc->solution(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        panel()->selectNode(vtu);
+        QTRY_VERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mp3ExportButton")) != nullptr);
+        panel()->findChild<QPushButton*>(QStringLiteral("mp3ExportButton"))->click();
+        const QString written = QFileInfo(file).absoluteDir().filePath(QStringLiteral("%1_%2.vtu").arg(QFileInfo(file).completeBaseName(), vtu));
+        QVERIFY2(QFileInfo::exists(written), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        QFile f(written);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(f.read(64).startsWith("<?xml"));
+        QVERIFY2(doc->messages().last().contains(QStringLiteral("written")), qPrintable(doc->messages().last()));
+        // A NumPy grid: its coordinates beside it.
+        const QString grid = panel()->addNode(exports, QStringLiteral("fieldexport"));
+        doc->editNode(grid, [](FNode& n) {
+            n.props.insert(QStringLiteral("expressions"), QStringLiteral("ht.T"));
+            n.props.insert(QStringLiteral("format"), QStringLiteral("npy"));
+            n.props.insert(QStringLiteral("nx"), 9);
+            n.props.insert(QStringLiteral("ny"), 7);
+            n.props.insert(QStringLiteral("nz"), 5);
+        }, QStringLiteral("grid"));
+        const QString npy = doc->runExport(grid);
+        QVERIFY2(npy.endsWith(QStringLiteral(".npy")) && QFileInfo::exists(npy), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        QVERIFY(QFileInfo::exists(QFileInfo(npy).absoluteDir().filePath(QFileInfo(npy).completeBaseName() + QStringLiteral("_xy.npy"))));
+        QVERIFY(!doc->solutionStale());
+    }
+
     /// A face on the view's cut is drawn whole: each of its pixels kept, not
     /// each by its rounding (a clipped view's cut face was speckled). Its
     /// plane at odd heights between odd bounds, its share of them as a plot
