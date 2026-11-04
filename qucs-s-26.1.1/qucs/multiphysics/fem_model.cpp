@@ -3225,7 +3225,8 @@ QList<NodeKind> makeKinds()
 
     // Results.
     add({QStringLiteral("results"), tr("Results"), QString(), QStringLiteral("results"), Level::None, {},
-         {QStringLiteral("plotgroup"), QStringLiteral("plotgroup1d"), QStringLiteral("cutline"), QStringLiteral("cutpoint")},
+         {QStringLiteral("plotgroup"), QStringLiteral("plotgroup1d"), QStringLiteral("cutline"), QStringLiteral("cutpoint"),
+          QStringLiteral("plotgroup3d")},
          {QStringLiteral("derived"), QStringLiteral("exports")}, true, true, QString(), QString()});
     {
         P study;
@@ -3378,6 +3379,60 @@ QList<NodeKind> makeKinds()
                       QStringLiteral("by=power|by=release")),
               shownIf(text(QStringLiteral("color"), tr("Color"), QStringLiteral("red")), QStringLiteral("by=single"))},
              {}, {}, false, false, QStringLiteral("ray"), tr("The rays' paths, as traced.")});
+        // A 3D model's view of its solution: surfaces, slices, isosurfaces,
+        // arrows and its mesh, a half-space clipped away.
+        const P colors = choice(QStringLiteral("colors"), tr("Color table"), tables, tableLabels, QStringLiteral("rainbow"));
+        const P range = choice(QStringLiteral("range"), tr("Range"), {QStringLiteral("auto"), QStringLiteral("manual")},
+                               {tr("Automatic"), tr("Manual")}, QStringLiteral("auto"));
+        const P least = shownIf(expr(QStringLiteral("min"), tr("Minimum"), QString(), QStringLiteral("0")), QStringLiteral("range=manual"));
+        const P most = shownIf(expr(QStringLiteral("max"), tr("Maximum"), QString(), QStringLiteral("1")), QStringLiteral("range=manual"));
+        add({QStringLiteral("plotgroup3d"), tr("3D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup3d"), Level::None,
+             {study, point, time, text(QStringLiteral("title"), tr("Title"), QString()),
+              choice(QStringLiteral("clip"), tr("Clip"), {QStringLiteral("none"), QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")},
+                     {tr("None"), tr("Across x"), tr("Across y"), tr("Across z")}, QStringLiteral("none"),
+                     tr("What lies beyond a plane cut away - its cut face drawn as the group's first surface or slice is coloured")),
+              shownIf(expr(QStringLiteral("clipat"), tr("Clip at"), QStringLiteral("length"), QStringLiteral("0"), tr("In the geometry's unit")),
+                      QStringLiteral("clip!=none"))},
+             {QStringLiteral("surface"), QStringLiteral("slice"), QStringLiteral("isosurface"), QStringLiteral("arrowvolume"), QStringLiteral("meshplot")},
+             {}, false, false, QStringLiteral("pg3d"),
+             tr("Plots of a 3D solution shown together in its tab's view: its boundaries coloured, slices, isosurfaces, arrows, the "
+                "mesh - at the tab's time and point, or the group's own.")});
+        add({QStringLiteral("slice"), tr("Slice"), QStringLiteral("plot"), QStringLiteral("slice"), Level::None,
+             {spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit, colors, range, least, most,
+              choice(QStringLiteral("plane"), tr("Plane"), {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z"), QStringLiteral("normal")},
+                     {tr("Across x (y-z planes)"), tr("Across y (x-z planes)"), tr("Across z (x-y planes)"), tr("A point and a normal")},
+                     QStringLiteral("z")),
+              shownIf(choice(QStringLiteral("entry"), tr("Planes"), {QStringLiteral("count"), QStringLiteral("values")},
+                             {tr("A number of them, evenly across"), tr("At coordinates")}, QStringLiteral("count")),
+                      QStringLiteral("plane!=normal")),
+              shownIf(integer(QStringLiteral("count"), tr("Number of planes"), 1, tr("Evenly across the model: 1 through its middle")),
+                      QStringLiteral("plane!=normal&entry=count")),
+              shownIf(text(QStringLiteral("at"), tr("Coordinates"), QStringLiteral("0"),
+                           tr("In the geometry's unit: 0.5, 1.5 or range(0, 0.5, 2)")),
+                      QStringLiteral("plane!=normal&entry=values")),
+              shownIf(text(QStringLiteral("origin"), tr("Through"), QStringLiteral("0, 0, 0"), tr("A point of the plane: x, y, z in the geometry's unit")),
+                      QStringLiteral("plane=normal")),
+              shownIf(text(QStringLiteral("normal"), tr("Normal"), QStringLiteral("0, 0, 1"), tr("Its normal: x, y, z")),
+                      QStringLiteral("plane=normal"))},
+             {}, {}, false, false, QStringLiteral("slc"), tr("An expression in colour on planes through the model.")});
+        add({QStringLiteral("isosurface"), tr("Isosurface"), QStringLiteral("plot"), QStringLiteral("isosurface"), Level::None,
+             {spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit, colors,
+              choice(QStringLiteral("entry"), tr("Levels"), {QStringLiteral("count"), QStringLiteral("values")},
+                     {tr("A number of them, evenly between the least and greatest"), tr("At values")}, QStringLiteral("count")),
+              shownIf(integer(QStringLiteral("levels"), tr("Number of levels"), 5), QStringLiteral("entry=count")),
+              shownIf(text(QStringLiteral("values"), tr("Values"), QString(), tr("In the unit shown: 300, 310 or range(300, 5, 340)")),
+                      QStringLiteral("entry=values"))},
+             {}, {}, false, false, QStringLiteral("iso"), tr("The surfaces where an expression has each of its levels' values.")});
+        add({QStringLiteral("arrowvolume"), tr("Arrow Volume"), QStringLiteral("plot"), QStringLiteral("arrowvolume"), Level::None,
+             {spatial(QStringLiteral("x"), tr("x component"), QString(), QStringLiteral("es.Ex")),
+              spatial(QStringLiteral("y"), tr("y component"), QString(), QStringLiteral("es.Ey")),
+              spatial(QStringLiteral("z"), tr("z component"), QString(), QStringLiteral("es.Ez")),
+              integer(QStringLiteral("nx"), tr("Arrows along x"), 8), integer(QStringLiteral("ny"), tr("Arrows along y"), 8),
+              integer(QStringLiteral("nz"), tr("Arrows along z"), 8),
+              choice(QStringLiteral("scaling"), tr("Length"), {QStringLiteral("proportional"), QStringLiteral("normalized")},
+                     {tr("Proportional"), tr("Normalized")}, QStringLiteral("proportional")),
+              text(QStringLiteral("color"), tr("Color"), QStringLiteral("black"))},
+             {}, {}, false, false, QStringLiteral("arwv"), tr("A vector field as arrows on a grid through the model.")});
         add({QStringLiteral("derived"), tr("Derived Values"), QString(), QStringLiteral("derived"), Level::None, {},
              {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
               QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams"), QStringLiteral("confinement"),
@@ -3767,6 +3822,12 @@ QList<NodeKind> makeKinds()
         if (kind.type == QLatin1String("sweep"))
             for (P& p : kind.properties)
                 if (p.key == QLatin1String("parallel")) p.spaces = Spaces::TwoD;
+        // A 3D model's plot groups and their plots (surfaces and the mesh as
+        // the plane's are).
+        if (kind.type == QLatin1String("plotgroup3d") || kind.type == QLatin1String("slice") || kind.type == QLatin1String("isosurface")
+            || kind.type == QLatin1String("arrowvolume"))
+            kind.spaces = Spaces::ThreeD;
+        if (kind.type == QLatin1String("surface") || kind.type == QLatin1String("meshplot")) kind.spaces = Spaces::All;
         // Derived values of a 3D solution: globals, integrals, averages and
         // extrema over its domains, faces or edges, values at points - an
         // axisymmetric model's revolution the plane's.

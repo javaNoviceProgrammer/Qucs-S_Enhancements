@@ -612,6 +612,154 @@ private slots:
         QCOMPARE(doc->solution()->global(QStringLiteral("ht.Tmax")).value_or(0), shownTmax);
     }
 
+    /// 3D plot groups in the tab: after the first solve two default ones for
+    /// its physics - ht.T on its boundaries, and on a slice through the middle
+    /// across x alone -, the solution fresh still, each in the Show box; the
+    /// first shown by the panel's Plot button, its surface's triangles and
+    /// legend; an isosurface and arrows added to the slice's draw more there;
+    /// a clip across z cuts the view and draws the cut face; an expression
+    /// that does not read said; the group shown removed, the solution shown.
+    void plotGroupsInTheTab()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        doc->compute();
+        QVERIFY(doc->waitForIdle(300000));
+        QVERIFY2(doc->solution(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        QStringList groups;
+        for (const FNode& c : doc->model().results().children)
+            if (c.type == QLatin1String("plotgroup3d")) groups << c.tag;
+        QCOMPARE(groups.size(), 2);
+        const QString group = groups[0], sliced = groups[1];
+        const FNode* g = doc->model().find(group);
+        QCOMPARE(g->name(), QStringLiteral("Heat Transfer in Solids (ht)"));
+        QVERIFY(g->children.size() == 1 && g->children[0].type == QLatin1String("surface"));
+        const FNode* g2 = doc->model().find(sliced);
+        QCOMPARE(g2->name(), QStringLiteral("Heat Transfer in Solids, slice (ht)"));
+        QVERIFY(g2->children.size() == 1 && g2->children[0].type == QLatin1String("slice"));
+        QCOMPARE(g2->children[0].text(QStringLiteral("plane")), QStringLiteral("x"));
+        const QString sliceTag = g2->children[0].tag;   // (g and g2 go with the next edit)
+        QVERIFY(!doc->solutionStale());
+        auto* show = doc->findChild<QComboBox*>(QStringLiteral("mp3Show"));
+        QVERIFY(show && show->findData(group) == 3 && show->findData(sliced) == 4);
+        // What its results and a group offer: the 3D kinds, not the plane's.
+        const QStringList groupsOffered = addsOf(panel()->menuFor(doc->model().results().tag));
+        QVERIFY2(groupsOffered.contains(QStringLiteral("3D Plot Group")) && !groupsOffered.contains(QStringLiteral("2D Plot Group")),
+                 qPrintable(groupsOffered.join(QStringLiteral(", "))));
+        const QStringList plots = addsOf(panel()->menuFor(group));
+        QVERIFY2(plots.contains(QStringLiteral("Surface")) && plots.contains(QStringLiteral("Slice")) && plots.contains(QStringLiteral("Isosurface"))
+                     && plots.contains(QStringLiteral("Arrow Volume")) && plots.contains(QStringLiteral("Mesh")) && !plots.contains(QStringLiteral("Contour")),
+                 qPrintable(plots.join(QStringLiteral(", "))));
+        // The first shown by its Plot button.
+        panel()->selectNode(group);
+        QTRY_VERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mp3PlotButton")) != nullptr);
+        panel()->findChild<QPushButton*>(QStringLiteral("mp3PlotButton"))->click();
+        QCOMPARE(doc->show(), Multiphysics3DDoc::Show::Plot);
+        QCOMPARE(show->currentIndex(), 3);
+        auto shaded = [doc] {
+            int n = 0;
+            for (const View3D::Triangle& t : doc->view()->scene().triangles) n += t.shaded ? 1 : 0;
+            return n;
+        };
+        QVERIFY(shaded() > 100);
+        QVERIFY(doc->view()->legend().shown && doc->view()->legend().title.startsWith(QStringLiteral("ht.T")));
+        QVERIFY2(doc->plotProblems().isEmpty(), qPrintable(doc->plotProblems().join(QStringLiteral("; "))));
+        // The slice's group, then an isosurface and arrows in it.
+        QVERIFY(doc->showPlotGroup(sliced));
+        const int slice = shaded(), triangles = int(doc->view()->scene().triangles.size()), lines = int(doc->view()->scene().lines.size());
+        QVERIFY(slice > 10);
+        // (Through the middle across x: each corner there.)
+        const Box3 bounds = doc->geometry().topology->bounds;
+        const double middle = 0.5 * (bounds.x0 + bounds.x1);
+        for (const View3D::Triangle& t : doc->view()->scene().triangles)
+            if (t.shaded)
+                for (const Vec3& c : t.p) QVERIFY2(std::abs(c.x - middle) < 1e-9 * (bounds.x1 - bounds.x0), qPrintable(QString::number(c.x)));
+        Model m = doc->model();
+        FNode iso = m.make(QStringLiteral("isosurface"));
+        iso.props.insert(QStringLiteral("expression"), QStringLiteral("ht.T"));
+        iso.props.insert(QStringLiteral("levels"), 3);
+        QVERIFY(m.add(sliced, iso));
+        FNode arrows = m.make(QStringLiteral("arrowvolume"));
+        arrows.props.insert(QStringLiteral("x"), QStringLiteral("ht.qx"));
+        arrows.props.insert(QStringLiteral("y"), QStringLiteral("ht.qy"));
+        arrows.props.insert(QStringLiteral("z"), QStringLiteral("ht.qz"));
+        QVERIFY(m.add(sliced, arrows));
+        QVERIFY(doc->setModel(m, QStringLiteral("more plots")));
+        QVERIFY(!doc->solutionStale());
+        QCOMPARE(doc->show(), Multiphysics3DDoc::Show::Plot);
+        QVERIFY2(int(doc->view()->scene().triangles.size()) > triangles, qPrintable(QStringLiteral("%1, then %2").arg(triangles).arg(doc->view()->scene().triangles.size())));
+        QVERIFY2(int(doc->view()->scene().lines.size()) > lines + 100, qPrintable(QStringLiteral("%1, then %2").arg(lines).arg(doc->view()->scene().lines.size())));
+        // A clip across z of the first, through the oxide: its cut face.
+        QVERIFY(doc->showPlotGroup(group));
+        const int whole = int(doc->view()->scene().triangles.size());
+        const double top = doc->geometry().topology->bounds.z1;
+        doc->editNode(group, [top](FNode& n) {
+            n.props.insert(QStringLiteral("clip"), QStringLiteral("z"));
+            n.props.insert(QStringLiteral("clipat"), QString::number(top - 1, 'g', 12));
+        }, QStringLiteral("clip"));
+        QCOMPARE(doc->view()->clipAxis(), 2);
+        QVERIFY(std::abs(doc->view()->clipValue() - (top - 1)) < 1e-6 * std::max(1.0, top));
+        QVERIFY(int(doc->view()->scene().triangles.size()) > whole);
+        // An expression that does not read: said.
+        doc->editNode(sliceTag, [](FNode& n) { n.props.insert(QStringLiteral("expression"), QStringLiteral("ht.nothing")); }, QStringLiteral("bad"));
+        QVERIFY(doc->showPlotGroup(sliced));
+        QVERIFY2(!doc->plotProblems().isEmpty() && doc->plotProblems().first().contains(QStringLiteral("ht.nothing")),
+                 qPrintable(doc->plotProblems().join(QStringLiteral("; "))));
+        // The group shown removed: the solution shown.
+        m = doc->model();
+        QVERIFY(m.remove(sliced));
+        QVERIFY(doc->setModel(m, QStringLiteral("no group")));
+        QCOMPARE(doc->show(), Multiphysics3DDoc::Show::Solution);
+        QCOMPARE(show->count(), 4);
+    }
+
+    /// A face on the view's cut is drawn whole: each of its pixels kept, not
+    /// each by its rounding (a clipped view's cut face was speckled). Its
+    /// plane at odd heights between odd bounds, its share of them as a plot
+    /// group's clip has it.
+    void aFaceOnTheCutIsWhole()
+    {
+        // (Its red pixels: the cut's own words drawn over it are not.)
+        auto red = [](const QImage& image) {
+            int n = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor c = image.pixelColor(x, y);
+                    n += c.red() > 80 && c.green() < 60 && c.blue() < 60 ? 1 : 0;
+                }
+            return n;
+        };
+        const double z0 = 0.1234567, z1 = 2.3456789;
+        int lost = 0;
+        QString said;
+        for (double z : {0.3, 1.0 / 3, 0.7071067811865476, 1.0987654321, 2.0001}) {
+            View3D view;
+            view.resize(400, 300);
+            View3D::Scene scene;
+            // (A fine grid of triangles on it: many pixels, each its own sum.)
+            const int n = 20;
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j) {
+                    const double a = double(i) / n, b = double(j) / n, d = 1.0 / n;
+                    scene.triangles.push_back({{Vec3{a, b, z}, Vec3{a + d, b, z}, Vec3{a, b + d, z}}, QColor(200, 30, 30), 0});
+                    scene.triangles.push_back({{Vec3{a + d, b, z}, Vec3{a + d, b + d, z}, Vec3{a, b + d, z}}, QColor(200, 30, 30), 0});
+                }
+            Box3 b;
+            b.add(Vec3{0, 0, z0});
+            b.add(Vec3{1, 1, z1});
+            scene.bounds = b;
+            view.setScene(scene, true);
+            view.viewFrom(View3D::Preset::Iso);
+            const int whole = red(view.picture());
+            view.setClip(2, (z - z0) / (z1 - z0));
+            const int cut = red(view.picture());
+            lost += whole - cut;
+            said += QStringLiteral(" z %1: %2 pixels, cut %3;").arg(z).arg(whole).arg(cut);
+            QVERIFY(whole > 1000);
+        }
+        QVERIFY2(lost == 0, qPrintable(said));
+    }
+
     /// A 3D model's physics through the panel: heat, electrostatics and
     /// currents offered on its component (no solid mechanics, no
     /// semiconductor); its study's step without the plane's adaptive
