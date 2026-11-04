@@ -1,7 +1,7 @@
 /*
  * qucs_multiphysics3d.cpp - Multiphysics 3D in the window: the left dock's
- *                           Multiphysics 3D tab, the Multiphysics 3D menu, a
- *                           new 3D model, a 3D model's file
+ *                           Multiphysics 3D tab, the Multiphysics 3D menu and
+ *                           its Settings, a new 3D model, a 3D model's file
  *
  * This file is part of Qucs-S.
  *
@@ -18,15 +18,75 @@
 
 #include "main.h"
 
+#include "fem3_estimate.h"
+
 #include <QAction>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QVBoxLayout>
 
 extern QString lastDirOpenSave;   // (qucs.cpp: the last folder a file was opened from)
+
+namespace {
+
+/// Multiphysics 3D > Settings: the memory a solve may take, past which it is
+/// not solved (half of this machine's by default; 0, no limit). Opened, not
+/// run: the window goes on behind it.
+void showMultiphysics3DSettings(QWidget *parent)
+{
+  using qucs_s::fem::bytesText;
+  using qucs_s::fem::physicalMemory;
+  auto *dialog = new QDialog(parent);
+  dialog->setObjectName(QStringLiteral("multiphysics3DSettings"));
+  dialog->setWindowTitle(QObject::tr("Multiphysics 3D Settings"));
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  auto *layout = new QVBoxLayout(dialog);
+  auto *line = new QHBoxLayout();
+  line->addWidget(new QLabel(QObject::tr("Memory a solve may take:"), dialog));
+  auto *limit = new QDoubleSpinBox(dialog);
+  limit->setObjectName(QStringLiteral("mp3MemoryLimit"));
+  limit->setRange(0, 1e5);
+  limit->setDecimals(1);
+  limit->setSuffix(QObject::tr(" GB"));
+  limit->setSpecialValueText(QObject::tr("No limit"));
+  limit->setValue(Multiphysics3DDoc::memoryLimit() / (1024.0 * 1048576.0));
+  line->addWidget(limit, 1);
+  const double half = physicalMemory() / 2;
+  auto *byDefault = new QPushButton(QObject::tr("Half of this machine's"), dialog);
+  byDefault->setObjectName(QStringLiteral("mp3MemoryDefault"));
+  byDefault->setToolTip(QObject::tr("%1 of its %2").arg(bytesText(half), bytesText(2 * half)));
+  QObject::connect(byDefault, &QPushButton::clicked, limit, [limit, half] { limit->setValue(half / (1024.0 * 1048576.0)); });
+  line->addWidget(byDefault);
+  layout->addLayout(line);
+  auto *about = new QLabel(QObject::tr("Each solve is estimated before it starts - each physics' unknowns, its matrix's nonzeros, "
+                                       "the memory and time of an iterative and of a direct solve - and one past this is not "
+                                       "solved: the messages say what would bring it under (the iterative solver, a coarser mesh, "
+                                       "fewer divisions in z). Build Mesh says the estimate too. Claude's fem_solve may go past it "
+                                       "(force)."),
+                           dialog);
+  about->setWordWrap(true);
+  layout->addWidget(about);
+  auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+  QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, [dialog, limit] {
+    Multiphysics3DDoc::setMemoryLimitGB(limit->value());
+    dialog->accept();
+  });
+  QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+  layout->addWidget(buttons);
+  dialog->open();
+}
+
+} // namespace
 
 bool QucsApp::isMultiphysics3DDocument(QWidget *w)
 {
@@ -86,6 +146,9 @@ void QucsApp::initMultiphysics3D()
   compute->setObjectName(QStringLiteral("mp3ComputeAction"));
   compute->setStatusTip(tr("Solve the 3D model's study: heat, electrostatics, electric currents"));
   a_multiphysics3DMenu->addSeparator();
+  QAction *settings = a_multiphysics3DMenu->addAction(tr("Settings…"), this, [this] { showMultiphysics3DSettings(this); });
+  settings->setObjectName(QStringLiteral("mp3SettingsAction"));
+  settings->setStatusTip(tr("The memory a 3D solve may take"));
   a_multiphysics3DMenu->addAction(tr("Show the Multiphysics 3D Panel"), this, [this] { showMultiphysics3DPanel(); });
   connect(a_multiphysics3DMenu, &QMenu::aboutToShow, this, &QucsApp::updateMultiphysics3DMenu);
   const QList<QAction *> bar = menuBar()->actions();

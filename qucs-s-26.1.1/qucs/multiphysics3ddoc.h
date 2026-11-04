@@ -102,7 +102,18 @@ public:
     void buildMesh();
     /// Solves study \a study (the first when empty) in the background - its
     /// geometry and mesh first where they are stale -; shown when solved.
-    void compute(const QString& study = {});
+    /// \a solver (auto, direct, iterative) for this solve alone; a study
+    /// estimated past the memory limit is not solved unless \a force.
+    void compute(const QString& study = {}, const QString& solver = {}, bool force = false);
+    /// What the last mesh made or solve was estimated to hold and take, each
+    /// physics' (none before).
+    const std::vector<qucs_s::fem::Estimate3>& estimates() const { return a_estimates; }
+    /// The memory a solve is held to (bytes; 0: no limit): Multiphysics 3D >
+    /// Settings (Multiphysics3D/memoryLimitGB), half of this machine's when
+    /// not set.
+    static double memoryLimit();
+    /// The setting, in GB (0: no limit; less than 0: the default again).
+    static void setMemoryLimitGB(double gb);
     std::shared_ptr<const qucs_s::fem::Solution3> solution() const { return a_solution; }
     /// Whether the solution is of the model as it was before an edit.
     bool solutionStale() const { return a_solutionStale; }
@@ -238,6 +249,8 @@ private:
     bool a_meshWanted = false;
     bool a_solveWanted = false;
     QString a_study;                 // the study a solve asked for (empty: the first)
+    qucs_s::fem::SolveAsked3 a_asked;   // and its solver and force (the limit set as it starts)
+    std::vector<qucs_s::fem::Estimate3> a_estimates;
     quint64 a_stops = 0;
     struct Waiting {
         std::function<void(bool)> then;

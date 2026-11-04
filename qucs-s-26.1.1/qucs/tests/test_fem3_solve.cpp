@@ -18,11 +18,13 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include "fem3_estimate.h"
 #include "fem3_export.h"
 #include "fem3_results.h"
 #include "fem3_solver.h"
 
 #include <QJsonDocument>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QXmlStreamReader>
 #include <QtTest>
@@ -1456,6 +1458,122 @@ private slots:
         const std::shared_ptr<ParameterScope> broken = evaluateParameters(withTable(false));
         QVERIFY2(broken->errors.value(QStringLiteral("f3")).contains(QStringLiteral("not a grid of every x with every y and every z")),
                  qPrintable(broken->errors.values().join(QStringLiteral("; "))));
+    }
+
+    /// What a solve will hold and take, said before it begins: each
+    /// physics' unknowns and its matrix's nonzeros - counted, as a brute
+    /// count of the pairs that share a prism has them, at orders 1 and 2 -,
+    /// the fits within their stated share of each solve measured in phase C,
+    /// a mesh's estimate the solve's, said first in its log; a study past the
+    /// limit not solved and what would bring it under said, forced solved; a
+    /// solver for this solve alone.
+    void estimates()
+    {
+        Model m = model3d(0.25);
+        addBox(m, QStringLiteral("cube"), 0, 0, 0, 1, 1, 1);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+        addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("cube"), QStringLiteral("bottom")),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K]")}});
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+        const GeometryBuild3 g = buildGeometry3(m, *ps);
+        QVERIFY(g.ok());
+        const Mesh3Build mb = buildMesh3(m, *ps, g.topology);
+        QVERIFY(mb.mesh);
+        for (int order : {1, 2}) {
+            const Space3 sp(mb.mesh, order);
+            std::set<std::pair<int, int>> pairs;
+            for (int e = 0; e < sp.elements(); ++e)
+                for (int i = 0; i < sp.perElement(); ++i)
+                    for (int j = 0; j < sp.perElement(); ++j)
+                        if (sp.dofs(e)[i] >= 0 && sp.dofs(e)[j] >= 0) pairs.insert({sp.dofs(e)[i], sp.dofs(e)[j]});
+            QCOMPARE(patternNonzeros(sp), qint64(pairs.size()));
+            // (Its rows in chunks on threads, as a large space's are: the same.)
+            QCOMPARE(patternNonzeros(sp, 7), qint64(pairs.size()));
+        }
+        // The fits, against what was measured (M2 Ultra): the app's own solves
+        // of boxes of order 1 and 2 (estimate_probe) and phase C's order-1
+        // Laplacians (amg_bench.tsv) - the solver's own part of each peak,
+        // its matrix and vectors aside; multigrid's within 7 %, the
+        // Cholesky's within 17 % and its time within a factor of two.
+        const double MB = 1048576;
+        const struct {
+            double n, nonzeros, cholMB, cholS;
+        } direct[] = {{15162, 296460, 49, 0.57},        {44070, 881496, 162, 0.39},        {119187, 2415765, 562, 1.24},
+                      {309852, 6342570, 1853, 4.03},    {14637, 619245, 75, 0.69},         {46531, 2029291, 309, 0.71},
+                      {114431, 5052341, 884, 2.00},     {28830, 410248, 94, 0.176},        {67240, 969398, 281, 0.473},
+                      {130050, 1889748, 634, 1.013},    {270400, 3956414, 1779, 2.984},    {524880, 7717998, 4168, 9.224},
+                      {1020100, 15059498, 7920, 31.678}};
+        for (const auto& r : direct) {
+            const double bytes = directSolverBytes(r.n, r.nonzeros) / (r.cholMB * MB), seconds = directSolverSeconds(r.n, r.nonzeros) / r.cholS;
+            QVERIFY2(std::abs(bytes - 1) < 0.18 && seconds > 0.45 && seconds < 2.1,
+                     qPrintable(QStringLiteral("%1 unknowns: memory %2, time %3 of the measured").arg(r.n).arg(bytes).arg(seconds)));
+        }
+        const struct {
+            double nonzeros, amgMB, amgS;
+        } iterative[] = {{881496, 72.5, 0.176}, {2415765, 201.6, 0.53}, {6342570, 528.2, 1.593}, {2029291, 155.4, 0.333}, {5052341, 400.6, 0.91}};
+        for (const auto& r : iterative)
+            QVERIFY2(std::abs(iterativeSolverBytes(r.nonzeros) / (r.amgMB * MB) - 1) < 0.07
+                         && std::abs((iterativeSolverSeconds(r.nonzeros) + assemblySeconds(0)) / r.amgS - 1) < 0.5,
+                     qPrintable(QString::number(r.nonzeros)));
+        // A mesh's estimate, and the solve's, said first in its log.
+        const std::vector<Estimate3> before = estimate3(m, mb.mesh);
+        QCOMPARE(int(before.size()), 1);
+        SolveAsked3 asked;
+        StudyResult3 r = solveStudy3(m, ps, mb.mesh, {}, {}, asked);
+        QVERIFY2(r.solution, qPrintable(r.error));
+        QCOMPARE(int(r.estimates.size()), 1);
+        // (A copy: r is solved again below.)
+        const Estimate3 e = r.estimates.front();
+        QCOMPARE(e.physics, ht);
+        QCOMPARE(e.unknowns, qint64(r.solution->fields().front().space->size()));
+        QCOMPARE(e.nonzeros, before.front().nonzeros);
+        QCOMPARE(e.bytes(), before.front().bytes());
+        QVERIFY(e.nonzeros > 10 * e.unknowns && e.bytes() > 0 && e.seconds() > 0);
+        QVERIFY2(r.log.first().startsWith(QStringLiteral("Estimated: %1 (order 1): %2 unknowns").arg(ht, QLocale().toString(e.unknowns))),
+                 qPrintable(r.log.first()));
+        // Past a limit: not solved, what would bring it under said; forced,
+        // solved and said.
+        asked.limit = e.bytes() / 2;
+        r = solveStudy3(m, ps, mb.mesh, {}, {}, asked);
+        QVERIFY(!r.solution);
+        QVERIFY2(r.error.contains(QStringLiteral("past the limit of %1").arg(bytesText(asked.limit))) && r.error.contains(QStringLiteral("a coarser mesh"))
+                     && r.error.contains(QStringLiteral("force")),
+                 qPrintable(r.error));
+        asked.force = true;
+        r = solveStudy3(m, ps, mb.mesh, {}, {}, asked);
+        QVERIFY2(r.solution && r.log.join(QLatin1Char('\n')).contains(QStringLiteral("Solved past the limit, as asked (force)")), qPrintable(r.error));
+        // A direct solve asked, a Cholesky; an iterative one, multigrid.
+        asked = SolveAsked3();
+        asked.solver = QStringLiteral("direct");
+        r = solveStudy3(m, ps, mb.mesh, {}, {}, asked);
+        QVERIFY2(r.solution && r.log.join(QLatin1Char('\n')).contains(QStringLiteral("Cholesky (METIS order)")), qPrintable(r.log.join(QLatin1Char('\n'))));
+        QCOMPARE(r.estimates.front().method, QStringLiteral("direct"));
+        asked.solver = QStringLiteral("iterative");
+        r = solveStudy3(m, ps, mb.mesh, {}, {}, asked);
+        QVERIFY2(r.solution && r.log.join(QLatin1Char('\n')).contains(QStringLiteral("conjugate gradients with algebraic multigrid")),
+                 qPrintable(r.log.join(QLatin1Char('\n'))));
+        // A direct solve past the limit where multigrid fits: the iterative
+        // solver offered, with its own estimate.
+        Estimate3 big = e;
+        big.method = QStringLiteral("direct");
+        big.directBytes = 10.0 * 1073741824.0;
+        big.iterativeBytes = 1.0 * 1073741824.0;
+        const QString past = pastTheLimit({big}, 2.0 * 1073741824.0);
+        QVERIFY2(past.contains(QStringLiteral("some 10 GB, past the limit of 2.0 GB")) && past.contains(QStringLiteral("the iterative solver (some 1.0 GB")),
+                 qPrintable(past));
+        QVERIFY(pastTheLimit({big}, 0).isEmpty() && pastTheLimit({big}, 20.0 * 1073741824.0).isEmpty());
+        // A study's peak its largest physics' (each lets go of its system):
+        // an order-2 physics beside it on its own space.
+        const QString ec = addPhysics(m, QStringLiteral("currents"), 2, QStringLiteral("1[S/m]"));
+        const std::vector<Estimate3> two = estimate3(m, mb.mesh);
+        QCOMPARE(int(two.size()), 2);
+        QCOMPARE(two[1].physics, ec);
+        QCOMPARE(two[1].order, 2);
+        QCOMPARE(two[1].unknowns, qint64(Space3(mb.mesh, 2).size()));
+        QCOMPARE(two[0].nonzeros, e.nonzeros);
+        QVERIFY(two[1].nonzeros > two[0].nonzeros);
+        QCOMPARE(peakBytes(two), std::max(two[0].bytes(), two[1].bytes()));
+        QVERIFY(physicalMemory() > 1e9);
     }
 
     void refusals()

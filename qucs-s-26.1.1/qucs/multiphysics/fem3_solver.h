@@ -14,6 +14,7 @@
 #ifndef QUCS_FEM3_SOLVER_H
 #define QUCS_FEM3_SOLVER_H
 
+#include "fem3_estimate.h"
 #include "fem3_fe.h"
 #include "fem_expr.h"
 #include "fem_model.h"
@@ -227,21 +228,33 @@ private:
     std::unique_ptr<Locator> a_locator;
 };
 
-/// A 3D study solved: its solution, or why not.
+/// What a 3D solve is asked beyond its model: its linear solver for this
+/// solve alone, and the memory its estimate is held to.
+struct SolveAsked3 {
+    QString solver;       ///< auto, direct or iterative (empty: each step's own)
+    double limit = 0;     ///< bytes: a study estimated past it is not solved (0: no limit)
+    bool force = false;   ///< solved past the limit all the same, said
+};
+
+/// A 3D study solved: its solution, or why not; what it was estimated to
+/// hold and take, each physics', before it began.
 struct StudyResult3 {
     std::shared_ptr<Solution3> solution;
     QString error;
     QStringList warnings;
     QStringList log;
+    std::vector<Estimate3> estimates;
 };
 
 /// Solves study \a studyTag (the first when empty) of 3D \a model on \a mesh:
 /// its Stationary steps, each its physics (all when none chosen) in turn till
 /// they agree, and its Time Dependent ones - heat by BDF (its ρ Cp ∂T/∂t),
 /// the other physics at rest at each step, kept at the output times; a step
-/// of another kind is refused, said.
+/// of another kind is refused, said. Each physics' estimate is said in its
+/// log first; past \a asked's limit it is not solved unless forced, and what
+/// would bring it under is said.
 StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh3> mesh,
-                         const QString& studyTag = {}, const Progress& progress = {});
+                         const QString& studyTag = {}, const Progress& progress = {}, const SolveAsked3& asked = {});
 
 /*!
  * A 3D study run whole: once, or once for each point of its Parametric
@@ -258,12 +271,15 @@ struct StudyRun3 {
     QStringList warnings;
     QStringList log;
     QString stopped;
+    std::vector<Estimate3> estimates;      ///< its first point's (or its own)
     bool ok() const { return error.isEmpty() && !solutions.empty(); }
 };
 /// Runs study \a studyTag (the first when empty): \a topology and \a mesh
-/// are of the model's own parameters (null: made).
+/// are of the model's own parameters (null: made); each point solved as \a
+/// asked.
 StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology3> topology,
-                    std::shared_ptr<const Mesh3> mesh, const QString& studyTag = {}, const Progress& progress = {});
+                    std::shared_ptr<const Mesh3> mesh, const QString& studyTag = {}, const Progress& progress = {},
+                    const SolveAsked3& asked = {});
 
 /// The variables a 3D model's physics give its expressions (x, y, z, t, dom,
 /// es.V, ht.T...): for a menu, a completer and Claude.

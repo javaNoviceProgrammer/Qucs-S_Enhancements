@@ -927,7 +927,7 @@ bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const d
 } // namespace
 
 StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh3> mesh,
-                         const QString& studyTag, const Progress& progress)
+                         const QString& studyTag, const Progress& progress, const SolveAsked3& asked)
 {
     StudyResult3 out;
     QElapsedTimer timer;
@@ -975,6 +975,36 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         out.error = tr("the model has no physics to solve");
         return out;
     }
+    // What it will hold and take, each physics', said before it begins;
+    // past the limit not solved, unless forced, and what would bring it
+    // under said.
+    {
+        QString solver = asked.solver;
+        if (solver.isEmpty())
+            for (const Node& step : study->children)
+                if (step.enabled && step.type != QLatin1String("sweep")) {
+                    solver = step.text(QStringLiteral("solver"));
+                    break;
+                }
+        qint64 nonzeros[3] = {-1, -1, -1};
+        for (const Field3& f : s->fields()) {
+            const int order = f.space->order();
+            if (nonzeros[order] < 0) nonzeros[order] = patternNonzeros(*f.space);
+            Estimate3 e = estimateOn(*f.space, nonzeros[order], solver);
+            e.physics = f.tag;
+            if (const Node* p = s->model().find(f.tag)) e.name = p->name();
+            s->log << tr("Estimated: %1").arg(estimateText(e));
+            out.estimates.push_back(e);
+        }
+        if (const QString past = pastTheLimit(out.estimates, asked.limit); !past.isEmpty()) {
+            if (!asked.force) {
+                out.error = past;
+                out.log = s->log;
+                return out;
+            }
+            s->log << tr("Solved past the limit, as asked (force): %1").arg(past);
+        }
+    }
     s->coefficients().resize(s->fields().size());
     s->defineVariables();
     std::vector<std::unique_ptr<detail3::Problem3>> problems;
@@ -1004,6 +1034,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             return out;
         }
         detail3::Options3 o = stepOptions(step, parameters->scope);
+        if (!asked.solver.isEmpty()) o.solver = asked.solver;
         const double from = double(steps) / stepCount, span = 1.0 / stepCount;
         // (How far it is, as last told: what a solve's check of Cancel says.)
         auto at = std::make_shared<std::pair<double, QString>>(from + 0.5 * span, step.name());
@@ -1066,7 +1097,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
 }
 
 StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology3> topology,
-                    std::shared_ptr<const Mesh3> mesh, const QString& studyTag, const Progress& progress)
+                    std::shared_ptr<const Mesh3> mesh, const QString& studyTag, const Progress& progress, const SolveAsked3& asked)
 {
     StudyRun3 run;
     run.mesh = mesh;
@@ -1109,10 +1140,12 @@ StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> paramete
         const Progress meshing = [&progress](double f, const QString& w) { return !progress || progress(0.3 * f, w); };
         if (!run.mesh && !meshOf(*parameters, topology, meshing, &run.mesh)) return run;
         const double from = mesh ? 0 : 0.3;
-        StudyResult3 r = solveStudy3(model, parameters, run.mesh, study->tag,
-                                     [&progress, from](double f, const QString& w) { return !progress || progress(from + (1 - from) * f, w); });
+        StudyResult3 r = solveStudy3(
+            model, parameters, run.mesh, study->tag, [&progress, from](double f, const QString& w) { return !progress || progress(from + (1 - from) * f, w); },
+            asked);
         run.warnings << r.warnings;
         run.log = r.log;
+        run.estimates = r.estimates;
         if (!r.solution) {
             run.error = r.error;
             return run;
@@ -1169,7 +1202,8 @@ StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> paramete
             run.mesh = base;
             m = base;
         }
-        StudyResult3 r = solveStudy3(model, ps, m, study->tag, sub(0.3, 1));
+        StudyResult3 r = solveStudy3(model, ps, m, study->tag, sub(0.3, 1), asked);
+        if (k == 0) run.estimates = r.estimates;
         for (const QString& w : r.warnings)
             if (!run.warnings.contains(w)) run.warnings << w;
         if (!r.solution) {
