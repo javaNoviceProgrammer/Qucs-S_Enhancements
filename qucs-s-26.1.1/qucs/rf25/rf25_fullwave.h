@@ -402,9 +402,11 @@ FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const 
 /// since the process began, for tests. A frequency is given the threads
 /// that the frequencies at a time leave (FullWaveControl::threads), and its
 /// Green's functions are made side by side on them; a dense solve's
-/// matrices, a column (or a block of columns) to a thread.
+/// matrices, a column (or a block of columns) to a thread. The dense
+/// solve's static parts, made once before its frequencies, are shared out
+/// alike among all of the solve's threads (statics).
 struct FillShared {
-    long long greens = 0, columns = 0;
+    long long greens = 0, columns = 0, statics = 0;
 };
 FillShared fillShared();
 
