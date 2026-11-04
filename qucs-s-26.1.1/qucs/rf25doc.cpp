@@ -72,17 +72,29 @@ FullWaveControl::Matrix studyMatrix(const Model& model)
 /// Whether the model's mesh is for a full-wave solve held compressed - the
 /// study's Solver full wave, and its Matrix not dense: then the mesh may
 /// have as many cells as that holds (MeshSettings::compressed).
-bool studyFullWave(const Model& model)
-{
-    const Node* study = model.root.child(QStringLiteral("rf_study"));
-    return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave");
-}
-
 bool meshedCompressed(const Model& model)
 {
     const Node* study = model.root.child(QStringLiteral("rf_study"));
     return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave")
            && studyMatrix(model) != FullWaveControl::Matrix::Dense;
+}
+
+/// How the tab meshes \a model: its Mesh node's settings, held compressed as
+/// its study is, and narrow gaps graded - the structure and, for a full-wave
+/// study, the strips of its ports' feeds alike (calibrate()). For both
+/// studies: a quasi-static one's capacitance is in the charge crowding on
+/// both edges of a gap (a coplanar line's 6 µm gaps on four cells across
+/// left it 10 % short), and a full-wave one's loss and impedance too in the
+/// current crowding there (a measured coplanar line on alumina lost 19 %
+/// under its 2D eddy-current solve on the edges' one halving, its impedance
+/// 17 % over; 1 % under to 10 % over on the graded edges, its impedance 6 %
+/// over).
+MeshSettings tabMeshSettings(const Model& model, QStringList* said)
+{
+    MeshSettings how = meshSettingsOf(model.mesh(), model.parameters(), said);
+    how.compressed = meshedCompressed(model);
+    how.gaps = true;
+    return how;
 }
 
 const char* const kShowProcessedKey = "RF25/showProcessed";
@@ -1186,12 +1198,7 @@ void RF25Doc::prepare()
     QThread* thread = QThread::create([job] {
         job->processed = std::make_shared<Processed>(processRead(job->model, *job->layout, job->called));
         QStringList said;
-        MeshSettings how = meshSettingsOf(job->model.mesh(), job->model.parameters(), &said);
-        how.compressed = meshedCompressed(job->model);
-        // (Narrow gaps graded for the quasi-static charge solve, where its
-        //  capacitance is: a coplanar line's 6 µm gaps on four cells across
-        //  left it 10 % short.)
-        how.gaps = !studyFullWave(job->model);
+        const MeshSettings how = tabMeshSettings(job->model, &said);
         Mesh mesh = meshOf(job->processed->conductors, how, job->model.stack(), topFrequency(job->model));
         mesh.problems = said + mesh.problems;
         job->mesh = std::make_shared<Mesh>(std::move(mesh));
@@ -1789,8 +1796,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (job->frequencies.isEmpty())
             return nothing(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
         QStringList said;
-        job->how = meshSettingsOf(a_model.mesh(), a_model.parameters(), &said);
-        job->how.compressed = meshedCompressed(a_model);
+        job->how = tabMeshSettings(a_model, &said);
         job->matrix = request.matrix.isEmpty() ? studyMatrix(a_model)
                       : request.matrix == QLatin1String("dense")    ? FullWaveControl::Matrix::Dense
                       : request.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed

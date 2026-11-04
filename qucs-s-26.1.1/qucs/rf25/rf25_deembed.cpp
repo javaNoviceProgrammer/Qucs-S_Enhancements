@@ -115,6 +115,7 @@ struct Strips {
     QList<double> halfWaves, gains;   ///< Hz
     QString problem;
     bool tooLarge = false;
+    int facing = 0;                ///< the sides its meshes graded where they face a gap (Mesh::facing)
     int indexOf(double f) const { return int(std::lower_bound(at.begin(), at.end(), f) - at.begin()); }
 };
 
@@ -196,6 +197,7 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
             }
         }
         const Mesh mesh = meshOf(parts, how, stack, top, micrometre);
+        out.facing = std::max(out.facing, mesh.facing);
         if (!mesh.problems.isEmpty() || mesh.cells.isEmpty()) {
             out.problem = tr("A calibration strip of %1 by %2 µm on %3 could not be meshed: %4")
                               .arg(l, 0, 'g', 4)
@@ -474,6 +476,13 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
                          .arg(base.third / base.between, 0, 'g', 4)
                          .arg(frequencies.size())
                          .arg(following);
+        // (Meshed as the structure was - its mesh's settings, narrow gaps
+        //  graded as its own are - so that the cells at a port are the cells
+        //  at its own.)
+        if (base.facing > 0)
+            out.lines << tr("The strips meshed as the structure is: %1 side(s) facing the feed's gaps, their outermost cells "
+                            "halved until they are no wider than a quarter of the gap.")
+                             .arg(base.facing);
         if (offset > 0)
             out.lines << tr("The port's own discontinuity found to the feed's first via, %1 µm in from its face, where "
                             "the line its rows make begins; the line taken back from there to the face.")
