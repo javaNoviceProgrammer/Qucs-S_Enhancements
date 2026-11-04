@@ -323,30 +323,18 @@ private slots:
         QVERIFY2(!says(single.lines, QStringLiteral("P1's current comes back")), qPrintable(single.lines.join(" | ")));
         QVERIFY2(std::abs(single.s[0][0][0] - even.s[0][0][0]) > 1e-3, qPrintable(QString::number(std::abs(single.s[0][0][0] - even.s[0][0][0]))));
         QVERIFY2(single.asymmetry < 1e-9 && single.gain <= 1e-6, qPrintable(QStringLiteral("%1 %2").arg(single.asymmetry).arg(single.gain)));
-        // An ideal source between its cells and its tip's: the current a
-        // probe carries from one to the other has no field here. Over a
-        // plane its image takes the radiation away; with none, ground-signal
-        // probes at both ends, their dipoles alike, give back at 40 GHz on
-        // this lossless line (9e-4), which is said with the cause, where the
-        // GSG's (1.7e-6) is the coplanar port's own (lossless, 1.1e-6 to
-        // 1.5e-5 from 40 to 60 GHz).
+        // The probe's own current, from its tip to its signal, has the
+        // radiating part of its field (SourceRun): ground-signal probes at
+        // both ends, their dipoles alike, give back nothing with no plane - on
+        // this lossless line 9e-4 at 40 GHz without it -, nor over one, nor on
+        // gold; and nothing is warned of.
         QList<rf::FullWavePort> both = gs;
         both[1].returns.removeLast();
-        const rf::FullWave dipole = rf::fullWaveOf(mesh, line, open, both, {40e9});
-        const rf::FullWave imaged = rf::fullWaveOf(mesh, line, stackOf(3.8, 500e-6), both, {40e9});
-        QVERIFY2(dipole.ok() && imaged.ok(), qPrintable(why(dipole) + why(imaged)));
-        qWarning("a ground-signal probe at 40 GHz gives back %.3g with no plane, %.3g over one", dipole.gain, imaged.gain);
-        QVERIFY2(dipole.gain > 1e-6 && says(dipole.warnings, QStringLiteral("with no ground plane, P1, P2 - returning through the terminals")),
-                 qPrintable(QString::number(dipole.gain) + QLatin1Char(' ') + dipole.warnings.join(" | ")));
-        QVERIFY2(imaged.gain <= 1e-6 && imaged.warnings.isEmpty(), qPrintable(QString::number(imaged.gain) + QLatin1Char(' ') + imaged.warnings.join(" | ")));
-        // The gold's loss and the substrate's do not cover the one-sided
-        // probes' (5.8e-4), and it is said again; they do the GSG's, which
-        // gives back nothing on them at 60 GHz either.
-        const rf::FullWave gold = rf::fullWaveOf(mesh, line, lossy(open), both, {40e9});
-        QVERIFY2(gold.ok() && gold.gain > 1e-6 && !gold.warnings.isEmpty(), qPrintable(why(gold) + QString::number(gold.gain)));
-        const rf::FullWave lossyGsg = rf::fullWaveOf(mesh, line, lossy(open), gsg(-125), {40e9, 60e9});
-        qWarning("on gold, one-sided probes give back %.3g at 40 GHz, the GSG's %.3g to 60", gold.gain, lossyGsg.gain);
-        QVERIFY2(lossyGsg.ok() && lossyGsg.gain <= 1e-6 && lossyGsg.warnings.isEmpty(), qPrintable(why(lossyGsg) + QString::number(lossyGsg.gain)));
+        for (const rf::Stack& under : {open, stackOf(3.8, 500e-6), lossy(open)}) {
+            const rf::FullWave dipoles = rf::fullWaveOf(mesh, line, under, both, {40e9, 60e9});
+            QVERIFY2(dipoles.ok() && dipoles.gain <= 1e-6 && dipoles.warnings.isEmpty(),
+                     qPrintable(why(dipoles) + QString::number(dipoles.gain) + dipoles.warnings.join(" | ")));
+        }
     }
 
     // A port named among another's returns: its cells that one's return,
@@ -356,9 +344,11 @@ private slots:
     // P1 = A - B and P2 = B - C are R1 - R2 and R2, R1 = A - C and R2 =
     // B - C, and Z_P = T' Z_R T with T = [1 0; -1 1], to the rounding. A
     // terminal on P2's cells, not P2 itself, is refused; so are two ports
-    // that return through each other. (Over a ground plane: with none, P2's
-    // current from its tip 250 µm away is a dipole's, and S gives back
-    // 3e-4 at 20 GHz, aProbesTipsShareItsCurrent's warning.)
+    // that return through each other. Still to the rounding with the ports'
+    // own currents' field (SourceRun): the two pairs are one probe of the
+    // same three sides, and what flows along its legs is the cells'
+    // injections alone (one straight run a column, P1's from B to A, R1's
+    // and R2's from C, left them 3e-6 apart).
     void aPortNamedAmongTheReturnsIsInSeries()
     {
         const double l = 600;
@@ -444,6 +434,36 @@ private slots:
         for (int i = 0; i < 2; ++i)
             for (int j = 2; j < 4; ++j) converted = std::max({converted, std::abs(modes[i][j]), std::abs(modes[j][i])});
         QVERIFY2(converted < 1e-6, qPrintable(QString::number(converted)));
+    }
+
+    // The port's own current, where it comes up by no path, radiates: a
+    // port between two small pads a millimetre apart in vacuum, nothing else
+    // there - its current from one pad to the other, its charges at the
+    // ends, is a Hertzian dipole's, and its resistance is the dipole's
+    // radiation, 80 pi^2 (d/lambda)^2. With the scalar potential alone - the
+    // source's current with no field of its own, as it was - it came out
+    // at minus half of that (G9's -R/2, horizontal), and a lossless line
+    // with a ground-signal probe at each end gave back 9e-4 at 40 GHz.
+    void aPortsOwnCurrentRadiatesAsAHertzianDipole()
+    {
+        const rf::Stack vacuum = stackOf(1.0, 1e-3, false);
+        const QString m1 = QStringLiteral("M1");
+        const double d = 1000, side = 20;
+        const QList<rf::Conductor> pads = {on(m1, -side / 2, -side / 2, side, side), on(m1, d - side / 2, -side / 2, side, side)};
+        const rf::Mesh mesh = meshed(pads, 2, 100e-6);
+        const QList<rf::FullWavePort> port = {returning(patchPort(QStringLiteral("P1"), QPointF(d, 0), side), {patch(QStringLiteral("T1"), QPointF(0, 0), side)})};
+        // Dense, and held compressed: each solve gives it its field.
+        rf::FullWaveControl compressed;
+        compressed.matrix = rf::FullWaveControl::Matrix::Compressed;
+        for (const rf::FullWaveControl* held : {static_cast<const rf::FullWaveControl*>(nullptr), static_cast<const rf::FullWaveControl*>(&compressed)})
+            for (const double f : {5e9, 10e9}) {
+                const rf::FullWave w = rf::fullWaveOf(mesh, pads, vacuum, port, {f}, 1e-6, held);
+                QVERIFY2(w.ok() && w.compressed == (held != nullptr), qPrintable(why(w)));
+                const double lambda = 299792458.0 / f, hertz = 80 * M_PI * M_PI * std::pow(d * 1e-6 / lambda, 2);
+                const double r = w.z.at(0).at(0).at(0).real();
+                qWarning("a dipole of 1 mm in vacuum at %g GHz, %s: %.5g Ohm, Hertz's %.5g", f / 1e9, held ? "compressed" : "dense", r, hertz);
+                QVERIFY2(std::abs(r / hertz - 1) < 0.02, qPrintable(QStringLiteral("%1 Ohm, Hertz's %2").arg(r).arg(hertz)));
+            }
     }
 
     // The request's fifth test: a signal's patch on M2 against a terminal on

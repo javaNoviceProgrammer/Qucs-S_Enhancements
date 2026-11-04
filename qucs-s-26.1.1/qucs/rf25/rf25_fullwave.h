@@ -115,8 +115,13 @@
  * metal under a rectangle, or a conductor's face - and other ports, whose
  * own cells are then its return too. Each return is a column of its own,
  * the port's cells less the return's, and the columns of a port are tied
- * as a coplanar port's two grounds are; an ideal source between its cells
- * and theirs, with no path up to them, as a probe's tips land on its pads.
+ * as a coplanar port's two grounds are; a source between its cells and
+ * theirs, with no path up to them, as a probe's tips land on its pads.
+ * Its current from its returns to its cells - and a coplanar port's across
+ * its gaps - has the part of its field that radiates and not the static
+ * part, the probe's own loop's inductance: without it the scalar potential
+ * alone took that current's radiation the wrong way, minus half a dipole's,
+ * and with no ground plane a probe on one side of its signal gave back.
  * Its columns and every other port's must be independent: two ports that
  * return through each other round a loop are one.
  */
@@ -195,9 +200,11 @@ struct FullWavePort {
     /// or the conductors beside it - a GSG probe's tips landing on its pads,
     /// the ground ring round a pad -, all of them tied: one voltage, the
     /// current shared out between them by the solve, as a coplanar port's
-    /// two grounds are. An ideal source between its own cells and theirs,
-    /// with no path of its own up to them, so that the probe's own loop is
-    /// not in the answer; and no ground plane wanted.
+    /// two grounds are. A source between its own cells and theirs, with no
+    /// path of its own up to them, so that the probe's own loop is not in
+    /// the answer - its current from them to it has only the part of its
+    /// field that radiates (a coplanar port's across its gaps alike) -; and
+    /// no ground plane wanted.
     bool terminals = false;
     QList<PortTerminal> returns;
     /// An edge port's partner in a differential pair, by its name: this port
