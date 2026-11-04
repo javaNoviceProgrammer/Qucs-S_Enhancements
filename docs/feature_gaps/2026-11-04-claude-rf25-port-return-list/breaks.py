@@ -2,7 +2,9 @@
 """breaks.py: a port's returns given as a list (4 November) undone on purpose, one
 piece at a time - the columns against each return, both faces of a metal
 solved as its two, the refusals, the loop check and the benign loop it lets
-through, the shares and where they are taken, the model's kinds and names,
+through, the shares and where they are taken, the ports' own currents'
+radiating field, dense and compressed, and none round two ports' ties, the
+model's kinds and names,
 the tab's reading, drawing and Shift-drag, the kept solution, and the tools'
 answers - each built and its tests run. Sources are put back whatever
 happens. BRK_ONLY_CHECK=1 checks the anchors and writes nothing; BRK_ONLY=3,7
@@ -31,6 +33,7 @@ METAL = (R, "aTerminalOnAnotherMetalIsItsFromMetalWithoutAPath")
 REFUSED = (R, "whatAPortThatNamesItsReturnsCannotBeIsSaid")
 COMPRESSED = (R, "aCompressedSolveOfTheTipsIsTheDenseOne")
 TIPS_GSSG = (R, "aGssgsSignalsReturnThroughTheSameTwoTips")
+DIPOLE = (R, "aPortsOwnCurrentRadiatesAsAHertzianDipole")
 MODEL = ("test_rf25_model", "aPortsReturnsAreTheTerminalsAndPortsItNames")
 DOC = ("test_rf25_doc", "aPortReturnsThroughTheTerminalsItNames")
 TOOLS = ("test_qucs_control", "anRf25PortsReturnsAreNamedThroughTheTools")
@@ -90,10 +93,18 @@ BREAKS = [
  ("a point terminal off its metal taken as the cell nearest it",
   [(F, "                if (!over) {\n                    bool onShape = false;", "                if (false) {\n                    bool onShape = false;")],
   [REFUSED]),
- ("no warning where a port that names its returns gives back",
-  [(F, "    if (!naming.isEmpty() && !c.layers.groundBelow && out.gain > 1e-6) {",
-       "    if (false && !naming.isEmpty() && !c.layers.groundBelow && out.gain > 1e-6) {")],
-  [TIPS]),
+ ("the ports' own currents with no field in the dense solve (the ideal source as first made)",
+  [(F, "    addSourceFields(c, k, rhs, pathZ);\n    out.fillSeconds", "    out.fillSeconds")],
+  [DIPOLE, TIPS]),
+ ("the ports' own currents with no field in the compressed solve",
+  [(F, "    addSourceFields(c, k, rhs, pathZ);\n    MatrixC current(nr, columns)", "    MatrixC current(nr, columns)")],
+  [DIPOLE]),
+ ("each column's sides its own, no probe's shared (a hub a column)",
+  [(F, "            const int found = int(sides.indexOf(cells));\n            if (found >= 0) return found;\n", "")],
+  [SERIES]),
+ ("the legs' couplings between themselves counted twice",
+  [(F, "    rhs -= fields * of;\n    own += of.transpose() * between * of;", "    rhs -= fields * of;\n    own += 2.0 * (of.transpose() * between * of);")],
+  [DIPOLE]),
  ("the edge port's Return without its terminals",
   [(M, "{QStringLiteral(\"ground\"), QStringLiteral(\"beside\"), QStringLiteral(\"terminals\")},",
        "{QStringLiteral(\"ground\"), QStringLiteral(\"beside\")},")],

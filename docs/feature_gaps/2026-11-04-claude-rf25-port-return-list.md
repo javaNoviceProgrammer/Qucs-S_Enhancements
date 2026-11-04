@@ -15,7 +15,7 @@ compressed solve.
 | The positive side: an internal port's rectangle on `to`, an edge port's face | **Done**, both as before; on a metal solved as its two faces the port's cells and its returns' are both faces' half each (`put()`), as an edge port's face - with no path up from below, nothing makes one face its own |
 | **Refusals with their names**: a return on the port's own net; one that is another port's positive side unless intended; an empty list; a terminal over no cell | **Done**, each by name: "P1's return T2 is on the same conductor as P1 (Au): it would short the source"; "P1's return TB is on the cells P2 drives: name P2 itself among P1's returns, if P1 is to return through what P2 drives (the two in series), or put TB elsewhere"; "...names none"; "P1's return T3, a 20 by 20 µm rectangle at 40, 900 µm, is over no cell of M1"; a point terminal on no shape of its metal (the nearest cell would otherwise have been taken without a word), a face terminal on no face, a port named that is not there, the port itself, a name twice |
 | **Another port's positive side as a return** (EMX allows it), the pairwise check becoming a rank check - "suggest phase 2" | **Done now**: a port named among another's returns is in series with it, its cells that one's return and it a port of its own. The pairwise "drive the same face or cell" check stays; beside it, a combination of the columns that comes to nothing **and that is a current into a port** is refused, naming the ports ("P1, P2 drive no cell between them: ..."): two ports that return through each other, three round a ring. One that is no port's current - round the ties of two ports returning through the same two conductors, a GSSG's two signals - is let through, as the reduction has always taken it (refusing it too broke the GSSG tests: break 6) |
-| Solver: `own` as now, a column per return with `put()`, `portOf` per column, no `PortPath` | **Done**: an ideal source between the cells, with no path up to them; columns made once every port's own cells are known, so that a port may name one after it |
+| Solver: `own` as now, a column per return with `put()`, `portOf` per column, no `PortPath` | **Done**: a source between the cells, with no path up to them; columns made once every port's own cells are known, so that a port may name one after it. Its current from its returns to its cells has the radiating part of its field, its loop's inductance left out (below: the user's choice, the same day) |
 | No ground plane: a port whose returns are all terminals returns through the layout | **Done**: the plane check passes them; over a plane they solve as they are, the plane no return of theirs |
 | Feeds and calibration refused at first, with the reason | **Done**: `calibrate` (or a move along the feed) refused by name - a source between its cells and its returns' is not what strips of a feed are; moving its plane along a given line is allowed |
 | Quasi-static unchanged; terminals are not nets | **Unchanged** |
@@ -35,17 +35,18 @@ the narrow gaps (47798db), so the reviewer's numbers of the morning (2.451, 77.6
 
 1. **The same as the coplanar edge port where the terminals are its faces** (`test_rf25_returns`, not `test_rf25_wave`,
    which is of the Green's functions): edge ports returning through face terminals on the grounds at their edge's line
-   against the same ports returning beside - **S apart by 0 on a sheet, 5.7e-16 as two faces**, Z by 8.9e-22 and
-   1.5e-15 of its largest; the grounds' cells alike, each return a half of the current.
+   against the same ports returning beside - **S apart by 4.4e-16 on a sheet, 3.0e-16 as two faces**, Z by 7.2e-16 and
+   4.4e-16 of its largest (0 and 5.7e-16 before the ports' own currents had their field); the grounds' cells alike, each
+   return a half of the current.
 2. **A GSG landing mid-pad, L-2L** - a 20 x 20 µm patch at each signal pad's centre against 20 x 20 µm terminals at
-   the ground pads' centres: **eps_eff within 0.034 % of the edge port's over the whole sweep** (asked: 0.2 %), **Z0
-   (the mean of the two pad-box orders) within 0.5 % to 58 GHz** (0.485 %), 0.512 % at 60 (asked: 0.5 %):
+   the ground pads' centres: **eps_eff within 0.038 % of the edge port's over the whole sweep** (asked: 0.2 %), **Z0
+   (the mean of the two pad-box orders) within 0.5 % to 58 GHz** (0.481 %), 0.508 % at 60 (asked: 0.5 %):
 
    | GHz | edge eps_eff | Z0 (Ω) | tips eps_eff | Z0 (Ω) | d eps_eff | d Z0 |
    |---|---|---|---|---|---|---|
    | 10 | 2.4699 | 76.11 | 2.4691 | 76.11 | -0.032 % | +0.002 % |
-   | 30 | 2.4483 | 76.14 | 2.4475 | 76.25 | -0.034 % | +0.137 % |
-   | 60 | 2.4272 | 77.35 | 2.4273 | 77.75 | +0.007 % | +0.512 % |
+   | 30 | 2.4483 | 76.14 | 2.4474 | 76.25 | -0.035 % | +0.137 % |
+   | 60 | 2.4272 | 77.34 | 2.4271 | 77.74 | -0.005 % | +0.508 % |
 
    Z0's difference grows as f², the pad box's second order: at 60 GHz the two orders themselves disagree by ±8.2 %
    (edge) and ±6.9 % (tips) about their mean, where eps_eff - from T_2L T_L⁻¹, any reciprocal box cancelled exactly - is
@@ -57,10 +58,10 @@ the narrow gaps (47798db), so the reviewer's numbers of the morning (2.451, 77.6
    pad is a capacitance across the port that grows as 1/h as its loop's inductance falls (20 x 80 µm at 5 µm, some
    3 fF): the bridge never becomes the ideal source - its own parasitics, as the request says, both ways.
 4. **Current share**: the symmetric GSG 50.00 / 50.00 % (0.00°) at both ends of both lines; the lower tip moved off its
-   pad's centre to |y| = 180 µm: 50.14 / 49.86 % on the 0.5 mm line, 48.46 / 51.54 % (±0.25°) on the 1 mm, S changed
-   (L-2L eps_eff still within 0.042 %); one tip dropped, a ground-signal probe: "a ground-signal probe's", T1 100 %, S
-   changed. All said in the answer and the Touchstone. (`test_rf25_returns` holds the same on a lossless line: 51.93 /
-   48.07 % with a tip at its ground's far edge.)
+   pad's centre to |y| = 180 µm: 50.09 / 49.91 % on the 0.5 mm line, 48.38 / 51.62 % (±0.1°) on the 1 mm, S changed
+   (L-2L eps_eff still within 0.035 %); one tip dropped, a ground-signal probe: "a ground-signal probe's", T1 100 %, S
+   changed, passive. All said in the answer and the Touchstone. (`test_rf25_returns` holds the same on a lossless line:
+   51.92 / 48.08 % with a tip at its ground's far edge.)
 5. **No plane, a terminal on another metal**: a patch on M2 against a terminal on M1 under it, no via, is today's
    internal port from M1 without its path - **the same S, to 0** (a test switch, `FullWaveControl::portPaths`, leaves
    that port's path out). With its path the port is the path's reactance more: +0.016j Ω at 10 GHz, +0.048j at 30,
@@ -70,41 +71,56 @@ the narrow gaps (47798db), so the reviewer's numbers of the morning (2.451, 77.6
    itself, a name twice, a terminal on another port's cells, ports round a loop.
 7. **The compressed solve**: the test 2 structure at 6 cells across held compressed - **GMRES converging at every
    frequency to 60 GHz, 47 and 51 iterations at the most, residual under 1e-10**, passive and reciprocal, 5 and 10 s.
-   Its L-2L against the edge port's at 6 cells across: eps_eff within 0.078 %, Z0 within 0.5 % to 58 GHz (0.493 %),
-   0.522 % at 60. (The bridge models at 3 cells across: the 1 mm ones past the dense limit, compressed, 142 to 287
+   Its L-2L against the edge port's at 6 cells across: eps_eff within 0.057 %, Z0 within 0.5 % to 58 GHz (0.483 %),
+   0.511 % at 60. (The bridge models at 3 cells across: the 1 mm ones past the dense limit, compressed, 142 to 287
    iterations.)
 
-## What the ideal source leaves: a port with its returns on one side, and no ground plane
+## The port's own current: its radiating field (the user's choice, the same day)
 
 A port that names its returns is a source between its cells and theirs, as the request asks: no path up to them, so
-that the probe's own loop is not in the answer. The current a probe carries from its returns to its tip then has no
-field here - G9's lesson again, horizontal this time: the scalar potential alone takes a current's radiation the wrong
-way, -R/2 of it. Over a ground plane the current's image takes that radiation away, and nothing of it shows (every
-port kind below gave back nothing to 60 GHz, lossless). With no plane it can: on the lossless 600 µm test line of
-`test_rf25_returns` (S 50 / G 25 µm, 500 µm of 3.8, nothing below),
+that the probe's own loop is not in the answer. In this round's first form the current a probe carries from its returns
+to its tip had no field at all - G9's lesson again, horizontal this time: the scalar potential alone takes a current's
+radiation the wrong way, minus half of it. Over a ground plane the current's image took that radiation away; with no
+plane a one-sided landing's dipole gave back. On the lossless 600 µm test line of `test_rf25_returns` (S 50 / G 25 µm,
+500 µm of 3.8, nothing below):
 
-| S gives back, lossless, no plane | 20 GHz | 40 GHz | 60 GHz |
-|---|---|---|---|
-| coplanar edge ports (as before) | 1e-8 | 1.1e-6 | 1.5e-5 |
-| GSG tips 125 µm either side | 1.6e-8 | 1.7e-6 | 2.3e-5 |
-| GSG tips 60 µm either side | 8.9e-9 | 1.0e-6 | 1.6e-5 |
-| ground-signal tips 125 µm away, both ends | 4.5e-5 | 9.1e-4 | 4.7e-3 |
+| S gives back, no plane | 20 GHz | 40 GHz | 60 GHz | with its field, to 60 GHz |
+|---|---|---|---|---|
+| coplanar edge ports (as they always were) | 1e-8 | 1.1e-6 | 1.5e-5 | nothing |
+| GSG tips 125 µm either side | 1.6e-8 | 1.7e-6 | 2.3e-5 | nothing |
+| ground-signal tips 125 µm away, both ends | 4.5e-5 | 9.1e-4 | 4.7e-3 | nothing |
+| the same on the request's gold (0.5 mm line) | | | 5.3e-3 | nothing (passive) |
 
-So a GSG's two returns, alike either side, leave what the coplanar port's own gap current always has - it has no field
-either - and the gold and the quartz's loss covers it: the request's structures are passive at both meshes. A
-one-sided landing's dipole does not cancel, and is not covered: on the request's own gold and quartz the 0.5 mm line's
-ground-signal probes give back 5.3e-3 at 60 GHz. Such a solve now says so, with the cause and the remedy, among its
-warnings: "At 60 GHz S gives back 0.0053 more than it is given: with no ground plane, P1, P2 - returning through the
-terminals and ports named, an ideal source between its cells and theirs - has none of the field its own current, from
-its returns to its cells as a probe carries it, would radiate; most where its returns lie on one side of it, little
-where they lie alike either side. Returns either side, nearer, or a ground plane under the stack make it less."
+The first form warned of it; the user chose the cure. Now the columns that come up by no path of their own - a port's
+that names its returns, and the coplanar port's, whose current crosses its gaps the same way - carry their own current
+(`SourceRun`) as a probe does. Each such column has two sides, its own cells (the positive part of its column) and its
+return's (the negative part), a side the same cells by the same shares wherever it comes; the columns whose sides touch
+are one probe, with one hub at the middle of its sides' middles and a straight leg in the plane from the hub to each
+side's middle, at the height of most of the probe's cells; each column's ampere comes in along its return's leg and
+goes out along its own's (`Context::sourceOf`). Their dipole is the columns' charges', and what flows along the legs is
+the cells' injections alone, so a current round two ports' ties - a GSSG's two signals returning through the same two
+conductors, which the loop check lets through - carries nothing here either, and columns made of the same sides another
+way come out the same (the series pair's identity below stays exact). The legs have **only the part of a current's field
+that radiates** (`Kernels::smooth()`, the vector kernel less its static 1/R part: the retardation of the source and of
+its image and the stack's remainder, which the runs' couplings have always had). Its static part, the probe's own
+loop's inductance and its coupling to the line, stays out, as the request wants the tips' loop out of the answer: a
+reactance takes no power, so leaving it out keeps the answer passive and reciprocal. The field goes into the runs'
+drive and, by reciprocity, into the columns' voltages of their currents (`addSourceFields()`, beside `addPortPaths()`
+in both the dense and the compressed solve), and between the legs into the columns' own impedances.
 
-The cure, left for the user to choose: give each column's source current - from its returns' cells to its own, the
-dipole the probe carries - the radiating part of its field alone (the vector kernel less its static 1/R part, the
-`smooth` term `Kernels::inductance` already has), so that the loop's inductance stays out and its radiation is in: the
-static part is a lossless reactance, so taking it out keeps reciprocity and passivity. It would change the coplanar
-port's answers by some (k gap)² too, and must, or the first acceptance test's equality goes. Or the request's own later
-`path: probe`, the tip loop as filaments at a given height.
+A straight run a column first, it worked as well - every case below passive, the dipole the same to its last digit -
+but a loop round two ports' ties then had a field of its own, set by nothing but the radiation's small terms (1e-5 of S
+at 60 GHz on a skewed GSSG), and the series identity held to 3e-6; one probe's legs from one hub settle both.
+
+- **A Hertzian dipole** (`aPortsOwnCurrentRadiatesAsAHertzianDipole`): a port between two 20 µm pads 1 mm apart in
+  vacuum is nothing but its own current, with its charges at its ends. Re Z is 0.21944 and 0.87726 Ω at 5 and 10 GHz,
+  80π²(d/λ)² 0.21963 and 0.87851 - 0.09 and 0.14 % under - dense and compressed alike. Without the field: -0.10968 Ω at
+  5 GHz, -0.499 of it, the -R/2.
+- **What it moves**: S11 by hundredths of a dB (the one-sided line at 60 GHz -4.187 to -4.180 dB, the coplanar line
+  -7.411 to -7.409); the acceptance numbers above in their last digits; the face terminals still the coplanar port to
+  4e-16, the series pair's identity still to the rounding (5.6e-15).
+- Every rf25 suite passes as it did: the measured alumina line, the coplanar calibrations, the GSSG's modes against
+  the quasi-static extraction's and its symmetry.
 
 ## What changed
 
@@ -112,7 +128,9 @@ port's answers by some (k gap)² too, and must, or the first acceptance test's e
   port's own cells first (`owns`), then a column per named return, `put()` throughout; the refusals; the loop check
   over the columns' Gram matrix, only of combinations that are a port's current; `FullWave::returnsOf`
   (`PortReturn`: name, cells, share) and `namesReturns`, shares from the reduction's own `x z` at the top frequency, a
-  coplanar port's too; `returnSharesOf()`; the no-plane warning; `FullWaveControl::portPaths` (tests).
+  coplanar port's too; `returnSharesOf()`; the ports' own currents' radiating field (`SourceRun`, one probe's legs
+  from one hub, `Context::sourceOf`; `addSourceFields()`; `Kernels::smooth()` taken out of `Kernels::inductance()` as
+  the same expression); `FullWaveControl::portPaths` (tests).
 - **rf25_model**: `rf_terminal`; the Return choices and **Returns** (a list of names, `PropertyDef::Objects`) on both
   ports, an internal port's From shown only for `from`; T1, T2... named; `namesOf()`, `portName()`,
   `Model::renamePort()`; `problems()` checks every return's name, a terminal's metal, a name a terminal and a port
@@ -126,26 +144,35 @@ port's answers by some (k gap)² too, and must, or the first acceptance test's e
 
 ## Tests
 
-- **test_rf25_returns** (new: 7 functions, 0.4 s in Release, 43 s under ASan and UBSan with Eigen's LU): the
+- **test_rf25_returns** (new: 8 functions, 0.4 s in Release, 64 s under ASan and UBSan with Eigen's LU): the
   coplanar equivalence on a sheet and two faces; a probe's tips sharing its current, moved, dropped, the shares at a
-  sweep's top in either order, the no-plane warning and where it is not; the series pair's Z the transformed pair's
-  to 3.6e-15; a GSSG's two signals against the same two tips at each end, paired - the loop round their ties let
-  through, reciprocal, passive, no mode turned into the other (beyond a GSG, as the request lists); the other metal;
-  the refusals; compressed against dense (1.1e-8).
+  sweep's top in either order, ground-signal probes at both ends giving back nothing with no plane, over one and on
+  gold; the series pair's Z the transformed pair's to 5.6e-15; a GSSG's two signals against the same two tips at each
+  end, paired - the loop round their ties let through, reciprocal, passive, no mode turned into the other (beyond a
+  GSG, as the request lists); the Hertzian dipole, dense and compressed; the other metal; the refusals; compressed
+  against dense (1.1e-8).
 - **test_rf25_model** `aPortsReturnsAreTheTerminalsAndPortsItNames`; **test_rf25_doc**
   `aPortReturnsThroughTheTerminalsItNames` (the file both ways, the drawing, the solve, the Touchstone, the kept
   solution, the rename, the Returns menu, the Shift-drag and its Undo, a refusal through the tab);
   **test_qucs_control** `anRf25PortsReturnsAreNamedThroughTheTools` (`rf25_solve`, brief too, `show_layout`'s
   overlays, a refusal, `fem_describe`'s RF 2.5D format); `theSolutionIsKeptBesideTheModel`'s "later build" is format 3.
-- Every rf25 suite in Release; under ASan and UBSan with Eigen's LU the changed suites (test_rf25_doc 65 s,
-  test_rf25_model 4 s, the two tool functions 15 s), test_rf25_fullwave's two parts (103 and 100 s) and
-  test_rf25_deembed (199 s), no report; **28 breaks, all caught** (`breaks.py` beside this file) - the first run
-  missed one, the shares taken at a sweep's first frequency, because the test's sweep listed its top first: it now
-  solves both orders; the four CI lints; the full ctest, 162 of 162 (323 s).
+- Every rf25 suite in Release; under ASan and UBSan with Eigen's LU, seven at once, test_rf25_returns (64 s),
+  test_rf25_doc (102 s), test_rf25_model (20 s), the two tool functions (36 s), test_rf25_fullwave's two parts (121 and
+  118 s) and test_rf25_deembed (228 s), no report;
+  **31 breaks, all caught** (`breaks.py` beside this file). Two earlier runs each missed one: the shares taken at a
+  sweep's first frequency, because the test's sweep listed its top first (it now solves both orders); and, with a
+  straight run a column, the projection that kept a loop round two ports' ties field-free, which moved S by 1e-5 at
+  most and no test could pin - the probe's hub that took its place keeps that loop field-free by what it is, and the
+  series identity exact, which a break of it (a hub a column) shows. The four CI lints; the full ctest, 162 of 162 (336 s).
 
 ## Left
 
-- The no-plane radiation of a one-sided landing (above): warned, not cured.
+- A port's own current (`SourceRun`) runs in straight legs in the plane from its probe's hub: its dipole is exact, its
+  near field a probe's only roughly, and a return on another metal adds no vertical part (a few µm of it, its
+  radiation (k h)² beside).
+- Found in passing, as it was: a port's path up from the ground and another port's column with no path (a coplanar
+  port beside a grounded one) are not coupled by the formulation's correction potential, the path's at that column's
+  charges - small, and symmetric, but not in the answer.
 - A return on the port's own conductor is refused, as asked. A full-wave port across one conductor - an inductor
   between its two ends, a shorted stub through a GSG's tips - is physically a port (the conductor's own impedance),
   and lifting the refusal would allow it; the coplanar port has always passed over its own net too.

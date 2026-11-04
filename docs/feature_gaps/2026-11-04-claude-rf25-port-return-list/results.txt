@@ -1,14 +1,14 @@
-# The acceptance solves through the build's --mcp-server (run.py), 4 November
+# The acceptance solves through the build's --mcp-server (run.py), 4 November, the ports' own currents carrying their radiating field (one probe's legs from one hub)
 
 tips_L500: solved in 3 s, {'cells': 1273, 'runs of current': 2370}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
    P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.00 % at 0.00 deg, T2 50.00 % at 0.00 deg
    P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.00 % at 0.00 deg, T4 50.00 % at 0.00 deg
    written tips_L500.s2p
-tips_L1000: solved in 8 s, {'cells': 2077, 'runs of current': 3898}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
+tips_L1000: solved in 9 s, {'cells': 2077, 'runs of current': 3898}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
    P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.00 % at 0.00 deg, T2 50.00 % at 0.00 deg
    P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.00 % at 0.00 deg, T4 50.00 % at 0.00 deg
    written tips_L1000.s2p
-edge_L500: solved in 2 s, {'cells': 1273, 'runs of current': 2370}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
+edge_L500: solved in 3 s, {'cells': 1273, 'runs of current': 2370}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
    P1: P1 drives the 13 cell(s) along the face at 0, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au and Au #3 either side: the two tied, as a probe's grounds are. | shares: Au 50.00 % at 0.00 deg, Au #3 50.00 % at 0.00 deg
    P2: P2 drives the 13 cell(s) along the face at 780, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au #3 and Au either side: the two tied, as a probe's grounds are. | shares: Au #3 50.00 % at 0.00 deg, Au 50.00 % at 0.00 deg
    written edge_L500.s2p
@@ -16,23 +16,40 @@ edge_L1000: solved in 8 s, {'cells': 2077, 'runs of current': 3898}, held dense 
    P1: P1 drives the 13 cell(s) along the face at 0, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au and Au #3 either side: the two tied, as a probe's grounds are. | shares: Au 50.00 % at 0.00 deg, Au #3 50.00 % at 0.00 deg
    P2: P2 drives the 13 cell(s) along the face at 1280, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au #3 and Au either side: the two tied, as a probe's grounds are. | shares: Au #3 50.00 % at 0.00 deg, Au 50.00 % at 0.00 deg
    written edge_L1000.s2p
-gs_L500: solved in 3 s, {'cells': 1273, 'runs of current': 2370}, held dense (iterations None, residual None), passive False (most returned 1.0052851068765654), reciprocal True
+gs_L500: solved in 3 s, {'cells': 1273, 'runs of current': 2370}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
    P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)): a ground-signal probe's. | shares: T1 100.00 % at 0.00 deg
    P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against T3 (2 cell(s)): a ground-signal probe's. | shares: T3 100.00 % at 0.00 deg
-   warning: At 60 GHz S gives back 0.0053 more than it is given: with no ground plane, P1, P2 - returning through the terminals and ports named, an ideal source between its cells and theirs - has none of the field its own current, from its returns to its cells as a probe carries it, would radiate; most where its returns lie on one side of it, little where they lie alike either side. Returns either side, nearer, or a ground plane under the stack make it less.
    written gs_L500.s2p
-gs_L1000: solved in 9 s, {'cells': 2077, 'runs of current': 3898}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
+gs_L1000: solved in 8 s, {'cells': 2077, 'runs of current': 3898}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
    P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)): a ground-signal probe's. | shares: T1 100.00 % at 0.00 deg
    P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against T3 (2 cell(s)): a ground-signal probe's. | shares: T3 100.00 % at 0.00 deg
    written gs_L1000.s2p
 skew_L500: solved in 3 s, {'cells': 1273, 'runs of current': 2370}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
-   P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.14 % at 0.07 deg, T2 49.86 % at -0.07 deg
-   P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.05 % at 0.00 deg, T4 49.95 % at -0.00 deg
+   P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.09 % at 0.03 deg, T2 49.91 % at -0.03 deg
+   P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.05 % at 0.00 deg, T4 49.95 % at 0.00 deg
    written skew_L500.s2p
-skew_L1000: solved in 9 s, {'cells': 2077, 'runs of current': 3898}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
-   P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 48.46 % at 0.26 deg, T2 51.54 % at -0.24 deg
-   P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.15 % at -0.02 deg, T4 49.85 % at 0.02 deg
+skew_L1000: solved in 8 s, {'cells': 2077, 'runs of current': 3898}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
+   P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 48.38 % at 0.10 deg, T2 51.62 % at -0.09 deg
+   P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.14 % at -0.03 deg, T4 49.86 % at 0.03 deg
    written skew_L1000.s2p
+tips6_L500: solved in 5 s, {'cells': 1850, 'runs of current': 3476}, held compressed (iterations 47, residual 9.99447874456573e-11), passive True (most returned 1), reciprocal True
+   P1: P1 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.00 % at 0.00 deg, T2 50.00 % at 0.00 deg
+   P2: P2 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.00 % at 0.00 deg, T4 50.00 % at 0.00 deg
+   written tips6_L500.s2p
+tips6_L1000: solved in 10 s, {'cells': 2984, 'runs of current': 5634}, held compressed (iterations 51, residual 9.973507806450684e-11), passive True (most returned 1), reciprocal True
+   P1: P1 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.00 % at 0.00 deg, T2 50.00 % at 0.00 deg
+   P2: P2 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.00 % at 0.00 deg, T4 50.00 % at 0.00 deg
+   written tips6_L1000.s2p
+edge6_L500: solved in 5 s, {'cells': 1850, 'runs of current': 3476}, held compressed (iterations 47, residual 9.978756552812748e-11), passive True (most returned 1), reciprocal True
+   P1: P1 drives the 16 cell(s) along the face at 0, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au and Au #3 either side: the two tied, as a probe's grounds are. | shares: Au 50.00 % at 0.00 deg, Au #3 50.00 % at 0.00 deg
+   P2: P2 drives the 16 cell(s) along the face at 780, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au #3 and Au either side: the two tied, as a probe's grounds are. | shares: Au #3 50.00 % at 0.00 deg, Au 50.00 % at 0.00 deg
+   written edge6_L500.s2p
+edge6_L1000: solved in 10 s, {'cells': 2984, 'runs of current': 5634}, held compressed (iterations 51, residual 9.587832729851857e-11), passive True (most returned 1), reciprocal True
+   P1: P1 drives the 16 cell(s) along the face at 0, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au and Au #3 either side: the two tied, as a probe's grounds are. | shares: Au 50.00 % at 0.00 deg, Au #3 50.00 % at 0.00 deg
+   P2: P2 drives the 16 cell(s) along the face at 1280, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au #3 and Au either side: the two tied, as a probe's grounds are. | shares: Au #3 50.00 % at 0.00 deg, Au 50.00 % at 0.00 deg
+   written edge6_L1000.s2p
+
+# The bridge workaround (its ports have paths of their own, untouched by the ports' own currents' field)
 bridge20_L500: solved in 6 s, {'cells': 1443, 'runs of current': 2726}, held dense (iterations None, residual None), passive True (most returned 1), reciprocal True
    P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against the 15 cell(s) of Probe under it.
    P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against the 15 cell(s) of Probe under it.
@@ -57,62 +74,46 @@ bridge5_L1000: solved in 8 s, {'cells': 2247, 'runs of current': 4254}, held com
    P1: P1 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against the 15 cell(s) of Probe under it.
    P2: P2 drives the 6 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against the 15 cell(s) of Probe under it.
    written bridge5_L1000.s2p
-tips6_L500: solved in 5 s, {'cells': 1850, 'runs of current': 3476}, held compressed (iterations 47, residual 9.994325317637516e-11), passive True (most returned 1), reciprocal True
-   P1: P1 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.00 % at 0.00 deg, T2 50.00 % at 0.00 deg
-   P2: P2 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 750, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.00 % at 0.00 deg, T4 50.00 % at 0.00 deg
-   written tips6_L500.s2p
-tips6_L1000: solved in 10 s, {'cells': 2984, 'runs of current': 5634}, held compressed (iterations 51, residual 9.974097013647142e-11), passive True (most returned 1), reciprocal True
-   P1: P1 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 30, 0 µm against T1 (2 cell(s)) and T2 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T1 50.00 % at 0.00 deg, T2 50.00 % at 0.00 deg
-   P2: P2 drives the 12 cell(s) of Au under its 20 by 20 µm rectangle at 1250, 0 µm against T3 (2 cell(s)) and T4 (2 cell(s)), tied: a ground-signal-ground probe's. | shares: T3 50.00 % at 0.00 deg, T4 50.00 % at 0.00 deg
-   written tips6_L1000.s2p
-edge6_L500: solved in 5 s, {'cells': 1850, 'runs of current': 3476}, held compressed (iterations 47, residual 9.916543892742116e-11), passive True (most returned 1), reciprocal True
-   P1: P1 drives the 16 cell(s) along the face at 0, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au and Au #3 either side: the two tied, as a probe's grounds are. | shares: Au 50.00 % at 0.00 deg, Au #3 50.00 % at 0.00 deg
-   P2: P2 drives the 16 cell(s) along the face at 780, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au #3 and Au either side: the two tied, as a probe's grounds are. | shares: Au #3 50.00 % at 0.00 deg, Au 50.00 % at 0.00 deg
-   written edge6_L500.s2p
-edge6_L1000: solved in 11 s, {'cells': 2984, 'runs of current': 5634}, held compressed (iterations 51, residual 9.590283256075732e-11), passive True (most returned 1), reciprocal True
-   P1: P1 drives the 16 cell(s) along the face at 0, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au and Au #3 either side: the two tied, as a probe's grounds are. | shares: Au 50.00 % at 0.00 deg, Au #3 50.00 % at 0.00 deg
-   P2: P2 drives the 16 cell(s) along the face at 1280, 0 µm against the conductors beside it, 8 and 8 cell(s) of the faces of Au #3 and Au either side: the two tied, as a probe's grounds are. | shares: Au #3 50.00 % at 0.00 deg, Au 50.00 % at 0.00 deg
-   written edge6_L1000.s2p
 
 # compare.py tips_L500 tips_L1000 (3 cells across, dense)
   GHz |   edge eps      Z0 |   tips eps      Z0 |  d eps %  d Z0 % | reviewer's edge port
     2 |     2.5226   76.87 |     2.5218   76.86 |   -0.031  -0.015 | 
    10 |     2.4699   76.11 |     2.4691   76.11 |   -0.032  +0.002 | 2.451 77.6
    20 |     2.4587   76.07 |     2.4579   76.11 |   -0.033  +0.054 | 
-   30 |     2.4483   76.14 |     2.4475   76.25 |   -0.034  +0.137 | 2.429 77.6
-   40 |     2.4425   76.39 |     2.4417   76.57 |   -0.034  +0.245 | 
-   50 |     2.4400   76.81 |     2.4394   77.09 |   -0.024  +0.373 | 
-   60 |     2.4272   77.35 |     2.4273   77.75 |   +0.007  +0.512 | 2.409 78.7
-over the sweep: eps_eff within 0.034 %, Z0 within 0.512 %
+   30 |     2.4483   76.14 |     2.4474   76.25 |   -0.035  +0.137 | 2.429 77.6
+   40 |     2.4425   76.39 |     2.4416   76.57 |   -0.037  +0.244 | 
+   50 |     2.4400   76.80 |     2.4392   77.09 |   -0.035  +0.370 | 
+   60 |     2.4272   77.34 |     2.4271   77.74 |   -0.005  +0.508 | 2.409 78.7
+over the sweep: eps_eff within 0.038 %, Z0 within 0.508 %
 
 # compare.py tips6_L500 tips6_L1000 edge6_L500 edge6_L1000 (6 cells across, compressed)
   GHz |  edge6 eps      Z0 |  tips6 eps      Z0 |  d eps %  d Z0 % | reviewer's edge port
     2 |     2.5149   76.26 |     2.5153   76.27 |   +0.016  +0.009 | 
    10 |     2.4715   75.64 |     2.4719   75.66 |   +0.015  +0.024 | 2.451 77.6
    20 |     2.4613   75.62 |     2.4617   75.67 |   +0.014  +0.071 | 
-   30 |     2.4519   75.70 |     2.4522   75.81 |   +0.013  +0.147 | 2.429 77.6
-   40 |     2.4467   75.94 |     2.4471   76.13 |   +0.015  +0.250 | 
-   50 |     2.4443   76.36 |     2.4451   76.65 |   +0.034  +0.378 | 
-   60 |     2.4311   76.91 |     2.4330   77.31 |   +0.078  +0.522 | 2.409 78.7
-over the sweep: eps_eff within 0.078 %, Z0 within 0.522 %
+   30 |     2.4519   75.69 |     2.4522   75.81 |   +0.011  +0.147 | 2.429 77.6
+   40 |     2.4469   75.94 |     2.4470   76.13 |   +0.007  +0.248 | 
+   50 |     2.4448   76.37 |     2.4451   76.65 |   +0.010  +0.371 | 
+   60 |     2.4316   76.91 |     2.4330   77.31 |   +0.057  +0.511 | 2.409 78.7
+over the sweep: eps_eff within 0.057 %, Z0 within 0.511 %
 
 # compare.py skew_L500 skew_L1000
   GHz |   edge eps      Z0 |   skew eps      Z0 |  d eps %  d Z0 % | reviewer's edge port
     2 |     2.5226   76.87 |     2.5221   76.87 |   -0.017  -0.008 | 
    10 |     2.4699   76.11 |     2.4695   76.11 |   -0.017  +0.005 | 2.451 77.6
-   20 |     2.4587   76.07 |     2.4583   76.10 |   -0.017  +0.043 | 
-   30 |     2.4483   76.14 |     2.4479   76.22 |   -0.016  +0.101 | 2.429 77.6
-   40 |     2.4425   76.39 |     2.4422   76.52 |   -0.013  +0.176 | 
-   50 |     2.4400   76.81 |     2.4400   77.01 |   +0.002  +0.263 | 
-   60 |     2.4272   77.35 |     2.4282   77.62 |   +0.042  +0.354 | 2.409 78.7
-over the sweep: eps_eff within 0.042 %, Z0 within 0.354 %
+   20 |     2.4587   76.07 |     2.4582   76.10 |   -0.017  +0.043 | 
+   30 |     2.4483   76.14 |     2.4479   76.22 |   -0.017  +0.102 | 2.429 77.6
+   40 |     2.4425   76.39 |     2.4421   76.52 |   -0.017  +0.176 | 
+   50 |     2.4400   76.80 |     2.4398   77.00 |   -0.008  +0.261 | 
+   60 |     2.4272   77.34 |     2.4281   77.61 |   +0.035  +0.350 | 2.409 78.7
+over the sweep: eps_eff within 0.035 %, Z0 within 0.350 %
 
 # bridges.py
 L = 500 um (the structure 780 um): at 60 GHz the terminal port's S11 -8.52 dB, S21 -0.77 dB
-   bridge 20 um: S11   -8.61 dB, S21  -0.77 dB at 60 GHz; |S - S_terminal| at most 0.1471 (at 60 GHz), at 10 GHz 0.0375
-   bridge 10 um: S11   -8.53 dB, S21  -0.79 dB at 60 GHz; |S - S_terminal| at most 0.1423 (at 60 GHz), at 10 GHz 0.0325
-   bridge  5 um: S11   -8.47 dB, S21  -0.81 dB at 60 GHz; |S - S_terminal| at most 0.1657 (at 60 GHz), at 10 GHz 0.0329
+   bridge 20 um: S11   -8.61 dB, S21  -0.77 dB at 60 GHz; |S - S_terminal| at most 0.1470 (at 60 GHz), at 10 GHz 0.0375
+   bridge 10 um: S11   -8.53 dB, S21  -0.79 dB at 60 GHz; |S - S_terminal| at most 0.1422 (at 60 GHz), at 10 GHz 0.0325
+   bridge  5 um: S11   -8.47 dB, S21  -0.81 dB at 60 GHz; |S - S_terminal| at most 0.1656 (at 60 GHz), at 10 GHz 0.0329
 L = 1000 um (the structure 1280 um): at 60 GHz the terminal port's S11 -9.66 dB, S21 -0.68 dB
-   bridge 20 um: S11  -14.18 dB, S21  -0.38 dB at 60 GHz; |S - S_terminal| at most 0.1925 (at 60 GHz), at 10 GHz 0.0357
-   bridge 10 um: S11  -11.90 dB, S21  -0.50 dB at 60 GHz; |S - S_terminal| at most 0.1672 (at 60 GHz), at 10 GHz 0.0312
-   bridge  5 um: S11  -10.30 dB, S21  -0.64 dB at 60 GHz; |S - S_terminal| at most 0.1748 (at 60 GHz), at 10 GHz 0.0321
+   bridge 20 um: S11  -14.18 dB, S21  -0.38 dB at 60 GHz; |S - S_terminal| at most 0.1924 (at 60 GHz), at 10 GHz 0.0357
+   bridge 10 um: S11  -11.90 dB, S21  -0.50 dB at 60 GHz; |S - S_terminal| at most 0.1670 (at 60 GHz), at 10 GHz 0.0312
+   bridge  5 um: S11  -10.30 dB, S21  -0.64 dB at 60 GHz; |S - S_terminal| at most 0.1747 (at 60 GHz), at 10 GHz 0.0321

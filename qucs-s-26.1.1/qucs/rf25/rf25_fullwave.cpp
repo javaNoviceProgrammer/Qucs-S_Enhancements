@@ -614,6 +614,33 @@ struct PortPath {
     QList<QPair<int, double>> ends;
 };
 
+/*!
+ * A leg of the ports' own currents where they come up by no path of their
+ * own - a coplanar port's, across its gaps from the conductors beside it; a
+ * port's that names its returns, from them to its cells, as a probe carries
+ * it. The columns whose sides touch - their own cells, their returns' - are
+ * one probe's, with one hub at the middle of those sides; from it a straight
+ * leg in the plane runs to each side's middle (by its shares), at the height
+ * of most of the probe's cells, and each column's ampere comes in along its
+ * return's leg and out along its own's (Context::sourceOf). Their dipole is
+ * the columns' charges', and what flows along them is the cells' injections
+ * alone: a current round two ports' ties, which drives nothing, carries
+ * nothing here either, and columns made of the same sides some other way
+ * come out the same. They have only the part of a current's field that
+ * radiates (Kernels::smooth()): its static part, the probe's own loop's
+ * inductance, is not in the answer - a reactance, which takes no power -,
+ * and without the rest the scalar potential alone took the current's
+ * radiation the wrong way, minus half of it, as G9's paths did up from the
+ * ground: a ground-signal probe at each end of a lossless line with nothing
+ * below gave back 9e-4 at 40 GHz, 5.3e-3 on gold at 60.
+ */
+struct SourceRun {
+    QPointF from, to;                ///< m: the hub, and the side's middle
+    int height = 0;                  ///< which of the heights
+    double length = 0;               ///< m
+    double dirX = 0, dirY = 0;
+};
+
 /// A via run as the mesh makes it, before the solve numbers its cells.
 struct ViaRun {
     Filament run;
@@ -814,6 +841,11 @@ struct Context {
     /// coplanar port, whose current comes back beside it. Their spans are
     /// among the vias'.
     QList<PortPath> paths;
+    /// The legs of the ports' own currents where they come up by no path
+    /// (SourceRun), and what each column carries along each, legs x columns:
+    /// +1 out along its own side's, -1 along its return's.
+    QList<SourceRun> sources;
+    Eigen::MatrixXd sourceOf;
     /// How many of each run in the plane's two sides are its conductor's
     /// edge, where the current crowds inside the cells (crowding()).
     QList<int> freeSides;
@@ -960,6 +992,11 @@ struct Kernels {
     /// remainder.
     Complex inductance(int a, int b, double direct, double image) const;
     Complex inductance(int a, int b) const;
+    /// The part of that kernel that is no static partial inductance, H/m^2
+    /// a unit current element's at \a rho (m), between heights \a h0 and
+    /// \a h1: the retardation of the source and of its image, and the
+    /// stack's own remainder - what radiates, smooth and finite at nought.
+    Complex smooth(int h0, int h1, double rho) const;
     /// P(i, j): cell i's potential of a unit charge spread over cell j and
     /// the other way round, averaged - each way's static part given
     /// (rectanglePotential(), \a pij and \a pji) or made here.
@@ -1016,9 +1053,15 @@ Complex Kernels::inductance(int a, int b, double direct, double image) const
     const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage();
     const double rho = std::hypot(c.midX.at(a) - c.midX.at(b), c.midY.at(a) - c.midY.at(b));
     const Complex l = 2.0 * d.coefficient / kMu0 * direct + 2.0 * i.coefficient / kMu0 * image;
-    const Complex smooth = d.coefficient / (2 * M_PI) * retardation(d.k, std::hypot(rho, d.dz))
-                           + i.coefficient / (2 * M_PI) * retardation(i.k, std::hypot(rho, i.dz)) + g.vectorRemainder(rho);
-    return l + c.runs.at(a).length() * c.runs.at(b).length() * smooth;
+    return l + c.runs.at(a).length() * c.runs.at(b).length() * smooth(c.hRun.at(a), c.hRun.at(b), rho);
+}
+
+Complex Kernels::smooth(int h0, int h1, double rho) const
+{
+    const WaveGreen& g = green(h0, h1);
+    const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage();
+    return d.coefficient / (2 * M_PI) * retardation(d.k, std::hypot(rho, d.dz))
+           + i.coefficient / (2 * M_PI) * retardation(i.k, std::hypot(rho, i.dz)) + g.vectorRemainder(rho);
 }
 
 Complex Kernels::inductance(int a, int b) const
@@ -1170,6 +1213,70 @@ void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own
             own(a.column, b.column) += v;
             if (i != j) own(b.column, a.column) += v;
         }
+}
+
+/*!
+ * What the ports' own currents add at \a k's frequency where they come up
+ * by no path (SourceRun): the radiating part of each leg's vector potential
+ * (Kernels::smooth()) along every run in the plane - the run's cosine with
+ * the leg times both lengths and the kernel averaged along the leg by
+ * Gauss's rule - into the drive \a rhs, as each column carries it along its
+ * legs (Context::sourceOf) - the same, by reciprocity, the column's voltage
+ * of the runs' currents -; and each two legs' alike into \a own, the
+ * columns' own impedances.
+ */
+void addSourceFields(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own)
+{
+    const int legs = int(c.sources.size());
+    if (legs == 0) return;
+    // (Of a leg and what it is seen at \a rho from: Gauss's points along it,
+    //  as many as a kernel that changes over the distance - or the
+    //  remainder's reach, or the wavelength, where shorter - wants.)
+    const auto pointsOf = [&k](const SourceRun& s, int h, double rho) {
+        const WaveGreen& g = k.green(h, s.height);
+        const double wave = 1.0 / std::max(1e-300, std::abs(g.vectorTerm().k));
+        return pointsAlong(s.length, std::min(std::hypot(rho, g.reach()), wave));
+    };
+    const auto along = [](const SourceRun& s, double t) {
+        return QPointF(s.from.x() + (t + 0.5) * (s.to.x() - s.from.x()), s.from.y() + (t + 0.5) * (s.to.y() - s.from.y()));
+    };
+    MatrixC fields = MatrixC::Zero(rhs.rows(), legs), between = MatrixC::Zero(legs, legs);
+    for (int l = 0; l < legs; ++l) {
+        const SourceRun& s = c.sources.at(l);
+        const QPointF middle = along(s, 0);
+        for (int a = 0; a < c.planar; ++a) {
+            const double dot = c.dirX.at(a) * s.dirX + c.dirY.at(a) * s.dirY;
+            if (std::abs(dot) < 1e-9) continue;
+            const int h = c.hRun.at(a);
+            const Rule& r = gaussRule(pointsOf(s, h, std::hypot(c.midX.at(a) - middle.x(), c.midY.at(a) - middle.y())));
+            Complex sum(0, 0);
+            for (int i = 0; i < r.at.size(); ++i) {
+                const QPointF at = along(s, r.at.at(i));
+                sum += r.weight.at(i) * k.smooth(h, s.height, std::hypot(c.midX.at(a) - at.x(), c.midY.at(a) - at.y()));
+            }
+            fields(a, l) = k.jw * dot * c.runs.at(a).length() * s.length * sum;
+        }
+    }
+    for (int i = 0; i < legs; ++i)
+        for (int j = i; j < legs; ++j) {
+            const SourceRun& a = c.sources.at(i);
+            const SourceRun& b = c.sources.at(j);
+            const double dot = a.dirX * b.dirX + a.dirY * b.dirY;
+            if (std::abs(dot) < 1e-9) continue;
+            const QPointF ma = along(a, 0), mb = along(b, 0);
+            const double apart = std::hypot(ma.x() - mb.x(), ma.y() - mb.y());
+            const Rule& r = gaussRule(std::max(pointsOf(a, b.height, apart), pointsOf(b, a.height, apart)));
+            Complex sum(0, 0);
+            for (int p = 0; p < r.at.size(); ++p)
+                for (int q = 0; q < r.at.size(); ++q) {
+                    const QPointF x = along(a, r.at.at(p)), y = along(b, r.at.at(q));
+                    sum += r.weight.at(p) * r.weight.at(q) * k.smooth(a.height, b.height, std::hypot(x.x() - y.x(), x.y() - y.y()));
+                }
+            between(i, j) = between(j, i) = k.jw * dot * a.length * b.length * sum;
+        }
+    const MatrixC of = c.sourceOf.cast<Complex>();
+    rhs -= fields * of;
+    own += of.transpose() * between * of;
 }
 
 /// \a job(i) for each i below \a count, each on one of \a threads threads,
@@ -1377,6 +1484,7 @@ AtFrequency solveAt(const Context& c, double f, int threads)
         for (int q = 0; q < c.np; ++q) rhs(c.vias.at(j).run, q) -= portVia(q, j);
     MatrixC pathZ = MatrixC::Zero(c.np, c.np);
     addPortPaths(c, k, rhs, pathZ);
+    addSourceFields(c, k, rhs, pathZ);
     out.fillSeconds = double(clock.nsecsElapsed()) * 1e-9;
     // (m factorized where it is: it is not needed past here.)
     const DenseFactors<Complex> lu(std::move(m));
@@ -1732,6 +1840,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         for (int q = 0; q < columns; ++q) rhs(c.vias.at(j).run, q) -= ph(j, q);
     MatrixC pathZ = MatrixC::Zero(columns, columns);
     addPortPaths(c, k, rhs, pathZ);
+    addSourceFields(c, k, rhs, pathZ);
     MatrixC current(nr, columns), applied(nr, columns);
     for (int q = 0; q < columns; ++q) {
         VectorC x = VectorC::Zero(nr), mx;
@@ -2815,6 +2924,86 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             c.paths << path;
         }
     }
+    // The ports' own currents where they come up by no path (SourceRun):
+    // each such column's two sides - its own cells, the positive part of its
+    // column, and its return's, the negative -, a side the same cells by the
+    // same shares wherever it comes; the columns whose sides touch one
+    // probe, its hub at the middle of its sides' middles, a leg from it to
+    // each side's middle (none to a side at the hub), at the height of most
+    // of the probe's cells. (In ordered maps, so that every process sums
+    // them alike.)
+    {
+        QSet<int> pathed;
+        for (const PortPath& path : std::as_const(c.paths)) pathed.insert(path.column);
+        QList<QList<QPair<int, double>>> sides;
+        QList<QPointF> middles;
+        QList<QPair<int, int>> sidesOf(c.np, qMakePair(-1, -1));
+        const auto sideOf = [&](const QList<QPair<int, double>>& cells) {
+            const int found = int(sides.indexOf(cells));
+            if (found >= 0) return found;
+            QPointF middle(0, 0);
+            double weight = 0;
+            for (const auto& [i, share] : cells) {
+                middle += share * c.centre.at(i);
+                weight += share;
+            }
+            sides << cells;
+            middles << middle / weight;
+            return int(sides.size()) - 1;
+        };
+        for (int k = 0; k < c.np; ++k) {
+            if (pathed.contains(k)) continue;
+            QList<QPair<int, double>> plus, minus;
+            for (int i = 0; i < nc; ++i) {
+                const double share = c.drive(i, k).real();
+                if (share > 0) plus << qMakePair(i, share);
+                else if (share < 0) minus << qMakePair(i, -share);
+            }
+            if (plus.isEmpty() || minus.isEmpty()) continue;
+            sidesOf[k] = qMakePair(sideOf(plus), sideOf(minus));
+        }
+        // (The probes: the sides a column joins, by union-find.)
+        QList<int> root(sides.size());
+        for (int s = 0; s < root.size(); ++s) root[s] = s;
+        const std::function<int(int)> find = [&root, &find](int s) { return root[s] == s ? s : root[s] = find(root[s]); };
+        for (const QPair<int, int>& two : std::as_const(sidesOf))
+            if (two.first >= 0) root[find(two.first)] = find(two.second);
+        QMap<int, QList<int>> probes;
+        for (int s = 0; s < sides.size(); ++s) probes[find(s)] << s;
+        QList<int> legOf(sides.size(), -1);
+        const double size = std::max(1e-9, std::hypot(extent.width(), extent.height()));
+        for (auto it = probes.cbegin(); it != probes.cend(); ++it) {
+            QPointF hub(0, 0);
+            QMap<int, double> atHeight;
+            for (const int s : it.value()) {
+                hub += middles.at(s);
+                for (const auto& [i, share] : sides.at(s)) atHeight[c.hNode.at(i)] += share;
+            }
+            hub /= double(it.value().size());
+            int height = atHeight.firstKey();
+            for (auto h = atHeight.cbegin(); h != atHeight.cend(); ++h)
+                if (h.value() > atHeight.value(height)) height = h.key();
+            for (const int s : it.value()) {
+                SourceRun leg;
+                leg.from = hub;
+                leg.to = middles.at(s);
+                leg.height = height;
+                leg.length = std::hypot(leg.to.x() - hub.x(), leg.to.y() - hub.y());
+                if (!(leg.length > 1e-9 * size)) continue;
+                leg.dirX = (leg.to.x() - hub.x()) / leg.length;
+                leg.dirY = (leg.to.y() - hub.y()) / leg.length;
+                legOf[s] = int(c.sources.size());
+                c.sources << leg;
+            }
+        }
+        c.sourceOf = Eigen::MatrixXd::Zero(c.sources.size(), c.np);
+        for (int k = 0; k < c.np; ++k) {
+            const auto [mine, back] = sidesOf.at(k);
+            if (mine < 0) continue;
+            if (legOf.at(mine) >= 0) c.sourceOf(legOf.at(mine), k) += 1;
+            if (legOf.at(back) >= 0) c.sourceOf(legOf.at(back), k) -= 1;
+        }
+    }
     // As far as any two points of the layout are apart, and a little more.
     c.rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
 
@@ -2960,7 +3149,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     if (!naming.isEmpty())
         out.lines << tr("%1 port(s) return through the terminals and ports they name, each port's returns tied as a "
                         "probe's tips are: a source between its own cells and theirs, with no path up to them, so that "
-                        "its reference plane is at those cells and the probe's own loop is not in the answer.")
+                        "its reference plane is at those cells and the probe's own loop is not in the answer - its "
+                        "current between them radiating, its loop's inductance left out.")
                          .arg(naming.size());
     out.lines << thick.said;
     if (!walled.isEmpty())
@@ -3068,30 +3258,6 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.solvedGain = out.gain;
     out.solvedGainAt = out.gainAt;
     out.lines << returnSharesOf(out);
-    // A port that names its returns is an ideal source between its cells and
-    // theirs: the current a probe carries from them to it has no field
-    // here. Over a ground plane its image takes that field's radiation away
-    // (a ground-signal probe 125 µm from its tip, lossless, gave back
-    // nothing to 60 GHz); with none it would radiate, and S can give back a
-    // little - most where the returns are on one side of the port, as its
-    // dipole, little where they lie alike either side (on lossless quartz at
-    // 60 GHz: 4.7e-3 and 2.3e-5, the coplanar port's own 1.5e-5 - its
-    // current across its gaps has none either). Gold's loss covers the GSG's,
-    // not the one-sided probes' (5.8e-4 at 40 GHz on it).
-    if (!naming.isEmpty() && !c.layers.groundBelow && out.gain > 1e-6) {
-        QStringList named;
-        for (const int p : std::as_const(naming)) named << out.portNames.at(p);
-        const QString said = tr("At %1 GHz S gives back %2 more than it is given: with no ground plane, %3 - returning through "
-                                "the terminals and ports named, an ideal source between its cells and theirs - has none of "
-                                "the field its own current, from its returns to its cells as a probe carries it, would "
-                                "radiate; most where its returns lie on one side of it, little where they lie alike either "
-                                "side. Returns either side, nearer, or a ground plane under the stack make it less.")
-                                 .arg(out.gainAt / 1e9, 0, 'g', 4)
-                                 .arg(out.gain, 0, 'g', 2)
-                                 .arg(named.join(QStringLiteral(", ")));
-        out.warnings << said;
-        out.lines << said;
-    }
     // Where the stack begins to carry a second surface wave - TE1 over a
     // ground - which a strip launches beside the TM0 of every frequency: the
     // top of a microstrip's band on it, said where the sweep passes it.
