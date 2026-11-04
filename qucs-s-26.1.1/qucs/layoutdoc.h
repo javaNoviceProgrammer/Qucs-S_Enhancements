@@ -133,6 +133,9 @@ public:
     /// the eraser, and Ctrl+Z undoes. Escape goes back to Select.
     enum class Mode { Select, Ruler, PickPoint, PickBox, Draw };
     Mode mode() const { return a_mode; }
+    /// The keys held as the last pick was made (picked(), boxPicked()): a
+    /// tab that places things by them - Shift, a port's return.
+    Qt::KeyboardModifiers pickModifiers() const { return a_pickModifiers; }
     void setMode(Mode mode);
     /// The rulers, µm; the last one is being drawn while a drag lasts.
     const QList<QLineF>& rulers() const { return a_rulers; }
@@ -351,6 +354,7 @@ private:
     QPoint a_lastPos;
     bool a_moved = false;
     QRect a_zoomBox;
+    Qt::KeyboardModifiers a_pickModifiers;
 };
 
 } // namespace qucs_s::layout

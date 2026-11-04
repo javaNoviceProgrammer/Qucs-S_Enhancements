@@ -17,6 +17,7 @@
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -122,6 +123,30 @@ P file(const QString& key, const QString& label, const QString& tip = {})
     p.defaultValue = QString();
     p.tooltip = tip;
     return p;
+}
+
+/// A list of names - of terminals and ports - written as a list of texts
+/// (namesOf() reads a text of them too).
+P names(const QString& key, const QString& label, const QString& tip = {})
+{
+    P p;
+    p.key = key;
+    p.label = label;
+    p.kind = P::Objects;
+    p.defaultValue = QJsonArray();
+    p.tooltip = tip;
+    return p;
+}
+
+/// What a port's Returns are, as both kinds of port say it.
+QString returnsTip()
+{
+    return QCoreApplication::translate("qucs_s::rf25",
+                                       "The terminals (a Terminal under Ports) and the ports it returns through, by "
+                                       "their names, all tied: one voltage, the current shared out between them by the "
+                                       "solve, as a probe's ground tips are - one for a ground-signal probe, two for a "
+                                       "GSG, four for the ground ring round a pad. A port named is in series with this "
+                                       "one: its cells are this one's return, and it a port of its own (full wave)");
 }
 
 QList<NodeKind> makeKinds()
@@ -253,8 +278,9 @@ QList<NodeKind> makeKinds()
 
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
-         {QStringLiteral("rf_edge_port"), QStringLiteral("rf_internal_port"), QStringLiteral("rf_return")}, {}, true, true,
-         QString(),
+         {QStringLiteral("rf_edge_port"), QStringLiteral("rf_internal_port"), QStringLiteral("rf_terminal"),
+          QStringLiteral("rf_return")},
+         {}, true, true, QString(),
          tr("Where the structure is driven, and what its lines return through. The ports' order is the order of the "
             "S matrix.")});
     add({QStringLiteral("rf_edge_port"), tr("Edge Port"), QStringLiteral("port"), QStringLiteral("port"), none,
@@ -265,13 +291,16 @@ QList<NodeKind> makeKinds()
                  {QStringLiteral("auto"), QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y")},
                  {tr("Outwards"), QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y")},
                  QStringLiteral("auto")),
-          choice(QStringLiteral("return"), tr("Return"), {QStringLiteral("ground"), QStringLiteral("beside")},
-                 {tr("Through the ground plane"), tr("Through the conductors beside it (ground-signal-ground)")},
+          choice(QStringLiteral("return"), tr("Return"),
+                 {QStringLiteral("ground"), QStringLiteral("beside"), QStringLiteral("terminals")},
+                 {tr("Through the ground plane"), tr("Through the conductors beside it (ground-signal-ground)"),
+                  tr("Through the terminals and ports it names (a probe's tips)")},
                  QStringLiteral("ground"),
                  tr("Where its current comes back: up from the ground plane under its face, or - for a coplanar "
                     "line, as a probe's grounds touch it - through the conductors either side of it on the line of "
                     "its edge, which must reach that edge too, tied together: the nearest return conductors, past "
-                    "any other (full wave)")),
+                    "any other; or through the terminals and ports it names, wherever they are (full wave)")),
+          shownIf(names(QStringLiteral("returns"), tr("Returns"), returnsTip()), "return=terminals"),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50")),
           text(QStringLiteral("pair"), tr("Pair with"), QString(),
                tr("Another port, by its name: this one the pair's plus, that one its minus - a differential pair, as "
@@ -306,7 +335,15 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("rf_internal_port"), tr("Internal Port"), QStringLiteral("port"), QStringLiteral("port"), none,
          {expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
           expr(QStringLiteral("y"), tr("At y"), QStringLiteral("m"), QStringLiteral("0")),
-          text(QStringLiteral("from"), tr("From metal"), QString(), tr("A metal of the stack, or \"ground\"")),
+          choice(QStringLiteral("return"), tr("Return"), {QStringLiteral("from"), QStringLiteral("terminals")},
+                 {tr("Its From metal (or the ground) under it"), tr("Through the terminals and ports it names (a probe's tips)")},
+                 QStringLiteral("from"),
+                 tr("Where its current comes back: from the cells of its From metal under it - or the ground - up a "
+                    "path of its own, or through the terminals and ports it names, wherever they are, with no path "
+                    "up to them: a probe's tips on its pads (full wave)")),
+          shownIf(text(QStringLiteral("from"), tr("From metal"), QString(), tr("A metal of the stack, or \"ground\"")),
+                  "return!=terminals"),
+          shownIf(names(QStringLiteral("returns"), tr("Returns"), returnsTip()), "return=terminals"),
           text(QStringLiteral("to"), tr("To metal"), QString()),
           expr(QStringLiteral("width"), tr("Width"), QStringLiteral("m"), QStringLiteral("0"),
                tr("Across x, the rectangle about its point whose cells it drives together; nought, with the height, "
@@ -322,6 +359,35 @@ QList<NodeKind> makeKinds()
          tr("A port between two metals, or between a metal and the ground: at a point, the one cell under it, or over "
             "a rectangle about the point, every cell of the metal in it driven together - as a rectangle drawn on "
             "the layout with the Internal Port tool makes it.")});
+
+    add({QStringLiteral("rf_terminal"), tr("Terminal"), QStringLiteral("port"), QStringLiteral("port"), none,
+         {text(QStringLiteral("metal"), tr("On metal"), QString(),
+               tr("A metal of the stack, by its name; empty: whichever is there")),
+          expr(QStringLiteral("x"), tr("At x"), QStringLiteral("m"), QStringLiteral("0")),
+          expr(QStringLiteral("y"), tr("At y"), QStringLiteral("m"), QStringLiteral("0")),
+          choice(QStringLiteral("face"), tr("Of"),
+                 {QStringLiteral("none"), QStringLiteral("auto"), QStringLiteral("+x"), QStringLiteral("-x"),
+                  QStringLiteral("+y"), QStringLiteral("-y")},
+                 {tr("The cells under its rectangle"), tr("The face nearest its point"), tr("The face facing +x"),
+                  tr("The face facing -x"), tr("The face facing +y"), tr("The face facing -y")},
+                 QStringLiteral("none"),
+                 tr("The cells under a rectangle about its point, each by its share of the area - or the one cell under "
+                    "the point -, or the face of the conductor at its point, each of its cells by its share of the "
+                    "face's length, as an edge port's")),
+          shownIf(expr(QStringLiteral("width"), tr("Width"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("Across x, the rectangle about its point whose cells it is; nought, with the height, the one "
+                          "cell under the point")),
+                  "face=none"),
+          shownIf(expr(QStringLiteral("height"), tr("Height"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("Across y, the same rectangle's")),
+                  "face=none")},
+         {}, {}, false, false, QStringLiteral("t"),
+         tr("A place a port returns through: the cells of a metal under a rectangle about its point - or the one cell "
+            "under the point -, or the face of the conductor at its point, as an edge port's. It drives nothing by "
+            "itself and is no port of the S matrix: a port whose Return is the terminals it names lists it among its "
+            "Returns, as a probe's ground tips land on their pads - one for a ground-signal probe, two for a GSG, four "
+            "for the ground ring round a pad. With the Internal Port tool, a Shift-drag puts one among the returns of "
+            "the port drawn last (full wave).")});
 
     add({QStringLiteral("rf_return"), tr("Return Conductor"), QStringLiteral("port"), QStringLiteral("port"), none,
          {text(QStringLiteral("conductor"), tr("On metal"), QString(),
@@ -590,6 +656,26 @@ QString nameOf(const Node& node)
     if (!node.label.isEmpty()) return node.label;
     const NodeKind* k = nodeKind(node.type);
     return k != nullptr ? k->title : node.type;
+}
+
+QStringList namesOf(const Node& node, const QString& key)
+{
+    const QJsonValue v = valueOf(node, key);
+    QStringList out;
+    if (v.isArray()) {
+        for (const QJsonValue& each : v.toArray())
+            if (const QString name = each.toString().trimmed(); !name.isEmpty()) out << name;
+        return out;
+    }
+    // (A text of them, as a file written by hand may give: "T1, T2".)
+    for (const QString& name : v.toString().split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts))
+        out << name;
+    return out;
+}
+
+QString portName(const Node& node)
+{
+    return node.label.isEmpty() ? node.tag : node.label;
 }
 
 QString formatName()
@@ -974,16 +1060,43 @@ QStringList Model::problems() const
     }
     if (mapped == 0 && !map.isEmpty())
         said << tr("The layer map sends no layer of the file to the stack.");
-    // The ports: each names conductors that are there.
+    // The ports: each names conductors that are there - and, one that
+    // names its returns, terminals and ports that are (a terminal's name
+    // and a port's not the same, or a return would be the one or the other).
+    QStringList terminals, driven;
     for (const Node& p : ports().children) {
         if (!p.enabled) continue;
-        const QString who = p.label.isEmpty() ? p.tag : p.label;
-        for (const QString& key : {QStringLiteral("conductor"), QStringLiteral("from"), QStringLiteral("to")}) {
-            const QString named = textOf(p, key).trimmed();
-            if (named.isEmpty() || named.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0) continue;
-            if (s.named(named) == nullptr)
-                said << tr("The port %1 names %2, which is no layer of the stack.").arg(who, named);
+        if (p.type == QLatin1String("rf_terminal")) terminals << portName(p);
+        else if (p.type == QLatin1String("rf_edge_port") || p.type == QLatin1String("rf_internal_port")) driven << portName(p);
+    }
+    for (const Node& p : ports().children) {
+        if (!p.enabled) continue;
+        const QString who = portName(p);
+        const bool named = textOf(p, QStringLiteral("return")) == QLatin1String("terminals")
+                           && p.type != QLatin1String("rf_terminal") && p.type != QLatin1String("rf_return");
+        for (const QString& key : {QStringLiteral("conductor"), QStringLiteral("from"), QStringLiteral("to"), QStringLiteral("metal")}) {
+            // (An internal port that names its returns is from no metal.)
+            if (named && key == QLatin1String("from")) continue;
+            const QString layer = textOf(p, key).trimmed();
+            if (layer.isEmpty() || layer.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0) continue;
+            if (s.named(layer) == nullptr)
+                said << (p.type == QLatin1String("rf_terminal")
+                             ? tr("The terminal %1 names %2, which is no layer of the stack.").arg(who, layer)
+                             : tr("The port %1 names %2, which is no layer of the stack.").arg(who, layer));
         }
+        if (p.type == QLatin1String("rf_terminal") && driven.contains(who))
+            said << tr("%1 is the name of a terminal and of a port: a port's returns name one or the other, so each needs "
+                       "a name of its own.")
+                        .arg(who);
+        if (!named) continue;
+        const QStringList returns = namesOf(p, QStringLiteral("returns"));
+        if (returns.isEmpty())
+            said << tr("The port %1 returns through the terminals and ports it names, and names none.").arg(who);
+        for (const QString& r : returns)
+            if (r == who)
+                said << tr("The port %1 returns through itself.").arg(who);
+            else if (!terminals.contains(r) && !driven.contains(r))
+                said << tr("The port %1 returns through %2, which is no terminal or port of the model.").arg(who, r);
     }
     if (ports().children.empty())
         said << tr("The model has no port: there is nothing to drive it with.");
@@ -1094,6 +1207,7 @@ Node Model::make(const QString& type) const
     else if (type == QLatin1String("rf_edge_port") || type == QLatin1String("rf_internal_port"))
         n.label = numbered(QStringLiteral("P"));
     else if (type == QLatin1String("rf_return")) n.label = numbered(QStringLiteral("G"));
+    else if (type == QLatin1String("rf_terminal")) n.label = numbered(QStringLiteral("T"));
     else if (!k->fixed) n.label = k->title;
     for (const QString& d : k->defaults) {
         Node c;
@@ -1186,6 +1300,7 @@ void Model::renameLayer(const QString& from, const QString& to)
         rename(p, QStringLiteral("conductor"));
         rename(p, QStringLiteral("from"));
         rename(p, QStringLiteral("to"));
+        rename(p, QStringLiteral("metal"));
     }
     if (Node* map = layout().child(QStringLiteral("rf_layer_map"))) {
         const QJsonArray rows = map->props.value(QLatin1String("rows")).toArray();
@@ -1200,6 +1315,20 @@ void Model::renameLayer(const QString& from, const QString& to)
             out.append(cells);
         }
         if (changed) map->props.insert(QStringLiteral("rows"), out);
+    }
+}
+
+void Model::renamePort(const QString& from, const QString& to)
+{
+    if (from.isEmpty() || to.isEmpty() || from == to) return;
+    for (Node& p : ports().children) {
+        if (textOf(p, QStringLiteral("pair")).trimmed() == from) p.props.insert(QStringLiteral("pair"), to);
+        if (!p.props.contains(QLatin1String("returns"))) continue;
+        QStringList returns = namesOf(p, QStringLiteral("returns"));
+        if (!returns.contains(from)) continue;
+        for (QString& r : returns)
+            if (r == from) r = to;
+        p.props.insert(QStringLiteral("returns"), QJsonArray::fromStringList(returns));
     }
 }
 
