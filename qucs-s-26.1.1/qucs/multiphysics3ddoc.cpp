@@ -28,6 +28,7 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -39,6 +40,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
@@ -86,6 +88,7 @@ QByteArray compact(const QJsonValue& v)
 /// and what the mesh is made of besides (its node, the selections).
 struct Parts {
     QByteArray geometry, mesh;
+    QByteArray solved;   // all a solve reads: the model but its results, title and description
 };
 
 Parts partsOf(const Model& m)
@@ -96,6 +99,9 @@ Parts partsOf(const Model& m)
     p.geometry = compact(o.value(QStringLiteral("parameters"))) + compact(o.value(QStringLiteral("functions")))
                  + compact(c.value(QStringLiteral("unit"))) + compact(c.value(QStringLiteral("geometry")));
     p.mesh = compact(c.value(QStringLiteral("mesh"))) + compact(c.value(QStringLiteral("selections")));
+    QJsonObject solved = o;
+    for (const char* key : {"results", "title", "description"}) solved.remove(QLatin1String(key));
+    p.solved = QJsonDocument(solved).toJson(QJsonDocument::Compact);
     return p;
 }
 
@@ -107,7 +113,7 @@ struct Multiphysics3DDoc::Job {
     bool mesh = false;                       ///< a mesh asked (its geometry first, when none given)
     bool solve = false;                      ///< a solve asked (its mesh first, when none given)
     std::shared_ptr<const Mesh3> givenMesh;  ///< the mesh a solve is on (none: made by it)
-    StudyResult3 study;
+    StudyRun3 study;
     Model model;
     std::shared_ptr<ParameterScope> parameters;
     std::shared_ptr<Topology3> topology;     ///< the geometry a mesh is of (given: not built again)
@@ -164,6 +170,7 @@ Multiphysics3DDoc::Multiphysics3DDoc(QucsApp* app, const QString& name) : QFrame
         if (QFileInfo::exists(path) && !a_watcher->files().contains(path)) a_watcher->addPath(path);   // (written anew)
         say(tr("%1 changed: the geometry is built again").arg(QFileInfo(path).fileName()));
         ++a_revision;
+        ++a_solvedRevision;
         a_geometryStale = true;
         a_meshStale = true;
         a_geometryTimer->start();
@@ -238,6 +245,26 @@ void Multiphysics3DDoc::buildUi()
     row->addWidget(a_plotBox);
     connect(a_plotBox, &QComboBox::activated, this, [this](int) { setPlotExpression(a_plotBox->currentText()); });
     connect(a_plotBox->lineEdit(), &QLineEdit::editingFinished, this, [this] { setPlotExpression(a_plotBox->currentText()); });
+    // (A solution in time: which of its output times is shown.)
+    a_timeLabel = new QLabel(tr("Time:"), bar);
+    row->addWidget(a_timeLabel);
+    a_timeBox = new QComboBox(bar);
+    a_timeBox->setObjectName(QStringLiteral("mp3Time"));
+    a_timeBox->setToolTip(tr("The output time shown: the fields, the plot and the globals at that time"));
+    row->addWidget(a_timeBox);
+    connect(a_timeBox, &QComboBox::activated, this, [this](int index) { setShownTime(index); });
+    a_timeLabel->hide();
+    a_timeBox->hide();
+    // (A sweep: which of its points is shown.)
+    a_pointLabel = new QLabel(tr("Point:"), bar);
+    row->addWidget(a_pointLabel);
+    a_pointBox = new QComboBox(bar);
+    a_pointBox->setObjectName(QStringLiteral("mp3Point"));
+    a_pointBox->setToolTip(tr("The point of the sweep shown: its parameters' values"));
+    row->addWidget(a_pointBox);
+    connect(a_pointBox, &QComboBox::activated, this, [this](int index) { setShownPoint(index); });
+    a_pointLabel->hide();
+    a_pointBox->hide();
     row->addSpacing(8);
     struct Preset {
         const char* name;
@@ -303,12 +330,25 @@ void Multiphysics3DDoc::buildUi()
     auto* split = new QSplitter(Qt::Vertical, this);
     split->setObjectName(QStringLiteral("mp3Splitter"));
     a_view = new View3D(split);
-    a_notes = new QPlainTextEdit(split);
+    // Below it the messages, and the derived values' table beside them once
+    // one is evaluated.
+    auto* below = new QSplitter(Qt::Horizontal, split);
+    below->setObjectName(QStringLiteral("mp3Below"));
+    a_notes = new QPlainTextEdit(below);
     a_notes->setObjectName(QStringLiteral("mp3Messages"));
     a_notes->setReadOnly(true);
     a_notes->setMaximumBlockCount(500);
+    a_table = new QTableWidget(0, 3, below);
+    a_table->setObjectName(QStringLiteral("mp3Table"));
+    a_table->setHorizontalHeaderLabels({tr("Node"), tr("Value of"), tr("Value")});
+    a_table->verticalHeader()->hide();
+    a_table->horizontalHeader()->setStretchLastSection(true);
+    a_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    a_table->hide();
+    below->addWidget(a_notes);
+    below->addWidget(a_table);
     split->addWidget(a_view);
-    split->addWidget(a_notes);
+    split->addWidget(below);
     split->setStretchFactor(0, 5);
     split->setStretchFactor(1, 1);
     split->setSizes({600, 110});
@@ -493,7 +533,12 @@ void Multiphysics3DDoc::applyModel(const Model& model, bool read)
     a_model.fileName = a_DocName;
     ++a_revision;
     const bool geometry = read || before.geometry != after.geometry;
-    if (a_solution) a_solutionStale = true;
+    // (Its results alone changed - a derived value, a plot added -: the
+    // solution is of the model as it is still.)
+    if (read || before.solved != after.solved) {
+        ++a_solvedRevision;
+        if (a_solution) a_solutionStale = true;
+    }
     if (geometry) {
         a_geometryStale = true;
         a_meshStale = true;
@@ -505,7 +550,10 @@ void Multiphysics3DDoc::applyModel(const Model& model, bool read)
     // (Read from its file: what was solved is of another model.)
     if (read) {
         a_solution.reset();
+        a_solutions.clear();
         a_plotCache = {};
+        fillPointChoices();
+        fillTimeChoices();
         if (a_show == Show::Solution) a_show = Show::Geometry;
     }
     if (!a_focus.isEmpty() && !a_model.find(a_focus)) a_focus.clear();
@@ -598,7 +646,7 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
     job->solve = solve;
     job->model = a_model;
     job->parameters = parameters();
-    job->revision = a_revision;
+    job->revision = a_solvedRevision;
     if (!a_geometryStale && a_geometry.ok()) job->topology = a_geometry.topology;
     if (solve && job->topology && a_mesh && !a_meshStale) job->givenMesh = a_mesh;
     a_job = job;
@@ -625,7 +673,7 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
             job->givenMesh = job->meshBuild.mesh;
         }
         if (job->solve)
-            job->study = solveStudy3(job->model, job->parameters, job->givenMesh, QString(), [job, meshShare](double fraction, const QString&) {
+            job->study = runStudy3(job->model, job->parameters, job->topology, job->givenMesh, QString(), [job, meshShare](double fraction, const QString&) {
                 job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
                 return !job->cancel.load();
             });
@@ -652,7 +700,7 @@ void Multiphysics3DDoc::jobFinished()
     if (!job) return;
     job->thread->deleteLater();
     job->thread = nullptr;
-    const bool current = job->revision == a_revision;
+    const bool current = job->revision == a_solvedRevision;
     bool fit = false;
     if (job->cancel) {
         say(tr("Stopped"));
@@ -830,20 +878,150 @@ void Multiphysics3DDoc::fillPlotChoices()
     a_plotBox->setEditText(a_plot.isEmpty() ? plotExpression() : now);
 }
 
-void Multiphysics3DDoc::sayFinished(const StudyResult3& r, qint64 ms)
+void Multiphysics3DDoc::fillTimeChoices()
+{
+    if (!a_timeBox) return;
+    a_timeBox->clear();
+    const bool inTime = a_solution && a_solution->timeDependent && a_solution->snapshotCount() > 0;
+    a_timeLabel->setVisible(inTime);
+    a_timeBox->setVisible(inTime);
+    if (!inTime) return;
+    for (int i = 0; i < a_solution->snapshotCount(); ++i) a_timeBox->addItem(formatQuantity(a_solution->snapshotTime(i), Dim::of(0, 0, 1)));
+    a_timeBox->setCurrentIndex(a_solution->selected());
+}
+
+DerivedResult Multiphysics3DDoc::evaluate(const QString& tag)
+{
+    DerivedResult out;
+    const Node* n = a_model.find(tag);
+    static const QStringList derived = {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
+                                        QStringLiteral("minimum"), QStringLiteral("pointeval")};
+    if (!n || !derived.contains(n->type)) {
+        out.error = n ? tr("%1 is not a derived value that a 3D model evaluates").arg(n->name()) : tr("there is no node %1").arg(tag);
+        return out;
+    }
+    if (a_solutions.empty()) {
+        out.error = tr("%1: the model is not computed yet - Compute first").arg(n->name());
+        say(out.error, true);
+        return out;
+    }
+    // At each output time and point it asks for, or at the one shown; that
+    // one shown again after.
+    const int shown = shownTime();
+    std::vector<Instance3> each;
+    if (n->text(QStringLiteral("solutions")) != QLatin1String("selected")) {
+        each = instances3(a_solutions, true);
+    } else {
+        Instance3 at;
+        at.point = std::max(0, shownPoint());
+        at.snapshot = shown;
+        each.push_back(at);
+    }
+    for (const Instance3& at : each) {
+        Solution3* s = select3(a_solutions, at);
+        if (!s) continue;
+        const DerivedResult one = evaluateDerived3(*s, *n);
+        for (DerivedValue v : one.values) {
+            if (!at.label.isEmpty()) v.name = at.label + QStringLiteral(": ") + v.name;
+            out.values << v;
+        }
+        if (out.error.isEmpty() && !one.error.isEmpty()) out.error = at.label.isEmpty() ? one.error : at.label + QStringLiteral(": ") + one.error;
+        if (out.note.isEmpty()) out.note = one.note;
+    }
+    for (const auto& s : a_solutions)
+        if (s->snapshotCount() > 0) s->select(s->snapshotCount() - 1);
+    if (a_solution && shown >= 0) a_solution->select(shown);
+    // Its rows in the table, in place of its last.
+    for (int r = a_table->rowCount() - 1; r >= 0; --r)
+        if (a_table->item(r, 0) && a_table->item(r, 0)->data(Qt::UserRole).toString() == tag) a_table->removeRow(r);
+    for (const DerivedValue& v : out.values) {
+        const int r = a_table->rowCount();
+        a_table->insertRow(r);
+        auto* name = new QTableWidgetItem(n->name());
+        name->setData(Qt::UserRole, tag);
+        a_table->setItem(r, 0, name);
+        a_table->setItem(r, 1, new QTableWidgetItem(v.name));
+        a_table->setItem(r, 2, new QTableWidgetItem(v.text));
+    }
+    a_table->setVisible(a_table->rowCount() > 0);
+    a_table->resizeColumnsToContents();
+    for (const DerivedValue& v : out.values) say(tr("%1: %2 = %3").arg(n->name(), v.name, v.text));
+    if (!out.error.isEmpty()) say(tr("%1: %2").arg(n->name(), out.error), out.values.isEmpty());
+    else if (!out.note.isEmpty()) say(tr("%1: %2").arg(n->name(), out.note));
+    return out;
+}
+
+void Multiphysics3DDoc::fillPointChoices()
+{
+    if (!a_pointBox) return;
+    a_pointBox->clear();
+    const bool swept = a_solutions.size() > 1;
+    a_pointLabel->setVisible(swept);
+    a_pointBox->setVisible(swept);
+    if (!swept) return;
+    for (const auto& s : a_solutions) a_pointBox->addItem(s->label);
+    a_pointBox->setCurrentIndex(shownPoint());
+}
+
+int Multiphysics3DDoc::shownPoint() const
+{
+    for (std::size_t i = 0; i < a_solutions.size(); ++i)
+        if (a_solutions[i] == a_solution) return int(i);
+    return -1;
+}
+
+void Multiphysics3DDoc::setShownPoint(int index)
+{
+    if (index < 0 || index >= int(a_solutions.size()) || a_solutions[std::size_t(index)] == a_solution) return;
+    // (The output time shown kept, where the point has it.)
+    const int time = shownTime();
+    a_solution = a_solutions[std::size_t(index)];
+    if (time >= 0 && time < a_solution->snapshotCount()) a_solution->select(time);
+    if (a_pointBox && a_pointBox->currentIndex() != index) a_pointBox->setCurrentIndex(index);
+    fillTimeChoices();
+    if (a_show == Show::Solution) updateScene();
+    emit stateChanged();
+}
+
+int Multiphysics3DDoc::shownTime() const
+{
+    return a_solution && a_solution->snapshotCount() > 0 ? a_solution->selected() : -1;
+}
+
+void Multiphysics3DDoc::setShownTime(int index)
+{
+    if (!a_solution || a_solution->snapshotCount() == 0) return;
+    a_solution->select(index);
+    if (a_timeBox && a_timeBox->currentIndex() != a_solution->selected()) a_timeBox->setCurrentIndex(a_solution->selected());
+    if (a_show == Show::Solution) updateScene();
+    emit stateChanged();
+}
+
+void Multiphysics3DDoc::sayFinished(const StudyRun3& r, qint64 ms)
 {
     for (const QString& line : r.log) say(line);
-    if (!r.solution) {
+    if (!r.ok()) {
         say(tr("Not solved: %1").arg(r.error), true);
         return;
     }
-    a_solution = r.solution;
+    // (A sweep's points each a solution: the last shown.)
+    a_solutions = r.solutions;
+    a_solution = r.solutions.back();
     a_solutionStale = false;
+    for (const QString& w : r.warnings) say(tr("Warning: %1").arg(w));
+    if (!r.stopped.isEmpty()) say(r.stopped, true);
+    if (a_solutions.size() > 1) say(tr("%1 points of %2: %3, the last, shown").arg(a_solutions.size()).arg(r.swept.join(QLatin1String(", ")), a_solution->label));
+    if (a_solution->timeDependent && a_solution->snapshotCount() > 0)
+        say(tr("At t = %1, the last of %2 output times:")
+                .arg(formatQuantity(a_solution->time(), Dim::of(0, 0, 1)))
+                .arg(a_solution->snapshotCount()));
     for (const Variable& g : a_solution->globals())
         say(tr("%1 = %2%3").arg(g.name, a_solution->globalText(g.name),
                                 g.description.isEmpty() ? QString() : QStringLiteral(" (") + g.description + QLatin1Char(')')));
     say(tr("Shown: %1 (%2 ms in all)").arg(plotExpression()).arg(ms));
     fillPlotChoices();
+    fillPointChoices();
+    fillTimeChoices();
     a_show = Show::Solution;
 }
 
@@ -919,7 +1097,8 @@ void Multiphysics3DDoc::updateScene(bool fit)
         std::vector<double> nodal(m.nodes.size(), std::numeric_limits<double>::quiet_NaN());
         std::vector<SliceTriangle> cut;
         if (e.isValid()) {
-            if (a_plotCache.solution != a_solution || a_plotCache.text != text) a_plotCache = {a_solution, text, nodalValues(sol, e)};
+            if (a_plotCache.solution != a_solution || a_plotCache.snapshot != sol.selected() || a_plotCache.text != text)
+                a_plotCache = {a_solution, sol.selected(), text, nodalValues(sol, e)};
             nodal = a_plotCache.nodal;
             const int axis = a_clipBox->currentData().toInt();
             if (axis >= 0 && t) {

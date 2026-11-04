@@ -17,6 +17,7 @@
 
 #include "fem3_geometry.h"
 #include "fem3_mesh.h"
+#include "fem3_results.h"
 #include "fem3_solver.h"
 #include "qucsdoc.h"
 #include "view3d.h"
@@ -32,6 +33,7 @@ class QLabel;
 class QPlainTextEdit;
 class QProgressBar;
 class QSlider;
+class QTableWidget;
 class QTimer;
 class QToolButton;
 class QUndoStack;
@@ -104,6 +106,21 @@ public:
     std::shared_ptr<const qucs_s::fem::Solution3> solution() const { return a_solution; }
     /// Whether the solution is of the model as it was before an edit.
     bool solutionStale() const { return a_solutionStale; }
+    /// A solution in time: the output time shown, by its number (from 0; -1:
+    /// at rest) - its fields and globals those of that time.
+    int shownTime() const;
+    void setShownTime(int index);
+    /// A sweep's solutions, a point each (one without a sweep; none before a
+    /// solve), and the one shown (from 0; -1: none).
+    const std::vector<std::shared_ptr<qucs_s::fem::Solution3>>& solutions() const { return a_solutions; }
+    int shownPoint() const;
+    void setShownPoint(int index);
+    /// Evaluates Derived Values node \a tag - at each output time and point
+    /// of the solution, or (its Solutions "selected") at the one shown -, its
+    /// rows in the table in place of its last: what it found, or why not.
+    qucs_s::fem::DerivedResult evaluate(const QString& tag);
+    /// The derived values' table: a node, a value's name, the value.
+    QTableWidget* table() const { return a_table; }
     bool solving() const;
     /// Lets the work going on go.
     void cancel();
@@ -153,8 +170,10 @@ private:
     void applyModel(const qucs_s::fem::Model& model, bool read = false);
     void say(const QString& text, bool error = false);
     void startJob(bool mesh, bool solve = false);
-    void sayFinished(const qucs_s::fem::StudyResult3& result, qint64 ms);
+    void sayFinished(const qucs_s::fem::StudyRun3& run, qint64 ms);
     void fillPlotChoices();
+    void fillPointChoices();
+    void fillTimeChoices();
     void jobFinished();
     void updateScene(bool fit = false);
     void updateHighlight();
@@ -167,6 +186,7 @@ private:
     mutable std::shared_ptr<qucs_s::fem::ParameterScope> a_parameters;
     mutable quint64 a_parametersRevision = 0;
     quint64 a_revision = 1;
+    quint64 a_solvedRevision = 1;   // of what a solve reads: a job of another, not kept
 
     qucs_s::fem::GeometryBuild3 a_geometry;
     bool a_geometryStale = true;
@@ -177,14 +197,17 @@ private:
     bool a_geometryWanted = false;   // a build asked while another worked
     bool a_meshWanted = false;
     bool a_solveWanted = false;
-    std::shared_ptr<const qucs_s::fem::Solution3> a_solution;
+    std::shared_ptr<qucs_s::fem::Solution3> a_solution;
+    std::vector<std::shared_ptr<qucs_s::fem::Solution3>> a_solutions;
     bool a_solutionStale = true;
     QString a_plot;
     std::pair<double, double> a_plotRange{0, 0};
-    // The plot's values at the nodes, of the solution and expression they are
-    // of: a redraw - a turn of the view, a focus - not reading them again.
+    // The plot's values at the nodes, of the solution, output time and
+    // expression they are of: a redraw - a turn of the view, a focus - not
+    // reading them again.
     struct PlotCache {
         std::shared_ptr<const qucs_s::fem::Solution3> solution;
+        int snapshot = -1;
         QString text;
         std::vector<double> nodal;
     };
@@ -203,12 +226,17 @@ private:
     QToolButton* a_compute = nullptr;
     QComboBox* a_showBox = nullptr;
     QComboBox* a_plotBox = nullptr;
+    QLabel* a_timeLabel = nullptr;
+    QComboBox* a_timeBox = nullptr;
+    QLabel* a_pointLabel = nullptr;
+    QComboBox* a_pointBox = nullptr;
     QComboBox* a_clipBox = nullptr;
     QSlider* a_clipSlider = nullptr;
     QProgressBar* a_progress = nullptr;
     QToolButton* a_cancel = nullptr;
     QLabel* a_stage = nullptr;
     QPlainTextEdit* a_notes = nullptr;
+    QTableWidget* a_table = nullptr;
     QTimer* a_geometryTimer = nullptr;
     QTimer* a_progressTimer = nullptr;
     QFileSystemWatcher* a_watcher = nullptr;

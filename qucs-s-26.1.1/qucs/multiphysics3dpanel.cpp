@@ -63,13 +63,6 @@ QString cellText(const QJsonValue& v)
     return v.toString();
 }
 
-/// The tree's parts a 3D model leaves out: its results (a solution is shown
-/// in its tab: Show, Plot, the cut).
-bool hidden(const Node& node)
-{
-    return node.type == QLatin1String("results");
-}
-
 QString levelText(Level level)
 {
     switch (level) {
@@ -265,7 +258,6 @@ void Multiphysics3DPanel::addItems(QTreeWidgetItem* parent, const Node& node)
     for (const Node& c : node.children)
         if (c.label.isEmpty()) ++ofType[c.type];
     for (const Node& c : node.children) {
-        if (hidden(c)) continue;
         auto* item = new QTreeWidgetItem(parent);
         const NodeKind* k = c.kind();
         QString shown = c.name();
@@ -704,6 +696,16 @@ void Multiphysics3DPanel::showSettings()
             if (a_doc) a_doc->buildMesh();
         });
         v->addWidget(build);
+    } else if (QStringList{QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
+                           QStringLiteral("minimum"), QStringLiteral("pointeval")}
+                   .contains(n->type)) {
+        auto* evaluate = new QPushButton(tr("Evaluate"), a_form);
+        evaluate->setObjectName(QStringLiteral("mp3EvaluateButton"));
+        const QString tag = n->tag;
+        connect(evaluate, &QPushButton::clicked, this, [this, tag] {
+            if (a_doc) a_doc->evaluate(tag);
+        });
+        v->addWidget(evaluate);
     }
     v->addStretch(1);
     a_scroll->setWidget(a_form);
@@ -1166,37 +1168,45 @@ QWidget* Multiphysics3DPanel::rowsEditor(const Node& node, const PropertyDef& p)
 QWidget* Multiphysics3DPanel::pointsEditor(const Node& node, const PropertyDef& p)
 {
     const QString key = p.key;
+    // Its columns: those its property names (a point's x, y, z), else a
+    // sketch's corners' x and y.
+    const QStringList columns = p.choices.isEmpty() ? QStringList{QStringLiteral("x"), QStringLiteral("y")} : p.choices;
+    const int n = int(columns.size());
+    const bool corners = p.choices.isEmpty();
     auto* w = new QWidget(a_form);
     auto* v = new QVBoxLayout(w);
     v->setContentsMargins(0, 0, 0, 0);
     auto* table = new QTableWidget(w);
     table->setObjectName(QStringLiteral("mp3Points"));
-    table->setColumnCount(2);
-    table->setHorizontalHeaderLabels({QStringLiteral("x"), QStringLiteral("y")});
+    table->setColumnCount(n);
+    table->setHorizontalHeaderLabels(columns);
     table->verticalHeader()->hide();
     table->horizontalHeader()->setStretchLastSection(true);
     const QJsonArray points = node.value(key).toArray();
     table->setRowCount(int(points.size()));
     for (int r = 0; r < points.size(); ++r) {
-        const QJsonArray xy = points.at(r).toArray();
-        table->setItem(r, 0, new QTableWidgetItem(cellText(xy.at(0))));
-        table->setItem(r, 1, new QTableWidgetItem(cellText(xy.at(1))));
+        const QJsonArray row = points.at(r).toArray();
+        for (int c = 0; c < n; ++c) table->setItem(r, c, new QTableWidgetItem(cellText(row.at(c))));
     }
     table->setMinimumHeight(std::min(280, 30 + 26 * std::max(3, int(points.size()) + 1)));
     v->addWidget(table);
-    auto collect = [table] {
+    auto collect = [table, n] {
         QJsonArray out;
         for (int r = 0; r < table->rowCount(); ++r) {
-            const QString x = table->item(r, 0) ? table->item(r, 0)->text().trimmed() : QString();
-            const QString y = table->item(r, 1) ? table->item(r, 1)->text().trimmed() : QString();
-            if (x.isEmpty() && y.isEmpty()) continue;
-            out.append(QJsonArray{x, y});
+            QJsonArray row;
+            bool any = false;
+            for (int c = 0; c < n; ++c) {
+                const QString t = table->item(r, c) ? table->item(r, c)->text().trimmed() : QString();
+                any = any || !t.isEmpty();
+                row.append(t);
+            }
+            if (any) out.append(row);
         }
         return out;
     };
-    connect(table, &QTableWidget::itemChanged, this, [this, key, collect] {
+    connect(table, &QTableWidget::itemChanged, this, [this, key, collect, corners] {
         a_focusKey = key;
-        commit(key, collect(), tr("Change Corners"));
+        commit(key, collect(), corners ? tr("Change Corners") : tr("Change Points"));
     });
     auto* buttons = new QHBoxLayout;
     auto* add = new QPushButton(tr("Add"), w);
@@ -1205,17 +1215,19 @@ QWidget* Multiphysics3DPanel::pointsEditor(const Node& node, const PropertyDef& 
     buttons->addWidget(remove);
     buttons->addStretch(1);
     v->addLayout(buttons);
-    connect(add, &QPushButton::clicked, this, [this, key, collect] {
+    connect(add, &QPushButton::clicked, this, [this, key, collect, n, corners] {
         QJsonArray rows = collect();
-        rows.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
-        commit(key, rows, tr("Add a Corner"));
+        QJsonArray zero;
+        for (int c = 0; c < n; ++c) zero.append(QStringLiteral("0"));
+        rows.append(zero);
+        commit(key, rows, corners ? tr("Add a Corner") : tr("Add a Point"));
     });
-    connect(remove, &QPushButton::clicked, this, [this, key, table, collect] {
+    connect(remove, &QPushButton::clicked, this, [this, key, table, collect, corners] {
         const int r = table->currentRow();
         if (r < 0) return;
         QJsonArray rows = collect();
         if (r < rows.size()) rows.removeAt(r);
-        commit(key, rows, tr("Remove a Corner"));
+        commit(key, rows, corners ? tr("Remove a Corner") : tr("Remove a Point"));
     });
     return w;
 }

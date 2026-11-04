@@ -504,6 +504,31 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
                   std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress = {},
                   const std::vector<std::shared_ptr<Solution>>& resume = {});
 
+/// A Parametric Sweep's points, as a 2D or 3D study runs them: the
+/// parameters swept (in order), each point's values of them (SI), its name
+/// ("w = 2 mm, P = 10 mW"), the texts the parameters are given there, by
+/// name and value; the last parameter's count (its innermost, of every
+/// combination).
+struct SweepPlan {
+    QStringList swept;
+    std::vector<std::vector<double>> points;
+    QStringList labels;
+    std::vector<QHash<QString, QString>> overrides;
+    std::vector<QHash<QString, double>> values;
+    std::size_t inner = 0;
+    /// What shapes the geometry and the mesh: the component's geometry,
+    /// mesh and the model's functions.
+    QJsonObject shaping;
+    /// Whether parameters \a changed (by name) shape the geometry or the
+    /// mesh: a point's own made again.
+    bool reshapes(const QSet<QString>& changed) const;
+};
+/// The points of Parametric Sweep \a sweep of \a model, its parameters'
+/// values read in \a parameters (the model's own); none, and why in \a
+/// error, where a row names no parameter, its values or its unit do not
+/// read, or the combinations do not match.
+std::optional<SweepPlan> sweepPlan(const Model& model, const Node& sweep, const ParameterScope& parameters, QString* error);
+
 /// A list of values as a sweep or a time step gives them: "1, 2, 5",
 /// "range(0, 0.1, 1)" (start, step, stop), "linspace(0, 1, 11)", with units
 /// (2[mm], range(0[s], 10[ms], 1[s])). SI values; their unit in \a dim; an

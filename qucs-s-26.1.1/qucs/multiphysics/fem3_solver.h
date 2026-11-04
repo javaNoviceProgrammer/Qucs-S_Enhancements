@@ -1,8 +1,8 @@
 /*
  * fem3_solver.h - the multiphysics solver in 3D: a 3D model's heat,
  *                 electrostatics and electric currents on a swept mesh's
- *                 prisms, its stationary study, and the fields and globals as
- *                 solved
+ *                 prisms, its study at rest and in time, and the fields and
+ *                 globals as solved (at each output time)
  *
  * This file is part of Qucs-S.
  *
@@ -77,6 +77,29 @@ public:
     int fieldIndex(const QString& tag) const;
     /// The time the fields are at (s): 0 at rest.
     double time() const { return a_time; }
+    void setTime(double t) { a_time = t; }
+
+    // Snapshots: a study in time's fields and globals at its output times
+    // (none at rest), one of which is selected.
+    int snapshotCount() const { return int(a_snapshots.size()); }
+    double snapshotTime(int i) const { return a_snapshots[std::size_t(i)].time; }
+    /// The snapshot the fields and globals are of (-1: none kept).
+    int selected() const { return a_selected; }
+    /// The fields and globals of snapshot \a i (out of range: the last).
+    void select(int i);
+    /// The fields and globals as they are now, kept as a snapshot at time().
+    void addSnapshot();
+    /// The last snapshot made again of the fields as they are now (a step at
+    /// rest after one in time).
+    void replaceLastSnapshot();
+    /// The snapshot nearest time \a t (s), or -1 when there is none.
+    int snapshotAt(double t) const;
+    /// \a text, an expression of the globals and parameters, at each
+    /// snapshot (none: empty, and why); its dimension in \a dim. The
+    /// selected snapshot's as they were after.
+    std::vector<double> globalSeries(const QString& text, Dim* dim, QString* why) const;
+    /// Its snapshots are of output times (a Time Dependent step's).
+    bool timeDependent = false;
 
     /// The scope of point expressions: x, y, z, t, dom, the fields'
     /// variables.
@@ -98,6 +121,8 @@ public:
         std::vector<char> isotropic;
         std::vector<std::vector<Expression>> sources;
         std::vector<double> sourceScale;
+        /// By domain: what multiplies ∂u/∂t (heat: ρ Cp; invalid: not given).
+        std::vector<Expression> capacity;
     };
     std::vector<Coefficients>& coefficients() { return a_coefficients; }
     const std::vector<Coefficients>& coefficients() const { return a_coefficients; }
@@ -125,6 +150,10 @@ public:
     QStringList log;
     QString studyTag;
     double seconds = 0;
+    /// Of a sweep: the parameters' values this solution is of ("w = 2 mm"),
+    /// and each in SI by name.
+    QString label;
+    QHash<QString, double> sweptValues;
 
 private:
     int define(const QString& name, const Dim& dim, const QString& description, VariableDef::Kind kind, int field, int component = 0,
@@ -145,6 +174,16 @@ private:
     };
     std::map<QString, Global> a_globals;
     QStringList a_globalOrder;
+    struct Snapshot {
+        double time = 0;
+        std::vector<std::vector<double>> values;                  // by field
+        std::vector<std::vector<Field3::Terminal>> terminals;     // by field
+        std::vector<std::vector<std::vector<double>>> matrices;   // by field
+        std::map<QString, Global> globals;
+    };
+    Snapshot snapshotNow() const;
+    std::vector<Snapshot> a_snapshots;
+    int a_selected = -1;
 };
 
 /*!
@@ -198,9 +237,33 @@ struct StudyResult3 {
 
 /// Solves study \a studyTag (the first when empty) of 3D \a model on \a mesh:
 /// its Stationary steps, each its physics (all when none chosen) in turn till
-/// they agree; a step of another kind is refused, said.
+/// they agree, and its Time Dependent ones - heat by BDF (its ρ Cp ∂T/∂t),
+/// the other physics at rest at each step, kept at the output times; a step
+/// of another kind is refused, said.
 StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh3> mesh,
                          const QString& studyTag = {}, const Progress& progress = {});
+
+/*!
+ * A 3D study run whole: once, or once for each point of its Parametric
+ * Sweep - each with its own parameters, and its own geometry and mesh where
+ * a parameter swept shapes them -, one point after another. The solutions in
+ * the sweep's order; a point without one after the first stops the sweep
+ * there, its points before kept, where and why said.
+ */
+struct StudyRun3 {
+    std::vector<std::shared_ptr<Solution3>> solutions;
+    QStringList swept;                     ///< the parameters swept, in order
+    std::shared_ptr<const Mesh3> mesh;     ///< the mesh of the model's own parameters, when made or given
+    QString error;
+    QStringList warnings;
+    QStringList log;
+    QString stopped;
+    bool ok() const { return error.isEmpty() && !solutions.empty(); }
+};
+/// Runs study \a studyTag (the first when empty): \a topology and \a mesh
+/// are of the model's own parameters (null: made).
+StudyRun3 runStudy3(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology3> topology,
+                    std::shared_ptr<const Mesh3> mesh, const QString& studyTag = {}, const Progress& progress = {});
 
 /// The variables a 3D model's physics give its expressions (x, y, z, t, dom,
 /// es.V, ht.T...): for a menu, a completer and Claude.
