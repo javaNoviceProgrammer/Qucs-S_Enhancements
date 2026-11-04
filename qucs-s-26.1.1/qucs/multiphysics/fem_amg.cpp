@@ -44,17 +44,23 @@ using Spai0 = SolverOf<amgcl::relaxation::spai0>;
 using GaussSeidel = SolverOf<amgcl::relaxation::gauss_seidel>;
 using Ilu0 = SolverOf<amgcl::relaxation::ilu0>;
 
-/// The smoother: ILU(0) - or (QUCS_FEM_AMG_RELAX, for measuring) SPAI-0 or
-/// Gauss-Seidel. A layered chip's thin films stretch its prisms, and order 2's
-/// matrices are no M-matrices: at 160,357 unknowns SPAI-0 ran past 500
-/// iterations in two of three solves (the fallback finishing them, 35 s),
-/// Gauss-Seidel took 146 and ILU(0) 52 (6.5 and 5.6 s); on a plain Laplacian
-/// ILU(0) is the fewest iterations too, 15% slower than SPAI-0 at a million.
+/// The smoother: Gauss-Seidel, forward before the coarse level and backward
+/// after, so that the cycle conjugate gradients are preconditioned by is
+/// symmetric - or (QUCS_FEM_AMG_RELAX, for measuring) SPAI-0 or ILU(0).
+/// AMGCL's ILU(0) is the same factor both ways, a cycle that is not: order 2's
+/// matrices on stretched prisms are no M-matrices, and with it the conjugate
+/// gradients stalled - a VCSEL array's 1,209,654 unknowns (prisms 30 µm wide
+/// and 0.5 thick) at a residual of 3e-4 after 400 iterations, two sweeps or a
+/// strength of 0 or 0.25 alike, and the chip heater's 55,272 short of 1e-9
+/// after 400 (phase C's 52 were of one mesh); Gauss-Seidel 156 and 102. On
+/// the plain Laplacian of 270,400 unknowns, copper in oxide too, it is as
+/// quick (14 and 15 iterations against 12 and 13, 10% less time, 27% less
+/// memory). SPAI-0 ran past 500 on the chip at 160,357 unknowns.
 int relaxation()
 {
     static const int which = [] {
         const QByteArray v = qgetenv("QUCS_FEM_AMG_RELAX");
-        return v == "spai0" ? 0 : v == "gauss_seidel" ? 1 : 2;
+        return v == "spai0" ? 0 : v == "ilu0" ? 2 : 1;
     }();
     return which;
 }
@@ -161,14 +167,26 @@ bool AmgSolver::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, IterativeRep
     IterativeReport r;
     const ptrdiff_t n = d.a.rows();
     if (x.size() != n) x = Eigen::VectorXd::Zero(n);
-    if (n == 0 || b.norm() == 0) {
+    // The right-hand side scaled to a norm of one, and the guess with it:
+    // AMGCL takes a right-hand side under the machine's epsilon for nought
+    // and answers nought - in 0 iterations, its norm for the residual, so
+    // that it passed for converged. A 3D electrostatics' entries are ε0 times
+    // a length: in µm a finger cell's right-hand side was some 1e-17, and its
+    // capacitance came out 7 to 21 times too large, the more as its mesh was
+    // refined. (The rest of a solve is of the matrix's scale alone - its
+    // aggregates, its smoother, its coarse level, the fallback's factor.)
+    const double norm = b.norm();
+    if (n == 0 || norm == 0 || !std::isfinite(norm)) {
         x.setZero();
-        r.converged = true;
+        r.converged = n == 0 || norm == 0;
         if (report) *report = r;
-        return true;
+        if (!r.converged && error) *error = tr("the right-hand side is not finite");
+        return r.converged;
     }
+    const Eigen::VectorXd bn = b / norm;
     if (d.ready()) {
-        std::vector<double> rhs(b.data(), b.data() + n), sol(x.data(), x.data() + n);
+        std::vector<double> rhs(bn.data(), bn.data() + n), sol(n);
+        for (ptrdiff_t i = 0; i < n; ++i) sol[std::size_t(i)] = x(i) / norm;
         try {
             std::size_t iterations = 0;
             double residual = 0;
@@ -177,7 +195,7 @@ bool AmgSolver::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, IterativeRep
             r.residual = residual;
             r.converged = residual <= d.tolerance * 1.0000001 && std::isfinite(residual);
             if (r.converged) {
-                x = Eigen::Map<const Eigen::VectorXd>(sol.data(), n);
+                x = Eigen::Map<const Eigen::VectorXd>(sol.data(), n) * norm;
                 if (report) *report = r;
                 return true;
             }
@@ -192,8 +210,8 @@ bool AmgSolver::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, IterativeRep
         d.ic->setMaxIterations(10 * d.maxIterations);
         d.ic->compute(d.a);
     }
-    const Eigen::VectorXd guess = x;
-    x = d.ic->solveWithGuess(b, guess);
+    const Eigen::VectorXd guess = x / norm;
+    x = d.ic->solveWithGuess(bn, guess) * norm;
     r.iterations += int(d.ic->iterations());
     r.residual = d.ic->error();
     r.converged = d.ic->info() == Eigen::Success && x.allFinite();

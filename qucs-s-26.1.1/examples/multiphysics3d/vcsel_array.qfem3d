@@ -1,0 +1,89 @@
+{
+    "format": "qucs-s multiphysics 3d 1",
+    "title": "A VCSEL array's thermal crosstalk",
+    "description": "Nine VCSELs at a pitch of 25 µm on a GaAs substrate, each a disc 10 µm across that makes its heat P at the top, the substrate's back held at 20 °C and the rest insulated: each VCSEL warmed by its neighbours as well as by itself, the middle one most. Alone on a half-space a VCSEL would rise P/(πka) at its middle and 8P/(3π²ka) over its disc (Carslaw and Jaeger's disc heated on a half-space), and warm one d away by about P/(2πkd); the substrate's bottom draws some of that away. Qucs-S's tests hold one VCSEL of such an array, heated alone, to Carslaw and Jaeger's disc with the substrate's bottom and walls as images: order 2 within 0.05 %. Here GaAs's k falls as it warms (Picard's iterations), and order 1 on the swept mesh's stretched prisms runs 1 to 3 % cool: order 2 for the last per cent.",
+    "parameters": [
+        {"name": "W", "expression": "300[um]", "description": "the substrate's width"},
+        {"name": "L", "expression": "150[um]", "description": "its thickness"},
+        {"name": "a", "expression": "5[um]", "description": "each VCSEL's radius: its heat made over a disc of it"},
+        {"name": "pitch", "expression": "25[um]", "description": "the array's pitch"},
+        {"name": "P", "expression": "10[mW]", "description": "each VCSEL's heat"}
+    ],
+    "components": [
+        {
+            "unit": "um",
+            "space": "3D",
+            "geometry": [
+                {"type": "box", "label": "substrate", "position": ["0", "0"], "size": ["W", "W"], "z": "0", "height": "L"},
+                {"type": "cylinder", "label": "vcsel11", "center": ["W/2 - pitch", "W/2 - pitch"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel12", "center": ["W/2 - pitch", "W/2"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel13", "center": ["W/2 - pitch", "W/2 + pitch"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel21", "center": ["W/2", "W/2 - pitch"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel22", "center": ["W/2", "W/2"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel23", "center": ["W/2", "W/2 + pitch"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel31", "center": ["W/2 + pitch", "W/2 - pitch"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel32", "center": ["W/2 + pitch", "W/2"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "cylinder", "label": "vcsel33", "center": ["W/2 + pitch", "W/2 + pitch"], "radius": "a", "z": "L - 0.5[um]", "height": "0.5[um]"},
+                {"type": "form union"}
+            ],
+            "materials": [
+                {
+                    "material": "Gallium arsenide",
+                    "selection": {"all": true}
+                }
+            ],
+            "physics": [
+                {
+                    "type": "heat",
+                    "tag": "ht",
+                    "order": "1",
+                    "features": [
+                        {
+                            "type": "flux",
+                            "label": "Each VCSEL's heat",
+                            "kind": "general",
+                            "q0": "P/(pi*a^2)",
+                            "selection": {"of": ["vcsel11", "vcsel12", "vcsel13", "vcsel21", "vcsel22", "vcsel23", "vcsel31", "vcsel32", "vcsel33"], "side": "top"}
+                        },
+                        {
+                            "type": "temperature",
+                            "label": "The heat sink",
+                            "T0": "293.15[K]",
+                            "selection": {"of": ["substrate"], "side": "bottom"}
+                        }
+                    ]
+                }
+            ],
+            "mesh": {
+                "size": "normal",
+                "custom": true,
+                "hmax": "30",
+                "growth": "1.25",
+                "features": [
+                    {
+                        "type": "size",
+                        "level": "domain",
+                        "selection": {"only": ["vcsel11", "vcsel12", "vcsel13", "vcsel21", "vcsel22", "vcsel23", "vcsel31", "vcsel32", "vcsel33"]},
+                        "hmax": "2"
+                    },
+                    {
+                        "type": "size",
+                        "level": "edge",
+                        "selection": {"of": ["vcsel11", "vcsel12", "vcsel13", "vcsel21", "vcsel22", "vcsel23", "vcsel31", "vcsel32", "vcsel33"]},
+                        "hmax": "1"
+                    }
+                ]
+            }
+        }
+    ],
+    "studies": [
+        {
+            "type": "study",
+            "label": "Study 1",
+            "steps": [
+                {"type": "stationary"}
+            ]
+        }
+    ],
+    "results": {"plots": [], "derived": []}
+}

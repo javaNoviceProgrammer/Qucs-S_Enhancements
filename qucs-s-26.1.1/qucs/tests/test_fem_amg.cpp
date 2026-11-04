@@ -3,7 +3,8 @@
  *                    (multiphysics/fem_amg.h): a 3D Laplacian solved to its
  *                    tolerance, as a direct solve has it, in iterations that
  *                    hardly grow as the grid is refined - copper beside oxide
- *                    too -; from a guess; and where it cannot converge, the
+ *                    too -; from a guess; at any scale, the system's and its
+ *                    right-hand side's; and where it cannot converge, the
  *                    incomplete Cholesky's conjugate gradients, said
  *
  * This file is part of Qucs-S.
@@ -123,6 +124,42 @@ private slots:
         }
     }
 
+    // A system of any scale - an electrostatics' entries are ε0 times a
+    // length, some 1e-17 in µm -, and a right-hand side of any size: the
+    // answer as at one, in its iterations. (AMGCL took a right-hand side
+    // under the machine's epsilon for nought and answered nought, in 0
+    // iterations - which passed for converged.)
+    void solvesAtAnyScale()
+    {
+        Eigen::SparseMatrix<double> A;
+        Eigen::VectorXd b;
+        laplacian(16, true, A, b);
+        AmgSolver plain;
+        plain.setTolerance(1e-10);
+        QString why;
+        QVERIFY(plain.compute(A, &why));
+        Eigen::VectorXd x0 = Eigen::VectorXd::Zero(A.rows());
+        IterativeReport r0;
+        QVERIFY2(plain.solve(b, x0, &r0, &why), qPrintable(why));
+        for (const double s : {1e-20, 1e20}) {
+            AmgSolver scaled;
+            scaled.setTolerance(1e-10);
+            const Eigen::SparseMatrix<double> As = A * s;
+            QVERIFY(scaled.compute(As, &why));
+            Eigen::VectorXd x = Eigen::VectorXd::Zero(A.rows());
+            IterativeReport r;
+            QVERIFY2(scaled.solve(b * s, x, &r, &why), qPrintable(why));
+            QVERIFY2(r.converged && !r.fallback && r.iterations == r0.iterations,
+                     qPrintable(QStringLiteral("scale %1: %2 iterations, %3 at one").arg(s).arg(r.iterations).arg(r0.iterations)));
+            QVERIFY2((x - x0).norm() <= 1e-8 * x0.norm(), qPrintable(QStringLiteral("scale %1").arg(s)));
+            // The right-hand side alone that small: the answer with it.
+            Eigen::VectorXd y = Eigen::VectorXd::Zero(A.rows());
+            QVERIFY2(plain.solve(b * s, y, &r, &why), qPrintable(why));
+            QVERIFY2(r.iterations == r0.iterations && (y - x0 * s).norm() <= 1e-8 * s * x0.norm(),
+                     qPrintable(QStringLiteral("a right-hand side of %1: %2 iterations").arg(s).arg(r.iterations)));
+        }
+    }
+
     // Too few iterations for multigrid: the incomplete Cholesky's conjugate
     // gradients take over (ten times as many), said; too few for both, a
     // failure and why.
@@ -150,6 +187,12 @@ private slots:
         Eigen::VectorXd zero = Eigen::VectorXd::Ones(A.rows());
         QVERIFY(amg.solve(Eigen::VectorXd::Zero(A.rows()), zero, &r, &why));
         QVERIFY(zero.norm() == 0);
+        // One not finite: refused, said.
+        Eigen::VectorXd bad = b;
+        bad(0) = std::numeric_limits<double>::quiet_NaN();
+        why.clear();
+        QVERIFY(!amg.solve(bad, x, &r, &why) && !r.converged);
+        QVERIFY2(why.contains(QStringLiteral("not finite")), qPrintable(why));
     }
 };
 
