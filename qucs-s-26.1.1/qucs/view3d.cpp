@@ -169,7 +169,9 @@ void View3D::render(QImage& image, std::vector<int>* ids) const
     if (clipping) {
         const double lo = a_clipAxis == 0 ? b.x0 : a_clipAxis == 1 ? b.y0 : b.z0;
         const double hi = a_clipAxis == 0 ? b.x1 : a_clipAxis == 1 ? b.y1 : b.z1;
-        clipValue = lo + (hi - lo) * a_clipAt;
+        // (A hair beyond the cut kept: a face on it - its cut face, a slice
+        // there - kept whole, not each pixel by its rounding.)
+        clipValue = lo + (hi - lo) * a_clipAt + 1e-9 * (hi - lo);
     }
     auto along = [this](const Vec3& p) { return a_clipAxis == 0 ? p.x : a_clipAxis == 1 ? p.y : p.z; };
     auto line = [&](int y) { return reinterpret_cast<QRgb*>(image.scanLine(y)); };

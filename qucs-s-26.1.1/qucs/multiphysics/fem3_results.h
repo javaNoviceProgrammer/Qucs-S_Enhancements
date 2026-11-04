@@ -43,6 +43,34 @@ struct SliceTriangle {
 /// across x or y - with \a e at its corners, read in its prism.
 std::vector<SliceTriangle> slice(const Solution3& solution, const Expression& e, int axis, double at);
 
+/// The model cut by the plane through \a origin of normal \a normal (the
+/// geometry's unit): its triangles, \a e at their corners read in their
+/// prisms. (The prisms split as isosurfaces() splits them.)
+std::vector<SliceTriangle> slicePlane(const Solution3& solution, const Expression& e, const Vec3& origin, const Vec3& normal);
+
+/// An isosurface's triangle: its corners (the geometry's unit), its level's
+/// place among the levels asked, its prism's domain.
+struct IsoTriangle {
+    std::array<Vec3, 3> p;
+    int level = 0;
+    int domain = -1;
+};
+/// Where \a nodal - an expression's values at the mesh's nodes, as
+/// nodalValues() gives them - is each of \a levels: each prism split into
+/// three tetrahedra, each wall along its diagonal through its corner of the
+/// least number (as the prism beside it splits it: no cracks between them),
+/// the values linear in each.
+std::vector<IsoTriangle> isosurfaces(const Solution3& solution, const std::vector<double>& nodal, const std::vector<double>& levels);
+
+/// A vector field's arrows on a grid of \a nx by \a ny by \a nz points across
+/// \a box (the geometry's unit), each in the middle of its cell: where, and
+/// its vector (SI); none where no domain defines it.
+struct Arrow3 {
+    Vec3 at;
+    Vec3 v;
+};
+std::vector<Arrow3> arrows3(const Solution3& solution, const std::array<Expression, 3>& v, const Box3& box, int nx, int ny, int nz);
+
 /// One solution of a 3D study's, as results take it: its sweep's point and
 /// its output time.
 struct Instance3 {

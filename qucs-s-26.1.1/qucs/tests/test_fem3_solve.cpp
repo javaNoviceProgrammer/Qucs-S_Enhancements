@@ -1137,6 +1137,108 @@ private slots:
         }
     }
 
+    // Isosurfaces and slices of linear temperatures held on a box's faces
+    // (order 1's exactly): T of z alone at 304 K is the plane z = 0.4 mm - in a
+    // layer, its tetrahedra cut across, not on their floors -, its area the
+    // box's 2 mm²; an oblique field's isosurface has the level at
+    // each corner; a sphere's (the distance from the box's middle at 0.3 mm)
+    // is closed - every edge two triangles' -, as the prisms beside each
+    // other split their walls alike; a slice through the middle of normal
+    // (1, 2, 3) has each corner on its plane, the field's value there; a
+    // uniform field's arrows each its vector, one in each cell.
+    void isosurfacesAndSlices()
+    {
+        auto heated = [](const QString& T0) {
+            Model m = model3d(0.25);
+            addBox(m, QStringLiteral("box"), 0, 0, 0, 2, 1, 1);
+            const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+            addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"), QJsonObject{{QStringLiteral("T0"), T0}});
+            return m;
+        };
+        auto area = [](const std::array<Vec3, 3>& p) {
+            const Vec3 a{p[1].x - p[0].x, p[1].y - p[0].y, p[1].z - p[0].z}, b{p[2].x - p[0].x, p[2].y - p[0].y, p[2].z - p[0].z};
+            const Vec3 c{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+            return 0.5 * std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+        };
+        {
+            const Solved sv = solve(heated(QStringLiteral("300[K] + 1e4[K/m]*z")));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const std::vector<double> nodal = nodalValues(sv.s(), Expression::compile(QStringLiteral("ht.T"), sv.s().pointScope()));
+            const std::vector<IsoTriangle> iso = isosurfaces(sv.s(), nodal, {304});
+            QVERIFY(!iso.empty());
+            double sum = 0, worst = 0;
+            for (const IsoTriangle& t : iso) {
+                sum += area(t.p);
+                for (const Vec3& v : t.p) worst = std::max(worst, std::abs(v.z - 0.4));
+            }
+            QVERIFY2(worst < 1e-9 && std::abs(sum - 2) < 1e-9, qPrintable(QStringLiteral("%1 mm off the plane, %2 mm²").arg(worst).arg(sum, 0, 'g', 12)));
+            // (A level past the field's: none.)
+            QVERIFY(isosurfaces(sv.s(), nodal, {400}).empty());
+        }
+        {
+            auto T = [](const Vec3& v) { return 300 + 10 * (v.x + 2 * v.y + 3 * v.z); };   // v in mm
+            const Solved sv = solve(heated(QStringLiteral("300[K] + 1e4[K/m]*(x + 2*y + 3*z)")));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const Expression e = Expression::compile(QStringLiteral("ht.T"), sv.s().pointScope());
+            const std::vector<double> nodal = nodalValues(sv.s(), e);
+            const std::vector<IsoTriangle> iso = isosurfaces(sv.s(), nodal, {320, 340});
+            QVERIFY(!iso.empty());
+            double worst = 0;
+            for (const IsoTriangle& t : iso)
+                for (const Vec3& v : t.p) worst = std::max(worst, std::abs(T(v) - (t.level == 0 ? 320 : 340)));
+            QVERIFY2(worst < 1e-9, qPrintable(QStringLiteral("%1 K off its level").arg(worst)));
+            // A slice through the middle of normal (1, 2, 3).
+            const Vec3 o{1, 0.5, 0.5}, n{1, 2, 3};
+            const std::vector<SliceTriangle> cut = slicePlane(sv.s(), e, o, n);
+            QVERIFY(!cut.empty());
+            double off = 0, wrong = 0;
+            for (const SliceTriangle& st : cut)
+                for (int k = 0; k < 3; ++k) {
+                    const Vec3& v = st.p[std::size_t(k)];
+                    off = std::max(off, std::abs((v.x - o.x) * n.x + (v.y - o.y) * n.y + (v.z - o.z) * n.z) / std::sqrt(14.0));
+                    wrong = std::max(wrong, std::abs(st.value[std::size_t(k)] - T(v)));
+                }
+            QVERIFY2(off < 1e-9 && wrong < 1e-9, qPrintable(QStringLiteral("%1 mm off the plane, %2 K off").arg(off).arg(wrong)));
+        }
+        {
+            const Solved sv = solve(heated(QStringLiteral("300[K] + 1e6[K/m]*sqrt((x - 1[mm])^2 + (y - 0.5[mm])^2 + (z - 0.5[mm])^2)")));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            // (The distance itself at the nodes: what is held on the faces,
+            // the field inside not.)
+            const Expression r = Expression::compile(QStringLiteral("sqrt((x - 1[mm])^2 + (y - 0.5[mm])^2 + (z - 0.5[mm])^2)"), sv.s().pointScope());
+            const std::vector<IsoTriangle> sphere = isosurfaces(sv.s(), nodalValues(sv.s(), r), {0.3e-3});
+            QVERIFY(sphere.size() > 50);
+            // Each edge, by its two corners rounded, counted.
+            std::map<std::pair<std::array<long long, 3>, std::array<long long, 3>>, int> edges;
+            auto key = [](const Vec3& v) { return std::array<long long, 3>{std::llround(v.x * 1e9), std::llround(v.y * 1e9), std::llround(v.z * 1e9)}; };
+            for (const IsoTriangle& t : sphere)
+                for (int k = 0; k < 3; ++k) {
+                    auto a = key(t.p[std::size_t(k)]), b = key(t.p[std::size_t((k + 1) % 3)]);
+                    if (b < a) std::swap(a, b);
+                    if (a != b) ++edges[{a, b}];
+                }
+            int open = 0;
+            for (const auto& [e, n] : edges) open += n != 2 ? 1 : 0;
+            QVERIFY2(open == 0, qPrintable(QStringLiteral("%1 of %2 edges not two triangles'").arg(open).arg(edges.size())));
+        }
+        {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("box"), 0, 0, 0, 2, 1, 1);
+            const QString es = addPhysics(m, QStringLiteral("electrostatics"), 1, QStringLiteral("1"));
+            addFeature(m, es, QStringLiteral("electrostatics/potential"), rule(R"({"exterior": true})"), QJsonObject{{QStringLiteral("V0"), QStringLiteral("1e3[V/m]*x")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const Scope& sc = sv.s().scope();
+            const std::vector<Arrow3> arrows = arrows3(sv.s(), {Expression::compile(QStringLiteral("es.Ex"), sc), Expression::compile(QStringLiteral("es.Ey"), sc),
+                                                                Expression::compile(QStringLiteral("es.Ez"), sc)},
+                                                       sv.s().topology().bounds, 4, 2, 2);
+            QCOMPARE(int(arrows.size()), 16);
+            for (const Arrow3& a : arrows)
+                QVERIFY2(std::abs(a.v.x + 1e3) < 1e-6 && std::abs(a.v.y) < 1e-6 && std::abs(a.v.z) < 1e-6, qPrintable(QStringLiteral("%1, %2, %3").arg(a.v.x).arg(a.v.y).arg(a.v.z)));
+            QCOMPARE(arrows.front().at.x, 0.25);
+        }
+    }
+
     void refusals()
     {
         auto base = [] {

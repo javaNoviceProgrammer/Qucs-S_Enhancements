@@ -231,7 +231,10 @@ void Multiphysics3DDoc::buildUi()
     a_showBox->addItems({tr("Geometry"), tr("Mesh"), tr("Solution")});
     row->addWidget(a_showBox);
     connect(a_showBox, &QComboBox::activated, this, [this](int index) {
-        if (index == 2) showSolution();
+        // (After the three: the model's 3D plot groups, by their tags.)
+        const QString group = a_showBox->itemData(index).toString();
+        if (!group.isEmpty()) showPlotGroup(group);
+        else if (index == 2) showSolution();
         else if (index == 1) showMesh();
         else showGeometry();
     });
@@ -557,6 +560,12 @@ void Multiphysics3DDoc::applyModel(const Model& model, bool read)
         if (a_show == Show::Solution) a_show = Show::Geometry;
     }
     if (!a_focus.isEmpty() && !a_model.find(a_focus)) a_focus.clear();
+    fillShowChoices();
+    // (Its plot group gone, or no longer one: its solution shown.)
+    if (a_show == Show::Plot) {
+        const Node* g = a_model.find(a_plotGroup);
+        if (!g || g->type != QLatin1String("plotgroup3d")) a_show = a_solution ? Show::Solution : Show::Geometry;
+    }
     updateHighlight();
     updateScene();
     emit modelChanged();
@@ -787,11 +796,16 @@ void Multiphysics3DDoc::watchFiles()
 
 void Multiphysics3DDoc::updateState()
 {
-    a_showBox->setCurrentIndex(a_show == Show::Solution ? 2 : a_show == Show::Mesh ? 1 : 0);
+    int shown = a_show == Show::Solution ? 2 : a_show == Show::Mesh ? 1 : 0;
+    if (a_show == Show::Plot) {
+        const int at = a_showBox->findData(a_plotGroup);
+        shown = at >= 0 ? at : 2;
+    }
+    a_showBox->setCurrentIndex(shown);
     a_plotBox->setEnabled(a_solution != nullptr);
     // (A solution shown as it was before an edit: said beside the bar.)
     if (!a_job) {
-        const bool stale = a_show == Show::Solution && a_solution && a_solutionStale;
+        const bool stale = (a_show == Show::Solution || a_show == Show::Plot) && a_solution && a_solutionStale;
         a_stage->setText(stale ? tr("The solution is of the model before its last change: Compute again") : QString());
         a_stage->setVisible(stale);
     }
@@ -818,6 +832,71 @@ void Multiphysics3DDoc::showMesh()
     a_show = Show::Mesh;
     updateScene();
     updateState();
+}
+
+void Multiphysics3DDoc::fillShowChoices()
+{
+    if (!a_showBox) return;
+    QStringList names, tags;
+    for (const Node& c : a_model.results().children)
+        if (c.type == QLatin1String("plotgroup3d")) {
+            names << c.name();
+            tags << c.tag;
+        }
+    // (Made again where the groups changed alone: a choice open stays.)
+    bool same = a_showBox->count() == 3 + names.size();
+    for (int i = 0; same && i < names.size(); ++i)
+        same = a_showBox->itemText(3 + i) == names[i] && a_showBox->itemData(3 + i).toString() == tags[i];
+    if (same) return;
+    while (a_showBox->count() > 3) a_showBox->removeItem(3);
+    for (int i = 0; i < names.size(); ++i) a_showBox->addItem(names[i], tags[i]);
+}
+
+bool Multiphysics3DDoc::showPlotGroup(const QString& tag, QString* error)
+{
+    auto fail = [this, error](const QString& why) {
+        if (error) *error = why;
+        say(why, true);
+        updateState();
+        return false;
+    };
+    const Node* g = a_model.find(tag);
+    if (!g || g->type != QLatin1String("plotgroup3d")) return fail(tr("there is no 3D plot group %1").arg(tag));
+    if (!a_solution) return fail(tr("%1: not solved yet - Compute first").arg(g->name()));
+    a_plotGroup = tag;
+    a_show = Show::Plot;
+    updateScene();
+    updateState();
+    return true;
+}
+
+void Multiphysics3DDoc::addDefaultPlots()
+{
+    if (!a_solution) return;
+    for (const Node& c : a_model.results().children)
+        if (c.type == QLatin1String("plotgroup3d")) return;
+    // Each physics: its variable on the boundaries, and on a slice through the
+    // middle across x alone (a surface, opaque, would hide it).
+    Model m = a_model;
+    const QString results = m.results().tag;
+    bool any = false;
+    for (const Field3& f : a_solution->fields()) {
+        const Node* physics = m.find(f.tag);
+        const QString name = physics && physics->kind() ? physics->kind()->title : f.type;
+        const QString variable = f.tag + QLatin1Char('.') + f.variable;
+        for (const QString type : {QStringLiteral("surface"), QStringLiteral("slice")}) {
+            Node g = m.make(QStringLiteral("plotgroup3d"));
+            g.label = type == QLatin1String("surface") ? tr("%1 (%2)").arg(name, f.tag) : tr("%1, slice (%2)").arg(name, f.tag);
+            const Node* added = m.add(results, g);
+            if (!added) continue;
+            Node plot = m.make(type);
+            plot.props.insert(QStringLiteral("expression"), variable);
+            if (type == QLatin1String("slice")) plot.props.insert(QStringLiteral("plane"), QStringLiteral("x"));
+            m.add(added->tag, plot);
+            any = true;
+        }
+    }
+    if (any) setModel(m, tr("Default Plots"));
 }
 
 void Multiphysics3DDoc::showSolution()
@@ -1022,7 +1101,8 @@ void Multiphysics3DDoc::sayFinished(const StudyRun3& r, qint64 ms)
     fillPlotChoices();
     fillPointChoices();
     fillTimeChoices();
-    a_show = Show::Solution;
+    if (a_show != Show::Plot) a_show = Show::Solution;
+    addDefaultPlots();
 }
 
 void Multiphysics3DDoc::focusNode(const QString& tag)
@@ -1062,9 +1142,306 @@ void Multiphysics3DDoc::updateHighlight()
     }
 }
 
+namespace {
+
+/// \a v's colour between \a lo and \a hi on \a table: grey where it is
+/// not finite.
+QColor colourIn(const std::vector<QRgb>& table, double lo, double hi, double v)
+{
+    if (!std::isfinite(v)) return QColor(190, 190, 190);
+    const double u = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+    return QColor::fromRgb(table[std::size_t(std::clamp(int(u * double(table.size() - 1) + 0.5), 0, int(table.size()) - 1))]);
+}
+
+/// The numbers of a list - "1, 2", "range(0, 0.5, 2)", "linspace(...)" -:
+/// lengths in the geometry's unit (\a lengths, a unit of length given
+/// changed into it), else values in \a unit (given in it), SI out.
+std::vector<double> numbersOf(const QString& text, const Scope& scope, bool lengths, double unitScale, const DisplayUnit& unit, QString* why)
+{
+    Dim dim;
+    const std::optional<std::vector<double>> listed = valueList(text, scope, &dim, why);
+    if (!listed) return {};
+    std::vector<double> out = *listed;
+    for (double& v : out) {
+        if (lengths) v = dim.isNone() ? v : v / unitScale;
+        else if (dim.isNone() && !unit.name.isEmpty()) v = v * unit.scale + unit.offset;
+    }
+    return out;
+}
+
+/// A face's quality: a floor's triangle's, 4√3 A/(a² + b² + c²); a wall's
+/// height over its width or the other way, the smaller - 1 at best.
+double faceQuality(const Mesh3& m, const Mesh3::Face& f)
+{
+    auto at = [&m](int k) { return m.nodes[std::size_t(k)]; };
+    auto length = [](const Vec3& a, const Vec3& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); };
+    if (f.quad) {
+        const double w = length(at(f.nodes[0]), at(f.nodes[1])), h = length(at(f.nodes[1]), at(f.nodes[2]));
+        return w > 0 && h > 0 ? std::min(w, h) / std::max(w, h) : 0;
+    }
+    const Vec3 a = at(f.nodes[0]), b = at(f.nodes[1]), c = at(f.nodes[2]);
+    const double ab = length(a, b), bc = length(b, c), ca = length(c, a);
+    const double area = 0.5 * std::abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+    const double sum = ab * ab + bc * bc + ca * ca;
+    return sum > 0 ? 4 * std::sqrt(3.0) * area / sum : 0;
+}
+
+} // namespace
+
+void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3D::Scene& scene, View3D::Legend& legend, int* clipAxis,
+                                       double* clipShare)
+{
+    a_plotProblems.clear();
+    // Its solution: the group's point and time, else the tab's.
+    Solution3* sol = &solution;
+    const int point = g.integer(QStringLiteral("point"));
+    if (point > 0 && point <= int(a_solutions.size())) sol = a_solutions[std::size_t(point) - 1].get();
+    const int before = sol->selected();
+    const QString time = g.text(QStringLiteral("time")).trimmed();
+    if (!time.isEmpty() && sol->snapshotCount() > 0) {
+        QString why;
+        if (const std::optional<double> t = evaluateConstant(time, sol->parameters().scope, Dim::of(0, 0, 1), &why)) sol->select(sol->snapshotAt(*t));
+        else a_plotProblems << tr("%1's time: %2").arg(g.name(), why);
+    }
+    const Mesh3& m = sol->mesh();
+    const Topology3* t = m.topology.get();
+    const Box3 box = t ? t->bounds : Box3();
+    const double k = m.unitScale;
+    // Its clip: the axis, where across the model.
+    const QString clip = g.text(QStringLiteral("clip"));
+    *clipAxis = clip == QLatin1String("x") ? 0 : clip == QLatin1String("y") ? 1 : clip == QLatin1String("z") ? 2 : -1;
+    double clipAt = 0;
+    if (*clipAxis >= 0) {
+        Expression::Options options;
+        options.lengthUnit = k;
+        options.numbersAreLengths = true;
+        const Expression at = Expression::compile(g.text(QStringLiteral("clipat")), sol->parameters().scope, options);
+        clipAt = at.isValid() && at.isConstant() ? at.constant() : 0;
+        const double lo = *clipAxis == 0 ? box.x0 : *clipAxis == 1 ? box.y0 : box.z0, hi = *clipAxis == 0 ? box.x1 : *clipAxis == 1 ? box.y1 : box.z1;
+        *clipShare = hi > lo ? std::clamp((clipAt - lo) / (hi - lo), 0.0, 1.0) : 0.5;
+    }
+    // The first coloured plot: the legend's, and the clip's cut face.
+    struct Coloured {
+        Expression e;
+        QString text;
+        DisplayUnit unit;
+        const std::vector<QRgb>* table = nullptr;
+        double lo = 0, hi = 0;
+    };
+    std::optional<Coloured> first;
+    // A coloured plot's range: its values', or its own given.
+    auto rangeOf = [&sol](const Node& p, const DisplayUnit& unit, const std::vector<double>& values) {
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (double v : values)
+            if (std::isfinite(v)) {
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+        if (p.text(QStringLiteral("range")) == QLatin1String("manual")) {
+            const std::optional<double> a = evaluateConstant(p.text(QStringLiteral("min")), sol->parameters().scope, Dim());
+            const std::optional<double> b = evaluateConstant(p.text(QStringLiteral("max")), sol->parameters().scope, Dim());
+            if (a) lo = unit.name.isEmpty() ? *a : *a * unit.scale + unit.offset;
+            if (b) hi = unit.name.isEmpty() ? *b : *b * unit.scale + unit.offset;
+        }
+        if (!(hi >= lo)) lo = hi = 0;
+        return std::make_pair(lo, hi);
+    };
+    const QColor text = palette().color(QPalette::Text);
+    for (const Node& p : g.children) {
+        if (!p.enabled) continue;
+        const QString type = p.type;
+        if (type == QLatin1String("meshplot")) {
+            const bool quality = p.flag(QStringLiteral("quality"));
+            const std::vector<QRgb>& table = colorTable(QStringLiteral("rainbow"));
+            for (const Mesh3::Face& f : m.faces) {
+                const Topology3::Face* tf = t && f.face >= 0 && f.face < int(t->faces.size()) ? &t->faces[std::size_t(f.face)] : nullptr;
+                const QColor colour = quality ? colourIn(table, 0, 1, faceQuality(m, f)) : domainColor(tf ? std::max(tf->back, tf->front) : -1);
+                const Vec3 a = m.nodes[std::size_t(f.nodes[0])], b = m.nodes[std::size_t(f.nodes[1])], c = m.nodes[std::size_t(f.nodes[2])];
+                scene.triangles.push_back({{a, b, c}, colour, f.face});
+                if (f.quad) scene.triangles.push_back({{a, c, m.nodes[std::size_t(f.nodes[3])]}, colour, f.face});
+                const int n = f.quad ? 4 : 3;
+                for (int i = 0; i < n; ++i)
+                    scene.lines.push_back({m.nodes[std::size_t(f.nodes[std::size_t(i)])], m.nodes[std::size_t(f.nodes[std::size_t((i + 1) % n)])], text, 1, -1});
+            }
+            if (quality && !legend.shown) {
+                legend.title = tr("Mesh quality");
+                legend.low = QStringLiteral("0");
+                legend.high = QStringLiteral("1");
+                legend.table = table;
+                legend.shown = true;
+            }
+            continue;
+        }
+        if (type == QLatin1String("arrowvolume")) {
+            const std::array<Expression, 3> v{Expression::compile(p.text(QStringLiteral("x")), sol->scope()),
+                                              Expression::compile(p.text(QStringLiteral("y")), sol->scope()),
+                                              Expression::compile(p.text(QStringLiteral("z")), sol->scope())};
+            bool ok = true;
+            for (const Expression& e : v)
+                if (!e.isValid()) {
+                    a_plotProblems << tr("%1: %2").arg(p.name(), e.error());
+                    ok = false;
+                    break;
+                }
+            if (!ok) continue;
+            const int nx = std::max(1, p.integer(QStringLiteral("nx"))), ny = std::max(1, p.integer(QStringLiteral("ny"))),
+                      nz = std::max(1, p.integer(QStringLiteral("nz")));
+            const std::vector<Arrow3> arrows = arrows3(*sol, v, box, nx, ny, nz);
+            const double cell = std::min({(box.x1 - box.x0) / nx, (box.y1 - box.y0) / ny, (box.z1 - box.z0) / nz});
+            double longest = 0;
+            for (const Arrow3& a : arrows) longest = std::max(longest, std::sqrt(a.v.x * a.v.x + a.v.y * a.v.y + a.v.z * a.v.z));
+            const bool normalized = p.text(QStringLiteral("scaling")) == QLatin1String("normalized");
+            QColor colour(p.text(QStringLiteral("color")));
+            if (!colour.isValid()) colour = text;
+            for (const Arrow3& a : arrows) {
+                const double norm = std::sqrt(a.v.x * a.v.x + a.v.y * a.v.y + a.v.z * a.v.z);
+                if (!(norm > 0) || !(longest > 0)) continue;
+                const double length = 0.9 * cell * (normalized ? 1 : norm / longest);
+                const Vec3 d{a.v.x / norm, a.v.y / norm, a.v.z / norm};
+                const Vec3 tip{a.at.x + length * d.x, a.at.y + length * d.y, a.at.z + length * d.z};
+                scene.lines.push_back({a.at, tip, colour, 1.5f, -1});
+                // Its head: two strokes back from the tip, across it.
+                Vec3 across{-d.y, d.x, 0};
+                if (std::abs(d.z) > 0.9) across = Vec3{1, 0, 0};
+                const double an = std::sqrt(across.x * across.x + across.y * across.y + across.z * across.z);
+                across = Vec3{across.x / an, across.y / an, across.z / an};
+                const double h = 0.3 * length;
+                for (double side : {1.0, -1.0})
+                    scene.lines.push_back({tip, Vec3{tip.x - h * d.x + side * 0.5 * h * across.x, tip.y - h * d.y + side * 0.5 * h * across.y,
+                                                     tip.z - h * d.z + side * 0.5 * h * across.z},
+                                           colour, 1.5f, -1});
+            }
+            continue;
+        }
+        if (type != QLatin1String("surface") && type != QLatin1String("slice") && type != QLatin1String("isosurface")) continue;
+        const QString what = p.text(QStringLiteral("expression"));
+        const Expression e = Expression::compile(what, sol->scope());
+        if (!e.isValid()) {
+            a_plotProblems << tr("%1: %2").arg(p.name(), e.error());
+            continue;
+        }
+        QString warning;
+        const DisplayUnit unit = displayUnit(p.text(QStringLiteral("unit")), e.dim(), &warning);
+        if (!warning.isEmpty()) a_plotProblems << tr("%1: %2").arg(p.name(), warning);
+        const QString tableName = p.text(QStringLiteral("colors")).isEmpty() ? QStringLiteral("rainbow") : p.text(QStringLiteral("colors"));
+        const std::vector<QRgb>& table = colorTable(tableName);
+        double lo = 0, hi = 0;
+        if (type == QLatin1String("surface")) {
+            const std::vector<double> nodal = nodalValues(*sol, e);
+            std::vector<double> on;
+            for (const Mesh3::Face& f : m.faces)
+                for (int i = 0; i < (f.quad ? 4 : 3); ++i) on.push_back(nodal[std::size_t(f.nodes[std::size_t(i)])]);
+            std::tie(lo, hi) = rangeOf(p, unit, on);
+            for (const Mesh3::Face& f : m.faces) {
+                const int n0 = f.nodes[0], n1 = f.nodes[1], n2 = f.nodes[2];
+                View3D::Triangle a{{m.nodes[std::size_t(n0)], m.nodes[std::size_t(n1)], m.nodes[std::size_t(n2)]}, QColor(), f.face};
+                a.shaded = true;
+                a.colors = {colourIn(table, lo, hi, nodal[std::size_t(n0)]), colourIn(table, lo, hi, nodal[std::size_t(n1)]),
+                            colourIn(table, lo, hi, nodal[std::size_t(n2)])};
+                scene.triangles.push_back(a);
+                if (f.quad) {
+                    const int n3 = f.nodes[3];
+                    View3D::Triangle b{{m.nodes[std::size_t(n0)], m.nodes[std::size_t(n2)], m.nodes[std::size_t(n3)]}, QColor(), f.face};
+                    b.shaded = true;
+                    b.colors = {colourIn(table, lo, hi, nodal[std::size_t(n0)]), colourIn(table, lo, hi, nodal[std::size_t(n2)]),
+                                colourIn(table, lo, hi, nodal[std::size_t(n3)])};
+                    scene.triangles.push_back(b);
+                }
+            }
+        } else if (type == QLatin1String("slice")) {
+            std::vector<SliceTriangle> cut;
+            const QString plane = p.text(QStringLiteral("plane"));
+            if (plane == QLatin1String("normal")) {
+                auto triple = [&sol](const QString& text, Vec3 fallback) {
+                    const QStringList parts = text.split(QLatin1Char(','));
+                    if (parts.size() != 3) return fallback;
+                    double c[3];
+                    for (int i = 0; i < 3; ++i) {
+                        const std::optional<double> v = evaluateConstant(parts[i].trimmed(), sol->parameters().scope, Dim());
+                        if (!v) return fallback;
+                        c[i] = *v;
+                    }
+                    return Vec3{c[0], c[1], c[2]};
+                };
+                cut = slicePlane(*sol, e, triple(p.text(QStringLiteral("origin")), Vec3{}), triple(p.text(QStringLiteral("normal")), Vec3{0, 0, 1}));
+            } else {
+                const int axis = plane == QLatin1String("x") ? 0 : plane == QLatin1String("y") ? 1 : 2;
+                const double a0 = axis == 0 ? box.x0 : axis == 1 ? box.y0 : box.z0, a1 = axis == 0 ? box.x1 : axis == 1 ? box.y1 : box.z1;
+                std::vector<double> at;
+                if (p.text(QStringLiteral("entry")) == QLatin1String("values")) {
+                    QString why;
+                    at = numbersOf(p.text(QStringLiteral("at")), sol->parameters().scope, true, k, unit, &why);
+                    if (!why.isEmpty()) a_plotProblems << tr("%1: %2").arg(p.name(), why);
+                } else {
+                    const int n = std::clamp(p.integer(QStringLiteral("count")), 1, 100);
+                    for (int i = 0; i < n; ++i) at.push_back(a0 + (i + 0.5) * (a1 - a0) / n);
+                }
+                for (double c : at) {
+                    const std::vector<SliceTriangle> one = slice(*sol, e, axis, c);
+                    cut.insert(cut.end(), one.begin(), one.end());
+                }
+            }
+            std::vector<double> on;
+            for (const SliceTriangle& st : cut) on.insert(on.end(), st.value.begin(), st.value.end());
+            std::tie(lo, hi) = rangeOf(p, unit, on);
+            for (const SliceTriangle& st : cut) {
+                View3D::Triangle c{st.p, QColor(), -1};
+                c.shaded = true;
+                c.colors = {colourIn(table, lo, hi, st.value[0]), colourIn(table, lo, hi, st.value[1]), colourIn(table, lo, hi, st.value[2])};
+                scene.triangles.push_back(c);
+            }
+        } else {
+            const std::vector<double> nodal = nodalValues(*sol, e);
+            std::tie(lo, hi) = rangeOf(p, unit, nodal);
+            std::vector<double> levels;
+            if (p.text(QStringLiteral("entry")) == QLatin1String("values")) {
+                QString why;
+                levels = numbersOf(p.text(QStringLiteral("values")), sol->parameters().scope, false, k, unit, &why);
+                if (!why.isEmpty()) a_plotProblems << tr("%1: %2").arg(p.name(), why);
+            } else {
+                const int n = std::clamp(p.integer(QStringLiteral("levels")), 1, 100);
+                for (int i = 0; i < n; ++i) levels.push_back(lo + (i + 1) * (hi - lo) / (n + 1));
+            }
+            for (const IsoTriangle& it : isosurfaces(*sol, nodal, levels)) {
+                const QColor colour = colourIn(table, lo, hi, levels[std::size_t(it.level)]);
+                scene.triangles.push_back({it.p, colour, -1});
+            }
+        }
+        if (!first) first = Coloured{e, what, unit, &table, lo, hi};
+    }
+    if (first) {
+        const QString said = first->unit.name.isEmpty() ? unitName(first->e.dim()) : first->unit.name;
+        legend.title = said.isEmpty() ? first->text : QStringLiteral("%1 (%2)").arg(first->text, said);
+        legend.low = shown(first->lo, first->e.dim(), first->unit);
+        legend.high = shown(first->hi, first->e.dim(), first->unit);
+        legend.table = *first->table;
+        legend.shown = true;
+        // The clip's cut face, as the first coloured plot is.
+        if (*clipAxis >= 0)
+            for (const SliceTriangle& st : slice(*sol, first->e, *clipAxis, clipAt)) {
+                View3D::Triangle c{st.p, QColor(), -1};
+                c.shaded = true;
+                c.colors = {colourIn(*first->table, first->lo, first->hi, st.value[0]), colourIn(*first->table, first->lo, first->hi, st.value[1]),
+                            colourIn(*first->table, first->lo, first->hi, st.value[2])};
+                scene.triangles.push_back(c);
+            }
+    }
+    if (t) {
+        const QColor edge = qucs_s::ink::isDark(palette().color(QPalette::Base)) ? QColor(220, 225, 232) : QColor(40, 44, 52);
+        for (int e = 0; e < int(t->edges.size()); ++e) {
+            const std::vector<Vec3> line = t->edgePolyline(e);
+            for (std::size_t i = 0; i + 1 < line.size(); ++i) scene.lines.push_back({line[i], line[i + 1], edge, 1, e});
+        }
+        scene.bounds = t->bounds;
+    }
+    if (sol->selected() != before && before >= 0) sol->select(before);
+}
+
 void Multiphysics3DDoc::updateScene(bool fit)
 {
     if (!a_view) return;
+    // (The tab's Cut; a plot group's own clip below, where it has none.)
+    if (a_clipBox) a_view->setClip(a_clipBox->currentData().toInt(), a_clipSlider->value() / 100.0);
     View3D::Scene scene;
     View3D::Legend legend;
     const Topology3* t = a_geometry.topology.get();
@@ -1162,6 +1539,13 @@ void Multiphysics3DDoc::updateScene(bool fit)
             legend.table = table;
             legend.shown = true;
         }
+    } else if (a_show == Show::Plot && a_solution && a_model.find(a_plotGroup)) {
+        int axis = -1;
+        double share = 0.5;
+        plotGroupScene(*a_model.find(a_plotGroup), *a_solution, scene, legend, &axis, &share);
+        t = a_solution->mesh().topology.get();
+        // (The group's own clip, where the tab's Cut is none.)
+        if (a_clipBox->currentData().toInt() < 0) a_view->setClip(axis, share);
     } else if (a_show == Show::Mesh && a_mesh && !a_meshStale && a_mesh->topology) {
         const Mesh3& m = *a_mesh;
         t = m.topology.get();

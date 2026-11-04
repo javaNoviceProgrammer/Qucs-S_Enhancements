@@ -150,6 +150,185 @@ std::vector<SliceTriangle> slice(const Solution3& s, const Expression& e, int ax
     return out;
 }
 
+// ------------------------------------------------- Isosurfaces, any slice
+
+namespace {
+
+/// A prism's three tetrahedra - its corners 0, 1, 2 its floor and 3, 4, 5
+/// above them, as Mesh3 numbers them -, each wall split along its diagonal
+/// through its corner of the least global number, as the prism beside it
+/// splits the wall they share: an isosurface without cracks (Dompierre,
+/// Labbé, Vallet and Camarero, "How to subdivide pyramids, prisms and
+/// hexahedra into tetrahedra", 1999).
+std::array<std::array<int, 4>, 3> prismTets(const std::array<int, 6>& g)
+{
+    int least = 0;
+    for (int i = 1; i < 6; ++i)
+        if (g[std::size_t(i)] < g[std::size_t(least)]) least = i;
+    // Its corners turned so the least is a: a, b, c a floor (or the top)
+    // and d, e, f across from them.
+    static const int turn[6][6] = {{0, 1, 2, 3, 4, 5}, {1, 2, 0, 4, 5, 3}, {2, 0, 1, 5, 3, 4},
+                                   {3, 4, 5, 0, 1, 2}, {4, 5, 3, 1, 2, 0}, {5, 3, 4, 2, 0, 1}};
+    const int* t = turn[least];
+    const int a = t[0], b = t[1], c = t[2], d = t[3], e = t[4], f = t[5];
+    // The walls by a split through it; the third through its least corner.
+    if (std::min(g[std::size_t(b)], g[std::size_t(f)]) < std::min(g[std::size_t(c)], g[std::size_t(e)]))
+        return {{{a, b, c, f}, {a, b, f, e}, {a, e, f, d}}};
+    return {{{a, b, c, e}, {a, e, c, f}, {a, e, f, d}}};
+}
+
+constexpr double CornerRef[6][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1}};
+
+/// A point where a tetrahedron's edge crosses a level: its place (the
+/// geometry's unit) and its reference coordinates in the prism.
+struct Crossing {
+    Vec3 x;
+    double ref[3];
+};
+
+/// The triangles where the linear function of \a v (at a tetrahedron's
+/// corners \a p, reference coordinates \a r) is nought: none, one or two.
+void marchTet(const std::array<Vec3, 4>& p, const std::array<std::array<double, 3>, 4>& r, const std::array<double, 4>& v,
+              std::vector<std::array<Crossing, 3>>& out)
+{
+    int above[4], na = 0, below[4], nb = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!std::isfinite(v[std::size_t(i)])) return;
+        if (v[std::size_t(i)] > 0) above[na++] = i;
+        else below[nb++] = i;
+    }
+    if (na == 0 || nb == 0) return;
+    auto cross = [&](int i, int j) {
+        const double a = v[std::size_t(i)], b = v[std::size_t(j)];
+        const double u = a == b ? 0.5 : a / (a - b);
+        Crossing c;
+        const Vec3& pi = p[std::size_t(i)];
+        const Vec3& pj = p[std::size_t(j)];
+        c.x = Vec3{pi.x + u * (pj.x - pi.x), pi.y + u * (pj.y - pi.y), pi.z + u * (pj.z - pi.z)};
+        for (int k = 0; k < 3; ++k) c.ref[k] = r[std::size_t(i)][std::size_t(k)] + u * (r[std::size_t(j)][std::size_t(k)] - r[std::size_t(i)][std::size_t(k)]);
+        return c;
+    };
+    if (na == 1 || nb == 1) {
+        // One corner alone on its side: a triangle about it.
+        const int lone = na == 1 ? above[0] : below[0];
+        const int* rest = na == 1 ? below : above;
+        out.push_back({cross(lone, rest[0]), cross(lone, rest[1]), cross(lone, rest[2])});
+        return;
+    }
+    // Two and two: a quadrilateral, as two triangles.
+    const Crossing q0 = cross(above[0], below[0]), q1 = cross(above[0], below[1]), q2 = cross(above[1], below[1]), q3 = cross(above[1], below[0]);
+    out.push_back({q0, q1, q2});
+    out.push_back({q0, q2, q3});
+}
+
+} // namespace
+
+std::vector<IsoTriangle> isosurfaces(const Solution3& s, const std::vector<double>& nodal, const std::vector<double>& levels)
+{
+    std::vector<IsoTriangle> out;
+    const Mesh3& m = s.mesh();
+    if (nodal.size() != m.nodes.size()) return out;
+    std::vector<std::array<Crossing, 3>> cut;
+    for (int p = 0; p < int(m.prisms.size()); ++p) {
+        const std::array<int, 6>& g = m.prisms[std::size_t(p)];
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (int n : g) {
+            lo = std::min(lo, nodal[std::size_t(n)]);
+            hi = std::max(hi, nodal[std::size_t(n)]);
+        }
+        if (!(hi >= lo)) continue;
+        const auto tets = prismTets(g);
+        for (int l = 0; l < int(levels.size()); ++l) {
+            const double level = levels[std::size_t(l)];
+            if (level < lo || level > hi) continue;
+            for (const auto& t : tets) {
+                std::array<Vec3, 4> x;
+                std::array<std::array<double, 3>, 4> r;
+                std::array<double, 4> v;
+                for (int k = 0; k < 4; ++k) {
+                    const int corner = t[std::size_t(k)];
+                    x[std::size_t(k)] = m.nodes[std::size_t(g[std::size_t(corner)])];
+                    r[std::size_t(k)] = {CornerRef[corner][0], CornerRef[corner][1], CornerRef[corner][2]};
+                    v[std::size_t(k)] = nodal[std::size_t(g[std::size_t(corner)])] - level;
+                }
+                cut.clear();
+                marchTet(x, r, v, cut);
+                for (const auto& tri : cut) out.push_back({{tri[0].x, tri[1].x, tri[2].x}, l, m.domain[std::size_t(p)]});
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<SliceTriangle> slicePlane(const Solution3& s, const Expression& e, const Vec3& origin, const Vec3& normal)
+{
+    std::vector<SliceTriangle> out;
+    const Mesh3& m = s.mesh();
+    const double len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+    if (!e.isValid() || !(len > 0)) return out;
+    const Vec3 n{normal.x / len, normal.y / len, normal.z / len};
+    std::vector<double> distance(m.nodes.size());
+    for (std::size_t i = 0; i < m.nodes.size(); ++i) {
+        const Vec3& x = m.nodes[i];
+        distance[i] = (x.x - origin.x) * n.x + (x.y - origin.y) * n.y + (x.z - origin.z) * n.z;
+    }
+    PointEvaluator3 ev(s);
+    std::vector<std::array<Crossing, 3>> cut;
+    for (int p = 0; p < int(m.prisms.size()); ++p) {
+        const std::array<int, 6>& g = m.prisms[std::size_t(p)];
+        bool pos = false, neg = false;
+        for (int k : g) (distance[std::size_t(k)] > 0 ? pos : neg) = true;
+        if (!pos || !neg) continue;
+        for (const auto& t : prismTets(g)) {
+            std::array<Vec3, 4> x;
+            std::array<std::array<double, 3>, 4> r;
+            std::array<double, 4> v;
+            for (int k = 0; k < 4; ++k) {
+                const int corner = t[std::size_t(k)];
+                x[std::size_t(k)] = m.nodes[std::size_t(g[std::size_t(corner)])];
+                r[std::size_t(k)] = {CornerRef[corner][0], CornerRef[corner][1], CornerRef[corner][2]};
+                v[std::size_t(k)] = distance[std::size_t(g[std::size_t(corner)])];
+            }
+            cut.clear();
+            marchTet(x, r, v, cut);
+            for (const auto& tri : cut) {
+                SliceTriangle st;
+                st.domain = m.domain[std::size_t(p)];
+                for (int k = 0; k < 3; ++k) {
+                    st.p[std::size_t(k)] = tri[std::size_t(k)].x;
+                    ev.at(p, tri[std::size_t(k)].ref[0], tri[std::size_t(k)].ref[1], tri[std::size_t(k)].ref[2]);
+                    st.value[std::size_t(k)] = ev.eval(e);
+                }
+                out.push_back(st);
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<Arrow3> arrows3(const Solution3& s, const std::array<Expression, 3>& v, const Box3& box, int nx, int ny, int nz)
+{
+    std::vector<Arrow3> out;
+    for (const Expression& e : v)
+        if (!e.isValid()) return out;
+    nx = std::clamp(nx, 1, 200);
+    ny = std::clamp(ny, 1, 200);
+    nz = std::clamp(nz, 1, 200);
+    const double k = s.mesh().unitScale;
+    PointEvaluator3 ev(s);
+    for (int i = 0; i < nx; ++i)
+        for (int j = 0; j < ny; ++j)
+            for (int l = 0; l < nz; ++l) {
+                const Vec3 at{box.x0 + (i + 0.5) * (box.x1 - box.x0) / nx, box.y0 + (j + 0.5) * (box.y1 - box.y0) / ny,
+                              box.z0 + (l + 0.5) * (box.z1 - box.z0) / nz};
+                if (!ev.at(Vec3{k * at.x, k * at.y, k * at.z})) continue;
+                const Vec3 a{ev.eval(v[0]), ev.eval(v[1]), ev.eval(v[2])};
+                if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)) continue;
+                out.push_back({at, a});
+            }
+    return out;
+}
+
 // --------------------------------------------------------- Instances
 
 std::vector<Instance3> instances3(const Solutions3& set, bool all, int point, const QString& time, QString* error)
