@@ -788,6 +788,123 @@ private slots:
         rf::forgetGreens();
     }
 
+    // A table's distances shared among threads (prepare(threads)), each made
+    // by one of them alone: the same table to the last digit on one thread
+    // and on several, kept or not - made whole, grown from a nearer one kept,
+    // or by more threads than it has distances left to make - a kept one
+    // handed over with nothing made, and of two solves of it at once the
+    // second waiting for the first. The wave kernel on 254 µm of 9.8 at
+    // 1 GHz, and a via's of four components (two vias, two heights) through
+    // 100 µm under 50 at 1 GHz.
+    void aTableIsTheSameOnAnyNumberOfThreads()
+    {
+        const rf::Layers thick = stackOf({{9.8, 254e-6, 0.002}}, true);
+        const rf::Layers l = stackOf({{9.8, 100e-6, 0.002}, {4.0, 50e-6, 0}}, true);
+        struct Made {
+            QList<Complex> values;
+            int size = 0, elsewhere = 0;
+        };
+        // (Read at nought and 60 distances a decade from a nanometre, where
+        //  the tables have 40: every node read, beside its neighbours.)
+        const auto along = [](double rhoMax) {
+            QList<double> at{0.0};
+            for (int i = 0; 1e-9 * std::pow(10.0, i / 60.0) < rhoMax; ++i) at << 1e-9 * std::pow(10.0, i / 60.0);
+            return at;
+        };
+        const auto wave = [&thick, &along](double rhoMax, int threads) {
+            const rf::WaveGreen g(thick, 254e-6, 254e-6, 1e9, rhoMax);
+            Made out;
+            out.elsewhere = g.prepare(threads);
+            for (const double rho : along(rhoMax)) out.values << g.scalarRemainder(rho) << g.vectorRemainder(rho);
+            out.size = g.tableSize();
+            return out;
+        };
+        const QList<rf::ViaGreen::Span> others = {{0, 100e-6}, {100e-6, 150e-6}};
+        const auto via = [&l, &others, &along](int threads) {
+            const rf::ViaGreen v(l, {0, 100e-6}, others, {100e-6, 150e-6}, 1e9, 2e-3);
+            Made out;
+            out.elsewhere = v.prepare(threads);
+            for (const double rho : along(2e-3))
+                out.values << v.couplingRemainder(0, rho) << v.couplingRemainder(1, rho) << v.potentialRemainder(0, rho)
+                           << v.potentialRemainder(1, rho);
+            out.size = v.tableSize();
+            return out;
+        };
+        const auto said = [](const Made& a, const Made& b) {
+            return QStringLiteral("%1 and %2 distances, %3 and %4 made elsewhere")
+                .arg(a.size)
+                .arg(b.size)
+                .arg(a.elsewhere)
+                .arg(b.elsewhere);
+        };
+        // Keeping nothing: one thread's tables, then four's and seven's.
+        rf::keepGreens(0);
+        const Made toTwo = wave(2e-3, 1), toTen = wave(10e-3, 1), viaOne = via(1);
+        QVERIFY(toTwo.elsewhere == 0 && toTen.elsewhere == 0 && viaOne.elsewhere == 0);
+        QVERIFY2(toTen.size > toTwo.size && toTwo.size > 50 && viaOne.size > 50,
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(toTwo.size).arg(toTen.size).arg(viaOne.size)));
+        for (const int threads : {4, 7}) {
+            const Made w = wave(2e-3, threads), v = via(threads);
+            QVERIFY2(w.values == toTwo.values && w.size == toTwo.size && w.elsewhere > 0, qPrintable(said(w, toTwo)));
+            QVERIFY2(v.values == viaOne.values && v.size == viaOne.size && v.elsewhere > 0, qPrintable(said(v, viaOne)));
+        }
+        // Kept: made on three threads, the store's count of it its own; then
+        // handed over on five, nothing made; then grown on six to 10 mm, by
+        // its further distances alone.
+        rf::keepGreens(256e6);
+        rf::forgetGreens();
+        const Made kept = wave(2e-3, 3);
+        QVERIFY2(kept.values == toTwo.values && kept.elsewhere > 0, qPrintable(said(kept, toTwo)));
+        QCOMPARE(rf::greensKept().built, (long long)toTwo.size);
+        const Made handed = wave(2e-3, 5);
+        QVERIFY2(handed.values == toTwo.values && handed.elsewhere == 0, qPrintable(said(handed, toTwo)));
+        QCOMPARE(rf::greensKept().built, (long long)toTwo.size);
+        QCOMPARE(rf::greensKept().reused, (long long)toTwo.size);
+        const Made grown = wave(10e-3, 6);
+        QVERIFY2(grown.values == toTen.values && grown.elsewhere > 0, qPrintable(said(grown, toTen)));
+        QCOMPARE(rf::greensKept().built, (long long)toTen.size);
+        // More threads than distances left: the 10 mm table grown to 12.5,
+        // a few distances, on 24.
+        const Made further = wave(12.5e-3, 24);
+        const long long added = rf::greensKept().built - toTen.size;
+        QVERIFY2(added > 1 && added < 24 && further.elsewhere <= added,
+                 qPrintable(QStringLiteral("%1 added, %2 made elsewhere").arg(added).arg(further.elsewhere)));
+        rf::keepGreens(0);
+        const Made furtherOne = wave(12.5e-3, 1);
+        QVERIFY2(further.values == furtherOne.values && further.size == furtherOne.size,
+                 qPrintable(said(further, furtherOne)));
+        // The via's kept, on four threads.
+        rf::keepGreens(256e6);
+        rf::forgetGreens();
+        const Made viaKept = via(4);
+        QVERIFY2(viaKept.values == viaOne.values && viaKept.elsewhere > 0, qPrintable(said(viaKept, viaOne)));
+        QCOMPARE(rf::greensKept().built, (long long)viaOne.size);
+        // Two solves of one kernel at once, each on three threads: one makes
+        // its table and the other waits for it, handed it whole.
+        rf::forgetGreens();
+        std::vector<Made> both(2);
+        std::atomic_int ready{0};
+        QList<QThread*> solves;
+        for (int t = 0; t < 2; ++t)
+            solves << QThread::create([&wave, &both, &ready, t] {
+                ++ready;
+                while (ready.load() < 2) {
+                }
+                both[std::size_t(t)] = wave(2e-3, 3);
+            });
+        for (QThread* thread : std::as_const(solves)) thread->start();
+        for (QThread* thread : std::as_const(solves)) {
+            thread->wait();
+            delete thread;
+        }
+        QVERIFY2(rf::greensKept().built == toTwo.size && rf::greensKept().reused == toTwo.size,
+                 qPrintable(QStringLiteral("%1 built, %2 reused").arg(rf::greensKept().built).arg(rf::greensKept().reused)));
+        QVERIFY2(both[0].values == toTwo.values && both[1].values == toTwo.values
+                     && (both[0].elsewhere > 0) != (both[1].elsewhere > 0),
+                 qPrintable(said(both[0], both[1])));
+        rf::forgetGreens();
+    }
+
     // A kernel read from many threads at once - as a compressed solve's
     // threads fill their blocks - reads what one thread reads, its table
     // shared with a copy of it as a kept table once shared the store's. Its
