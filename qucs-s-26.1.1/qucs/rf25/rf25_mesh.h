@@ -70,6 +70,15 @@ struct MeshSettings {
     /// Solver and Matrix): its cost said so, and its cells not held to the
     /// charge solve's bound. Not read from the node: the tab sets it.
     bool compressed = false;
+    /// Whether a side that faces another conductor across a gap narrower
+    /// than its outermost cells has them halved until they are no wider
+    /// than a quarter of the gap, where the charge crowds on both edges.
+    /// The quasi-static charge solve's: the tab sets it for a quasi-static
+    /// study. Not yet a full-wave solve's - its conductors' loss at their
+    /// edges was fitted on the edges' one halving, and a measured coplanar
+    /// line's loss came out over its measurement on the finer cells. Not
+    /// read from the node.
+    bool gaps = false;
     /// The most cells, as the solver has it.
     int mostCells() const;
 };
@@ -98,6 +107,10 @@ struct MeshCost {
 
 struct Mesh {
     QList<MeshCell> cells;
+    /// The charges a quasi-static solve of it has: its cells, a metal solved
+    /// as its two faces counting each twice (the walls carry no charge of
+    /// their own).
+    int charges = 0;
     MeshCost cost;
     QStringList problems;
     QStringList lines;        ///< what it did, as the processing reports its own

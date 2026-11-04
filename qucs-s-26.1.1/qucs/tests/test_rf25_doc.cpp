@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QFileDialog>
 #include <QAction>
@@ -57,6 +58,7 @@
 #include "qucs.h"
 #include "layoutdoc.h"
 #include "rf25doc.h"
+#include "rf25/rf25_static.h"
 #include "rf25panel.h"
 #include "schematic.h"
 #include "rf25/rf25_sparams.h"
@@ -1693,6 +1695,117 @@ private slots:
         QVERIFY2(!doc->isSolving() && doc->extraction() == nullptr, "a stopped solve went on");
     }
 
+    /// A coplanar line in the workspace as \a name - its signal 50 µm, its
+    /// gaps 6, its grounds 150, 1000 µm long - on a stack that takes its
+    /// time: a mirror of forty films of 0.1 and 0.2 µm, εr 28 and 3.9, on
+    /// 500 µm of silicon, nothing under it; its metal solved as its two
+    /// faces, four cells across and none over 25 µm.
+    QString slowLine(const QString& name)
+    {
+        if (!writeRectangles(path(name + QStringLiteral(".gds")),
+                             {QRectF(QPointF(0, -25), QPointF(1000, 25)), QRectF(QPointF(0, 31), QPointF(1000, 181)),
+                              QRectF(QPointF(0, -181), QPointF(1000, -31))}))
+            return {};
+        rf::Model m = rf::Model::blank();
+        std::vector<rf::Node>& stack = m.stackNode().children;
+        for (rf::Node& n : stack) {
+            if (n.type == QLatin1String("rf_ground")) n.props.insert(QStringLiteral("kind"), QStringLiteral("open"));
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("500[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("11.7"));
+            }
+            if (n.type == QLatin1String("rf_metal")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("1[um]"));
+                n.props.insert(QStringLiteral("model"), QStringLiteral("faces"));
+            }
+        }
+        stack.erase(std::remove_if(stack.begin(), stack.end(), [](const rf::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (int i = 0; i < 40; ++i) {
+            rf::Node film;
+            film.type = QStringLiteral("rf_dielectric");
+            film.tag = QStringLiteral("film%1").arg(i + 1);
+            film.label = QStringLiteral("F%1").arg(i + 1);
+            film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
+            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
+            // (Lossless: each lossy layer is its own Green's function more,
+            //  a second and a half each of a mirror's.)
+            film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
+            stack.insert(stack.end() - 1, film);
+        }
+        m.layout().props.insert(QStringLiteral("file"), name + QStringLiteral(".gds"));
+        m.layout().child(QStringLiteral("rf_layer_map"))
+            ->props.insert(QStringLiteral("rows"), rowsOf({{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}}));
+        m.mesh().props.insert(QStringLiteral("cells_across"), 4);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("25[um]"));
+        m.normalise();
+        const QString file = path(name + QStringLiteral(".qrf25"));
+        QFile f(file);
+        if (!f.open(QIODevice::WriteOnly)) return {};
+        f.write(m.toJson());
+        return file;
+    }
+
+    // A quasi-static solve says what it is doing, and a Stop stops it. It
+    // said "Solving…" and nothing more, and its Stop let it go to run on to
+    // its end: a coplanar line on thin-film lithium niobate, whose stack's
+    // Green's function did not end, held a core and gigabytes until Qucs-S
+    // was killed, and a second solve ran beside it (the review of 3
+    // November). And the status line counts the charges the solve has: a
+    // metal solved as its two faces has each cell twice (it said 924 to
+    // solve the charge on, where the solve had 1848).
+    void aQuasiStaticSolveSaysWhatItDoesAndStops()
+    {
+        const QString model = slowLine(QStringLiteral("slowline"));
+        QVERIFY(!model.isEmpty());
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->mesh() != nullptr && doc->mesh()->ok(), qPrintable(doc->problemsText()->toPlainText()));
+        const int cells = int(doc->mesh()->cells.size());
+        QCOMPARE(doc->mesh()->charges, 2 * cells);
+        // A quasi-static study's mesh graded at the line's narrow gaps, where
+        // its capacitance is (test_rf25_mesh, test_rf25_static).
+        QVERIFY2(doc->mesh()->lines.join(' ').contains(QStringLiteral("face another conductor across a gap")),
+                 qPrintable(doc->mesh()->lines.join(" | ")));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("%1 cell(s), %2").arg(cells).arg(rf::chargeCostOf(2 * cells))),
+                 qPrintable(doc->statusLabel()->text()));
+        const int begun = doc->solvesBegun();
+        doc->solve();
+        QVERIFY(doc->isSolving());
+        QCOMPARE(doc->solvesBegun(), begun + 1);
+        QVERIFY2(QTest::qWaitFor([doc] { return doc->quasiStaticStep() >= rf::ExtractControl::Greens; }, 60000), "it never began");
+        QVERIFY2(doc->solvingSaid().contains(QStringLiteral("building the stack's Green's functions")), qPrintable(doc->solvingSaid()));
+        QVERIFY2(QTest::qWaitFor([doc] { return doc->statusLabel()->text().contains(QStringLiteral("Green's functions")); }, 5000),
+                 qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(QTest::qWaitFor([doc] {
+                     return doc->problemsText()->toPlainText().contains(
+                         QStringLiteral("Solving quasi-statically: building the stack's Green's functions"));
+                 }, 5000),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        QCOMPARE(doc->solvesAtWork(), 1);
+        // Stopped as its stack's Green's functions are built: its thread
+        // ends then, not when the solve would have.
+        QElapsedTimer t;
+        t.start();
+        doc->stopSolving();
+        QVERIFY(!doc->isSolving());
+        QVERIFY2(QTest::qWaitFor([doc] { return doc->solvesAtWork() == 0; }, slowBuild() ? 60000 : 5000),
+                 qPrintable(QStringLiteral("still at work %1 ms after the Stop").arg(t.elapsed())));
+        qWarning("a quasi-static solve stopped %lld ms after its Stop", (long long)t.elapsed());
+        QVERIFY(doc->extraction() == nullptr);
+        QVERIFY(doc->solvingSaid().isEmpty());
+        // A full-wave study's is not, yet: its conductors' loss at their
+        // edges was fitted on the edges' one halving.
+        QVERIFY(doc->editNode(doc->model().root.child(QStringLiteral("rf_study"))->tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("kind"), QStringLiteral("full_wave")); },
+                              QStringLiteral("full wave")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(!doc->mesh()->lines.join(' ').contains(QStringLiteral("across a gap")), qPrintable(doc->mesh()->lines.join(" | ")));
+        QVERIFY(int(doc->mesh()->cells.size()) < cells);
+    }
+
     /// A microstrip to solve full-wave, in the workspace as \a name: 1000 by
     /// 50 µm on 100 µm of 9.8 over a ground, an edge port at each end, and a
     /// study of three frequencies from 1 to 5 GHz by the full-wave solver.
@@ -2873,7 +2986,10 @@ private slots:
         QTRY_VERIFY(bar->isVisible());
         QCOMPARE(bar->minimum(), 0);
         QCOMPARE(bar->maximum(), 0);
-        QVERIFY2(doc->statusLabel()->text().endsWith(QStringLiteral("; solving")), qPrintable(doc->statusLabel()->text()));
+        // (What it is doing, in words: held before it computes, starting.)
+        QVERIFY2(doc->statusLabel()->text().endsWith(QStringLiteral("; ") + rf::extractStepSaid(rf::ExtractControl::Starting, 0, 0, 0)),
+                 qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(bar->toolTip().startsWith(QStringLiteral("Solving quasi-statically: starting")), qPrintable(bar->toolTip()));
         tab->activate();
         QCoreApplication::processEvents();
         QVERIFY2(bar->geometry().left() > doc->statusLabel()->geometry().right() && bar->geometry().right() < doc->width(),

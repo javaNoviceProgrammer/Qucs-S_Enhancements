@@ -17,6 +17,7 @@
 #include <QHash>
 
 #include <algorithm>
+#include <numeric>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -82,15 +83,28 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
 /// apart, evenly, and the first space halved where \a gradeLow says, the
 /// last where \a gradeHigh does. A side shorter than a step is one space
 /// (two where graded).
-QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh)
+/// How fine a conductor's outermost cells are made where it faces another
+/// across a gap: no wider than this share of the gap (meshOf()).
+constexpr double kGapShare = 0.25;
+
+QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh, double finestLow = 0,
+                        double finestHigh = 0)
 {
     QList<double> at;
     const int n = step > 0 ? std::max(1, int(std::ceil(length / step - 1e-9))) : 1;
     const double d = length / n;
     at << from;
-    if (gradeLow) at << from + d / 2;
+    // A graded end's outermost space halved, and halved again while it is
+    // wider than the finest asked there (a narrow gap it faces).
+    if (gradeLow) {
+        at << from + d / 2;
+        for (double w = d / 2; finestLow > 0 && w > finestLow && w > 1e-6 * length; w /= 2) at << from + w / 2;
+    }
     for (int i = 1; i < n; ++i) at << from + i * d;
-    if (gradeHigh) at << from + length - d / 2;
+    if (gradeHigh) {
+        at << from + length - d / 2;
+        for (double w = d / 2; finestHigh > 0 && w > finestHigh && w > 1e-6 * length; w /= 2) at << from + length - w / 2;
+    }
     at << from + length;
     std::sort(at.begin(), at.end());
     // (One space graded at both ends is cut once, in its middle.)
@@ -392,6 +406,7 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         QRectF box;
         bool rectangle = false;        // a rectangle, of a conductor or cut from one
         bool grade[4] = {true, true, true, true};   // its sides at low x, high x, low y, high y
+        double gap[4] = {0, 0, 0, 0};                // how far across each side another conductor faces it; 0: none
         QList<double> xs, ys;
     };
     QList<Piece> pieces;
@@ -469,6 +484,58 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         mesh.lines << tr("%1 shape(s) cut into the %2 rectangle(s) they are made of, each meshed as a strip of its own; "
                          "where two rectangles meet, their cells meet edge to edge.")
                           .arg(cutFrom).arg(cutInto);
+    // Where each side faces another conductor of its layer, and how far
+    // across: the charge crowds on both edges of a narrow gap, and halving
+    // the outermost cells once - the edges' grading - leaves a gap of 6 µm
+    // between conductors of 50 and 150 µm with one cell of 3 µm on one side
+    // and of 9 on the other. A coplanar line so on thin-film lithium niobate
+    // came out 10 % under its capacitance in vacuum, 12 % under its own
+    // conformal mapping (the review of 3 November); its edge cells halved
+    // down to a quarter of the gap it is a per cent from either, and the
+    // cells across hardly matter. (Pieces swept in order of their left
+    // edges: only those within twice the largest cell can face one within
+    // reach of its grading.)
+    if (how.edges && how.gaps) {
+        QList<int> order(pieces.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&pieces](int a, int b) { return pieces.at(a).box.left() < pieces.at(b).box.left(); });
+        const double reach = size / (2 * kGapShare);
+        for (int oi = 0; oi < order.size(); ++oi) {
+            Piece& p = pieces[order.at(oi)];
+            const QRectF& A = p.box;
+            const QString& layer = conductors.at(p.conductor).layer;
+            for (int oj = oi + 1; oj < order.size(); ++oj) {
+                Piece& q = pieces[order.at(oj)];
+                const QRectF& B = q.box;
+                if (B.left() > A.right() + reach) break;
+                if (conductors.at(q.conductor).layer != layer) continue;
+                const auto keep = [](double* at, double g) {
+                    if (g > 0 && (*at <= 0 || g < *at)) *at = g;
+                };
+                const bool acrossY = B.bottom() > A.top() && B.top() < A.bottom();   // they share some y: face across x
+                const bool acrossX = B.right() > A.left() && B.left() < A.right();   // they share some x: face across y
+                if (acrossY && B.left() >= A.right()) {
+                    keep(&p.gap[1], B.left() - A.right());
+                    keep(&q.gap[0], B.left() - A.right());
+                }
+                if (acrossY && A.left() >= B.right()) {
+                    keep(&p.gap[0], A.left() - B.right());
+                    keep(&q.gap[1], A.left() - B.right());
+                }
+                if (acrossX && B.top() >= A.bottom()) {
+                    keep(&p.gap[3], B.top() - A.bottom());
+                    keep(&q.gap[2], B.top() - A.bottom());
+                }
+                if (acrossX && A.top() >= B.bottom()) {
+                    keep(&p.gap[2], A.top() - B.bottom());
+                    keep(&q.gap[3], A.top() - B.bottom());
+                }
+            }
+        }
+        for (Piece& p : pieces)
+            for (int k = 0; k < 4; ++k)
+                if (!p.grade[k] || p.gap[k] >= reach) p.gap[k] = 0;
+    }
     double narrowest = 0, finest = 0;
     int strips = 0;
     // The conductors cut with \a perFeature cells across each: false where
@@ -480,11 +547,13 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     // at all.
     const int most = how.mostCells();
     const double pieceMost = std::max(double(kMostUnknowns), double(most));
-    const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, size, pieceMost](int perFeature,
-                                                                                                                    double* many) {
+    int facing = 0;
+    const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, &facing, size,
+                      pieceMost](int perFeature, double* many) {
         mesh.cells.clear();
         narrowest = finest = 0;
         strips = 0;
+        facing = 0;
         for (Piece& piece : pieces) {
             const Conductor& conductor = conductors.at(piece.conductor);
             const QRectF bounds = piece.box;
@@ -510,8 +579,18 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                 *many = squares;
                 return false;
             }
-            piece.xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges && piece.grade[0], how.edges && piece.grade[1]);
-            piece.ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges && piece.grade[2], how.edges && piece.grade[3]);
+            const double* gap = piece.gap;
+            piece.xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges && piece.grade[0], how.edges && piece.grade[1],
+                                 kGapShare * gap[0], kGapShare * gap[1]);
+            piece.ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges && piece.grade[2], how.edges && piece.grade[3],
+                                 kGapShare * gap[2], kGapShare * gap[3]);
+            // (The sides graded past the edges' one halving, for the line
+            //  that says so: those whose quarter gap is narrower than it.)
+            for (int k = 0; k < 4 && how.edges; ++k) {
+                const double span = k < 2 ? bounds.width() : bounds.height(), step = k < 2 ? stepX : stepY;
+                const double outermost = span / std::max(1, int(std::ceil(span / step - 1e-9))) / 2;
+                if (gap[k] > 0 && kGapShare * gap[k] < outermost) ++facing;
+            }
             if (narrowest <= 0 || feature < narrowest) narrowest = feature;
             if (finest <= 0 || across < finest) finest = across;
             if (strip) ++strips;
@@ -608,6 +687,10 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                                           : QString());
     if (how.edges) mesh.lines << tr("The outermost cells of each conductor's sides are half as wide, where its charge "
                                     "crowds.");
+    if (facing > 0)
+        mesh.lines << tr("%1 side(s) face another conductor across a gap: their outermost cells are halved until they are no "
+                         "wider than a quarter of it, where the charge crowds on both edges.")
+                          .arg(facing);
 
     // The unknowns: an edge two cells of a layer share is where current
     // flows from one to the other, and is one unknown of a rooftop basis.
@@ -631,6 +714,7 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             if (cell.onEdge) ++unknowns;
             if (!faced.contains(cell.layer)) faced << cell.layer;
         }
+    mesh.charges = charges;
     mesh.cost = how.compressed ? costOf(unknowns + charges, true) : costOf(unknowns);
     // (For a full-wave solve held compressed, its cells and runs together
     //  are its unknowns, and the charge solve's dense matrix is no one's.)

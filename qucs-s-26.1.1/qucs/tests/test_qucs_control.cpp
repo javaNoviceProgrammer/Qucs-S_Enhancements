@@ -2596,6 +2596,123 @@ private slots:
         closeUnder(ws + "/rf");
     }
 
+    // A solve going on is joined, not started again beside it; one asked
+    // otherwise is refused; past its timeout rf25_solve says what the solve
+    // is doing and leaves it going, and rf25_stop stops it. A second
+    // rf25_solve once let the first go - which ran on regardless - and
+    // started another: two cores and gigabytes on a stack whose Green's
+    // function did not end, and on timeout each call stopped its own solve,
+    // so that a solve longer than one call could never finish (the review
+    // of 3 November). A stack that takes its time, so that the solve is
+    // still going on a second in: a mirror of forty films of 0.1 and 0.2 µm,
+    // εr 28 and 3.9, on silicon.
+    void anRf25SolveGoingOnIsJoinedAndStopped()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString gds = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(gds)) QSKIP("the example layout is not in this build");
+        QVERIFY(QDir().mkpath(ws + "/rfjoin"));
+        QFile::remove(ws + "/rfjoin/heater.gds");
+        QVERIFY(QFile::copy(gds, ws + "/rfjoin/heater.gds"));
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (qucs_s::rf25::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("500[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("11.7"));
+            }
+        for (int i = 0; i < 40; ++i) {
+            qucs_s::rf25::Node film;
+            film.type = QStringLiteral("rf_dielectric");
+            film.tag = QStringLiteral("film%1").arg(i + 1);
+            film.label = QStringLiteral("F%1").arg(i + 1);
+            film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
+            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
+            // (Lossless: each lossy layer is its own Green's function more,
+            //  a second and a half each of a mirror's.)
+            film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
+            stack.insert(stack.end() - 1, film);
+        }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        QCOMPARE(rows.size(), 1);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
+        m.mesh().props.insert(QStringLiteral("cells_across"), 0);
+        m.normalise();
+        {
+            QFile f(ws + "/rfjoin/mirror.qrf25");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        const QString file = ws + "/rfjoin/mirror.qrf25";
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(120000));
+        QVERIFY(doc->waitForPrepared(120000));
+        QVERIFY(doc->mesh() != nullptr);
+        const int begun = doc->solvesBegun();
+        // Past its timeout: what it is doing, and it goes on.
+        const QJsonObject first = call("rf25_solve", {{"path", file}, {"timeout", 1}}, 60000);
+        QVERIFY2(failed(first) && text(first).contains(QStringLiteral("still solving after 1 s"))
+                     && text(first).contains(QStringLiteral("building the stack's Green's functions"))
+                     && text(first).contains(QStringLiteral("which the mesh does not change"))
+                     && text(first).contains(QStringLiteral("rf25_stop stops it")) && !text(first).contains(QStringLiteral("coarser")),
+                 qPrintable(text(first)));
+        QVERIFY2(doc->isSolving(), "rf25_solve stopped the solve at its timeout");
+        QCOMPARE(doc->solvesBegun(), begun + 1);
+        // Asked otherwise while it goes on: refused, the solve left be.
+        const QJsonObject other = call("rf25_solve", {{"path", file}, {"solver", "full_wave"}, {"timeout", 1}}, 60000);
+        QVERIFY2(failed(other) && text(other).contains(QStringLiteral("solving already")), qPrintable(text(other)));
+        QCOMPARE(doc->solvesBegun(), begun + 1);
+        // Asked alike: joined, not begun again.
+        const QJsonObject again = call("rf25_solve", {{"path", file}, {"timeout", 1}}, 60000);
+        QVERIFY2(failed(again) && text(again).contains(QStringLiteral("still solving after 1 s")), qPrintable(text(again)));
+        QCOMPARE(doc->solvesBegun(), begun + 1);
+        QCOMPARE(doc->solvesAtWork(), 1);
+        // rf25_inductance's loop is of the quasi-static solve: it joins it
+        // too, where it let it go and began its own.
+        const QJsonObject loop = call("rf25_inductance", {{"path", file}, {"timeout", 1}}, 60000);
+        QVERIFY2(failed(loop) && text(loop).contains(QStringLiteral("still solving after 1 s")), qPrintable(text(loop)));
+        QCOMPARE(doc->solvesBegun(), begun + 1);
+        // rf25_stop: stopped, its thread ended; nothing to stop after.
+        const QJsonObject stopped = call("rf25_stop", {{"path", file}}, 120000);
+        QVERIFY2(!failed(stopped) && json(stopped).toObject().value("stopped").toBool(), qPrintable(text(stopped)));
+        QVERIFY2(json(stopped).toObject().value("note").toString().contains(QStringLiteral("Stopped mirror.qrf25")), qPrintable(text(stopped)));
+        QVERIFY(!doc->isSolving());
+        QCOMPARE(doc->solvesAtWork(), 0);
+        const QJsonObject idle = call("rf25_stop", {{"path", file}}, 60000);
+        QVERIFY2(!failed(idle) && !json(idle).toObject().value("stopped").toBool(true)
+                     && json(idle).toObject().value("note").toString().contains(QStringLiteral("Nothing is solving")),
+                 qPrintable(text(idle)));
+        // And a solve started again after the stop is solved whole, where
+        // the build is quick enough to wait for it.
+        const bool sanitized = qEnvironmentVariableIsSet("QUCS_TEST_SLOW")
+#if defined(__SANITIZE_ADDRESS__)
+                               || true
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+                               || true
+#endif
+#endif
+            ;
+        if (!sanitized) {
+            const QJsonObject whole = call("rf25_solve", {{"path", file}, {"brief", true}}, 300000);
+            QVERIFY2(!failed(whole), qPrintable(text(whole)));
+            QCOMPARE(doc->solvesBegun(), begun + 2);
+        }
+        closeUnder(ws + "/rfjoin");
+    }
+
     // rf25_solve's full-wave solver, asked for by the tool for one solve
     // alone: the ports' S and Z, the sweep and the checks; rf25_export of
     // the ports after it; and rf25_inductance's loop found whatever the

@@ -13,6 +13,7 @@
 
 #include <Eigen/Dense>
 
+#include <atomic>
 #include <cmath>
 #include <vector>
 
@@ -600,34 +601,189 @@ private slots:
         }
     }
 
-    // The images are truncated where a stack reflects too strongly for
-    // them ever to die away: what was dropped is counted, not forgotten,
-    // and what is left is still the function to within it.
-    void whatTheTruncationDroppedIsCounted()
+    // A cavity whose faces each keep all but a part in ten thousand: every
+    // bounce keeps nearly all of its strength. Added one at a time, two
+    // thousand bounces of it were not the whole series and a part in a
+    // thousand of the potential was missing (counted, and said); summed as
+    // (1 + x)(1 + x^2)(1 + x^4)... seventeen squarings are 2^17 bounces, and
+    // nothing is left out.
+    void aCavityThatReflectsNearlyEverythingConverges()
     {
-        // Two faces that each reflect almost wholly: every bounce keeps
-        // nearly all of its strength, so the series is long.
         rf::Layers hard = oneSlab(1.0, 4e-6, 10000.0, 10000.0, false);
         const rf::Green g(hard, 2e-6);
         QVERIFY2(g.ok(), qPrintable(g.problems().join(" | ")));
-        // Two thousand bounces of a cavity that keeps all but a part in
-        // ten thousand of each is still not the whole of it, and the
-        // counter says how much is missing rather than letting it pass as
-        // nothing. This is the loss nothing stands for, which is not the
-        // coarsening: that keeps its charge and only blurs where it sat.
-        QVERIFY2(g.truncated() > 1e-6, "a stack that reflects nearly everything lost nothing at all");
-        QVERIFY2(g.truncated() < 1e-2, qPrintable(QStringLiteral("it lost %1 of the reflection").arg(g.truncated())));
-        // And it is still the same function as the integral, to about what
-        // the truncation threw away.
+        QVERIFY2(g.truncated() < 1e-12, qPrintable(QStringLiteral("it left out %1 of the reflection").arg(g.truncated())));
+        // And it is the integral's function, to the part in a million the
+        // images and the integral meet at elsewhere - where it was within a
+        // part in a thousand, what the truncation threw away.
         for (double rho : {1e-7, 1e-6, 1e-5}) {
             const double images = g.reflected(rho), integral = g.reflectedByIntegral(rho);
-            QVERIFY2(std::abs(images - integral) <= 1e-3 * std::abs(integral) + 1e-9 * std::abs(g.freeSpace(rho)),
+            QVERIFY2(std::abs(images - integral) <= 1e-6 * std::abs(integral) + 1e-9 * std::abs(g.freeSpace(rho)),
                      qPrintable(QStringLiteral("rho %1 µm: images %2 vs integral %3").arg(rho * 1e6).arg(images).arg(integral)));
         }
         // A stack that barely reflects loses nothing worth counting.
         const rf::Green easy(oneSlab(1.01, 4e-6, 1.0, 1.0, false), 2e-6);
         QVERIFY(easy.ok());
         QVERIFY2(easy.truncated() < 1e-11, qPrintable(QString::number(easy.truncated())));
+    }
+
+    // Thin-film lithium niobate on silicon (Nelan et al., Opt. Lett. 2022):
+    // 500 µm of Si, 4.7 µm of SiO2, 0.3 µm of LN at εr 28, 0.5 µm of SiO2,
+    // nothing under it. The film reflects 0.755 at each face; its paths and
+    // the oxide's and the substrate's are every sum of their lengths, which
+    // enumerated one by one filled every series to its twenty thousand terms
+    // and formed products of four hundred million pairs - a solve of a
+    // coplanar line on it never ended (the review of 3 November). Gathered
+    // in bins, it is a few hundred images in a few million pairs, and the
+    // same function as the integral, which rests on no expansion at all.
+    void aThinFilmOfHighPermittivityIsBuiltInBoundedWork()
+    {
+        const rf::Layers tfln = slabs({{11.7, 500e-6}, {3.9, 4.7e-6}, {28.0, 0.3e-6}, {3.9, 0.5e-6}}, false);
+        const double top = tfln.height();
+        rf::Green g(tfln, top);
+        // (What it may cost, bounded far below the build's own: a series
+        //  enumerated path by path runs past it, and says so.)
+        g.limitPairs(2e8);
+        QVERIFY2(g.ok(), qPrintable(g.problems().join(" | ")));
+        const int images = int(g.images().size());
+        QVERIFY2(g.ok(), qPrintable(g.problems().join(" | ")));
+        qWarning("thin-film lithium niobate: %d images, %.3g pairs, %.2g of the reflection gathered at nodes", images,
+                 g.pairs(), g.gathered());
+        QVERIFY2(images > 50 && images < 3000, qPrintable(QString::number(images)));
+        QVERIFY2(g.pairs() < 5e7, qPrintable(QString::number(g.pairs())));
+        // Its charge all there: with air on both sides, a charge far away
+        // sees the stack as no thickness at all - the potential of a charge
+        // in air, 1/(4 pi eps0 rho) - so the images of a charge in the
+        // top slab add up to eps_r - 1 of it.
+        double charge = 0;
+        for (const rf::Green::Image& im : g.images()) charge += im.a;
+        QVERIFY2(std::abs(charge - (3.9 - 1)) < 1e-7, qPrintable(QStringLiteral("%1").arg(charge, 0, 'g', 12)));
+        // The recursion, as a function of k.
+        for (double k : {1e2, 1e3, 1e4, 1e5, 1e6, 1e7}) {
+            double sum = 0;
+            for (const rf::Green::Image& im : g.images()) sum += im.a * std::exp(-k * im.z);
+            const double want = g.spectralReflection(k);
+            QVERIFY2(std::abs(sum - want) <= 1e-8 + 1e-7 * std::abs(want),
+                     qPrintable(QStringLiteral("k %1: images %2, recursion %3").arg(k).arg(sum, 0, 'g', 12).arg(want, 0, 'g', 12)));
+        }
+        // And the integral, from a tenth of a micrometre to three
+        // centimetres: a part in a million of what the stack reflects, a
+        // part in a billion of the charge's own field. (The lump the old
+        // floor coarsened into one image left it three in a million out at
+        // a centimetre, the cap's a thousand.)
+        for (double rho : {1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 3e-2}) {
+            const double im = g.reflected(rho), in = g.reflectedByIntegral(rho);
+            QVERIFY2(std::abs(im - in) <= 1e-6 * std::abs(in) + 1e-9 * g.freeSpace(rho),
+                     qPrintable(QStringLiteral("rho %1 µm: images %2, integral %3 (%4 of it)")
+                                    .arg(rho * 1e6).arg(im, 0, 'g', 12).arg(in, 0, 'g', 12).arg(std::abs(im - in) / std::abs(in))));
+        }
+        // On a ground (a chuck under the silicon) the images take the
+        // charge away: their charges add up to minus one.
+        rf::Layers chucked = tfln;
+        chucked.groundBelow = true;
+        rf::Green onChuck(chucked, top);
+        onChuck.limitPairs(2e8);
+        QVERIFY2(!onChuck.images().isEmpty() && onChuck.ok(), qPrintable(onChuck.problems().join(" | ")));
+        double away = 0;
+        for (const rf::Green::Image& im : onChuck.images()) away += im.a;
+        QVERIFY2(std::abs(away + 1) < 1e-7, qPrintable(QStringLiteral("%1").arg(away, 0, 'g', 12)));
+        for (double rho : {1e-6, 1e-4, 1e-2}) {
+            const double im = onChuck.reflected(rho), in = onChuck.reflectedByIntegral(rho);
+            QVERIFY2(std::abs(im - in) <= 1e-6 * std::abs(in) + 1e-9 * onChuck.freeSpace(rho),
+                     qPrintable(QStringLiteral("on a chuck, rho %1 µm: images %2, integral %3").arg(rho * 1e6).arg(im).arg(in)));
+        }
+    }
+
+    // The film's own layer seen across it: the charge on the film's top
+    // face (in the SiO2 below it) and the point below the film, in the box
+    // oxide - the transmission branch through a cavity of 0.755 at both
+    // faces. The same function both ways round, and the integral's.
+    void aChargeSeenAcrossAThinFilmIsBuiltToo()
+    {
+        const rf::Layers tfln = slabs({{11.7, 500e-6}, {3.9, 4.7e-6}, {28.0, 0.3e-6}, {3.9, 0.5e-6}}, false);
+        const double below = 500e-6 + 4.0e-6, above = tfln.height();
+        rf::Green there(tfln, below, above), back(tfln, above, below);
+        there.limitPairs(2e8);
+        back.limitPairs(2e8);
+        QVERIFY2(!there.images().isEmpty() && !back.images().isEmpty() && there.ok() && back.ok(),
+                 qPrintable((there.problems() + back.problems()).join(" | ")));
+        QVERIFY2(there.pairs() < 5e7 && back.pairs() < 5e7, qPrintable(QStringLiteral("%1, %2").arg(there.pairs()).arg(back.pairs())));
+        for (double rho : {1e-7, 1e-6, 1e-5, 1e-4, 1e-3}) {
+            const double a = exact(there, rho), b = exact(back, rho), in = there.reflectedByIntegral(rho);
+            QVERIFY2(std::abs(a - in) <= 1e-6 * std::abs(in), qPrintable(QStringLiteral("rho %1 µm: %2 vs the integral's %3").arg(rho * 1e6).arg(a).arg(in)));
+            QVERIFY2(std::abs(a - b) <= 1e-6 * std::abs(a), qPrintable(QStringLiteral("rho %1 µm: %2 one way, %3 the other").arg(rho * 1e6).arg(a).arg(b)));
+        }
+    }
+
+    // Where the images do not settle in what the expansion may cost, the
+    // Green's function says so - which layer is likeliest why, and that
+    // the mesh has nothing to do with it - rather than run on: a solve of
+    // that film ran for forty minutes and twelve gigabytes and was killed.
+    // And stopped, it stops.
+    void aStackThatDoesNotSettleSaysWhyAndAStopStops()
+    {
+        const rf::Layers tfln = []() {
+            rf::Layers l = slabs({{11.7, 500e-6}, {3.9, 4.7e-6}, {28.0, 0.3e-6}, {3.9, 0.5e-6}}, false);
+            const char* names[] = {"Si", "BOX", "LN", "SiO2"};
+            for (int i = 0; i < 4; ++i) l.slabs[i].name = QString::fromLatin1(names[i]);
+            return l;
+        }();
+        rf::Green g(tfln, tfln.height());
+        g.limitPairs(1e4);
+        QVERIFY(g.ok());   // (nothing built yet)
+        QVERIFY(g.images().isEmpty());
+        QVERIFY(!g.ok());
+        const QString said = g.problems().join(QLatin1Char(' '));
+        QVERIFY2(said.contains(QStringLiteral("did not settle")) && said.contains(QStringLiteral("LN, 0.3 µm of εr 28"))
+                     && said.contains(QStringLiteral("0.755 at its lower face and 0.755 at its upper"))
+                     && said.contains(QStringLiteral("the mesh does not change")),
+                 qPrintable(said));
+        QCOMPARE(g.potential(1e-6), 0.0);
+        // Stopped: no images, and said.
+        std::atomic_bool stop{true};
+        rf::Green stopped(tfln, tfln.height());
+        stopped.stopWith(&stop);
+        QVERIFY(stopped.images().isEmpty());
+        QVERIFY2(!stopped.ok() && stopped.problems().join(QLatin1Char(' ')).contains(QLatin1String("Stopped")),
+                 qPrintable(stopped.problems().join(" | ")));
+    }
+
+    // The integral itself, which the images are held to and which rests on
+    // no expansion. Far from the charge it is taken between J0's zeros, and
+    // two things went wrong there, both where a thin slab makes the range
+    // of k long:
+    //
+    //  - The first interval spans every k below 2.4/rho, a single ten-point
+    //    panel, where the substrate's reflections turn on the scale of its
+    //    own thickness. A stack whose film has the oxide's own permittivity
+    //    is the oxide alone, exactly, but its integral came out 4 % from the
+    //    oxide's a hundred micrometres off.
+    //  - Four thousand intervals end short of the range a centimetre out,
+    //    and the plain sum there is an alternating series cut off mid-swing,
+    //    half its last term out: a part in a thousand.
+    void theIntegralIsGradedAndItsSeriesSummed()
+    {
+        const rf::Layers four = slabs({{11.7, 500e-6}, {3.9, 4.7e-6}, {3.9, 0.3e-6}, {3.9, 0.5e-6}}, false);
+        const rf::Layers two = slabs({{11.7, 500e-6}, {3.9, 5.5e-6}}, false);
+        const rf::Green g4(four, four.height()), g2(two, two.height());
+        for (double rho : {3e-5, 1e-4, 2e-4, 1e-3}) {
+            const double a = g4.reflectedByIntegral(rho), b = g2.reflectedByIntegral(rho);
+            QVERIFY2(std::abs(a - b) <= 1e-7 * std::abs(b),
+                     qPrintable(QStringLiteral("rho %1 µm: four slabs %2, the one they are %3").arg(rho * 1e6).arg(a).arg(b)));
+        }
+        // Far out, a stack of films a few micrometres high is no height at
+        // all: what it reflects is (eps_r - 1)/(4 pi eps rho) of a charge in
+        // its top slab, to (z/rho)^2 of its images' depths - which reach
+        // some tens of micrometres down, its silicon reflecting 0.84 at its
+        // foot: ten parts in a million at a centimetre, a tenth of one at
+        // ten.
+        const rf::Layers films = slabs({{11.7, 3e-6}, {3.9, 1.7e-6}, {28.0, 0.3e-6}, {3.9, 0.5e-6}}, false);
+        const rf::Green g(films, films.height());
+        for (double rho : {0.1, 0.3}) {
+            const double want = (3.9 - 1) / (4 * M_PI * kEps0 * 3.9 * rho), got = g.reflectedByIntegral(rho);
+            QVERIFY2(std::abs(got - want) <= 1e-6 * std::abs(want),
+                     qPrintable(QStringLiteral("rho %1 cm: %2 against %3 (%4 of it)").arg(rho * 100).arg(got).arg(want).arg(std::abs(got - want) / want)));
+        }
     }
 
     // A stack of several slabs: its reflections are bounded, its potential

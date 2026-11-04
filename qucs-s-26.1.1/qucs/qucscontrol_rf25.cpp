@@ -28,6 +28,7 @@
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_sparams.h"
+#include "rf25/rf25_static.h"
 #include "rf25doc.h"
 
 #include <QCoreApplication>
@@ -340,16 +341,16 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_solve is of a planar structure's stack and layout.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
 
-    const int timeout = args.contains(QLatin1String("timeout"))
-                            ? qBound(1, args.value(QLatin1String("timeout")).toInt(300), 3600)
-                            : 300;
+    const int timeout = waitsFor(QStringLiteral("rf25_solve"), args);
     // Cancelled by its client while it waits (the user stopped Claude): its
-    // solve stopped, or not begun.
+    // solve stopped, or not begun - a solve it joined, someone else's, left
+    // to go on.
     QPointer<RF25Doc> solving(model);
     auto cancelled = std::make_shared<bool>(false);
-    const int stop = stoppable(running(), [solving, cancelled] {
+    auto startedHere = std::make_shared<bool>(false);
+    const int stop = stoppable(running(), [solving, cancelled, startedHere] {
         *cancelled = true;
-        if (solving) solving->stopSolving();
+        if (solving && *startedHere) solving->stopSolving();
     });
     const auto over = qScopeGuard([this, stop] { stopped(stop); });
     // The shapes and the cells first: the tab makes them at every edit,
@@ -389,11 +390,40 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     if (fullWave && asked > 0) request.frequencies = {asked};
 
     if (*cancelled || !solving) return errorResult(tr("Cancelled by the client before it was solved."));
-    model->solveWith(request);
+    // A solve going on already - the tab's, or an earlier call's that ran
+    // past its timeout: one asked alike is joined, waited for rather than
+    // started again; one asked otherwise is refused, not started beside
+    // it. A second rf25_solve once let the first go and started another,
+    // and the first, unstoppable, ran on beside it (the review of 3
+    // November: two cores, twelve gigabytes and climbing).
+    const bool joined = model->solvingAlike(request);
+    if (model->isSolving() && !joined)
+        return errorResult(tr("%1 is solving already, as it was asked otherwise (%2): rf25_solve asked as it was waits for "
+                              "that solve, and rf25_stop stops it.")
+                               .arg(QFileInfo(model->getDocName()).fileName(), model->solvingSaid()));
+    if (!joined) {
+        *startedHere = true;
+        model->solveWith(request);
+    }
     if (!model->waitForSolved(timeout * 1000)) {
-        model->stopSolving();
-        return errorResult(tr("It is still solving after %1 s: mesh it more coarsely (the Mesh node's largest cell), ask "
-                              "for fewer frequencies, or give rf25_solve a longer 'timeout'.").arg(timeout));
+        // It goes on: stopped here, the next call started it from nothing
+        // and its time went for nought. Where the time goes decides what
+        // would make it shorter - the stack's Green's functions are no
+        // quicker on a coarser mesh.
+        const int step = model->quasiStaticStep();
+        QString why;
+        if (step == ExtractControl::Greens)
+            why = tr(" The time is in the stack's Green's functions, which the mesh does not change: fewer layers, or "
+                     "thin ones of permittivities nearer their neighbours', build sooner.");
+        else if (step >= ExtractControl::Charge)
+            why = tr(" A coarser mesh solves sooner: fewer cells across a conductor, or a larger largest cell (the Mesh "
+                     "node).");
+        else if (fullWave)
+            why = tr(" A coarser mesh, or fewer frequencies, solve sooner.");
+        return errorResult(tr("It is still solving after %1 s: %2 It goes on - rf25_solve asked again waits for it, and "
+                              "rf25_stop stops it.%3")
+                               .arg(timeout)
+                               .arg(model->solvingSaid(), why));
     }
     if (fullWave) {
         const std::shared_ptr<const FullWave> w = model->fullWave();
@@ -691,6 +721,34 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     return jsonResult(out);
 }
 
+
+QJsonObject QucsControl::rf25Stop(const QJsonObject& args)
+{
+    // As the tab's Stop: the solve told to stop, and waited for - a
+    // quasi-static one stops at its next row of a matrix or its next
+    // Green's function's next product, a full-wave one at its next
+    // frequency. The model as it is open: one not open is solving nothing.
+    QString error;
+    QucsDoc* doc = document(args, &error);
+    if (doc == nullptr) return errorResult(error);
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_stop stops a planar structure's solve.").arg(titleOf(doc)));
+    const QString name = QFileInfo(model->getDocName()).fileName();
+    if (!model->isSolving() && model->solvesAtWork() == 0)
+        return jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
+                                      {QStringLiteral("note"), tr("Nothing is solving in %1.").arg(name)}});
+    const QString was = model->solvingSaid();
+    model->stopSolving();
+    const int timeout = waitsFor(QStringLiteral("rf25_stop"), args);
+    if (!model->waitForSolvesToEnd(timeout * 1000))
+        return errorResult(tr("Asked to stop, still at work after %1 s: it stops at its next check (rf25_stop again waits "
+                              "more).").arg(timeout));
+    QJsonObject out{{QStringLiteral("stopped"), true}};
+    if (!was.isEmpty()) out.insert(QStringLiteral("note"), tr("Stopped %1, which was %2").arg(name, was));
+    return jsonResult(out);
+}
+
 QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
 {
     // The model, as rf25_export finds it: the one named, else in front.
@@ -803,9 +861,7 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
                               "ports make.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
 
-    const int timeout = args.contains(QLatin1String("timeout"))
-                            ? qBound(1, args.value(QLatin1String("timeout")).toInt(300), 3600)
-                            : 300;
+    const int timeout = waitsFor(QStringLiteral("rf25_inductance"), args);
     // A frequency of its own is only for Q, and L and R do not move with
     // it here, so it is taken afterwards rather than by editing the
     // model's own study - a tool that is asked a question should not
@@ -826,11 +882,22 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
     RF25Doc::SolveRequest quasiStatic;
     quasiStatic.solver = QStringLiteral("quasi_static");
-    model->solveWith(quasiStatic);
+    // As rf25_solve: a quasi-static solve going on is joined, one of
+    // another kind refused, and past the timeout the solve goes on.
+    if (model->isSolving() && !model->solvingAlike(quasiStatic))
+        return errorResult(tr("%1 is solving already, full-wave (%2): rf25_inductance's loop is of a quasi-static solve "
+                              "- ask again once that one has ended, or after rf25_stop.")
+                               .arg(QFileInfo(model->getDocName()).fileName(), model->solvingSaid()));
+    if (!model->isSolving()) model->solveWith(quasiStatic);
     if (!model->waitForSolved(timeout * 1000)) {
-        model->stopSolving();
-        return errorResult(tr("It is still solving after %1 s: mesh it more coarsely (the Mesh node's largest cell), or "
-                              "give rf25_inductance a longer 'timeout'.").arg(timeout));
+        const bool greens = model->quasiStaticStep() == ExtractControl::Greens;
+        return errorResult(tr("It is still solving after %1 s: %2 It goes on - rf25_inductance asked again waits for it, "
+                              "and rf25_stop stops it.%3")
+                               .arg(timeout)
+                               .arg(model->solvingSaid(),
+                                    greens ? tr(" The time is in the stack's Green's functions, which the mesh does not "
+                                                "change.")
+                                           : tr(" A coarser mesh (the Mesh node's largest cell) solves sooner.")));
     }
     const std::shared_ptr<const Inductance> ind = model->inductance();
     if (!ind) {

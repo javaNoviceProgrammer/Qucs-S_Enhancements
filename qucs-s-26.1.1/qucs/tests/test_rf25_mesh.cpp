@@ -224,6 +224,74 @@ private slots:
         QCOMPARE(refined.cost.unknowns, 2 * 8 * 7);
     }
 
+    // Where a conductor faces another across a gap narrower than its
+    // outermost cells, those cells are halved until they are no wider than
+    // a quarter of the gap: the charge crowds on both edges of a narrow gap,
+    // and the edges' one halving left a coplanar line's 6 µm gaps, between a
+    // signal of 50 µm and grounds of 150, with one cell of 3 µm on one side
+    // and one of 9 on the other - its capacitance 10 % short (the review of
+    // 3 November; test_rf25_static has the line against its references).
+    // A side that faces nothing, or a gap as wide as its cells, is graded as
+    // before, and with no grading at the edges there is none here either.
+    // The quasi-static solve's mesh, which the tab asks it of for a
+    // quasi-static study: not a full-wave one's yet, whose conductors' loss
+    // at their edges was fitted on the edges' one halving.
+    void aSideFacingANarrowGapIsGradedToAQuarterOfIt()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        how.maximum = 25e-6;
+        const QList<rf::Conductor> line{on(QStringLiteral("M1"), 0, -25, 1000, 50), on(QStringLiteral("M1"), 0, 31, 1000, 150),
+                                        on(QStringLiteral("M1"), 0, -181, 1000, 150)};
+        // (Not for a full-wave solve yet, nor asked: as before.)
+        QVERIFY(!how.gaps);
+        const rf::Mesh before = rf::meshOf(line, how, m.stack(), 0);
+        QVERIFY2(!says(before.lines, "across a gap"), qPrintable(before.lines.join(" | ")));
+        how.gaps = true;
+        const rf::Mesh mesh = rf::meshOf(line, how, m.stack(), 0);
+        QVERIFY(mesh.cells.size() > before.cells.size());
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        QVERIFY2(says(mesh.lines, "4 side(s) face another conductor across a gap"), qPrintable(mesh.lines.join(" | ")));
+        // How wide in y the cells are that touch a line y = at, from the
+        // side of it that \a above says.
+        const auto widthAt = [&mesh](double at, bool above) {
+            double widest = 0;
+            for (const rf::MeshCell& c : mesh.cells) {
+                const QRectF b = c.outline.boundingRect();
+                if (above ? std::abs(b.top() - at) < 1e-9 : std::abs(b.bottom() - at) < 1e-9) widest = std::max(widest, b.height());
+            }
+            return widest;
+        };
+        // The signal's two sides and each ground's inner one: a quarter of
+        // 6 µm at most (from 6.25 µm halved: 3.125, 1.5625, then 0.78).
+        for (const double w : {widthAt(25, false), widthAt(-25, true), widthAt(31, true), widthAt(-31, false)})
+            QVERIFY2(w > 0 && w <= 1.5 + 1e-9, qPrintable(QString::number(w)));
+        // Each ground's outer side faces nothing: its cells as before, half
+        // of the 25 µm its cells are (the largest cell, six across it).
+        QVERIFY2(std::abs(widthAt(181, false) - 12.5) < 1e-9, qPrintable(QString::number(widthAt(181, false))));
+        QVERIFY2(std::abs(widthAt(-181, true) - 12.5) < 1e-9, qPrintable(QString::number(widthAt(-181, true))));
+        // A gap as wide as the cells: graded as before.
+        const QList<rf::Conductor> apart{on(QStringLiteral("M1"), 0, -25, 1000, 50), on(QStringLiteral("M1"), 0, 75, 1000, 150)};
+        const rf::Mesh wide = rf::meshOf(apart, how, m.stack(), 0);
+        QVERIFY2(!says(wide.lines, "across a gap"), qPrintable(wide.lines.join(" | ")));
+        // No grading at the edges, none at the gaps.
+        how.edges = false;
+        const rf::Mesh plain = rf::meshOf(line, how, m.stack(), 0);
+        QVERIFY2(!says(plain.lines, "across a gap"), qPrintable(plain.lines.join(" | ")));
+        QVERIFY(plain.cells.size() < mesh.cells.size());
+        // And the charges a quasi-static solve has: one a cell on a sheet;
+        // twice over on a metal solved as its two faces, which the tab's
+        // status line counts (it counted the cells alone: 924 where the
+        // solve had 1848, a matrix a quarter of the size it filled).
+        QCOMPARE(mesh.charges, int(mesh.cells.size()));
+        rf::Model faced = stacked();
+        faced.stackNode().children.back().props.insert(QStringLiteral("model"), QStringLiteral("faces"));
+        const rf::Mesh two = rf::meshOf(line, how, faced.stack(), 0);
+        QVERIFY2(faced.stack().layers.last().twoSheets, "the metal is not solved as its faces");
+        QCOMPARE(two.charges, 2 * int(two.cells.size()));
+    }
+
     // Cells across a conductor: at least so many across its narrowest
     // part, whatever the wavelength - the phase B check found a 100 µm
     // strip one cell wide at the default, its Z0 12 % high - and a straight

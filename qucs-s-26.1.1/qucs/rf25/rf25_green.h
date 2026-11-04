@@ -55,6 +55,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <atomic>
+
 namespace qucs_s::rf25 {
 
 /// The permittivity of free space, F/m, and the speed of light, m/s - the
@@ -119,8 +121,36 @@ public:
     /// freeSpace() is nothing and potential() is the images alone.
     Green(const Layers& layers, double zField, double zSource);
 
-    bool ok() const { return a_problems.isEmpty(); }
-    QStringList problems() const { return a_problems; }
+    /// Whether it can be read: its heights in the stack and, once its
+    /// images are built, that they were - not stopped, nor past the bound
+    /// on what the expansion may cost (limitPairs()).
+    bool ok() const { return a_problems.isEmpty() && a_unbuilt.isEmpty(); }
+    QStringList problems() const { return a_problems + a_unbuilt; }
+
+    /// The solve's stop, which the expansion looks at as it forms its
+    /// products: stopped, the Green has no images and says so.
+    void stopWith(const std::atomic_bool* stop) { a_stop = stop; }
+    /// The most pairs of terms the expansion's products may form - 0, the
+    /// build's own kMostPairs; past them it says the stack's images did not
+    /// settle, and which of its layers is likeliest why. (Lower, a test
+    /// meets the bound.)
+    void limitPairs(double most) { a_mostPairs = most; }
+    /// What building the images cost: the pairs of terms its products
+    /// formed - a count, not a time, so that it reads the same in every
+    /// build.
+    double pairs() const
+    {
+        build();
+        return a_pairs;
+    }
+    /// How much of the reflection went to crowded bins' nodes: paths of
+    /// lengths a part in sixty-four apart, not told apart (rf25_green.cpp,
+    /// kBinBits).
+    double gathered() const
+    {
+        build();
+        return a_gathered;
+    }
 
     /// The potential at distance \a rho (m) from a unit charge, V/C: the
     /// free-space 1/(4 pi eps rho) of the slab the charge is in, plus what
@@ -227,6 +257,11 @@ private:
     double a_zRef = 1;                 ///< the stack's finest length, m
     mutable QList<double> a_table;     ///< rho times the images' sum, at a_rho
     mutable QList<double> a_rho;       ///< log-spaced, m
+    mutable double a_pairs = 0;        ///< what the build's products formed
+    mutable double a_gathered = 0;     ///< what went to crowded bins' nodes
+    mutable QStringList a_unbuilt;     ///< why the images are not there, once built
+    const std::atomic_bool* a_stop = nullptr;
+    double a_mostPairs = 0;
     QStringList a_problems;
 };
 

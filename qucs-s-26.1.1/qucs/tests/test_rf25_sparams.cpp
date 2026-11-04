@@ -655,9 +655,13 @@ private slots:
 
         // G is w times it, which the coupled lines carry across whole - of
         // the line's cross-section, per metre as C is, its ends' share not
-        // in it; so near the whole over the length, but not it (the
-        // coupling per metre is a little more: at the ends the field
-        // goes to the ground rather than to the other line).
+        // in it. Of a uniform line the whole's loss is that over its length:
+        // it is read per metre, and the whole solved again for each lossy
+        // layer was read by nothing (the review of 3 November). Its C is
+        // solved whole, and there the cross-section's is near the whole over
+        // the length, but not it (the coupling per metre is a little more:
+        // at the ends the field goes to the ground rather than to the other
+        // line).
         const fem::CoupledLines c = rf::asCoupledLines(e, length, f);
         QVERIFY(c.error.isEmpty());
         const double omega = 2 * M_PI * f;
@@ -666,10 +670,20 @@ private slots:
         const double offPerMetre = e.perMetre.dielectricLoss.at(0).at(1);
         QVERIFY2(std::abs(c.G[0][1] - omega * offPerMetre) < 1e-6 * std::abs(omega * offPerMetre),
                  "the conductance matrix is w times the loss matrix, per metre");
-        QVERIFY2(offPerMetre < 0 && std::abs(offPerMetre - off / length) < 0.2 * std::abs(off / length)
-                     && std::abs(offPerMetre - off / length) > 1e-4 * std::abs(off / length),
+        QVERIFY2(offPerMetre < 0 && std::abs(offPerMetre - off / length) <= 1e-12 * std::abs(off / length),
                  qPrintable(QStringLiteral("per metre %1, the whole over the length %2").arg(offPerMetre).arg(off / length)));
+        QCOMPARE(e.solves, 2);
+        const double cPerMetre = e.perMetre.maxwell.at(0).at(1), cWhole = e.maxwell.at(0).at(1) / length;
+        QVERIFY2(cPerMetre < 0 && std::abs(cPerMetre - cWhole) < 0.2 * std::abs(cWhole) && std::abs(cPerMetre - cWhole) > 1e-4 * std::abs(cWhole),
+                 qPrintable(QStringLiteral("C per metre %1, the whole over the length %2").arg(cPerMetre).arg(cWhole)));
         QVERIFY2(c.G[0][1] < 0, "and its coupling term survives the crossing");
+        // A structure that is no line - the pair's two strips of unlike
+        // lengths - is solved whole again for its lossy layer.
+        const QList<rf::Conductor> unlike{strip(0, 0, 2000, 200), strip(0, 300, 1200, 200)};
+        const rf::Extraction pads = rf::extract(meshed(unlike, 60), unlike, grounded(epsr, h, 0.002));
+        QVERIFY2(pads.ok() && !pads.perMetre.fromMiddle, qPrintable((pads.problems + pads.lines).join(" | ")));
+        QCOMPARE(pads.solves, 3);
+        QVERIFY2(pads.dielectricLoss.at(0).at(1) < 0 && pads.dielectricLoss.at(0).at(0) > 0, "its whole loss matrix is solved");
 
         // A stack that declares no loss has none of it.
         const rf::Extraction dry = rf::extract(meshed(pair, 60), pair, grounded(epsr, h));

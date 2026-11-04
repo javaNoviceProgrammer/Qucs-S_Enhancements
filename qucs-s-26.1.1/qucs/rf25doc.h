@@ -218,9 +218,32 @@ public:
     int frequenciesSolved() const;
     int frequenciesToSolve() const;
     /// Lets a solve going on go, or one waiting for the mesh: its result is
-    /// dropped.
+    /// dropped, and it is told to stop - a quasi-static one at its next row
+    /// of a matrix or its next Green's function's next product, a
+    /// full-wave one at its next frequency.
     void stopSolving();
     bool isSolving() const { return a_solveJob != nullptr || a_solveWhenPrepared; }
+    /// Whether a solve is going on, or waiting for its mesh, that \a request
+    /// asks for too - the same solver, the study's when it names none, and
+    /// a full-wave one's frequencies and matrix: rf25_solve and
+    /// rf25_inductance join it rather than starting it again.
+    bool solvingAlike(const SolveRequest& request) const;
+    /// What it is doing, in words, as the bar's tip says it; empty where
+    /// nothing is solving.
+    QString solvingSaid() const;
+    /// The step of the quasi-static solve going on (ExtractControl::Step),
+    /// else -1.
+    int quasiStaticStep() const;
+    /// The solves still at work on their threads: the one going on, and
+    /// any let go that have not yet come to their next check. A stopped
+    /// solve let go ran on to its end before, beside the next.
+    int solvesAtWork() const { return a_solvesAtWork->load(); }
+    /// How many solves this tab has begun on their threads: one joined by
+    /// rf25_solve is not begun again.
+    int solvesBegun() const { return a_solvesBegun; }
+    /// Waits \a ms at most for every solve's thread to end; whether they
+    /// had.
+    bool waitForSolvesToEnd(int ms);
     /// Waits for it, a solve waiting for the mesh included, \a ms at most;
     /// whether it ended.
     bool waitForSolved(int ms = 600000);
@@ -513,6 +536,9 @@ private:
     std::shared_ptr<std::atomic_bool> a_solvesHeld = std::make_shared<std::atomic_bool>(false);
     /// allowFrequencies(): held by each solve job, as that is.
     std::shared_ptr<std::atomic_int> a_frequenciesAllowed = std::make_shared<std::atomic_int>(-1);
+    /// solvesAtWork(): each solve's thread holds it and counts itself out.
+    std::shared_ptr<std::atomic_int> a_solvesAtWork = std::make_shared<std::atomic_int>(0);
+    int a_solvesBegun = 0;
     bool a_showProcessed = true;
     bool a_showMesh = false;
     bool a_showCurrents = false;

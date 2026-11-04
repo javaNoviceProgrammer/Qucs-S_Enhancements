@@ -473,6 +473,8 @@ private:
     QJsonObject openDocument(const QJsonObject& args);
     /// rf25_solve: an RF 2.5D model's capacitance, and each net as a line.
     QJsonObject rf25Solve(const QJsonObject& args);
+    /// rf25_stop: the model's solve stopped, as its tab's Stop does.
+    QJsonObject rf25Stop(const QJsonObject& args);
     QJsonObject rf25Export(const QJsonObject& args);
     QJsonObject rf25Circuit(const QJsonObject& args);
     QJsonObject rf25Inductance(const QJsonObject& args);

@@ -15,7 +15,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <vector>
 
 namespace qucs_s::rf25 {
 
@@ -60,31 +62,92 @@ double besselZero(int n)
 /// A function of k that is a sum of a_i exp(-k z_i), with z >= 0: what
 /// every reflection of a stratified medium is, once the rational function
 /// of exp(-2 k h) it is written as has been expanded. The terms are kept
-/// in a list, and the operations are the few the recursion needs.
+/// in a list, in order of length, and the operations are the few the
+/// recursion needs.
 using Series = QList<QPair<double, double>>;   // (coefficient, path length)
 
 /*!
  * How weak a term may be before it is pruned, measured as what it is
  * worth beside one at the stack's finest length (Budget::worth).
  *
- * A part in a hundred million, which is four orders below what the method
- * of moments on top of this can tell apart and three below what the
- * spectral integral the images are checked against can resolve. Tightening
- * it does not make an answer better; it only makes a deep stack
- * combinatorial, which five slabs at 1e-13 showed by running to eighteen
- * thousand images and half a minute.
+ * What is pruned is not lost: its charge goes into the lump (Budget). But
+ * the lump is one image for all of it, at their mean distance, and pruned
+ * at 1e-13 the thin-film lithium niobate stack of 3 November lumped enough
+ * a few millimetres down its substrate to leave the potential three parts
+ * in a million out at a centimetre; at 1e-16 it is a part in a billion.
+ * Once a series could run to every path through the stack, which is what
+ * made a floor costly - five slabs at 1e-13 ran to eighteen thousand images
+ * and half a minute - but crowded lengths now share bins (Gathered), and a
+ * lower floor costs a few more of them.
  */
-constexpr double kTermFloor = 1e-13;
+constexpr double kTermFloor = 1e-16;
 constexpr int kMostTerms = 20000;      ///< and no more than this many are kept
+
+/*!
+ * Bins of path length: 2^kBinBits of them to a factor of two, read off a
+ * length's double - its exponent and the top six bits of its mantissa -
+ * so that a bin is a part in 64 to 128 of its length wide, every series
+ * has the same bins, and no logarithm is taken.
+ *
+ * The paths in one bin are told apart while it holds no more than
+ * kKeptPerBin lengths; past that the bin is crowded, and each of its terms
+ * goes to the four nodes about it (the bins' lower edges) by the cubic
+ * through them. That keeps a series finite whatever the stack. A thin film
+ * of high permittivity between two of low reflects three quarters at each
+ * face; its paths and its substrate's are every sum of their lengths;
+ * enumerated one by one they filled every series to its cap, the products
+ * of two such ran to four hundred million pairs and six gigabytes, and the
+ * solve never ended (that lithium niobate stack: Si 500 µm, SiO2 4.7 µm,
+ * LN 0.3 µm of εr 28, SiO2 0.5 µm).
+ *
+ * The nodes take a term by weights that are linear in it, and that is not
+ * a detail: the series of such a stack converge only because paths of the
+ * same length but opposite sign cancel. The film's cavity's series sums to
+ * 2.5 in absolute value and its powers fall; gathered with each sign apart,
+ * at its own centre, it summed to 10 and its powers grew to 1e306. A cubic
+ * is good to the fourth power of the bin's width, (1/64)^4 against the
+ * term's own potential at any distance, which held that stack to its
+ * integral within a few parts in a hundred million.
+ */
+constexpr int kBinBits = 6;
+constexpr int kKeptPerBin = 2;
+
+/*!
+ * The most pairs of terms an expansion's products may form before it is
+ * given up as not settling. That lithium niobate stack forms seven million
+ * now, and a mirror of forty films of 0.1 and 0.2 µm, εr 28 and 3.9, on
+ * 500 µm of silicon - a stack meant to be hard - two hundred and sixty
+ * million in a second and a half; five billion is a minute or so, and a
+ * stack past it is said to be one, not solved for ever.
+ */
+constexpr double kMostPairs = 5e9;
+
+/// The bin of a length above nought: its double's top bits, which order as
+/// the length does.
+qint64 binOf(double z)
+{
+    quint64 bits = 0;
+    std::memcpy(&bits, &z, sizeof bits);
+    return qint64(bits >> (52 - kBinBits));
+}
+
+/// The lower edge of bin \a j, which is a node: the length binOf() reads
+/// \a j from, its lower bits nought.
+double nodeOf(qint64 j)
+{
+    const quint64 bits = quint64(j) << (52 - kBinBits);
+    double z = 0;
+    std::memcpy(&z, &bits, sizeof z);
+    return z;
+}
 
 /*!
  * What a term is worth, and what was dropped.
  *
- * Enumerating every path through a stack is combinatorial - five slabs ran
- * to eighteen thousand images and half a minute - and nearly all of the
- * long ones are worth nothing, because an image at a distance z is worth
- * at most a/z. So a term is judged by that, against the finest length of
- * the stack, and not by its coefficient alone: an image a hundred slabs
+ * Enumerating every path through a stack is combinatorial, and nearly all
+ * of the long ones are worth nothing, because an image at a distance z is
+ * worth at most a/z. So a term is judged by that, against the finest length
+ * of the stack, and not by its coefficient alone: an image a hundred slabs
  * away must be a hundred times stronger to be kept.
  *
  * What is pruned is not thrown away. Its charge and its first moment are
@@ -92,13 +155,22 @@ constexpr int kMostTerms = 20000;      ///< and no more than this many are kept
  * which is right in both limits - near the charge those paths were
  * negligible anyway, and far from it only the total charge is felt - and
  * between them is wrong by no more than the pruned terms themselves.
+ *
+ * And what the expansion may cost: the pairs its products form, counted,
+ * and stopped past a bound or when the solve is stopped.
  */
 struct Budget {
     double zRef = 1;        ///< the length a path is judged against, m
+    double zExact = 0;      ///< lengths at or below this are merged only where equal, m
     double lumpA = 0;       ///< the coarsened terms' charge
     double lumpAz = 0;      ///< and their first moment
     double coarsened = 0;   ///< their worth, which the lump stands for
     double missing = 0;     ///< the worth of what nothing stands for
+    double gathered = 0;    ///< the worth of what went to a crowded bin's nodes
+    double pairs = 0;       ///< the pairs the products have formed
+    double mostPairs = 0;   ///< and the most they may (0: as many as they take)
+    const std::atomic_bool* stop = nullptr;
+    bool over = false;      ///< past mostPairs, or stopped: every product after is nothing
 
     /// What a term at \a z with coefficient \a a is worth, relative to
     /// one at the reference length.
@@ -115,63 +187,191 @@ struct Budget {
     /// A term nothing stands for: the bounces ran out before the series
     /// did, so this much of the reflection is simply not there.
     void lose(double a, double z) { missing += worth(a, z); }
+    /// Whether a product of \a count pairs may be formed: not once the
+    /// bound is passed or the solve stopped, and then nothing after it.
+    bool spend(double count)
+    {
+        pairs += count;
+        if ((mostPairs > 0 && pairs > mostPairs) || (stop != nullptr && stop->load())) over = true;
+        return !over;
+    }
 };
 
-///  s with the terms below the floor dropped and equal lengths added
-/// together; what was dropped is added to  lost.
+/*!
+ * Terms gathered into a series: equal lengths added together, and a
+ * crowded bin's terms handed to its nodes (kBinBits). Each term is added
+ * where it falls, so that a product of two series of a thousand terms each
+ * never holds its million pairs - it holds its bins.
+ */
+class Gathered
+{
+public:
+    explicit Gathered(Budget* lost) : a_lost(lost) {}
+
+    /// Room for lengths from \a shortest to \a longest.
+    void span(double shortest, double longest)
+    {
+        const double exact = a_lost != nullptr ? a_lost->zExact : 0.0;
+        if (!(longest > exact)) return;
+        a_first = binOf(std::max(shortest, std::nextafter(exact, 1.0))) - 1;
+        const size_t count = size_t(binOf(longest) + 2 - a_first + 1);
+        a_bins.assign(count, Bin{});
+        a_nodes.assign(count, 0.0);
+    }
+
+    void add(double a, double z)
+    {
+        if (a_lost != nullptr && a_lost->worth(a, z) < kTermFloor) {
+            a_lost->coarsen(a, z);
+            return;
+        }
+        if (a_lost == nullptr && std::abs(a) < kTermFloor) return;
+        if (a_bins.empty() || z <= (a_lost != nullptr ? a_lost->zExact : 0.0)) {
+            a_exact << QPair<double, double>{a, z};
+            return;
+        }
+        const qint64 j = binOf(z);
+        Bin& bin = a_bins[size_t(j - a_first)];
+        if (!bin.crowded) {
+            for (int i = 0; i < bin.used; ++i)
+                if (std::abs(z - bin.z[i]) <= 1e-15 * (1 + z)) {
+                    bin.a[i] += a;
+                    return;
+                }
+            if (bin.used < kKeptPerBin) {
+                bin.z[bin.used] = z;
+                bin.a[bin.used] = a;
+                ++bin.used;
+                return;
+            }
+            bin.crowded = true;
+            for (int i = 0; i < bin.used; ++i) toNodes(j, bin.a[i], bin.z[i]);
+            bin.used = 0;
+        }
+        toNodes(j, a, z);
+    }
+
+    /// The series: in order of length, equal lengths added, terms below the
+    /// floor pruned and no more than kMostTerms of them kept.
+    Series taken()
+    {
+        Series all = a_exact;
+        for (size_t i = 0; i < a_bins.size(); ++i) {
+            for (int k = 0; k < a_bins[i].used; ++k) all << QPair<double, double>{a_bins[i].a[k], a_bins[i].z[k]};
+            if (a_nodes[i] != 0) all << QPair<double, double>{a_nodes[i], nodeOf(a_first + qint64(i))};
+        }
+        std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+        Series out;
+        for (const auto& t : std::as_const(all)) {
+            if (!out.isEmpty() && std::abs(t.second - out.last().second) <= 1e-15 * (1 + std::abs(t.second)))
+                out.last().first += t.first;
+            else
+                out << t;
+        }
+        Series kept;
+        for (const auto& t : std::as_const(out)) {
+            if (a_lost != nullptr && a_lost->worth(t.first, t.second) < kTermFloor) a_lost->coarsen(t.first, t.second);
+            else if (std::abs(t.first) >= kTermFloor) kept << t;
+        }
+        if (kept.size() > kMostTerms) {
+            Budget* lost = a_lost;
+            std::sort(kept.begin(), kept.end(), [lost](const auto& a, const auto& b) {
+                return (lost != nullptr ? lost->worth(a.first, a.second) : std::abs(a.first))
+                       > (lost != nullptr ? lost->worth(b.first, b.second) : std::abs(b.first));
+            });
+            for (int i = kMostTerms; i < kept.size(); ++i)
+                if (lost != nullptr) lost->coarsen(kept.at(i).first, kept.at(i).second);
+            kept.erase(kept.begin() + kMostTerms, kept.end());
+            std::sort(kept.begin(), kept.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+        }
+        return kept;
+    }
+
+private:
+    /// A term of bin \a j to the nodes about it, j-1 to j+2, by Lagrange's
+    /// cubic through them: its charge and its first three moments kept.
+    void toNodes(qint64 j, double a, double z)
+    {
+        double at[4];
+        for (int m = 0; m < 4; ++m) at[m] = nodeOf(j - 1 + m);
+        for (int m = 0; m < 4; ++m) {
+            double w = 1;
+            for (int n = 0; n < 4; ++n)
+                if (n != m) w *= (z - at[n]) / (at[m] - at[n]);
+            a_nodes[size_t(j - 1 + m - a_first)] += a * w;
+        }
+        if (a_lost != nullptr) a_lost->gathered += a_lost->worth(a, z);
+    }
+
+    struct Bin {
+        double z[kKeptPerBin] = {}, a[kKeptPerBin] = {};
+        int used = 0;
+        bool crowded = false;
+    };
+    Budget* a_lost;
+    Series a_exact;
+    std::vector<Bin> a_bins;
+    std::vector<double> a_nodes;
+    qint64 a_first = 0;
+};
+
+///  s with the terms below the floor dropped, equal lengths added together
+/// and crowded bins gathered; what was dropped is added to  lost.
 Series tidied(Series s, Budget* lost)
 {
-    std::sort(s.begin(), s.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
-    Series out;
-    for (const auto& t : std::as_const(s)) {
-        if (!out.isEmpty() && std::abs(t.second - out.last().second) <= 1e-15 * (1 + std::abs(t.second)))
-            out.last().first += t.first;
-        else
-            out << t;
+    Gathered g(lost);
+    if (!s.isEmpty()) {
+        double shortest = s.first().second, longest = shortest;
+        for (const auto& t : std::as_const(s)) {
+            shortest = std::min(shortest, t.second);
+            longest = std::max(longest, t.second);
+        }
+        g.span(shortest, longest);
     }
-    Series kept;
-    for (const auto& t : std::as_const(out)) {
-        if (lost != nullptr && lost->worth(t.first, t.second) < kTermFloor) lost->coarsen(t.first, t.second);
-        else if (std::abs(t.first) >= kTermFloor) kept << t;
-    }
-    if (kept.size() > kMostTerms) {
-        std::sort(kept.begin(), kept.end(), [&lost](const auto& a, const auto& b) {
-            return (lost != nullptr ? lost->worth(a.first, a.second) : std::abs(a.first))
-                   > (lost != nullptr ? lost->worth(b.first, b.second) : std::abs(b.first));
-        });
-        for (int i = kMostTerms; i < kept.size(); ++i)
-            if (lost != nullptr) lost->coarsen(kept.at(i).first, kept.at(i).second);
-        kept.erase(kept.begin() + kMostTerms, kept.end());
-    }
-    return kept;
+    for (const auto& t : std::as_const(s)) g.add(t.first, t.second);
+    return g.taken();
 }
 
 Series times(const Series& a, const Series& b, Budget* lost)
 {
-    Series out;
-    out.reserve(std::min(a.size() * b.size(), qsizetype(kMostTerms * 2)));
+    if (a.isEmpty() || b.isEmpty()) return {};
+    if (lost != nullptr && !lost->spend(double(a.size()) * double(b.size()))) return {};
+    double aShort = a.first().second, aLong = aShort, bShort = b.first().second, bLong = bShort;
+    for (const auto& t : a) {
+        aShort = std::min(aShort, t.second);
+        aLong = std::max(aLong, t.second);
+    }
+    for (const auto& t : b) {
+        bShort = std::min(bShort, t.second);
+        bLong = std::max(bLong, t.second);
+    }
+    Gathered g(lost);
+    g.span(aShort + bShort, aLong + bLong);
     for (const auto& x : a)
-        for (const auto& y : b) {
-            const double c = x.first * y.first, z = x.second + y.second;
-            if (lost != nullptr && lost->worth(c, z) < kTermFloor) lost->coarsen(c, z);
-            else if (std::abs(c) >= kTermFloor) out << QPair<double, double>{c, z};
-        }
-    return tidied(std::move(out), lost);
+        for (const auto& y : b) g.add(x.first * y.first, x.second + y.second);
+    return g.taken();
 }
 
-/// 1/(1 -  x), where every term of  x decays: the geometric series,
-/// to the term that no longer matters.
+/// 1/(1 -  x), where every term of  x decays: the geometric series, to
+/// the term that no longer matters - as (1 + x)(1 + x^2)(1 + x^4)..., so
+/// that a series that falls off slowly is as many products as its bounces
+/// have binary digits, not as many as its bounces.
 Series overOneMinus(const Series& x, Budget* lost)
 {
-    Series out{{1.0, 0.0}}, power{{1.0, 0.0}};
-    constexpr int kMostBounces = 2000;
-    for (int n = 0; n < kMostBounces; ++n) {
-        power = times(power, x, lost);
-        if (power.isEmpty()) return tidied(std::move(out), lost);
+    Series out{{1.0, 0.0}}, power = x;
+    // (2^40 bounces: a cavity whose faces keep all but a part in ten
+    // thousand of each ran out of two thousand bounces when they were added
+    // one at a time, and is done long before.)
+    constexpr int kMostSquarings = 40;
+    for (int n = 0; n < kMostSquarings; ++n) {
+        if (power.isEmpty()) return out;
         double biggest = 0;
         for (const auto& t : std::as_const(power)) biggest = std::max(biggest, std::abs(t.first));
-        out += power;
-        if (biggest < kTermFloor) return tidied(std::move(out), lost);
+        Series factor{{1.0, 0.0}};
+        factor += power;
+        out = times(out, factor, lost);
+        if (biggest < kTermFloor) return out;
+        power = times(power, power, lost);
     }
     // The bounces ran out before the terms did: a stack that reflects
     // nearly everything, where the expansion is not the whole function.
@@ -179,7 +379,7 @@ Series overOneMinus(const Series& x, Budget* lost)
     // order of all the rest of them, so that the caller can see it.
     if (lost != nullptr)
         for (const auto& t : std::as_const(power)) lost->lose(t.first, t.second);
-    return tidied(std::move(out), lost);
+    return out;
 }
 
 Series scaled(const Series& a, double by)
@@ -190,13 +390,49 @@ Series scaled(const Series& a, double by)
     return out;
 }
 
-///  a with every path lengthened by  z: multiplying by exp(-k z).
+///  a with every path lengthened by  z: multiplying by exp(-k z).
 Series shifted(const Series& a, double z)
 {
     Series out;
     out.reserve(a.size());
     for (const auto& t : a) out << QPair<double, double>{t.first, t.second + z};
     return out;
+}
+
+/// The slab of \a layers whose faces together reflect the most - the
+/// likeliest reason its images are slow to settle - said with its
+/// thickness and what each face reflects: a thin film of high permittivity
+/// between two of low, as a rule.
+QString hardestOf(const Layers& layers)
+{
+    int worst = -1;
+    double most = -1, worstDown = 0, worstUp = 0;
+    for (int i = 0; i < layers.slabs.size(); ++i) {
+        const double e = layers.slabs.at(i).epsr;
+        const double below = i > 0 ? layers.slabs.at(i - 1).epsr : layers.epsrBelow;
+        const double above = i + 1 < layers.slabs.size() ? layers.slabs.at(i + 1).epsr : layers.epsrAbove;
+        const double down = i == 0 && layers.groundBelow ? 1.0 : std::abs((e - below) / (e + below));
+        const double up = std::abs((e - above) / (e + above));
+        // (Of two that reflect alike, the thinner: its bounces are the
+        //  shorter, and so the more of them before they fade.)
+        const bool thinner = worst >= 0 && layers.slabs.at(i).z1 - layers.slabs.at(i).z0
+                                               < layers.slabs.at(worst).z1 - layers.slabs.at(worst).z0;
+        if (down * up > most * (1 + 1e-9) || (std::abs(down * up - most) <= 1e-9 * most && thinner)) {
+            most = down * up;
+            worst = i;
+            worstDown = down;
+            worstUp = up;
+        }
+    }
+    if (worst < 0) return QString();
+    const Layers::Slab& s = layers.slabs.at(worst);
+    const QString name = s.name.isEmpty() ? tr("slab %1 from the bottom").arg(worst + 1) : s.name;
+    return tr("its layer %1, %2 µm of εr %3, reflects %4 at its lower face and %5 at its upper, the most of any.")
+        .arg(name)
+        .arg((s.z1 - s.z0) * 1e6, 0, 'g', 3)
+        .arg(s.epsr, 0, 'g', 3)
+        .arg(worstDown, 0, 'g', 3)
+        .arg(worstUp, 0, 'g', 3);
 }
 
 } // namespace
@@ -372,6 +608,9 @@ void Green::build() const
     // long paths is what makes a deep stack combinatorial.
     Budget budget;
     budget.zRef = a_zRef;
+    budget.zExact = 1e-6 * a_zRef;   // (the images on an interface itself, at nought)
+    budget.stop = a_stop;
+    budget.mostPairs = a_mostPairs > 0 ? a_mostPairs : kMostPairs;
     //
     // A series here is a sum of a exp(-k z): the coefficient of an image
     // and the length of the path it travelled. Every exponent below is
@@ -481,6 +720,20 @@ void Green::build() const
         Q_UNUSED(from);
     }
     series = tidied(std::move(series), &budget);
+    a_pairs = budget.pairs;
+    a_gathered = budget.gathered;
+    if (budget.over) {
+        // Stopped, or past what the expansion may cost: no images, and
+        // why, rather than a part of them passed off as the whole.
+        if (a_stop != nullptr && a_stop->load())
+            a_unbuilt << tr("Stopped while building the stack's Green's function.");
+        else
+            a_unbuilt << tr("The stack's images did not settle in %1 million products of their terms: %2 The bound "
+                            "is on the stack's Green's function, which the mesh does not change - fewer layers, or "
+                            "that one's permittivity nearer its neighbours', settle sooner.")
+                             .arg(budget.mostPairs / 1e6, 0, 'g', 6).arg(hardestOf(layers));
+        return;
+    }
     // What was pruned, put back as one image at the mean distance of the
     // paths it stands for: near the charge those paths were worth nothing,
     // far from it only their charge is felt, and this is right in both.
@@ -732,26 +985,47 @@ double Green::reflectedByIntegral(double rho) const
         }
         return level.isEmpty() ? 0.0 : level.last();
     };
+    // Each interval cut where the panels of the branch above are graded:
+    // the first spans all of k below 2.4/rho, where a thick slab's
+    // reflections change on the scale of its own thickness, and one panel
+    // there was 4 % out a hundred micrometres from a charge on silicon
+    // under thin films (3 November).
+    const double graded = std::pow(10.0, 1.0 / 14);
+    const auto integrand = [&](double k) { return f(k) * besselJ0(k * rho); };
+    double edge = 1e-4 / large;
+    const auto over = [&](double from, double to) {
+        double sum = 0;
+        for (; edge < to; edge *= graded)
+            if (edge > from) {
+                sum += gauss(integrand, from, edge);
+                from = edge;
+            }
+        return sum + gauss(integrand, from, to);
+    };
     QList<double> partial;
     double sum = 0, a = 0, estimate = 0;
-    bool settled = false;
+    bool covered = false;
     for (int n = 1; n <= 4000; ++n) {
         const double b = besselZero(n) / rho;
-        sum += gauss([&](double k) { return f(k) * besselJ0(k * rho); }, a, std::min(b, kMax));
+        sum += over(a, std::min(b, kMax));
         partial << sum;
         a = b;
-        if (b >= kMax) break;   // the whole range covered: sum is the integral
+        if (b >= kMax) {
+            covered = true;   // the whole range: sum is the integral
+            break;
+        }
         if (partial.size() >= 8) {
             const double now = averaged(partial);
-            if (std::abs(now - estimate) <= 1e-13 * std::abs(now)) {
-                settled = true;
-                estimate = now;
-                break;
-            }
+            if (std::abs(now - estimate) <= 1e-13 * std::abs(now)) break;   // settled
             estimate = now;
         }
     }
-    integral = settled ? estimate : sum;
+    // The intervals run out short of the range - four thousand of them a
+    // centimetre from the charge reach k of a million, where a thin film's
+    // reflections are still a tenth - and then the plain sum is an
+    // alternating series cut off mid-swing, half its last term out (a part
+    // in a thousand there); the averaged sum is what it tends to.
+    integral = covered || partial.size() < 8 ? sum : averaged(partial);
     return integral / (4 * M_PI * epsilon()) + (tail != 0 ? tail / (4 * M_PI * epsilon() * rho) : 0.0);
 }
 
