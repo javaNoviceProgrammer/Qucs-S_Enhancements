@@ -1796,14 +1796,15 @@ private slots:
         qWarning("a quasi-static solve stopped %lld ms after its Stop", (long long)t.elapsed());
         QVERIFY(doc->extraction() == nullptr);
         QVERIFY(doc->solvingSaid().isEmpty());
-        // A full-wave study's is not, yet: its conductors' loss at their
-        // edges was fitted on the edges' one halving.
+        // A full-wave study's so too, where the current crowds as the charge
+        // does (test_rf25_measured): the same cells.
         QVERIFY(doc->editNode(doc->model().root.child(QStringLiteral("rf_study"))->tag,
                               [](rf::Node& n) { n.props.insert(QStringLiteral("kind"), QStringLiteral("full_wave")); },
                               QStringLiteral("full wave")));
         QVERIFY(doc->waitForPrepared(60000));
-        QVERIFY2(!doc->mesh()->lines.join(' ').contains(QStringLiteral("across a gap")), qPrintable(doc->mesh()->lines.join(" | ")));
-        QVERIFY(int(doc->mesh()->cells.size()) < cells);
+        QVERIFY2(doc->mesh()->lines.join(' ').contains(QStringLiteral("face another conductor across a gap")),
+                 qPrintable(doc->mesh()->lines.join(" | ")));
+        QCOMPARE(int(doc->mesh()->cells.size()), cells);
     }
 
     /// A microstrip to solve full-wave, in the workspace as \a name: 1000 by
@@ -2317,6 +2318,10 @@ private slots:
         QVERIFY(doc != nullptr);
         QVERIFY(doc->waitForLayout(60000));
         QVERIFY(doc->waitForPrepared(60000));
+        // Its signal's sides and its grounds' inner ones graded where they
+        // face the 50 µm gaps, and the strips of its feed meshed as it is,
+        // so that the cells at the port are the cells at its own.
+        QCOMPARE(doc->mesh()->facing, 4);
         doc->solve();
         QVERIFY2(doc->waitForSolved(300000), "the solve ended");
         const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
@@ -2326,6 +2331,8 @@ private slots:
         const QString said = w->lines.join(QStringLiteral(" | "));
         QVERIFY2(said.contains(QStringLiteral("Three strips of the coplanar feed")) && said.contains(QStringLiteral("no vias"))
                      && said.contains(QStringLiteral("P1 de-embedded")),
+                 qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("The strips meshed as the structure is: 4 side(s) facing the feed's gaps")),
                  qPrintable(said));
         QVERIFY(w->deembedding.value(0).done && w->deembedding.value(0).calibrated && w->deembedding.value(0).coplanar);
         QVERIFY(!w->deembedding.value(1).done);
