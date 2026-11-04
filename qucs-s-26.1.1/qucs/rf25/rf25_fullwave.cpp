@@ -50,7 +50,13 @@ const Complex kJ(0, 1);
 /// on a desktop of 2026. It was 3000 (0.8 s at 2858) until a metal could be
 /// solved as its two faces, which doubles its cells: a millimetre of
 /// coplanar line eight cells across was more than that so (the recheck of
-/// 75ff6f9).
+/// 75ff6f9). Accelerate's LU (rf25_dense.h) made the dense solve some
+/// twice as quick a frequency, but not the bound worth raising by default:
+/// past it the compressed solve was the quicker of the two on lines of 7000
+/// to 13 000 runs and cells, 7 to 17 times on microstrip (28 to 31 GMRES
+/// iterations), and on a coplanar line of narrow gaps the two about even
+/// (180 to 200), S the same to 1e-3 dB (docs/feature_gaps/
+/// 2026-11-04-rf25-settings.md). RF 2.5D > Settings… sets another.
 constexpr int kMostUnknowns = 6000;
 /// The compressed solve (rf25_fast.h). Each low-rank block to a part in
 /// 1e5 of its own size; clusters of up to kLeaf unknowns; a pair of
@@ -476,8 +482,16 @@ QRectF scaledBy(const QRectF& box, double unit)
 
 using MatrixC = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
 
-/// How much memory the frequencies solved side by side may take, bytes.
+/// How much memory the frequencies solved side by side may take, bytes, by
+/// default: a quarter of the machine's, no less than this. More at once is
+/// quicker: a coplanar line's 40 frequencies held dense (6996 runs and
+/// cells, some 435 MB each) 73 s three at a time in 1.5 GB, 44 s six in 3,
+/// 31 s thirteen in 6 and 27 s all 24 threads in 12, the app's peak some
+/// half a gigabyte over the budget each time (an M2 Ultra; docs/
+/// feature_gaps/2026-11-04-rf25-settings.md).
 constexpr double kSweepMemory = 1.5e9;
+std::atomic<int> denseLimitSet{0};
+std::atomic<double> sweepMemorySet{0};
 
 /// The cell of \a reached under \a where on \a layer (any, where it is
 /// empty): the one whose outline holds the point, else the one whose
@@ -1662,6 +1676,38 @@ bool allowedOne(const FullWaveControl* control)
 
 } // namespace
 
+void setDenseLimit(int runsAndCells)
+{
+    denseLimitSet = std::max(0, runsAndCells);
+}
+
+void setSweepMemory(double bytes)
+{
+    sweepMemorySet = std::isfinite(bytes) && bytes > 0 ? bytes : 0.0;
+}
+
+int automaticDenseLimit()
+{
+    return kMostUnknowns;
+}
+
+double automaticSweepMemory()
+{
+    return std::max(kSweepMemory, physicalMemory() / 4);
+}
+
+int denseLimit()
+{
+    const int set = denseLimitSet.load();
+    return set > 0 ? set : automaticDenseLimit();
+}
+
+double sweepMemory()
+{
+    const double set = sweepMemorySet.load();
+    return set > 0 ? set : automaticSweepMemory();
+}
+
 double metalHeight(const Stack& stack, const QString& name)
 {
     if (stack.isGround(name)) return 0;
@@ -2030,15 +2076,16 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // Dense up to the limit, compressed past it - or as the control asks,
     // a dense matrix past the limit refused as it was before there was a
     // compressed one.
-    const int most = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : kMostUnknowns;
+    const int most = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : denseLimit();
     const FullWaveControl::Matrix asked = control != nullptr ? control->matrix : FullWaveControl::Matrix::Automatic;
     const bool compress = asked == FullWaveControl::Matrix::Compressed
                           || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most);
     if (!compress && nr + nc > most) {
         out.tooLarge = true;
-        out.problems << tr("%1 runs of current over %2 cells is more than this build sets up a dense complex matrix for "
-                           "(%3 in all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger "
-                           "largest cell - or hold it compressed (the study's Matrix).")
+        out.problems << tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
+                           "all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
+                           "cell - or hold it compressed (the study's Matrix), or raise the limit (RF 2.5D > "
+                           "Settings…).")
                             .arg(nr).arg(nc).arg(most);
         return out;
     }
@@ -2441,10 +2488,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 c.pStatic(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
         // The frequencies side by side: each its own Green's functions and
         // its own system, the static parts shared. As many threads as the
-        // machine has, and no more than the memory allows - a system and its
-        // LU and P are some 16 (2 nr^2 + nc^2) bytes a frequency.
-        const double perFrequency = 16.0 * (2.0 * double(nr) * nr + double(nc) * nc) + 1e6;
-        side = std::min({threads, nf, std::max(1, int(kSweepMemory / perFrequency))});
+        // machine has, and no more than the memory allows - a system,
+        // factorized where it is, and P are some 16 (nr^2 + nc^2) bytes a
+        // frequency (measured in the app: 258 MB at 3588 runs over 1800
+        // cells, 266 each of three at once).
+        const double perFrequency = 16.0 * (double(nr) * nr + double(nc) * nc) + 1e6;
+        side = std::min({threads, nf, std::max(1, int(sweepMemory() / perFrequency))});
     } else {
         // Compressed: the trees and the shapes of the matrices, the same at
         // every frequency, and what a frequency will take. As many

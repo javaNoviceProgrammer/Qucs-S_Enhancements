@@ -366,9 +366,10 @@ QList<NodeKind> makeKinds()
           shownIf(choice(QStringLiteral("matrix"), tr("Matrix"),
                          {QStringLiteral("automatic"), QStringLiteral("dense"), QStringLiteral("compressed")},
                          {tr("Automatic"), tr("Dense"), tr("Compressed")}, QStringLiteral("automatic"),
-                         tr("How the full-wave solve holds its system: dense up to 6000 runs and cells and compressed "
-                            "past them (Automatic), always dense - a few thousand at most - or always compressed, its "
-                            "far blocks of low rank and solved by iteration, to some hundreds of thousands")),
+                         tr("How the full-wave solve holds its system: dense up to the limit set in RF 2.5D > "
+                            "Settings… and compressed past it (Automatic), always dense - to that limit at most - or "
+                            "always compressed, its far blocks of low rank and solved by iteration, to some hundreds of "
+                            "thousands")),
                   "kind=full_wave")},
          {}, {}, true, true, QStringLiteral("st"),
          tr("The frequencies to solve at, and by which solver. The quasi-static one solves the charge once and reads "
