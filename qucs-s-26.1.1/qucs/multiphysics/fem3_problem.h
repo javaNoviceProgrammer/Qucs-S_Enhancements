@@ -33,6 +33,11 @@ struct Options3 {
     double tolerance = 1e-6;                   ///< its nonlinear iterations', and (to 1e-9 at most) the iterative solve's
     int maxIterations = 50;                    ///< its nonlinear iterations
     bool sweep = true;                         ///< the terminals' matrix
+    /// A step in time's: what multiplies the capacity's ∂u/∂t of u (1/h,
+    /// BDF2's (1 + 2ω)/((1 + ω)h)), and the history it is taken from by dof
+    /// - C (mass u - history) + K u = F. 0: at rest.
+    double mass = 0;
+    const std::vector<double>* history = nullptr;
     std::function<bool()> cancelled;
 };
 
@@ -76,6 +81,9 @@ public:
     virtual bool solve(const Options3& options, QString* error) = 0;
     /// Its globals from the field as solved.
     virtual void setGlobals() = 0;
+    /// Whether its field changes in time (heat: ρ Cp ∂T/∂t), or is at rest
+    /// at each step (electrostatics, currents).
+    virtual bool hasMass() const { return false; }
     /// Whether what it reads reads field \a f.
     bool reads(int f) const { return a_reads.contains(f); }
     int index() const { return a_fi; }

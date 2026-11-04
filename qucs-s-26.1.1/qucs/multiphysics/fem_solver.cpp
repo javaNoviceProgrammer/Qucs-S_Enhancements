@@ -4613,6 +4613,154 @@ static void spectraAgainstTheFirst(const Node& study, StudyRun& run)
     }
 }
 
+std::optional<SweepPlan> sweepPlan(const Model& model, const Node& sweep, const ParameterScope& ps, QString* error)
+{
+    SweepPlan plan;
+    const ParameterScope* parameters = &ps;
+    struct Swept {
+        QString name;
+        std::vector<double> values;
+        Dim dim;
+        QString unitText;              // the unit its plain numbers were given in (else empty)
+        double scale = 1, offset = 0;  // that unit's
+    };
+    std::vector<Swept> lists;
+    QStringList known;
+    for (const Model::Parameter& p : model.parameters()) known << p.name.trimmed();
+    for (const QJsonValue& row : sweep.value(QStringLiteral("parameters")).toArray()) {
+        const QJsonArray r = row.toArray();
+        const QString name = r.at(0).toString().trimmed();
+        if (name.isEmpty()) continue;
+        if (!known.contains(name)) {
+            *error = tr("%1: there is no parameter %2").arg(sweep.name(), name);
+            return std::nullopt;
+        }
+        QString why;
+        Dim dim;
+        std::optional<std::vector<double>> values = valueList(r.at(1).toString(), parameters->scope, &dim, &why);
+        if (!values) {
+            *error = tr("%1: %2's values: %3").arg(sweep.name(), name, why);
+            return std::nullopt;
+        }
+        // Plain numbers in the unit given, else in the parameter's own.
+        const QString unitText = r.at(2).toString().trimmed();
+        const Dim own = parameters->dims.value(name);
+        if (dim.isNone() && !unitText.isEmpty()) {
+            const std::optional<Unit> u = parseUnit(unitText, &why);
+            if (!u) {
+                *error = tr("%1: %2's unit: %3").arg(sweep.name(), name, why);
+                return std::nullopt;
+            }
+            for (double& v : *values) v = v * u->scale + u->offset;
+            dim = u->dim;
+            lists.push_back({name, *values, dim, unitText, u->scale, u->offset});
+            plan.swept << name;
+            continue;
+        } else if (dim.isNone() && !own.isNone()) {
+            *error = tr("%1: %2 is in %3: give its values a unit (2[mm]), or the row one").arg(sweep.name(), name, dimName(own));
+            return std::nullopt;
+        }
+        lists.push_back({name, *values, dim, QString(), 1, 0});
+        plan.swept << name;
+    }
+    if (lists.empty()) {
+        *error = tr("%1 sweeps no parameter: name one and its values").arg(sweep.name());
+        return std::nullopt;
+    }
+    std::vector<std::vector<double>> points;   // each a value of each list
+    if (sweep.text(QStringLiteral("combination")) == QLatin1String("specified")) {
+        const std::size_t n = lists.front().values.size();
+        for (const Swept& l : lists)
+            if (l.values.size() != n) {
+                *error = tr("%1: in specified combinations every parameter has as many values (%2 has %3, %4 has %5)")
+                                .arg(sweep.name(), lists.front().name)
+                                .arg(n)
+                                .arg(l.name)
+                                .arg(l.values.size());
+                return std::nullopt;
+            }
+        for (std::size_t k = 0; k < n; ++k) {
+            std::vector<double> p;
+            for (const Swept& l : lists) p.push_back(l.values[k]);
+            points.push_back(p);
+        }
+    } else {
+        // Every combination; the last parameter changes fastest.
+        std::size_t total = 1;
+        for (const Swept& l : lists) total *= l.values.size();
+        if (total > 10000) {
+            *error = tr("%1: %2 combinations; 10000 at most").arg(sweep.name()).arg(total);
+            return std::nullopt;
+        }
+        for (std::size_t k = 0; k < total; ++k) {
+            std::vector<double> p(lists.size());
+            std::size_t rest = k;
+            for (int i = int(lists.size()) - 1; i >= 0; --i) {
+                const std::size_t n = lists[std::size_t(i)].values.size();
+                p[std::size_t(i)] = lists[std::size_t(i)].values[rest % n];
+                rest /= n;
+            }
+            points.push_back(p);
+        }
+    }
+    // Each parameter's figures in the points' names: as many as tell its
+    // values apart, 4 at least (21.542937, 21.543037 and 21.543137 were each
+    // "theta = 21.54", one name for three points: the update check of
+    // 8bd5709).
+    // A value as its point's name says it: in SI with a prefix, or - nought,
+    // or where SI says it only with an exponent - in the unit the sweep gave
+    // (a length's nought in mm was "0 m", a doping in 1/cm³ "1e+22 1/m³":
+    // the hunt of 19 October, N4).
+    static const QRegularExpression exponent(QStringLiteral("\\de[+-]?\\d"));
+    auto said = [&lists](std::size_t i, double v, int d) {
+        const Swept& l = lists[i];
+        const QString t = formatQuantity(v, l.dim, d);
+        if (l.unitText.isEmpty() || !(l.scale != 0) || (v != 0 && !exponent.match(t).hasMatch())) return t;
+        return QStringLiteral("%1 %2").arg(formatNumber((v - l.offset) / l.scale, d), l.unitText);
+    };
+    std::vector<int> figures(lists.size(), 4);
+    for (std::size_t i = 0; i < lists.size(); ++i)
+        for (int d = 4; d <= 15; ++d) {
+            QHash<QString, double> named;
+            bool apart = true;
+            for (double v : lists[i].values) {
+                const QString t = said(i, v, d);
+                const auto it = named.constFind(t);
+                if (it != named.constEnd() && *it != v) apart = false;
+                named.insert(t, v);
+            }
+            figures[i] = d;
+            if (apart) break;
+        }
+    plan.points = points;
+    plan.inner = lists.back().values.size();
+    for (std::size_t k = 0; k < points.size(); ++k) {
+        QHash<QString, QString> overrides;
+        QStringList label;
+        QHash<QString, double> values;
+        for (std::size_t i = 0; i < lists.size(); ++i) {
+            overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
+            label << QStringLiteral("%1 = %2").arg(lists[i].name, said(i, points[k][i], figures[i]));
+            values.insert(lists[i].name, points[k][i]);
+        }
+        plan.overrides.push_back(overrides);
+        plan.labels << label.join(QLatin1String(", "));
+        plan.values.push_back(values);
+    }
+    // What shapes the geometry and the mesh.
+    const QJsonObject whole = model.toObject();
+    const QJsonObject component = whole.value(QStringLiteral("components")).toArray().first().toObject();
+    plan.shaping.insert(QStringLiteral("geometry"), component.value(QStringLiteral("geometry")));
+    plan.shaping.insert(QStringLiteral("mesh"), component.value(QStringLiteral("mesh")));
+    plan.shaping.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
+    return plan;
+}
+
+bool SweepPlan::reshapes(const QSet<QString>& changed) const
+{
+    return mentions(shaping, changed);
+}
+
 StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
                   std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress,
                   const std::vector<std::shared_ptr<Solution>>& resume)
@@ -4683,128 +4831,10 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         return run;
     }
     // The sweep's points.
-    struct Swept {
-        QString name;
-        std::vector<double> values;
-        Dim dim;
-        QString unitText;              // the unit its plain numbers were given in (else empty)
-        double scale = 1, offset = 0;  // that unit's
-    };
-    std::vector<Swept> lists;
-    QStringList known;
-    for (const Model::Parameter& p : model.parameters()) known << p.name.trimmed();
-    for (const QJsonValue& row : sweep->value(QStringLiteral("parameters")).toArray()) {
-        const QJsonArray r = row.toArray();
-        const QString name = r.at(0).toString().trimmed();
-        if (name.isEmpty()) continue;
-        if (!known.contains(name)) {
-            run.error = tr("%1: there is no parameter %2").arg(sweep->name(), name);
-            return run;
-        }
-        QString why;
-        Dim dim;
-        std::optional<std::vector<double>> values = valueList(r.at(1).toString(), parameters->scope, &dim, &why);
-        if (!values) {
-            run.error = tr("%1: %2's values: %3").arg(sweep->name(), name, why);
-            return run;
-        }
-        // Plain numbers in the unit given, else in the parameter's own.
-        const QString unitText = r.at(2).toString().trimmed();
-        const Dim own = parameters->dims.value(name);
-        if (dim.isNone() && !unitText.isEmpty()) {
-            const std::optional<Unit> u = parseUnit(unitText, &why);
-            if (!u) {
-                run.error = tr("%1: %2's unit: %3").arg(sweep->name(), name, why);
-                return run;
-            }
-            for (double& v : *values) v = v * u->scale + u->offset;
-            dim = u->dim;
-            lists.push_back({name, *values, dim, unitText, u->scale, u->offset});
-            run.swept << name;
-            continue;
-        } else if (dim.isNone() && !own.isNone()) {
-            run.error = tr("%1: %2 is in %3: give its values a unit (2[mm]), or the row one").arg(sweep->name(), name, dimName(own));
-            return run;
-        }
-        lists.push_back({name, *values, dim, QString(), 1, 0});
-        run.swept << name;
-    }
-    if (lists.empty()) {
-        run.error = tr("%1 sweeps no parameter: name one and its values").arg(sweep->name());
-        return run;
-    }
-    std::vector<std::vector<double>> points;   // each a value of each list
-    if (sweep->text(QStringLiteral("combination")) == QLatin1String("specified")) {
-        const std::size_t n = lists.front().values.size();
-        for (const Swept& l : lists)
-            if (l.values.size() != n) {
-                run.error = tr("%1: in specified combinations every parameter has as many values (%2 has %3, %4 has %5)")
-                                .arg(sweep->name(), lists.front().name)
-                                .arg(n)
-                                .arg(l.name)
-                                .arg(l.values.size());
-                return run;
-            }
-        for (std::size_t k = 0; k < n; ++k) {
-            std::vector<double> p;
-            for (const Swept& l : lists) p.push_back(l.values[k]);
-            points.push_back(p);
-        }
-    } else {
-        // Every combination; the last parameter changes fastest.
-        std::size_t total = 1;
-        for (const Swept& l : lists) total *= l.values.size();
-        if (total > 10000) {
-            run.error = tr("%1: %2 combinations; 10000 at most").arg(sweep->name()).arg(total);
-            return run;
-        }
-        for (std::size_t k = 0; k < total; ++k) {
-            std::vector<double> p(lists.size());
-            std::size_t rest = k;
-            for (int i = int(lists.size()) - 1; i >= 0; --i) {
-                const std::size_t n = lists[std::size_t(i)].values.size();
-                p[std::size_t(i)] = lists[std::size_t(i)].values[rest % n];
-                rest /= n;
-            }
-            points.push_back(p);
-        }
-    }
-    // What shapes the geometry and the mesh.
-    const QJsonObject whole = model.toObject();
-    const QJsonObject component = whole.value(QStringLiteral("components")).toArray().first().toObject();
-    QJsonObject shaping;
-    shaping.insert(QStringLiteral("geometry"), component.value(QStringLiteral("geometry")));
-    shaping.insert(QStringLiteral("mesh"), component.value(QStringLiteral("mesh")));
-    shaping.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
-    // Each parameter's figures in the points' names: as many as tell its
-    // values apart, 4 at least (21.542937, 21.543037 and 21.543137 were each
-    // "theta = 21.54", one name for three points: the update check of
-    // 8bd5709).
-    // A value as its point's name says it: in SI with a prefix, or - nought,
-    // or where SI says it only with an exponent - in the unit the sweep gave
-    // (a length's nought in mm was "0 m", a doping in 1/cm³ "1e+22 1/m³":
-    // the hunt of 19 October, N4).
-    static const QRegularExpression exponent(QStringLiteral("\\de[+-]?\\d"));
-    auto said = [&lists](std::size_t i, double v, int d) {
-        const Swept& l = lists[i];
-        const QString t = formatQuantity(v, l.dim, d);
-        if (l.unitText.isEmpty() || !(l.scale != 0) || (v != 0 && !exponent.match(t).hasMatch())) return t;
-        return QStringLiteral("%1 %2").arg(formatNumber((v - l.offset) / l.scale, d), l.unitText);
-    };
-    std::vector<int> figures(lists.size(), 4);
-    for (std::size_t i = 0; i < lists.size(); ++i)
-        for (int d = 4; d <= 15; ++d) {
-            QHash<QString, double> named;
-            bool apart = true;
-            for (double v : lists[i].values) {
-                const QString t = said(i, v, d);
-                const auto it = named.constFind(t);
-                if (it != named.constEnd() && *it != v) apart = false;
-                named.insert(t, v);
-            }
-            figures[i] = d;
-            if (apart) break;
-        }
+    const std::optional<SweepPlan> plan = sweepPlan(model, *sweep, *parameters, &run.error);
+    if (!plan) return run;
+    run.swept = plan->swept;
+    const std::vector<std::vector<double>>& points = plan->points;
     std::shared_ptr<const Mesh> base = mesh;
     std::shared_ptr<const Solution> previous;
     // Each point's solution, by its place among the points (where the next
@@ -4818,8 +4848,8 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     if (!resume.empty() && resume.size() < points.size()) {
         bool same = true;
         for (std::size_t k = 0; k < resume.size() && same; ++k)
-            for (std::size_t i = 0; i < lists.size() && same; ++i)
-                same = resume[k] && resume[k]->sweptValues.value(lists[i].name, NAN) == points[k][i];
+            for (std::size_t i = 0; i < plan->swept.size() && same; ++i)
+                same = resume[k] && resume[k]->sweptValues.value(plan->swept.at(int(i)), NAN) == points[k][i];
         if (same) {
             first = resume.size();
             run.solutions = resume;
@@ -4886,16 +4916,10 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         std::vector<Ready> ready;
         std::optional<std::tuple<std::size_t, QString, QString>> meshFailed;   // a point not made ready - its mesh, its parameters: where, why
         for (std::size_t k = batch; k < end; ++k) {
-            QHash<QString, QString> overrides;
-            QStringList label;
             Ready r;
-            for (std::size_t i = 0; i < lists.size(); ++i) {
-                overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
-                label << QStringLiteral("%1 = %2").arg(lists[i].name, said(i, points[k][i], figures[i]));
-                r.values.insert(lists[i].name, points[k][i]);
-            }
-            r.where = label.join(QLatin1String(", "));
-            r.ps = evaluateParameters(model, overrides);
+            r.values = plan->values[k];
+            r.where = plan->labels.at(int(k));
+            r.ps = evaluateParameters(model, plan->overrides[k]);
             if (!r.ps->errors.isEmpty()) {
                 // (As a mesh not made: the points before kept - they were
                 // lost, the hunt of 19 October, N1.)
@@ -4919,7 +4943,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
                 std::lock_guard<std::mutex> lock(told);
                 return !progress || progress(from, QStringLiteral("%1: %2").arg(r.where, w));
             });
-            if (mentions(shaping, changed)) {
+            if (plan->reshapes(changed)) {
                 if (!meshOf(*r.ps, nullptr, meshing, &r.mesh)) {
                     // (The batch's points before it solved first.)
                     meshFailed = {k, r.where, run.error};
@@ -4971,15 +4995,9 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             one->sweepSeconds = double(wall.elapsed()) / 1000;
         }
     for (std::size_t k = first; k < points.size() && atOnce == 1; ++k) {
-        QHash<QString, QString> overrides;
-        QStringList label;
-        QHash<QString, double> values;
-        for (std::size_t i = 0; i < lists.size(); ++i) {
-            overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
-            label << QStringLiteral("%1 = %2").arg(lists[i].name, said(i, points[k][i], figures[i]));
-            values.insert(lists[i].name, points[k][i]);
-        }
-        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model, overrides);
+        const QHash<QString, double>& values = plan->values[k];
+        const QStringList label{plan->labels.at(int(k))};
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model, plan->overrides[k]);
         if (!ps->errors.isEmpty()) {
             QStringList list;
             for (auto it = ps->errors.cbegin(); it != ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
@@ -5010,7 +5028,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             });
         };
         std::shared_ptr<const Mesh> m;
-        if (mentions(shaping, changed)) {
+        if (plan->reshapes(changed)) {
             if (!meshOf(*ps, nullptr, sub(0, 0.3), &m)) {
                 if (stopAt(k, where, run.error)) break;
                 return run;
@@ -5027,10 +5045,10 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         // from -10 V and found no equilibrium in 200 steps (the update check
         // of 21 October, 6).
         const Solution* start = previous.get();
-        if (everyCombination && lists.size() > 1 && k > 0) {
+        if (everyCombination && plan->swept.size() > 1 && k > 0) {
             bool outer = false;
-            for (std::size_t i = 0; i + 1 < lists.size(); ++i) outer = outer || points[k][i] != points[k - 1][i];
-            const std::size_t inner = lists.back().values.size();
+            for (std::size_t i = 0; i + 1 < plan->swept.size(); ++i) outer = outer || points[k][i] != points[k - 1][i];
+            const std::size_t inner = plan->inner;
             if (outer) start = k >= inner && solvedAt[k - inner] ? solvedAt[k - inner].get() : nullptr;
         }
         StudyResult r = solveAdaptive(read ? *read : model, ps, m, study->tag, sub(0.3, 1), start);

@@ -87,6 +87,8 @@ void refine(const Solution& s, int t, QPointF p, double& xi, double& eta)
     eta = std::clamp(eta, 0.0, 1.0 - xi);
 }
 
+} // namespace
+
 QString shown(double si, const Dim& dim, const DisplayUnit& unit)
 {
     if (unit.name.isEmpty()) return formatQuantity(si, dim);
@@ -128,8 +130,6 @@ DisplayUnit quotientUnit(const QString& text, const Dim& dim, const Scope& scope
     u.name = a + QLatin1Char('/') + (b.contains(QLatin1Char('/')) || b.contains(QChar(0x00B7)) ? QLatin1Char('(') + b + QLatin1Char(')') : b);
     return u;
 }
-
-} // namespace
 
 // ------------------------------------------------------------------ Locator
 
