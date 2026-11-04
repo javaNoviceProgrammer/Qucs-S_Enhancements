@@ -797,11 +797,11 @@ struct Context {
     QList<double> cellZ;                 ///< each charge's height, m
     QList<double> dirX, dirY, midX, midY;
     QList<Filament> mirrored;            ///< each run in the plane's image in the ground
-    /// A dense solve's static parts, made once for every frequency: each
-    /// pair of runs' aligned partial inductance (alignedInductance()),
-    /// direct and of the image, and each cell's static potential of a
-    /// charge spread over another. (A compressed solve makes the few it
-    /// wants as it goes.)
+    /// A dense solve's static parts, made once for every frequency and on
+    /// every thread (makeStatics()): each pair of runs' aligned partial
+    /// inductance (alignedInductance()), direct and of the image, and each
+    /// cell's static potential of a charge spread over another. (A
+    /// compressed solve makes the few it wants as it goes.)
     Eigen::MatrixXd lDirect, lImage, pStatic;
     QList<Via> vias;
     QList<ViaGreen::Span> spans;         ///< each of the stack's vias that the mesh has
@@ -928,7 +928,7 @@ void faceImpedances(double sigma, double thickness, double frequency, Complex* o
 }
 
 /// What fillShared() counts.
-std::atomic<long long> sharedGreens{0}, sharedColumns{0};
+std::atomic<long long> sharedGreens{0}, sharedColumns{0}, sharedStatics{0};
 
 /*!
  * The Green's functions of one frequency, and the terms of the solve's
@@ -1190,13 +1190,15 @@ void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own
 }
 
 /// \a job(i) for each i below \a count, each on one of \a threads threads,
-/// as they come free, and on no other: in turn from nought.
-void sharedOut(int count, int threads, const std::function<void(int)>& job)
+/// as they come free, and on no other: in turn from nought. Each done on a
+/// thread other than the caller's is counted in \a counted (fillShared()).
+void sharedOut(int count, int threads, const std::function<void(int)>& job,
+               std::atomic<long long>& counted = sharedColumns)
 {
     std::atomic_int next{0};
-    onThreads(std::clamp(threads, 1, std::max(1, count)), [&next, &job, count](int t) {
+    onThreads(std::clamp(threads, 1, std::max(1, count)), [&next, &job, &counted, count](int t) {
         for (int i = next++; i < count; i = next++) {
-            if (t > 0) ++sharedColumns;
+            if (t > 0) ++counted;
             job(i);
         }
     });
@@ -1260,7 +1262,7 @@ constexpr int kMirrorBlock = 16;
 
 /// A symmetric matrix's columns from \a b0 to before \a b1, below their
 /// diagonal, made their rows' above it.
-void mirrorColumns(MatrixC& x, int b0, int b1)
+template <typename Matrix> void mirrorColumns(Matrix& x, int b0, int b1)
 {
     for (int a = b0 + 1; a < x.rows(); ++a)
         for (int b = b0; b < std::min(b1, a); ++b) x(a, b) = x(b, a);
@@ -1274,6 +1276,58 @@ void chargeColumn(const Context& c, const MatrixC& p, Complex jw, MatrixC& m, in
     const int tail = c.tail.at(b), head = c.head.at(b);
     for (int a = 0; a < c.nr; ++a)
         m(a, b) += (pAt(c.tail.at(a), tail) - pAt(c.tail.at(a), head) - pAt(c.head.at(a), tail) + pAt(c.head.at(a), head)) / jw;
+}
+
+/// Column \a b of a dense solve's static partial inductances, direct and of
+/// the images (Context::lDirect and lImage), its part above the diagonal and
+/// on it: each run's with the runs before it, nought at right angles.
+void staticInductanceColumn(const Context& c, Eigen::MatrixXd& direct, Eigen::MatrixXd& image, int b)
+{
+    for (int a = 0; a <= b; ++a) {
+        const bool crossed = std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9;
+        direct(a, b) = crossed ? 0.0 : alignedInductance(c.runs.at(a), c.runs.at(b));
+        image(a, b) = crossed ? 0.0 : alignedInductance(c.runs.at(a), c.mirrored.at(b));
+    }
+}
+
+/// Column \a j of a dense solve's static potentials (Context::pStatic),
+/// whole: each cell's of a unit charge spread over cell j - not cell j's of
+/// one spread over it, where the two differ in size.
+void staticPotentialColumn(const Context& c, Eigen::MatrixXd& p, int j)
+{
+    for (int i = 0; i < c.nc; ++i)
+        p(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
+}
+
+/*!
+ * A dense solve's static parts (Context::lDirect, lImage and pStatic), made
+ * once before its frequencies and shared out among \a threads threads a
+ * column at a time as they come free, each column written by its own thread
+ * alone, as solveAt() fills a frequency's: first the potentials' columns,
+ * each whole, and the inductances' above the diagonal and on it, the
+ * longest first, so that the threads end together; then the inductances'
+ * part below from the others' above, a block of columns at a time. Each
+ * term is made by the expression that made it on one thread, so the parts
+ * are the same to the last digit on any number of threads.
+ */
+void makeStatics(Context& c, int threads)
+{
+    const int nr = c.nr, nc = c.nc;
+    c.lDirect.resize(nr, nr);
+    c.lImage.resize(nr, nr);
+    c.pStatic.resize(nc, nc);
+    sharedOut(nc + nr, threads, [&c, nr, nc](int i) {
+        if (i < nc)
+            staticPotentialColumn(c, c.pStatic, i);
+        else
+            staticInductanceColumn(c, c.lDirect, c.lImage, nr - 1 - (i - nc));
+    }, sharedStatics);
+    const int blocks = (nr + kMirrorBlock - 1) / kMirrorBlock;
+    sharedOut(2 * blocks, threads, [&c, blocks](int i) {
+        Eigen::MatrixXd& x = i < blocks ? c.lDirect : c.lImage;
+        const int b0 = (i < blocks ? i : i - blocks) * kMirrorBlock;
+        mirrorColumns(x, b0, std::min(int(x.cols()), b0 + kMirrorBlock));
+    }, sharedStatics);
 }
 
 AtFrequency solveAt(const Context& c, double f, int threads)
@@ -1801,6 +1855,7 @@ FillShared fillShared()
     FillShared out;
     out.greens = sharedGreens.load();
     out.columns = sharedColumns.load();
+    out.statics = sharedStatics.load();
     return out;
 }
 
@@ -2546,7 +2601,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // middle, and its image in the ground; for a dense solve, the runs'
     // static partial inductances, direct and of their images, and the
     // static potential of each cell's charge spread over it - the singular
-    // parts of the two kernels, in closed form. The partial inductances are
+    // parts of the two kernels, in closed form, made on every thread before
+    // the frequencies are (makeStatics()). The partial inductances are
     // aligned (alignedInductance()), the cosine between two runs taken
     // apart from them: of two runs neither parallel nor at right angles,
     // the partial inductance was taken as though they were parallel and
@@ -2570,18 +2626,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     Compression z;
     int side = 1;   // frequencies at a time
     if (!compress) {
-        c.lDirect = Eigen::MatrixXd::Zero(nr, nr);
-        c.lImage = Eigen::MatrixXd::Zero(nr, nr);
-        for (int a = 0; a < nr; ++a)
-            for (int b = a; b < nr; ++b) {
-                if (std::abs(c.dirX.at(a) * c.dirX.at(b) + c.dirY.at(a) * c.dirY.at(b)) < 1e-9) continue;
-                c.lDirect(a, b) = c.lDirect(b, a) = alignedInductance(c.runs.at(a), c.runs.at(b));
-                c.lImage(a, b) = c.lImage(b, a) = alignedInductance(c.runs.at(a), c.mirrored.at(b));
-            }
-        c.pStatic.resize(nc, nc);
-        for (int i = 0; i < nc; ++i)
-            for (int j = 0; j < nc; ++j)
-                c.pStatic(i, j) = rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(zOf.at(i) - zOf.at(j)));
+        makeStatics(c, threads);
         // The frequencies side by side: each its own Green's functions and
         // its own system, the static parts shared. As many at a time as the
         // machine has threads, and no more than the memory allows - a system,
