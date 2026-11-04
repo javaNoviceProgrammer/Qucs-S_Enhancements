@@ -7,7 +7,10 @@
  *                         resistance and crosstalk (the disc heated on a
  *                         half-space of Carslaw and Jaeger, its substrate's
  *                         bottom and walls by images); a TSV's resistance
- *                         (Katti et al.'s) and thermal resistances
+ *                         (Katti et al.'s) and thermal resistances; a heater
+ *                         over a ring (Manganelli et al.'s double racetrack:
+ *                         its power per free spectral range); the device
+ *                         examples
  *
  * This file is part of Qucs-S.
  *
@@ -18,6 +21,7 @@
  */
 #include "fem3_solver.h"
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QtTest>
@@ -382,6 +386,144 @@ double topValue(const Solution3& s, double x, double y, double top)
     return ev.eval(Expression::compile(QStringLiteral("ht.T"), s.pointScope()));
 }
 
+/// A racetrack's band in an extrude (µm): a stadium of radius \a R about
+/// (cx, cy), its straights \a S long along y, \a w wide, \a z0 up for \a h.
+void addStadiumBand(Model& m, const QString& name, double cx, double cy, double R, double S, double w, double z0, double h)
+{
+    Node e = m.make(QStringLiteral("extrude"));
+    e.label = name;
+    e.props.insert(QStringLiteral("z"), QString::number(z0, 'g', 17));
+    e.props.insert(QStringLiteral("height"), QString::number(h, 'g', 17));
+    const auto rect = [&m](const QString& label, double x, double y, double wx, double wy) {
+        Node r = m.make(QStringLiteral("rectangle"));
+        r.label = label;
+        r.props.insert(QStringLiteral("base"), QStringLiteral("center"));
+        r.props.insert(QStringLiteral("position"), pairOf(x, y));
+        r.props.insert(QStringLiteral("size"), pairOf(wx, wy));
+        return r;
+    };
+    const auto circle = [&m](const QString& label, double x, double y, double r) {
+        Node c = m.make(QStringLiteral("circle"));
+        c.label = label;
+        c.props.insert(QStringLiteral("center"), pairOf(x, y));
+        c.props.insert(QStringLiteral("radius"), QString::number(r, 'g', 17));
+        return c;
+    };
+    const auto join = [&m](const QString& type, const QString& label, const QStringList& input, const QStringList& tools = {}) {
+        Node u = m.make(type);
+        u.label = label;
+        QJsonArray in, to;
+        for (const QString& i : input) in.append(i);
+        for (const QString& t : tools) to.append(t);
+        u.props.insert(QStringLiteral("input"), in);
+        if (!tools.isEmpty()) u.props.insert(QStringLiteral("tools"), to);
+        return u;
+    };
+    const double ro = R + w / 2, ri = R - w / 2;
+    e.children.push_back(rect(name + QStringLiteral("_or"), cx, cy, 2 * ro, S));
+    e.children.push_back(circle(name + QStringLiteral("_ot"), cx, cy + S / 2, ro));
+    e.children.push_back(circle(name + QStringLiteral("_ob"), cx, cy - S / 2, ro));
+    e.children.push_back(join(QStringLiteral("union"), name + QStringLiteral("_o"), {name + QStringLiteral("_or"), name + QStringLiteral("_ot"), name + QStringLiteral("_ob")}));
+    e.children.push_back(rect(name + QStringLiteral("_ir"), cx, cy, 2 * ri, S));
+    e.children.push_back(circle(name + QStringLiteral("_it"), cx, cy + S / 2, ri));
+    e.children.push_back(circle(name + QStringLiteral("_ib"), cx, cy - S / 2, ri));
+    e.children.push_back(join(QStringLiteral("union"), name + QStringLiteral("_i"), {name + QStringLiteral("_ir"), name + QStringLiteral("_it"), name + QStringLiteral("_ib")}));
+    e.children.push_back(join(QStringLiteral("difference"), name, {name + QStringLiteral("_o")}, {name + QStringLiteral("_i")}));
+    QString why;
+    if (m.add(m.geometry().tag, e, -1, &why) == nullptr) qWarning("%s", qPrintable(why));
+}
+
+/// The mean of \a text over the domains of solution \a s owned by \a object.
+double domainMean(const Solution3& s, const QString& object, const QString& text)
+{
+    const Topology3& t = s.topology();
+    const int owner = int(t.objectNames.indexOf(object));
+    std::vector<char> in(t.domains.size(), 0);
+    for (std::size_t d = 0; d < t.domains.size(); ++d) in[d] = t.domains[d].owner == owner ? 1 : 0;
+    const Expression e = Expression::compile(text, s.pointScope());
+    const Space3& sp = *s.fields().front().space;
+    PointEvaluator3 ev(s);
+    double sum = 0, volume = 0;
+    for (int el = 0; el < sp.elements(); ++el) {
+        if (!in[std::size_t(s.mesh().domain[std::size_t(el)])]) continue;
+        for (const auto& q : prismRule(4, 3).points) {
+            const Space3::Map mp = sp.map(el, q[0], q[1], q[2]);
+            ev.at(el, q[0], q[1], q[2], mp.x);
+            const double wgt = q[3] * std::abs(mp.det);
+            sum += wgt * ev.eval(e);
+            volume += wgt;
+        }
+    }
+    return volume > 0 ? sum / volume : std::nan("");
+}
+
+/// The group index of a silicon strip \a w x 220 nm in silica at 1550 nm -
+/// TE0's, the library's dispersive silicon and silica - by the 2D mode
+/// solver, its core meshed at \a hcore µm.
+double stripGroupIndex(double w, double hcore, QString* error)
+{
+    const QByteArray json = QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "name": "oxide", "base": "center", "size": ["4", "4"]},
+                     {"type": "rectangle", "name": "core", "base": "center", "size": ["%1", "0.22"]}],
+        "materials": [{"material": "Silicon dioxide", "selection": {"only": ["oxide"]}},
+                      {"material": "Silicon", "selection": {"only": ["core"]}}],
+        "physics": [{"type": "modes", "tag": "emw"}],
+        "mesh": {"size": "fine", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "%2"},
+                                              {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "0.15"}]}}],
+      "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 1, "neff": "3"}]}]})json")
+                               .arg(w).arg(hcore).toUtf8();
+    std::optional<Model> m = Model::fromJson(json, error);
+    if (!m) return std::nan("");
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(*m);
+    const GeometryBuild g = buildGeometry(*m, *ps);
+    if (!g.ok()) {
+        *error = QStringList(g.errors.values()).join(QStringLiteral("; "));
+        return std::nan("");
+    }
+    StudyRun r = runStudy(*m, ps, g.topology, nullptr, QString(), {});
+    if (!r.ok()) {
+        *error = r.error;
+        return std::nan("");
+    }
+    Solution& sol = *r.solutions.back();
+    sol.select(0);
+    return sol.global(QStringLiteral("emw.ng")).value_or(std::nan(""));
+}
+
+/// C. L. Manganelli et al.'s double racetrack (µm): two racetracks \a L
+/// long, of 3 µm bends, 410 x 220 nm, 250 nm apart, on 2 µm of buried oxide
+/// over a substrate 100 µm deep and 80 across held at 300 K below; over
+/// each a heater loop 120 nm thick 600 nm above it (its 434 nm drawn as the
+/// waveguide's 410: else the plan holds slivers 12 nm wide all along, 3
+/// million prisms where there are 150,000, for 0.1 % in the answer), 320 nm
+/// of silica over all, its top insulated; each loop making 1 mW. Silicon
+/// 148, silica 1.38, Ti/TiN 29 W/(m·K).
+Solved ringHeater(int order, double hedge, double L)
+{
+    const double R = 3, w = 0.41, S = (L - 2 * M_PI * R) / 2, Hs = 100, W = 80;
+    const double zw = Hs + 2, zh = zw + 0.22 + 0.6, ztop = zh + 0.12 + 0.32, dx = (2 * R + w + 0.25) / 2;
+    Model m = model3d(QStringLiteral("um"), 8, 1.3);
+    addBox(m, QStringLiteral("substrate"), -W / 2, -W / 2, 0, W, W, Hs);
+    addBox(m, QStringLiteral("oxide"), -W / 2, -W / 2, Hs, W, W, ztop - Hs);
+    addStadiumBand(m, QStringLiteral("wg1"), -dx, 0, R, S, w, zw, 0.22);
+    addStadiumBand(m, QStringLiteral("wg2"), dx, 0, R, S, w, zw, 0.22);
+    addStadiumBand(m, QStringLiteral("heater1"), -dx, 0, R, S, w, zh, 0.12);
+    addStadiumBand(m, QStringLiteral("heater2"), dx, 0, R, S, w, zh, 0.12);
+    const QString ht = addPhysics(m, QStringLiteral("heat"), order, QStringLiteral("1.38[W/(m*K)]"));
+    addFeature(m, ht, QStringLiteral("heat/solid"), only({QStringLiteral("substrate"), QStringLiteral("wg1"), QStringLiteral("wg2")}),
+               QJsonObject{{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("k"), QStringLiteral("148[W/(m*K)]")}});
+    addFeature(m, ht, QStringLiteral("heat/solid"), only({QStringLiteral("heater1"), QStringLiteral("heater2")}),
+               QJsonObject{{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("k"), QStringLiteral("29[W/(m*K)]")}});
+    for (const char* h : {"heater1", "heater2"})
+        addFeature(m, ht, QStringLiteral("heat/source"), only({QLatin1String(h)}),
+                   QJsonObject{{QStringLiteral("kind"), QStringLiteral("power")}, {QStringLiteral("P0"), QStringLiteral("1[mW]")}});
+    addFeature(m, ht, QStringLiteral("heat/temperature"), objectsOf({QStringLiteral("substrate")}, QStringLiteral("bottom")),
+               QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K]")}});
+    addSize(m, QStringLiteral("edge"), objectsOf({QStringLiteral("wg1"), QStringLiteral("wg2"), QStringLiteral("heater1"), QStringLiteral("heater2")}), hedge);
+    return solve(m);
+}
+
 /// An example of examples/multiphysics3d solved as it is.
 Solved example(const QString& name, QString* error)
 {
@@ -571,8 +713,56 @@ private slots:
     }
 
 
+
+
+
+    // The heater over a ring: C. L. Manganelli et al.'s double racetrack
+    // (IEEE Photon. Technol. Lett. 30, 1601, 2018) - two coupled racetracks
+    // of a 410 x 220 nm strip on 2 µm of buried oxide, each under a Ti/TiN
+    // loop 600 nm above it -, whose 3D thermo-electrical simulation took
+    // 21.2 mW per free spectral range per ring with dn/dT 1.8e-4 /K, and
+    // measurement 20 to 22. One FSR is ΔT = λ/(L dn/dT), whatever the group
+    // index (Δλ = λ ΔT dn/dT / n_g, FSR = λ²/(n_g L)); L is c/(n_g FSR) of
+    // its 2.4 THz, n_g the strip's TE0 by the 2D mode solver. Both heaters
+    // on, each ring's mean rise per mW: within 5 % of 21.2 at orders 1 and
+    // 2. (The paper gives no bend radius, leads or substrate: bends of 2.5
+    // to 3.5 µm at the same length move it 5 % either way, the substrate's
+    // depth and the chip's width 2 %.)
+    void heaterOverARing()
+    {
+        QString why;
+        const double ng = stripGroupIndex(0.41, slowBuild() ? 0.03 : 0.015, &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        const double L = 2.99792458e8 / (ng * 2.4e12) * 1e6;   // µm
+        const double perFsr = 1.55e-6 / (L * 1e-6 * 1.8e-4);   // K
+        qInfo("the strip's group index %.4f: the racetrack %.3f um long, an FSR %.1f K", ng, L, perFsr);
+        QVERIFY2(ng > 4.3 && ng < 4.45, qPrintable(QString::number(ng)));
+        double fsr[3] = {};
+        for (int order : {1, 2}) {
+            // (Order 2's 600,000 unknowns some 13 s: not under the sanitizers.)
+            if (order == 2 && slowBuild()) continue;
+            const Solved sv = ringHeater(order, 0.3, L);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            const QString log = sv.s().log.join(QStringLiteral(" | "));
+            QVERIFY2(!log.contains(QStringLiteral("did not converge")), qPrintable(log));
+            const double one = domainMean(sv.s(), QStringLiteral("wg1"), QStringLiteral("ht.T")) - 300;
+            const double two = domainMean(sv.s(), QStringLiteral("wg2"), QStringLiteral("ht.T")) - 300;
+            const double loop = global(sv.s(), QStringLiteral("ht.Tmax")) - 300;
+            fsr[order] = perFsr / one;
+            const QString said = QStringLiteral("order %1: the racetracks %2 and %3 K per mW of each, the loops' peak %4 K: %5 mW per FSR "
+                                                "per ring (the paper's simulation 21.2, its measurement 20 to 22)")
+                                     .arg(order).arg(one, 0, 'f', 3).arg(two, 0, 'f', 3).arg(loop, 0, 'f', 2).arg(fsr[order], 0, 'f', 2);
+            qInfo("%s", qPrintable(said));
+            QVERIFY2(std::abs(one - two) < 1e-3 * one, qPrintable(said));
+            QVERIFY2(loop > 1.5 * one, qPrintable(said));
+            QVERIFY2(std::abs(fsr[order] - 21.2) < 0.05 * 21.2, qPrintable(said));
+        }
+        if (!slowBuild()) QVERIFY2(std::abs(fsr[1] - fsr[2]) < 0.02 * fsr[2], qPrintable(QStringLiteral("%1, %2").arg(fsr[1]).arg(fsr[2])));
+    }
+
     // The device examples (examples/multiphysics3d) solved as they are, each
-    // beside its formula: the VCSEL array's 90 mW made (its discs' polygons a
+    // beside its formula: the ring heater's tuning the paper's (as
+    // heaterOverARing), its racetracks alike; the VCSEL array's 90 mW made (its discs' polygons a
     // little short), the middle VCSEL the hottest and its neighbours' heat in
     // its rise - over P/(πka), a lone disc's on a half-space; the MSM
     // photodiode's capacitance above its gaps' share by Lim and Moore, the bus
@@ -583,8 +773,9 @@ private slots:
     void theExamples()
     {
         QString why;
-        // (The array's 146,000 prisms and the photodiode's million in Release
-        // alone: under the sanitizers they ran past QtTest's 300 s here.)
+        // (The array's 146,000 prisms, the photodiode's million and the ring
+        // heater's 150,000 in Release alone: under the sanitizers the first
+        // two ran past QtTest's 300 s here.)
         if (!slowBuild()) {
             const Solved sv = example(QStringLiteral("vcsel_array.qfem3d"), &why);
             QVERIFY2(why.isEmpty(), qPrintable(why));
@@ -609,6 +800,20 @@ private slots:
             const QString said = QStringLiteral("the photodiode's capacitance %1 F, its gaps' share %2 F").arg(c).arg(gaps);
             qInfo("%s", qPrintable(said));
             QVERIFY2(c > gaps && c < 1.6 * gaps, qPrintable(said));
+        }
+        if (!slowBuild()) {
+            const Solved sv = example(QStringLiteral("ring_heater.qfem3d"), &why);
+            QVERIFY2(why.isEmpty(), qPrintable(why));
+            const Solution3& s = sv.s();
+            QVERIFY2(std::abs(global(s, QStringLiteral("ht.P")) - 2e-3) < 1e-9, qPrintable(s.globalText(QStringLiteral("ht.P"))));
+            const double one = domainMean(s, QStringLiteral("ring1_band"), QStringLiteral("ht.T")) - 293.15;
+            const double two = domainMean(s, QStringLiteral("ring2_band"), QStringLiteral("ht.T")) - 293.15;
+            // (One FSR 301 K, as heaterOverARing has it; the library's
+            // silicon and silica, k of their temperature, a little off its.)
+            const double perFsr = 1.55e-6 / (28.573e-6 * 1.8e-4), fsr = perFsr / one;
+            const QString said = QStringLiteral("the ring heater: its racetracks %1 and %2 K per mW: %3 mW per FSR per ring").arg(one).arg(two).arg(fsr);
+            qInfo("%s", qPrintable(said));
+            QVERIFY2(std::abs(one - two) < 1e-3 * one && std::abs(fsr - 21.2) < 0.1 * 21.2, qPrintable(said));
         }
         {
             const Solved sv = example(QStringLiteral("tsv.qfem3d"), &why);
