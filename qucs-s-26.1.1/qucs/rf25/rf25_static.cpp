@@ -347,11 +347,18 @@ QRectF scaled(const QRectF& box, double unit)
 }
 
 Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which,
-                             const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit)
+                             const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit,
+                             const ExtractControl* control)
 {
     const int n = int(which.size());
     Eigen::MatrixXd p(n, n);
     for (int i = 0; i < n; ++i) {
+        // (Stopped: the rows not filled are nothing, and the caller,
+        //  seeing it stopped, reads none of them.)
+        if (control != nullptr && control->stopped()) {
+            p.bottomRows(n - i).setZero();
+            break;
+        }
         const MeshCell& ci = cells.at(which.at(i));
         const QPointF at = ci.centre * unit;
         for (int j = 0; j < n; ++j) {
@@ -481,18 +488,37 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, const QList<int>& signal
  * R from it at direct current is through the whole metal, as a sheet's is.
  */
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks);
+                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control);
 
 } // namespace
 
+QString extractStepSaid(int step, int done, int all, int images)
+{
+    switch (step) {
+    case ExtractControl::Greens:
+        return images > 0 ? tr("building the stack's Green's functions, %1 of %2 (the last of %3 images)").arg(done + 1).arg(all).arg(images)
+                          : tr("building the stack's Green's functions, %1 of %2").arg(done + 1).arg(all);
+    case ExtractControl::Charge:
+        return tr("solving the charge on the cells");
+    case ExtractControl::Vacuum:
+        return tr("solving the charge on the cells again in vacuum, for C0");
+    case ExtractControl::CrossSection:
+        return tr("solving the line's middle cross-section");
+    case ExtractControl::Losses:
+        return tr("solving again for each lossy dielectric's share of the field, %1 of %2").arg(done + 1).arg(all);
+    default:
+        return tr("starting");
+    }
+}
+
 Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                   const QList<ReturnMark>& returns)
+                   const QList<ReturnMark>& returns, const ExtractControl* control)
 {
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()).
     const Thickened thick = thickened(stack, conductors, mesh);
-    if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {}, returns);
-    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns);
+    if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {}, returns, control);
+    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns, control);
     out.lines = thick.said + out.lines;
     return out;
 }
@@ -500,9 +526,16 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
 namespace {
 
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks)
+                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control)
 {
     Extraction out;
+    // Stopped: said, and nothing more done.
+    const auto stopped = [&out, control] {
+        if (control == nullptr || !control->stopped()) return false;
+        out.problems << tr("Stopped.");
+        return true;
+    };
+    if (control != nullptr) control->at(ExtractControl::Starting);
     if (mesh.cells.isEmpty()) {
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
@@ -572,6 +605,31 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 return out;
             }
         }
+    // Built here, each in turn, where they were built as the matrix first
+    // asked for one: what is being done is then said as it is done, a
+    // stop is seen while one is built, and a stack whose images do not
+    // settle says so before a cell is solved.
+    {
+        int built = 0;
+        const int all = int(greens.size() + bareGreens.size());
+        for (QMap<QString, Green>* some : {&greens, &bareGreens})
+            for (Green& g : *some) {
+                if (control != nullptr) {
+                    control->at(ExtractControl::Greens, built, all);
+                    g.stopWith(control->stop);
+                    if (control->mostPairs > 0) g.limitPairs(control->mostPairs);
+                }
+                const int count = int(g.images().size());
+                if (stopped()) return out;
+                if (!g.ok()) {
+                    out.problems += g.problems();
+                    return out;
+                }
+                // (The stack's: the vacuum's, built after, have none.)
+                if (control != nullptr && control->images != nullptr && some == &greens) control->images->store(count);
+                ++built;
+            }
+    }
     // (By reference to the maps themselves: a helper that took one as a
     // parameter and captured that would hand out a reference to its own
     // argument, which is gone by the time the matrix is filled.)
@@ -731,8 +789,9 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     const auto crossSection = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
                                   QList<QList<double>>* matrix, QList<double>* crowd) {
         const int m = int(column.size());
-        Eigen::MatrixXd p(m, m);
+        Eigen::MatrixXd p = Eigen::MatrixXd::Zero(m, m);
         for (int a = 0; a < m; ++a) {
+            if (control != nullptr && control->stopped()) return;
             const MeshCell& ca = mesh.cells.at(which.at(column.at(a)));
             const QPointF at = ca.centre * micrometre;
             for (int b = 0; b < m; ++b) {
@@ -785,7 +844,9 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
                            QList<QList<double>>* matrix, QList<double>* crowd = nullptr) {
-        const Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre);
+        const Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control);
+        if (control != nullptr && control->stopped()) return 1.0;
+        ++out.solves;
         const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
         matrix->clear();
         if (crowd != nullptr) crowd->clear();
@@ -822,13 +883,19 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         return p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
     };
 
+    if (control != nullptr) control->at(ExtractControl::Charge);
     out.conditionHint = solve(fromStack, &out.maxwell, &crowding);
+    if (stopped()) return out;
+    if (control != nullptr) control->at(ExtractControl::Vacuum);
     solve(fromVacuum, &out.maxwell0);
+    if (stopped()) return out;
     out.crowding = crowding;
     out.grounded = layers0.groundBelow;
     if (uniform) {
+        if (control != nullptr) control->at(ExtractControl::CrossSection);
         crossSection(fromStack, &out.perMetre.maxwell, &out.perMetre.crowding);
         crossSection(fromVacuum, &out.perMetre.maxwell0, nullptr);
+        if (stopped()) return out;
     }
     // The ground's kind, for its share of the loss.
     out.groundKind = QStringLiteral("open");
@@ -982,48 +1049,79 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     for (const Layer& l : stack.layers)
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand > 0) lossy = true;
     if (lossy) {
-        for (int k = 0; k < layers0.slabs.size(); ++k) {
-            // The model's own layer behind this slab, for its tan delta.
+        // (Counted for the bar: the slabs whose tan delta is above nought.)
+        const auto tandOf = [&stack, &layers0](int k) {
             double tand = 0;
             for (const Layer& l : stack.layers)
                 if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.name == layers0.slabs.at(k).name)
                     tand = l.tand;
+            return tand;
+        };
+        int lossyDone = 0, lossyAll = 0;
+        for (int k = 0; k < layers0.slabs.size(); ++k)
+            if (tandOf(k) > 0) ++lossyAll;
+        for (int k = 0; k < layers0.slabs.size(); ++k) {
+            // The model's own layer behind this slab, for its tan delta.
+            const double tand = tandOf(k);
             if (!(tand > 0)) continue;
+            if (control != nullptr) control->at(ExtractControl::Losses, lossyDone++, lossyAll);
             Layers nudged = layers0;
             const double was = nudged.slabs[k].epsr;
             const double step = was * 1e-3;
             nudged.slabs[k].epsr = was + step;
             QMap<QString, Green> some;
-            bool built = true;
             for (const QString& a : std::as_const(layers))
                 for (const QString& b : std::as_const(layers)) {
                     const QString key = keyOf(a, b);
                     if (some.contains(key)) continue;
                     some.insert(key, Green(nudged, height.value(a), height.value(b)));
-                    built = built && some.value(key).ok();
+                    Green& g = some[key];
+                    if (control != nullptr) {
+                        g.stopWith(control->stop);
+                        if (control->mostPairs > 0) g.limitPairs(control->mostPairs);
+                    }
+                    g.images();
+                    if (stopped()) return out;
+                    // (A part in a thousand from a stack that built: one
+                    //  that does not is said, not passed over as lossless.)
+                    if (!g.ok()) {
+                        out.problems += g.problems();
+                        return out;
+                    }
                 }
-            if (!built) continue;
             const auto fromNudged = [&some, &keyOf](const QString& a, const QString& b) -> const Green& {
                 const auto it = some.constFind(keyOf(a, b));
                 return it != some.constEnd() ? it.value() : some.constBegin().value();
             };
             QList<QList<double>> nudgedMaxwell, nudgedPerMetre;
-            solve(fromNudged, &nudgedMaxwell);
-            // (And of the cross-section, for G per metre.)
+            // A uniform line's G is of its cross-section, per metre, solved
+            // again here in a moment; the whole structure solved again for
+            // each lossy layer was read by nothing, and was two thirds of the
+            // time once the stack's Green's functions took milliseconds (a
+            // coplanar line on that lithium niobate, four lossy layers: its
+            // matrix filled and factored six times where twice is enough).
+            if (!uniform) solve(fromNudged, &nudgedMaxwell);
             if (uniform) crossSection(fromNudged, &nudgedPerMetre, nullptr);
+            if (stopped()) return out;
             // The whole matrix's derivative, not one number of it: a
             // layer's loss couples two conductors as well as loading one,
             // and coupled lines need that term.
             for (int i = 0; i < nets.size(); ++i)
                 for (int j = 0; j < nets.size(); ++j) {
-                    const double dCdEps = (nudgedMaxwell.at(i).at(j) - out.maxwell.at(i).at(j)) / step;
-                    out.dielectricLoss[i][j] += tand * was * dCdEps;
+                    if (i < nudgedMaxwell.size() && j < nudgedMaxwell.at(i).size())
+                        out.dielectricLoss[i][j] += tand * was * (nudgedMaxwell.at(i).at(j) - out.maxwell.at(i).at(j)) / step;
                     // (And per metre, of the cross-section.)
                     if (uniform && i < nudgedPerMetre.size() && j < nudgedPerMetre.at(i).size())
                         out.perMetre.dielectricLoss[i][j] +=
                             tand * was * (nudgedPerMetre.at(i).at(j) - out.perMetre.maxwell.at(i).at(j)) / step;
                 }
         }
+        // (The whole line's, for what reads it - nothing yet: its cross-
+        //  section's over its length, its two ends' fringing left out.)
+        if (uniform)
+            for (int i = 0; i < nets.size() && i < out.perMetre.dielectricLoss.size(); ++i)
+                for (int j = 0; j < nets.size() && j < out.perMetre.dielectricLoss.at(i).size(); ++j)
+                    out.dielectricLoss[i][j] = out.perMetre.dielectricLoss.at(i).at(j) * lineLength * micrometre;
     }
     // What was done for the per-metre values, said.
     {
@@ -1104,6 +1202,11 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, a dense matrix of %4 to solve.")
                      .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")))
                      .arg(megabytes >= 1024 ? tr("%1 GB").arg(megabytes / 1024, 0, 'f', 1) : tr("%1 MB").arg(megabytes, 0, 'f', 1));
+    out.lines << (lossy && out.perMetre.fromMiddle
+                      ? tr("Solved %1 time(s): with the stack and in vacuum; each lossy layer's share on the line's middle "
+                           "cross-section alone.").arg(out.solves)
+                  : lossy ? tr("Solved %1 time(s): with the stack, in vacuum, and again for each lossy layer.").arg(out.solves)
+                          : tr("Solved %1 time(s): with the stack and in vacuum.").arg(out.solves));
     for (const QString& name : std::as_const(layers))
         out.lines << tr("%1 sits %2 µm up the stack.").arg(name).arg(height.value(name) * 1e6, 0, 'g', 4);
     const Green& first = greens[keyOf(layers.first(), layers.first())];

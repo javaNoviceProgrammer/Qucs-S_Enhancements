@@ -57,6 +57,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <atomic>
 #include <complex>
 
 namespace qucs_s::rf25 {
@@ -123,9 +124,19 @@ struct Extraction {
      * for every pair of nets at once. Reducing it to one number per net
      * (which is what \a lossTangent is) throws away how a layer's loss
      * couples two conductors, and coupled lines need that.
+     *
+     * A uniform line's is its cross-section's (PerMetre) over its length,
+     * its two ends' share left out: its losses are read per metre, and the
+     * whole solved again for each lossy layer was read by nothing - two
+     * thirds of its time once the stack's Green's functions took
+     * milliseconds.
      */
     QList<QList<double>> dielectricLoss;
     int unknowns = 0;                 ///< the cells it solved for
+    /// The dense systems of all of them it filled and factored: the stack's
+    /// and the vacuum's, and for a structure that is no uniform line the
+    /// whole again for each lossy layer.
+    int solves = 0;
     double conditionHint = 0;         ///< the matrix's diagonal spread, for a warning
     /*!
      * How the charge crowds on each net, 1/m^2: sum(q^2/A) over its cells
@@ -227,6 +238,53 @@ struct Extraction {
 };
 
 /*!
+ * What an extraction looks at and tells as it goes: its stop - between its
+ * steps, as the stack's Green's functions are built, as its matrices are
+ * filled - and how far it has got, for the tab's bar and rf25_solve's
+ * answer when it is still at work.
+ *
+ * Stopped, it returns at once with "Stopped." in its problems. Before, the
+ * tab's Stop let a quasi-static solve go and it ran on regardless: a stack
+ * whose Green's function did not end kept a core and twelve gigabytes busy
+ * until Qucs-S was killed, and a second solve started beside it (the review
+ * of 3 November).
+ */
+struct ExtractControl {
+    /// What it is doing.
+    enum Step {
+        Starting,
+        Greens,         ///< building the stack's Green's functions: done of all
+        Charge,         ///< solving the charge on the cells (the matrix filled, then factored)
+        Vacuum,         ///< the same with every dielectric vacuum, for C0
+        CrossSection,   ///< a uniform line's middle cross-section, per metre
+        Losses          ///< each lossy dielectric's share, a solve each: done of all
+    };
+    const std::atomic_bool* stop = nullptr;
+    std::atomic_int* step = nullptr;   ///< a Step
+    std::atomic_int* done = nullptr;
+    std::atomic_int* all = nullptr;
+    /// The images the Green's function last built has, for what is said
+    /// while the next is built.
+    std::atomic_int* images = nullptr;
+    /// Tests: the most pairs each Green's function's expansion may form
+    /// (Green::limitPairs; 0, its own).
+    double mostPairs = 0;
+
+    bool stopped() const { return stop != nullptr && stop->load(); }
+    void at(Step s, int d = 0, int a = 0) const
+    {
+        if (step != nullptr) step->store(s);
+        if (done != nullptr) done->store(d);
+        if (all != nullptr) all->store(a);
+    }
+};
+
+/// What \a step of an extraction is, in words, with how far into it
+/// \a done of \a all are and the images of the Green's function built last:
+/// what the tab's bar and rf25_solve say while it is at work.
+QString extractStepSaid(int step, int done, int all, int images);
+
+/*!
  * \a mesh (cells in the layout's micrometres) solved on \a stack: the
  * capacitance matrix of its nets.
  *
@@ -235,7 +293,7 @@ struct Extraction {
  * metal of it; anything else is said in problems() rather than answered.
  */
 Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre = 1e-6,
-                   const QList<ReturnMark>& returns = {});
+                   const QList<ReturnMark>& returns = {}, const ExtractControl* control = nullptr);
 
 /*!
  * The lines of \a extraction's signals against its returns, per metre, in

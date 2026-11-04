@@ -758,7 +758,7 @@ void RF25Panel::showSettings()
             did << (a_doc->frequenciesToSolve() > 0 ? tr("Solving full-wave: %1 of %2 frequencies…")
                                                           .arg(a_doc->frequenciesSolved())
                                                           .arg(a_doc->frequenciesToSolve())
-                                                    : tr("Solving…"));
+                                                    : a_doc->solvingSaid());
         } else if (a_doc->fullWave() && a_doc->fullWave()->ok()) {
             did = a_doc->fullWave()->lines;
             did += a_doc->fullWaveSummary();

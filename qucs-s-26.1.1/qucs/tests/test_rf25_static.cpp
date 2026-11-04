@@ -9,12 +9,16 @@
  * ... a two-line coupling".
  */
 #include <QtTest>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QSet>
 
 #include "rf25/rf25_sparams.h"
 #include "rf25/rf25_static.h"
 
 #include <Eigen/Dense>
 
+#include <atomic>
 #include <cmath>
 
 namespace rf = qucs_s::rf25;
@@ -97,6 +101,34 @@ rf::Stack layered(const QList<QPair<double, double>>& each)
     metal.tag = QStringLiteral("m1");
     s.layers << metal;
     return s;
+}
+
+/// Whether this build is one whose dense solves are many times slower - a
+/// sanitized one, as CI's Linux job is (QUCS_TEST_SLOW: its path in any).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
+/// The complete elliptic integral of the first kind of modulus \a k, by
+/// the arithmetic-geometric mean: pi/2 over AGM(1, sqrt(1 - k^2)).
+double ellipticK(double k)
+{
+    double a = 1, b = std::sqrt(1 - k * k);
+    for (int i = 0; i < 60 && std::abs(a - b) > 1e-16 * a; ++i) {
+        const double next = (a + b) / 2;
+        b = std::sqrt(a * b);
+        a = next;
+    }
+    return M_PI / (2 * a);
 }
 
 /// A conductor on M1: a rectangle in micrometres.
@@ -1301,6 +1333,162 @@ private slots:
                 QVERIFY(std::abs(over.c.at(a).at(b) - 0.5 * (gcpw.perMetre.maxwell.at(i).at(j) + gcpw.perMetre.maxwell.at(j).at(i)))
                         < 1e-12 * std::abs(over.c.at(0).at(0)));
             }
+    }
+
+    // The review of 3 November's test: a coplanar line - its signal 50 µm,
+    // its gaps 6, its grounds 150 - on thin-film lithium niobate (Nelan et
+    // al., Opt. Lett. 2022): 500 µm of Si, 4.7 µm of SiO2, 0.3 µm of LN at
+    // εr 28, 0.5 µm of SiO2, nothing under it; the reviewer's mesh, four
+    // cells across and none longer than 25 µm. Its stack's Green's function
+    // never finished (forty minutes and twelve gigabytes, then killed).
+    //
+    // Its capacitance per metre against two references of its own, of no
+    // thickness as the sheet it is solved as: in vacuum, the conformal
+    // mapping of a coplanar line with grounds of finite width - exact - and
+    // on the stack, a spectral-domain solve of its cross-section (Galerkin,
+    // Chebyshev functions with each edge's singularity on each strip; the
+    // stack's reflection in closed form; 165.22 pF/m, εeff 4.0791 - its
+    // script beside the review's write-up, the same 40.5047 pF/m in vacuum
+    // as the conformal mapping to a part in a million). The cells across a
+    // gap of 6 µm between conductors of 50 and 150 µm were one of 3 µm on
+    // one side and one of 9 on the other, and it came out 10 % under both;
+    // graded down to a quarter of the gap it is a per cent from them.
+    void aCoplanarLineOnThinFilmLithiumNiobate()
+    {
+        const auto layer = [](rf::Layer::Kind kind, const QString& name, double thickness, double er, double tand) {
+            rf::Layer l;
+            l.kind = kind;
+            l.name = name;
+            l.tag = name.toLower();
+            l.thickness = thickness;
+            l.epsr = er;
+            l.tand = tand;
+            return l;
+        };
+        rf::Stack s;
+        rf::Layer open = layer(rf::Layer::Ground, QStringLiteral("GND"), 0, 1, 0);
+        open.variant = QStringLiteral("open");
+        rf::Layer au = layer(rf::Layer::Metal, QStringLiteral("Au"), 1e-6, 1, 0);
+        au.sigma = 4.1e7;
+        s.layers << open << layer(rf::Layer::Substrate, QStringLiteral("Si"), 500e-6, 11.7, 0.01)
+                 << layer(rf::Layer::Dielectric, QStringLiteral("BOX"), 4.7e-6, 3.9, 0.001)
+                 << layer(rf::Layer::Dielectric, QStringLiteral("LN"), 0.3e-6, 28, 0.004)
+                 << layer(rf::Layer::Dielectric, QStringLiteral("SiO2"), 0.5e-6, 3.9, 0.001) << au;
+        // (Under the sanitizers a quarter of its length: a uniform line's
+        //  values are of its middle cross-section, whatever its length.)
+        const double length = slowBuild() ? 250 : 1000;
+        const QList<rf::Conductor> line{strip(0, -25, length, 50, QStringLiteral("Au")), strip(0, 31, length, 150, QStringLiteral("Au")),
+                                        strip(0, -181, length, 150, QStringLiteral("Au"))};
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        how.maximum = 25e-6;
+        how.gaps = true;   // (as the tab meshes a quasi-static study)
+        const rf::Mesh mesh = rf::meshOf(line, how, rf::Stack(), 0);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        QVERIFY2(mesh.lines.join(' ').contains(QStringLiteral("face another conductor across a gap")), qPrintable(mesh.lines.join(" | ")));
+        // What it is doing, as it goes: every step seen.
+        std::atomic_int step{rf::ExtractControl::Starting}, done{0}, all{0}, images{0};
+        rf::ExtractControl control;
+        control.step = &step;
+        control.done = &done;
+        control.all = &all;
+        control.images = &images;
+        QSet<int> seen;
+        QElapsedTimer t;
+        t.start();
+        rf::Extraction e;
+        {
+            std::atomic_bool over{false};
+            QThread* worker = QThread::create([&] {
+                e = rf::extract(mesh, line, s, 1e-6, {}, &control);
+                over = true;
+            });
+            worker->start();
+            while (!over.load()) {
+                seen.insert(step.load());
+                QThread::msleep(1);
+            }
+            worker->wait();
+            delete worker;
+        }
+        const double seconds = t.elapsed() / 1000.0;
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+        QVERIFY2(e.perMetre.fromMiddle, qPrintable(e.perMetre.said));
+        for (const int each : {int(rf::ExtractControl::Charge), int(rf::ExtractControl::CrossSection), int(rf::ExtractControl::Losses)})
+            QVERIFY2(seen.contains(each), qPrintable(QStringLiteral("step %1 was not seen").arg(each)));
+        QVERIFY2(images.load() > 0 && images.load() < 3000, qPrintable(QString::number(images.load())));
+        int signal = 0;
+        for (int i = 0; i < e.names.size(); ++i)
+            if (!e.returns.value(i, false)) signal = i;
+        const rf::LineParameters lp = rf::lineParameters(e, signal, length * 1e-6, 10e9);
+        QVERIFY2(lp.problems.isEmpty(), qPrintable(lp.problems.join(" | ")));
+        const double a = 25e-6, b = 31e-6, c = 181e-6;
+        const double k = (a / b) * std::sqrt((1 - b * b / (c * c)) / (1 - a * a / (c * c)));
+        const double conformal = 4 * rf::kEps0 * ellipticK(k) / ellipticK(std::sqrt(1 - k * k));
+        const double spectral = 165.22e-12, spectralEps = 4.0791;
+        qWarning("on thin-film lithium niobate, %lld cells in %.1f s: C %.2f pF/m (spectral %.2f), C0 %.3f (conformal %.3f), eps_eff "
+                 "%.4f (%.4f), Z0 %.2f Ohm, G %.4g S/m",
+                 (long long)mesh.cells.size(), seconds, lp.c * 1e12, spectral * 1e12, lp.c0 * 1e12, conformal * 1e12, lp.epsilonEff,
+                 spectralEps, lp.z0, lp.g);
+        QVERIFY2(std::abs(lp.c0 / conformal - 1) < 0.02, qPrintable(QStringLiteral("C0 %1 pF/m, the conformal mapping's %2").arg(lp.c0 * 1e12).arg(conformal * 1e12)));
+        QVERIFY2(std::abs(lp.c / spectral - 1) < 0.02, qPrintable(QStringLiteral("C %1 pF/m, the spectral solve's 165.22").arg(lp.c * 1e12)));
+        QVERIFY2(std::abs(lp.epsilonEff / spectralEps - 1) < 0.005, qPrintable(QStringLiteral("eps_eff %1, the spectral solve's 4.0791").arg(lp.epsilonEff)));
+        // Its losses, each lossy layer solved again on the cross-section
+        // alone: the whole line's is the cross-section's over its length,
+        // and the whole is solved twice, with the stack and in vacuum.
+        QVERIFY(lp.g > 0);
+        QCOMPARE(e.solves, 2);
+        for (int i = 0; i < e.names.size(); ++i)
+            for (int j = 0; j < e.names.size(); ++j)
+                QVERIFY2(std::abs(e.dielectricLoss.at(i).at(j) - e.perMetre.dielectricLoss.at(i).at(j) * length * 1e-6)
+                             <= 1e-12 * std::abs(e.perMetre.dielectricLoss.at(i).at(j) * length * 1e-6),
+                         "the whole line's loss is not its cross-section's over its length");
+    }
+
+    // A stop stops it, wherever it is: the tab's Stop let a quasi-static
+    // solve go and it ran on regardless, held a core and gigabytes, and the
+    // next solve ran beside it. Stopped while its Green's functions are
+    // built - a stack that takes a while there, a mirror of forty films of
+    // 0.1 and 0.2 µm, εr 28 and 3.9, on silicon - and as its matrix is
+    // filled - a plain substrate, and a mesh fine enough that the filling
+    // takes seconds: stopped in it, it ends at its next row, not when the
+    // matrix is full.
+    void anExtractionStopsWhenItIsStopped()
+    {
+        QList<QPair<double, double>> films{{11.7, 500e-6}};
+        for (int i = 0; i < 20; ++i) films << QPair<double, double>{28, 0.1e-6} << QPair<double, double>{3.9, 0.2e-6};
+        const QList<rf::Conductor> line{strip(0, -25, 1000, 50), strip(0, 31, 1000, 150), strip(0, -181, 1000, 150)};
+        for (const int at : {int(rf::ExtractControl::Greens), int(rf::ExtractControl::Charge)}) {
+            const bool greens = at == rf::ExtractControl::Greens;
+            const rf::Stack s = greens ? layered(films) : grounded(9.8, 200e-6);
+            rf::MeshSettings how;
+            how.cellsAcross = greens ? 4 : 8;
+            how.maximum = greens ? 25e-6 : 10e-6;
+            const rf::Mesh mesh = rf::meshOf(line, how, rf::Stack(), 0);
+            QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+            std::atomic_bool stop{false}, over{false};
+            std::atomic_int step{rf::ExtractControl::Starting};
+            rf::ExtractControl control;
+            control.stop = &stop;
+            control.step = &step;
+            rf::Extraction e;
+            QThread* worker = QThread::create([&] {
+                e = rf::extract(mesh, line, s, 1e-6, {}, &control);
+                over = true;
+            });
+            worker->start();
+            QVERIFY2(QTest::qWaitFor([&] { return step.load() >= at || over.load(); }, 600000), "it never got there");
+            QVERIFY2(!over.load() && step.load() == at, qPrintable(QStringLiteral("it was at step %1, not %2").arg(step.load()).arg(at)));
+            QElapsedTimer t;
+            t.start();
+            stop = true;
+            QVERIFY2(QTest::qWaitFor([&] { return over.load(); }, 60000), "a stopped extraction went on");
+            worker->wait();
+            delete worker;
+            qWarning("stopped at step %d: it ended %lld ms later", at, (long long)t.elapsed());
+            QVERIFY2(t.elapsed() < (slowBuild() ? 20000 : 500), qPrintable(QString::number(t.elapsed())));
+            QVERIFY2(!e.ok() && e.problems.contains(QStringLiteral("Stopped.")), qPrintable(e.problems.join(" | ")));
+        }
     }
 
     void whatItCannotSolveIsRefused()
