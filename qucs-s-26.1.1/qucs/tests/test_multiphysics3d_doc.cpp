@@ -893,6 +893,18 @@ private slots:
         r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"}, {"at", at}});
         v = si(r);
         QVERIFY2(v.size() == 2 && std::abs(v[0] - 301.25) < 1e-6 && std::abs(v[1] - 302.5) < 1e-6, qPrintable(text(r)));
+        // Several, split by ';', each named if wanted (the DMG's drive of
+        // 4b238d6: they were one expression, refused).
+        QJsonArray one;
+        one.append(QJsonArray{1.0, 0.5, 0.25});
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T; rise = T - 300[K]"}, {"at", one}});
+        v = si(r);
+        QVERIFY2(v.size() == 2 && std::abs(v[0] - 301.25) < 1e-6 && std::abs(v[1] - 1.25) < 1e-6, qPrintable(text(r)));
+        QVERIFY2(json(r).value(QStringLiteral("values")).toArray().at(1).toObject().value(QStringLiteral("name")).toString().startsWith(QStringLiteral("rise at (1")),
+                 qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T; 2*T"}, {"over", "boundary"}, {"selection", topRule}, {"kind", "average"}});
+        v = si(r);
+        QVERIFY2(v.size() == 2 && std::abs(v[0] - 302.5) < 1e-6 && std::abs(v[1] - 605) < 1e-6, qPrintable(text(r)));
         r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"},
                                                   {"along", QJsonObject{{"from", QJsonArray{1.0, 0.5, 0.0}}, {"to", QJsonArray{1.0, 0.5, 0.5}}, {"points", 5}}}});
         v = si(r);
@@ -1236,23 +1248,29 @@ private slots:
         QVERIFY(!inTime.isEmpty());
         panel()->selectNode(inTime);
         QVERIFY(panel()->editorFor(QStringLiteral("times")) != nullptr);
+        // (Newton's method in 3D too: a field that reads itself.)
         const QStringList timeMethods = valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("nonlinear"))));
-        QVERIFY2(!timeMethods.contains(QStringLiteral("newton")), qPrintable(timeMethods.join(QStringLiteral(", "))));
+        QVERIFY2(timeMethods.contains(QStringLiteral("newton")) && timeMethods.contains(QStringLiteral("picard")), qPrintable(timeMethods.join(QStringLiteral(", "))));
         panel()->selectNode(step);
         QVERIFY(panel()->editorFor(QStringLiteral("solver")) != nullptr);
         QVERIFY(panel()->editorFor(QStringLiteral("adaptive")) == nullptr);
         QVERIFY(panel()->editorFor(QStringLiteral("lightloop")) == nullptr);
         const QStringList methods = valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("nonlinear"))));
-        QVERIFY2(methods.contains(QStringLiteral("picard")) && !methods.contains(QStringLiteral("newton")), qPrintable(methods.join(QStringLiteral(", "))));
+        QVERIFY2(methods.contains(QStringLiteral("picard")) && methods.contains(QStringLiteral("newton")), qPrintable(methods.join(QStringLiteral(", "))));
         QVERIFY(qobject_cast<QListWidget*>(panel()->editorFor(QStringLiteral("physics"))) != nullptr);
-        // A heat model's solid of the user's k: its anisotropy the plane's
-        // alone offered isotropic.
+        // A heat model's solid of the user's k: a tensor in the model's
+        // axes offered, its zz and (symmetric) xz and yz a 3D model's.
         QString solid;
         for (const FNode& c : doc->model().find(ht)->children)
             if (c.type == QLatin1String("heat/solid")) solid = c.tag;
         doc->editNode(solid, [](FNode& n) { n.props.insert(QStringLiteral("source"), QStringLiteral("user")); }, QStringLiteral("user"));
         panel()->selectNode(solid);
-        QCOMPARE(valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("anisotropy")))), QStringList{QStringLiteral("isotropic")});
+        QCOMPARE(valuesOf(qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("anisotropy")))),
+                 QStringList({QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")}));
+        doc->editNode(solid, [](FNode& n) { n.props.insert(QStringLiteral("anisotropy"), QStringLiteral("symmetric")); }, QStringLiteral("tensor"));
+        panel()->selectNode(solid);
+        QTRY_VERIFY(panel()->editorFor(QStringLiteral("kzz")) != nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("kxz")) != nullptr && panel()->editorFor(QStringLiteral("kyz")) != nullptr);
     }
 
     /// A 2D model is not opened as a 3D one, nor a 3D one as a 2D one.

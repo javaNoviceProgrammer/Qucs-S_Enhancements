@@ -19,6 +19,7 @@
  * (at your option) any later version.
  */
 #include "fem3_estimate.h"
+#include "fem_amg.h"
 #include "fem3_export.h"
 #include "fem3_results.h"
 #include "fem3_solver.h"
@@ -75,6 +76,21 @@ QJsonObject objects(const QString& object)
     QJsonArray of;
     of.append(object);
     return QJsonObject{{QStringLiteral("objects"), of}};
+}
+
+/// A sanitized build (CI's Linux, build-asan): its solves some 30 to 200
+/// times slower - a test's mesh coarser there.
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
 }
 
 Model model3d(double hmax)
@@ -560,7 +576,16 @@ private slots:
             }
             const double want = 300 + lo * L - Q * L * L / (2 * k);
             QVERIFY2(std::abs(got - want) < 1e-7 * want, qPrintable(QStringLiteral("%1 K, the quartic's %2 K").arg(got, 0, 'g', 12).arg(want, 0, 'g', 12)));
-            QVERIFY(sv.s().log.join(QLatin1Char('\n')).contains(QStringLiteral("Picard")));
+            // By Newton's method (its film's derivative in T), in fewer steps
+            // than Picard's iterations take to the same temperature.
+            const QString newtonLog = sv.s().log.join(QLatin1Char('\n'));
+            QVERIFY2(newtonLog.contains(QStringLiteral("Newton's step")) && !newtonLog.contains(QStringLiteral("Picard")), qPrintable(newtonLog));
+            stationary(m).props.insert(QStringLiteral("nonlinear"), QStringLiteral("picard"));
+            const Solved picard = solve(m);
+            QVERIFY2(picard.error.isEmpty(), qPrintable(picard.error));
+            QVERIFY(std::abs(valueAt(picard.s(), QStringLiteral("ht.T"), 0.5, 0.5, 0.2) - got) < 1e-7 * got);
+            const int steps = int(newtonLog.count(QStringLiteral("Newton's step"))), rounds = int(picard.s().log.join(QLatin1Char('\n')).count(QStringLiteral("Picard's iteration")));
+            QVERIFY2(steps >= 2 && steps < rounds, qPrintable(QStringLiteral("Newton %1 steps, Picard %2").arg(steps).arg(rounds)));
         }
     }
 
@@ -1460,6 +1485,171 @@ private slots:
                  qPrintable(broken->errors.values().join(QStringLiteral("; "))));
     }
 
+    /// A user's tensor in 3D, in the model's axes: diagonal - a cube held
+    /// 10 K apart across each axis in turn, its flux that axis' k times the
+    /// gradient, exactly on order 1 -, and symmetric: T = 300 K + 1e4 K/m x
+    /// held on every face, the flux -K ∇T at each point, its xy, xz terms the
+    /// cross flows.
+    void usersTensor()
+    {
+        const char* sides[3][2] = {{"left", "right"}, {"front", "back"}, {"bottom", "top"}};
+        const char* fluxes[3] = {"ht.qx", "ht.qy", "ht.qz"};
+        const double k[3] = {2, 5, 7};
+        for (int a = 0; a < 3; ++a) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("cube"), 0, 0, 0, 1, 1, 1);
+            const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+            for (Node& c : m.find(ht)->children)
+                if (c.type == QLatin1String("heat/solid")) {
+                    c.props.insert(QStringLiteral("anisotropy"), QStringLiteral("diagonal"));
+                    c.props.insert(QStringLiteral("kxx"), QStringLiteral("2[W/(m*K)]"));
+                    c.props.insert(QStringLiteral("kyy"), QStringLiteral("5[W/(m*K)]"));
+                    c.props.insert(QStringLiteral("kzz"), QStringLiteral("7[W/(m*K)]"));
+                    // (A symmetric tensor's left over: not read by a diagonal one.)
+                    c.props.insert(QStringLiteral("kxy"), QStringLiteral("1[W/(m*K)]"));
+                    c.props.insert(QStringLiteral("kxz"), QStringLiteral("1[W/(m*K)]"));
+                    c.props.insert(QStringLiteral("kyz"), QStringLiteral("1[W/(m*K)]"));
+                }
+            addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("cube"), QString::fromLatin1(sides[a][0])),
+                       QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K]")}});
+            addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("cube"), QString::fromLatin1(sides[a][1])),
+                       QJsonObject{{QStringLiteral("T0"), QStringLiteral("310[K]")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            for (int b = 0; b < 3; ++b) {
+                const double q = integral(sv.s(), QString::fromLatin1(fluxes[b])) / 1e-9, want = b == a ? -k[a] * 10 / 1e-3 : 0;
+                QVERIFY2(std::abs(q - want) < 1e-6 * k[a] * 1e4, qPrintable(QStringLiteral("across %1: %2 = %3, not %4").arg(a).arg(fluxes[b]).arg(q).arg(want)));
+            }
+        }
+        Model m = model3d(0.5);
+        addBox(m, QStringLiteral("cube"), 0, 0, 0, 1, 1, 1);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+        const QJsonObject tensor{{QStringLiteral("anisotropy"), QStringLiteral("symmetric")}, {QStringLiteral("kxx"), QStringLiteral("3[W/(m*K)]")},
+                                 {QStringLiteral("kyy"), QStringLiteral("4[W/(m*K)]")},       {QStringLiteral("kzz"), QStringLiteral("5[W/(m*K)]")},
+                                 {QStringLiteral("kxy"), QStringLiteral("1[W/(m*K)]")},       {QStringLiteral("kxz"), QStringLiteral("0.5[W/(m*K)]")},
+                                 {QStringLiteral("kyz"), QStringLiteral("0.25[W/(m*K)]")}};
+        for (Node& c : m.find(ht)->children)
+            if (c.type == QLatin1String("heat/solid"))
+                for (auto it = tensor.begin(); it != tensor.end(); ++it) c.props.insert(it.key(), it.value());
+        addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K] + 1e4[K/m]*x")}});
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+        const double want[3] = {-3e4, -1e4, -5e3};
+        for (int b = 0; b < 3; ++b) {
+            const double q = valueAt(sv.s(), QString::fromLatin1(fluxes[b]), 0.4, 0.6, 0.3);
+            QVERIFY2(std::abs(q - want[b]) < 1e-6 * 3e4, qPrintable(QStringLiteral("%1 = %2, not %3").arg(fluxes[b]).arg(q).arg(want[b])));
+        }
+    }
+
+    /// Newton's method in 3D: k(T) = 1 W/(m K) (1 + 0.01 (T - 300 K)) along a
+    /// bar held at 300 and 400 K - Kirchhoff's θ = (T - 300) + 0.005 (T -
+    /// 300)² linear along it, T at its middle 358.11388 K, its flux -1.5e5
+    /// W/m² throughout -: in a few steps, where Picard's iterations take
+    /// more to the same field; its matrix not symmetric, by BiCGStab with
+    /// multigrid and by an LU alike.
+    void newtonsMethod()
+    {
+        // (Multigrid's solve of a matrix not symmetric: 1D convection and
+        // diffusion, read by its rows - by its columns it is its transpose.)
+        {
+            const int n = 5000;
+            std::vector<Eigen::Triplet<double>> ts;
+            for (int i = 0; i < n; ++i) {
+                ts.emplace_back(i, i, 2.0);
+                if (i > 0) ts.emplace_back(i, i - 1, -1.4);
+                if (i + 1 < n) ts.emplace_back(i, i + 1, -0.6);
+            }
+            Eigen::SparseMatrix<double> a(n, n);
+            a.setFromTriplets(ts.begin(), ts.end());
+            Eigen::VectorXd b(n), x = Eigen::VectorXd::Zero(n);
+            for (int i = 0; i < n; ++i) b(i) = std::sin(0.01 * i) + 1;
+            AmgSolver amg;
+            amg.setNonsymmetric(true);
+            QString why;
+            QVERIFY2(amg.compute(a, &why), qPrintable(why));
+            IterativeReport report;
+            QVERIFY2(amg.solve(b, x, &report, &why), qPrintable(why));
+            const double residual = (a * x - b).norm() / b.norm();
+            QVERIFY2(residual < 1e-8 && !report.fallback, qPrintable(QStringLiteral("%1 after %2 iterations").arg(residual).arg(report.iterations)));
+        }
+        // (A sanitized build: a coarser bar, and three of the six ways - 192 s
+        // under ASan here, past CI's Linux's 300 s, at 0.05 mm.)
+        const bool slow = slowBuild();
+        Model m = model3d(slow ? 0.1 : 0.05);
+        addBox(m, QStringLiteral("bar"), 0, 0, 0, 1, 0.2, 0.2);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 2, QStringLiteral("1[W/(m*K)]*(1 + 0.01[1/K]*(T - 300[K]))"));
+        addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("bar"), QStringLiteral("left")),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K]")}});
+        addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("bar"), QStringLiteral("right")),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("400[K]")}});
+        stationary(m).props.insert(QStringLiteral("tolerance"), QStringLiteral("1e-10"));
+        const double middle = 300 + (std::sqrt(1 + 2 * 0.01 * 75) - 1) / 0.01;
+        QStringList seen;
+        double first = 0;
+        for (const char* method : {"newton", "auto", "picard"})
+            for (const char* solver : {"iterative", "direct"}) {
+                if (slow && QLatin1String(method) != QLatin1String("newton") && QLatin1String(solver) == QLatin1String("direct")) continue;
+                stationary(m).props.insert(QStringLiteral("nonlinear"), QString::fromLatin1(method));
+                stationary(m).props.insert(QStringLiteral("solver"), QString::fromLatin1(solver));
+                const Solved sv = solve(m);
+                QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+                const double t = valueAt(sv.s(), QStringLiteral("ht.T"), 0.5, 0.1, 0.1);
+                QVERIFY2(std::abs(t - middle) < (slow ? 2e-2 : 2e-3), qPrintable(QStringLiteral("%1, %2: %3 K, Kirchhoff's %4 K").arg(method, solver).arg(t, 0, 'g', 10).arg(middle, 0, 'g', 10)));
+                const double q = integral(sv.s(), QStringLiteral("ht.qx")) / (1e-3 * 0.2e-3 * 0.2e-3);
+                QVERIFY2(std::abs(q + 1.5e5) < 1e-3 * 1.5e5, qPrintable(QStringLiteral("%1, %2: q %3").arg(method, solver).arg(q)));
+                if (first == 0) first = t;
+                QVERIFY2(std::abs(t - first) < 1e-7 * t, qPrintable(QStringLiteral("%1, %2: %3 K, the first %4 K").arg(method, solver).arg(t, 0, 'g', 12).arg(first, 0, 'g', 12)));
+                const QString log = sv.s().log.join(QLatin1Char('\n'));
+                const bool newton = QLatin1String(method) != QLatin1String("picard");
+                const int steps = int(log.count(newton ? QStringLiteral("Newton's step") : QStringLiteral("Picard's iteration")));
+                seen << QStringLiteral("%1 %2: %3").arg(method, solver).arg(steps);
+                if (newton) {
+                    QVERIFY2(steps >= 2 && steps <= 6, qPrintable(log));
+                    QVERIFY2(log.contains(QLatin1String(solver) == QLatin1String("direct") ? QStringLiteral("LU (Newton's matrix)")
+                                                                                         : QStringLiteral("BiCGStab with algebraic multigrid (Newton's matrix)")),
+                             qPrintable(log));
+                } else {
+                    QVERIFY2(steps > 6, qPrintable(log));
+                }
+            }
+        qInfo("%s", qPrintable(seen.join(QStringLiteral("; "))));
+    }
+
+    /// The elements assembled in parts on threads, joined in their order: a
+    /// field, its globals and Newton's steps the same, bit for bit, in one
+    /// part, in 13 and as the size has them.
+    void parallelAssembly()
+    {
+        // (A sanitized build: 7,319 prisms, 50 s under ASan here at 15,776 -
+        // and not fewer: under some 3,000 unknowns multigrid's coarsest level
+        // is the whole matrix, AMGCL's own LU, slower than a finer mesh's
+        // levels - 4,836 prisms took 1.2 s in Release, 7,319 0.15.)
+        Model m = model3d(slowBuild() ? 0.08 : 0.06);
+        addBox(m, QStringLiteral("cube"), 0, 0, 0, 1, 1, 1);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]*(1 + 0.002[1/K]*(T - 300[K]))"));
+        addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("cube"), QStringLiteral("bottom")),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K]")}});
+        addFeature(m, ht, QStringLiteral("heat/source"), rule(R"({"all": true})"),
+                   QJsonObject{{QStringLiteral("Q0"), QStringLiteral("1e9[W/m^3]*(1 + sin(7*x/1[mm])*cos(5*y/1[mm]))")}});
+        std::vector<double> values[3];
+        double tmax[3] = {0, 0, 0};
+        int prisms = 0;
+        for (int i = 0; i < 3; ++i) {
+            setAssemblyParts(i == 0 ? 1 : i == 1 ? 13 : 0);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+            values[i] = sv.s().fields().front().values;
+            tmax[i] = global(sv.s(), QStringLiteral("ht.Tmax"));
+            prisms = int(sv.mesh->prisms.size());
+        }
+        setAssemblyParts(0);
+        // (Parts by the size: one for each 2,000 prisms - more than one here.)
+        QVERIFY2(prisms > 4000, qPrintable(QString::number(prisms)));
+        QVERIFY(values[0] == values[1] && values[0] == values[2]);
+        QVERIFY(tmax[0] == tmax[1] && tmax[0] == tmax[2]);
+    }
+
     /// What a solve will hold and take, said before it begins: each
     /// physics' unknowns and its matrix's nonzeros - counted, as a brute
     /// count of the pairs that share a prism has them, at orders 1 and 2 -,
@@ -1599,13 +1789,6 @@ private slots:
         const QString ht = addPhysics(m, QStringLiteral("heat"), 1);
         addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"));
         why = refused(m, QStringLiteral("has no material"));
-        QVERIFY2(why.isEmpty(), qPrintable(why));
-        m = base();
-        const QString ht2 = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
-        for (Node& c : m.find(ht2)->children)
-            if (c.type == QLatin1String("heat/solid")) c.props.insert(QStringLiteral("anisotropy"), QStringLiteral("diagonal"));
-        addFeature(m, ht2, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"));
-        why = refused(m, QStringLiteral("isotropic in 3D"));
         QVERIFY2(why.isEmpty(), qPrintable(why));
         m = base();
         const QString ht3 = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
