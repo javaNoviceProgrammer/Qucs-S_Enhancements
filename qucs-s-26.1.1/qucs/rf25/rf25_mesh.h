@@ -72,12 +72,9 @@ struct MeshSettings {
     bool compressed = false;
     /// Whether a side that faces another conductor across a gap narrower
     /// than its outermost cells has them halved until they are no wider
-    /// than a quarter of the gap, where the charge crowds on both edges.
-    /// The quasi-static charge solve's: the tab sets it for a quasi-static
-    /// study. Not yet a full-wave solve's - its conductors' loss at their
-    /// edges was fitted on the edges' one halving, and a measured coplanar
-    /// line's loss came out over its measurement on the finer cells. Not
-    /// read from the node.
+    /// than a quarter of the gap, where the charge and the current crowd on
+    /// both edges. The tab sets it for both studies, and a full-wave one's
+    /// calibration strips are meshed so too; not read from the node.
     bool gaps = false;
     /// The most cells, as the solver has it.
     int mostCells() const;
@@ -115,6 +112,9 @@ struct Mesh {
     QStringList problems;
     QStringList lines;        ///< what it did, as the processing reports its own
     double cellSize = 0;      ///< the size it aimed at, µm
+    /// How many conductors' sides it graded where they face another across a
+    /// narrow gap (MeshSettings::gaps).
+    int facing = 0;
     bool ok() const { return problems.isEmpty(); }
     QMap<QString, int> byLayer() const;
 };

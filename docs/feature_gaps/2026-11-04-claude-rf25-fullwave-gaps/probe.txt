@@ -1,0 +1,68 @@
+# probe.cpp's runs, 4 November 2026: Release, main at 77fad7a, the probe grading the gaps itself (its first argument) as the
+# tab now does; the times on a machine loaded by other work.
+# probe gaps sigma tand cellsAcross maximum_um faces substrate_um [GHz,...]; PROBE_DENSE=1 a dense solve
+# R = Re(gamma Z) and L = Im(gamma Z)/w (Ohm/m, H/m), G and C likewise of gamma/Z, Z in the port's voltage and current.
+
+## The measured line on alumina (50/25/270 um, 6.5 um at 36 MS/m, 500 um of 9.7), the substrate lossless
+
+$ ./probe 0 36e6 0
+gaps 0 sigma 3.6e+07 tand 0 across 3 max 100 faces 1 sub 500: 107 s
+ 10.0 GHz eps 4.8540 alpha 6.2042 Np/m Z 55.091-0.739j  R 682.90 L 4.0479e-07 G 0.0002271 C 1.334e-10  residual 0.00018
+ 30.0 GHz eps 4.8043 alpha 11.2213 Np/m Z 54.714-0.430j  R 1206.80 L 4.0001e-07 G 0.007057 C 1.3363e-10  residual 0.0022
+ 60.0 GHz eps 4.8148 alpha 16.4515 Np/m Z 54.690-0.305j  R 1740.34 L 4.0028e-07 G 0.01976 C 1.3383e-10  residual 0.0026
+
+$ ./probe 1 36e6 0
+gaps 1 sigma 3.6e+07 tand 0 across 3 max 100 faces 1 sub 500: 371 s
+ 10.0 GHz eps 4.9138 alpha 7.6174 Np/m Z 50.189-0.821j  R 763.73 L 3.71e-07 G 0.0003536 C 1.4733e-10  residual 0.00011
+ 30.0 GHz eps 4.8450 alpha 14.2657 Np/m Z 49.787-0.499j  R 1401.13 L 3.6551e-07 G 0.007808 C 1.4747e-10  residual 0.0015
+ 60.0 GHz eps 4.8431 alpha 21.1379 Np/m Z 49.768-0.351j  R 2024.56 L 3.6531e-07 G 0.03206 C 1.475e-10  residual 0.0029
+
+$ ./probe 0 144e6 0
+gaps 0 sigma 1.44e+08 tand 0 across 3 max 100 faces 1 sub 500: 72 s
+ 10.0 GHz eps 4.7836 alpha 3.2553 Np/m Z 54.691-0.388j  R 355.73 L 3.9898e-07 G 0.0001142 C 1.334e-10  residual 0.00018
+ 30.0 GHz eps 4.7631 alpha 5.7866 Np/m Z 54.485-0.221j  R 618.65 L 3.9664e-07 G 0.004015 C 1.3361e-10  residual 0.0021
+ 60.0 GHz eps 4.7852 alpha 8.5273 Np/m Z 54.536-0.157j  R 896.81 L 3.9793e-07 G 0.01119 C 1.338e-10  residual 0.0026
+
+$ ./probe 1 144e6 0
+gaps 1 sigma 1.44e+08 tand 0 across 3 max 100 faces 1 sub 500: 238 s
+ 10.0 GHz eps 4.8218 alpha 4.1739 Np/m Z 49.718-0.450j  R 414.56 L 3.6414e-07 G 0.0001948 C 1.4732e-10  residual 0.0001
+ 30.0 GHz eps 4.7899 alpha 7.5879 Np/m Z 49.509-0.265j  R 740.57 L 3.6142e-07 G 0.004392 C 1.4745e-10  residual 0.0014
+ 60.0 GHz eps 4.8032 alpha 11.1530 Np/m Z 49.583-0.184j  R 1059.14 L 3.6247e-07 G 0.01906 C 1.4744e-10  residual 0.0029
+
+$ PROBE_DENSE=1 ./probe 0 0 0
+gaps 0 sigma 0 tand 0 across 3 max 100 faces 1 sub 500: 116 s
+ 10.0 GHz eps 4.7124 alpha -0.0000 Np/m Z 54.282-0.000j  R 0.01 L 3.9306e-07 G -2.136e-06 C 1.3339e-10  residual 0.00017
+ 30.0 GHz eps 4.7218 alpha 0.0027 Np/m Z 54.255+0.002j  R -2.21 L 3.9325e-07 G 0.0008482 C 1.336e-10  residual 0.002
+ 60.0 GHz eps 4.7556 alpha 0.2350 Np/m Z 54.375-0.003j  R 22.21 L 3.9553e-07 G 0.001134 C 1.3378e-10  residual 0.0027
+
+$ PROBE_DENSE=1 ./probe 1 0 0
+gaps 1 sigma 0 tand 0 across 3 max 100 faces 1 sub 500: 464 s
+ 10.0 GHz eps 4.7255 alpha -0.0000 Np/m Z 49.220-0.000j  R 0.00 L 3.569e-07 G -2.289e-06 C 1.4732e-10  residual 0.0001
+ 30.0 GHz eps 4.7337 alpha 0.0011 Np/m Z 49.225+0.001j  R -1.25 L 3.5724e-07 G 0.0005618 C 1.4743e-10  residual 0.0013
+ 60.0 GHz eps 4.7605 alpha 0.1957 Np/m Z 49.278-0.003j  R 16.63 L 3.5864e-07 G 0.001098 C 1.4769e-10  residual 0.0054
+
+## A narrow-gap line: 20/6/100 um, 3 um at 41 MS/m, 100 um of 9.7 (PROBE_S=20 PROBE_G=6 PROBE_WG=100 PROBE_T=3)
+
+$ ./probe 0 4.1e7 0 3 50 1 100 10,30,60
+gaps 0 sigma 4.1e+07 tand 0 across 3 max 50 faces 1 sub 100: 9 s
+ 10.0 GHz eps 4.9227 alpha 15.2165 Np/m Z 49.662-1.625j  R 1511.14 L 3.6714e-07 G 8.282e-05 C 1.4903e-10  residual 4.4e-05
+ 30.0 GHz eps 4.7603 alpha 29.1662 Np/m Z 48.825-1.034j  R 2842.78 L 3.5517e-07 G 0.002212 C 1.4906e-10  residual 0.00046
+ 60.0 GHz eps 4.7521 alpha 53.7358 Np/m Z 48.625-0.841j  R 4917.41 L 3.5345e-07 G 0.1304 C 1.4955e-10  residual 0.0073
+
+$ ./probe 1 4.1e7 0 3 50 1 100 10,30,60
+gaps 1 sigma 4.1e+07 tand 0 across 3 max 50 faces 1 sub 100: 13 s
+ 10.0 GHz eps 5.1240 alpha 19.1217 Np/m Z 43.254-1.743j  R 1653.93 L 3.2607e-07 G 0.000142 C 1.7456e-10  residual 7.2e-05
+ 30.0 GHz eps 4.8953 alpha 40.6492 Np/m Z 42.273-1.231j  R 3430.44 L 3.1172e-07 G 0.003536 C 1.7458e-10  residual 0.00032
+ 60.0 GHz eps 4.7817 alpha 58.6652 Np/m Z 41.927-0.942j  R 5049.05 L 3.0567e-07 G -0.07379 C 1.7397e-10  residual 0.0084
+
+$ ./probe 0 1.64e8 0 3 50 1 100 10,30,60
+gaps 0 sigma 1.64e+08 tand 0 across 3 max 50 faces 1 sub 100: 9 s
+ 10.0 GHz eps 4.7244 alpha 8.5370 Np/m Z 48.651-0.911j  R 830.56 L 3.5261e-07 G 4.853e-05 C 1.4903e-10  residual 4.4e-05
+ 30.0 GHz eps 4.6484 alpha 15.5569 Np/m Z 48.249-0.551j  R 1498.13 L 3.4695e-07 G 0.001329 C 1.4905e-10  residual 0.00043
+ 60.0 GHz eps 4.6732 alpha 31.3698 Np/m Z 48.220-0.470j  R 2790.28 L 3.4766e-07 G 0.1011 C 1.4954e-10  residual 0.0069
+
+$ ./probe 1 1.64e8 0 3 50 1 100 10,30,60
+gaps 1 sigma 1.64e+08 tand 0 across 3 max 50 faces 1 sub 100: 14 s
+ 10.0 GHz eps 4.8463 alpha 12.1460 Np/m Z 42.066-1.107j  R 1021.71 L 3.0868e-07 G 8.921e-05 C 1.7456e-10  residual 7e-05
+ 30.0 GHz eps 4.7205 alpha 23.7800 Np/m Z 41.514-0.720j  R 1970.71 L 3.0077e-07 G 0.002153 C 1.7457e-10  residual 0.00032
+ 60.0 GHz eps 4.6508 alpha 32.6886 Np/m Z 41.362-0.553j  R 2851.15 L 2.9749e-07 G -0.08594 C 1.7392e-10  residual 0.0078

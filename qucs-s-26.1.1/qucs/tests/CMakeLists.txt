@@ -259,11 +259,12 @@ qucs_add_test(test_rf25_doc)
 set_tests_properties(test_rf25_doc PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_measured)
 # (A published measurement: a coplanar line's three strips, 4 to 8 mm long,
-# at 10, 30 and 60 GHz - 38 s here in Release, several times that on CI's
-# macOS runner of three processors, where its function has 900 s as the
-# memory-heavy ones below do. Skipped under the sanitizers: its coarsest
-# mesh at one frequency was still solving at QtTest's 300 s.)
-set_tests_properties(test_rf25_measured PROPERTIES TIMEOUT 1200)
+# at 10, 30 and 60 GHz - 166 s here in Release since its gaps are graded as
+# the tab grades them, 38 s on the edges' one halving, which took 145 s on
+# CI's macOS runner of three processors; there its function has 1800 s,
+# twice the memory-heavy ones' below. Skipped under the sanitizers: its
+# coarsest mesh at one frequency was still solving at QtTest's 300 s.)
+set_tests_properties(test_rf25_measured PROPERTIES TIMEOUT 2400)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics3d_doc)
@@ -461,10 +462,12 @@ if(APPLE)
   if(_qucs_memory_ms LESS 900000)
     set(_qucs_memory_ms 900000)
   endif()
-  # (And the RF solver's measured line, one function of long solves.)
   set_property(TEST test_fem_laser test_fem_resonator test_fem_quantum test_fem_modulator test_fem_optoelectronics
-               test_rf25_measured
                APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
+  # (And the RF solver's measured line, one function of long solves: twice
+  # that.)
+  math(EXPR _qucs_measured_ms "2 * ${_qucs_memory_ms}")
+  set_property(TEST test_rf25_measured APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_measured_ms}")
 endif()
 # (The toy laser's threshold cases - three walks to 1.4 V and more, one of
 # them failing on purpose, halved to 10 µV and tried again from rest - some

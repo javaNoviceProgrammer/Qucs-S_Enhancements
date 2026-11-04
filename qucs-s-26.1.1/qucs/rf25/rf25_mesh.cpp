@@ -492,9 +492,13 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     // came out 10 % under its capacitance in vacuum, 12 % under its own
     // conformal mapping (the review of 3 November); its edge cells halved
     // down to a quarter of the gap it is a per cent from either, and the
-    // cells across hardly matter. (Pieces swept in order of their left
-    // edges: only those within twice the largest cell can face one within
-    // reach of its grading.)
+    // cells across hardly matter. The current crowds there too: a measured
+    // coplanar line on alumina, 25 µm gaps beside a 50 µm signal and its
+    // 270 µm grounds, the grounds' outermost cells 45 µm wide, lost 19 %
+    // under its 2D eddy-current solve in a full-wave solve, and 1 % under at
+    // 10 GHz to 9 % over at 60 on the graded cells. (Pieces swept in order
+    // of their left edges: only those within twice the largest cell can face
+    // one within reach of its grading.)
     if (how.edges && how.gaps) {
         QList<int> order(pieces.size());
         std::iota(order.begin(), order.end(), 0);
@@ -687,9 +691,10 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                                           : QString());
     if (how.edges) mesh.lines << tr("The outermost cells of each conductor's sides are half as wide, where its charge "
                                     "crowds.");
+    mesh.facing = facing;
     if (facing > 0)
         mesh.lines << tr("%1 side(s) face another conductor across a gap: their outermost cells are halved until they are no "
-                         "wider than a quarter of it, where the charge crowds on both edges.")
+                         "wider than a quarter of it, where the charge and the current crowd on both edges.")
                           .arg(facing);
 
     // The unknowns: an edge two cells of a layer share is where current

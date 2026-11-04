@@ -863,6 +863,18 @@ struct AtFrequency {
  * eight, where Holloway and Kuester's stopping distance says 1.82 and
  * 1.64. Three times it says 1.50 and 1.33, and within -4 to +10 % from 2
  * to 60 GHz and from 1 to 3 µm thick.
+ *
+ * Graded at a narrow gap (MeshSettings::gaps), an edge cell is down to a
+ * quarter of it, and on a thick metal narrower than the metal is thick:
+ * there the 2D solve's band loses less than its current's average - 0.78
+ * of it 4.2 µm in from the edge of 6.5 µm of metal -, its current running
+ * down the wall too. The faces carry none down their walls, though, and
+ * such a cell of theirs takes the less of the current the lower the
+ * frequency, so the factor as it is, though over the band's, comes the
+ * nearer: on five lines it left a coplanar line's attenuation 9 % from
+ * their 2D solves on average, where one faded to nought as the cell
+ * narrows left 16 %, and none tried came nearer
+ * (docs/feature_gaps/2026-11-04-claude-rf25-fullwave-gaps.md).
  */
 double crowding(double width, double thickness, double sigma, int free, double frequency, Complex sheet, bool faces = false)
 {
