@@ -5,7 +5,8 @@
  *                               panel, each a step of Undo; the examples
  *                               opened, their geometry built in the
  *                               background and meshed; the 3D view's camera,
- *                               cut and picture; a selection drawn
+ *                               cut and picture; a selection drawn;
+ *                               Claude's fem tools on a 3D model
  *
  * This file is part of Qucs-S.
  *
@@ -47,6 +48,7 @@
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
 #include "qucs.h"
+#include "qucscontrol.h"
 
 using namespace qucs_s::fem;
 // (The schematic's Node is another: the model's by its whole name.)
@@ -99,6 +101,52 @@ QStringList titles(QTreeWidget* tree)
     return out;
 }
 
+/// A block of 2 x 1 x 0.5 mm, k 2 W/(m K), its bottom held at 300 K and q
+/// (1e4 W/m^2) flowing in through its top, its walls insulated: T = 300 K +
+/// q z / k, linear in z - exact on order 1. As a tool takes it, JSON.
+QJsonObject heatedBlock()
+{
+    Model m = Model::blank3d();
+    m.component().props.insert(QStringLiteral("unit"), QStringLiteral("mm"));
+    Model::Parameter q;
+    q.name = QStringLiteral("q");
+    q.expression = QStringLiteral("1e4[W/m^2]");
+    m.setParameters({q});
+    FNode box = m.make(QStringLiteral("box"));
+    box.label = QStringLiteral("blk");
+    box.props.insert(QStringLiteral("position"), QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
+    box.props.insert(QStringLiteral("size"), QJsonArray{QStringLiteral("2"), QStringLiteral("1")});
+    box.props.insert(QStringLiteral("z"), QStringLiteral("0"));
+    box.props.insert(QStringLiteral("height"), QStringLiteral("0.5"));
+    m.add(m.geometry().tag, box);
+    FNode heat = m.make(QStringLiteral("heat"));
+    heat.props.insert(QStringLiteral("order"), QStringLiteral("1"));
+    const QString ht = heat.tag;
+    m.add(m.component().tag, heat);
+    for (FNode& c : m.find(ht)->children)
+        if (c.type == QLatin1String("heat/solid")) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(QStringLiteral("k"), QStringLiteral("2[W/(m*K)]"));
+        }
+    auto side = [](const QString& which) {
+        QJsonArray of;
+        of.append(QStringLiteral("blk"));
+        return QJsonObject{{QStringLiteral("of"), of}, {QStringLiteral("side"), which}};
+    };
+    FNode bottom = m.make(QStringLiteral("heat/temperature"));
+    bottom.props.insert(QStringLiteral("selection"), side(QStringLiteral("bottom")));
+    bottom.props.insert(QStringLiteral("T0"), QStringLiteral("300[K]"));
+    m.add(ht, bottom);
+    FNode top = m.make(QStringLiteral("heat/flux"));
+    top.props.insert(QStringLiteral("selection"), side(QStringLiteral("top")));
+    top.props.insert(QStringLiteral("kind"), QStringLiteral("general"));
+    top.props.insert(QStringLiteral("q0"), QStringLiteral("q"));
+    m.add(ht, top);
+    m.mesh().props.insert(QStringLiteral("custom"), true);
+    m.mesh().props.insert(QStringLiteral("hmax"), QStringLiteral("0.5"));
+    return QJsonDocument::fromJson(m.toJson()).object();
+}
+
 /// How many pixels of \a image are not its corner's colour.
 int drawn(const QImage& image)
 {
@@ -121,6 +169,18 @@ class TestMultiphysics3DDoc : public QObject
     QString path(const QString& name) const { return dir.filePath("workspace/" + name); }
     Multiphysics3DPanel* panel() const { return app->multiphysics3DPanel(); }
     Multiphysics3DDoc* front() const { return qobject_cast<Multiphysics3DDoc*>(app->DocumentTab->currentWidget()); }
+    /// A tool called as Claude calls it, its answer waited for.
+    QJsonObject call(const QString& tool, const QJsonObject& args) { return app->findChild<QucsControl*>()->callNow(tool, args, 300000); }
+    static bool failed(const QJsonObject& r) { return r.value(QStringLiteral("isError")).toBool(); }
+    static QString text(const QJsonObject& r) { return QucsControl::textOf(r); }
+    static QJsonObject json(const QJsonObject& r) { return QJsonDocument::fromJson(text(r).toUtf8()).object(); }
+    /// An answer's values (fem_evaluate's) in SI, in their order.
+    static QList<double> si(const QJsonObject& r)
+    {
+        QList<double> out;
+        for (const QJsonValue& v : json(r).value(QStringLiteral("values")).toArray()) out << v.toObject().value(QStringLiteral("SI")).toDouble(qQNaN());
+        return out;
+    }
     Multiphysics3DDoc* open(const QString& file)
     {
         if (!app->gotoPage(file)) return nullptr;
@@ -759,6 +819,259 @@ private slots:
         QVERIFY2(npy.endsWith(QStringLiteral(".npy")) && QFileInfo::exists(npy), qPrintable(doc->messages().join(QStringLiteral("\n"))));
         QVERIFY(QFileInfo::exists(QFileInfo(npy).absoluteDir().filePath(QFileInfo(npy).completeBaseName() + QStringLiteral("_xy.npy"))));
         QVERIFY(!doc->solutionStale());
+    }
+
+    /// Claude's fem tools on a 3D model: one made whole as JSON (the heated
+    /// block, T linear in z), its geometry built - its domain, faces and
+    /// edges, a rule's pick -, meshed and solved; its values at points,
+    /// along a line, over its domain, a face and an edge, its globals, named
+    /// and against a reference, each exact; an edit of its height built and
+    /// solved again; its format and variables; saved; what is a 2D model's
+    /// refused, said.
+    void theToolsOnA3DModel()
+    {
+        const QString file = path(QStringLiteral("tools3d.qfem3d"));
+        QFile::remove(file);
+        // A blank one first, by 'space': a 3D tab.
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"space", "3D"}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("space")).toString() == QLatin1String("3D") && front(), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", heatedBlock()}, {"path", "tools3d"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(file));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc && doc->getDocName() == file);
+        // Its geometry: one block's domain, its six faces - two floors - and
+        // twelve edges; the rule {of blk, side top} picks its top floor.
+        r = call(QStringLiteral("fem_build"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r);
+        QCOMPARE(o.value(QStringLiteral("domains")).toInt(), 1);
+        QCOMPARE(o.value(QStringLiteral("faces")).toInt(), 6);
+        QCOMPARE(o.value(QStringLiteral("edges")).toInt(), 12);
+        QCOMPARE(o.value(QStringLiteral("points")).toInt(), 8);
+        QCOMPARE(o.value(QStringLiteral("bounds")).toArray().at(5).toString(), QStringLiteral("0.5"));
+        int floors = 0, longEdge = 0;
+        for (const QJsonValue& f : o.value(QStringLiteral("face list")).toArray()) floors += f.toObject().value(QStringLiteral("kind")).toString() == QLatin1String("floor");
+        QCOMPARE(floors, 2);
+        for (const QJsonValue& e : o.value(QStringLiteral("edge list")).toArray())
+            if (e.toObject().value(QStringLiteral("length")).toString() == QLatin1String("2") && !longEdge) longEdge = e.toObject().value(QStringLiteral("number")).toInt();
+        QVERIFY(longEdge > 0);
+        QJsonArray blk;
+        blk.append(QStringLiteral("blk"));
+        const QJsonObject topRule{{"of", blk}, {"side", "top"}};
+        r = call(QStringLiteral("fem_describe"), {{"path", file}, {"what", "geometry"}, {"selection", topRule}, {"level", "boundary"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray picked = json(r).value(QStringLiteral("selection picks")).toObject().value(QStringLiteral("numbers")).toArray();
+        QCOMPARE(picked.size(), 1);
+        const QJsonObject topFace = json(r).value(QStringLiteral("face list")).toArray().at(picked.at(0).toInt() - 1).toObject();
+        QVERIFY2(topFace.value(QStringLiteral("kind")).toString() == QLatin1String("floor")
+                     && topFace.value(QStringLiteral("bounds")).toArray().at(2).toString() == QLatin1String("0.5"),
+                 qPrintable(QJsonDocument(topFace).toJson()));
+        // Its mesh, its prisms in layers.
+        r = call(QStringLiteral("fem_build"), {{"path", file}, {"what", "mesh"}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("prisms")).toInt() > 0 && json(r).value(QStringLiteral("layers")).toInt() >= 1, qPrintable(text(r)));
+        // Solved: its globals; ht.Tmax 300 K + q h / k = 302.5 K.
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        o = json(r);
+        QVERIFY2(o.value(QStringLiteral("globals")).toObject().contains(QStringLiteral("ht.Tmax")) && o.value(QStringLiteral("unknowns")).toInt() > 0, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax; dT = ht.Tmax - ht.Tmin"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QList<double> v = si(r);
+        QCOMPARE(v.size(), 2);
+        QVERIFY2(std::abs(v[0] - 302.5) < 1e-6 && std::abs(v[1] - 2.5) < 1e-6, qPrintable(text(r)));
+        QCOMPARE(json(r).value(QStringLiteral("values")).toArray().at(1).toObject().value(QStringLiteral("name")).toString(), QStringLiteral("dT"));
+        // At points (x, y, z in mm), along a line, over the domain, its top
+        // and an edge.
+        QJsonArray at;
+        at.append(QJsonArray{1.0, 0.5, 0.25});
+        at.append(QJsonArray{0.1, 0.9, 0.5});
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"}, {"at", at}});
+        v = si(r);
+        QVERIFY2(v.size() == 2 && std::abs(v[0] - 301.25) < 1e-6 && std::abs(v[1] - 302.5) < 1e-6, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"},
+                                                  {"along", QJsonObject{{"from", QJsonArray{1.0, 0.5, 0.0}}, {"to", QJsonArray{1.0, 0.5, 0.5}}, {"points", 5}}}});
+        v = si(r);
+        QVERIFY2(v.size() == 5, qPrintable(text(r)));
+        for (int i = 0; i < 5; ++i) QVERIFY2(std::abs(v[i] - (300 + 2.5 * i / 4)) < 1e-6, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "1"}, {"over", "domain"}});
+        v = si(r);
+        QVERIFY2(v.size() == 1 && std::abs(v[0] - 1e-9) < 1e-18, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"}, {"over", "boundary"}, {"selection", topRule}, {"kind", "average"}});
+        v = si(r);
+        QVERIFY2(v.size() == 1 && std::abs(v[0] - 302.5) < 1e-6, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "1"}, {"over", "edge"}, {"selection", QJsonObject{{"numbers", QJsonArray{longEdge, longEdge}}}}});
+        v = si(r);
+        QVERIFY2(v.size() == 1 && std::abs(v[0] - 2e-3) < 1e-12, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"}, {"over", "domain"}, {"kind", "maximum"}});
+        v = si(r);
+        QVERIFY2(v.size() == 1 && std::abs(v[0] - 302.5) < 1e-6, qPrintable(text(r)));
+        // Against a reference: its difference.
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"reference", 302.5}});
+        o = json(r);
+        QVERIFY2(!failed(r) && o.value(QStringLiteral("against the reference")).toObject().value(QStringLiteral("values measured")).toInt() == 1, qPrintable(text(r)));
+        QVERIFY(std::abs(o.value(QStringLiteral("values")).toArray().at(0).toObject().value(QStringLiteral("difference")).toDouble(1)) < 1e-6);
+        // A field without a place, a 2D model's arguments, another study:
+        // said.
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("varies over the model")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "T"}, {"frequency", "1[GHz]"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("'frequency' is a 2D model's")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"study", "nostudy"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("fem_solve study=nostudy")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_build"), {{"path", file}, {"until", "blk1"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("built whole")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_converge"), {{"path", file}, {"values", QJsonArray{QStringLiteral("ht.Tmax"), QStringLiteral("ht.Tmin")}}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("2D models alone")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_stop"), {{"path", file}});
+        QVERIFY2(!failed(r) && !json(r).value(QStringLiteral("stopped")).toBool(), qPrintable(text(r)));
+        // The model as the tools describe it: 3D, solved; its variables.
+        r = call(QStringLiteral("fem_describe"), {{"path", file}});
+        o = json(r);
+        QVERIFY2(o.value(QStringLiteral("space")).toString() == QLatin1String("3D") && o.value(QStringLiteral("solved")).isObject()
+                     && o.value(QStringLiteral("geometry")).toString() == QLatin1String("1 domains, 6 faces, 12 edges, 8 points"),
+                 qPrintable(text(r)));
+        r = call(QStringLiteral("fem_describe"), {{"path", file}, {"what", "variables"}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("\"ht.Tmax\"")), qPrintable(text(r)));
+        // Its format: a 3D model's kinds - the solids, an Extrude's sketch -,
+        // not the plane's alone; its file's paragraph first.
+        r = call(QStringLiteral("fem_describe"), {{"path", file}, {"what", "format"}, {"text", "all"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QStringList types;
+        for (const QJsonValue& k : json(r).value(QStringLiteral("kinds")).toArray()) types << k.toObject().value(QStringLiteral("type")).toString();
+        QVERIFY2(types.contains(QStringLiteral("box")) && types.contains(QStringLiteral("plotgroup3d")) && types.contains(QStringLiteral("rectangle"))
+                     && !types.contains(QStringLiteral("contour")) && !types.contains(QStringLiteral("plotgroup")),
+                 qPrintable(types.join(QStringLiteral(", "))));
+        QVERIFY(json(r).value(QStringLiteral("format")).toString().startsWith(QStringLiteral("A 3D model (.qfem3d")));
+        r = call(QStringLiteral("fem_describe"), {{"path", file}, {"what", "format"}, {"space", "2D"}, {"text", "none"}});
+        types.clear();
+        for (const QJsonValue& k : json(r).value(QStringLiteral("kinds")).toArray()) types << k.toObject().value(QStringLiteral("type")).toString();
+        QVERIFY(types.contains(QStringLiteral("contour")) && types.contains(QStringLiteral("box")));
+        // An edit: a block twice as high, built again, 305 K at its top.
+        QString blkTag;
+        for (const FNode& c : doc->model().geometry().children)
+            if (c.label == QLatin1String("blk")) blkTag = c.tag;
+        QVERIFY(!blkTag.isEmpty());
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", blkTag}, {"props", QJsonObject{{"height", "1"}}}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("being built again")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_build"), {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("bounds")).toArray().at(5).toString() == QLatin1String("1"), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        v = si(call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}}));
+        QVERIFY2(v.size() == 1 && std::abs(v[0] - 305) < 1e-6, qPrintable(QString::number(v.value(0))));
+        // A 2D model's tab stays the 2D tools': a 3D one is not made of it.
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", doc->model().component().tag}, {"props", QJsonObject{{"space", "2D"}}}});
+        QVERIFY2(failed(r) && doc->model().is3D(), qPrintable(text(r)));
+        // Saved, as another file.
+        r = call(QStringLiteral("fem_model"), {{"path", file}, {"action", "save"}, {"as", "tools3d_copy"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(path(QStringLiteral("tools3d_copy.qfem3d"))), qPrintable(text(r)));
+        QFile saved(path(QStringLiteral("tools3d_copy.qfem3d")));
+        QVERIFY(saved.open(QIODevice::ReadOnly));
+        QVERIFY(saved.readAll().contains("qucs-s multiphysics 3d 1"));
+    }
+
+    /// Claude's plots and exports of a 3D model: a 3D Plot Group made of an
+    /// expression - its surface, a slice, an isosurface and a clip - and
+    /// shown, its legend the field's range; the camera; the mesh shown; a
+    /// VTU export added and written; a sweep solved, each point's value.
+    void theToolsPlotAndExportA3DModel()
+    {
+        const QString file = path(QStringLiteral("tools3d_plot.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", heatedBlock()}, {"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc);
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("fem_solve first")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonArray slices;
+        slices.append(QJsonObject{{"z", 0.25}});
+        QJsonArray levels;
+        levels.append(301.0);
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}, {"title", "The block's T"}, {"slices", slices},
+                                              {"isosurfaces", levels}, {"clip", QJsonObject{{"x", 1.5}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r);
+        QCOMPARE(o.value(QStringLiteral("shown")).toString(), QStringLiteral("The block's T"));
+        QVERIFY2(!o.contains(QStringLiteral("problems")), qPrintable(text(r)));
+        const QJsonArray range = o.value(QStringLiteral("legend")).toObject().value(QStringLiteral("SI")).toArray();
+        QVERIFY2(range.size() == 2 && std::abs(range.at(0).toDouble() - 300) < 1e-6 && std::abs(range.at(1).toDouble() - 302.5) < 1e-6, qPrintable(text(r)));
+        const QString group = o.value(QStringLiteral("plot group")).toString();
+        const FNode* g = doc->model().find(group);
+        QVERIFY(g && g->type == QLatin1String("plotgroup3d") && g->text(QStringLiteral("clip")) == QLatin1String("x")
+                && g->text(QStringLiteral("clipat")) == QLatin1String("1.5"));
+        QStringList kinds;
+        for (const FNode& c : g->children) kinds << c.type;
+        QCOMPARE(kinds, QStringList({QStringLiteral("surface"), QStringLiteral("slice"), QStringLiteral("isosurface")}));
+        QVERIFY(g->children[1].text(QStringLiteral("plane")) == QLatin1String("z") && g->children[1].text(QStringLiteral("at")) == QLatin1String("0.25"));
+        QVERIFY(g->children[2].text(QStringLiteral("entry")) == QLatin1String("values") && g->children[2].text(QStringLiteral("values")) == QLatin1String("301"));
+        QCOMPARE(doc->show(), Multiphysics3DDoc::Show::Plot);
+        QCOMPARE(doc->view()->clipAxis(), 0);
+        // One step of Undo.
+        QVERIFY(doc->undoStack()->undoText().contains(QStringLiteral("Plot T")));
+        // Without its surface: a slice alone, two planes across x - the
+        // rise above 300 K, its legend 0 to 2.5 K.
+        QJsonArray across;
+        across.append(QJsonObject{{"x", QJsonArray{0.5, 1.5}}});
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T - 300[K]"}, {"surface", false}, {"slices", across}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray rise = json(r).value(QStringLiteral("legend")).toObject().value(QStringLiteral("SI")).toArray();
+        QVERIFY2(rise.size() == 2 && std::abs(rise.at(0).toDouble()) < 1e-6 && std::abs(rise.at(1).toDouble() - 2.5) < 1e-6, qPrintable(text(r)));
+        const FNode* alone = doc->model().find(json(r).value(QStringLiteral("plot group")).toString());
+        QVERIFY(alone && alone->children.size() == 1 && alone->children[0].type == QLatin1String("slice"));
+        QCOMPARE(alone->children[0].text(QStringLiteral("plane")), QStringLiteral("x"));
+        QCOMPARE(alone->children[0].text(QStringLiteral("at")), QStringLiteral("0.5, 1.5"));
+        // The camera from above; the mesh.
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"camera", "top"}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("camera")).toObject().value(QStringLiteral("elevation")).toDouble() == 90, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"show", "mesh"}, {"azimuth", 30}, {"elevation", 20}, {"zoom", 2}});
+        QVERIFY2(!failed(r) && doc->show() == Multiphysics3DDoc::Show::Mesh, qPrintable(text(r)));
+        QCOMPARE(doc->view()->azimuth(), 30.0);
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"plot", group}});
+        QVERIFY2(!failed(r) && doc->show() == Multiphysics3DDoc::Show::Plot && doc->plotGroup() == group, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}, {"contours", true}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("'contours' is a 2D model's")), qPrintable(text(r)));
+        // A VTU export added by fem_edit and written.
+        r = call(QStringLiteral("fem_export"), {{"path", file}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("none yet")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "add"}, {"parent", "exports"}, {"type", "vtu"}, {"props", QJsonObject{{"expressions", "T"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QString vtu;
+        for (const FNode& c : doc->model().results().child(QStringLiteral("exports"))->children)
+            if (c.type == QLatin1String("vtu")) vtu = c.tag;
+        QVERIFY(!vtu.isEmpty());
+        r = call(QStringLiteral("fem_export"), {{"path", file}, {"export", vtu}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString written = json(r).value(QStringLiteral("written")).toString();
+        QVERIFY2(written.endsWith(QStringLiteral(".vtu")) && QFileInfo::exists(written), qPrintable(text(r)));
+        QVERIFY2(json(r).value(QStringLiteral("begins")).toString().contains(QStringLiteral("<VTKFile")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_export"), {{"path", file}, {"export", vtu}, {"copy", true}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("'copy'")), qPrintable(text(r)));
+        // A sweep of q: each point's ht.Tmax, 302.5 and 305 K.
+        QString study;
+        for (const FNode& c : doc->model().root.children)
+            if (c.type == QLatin1String("study")) study = c.tag;
+        QJsonArray rows;
+        rows.append(QJsonArray{QStringLiteral("q"), QStringLiteral("1e4, 2e4"), QStringLiteral("W/m^2")});
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "add"}, {"parent", study}, {"type", "sweep"}, {"props", QJsonObject{{"parameters", rows}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("sweep")).toArray().size() == 2, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"all", true}});
+        QList<double> v = si(r);
+        QVERIFY2(v.size() == 2 && std::abs(v[0] - 302.5) < 1e-6 && std::abs(v[1] - 305) < 1e-6, qPrintable(text(r)));
+        QVERIFY2(json(r).value(QStringLiteral("values")).toArray().at(0).toObject().value(QStringLiteral("name")).toString().startsWith(QStringLiteral("q = ")),
+                 qPrintable(text(r)));
+        v = si(call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"point", 1}}));
+        QVERIFY(v.size() == 1 && std::abs(v[0] - 302.5) < 1e-6);
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"point", 3}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("the sweep has 2 points")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"plot", group}, {"point", 1}});
+        QVERIFY2(!failed(r) && std::abs(json(r).value(QStringLiteral("legend")).toObject().value(QStringLiteral("SI")).toArray().at(1).toDouble() - 302.5) < 1e-6,
+                 qPrintable(text(r)));
     }
 
     /// A face on the view's cut is drawn whole: each of its pixels kept, not

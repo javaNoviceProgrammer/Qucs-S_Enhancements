@@ -100,9 +100,9 @@ public:
     /// Builds the mesh in the background, the geometry first where it is
     /// stale; shown when made.
     void buildMesh();
-    /// Solves its first study in the background - its geometry and mesh first
-    /// where they are stale -; shown when solved.
-    void compute();
+    /// Solves study \a study (the first when empty) in the background - its
+    /// geometry and mesh first where they are stale -; shown when solved.
+    void compute(const QString& study = {});
     std::shared_ptr<const qucs_s::fem::Solution3> solution() const { return a_solution; }
     /// Whether the solution is of the model as it was before an edit.
     bool solutionStale() const { return a_solutionStale; }
@@ -125,8 +125,9 @@ public:
     /// where its File says (relative to the model's folder) or beside the
     /// model as model_tag (in the cache while the model has no file), a
     /// collection's parts and a grid's coordinates beside it. Its path, or
-    /// empty and why.
-    QString runExport(const QString& tag, QString* error = nullptr);
+    /// empty and why. \a beforeWrite, given, is asked of each file first: a
+    /// reason not to write it, or empty.
+    QString runExport(const QString& tag, QString* error = nullptr, const std::function<QString(const QString&)>& beforeWrite = {});
     bool solving() const;
     /// Lets the work going on go.
     void cancel();
@@ -134,6 +135,17 @@ public:
     /// Waits for the work going on, and a build waiting to start, \a ms at
     /// most; whether it ended.
     bool waitForIdle(int ms = 120000);
+    /// Calls \a then once the work going on - a build, a solve, what waits
+    /// behind it - has ended (true), or \a ms have gone by (false); nothing
+    /// at work, at once. No loop of its own: a tool's call answers from it.
+    /// Closed first: false, after.
+    void whenJobEnds(int ms, std::function<void(bool)> then);
+    /// Whether nothing is at work or waiting to be.
+    bool idle() const;
+    /// How far the work going on is ("Solving, 42 %"); empty: none.
+    QString jobProgress() const;
+    /// How many times its work was asked to stop (Cancel, cancel()).
+    quint64 stops() const { return a_stops; }
 
     // What is shown.
     enum class Show { Geometry, Mesh, Solution, Plot };
@@ -156,7 +168,8 @@ public:
     /// slice where there is one.
     QString plotExpression() const;
     void setPlotExpression(const QString& text);
-    /// The values coloured now, least and greatest (SI): the legend's.
+    /// The values coloured now, least and greatest (SI): the legend's - the
+    /// solution's, or a plot group's first coloured plot's.
     std::pair<double, double> plotRange() const { return a_plotRange; }
     /// The node the panel chose: its selection (a feature's: its solids)
     /// shown.
@@ -224,6 +237,15 @@ private:
     bool a_geometryWanted = false;   // a build asked while another worked
     bool a_meshWanted = false;
     bool a_solveWanted = false;
+    QString a_study;                 // the study a solve asked for (empty: the first)
+    quint64 a_stops = 0;
+    struct Waiting {
+        std::function<void(bool)> then;
+        QTimer* timer = nullptr;
+    };
+    std::vector<std::shared_ptr<Waiting>> a_waiting;
+    /// Each call waiting for the work to end told, where it has.
+    void wakeWaiting();
     std::shared_ptr<qucs_s::fem::Solution3> a_solution;
     std::vector<std::shared_ptr<qucs_s::fem::Solution3>> a_solutions;
     bool a_solutionStale = true;
