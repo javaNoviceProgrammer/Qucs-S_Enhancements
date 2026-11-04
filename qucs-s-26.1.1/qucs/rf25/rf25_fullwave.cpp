@@ -946,7 +946,8 @@ struct Kernels {
     QList<ViaGreen> viaGreens;
     QStringList problems;
 
-    /// Made on as many as \a threads threads, one Green's function each.
+    /// Made on as many as \a threads threads, a distance of a Green's
+    /// function's table to a thread.
     Kernels(const Context& context, double frequency, int threads = 1);
     const WaveGreen& green(int h0, int h1) const { return greens.at(pairOf.at(h0 * c.nh + h1)); }
     /// The cosine between runs \a a and \a b in the plane.
@@ -978,51 +979,33 @@ Kernels::Kernels(const Context& context, double frequency, int threads)
 {
     // The retarded Green's functions of each pair of heights; and a via's
     // kernels, one for each of the stack's vias the mesh has - its coupling
-    // to every via, and its potential at every metal height. Each made on
-    // one of the threads as they come free, where its tables are not kept
-    // from an earlier solve (a coplanar line's at 10 GHz: its walls' via's
-    // 0.46 s, its three pairs' 0.14 to 0.21), and taken in the order one
-    // thread made them in, the first of them that cannot be made said.
+    // to every via, and its potential at every metal height. One after
+    // another, the first that cannot be made said, each one's table - where
+    // it is not kept from an earlier solve - made on all of the frequency's
+    // threads, a distance to a thread as they come free. (Made side by side,
+    // a thread each, they waited on the slowest: a coplanar line's at
+    // 10 GHz, its walls' via's 0.46 s where its three pairs took 0.14 to
+    // 0.21. One after another, all four take some 55 ms on 24 threads.)
     const int nh = c.nh;
-    QList<QPair<int, int>> heightPairs;
-    for (int i = 0; i < nh; ++i)
-        for (int j = i; j < nh; ++j) heightPairs << qMakePair(i, j);
-    const int pairs = int(heightPairs.size()), count = pairs + int(c.spans.size());
-    // (Vectors, not QLists: the threads write to them side by side.)
-    std::vector<WaveGreen> waves(static_cast<std::size_t>(pairs));
-    std::vector<ViaGreen> vias(static_cast<std::size_t>(c.spans.size()));
-    std::atomic_int next{0};
-    onThreads(std::clamp(threads, 1, std::max(1, count)), [this, &heightPairs, &waves, &vias, &next, pairs, count](int t) {
-        for (int w = next++; w < count; w = next++) {
-            if (t > 0) ++sharedGreens;
-            if (w < pairs) {
-                const QPair<int, int>& ij = heightPairs.at(w);
-                WaveGreen& g = waves[std::size_t(w)];
-                g = WaveGreen(c.layers, c.heights.at(ij.first), c.heights.at(ij.second), f, c.rhoMax);
-                g.prepare();
-            } else {
-                ViaGreen& v = vias[std::size_t(w - pairs)];
-                v = ViaGreen(c.layers, c.spans.at(w - pairs), c.spans, c.heights, f, c.rhoMax);
-                v.prepare();
-            }
-        }
-    });
     pairOf = QList<int>(nh * nh, -1);
-    for (int w = 0; w < pairs; ++w) {
-        WaveGreen& g = waves[std::size_t(w)];
-        if (!g.ok()) {
-            problems << g.problems();
-            return;
+    for (int i = 0; i < nh; ++i)
+        for (int j = i; j < nh; ++j) {
+            WaveGreen g(c.layers, c.heights.at(i), c.heights.at(j), f, c.rhoMax);
+            if (!g.ok()) {
+                problems << g.problems();
+                return;
+            }
+            sharedGreens += g.prepare(threads);
+            pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
+            greens << std::move(g);
         }
-        const int i = heightPairs.at(w).first, j = heightPairs.at(w).second;
-        pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
-        greens << std::move(g);
-    }
-    for (ViaGreen& v : vias) {
+    for (const ViaGreen::Span& s : c.spans) {
+        ViaGreen v(c.layers, s, c.spans, c.heights, f, c.rhoMax);
         if (!v.ok()) {
             problems << v.problems();
             return;
         }
+        sharedGreens += v.prepare(threads);
         viaGreens << std::move(v);
     }
 }

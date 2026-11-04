@@ -100,7 +100,8 @@ Complex hankelH0(Complex z, int kind);
  * 2 pi, and evenly from a sixtieth of the shortest wavelength. So a table
  * kept to a further distance holds a nearer one's nodes exactly, and each
  * kernel is handed the nodes its own table would have had and no more: what
- * it gives is the same to the last digit whatever was solved before it.
+ * it gives is the same to the last digit whatever was solved before it, and
+ * on however many threads its nodes were made, each by one of them alone.
  * Kept by the stack, the heights or spans, the frequency and the grid; the
  * least lately used forgotten past a budget.
  */
@@ -183,9 +184,14 @@ public:
     double reach() const { return a_reach; }
 
     /// Fills the table over distance, if it is not already: the first
-    /// remainder asked for does it otherwise. Call it before handing the
-    /// same Green's function to several threads.
-    void prepare() const;
+    /// remainder asked for does it otherwise, on its own thread. Call it
+    /// before handing the same Green's function to several threads. The
+    /// distances it makes - those not kept from an earlier solve - are shared
+    /// among as many as \a threads threads as they come free, each made by
+    /// one of them alone, so that the table is the same to the last digit on
+    /// any number. Returns how many were made on threads other than the
+    /// caller's.
+    int prepare(int threads = 1) const;
     /// How many distances the table holds (nought before prepare()).
     int tableSize() const { return int(a_rho.size()); }
 
@@ -320,8 +326,9 @@ public:
 
     double reach() const { return a_reach; }
     /// Fills the table over distance (the first remainder asked for does it
-    /// otherwise). Call it before handing it to several threads.
-    void prepare() const;
+    /// otherwise), on as many as \a threads threads as WaveGreen's. Call it
+    /// before handing it to several threads.
+    int prepare(int threads = 1) const;
     int tableSize() const { return int(a_rho.size()); }
 
 private:

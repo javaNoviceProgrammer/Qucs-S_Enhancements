@@ -10,12 +10,15 @@
  */
 #include "rf25_wave.h"
 
+#include "rf25_fast.h"
+
 #include <QCoreApplication>
 #include <QHash>
 #include <QMutex>
 #include <QVarLengthArray>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -438,6 +441,33 @@ void trim(Store& s, const Kept* keep)
 }
 
 /*!
+ * \a node(r, out) at each of \a at's distances from the \a from-th on, its
+ * \a width values into \a out - the \a from-th's first - shared among as many
+ * as \a threads threads as they come free: each distance made by one of them
+ * alone, into its own place, so that what is made is the same on any number.
+ * The furthest first: their integrals go on to the vertical lines, and take
+ * some three times as long as the nearest, which are left to even out the
+ * threads' ends (a via's 197 distances at 10 GHz on 24 threads: 25.5 ms,
+ * 26.7 nearest first). Returns how many were made on threads other than the
+ * caller's.
+ */
+int nodesOf(const QList<double>& at, int from, int width, int threads, const std::function<void(double, Complex*)>& node,
+            Complex* out)
+{
+    const int count = int(at.size()) - from;
+    if (count <= 0) return 0;
+    std::atomic_int next{0}, elsewhere{0};
+    onThreads(std::clamp(threads, 1, count), [&at, &node, &next, &elsewhere, from, width, out, count](int t) {
+        for (int k = next++; k < count; k = next++) {
+            const int i = count - 1 - k;
+            node(at.at(from + i), out + qsizetype(i) * width);
+            if (t > 0) ++elsewhere;
+        }
+    });
+    return elsewhere.load();
+}
+
+/*!
  * The table of the kernel \a key to the first distance at or past \a far,
  * eight distances at least: the distances into \a rho, the values - \a width
  * a distance - into \a values. Those kept are handed over and the rest made
@@ -447,9 +477,11 @@ void trim(Store& s, const Kept* keep)
  * 10^(1/40) or plus \a most, whichever is the less: the same sequence
  * however far it goes, so that what is handed over is the table this
  * kernel would have made itself, to the last digit, and no more of it.
+ * Those it makes are shared among as many as \a threads threads (nodesOf()),
+ * and how many were made on threads other than the caller's returned.
  */
-void tableOf(const QByteArray& key, int width, double low, double most, double far,
-             const std::function<void(double, Complex*)>& node, QList<double>* rho, QList<Complex>* values)
+int tableOf(const QByteArray& key, int width, double low, double most, double far, int threads,
+            const std::function<void(double, Complex*)>& node, QList<double>* rho, QList<Complex>* values)
 {
     const double ratio = std::pow(10.0, 1.0 / 40);
     QList<double> wanted{0.0};
@@ -474,19 +506,22 @@ void tableOf(const QByteArray& key, int width, double low, double most, double f
     if (!kept) {
         // Keeping nothing: made here, as wanted.
         QList<Complex> made(n * width);
-        for (int i = 0; i < n; ++i) node(wanted.at(i), made.data() + i * width);
+        const int elsewhere = nodesOf(wanted, 0, width, threads, node, made.data());
         *rho = wanted;
         *values = made;
         QMutexLocker held(&s.lock);
         s.built += n;
-        return;
+        return elsewhere;
     }
     QMutexLocker growing(&kept->lock);
     const int had = int(kept->rho.size());
-    for (int i = had; i < n; ++i) {
-        kept->values.resize((i + 1) * width);
-        node(wanted.at(i), kept->values.data() + i * width);
-        kept->rho << wanted.at(i);
+    int elsewhere = 0;
+    if (had < n) {
+        // (Its places made first, for the threads to fill side by side, and
+        //  its distances added once each has its value.)
+        kept->values.resize(qsizetype(n) * width);
+        elsewhere = nodesOf(wanted, had, width, threads, node, kept->values.data() + qsizetype(had) * width);
+        for (int i = had; i < n; ++i) kept->rho << wanted.at(i);
     }
     // (Copies of its own, never the kept lists shared: a kernel's table is
     // read from many threads, and a list shared with the store is one a
@@ -503,6 +538,7 @@ void tableOf(const QByteArray& key, int width, double low, double most, double f
         kept->bytes = now;
         trim(s, kept.get());
     }
+    return elsewhere;
 }
 
 } // namespace
@@ -743,9 +779,9 @@ WaveGreen::Pair WaveGreen::integral(double rho, double ellipse) const
     return {out[0], out[1]};
 }
 
-void WaveGreen::prepare() const
+int WaveGreen::prepare(int threads) const
 {
-    if (!ok() || !a_rho.isEmpty()) return;
+    if (!ok() || !a_rho.isEmpty()) return 0;
     // From nought, then log-spaced from well inside the nearest image's
     // distance and a thousandth of the wavelength over 2 pi - forty a
     // decade - until the step reaches a sixtieth of the shortest wavelength,
@@ -763,16 +799,17 @@ void WaveGreen::prepare() const
     key.add(a_zField);
     key.add(a_zSource);
     QList<Complex> values;
-    tableOf(key.bytes, 2, low, most, a_rhoMax,
-            [this](double r, Complex* v) {
-                const Pair p = integral(r, 0);
-                v[0] = p.scalar;
-                v[1] = p.vector;
-            },
-            &a_rho, &values);
+    const int elsewhere = tableOf(key.bytes, 2, low, most, a_rhoMax, threads,
+                                  [this](double r, Complex* v) {
+                                      const Pair p = integral(r, 0);
+                                      v[0] = p.scalar;
+                                      v[1] = p.vector;
+                                  },
+                                  &a_rho, &values);
     a_table.clear();
     a_table.reserve(a_rho.size());
     for (int i = 0; i < a_rho.size(); ++i) a_table << Pair{values.at(2 * i), values.at(2 * i + 1)};
+    return elsewhere;
 }
 
 WaveGreen::Pair WaveGreen::fromTable(double rho) const
@@ -1144,9 +1181,9 @@ void ViaGreen::integral(double rho, double ellipse, Complex* out) const
         out);
 }
 
-void ViaGreen::prepare() const
+int ViaGreen::prepare(int threads) const
 {
-    if (!ok() || !a_rho.isEmpty() || a_count == 0) return;
+    if (!ok() || !a_rho.isEmpty() || a_count == 0) return 0;
     // WaveGreen's table: from nought, then log-spaced from well inside the
     // thinnest slab and a thousandth of the wavelength over 2 pi, and evenly
     // from a sixtieth of the shortest - one sequence for every extent, kept
@@ -1170,12 +1207,14 @@ void ViaGreen::prepare() const
     for (const double h : std::as_const(a_heights)) key.add(h);
     QList<Complex> values;
     QList<double> rho;
-    tableOf(key.bytes, a_count, low, most, a_rhoMax, [this](double r, Complex* v) { integral(r, 0, v); }, &rho, &values);
+    const int elsewhere = tableOf(key.bytes, a_count, low, most, a_rhoMax, threads,
+                                  [this](double r, Complex* v) { integral(r, 0, v); }, &rho, &values);
     QList<QList<Complex>> table;
     table.reserve(rho.size());
     for (int i = 0; i < rho.size(); ++i) table << values.mid(i * a_count, a_count);
     a_table = table;
     a_rho = rho;
+    return elsewhere;
 }
 
 Complex ViaGreen::fromTable(int component, double rho) const

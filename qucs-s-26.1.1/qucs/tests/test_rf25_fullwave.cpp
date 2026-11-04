@@ -1086,15 +1086,15 @@ private slots:
     }
 
     // A frequency's fill shared out among the threads the frequencies at a
-    // time leave it - its Green's functions side by side, its system's
-    // columns and P's - is the same to the last digit as on one thread: a
-    // copper line solved as its two faces (each face's twin, the walls'
-    // vias between them), shorted to the ground by a via at its far end,
-    // driven at its edge and at its middle (the ports' paths up from the
-    // ground), its runs along it and across it. (A sanitized build solves
-    // it as a sheet, at one frequency, on one thread and four, and leaves
-    // out the compressed solve: the faces' three pairs of heights and two
-    // vias' kernels, made afresh for each solve, were 101 s of it here.)
+    // time leave it - its Green's functions' tables a distance to a thread,
+    // its system's columns and P's - is the same to the last digit as on
+    // one thread: a copper line solved as its two faces (each face's twin,
+    // the walls' vias between them), shorted to the ground by a via at its
+    // far end, driven at its edge and at its middle (the ports' paths up
+    // from the ground), its runs along it and across it. (A sanitized build
+    // solves it as a sheet, at one frequency, on one thread and four, and
+    // leaves out the compressed solve: the faces' three pairs of heights and
+    // two vias' kernels, made afresh for each solve, were 101 s of it here.)
     void aFrequencysFillIsTheSameOnAnyNumberOfThreads()
     {
         const bool slow = slowBuild();
@@ -1132,7 +1132,7 @@ private slots:
             const int side = int(fs.size());
             QCOMPARE(shared.threads, side * (threads / side));
             QVERIFY2(rf::fillShared().greens > was.greens && rf::fillShared().columns > was.columns,
-                     qPrintable(QStringLiteral("%1 Green's functions and %2 columns made on other threads")
+                     qPrintable(QStringLiteral("%1 of the tables' distances and %2 columns made on other threads")
                                     .arg(rf::fillShared().greens - was.greens).arg(rf::fillShared().columns - was.columns)));
             QVERIFY2(shared.z == alone.z && shared.s == alone.s, qPrintable(QStringLiteral("on %1 threads").arg(threads)));
             QVERIFY2(shared.currents == alone.currents, qPrintable(QStringLiteral("on %1 threads").arg(threads)));
