@@ -18,6 +18,7 @@
 #include "misc.h"
 #include "multiphysicsview.h"
 #include "qucs.h"
+#include "settings.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -117,6 +118,8 @@ struct Multiphysics3DDoc::Job {
     std::shared_ptr<const Mesh3> givenMesh;  ///< the mesh a solve is on (none: made by it)
     StudyRun3 study;
     QString studyTag;                        ///< the study solved (empty: the first)
+    SolveAsked3 asked;                       ///< its solver, the memory limit, whether forced past it
+    std::vector<Estimate3> estimates;        ///< a mesh's, made without a solve
     Model model;
     std::shared_ptr<ParameterScope> parameters;
     std::shared_ptr<Topology3> topology;     ///< the geometry a mesh is of (given: not built again)
@@ -129,6 +132,22 @@ struct Multiphysics3DDoc::Job {
     QThread* thread = nullptr;
     QElapsedTimer started;
 };
+
+double Multiphysics3DDoc::memoryLimit()
+{
+    const QVariant v = QucsSettingsFile().value(QStringLiteral("Multiphysics3D/memoryLimitGB"));
+    bool ok = false;
+    const double gb = v.toDouble(&ok);
+    if (v.isValid() && ok && gb >= 0) return gb * 1024.0 * 1048576.0;
+    return physicalMemory() / 2;
+}
+
+void Multiphysics3DDoc::setMemoryLimitGB(double gb)
+{
+    QucsSettingsFile s;
+    if (gb < 0) s.remove(QStringLiteral("Multiphysics3D/memoryLimitGB"));
+    else s.setValue(QStringLiteral("Multiphysics3D/memoryLimitGB"), gb);
+}
 
 QColor Multiphysics3DDoc::domainColor(int domain)
 {
@@ -605,10 +624,12 @@ bool Multiphysics3DDoc::solving() const
     return a_job && a_job->solve;
 }
 
-void Multiphysics3DDoc::compute(const QString& study)
+void Multiphysics3DDoc::compute(const QString& study, const QString& solver, bool force)
 {
     if (a_closed) return;
     a_study = study;
+    a_asked.solver = solver;
+    a_asked.force = force;
     if (a_job) {
         a_solveWanted = true;
         return;
@@ -709,6 +730,8 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
     job->mesh = mesh;
     job->solve = solve;
     job->studyTag = a_study;
+    job->asked = a_asked;
+    job->asked.limit = memoryLimit();
     job->model = a_model;
     job->parameters = parameters();
     job->revision = a_solvedRevision;
@@ -736,12 +759,17 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
             });
             if (!job->meshBuild.mesh || job->cancel) return;
             job->givenMesh = job->meshBuild.mesh;
+            // (A mesh made alone: what a solve on it would hold and take.)
+            if (!job->solve) job->estimates = estimate3(job->model, job->givenMesh);
         }
         if (job->solve)
-            job->study = runStudy3(job->model, job->parameters, job->topology, job->givenMesh, job->studyTag, [job, meshShare](double fraction, const QString&) {
-                job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
-                return !job->cancel.load();
-            });
+            job->study = runStudy3(
+                job->model, job->parameters, job->topology, job->givenMesh, job->studyTag,
+                [job, meshShare](double fraction, const QString&) {
+                    job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
+                    return !job->cancel.load();
+                },
+                job->asked);
     });
     // (A main thread's stack: the expressions compile by recursion.)
     job->thread->setStackSize(8u << 20);
@@ -808,6 +836,15 @@ void Multiphysics3DDoc::jobFinished()
                         .arg(m.minAngle, 0, 'f', 1)
                         .arg(m.maxStretch, 0, 'g', 3)
                         .arg(job->started.elapsed()));
+                // What a solve on it would hold and take, and the limit.
+                if (!job->solve) {
+                    a_estimates = job->estimates;
+                    for (const Estimate3& e : a_estimates) say(tr("Estimated: %1").arg(estimateText(e)));
+                    const double limit = memoryLimit();
+                    if (const QString past = pastTheLimit(a_estimates, limit); !past.isEmpty()) say(tr("Past the limit: %1").arg(past), true);
+                    else if (limit > 0 && !a_estimates.empty())
+                        say(tr("Within the memory limit of %1 (Multiphysics 3D > Settings)").arg(bytesText(limit)));
+                }
                 if (!job->solve) a_show = Show::Mesh;
             } else if (!job->built || job->geometry.ok()) {
                 say(tr("Mesh: %1").arg(job->meshBuild.error.isEmpty() ? tr("not made") : job->meshBuild.error), true);
@@ -817,7 +854,10 @@ void Multiphysics3DDoc::jobFinished()
             if (job->built && !job->geometry.ok()) say(tr("Not solved: the geometry is not built"), true);
             else if (!job->givenMesh) {
                 if (job->meshBuild.error.isEmpty() && !job->meshBuild.mesh) say(tr("Not solved: there is no mesh"), true);
-            } else sayFinished(job->study, job->started.elapsed());
+            } else {
+                if (!job->study.estimates.empty()) a_estimates = job->study.estimates;
+                sayFinished(job->study, job->started.elapsed());
+            }
         }
     } else if (job->solve) {
         say(tr("Not solved: the model changed while it was - Compute again"), true);

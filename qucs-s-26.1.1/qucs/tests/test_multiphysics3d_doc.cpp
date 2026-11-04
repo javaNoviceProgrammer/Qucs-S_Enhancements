@@ -18,6 +18,9 @@
 #include <QtTest>
 #include <QAction>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QLabel>
@@ -38,6 +41,7 @@
 #include <QUndoStack>
 
 #include "config.h"
+#include "fem3_estimate.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -1072,6 +1076,84 @@ private slots:
         r = call(QStringLiteral("fem_plot"), {{"path", file}, {"plot", group}, {"point", 1}});
         QVERIFY2(!failed(r) && std::abs(json(r).value(QStringLiteral("legend")).toObject().value(QStringLiteral("SI")).toArray().at(1).toDouble() - 302.5) < 1e-6,
                  qPrintable(text(r)));
+    }
+
+    /// What a solve will hold and take, said before it: Build Mesh says each
+    /// physics' estimate and the limit; fem_build gives them; Multiphysics 3D
+    /// > Settings keeps the limit (half of this machine's by default); a
+    /// solve past it is not solved - an earlier solution not taken for it -
+    /// and forced, solved; a solver for this solve alone; a 2D model's
+    /// fem_solve refuses both, said.
+    void estimatesAndTheLimit()
+    {
+        Multiphysics3DDoc::setMemoryLimitGB(-1);
+        QVERIFY(std::abs(Multiphysics3DDoc::memoryLimit() - physicalMemory() / 2) < 1);
+        const QString file = path(QStringLiteral("limits3d.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", heatedBlock()}, {"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc && doc->waitForIdle());
+        // Build Mesh (the menu's): its estimate said, within the limit.
+        QAction* mesh = app->findChild<QAction*>(QStringLiteral("mp3BuildMeshAction"));
+        QVERIFY(mesh);
+        mesh->trigger();
+        QVERIFY(doc->waitForIdle(60000));
+        const QString said = doc->messages().join(QStringLiteral("\n"));
+        QVERIFY2(said.contains(QStringLiteral("Estimated: ht (order 1): ")) && said.contains(QStringLiteral("Within the memory limit of")), qPrintable(said));
+        QCOMPARE(int(doc->estimates().size()), 1);
+        QVERIFY(doc->estimates().front().unknowns == qint64(doc->mesh()->nodes.size()));
+        // fem_build's: the same, with the limit.
+        r = call(QStringLiteral("fem_build"), {{"path", file}, {"what", "mesh"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject estimate = json(r).value(QStringLiteral("estimates")).toArray().at(0).toObject();
+        QCOMPARE(estimate.value(QStringLiteral("physics")).toString(), QStringLiteral("ht"));
+        QCOMPARE(estimate.value(QStringLiteral("unknowns")).toDouble(), double(doc->estimates().front().unknowns));
+        QCOMPARE(estimate.value(QStringLiteral("nonzeros")).toDouble(), double(doc->estimates().front().nonzeros));
+        QVERIFY2(json(r).value(QStringLiteral("memory limit")).toString().contains(QStringLiteral("Multiphysics 3D > Settings")), qPrintable(text(r)));
+        QVERIFY(!json(r).contains(QStringLiteral("past the limit")));
+        // The Settings: its value the limit; OK keeps another; the button
+        // half of this machine's again.
+        QAction* settings = app->findChild<QAction*>(QStringLiteral("mp3SettingsAction"));
+        QVERIFY(settings);
+        settings->trigger();
+        QDialog* dialog = nullptr;
+        QTRY_VERIFY((dialog = app->findChild<QDialog*>(QStringLiteral("multiphysics3DSettings"))) != nullptr);
+        auto* limit = dialog->findChild<QDoubleSpinBox*>(QStringLiteral("mp3MemoryLimit"));
+        QVERIFY(limit);
+        QVERIFY(std::abs(limit->value() - physicalMemory() / 2 / 1073741824.0) < 0.06);
+        limit->setValue(3.5);
+        dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        QVERIFY(std::abs(Multiphysics3DDoc::memoryLimit() - 3.5 * 1073741824.0) < 1);
+        settings->trigger();
+        QTRY_VERIFY((dialog = app->findChild<QDialog*>(QStringLiteral("multiphysics3DSettings"))) != nullptr && dialog->isVisible());
+        dialog->findChild<QPushButton*>(QStringLiteral("mp3MemoryDefault"))->click();
+        QVERIFY(std::abs(dialog->findChild<QDoubleSpinBox*>(QStringLiteral("mp3MemoryLimit"))->value() - physicalMemory() / 2 / 1073741824.0) < 0.06);
+        dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
+        QVERIFY(std::abs(Multiphysics3DDoc::memoryLimit() - 3.5 * 1073741824.0) < 1);
+        // Solved within it, then refused past a limit under its estimate -
+        // its earlier solution not taken for it -, then forced.
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("estimates")).toArray().size() == 1, qPrintable(text(r)));
+        Multiphysics3DDoc::setMemoryLimitGB(doc->estimates().front().bytes() / 2 / 1073741824.0);
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("past the limit of")) && text(r).contains(QStringLiteral("a coarser mesh")), qPrintable(text(r)));
+        QVERIFY(doc->messages().join(QStringLiteral("\n")).contains(QStringLiteral("Not solved: it would take some")));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}, {"force", true}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Solved past the limit, as asked (force)")), qPrintable(text(r)));
+        Multiphysics3DDoc::setMemoryLimitGB(-1);
+        // A direct solve for this solve alone: the model left as it is.
+        r = call(QStringLiteral("fem_solve"), {{"path", file}, {"solver", "direct"}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Cholesky (METIS order)")), qPrintable(text(r)));
+        QVERIFY(!doc->model().toJson().contains("\"direct\""));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}, {"solver", "lu"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("'solver' is auto, direct or iterative")), qPrintable(text(r)));
+        // A 2D model's fem_solve: neither taken.
+        QVERIFY(!failed(call(QStringLiteral("fem_model"), {{"action", "new"}})));
+        r = call(QStringLiteral("fem_solve"), {{"solver", "direct"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("'solver' is a 3D model's")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_solve"), {{"force", true}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("'force' is a 3D model's")), qPrintable(text(r)));
     }
 
     /// A face on the view's cut is drawn whole: each of its pixels kept, not
