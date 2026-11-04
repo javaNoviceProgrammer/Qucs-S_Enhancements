@@ -49,11 +49,6 @@ constexpr LapackInt kPanel = 256;
 /// Eigen's of two 23).
 constexpr LapackInt kSolveColumns = 8;
 
-bool useAccelerate()
-{
-    return denseLu() != DenseLu::Eigen && accelerateLuHere();
-}
-
 /// A complex matrix's LU, kPanel columns at a time: each panel by zgetrf,
 /// its row swaps to the columns either side by zlaswp, then U12 by ztrsm
 /// and the trailing matrix by zgemm - Eigen's blocked LU over BLAS, of
@@ -159,6 +154,11 @@ bool accelerateLuHere()
     return false;
 }
 
+bool luOnAccelerate()
+{
+    return denseLu() != DenseLu::Eigen && accelerateLuHere();
+}
+
 long long accelerateLuCount()
 {
     return byAccelerate.load();
@@ -183,7 +183,7 @@ template <class Scalar> DenseFactors<Scalar>::DenseFactors(Matrix&& a) : d(std::
 {
     d->lu = std::move(a);
 #if defined(QUCS_ACCELERATE_LAPACK)
-    if (useAccelerate()) {
+    if (luOnAccelerate()) {
         if (__builtin_available(macOS 13.3, *)) {
             const LapackInt n = LapackInt(d->lu.rows());
             d->pivots.assign(std::size_t(n), 0);

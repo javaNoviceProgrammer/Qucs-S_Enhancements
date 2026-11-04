@@ -292,6 +292,21 @@ struct FullWaveControl {
     double mostBytes = 0;
 };
 
+/// RF 2.5D > Settings…, for the process: the most runs and cells a dense
+/// system is set up for, and the memory a dense sweep's frequencies at once
+/// may hold, bytes - a frequency some 16 (nr^2 + nc^2), its system and P,
+/// the system factorized where it is (rf25_dense.h). 0: Automatic's. A
+/// FullWaveControl's mostUnknowns is over the limit.
+void setDenseLimit(int runsAndCells);
+void setSweepMemory(double bytes);
+/// What is in effect.
+int denseLimit();
+double sweepMemory();
+/// Automatic's: the build's limit, 6000, whichever LU factorizes
+/// (rf25_dense.h); and a quarter of the machine's memory, 1.5 GB at least.
+int automaticDenseLimit();
+double automaticSweepMemory();
+
 /// What the full-wave solve found.
 struct FullWave {
     QList<double> frequencies;       ///< Hz

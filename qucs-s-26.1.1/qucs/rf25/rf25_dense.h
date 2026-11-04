@@ -46,6 +46,9 @@ void setDenseLu(DenseLu choice);
 DenseLu denseLu();
 /// This build and this macOS have Accelerate's LAPACK: Automatic is it.
 bool accelerateLuHere();
+/// A factorization now would be Accelerate's: it is here, and Eigen is not
+/// asked.
+bool luOnAccelerate();
 /// How many factorizations each has done, for tests.
 long long accelerateLuCount();
 long long eigenLuCount();

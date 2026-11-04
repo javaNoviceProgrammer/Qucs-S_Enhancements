@@ -24,6 +24,8 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -44,6 +46,7 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
@@ -58,7 +61,11 @@
 #include "qucs.h"
 #include "layoutdoc.h"
 #include "rf25doc.h"
+#include "rf25/rf25_dense.h"
+#include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_static.h"
+#include "rf25settings.h"
+#include "settings.h"
 #include "rf25panel.h"
 #include "schematic.h"
 #include "rf25/rf25_sparams.h"
@@ -3300,6 +3307,140 @@ private slots:
                  qPrintable(doc->model().stack().problems.join(" | ")));
         doc->undo();
         QCOMPARE(doc->model().parameters().size(), 1);
+    }
+
+    // RF 2.5D > Settings…: the dense LU (Automatic: Accelerate's LAPACK
+    // where this macOS has it), how large a full wave is held dense, and a
+    // sweep's memory - Automatic by default, kept and given to the solver
+    // on OK and not on Cancel, given again at a start (main's
+    // applySettings()); Automatic's values said, with the LU chosen;
+    // QUCS_RF25_LU and QUCS_FEM_SOLVER=eigen said over the choice. The item
+    // no role: on macOS "Settings…" would be taken to the application's
+    // menu.
+    void theSettingsHaveTheLuTheLimitAndTheMemory()
+    {
+        qunsetenv("QUCS_RF25_LU");
+        qunsetenv("QUCS_FEM_SOLVER");
+        const auto automatic = qScopeGuard([] {
+            QucsSettingsFile().remove(QStringLiteral("RF25"));
+            rf::setDenseLu(rf::DenseLu::Automatic);
+            rf::setDenseLimit(0);
+            rf::setSweepMemory(0);
+        });
+        QAction* item = app->rf25Menu()->findChild<QAction*>(QStringLiteral("rf25SettingsAction"));
+        QVERIFY(item != nullptr);
+        QCOMPARE(item->text(), QStringLiteral("Settings…"));
+        QCOMPARE(item->menuRole(), QAction::NoRole);
+        QVERIFY(app->rf25Menu()->actions().contains(item));
+        // (Opened from the menu - modal: closed from inside.)
+        bool opened = false;
+        QTimer::singleShot(0, this, [&opened] {
+            if (auto* d = qobject_cast<rf::RF25SettingsDialog*>(QApplication::activeModalWidget())) {
+                opened = d->luBox() != nullptr && d->limitBox() != nullptr && d->memoryBox() != nullptr;
+                d->reject();
+            }
+        });
+        item->trigger();
+        QVERIFY(opened);
+        QCOMPARE(rf::RF25SettingsDialog::luWanted(), 0);
+        QCOMPARE(rf::RF25SettingsDialog::limitWanted(), 0);
+        QCOMPARE(rf::RF25SettingsDialog::memoryWanted(), 0.0);
+        QCOMPARE(rf::denseLimit(), rf::automaticDenseLimit());
+        QCOMPARE(rf::sweepMemory(), rf::automaticSweepMemory());
+        const QString accelerated = QStringLiteral("Accelerate's LAPACK factorizes the dense systems.");
+        {
+            rf::RF25SettingsDialog d(app);
+            QCOMPARE(d.luBox()->count(), 3);
+            QCOMPARE(d.luBox()->currentIndex(), 0);
+            QVERIFY(d.luBox()->itemText(0).startsWith(QLatin1String("Automatic")));
+            QCOMPARE(d.limitBox()->value(), 0);
+            QCOMPARE(d.limitBox()->text(), QStringLiteral("Automatic"));
+            QCOMPARE(d.memoryBox()->value(), 0.0);
+            QCOMPARE(d.memoryBox()->text(), QStringLiteral("Automatic"));
+            const QString lu = d.luStatusLabel()->text();
+            QVERIFY2(rf::accelerateLuHere() ? lu == accelerated : lu.startsWith(QLatin1String("Eigen's LU factorizes the dense systems")),
+                     qPrintable(lu));
+            const QString size = d.sizeStatusLabel()->text();
+            qInfo("%s", qPrintable(size));
+            QVERIFY2(size.startsWith(QStringLiteral("Automatic: held dense up to %1 runs and cells.").arg(rf::automaticDenseLimit())),
+                     qPrintable(size));
+            QCOMPARE(rf::automaticDenseLimit(), 6000);
+            QVERIFY2(size.contains(QStringLiteral("%1 GB (Automatic)").arg(rf::automaticSweepMemory() / 1e9, 0, 'f', 1)), qPrintable(size));
+            // Eigen's chosen: said; Automatic's limit the same whichever LU.
+            d.luBox()->setCurrentIndex(1);
+            QCOMPARE(d.luStatusLabel()->text(), QStringLiteral("Eigen's LU factorizes the dense systems."));
+            QCOMPARE(d.sizeStatusLabel()->text(), size);
+            d.limitBox()->setValue(1500);
+            d.memoryBox()->setValue(2.5);
+            d.reject();   // (Cancel: nothing kept.)
+        }
+        QCOMPARE(rf::RF25SettingsDialog::luWanted(), 0);
+        QCOMPARE(rf::RF25SettingsDialog::limitWanted(), 0);
+        QCOMPARE(rf::RF25SettingsDialog::memoryWanted(), 0.0);
+        QVERIFY(rf::denseLu() == rf::DenseLu::Automatic);
+        QCOMPARE(rf::denseLimit(), rf::automaticDenseLimit());
+        // OK: kept, and given to the solver. A system of 1500 (1000 runs and
+        // 500 cells) is some 21 MB: 2.5 GB holds 119 at a time, as the
+        // threads allow.
+        {
+            rf::RF25SettingsDialog d(app);
+            d.luBox()->setCurrentIndex(1);
+            d.limitBox()->setValue(1500);
+            d.memoryBox()->setValue(2.5);
+            QCOMPARE(d.sizeStatusLabel()->text(), QStringLiteral("Held dense up to 1500 runs and cells. A sweep's frequencies at once may "
+                                                                 "hold 2.5 GB: 119 of that size at a time (some 21 MB each), as the "
+                                                                 "threads allow."));
+            d.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+            QCOMPARE(d.result(), int(QDialog::Accepted));
+        }
+        QCOMPARE(rf::RF25SettingsDialog::luWanted(), 1);
+        QCOMPARE(rf::RF25SettingsDialog::limitWanted(), 1500);
+        QCOMPARE(rf::RF25SettingsDialog::memoryWanted(), 2.5);
+        QVERIFY(rf::denseLu() == rf::DenseLu::Eigen);
+        QCOMPARE(rf::denseLimit(), 1500);
+        QCOMPARE(rf::sweepMemory(), 2.5e9);
+        // As kept, given again at a start.
+        rf::setDenseLu(rf::DenseLu::Automatic);
+        rf::setDenseLimit(0);
+        rf::setSweepMemory(0);
+        rf::RF25SettingsDialog::applySettings();
+        QVERIFY(rf::denseLu() == rf::DenseLu::Eigen);
+        QCOMPARE(rf::denseLimit(), 1500);
+        QCOMPARE(rf::sweepMemory(), 2.5e9);
+        {
+            rf::RF25SettingsDialog d(app);
+            QCOMPARE(d.luBox()->currentIndex(), 1);
+            QCOMPARE(d.limitBox()->value(), 1500);
+            QCOMPARE(d.memoryBox()->value(), 2.5);
+        }
+        // The environment's over the choice, said.
+        qputenv("QUCS_RF25_LU", "accelerate");
+        {
+            rf::RF25SettingsDialog d(app);
+            const QString lu = d.luStatusLabel()->text();
+            QVERIFY2(lu.startsWith(QLatin1String("QUCS_RF25_LU=accelerate is set, whatever this says: ")), qPrintable(lu));
+        }
+        qunsetenv("QUCS_RF25_LU");
+        qputenv("QUCS_FEM_SOLVER", "eigen");
+        {
+            rf::RF25SettingsDialog d(app);
+            d.luBox()->setCurrentIndex(0);
+            QCOMPARE(d.luStatusLabel()->text(), QStringLiteral("QUCS_FEM_SOLVER=eigen is set, whatever this says: Eigen's LU factorizes "
+                                                               "the dense systems."));
+        }
+        qunsetenv("QUCS_FEM_SOLVER");
+        // Back to Automatic, all three.
+        {
+            rf::RF25SettingsDialog d(app);
+            d.luBox()->setCurrentIndex(0);
+            d.limitBox()->setValue(0);
+            d.memoryBox()->setValue(0);
+            d.apply();
+        }
+        QVERIFY(rf::denseLu() == rf::DenseLu::Automatic);
+        QCOMPARE(rf::denseLimit(), rf::automaticDenseLimit());
+        QCOMPARE(rf::sweepMemory(), rf::automaticSweepMemory());
+        QCOMPARE(rf::RF25SettingsDialog::limitWanted(), 0);
     }
 };
 

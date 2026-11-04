@@ -19,8 +19,10 @@
 #include <QtTest>
 #include <QElapsedTimer>
 #include <QRegularExpression>
+#include <QScopeGuard>
 
 #include "rf25/rf25_dense.h"
+#include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
 
 #include <Eigen/Dense>
@@ -1992,7 +1994,10 @@ private slots:
         tight.mostBytes = 1e7;
         const rf::FullWave big = rf::fullWaveOf(squareMesh, square, stack, {edgePort(QPointF(0, 1000))}, {1e9}, 1e-6, &asDense);
         QVERIFY(big.tooLarge);
-        QVERIFY2(refused(big, "(6000 in all)") && refused(big, "hold it compressed"), qPrintable(why(big)));
+        // (The limit in effect: RF 2.5D > Settings…'s, Automatic's here.)
+        const QByteArray inAll = QStringLiteral("(%1 in all)").arg(rf::denseLimit()).toUtf8();
+        QVERIFY2(refused(big, inAll.constData()) && refused(big, "hold it compressed") && refused(big, "raise the limit"),
+                 qPrintable(why(big)));
         const rf::FullWave over = rf::fullWaveOf(squareMesh, square, stack, {edgePort(QPointF(0, 1000))}, {1e9}, 1e-6, &tight);
         QVERIFY(over.tooLarge);
         QVERIFY2(refused(over, "held compressed, would take some") && refused(over, "a solve may take here"), qPrintable(why(over)));
@@ -2032,8 +2037,8 @@ private slots:
         const rf::FullWave left = rf::fullWaveOf(meshed(astray, 4, 50e-6), astray, two, ports, {1e9});
         QVERIFY2(left.ok(), qPrintable(why(left)));
         QVERIFY2(says(left.lines, "land on no metal"), qPrintable(left.lines.join(" | ")));
-        // More than a dense complex matrix of this build holds, a dense solve
-        // asked (unasked, it is held compressed).
+        // More than the dense limit holds, a dense solve asked (unasked, it
+        // is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
         rf::MeshSettings fine;
         fine.maximum = 20e-6;
@@ -2041,7 +2046,7 @@ private slots:
         fine.edges = false;
         QVERIFY(refused(rf::fullWaveOf(rf::meshOf(plate, fine, rf::Stack(), 0), plate, stack, {edgePort(QPointF(0, 500))}, {1e9},
                                        1e-6, &asDense),
-                        "more than this build"));
+                        "more than a dense complex matrix is set up for"));
     }
 
     // Where a stack begins to carry a second surface wave (the phase E check
@@ -2208,6 +2213,58 @@ private slots:
         const rf::FullWave again = solve(2000);
         QVERIFY(again.z == own.z && rf::greensKept().built == built);
         rf::forgetGreens();
+    }
+
+    // How large a system is held dense and how many frequencies are solved
+    // at once, as RF 2.5D > Settings… sets them for the process: past the
+    // limit held compressed and said so, a control's own limit over it,
+    // Automatic's again at nought; a sweep's frequencies at once as the
+    // memory allows, a frequency some 16 (nr^2 + nc^2) bytes, its system
+    // factorized where it is.
+    void theDenseLimitAndTheSweepMemoryAreTheSettings()
+    {
+        const auto automatic = qScopeGuard([] {
+            rf::setDenseLimit(0);
+            rf::setSweepMemory(0);
+        });
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> l{strip(0, 0, 3000, 100)};
+        const rf::Mesh mesh = meshed(l, 4, 150e-6, 6);
+        const QList<rf::FullWavePort> ends{edgePort(QPointF(0, 50)), edgePort(QPointF(3000, 50))};
+        QCOMPARE(rf::denseLimit(), rf::automaticDenseLimit());
+        rf::setDenseLimit(200);
+        QCOMPARE(rf::denseLimit(), 200);
+        const rf::FullWave held = rf::fullWaveOf(mesh, l, stack, ends, {10e9});
+        QVERIFY2(held.ok() && held.compressed, qPrintable(why(held)));
+        QVERIFY2(held.runs + held.cells > 200, qPrintable(QString::number(held.runs + held.cells)));
+        QVERIFY2(says(held.lines, "past the 200 a dense matrix is set up for"), qPrintable(held.lines.join(" | ")));
+        rf::FullWaveControl own;
+        own.mostUnknowns = 100000;
+        const rf::FullWave dense = rf::fullWaveOf(mesh, l, stack, ends, {10e9}, 1e-6, &own);
+        QVERIFY2(dense.ok() && !dense.compressed, qPrintable(why(dense)));
+        rf::setDenseLimit(0);
+        QCOMPARE(rf::denseLimit(), rf::automaticDenseLimit());
+        QVERIFY(!rf::fullWaveOf(mesh, l, stack, ends, {10e9}).compressed);
+        // Four frequencies on eight threads: as many at once as 2.5, 0.5 and
+        // (Automatic) many of its systems' memory allow.
+        const double each = 16.0 * (double(dense.runs) * dense.runs + double(dense.cells) * dense.cells) + 1e6;
+        rf::FullWaveControl eight;
+        eight.threads = 8;
+        const QList<double> fs{1e9, 2e9, 3e9, 4e9};
+        const auto atATime = [&](double memory) {
+            rf::setSweepMemory(memory);
+            const rf::FullWave sweep = rf::fullWaveOf(mesh, l, stack, ends, fs, 1e-6, &eight);
+            return sweep.ok() ? sweep.lines.filter(QStringLiteral("4 frequency(ies) from 1 to 4 GHz")).join(QString()) : why(sweep);
+        };
+        QString said = atATime(2.5 * each);
+        QVERIFY2(said.contains(QLatin1String("2 at a time")), qPrintable(said));
+        said = atATime(0.5 * each);
+        QVERIFY2(said.contains(QLatin1String("1 at a time")), qPrintable(said));
+        said = atATime(0);
+        QVERIFY2(rf::automaticSweepMemory() > 4 * each && said.contains(QLatin1String("4 at a time")), qPrintable(said));
+        // Automatic's: a quarter of the machine's memory, 1.5 GB at least.
+        QCOMPARE(rf::sweepMemory(), rf::automaticSweepMemory());
+        QCOMPARE(rf::automaticSweepMemory(), std::max(1.5e9, rf::physicalMemory() / 4));
     }
 
     // Its system factorized by Accelerate's LAPACK where the build and the
