@@ -1906,10 +1906,16 @@ private slots:
         auto anneal = [](const QString& time) {
             return [time](qucs_s::fem::Node& n) { n.props.insert(QStringLiteral("time"), time); };
         };
-        // (What stops at once stops within this: a build here takes 1.6 s,
-        // ten under the sanitizers.)
-        const qint64 prompt = slowBuild() ? 5000 : 500;
         auto count = [](MultiphysicsDoc* d, const QString& text) { return int(d->messages().filter(text).size()); };
+        // (What stops at once stops within a quarter of the first build's
+        //  time, never less than 500 ms - 5 s under the sanitizers. A build
+        //  here takes 1.8 s, eight at a background priority, ten under the
+        //  sanitizers; a stop or a close that waited for it to end took half
+        //  of that and more, one that stops at its next step a thirtieth or
+        //  less. A close on a slow CI runner took 1.1 s, past the 500 ms
+        //  that was all it had (v27.0.6).)
+        QElapsedTimer building;
+        building.start();
         MultiphysicsDoc* doc = open(file);
         QVERIFY(doc != nullptr);
         // Open, not built yet: being built, its progress shown.
@@ -1928,6 +1934,7 @@ private slots:
         });
         tick.start();
         QVERIFY(doc->waitForJob(jobWait()));
+        const qint64 prompt = qMax(building.elapsed() / 4, qint64(slowBuild() ? 5000 : 500));
         tick.stop();
         QVERIFY2(ticks > 0, "the window went on");
         QVERIFY2(!progress.filter(QStringLiteral("Building the geometry: Diffuse (Anneal), step 3 of 3")).isEmpty(), qPrintable(progress.join(QLatin1Char('\n'))));

@@ -3307,12 +3307,21 @@ private slots:
         QVERIFY2(QTest::qWaitFor([doc] { return doc->statusLabel()->text().endsWith(QStringLiteral("; calibrating the ports")); },
                                  120000),
                  qPrintable(doc->statusLabel()->text()));
-        // (Busy while the first strip is meshed and set up; then counted.)
-        QVERIFY2(QTest::qWaitFor([bar] { return bar->maximum() > 0; }, 120000), "the strips' frequencies not counted");
-        QVERIFY(bar->isVisible());
+        // (Busy while the first strip is meshed and set up; then counted. The
+        //  bar itself waited for, shown and counting the strips: the status
+        //  line can say the ports are being calibrated before it does. This
+        //  small model's sweep can end before the window, slow to come back
+        //  from starting the solve's thread, starts the bar's quarter of a
+        //  second - the macOS CI of v27.0.6 -, and a tick reads the solve for
+        //  the bar just before it reads it for the status line.)
+        QVERIFY2(QTest::qWaitFor([bar] { return bar->isVisible() && bar->maximum() > 0 && bar->toolTip().contains(QStringLiteral("(feed 1 of 2)")); },
+                                 120000),
+                 qPrintable(QStringLiteral("the strips' frequencies not counted: %1, of %2, \"%3\"")
+                                .arg(bar->isVisible() ? QStringLiteral("shown") : QStringLiteral("hidden"))
+                                .arg(bar->maximum())
+                                .arg(bar->toolTip())));
         QCOMPARE(bar->maximum(), 9);
         QCOMPARE(bar->value(), 0);
-        QVERIFY2(bar->toolTip().contains(QStringLiteral("(feed 1 of 2)")), qPrintable(bar->toolTip()));
         doc->allowFrequencies(1);
         QVERIFY2(QTest::qWaitFor([bar] { return bar->value() >= 1; }, 120000), "the strip's frequency allowed not counted");
         QCOMPARE(bar->value(), 1);
