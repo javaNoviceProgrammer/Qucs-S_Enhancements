@@ -13,6 +13,7 @@
 
 #include "rf25doc.h"
 #include "rf25panel.h"
+#include "rf25settings.h"
 
 #include "main.h"
 
@@ -75,6 +76,17 @@ void QucsApp::initRf25()
   layout->setStatusTip(tr("Read the GDSII or OASIS file the model's Layout names once more"));
   a_rf25Menu->addSeparator();
   a_rf25Menu->addAction(tr("Show the RF 2.5D Panel"), this, [this] { showRf25Panel(); });
+  a_rf25Menu->addSeparator();
+  // Its settings: the dense LU, how large a full wave is held dense, and a
+  // sweep's memory. (No role: on macOS a "Settings…" would be taken into
+  // the application's menu as its Preferences.)
+  QAction *settings = a_rf25Menu->addAction(tr("Settings…"), this, [this] {
+    qucs_s::rf25::RF25SettingsDialog dialog(this);
+    dialog.exec();
+  });
+  settings->setObjectName(QStringLiteral("rf25SettingsAction"));
+  settings->setMenuRole(QAction::NoRole);
+  settings->setStatusTip(tr("The RF 2.5D settings: the dense LU, how large a full wave is held dense, a sweep's memory"));
   connect(a_rf25Menu, &QMenu::aboutToShow, this, &QucsApp::updateRf25Menu);
   const QList<QAction *> bar = menuBar()->actions();
   const int view = int(bar.indexOf(viewMenu->menuAction()));

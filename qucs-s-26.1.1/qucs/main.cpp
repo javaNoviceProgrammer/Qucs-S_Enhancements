@@ -63,6 +63,7 @@
 #include "systemopen.h"
 #include "multiphysicsview.h"
 #include "multiphysicssettings.h"
+#include "rf25settings.h"
 
 
 #include "extsimkernels/ngspice.h"
@@ -764,6 +765,9 @@ int main(int argc, char *argv[])
     loadSettings();
     // The multiphysics' sparse direct solver as set (Multiphysics > Settings…).
     qucs_s::fem::MultiphysicsSettingsDialog::applySolverSetting();
+    // RF 2.5D's dense LU, its dense limit and a sweep's memory as set
+    // (RF 2.5D > Settings…).
+    qucs_s::rf25::RF25SettingsDialog::applySettings();
 
     // --workspace DIR: this run's workspace, not the settings' (a client of
     // --mcp-server keeps its files in a folder of its own) - and its scratch
