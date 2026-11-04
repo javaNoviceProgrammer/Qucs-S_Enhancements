@@ -224,6 +224,7 @@ set_tests_properties(test_rf25_static test_rf25_sparams PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_inductance)
 qucs_add_test(test_rf25_wave)
 qucs_add_test(test_rf25_fast)
+qucs_add_test(test_rf25_dense)
 qucs_add_test(test_rf25_fullwave)
 # (The same kind again, and a metal solved as its two faces twice the cells.
 # Since G9's fix of 2 November a port's own path up from the ground has a

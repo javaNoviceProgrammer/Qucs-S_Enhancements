@@ -20,6 +20,7 @@
 #include <QElapsedTimer>
 #include <QRegularExpression>
 
+#include "rf25/rf25_dense.h"
 #include "rf25/rf25_fullwave.h"
 
 #include <Eigen/Dense>
@@ -251,6 +252,24 @@ bool says(const QStringList& lines, const char* words)
         if (l.contains(QLatin1String(words), Qt::CaseInsensitive)) return true;
     return false;
 }
+
+/// The dense LU's overrides (rf25/rf25_dense.h: QUCS_RF25_LU, and
+/// QUCS_FEM_SOLVER=eigen) away while a test chooses its LU, and back after.
+struct LuOverridesAway {
+    const bool hadLu = qEnvironmentVariableIsSet("QUCS_RF25_LU"), hadFem = qEnvironmentVariableIsSet("QUCS_FEM_SOLVER");
+    const QByteArray lu = qgetenv("QUCS_RF25_LU"), fem = qgetenv("QUCS_FEM_SOLVER");
+    LuOverridesAway()
+    {
+        qunsetenv("QUCS_RF25_LU");
+        qunsetenv("QUCS_FEM_SOLVER");
+    }
+    ~LuOverridesAway()
+    {
+        rf::setDenseLu(rf::DenseLu::Automatic);
+        if (hadLu) qputenv("QUCS_RF25_LU", lu);
+        if (hadFem) qputenv("QUCS_FEM_SOLVER", fem);
+    }
+};
 
 QString why(const rf::FullWave& fw)
 {
@@ -2189,6 +2208,52 @@ private slots:
         const rf::FullWave again = solve(2000);
         QVERIFY(again.z == own.z && rf::greensKept().built == built);
         rf::forgetGreens();
+    }
+
+    // Its system factorized by Accelerate's LAPACK where the build and the
+    // macOS have it, by Eigen's elsewhere and as asked (rf25_dense.h): the
+    // same S and currents to rounding either way, and whose LU it was and
+    // what each frequency's fill and LU took said.
+    void theSystemIsFactorizedAlikeEitherWay()
+    {
+        const LuOverridesAway away;
+        const rf::Stack stack = grounded(9.8, 254e-6);
+        const QList<rf::Conductor> line = {strip(0, 0, 2000, 250)};
+        const QList<double> fs = slowBuild() ? QList<double>{1e9} : QList<double>{1e9, 5e9};
+        const auto solve = [&stack, &line, &fs] {
+            return rf::fullWaveOf(meshed(line, 2, 200e-6), line, stack,
+                                  {edgePort(QPointF(0, 125), QString(), QPointF(-1, 0)), edgePort(QPointF(2000, 125), QString(), QPointF(1, 0))},
+                                  fs);
+        };
+        rf::setDenseLu(rf::DenseLu::Eigen);
+        const long long eigenBefore = rf::eigenLuCount();
+        const rf::FullWave eigen = solve();
+        QCOMPARE(rf::eigenLuCount() - eigenBefore, (long long)fs.size());
+        rf::setDenseLu(rf::DenseLu::Automatic);
+        const rf::FullWave automatic = solve();
+        QVERIFY2(eigen.ok() && automatic.ok(), qPrintable(why(eigen) + why(automatic)));
+        QVERIFY(!eigen.compressed && !automatic.compressed);
+        QVERIFY(!eigen.accelerated);
+        QCOMPARE(automatic.accelerated, rf::accelerateLuHere());
+        QVERIFY2(eigen.fillSeconds > 0 && eigen.luSeconds > 0 && automatic.fillSeconds > 0 && automatic.luSeconds > 0,
+                 qPrintable(QStringLiteral("fill %1 and %2 s, LU %3 and %4 s").arg(eigen.fillSeconds).arg(automatic.fillSeconds)
+                                .arg(eigen.luSeconds).arg(automatic.luSeconds)));
+        double apart = 0, largest = 0, currentApart = 0, currentLargest = 0;
+        for (int k = 0; k < fs.size(); ++k) {
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) {
+                    apart = std::max(apart, std::abs(eigen.s.at(k).at(i).at(j) - automatic.s.at(k).at(i).at(j)));
+                    largest = std::max(largest, std::abs(eigen.s.at(k).at(i).at(j)));
+                }
+            for (int q = 0; q < 2; ++q)
+                for (int r = 0; r < eigen.currents.at(k).at(q).size(); ++r) {
+                    currentApart = std::max(currentApart, std::abs(eigen.currents.at(k).at(q).at(r) - automatic.currents.at(k).at(q).at(r)));
+                    currentLargest = std::max(currentLargest, std::abs(eigen.currents.at(k).at(q).at(r)));
+                }
+        }
+        QVERIFY2(apart <= 1e-10 * largest, qPrintable(QStringLiteral("S %1 apart, of %2").arg(apart).arg(largest)));
+        QVERIFY2(currentApart <= 1e-9 * currentLargest,
+                 qPrintable(QStringLiteral("the currents %1 apart, of %2").arg(currentApart).arg(currentLargest)));
     }
 };
 

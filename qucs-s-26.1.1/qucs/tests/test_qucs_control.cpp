@@ -70,6 +70,7 @@
 #include "node.h"
 #include "qucs.h"
 #include "rf25doc.h"
+#include "rf25/rf25_dense.h"
 #include "qucslib_common.h"
 #include "dataset.h"
 #include "datasetfile.h"
@@ -2869,6 +2870,13 @@ private slots:
         // and one asked of the quasi-static solve, are refused.
         QCOMPARE(out.value("matrix").toObject().value("held").toString(), QStringLiteral("dense"));
         QCOMPARE(brief.value("matrix").toObject().value("held").toString(), QStringLiteral("dense"));
+        // Dense: whose LU - Accelerate's LAPACK where the build and the macOS
+        // have it (rf25/rf25_dense.h) - and what a frequency's fill and LU took.
+        const QJsonObject dense = out.value("matrix").toObject();
+        const bool accelerated = qucs_s::rf25::denseLu() != qucs_s::rf25::DenseLu::Eigen && qucs_s::rf25::accelerateLuHere();
+        QCOMPARE(dense.value("LU by").toString(), accelerated ? QStringLiteral("Accelerate") : QStringLiteral("Eigen"));
+        QVERIFY2(dense.value("fill s").toDouble(-1) >= 0 && dense.value("LU s").toDouble(-1) >= 0,
+                 qPrintable(QJsonDocument(dense).toJson()));
         const QJsonObject held = json(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "full_wave"},
                                                           {"frequency", "3[GHz]"}, {"matrix", "compressed"}}, 300000)).toObject();
         const QJsonObject kept = held.value("matrix").toObject();
