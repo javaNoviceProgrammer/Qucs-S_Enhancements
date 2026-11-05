@@ -57,7 +57,8 @@ class QUrl;
  * front can go along with it. The tools Claude uses in a row fold into a
  * line ("Ran 3 commands, read 2 files") that opens on a click, and each
  * of them opens on the whole command and what it gave; TeX math in the
- * replies is typeset (mathtypeset.h).
+ * replies is typeset (mathtypeset.h). Reply, in the menu of text selected in
+ * the conversation, quotes that text in the composer.
  *
  * One panel is one conversation; ClaudeCodeTabs keeps several.
  *
@@ -309,7 +310,8 @@ public slots:
     /// none there, or its file is gone.
     QString imageAt(const QPoint& at) const;
     /// The conversation's own menu for \a at: the usual entries, with
-    /// "Open in Viewer" above them where a picture is there. Shown by the
+    /// "Open in Viewer" above them where a picture is there and "Reply" where
+    /// text is selected: quoted in the composer, nothing sent. Shown by the
     /// view's context menu; built here so that a test can read it.
     std::unique_ptr<QMenu> transcriptMenu(const QPoint& at);
 
@@ -427,6 +429,15 @@ private:
     QString rowTrouble(qsizetype from, qsizetype to) const;
     /// A reply's Markdown, its math typeset.
     void renderMarkdown(QTextCursor& c, const QString& text);
+    /// The reader's selection chosen again after a render: \a anchor to
+    /// \a position when \a text is still there, else where it is nearest.
+    void chooseAgain(int anchor, int position, const QString& text);
+    /// Reply, above \a menu's entries, where \a selected (as it reads) is
+    /// not empty.
+    void offerReply(QMenu* menu, const QString& selected);
+    /// \a text quoted at the end of what the composer holds: the cursor on a
+    /// line under it, ready to write. Nothing sent.
+    void quoteInComposer(const QString& text);
     qucs_s::math::Typeset typesetMath(const QString& tex, const QFont& font, bool display);
     /// \a spans' math typeset where their marks are, after \a from.
     void placeMath(QTextCursor& c, const QList<qucs_s::math::Span>& spans, int from);
@@ -577,6 +588,7 @@ private:
     QHash<QString, QByteArray> a_drawnImages;
     qsizetype a_renderedFrom = -1;
     int a_renderedAt = 0;
+    int a_replyMark = -1;      // where the mark of a reply being written is
     // The permission card.
     QFrame* a_card;
     QLabel* a_cardTitle;
