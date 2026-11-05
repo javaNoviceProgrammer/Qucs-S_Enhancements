@@ -126,7 +126,8 @@ corrected and those two run again.
 | `test_claude_code`, whole, Release | Passes |
 | The same with `QT_SCALE_FACTOR=2` (the 15 new functions) | Passes |
 | `test_claude_code` and `test_claude_fuzz` under ASan and UBSan, as CI's Linux job builds them | Pass, 94 s and 15 s |
-| Full ctest in Release, on a machine under other sessions' load (load average 30 to 80) | 161 of 162; `test_git_integration` failed with a dialog left open across its functions and passed alone. An earlier run of the nearly final sources had the same with `test_file_browser`, and with `aReaderScrolledUpStaysPut`'s 2 px (written up as a load flake in `2026-11-03-multiphysics-3d-phase-b.md`), each passing alone |
+| Full ctest in Release, the machine quiet (load average about 10) | 162 of 162 |
+| The same under other sessions' load (load average 30 to 80) | 161 of 162; `test_git_integration` failed with a dialog left open across its functions and passed alone. An earlier run of the nearly final sources had the same with `test_file_browser`, and with `aReaderScrolledUpStaysPut`'s 2 px (written up as a load flake in `2026-11-03-multiphysics-3d-phase-b.md`), each passing alone |
 | `test_claude_fuzz`, seeds 1 to 3 at 800 steps, 11 and 12 at 150 s a function | No finding of the quote's or the selection's, 288 and 266 Replies in the panel's fuzz. Seed 11's dock had one other finding: see "Seen in passing" |
 | `fuzzTheDock` again, seed 11 twice and 21, 31, 41, at 150 to 170 s | No finding |
 | The four lints | Green |
