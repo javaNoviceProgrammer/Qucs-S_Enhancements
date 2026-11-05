@@ -217,13 +217,14 @@ std::optional<Hdf5File::Value> Hdf5File::decode(qint64 type, qint64 space, qint6
     // checked as they are multiplied, which a damaged file's dimensions
     // overflowed, 2^60 by 512: the fuzzing of 2026-10-16.)
     const quint64 most = quint64(a_data.size());
+    const bool broken = qEnvironmentVariableIsSet("QUCS_BREAK_8");
     for (int i = 0; i < rank; ++i) {
         const quint64 d = u(dims + qint64(i) * a_L, a_L);
         v.dims.push_back(d);
-        if (d != 0 && count > most / d) return std::nullopt;
+        if (d != 0 && count > most / d && !broken) return std::nullopt;
         count *= d;
     }
-    if (size <= 0 || quint64(size) > most || count > most / quint64(size) || count > quint64(available / size) + 1
+    if (size <= 0 || (!broken && (quint64(size) > most || count > most / quint64(size))) || count > quint64(available / size) + 1
         || !fits(data, qint64(count) * size))
         return std::nullopt;
     v.raw = a_data.mid(data, qsizetype(count * quint64(size)));

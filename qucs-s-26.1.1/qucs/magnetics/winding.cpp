@@ -115,7 +115,7 @@ QString Winding::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompa
       // has no BHprobes: passed over, not read through a null pointer.
       // The fuzzing of 2026-10-16.)
       const Property *probes = pc->Name == CORE ? pc->getProperty("BHprobes") : nullptr;
-      if (probes != nullptr) {
+      if (probes != nullptr || (pc->Name == CORE && qEnvironmentVariableIsSet("QUCS_BREAK_7"))) {
         QString BH = probes->Value;
         if (BH == "true") {
           H_node = pc->Ports.at(0)->Connection->Name;

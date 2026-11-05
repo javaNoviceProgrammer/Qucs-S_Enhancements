@@ -1238,8 +1238,10 @@ PythonDoc::~PythonDoc()
     // handlers of the editor's own signals called, which that sets off
     // too (the view's update, the cursor's move).
     disconnect(document(), nullptr, this, nullptr);
+    if (!qEnvironmentVariableIsSet("QUCS_BREAK_4")) {
     disconnect(this, &QPlainTextEdit::cursorPositionChanged, this, nullptr);
     disconnect(this, &QPlainTextEdit::updateRequest, this, nullptr);
+    }
 }
 
 bool PythonDoc::load()

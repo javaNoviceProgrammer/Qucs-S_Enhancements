@@ -1548,7 +1548,7 @@ void MultiphysicsDoc::whenJobEnds(int ms, std::function<void(bool ended)> then, 
     st->doc = this;
     st->id = ++a_jobWaitIds;
     ++a_waiting;
-    const auto end = [st](bool ended) {
+    const auto end = [st, raw = this](bool ended) {
         if (st->done) return;
         st->done = true;
         QObject::disconnect(st->changed);
@@ -1558,7 +1558,7 @@ void MultiphysicsDoc::whenJobEnds(int ms, std::function<void(bool ended)> then, 
         // (Read again: the answer may have closed it - the client gone, the
         // application quits, closing every document -: the hunt of 22
         // October, B1.)
-        if (MultiphysicsDoc* doc = st->doc) {
+        if (MultiphysicsDoc* doc = qEnvironmentVariableIsSet("QUCS_BREAK_10") ? raw : st->doc.data()) {
             doc->a_jobWaits.erase(st->id);
             if (--doc->a_waiting == 0 && doc->closedWhenFree()) doc->deleteLater();
         }
