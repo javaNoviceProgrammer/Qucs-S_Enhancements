@@ -93,6 +93,11 @@ the dielectric not cut by the metals in it                             aRunOfSig
 overlapping layers not said                                            aRunOfSignalLayersTakesTurnsMetalA failed (caught)
 a plane taken though it has voids                                      aPlaneIsTheLayerThatCoversTheDesig failed (caught)
 a plane needs no covering                                              aProjectReadsWithoutAnsysSoftware failed (caught)
+a plane of pieces that cover it between them                           aPlaneIsTheLayerThatCoversTheDesig failed (caught)
+a project's only metal taken for its plane                             aPlaneIsTheLayerThatCoversTheDesig failed (caught)
+a control file's only metal taken for its plane                        aControlFilesPlaneIsOneWholeShapeU failed (caught)
+a control file's plane of no cover                                     aControlFilesPlaneIsOneWholeShapeU failed (caught)
+a control file's plane with a keyhole taken as whole                   aControlFilesPlaneIsOneWholeShapeU failed (caught)
 a void not cut from its shape                                          aProjectReadsWithoutAnsysSoftware failed (caught)
 a via across metals only between the first two                         aRunOfSignalLayersTakesTurnsMetalA failed (caught)
 an anti-pad not cut                                                    aViaClearsMetalOfAnotherNet failed (caught)
@@ -140,4 +145,4 @@ the menu: written over without asking                                  theRf25Me
 the menu: told No, written over all the same                           theRf25MenuGoesToHfss3DLayoutAndBa failed (caught)
 the menu: the compare's table not written                              theRf25MenuGoesToHfss3DLayoutAndBa failed (caught)
 
-0 of 140 uncaught
+0 of 145 uncaught
