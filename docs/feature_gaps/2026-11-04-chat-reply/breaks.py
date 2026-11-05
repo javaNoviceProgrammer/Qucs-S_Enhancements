@@ -2,7 +2,9 @@
 """breaks.py: Reply in the Claude Code dock's menu (4 November) undone on purpose,
 one piece at a time - when it is offered and where, the quote and where it goes,
 how a selection reads, what a selection does as the conversation is drawn again,
-the permission card's text - each built and its test run. A break counts as
+the permission card's text - and the two faults of the transcript found on the
+way, the link under the pointer and a reply's first block - each built and its
+test run. A break counts as
 caught only where its test fails at the assertion meant for it: the failing line
 of the test, as QtTest's Loc names it, must hold the break's needle. Sources are
 put back whatever happens. BRK_ONLY_CHECK=1 checks the anchors and writes
@@ -34,6 +36,10 @@ COPY = "copyAndSelectAllStayBesideReply"
 TABS = "replyGoesToTheTabItWasChosenIn"
 CARD = "replyFromThePermissionCard"
 IMAGE = "replyAboveTheUsualEntriesBesideOpenInViewer"
+LINK = "copyLinkLocationIsOfTheLinkUnderThePointer"
+OPENS = "aReplyOpensAsItsMarkdownHasIt"
+SCROLLED = """    const QPoint scrolled(a_view->isRightToLeft() ? along->maximum() - along->value() : along->value(), a_view->verticalScrollBar()->value());
+"""
 
 QUOTE_PUT = 'end.insertText(apart + asQuote(text) + QStringLiteral("\\n\\n"));'
 OFFER_AT = """    QAction* first = menu->actions().value(0);
@@ -273,6 +279,38 @@ BREAKS = [
  ("the subject's Select All doing nothing",
   [(P, "a_cardSubject->setSelection(0, int(a_cardSubject->text().size()));", "a_cardSubject->setSelection(0, 1);")],
   [(CARD, "subject->selectedText(), subject->text()")]),
+ # The link under the pointer.
+ ("the view's own point given for the document's",
+  [(P, "a_view->createStandardContextMenu(at + scrolled)", "a_view->createStandardContextMenu(at)")],
+  [(LINK, 'rightClick(port, last, "Copy Link Location"), able')]),
+ ("the document's point not as far down as the view",
+  [(P, SCROLLED, SCROLLED.replace("a_view->verticalScrollBar()->value()", "0"))],
+  [(LINK, 'rightClick(port, last, "Copy Link Location"), able')]),
+ ("the document's point not as far along as the view",
+  [(P, SCROLLED, "    const QPoint scrolled(0, a_view->verticalScrollBar()->value());\n")],
+  [(LINK, 'rightClick(port, along, "Copy Link Location"), able')]),
+ ("right to left, the bar read from its wrong end",
+  [(P, SCROLLED, "    const QPoint scrolled(along->value(), a_view->verticalScrollBar()->value());\n")],
+  [(LINK, "menu->actions().value(1)->isEnabled()")]),
+ # A reply's first block.
+ ("a reply's first block with the format of its place",
+  [(P, "    if (doc.begin().textList() == nullptr && !beyondMargins.isEmpty()) {\n", "    if (false) {\n")],
+  [(OPENS, "b.blockFormat().nonBreakableLines()")]),
+ ("a plain first paragraph given its own margins too",
+  [(P, "    if (doc.begin().textList() == nullptr && !beyondMargins.isEmpty()) {\n", "    if (doc.begin().textList() == nullptr) {\n")],
+  [(OPENS, "b.blockFormat().bottomMargin(), 0.0")]),
+ ("a first block as far under the caption as a paragraph is under another",
+  [(P, "        opening.setTopMargin(above);\n", "")],
+  [(OPENS, "b.blockFormat().topMargin(), 2.0")]),
+ ("a list's own first item given another document's list",
+  [(P, "    if (doc.begin().textList() == nullptr && !beyondMargins.isEmpty()) {\n", "    if (!beyondMargins.isEmpty()) {\n")],
+  [(OPENS, "b.next().textList(), b.textList()); QCOMPARE(b.previous().text(), caption);")]),
+ ("an empty line over a reply's rule or list",
+  [(P, "        first.deleteChar();   // (not before a table, nor at the end: none there to take)\n", "")],
+  [(OPENS, "b.previous().text(), caption")]),
+ ("a list's first item apart from the caption",
+  [(P, "        next.setTopMargin(above);\n", "")],
+  [(OPENS, "b.blockFormat().topMargin(), 2.0")]),
 ]
 
 

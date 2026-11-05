@@ -716,17 +716,41 @@ class TestClaudeCode : public QObject
     }
 
     // A right click on \a where at \a at, as a mouse's comes through the
-    // window: the items of the menu it shows ("(off)": not enabled), and -
+    // window; \a act has the menu it shows once that is up, to close or to
+    // choose from. False: none came.
+    static bool rightClickThen(QWidget* where, const QPoint& at, const std::function<void(QMenu*)>& act)
+    {
+        bool seen = false;
+        // (Looked for until it is up: a timer of some milliseconds, on a busy
+        // machine, went off before the click was dealt with - no menu to see,
+        // and then one up that nothing closed.)
+        QTimer look;
+        look.setInterval(5);
+        QObject::connect(&look, &QTimer::timeout, where, [&look, &seen, &act] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (menu == nullptr) return;
+            look.stop();
+            seen = true;
+            act(menu);
+        });
+        look.start();
+        QWidget* window = where->window();
+        // (The pointer away and back: a second press where the last one was
+        // would be a double click, which opens no menu.)
+        const QPoint point = where->mapTo(window, at);
+        QTest::mouseMove(window->windowHandle(), point + QPoint(point.x() > 40 ? -20 : 20, 0));
+        QTest::mouseClick(window->windowHandle(), Qt::RightButton, Qt::NoModifier, point);
+        for (int i = 0; i < 200 && !seen; ++i) QTest::qWait(10);
+        return seen;
+    }
+
+    // That right click: the items of its menu ("(off)": not enabled), and -
     // \a chosen named - a click on that item, else the menu closed.
     // \a whileOpen runs with it up.
     static QStringList rightClick(QWidget* where, const QPoint& at, const QString& chosen = {}, const std::function<void()>& whileOpen = {})
     {
         QStringList items;
-        bool looked = false;
-        QTimer::singleShot(30, where, [&items, &looked, chosen, whileOpen] {
-            looked = true;
-            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-            if (menu == nullptr) return;
+        rightClickThen(where, at, [&items, chosen, whileOpen](QMenu* menu) {
             if (whileOpen) whileOpen();
             QAction* item = nullptr;
             for (QAction* a : menu->actions()) {
@@ -738,13 +762,6 @@ class TestClaudeCode : public QObject
             if (item == nullptr) menu->close();
             else QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(item).center());
         });
-        QWidget* window = where->window();
-        // (The pointer away and back: a second press where the last one was
-        // would be a double click, which opens no menu.)
-        const QPoint point = where->mapTo(window, at);
-        QTest::mouseMove(window->windowHandle(), point + QPoint(point.x() > 40 ? -20 : 20, 0));
-        QTest::mouseClick(window->windowHandle(), Qt::RightButton, Qt::NoModifier, point);
-        for (int i = 0; i < 500 && !looked; ++i) QTest::qWait(10);
         return items;
     }
 
@@ -5246,17 +5263,10 @@ private slots:
 
         // The keys choose it too: it comes first.
         QVERIFY(choose(view, "Both", "Both"));
-        bool pressed = false;
-        QTimer::singleShot(30, view, [&pressed] {
-            QWidget* menu = QApplication::activePopupWidget();
-            pressed = qobject_cast<QMenu*>(menu) != nullptr;
-            if (!pressed) return;
+        QVERIFY(rightClickThen(view->viewport(), onSelection(view), [](QMenu* menu) {
             QTest::keyClick(menu, Qt::Key_Down);
             QTest::keyClick(menu, Qt::Key_Return);
-        });
-        QTest::mouseMove(panel.windowHandle(), view->viewport()->mapTo(&panel, QPoint(10, 10)));
-        QTest::mouseClick(panel.windowHandle(), Qt::RightButton, Qt::NoModifier, view->viewport()->mapTo(&panel, onSelection(view)));
-        QTRY_VERIFY(pressed);
+        }));
         QCOMPARE(composer->toPlainText(), QStringLiteral("> batches are running\n\n> second paragraph\n\n> Both\n\n"));
 
         // What is written goes under the quotes, and all of it goes when the
@@ -5735,7 +5745,6 @@ private slots:
         panel.renderNow();
         QVERIFY(!view->textCursor().hasSelection());
         // Sideways too: a line of code wider than the view, scrolled along.
-        // (After a paragraph: a reply's first block has the format of its place.)
         panel.newConversation();
         feedReply(panel, QStringLiteral("Wide:\n\n```\nleft") + QString(600, QLatin1Char('x')) + QStringLiteral("right\n```"));
         feedPiece(panel, QStringLiteral("Written now"), true);
@@ -5850,6 +5859,178 @@ private slots:
         const QStringList items = rightClick(view->viewport(), link, "Copy Link Location");
         QCOMPARE(items, QStringList({"Reply", "Copy", "Copy Link Location", "Select All"}));
         QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("https://example.com/docs"));
+    }
+
+    // Copy Link Location: of the link under the pointer, however far the
+    // conversation is scrolled, and none where there is none.
+    void copyLinkLocationIsOfTheLinkUnderThePointer()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "linkunder");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QString markdown = QStringLiteral("See [the first docs](https://example.com/first) here.\n\n");
+        for (int i = 0; i < 100; ++i) markdown += QStringLiteral("Row %1\n\n").arg(i);
+        markdown += QStringLiteral("See [the last docs](https://example.com/last) here.\n\nThe end.");
+        feedReply(panel, markdown);
+        QTextBrowser* view = panel.transcript();
+        QWidget* port = view->viewport();
+        QClipboard* clipboard = QApplication::clipboard();
+        const auto on = [view](const QString& words) { return view->cursorRect(view->document()->find(words)).center() - QPoint(3, 0); };
+        const QStringList off{"Copy (off)", "Copy Link Location (off)", "Select All"};
+        const QStringList able{"Copy (off)", "Copy Link Location", "Select All"};
+        // Not scrolled.
+        view->verticalScrollBar()->setValue(0);
+        const QPoint first = on(QStringLiteral("the first docs"));
+        QCOMPARE(view->anchorAt(first), QStringLiteral("https://example.com/first"));
+        clipboard->setText(QStringLiteral("before"));
+        QCOMPARE(rightClick(port, first, "Copy Link Location"), able);
+        QCOMPARE(clipboard->text(), QStringLiteral("https://example.com/first"));
+        // Scrolled down: the link there, whichever it is.
+        view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
+        const QPoint last = on(QStringLiteral("the last docs"));
+        QVERIFY(port->rect().contains(last));
+        clipboard->setText(QStringLiteral("before"));
+        QCOMPARE(rightClick(port, last, "Copy Link Location"), able);
+        QCOMPARE(clipboard->text(), QStringLiteral("https://example.com/last"));
+        // Where the first would be were it not scrolled: on no link now.
+        QVERIFY(view->anchorAt(first).isEmpty());
+        QCOMPARE(rightClick(port, first), off);
+        // Scrolled along: a link further on in its line than the view has
+        // gone, beside a line of code wider than the view.
+        panel.newConversation();
+        feedReply(panel, QStringLiteral("Wide:\n\n```\n") + QString(600, QLatin1Char('x'))
+                             + QStringLiteral("\n```\n\nSome words in front of the link, all on their way to [it](https://example.com/along), and on."));
+        QScrollBar* across = view->horizontalScrollBar();
+        QTRY_VERIFY(across->maximum() > 200);
+        const auto inTheLink = [view] {   // (between its two letters)
+            QTextCursor c = view->document()->find(QStringLiteral("it,"));
+            c.setPosition(c.selectionStart() + 1);
+            return view->cursorRect(c).center();
+        };
+        // (Taking it 40 pixels from the view's edge: at that place of the
+        // document, words in front of it.)
+        across->setValue(inTheLink().x() - 40);
+        QVERIFY(across->value() > 80);
+        const QPoint along = inTheLink();
+        QVERIFY2(port->rect().contains(along), qPrintable(QString::number(along.x())));
+        QCOMPARE(view->anchorAt(along), QStringLiteral("https://example.com/along"));
+        clipboard->setText(QStringLiteral("before"));
+        QCOMPARE(rightClick(port, along, "Copy Link Location"), able);
+        QCOMPARE(clipboard->text(), QStringLiteral("https://example.com/along"));
+        // The same right to left, where a scroll bar counts from the other end.
+        view->setLayoutDirection(Qt::RightToLeft);
+        QTRY_VERIFY(across->maximum() > 200);
+        across->setValue(0);
+        across->setValue(across->maximum() - (inTheLink().x() - 40));
+        const QPoint mirrored = inTheLink();
+        QVERIFY2(port->rect().contains(mirrored), qPrintable(QString::number(mirrored.x())));
+        QCOMPARE(view->anchorAt(mirrored), QStringLiteral("https://example.com/along"));
+        const std::unique_ptr<QMenu> menu = panel.transcriptMenu(mirrored);
+        QVERIFY(menu->actions().value(1) != nullptr);
+        QCOMPARE(menu->actions().value(1)->text().remove(QLatin1Char('&')), QStringLiteral("Copy Link Location"));
+        QVERIFY(menu->actions().value(1)->isEnabled());
+        view->setLayoutDirection(Qt::LeftToRight);
+    }
+
+    // A reply's first block as its Markdown has it, whatever it opens with.
+    void aReplyOpensAsItsMarkdownHasIt()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replyopens");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextBrowser* view = panel.transcript();
+        QTextDocument* doc = view->document();
+        // A conversation of that reply: the block its words are in.
+        const auto opening = [&panel, doc](const QString& markdown, const QString& words) {
+            panel.newConversation();
+            feedReply(panel, markdown);
+            return doc->find(words, 0, QTextDocument::FindCaseSensitively).block();
+        };
+        const auto caption = QStringLiteral("● Claude");
+        // A plain paragraph, as it was: close under the caption, the next one
+        // apart by its own margin.
+        QTextBlock b = opening(QStringLiteral("Just words.\n\nMore words."), QStringLiteral("Just"));
+        QCOMPARE(b.previous().text(), caption);
+        QCOMPARE(b.blockFormat().topMargin(), 2.0);
+        QCOMPARE(b.blockFormat().bottomMargin(), 0.0);
+        QVERIFY(b.next().blockFormat().topMargin() > 0);
+        // Fenced code: as the lines after it, on the same shade.
+        b = opening(QStringLiteral("```\nfirst code line\nsecond code line\n```"), QStringLiteral("first code"));
+        QVERIFY(b.blockFormat().nonBreakableLines());
+        QVERIFY(b.blockFormat().hasProperty(QTextFormat::BlockCodeFence));
+        QCOMPARE(b.blockFormat().background(), b.next().blockFormat().background());
+        QCOMPARE(b.blockFormat().leftMargin(), b.next().blockFormat().leftMargin());
+        QCOMPARE(b.blockFormat().topMargin(), 2.0);
+        QCOMPARE(quoteOf(panel, "first code", "second code line"), QStringLiteral(">     first code line\n>     second code line\n\n"));
+        // Indented code.
+        b = opening(QStringLiteral("    indented first\n    indented second\n\nThen words."), QStringLiteral("indented first"));
+        QVERIFY(b.blockFormat().hasProperty(QTextFormat::BlockCodeLanguage));
+        QCOMPARE(b.blockFormat().background(), b.next().blockFormat().background());
+        // A heading.
+        b = opening(QStringLiteral("# A heading first\n\nThen words."), QStringLiteral("A heading"));
+        QCOMPARE(b.blockFormat().headingLevel(), 1);
+        // A quote: indented as its next paragraph is, with its bar beside it.
+        b = opening(QStringLiteral("> quoted first\n>\n> quoted second\n\nThen words."), QStringLiteral("quoted first"));
+        QCOMPARE(b.blockFormat().intProperty(QTextFormat::BlockQuoteLevel), 1);
+        QCOMPARE(b.blockFormat().leftMargin(), b.next().blockFormat().leftMargin());
+        QCOMPARE(b.blockFormat().topMargin(), 2.0);
+        {
+            QTextCursor words(b);
+            const int middle = view->cursorRect(words).center().y();
+            QList<QRectF> bars = qucs_s::markdown::QuoteBars::bars(view);
+            QVERIFY(std::any_of(bars.cbegin(), bars.cend(), [middle](const QRectF& bar) { return bar.top() <= middle && middle <= bar.bottom(); }));
+        }
+        QCOMPARE(quoteOf(panel, "quoted first", "quoted second"), QStringLiteral("> > quoted first\n>\n> > quoted second\n\n"));
+        // A rule: drawn, not an empty line.
+        b = opening(QStringLiteral("---\n\nAfter the rule."), QStringLiteral("After the rule")).previous();
+        QVERIFY(b.blockFormat().hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth));
+        QCOMPARE(b.previous().text(), caption);
+        // A list: its first item right under the caption, no empty line over it.
+        b = opening(QStringLiteral("- item one\n- item two"), QStringLiteral("item one"));
+        QVERIFY(b.textList() != nullptr);
+        QCOMPARE(b.next().textList(), b.textList());
+        QCOMPARE(b.previous().text(), caption);
+        QCOMPARE(b.blockFormat().topMargin(), 2.0);
+        QCOMPARE(quoteOf(panel, "item one", "item two"), QStringLiteral("> • item one\n> • item two\n\n"));
+        b = opening(QStringLiteral("7. seven\n8. eight"), QStringLiteral("seven"));
+        QCOMPARE(b.textList()->itemText(b), QStringLiteral("7."));
+        QCOMPARE(b.previous().text(), caption);
+        // A list of HTML's: the first block its first item, in Qt's reading.
+        b = opening(QStringLiteral("<ul><li>html one</li><li>html two</li></ul>"), QStringLiteral("html one"));
+        QVERIFY(b.textList() != nullptr);
+        QCOMPARE(b.next().textList(), b.textList());
+        // A table, display math: as they were.
+        b = opening(QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |"), QStringLiteral("b"));
+        QVERIFY(QTextCursor(b).currentTable() != nullptr);
+        b = opening(QStringLiteral("$$E = mc^2$$\n\nThen words."), QStringLiteral("Then")).previous();
+        QCOMPARE(b.blockFormat().alignment(), Qt::AlignHCenter);
+        QCOMPARE(mathIn(doc).size(), 1);
+        // Nothing to it yet: nothing goes, the mark of writing under the caption.
+        panel.newConversation();
+        feedPiece(panel, QStringLiteral("  "), true);
+        QVERIFY2(panel.transcriptText().endsWith(caption + QStringLiteral("\n ▍")), qPrintable(panel.transcriptText()));
+        // Being written: from its first piece, drawn in part as drawn whole.
+        panel.newConversation();
+        feedPiece(panel, QStringLiteral("```\nwriting first"), true);
+        b = doc->find(QStringLiteral("writing first")).block();
+        QVERIFY(b.blockFormat().nonBreakableLines());
+        feedPiece(panel, QStringLiteral("\nwriting second\n```\n\nThen words"));
+        b = doc->find(QStringLiteral("writing first")).block();
+        QVERIFY(b.blockFormat().nonBreakableLines());
+        const QTextBlockFormat inPart = b.blockFormat();
+        const int countInPart = doc->blockCount();
+        panel.renderNow(true);
+        QCOMPARE(doc->find(QStringLiteral("writing first")).block().blockFormat(), inPart);
+        QCOMPARE(doc->blockCount(), countInPart);
+        // After a line of tools, no caption of its own: the same.
+        panel.newConversation();
+        const QJsonObject use{{"type", "tool_use"}, {"id", "t1"}, {"name", "Read"}, {"input", QJsonObject{{"file_path", "/work/one.cpp"}}}};
+        const QJsonObject message{{"content", QJsonArray{use}}};
+        panel.session()->handleLine(QJsonDocument(QJsonObject{{"type", "assistant"}, {"message", message}}).toJson(QJsonDocument::Compact));
+        feedReply(panel, QStringLiteral("- after the tool\n- and on"));
+        b = doc->find(QStringLiteral("after the tool")).block();
+        QVERIFY(b.textList() != nullptr);
+        QVERIFY2(b.previous().text().contains(QStringLiteral("Read")), qPrintable(b.previous().text()));
     }
 
     // Conversations in tabs: to the composer of the one it was chosen in.
