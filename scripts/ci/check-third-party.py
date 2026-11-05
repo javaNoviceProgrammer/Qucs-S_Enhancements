@@ -26,9 +26,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 DATA = "qucs-s-26.1.1/qucs/tests/data/"
-# Lumerical's (DEVICE, MODE, FDTD, INTERCONNECT, data, scripts) and Zemax's
-# (OpticStudio's lens, archive, glass catalog) formats.
-VENDOR = (".ldev", ".lms", ".fsp", ".icp", ".lsf", ".ldf", ".zar", ".zmx", ".zos", ".zda", ".agf")
+# Lumerical's (DEVICE, MODE, FDTD, INTERCONNECT, data, scripts), Zemax's
+# (OpticStudio's lens, archive, glass catalog) and Electronics Desktop's (a
+# project, its layout database) formats.
+VENDOR = (".ldev", ".lms", ".fsp", ".icp", ".lsf", ".ldf", ".zar", ".zmx", ".zos", ".zda", ".agf", ".aedt", ".aedtz", "edb.def")
 # Ours: each written by its generator.
 OURS = {
     DATA + "lumerical_charge.ldev": DATA + "lumerical_projects.py",
@@ -45,7 +46,7 @@ OURS = {
 # A vendor's copyright line (its examples carry one); not a trademark notice.
 NOTICE = re.compile(r"(copyright|\(c\)|©)[^\n]{0,40}\b(ansys|lumerical|zemax|synopsys)\b", re.IGNORECASE)
 TEXT = (".cpp", ".h", ".py", ".md", ".txt", ".json", ".qfem", ".sch", ".cmake", ".sh", ".yml", ".html", ".csv", ".lsf")
-POSSESSIVE = re.compile(r"\b(Lumerical|Ansys|ANSYS|Zemax|OpticStudio)'s\b")
+POSSESSIVE = re.compile(r"\b(Lumerical|Ansys|ANSYS|Zemax|OpticStudio|HFSS)'s\b")
 
 
 def strings(text):
