@@ -986,7 +986,7 @@ void ClaudeCodePanel::buildPermissionCard()
     a_cardDetail->setLineWrapMode(QPlainTextEdit::NoWrap);
     a_cardDetail->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(a_cardDetail, &QWidget::customContextMenuRequested, this, [this](const QPoint& at) {
-        std::unique_ptr<QMenu> menu(a_cardDetail->createStandardContextMenu(at));
+        std::unique_ptr<QMenu> menu(a_cardDetail->createStandardContextMenu());
         if (menu == nullptr) return;
         offerReply(menu.get(), readSelection(a_cardDetail->textCursor()));
         menu->exec(a_cardDetail->viewport()->mapToGlobal(at));
@@ -2681,7 +2681,13 @@ void ClaudeCodePanel::onTurnFinished(const qucs_s::claude::TurnResult& r)
 // ----------------------------------------------------------------------
 std::unique_ptr<QMenu> ClaudeCodePanel::transcriptMenu(const QPoint& at)
 {
-    std::unique_ptr<QMenu> menu(a_view->createStandardContextMenu(at));
+    // (It takes a point of the document, where Copy Link Location looks for
+    // its link: \a at, as far on as the view is scrolled. Given \a at itself,
+    // the item was off on a link in a conversation scrolled down, and on, with
+    // another link, where one would be were it not.)
+    const QScrollBar* along = a_view->horizontalScrollBar();
+    const QPoint scrolled(a_view->isRightToLeft() ? along->maximum() - along->value() : along->value(), a_view->verticalScrollBar()->value());
+    std::unique_ptr<QMenu> menu(a_view->createStandardContextMenu(at + scrolled));
     if (menu == nullptr) return menu;
     // Text selected: quoted in the composer (the user, 4 November: "a 'Reply'
     // menu item ... similar to how Claude desktop app has"). As it reads now:
@@ -3581,6 +3587,27 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
     qucs_s::markdown::setMarkdown(&doc, md);
     c.insertFragment(QTextDocumentFragment(&doc));
     QTextDocument* target = c.document();
+    // The fragment's first block goes into the block the cursor is in, and has
+    // that block's format: a reply opening with code, a heading or a quote had
+    // its first block drawn as plain text. Its own now, only as far under what
+    // is above it as the block was. (A plain paragraph as it was.) A list or a
+    // rule comes in a block of its own, after that one: the empty one taken
+    // out, an empty line no more, what follows as far under what is above it.
+    QTextBlockFormat opening = doc.begin().blockFormat();
+    QTextBlockFormat beyondMargins = opening;
+    beyondMargins.clearProperty(QTextFormat::BlockTopMargin);
+    beyondMargins.clearProperty(QTextFormat::BlockBottomMargin);
+    QTextCursor first(target->findBlock(from));
+    const qreal above = first.blockFormat().topMargin();
+    if (doc.begin().textList() == nullptr && !beyondMargins.isEmpty()) {
+        opening.setTopMargin(above);
+        first.setBlockFormat(opening);
+    } else if (first.block().length() == 1) {
+        first.deleteChar();   // (not before a table, nor at the end: none there to take)
+        QTextBlockFormat next = first.blockFormat();
+        next.setTopMargin(above);
+        first.setBlockFormat(next);
+    }
     // Code on a shade, set off from the text.
     for (QTextBlock b = target->findBlock(from); b.isValid() && b.position() <= c.position(); b = b.next()) {
         const QTextBlockFormat bf = b.blockFormat();

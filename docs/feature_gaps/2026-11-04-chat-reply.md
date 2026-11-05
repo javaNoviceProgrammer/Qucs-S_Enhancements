@@ -87,7 +87,8 @@ not the conversation.
 
 In `test_claude_code`, all through `rightClick()`: a right click sent through the window as a mouse's is (it goes through
 `QWidgetWindow` and the context-menu event, not to the widget directly), and a click on the item in the real `QMenu`. The
-keys are checked once, Down and Return.
+keys are checked once, Down and Return. The helper looks for the menu until it is up: its first form used a timer of 30 ms,
+which on a busy machine went off before the click was dealt with (a break run showed it, with a menu left up for 60 s).
 
 | Function | Holds |
 |---|---|
@@ -103,6 +104,8 @@ keys are checked once, Down and Return.
 | `replyGoesToTheTabItWasChosenIn` | Each its own composer, also with another tab brought forward while the menu is up |
 | `replyFromThePermissionCard` | Both places, Copy and Select All on the label, nothing answered |
 | `replyAboveTheUsualEntriesBesideOpenInViewer` | Open in Viewer, a line, Reply, a line, the usual items; a reply's and a prompt's picture in the quote |
+| `copyLinkLocationIsOfTheLinkUnderThePointer` | The link under the pointer, scrolled down, scrolled along, and right to left; none where there is none |
+| `aReplyOpensAsItsMarkdownHasIt` | A first block of code, indented code, a heading, a quote, a rule, a list and an HTML list, a table, display math, a plain paragraph; being written, drawn in part as drawn whole |
 | `theConversationsTextTakesTheKeys` (added to) | In the real main window with a schematic open and all of it chosen: the quote, the focus, and what is typed next going to the composer, the schematic untouched |
 
 `test_claude_fuzz` now does it too. `fuzzThePanel` selects anywhere, quotes, and checks that the draft is kept and that
@@ -117,7 +120,7 @@ of the same test. Three were tests that did not do what they said: a backward se
 up to an item's start that the "words alone" path hid, and a scrolled-up view whose selection was in a part not drawn again.
 Those tests were changed. The ninth was a step in the panel that did nothing: it turned non-breaking spaces into plain ones,
 which the composer's `toPlainText()` does anyway, so the step went. The second run, of 71, left two more needles, which were
-corrected and those two run again.
+corrected and those two run again. With the two fixes under "Seen in passing" it has 81, and a whole run left none.
 
 ## What was run
 
@@ -125,8 +128,8 @@ corrected and those two run again.
 |---|---|
 | `test_claude_code`, whole, Release | Passes |
 | The same with `QT_SCALE_FACTOR=2` (the 15 new functions) | Passes |
-| `test_claude_code` and `test_claude_fuzz` under ASan and UBSan, as CI's Linux job builds them | Pass, 94 s and 15 s |
-| Full ctest in Release, the machine quiet (load average about 10) | 162 of 162 |
+| `test_claude_code` and `test_claude_fuzz` under ASan and UBSan, as CI's Linux job builds them | Pass, 94 s and 15 s; with the fixes 183 s and 33 s, the machine busy, and fuzz seeds 2, 3, 4 at 600 steps with no finding |
+| Full ctest in Release, the machine quiet (load average about 10) | 162 of 162, for the feature; for the fixes too, at a load of about 20 |
 | The same under other sessions' load (load average 30 to 80) | 161 of 162; `test_git_integration` failed with a dialog left open across its functions and passed alone. An earlier run of the nearly final sources had the same with `test_file_browser`, and with `aReaderScrolledUpStaysPut`'s 2 px (written up as a load flake in `2026-11-03-multiphysics-3d-phase-b.md`), each passing alone |
 | `test_claude_fuzz`, seeds 1 to 3 at 800 steps, 11 and 12 at 150 s a function | No finding of the quote's or the selection's, 288 and 266 Replies in the panel's fuzz. Seed 11's dock had one other finding: see "Seen in passing" |
 | `fuzzTheDock` again, seed 11 twice and 21, 31, 41, at 150 to 170 s | No finding |
@@ -162,19 +165,28 @@ transcript's own. For a Select All over one reply of a single unbroken run, Rele
 The break characters that would avoid this are the ones a quote must not hold, so nothing is done about it. Ordinary
 text is cheap: the 2.2 MB above is 30,000 paragraphs.
 
-## Seen in passing, not changed
+## Seen in passing
 
-1. **Copy Link Location is greyed on a link once the conversation is scrolled.** `transcriptMenu()` hands
+The user, of the first two: "Yes, fix them". They were fixed in the commit after the feature's.
+
+1. **Copy Link Location was greyed on a link once the conversation was scrolled. Fixed.** `transcriptMenu()` handed
    `createStandardContextMenu()` a point in the viewport, and it wants one in the document. At a view scrolled by 2091 px
-   the item was off with `anchorAt()` finding the link at that point. In the code since `dc49cc0`.
-2. **A reply that opens with a code block, a heading or a quote draws its first block as plain text.** The first block of
-   a fragment takes the format of the block it goes into: the first line of such a code block is not shaded and wraps, and
-   a quote made from it shows that line as a paragraph. A list is not affected, since Qt puts an empty block first.
-
-3. **One long fuzz run reported a line the dock wrote as not JSON.** `fuzzTheDock`, seed 11, 150 s: a long MCP answer, of
-   which the report keeps the first 200 characters. It did not come back in five more runs with the check made to say
-   more. Nothing in this work writes to the program. The fake program is `cat`, stopped when its tab closes, and a long line
-   stopped part-way would read so; that is a reading, not proved. CI's short pass has no texts that long.
+   the item was off with `anchorAt()` finding the link at that point, and where a link would have been were the view not
+   scrolled it was on, and copied that other link. In the code since `dc49cc0`. The point is now moved on by how far the
+   view is scrolled, down and along, as Qt's own context-menu event does (right to left, a scroll bar counts from its
+   other end). The permission card's details have no links, so their menu now gets no point at all.
+2. **A reply that opened with a code block, a heading or a quote drew its first block as plain text. Fixed.** The first
+   block of a fragment takes the format of the block it goes into: the first line of such a code block was not shaded and
+   wrapped, a heading lost its level, and a quote's first paragraph lost its indent and its bar (and a Reply read it as a
+   paragraph). `renderMarkdown()` now gives that block its own format, keeping only how far it is under the caption. A plain
+   first paragraph is left as it was, to the pixel. A list or a rule was not hit by this but had its own fault of the same
+   place, an empty line over it: a list's first item, or a rule, comes in a block of its own after the one the reply starts
+   in. That empty block is now taken out. Before a table it stays: it cannot be removed (it ends in the frame's start) and
+   Qt does not draw it.
+3. **One long fuzz run reported a line the dock wrote as not JSON. Not changed.** `fuzzTheDock`, seed 11, 150 s: a long MCP
+   answer, of which the report keeps the first 200 characters. It did not come back in five more runs with the check made to
+   say more. Nothing in this work writes to the program. The fake program is `cat`, stopped when its tab closes, and a long
+   line stopped part-way would read so; that is a reading, not proved. CI's short pass has no texts that long.
 
 ## Not exercised
 
