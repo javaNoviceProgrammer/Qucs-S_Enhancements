@@ -1,19 +1,10 @@
-# Continuous integration: a Debug build instrumented with AddressSanitizer and
-# UndefinedBehaviorSanitizer, then the QtTest unit tests (qucs/tests) and the
-# headless smoke tests over the shipped examples (scripts/ci/smoke-test.sh),
-# on Linux; plus Release builds on macOS (with the unit tests) and Windows
-# (MSYS2), so a platform break shows on the push that made it and not on
-# release day (WS2.1 of ENHANCEMENT_PROPOSAL.md). Release packaging for all
-# platforms lives in release.yml.
+# A trial, on a ci/ branch only: what the sanitized Linux job's time is made of
+# (docs/proposals/2026-11-05-linux-ci-time.md). Not for main: main's ci.yml has
+# the three platforms' jobs.
 name: CI
 
 on:
   push:
-    paths-ignore:
-      - '**.md'
-      - 'bin/**'
-      - 'LICENSE'
-  pull_request:
     paths-ignore:
       - '**.md'
       - 'bin/**'
@@ -26,60 +17,41 @@ concurrency:
 
 env:
   SRC_DIR: qucs-s-26.1.1
-  # Never use the distro Qt on Ubuntu 24.04 (6.4.2): its QProcess crashes on
-  # every start because of the forkfd_pidfd bug (upstream #1543, QTBUG-98951).
   QT_VERSION: 6.10.3
 
 jobs:
-  linux-asan:
-    name: Linux · Debug + ASan/UBSan · smoke tests
-    runs-on: ubuntu-24.04
-    # The build takes about half an hour and the unit tests under the
-    # sanitizers 40 to 55 minutes (the multiphysics tests most of it): with
-    # the smoke tests, past 90 minutes on a busy runner (October 2026). The
-    # semiconductor devices' tests (test_fem_devices) some 25 minutes more
-    # there since: the job some 150. From mid-October the runners took twice
-    # that on the same image and compiler (the build 27 minutes, then 43;
-    # test_fem_pde 144 s, then 294) and the job ran out of its 210 minutes:
-    # the tests now run four at a time, their limits three times theirs.
-    # 222.6 of those 240 minutes on 91450f4 (19 October): 330, below the
-    # hosted runners' 360 (the hunt of 19 October, C3).
-    timeout-minutes: 330
+  sanitized:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The whole job, as main's.
+          - { label: 'x86 O1 g1 full', os: ubuntu-24.04, qt_host: linux, qt_arch: linux_gcc_64, debug: '-O1 -g1', full: true, ccache: false }
+          - { label: 'x86 Og g1 full', os: ubuntu-24.04, qt_host: linux, qt_arch: linux_gcc_64, debug: '-Og -g1', full: true, ccache: false }
+          - { label: 'arm O1 g1 full', os: ubuntu-24.04-arm, qt_host: linux_arm64, qt_arch: linux_gcc_arm64, debug: '-O1 -g1', full: true, ccache: false }
+          - { label: 'arm O0 g full', os: ubuntu-24.04-arm, qt_host: linux_arm64, qt_arch: linux_gcc_arm64, debug: '-O0 -g', full: true, ccache: false }
+          # The build alone: debug info's share of it, and what ccache keeps.
+          - { label: 'x86 O0 g1 build', os: ubuntu-24.04, qt_host: linux, qt_arch: linux_gcc_64, debug: '-O0 -g1', full: false, ccache: false }
+          - { label: 'x86 O0 g ccache', os: ubuntu-24.04, qt_host: linux, qt_arch: linux_gcc_64, debug: '-O0 -g', full: false, ccache: true }
+          - { label: 'x86 O1 g1 ccache', os: ubuntu-24.04, qt_host: linux, qt_arch: linux_gcc_64, debug: '-O1 -g1', full: false, ccache: true }
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
+      CCACHE_MAXSIZE: 40G
     steps:
       - uses: actions/checkout@v4
 
-      # Before the build, in a second: every argument a Claude tool reads is
-      # in its schema - a call with one it lacks is refused - and the other
-      # way round (see scripts/ci/check-tool-arguments.py).
-      - name: Claude's tools take what they read
-        run: python3 scripts/ci/check-tool-arguments.py
+      - name: The machine
+        run: |
+          lscpu
+          nproc
+          free -h
+          df -h / /mnt 2>/dev/null || true
 
-      # No list of one list written as QJsonArray{QJsonArray{...}}: a copy
-      # to Apple's newer clang, a nesting to the others (see
-      # scripts/ci/check-json-nesting.py).
-      - name: Lists of one list are nested on every compiler
-        run: python3 scripts/ci/check-json-nesting.py
-
-      # No vendor's own project, script or data file - Ansys's examples stay
-      # out of the repository - and no vendor's copyright line (see
-      # scripts/ci/check-third-party.py).
-      - name: No vendor's files in the repository
-        run: python3 scripts/ci/check-third-party.py
-
-      # The GPU viewers' shaders compiled from their sources and in the
-      # resources: CI builds them without Qt Shader Tools (see
-      # scripts/ci/check-shaders.py, scripts/compile-shaders.sh).
-      - name: The shaders are compiled
-        run: python3 scripts/ci/check-shaders.py
-
-      # Room on the disk: some runners have no spare disk at /mnt and 12 GB
-      # free on their root, where the swap below took 8 of them and the build
-      # ran out of space at its 661st step of 2362 ("No space left on
-      # device", 934b0de's run of 2 November). The image's SDKs this job
-      # never uses go first - Android's, .NET's, Haskell's, Swift's and
-      # CodeQL's (the Python install-qt-action sets up is in the same tool
-      # cache, and stays) -, how much that frees said by the disk before and
-      # after.
       - name: Room on the disk
         run: |
           df -h /
@@ -93,29 +65,22 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build flex bison gperf dos2unix \
             libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev \
-            ngspice fonts-dejavu-core
+            ngspice fonts-dejavu-core ccache zstd
           ngspice --version | sed -n '2p'
+          gcc --version | head -1
+          ccache --version | head -1
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
-          host: linux
+          host: ${{ matrix.qt_host }}
           target: desktop
-          arch: linux_gcc_64
+          arch: ${{ matrix.qt_arch }}
           modules: qtcharts qtpdf
           cache: true
           install-deps: true
 
-      # More memory for the build: its job was killed three times on bacbec0
-      # (21 October) at the same point - "the runner has received a shutdown
-      # signal", mid-build, four compilers at once (a sanitized Debug
-      # qcustomplot.cpp among them) while the tests linked -, as a runner
-      # out of memory is. Up to 8 GB of swap beside the image's own, on the
-      # spare disk where the runner has one - /mnt, a filesystem of its own
-      # - else on the root, past 15 GB kept there for the build and the tests
-      # (the build 7.4 GB, then the tests' and smoke tests' output); none
-      # where the disk cannot spare 1 GB. The memory and disks said.
       - name: Swap for the build
         run: |
           free -h
@@ -142,31 +107,35 @@ jobs:
           fi
           free -h
 
-      # The tests share one library of the core (QUCS_SHARED_TEST_CORE):
-      # each linking its own copy, with this build's debug info, came to
-      # 89 GB, more than the runner's free disk ("No space left on device"
-      # at link, October 2026); shared, the build is 7.4 GB.
-      - name: Configure (Debug, ASan + UBSan)
+      # The least memory left, every 20 s, from here to the job's end.
+      - name: Watch the memory
         run: |
+          nohup bash -c 'while :; do echo "$(date +%T) $(awk "/^MemAvailable|^SwapFree/{print \$2}" /proc/meminfo | xargs)"; sleep 20; done' > "$RUNNER_TEMP/mem.log" 2>&1 &
+          disown
+
+      - name: Configure
+        run: |
+          launcher=""
+          if [ "${{ matrix.ccache }}" = "true" ]; then launcher="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"; fi
           cmake -S "$SRC_DIR" -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS_DEBUG="${{ matrix.debug }}" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DQUCS_SHARED_TEST_CORE=ON \
             -DQUCS_TEST_TIMEOUT_SCALE=3 \
-            -DGIT="${GITHUB_SHA::7}"
+            -DGIT="${GITHUB_SHA::7}" $launcher
 
       - name: Build
-        # The build runs the freshly built qucsator_rf to generate
-        # qucsdefs.h; LeakSanitizer (on by default on Linux) would fail it.
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: cmake --build build --parallel
+        run: |
+          cat /proc/stat | head -1
+          cmake --build build --parallel
+          cat /proc/stat | head -1
 
-      # How much room the build left, and what takes it: the next growth
-      # shows here first.
-      - name: Disk left after the build
+      - name: After the build
         run: |
           free -h
           df -h /
@@ -174,142 +143,215 @@ jobs:
           du -sh build/qucs/tests build/qucs/CMakeFiles build/qucsator_rf 2>/dev/null || true
           find build/qucs/tests -maxdepth 1 -type f \( -perm -u+x -o -name '*.so' \) -printf '%s %p\n' \
             | sort -n | awk '{ total += $1 } END { printf "tests and their library: %d files, %.1f GB\n", NR, total / 2^30 }
-                            { last = $0 } END { print "largest: " last }' 
+                            { last = $0 } END { print "largest: " last }'
+          find build -name '*.o' -printf '%s\n' | awk '{ t += $1 } END { printf "objects: %d, %.1f GB\n", NR, t / 2^30 }'
+          find build -name '*.a' -printf '%s\n' | awk '{ t += $1 } END { printf "archives: %d, %.1f GB\n", NR, t / 2^30 }'
+          echo "least available and swap free, in kB:"
+          sort -k2 -n "$RUNNER_TEMP/mem.log" | head -1
+          sort -k3 -n "$RUNNER_TEMP/mem.log" | head -1
+          if [ "${{ matrix.ccache }}" = "true" ]; then ccache -s -v; du -sh "$CCACHE_DIR"; fi
 
-      # As many at a time as the runner has processors (four), each test's
-      # limit and QtTest's per function three times theirs (the configure's
-      # QUCS_TEST_TIMEOUT_SCALE): a slow runner's time is not a failure. Its
-      # processors said, the next slow run's machine on record.
+      - name: Every object from the cache, nothing linked yet
+        if: ${{ matrix.ccache }}
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          rm -rf build
+          launcher="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          cmake -S "$SRC_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS_DEBUG="${{ matrix.debug }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DQUCS_SHARED_TEST_CORE=ON \
+            -DQUCS_TEST_TIMEOUT_SCALE=3 \
+            -DGIT="trial01" $launcher > /dev/null
+          ccache -z
+          SECONDS=0
+          cmake --build build --parallel
+          echo "the build again from the cache: $SECONDS s"
+          ccache -s -v
+          du -sh "$CCACHE_DIR"
+          tar -C "$CCACHE_DIR/.." -cf - .ccache | zstd -T0 -1 | wc -c
+
+      - name: What the tests would need, packed
+        if: ${{ !matrix.ccache }}
+        run: |
+          SECONDS=0
+          tar --exclude='*.o' --exclude='*.a' -cf - build | zstd -T0 -3 | wc -c
+          echo "packed in $SECONDS s"
+
+      # What the sanitizers' run-time options cost, on one test alone.
+      - name: The run-time options
+        if: ${{ !matrix.full }}
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ASAN_OPTIONS=help=1 build/qucs/tests/test_fem_physics 2>&1 | grep -E -A1 'detect_stack_use_after_return|malloc_context_size|^\s*quarantine_size_mb|max_uar_stack_size_log|min_uar_stack_size_log' || true
+          t=build/qucs/tests/test_fem_physics
+          for o in detect_leaks=0 \
+                   detect_leaks=0:detect_stack_use_after_return=0 \
+                   detect_leaks=0:malloc_context_size=5 \
+                   detect_leaks=0:detect_stack_use_after_return=0:malloc_context_size=5 \
+                   detect_leaks=0; do
+            SECONDS=0
+            ASAN_OPTIONS=$o UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$t" > /dev/null 2>&1
+            echo "$o: rc=$? $SECONDS s"
+          done
+
       - name: Unit tests (QtTest, headless)
+        if: ${{ matrix.full }}
         run: |
           echo "$(nproc) processors: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
+          cat /proc/stat | head -1
           ctest --test-dir build --output-on-failure --parallel "$(nproc)"
+          cat /proc/stat | head -1
+
+      - name: Memory the tests left
+        if: ${{ always() && matrix.full }}
+        run: |
+          cat /proc/stat | head -1
+          echo "least available and swap free, in kB:"
+          sort -k2 -n "$RUNNER_TEMP/mem.log" | head -1
+          sort -k3 -n "$RUNNER_TEMP/mem.log" | head -1
+          df -h /
 
       - name: Smoke test · load and render every ngspice example
+        if: ${{ always() && matrix.full }}
         run: scripts/ci/smoke-test.sh load build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
       - name: Smoke test · netlist → ngspice → dataset → render
+        if: ${{ always() && matrix.full }}
         run: scripts/ci/smoke-test.sh simulate build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
-      # Regression guard for the dataset-loader crashes fixed in WS1.1
-      # (ENHANCEMENT_PROPOSAL.md §1.2): blocking, must stay green.
       - name: Smoke test · hostile datasets
+        if: ${{ always() && matrix.full }}
         run: scripts/ci/smoke-test.sh hostile build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
 
-      # Damaged schematics and datasets through the loader, netlister and
-      # renderer; the simulate suite's work directory supplies schematics
-      # with real ngspice datasets next to them. A fixed seed makes the run
-      # reproducible; failures keep the mutant under smoke-out/fuzz/findings/
-      # (see scripts/ci/fuzz-sch.py).
       - name: Fuzz · mutated example schematics and datasets
+        if: ${{ always() && matrix.full }}
         run: python3 scripts/ci/fuzz-sch.py build/qucs/qucs-s "$SRC_DIR/examples" smoke-out/fuzz --count 150 --seed 1 --timeout 120 --extra smoke-out/simulate/work
 
-      # Damaged ngspice output (the raw files the simulate suite stashed)
-      # through the parsers behind every "Simulate" click, via the harness
-      # in qucs/tests/simout_harness.cpp.
       - name: Fuzz · mutated simulator output
+        if: ${{ always() && matrix.full }}
         run: python3 scripts/ci/fuzz-simout.py build/qucs/tests/simout_harness smoke-out/simulate/work smoke-out/fuzz-simout --count 150 --seed 1 --timeout 120
 
-      # The same into binary datasets (datasetfile.h): a raw file's header
-      # read, its values taken whole when it is a plain one.
       - name: Fuzz · mutated simulator output into binary datasets
+        if: ${{ always() && matrix.full }}
         env:
           QUCS_DATASET_FORMAT: binary
         run: python3 scripts/ci/fuzz-simout.py build/qucs/tests/simout_harness smoke-out/simulate/work smoke-out/fuzz-simout-binary --count 100 --seed 2 --timeout 120
 
-      - name: Upload smoke-test logs and renders
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-output
-          path: |
-            smoke-out/**/*.log
-            smoke-out/**/*.png
-            smoke-out/fuzz/findings/**
-            smoke-out/fuzz-simout/findings/**
-            smoke-out/fuzz-simout-binary/findings/**
-          retention-days: 14
-          if-no-files-found: ignore
-
-  macos-build:
-    name: macOS · Release build · unit tests
-    runs-on: macos-15
-    # The build some 28 minutes and the tests, one at a time, 31 at ce8d2b0
-    # (October 2026): past the 60 the job had. The tests now run as many at
-    # a time as the runner has processors (three).
-    timeout-minutes: 90
+  # The build handed to another runner: what a split job would pay.
+  hand-over-build:
+    name: Hand over · build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+
+      - name: Room on the disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build flex bison gperf dos2unix \
+            libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev \
+            ngspice fonts-dejavu-core zstd
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
-          host: mac
+          host: linux
           target: desktop
-          arch: clang_64
+          arch: linux_gcc_64
           modules: qtcharts qtpdf
           cache: true
+          install-deps: true
 
-      - name: Install build dependencies
+      - name: Swap for the build
         run: |
-          brew install ninja gperf dos2unix bison flex
-          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix flex)/bin"  >> "$GITHUB_PATH"
+          sudo fallocate -l 8G /swapfile-ci
+          sudo chmod 600 /swapfile-ci
+          sudo mkswap /swapfile-ci > /dev/null
+          sudo swapon /swapfile-ci
 
-      - name: Configure (Release)
+      - name: Configure
         run: |
           cmake -S "$SRC_DIR" -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS_DEBUG="-O1 -g1" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DQUCS_SHARED_TEST_CORE=ON \
+            -DQUCS_TEST_TIMEOUT_SCALE=3 \
             -DGIT="${GITHUB_SHA::7}"
 
       - name: Build
+        env:
+          ASAN_OPTIONS: detect_leaks=0
         run: cmake --build build --parallel
 
-      - name: Unit tests (QtTest, headless)
-        env:
-          QT_QPA_PLATFORM: offscreen
+      - name: Pack
         run: |
-          echo "$(sysctl -n hw.ncpu) processors: $(sysctl -n machdep.cpu.brand_string)"
-          ctest --test-dir build --output-on-failure --parallel "$(sysctl -n hw.ncpu)"
+          tar --exclude='*.o' --exclude='*.a' -cf - build | zstd -T0 -3 > build.tar.zst
+          ls -la build.tar.zst
 
-  windows-build:
-    name: Windows · Release build (MSYS2 ucrt64)
-    runs-on: windows-2022
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: msys2 {0}
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitized-build
+          path: build.tar.zst
+          compression-level: 0
+          retention-days: 1
+
+  hand-over-tests:
+    name: Hand over · tests
+    needs: hand-over-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - name: Keep LF line endings
-        shell: pwsh
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-
       - uses: actions/checkout@v4
 
-      - name: Set up MSYS2 (ucrt64)
-        uses: msys2/setup-msys2@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev \
+            ngspice fonts-dejavu-core zstd
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
         with:
-          msystem: ucrt64
-          update: true
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtcharts qtpdf
           cache: true
-          install: bison flex dos2unix
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p
+          install-deps: true
 
-      - name: Configure and build (Release)
-        run: |
-          cmake -S "$SRC_DIR" -B "$SRC_DIR/build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DGIT="${GITHUB_SHA::7}"
-          cmake --build "$SRC_DIR/build" --parallel
+      - name: Download
+        uses: actions/download-artifact@v4
+        with:
+          name: sanitized-build
 
-      - name: Bundle as the release does, and check it as a PC without MSYS2 runs it
-        timeout-minutes: 30
-        # A DLL the bundle lacks shows here, on the push that made it - not
-        # on a user's first start (26.1.3 shipped without Qt6Network.dll).
+      - name: Unpack
         run: |
-          cmake --install "$SRC_DIR/build" --prefix "$SRC_DIR/build/qucs-suite"
-          bash scripts/ci/windows-bundle.sh deploy "$SRC_DIR/build/qucs-suite/bin" ucrt64
-          bash scripts/ci/windows-bundle.sh check "$SRC_DIR/build/qucs-suite/bin" ucrt64 "$SRC_DIR/examples/ngspice/General Electronics/RC_filter_FFT.sch"
+          zstd -d -c build.tar.zst | tar -xf -
+          du -sh build
+          rm build.tar.zst
+
+      - name: Tests of each kind
+        run: ctest --test-dir build --output-on-failure --parallel 4 -R '^(test_fem_physics|test_rf25_model|test_markdown_doc|test_mcp_server|test_python_tools|test_library_export|test_build_commit)$'
+
+      - name: Smoke test · hostile datasets
+        run: scripts/ci/smoke-test.sh hostile build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
