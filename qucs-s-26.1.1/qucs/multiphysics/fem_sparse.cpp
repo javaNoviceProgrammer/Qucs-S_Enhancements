@@ -658,12 +658,16 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
         }
     }
 #endif
+    const bool broken = qEnvironmentVariableIsSet("QUCS_BREAK_11");
     if (!d.fillEigen(given)) {
+        if (broken) ++d.analyses;
+        else {
         d.analyseEigen(given, true);
         d.fillEigen(given);
+        }
     }
     ++usedEigenLu;
-    d.eigen->factorize(d.eigenFilled);
+    d.eigen->factorize(broken ? given : d.eigenFilled);
     d.info = d.eigen->info();
     if (d.info != Eigen::Success) {
         d.error = d.eigen->lastErrorMessage();

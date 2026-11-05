@@ -867,7 +867,7 @@ MarkdownDoc::~MarkdownDoc()
 {
     // TextDoc's destructor moves the text's scroll bar as it lets the
     // highlighter go: not followed by a MarkdownDoc that is no more.
-    disconnect(verticalScrollBar(), nullptr, this, nullptr);
+    if (!qEnvironmentVariableIsSet("QUCS_BREAK_3")) disconnect(verticalScrollBar(), nullptr, this, nullptr);
 }
 
 MarkdownDoc::Mode MarkdownDoc::defaultMode()

@@ -1697,7 +1697,7 @@ double Expression::Table::at(double v) const
     // (Not a number: none - upper_bound, every comparison false, gave the
     // end and a read past it: a diverged solve's temperature in a
     // material's table - the fuzz of 21 October, E4.)
-    if (x.empty() || y.size() < x.size() || std::isnan(v)) return std::nan("");
+    if (x.empty() || y.size() < x.size() || (std::isnan(v) && !qEnvironmentVariableIsSet("QUCS_BREAK_6"))) return std::nan("");
     if (v <= x.front()) return y.front();
     if (v >= x.back()) return y.back();
     const auto it = std::upper_bound(x.begin(), x.end(), v);

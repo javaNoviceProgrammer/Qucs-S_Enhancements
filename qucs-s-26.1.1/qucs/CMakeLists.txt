@@ -152,7 +152,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(/permissive- /Zc:__cplusplus /Zc:preprocessor /MP /Od /vmg)
         add_compile_options(/wd4244 /wd4267 /wd4312)
     else()
-        add_compile_options(-Wall -Wextra -O0 -g)
+        add_compile_options(-Wall -Wextra)
         if (CMAKE_CXX_COMPILER_ID MATCHES "^AppleClang$|^Clang$")
             add_compile_options(-Wno-ignored-attributes
                 -Wno-inconsistent-missing-override -Wno-overloaded-virtual)

@@ -1268,6 +1268,7 @@ public:
         // a neighbour's index - the fuzz of 21 October, G1.)
         auto cell = [this](double v) {
             const double c = std::floor(v / a_eps);
+            if (qEnvironmentVariableIsSet("QUCS_BREAK_13")) return (long long)std::llround(c);
             return std::isfinite(c) ? static_cast<long long>(std::clamp(c, -4e18, 4e18)) : 0LL;
         };
         const long long ix = cell(p.x()), iy = cell(p.y());

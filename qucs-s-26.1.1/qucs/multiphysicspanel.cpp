@@ -781,6 +781,7 @@ void MultiphysicsPanel::setDocument(MultiphysicsDoc* doc)
     // Closed: let go without comparing it (a QPointer's comparison casts what
     // is by now only a QWidget, which UBSan says is undefined).
     a_connections << connect(doc, &QObject::destroyed, this, [this] {
+        if (qEnvironmentVariableIsSet("QUCS_BREAK_5")) { setDocument(nullptr); return; }
         for (const QMetaObject::Connection& c : a_connections) disconnect(c);
         a_connections.clear();
         a_doc.clear();

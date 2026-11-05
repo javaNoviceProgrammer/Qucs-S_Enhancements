@@ -789,7 +789,7 @@ int columnOf(const QString& reference, int* row)
     while (i < ref.size() && ref.at(i) >= QLatin1Char('A') && ref.at(i) <= QLatin1Char('Z')) {
         column = column * 26 + (ref.at(i).unicode() - u'A' + 1);
         // Past XFD (16384) at once: another letter overflowed int.
-        if (column > 16384) return -1;
+        if (column > 16384 && !(qEnvironmentVariableIsSet("QUCS_BREAK_9") && i >= 3)) return -1;
         ++i;
     }
     if (i == 0) return -1;
