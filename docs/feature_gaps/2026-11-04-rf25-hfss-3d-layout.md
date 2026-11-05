@@ -76,7 +76,7 @@ a `.qrf25` (and a `.gds` of its name where the shapes are in no file already) an
 | Given | Read as |
 |---|---|
 | An exported `.py` | The same model. Its layout file where it still is, else the `.gds` beside the script, else the shapes in the line |
-| An `.xml` control file and its `.gds` | Stack, materials, layer map, circuit ports (as internal ports), sweep. The lowest layer that covers the design becomes the ground plane |
+| An `.xml` control file and its `.gds` | Stack, materials, layer map, circuit ports (as internal ports), sweep. A lowest layer under other metals, one whole shape of it covering the design, becomes the ground plane |
 | An `.aedt`, its `.aedb` folder or `edb.def` | A project made anywhere: stack, materials, shapes with voids and arcs, vias, edge and point ports, sweep. Sections 3 and 4 say how far |
 
 It writes over nothing unless told (`replace`, or Yes in the menu's question).
@@ -119,7 +119,7 @@ ports on two signal layers), imported directly from `edb.def` and solved:
   signal off the planes.
 - Exported again it has the 18 voids and separate nets for GND, each signal and each VCC plane.
 
-Five defects came only from this real project, and a test now holds each (section 5).
+Five defects came only from this real project, and a sixth from driving the packaged app; a test now holds each (section 5).
 
 ## 3. The shapes in `edb.def`
 
@@ -240,7 +240,7 @@ Each is in the export's `notes` where it applies, in the script's head, and in t
 
 | HFSS 3D Layout | RF 2.5D |
 |---|---|
-| Lowest signal layer, covering the design with nothing cut from it | The ground plane, without end; said. Perfect, or Metal where it has a finite conductivity |
+| Lowest signal layer, under other metals, one shape of it covering the design with nothing cut from it | The ground plane, without end; said. Perfect, or Metal where it has a finite conductivity. Anything else stays a metal: a coplanar line's signal and grounds cover nearly all of their layer |
 | Other signal layer | A metal at its height |
 | A signal layer in a run of them each on the last, in turn | A via between the two either side, its shapes the via's. A run takes turns from its bottom, and its top is always a metal. Sky130's `via2`, which has no height, comes in its place |
 | Dielectric | A dielectric, cut by the metals in it (an Overlap stack's goes round them), the lowest a substrate with its conductivity |
@@ -309,6 +309,8 @@ If the script stumbles, the `.gds` and `.xml` are the documented way in for the 
   3. Anti-pads were not read, which shorted every plane a via passes.
   4. Holes chained by slits were left in the outline, all but the first of each chain.
   5. What stands in a void was given the net of the shape round it, on the way out.
+
+  Driving the packaged app found a sixth, on a control file: a coplanar line's only metal, its signal and grounds covering 97 % of it, was taken for the ground plane, leaving nothing to solve. A plane is now one whole shape under other metals, on both routes.
 - **A file damaged anywhere.** Every int32 of a small file as -1, the largest, a million and nought; every double of its records as NaN, infinity and 1e30, at every byte; the file cut at every length: 14,193 reads under ASan and UBSan with no fault, and a place that is no number stops it. Damaged projects also went on through to a model written to disk.
 - **The public samples** read to their ends and made models, in Release and under ASan and UBSan (one sample's ports on their lines checked by name). Their pictures were looked at (`all.png`, not kept), and were right.
 - **`test_qucs_control`:** the tools through MCP's own path (every argument, every refusal by name), the write guard on all three, and the menu driven through its file dialogs and boxes: suggested name, No and Yes on writing over, a refused file.
@@ -316,5 +318,5 @@ If the script stumbles, the `.gds` and `.xml` are the documented way in for the 
 - **The dry run** in section 2, on scratch copies; nothing under `~/QucsWorkspace` or the real cache changed (`find -newer`).
 - **Vendor names.** HFSS™ joined the Trademarks in the README and the About tab, word for word; `check-third-party` now also refuses `.aedt`, `.aedtz` and `edb.def` files and an HFSS possessive.
 
-- **140 breaks**, each undoing one piece and built and tested on its own, all caught (`breaks.py` and `results.txt` beside this file). The first run of 120 caught 92. Each of the other 28 either became a test or showed code that did nothing, which was taken out (a polygon's closing point, type checks the tool schema makes first). One, reading past the end of the file, only the sanitizers can see, so it runs under them.
+- **145 breaks**, each undoing one piece and built and tested on its own, all caught (`breaks.py` and `results.txt` beside this file). The first run of 120 caught 92. Each of the other 28 either became a test or showed code that did nothing, which was taken out (a polygon's closing point, type checks the tool schema makes first). One, reading past the end of the file, only the sanitizers can see, so it runs under them.
 - **The suites.** The full ctest in Release, 163 of 163. Run once more on the final code, at a load of about 20 from other sessions' work, two suites failed: `theCommitIsTheOneCheckedOut`, as another session's commit had moved HEAD after the build; and `aWaitingCallIsNotHeldBackByLaterOnes`, whose 500 ms margin had 282 ms that time, in code this does not touch. Both passed when rerun, the second five times more on its own. `test_rf25_hfss`, the new functions of `test_qucs_control`, and the changed ones of `test_rf25_doc` and `test_build_commit` under ASan and UBSan. The four lints green.

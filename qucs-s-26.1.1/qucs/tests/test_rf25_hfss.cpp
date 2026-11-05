@@ -1624,6 +1624,25 @@ private slots:
         QCOMPARE(s.named(QStringLiteral("Si"))->sigma, 6.5);
         QCOMPARE(s.named(QStringLiteral("PI"))->tand, 0.002);
         QCOMPARE(s.named(QStringLiteral("M1"))->sigma, 4.1e7);
+
+        // A coplanar line with no plane: its only metal, which its signal and grounds
+        // cover nearly all of, is a metal, and no ground plane with nothing to solve.
+        const QString openStack = QStringLiteral(R"({"type": "rf_stack", "tag": "stack", "children": [
+            {"type": "rf_ground", "tag": "g", "label": "GND", "properties": {"kind": "open"}},
+            {"type": "rf_substrate", "tag": "s", "label": "Si", "properties": {"thickness": "500[um]", "epsr": "11.7"}},
+            {"type": "rf_metal", "tag": "m", "label": "M1", "properties": {"thickness": "1.5[um]", "sigma": "4.1e7"}}]})");
+        const Model open = modelOf(openStack + QLatin1Char(',') + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x", "return": "beside"}})"))
+                                   + QLatin1Char(',') + QLatin1String(kStudy));
+        // (A signal of 62, grounds of 300, gaps of 9: 97 % of its width.)
+        const HfssExport line = hfssExportOf(open, {box(QStringLiteral("M1"), 0, -31, 1000, 31), box(QStringLiteral("M1"), 0, 40, 1000, 340), box(QStringLiteral("M1"), 0, -340, 1000, -40)});
+        QVERIFY2(line.ok(), qPrintable(line.problems.join(QLatin1Char(' '))));
+        QTemporaryDir other;
+        written(line, other.path());
+        const HfssImport coplanarBack = hfssImportOf(QDir(other.path()).filePath(QStringLiteral("model.xml")), {}, &why);
+        QVERIFY2(coplanarBack.model.has_value(), qPrintable(why));
+        QVERIFY2(!coplanarBack.problems.join(QLatin1Char(' ')).contains(QLatin1String("no metal")), qPrintable(coplanarBack.problems.join(QLatin1Char(' '))));
+        QCOMPARE(coplanarBack.model->stack().named(QStringLiteral("M1"))->kind, Layer::Metal);
+        QVERIFY(!coplanarBack.layers.join(QLatin1Char(' ')).contains(QLatin1String("the ground plane")));
     }
 
     // ------------------------------------------------------------ A project
@@ -1874,6 +1893,77 @@ private slots:
         QCOMPARE(cut.layers.first(), QStringLiteral("BOT"));
         QVERIFY(!cut.notes.join(QLatin1Char(' ')).contains(QLatin1String("BOT covers the whole design")));
         QCOMPARE(cut.model->stack().named(QStringLiteral("BOT"))->kind, Layer::Metal);
+        // In pieces that cover it between them, as a coplanar line's do: a metal.
+        const HfssImport pieces = readWith({centredRectangle(72, "left", 0, 5.75e-3, 0, 13.5e-3, 6e-3), centredRectangle(73, "right", 0, 18.25e-3, 0, 11.5e-3, 6e-3)}, &why);
+        QVERIFY2(pieces.model.has_value(), qPrintable(why));
+        QCOMPARE(pieces.model->stack().named(QStringLiteral("BOT"))->kind, Layer::Metal);
+        // The only metal there is: a metal, whatever it covers. (Under its dielectric
+        // here, BOT's plane its one shape and all there is of the design.)
+        {
+            QFile f(QDir(aedb).filePath(QStringLiteral("edb.def")));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(edbFile({}, QByteArray("$begin ''\n\tMode='Laminate'\n"
+                                           "\tSLayer(Layer(N='D1', ID=1, T='dielectric', Zones()), SubL(Th='1mm', LElev='0.05mm', R='0um', Mat='fr4'), UseR=false)\n"
+                                           "\tSLayer(Layer(N='BOT', ID=0, T='signal', Zones()), SubL(Th='50um', LElev='0mm', R='0um', Mat='copper', FilMat='air'), UseR=false)\n$end ''\n")));
+        }
+        const HfssImport alone = hfssImportOf(aedb, {}, &why);
+        QVERIFY2(alone.model.has_value(), qPrintable(why));
+        QCOMPARE(alone.model->stack().named(QStringLiteral("BOT"))->kind, Layer::Metal);
+        QVERIFY2(!alone.problems.join(QLatin1Char(' ')).contains(QLatin1String("no metal")), qPrintable(alone.problems.join(QLatin1Char(' '))));
+    }
+
+    // In a control file too, where the GDSII file has the shapes: one shape, whole,
+    // covering what is above it, and under another metal.
+    void aControlFilesPlaneIsOneWholeShapeUnderTheRest()
+    {
+        QTemporaryDir dir;
+        const auto readWith = [&dir](const QList<QPair<int, QPolygonF>>& shapes, bool onlyLower, QString* why) {
+            const QString control = QDir(dir.path()).filePath(QStringLiteral("chip.xml"));
+            {
+                QFile f(control);
+                if (!f.open(QIODevice::WriteOnly)) qFatal("the control file could not be written");
+                f.write("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n"
+                        "<c:Control xmlns:c=\"http://www.ansys.com/control\" schemaVersion=\"1.0\">\n"
+                        "  <Stackup schemaVersion=\"1.0\">\n"
+                        "    <Materials>\n"
+                        "      <Material Name=\"Al\"><Conductivity><Double>3e7</Double></Conductivity></Material>\n"
+                        "      <Material Name=\"ox\"><Permittivity><Double>4</Double></Permittivity></Material>\n"
+                        "    </Materials>\n"
+                        "    <ELayers LengthUnit=\"um\">\n"
+                        "      <Dielectrics><Layer Material=\"ox\" Name=\"ox\" Thickness=\"10\"/></Dielectrics>\n"
+                        "      <Layers>\n");
+                if (!onlyLower) f.write("        <Layer Elevation=\"10\" GDSDataType=\"0\" Name=\"2\" TargetLayer=\"UP\" Material=\"Al\" Thickness=\"1\" Type=\"conductor\"/>\n");
+                f.write("        <Layer Elevation=\"0\" GDSDataType=\"0\" Name=\"1\" TargetLayer=\"LOW\" Material=\"Al\" Thickness=\"1\" Type=\"conductor\"/>\n"
+                        "      </Layers>\n"
+                        "    </ELayers>\n"
+                        "  </Stackup>\n"
+                        "</c:Control>\n");
+            }
+            if (!writeGdsOf(shapes, QDir(dir.path()).filePath(QStringLiteral("chip.gds")), QStringLiteral("TOP"), why)) qFatal("the GDSII file could not be written");
+            return hfssImportOf(control, {}, why);
+        };
+        const auto rectangle = [](double x0, double y0, double x1, double y1) { return QPolygonF(QList<QPointF>{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}); };
+        const QPair<int, QPolygonF> line = qMakePair(2, rectangle(0, 45, 100, 55));
+        QString why;
+        // Whole and past the line: the plane.
+        HfssImport read = readWith({qMakePair(1, rectangle(0, 0, 100, 100)), line}, false, &why);
+        QVERIFY2(read.model.has_value(), qPrintable(why));
+        QCOMPARE(read.layers.first(), QStringLiteral("LOW (the ground plane)"));
+        // Whole, but under part of the line: a metal.
+        read = readWith({qMakePair(1, rectangle(0, 45, 40, 55)), line}, false, &why);
+        QVERIFY2(read.model.has_value(), qPrintable(why));
+        QCOMPARE(read.layers.first(), QStringLiteral("LOW"));
+        // With a clearance in it, kept as a keyhole: a metal, though it covers 99 %.
+        const QList<QPolygonF> ring = unionOf({rectangle(0, 0, 100, 45), rectangle(0, 55, 100, 100), rectangle(0, 0, 45, 100), rectangle(55, 0, 100, 100)});
+        QCOMPARE(ring.size(), 1);
+        read = readWith({qMakePair(1, ring.first()), line}, false, &why);
+        QVERIFY2(read.model.has_value(), qPrintable(why));
+        QCOMPARE(read.layers.first(), QStringLiteral("LOW"));
+        // The only metal there is, whole: a metal.
+        read = readWith({qMakePair(1, rectangle(0, 0, 100, 100))}, true, &why);
+        QVERIFY2(read.model.has_value(), qPrintable(why));
+        QVERIFY(!read.layers.join(QLatin1Char(' ')).contains(QLatin1String("the ground plane")));
+        QVERIFY(!read.problems.join(QLatin1Char(' ')).contains(QLatin1String("no metal")));
     }
 
     // A via through metal of another net: its anti-pad clears it, a pad of its own

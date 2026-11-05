@@ -739,11 +739,14 @@ bool readControlFile(const QString& path, const QString& layoutGiven, HfssImport
     for (const EdbLayer& l : std::as_const(control.layers))
         if (l.signal) signalLayers << l;
     std::stable_sort(signalLayers.begin(), signalLayers.end(), below);
-    if (!signalLayers.isEmpty() && !all.isNull()) {
+    // (One shape, under other metals, nothing cut from it: a keyhole shows in its
+    // area. A coplanar line's signal and grounds cover nearly all of their layer.)
+    if (signalLayers.size() > 1 && !all.isNull()) {
         const EdbLayer& lowest = signalLayers.first();
-        double covered = 0;
-        for (const QPolygonF& p : shapesOf.value(lowest.name)) covered += polygonArea(p);
-        if (covered >= 0.9 * all.width() * all.height()) plane = lowest.name;
+        for (const QPolygonF& p : shapesOf.value(lowest.name)) {
+            const QRectF box = p.boundingRect();
+            if (polygonArea(p) >= 0.9 * all.width() * all.height() && polygonArea(p) >= 0.999 * box.width() * box.height()) plane = lowest.name;
+        }
     }
 
     Model model = Model::blank();
@@ -895,8 +898,8 @@ bool readProject(const QString& path, HfssImport* out, QString* error)
             all = all.isNull() ? s.outline.boundingRect() : all.united(s.outline.boundingRect());
     }
 
-    // The plane: the lowest signal layer, with nothing cut out of it, covering
-    // what is above it.
+    // The plane: the lowest signal layer, under others, one shape of it covering
+    // what is above it, with nothing cut out of it.
     QList<EdbLayer> signalLayers;
     for (const EdbLayer& l : std::as_const(design.layers))
         if (l.signal) signalLayers << l;
@@ -962,16 +965,16 @@ bool readProject(const QString& path, HfssImport* out, QString* error)
     }
 
     QString plane;
-    if (!signalLayers.isEmpty() && !all.isNull()) {
+    if (signalLayers.size() > 1 && !all.isNull()) {
         const EdbLayer& lowest = signalLayers.first();
-        double covered = 0;
+        double largest = 0;
         bool voids = false;
         for (const EdbShape& s : std::as_const(design.shapes)) {
             if (s.layer != lowest.id || s.owner >= 0) continue;
-            covered += polygonArea(s.outline);
+            largest = std::max(largest, polygonArea(s.outline));
             voids = voids || voidsOf.contains(s.id) || clearedFrom.contains(s.id);
         }
-        if (!voids && covered >= 0.9 * all.width() * all.height()) plane = lowest.name;
+        if (!voids && largest >= 0.9 * all.width() * all.height()) plane = lowest.name;
     }
     if (!plane.isEmpty())
         out->notes << tr("%1 covers the whole design with nothing cut from it: it is the ground plane here, without end, where the project has its edges.").arg(plane);

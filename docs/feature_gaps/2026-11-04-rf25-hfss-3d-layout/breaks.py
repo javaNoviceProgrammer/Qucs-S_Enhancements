@@ -28,6 +28,7 @@ S = "test_rf25_hfss"
 MICRO = (S, "aMicrostripsScriptIsWhatTheGuideSays")
 PLANES = (S, "aPlaneOrALidIsWhatGivesTheSameThere")
 PLANE = (S, "aPlaneIsTheLayerThatCoversTheDesignWithNoVoid")
+CTRLPLANE = (S, "aControlFilesPlaneIsOneWholeShapeUnderTheRest")
 REFERENCE = (S, "aPortsReferenceIsWhereItReturnsThrough")
 CLEAR = (S, "aViaClearsMetalOfAnotherNet")
 NOUGHT = (S, "aSweepFromNoughtBeginsAtItsFirstStep")
@@ -250,9 +251,19 @@ BREAKS = [
  ("overlapping layers not said",
   [(I, "if (item.z < z - 1e-12) overlapping << (item.metal ? metals.at(item.index).name : slabs.at(item.index).name);", "")], [RUN]),
  ("a plane taken though it has voids",
-  [(I, "if (!voids && covered >= 0.9 * all.width() * all.height()) plane = lowest.name;", "if (covered >= 0.9 * all.width() * all.height()) plane = lowest.name;")], [PLANE]),
+  [(I, "if (!voids && largest >= 0.9 * all.width() * all.height()) plane = lowest.name;", "if (largest >= 0.9 * all.width() * all.height()) plane = lowest.name;")], [PLANE]),
  ("a plane needs no covering",
-  [(I, "if (!voids && covered >= 0.9 * all.width() * all.height()) plane = lowest.name;", "if (!voids) plane = lowest.name;")], [PROJECT]),
+  [(I, "if (!voids && largest >= 0.9 * all.width() * all.height()) plane = lowest.name;", "if (!voids) plane = lowest.name;")], [PROJECT]),
+ ("a plane of pieces that cover it between them",
+  [(I, "largest = std::max(largest, polygonArea(s.outline));", "largest += polygonArea(s.outline);")], [PLANE]),
+ ("a project's only metal taken for its plane",
+  [(I, "    QString plane;\n    if (signalLayers.size() > 1 && !all.isNull()) {", "    QString plane;\n    if (!signalLayers.isEmpty() && !all.isNull()) {")], [PLANE]),
+ ("a control file's only metal taken for its plane",
+  [(I, "    // area. A coplanar line's signal and grounds cover nearly all of their layer.)\n    if (signalLayers.size() > 1 && !all.isNull()) {", "    // area. A coplanar line's signal and grounds cover nearly all of their layer.)\n    if (!signalLayers.isEmpty() && !all.isNull()) {")], [CTRLPLANE]),
+ ("a control file's plane of no cover",
+  [(I, "if (polygonArea(p) >= 0.9 * all.width() * all.height() && polygonArea(p) >= 0.999 * box.width() * box.height()) plane = lowest.name;", "if (polygonArea(p) >= 0.999 * box.width() * box.height()) plane = lowest.name;")], [CTRLPLANE]),
+ ("a control file's plane with a keyhole taken as whole",
+  [(I, "if (polygonArea(p) >= 0.9 * all.width() * all.height() && polygonArea(p) >= 0.999 * box.width() * box.height()) plane = lowest.name;", "if (polygonArea(p) >= 0.9 * all.width() * all.height()) plane = lowest.name;")], [CTRLPLANE]),
  ("a void not cut from its shape",
   [(I, "        for (const int v : voidsOf.value(s.id)) holes << design.shapes.at(v).outline;\n", "")], [PROJECT]),
  ("a via across metals only between the first two",
