@@ -54,6 +54,7 @@
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTextFormat>
 #include <QTextLayout>
 #include <QToolButton>
@@ -660,6 +661,110 @@ class TestClaudeCode : public QObject
 #ifdef Q_OS_WIN
         QSKIP("the fake claude is a shell script");
 #endif
+    }
+
+    // ------------------------------------------------------------------
+    // Reply: the menu reached as a user reaches it.
+
+    // A finished reply of Claude's, drawn.
+    static void feedReply(ClaudeCodePanel& panel, const QString& markdown)
+    {
+        const QJsonObject text{{"type", "text"}, {"text", markdown}};
+        const QJsonObject message{{"content", QJsonArray{text}}};
+        panel.session()->handleLine(QJsonDocument(QJsonObject{{"type", "assistant"}, {"message", message}}).toJson(QJsonDocument::Compact));
+        panel.renderNow();
+    }
+
+    // More of a reply being written (begun: the first piece of it), drawn.
+    static void feedPiece(ClaudeCodePanel& panel, const QString& text, bool begin = false)
+    {
+        if (begin) {
+            const QJsonObject block{{"type", "text"}, {"text", ""}};
+            const QJsonObject event{{"type", "content_block_start"}, {"content_block", block}};
+            panel.session()->handleLine(QJsonDocument(QJsonObject{{"type", "stream_event"}, {"event", event}}).toJson(QJsonDocument::Compact));
+        }
+        const QJsonObject delta{{"type", "text_delta"}, {"text", text}};
+        const QJsonObject event{{"type", "content_block_delta"}, {"delta", delta}};
+        panel.session()->handleLine(QJsonDocument(QJsonObject{{"type", "stream_event"}, {"event", event}}).toJson(QJsonDocument::Compact));
+        panel.renderNow();
+    }
+
+    // From the start of the first \a from to the end of the first \a to after
+    // it chosen in \a view; false where either is not there.
+    static bool choose(QTextEdit* view, const QString& from, const QString& to)
+    {
+        QTextDocument* doc = view->document();
+        const QTextCursor first = doc->find(from, 0, QTextDocument::FindCaseSensitively);
+        if (first.isNull()) return false;
+        const QTextCursor last = doc->find(to, first.selectionStart(), QTextDocument::FindCaseSensitively);
+        if (last.isNull()) return false;
+        QTextCursor c(doc);
+        c.setPosition(first.selectionStart());
+        c.setPosition(last.selectionEnd(), QTextCursor::KeepAnchor);
+        view->setTextCursor(c);
+        return true;
+    }
+
+    // Where the selection starts in \a view's viewport, a right click on it:
+    // out of sight (it is long), the middle of the view.
+    static QPoint onSelection(QTextEdit* view)
+    {
+        QTextCursor c = view->textCursor();
+        c.setPosition(c.selectionStart());
+        const QPoint at = view->cursorRect(c).center();
+        return view->viewport()->rect().contains(at) ? at : view->viewport()->rect().center();
+    }
+
+    // A right click on \a where at \a at, as a mouse's comes through the
+    // window: the items of the menu it shows ("(off)": not enabled), and -
+    // \a chosen named - a click on that item, else the menu closed.
+    // \a whileOpen runs with it up.
+    static QStringList rightClick(QWidget* where, const QPoint& at, const QString& chosen = {}, const std::function<void()>& whileOpen = {})
+    {
+        QStringList items;
+        bool looked = false;
+        QTimer::singleShot(30, where, [&items, &looked, chosen, whileOpen] {
+            looked = true;
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (menu == nullptr) return;
+            if (whileOpen) whileOpen();
+            QAction* item = nullptr;
+            for (QAction* a : menu->actions()) {
+                if (a->isSeparator()) continue;
+                const QString text = a->text().remove(QLatin1Char('&')).section(QLatin1Char('\t'), 0, 0);
+                items << text + (a->isEnabled() ? QString() : QStringLiteral(" (off)"));
+                if (text == chosen) item = a;
+            }
+            if (item == nullptr) menu->close();
+            else QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(item).center());
+        });
+        QWidget* window = where->window();
+        // (The pointer away and back: a second press where the last one was
+        // would be a double click, which opens no menu.)
+        const QPoint point = where->mapTo(window, at);
+        QTest::mouseMove(window->windowHandle(), point + QPoint(point.x() > 40 ? -20 : 20, 0));
+        QTest::mouseClick(window->windowHandle(), Qt::RightButton, Qt::NoModifier, point);
+        for (int i = 0; i < 500 && !looked; ++i) QTest::qWait(10);
+        return items;
+    }
+
+    // What a Reply to the first \a from through the first \a to after it puts
+    // in an empty composer.
+    static QString quoteOf(ClaudeCodePanel& panel, const QString& from, const QString& to)
+    {
+        panel.composer()->clear();
+        if (!choose(panel.transcript(), from, to)) return QStringLiteral("(not found: %1 ... %2)").arg(from, to);
+        rightClick(panel.transcript()->viewport(), onSelection(panel.transcript()), QStringLiteral("Reply"));
+        return panel.composer()->toPlainText();
+    }
+
+    // A panel on the fake that logs what it is sent, shown.
+    void showForReply(ClaudeCodePanel& panel, const QString& name)
+    {
+        panel.setDefaultDirectory(fresh(name));
+        panel.session()->setProgram(script("resumer", kResumer));
+        panel.resize(640, 800);
+        panel.show();
     }
 
 private slots:
@@ -5052,6 +5157,856 @@ private slots:
         QVERIFY(panel.transcriptMenu(on)->findChild<QAction*>(QStringLiteral("claudeOpenImage")) == nullptr);
     }
 
+    // Reply, in the conversation's menu: text selected, and only then. A right
+    // click is a mouse's, through the window, as the menu's choice is a click.
+    void replyIsOfferedWhereTextIsSelected()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replyoffered");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("Both batches are running.\n\nThe second paragraph."));
+        QTextBrowser* view = panel.transcript();
+        QWidget* port = view->viewport();
+        const QTextCursor words = view->document()->find(QStringLiteral("batches"));
+        const QPoint on = view->cursorRect(words).center();
+
+        // Nothing selected: not offered.
+        QVERIFY(!view->textCursor().hasSelection());
+        const QStringList usual{"Copy (off)", "Copy Link Location (off)", "Select All"};
+        QCOMPARE(rightClick(port, on), usual);
+        // Selected: first, the usual ones under it.
+        QVERIFY(choose(view, "batches", "running"));
+        const QStringList withReply{"Reply", "Copy", "Copy Link Location (off)", "Select All"};
+        QCOMPARE(rightClick(port, on), withReply);
+        // (Set off from them; its letter underlined as theirs are.)
+        const std::unique_ptr<QMenu> menu = panel.transcriptMenu(on);
+        QCOMPARE(menu->actions().value(0)->objectName(), QStringLiteral("claudeReply"));
+        QVERIFY(menu->actions().value(1)->isSeparator());
+        QCOMPARE(menu->actions().value(0)->text(), QStringLiteral("&Reply"));
+        // Selected, anywhere: as Copy has it.
+        QVERIFY(choose(view, "second", "paragraph"));
+        QCOMPARE(rightClick(port, on), withReply);
+        // Spaces alone: nothing to quote, and Copy as ever.
+        QVERIFY(choose(view, " ", " "));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral(" "));
+        QCOMPARE(rightClick(port, on), QStringList({"Copy", "Copy Link Location (off)", "Select All"}));
+        // Let go of: not offered again.
+        QTextCursor none = view->textCursor();
+        none.clearSelection();
+        view->setTextCursor(none);
+        QCOMPARE(rightClick(port, on), usual);
+    }
+
+    void replyQuotesTheSelectionInTheComposer()
+    {
+        skipWithoutShell();
+        ClaudeCodePanel panel;
+        showForReply(panel, "replyquotes");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        const QString sent = dir.filePath("resumer-prompts");
+        QFile::remove(sent);
+        feedReply(panel, QStringLiteral("Both batches are running.\n\nThe second paragraph."));
+        QTextBrowser* view = panel.transcript();
+        QPlainTextEdit* composer = panel.composer();
+        const QString before = panel.transcriptText();
+
+        // The composer's text, exactly; the cursor on a line of its own under
+        // it, a blank line apart (a line right under a quote is the quote's).
+        QVERIFY(choose(view, "batches", "running"));
+        QStringList items = rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(items.value(0), QStringLiteral("Reply"));
+        // Nothing sent: no turn, not a word to the program.
+        QVERIFY(!panel.session()->isBusy());
+        QVERIFY(!QFile::exists(sent));
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> batches are running\n\n"));
+        QCOMPARE(composer->textCursor().position(), composer->document()->characterCount() - 1);
+        QVERIFY(!composer->textCursor().hasSelection());
+        // The focus there. (Offscreen, the menu leaves no window active; a
+        // desktop's stays.)
+        panel.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&panel));
+        QTRY_VERIFY(composer->hasFocus());
+        // The conversation as it was, and the selection left as it was.
+        QVERIFY(!panel.session()->isBusy());
+        QVERIFY(!QFile::exists(sent));
+        QCOMPARE(panel.transcriptText(), before);
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("batches are running"));
+
+        // A second: added under it.
+        QVERIFY(choose(view, "second", "paragraph"));
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> batches are running\n\n> second paragraph\n\n"));
+        QVERIFY(!QFile::exists(sent));
+        // One step to undo.
+        composer->undo();
+        const QString undone = composer->toPlainText();
+        QCOMPARE(undone, QStringLiteral("> batches are running\n\n"));
+        composer->redo();
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> batches are running\n\n> second paragraph\n\n"));
+
+        // The keys choose it too: it comes first.
+        QVERIFY(choose(view, "Both", "Both"));
+        bool pressed = false;
+        QTimer::singleShot(30, view, [&pressed] {
+            QWidget* menu = QApplication::activePopupWidget();
+            pressed = qobject_cast<QMenu*>(menu) != nullptr;
+            if (!pressed) return;
+            QTest::keyClick(menu, Qt::Key_Down);
+            QTest::keyClick(menu, Qt::Key_Return);
+        });
+        QTest::mouseMove(panel.windowHandle(), view->viewport()->mapTo(&panel, QPoint(10, 10)));
+        QTest::mouseClick(panel.windowHandle(), Qt::RightButton, Qt::NoModifier, view->viewport()->mapTo(&panel, onSelection(view)));
+        QTRY_VERIFY(pressed);
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> batches are running\n\n> second paragraph\n\n> Both\n\n"));
+
+        // What is written goes under the quotes, and all of it goes when the
+        // user sends it (the blank lines at its end not).
+        panel.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&panel));
+        QTRY_VERIFY(composer->hasFocus());
+        QTest::keyClicks(composer, "why?");
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> batches are running\n\n> second paragraph\n\n> Both\n\nwhy?"));
+        QVERIFY(!QFile::exists(sent));
+        QTest::keyClick(composer, Qt::Key_Return);
+        QTRY_VERIFY_WITH_TIMEOUT(read(sent).contains(R"(> batches are running\n\n> second paragraph\n\n> Both\n\nwhy?)"), 10000);
+        QCOMPARE(composer->toPlainText(), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy(), 10000);
+        panel.session()->reset();
+    }
+
+    void replyKeepsWhatTheComposerHolds()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replydraft");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("Quote me."));
+        QTextBrowser* view = panel.transcript();
+        QPlainTextEdit* composer = panel.composer();
+        const auto replyOn = [view, composer](const QString& draft) {
+            composer->setPlainText(draft);
+            choose(view, "Quote", "me.");
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            return composer->toPlainText();
+        };
+        // A blank line apart from it, whatever it ends with; all of it kept.
+        QCOMPARE(replyOn("my draft"), QStringLiteral("my draft\n\n> Quote me.\n\n"));
+        QCOMPARE(replyOn("my draft\n"), QStringLiteral("my draft\n\n> Quote me.\n\n"));
+        QCOMPARE(replyOn("my draft\n\n"), QStringLiteral("my draft\n\n> Quote me.\n\n"));
+        QCOMPARE(replyOn("my draft\n\n\n"), QStringLiteral("my draft\n\n\n> Quote me.\n\n"));
+        QCOMPARE(replyOn("  "), QStringLiteral("  \n\n> Quote me.\n\n"));
+        // Under the draft, wherever its cursor is, what is selected in it
+        // not replaced; the cursor under the quote.
+        composer->setPlainText("first line\nsecond line");
+        QTextCursor in = composer->textCursor();
+        in.setPosition(2);
+        in.setPosition(7, QTextCursor::KeepAnchor);
+        composer->setTextCursor(in);
+        choose(view, "Quote", "me.");
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(composer->toPlainText(), QStringLiteral("first line\nsecond line\n\n> Quote me.\n\n"));
+        QVERIFY(!composer->textCursor().hasSelection());
+        QCOMPARE(composer->textCursor().position(), composer->document()->characterCount() - 1);
+        // A command being typed: the list it brought goes, the text stays.
+        composer->setPlainText("/co");
+        QVERIFY(panel.commandList()->isVisible());
+        choose(view, "Quote", "me.");
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(composer->toPlainText(), QStringLiteral("/co\n\n> Quote me.\n\n"));
+        QVERIFY(!panel.commandList()->isVisible());
+        // A prompt being edited is what it holds: the quote under that, and
+        // gone with it if the edit is cancelled, what it held before back.
+        {
+            const QJsonObject first{{"kind", 0}, {"text", "First"}, {"session", "s-1"}, {"at", ""}};
+            const QJsonObject one{{"kind", 1}, {"text", "Said one."}};
+            const QJsonObject second{{"kind", 0}, {"text", "Second"}, {"session", "s-1"}, {"at", "u-1"}};
+            panel.restoreConversation(QJsonObject{{"entries", QJsonArray{first, one, second, QJsonObject{{"kind", 1}, {"text", "Two."}}}}});
+            panel.renderNow();
+            composer->setPlainText("held before");
+            QVERIFY(panel.editPrompt(2));
+            panel.renderNow();
+            QCOMPARE(composer->toPlainText(), QStringLiteral("Second"));
+            choose(view, "Said", "one.");
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            QCOMPARE(composer->toPlainText(), QStringLiteral("Second\n\n> Said one.\n\n"));
+            QVERIFY(panel.isEditing());
+            panel.cancelEdit();
+            QCOMPARE(composer->toPlainText(), QStringLiteral("held before"));
+            panel.newConversation();
+            panel.renderNow();
+        }
+        // Grown as it needs (eight lines at most), the cursor in sight.
+        composer->clear();
+        const int least = composer->height();
+        QString many;
+        for (int i = 0; i < 40; ++i) many += QStringLiteral("Line%1\n\n").arg(i);
+        feedReply(panel, many);
+        choose(view, "Line0", "Line39");
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QVERIFY(composer->toPlainText().endsWith(QStringLiteral(">\n> Line39\n\n")));
+        QTRY_VERIFY(composer->height() > least);
+        QTRY_VERIFY2(composer->viewport()->rect().intersects(composer->cursorRect()), qPrintable(QString::number(composer->cursorRect().y())));
+    }
+
+    // What a quote holds: what the reader saw, read as lines.
+    void replyReadsParagraphsAndLines()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replylines");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("First para **bold** and *it* and `code`.\n\nSecond para\nsoft broken.\n\nThird  \nhard broken.\n\n"
+                                        "Sixth<br/>seventh.\n\n# A heading\n\nFourth.\n\n---\n\nFifth.\n\nzero\u200Bwidth and no\u00A0break."));
+        QCOMPARE(quoteOf(panel, "First", "para"), QStringLiteral("> First para\n\n"));
+        QCOMPARE(quoteOf(panel, "bold", "code"), QStringLiteral("> bold and it and code\n\n"));
+        // Paragraphs: a line each, a quote's blank line where they stand apart.
+        // (selectedText() has U+2029 there.)
+        QCOMPARE(quoteOf(panel, "First", "soft broken."), QStringLiteral("> First para bold and it and code.\n>\n> Second para soft broken.\n\n"));
+        QCOMPARE(quoteOf(panel, "code.", "Second"), QStringLiteral("> code.\n>\n> Second\n\n"));
+        // From the space between two words: no line indented.
+        QCOMPARE(quoteOf(panel, " and it", "Second"), QStringLiteral("> and it and code.\n>\n> Second\n\n"));
+        // A selection to the start of the next one holds none of it.
+        panel.composer()->clear();
+        {
+            QTextBrowser* view = panel.transcript();
+            const QTextCursor second = view->document()->find(QStringLiteral("Second"));
+            const QTextCursor first = view->document()->find(QStringLiteral("First"));
+            QTextCursor c(view->document());
+            c.setPosition(first.selectionStart());
+            c.setPosition(second.selectionStart(), QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            QVERIFY(c.selectedText().endsWith(QChar::ParagraphSeparator));
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> First para bold and it and code.\n\n"));
+        }
+        // A hard break: a block as a paragraph is to Qt's Markdown, drawn apart.
+        QCOMPARE(quoteOf(panel, "Third", "hard broken."), QStringLiteral("> Third\n>\n> hard broken.\n\n"));
+        // A <br>: a line in its block. (selectedText() has U+2028 there.)
+        QVERIFY(choose(panel.transcript(), "Sixth", "seventh."));
+        QVERIFY(panel.transcript()->textCursor().selectedText().contains(QChar::LineSeparator));
+        QCOMPARE(quoteOf(panel, "Sixth", "seventh."), QStringLiteral("> Sixth\n> seventh.\n\n"));
+        QCOMPARE(quoteOf(panel, "A heading", "Fourth"), QStringLiteral("> A heading\n>\n> Fourth\n\n"));
+        QCOMPARE(quoteOf(panel, "Fourth", "Fifth"), QStringLiteral("> Fourth.\n>\n> ----\n>\n> Fifth\n\n"));
+        // No character the reader did not see, a space as a space.
+        QCOMPARE(quoteOf(panel, "zero", "break."), QStringLiteral("> zerowidth and no break.\n\n"));
+        QVERIFY(panel.transcriptText().contains(QChar(0x200B)));
+    }
+
+    void replyReadsListsCodeAndTables()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replyblocks");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("Intro.\n\nPoints:\n\n- Passing: all\n- Open: why\n  - Nested: this\n\nAfter the points.\n\n"
+                                        "* Circled: one\n\nAfter the circle.\n\n"
+                                        "3. three\n4. four\n5. five\n\nAfter the numbers.\n\n"
+                                        "> Said before.\n> \n> And again.\n\nAfter the quote.\n\n"
+                                        "Run:\n\n```sh\nninja -C build\n\n  ctest\n```\n\nAfter the code.\n\n"
+                                        "Then:\n\n    indented code\n\nAfter indented.\n\n"
+                                        "| Head1 | Head2 |\n|---|---|\n| One | Two |\n| Three | Four |\n\nAfter the table."));
+        // Items in a list, with the marks drawn, a line each.
+        QCOMPARE(quoteOf(panel, "Passing", "why"), QStringLiteral("> • Passing: all\n> • Open: why\n\n"));
+        QCOMPARE(quoteOf(panel, "Points", "Nested"), QStringLiteral("> Points:\n>\n> • Passing: all\n> • Open: why\n>   • Nested\n\n"));
+        QCOMPARE(quoteOf(panel, "Nested", "After the points"), QStringLiteral(">   • Nested: this\n>\n> After the points\n\n"));
+        // Up to the start of an item: not that item, nor its mark.
+        {
+            QTextBrowser* view = panel.transcript();
+            QTextCursor c = view->document()->find(QStringLiteral("Intro"));
+            c.setPosition(c.selectionStart());
+            c.setPosition(view->document()->find(QStringLiteral("Passing")).selectionStart(), QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            panel.composer()->clear();
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> Intro.\n>\n> Points:\n\n"));
+        }
+        // From the end of an item: not that item, nor its mark.
+        {
+            QTextBrowser* view = panel.transcript();
+            QTextCursor c = view->document()->find(QStringLiteral("all"));
+            c.setPosition(c.selectionEnd());
+            c.setPosition(view->document()->find(QStringLiteral("Nested")).selectionEnd(), QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            panel.composer()->clear();
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> • Open: why\n>   • Nested\n\n"));
+        }
+        // Numbered as they are drawn, not from one.
+        QCOMPARE(quoteOf(panel, "four", "five"), QStringLiteral("> 4. four\n> 5. five\n\n"));
+        // Each kind's mark.
+        QCOMPARE(quoteOf(panel, "Circled", "After the circle"), QStringLiteral("> ◦ Circled: one\n>\n> After the circle\n\n"));
+        // Within one: its words.
+        QCOMPARE(quoteOf(panel, "Open", "why"), QStringLiteral("> Open: why\n\n"));
+        // A quote in the reply, deeper in this one.
+        QCOMPARE(quoteOf(panel, "Said", "again"), QStringLiteral("> > Said before.\n>\n> > And again\n\n"));
+        // Code: indented, as it is set off, its blank line and spaces kept.
+        QCOMPARE(quoteOf(panel, "Run", "After the code"),
+                 QStringLiteral("> Run:\n>\n>     ninja -C build\n>\n>       ctest\n>\n> After the code\n\n"));
+        QCOMPARE(quoteOf(panel, "ninja", "ctest"), QStringLiteral(">     ninja -C build\n>\n>       ctest\n\n"));
+        QCOMPARE(quoteOf(panel, "-C", "build"), QStringLiteral("> -C build\n\n"));
+        QCOMPARE(quoteOf(panel, "Then", "After indented"), QStringLiteral("> Then:\n>\n>     indented code\n>\n> After indented\n\n"));
+        // A table: within a cell its words; across cells, the cells chosen, a
+        // row to a line; through it, all of it.
+        QCOMPARE(quoteOf(panel, "Thr", "ree"), QStringLiteral("> Three\n\n"));
+        QCOMPARE(quoteOf(panel, "Two", "Three"), QStringLiteral("> One | Two\n> Three | Four\n\n"));
+        QCOMPARE(quoteOf(panel, "One", "Two"), QStringLiteral("> One | Two\n\n"));
+        QCOMPARE(quoteOf(panel, "After indented", "After the table"),
+                 QStringLiteral("> After indented.\n>\n> Head1 | Head2\n> One | Two\n> Three | Four\n>\n> After the table\n\n"));
+    }
+
+    void replyReadsMathAsItWasWritten()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replymath");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("The value $\\epsilon_{eff}$ is low, twice $x$$x$ here.\n\n$$\\int_0^1 f(x)\\,dx$$\n\nAfter \\(a+b\\) it."));
+        QCOMPARE(mathIn(panel.transcript()->document()).size(), 4);   // (the same one twice in a row: one fragment)
+        // No object's place: the formula, between its dollars.
+        QCOMPARE(quoteOf(panel, "The value", "is low"), QStringLiteral("> The value $\\epsilon_{eff}$ is low\n\n"));
+        QCOMPARE(quoteOf(panel, "twice", "here"), QStringLiteral("> twice $x$$x$ here\n\n"));
+        QCOMPARE(quoteOf(panel, "here", "After"), QStringLiteral("> here.\n>\n> $$\\int_0^1 f(x)\\,dx$$\n>\n> After\n\n"));
+        QCOMPARE(quoteOf(panel, "After", "it."), QStringLiteral("> After $a+b$ it.\n\n"));
+        // The formula alone.
+        {
+            QTextBrowser* view = panel.transcript();
+            const QTextCursor after = view->document()->find(QStringLiteral(" is low"));
+            QTextCursor c(view->document());
+            c.setPosition(after.selectionStart() - 1);
+            c.setPosition(after.selectionStart(), QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            panel.composer()->clear();
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> $\\epsilon_{eff}$\n\n"));
+        }
+    }
+
+    // All the conversation's kinds of text, with what only works the view left out.
+    void replyReadsThePromptsAndToolsToo()
+    {
+        skipWithoutShell();
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("replykinds"));
+        panel.session()->setProgram(script("writer", kWriter));
+        panel.resize(640, 800);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        panel.composer()->setPlainText(QStringLiteral("Typed line one\nline two\n\n  typed line three $E_g$"));
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(panel.permissionCard()->isVisible(), 10000);
+        panel.renderNow();
+        QTextBrowser* view = panel.transcript();
+        // A prompt's lines as typed, none apart unless typed so.
+        QCOMPARE(quoteOf(panel, "Typed", "three"), QStringLiteral("> Typed line one\n> line two\n>\n>   typed line three\n\n"));
+        // Its math too.
+        {
+            const QTextCursor line = view->document()->find(QStringLiteral("  typed"));
+            QTextCursor c(view->document());
+            c.setPosition(line.selectionStart());
+            c.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            panel.composer()->clear();
+            rightClick(view->viewport(), onSelection(view), "Reply");
+            QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> typed line three $E_g$\n\n"));
+        }
+        // A caption over its prompt, without the Edit beside it.
+        QVERIFY(view->document()->find(QStringLiteral("Edit")).hasSelection());
+        QCOMPARE(quoteOf(panel, "You", "Typed line one"), QStringLiteral("> You\n>\n> Typed line one\n> line two\n>\n>   typed line three $E_g$\n\n"));
+        // Nothing but the Edit: nothing to quote.
+        QVERIFY(choose(view, "Edit", "Edit"));
+        QVERIFY(!rightClick(view->viewport(), onSelection(view)).contains("Reply"));
+        // A tool's line, without its twisty.
+        panel.composer()->clear();
+        const QString tool = view->toPlainText();
+        QVERIFY2(tool.contains(QStringLiteral("▸ ")), qPrintable(tool));
+        QTextCursor row = view->document()->find(QStringLiteral("▸ "));
+        QVERIFY(!row.isNull());
+        row.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        view->setTextCursor(row);
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QVERIFY2(panel.composer()->toPlainText().startsWith(QStringLiteral("> ○  Write")), qPrintable(panel.composer()->toPlainText()));
+        // Every line a quote's, whatever is chosen - and no mark of frames,
+        // objects, blocks.
+        view->selectAll();
+        panel.composer()->clear();
+        rightClick(view->viewport(), view->viewport()->rect().center(), "Reply");
+        const QString all = panel.composer()->toPlainText();
+        QVERIFY2(all.startsWith(QStringLiteral("> You\n>\n> Typed line one")), qPrintable(all));
+        for (const QString& line : all.chopped(2).split(QLatin1Char('\n')))
+            QVERIFY2(line.startsWith(QStringLiteral("> ")) || line == QStringLiteral(">"), qPrintable(line));
+        for (const QChar c : {QChar(QChar::ParagraphSeparator), QChar(QChar::LineSeparator), QChar(QChar::ObjectReplacementCharacter), QChar(0xFDD0), QChar(0xFDD1)})
+            QVERIFY(!all.contains(c));
+        // (The card's question left waiting.)
+        panel.session()->reset();
+
+        // A row of tools, opened: without its twisty, each on its line, none
+        // apart; the line of the turn under them apart.
+        ClaudeCodePanel rows;
+        rows.setDefaultDirectory(fresh("replyrows"));
+        rows.resize(640, 800);
+        rows.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&rows));
+        const auto used = [&rows](const QString& id, const QString& name, const QJsonObject& input) {
+            const QJsonObject use{{"type", "tool_use"}, {"id", id}, {"name", name}, {"input", input}};
+            const QJsonObject message{{"content", QJsonArray{use}}};
+            rows.session()->handleLine(QJsonDocument(QJsonObject{{"type", "assistant"}, {"message", message}}).toJson(QJsonDocument::Compact));
+            const QJsonObject gave{{"type", "tool_result"}, {"tool_use_id", id}, {"content", "gave"}};
+            const QJsonObject answer{{"content", QJsonArray{gave}}};
+            rows.session()->handleLine(QJsonDocument(QJsonObject{{"type", "user"}, {"message", answer}}).toJson(QJsonDocument::Compact));
+        };
+        used("a1", "Read", QJsonObject{{"file_path", "/work/one.cpp"}});
+        used("a2", "Read", QJsonObject{{"file_path", "/work/two.cpp"}});
+        rows.toggle(QStringLiteral("group:a1"));
+        rows.addNote(QStringLiteral("A note under them."));
+        rows.renderNow();
+        QTextBrowser* rowsView = rows.transcript();
+        QVERIFY(rowsView->toPlainText().contains(QStringLiteral("▾ ✓  Read 2 files")));
+        QCOMPARE(quoteOf(rows, "Read 2 files", "A note"), QStringLiteral("> Read 2 files\n> ✓  Read   /work/one.cpp\n> ✓  Read   /work/two.cpp\n>\n> A note\n\n"));
+        QVERIFY(choose(rowsView, "▾ ", "Read 2 files"));
+        rows.composer()->clear();
+        QCOMPARE(rightClick(rowsView->viewport(), onSelection(rowsView), "Reply").value(0), QStringLiteral("Reply"));
+        QCOMPARE(rows.composer()->toPlainText(), QStringLiteral("> ✓  Read 2 files\n\n"));
+    }
+
+    // A long selection whole, each line of it, in moderate time.
+    void replyOfALongSelectionIsWhole()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replylong");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QString markdown, expected;
+        for (int i = 0; i < 3000; ++i) {
+            const QString line = QStringLiteral("Paragraph %1 of a long reply, with words enough to fill a line of it.").arg(i);
+            markdown += line + QStringLiteral("\n\n");
+            expected += (i > 0 ? QStringLiteral(">\n") : QString()) + QStringLiteral("> ") + line + QLatin1Char('\n');
+        }
+        expected += QLatin1Char('\n');
+        feedReply(panel, markdown);
+        QCOMPARE(quoteOf(panel, "Paragraph 0 ", "Paragraph 2999 of a long reply, with words enough to fill a line of it."), expected);
+        QVERIFY(expected.size() > 200000);
+    }
+
+    // A reply being written: what is selected stays as more comes, and a
+    // Reply holds the words alone.
+    void aReplyBeingWrittenCanBeQuoted()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replystream");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextBrowser* view = panel.transcript();
+        feedReply(panel, QStringLiteral("An earlier reply."));
+        feedPiece(panel, QStringLiteral("Streaming one.\n\nStreaming two"), true);
+        QVERIFY(panel.transcriptText().endsWith(QStringLiteral("Streaming two ▍")));
+        // Selected: still so at the next piece, and the next.
+        QVERIFY(choose(view, "one.", "two"));
+        const QString chosen = view->textCursor().selectedText();
+        feedPiece(panel, QStringLiteral(" goes on"));
+        QCOMPARE(view->textCursor().selectedText(), chosen);
+        feedPiece(panel, QStringLiteral(" and on"));
+        QCOMPARE(view->textCursor().selectedText(), chosen);
+        QVERIFY(panel.transcriptText().endsWith(QStringLiteral("Streaming two goes on and on ▍")));
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> one.\n>\n> Streaming two\n\n"));
+        // To the end, the mark of writing with it: not in the quote.
+        QVERIFY(choose(view, "goes on", "▍"));
+        QVERIFY(view->textCursor().selectedText().endsWith(QStringLiteral("▍")));
+        panel.composer()->clear();
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> goes on and on\n\n"));
+        // That one too stays what it was as more comes - the words, no mark,
+        // none of what comes.
+        feedPiece(panel, QStringLiteral(" and more"));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("goes on and on"));
+        // A piece comes while the menu is up: the quote is what was selected
+        // when it was asked for, and the selection stays.
+        QVERIFY(choose(view, "two", "more"));
+        panel.composer()->clear();
+        ClaudeCodePanel* inMenu = &panel;
+        rightClick(view->viewport(), onSelection(view), "Reply", [inMenu] { feedPiece(*inMenu, QStringLiteral(" still")); });
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> two goes on and on and more\n\n"));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("two goes on and on and more"));
+        // Let go of while the menu is up: what it offered, what was selected
+        // when it opened.
+        QVERIFY(choose(view, "one.", "one."));
+        panel.composer()->clear();
+        rightClick(view->viewport(), onSelection(view), "Reply", [view] {
+            QTextCursor none = view->textCursor();
+            none.clearSelection();
+            view->setTextCursor(none);
+        });
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> one.\n\n"));
+        // From a finished reply into this one: the same.
+        QVERIFY(choose(view, "earlier", "still"));
+        const QString across = view->textCursor().selectedText();
+        feedPiece(panel, QStringLiteral(" further"));
+        QCOMPARE(view->textCursor().selectedText(), across);
+        // The mark alone: nothing to quote.
+        QVERIFY(choose(view, "▍", "▍"));
+        QCOMPARE(rightClick(view->viewport(), onSelection(view)), QStringList({"Copy", "Copy Link Location (off)", "Select All"}));
+        // Read again as more comes, the words move: still the same words.
+        QVERIFY(choose(view, "further", "further"));
+        feedPiece(panel, QStringLiteral(" **bold"));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("further"));
+        QVERIFY(choose(view, "bold", "bold"));
+        feedPiece(panel, QStringLiteral("er** after"));
+        QVERIFY(!panel.transcriptText().contains(QStringLiteral("**")));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("bold"));
+        const int moved = view->textCursor().selectionStart();
+        QCOMPARE(view->document()->find(QStringLiteral("bolder")).selectionStart(), moved);
+        // Chosen backwards: its anchor at its far end, moved as well.
+        {
+            feedPiece(panel, QStringLiteral(" and **back"));
+            QTextCursor c = view->document()->find(QStringLiteral("after"));
+            const int s = c.selectionStart(), e = c.selectionEnd();
+            c.setPosition(e);
+            c.setPosition(s, QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            feedPiece(panel, QStringLiteral("**"));
+            QCOMPARE(view->textCursor().selectedText(), QStringLiteral("after"));
+            QVERIFY(view->textCursor().position() < view->textCursor().anchor());
+            // (Before what moved: where it was.)
+            QCOMPARE(view->textCursor().position(), s);
+            feedPiece(panel, QStringLiteral(" and **bolded tail"));
+            c = view->document()->find(QStringLiteral("tail"));
+            const int ts = c.selectionStart(), te = c.selectionEnd();
+            c.setPosition(te);
+            c.setPosition(ts, QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            feedPiece(panel, QStringLiteral("**"));
+            QCOMPARE(view->textCursor().selectedText(), QStringLiteral("tail"));
+            QCOMPARE(view->textCursor().position(), ts - 2);
+            QCOMPARE(view->textCursor().anchor(), te - 2);
+        }
+        // The same words elsewhere: the ones nearest it, where it was.
+        feedPiece(panel, QStringLiteral(" same **x same same"));
+        {
+            QTextCursor c = view->document()->find(QStringLiteral("same"));
+            c = view->document()->find(QStringLiteral("same"), c);
+            const int second = c.selectionStart();
+            view->setTextCursor(c);
+            feedPiece(panel, QStringLiteral("**"));
+            QCOMPARE(view->textCursor().selectedText(), QStringLiteral("same"));
+            QCOMPARE(view->textCursor().selectionStart(), second - 2);
+        }
+        // Finished: the last piece written over all it had, the selection stays.
+        QVERIFY(choose(view, "bold", "bold"));
+        feedReply(panel, QStringLiteral("Streaming one.\n\nStreaming two goes on and on and more still further **bolder** after and done."));
+        QVERIFY(!panel.transcriptText().contains(QStringLiteral("▍")));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("bold"));
+    }
+
+    // A selection elsewhere: what is drawn after it, or drawn again, leaves it.
+    void aSelectionStaysAsTheConversationIsDrawn()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replydrawn");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextBrowser* view = panel.transcript();
+        feedReply(panel, QStringLiteral("The first reply."));
+        // Up to the end of all there is: not on with what comes after.
+        QVERIFY(choose(view, "first", "reply."));
+        QCOMPARE(view->textCursor().selectionEnd(), view->document()->characterCount() - 1);
+        feedReply(panel, QStringLiteral("The second reply."));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("first reply."));
+        panel.addNote(QStringLiteral("A note after it."));
+        panel.renderNow();
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("first reply."));
+        // In what is drawn again whole (another look, say): the same text.
+        panel.renderNow(true);
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("first reply."));
+        // Backwards too: the anchor where it was.
+        QTextCursor back = view->document()->find(QStringLiteral("second"));
+        const int s = back.selectionStart(), e = back.selectionEnd();
+        back.setPosition(e);
+        back.setPosition(s, QTextCursor::KeepAnchor);
+        view->setTextCursor(back);
+        panel.renderNow(true);
+        QCOMPARE(view->textCursor().anchor(), e);
+        QCOMPARE(view->textCursor().position(), s);
+        // Into a reply whose words are written over: nothing selected, not
+        // all that came after it.
+        feedPiece(panel, QStringLiteral("Written at first"), true);
+        QVERIFY(choose(view, "second", "at first"));
+        feedReply(panel, QStringLiteral("Other words altogether."));
+        QVERIFY(!view->textCursor().hasSelection());
+        // The mark of that reply gone with it: nothing kept short by it.
+        feedReply(panel, QStringLiteral("A later reply."));
+        QVERIFY(choose(view, "later", "reply."));
+        feedReply(panel, QStringLiteral("One after it."));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("later reply."));
+        // Gone from the conversation: nothing selected - no stray selection.
+        panel.newConversation();
+        panel.renderNow();
+        QVERIFY(!view->textCursor().hasSelection());
+        // Sideways too: a line of code wider than the view, scrolled along.
+        // (After a paragraph: a reply's first block has the format of its place.)
+        panel.newConversation();
+        feedReply(panel, QStringLiteral("Wide:\n\n```\nleft") + QString(600, QLatin1Char('x')) + QStringLiteral("right\n```"));
+        feedPiece(panel, QStringLiteral("Written now"), true);
+        QScrollBar* across = view->horizontalScrollBar();
+        QTRY_VERIFY(across->maximum() > 100);
+        QVERIFY(choose(view, "right", "right"));
+        across->setValue(40);
+        feedPiece(panel, QStringLiteral(" and more"));
+        QCOMPARE(across->value(), 40);
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("right"));
+        panel.newConversation();
+        // Out of sight in the reply being written, the view following its
+        // end: on it goes, following.
+        {
+            QString rows;
+            for (int i = 0; i < 200; ++i) rows += QStringLiteral("Line%1\n\n").arg(i);
+            feedPiece(panel, rows, true);
+            QVERIFY(choose(view, "Line3", "Line3"));
+            QScrollBar* down = view->verticalScrollBar();
+            down->setValue(down->maximum());
+            QVERIFY(panel.followsTheEnd());
+            feedPiece(panel, QStringLiteral("More\n\nAnd more\n\nAnd yet more"));
+            QVERIFY(panel.followsTheEnd());
+            QCOMPARE(down->value(), down->maximum());
+            QCOMPARE(view->textCursor().selectedText(), QStringLiteral("Line3"));
+            panel.newConversation();
+        }
+        // A view scrolled up stays where it is, what is selected in the
+        // reply being written out of its sight.
+        QString many;
+        for (int i = 0; i < 200; ++i) many += QStringLiteral("Row%1\n\n").arg(i);
+        feedPiece(panel, many, true);
+        QVERIFY(view->verticalScrollBar()->maximum() > 100);
+        view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum() / 2);
+        const int top = view->verticalScrollBar()->value();
+        QVERIFY(!panel.followsTheEnd());
+        QVERIFY(choose(view, "Row3", "Row3"));   // (out of sight: Qt would bring it in)
+        view->verticalScrollBar()->setValue(top);
+        feedPiece(panel, QStringLiteral(" and more"));
+        QCOMPARE(view->verticalScrollBar()->value(), top);
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("Row3"));
+    }
+
+    // Selected with the mouse, as a user does it.
+    void aDragSelectsWhatReplyQuotes()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replydrag");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("Both batches are running.\n\nThe second paragraph."));
+        QTextBrowser* view = panel.transcript();
+        const QTextCursor from = view->document()->find(QStringLiteral("batches"));
+        const QTextCursor to = view->document()->find(QStringLiteral("second"));
+        QTextCursor a(view->document()), z(view->document());
+        a.setPosition(from.selectionStart());
+        z.setPosition(to.selectionEnd());
+        const QPoint start = view->cursorRect(a).center(), end = view->cursorRect(z).center();
+        QTest::mousePress(view->viewport(), Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(view->viewport(), (start + end) / 2);
+        QTest::mouseMove(view->viewport(), end);
+        QTest::mouseRelease(view->viewport(), Qt::LeftButton, Qt::NoModifier, end);
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("batches are running.\u2029The second"));
+        rightClick(view->viewport(), end, "Reply");
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> batches are running.\n>\n> The second\n\n"));
+
+        // In a reply being written, pieces coming along the drag: from where
+        // it was pressed to where it is let go.
+        feedPiece(panel, QStringLiteral("Streamed words being written"), true);
+        const auto place = [view](const QString& word, bool atEnd) {
+            const QTextCursor found = view->document()->find(word);
+            QTextCursor c(view->document());
+            c.setPosition(atEnd ? found.selectionEnd() : found.selectionStart());
+            return view->cursorRect(c).center();
+        };
+        const QPoint press = place(QStringLiteral("words"), false);
+        QTest::mouseMove(view->viewport(), press + QPoint(0, 40));   // (no double click)
+        QTest::mousePress(view->viewport(), Qt::LeftButton, Qt::NoModifier, press);
+        feedPiece(panel, QStringLiteral(" still"));   // (pressed: no selection yet)
+        QTest::mouseMove(view->viewport(), place(QStringLiteral("being"), true));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("words being"));
+        feedPiece(panel, QStringLiteral(" more"));
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("words being"));
+        const QPoint let = place(QStringLiteral("written"), true);
+        QTest::mouseMove(view->viewport(), let);
+        QTest::mouseRelease(view->viewport(), Qt::LeftButton, Qt::NoModifier, let);
+        QCOMPARE(view->textCursor().selectedText(), QStringLiteral("words being written"));
+        panel.composer()->clear();
+        rightClick(view->viewport(), let, "Reply");
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> words being written\n\n"));
+    }
+
+    // Copy and Select All in the same menu, as before.
+    void copyAndSelectAllStayBesideReply()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replycopy");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("Both batches are running.\n\nSee [the docs](https://example.com/docs) here."));
+        QTextBrowser* view = panel.transcript();
+        QVERIFY(choose(view, "batches", "running"));
+        QApplication::clipboard()->setText(QStringLiteral("before"));
+        rightClick(view->viewport(), onSelection(view), "Copy");
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("batches are running"));
+        QCOMPARE(panel.composer()->toPlainText(), QString());
+        rightClick(view->viewport(), onSelection(view), "Select All");
+        QCOMPARE(view->textCursor().selectionStart(), 0);
+        QCOMPARE(view->textCursor().selectionEnd(), view->document()->characterCount() - 1);
+        QCOMPARE(panel.composer()->toPlainText(), QString());
+        // Copy Link Location on a link.
+        const QPoint link = view->cursorRect(view->document()->find(QStringLiteral("the docs"))).center();
+        QApplication::clipboard()->setText(QStringLiteral("before"));
+        const QStringList items = rightClick(view->viewport(), link, "Copy Link Location");
+        QCOMPARE(items, QStringList({"Reply", "Copy", "Copy Link Location", "Select All"}));
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("https://example.com/docs"));
+    }
+
+    // Conversations in tabs: to the composer of the one it was chosen in.
+    void replyGoesToTheTabItWasChosenIn()
+    {
+        ClaudeCodeTabs tabs;
+        tabs.resize(640, 800);
+        tabs.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&tabs));
+        ClaudeCodePanel* first = tabs.current();
+        ClaudeCodePanel* second = tabs.newConversation();
+        QVERIFY(first != second && tabs.current() == second);
+        first->composer()->setPlainText(QStringLiteral("first's draft"));
+        second->composer()->setPlainText(QStringLiteral("second's draft"));
+        feedReply(*first, QStringLiteral("Said in the first."));
+        feedReply(*second, QStringLiteral("Said in the second."));
+        QVERIFY(choose(first->transcript(), "Said", "first."));   // (selected behind, in the first)
+        QVERIFY(choose(second->transcript(), "Said", "second."));
+        rightClick(second->transcript()->viewport(), onSelection(second->transcript()), "Reply");
+        QCOMPARE(second->composer()->toPlainText(), QStringLiteral("second's draft\n\n> Said in the second.\n\n"));
+        QCOMPARE(first->composer()->toPlainText(), QStringLiteral("first's draft"));
+        // The other in front: to its own.
+        tabs.showConversation(first);
+        QTRY_VERIFY(first->transcript()->isVisible());
+        rightClick(first->transcript()->viewport(), onSelection(first->transcript()), "Reply");
+        QCOMPARE(first->composer()->toPlainText(), QStringLiteral("first's draft\n\n> Said in the first.\n\n"));
+        QCOMPARE(second->composer()->toPlainText(), QStringLiteral("second's draft\n\n> Said in the second.\n\n"));
+        // Another tab brought forward while the menu is up: still its own.
+        first->composer()->clear();
+        ClaudeCodeTabs* all = &tabs;
+        rightClick(first->transcript()->viewport(), onSelection(first->transcript()), "Reply", [all, second] { all->showConversation(second); });
+        QCOMPARE(first->composer()->toPlainText(), QStringLiteral("> Said in the first.\n\n"));
+        QCOMPARE(second->composer()->toPlainText(), QStringLiteral("second's draft\n\n> Said in the second.\n\n"));
+    }
+
+    // What a permission asks about can be selected too: quoted as well.
+    void replyFromThePermissionCard()
+    {
+        skipWithoutShell();
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("replycard"));
+        panel.session()->setProgram(script("writer", kWriter));
+        QFile::remove(dir.filePath("answers"));   // (an earlier test's)
+        panel.resize(640, 800);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        panel.composer()->setPlainText(QStringLiteral("Write it"));
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(panel.permissionCard()->isVisible(), 10000);
+        auto* detail = panel.permissionCard()->findChild<QPlainTextEdit*>(QStringLiteral("claudeCardDetail"));
+        auto* subject = panel.permissionCard()->findChild<QLabel*>(QStringLiteral("claudeCardSubject"));
+        QVERIFY(detail != nullptr && subject != nullptr);
+        QTRY_VERIFY(subject->isVisible());
+        QPlainTextEdit* composer = panel.composer();
+        // The subject: its own two items as before, and Reply when selected.
+        const QPoint on(4, subject->height() / 2);
+        QCOMPARE(rightClick(subject, on), QStringList({"Copy (off)", "Select All"}));
+        QVERIFY(!subject->hasSelectedText());
+        subject->setSelection(0, 3);
+        const QString three = subject->selectedText();
+        QCOMPARE(rightClick(subject, on), QStringList({"Reply", "Copy", "Select All"}));
+        QApplication::clipboard()->setText(QStringLiteral("before"));
+        rightClick(subject, on, "Copy");
+        QCOMPARE(QApplication::clipboard()->text(), three);
+        rightClick(subject, on, "Reply");
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> ") + three + QStringLiteral("\n\n"));
+        rightClick(subject, on, "Select All");
+        QCOMPARE(subject->selectedText(), subject->text());
+        // Over two lines: two lines, in the quote and in what is copied.
+        const QString wholeSubject = subject->text();
+        subject->setText(QStringLiteral("line one\nline two"));
+        subject->setSelection(5, 7);
+        QCOMPARE(subject->selectedText(), QStringLiteral("one\u2029lin"));
+        composer->clear();
+        rightClick(subject, on, "Reply");
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> one\n> lin\n\n"));
+        rightClick(subject, on, "Copy");
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("one\nlin"));
+        subject->setText(wholeSubject);
+        // The details: a line to a line, the box's own items under it.
+        QVERIFY(detail->isVisible());
+        composer->clear();
+        detail->setPlainText(QStringLiteral("line one\n\n  line three\nline four"));   // (as a command of several lines shows)
+        QTextCursor c = detail->textCursor();
+        c.movePosition(QTextCursor::Start);
+        c.movePosition(QTextCursor::Down, QTextCursor::KeepAnchor, 2);
+        c.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        detail->setTextCursor(c);
+        const QPoint in = detail->cursorRect().center();
+        const QStringList items = rightClick(detail->viewport(), in, "Reply");
+        QCOMPARE(items.value(0), QStringLiteral("Reply"));
+        QVERIFY(items.contains("Copy") && items.contains("Select All"));
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> line one\n>\n>   line three\n\n"));
+        c.clearSelection();
+        detail->setTextCursor(c);
+        QVERIFY(!rightClick(detail->viewport(), in).contains("Reply"));
+        // Nothing answered, nothing sent.
+        QVERIFY(panel.permissionCard()->isVisible());
+        QVERIFY(!QFile::exists(dir.filePath("answers")));
+        panel.session()->reset();
+    }
+
+    // A picture and a selection: both entries; the picture named in a quote.
+    void replyAboveTheUsualEntriesBesideOpenInViewer()
+    {
+        skipWithoutShell();
+        const QString work = fresh("replyimage");
+        const QString file = work + "/pic.png";
+        QImage plot(120, 80, QImage::Format_RGB32);
+        plot.fill(Qt::blue);
+        QVERIFY(plot.save(file));
+        ClaudeCodePanel panel;
+        showForReply(panel, "replyimagework");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        feedReply(panel, QStringLiteral("Before it.\n\n![the plot](%1)\n\nAfter it.").arg(QUrl::fromLocalFile(file).toString()));
+        QTextBrowser* view = panel.transcript();
+        QTextCursor at;
+        for (QTextBlock b = view->document()->begin(); b.isValid() && at.isNull(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().charFormat().isImageFormat()) {
+                    at = QTextCursor(view->document());
+                    at.setPosition(it.fragment().position() + 1);
+                    break;
+                }
+        QVERIFY(!at.isNull());
+        const QRect box = view->cursorRect(at);
+        const QPoint on(std::max(0, box.center().x() - 20), box.center().y());
+        QCOMPARE(panel.imageAt(on), file);
+        QVERIFY(choose(view, "Before", "After"));
+        const QStringList items = rightClick(view->viewport(), on, "Reply");
+        QCOMPARE(items, QStringList({"Open in Viewer", "Reply", "Copy", "Copy Link Location (off)", "Select All"}));
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> Before it.\n>\n> ![the plot](%1)\n>\n> After\n\n").arg(file));
+        const std::unique_ptr<QMenu> menu = panel.transcriptMenu(on);
+        QCOMPARE(menu->actions().value(0)->objectName(), QStringLiteral("claudeOpenImage"));
+        QVERIFY(menu->actions().value(1)->isSeparator());
+        QCOMPARE(menu->actions().value(2)->objectName(), QStringLiteral("claudeReply"));
+        QVERIFY(menu->actions().value(3)->isSeparator());
+        // A prompt's picture: its file, no name but that.
+        panel.composer()->setPlainText(QStringLiteral("See this"));
+        QVERIFY(panel.attachImageFiles({file}));
+        panel.sendComposer();
+        panel.renderNow();
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy(), 10000);
+        panel.renderNow();
+        QCOMPARE(quoteOf(panel, "See", "this"), QStringLiteral("> See this\n\n"));
+        const QTextCursor said = view->document()->find(QStringLiteral("See this"));
+        QTextCursor c(view->document());
+        c.setPosition(said.selectionStart());
+        c.movePosition(QTextCursor::NextBlock);
+        c.movePosition(QTextCursor::EndOfBlock);
+        c.setPosition(said.selectionStart(), QTextCursor::KeepAnchor);
+        view->setTextCursor(c);
+        panel.composer()->clear();
+        rightClick(view->viewport(), onSelection(view), "Reply");
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("> See this\n>\n> ![](%1)\n\n").arg(file));
+    }
+
     void imagesDroppedAreShownToClaude()
     {
         const QString work = fresh("dropwork");
@@ -6009,6 +6964,19 @@ private slots:
         QApplication::clipboard()->setText(QStringLiteral("before"));
         QVERIFY(QMetaObject::invokeMethod(&app, "slotEditCopy"));
         QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("1.59 kHz"));
+        // Reply: the quote in the dock's composer, the focus there, and what
+        // is typed next its - not the schematic's, all of it still chosen.
+        QCOMPARE(rightClick(view->viewport(), view->cursorRect(chosen).center(), "Reply").value(0), QStringLiteral("Reply"));
+        QPlainTextEdit* composer = panel->composer();
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> 1.59 kHz\n\n"));
+        app.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&app));
+        QTRY_VERIFY(composer->hasFocus());
+        QTest::keyClicks(QApplication::focusWidget(), "why");
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_Backspace);
+        QCOMPARE(composer->toPlainText(), QStringLiteral("> 1.59 kHz\n\nwh"));
+        QCOMPARE(doc->a_DocComps.size(), parts);
+        QCOMPARE(app.getDoc(), static_cast<QucsDoc*>(doc));
         panel->session()->reset();
         app.closeAllFiles();
     }
