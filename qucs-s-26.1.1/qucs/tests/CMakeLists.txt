@@ -105,8 +105,10 @@ qucs_add_fem_test(test_fem_waves)
 set_tests_properties(test_fem_waves PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_semiconductor)
 # (864 s and a timeout at 900 on CI's runners, 613 s on a sanitized Debug
-# build at home: its contacts' currents, its examples.)
-set_tests_properties(test_fem_semiconductor PROPERTIES TIMEOUT 1800)
+# build at home: its contacts' currents, its examples. 4458 s of its 5400,
+# 1800 times the scale of 3, on an EPYC 7763, the slowest runner CI has
+# been given, in the runs to c6c7eb2.)
+set_tests_properties(test_fem_semiconductor PROPERTIES TIMEOUT 2400)
 qucs_add_fem_test(test_fem_rays)
 qucs_add_fem_test(test_fem_modeoverlap)
 qucs_add_fem_test(test_fem_photodiode_power)
@@ -145,6 +147,9 @@ target_compile_definitions(test_fem_materials PRIVATE QUCS_TEST_DATA="${CMAKE_CU
 qucs_add_fem_test(test_fem_pde)
 qucs_add_fem_test(test_fem_anisotropy)
 qucs_add_fem_test(test_fem_modulator)
+# (2481 s of its 2700, 900 times the scale of 3, on an EPYC 7763, as the
+# semiconductors' above.)
+set_tests_properties(test_fem_modulator PROPERTIES TIMEOUT 1200)
 qucs_add_fem_test(test_fem_resonator)
 qucs_add_fem_test(test_fem_laser)
 qucs_add_fem_test(test_fem_process)
@@ -275,8 +280,9 @@ qucs_add_test(test_multiphysics_view)
 # five minutes and more under the sanitizers on CI's runners, as the
 # engine's tests. There 1131 to 2254 s of its 2700 (900 times the scale of
 # 3) from 28dab4c to d3e35fe, its time growing with its functions and
-# twice as long on a slow runner: 1200, room for a slow one's.)
-set_tests_properties(test_multiphysics_doc PROPERTIES TIMEOUT 1200)
+# twice as long on a slow runner: 1200, room for a slow one's. Then 3251 s
+# of that 3600 on an EPYC 7763, as the semiconductors' above.)
+set_tests_properties(test_multiphysics_doc PROPERTIES TIMEOUT 1800)
 # (a layout KLayout wrote, data/klayout_sample.oas: another program's OASIS)
 target_compile_definitions(test_layout_doc PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 # (Lumerical's files: data/lumerical_sample.py writes them - an MQW project
@@ -361,6 +367,9 @@ qucs_add_test(test_claude_code)
 # QUCS_FUZZ_SECONDS (test_claude_fuzz.cpp).
 qucs_add_test(test_claude_fuzz)
 qucs_add_test(test_qucs_control)
+# (731 s of its 900, 300 times the scale of 3, on an EPYC 7763, as the
+# semiconductors' above.)
+set_tests_properties(test_qucs_control PROPERTIES TIMEOUT 600)
 # The Tools menu's programs as Claude's tools (their --json): built first
 # (the top CMakeLists.txt, once they are known).
 qucs_add_test(test_wishlist_tools)
@@ -476,9 +485,14 @@ endif()
 # 300 s sanitized here; CI's sanitized Debug runner twice that or so, and a
 # slow one past QtTest's 900 s there (d3e35fe's run, its tests 188 minutes
 # where 953c8c9's took 90). The laser test's functions twice the scale's,
-# within its TIMEOUT; on macOS 900 s at least, as above.)
-math(EXPR _qucs_laser_ms "600000 * ${QUCS_TEST_TIMEOUT_SCALE}")
-if(APPLE AND _qucs_laser_ms LESS 900000)
-  set(_qucs_laser_ms 900000)
+# within its TIMEOUT; on macOS 900 s at least, as above. The devices' test's
+# likewise: a MOSFET's three solves, 150 s sanitized here, some 470 s by the
+# rate of the functions before them on an EPYC 7763, went past that 900 on
+# c6c7eb2's tag run and not on its main run, the same build on the same
+# processor, with the RF tests beside them on both. The avalanche's function,
+# as long here, and the ionizations', longer, are as near.)
+math(EXPR _qucs_long_function_ms "600000 * ${QUCS_TEST_TIMEOUT_SCALE}")
+if(APPLE AND _qucs_long_function_ms LESS 900000)
+  set(_qucs_long_function_ms 900000)
 endif()
-set_property(TEST test_fem_laser APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_laser_ms}")
+set_property(TEST test_fem_laser test_fem_devices APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_long_function_ms}")

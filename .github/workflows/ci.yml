@@ -43,8 +43,12 @@ jobs:
     # test_fem_pde 144 s, then 294) and the job ran out of its 210 minutes:
     # the tests now run four at a time, their limits three times theirs.
     # 222.6 of those 240 minutes on 91450f4 (19 October): 330, below the
-    # hosted runners' 360 (the hunt of 19 October, C3).
-    timeout-minutes: 330
+    # hosted runners' 360 (the hunt of 19 October, C3). Its time now follows
+    # the processor it is given: some 170 minutes on an EPYC 9V45, 308 to 331
+    # on a 7763, where c6c7eb2's main run ran out of its 330 in the last fuzz
+    # steps with every unit test passed: 355, five minutes before the
+    # runners' 360 to upload what the job wrote.
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
