@@ -243,6 +243,7 @@ set_tests_properties(test_rf25_fullwave_2 PROPERTIES
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh;QUCS_TEST_PART=2"
   TIMEOUT 900)
 qucs_add_test(test_rf25_returns)
+qucs_add_test(test_rf25_hfss)
 qucs_add_test(test_rf25_deembed)
 # (Each calibration solves three strips now, and shorter ones beside them
 # where they disagree - the phase E check of 2 November - and every strip's

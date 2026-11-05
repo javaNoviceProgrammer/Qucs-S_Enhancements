@@ -479,6 +479,10 @@ private:
     QJsonObject rf25Export(const QJsonObject& args);
     QJsonObject rf25Circuit(const QJsonObject& args);
     QJsonObject rf25Inductance(const QJsonObject& args);
+    /// rf25_hfss_export, rf25_hfss_import, rf25_compare: HFSS™ 3D Layout.
+    QJsonObject rf25HfssExport(const QJsonObject& args);
+    QJsonObject rf25HfssImport(const QJsonObject& args);
+    QJsonObject rf25Compare(const QJsonObject& args);
     QJsonObject newDocument(const QJsonObject& args);
     QJsonObject showDocument(const QJsonObject& args);
     /// What a schematic's save did to the project's library folders (QucsApp::syncProjectLibraries()), as a sentence; empty for none.

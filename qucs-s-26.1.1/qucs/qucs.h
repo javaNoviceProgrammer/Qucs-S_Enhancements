@@ -598,6 +598,11 @@ public:
   static bool isRf25File(const QString &name);
   /// A new RF 2.5D model in a tab, untitled; the RF 2.5D panel shown.
   RF25Doc *newRf25Model();
+  /// RF 2.5D > Export HFSS™ 3D Layout, Import HFSS™ 3D Layout and Compare With
+  /// Touchstone: a file asked for, and the tool that does it.
+  void exportRf25Hfss();
+  void importRf25Hfss();
+  void compareRf25WithTouchstone();
   /// The left dock's RF 2.5D tab brought to the front.
   void showRf25Panel();
   /// Whether \a w is a 3D multiphysics model in a tab (multiphysics3ddoc.h).
