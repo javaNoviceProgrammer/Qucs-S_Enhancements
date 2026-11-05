@@ -612,6 +612,19 @@ QString toolTipOf(const QTextDocument* doc, const QString& text)
     return QString();
 }
 
+// A time is judged in Release alone (aLongReplyIsReadInLinearTime says why).
+#if defined(__SANITIZE_ADDRESS__)
+constexpr bool kTimesJudged = false;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr bool kTimesJudged = false;
+#else
+constexpr bool kTimesJudged = true;
+#endif
+#else
+constexpr bool kTimesJudged = true;
+#endif
+
 } // namespace
 
 class TestClaudeCode : public QObject
@@ -3233,26 +3246,32 @@ private slots:
         QVERIFY2(text.startsWith(QStringLiteral("Archived:\n")) && !text.contains(QLatin1Char('|')), qPrintable(text));
         // One pass: a long reply of many such tables in a time its length's
         // (a reply is drawn again every 40 ms as it streams) - four times as
-        // many, under eight times as long (CI's sanitized build alike).
-        const auto apartIn = [&t](int count, QString* out) {
+        // many, under eight times as long. Each size's best of five, the two
+        // timed in turn so that a slow stretch of a loaded machine slows both:
+        // each size's best of three, one size after the other, was 4.62 then
+        // 37.34 ms on CI's macOS (at d8b5942), 8.08 times, and 4.0 and 16.2
+        // here. Judged in Release alone, as aLongReplyIsReadInLinearTime says.
+        const auto tablesOf = [&t](int count) {
             QString many;
             for (int i = 0; i < count; ++i) many += QStringLiteral("**Label %1:**\n").arg(i) + t + QLatin1Char('\n');
-            qint64 best = std::numeric_limits<qint64>::max();
-            for (int k = 0; k < 3; ++k) {
-                QElapsedTimer clock;
-                clock.start();
-                *out = tablesApart(many);
-                best = std::min(best, clock.nsecsElapsed());
-            }
-            return best;
+            return many;
         };
-        QString apart;
-        const qint64 a = apartIn(2000, &apart);
-        QCOMPARE(apart.count(QStringLiteral(":**\n\n|")), 2000);
-        const qint64 b = apartIn(8000, &apart);
-        QCOMPARE(apart.count(QStringLiteral(":**\n\n|")), 8000);
+        const QString fewer = tablesOf(2000), more = tablesOf(8000);
+        QString fewerApart, moreApart;
+        qint64 a = std::numeric_limits<qint64>::max(), b = a;
+        for (int k = 0; k < 5; ++k) {
+            QElapsedTimer clock;
+            clock.start();
+            fewerApart = tablesApart(fewer);
+            a = std::min(a, clock.nsecsElapsed());
+            clock.start();
+            moreApart = tablesApart(more);
+            b = std::min(b, clock.nsecsElapsed());
+        }
+        QCOMPARE(fewerApart.count(QStringLiteral(":**\n\n|")), 2000);
+        QCOMPARE(moreApart.count(QStringLiteral(":**\n\n|")), 8000);
         qInfo("tables apart: 2,000 in %.2f ms, 8,000 in %.2f ms", a / 1e6, b / 1e6);
-        QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+        if (kTimesJudged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
     }
 
     // Qt's Markdown importer dropped all the text after a tag it saw opened
@@ -3638,17 +3657,6 @@ private slots:
     void aLongReplyIsReadInLinearTime()
     {
         using qucs_s::markdown::htmlBalanced;
-#if defined(__SANITIZE_ADDRESS__)
-        const bool judged = false;
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-        const bool judged = false;
-#else
-        const bool judged = true;
-#endif
-#else
-        const bool judged = true;
-#endif
         // (Each of two texts' best of five, in turn: ns.)
         const auto inTurn = [](const auto& read, const QString& small, const QString& large) {
             qint64 a = std::numeric_limits<qint64>::max(), b = a;
@@ -3681,14 +3689,14 @@ private slots:
             const QString small = unit.repeated(int(25000 / unit.size())) + tail, large = unit.repeated(4 * int(25000 / unit.size())) + tail;
             const auto [a, b] = inTurn(bothRead, small, large);
             qInfo("%lld, then %lld characters: %.2f ms, %.2f ms", qlonglong(small.size()), qlonglong(large.size()), a / 1e6, b / 1e6);
-            if (judged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+            if (kTimesJudged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         // (findMath alone, on tags with one '>' at the end: a <code>'s, a
         // <pre>'s tag looked for no further than it.)
         {
             const auto [a, b] = inTurn([](const QString& md) { (void)qucs_s::math::findMath(md); }, quoted.repeated(2000) + ">", quoted.repeated(8000) + ">");
             qInfo("findMath, one '>' at the end: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
-            if (judged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+            if (kTimesJudged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         // (An HTML block's tags, for its marks: looked over to a '>' - none.)
         {
@@ -3698,7 +3706,7 @@ private slots:
             };
             const auto [a, b] = inTurn(marked, "<div>\n" + quoted.repeated(2000), "<div>\n" + quoted.repeated(8000));
             qInfo("an HTML block: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
-            if (judged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+            if (kTimesJudged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         const QString lone = QString("a <name> b ") + QChar(0xD800) + " c $x" + QChar(0xDC00) + "$\n\nEND";
         const QChar fffd(QChar::ReplacementCharacter);
