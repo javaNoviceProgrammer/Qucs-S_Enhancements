@@ -598,7 +598,8 @@ QString formatTextRf25()
         "rf_return marks a conductor the lines return through: the quasi-static solve's, and a coplanar edge port's.\n"
         "rf_mesh: \"cells_across\", \"maximum\" (the largest cell), \"per_wavelength\", \"edges\", \"stretch\". rf_study: "
         "\"kind\" quasi_static or full_wave, \"from\", \"to\", \"points\", \"scale\" linear or log, \"matrix\". rf_exports: "
-        "rf_touchstone and rf_circuit.");
+        "rf_touchstone and rf_circuit. rf25_hfss_export writes a model for HFSS™ 3D Layout, rf25_hfss_import makes one of a "
+        "project, its control file or an exported script, and rf25_compare sets a solve beside a Touchstone file's S.");
 }
 
 /// The RF 2.5D kinds, each with its properties as propertyLine() says them -

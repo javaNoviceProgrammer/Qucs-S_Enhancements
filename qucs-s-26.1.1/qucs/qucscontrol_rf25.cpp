@@ -1134,3 +1134,247 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
                                 "stops being the whole story.")));
     return jsonResult(out);
 }
+
+// ------------------------------------------------------- HFSS 3D Layout
+
+QJsonObject QucsControl::rf25HfssExport(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_hfss_export writes one for HFSS™ 3D Layout.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    if (!model->waitForPrepared(300000))
+        return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
+
+    HfssOptions how;
+    if (args.contains(QLatin1String("port_type"))) how.portType = args.value(QLatin1String("port_type")).toString().trimmed();
+    // (Nought is a length here: no margin, no air.)
+    const auto lengthIn = [model](const QJsonValue& value, double* into) {
+        const QString text = value.toString().trimmed();
+        if (text == QLatin1String("0")) {
+            *into = 0;
+            return true;
+        }
+        const std::optional<double> given = positiveNumber(text, *model);
+        if (!given) return false;
+        *into = *given;
+        return true;
+    };
+    if (args.contains(QLatin1String("margin")) && !lengthIn(args.value(QLatin1String("margin")), &how.margin))
+        return errorResult(tr("'margin' is a length of nought or more (\"2[mm]\")."));
+    if (args.contains(QLatin1String("air")) && !lengthIn(args.value(QLatin1String("air")), &how.air))
+        return errorResult(tr("'air' is a length of nought or more (\"5[mm]\")."));
+    if (args.contains(QLatin1String("thin_metal")) && !lengthIn(args.value(QLatin1String("thin_metal")), &how.thinMetal))
+        return errorResult(tr("'thin_metal' is a length of nought or more (\"2[um]\")."));
+    if (args.contains(QLatin1String("adaptive_frequency"))) {
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("adaptive_frequency")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'adaptive_frequency' is a frequency above nought (\"20[GHz]\")."));
+        how.adaptive = *given;
+    }
+    if (args.contains(QLatin1String("max_delta"))) {
+        how.maxDelta = args.value(QLatin1String("max_delta")).toDouble();
+        if (!(how.maxDelta > 0)) return errorResult(tr("'max_delta' is a number above nought (0.02)."));
+    }
+    if (args.contains(QLatin1String("max_passes"))) {
+        how.maxPasses = args.value(QLatin1String("max_passes")).toInt();
+        if (how.maxPasses < 1 || how.maxPasses > 1000) return errorResult(tr("'max_passes' is a whole number from 1 to 1000."));
+    }
+    if (args.contains(QLatin1String("sweep"))) {
+        const QString sweep = args.value(QLatin1String("sweep")).toString().trimmed();
+        if (sweep != QLatin1String("interpolating") && sweep != QLatin1String("discrete"))
+            return errorResult(tr("'sweep' is \"interpolating\" or \"discrete\", not \"%1\".").arg(sweep));
+        how.discrete = sweep == QLatin1String("discrete");
+    }
+    const HfssExport written = model->hfssExport(how);
+    if (!written.ok()) return errorResult(written.problems.join(QLatin1Char(' ')));
+
+    // Where: the file given, relative to the model; else beside it.
+    const QString name = model->getDocName();
+    const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
+    QString where = args.value(QLatin1String("file")).toString().trimmed();
+    if (where.isEmpty()) where = (name.isEmpty() ? QStringLiteral("rf25") : QFileInfo(name).completeBaseName()) + QStringLiteral("_hfss.py");
+    if (const QString bad = badFileName(QFileInfo(where).fileName()); !bad.isEmpty()) return errorResult(tr("'file': %1.").arg(bad));
+    where = QDir::cleanPath(dir.absoluteFilePath(where));
+    if (QFileInfo(where).suffix().compare(QLatin1String("py"), Qt::CaseInsensitive) != 0)
+        return errorResult(tr("'file' is the script's, a .py: the .gds and the .xml go beside it by its name."));
+    if (!QFileInfo(QFileInfo(where).absolutePath()).isDir()) return errorResult(tr("There is no folder %1.").arg(QFileInfo(where).absolutePath()));
+    const QString stem = QFileInfo(where).absoluteDir().filePath(QFileInfo(where).completeBaseName());
+    // The .gds and the .xml take the script's name, so never the model's own
+    // layout; and with no script there, what has those names is no earlier export.
+    const QString layoutName = qucs_s::rf25::textOf(model->model().layout(), QStringLiteral("file")).trimmed();
+    if (!layoutName.isEmpty() && sameFile(dir.absoluteFilePath(layoutName), stem + QStringLiteral(".gds")))
+        return errorResult(tr("%1 is this model's layout, and the GDSII file goes beside the script by its name: name the script otherwise.").arg(layoutName));
+    if (!QFileInfo::exists(where))
+        for (const QString& file : {stem + QStringLiteral(".xml"), stem + QStringLiteral(".gds")})
+            if (QFileInfo::exists(file))
+                return errorResult(tr("%1 is there already, and the export would write over it by the script's name: name the script otherwise.").arg(QFileInfo(file).fileName()));
+    for (const QString& file : {where, stem + QStringLiteral(".xml"), stem + QStringLiteral(".gds")})
+        if (const QString no = aboutToWrite(file); !no.isEmpty()) return errorResult(no);
+    QString why;
+    QStringList files;
+    if (!writeHfssExport(written, where, &files, &why)) return errorResult(why);
+
+    QJsonArray ports;
+    for (const QString& p : written.portSaid) ports.append(p);
+    QJsonArray notes;
+    for (const QString& n : written.notes) notes.append(n);
+    return jsonResult(QJsonObject{{QStringLiteral("files"), QJsonArray::fromStringList(files)},
+                                  {QStringLiteral("design"), written.name},
+                                  {QStringLiteral("layers"), written.layers},
+                                  {QStringLiteral("materials"), written.materials},
+                                  {QStringLiteral("polygons"), written.polygons},
+                                  {QStringLiteral("voids"), written.voids},
+                                  {QStringLiteral("vias"), written.vias},
+                                  {QStringLiteral("planes"), written.planes},
+                                  {QStringLiteral("ports"), ports},
+                                  {QStringLiteral("setup"), written.setup},
+                                  {QStringLiteral("sweep"), written.sweep},
+                                  {QStringLiteral("sweep_data"), written.sweepData},
+                                  {QStringLiteral("adaptive_frequency_hz"), written.adaptive},
+                                  {QStringLiteral("margin_m"), written.marginUsed},
+                                  {QStringLiteral("air_m"), written.airUsed},
+                                  {QStringLiteral("notes"), notes},
+                                  {QStringLiteral("run"), tr("Not run: no Electronics Desktop here. Tools > Run Script, or ansysedt -RunScriptAndExit %1 -ScriptArgs solve; it leaves a report beside it.")
+                                                              .arg(QFileInfo(where).fileName())}});
+}
+
+QJsonObject QucsControl::rf25HfssImport(const QJsonObject& args)
+{
+    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    if (given.isEmpty()) return errorResult(tr("'path' names what to read: an .aedt, an .aedb folder or its edb.def, a control file (.xml) or an exported script (.py)."));
+    const QString path = absolute(given);
+    QString layoutFile = args.value(QLatin1String("layout")).toString().trimmed();
+    const QFileInfo info(path);
+    if (!layoutFile.isEmpty()) {
+        layoutFile = QFileInfo(layoutFile).isAbsolute() ? layoutFile : info.absoluteDir().absoluteFilePath(layoutFile);
+        if (!QFileInfo(layoutFile).isFile()) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(layoutFile)));
+    }
+    QString why;
+    const HfssImport read = hfssImportOf(path, layoutFile, &why);
+    if (!read.model) return errorResult(why);
+
+    // Where the model goes: as asked, relative to what was read; else beside it.
+    const QString edbFolder = info.fileName() == QLatin1String("edb.def") ? info.absolutePath() : QString();
+    const QFileInfo named(edbFolder.isEmpty() ? path : edbFolder);
+    QString where = args.value(QLatin1String("save_as")).toString().trimmed();
+    if (where.isEmpty()) where = named.completeBaseName() + QStringLiteral(".qrf25");
+    if (const QString bad = badFileName(QFileInfo(where).fileName()); !bad.isEmpty()) return errorResult(tr("'save_as': %1.").arg(bad));
+    where = QFileInfo(where).isAbsolute() ? QDir::cleanPath(where) : QDir::cleanPath(named.absoluteDir().absoluteFilePath(where));
+    if (QFileInfo(where).suffix().compare(QLatin1String("qrf25"), Qt::CaseInsensitive) != 0)
+        return errorResult(tr("'save_as' is a model's, a .qrf25."));
+    if (!QFileInfo(QFileInfo(where).absolutePath()).isDir()) return errorResult(tr("There is no folder %1.").arg(QFileInfo(where).absolutePath()));
+    const bool replace = args.value(QLatin1String("replace")).toBool();
+    // (Its shapes, where it keeps naming no layout, go in a .gds of its name.)
+    const QString shapesFile = read.layoutFile.isEmpty() && !read.shapes.isEmpty() ? QFileInfo(where).absoluteDir().filePath(QFileInfo(where).completeBaseName() + QStringLiteral(".gds")) : QString();
+    for (const QString& file : {where, shapesFile})
+        if (!file.isEmpty() && QFileInfo::exists(file) && !replace)
+            return errorResult(tr("%1 is there already: 'replace' writes over it.").arg(QDir::toNativeSeparators(file)));
+    for (QucsDoc* d : a_app->allDocuments())
+        for (const QString& file : {where, shapesFile})
+            if (!file.isEmpty() && sameFile(d->getDocName(), file)) return errorResult(tr("%1 is open: close it first.").arg(QFileInfo(file).fileName()));
+    if (const QString no = aboutToWrite(where); !no.isEmpty()) return errorResult(no);
+    if (!shapesFile.isEmpty())
+        if (const QString no = aboutToWrite(shapesFile); !no.isEmpty()) return errorResult(no);
+    QStringList files;
+    if (!writeHfssImport(read, where, &files, &why)) return errorResult(why);
+    const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), where}});
+    if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+
+    QJsonObject sweep;
+    if (read.points > 0) {
+        sweep.insert(QStringLiteral("from_hz"), read.from);
+        sweep.insert(QStringLiteral("to_hz"), read.to);
+        sweep.insert(QStringLiteral("points"), read.points);
+    }
+    return jsonResult(QJsonObject{{QStringLiteral("model"), where},
+                                  {QStringLiteral("read_as"), read.kind},
+                                  {QStringLiteral("stack"), QJsonArray::fromStringList(read.layers)},
+                                  {QStringLiteral("polygons"), read.polygons},
+                                  {QStringLiteral("vias"), read.vias},
+                                  {QStringLiteral("ports"), read.ports},
+                                  {QStringLiteral("sweep"), sweep},
+                                  {QStringLiteral("notes"), QJsonArray::fromStringList(read.notes)},
+                                  {QStringLiteral("problems"), QJsonArray::fromStringList(read.problems)},
+                                  {QStringLiteral("files"), QJsonArray::fromStringList(files)}});
+}
+
+QJsonObject QucsControl::rf25Compare(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_compare sets the full-wave solve of one beside a Touchstone file.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    if (!model->waitForPrepared(300000))
+        return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
+    const std::shared_ptr<const FullWave> wave = model->fullWave();
+    if (!wave || !wave->ok())
+        return errorResult(model->solveProblem().isEmpty() ? tr("It has no full-wave solve to compare: rf25_solve it first, or press Solve on its tab.") : model->solveProblem());
+    const QString name = model->getDocName();
+    const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
+    const QString given = args.value(QLatin1String("file")).toString().trimmed();
+    if (given.isEmpty()) return errorResult(tr("'file' names the Touchstone file (.sNp) to compare it with."));
+    const QString file = QDir::cleanPath(dir.absoluteFilePath(given));
+    if (!QFileInfo(file).isFile()) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(file)));
+    QList<int> order;
+    for (const QJsonValue& v : args.value(QLatin1String("order")).toArray()) order << v.toInt();
+    const SCompared compared = compareWithTouchstone(*wave, file, order);
+    if (!compared.ok()) return errorResult(compared.problem);
+
+    const auto saidOf = [this](const SCompared::Term& t) {
+        return tr("S%1,%2: at most %3 apart, at %4 GHz; rms %5; at most %6 dB and %7 degrees")
+            .arg(t.i).arg(t.j).arg(t.worst, 0, 'g', 3).arg(t.worstAt / 1e9, 0, 'g', 5).arg(t.rms, 0, 'g', 3).arg(t.dbWorst, 0, 'f', 3).arg(t.degWorst, 0, 'f', 2);
+    };
+    QJsonArray terms;
+    for (const SCompared::Term& t : compared.terms)
+        terms.append(QJsonObject{{QStringLiteral("term"), QStringLiteral("S%1,%2").arg(t.i).arg(t.j)},
+                                 {QStringLiteral("apart"), t.worst},
+                                 {QStringLiteral("at_hz"), t.worstAt},
+                                 {QStringLiteral("rms"), t.rms},
+                                 {QStringLiteral("db"), t.dbWorst},
+                                 {QStringLiteral("degrees"), t.degWorst},
+                                 {QStringLiteral("said"), saidOf(t)}});
+    QJsonObject result{{QStringLiteral("file"), file},
+                       {QStringLiteral("ports"), compared.ports},
+                       {QStringLiteral("frequencies"), int(compared.frequencies.size())},
+                       {QStringLiteral("interpolated"), compared.interpolated},
+                       {QStringLiteral("reference_ohm"), compared.reference > 0 ? QJsonValue(compared.reference) : QJsonValue(tr("each port's own, as the file says"))},
+                       {QStringLiteral("worst"), QJsonObject{{QStringLiteral("term"), QStringLiteral("S%1,%2").arg(compared.worstI).arg(compared.worstJ)},
+                                                             {QStringLiteral("apart"), compared.worst},
+                                                             {QStringLiteral("at_hz"), compared.worstAt}}},
+                       {QStringLiteral("said"), tr("At most %1 apart: S%2,%3 at %4 GHz, over %5 frequencies.")
+                                                     .arg(compared.worst, 0, 'g', 3).arg(compared.worstI).arg(compared.worstJ).arg(compared.worstAt / 1e9, 0, 'g', 5).arg(compared.frequencies.size())},
+                       {QStringLiteral("terms"), terms},
+                       {QStringLiteral("notes"), QJsonArray::fromStringList(compared.notes)}};
+    const QString table = args.value(QLatin1String("table")).toString().trimmed();
+    if (!table.isEmpty()) {
+        const QString where = QDir::cleanPath(dir.absoluteFilePath(table));
+        if (const QString no = aboutToWrite(where); !no.isEmpty()) return errorResult(no);
+        QFile out(where);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
+            return errorResult(tr("%1 could not be written: %2.").arg(QDir::toNativeSeparators(where), out.errorString()));
+        out.write(comparisonTable(compared, QFileInfo(name).fileName(), QFileInfo(file).fileName()).toUtf8());
+        out.close();
+        result.insert(QStringLiteral("table"), where);
+    }
+    return jsonResult(result);
+}

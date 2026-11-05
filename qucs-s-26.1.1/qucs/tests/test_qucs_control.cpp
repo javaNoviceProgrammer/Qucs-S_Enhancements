@@ -128,6 +128,49 @@ bool writeStrip(const QString& path, double length, double width)
     return ok;
 }
 
+/// A strip of 1000 by 50 µm on 100 µm of 9.8 over a ground, a port at each end,
+/// its layout "strip.gds".
+qucs_s::rf25::Model hfssLineModel()
+{
+    qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+    std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+    stack.erase(std::remove_if(stack.begin(), stack.end(), [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }), stack.end());
+    for (qucs_s::rf25::Node& n : stack)
+        if (n.type == QLatin1String("rf_substrate")) {
+            n.props.insert(QStringLiteral("thickness"), QStringLiteral("100[um]"));
+            n.props.insert(QStringLiteral("epsr"), QStringLiteral("9.8"));
+        }
+    m.layout().props.insert(QStringLiteral("file"), QStringLiteral("strip.gds"));
+    QJsonArray row;
+    row.append(QStringLiteral("1"));
+    row.append(QStringLiteral("0"));
+    row.append(QStringLiteral("M1"));
+    QJsonArray rows;
+    rows.append(row);
+    if (rows.size() != 1) qFatal("a row of one row: %d", int(rows.size()));
+    m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+    m.mesh().props.insert(QStringLiteral("cells_across"), 3);
+    m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+    for (const QPair<const char*, const char*>& at : {qMakePair("0", "In"), qMakePair("1000[um]", "Out")}) {
+        qucs_s::rf25::Node port = m.make(QStringLiteral("rf_edge_port"));
+        port.label = QLatin1String(at.second);
+        port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+        port.props.insert(QStringLiteral("x"), QLatin1String(at.first));
+        port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
+        if (m.add(QStringLiteral("ports"), port) == nullptr) qFatal("the port does not go in");
+    }
+    return m;
+}
+
+/// That model written to \a folder, as line.qrf25 and its strip.gds.
+qucs_s::rf25::Model hfssLine(const QString& folder)
+{
+    const qucs_s::rf25::Model m = hfssLineModel();
+    QFile f(folder + "/line.qrf25");
+    if (!writeStrip(folder + "/strip.gds", 1000, 50) || !f.open(QIODevice::WriteOnly) || f.write(m.toJson()) <= 0) qFatal("%s could not be written", qPrintable(folder));
+    return m;
+}
+
 /// Rectangles on layer 1, in micrometres, as a GDS file at \a path.
 bool writeBoxes(const QString& path, const QList<QRectF>& boxes)
 {
@@ -2829,6 +2872,276 @@ private slots:
             // (None of the multiphysics kinds.)
             for (const QJsonValue& k : kinds) QVERIFY(k.toObject().value("type").toString().startsWith(QLatin1String("rf_")));
         }
+    }
+
+    // An RF 2.5D model written for HFSS 3D Layout and read back by the tools,
+    // and its solve set beside a Touchstone file: rf25_hfss_export,
+    // rf25_hfss_import, rf25_compare. (What the files hold is test_rf25_hfss's.)
+    void anRf25ModelGoesToHfss3DLayoutAndBackThroughItsTools()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/hfss"));
+        const qucs_s::rf25::Model m = hfssLine(ws + "/hfss");
+        QVERIFY(!m.toJson().isEmpty());
+        const QString model = ws + "/hfss/line.qrf25";
+        // The export: three files beside the model, what they hold counted.
+        const QJsonObject wrote = call("rf25_hfss_export", {{"path", model}}, 120000);
+        QVERIFY2(!failed(wrote), qPrintable(text(wrote)));
+        const QJsonObject out = json(wrote).toObject();
+        QCOMPARE(out.value("files").toArray().size(), 3);
+        for (const QString& name : {QStringLiteral("line_hfss.py"), QStringLiteral("line_hfss.xml"), QStringLiteral("line_hfss.gds")})
+            QVERIFY2(QFileInfo::exists(ws + "/hfss/" + name), qPrintable(name));
+        QCOMPARE(out.value("design").toString(), QStringLiteral("line"));
+        QCOMPARE(out.value("polygons").toInt(), 1);
+        QCOMPARE(out.value("planes").toInt(), 1);
+        QCOMPARE(out.value("ports").toArray().size(), 2);
+        QVERIFY2(out.value("ports").toArray().at(0).toString().contains(QLatin1String("gap port")), qPrintable(text(wrote)));
+        QCOMPARE(out.value("setup").toString(), QStringLiteral("HFSS Setup 1"));
+        QVERIFY(out.value("run").toString().contains(QLatin1String("Not run")));
+        QVERIFY(!out.value("notes").toArray().isEmpty());
+        // What it is given by name.
+        const QJsonObject asked = json(call("rf25_hfss_export", {{"path", model}, {"file", "asked.py"}, {"port_type", "wave"}, {"margin", "1[mm]"}, {"air", "2[mm]"},
+                                                                 {"adaptive_frequency", "12[GHz]"}, {"max_delta", 0.01}, {"max_passes", 15}, {"sweep", "discrete"}, {"thin_metal", "1[um]"}}, 120000)).toObject();
+        QVERIFY2(asked.value("ports").toArray().at(0).toString().contains(QLatin1String("wave port")), qPrintable(QString::fromUtf8(QJsonDocument(asked).toJson())));
+        QCOMPARE(asked.value("adaptive_frequency_hz").toDouble(), 12e9);
+        QCOMPARE(asked.value("margin_m").toDouble(), 1e-3);
+        QCOMPARE(asked.value("air_m").toDouble(), 2e-3);
+        {
+            QFile script(ws + "/hfss/asked.py");
+            QVERIFY(script.open(QIODevice::ReadOnly));
+            const QByteArray text = script.readAll();
+            QVERIFY(text.contains("SWEEP_TYPE = \"kDiscrete\""));
+            QVERIFY(text.contains("MAX_DELTA = 0.01"));
+            QVERIFY(text.contains("MAX_PASSES = 15"));
+            QVERIFY(text.contains("ADAPTIVE = \"12GHz\""));
+            QVERIFY(text.contains("THIN_METAL = \"1um\""));
+        }
+        // What it refuses, by name.
+        for (const QJsonObject& bad : {QJsonObject{{"path", model}, {"port_type", "coax"}}, QJsonObject{{"path", model}, {"margin", "-1[mm]"}}, QJsonObject{{"path", model}, {"air", "x"}},
+                                       QJsonObject{{"path", model}, {"adaptive_frequency", "0"}}, QJsonObject{{"path", model}, {"max_delta", 0}}, QJsonObject{{"path", model}, {"max_passes", 1.5}}, QJsonObject{{"path", model}, {"max_passes", 5000}},
+                                       QJsonObject{{"path", model}, {"sweep", "fast"}}, QJsonObject{{"path", model}, {"file", "a.txt"}}, QJsonObject{{"path", model}, {"file", "nofolder/a.py"}}})
+            QVERIFY2(failed(call("rf25_hfss_export", bad, 60000)), qPrintable(QString::fromUtf8(QJsonDocument(bad).toJson())));
+        QVERIFY(failed(call("rf25_hfss_export", {{"path", ws + "/hfss/strip.gds"}}, 60000)));
+        // Never over the model's own layout, which would take the script's name;
+        // nor over what no earlier export wrote; over an earlier export's, yes.
+        const auto contents = [](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        const QByteArray layoutBefore = contents(ws + "/hfss/strip.gds");
+        QVERIFY(!layoutBefore.isEmpty());
+        const QJsonObject overLayout = call("rf25_hfss_export", {{"path", model}, {"file", "strip.py"}}, 60000);
+        QVERIFY2(failed(overLayout) && text(overLayout).contains(QLatin1String("this model's layout")), qPrintable(text(overLayout)));
+        QCOMPARE(contents(ws + "/hfss/strip.gds"), layoutBefore);
+        QVERIFY(!QFileInfo::exists(ws + "/hfss/strip.py"));
+        for (const char* other : {"mine.xml", "yours.gds"}) {
+            QFile f(ws + "/hfss/" + other);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("kept\n");
+        }
+        for (const char* script : {"mine.py", "yours.py"}) {
+            const QJsonObject overOther = call("rf25_hfss_export", {{"path", model}, {"file", script}}, 60000);
+            QVERIFY2(failed(overOther) && text(overOther).contains(QLatin1String("is there already")), qPrintable(text(overOther)));
+            QVERIFY(!QFileInfo::exists(ws + "/hfss/" + script));
+        }
+        QCOMPARE(contents(ws + "/hfss/mine.xml"), QByteArray("kept\n"));
+        QCOMPARE(contents(ws + "/hfss/yours.gds"), QByteArray("kept\n"));
+        QVERIFY(!failed(call("rf25_hfss_export", {{"path", model}, {"file", "asked.py"}}, 60000)));
+
+        // Back: the same model, opened.
+        const QJsonObject back = call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "back.qrf25"}}, 120000);
+        QVERIFY2(!failed(back), qPrintable(text(back)));
+        const QJsonObject read = json(back).toObject();
+        QCOMPARE(read.value("read_as").toString(), QStringLiteral("exported script"));
+        QCOMPARE(read.value("model").toString(), ws + "/hfss/back.qrf25");
+        QCOMPARE(read.value("ports").toInt(), 2);
+        auto* opened = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(opened != nullptr);
+        QCOMPARE(QFileInfo(opened->getDocName()).fileName(), QStringLiteral("back.qrf25"));
+        QCOMPARE(opened->model().toObject(), m.toObject());
+        // Not over what is there, unless told; never over what is open.
+        const QJsonObject again = call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "back.qrf25"}}, 60000);
+        QVERIFY2(failed(again) && text(again).contains(QLatin1String("'replace'")), qPrintable(text(again)));
+        const QJsonObject isOpen = call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "back.qrf25"}, {"replace", true}}, 60000);
+        QVERIFY2(failed(isOpen) && text(isOpen).contains(QLatin1String("is open")), qPrintable(text(isOpen)));
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfss/back.qrf25"}, {"unsaved", "discard"}})));
+        QVERIFY2(!failed(call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "back.qrf25"}, {"replace", true}}, 120000)), "written over when told");
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfss/back.qrf25"}, {"unsaved", "discard"}})));
+        // Its control file: the stack and the ports it can say.
+        const QJsonObject control = json(call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.xml"}, {"save_as", "fromxml.qrf25"}}, 120000)).toObject();
+        QCOMPARE(control.value("read_as").toString(), QStringLiteral("control file"));
+        QVERIFY2(control.value("stack").toArray().contains(QJsonValue(QStringLiteral("M1"))), qPrintable(QString::fromUtf8(QJsonDocument(control).toJson())));
+        QCOMPARE(control.value("ports").toInt(), 2);
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfss/fromxml.qrf25"}, {"unsaved", "discard"}})));
+        // What it refuses.
+        QVERIFY(failed(call("rf25_hfss_import", {}, 60000)));
+        QVERIFY(failed(call("rf25_hfss_import", {{"path", ws + "/hfss/none.aedt"}}, 60000)));
+        QVERIFY(failed(call("rf25_hfss_import", {{"path", ws + "/hfss/strip.gds"}}, 60000)));
+        QVERIFY(failed(call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "back.txt"}}, 60000)));
+        QVERIFY(failed(call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "nofolder/x.qrf25"}}, 60000)));
+        QVERIFY(failed(call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.xml"}, {"layout", "none.gds"}}, 60000)));
+        QVERIFY(failed(call("rf25_hfss_import", {{"path", ws + "/hfss/line_hfss.py"}, {"save_as", "over.qrf25"}, {"replace", "yes"}}, 60000)));
+        // A script whose layout has gone: its shapes in a .gds of the model's name,
+        // over one that is there only when told.
+        QVERIFY(QDir().mkpath(ws + "/hfssgone"));
+        hfssLine(ws + "/hfssgone");
+        QVERIFY(!failed(call("rf25_hfss_export", {{"path", ws + "/hfssgone/line.qrf25"}, {"file", "gone.py"}}, 60000)));
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfssgone/line.qrf25"}, {"unsaved", "discard"}})));
+        QVERIFY(QFile::remove(ws + "/hfssgone/strip.gds"));
+        QVERIFY(QFile::remove(ws + "/hfssgone/gone.gds"));
+        {
+            QFile f(ws + "/hfssgone/shapes.gds");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("kept\n");
+        }
+        const QJsonObject overShapes = call("rf25_hfss_import", {{"path", ws + "/hfssgone/gone.py"}, {"save_as", "shapes.qrf25"}}, 60000);
+        QVERIFY2(failed(overShapes) && text(overShapes).contains(QLatin1String("shapes.gds is there already")), qPrintable(text(overShapes)));
+        QCOMPARE(contents(ws + "/hfssgone/shapes.gds"), QByteArray("kept\n"));
+        QVERIFY(!QFileInfo::exists(ws + "/hfssgone/shapes.qrf25"));
+        const QJsonObject toldTo = call("rf25_hfss_import", {{"path", ws + "/hfssgone/gone.py"}, {"save_as", "shapes.qrf25"}, {"replace", true}}, 60000);
+        QVERIFY2(!failed(toldTo), qPrintable(text(toldTo)));
+        QVERIFY(contents(ws + "/hfssgone/shapes.gds") != QByteArray("kept\n"));
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfssgone/shapes.qrf25"}, {"unsaved", "discard"}})));
+
+        // Set beside a Touchstone file: not before it is solved.
+        const QJsonObject unsolved = call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}}, 60000);
+        QVERIFY2(failed(unsolved) && text(unsolved).contains(QLatin1String("rf25_solve")), qPrintable(text(unsolved)));
+        QVERIFY(!failed(call("rf25_solve", {{"path", model}, {"solver", "full_wave"}, {"frequency", "3[GHz]"}}, 300000)));
+        QVERIFY(!failed(call("rf25_export", {{"path", model}, {"file", "hf.s2p"}}, 120000)));
+        const QJsonObject same = call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"table", "both.csv"}}, 60000);
+        QVERIFY2(!failed(same), qPrintable(text(same)));
+        const QJsonObject compared = json(same).toObject();
+        QCOMPARE(compared.value("ports").toInt(), 2);
+        QCOMPARE(compared.value("frequencies").toInt(), 1);
+        QVERIFY2(compared.value("worst").toObject().value("apart").toDouble() < 1e-5, qPrintable(text(same)));
+        QCOMPARE(compared.value("terms").toArray().size(), 4);
+        QCOMPARE(compared.value("reference_ohm").toDouble(), 50.0);
+        QVERIFY(QFileInfo::exists(ws + "/hfss/both.csv"));
+        QVERIFY(failed(call("rf25_compare", {{"path", model}}, 60000)));
+        QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "none.s2p"}}, 60000)));
+        QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"order", QJsonArray{1, 9}}}, 60000)));
+        QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"order", "1, 2"}}, 60000)));
+        QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
+    }
+
+    // The same three from the RF 2.5D menu: its file dialogs, and what it has to
+    // say in a box - a model of the file, and the two sets of S beside each other.
+    void theRf25MenuGoesToHfss3DLayoutAndBack()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/hfssmenu"));
+        hfssLine(ws + "/hfssmenu");
+        const QString model = ws + "/hfssmenu/line.qrf25";
+        QVERIFY(!failed(call("open_document", {{"path", model}})));
+
+        const bool nativeBefore = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+        QString chosen;
+        QStringList suggested, boxes;
+        bool yes = false;
+        // (A modal dialog runs a loop of its own: this answers from within it.)
+        QTimer answers;
+        answers.setInterval(50);
+        connect(&answers, &QTimer::timeout, this, [&chosen, &suggested, &boxes, &yes] {
+            QWidget* w = QApplication::activeModalWidget();
+            if (auto* d = qobject_cast<QFileDialog*>(w)) {
+                suggested << d->selectedFiles().value(0);
+                if (chosen.isEmpty()) {
+                    d->reject();
+                } else {
+                    // (selectFile leaves a line edit that has the focus as it is.)
+                    d->setDirectory(QFileInfo(chosen).absolutePath());
+                    d->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"))->setText(QFileInfo(chosen).fileName());
+                    static_cast<QDialog*>(d)->accept();
+                }
+            } else if (auto* b = qobject_cast<QMessageBox*>(w)) {
+                boxes << b->text();
+                if (b->button(QMessageBox::Yes) != nullptr) b->button(yes ? QMessageBox::Yes : QMessageBox::No)->click();
+                else b->accept();
+            }
+        });
+        answers.start();
+        const auto press = [this](const QString& title) {
+            for (QAction* a : app->findChildren<QAction*>())
+                if (a->text() == title && a->isEnabled() && a->parent() != nullptr) {
+                    a->trigger();
+                    return true;
+                }
+            return false;
+        };
+        // Export: it suggests a name beside the model; turned down, nothing is written.
+        chosen.clear();
+        QVERIFY(press(QStringLiteral("Export HFSS™ 3D Layout…")));
+        QCOMPARE(QFileInfo(suggested.value(0)).fileName(), QStringLiteral("line_hfss.py"));
+        QVERIFY(boxes.isEmpty());
+        QVERIFY(!QFileInfo::exists(ws + "/hfssmenu/line_hfss.py"));
+        // Answered: the three files, and what is not the same said.
+        chosen = ws + "/hfssmenu/board.py";
+        QVERIFY(press(QStringLiteral("Export HFSS™ 3D Layout…")));
+        for (const char* written : {"board.py", "board.xml", "board.gds"})
+            QVERIFY2(QFileInfo::exists(ws + "/hfssmenu/" + written), written);
+        QCOMPARE(boxes.size(), 1);
+        QVERIFY2(boxes.first().contains(QLatin1String("No Electronics Desktop has run them here")), qPrintable(boxes.first()));
+        boxes.clear();
+
+        // Import: the same model, opened beside the file; asked before writing over it.
+        chosen = ws + "/hfssmenu/board.py";
+        QVERIFY(press(QStringLiteral("Import HFSS™ 3D Layout…")));
+        auto* opened = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(opened != nullptr);
+        QCOMPARE(QFileInfo(opened->getDocName()).fileName(), QStringLiteral("board.qrf25"));
+        QCOMPARE(opened->model().toObject(), hfssLineModel().toObject());
+        boxes.clear();
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfssmenu/board.qrf25"}, {"unsaved", "discard"}})));
+        const auto kept = [&ws] {
+            QFile f(ws + "/hfssmenu/board.qrf25");
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        {
+            QFile f(ws + "/hfssmenu/board.qrf25");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("mine\n");
+        }
+        // No: what is there stays.
+        const int open = int(app->allDocuments().size());
+        QVERIFY(press(QStringLiteral("Import HFSS™ 3D Layout…")));
+        QCOMPARE(boxes.size(), 1);
+        QVERIFY2(boxes.first().contains(QLatin1String("is there already")), qPrintable(boxes.first()));
+        QCOMPARE(kept(), QByteArray("mine\n"));
+        QCOMPARE(int(app->allDocuments().size()), open);
+        boxes.clear();
+        // Yes: written over, and opened.
+        yes = true;
+        QVERIFY(press(QStringLiteral("Import HFSS™ 3D Layout…")));
+        QVERIFY2(kept().contains("rf_stack"), kept().constData());
+        QCOMPARE(QFileInfo(app->getDoc()->getDocName()).fileName(), QStringLiteral("board.qrf25"));
+        boxes.clear();
+        QVERIFY(!failed(call("close_document", {{"path", ws + "/hfssmenu/board.qrf25"}, {"unsaved", "discard"}})));
+
+        // Compare: the solve beside a Touchstone file, and a table of both.
+        QVERIFY(!failed(call("open_document", {{"path", model}})));
+        QVERIFY(!failed(call("rf25_solve", {{"path", model}, {"solver", "full_wave"}, {"frequency", "3[GHz]"}}, 300000)));
+        QVERIFY(!failed(call("rf25_export", {{"path", model}, {"file", "hf.s2p"}}, 120000)));
+        chosen = ws + "/hfssmenu/hf.s2p";
+        QVERIFY(press(QStringLiteral("Compare With Touchstone…")));
+        QCOMPARE(boxes.size(), 1);
+        QVERIFY2(boxes.first().contains(QLatin1String("S2,1")) && boxes.first().contains(QLatin1String("hf_compared.csv")), qPrintable(boxes.first()));
+        QVERIFY(QFileInfo::exists(ws + "/hfssmenu/hf_compared.csv"));
+        boxes.clear();
+        // What the tool refuses, in a box of its own.
+        const QString notTouchstone = ws + "/hfssmenu/hf.s9p";
+        {
+            QFile f(notTouchstone);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("nothing here\n");
+        }
+        chosen = notTouchstone;
+        QVERIFY(press(QStringLiteral("Compare With Touchstone…")));
+        QCOMPARE(boxes.size(), 1);
+        answers.stop();
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nativeBefore);
+        QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
+        QVERIFY(QApplication::activeModalWidget() == nullptr);
     }
 
     // rf25_solve's full-wave solver, asked for by the tool for one solve
@@ -7216,6 +7529,12 @@ private slots:
         QVERIFY(asked("create_subcircuit", {{"save_as", outside + "/sub.sch"}}).contains("writes"));
         QVERIFY(asked("fem_model", {{"action", "new"}, {"path", outside + "/m"}}).contains("writes " + shown(real + "/m.qfem")));
         QVERIFY(asked("fem_model", {{"action", "save"}, {"as", outside + "/m2"}}).contains("writes"));
+        said = asked("rf25_hfss_export", {{"file", outside + "/h.py"}});
+        QVERIFY2(said.contains("writes " + shown(real + "/h.py")) && said.contains(shown(real + "/h.xml")) && said.contains(shown(real + "/h.gds")), qPrintable(said));
+        said = asked("rf25_compare", {{"file", "inside.s2p"}, {"table", outside + "/both.csv"}});
+        QVERIFY2(said.contains("writes " + shown(real + "/both.csv")), qPrintable(said));
+        said = asked("rf25_hfss_import", {{"path", dir.filePath("inside.aedt")}, {"save_as", outside + "/back.qrf25"}});
+        QVERIFY2(said.contains(shown(real + "/back.qrf25")) && said.contains(shown(real + "/back.gds")), qPrintable(said));
         QVERIFY(write(outside + "/.aws/credentials", "[default]\nkey = NOT-A-REAL-KEY\n"));
         QVERIFY(write(outside + "/paper.pdf", "%PDF-1.4\n"));
         QVERIFY(write(outside + "/m.csv", "x,y\n1,2\n"));
@@ -7225,6 +7544,12 @@ private slots:
         QVERIFY(asked("list_documents", {{"folder", outside}}).contains("reads"));
         QVERIFY(asked("open_project", {{"name", outside}}).contains("reads"));
         QVERIFY(asked("import_data", {{"file", outside + "/m.csv"}}).contains("reads"));
+        // (Beside what it reads, where it is told nothing else: outside too.)
+        QVERIFY(write(outside + "/p.aedt", "$begin 'AnsoftProject'\n$end 'AnsoftProject'\n"));
+        said = asked("rf25_hfss_import", {{"path", outside + "/p.aedt"}});
+        QVERIFY2(said.contains("reads " + shown(real + "/p.aedt")) && said.contains("writes") && said.contains(shown(real + "/p.qrf25")), qPrintable(said));
+        QVERIFY(write(outside + "/m.s2p", "# GHz S RI R 50\n"));
+        QVERIFY(asked("rf25_compare", {{"file", outside + "/m.s2p"}}).contains("reads " + shown(real + "/m.s2p")));
         QVERIFY(asked("open_document", {{"path", outside + "/not-there.sch"}}).isEmpty());   // (nothing read)
         // Into the folder: copied there.
         QVERIFY(asked("copy_document", {{"path", cmd}, {"to", outside}}).contains("writes " + shown(real + "/guard-cmd.sch")));

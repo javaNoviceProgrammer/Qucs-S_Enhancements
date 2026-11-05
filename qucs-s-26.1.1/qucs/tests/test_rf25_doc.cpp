@@ -3383,6 +3383,19 @@ private slots:
         // off while one is being read.
         QVERIFY(app->rf25Menu() != nullptr);
         QVERIFY(app->rf25Menu()->findChild<QAction*>(QStringLiteral("rfNewModelAction")) != nullptr);
+        // HFSS 3D Layout's, each by a mark at its first use; what has no model
+        // to act on off (the menu says so as it opens).
+        QAction* hfssExport = app->rf25Menu()->findChild<QAction*>(QStringLiteral("rfHfssExportAction"));
+        QAction* hfssImport = app->rf25Menu()->findChild<QAction*>(QStringLiteral("rfHfssImportAction"));
+        QAction* compare = app->rf25Menu()->findChild<QAction*>(QStringLiteral("rfCompareAction"));
+        QVERIFY(hfssExport != nullptr && hfssImport != nullptr && compare != nullptr);
+        QVERIFY2(hfssExport->text().contains(QStringLiteral("HFSS\u2122 3D Layout")), qPrintable(hfssExport->text()));
+        QVERIFY(hfssImport->text().contains(QStringLiteral("HFSS\u2122 3D Layout")));
+        QVERIFY(hfssExport->statusTip().contains(QStringLiteral("Ansys\u00ae")));
+        QMetaObject::invokeMethod(app->rf25Menu(), "aboutToShow");
+        QVERIFY(hfssExport->isEnabled());
+        QVERIFY(hfssImport->isEnabled());
+        QVERIFY(!compare->isEnabled());   // (nothing solved)
     }
 
     // The window's own Edit > Undo and Redo work on this tab, and its

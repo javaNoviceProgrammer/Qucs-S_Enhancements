@@ -559,6 +559,29 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
         }
     } else if (tool == QLatin1String("fem_model") || tool == QLatin1String("fem_export")) {
         for (const QString& file : femFilesWritten(tool, a)) write(file);
+    } else if (tool == QLatin1String("rf25_hfss_export")) {
+        // The script, and by its name beside it the GDSII and the control file.
+        const QString name = doc != nullptr ? doc->getDocName() : QString();
+        const QString given = !text("file").isEmpty() ? text("file") : QFileInfo(name).completeBaseName() + QStringLiteral("_hfss.py");
+        const QString script = QFileInfo(given).isAbsolute() ? QDir::cleanPath(given) : QDir::cleanPath(QDir(beside.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : beside).filePath(given));
+        const QString stem = QFileInfo(script).absoluteDir().filePath(QFileInfo(script).completeBaseName());
+        write(script);
+        write(stem + QStringLiteral(".xml"));
+        write(stem + QStringLiteral(".gds"));
+    } else if (tool == QLatin1String("rf25_hfss_import")) {
+        // The model, and by its name its GDSII file; beside what is read.
+        read(text("layout"));
+        const QString from = text("path").isEmpty() ? QString() : absolute(text("path"));
+        if (!from.isEmpty()) {
+            const QFileInfo info(from);
+            const QFileInfo named(info.fileName() == QLatin1String("edb.def") ? info.absolutePath() : from);
+            const QString given = !saveAs.isEmpty() ? saveAs : named.completeBaseName() + QStringLiteral(".qrf25");
+            const QString model = QFileInfo(given).isAbsolute() ? QDir::cleanPath(given) : QDir::cleanPath(named.absoluteDir().filePath(given));
+            write(model);
+            write(QFileInfo(model).absoluteDir().filePath(QFileInfo(model).completeBaseName() + QStringLiteral(".gds")));
+        }
+    } else if (tool == QLatin1String("rf25_compare")) {
+        if (!text("table").isEmpty()) write(QFileInfo(text("table")).isAbsolute() ? QDir::cleanPath(text("table")) : QDir::cleanPath(QDir(beside.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : beside).filePath(text("table"))));
     } else if (tool == QLatin1String("rename_file")) {
         // 'to' is a new name or a path to move it to: the file leaves where
         // it was and lands there, and neither end was named (the hunt of 23

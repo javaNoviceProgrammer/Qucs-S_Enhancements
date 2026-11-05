@@ -1778,37 +1778,13 @@ void RF25Doc::showOverlays()
         LayoutView::Overlay returns = grounds;
         returns.name = tr("the return conductors");
         const QList<Conductor>& shapes = a_processed->conductors;
-        // A coplanar port's grounds as the solve finds them: the nearest
-        // return conductors either side, past a signal (returnNetsOf()) -
-        // each shape a return where the net of a cell inside it is one.
+        // A coplanar port's grounds as the solve finds them.
         QList<bool> shapeReturns;
         bool coplanar = false;
         for (const Node& node : a_model.ports().children)
             coplanar = coplanar || (node.enabled && node.type == QLatin1String("rf_edge_port")
                                     && textOf(node, QStringLiteral("return")) == QLatin1String("beside"));
-        if (coplanar && a_mesh) {
-            QString problem;
-            const QList<ReturnMark> marks = returnMarksOf(a_model, &problem);
-            const Stack stack = a_model.stack();
-            const QList<Net> nets = netsOf(*a_mesh, shapes, stack);
-            const QList<bool> isReturn = returnNetsOf(nets, *a_mesh, shapes, stack, marks);
-            if (isReturn.contains(true)) {
-                for (const Conductor& shape : shapes) {
-                    const QRectF box = shape.outline.boundingRect();
-                    int net = -1;
-                    for (int i = 0; i < nets.size() && net < 0; ++i)
-                        for (const int c : nets.at(i).cells) {
-                            const MeshCell& cell = a_mesh->cells.at(c);
-                            if (cell.layer == shape.layer && box.contains(cell.centre)
-                                && shape.outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
-                                net = i;
-                                break;
-                            }
-                        }
-                    shapeReturns << isReturn.value(net, false);
-                }
-            }
-        }
+        if (coplanar) shapeReturns = returnShapes();
         // (Where each port and terminal is drawn, by its name: what a line
         //  from a port to its returns joins.)
         QHash<QString, QPointF> placeOf;
@@ -2985,6 +2961,50 @@ QString RF25Doc::writeExport(const QString& tag, QString* error) const
     file.close();
     if (error != nullptr) error->clear();
     return path;
+}
+
+QList<bool> RF25Doc::returnShapes() const
+{
+    // The nearest return conductors either side, past a signal
+    // (returnNetsOf()) - each shape a return where the net of a cell inside it
+    // is one.
+    QList<bool> shapeReturns;
+    if (!a_mesh || !a_processed) return shapeReturns;
+    const QList<Conductor>& shapes = a_processed->conductors;
+    QString problem;
+    const QList<ReturnMark> marks = returnMarksOf(a_model, &problem);
+    const Stack stack = a_model.stack();
+    const QList<Net> nets = netsOf(*a_mesh, shapes, stack);
+    const QList<bool> isReturn = returnNetsOf(nets, *a_mesh, shapes, stack, marks);
+    if (!isReturn.contains(true)) return shapeReturns;
+    for (const Conductor& shape : shapes) {
+        const QRectF box = shape.outline.boundingRect();
+        int net = -1;
+        for (int i = 0; i < nets.size() && net < 0; ++i)
+            for (const int c : nets.at(i).cells) {
+                const MeshCell& cell = a_mesh->cells.at(c);
+                if (cell.layer == shape.layer && box.contains(cell.centre) && shape.outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
+                    net = i;
+                    break;
+                }
+            }
+        shapeReturns << isReturn.value(net, false);
+    }
+    return shapeReturns;
+}
+
+HfssExport RF25Doc::hfssExport(const HfssOptions& options) const
+{
+    if (!a_processed) {
+        HfssExport none;
+        none.problems << (a_layoutProblem.isEmpty() ? tr("Its shapes are not made yet: its layout has not been read.") : a_layoutProblem);
+        return none;
+    }
+    const QString name = getDocName();
+    HfssOptions how = options;
+    if (!name.isEmpty() && how.modelFolder.isEmpty()) how.modelFolder = QFileInfo(name).absolutePath();
+    return hfssExportOf(a_model, a_processed->conductors, how, name.isEmpty() ? QStringLiteral("RF25") : QFileInfo(name).completeBaseName(),
+                        QStringLiteral("Qucs-S %1").arg(misc::buildName()), returnShapes());
 }
 
 QStringList RF25Doc::inductanceSummary() const
