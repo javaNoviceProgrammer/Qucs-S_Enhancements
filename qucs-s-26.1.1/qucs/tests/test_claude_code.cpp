@@ -2015,7 +2015,14 @@ private slots:
         panel.renderNow();
         QCOMPARE(panel.typesetCount(), typeset);
         // Four times the formulas, some four times the time (searched from
-        // the reply's start, ten times and more): typeset first, then timed.
+        // the reply's start, ten times and more): typeset first, then drawn
+        // whole and timed, each size's best of five in turn. (Timed without
+        // "whole", a render with nothing changed returns at once: since
+        // 87e3d9e these were some 10 µs of no formula, 0.087 ms against
+        // 0.009 on the macOS CI of c6c7eb2's tag, and no search could fail
+        // them.) Judged in Release alone, as aLongReplyIsReadInLinearTime
+        // says, and the 1000 above have been through the sanitizers.
+        if (!kTimesJudged) return;
         ClaudeCodePanel shorter, longer;
         for (auto* p : {&shorter, &longer}) {
             p->setDefaultDirectory(fresh(p == &shorter ? "mathshort" : "mathlong"));
@@ -2028,17 +2035,20 @@ private slots:
         reply(longer, 0, 2000);
         shorter.renderNow();
         longer.renderNow();
-        const auto bestOf = [](ClaudeCodePanel& p) {
-            qint64 least = std::numeric_limits<qint64>::max();
-            for (int i = 0; i < 2; ++i) {
-                QElapsedTimer t;
-                t.start();
-                p.renderNow();
-                least = std::min(least, t.nsecsElapsed());
-            }
-            return least;
-        };
-        const qint64 quarter = bestOf(shorter), whole = bestOf(longer);
+        const int typesetShorter = shorter.typesetCount(), typesetLonger = longer.typesetCount();
+        qint64 quarter = std::numeric_limits<qint64>::max(), whole = quarter;
+        for (int k = 0; k < 5; ++k) {
+            QElapsedTimer clock;
+            clock.start();
+            shorter.renderNow(true);
+            quarter = std::min(quarter, clock.nsecsElapsed());
+            clock.start();
+            longer.renderNow(true);
+            whole = std::min(whole, clock.nsecsElapsed());
+        }
+        QCOMPARE(longer.transcriptText().count(QChar::ObjectReplacementCharacter), 2000);
+        QCOMPARE(shorter.typesetCount(), typesetShorter);
+        QCOMPARE(longer.typesetCount(), typesetLonger);
         qInfo("2000 formulas: %g ms, 500: %g ms", whole / 1e6, quarter / 1e6);
         QVERIFY2(whole < 8 * quarter, qPrintable(QStringLiteral("%1 ms, a quarter of it %2 ms").arg(whole / 1e6).arg(quarter / 1e6)));
     }
