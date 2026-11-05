@@ -370,6 +370,25 @@ QString codeBlock(const QString& text, const QString& indent)
     return out + indent + fence + QLatin1Char('\n');
 }
 
+// What a block of a quote in a reply starts with, read as text.
+QString quoteMarks(const QTextBlockFormat& format)
+{
+    const int quote = format.intProperty(QTextFormat::BlockQuoteLevel);
+    return quote > 0 ? QString(quote, QLatin1Char('>')) + QLatin1Char(' ') : QString();
+}
+
+// A list item read as text: \a quoted, indented for its list, its mark as it
+// is drawn - its number, its bullet -, its lines (\a text) under one another.
+QString itemLines(const QTextList* list, const QTextBlock& item, const QString& quoted, QString text)
+{
+    const QString lead(2 * std::max(0, list->format().indent() - 1), QLatin1Char(' '));
+    // (A bullet's item text is its suffix alone.)
+    static const QRegularExpression word(QStringLiteral("[\\p{L}\\p{N}]"));
+    QString mark = list->itemText(item).trimmed();
+    if (!mark.contains(word)) mark = list->format().style() == QTextListFormat::ListCircle ? QStringLiteral("◦") : QStringLiteral("•");
+    return quoted + lead + mark + QLatin1Char(' ') + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + lead + QStringLiteral("  "));
+}
+
 // A reply's Markdown read as plain text: paragraphs apart, list items with
 // their marks, quotes after "> ", code indented, a table a row to a line
 // with " | " between its cells, the math as TeX between its $ signs.
@@ -409,20 +428,14 @@ QString plainTextOf(const QString& markdown)
         }
         const QTextBlockFormat bf = b.blockFormat();
         QString text = b.text().replace(QChar::LineSeparator, QLatin1Char('\n')).remove(QChar::ObjectReplacementCharacter);
-        const int quote = bf.intProperty(QTextFormat::BlockQuoteLevel);
-        const QString quoted = quote > 0 ? QString(quote, QLatin1Char('>')) + QLatin1Char(' ') : QString();
+        const QString quoted = quoteMarks(bf);
         if (bf.hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth)) {
             apart(true);
             out << QStringLiteral("----");
             last = Paragraph;
         } else if (QTextList* list = b.textList()) {
             apart(last != Item);
-            const QString lead(2 * std::max(0, list->format().indent() - 1), QLatin1Char(' '));
-            // (A bullet's item text is its suffix alone.)
-            QString mark = list->itemText(b).trimmed();
-            if (!mark.contains(QRegularExpression(QStringLiteral("[\\p{L}\\p{N}]"))))
-                mark = list->format().style() == QTextListFormat::ListCircle ? QStringLiteral("◦") : QStringLiteral("•");
-            out << quoted + lead + mark + QLatin1Char(' ') + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + lead + QStringLiteral("  "));
+            out << itemLines(list, b, quoted, text);
             last = Item;
         } else if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)) {
             apart(last != Code);
@@ -440,6 +453,152 @@ QString plainTextOf(const QString& markdown)
         result.replace(QChar(char16_t(kMathMark + k)), dollars + spans.at(k).tex + dollars);
     }
     return result;
+}
+
+// ----------------------------------------------------------------------
+// A selection read, to be quoted (Reply).
+
+// On the format of what is drawn to work the conversation, not to say
+// anything - a prompt's Edit, a tool's twisty, the mark of a reply being
+// written: a quote leaves it out.
+constexpr int kWorksTheView = QTextFormat::UserProperty + 0x4351;
+// On a formula's format: what it was written as, between its dollars.
+constexpr int kWrittenAs = kWorksTheView + 1;
+// The margins, in pixels, between two blocks that stand apart for the reader:
+// paragraphs (Qt's Markdown gives each two thirds of the font's size, a reply's
+// first none at its end), a caption and what it heads. Not tools in a row (3),
+// nor the lines of a prompt (0).
+constexpr qreal kApart = 4.0;
+
+// \a text as it reads: its line breaks as such, without spaces of no width or
+// the places of objects. (A non-breaking space stays: the composer's text, as
+// its document gives it, has a plain one.)
+QString asRead(QString text)
+{
+    text.replace(QChar::ParagraphSeparator, QLatin1Char('\n')).replace(QChar::LineSeparator, QLatin1Char('\n'));
+    return text.remove(QChar(0x200B)).remove(QChar::ObjectReplacementCharacter);
+}
+
+// \a block between the document's positions \a from and \a to, as it reads.
+QString readBlock(const QTextBlock& block, int from, int to)
+{
+    QString text;
+    for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment f = it.fragment();
+        const int first = std::max(from, f.position()), end = std::min(to, f.position() + f.length());
+        if (first >= end) continue;
+        const QTextCharFormat format = f.charFormat();
+        if (format.hasProperty(kWorksTheView)) continue;
+        // (Each one character; the same one twice in a row, one fragment.)
+        if (format.hasProperty(kWrittenAs)) {
+            text += format.stringProperty(kWrittenAs).repeated(end - first);
+        } else if (format.isImageFormat()) {
+            const QTextImageFormat image = format.toImageFormat();
+            const QUrl url(image.name());
+            text += QStringLiteral("![%1](%2)").arg(image.stringProperty(QTextFormat::ImageAltText), url.isLocalFile() ? url.toLocalFile() : image.name()).repeated(end - first);
+        } else {
+            text += f.text().mid(first - f.position(), end - first);
+        }
+    }
+    return asRead(text);
+}
+
+// What \a selection holds as its reader reads it: a line to each line, an
+// empty one where paragraphs stand apart, list items with their marks, code
+// indented, a table a row to a line with " | " between its cells, the math as
+// TeX between its dollars, a picture as Markdown's. Within one block, its
+// words alone. Empty: nothing to read.
+QString readSelection(const QTextCursor& selection)
+{
+    if (!selection.hasSelection()) return {};
+    QTextDocument* doc = selection.document();
+    const int start = selection.selectionStart(), end = selection.selectionEnd();
+    const auto cellAt = [doc](int position) {
+        QTextCursor at(doc);
+        at.setPosition(position);
+        QTextTable* table = at.currentTable();
+        return table != nullptr ? table->cellAt(position) : QTextTableCell();
+    };
+    // (Within a cell, a table's text is as any other. Across cells, or from
+    // outside the table: Qt has chosen whole cells, the ones to read as rows.)
+    const QTextTableCell cell = cellAt(start);
+    const bool withinCell = cell.isValid() && cell == cellAt(end);
+
+    QStringList out;
+    enum { None, Paragraph, Item, Code } last = None;
+    const auto apart = [&out](bool yes) {
+        if (yes && !out.isEmpty() && !out.constLast().isEmpty()) out << QString();
+    };
+    QString words;     // the first block with any
+    int withWords = 0;
+    qreal below = 0.0;   // the last block's margin
+    for (QTextBlock b = doc->findBlock(start); b.isValid() && b.position() <= end; b = b.next()) {
+        if (b.position() == end) break;   // (chosen up to its start: none of it)
+        if (QTextTable* table = withinCell ? nullptr : QTextCursor(b).currentTable()) {
+            int row = 0, rows = table->rows(), column = 0, columns = table->columns();
+            if (selection.hasComplexSelection()) selection.selectedTableCells(&row, &rows, &column, &columns);
+            apart(true);
+            for (int r = row; r < row + rows; ++r) {
+                QStringList cells;
+                for (int k = column; k < column + columns; ++k) {
+                    const QTextTableCell one = table->cellAt(r, k);
+                    if (!one.isValid() || one.row() != r || one.column() != k) continue;   // (a spanned one's)
+                    QStringList lines;
+                    for (QTextBlock c = doc->findBlock(one.firstPosition()); c.isValid() && c.position() <= one.lastPosition(); c = c.next())
+                        lines << readBlock(c, c.position(), c.position() + c.length() - 1);
+                    cells << lines.join(QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' ')).trimmed();
+                }
+                out << cells.join(QStringLiteral(" | "));
+            }
+            withWords += 2;   // (never its words alone)
+            last = Paragraph;
+            below = 0.0;
+            b = doc->findBlock(table->lastPosition());
+            continue;
+        }
+        const int from = std::max(start, b.position()), to = std::min(end, b.position() + b.length() - 1);
+        if (from == to && out.isEmpty()) continue;   // (chosen from its end: none of it)
+        const QTextBlockFormat bf = b.blockFormat();
+        QString text = readBlock(b, from, to);
+        if (!text.trimmed().isEmpty() && ++withWords == 1) words = text;
+        const QString quoted = quoteMarks(bf);
+        if (bf.hasProperty(QTextFormat::BlockTrailingHorizontalRulerWidth)) {
+            apart(true);
+            out << QStringLiteral("----");
+            last = Paragraph;
+        } else if (QTextList* list = b.textList()) {
+            apart(last != Item);
+            out << itemLines(list, b, quoted, text);
+            last = Item;
+        } else if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence) || bf.hasProperty(QTextFormat::BlockCodeLanguage)) {
+            apart(last != Code);
+            out << quoted + QStringLiteral("    ") + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + quoted + QStringLiteral("    "));
+            last = Code;
+        } else {
+            apart(last != Paragraph || below + bf.topMargin() >= kApart);
+            // (Chosen from a space between its words: not a line indented.)
+            static const QRegularExpression leading(QStringLiteral("^\\s+"));
+            if (out.isEmpty()) text.remove(leading);
+            out << quoted + text.replace(QLatin1Char('\n'), QLatin1Char('\n') + quoted);
+            last = Paragraph;
+        }
+        below = bf.bottomMargin();
+    }
+    if (withWords == 1) return words.trimmed();
+    while (!out.isEmpty() && out.constFirst().trimmed().isEmpty()) out.removeFirst();
+    while (!out.isEmpty() && out.constLast().trimmed().isEmpty()) out.removeLast();
+    return out.join(QLatin1Char('\n'));
+}
+
+// \a text as a Markdown quote: "> " before each line, its spaces at the end off.
+QString asQuote(const QString& text)
+{
+    QStringList lines = text.split(QLatin1Char('\n'));
+    for (QString& line : lines) {
+        while (line.endsWith(QLatin1Char(' ')) || line.endsWith(QLatin1Char('\t'))) line.chop(1);
+        line = line.isEmpty() ? QStringLiteral(">") : QStringLiteral("> ") + line;
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 
 // A file's name for a conversation about \a title: what a file name may not
@@ -809,12 +968,29 @@ void ClaudeCodePanel::buildPermissionCard()
     a_cardSubject->setObjectName(QStringLiteral("claudeCardSubject"));
     a_cardSubject->setTextInteractionFlags(Qt::TextSelectableByMouse);
     a_cardSubject->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    // (A label's own menu cannot be added to: its two entries here, and Reply.)
+    a_cardSubject->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(a_cardSubject, &QWidget::customContextMenuRequested, this, [this](const QPoint& at) {
+        QMenu menu(this);
+        QAction* copy = menu.addAction(tr("&Copy"), this, [this] { QApplication::clipboard()->setText(asRead(a_cardSubject->selectedText())); });
+        copy->setEnabled(a_cardSubject->hasSelectedText());
+        menu.addAction(tr("Select All"), this, [this] { a_cardSubject->setSelection(0, int(a_cardSubject->text().size())); });
+        offerReply(&menu, asRead(a_cardSubject->selectedText()).trimmed());
+        menu.exec(a_cardSubject->mapToGlobal(at));
+    });
     layout->addWidget(a_cardSubject);
     a_cardDetail = new QPlainTextEdit(a_card);
     a_cardDetail->setObjectName(QStringLiteral("claudeCardDetail"));
     a_cardDetail->setReadOnly(true);
     a_cardDetail->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     a_cardDetail->setLineWrapMode(QPlainTextEdit::NoWrap);
+    a_cardDetail->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(a_cardDetail, &QWidget::customContextMenuRequested, this, [this](const QPoint& at) {
+        std::unique_ptr<QMenu> menu(a_cardDetail->createStandardContextMenu(at));
+        if (menu == nullptr) return;
+        offerReply(menu.get(), readSelection(a_cardDetail->textCursor()));
+        menu->exec(a_cardDetail->viewport()->mapToGlobal(at));
+    });
     layout->addWidget(a_cardDetail);
     auto* buttons = new QHBoxLayout;
     buttons->setSpacing(6);
@@ -2507,6 +2683,10 @@ std::unique_ptr<QMenu> ClaudeCodePanel::transcriptMenu(const QPoint& at)
 {
     std::unique_ptr<QMenu> menu(a_view->createStandardContextMenu(at));
     if (menu == nullptr) return menu;
+    // Text selected: quoted in the composer (the user, 4 November: "a 'Reply'
+    // menu item ... similar to how Claude desktop app has"). As it reads now:
+    // a reply being written goes on, drawn again, while the menu is open.
+    offerReply(menu.get(), readSelection(a_view->textCursor()));
     // A picture under the pointer: opened in a tab of its own, above the
     // usual entries (the user, 23 October).
     const QString picture = imageAt(at);
@@ -2520,6 +2700,36 @@ std::unique_ptr<QMenu> ClaudeCodePanel::transcriptMenu(const QPoint& at)
     menu->insertAction(first, open);
     if (first != nullptr) menu->insertSeparator(first);
     return menu;
+}
+
+void ClaudeCodePanel::offerReply(QMenu* menu, const QString& selected)
+{
+    if (selected.isEmpty()) return;
+    auto* reply = new QAction(QIcon::fromTheme(QStringLiteral("mail-reply-sender")), tr("&Reply"), menu);
+    reply->setObjectName(QStringLiteral("claudeReply"));
+    reply->setStatusTip(tr("Quotes the selected text in the prompt, to write about it; nothing is sent"));
+    reply->setToolTip(reply->statusTip());
+    connect(reply, &QAction::triggered, this, [this, selected] { quoteInComposer(selected); });
+    QAction* first = menu->actions().value(0);
+    menu->insertAction(first, reply);
+    if (first != nullptr) menu->insertSeparator(first);
+}
+
+void ClaudeCodePanel::quoteInComposer(const QString& text)
+{
+    // After what is there, whatever it is, a blank line apart. And the cursor
+    // a blank line under it: a line right under a quote reads, in Markdown,
+    // as more of the quote.
+    const QString draft = a_input->toPlainText();
+    const QString apart = draft.isEmpty() || draft.endsWith(QLatin1String("\n\n")) ? QString()
+                          : draft.endsWith(QLatin1Char('\n'))                       ? QStringLiteral("\n")
+                                                                                    : QStringLiteral("\n\n");
+    QTextCursor end(a_input->document());
+    end.movePosition(QTextCursor::End);
+    // (Put in at once: one step to undo.)
+    end.insertText(apart + asQuote(text) + QStringLiteral("\n\n"));
+    a_input->setTextCursor(end);
+    focusComposer();
 }
 
 QString ClaudeCodePanel::imageAt(const QPoint& at) const
@@ -2668,6 +2878,31 @@ void ClaudeCodePanel::render(bool whole)
         return;
     }
 
+    // The reader's selection, where what is drawn again takes it away or
+    // moves it (a cursor at the place text goes in goes on with it): chosen
+    // again once it is drawn. (Each piece of a reply being written lost what
+    // was selected of it, and a selection up to the end of what stayed grew
+    // with what came - nothing there to Copy or Reply to.) Without the mark
+    // of the reply being written: more of the reply comes in its place. And
+    // the cursor alone, but at the end: where a drag being started goes from.
+    int chosenAnchor = -1, chosenPosition = -1;
+    QString chosenText;
+    {
+        const QTextCursor chosen = a_view->textCursor();
+        const int end = doc->characterCount() - 1;
+        const int redrawn = afresh ? 0 : same < a_drawn.size() ? a_drawn.at(same).start : end;
+        if (chosen.selectionEnd() >= redrawn && (chosen.hasSelection() || chosen.position() < end)) {
+            const int upTo = a_replyMark >= 0 ? a_replyMark : end;
+            QTextCursor kept(doc);
+            kept.setPosition(std::min(chosen.anchor(), upTo));
+            kept.setPosition(std::min(chosen.position(), upTo), QTextCursor::KeepAnchor);
+            chosenAnchor = kept.anchor();
+            chosenPosition = kept.position();
+            chosenText = kept.selectedText();
+        }
+    }
+    a_replyMark = -1;
+
     QTextCursor c(doc);
     if (afresh) {
         // (Its images let go of: read again.)
@@ -2742,8 +2977,41 @@ void ClaudeCodePanel::render(bool whole)
     // following the end showed the middle first.
     QAbstractTextDocumentLayout* layout = doc->documentLayout();
     emit layout->documentSizeChanged(layout->documentSize());
+    if (chosenAnchor >= 0) chooseAgain(chosenAnchor, chosenPosition, chosenText);
     bar->setValue(a_following ? bar->maximum() : keep);
     a_scrolling = false;
+}
+
+void ClaudeCodePanel::chooseAgain(int anchor, int position, const QString& text)
+{
+    QTextDocument* doc = a_view->document();
+    const int last = doc->characterCount() - 1;
+    QTextCursor again(doc);
+    const auto choose = [&again, last](int from, int to) {
+        again.setPosition(std::min(from, last));
+        again.setPosition(std::min(to, last), QTextCursor::KeepAnchor);
+    };
+    choose(anchor, position);
+    if (again.selectedText() != text) {
+        // Moved a little (what is written is read again as more comes: a
+        // formula closed, a word in bold): where the same text is nearest.
+        // Gone: nothing selected.
+        const QString all = doc->toRawText();
+        const int from = std::min(anchor, position);
+        const qsizetype ahead = all.indexOf(text, from), behind = all.lastIndexOf(text, from);
+        const qsizetype at = ahead < 0 ? behind : behind < 0 ? ahead : ahead - from <= from - behind ? ahead : behind;
+        if (at < 0) choose(from, from);
+        else if (anchor < position) choose(int(at), int(at + text.size()));
+        else choose(int(at + text.size()), int(at));
+    }
+    // (It brings the cursor into view: not the reader's scrolling, and the
+    // view put back where it was, after it, by render(). The bar's range
+    // having just changed, a_scrolling may be off again by now.)
+    a_scrolling = true;
+    QScrollBar* across = a_view->horizontalScrollBar();
+    const int acrossAt = across->value();
+    a_view->setTextCursor(again);
+    across->setValue(acrossAt);
 }
 
 void ClaudeCodePanel::fitImages()
@@ -2871,6 +3139,7 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
             edit.setAnchor(true);
             edit.setAnchorHref(QStringLiteral("edit:%1").arg(index));
             edit.setToolTip(tr("Edit this prompt and send it again: the conversation goes back to before it"));
+            edit.setProperty(kWorksTheView, true);
             c.insertText(QStringLiteral("   "), muted);
             c.insertText(tr("Edit"), edit);
         }
@@ -2942,6 +3211,8 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         if (e.streaming && !a_exporting) {
             QTextCharFormat cursor = plain;
             cursor.setForeground(col.accent);
+            cursor.setProperty(kWorksTheView, true);
+            a_replyMark = c.position();
             c.insertText(QStringLiteral(" ▍"), cursor);
         }
         break;
@@ -3138,7 +3409,9 @@ void ClaudeCodePanel::renderTools(QTextCursor& c, qsizetype from, qsizetype to, 
     QTextCharFormat twisty = link;
     twisty.setFont(small);
     twisty.setForeground(col.faint);
-    if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
+    QTextCharFormat knob = twisty;
+    knob.setProperty(kWorksTheView, true);
+    if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), knob);
     QTextCharFormat mark = twisty;
     mark.setFontWeight(QFont::DemiBold);
     const int outcome = rowOutcome(from, to);
@@ -3189,7 +3462,9 @@ void ClaudeCodePanel::renderTool(QTextCursor& c, const Entry& e, qreal indent)
     QTextCharFormat twisty = link;
     twisty.setFont(small);
     twisty.setForeground(more ? col.faint : col.base);
-    if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), twisty);
+    QTextCharFormat knob = twisty;
+    knob.setProperty(kWorksTheView, true);
+    if (!a_exporting) c.insertText(open ? QStringLiteral("▾ ") : QStringLiteral("▸ "), knob);
     QTextCharFormat mark = twisty;
     mark.setFontWeight(QFont::DemiBold);
     QString glyph;
@@ -3348,7 +3623,10 @@ void ClaudeCodePanel::placeMath(QTextCursor& c, const QList<qucs_s::math::Span>&
         const qucs_s::math::Span& sp = spans.at(k);
         const QFont font = hit.charFormat().font().resolve(base);
         const qucs_s::math::Typeset t = typesetMath(sp.tex, font, sp.display);
-        hit.insertText(QString(QChar::ObjectReplacementCharacter), qucs_s::math::MathObject::format(t, font, sp.tex));
+        QTextCharFormat formula = qucs_s::math::MathObject::format(t, font, sp.tex);
+        const QString dollars = sp.display ? QStringLiteral("$$") : QStringLiteral("$");
+        formula.setProperty(kWrittenAs, dollars + sp.tex + dollars);
+        hit.insertText(QString(QChar::ObjectReplacementCharacter), formula);
         if (sp.display && hit.block().text().trimmed() == QString(QChar::ObjectReplacementCharacter)) {
             qucs_s::math::placeDisplay(hit);
         }

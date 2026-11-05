@@ -8,11 +8,15 @@
  * attached, prompts edited, permissions answered, conversations exported,
  * restored and imported, the theme changed, the view scrolled.
  *
+ * Text selected anywhere and quoted in the composer (Reply), or drawn whole
+ * under the selection.
+ *
  * After each step: no dialog left open (one is closed and said), a render
  * in bounded time, the newest plain reply in the transcript, no formula's
  * mark left unplaced, the view at the conversation's end while it follows
- * it. A crash or a sanitizer's report ends the run; the trace file (each
- * step, flushed) and the seed replay it.
+ * it; a quote lines of a quote under all the composer held, none of the
+ * characters that only lay text out. A crash or a sanitizer's report ends the
+ * run; the trace file (each step, flushed) and the seed replay it.
  *
  * QUCS_FUZZ_SEED (1), QUCS_FUZZ_STEPS (400 - CI's short pass) or
  * QUCS_FUZZ_SECONDS (a long run: steps without limit until then),
@@ -734,6 +738,39 @@ class TestClaudeFuzz : public QObject
         return out;
     }
 
+    // Some of the transcript selected, anywhere, as a drag or Select All
+    // leaves it.
+    static void selectSome(Draw& d, QTextBrowser* view)
+    {
+        QTextDocument* doc = view->document();
+        const int end = doc->characterCount() - 1;
+        const auto place = [&d, end] { return d.chance(0.15) ? (d.chance(0.5) ? 0 : end) : d.below(end + 1); };
+        QTextCursor c(doc);
+        c.setPosition(place());
+        c.setPosition(place(), QTextCursor::KeepAnchor);
+        view->setTextCursor(c);
+    }
+
+    // What is wrong with the composer after a Reply (\a before: its text until
+    // then): all that kept, the rest lines of a quote and a blank line, none
+    // of the characters that only lay text out or stand for something else.
+    static QString quoteTrouble(const QString& before, const QString& after)
+    {
+        if (!after.startsWith(before)) return QStringLiteral("a reply did not keep the draft \"%1\"").arg(before.left(60));
+        const QString added = after.mid(before.size());
+        if (!added.endsWith(QLatin1String("\n\n"))) return QStringLiteral("a reply's quote has no line under it: \"%1\"").arg(added.right(60));
+        QStringList lines = added.chopped(2).split(QLatin1Char('\n'));
+        while (!lines.isEmpty() && lines.constFirst().isEmpty()) lines.removeFirst();   // (apart from the draft)
+        if (lines.isEmpty()) return QStringLiteral("a reply quoted nothing");
+        for (const QString& line : std::as_const(lines))
+            if (line != QLatin1String(">") && !line.startsWith(QLatin1String("> "))) return QStringLiteral("a reply's line not quoted: \"%1\"").arg(line.left(60));
+        for (const QChar c : added)
+            if (c == QChar::ParagraphSeparator || c == QChar::LineSeparator || c == QChar::ObjectReplacementCharacter || c.unicode() == 0x200B
+                || c.unicode() == 0xFDD0 || c.unicode() == 0xFDD1 || c.unicode() == 0x258D || (c.unicode() >= 0xE000 && c.unicode() < 0xE000 + 0x1800))
+                return QStringLiteral("a reply's quote holds U+%1").arg(uint(c.unicode()), 4, 16, QLatin1Char('0'));
+        return {};
+    }
+
     // The transcript as drawn: each block - its frame, list, formats,
     // fragments - but the document's own numbers for its lists and frames.
     static QString drawn(QTextDocument* doc)
@@ -910,11 +947,16 @@ private slots:
                 if (!following && top < panel->renderedAt() && before <= bar->maximum() && bar->value() != before)
                     found(n, QStringLiteral("scrolled up, the view moved from %1 to %2 of %3 (drawn from %4, its top at %5)")
                                  .arg(before).arg(bar->value()).arg(bar->maximum()).arg(panel->renderedAt()).arg(top));
-                // Drawn in part, drawn whole: the same transcript.
+                // Drawn in part, drawn whole: the same transcript, and what
+                // is selected still so.
                 if (d.chance(0.3)) {
                     const QString part = drawn(panel->transcript()->document());
                     const qsizetype from = panel->renderedFrom();
+                    selectSome(d, panel->transcript());
+                    const QString selected = panel->transcript()->textCursor().selectedText();
                     panel->renderNow(true);
+                    if (panel->transcript()->textCursor().selectedText() != selected)
+                        found(n, QStringLiteral("drawn whole, the selection went from \"%1\" to \"%2\"").arg(selected.left(60), panel->transcript()->textCursor().selectedText().left(60)));
                     const QString whole = drawn(panel->transcript()->document());
                     if (part != whole) {
                         if (qEnvironmentVariableIsSet("QUCS_FUZZ_DUMPS")) {
@@ -1035,6 +1077,20 @@ private slots:
                 step(n, QStringLiteral("export %1").arg(int(format)));
                 QString why;
                 panel->exportConversation(dir.filePath(QStringLiteral("export.out")), format, &why);
+            } else if (action < 93) {
+                selectSome(d, panel->transcript());
+                const QPoint at(d.below(panel->transcript()->viewport()->width() + 1), d.below(panel->transcript()->viewport()->height() + 1));
+                const std::unique_ptr<QMenu> menu = panel->transcriptMenu(at);
+                auto* item = menu != nullptr ? menu->findChild<QAction*>(QStringLiteral("claudeReply")) : nullptr;
+                step(n, QStringLiteral("reply to %1 characters (%2)").arg(panel->transcript()->textCursor().selectedText().size()).arg(item != nullptr));
+                if (item != nullptr) {
+                    if (d.chance(0.3)) panel->composer()->setPlainText(word(d));
+                    const QString draft = panel->composer()->toPlainText();
+                    item->trigger();
+                    const QString trouble = quoteTrouble(draft, panel->composer()->toPlainText());
+                    if (!trouble.isEmpty()) found(n, trouble);
+                    if (d.chance(0.5)) panel->composer()->clear();
+                }
             } else if (action < 94) {
                 step(n, QStringLiteral("scroll"));
                 bar->setValue(d.below(bar->maximum() + 1));
@@ -1085,7 +1141,7 @@ private slots:
     // shown, renamed (through the editor) and through their menu, the
     // conversations kept and brought back, /resume's list, every menu's
     // actions (modes, models, the guards, pins, usage, exports), the
-    // transcript's own menu (Open in Viewer), the composer's keys, pastes
+    // transcript's own menu (Open in Viewer, Reply), the composer's keys, pastes
     // and drops of files, images, text, the document in front and what the
     // pen drew on it, a document renamed, the dock hidden, its font.
     //
@@ -1320,6 +1376,7 @@ private slots:
                 const QPoint at = picture ? *picture
                                           : QPoint(d.below(panel->transcript()->viewport()->width() + 1),
                                                    d.below(panel->transcript()->viewport()->height() + 1));
+                if (d.chance(0.5)) selectSome(d, panel->transcript());
                 std::unique_ptr<QMenu> menu = panel->transcriptMenu(at);
                 const QList<QAction*> actions = menu ? menu->actions() : QList<QAction*>();
                 QList<QAction*> usable;
@@ -1328,7 +1385,12 @@ private slots:
                 if (usable.isEmpty()) continue;
                 QAction* a = usable.at(d.below(int(usable.size())));
                 step(n, QStringLiteral("transcript menu at %1,%2: %3").arg(at.x()).arg(at.y()).arg(a->text()));
+                const QString draft = panel->composer()->toPlainText();
                 a->trigger();
+                if (a->objectName() == QLatin1String("claudeReply")) {
+                    const QString trouble = quoteTrouble(draft, panel->composer()->toPlainText());
+                    if (!trouble.isEmpty()) found(n, trouble);
+                }
             } else if (action < 74) {
                 QString text;
                 const QList<ClaudeCodePanel::Command> commands = panel->commands();
