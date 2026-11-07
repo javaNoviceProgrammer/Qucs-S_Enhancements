@@ -86,6 +86,63 @@ auto getFontDescription = [](const auto& Font) -> QString {
     return fontDescription;
 };
 
+// Asks for a font: true if \a font is now another. Nothing is kept until the
+// settings' own Apply or OK, and their Cancel drops it.
+//
+// macOS's font panel is a live panel, without OK or Cancel: what is picked in
+// it applies, and it is simply closed. QFontDialog::getFont() takes closing it
+// for Cancel, so there the choice was lost (macOS 27: Qt makes its OK and Cancel
+// buttons, but they never reach the panel's window, docs/feature_gaps/
+// 2026-11-07-font-panel.md). So: no buttons, as Qt has for a live dialog, and
+// what the panel told last.
+//
+// The panel tells once more as it closes, with whatever it has then, and that
+// alone is no choice: on a font it cannot show, it has the first font of its
+// list (the system font became Academy Engraved LET), and 10.5 points are 11.
+// So a font is taken from the second telling on.
+static bool chooseFont(QFont& font, QWidget* parent)
+{
+#ifdef Q_OS_MACOS
+    // (Qt's own dialog, while the tools hold the native ones back, has buttons.)
+    if (!QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs)) {
+        // The system's font (a name with a dot) is not in the panel's list. It
+        // opens on a like font instead of the list's first, and what is left of
+        // that if only the size or the style changes is still the system's.
+        const bool systemFont = font.family().startsWith(u'.');
+        QFont opening = font;
+        if (systemFont) opening.setFamily(QStringLiteral("Helvetica Neue"));
+
+        QFontDialog panel(opening, parent);
+        panel.setOption(QFontDialog::NoButtons);
+        int told = 0;
+        QFont chosen;
+        QObject::connect(&panel, &QFontDialog::currentFontChanged, &panel, [&](const QFont& f) {
+            ++told;
+            chosen = f;
+        });
+        panel.exec();
+        if (told < 2) return false;
+
+        if (systemFont && chosen.family() == opening.family()) {
+            QFont kept = font;
+            kept.setPointSize(chosen.pointSize());
+            kept.setWeight(chosen.weight());
+            kept.setItalic(chosen.italic());
+            chosen = kept;
+        }
+        // The plain face needs no name, and a name would be over a later bold.
+        if (chosen.styleName() == QLatin1String("Regular") || chosen.styleName() == QLatin1String("Plain"))
+            chosen.setStyleName(QString());
+        font = chosen;
+        return true;
+    }
+#endif
+    bool ok = false;
+    const QFont chosen = QFontDialog::getFont(&ok, font, parent);
+    if (ok) font = chosen;
+    return ok;
+}
+
 QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     : QDialog(parent)
 {
@@ -1320,35 +1377,17 @@ void QucsSettingsDialog::slotApply()
 // -----------------------------------------------------------
 void QucsSettingsDialog::slotFontDialog()
 {
-    bool ok;
-    QFont tmpFont = QFontDialog::getFont(&ok, Font, this);
-    if(ok)
-    {
-        Font = tmpFont;
-        FontButton->setText(getFontDescription(Font));
-    }
+    if (chooseFont(Font, this)) FontButton->setText(getFontDescription(Font));
 }
 
 void QucsSettingsDialog::slotAppFontDialog()
 {
-    bool ok;
-    QFont tmpFont = QFontDialog::getFont(&ok, AppFont, this);
-    if(ok)
-    {
-        AppFont = tmpFont;
-        AppFontButton->setText(getFontDescription(AppFont));
-    }
+    if (chooseFont(AppFont, this)) AppFontButton->setText(getFontDescription(AppFont));
 }
 
 void QucsSettingsDialog::slotTextFontDialog()
 {
-    bool ok;
-    QFont tmpFont = QFontDialog::getFont(&ok, TextFont, this);
-    if(ok)
-    {
-        TextFont = tmpFont;
-        TextFontButton->setText(getFontDescription(TextFont));
-    }
+    if (chooseFont(TextFont, this)) TextFontButton->setText(getFontDescription(TextFont));
 }
 
 // -----------------------------------------------------------
