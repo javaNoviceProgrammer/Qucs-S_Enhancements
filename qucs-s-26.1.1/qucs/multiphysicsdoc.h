@@ -17,6 +17,7 @@
 
 #include "fem_material_plot.h"
 #include "fem_optimize.h"
+#include "fem_adapt.h"
 #include "multiphysicsview.h"
 #include "qucsdoc.h"
 
@@ -47,6 +48,7 @@ class QToolButton;
 class QUndoStack;
 namespace qucs_s::fem {
 class OptimizationPage;
+class ConvergencePage;
 }
 
 /*!
@@ -192,6 +194,32 @@ public:
     qucs_s::fem::OptimizationPage* optimizationPage() const { return a_optimizationPage; }
     QString shownOptimization() const { return a_shownOptimization; }
     QToolButton* optimizeButton() const { return a_optimize; }
+    // A mesh convergence check: the mesh refined until the values it watches
+    // have settled, as a job of its own.
+    /// Starts running check \a tag (the first: empty) - its geometry and mesh
+    /// first, when stale - with its progress and Cancel; what stops it keeps
+    /// the meshes solved so far. What it found stays in its node (a step of Undo,
+    /// saved with the model); the model's mesh is not touched.
+    void converge(const QString& tag = {});
+    /// The check the job at work runs (empty: none).
+    QString converging() const;
+    /// \a tag's last result, as its node keeps it (none: not run).
+    std::optional<qucs_s::fem::ConvergenceResult> convergenceResult(const QString& tag = {}) const;
+    /// Whether the model changed since it was found.
+    bool convergenceStale(const QString& tag = {}) const;
+    /// \a tag's refined mesh written into the mesh node (Adapted Sizes), a step of
+    /// Undo. False and why where it is not.
+    bool keepRefinedMesh(const QString& tag, QString* error = nullptr);
+    /// \a tag's refined mesh, in memory after its run (null: none), shown in the view.
+    std::shared_ptr<const qucs_s::fem::Mesh> refinedMesh(const QString& tag) const;
+    bool showRefinedMesh(const QString& tag, QString* error = nullptr);
+    /// Adds a check to the model if it has none (its values one the solution has,
+    /// if any) and shows it; a check with values is run. Its tag.
+    QString checkMeshConvergence();
+    /// The model tab's Mesh Convergence page, and the check it shows (a tab of its
+    /// own only where the model has a check).
+    qucs_s::fem::ConvergencePage* convergencePage() const { return a_convergencePage; }
+    QString shownConvergence() const { return a_shownConvergence; }
     bool isBusy() const { return a_job != nullptr; }
     /// The job at work, how far: "61 % - Vc = -9.5 V (point 21 of 34):
     /// Solving Stationary - collector at -9.31 V of -9.5 V (step 412,
@@ -369,6 +397,9 @@ private:
     void updateOptimizationPage();
     void showOptimizationPage();
     void takeOptimizationRows(Job& job);
+    void updateConvergencePage();
+    void showConvergencePage();
+    void takeConvergenceRows(Job& job);
     void addDefaultPlots(const QString& study);
     void evaluateAll(const QString& study);
     void fillPlotBox();
@@ -432,6 +463,11 @@ private:
     QString a_shownOptimization;
     QString a_jobOptimization;
     QJsonObject a_pageShows;      // what the page was last given: not drawn again for the same
+    qucs_s::fem::ConvergencePage* a_convergencePage = nullptr;
+    QString a_shownConvergence;
+    QString a_jobConvergence;
+    QJsonObject a_convergenceShows;   // as a_pageShows, the Mesh Convergence page's
+    std::map<QString, std::shared_ptr<const qucs_s::fem::Mesh>> a_refined;   // each check's refined mesh, while in memory
     QComboBox* a_showBox = nullptr;
     QComboBox* a_plotBox = nullptr;
     QComboBox* a_instanceBox = nullptr;
