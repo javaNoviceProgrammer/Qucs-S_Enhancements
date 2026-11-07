@@ -72,6 +72,9 @@ public:
 
     /// The run in progress, or nullptr.
     SimulationRun* currentRun() const { return a_run; }
+    /// What its bar shows: the percentage the simulator last said (0 when it
+    /// has said none).
+    int percent() const;
     bool isRunning() const;
 
     /// Creates the run for a schematic, attached to this console, and

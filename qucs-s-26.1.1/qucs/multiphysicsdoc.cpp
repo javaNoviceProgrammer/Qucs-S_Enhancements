@@ -1594,6 +1594,12 @@ QString MultiphysicsDoc::jobProgress() const
     return tr("%1 % - %2").arg(int(std::floor(100 * job->fraction.load()))).arg(stage);
 }
 
+double MultiphysicsDoc::jobFraction() const
+{
+    const std::shared_ptr<Job> job = a_job ? a_job : a_build;
+    return job ? job->fraction.load() : -1;
+}
+
 void MultiphysicsDoc::closeWhenFree()
 {
     // (Its work stopped - a process flow at its next time step -, none

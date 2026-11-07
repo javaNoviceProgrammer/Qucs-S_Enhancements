@@ -306,6 +306,12 @@ monkey's fake claude calls the tools too, some with arguments no one
 would give (coordinates of two billion, junk .sch text, pins that do not
 exist).
 
+`qucs/tests/test_claude_jobs` does the same for the Background Jobs window
+(⋯ > Show Background Jobs): each status from the program's events, a real
+percentage against an unknown one, Stop and Clear Finished. Only its opt-in
+`QUCS_JOBS_REAL=1` reaches the `claude` on the machine; a test run leaves it
+alone.
+
 `qucs/tests/test_netlist_audit` places every built-in component on a
 schematic and checks that it netlists in every flavour without a crash and
 survives a save/load and a properties-dialog Apply unchanged. With

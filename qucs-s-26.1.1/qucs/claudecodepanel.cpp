@@ -15,6 +15,7 @@
 #include "svgguard.h"
 #include "claudegitbar.h"
 #include "claudehistory.h"
+#include "claudejobswindow.h"
 
 #include "apptheme.h"
 #include "ink.h"
@@ -1376,6 +1377,10 @@ void ClaudeCodePanel::buildMenu()
                        "prompt shows its branch and the lines changed, and offers to create a pull request - in "
                        "every conversation"));
     connect(git, &QAction::triggered, this, [](bool on) { ClaudeGitBar::setOn(on); });
+    QAction* jobs = a_menu->addAction(tr("Show Background Jobs"), this, [this] { ClaudeJobsWindow::showWindow(this); });
+    jobs->setObjectName(QStringLiteral("claudeShowBackgroundJobs"));
+    jobs->setToolTip(tr("A window of what Claude has run in every conversation: each job's status and how far it has got, "
+                        "with a button to stop it"));
     // What the line that ends each turn tells of what it took.
     QMenu* usage = a_menu->addMenu(tr("Show Usage"));
     usage->setObjectName(QStringLiteral("claudeUsageMenu"));
