@@ -931,8 +931,12 @@ const char* const kTools = R"JSON([
    "mode": {"type": "string", "enum": ["soft", "mixed", "hard"], "description": "reset: what becomes of the changes (mixed by default)"},
    "path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}, "required": ["commit", "action"]}},
 {"name": "git_abort",
- "description": "Gives up the merge, rebase, cherry-pick or revert under way (a bisect is ended): the files and the branch back to how they were before it.",
+ "description": "Gives up the merge, rebase, git am, cherry-pick or revert under way (a bisect is ended): the files and the branch back to how they were before it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
+{"name": "git_continue",
+ "description": "Goes on with the rebase, git am, cherry-pick, revert or merge under way, once what is in conflict is resolved and staged (git_resolve, git_stage): makes its commit, and goes on with the next. With 'skip', past the commit it stopped at instead: a rebase, am, cherry-pick or revert. A stop in conflict again is said as a merge's is.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"},
+   "skip": {"type": "boolean", "description": "Past the commit it stopped at, its changes left out"}}}},
 {"name": "git_resolve",
  "description": "A file in conflict - a merge, a cherry-pick, a revert or a stash brought back left git's conflict marks in it, which no schematic reads (its open tab keeps the version from before): 'action' show (the default: its versions - mine, the branch's as before; theirs, the one merged in; base, where both started - and for a schematic what each side changed, part by part), take_ours or take_theirs (the file becomes that version whole, staged as resolved: the other side's changes, and any edit made in the file, are gone from it - asked about each time), or open (both versions written beside it as 'name (mine).sch' and 'name (theirs).sch', untracked, and opened). A file resolved by hand - its marks edited out, or a schematic's tab saved over it with save_document's 'replace' - is marked resolved with git_stage; then git_commit ends the merge, or git_abort gives it up.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file in conflict - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository)"},
@@ -1122,6 +1126,7 @@ const struct {
     {"git_tag", QT_TRANSLATE_NOOP("QucsControl", "work with git tags from Qucs-S")},
     {"git_commit_action", QT_TRANSLATE_NOOP("QucsControl", "revert, cherry-pick, check out or reset to a git commit from Qucs-S")},
     {"git_abort", QT_TRANSLATE_NOOP("QucsControl", "give up a git merge from Qucs-S")},
+    {"git_continue", QT_TRANSLATE_NOOP("QucsControl", "go on with a git rebase from Qucs-S")},
     {"git_resolve", QT_TRANSLATE_NOOP("QucsControl", "resolve a git conflict from Qucs-S")},
     {"xml", QT_TRANSLATE_NOOP("QucsControl", "read or change an XML file in Qucs-S")},
     {"git_init", QT_TRANSLATE_NOOP("QucsControl", "make a git repository from Qucs-S")},
@@ -1315,6 +1320,7 @@ const struct {
     {"git_tag", "git tag release version label"},
     {"git_commit_action", "git revert cherry-pick reset checkout commit undo history"},
     {"git_abort", "git abort merge rebase cherry-pick conflict give up"},
+    {"git_continue", "git continue rebase am cherry-pick revert merge conflict resolved go on skip"},
     {"git_resolve", "git conflict resolve merge ours theirs mine markers both versions"},
     {"xml", "xml xsd xsl plist ui qrc element attribute xpath tree outline format pretty print minify well formed"},
     {"fem_describe", "multiphysics fem finite element model qfem tree geometry domains boundaries materials physics format variables"},
@@ -5413,6 +5419,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("git_tag")) return gitTag(args);
     if (tool == QLatin1String("git_commit_action")) return gitCommitAction(args);
     if (tool == QLatin1String("git_abort")) return gitAbort(args);
+    if (tool == QLatin1String("git_continue")) return gitContinue(args);
     if (tool == QLatin1String("git_resolve")) return gitResolve(args);
     if (tool == QLatin1String("xml")) return xmlDocument(args);
     if (tool == QLatin1String("fem_describe")) return femDescribe(args);

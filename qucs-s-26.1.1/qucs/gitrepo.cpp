@@ -155,7 +155,20 @@ QString Result::error() const
             .arg(names.join(QStringLiteral(", ")));
     }
     QStringList said;
-    for (const QString& l : linesOf(err + QLatin1Char('\n') + out)) {
+    bool goesOn = false;   // (a "fatal:" of several lines, whole: the rest says what to do)
+    for (const QString& l : linesOf(err)) {
+        const QString t = l.trimmed();
+        if (t.startsWith(QLatin1String("fatal:")) || t.startsWith(QLatin1String("error:")) || t.startsWith(QLatin1String("CONFLICT"))
+            || t.startsWith(QLatin1String("Automatic merge failed")) || t.startsWith(QLatin1String("! ["))) {
+            said << t;
+            goesOn = t.startsWith(QLatin1String("fatal:"));
+        } else if (goesOn && !t.startsWith(QLatin1String("hint:"))) {
+            said << t;
+        } else {
+            goesOn = false;
+        }
+    }
+    for (const QString& l : linesOf(out)) {
         const QString t = l.trimmed();
         if (t.startsWith(QLatin1String("fatal:")) || t.startsWith(QLatin1String("error:")) || t.startsWith(QLatin1String("CONFLICT"))
             || t.startsWith(QLatin1String("Automatic merge failed")) || t.startsWith(QLatin1String("! [")))
@@ -579,14 +592,35 @@ Result stage(const QString& root, const QStringList& paths)
     return addAll(root, rel);
 }
 
+QStringList withRenameSources(const QString& root, const QStringList& paths)
+{
+    QStringList out = paths;
+    for (const Entry& e : read(root).entries)
+        if (e.staged == QLatin1Char('R') && !e.from.isEmpty() && paths.contains(e.path) && !out.contains(e.from)) out << e.from;
+    return out;
+}
+
 Result unstage(const QString& root, const QStringList& paths)
 {
-    const QStringList rel = paths.isEmpty() ? QStringList{QStringLiteral(".")} : relative(root, paths);
+    QStringList rel = paths.isEmpty() ? QStringList{QStringLiteral(".")} : relative(root, paths);
     if (rel.isEmpty()) return outside();
+    const bool head = hasHead(root);
+    // A name that is no file: said. (git resets a path it does not know in silence.)
+    if (!paths.isEmpty()) {
+        for (const QString& p : std::as_const(rel)) {
+            if (p == QLatin1String(".") || (head && inHead(root, p))) continue;
+            const Result known = run(root, {QStringLiteral("ls-files"), QStringLiteral("--"), p}, true, 15000);
+            if (known.ok() && known.out.trimmed().isEmpty())
+                return failure(QStringLiteral("error: pathspec '%1' did not match any file(s) known to git").arg(p));
+        }
+        rel = withRenameSources(root, rel);
+    }
     // (Before the first commit: nothing to go back to. -f: edited since it was
-    // staged, git would refuse - and the file on the disk stays.)
-    if (!hasHead(root))
-        return run(root, withPaths({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-r"), QStringLiteral("-q"), QStringLiteral("-f")}, rel));
+    // staged, git would refuse - and the file on the disk stays. --ignore-unmatch:
+    // nothing staged at all is no fault.)
+    if (!head)
+        return run(root, withPaths({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-r"), QStringLiteral("-q"), QStringLiteral("-f"),
+                                    QStringLiteral("--ignore-unmatch")}, rel));
     if (paths.isEmpty()) return run(root, {QStringLiteral("reset"), QStringLiteral("-q")});
     return run(root, withPaths({QStringLiteral("reset"), QStringLiteral("-q"), QStringLiteral("HEAD")}, rel));
 }
@@ -604,8 +638,9 @@ Result discard(const QString& root, const QStringList& paths, QStringList* trash
     const bool head = !repo.head.isEmpty();
     // The entries the paths take in: their own, those in a folder given.
     QList<Entry> chosen;
-    const QStringList rel = paths.isEmpty() ? QStringList{QString()} : relative(root, paths);
+    QStringList rel = paths.isEmpty() ? QStringList{QString()} : relative(root, paths);
     if (rel.isEmpty()) return outside();
+    for (QString& p : rel) p = spelledOnDisk(root, p);
     QSet<QString> taken;   // the names given that took in an entry
     for (const Entry& e : repo.entries) {
         if (e.ignored) continue;
@@ -616,8 +651,11 @@ Result discard(const QString& root, const QStringList& paths, QStringList* trash
             const QString p = given == QLatin1String(".") ? QString() : lookupForm(given);
             const QString path = lookupForm(e.path);
             const QString bare = e.isFolder() ? path.chopped(1) : path;
-            if (p.isEmpty() || bare == p || bare.startsWith(p + QLatin1Char('/')) || (e.isFolder() && p.startsWith(path))) {
-                taken.insert(given);
+            // (A name inside an untracked folder is not known from the folder's
+            // entry: it has to be there. A rename is also its former name.)
+            const bool within = e.isFolder() && p.startsWith(path);
+            if (p.isEmpty() || bare == p || bare.startsWith(p + QLatin1Char('/')) || within || (!e.from.isEmpty() && lookupForm(e.from) == p)) {
+                if (!within || QFileInfo::exists(fileIn(root, given))) taken.insert(given);
                 in = true;
             }
         }
@@ -636,15 +674,18 @@ Result discard(const QString& root, const QStringList& paths, QStringList* trash
     QStringList restore, forget, toTrash;
     for (const Entry& e : chosen) {
         if (e.untracked) {
-            // In an untracked folder: the path given (a file in it), else the folder.
-            QString target = e.path;
+            // In an untracked folder: the paths given (files in it), else the folder.
+            QStringList targets;
             if (e.isFolder()) {
-                target.chop(1);
                 for (const QString& p : rel)
-                    if (!p.isEmpty() && p != QLatin1String(".") && lookupForm(p).startsWith(lookupForm(e.path))) target = p;
+                    if (!p.isEmpty() && p != QLatin1String(".") && lookupForm(p).startsWith(lookupForm(e.path))) targets << p;
+                if (targets.isEmpty()) targets << e.path.chopped(1);
+            } else {
+                targets << e.path;
             }
-            toTrash << target;
-        } else if (!head || e.staged == QLatin1Char('A') || e.staged == QLatin1Char('C') || e.staged == QLatin1Char('R')) {
+            toTrash << targets;
+        } else if (!head || e.staged == QLatin1Char('A') || e.staged == QLatin1Char('C') || e.staged == QLatin1Char('R')
+                   || (e.conflicted && !inHead(root, e.path))) {   // (a side's alone, HEAD has none: DU, UA, DD)
             forget << e.path;   // not in HEAD: out of the index, then to the trash
             toTrash << e.path;
             if (e.staged == QLatin1Char('R') && !e.from.isEmpty()) restore << e.from;
@@ -688,7 +729,7 @@ Result commit(const QString& root, const QString& message, bool amend, const QSt
     QStringList args{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
     if (amend) args << QStringLiteral("--amend");
     if (!only.isEmpty()) {
-        const QStringList rel = relative(root, only);
+        const QStringList rel = withRenameSources(root, relative(root, only));
         if (rel.isEmpty()) return outside();
         const Result added = addAll(root, rel);
         if (!added.ok()) return added;
@@ -728,7 +769,9 @@ bool ignore(const QString& root, const QString& path, QString* why)
     // A pattern for it alone: from the top folder, its special characters
     // taken as they are, and spaces at its end kept (git drops them, unless
     // written so).
-    const bool folder = QFileInfo(fileIn(root, rel)).isDir();
+    // (A link to a folder is no folder to git: a pattern with "/" would not take it.)
+    const QFileInfo what(fileIn(root, rel));
+    const bool folder = what.isDir() && !what.isSymLink();
     const auto patternOf = [folder](const QString& name) {
         qsizetype textEnd = name.size();
         while (textEnd > 0 && name.at(textEnd - 1) == QLatin1Char(' ')) --textEnd;
@@ -748,6 +791,13 @@ bool ignore(const QString& root, const QString& path, QString* why)
     patterns = {patternOf(rel.normalized(QString::NormalizationForm_C))};
     if (const QString other = patternOf(rel.normalized(QString::NormalizationForm_D)); other != patterns.first()) patterns << other;
 #endif
+    // (A pipe of that name would wait for ever. A link: written through it the
+    // line would go outside the repository, and git does not read such a file.)
+    const QFileInfo ignoreFile(fileIn(root, QStringLiteral(".gitignore")));
+    if (ignoreFile.isSymLink() || (ignoreFile.exists() && !ignoreFile.isFile())) {
+        if (why != nullptr) *why = tr(".gitignore here is not a plain file");
+        return false;
+    }
     QFile file(QDir(root).filePath(QStringLiteral(".gitignore")));
     QByteArray text;
     if (file.exists()) {
@@ -835,7 +885,11 @@ Result switchTo(const QString& root, const QString& branch)
     // A remote's branch: a local one that follows it (made when there is none).
     for (const Branch& b : branches(root)) {
         if (!b.remote || b.name != branch) continue;
-        const QString local = branch.section(QLatin1Char('/'), 1);
+        // (Past the remote's name, which may hold a '/' too.)
+        QString remoteName = branch.section(QLatin1Char('/'), 0, 0);
+        for (const Remote& r : remotes(root))
+            if (r.name.size() > remoteName.size() && branch.startsWith(r.name + QLatin1Char('/'))) remoteName = r.name;
+        const QString local = branch.mid(remoteName.size() + 1);
         for (const Branch& l : branches(root))
             if (!l.remote && l.name == local) return run(root, {QStringLiteral("checkout"), local, QStringLiteral("--")});
         return run(root, {QStringLiteral("checkout"), QStringLiteral("-b"), local, QStringLiteral("--track"), branch});
@@ -867,7 +921,31 @@ Result renameBranch(const QString& root, const QString& from, const QString& to)
 Result merge(const QString& root, const QString& ref)
 {
     if (optionLike(ref)) return optionRefused(ref);
-    return run(root, {QStringLiteral("merge"), QStringLiteral("--no-edit"), ref}, false, 300000);
+    return run(root, mergeArgs(ref), false, 300000);
+}
+
+QStringList mergeArgs(const QString& ref)
+{
+    if (optionLike(ref)) return {};
+    return {QStringLiteral("merge"), QStringLiteral("--no-edit"), ref};
+}
+
+QString folderOfUrl(const QString& url)
+{
+    QString name = url;
+    while (name.endsWith(QLatin1Char('/'))) name.chop(1);
+    name = name.section(QLatin1Char('/'), -1).section(QLatin1Char(':'), -1);
+    if (name.endsWith(QLatin1String(".git"))) name.chop(4);
+    return name.isEmpty() ? QStringLiteral("repository") : name;
+}
+
+QString spelledOnDisk(const QString& root, const QString& rel)
+{
+    if (rel.isEmpty() || rel == QLatin1String(".")) return rel;
+    const QFileInfo info(fileIn(root, rel));
+    if (!info.exists() || info.isSymLink()) return rel;
+    const QString found = relativePath(root, info.canonicalFilePath());
+    return found.size() == rel.size() && found != rel && found.compare(rel, Qt::CaseInsensitive) == 0 ? found : rel;
 }
 
 Result abort(const QString& root, const QString& operation)
@@ -880,6 +958,14 @@ Result abort(const QString& root, const QString& operation)
     r.exitCode = 1;
     r.err = tr("error: nothing is under way to abort");
     return r;
+}
+
+Result continueOperation(const QString& root, const QString& operation, bool skip)
+{
+    if (operation != QLatin1String("rebase") && operation != QLatin1String("am") && operation != QLatin1String("cherry-pick")
+        && operation != QLatin1String("revert") && !(operation == QLatin1String("merge") && !skip))
+        return failure(tr("error: there is nothing to go on with here"));
+    return run(root, {operation, skip ? QStringLiteral("--skip") : QStringLiteral("--continue")}, false, 300000);
 }
 
 Result createTag(const QString& root, const QString& name, const QString& message, const QString& commit)
@@ -941,9 +1027,16 @@ QStringList fetchArgs(const QString& remote)
             remote.isEmpty() ? QStringLiteral("--all") : remote};
 }
 
-QStringList pullArgs()
+QStringList pullArgs(const QString& root)
 {
-    return {QStringLiteral("pull"), QStringLiteral("--no-edit"), QStringLiteral("--progress")};
+    QStringList args{QStringLiteral("pull"), QStringLiteral("--no-edit"), QStringLiteral("--progress")};
+    if (root.isEmpty()) return args;
+    const auto isSet = [&root](const QString& key) { return run(root, {QStringLiteral("config"), QStringLiteral("--get"), key}, true, 15000).ok(); };
+    const QString branch = run(root, {QStringLiteral("symbolic-ref"), QStringLiteral("--short"), QStringLiteral("-q"), QStringLiteral("HEAD")}, true, 15000).out.trimmed();
+    if (!isSet(QStringLiteral("pull.rebase")) && !isSet(QStringLiteral("pull.ff"))
+        && (branch.isEmpty() || !isSet(QStringLiteral("branch.%1.rebase").arg(branch))))
+        args << QStringLiteral("--no-rebase");
+    return args;
 }
 
 QStringList pushArgs(const Repository& repo, QString* why, bool tags)
@@ -1023,9 +1116,13 @@ Result dropStash(const QString& root, int index)
 
 QString showStash(const QString& root, int index)
 {
-    const Result r = run(root, {QStringLiteral("stash"), QStringLiteral("show"), QStringLiteral("-p"), QStringLiteral("--no-ext-diff"),
-                                QStringLiteral("--no-textconv"), QStringLiteral("stash@{%1}").arg(index)},
-                         true, 30000);
+    // (New files too, which a stash holds by default: from git 2.32.)
+    QStringList args{QStringLiteral("stash"), QStringLiteral("show"), QStringLiteral("-p"), QStringLiteral("--no-ext-diff"),
+                     QStringLiteral("--no-textconv"), QStringLiteral("stash@{%1}").arg(index)};
+    QStringList withNew = args;
+    withNew.insert(3, QStringLiteral("--include-untracked"));
+    Result r = run(root, withNew, true, 30000);
+    if (!r.ok()) r = run(root, args, true, 30000);
     return r.ok() ? r.out : r.error();
 }
 
@@ -1121,6 +1218,7 @@ QList<Commit> log(const QString& root, const QString& path, int max, const QStri
     if (skip > 0) args << QStringLiteral("--skip=%1").arg(skip);
     if (optionLike(ref)) return out;
     if (!ref.isEmpty()) args << ref;
+    QStringList limit{QStringLiteral("--")};   // (a file named as the ref: the ref, not "both")
     if (!path.isEmpty()) {
         const QStringList rel = relative(root, {path});
         if (rel.isEmpty()) return out;
@@ -1129,9 +1227,10 @@ QList<Commit> log(const QString& root, const QString& path, int max, const QStri
         // with theirs).
         if (rel.first() != QLatin1String(".")) {
             if (!QFileInfo(fileIn(root, rel.first())).isDir()) args << QStringLiteral("--follow");
-            args << QStringLiteral("--") << rel;
+            limit << rel;
         }
     }
+    args << limit;
     const Result r = run(root, args, true, 30000);
     return r.ok() ? readCommits(r.out) : out;
 }
@@ -1157,14 +1256,16 @@ QList<Commit> history(const QString& root, const HistoryQuery& query)
         args << query.ref;
         break;
     }
+    QStringList limit{QStringLiteral("--")};
     if (!query.path.isEmpty()) {
         const QStringList rel = relative(root, {query.path});
         if (rel.isEmpty()) return {};
         if (rel.first() != QLatin1String(".")) {
             if (!QFileInfo(fileIn(root, rel.first())).isDir()) args << QStringLiteral("--follow");
-            args << QStringLiteral("--") << rel;
+            limit << rel;
         }
     }
+    args << limit;
     const Result r = run(root, args, true, 60000);
     return r.ok() ? readCommits(r.out) : QList<Commit>();
 }
@@ -1275,7 +1376,7 @@ QList<ChangedFile> changedFiles(const QString& root, const QString& commit)
 QString commitMessage(const QString& root, const QString& commit)
 {
     if (commit.isEmpty() || optionLike(commit)) return {};
-    const Result r = run(root, {QStringLiteral("show"), QStringLiteral("-s"), QStringLiteral("--format=%B"), commit}, true, 15000);
+    const Result r = run(root, {QStringLiteral("show"), QStringLiteral("-s"), QStringLiteral("--format=%B"), commit, QStringLiteral("--")}, true, 15000);
     return r.ok() ? r.out.trimmed() : QString();
 }
 
@@ -1362,13 +1463,14 @@ QString show(const QString& root, const QString& commit, const QString& path)
     // (The top folder is the whole repository: no path, as in log().)
     const QStringList rel = path.isEmpty() ? QStringList() : relative(root, {path});
     const bool limited = !rel.isEmpty() && rel.first() != QLatin1String(".");
-    if (limited) args << QStringLiteral("--") << rel;
+    args << QStringLiteral("--");   // (a file named as the commit: the commit, not "both")
+    if (limited) args << rel;
     const Result r = run(root, args, true, 30000);
     if (!r.ok()) return r.error();
     // A commit that changed nothing there: git says nothing at all with a path
     // given. Who made it and why still come back.
     if (limited && r.out.trimmed().isEmpty()) {
-        const Result alone = run(root, {QStringLiteral("show"), QStringLiteral("-s"), QStringLiteral("--format=fuller"), commit}, true, 30000);
+        const Result alone = run(root, {QStringLiteral("show"), QStringLiteral("-s"), QStringLiteral("--format=fuller"), commit, QStringLiteral("--")}, true, 30000);
         return alone.ok() ? alone.out : alone.error();
     }
     return r.out;
@@ -1525,7 +1627,7 @@ Result reset(const QString& root, const QString& commit, const QString& mode)
         r.err = tr("error: a reset is soft, mixed or hard");
         return r;
     }
-    return run(root, {QStringLiteral("reset"), QStringLiteral("--") + mode, commit});
+    return run(root, {QStringLiteral("reset"), QStringLiteral("--") + mode, commit, QStringLiteral("--")});
 }
 
 // ----------------------------------------------------------------------
@@ -1558,15 +1660,20 @@ ConflictVersions conflictVersions(const QString& root, const QString& path)
     ConflictVersions v;
     const QStringList rel = relative(root, {path});
     if (rel.isEmpty()) return v;
-    const Result stages = run(root, {QStringLiteral("ls-files"), QStringLiteral("-u"), QStringLiteral("--"), rel.first()}, true, 15000);
+    const Result stages = run(root, {QStringLiteral("ls-files"), QStringLiteral("-u"), QStringLiteral("-z"), QStringLiteral("--"), rel.first()}, true, 15000);
     if (!stages.ok()) return v;
-    // "mode hash stage<TAB>path": 1 the base, 2 ours, 3 theirs.
-    for (const QString& l : linesOf(stages.out)) {
+    // "mode hash stage<TAB>path": 1 the base, 2 ours, 3 theirs. That file's
+    // alone: a folder given names others.
+    for (const QString& l : stages.out.split(QChar(0), Qt::SkipEmptyParts)) {
+        if (l.section(QLatin1Char('\t'), 1) != rel.first()) continue;
         const int stage = l.section(QLatin1Char('\t'), 0, 0).section(QLatin1Char(' '), 2, 2).toInt();
         if (stage < 1 || stage > 3) continue;
         v.inConflict = true;
         const Result text = run(root, {QStringLiteral("show"), QStringLiteral(":%1:%2").arg(stage).arg(rel.first())}, true, 30000);
-        if (!text.ok()) continue;
+        if (!text.ok()) {
+            v.incomplete = true;
+            continue;
+        }
         (stage == 1 ? v.base : stage == 2 ? v.ours : v.theirs) = text.out;
     }
     return v;
@@ -1580,6 +1687,8 @@ Result resolve(const QString& root, const QString& path, const QString& side)
     if (rel.isEmpty() || rel.first() == QLatin1String(".")) return outside();
     const ConflictVersions v = conflictVersions(root, path);
     if (!v.inConflict) return failure(tr("error: %1 is not in conflict").arg(rel.first()));
+    // (A side not read is not a side that deleted it: taken so, the file would go.)
+    if (v.incomplete) return failure(tr("error: git could not read the versions of %1").arg(rel.first()));
     // That side deleted it: deleted.
     if (!(side == QLatin1String("ours") ? v.ours : v.theirs).has_value())
         return run(root, withPaths({QStringLiteral("rm"), QStringLiteral("-q"), QStringLiteral("--ignore-unmatch")}, rel));

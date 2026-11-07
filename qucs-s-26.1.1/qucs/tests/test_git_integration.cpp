@@ -321,6 +321,13 @@ class TestGitIntegration : public QObject
         return {};
     }
 
+    static QStringList pathsOfConflicts(const QJsonObject& o)
+    {
+        QStringList out;
+        for (const QJsonValue& v : o.value("conflicts").toArray()) out << v.toString();
+        return out;
+    }
+
     static const Entry* entry(const Repository& r, const QString& path)
     {
         for (const Entry& e : r.entries)
@@ -2434,6 +2441,305 @@ private slots:
     // unstage, discard, commit (and push), branches, the remotes, stashes,
     // tags, a commit's actions, abort, init, clone, ignore. What would
     // throw work away, or publish it, is asked about each time.
+    // ------------------------------------------------------------------
+    // The review of 7 November (2026-11-07-claude-git-integration-review.md).
+
+    void aCommitWithAPathOutsideCommitsNothing()
+    {
+        const QString repo = makeRepo("commitoutside");
+        QVERIFY(!repo.isEmpty());
+        const QString head = gitIn(repo, {"rev-parse", "HEAD"});
+        QVERIFY(write(repo + "/a.txt", "edit a\n"));
+        QVERIFY(write(repo + "/b.txt", "edit b\n"));
+        QVERIFY(!gitIn(repo, {"add", "b.txt"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "b"}).isNull());
+        QVERIFY(write(repo + "/b.txt", "edit b again\n"));
+        const QString before = gitIn(repo, {"rev-parse", "HEAD"});
+        QVERIFY(write(canonical(dir.path()) + "/outside.txt", "outside\n"));
+        QJsonObject r = call("git_commit", {{"path", repo}, {"message", "only a"}, {"paths", QJsonArray{"a.txt", "../outside.txt"}}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("not in the repository"), qPrintable(text(r)));
+        QCOMPARE(gitIn(repo, {"rev-parse", "HEAD"}), before);
+        // Alike: nothing done with a list that names a file elsewhere.
+        for (const char* tool : {"git_stage", "git_unstage", "git_discard"}) {
+            r = call(tool, {{"path", repo}, {"paths", QJsonArray{"a.txt", "../outside.txt"}}});
+            QVERIFY2(failed(r), qPrintable(QString(tool) + ": " + text(r)));
+        }
+        QCOMPARE(readAll(repo + "/a.txt"), QByteArray("edit a\n"));
+    }
+
+    void pullOfBranchesThatDiverged()
+    {
+        const QString base = canonical(dir.path()) + "/diverged";
+        const QString bare = base + "/origin.git";
+        QVERIFY(QDir().mkpath(base));
+        QVERIFY(!gitIn(base, {"init", "-q", "--bare", bare}).isNull());
+        const QString first = base + "/first", second = base + "/second";
+        QVERIFY(!gitIn(base, {"clone", "-q", bare, first}).isNull());
+        QVERIFY(write(first + "/a.txt", "base\n"));
+        QVERIFY(write(first + "/f.txt", "base\n"));
+        QVERIFY(!gitIn(first, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(first, {"commit", "-q", "-m", "base"}).isNull());
+        QVERIFY(!gitIn(first, {"push", "-q", "origin", "HEAD:main"}).isNull());
+        QVERIFY(!gitIn(base, {"clone", "-q", bare, second}).isNull());
+        const auto diverge = [&](const char* mine, const char* theirs, const char* file) {
+            QVERIFY(write(second + "/" + file, mine));
+            QVERIFY(!gitIn(second, {"commit", "-q", "-a", "-m", "mine"}).isNull());
+            QVERIFY(write(first + "/" + file, theirs));
+            QVERIFY(!gitIn(first, {"commit", "-q", "-a", "-m", "theirs"}).isNull());
+            QVERIFY(!gitIn(first, {"pull", "-q", "--no-rebase", "--no-edit"}).isNull());
+            QVERIFY(!gitIn(first, {"push", "-q"}).isNull());
+        };
+        // No setting: merged, as the menu says.
+        QVERIFY(write(second + "/m.txt", "mine\n"));
+        QVERIFY(!gitIn(second, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(second, {"commit", "-q", "-m", "mine"}).isNull());
+        diverge("x", "theirs\n", "f.txt");
+        gitIn(second, {"reset", "-q", "--hard", "HEAD~1"});
+        QJsonObject r = call("git_remote", {{"path", second}, {"action", "pull"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(log(second).first().parents.size(), qsizetype(2));
+        QCOMPARE(readAll(second + "/f.txt"), QByteArray("theirs\n"));
+
+        // In conflict: said as a merge in conflict is.
+        diverge("mine again\n", "theirs again\n", "a.txt");
+        r = call("git_remote", {{"path", second}, {"action", "pull"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(pathsOfConflicts(json(r)), QStringList{"a.txt"});
+        QVERIFY2(json(r).value("pull").toString().contains("git_resolve"), qPrintable(text(r)));
+        QVERIFY(!failed(call("git_abort", {{"path", second}})));
+
+        // Set to rebase: a rebase. (And it stops, and goes on: below.)
+        QVERIFY(!gitIn(second, {"config", "pull.rebase", "true"}).isNull());
+        r = call("git_remote", {{"path", second}, {"action", "pull"}});
+        QCOMPARE(json(r).value("under way").toString(), QStringLiteral("rebase"));
+        QVERIFY(!failed(call("git_abort", {{"path", second}})));
+        QVERIFY(!gitIn(second, {"config", "--unset", "pull.rebase"}).isNull());
+    }
+
+    void aDiscardTakesTheFileNamed()
+    {
+        // A name with a space at its end is that name.
+        const QString repo = makeRepo("discardname");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/sp", "one\n"));
+        QVERIFY(write(repo + "/sp ", "one\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "both"}).isNull());
+        QVERIFY(write(repo + "/sp", "edit\n"));
+        QVERIFY(write(repo + "/sp ", "edit\n"));
+        QJsonObject r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{"sp "}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(readAll(repo + "/sp "), QByteArray("one\n"));
+        QCOMPARE(readAll(repo + "/sp"), QByteArray("edit\n"));
+
+        // Several in one untracked folder; a name there that is no file.
+        QVERIFY(write(repo + "/new/x.sch", "x\n"));
+        QVERIFY(write(repo + "/new/y.sch", "y\n"));
+        QVERIFY(write(repo + "/new/z.sch", "z\n"));
+        r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{"new/typo.sch"}}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{"new/x.sch", "new/y.sch"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!QFileInfo::exists(repo + "/new/x.sch"));
+        QVERIFY(!QFileInfo::exists(repo + "/new/y.sch"));
+        QVERIFY(QFileInfo::exists(repo + "/new/z.sch"));
+
+        // A staged rename, by its old name: back as it was.
+        QVERIFY(!gitIn(repo, {"mv", "a.txt", "moved.txt"}).isNull());
+        r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{"a.txt"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(repo + "/a.txt"));
+        QVERIFY(!QFileInfo::exists(repo + "/moved.txt"));
+#ifdef Q_OS_MACOS
+        // Another case of the name, where the disk takes either.
+        if (!QFileInfo::exists(repo + "/A.TXT")) QSKIP("a case-sensitive disk");
+        QVERIFY(write(repo + "/a.txt", "edited\n"));
+        r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{"A.TXT"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
+#endif
+    }
+
+    void discardAllInAMerge()
+    {
+        // Deleted by us, added by both, and an edit besides.
+        const QString repo = makeRepo("discardmerge");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/d.txt", "d\n"));
+        QVERIFY(write(repo + "/z.txt", "z\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "base"}).isNull());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "-b", "theirs"}).isNull());
+        QVERIFY(write(repo + "/d.txt", "changed\n"));
+        QVERIFY(write(repo + "/new.txt", "theirs\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "theirs"}).isNull());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "main"}).isNull());
+        QVERIFY(!gitIn(repo, {"rm", "-q", "d.txt"}).isNull());
+        QVERIFY(write(repo + "/new.txt", "mine\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "mine"}).isNull());
+        QVERIFY(!run(repo, {"merge", "--no-edit", "theirs"}).ok());
+        QVERIFY(write(repo + "/z.txt", "edit\n"));
+        QJsonObject r = call("git_discard", {{"path", repo}, {"all", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(readAll(repo + "/z.txt"), QByteArray("z\n"));
+        QVERIFY(!QFileInfo::exists(repo + "/d.txt"));
+        QVERIFY(json(r).value("conflicts").toArray().isEmpty());
+    }
+
+    void whatIsNotAConflictIsNotCalledOne()
+    {
+        const QString repo = makeRepo("alreadyapplied");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "-b", "side"}).isNull());
+        QVERIFY(write(repo + "/a.txt", "the change\n"));
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-a", "-m", "the change"}).isNull());
+        const QString hash = gitIn(repo, {"rev-parse", "HEAD"});
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "main"}).isNull());
+        QVERIFY(write(repo + "/a.txt", "the change\n"));
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-a", "-m", "the same change, by hand"}).isNull());
+        QJsonObject r = call("git_commit_action", {{"path", repo}, {"commit", hash}, {"action", "cherry_pick"}});
+        QVERIFY2(!json(r).value("cherry_pick").toString().contains("conflicts:"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("git_continue"), qPrintable(text(r)));
+        QCOMPARE(json(r).value("under way").toString(), QStringLiteral("cherry-pick"));
+        r = call("git_continue", {{"path", repo}, {"skip", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!json(r).contains("under way"));
+    }
+
+    void aRebaseStoppedGoesOn()
+    {
+        const QString repo = makeRepo("rebasing");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "-b", "topic"}).isNull());
+        QVERIFY(write(repo + "/a.txt", "topic\n"));
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-a", "-m", "topic 1"}).isNull());
+        QVERIFY(write(repo + "/b.txt", "topic\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "topic 2"}).isNull());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "main"}).isNull());
+        QVERIFY(write(repo + "/a.txt", "main\n"));
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-a", "-m", "main's"}).isNull());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "topic"}).isNull());
+        QVERIFY(!run(repo, {"rebase", "main"}).ok());
+        QJsonObject r = call("git_status", {{"path", repo}});
+        QCOMPARE(json(r).value("under way").toString(), QStringLiteral("rebase"));
+        // Nothing resolved yet: said, nothing lost.
+        r = call("git_continue", {{"path", repo}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        r = call("git_resolve", {{"path", repo + "/a.txt"}, {"action", "take_theirs"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        // A commit here would leave it unfinished, on a detached HEAD.
+        r = call("git_commit", {{"path", repo}, {"message", "not this"}});
+        QVERIFY2(failed(r) && text(r).contains("git_continue"), qPrintable(text(r)));
+        r = call("git_continue", {{"path", repo}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!json(r).contains("under way"), qPrintable(text(r)));
+        QCOMPARE(json(r).value("branch").toString(), QStringLiteral("topic"));
+        QCOMPARE(log(repo).first().subject, QStringLiteral("topic 2"));
+        QVERIFY(failed(call("git_continue", {{"path", repo}})));   // nothing under way
+
+        // From the menus, as Abort is: a cherry-pick in conflict, resolved.
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "-b", "other", "main~1"}).isNull());
+        QVERIFY(write(repo + "/a.txt", "other\n"));
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-a", "-m", "other's"}).isNull());
+        const QString other = gitIn(repo, {"rev-parse", "HEAD"});
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "main"}).isNull());
+        QVERIFY(!cherryPick(repo, other).ok());
+        QVERIFY(resolve(repo, repo + "/a.txt", "theirs").ok());
+        QVERIFY(Tracker::instance()->readNow(repo) != nullptr);   // (the menu's state, up to 3 s old otherwise)
+        QMenu fileMenu;
+        Commands::instance()->fillFileMenu(&fileMenu, repo + "/a.txt");
+        QAction* goOn = nullptr;
+        for (QAction* a : fileMenu.actions())
+            if (a->objectName() == QLatin1String("gitContinue")) goOn = a;
+        QVERIFY(goOn != nullptr);
+        goOn->trigger();
+        QCOMPARE(read(repo).operation, QString());
+        QCOMPARE(log(repo).first().subject, QStringLiteral("other's"));
+    }
+
+    void theSmallerFaultsOfTheReview()
+    {
+        const QString repo = makeRepo("smaller");
+        QVERIFY(!repo.isEmpty());
+        // Said, not done in silence.
+        QJsonObject r = call("git_unstage", {{"path", repo}, {"paths", QJsonArray{"typo.txt"}}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        r = call("git_status", {{"path", repo + "/nowhere.txt"}});
+        QVERIFY2(!json(r).value("path").toObject().value("state").toString().contains("as committed"), qPrintable(text(r)));
+        r = call("git_log", {{"path", repo}, {"ref", "no-such-ref"}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        r = call("git_stash", {{"path", repo}, {"action", "show"}, {"index", 5}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+
+        // A file named as a branch.
+        QVERIFY(write(repo + "/main", "a file\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "a file named main"}).isNull());
+        r = call("git_log", {{"path", repo}, {"ref", "main"}});
+        QVERIFY2(!failed(r) && !json(r).value("commits").toArray().isEmpty(), qPrintable(text(r)));
+        r = call("git_show", {{"path", repo}, {"commit", "main"}});
+        QVERIFY2(!failed(r) && text(r).contains("a file named main"), qPrintable(text(r)));
+        r = call("git_commit_action", {{"path", repo}, {"commit", "main"}, {"action", "reset"}, {"mode", "mixed"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+
+        // A stash of new files alone shows them.
+        QVERIFY(write(repo + "/only-new.txt", "stashed line\n"));
+        QVERIFY(!failed(call("git_stash", {{"path", repo}, {"action", "push"}})));
+        r = call("git_stash", {{"path", repo}, {"action", "show"}});
+        QVERIFY2(text(r).contains("stashed line"), qPrintable(text(r)));
+        QVERIFY(!failed(call("git_stash", {{"path", repo}, {"action", "drop"}})));
+
+        // A rename, by the name the status gives it.
+        QVERIFY(!gitIn(repo, {"mv", "a.txt", "renamed.txt"}).isNull());
+        r = call("git_unstage", {{"path", repo}, {"paths", QJsonArray{"renamed.txt"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("staged").toArray().isEmpty(), qPrintable(text(r)));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        r = call("git_commit", {{"path", repo}, {"message", "renamed"}, {"paths", QJsonArray{"renamed.txt"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("staged").toArray().isEmpty(), qPrintable(text(r)));
+        QVERIFY(gitIn(repo, {"ls-tree", "--name-only", "HEAD"}).split('\n').contains("renamed.txt"));
+        QVERIFY(!gitIn(repo, {"ls-tree", "--name-only", "HEAD"}).split('\n').contains("a.txt"));
+
+        // Blame cut: said.
+        QByteArray many;
+        for (int i = 0; i < 2100; ++i) many += "line\n";
+        QVERIFY(write(repo + "/long.txt", many));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "long"}).isNull());
+        r = call("git_blame", {{"path", repo + "/long.txt"}});
+        QCOMPARE(json(r).value("lines").toArray().size(), 2000);
+        QVERIFY2(json(r).contains("more"), "the cut is not said");
+
+        // Unstage all before a first commit, with nothing staged.
+        const QString fresh = canonical(dir.path()) + "/smaller-fresh";
+        QVERIFY(QDir().mkpath(fresh));
+        QVERIFY(init(fresh).ok());
+        r = call("git_unstage", {{"path", fresh}, {"all", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+
+        // A clone of a URL with a slash at its end: named for the repository.
+        const QString bare = canonical(dir.path()) + "/slash.git";
+        QVERIFY(!gitIn(canonical(dir.path()), {"init", "-q", "--bare", bare}).isNull());
+        QVERIFY(!gitIn(repo, {"remote", "add", "up", bare}).isNull());
+        QVERIFY(!gitIn(repo, {"push", "-q", "up", "HEAD:main"}).isNull());
+        r = call("git_clone", {{"url", bare + "/"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(QFileInfo(QucsSettings.qucsWorkspaceDir.filePath("slash")).isDir(), qPrintable(text(r)));
+
+        // A remote with a slash in its name: the local branch is the branch's.
+        QVERIFY(!gitIn(repo, {"remote", "add", "my/remote", bare}).isNull());
+        QVERIFY(!gitIn(repo, {"fetch", "-q", "my/remote"}).isNull());
+        QVERIFY(!gitIn(repo, {"update-ref", "refs/remotes/my/remote/feature", "HEAD"}).isNull());
+        r = call("git_branch", {{"path", repo}, {"action", "switch"}, {"name", "my/remote/feature"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("branch").toString(), QStringLiteral("feature"));
+    }
+
     void claudesGitTools()
     {
         const QString repo = makeRepo("claude");

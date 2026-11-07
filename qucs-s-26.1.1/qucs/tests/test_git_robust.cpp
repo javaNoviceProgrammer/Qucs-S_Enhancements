@@ -287,6 +287,87 @@ private slots:
         QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
     }
 
+    // The review of 7 November, what the tools' tests do not reach.
+    void aGitignoreThatIsNoPlainFile()
+    {
+        const QString repo = makeRepo();
+        QVERIFY(write(repo + "/t.txt", "x\n"));
+        // A link out of the repository: nothing written through it.
+        const QString outside = folder("elsewhere") + "/ignored";
+        QVERIFY(write(outside, "kept\n"));
+        QVERIFY(QFile::link(outside, repo + "/.gitignore"));
+        QString why;
+        QVERIFY(!ignore(repo, "t.txt", &why));
+        QVERIFY(!why.isEmpty());
+        QCOMPARE(readAll(outside), QByteArray("kept\n"));
+        QVERIFY(QFile::remove(repo + "/.gitignore"));
+        // A link to a folder: a pattern that takes it.
+        QVERIFY(QFile::link(folder("target"), repo + "/link"));
+        QVERIFY(ignore(repo, "link"));
+        QVERIFY(entry(read(repo), "link") != nullptr && entry(read(repo), "link")->ignored);
+        QVERIFY(QFile::remove(repo + "/.gitignore"));
+#ifndef Q_OS_WIN
+        // A pipe of that name: answered, not waited on.
+        QCOMPARE(mkfifo(QFile::encodeName(repo + "/.gitignore").constData(), 0600), 0);
+        auto ok = std::make_shared<std::atomic<bool>>(true);
+        const QString target = repo;
+        QVERIFY2(cameBack([target, ok] { ok->store(ignore(target, "t.txt")); }), "git_ignore waits for ever on a pipe named .gitignore");
+        QVERIFY(!ok->load());
+#endif
+    }
+
+    void aSideNotReadIsNotASideThatDeleted()
+    {
+        const QString repo = makeRepo();
+        QVERIFY(makeConflict(repo, {{"x.txt", {"ours\n", "theirs\n"}}}));
+        // A git whose read of a version fails, as a timeout would.
+        const QString work = folder("shim");
+        const QString shim = work + "/git.sh";
+        QVERIFY(write(shim, "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in :[123]:*) exit 1 ;; esac\ndone\nexec '"
+                                + QFile::encodeName(QStandardPaths::findExecutable("git")) + "' \"$@\"\n"));
+        QVERIFY(QFile::setPermissions(shim, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        qputenv("QUCS_GIT", QFile::encodeName(shim));
+        const ConflictVersions v = conflictVersions(repo, "x.txt");
+        const Result r = resolve(repo, "x.txt", "theirs");
+        qunsetenv("QUCS_GIT");
+        QVERIFY(v.incomplete);
+        QVERIFY(!r.ok());
+        QVERIFY2(QFileInfo::exists(repo + "/x.txt"), "the file was removed as if that side had deleted it");
+        // A folder is no file in conflict.
+        QVERIFY(!conflictVersions(repo, ".").inConflict);
+    }
+
+    void theSmallerNames()
+    {
+        QCOMPARE(folderOfUrl("https://example.invalid/a/b.git/"), QStringLiteral("b"));
+        QCOMPARE(folderOfUrl("git@example.invalid:a/b.git"), QStringLiteral("b"));
+        QCOMPARE(folderOfUrl("/"), QStringLiteral("repository"));
+        QVERIFY(mergeArgs("--upload-pack=x").isEmpty());
+        QCOMPARE(mergeArgs("side").last(), QStringLiteral("side"));
+        // git's messages in English, whatever the machine's language.
+        const QProcessEnvironment env = environment();
+        QCOMPARE(env.value("LANGUAGE"), QStringLiteral("C"));
+        // A "fatal:" of several lines, whole; its hints left out.
+        Result r;
+        r.exitCode = 128;
+        r.err = "fatal: The upstream branch of your current branch does not match\nthe name of your current branch.  To push\n\n    git push origin HEAD:main\n\nhint: an advice\n";
+        QVERIFY2(r.error().contains("git push origin HEAD:main") && !r.error().contains("advice"), qPrintable(r.error()));
+    }
+
+    // A pull: merged only where nothing says how.
+    void pullSaysHowOnlyWhereNothingDoes()
+    {
+        const QString repo = makeRepo();
+        QVERIFY(pullArgs(repo).contains("--no-rebase"));
+        QVERIFY(!pullArgs().contains("--no-rebase"));
+        for (const char* key : {"pull.rebase", "pull.ff", "branch.main.rebase"}) {
+            QVERIFY(!gitIn(repo, {"config", key, "true"}).isNull());
+            QVERIFY2(!pullArgs(repo).contains("--no-rebase"), key);
+            QVERIFY(!gitIn(repo, {"config", "--unset", key}).isNull());
+        }
+        QVERIFY(pullArgs(repo).contains("--no-rebase"));
+    }
+
     // A commit with no changes, or none in the path asked about: its author and
     // message still come back.
     void aCommitIsShownWhateverThePath()

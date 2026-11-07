@@ -319,6 +319,49 @@ takes one more, and a repository with an `include` takes one more at every look.
 
 For the other session: its one `git_e2e.py` run that hung until the script's limit is not explained by this.
 
+## A second review
+
+The user's review at `86a8458` (`2026-11-07-claude-git-integration-review.md`), by Claude's tools on the app of `4a7186b`.
+Each fault was reproduced by a test that failed first. Two choices were the user's: a pull respects a pull setting, and a
+rebase gets a way to go on.
+
+| Severity | Fault | Now |
+|---|---|---|
+| High | **`git_commit` with one path outside the repository committed every tracked change:** `relativePath` gives an empty string for an outside path too, and that became `.`. | Refused, with nothing done. `git_stage`, `git_unstage` and `git_discard` refuse such a list alike. |
+| High | **Pull failed whenever the branches had diverged** and no pull setting was set. | `--no-rebase` where `pull.rebase`, `pull.ff` and `branch.<name>.rebase` say nothing; a setting stands. The tooltip says so. A pull in conflict is said as a merge's is. |
+| Medium | **`git_discard` of `"sp "` discarded `sp`:** the tools trimmed names. | `paths` as given. A tool's `path` keeps its spaces when such a file exists. |
+| Medium | **Discard all stopped partway in a merge** with a side that is not in HEAD (`DU`, `UA`, `DD`). | Such a file is taken out of the index and to the trash. |
+| Medium | **Several files in one untracked folder: only the last went**, and a name there that is no file was success. | Each goes; such a name is said. |
+| Medium | **A pipe named `.gitignore` hung `git_ignore`; a link was written through,** outside the repository. | Refused, with why. |
+| Medium | **A commit already applied, cherry-picked, was said to be in conflict:** "conflict" was looked for in git's words. | By the files in conflict. It says there is nothing to apply, and what to do. |
+| Medium | **A rebase could not be finished:** `git_commit` said success and left it on a detached HEAD. | **`git_continue`** (`skip` for past a commit), Git > Continue and Skip This Commit, the file's menu too. `git_commit` and the Commit window refuse in a rebase or `am`, and say so. |
+
+**The smaller ones, fixed:** `git_unstage` and `git_discard` of a name that is no file (in another case of the name too, and a
+rename's old name); `git_status` of a file that does not exist; `git_log` of an unknown ref; `git_stash show` of a stash that is
+not there; a file named as a branch or commit (`--` after the ref in log, show and reset); a stash of new files alone; a rename by
+its new name, in commit and unstage; a `fatal:` of several lines, whole; a link to a folder in `.gitignore`; a clone URL with
+a slash at its end; a remote with a slash in its name; blame's cut at 2,000 lines, said; unstage all before a first commit; a folder given to `git_resolve`.
+
+**From its reading, fixed though not run as it describes:** a side of a conflict that could not be read was taken for one that deleted the file, and `resolve` removed it (a git that fails that read
+stands in for the timeout); the Merge dialog's unchecked name; git's messages looked for in English, now `LANGUAGE=C` (tested
+that it is set: no translated git here).
+
+**Left, each a choice or a job of its own:**
+
+- **A branch made from `origin/main` under another name cannot push** (`push.default=simple`). git's whole message now says what
+  to do. Pushing for the user would mean choosing a remote branch for them.
+- **`git_resolve` of a conflicted submodule** still answers "not in conflict": its path finds the submodule's own repository.
+- Behaviour change: a list with one path outside the repository is now refused whole by the tools. The windows still act on those inside.
+
+**Checked** on a clean export of `e723e56` with only these files on it, as the checkout held another session's work: the 34 new
+breaks caught; `test_git_robust`, `test_git_fuzz`, `test_git_perf`, `test_git_integration`, `test_claude_git`, `test_qucs_control`,
+`test_project_folders`, `test_claude_code` and `test_mcp_server` under ASan and UBSan (`test_mcp_server` alone: in a parallel run its
+`aCancelledCallStopsAndIsNotAnswered` went past its 20 s). The full ctest in Release, 12 at a time on Qt 6.12.0, twice: `test_library_export` not run
+both times (it needs `dos2unix`), and one or two others failing, not the same ones: `test_qucs_control` and `test_claude_code` the first time, whose reasons were not kept,
+and `test_file_browser`'s `theFolderShownTakenAwayAndBack`, a wait, the second, with the machine's load above 40 on 24 processors. Each passes alone.
+The fuzzers, 16 seeds, no finding; `retest_packaged.py` on this build, 34 of 34. **Not run on a packaged app** with this review's own
+cases: the tests drive the same tools. The DMG predates all of it.
+
 ## What could not be verified
 
 - **Linux and Windows:** not built or run. The tests are written for them (the `#ifdef`s), but CI will be their first

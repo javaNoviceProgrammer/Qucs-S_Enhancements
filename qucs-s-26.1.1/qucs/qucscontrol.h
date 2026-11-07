@@ -733,6 +733,7 @@ private:
     QJsonObject gitTag(const QJsonObject& args);
     QJsonObject gitCommitAction(const QJsonObject& args);
     QJsonObject gitAbort(const QJsonObject& args);
+    QJsonObject gitContinue(const QJsonObject& args);
     QJsonObject gitInit(const QJsonObject& args);
     QJsonObject gitIgnore(const QJsonObject& args);
     QJsonObject gitResolve(const QJsonObject& args);

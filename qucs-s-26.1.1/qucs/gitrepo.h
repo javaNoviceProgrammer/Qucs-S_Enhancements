@@ -185,8 +185,23 @@ Result deleteBranch(const QString& root, const QString& name, bool force = false
 Result renameBranch(const QString& root, const QString& from, const QString& to);
 /// Merges \a ref into the branch checked out.
 Result merge(const QString& root, const QString& ref);
+/// git's arguments for that; none for a name that begins with '-'.
+QStringList mergeArgs(const QString& ref);
+/// The folder a clone of \a url makes: the last part of it, no ".git".
+QString folderOfUrl(const QString& url);
+/// \a paths (from the top folder) and, of a staged rename among them, the
+/// former name: the status lists a rename by its new name alone, and a commit
+/// or unstage of that alone would leave the deletion behind.
+QStringList withRenameSources(const QString& root, const QStringList& paths);
+/// \a rel (from the top folder) as the file on the disk spells it, where the
+/// disk takes another case of the name; else as it is.
+QString spelledOnDisk(const QString& root, const QString& rel);
 /// Gives up the merge, rebase, am, cherry-pick or revert under way.
 Result abort(const QString& root, const QString& operation);
+/// Goes on with the rebase, am, cherry-pick, revert or merge \a operation,
+/// its conflict resolved and staged - or past the commit it stopped at (\a
+/// skip: no merge has one).
+Result continueOperation(const QString& root, const QString& operation, bool skip = false);
 Result createTag(const QString& root, const QString& name, const QString& message = {}, const QString& commit = {});
 Result deleteTag(const QString& root, const QString& name);
 
@@ -203,11 +218,13 @@ Result removeRemote(const QString& root, const QString& name);
 
 /// What goes over the network - long: a Job runs it. Fetch from \a remote
 /// (every one when empty; none - empty - for a name that begins with '-'),
-/// pruning; pull the branch's upstream; push the
+/// pruning; pull the branch's upstream (with \a root, merged in when nothing
+/// there says how to pull: git otherwise stops at branches that diverged, and
+/// a pull.rebase or pull.ff of the user's stands); push the
 /// branch - to its upstream, else to the only remote or origin, made its
 /// upstream (empty and why when there is no remote, or no branch); clone.
 QStringList fetchArgs(const QString& remote = {});
-QStringList pullArgs();
+QStringList pullArgs(const QString& root = {});
 QStringList pushArgs(const Repository& repo, QString* why = nullptr, bool tags = false);
 QStringList cloneArgs(const QString& url, const QString& folder);
 
@@ -355,6 +372,7 @@ bool hasConflictMarkers(const QString& path);
 /// file added on one side alone: that version absent.
 struct ConflictVersions {
     bool inConflict = false;
+    bool incomplete = false;   ///< a side git holds could not be read: not to be taken for one that deleted the file
     std::optional<QString> base;
     std::optional<QString> ours;
     std::optional<QString> theirs;
