@@ -10,6 +10,8 @@
  * (at your option) any later version.
  */
 #include "pdfdoc.h"
+#include "plotdigitizer.h"
+#include "plotdigitizerpanel.h"
 
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
@@ -1049,6 +1051,16 @@ void PageView::paintPages(Surface& p, const QRect& visible)
                 p.fillPolygon(on, c);
             }
         }
+        // What lies over the page.
+        if (a_tool != nullptr) {
+            QPointF at;
+            const QRectF sight((shown.topLeft() - r.topLeft()) / pixelsPerPoint(), shown.size() / pixelsPerPoint());
+            QImage over = a_tool->painted(i, sight, scale, &at);
+            if (!over.isNull()) {
+                over.setDevicePixelRatio(dpr);
+                p.drawImage(toViewport(i, at), over);
+            }
+        }
     }
     if (pending) QTimer::singleShot(0, viewport(), qOverload<>(&QWidget::update));
 }
@@ -1166,6 +1178,15 @@ void PageView::mousePressEvent(QMouseEvent* event)
         return;
     }
     setFocus(Qt::MouseFocusReason);
+    if (a_tool != nullptr && a_tool->takesMouse()) {
+        QPointF point;
+        const int page = pageAt(a_pressPos, &point);
+        if (page >= 0) {
+            a_toolDown = true;
+            a_tool->pressed(page, point);
+            return;
+        }
+    }
     if (const Link* l = linkAt(a_pressPos)) {
         a_drag = Drag::Link;
         a_pressedLink = l;
@@ -1187,6 +1208,13 @@ void PageView::mousePressEvent(QMouseEvent* event)
 void PageView::mouseMoveEvent(QMouseEvent* event)
 {
     const QPoint pos = event->position().toPoint();
+    if (a_tool != nullptr && a_drag != Drag::Pan && (a_tool->takesMouse() || a_toolDown)) {
+        QPointF point;
+        const int page = pageAt(pos, &point);
+        a_tool->moved(page, point, a_toolDown);
+        viewport()->setCursor(page >= 0 ? Qt::CrossCursor : Qt::ArrowCursor);
+        return;
+    }
     switch (a_drag) {
     case Drag::Pan: {
         const QPoint d = event->globalPosition().toPoint() - a_panStart;
@@ -1218,6 +1246,13 @@ void PageView::mouseMoveEvent(QMouseEvent* event)
 
 void PageView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (a_toolDown && event->button() == Qt::LeftButton) {
+        a_toolDown = false;
+        QPointF point;
+        const int page = pageAt(event->position().toPoint(), &point);
+        if (a_tool != nullptr) a_tool->released(page, point);
+        return;
+    }
     const Drag drag = a_drag;
     a_drag = Drag::None;
     viewport()->unsetCursor();
@@ -1240,8 +1275,27 @@ void PageView::mouseDoubleClickEvent(QMouseEvent* event)
     if (page >= 0) selectWordAt(page, point);
 }
 
+void PageView::setTool(PageTool* tool)
+{
+    a_tool = tool;
+    a_toolDown = false;
+    viewport()->update();
+}
+
+bool PageView::event(QEvent* event)
+{
+    // (Escape and Ctrl+Z are the window's too: the tool's first, while it is
+    // at work, as the pens' are.)
+    if (event->type() == QEvent::ShortcutOverride && a_tool != nullptr && a_tool->wantsKey(static_cast<QKeyEvent*>(event))) {
+        event->accept();
+        return true;
+    }
+    return QAbstractScrollArea::event(event);
+}
+
 void PageView::keyPressEvent(QKeyEvent* event)
 {
+    if (a_tool != nullptr && a_tool->keyPressed(event)) return;
     if (a_pages.isEmpty()) {
         QAbstractScrollArea::keyPressEvent(event);
         return;
@@ -1350,8 +1404,59 @@ PdfDoc::PdfDoc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
     connect(a_search, &QAbstractItemModel::modelReset, this, &PdfDoc::updateSearchLabel);
 }
 
+qucs_s::digitizer::Panel* PdfDoc::digitizer()
+{
+    if (a_digitizer == nullptr) {
+        a_digitizer = new qucs_s::digitizer::Panel(this, a_splitter);
+        a_splitter->addWidget(a_digitizer);
+        a_splitter->setStretchFactor(2, 0);
+        a_digitizer->hide();
+    }
+    return a_digitizer;
+}
+
+bool PdfDoc::digitizerShown() const { return a_digitizer != nullptr && !a_digitizer->isHidden(); }
+
+void PdfDoc::setDigitizerShown(bool shown)
+{
+    if (a_digitizeButton->isChecked() != shown) {
+        const QSignalBlocker quiet(a_digitizeButton);
+        a_digitizeButton->setChecked(shown);
+    }
+    if (!shown && a_digitizer == nullptr) return;
+    qucs_s::digitizer::Panel* panel = digitizer();
+    if (panel->isHidden() == !shown) return;
+    panel->setVisible(shown);
+    a_view->setTool(shown ? panel : nullptr);
+    if (shown) {
+        panel->opened();
+        QList<int> sizes = a_splitter->sizes();
+        if (sizes.size() >= 3 && sizes.at(2) < 260) {
+            const int want = 340;
+            sizes[1] = std::max(200, sizes.at(1) - (want - sizes.at(2)));
+            sizes[2] = want;
+            a_splitter->setSizes(sizes);
+        }
+    }
+}
+
+void PdfDoc::digitizedChanged()
+{
+    if (a_digitizer != nullptr) a_digitizer->reloadKept();
+    else if (QFileInfo::exists(qucs_s::digitizer::sidecarPath(a_DocName))) setDigitizerShown(true);
+}
+
+void PdfDoc::showDigitized(int index)
+{
+    setDigitizerShown(true);
+    a_digitizer->reloadKept();
+    a_digitizer->selectPlot(index);
+}
+
 PdfDoc::~PdfDoc()
 {
+    // The tool goes with its panel: the view lets go of it first.
+    a_view->setTool(nullptr);
     // The view and the models let go of the document before it goes.
     a_view->setSearchModel(nullptr);
     a_view->setDocument(nullptr);
@@ -1395,6 +1500,14 @@ void PdfDoc::buildUi()
     a_zoomBox->setMinimumContentsLength(8);
     a_zoomBox->setFocusPolicy(Qt::ClickFocus);
     a_findButton = toolButton(a_toolbar, glyph(GlyphIcon::Search), tr("Find in the document"));
+    a_digitizeButton = new QToolButton(a_toolbar);
+    a_digitizeButton->setText(tr("Digitize"));
+    a_digitizeButton->setToolTip(tr("Read the numbers off a plot: its axes calibrated, its curves and markers extracted"));
+    a_digitizeButton->setAutoRaise(true);
+    a_digitizeButton->setCheckable(true);
+    a_digitizeButton->setFocusPolicy(Qt::NoFocus);
+    a_digitizeButton->setProperty("pdfTool", true);
+    connect(a_digitizeButton, &QToolButton::toggled, this, &PdfDoc::setDigitizerShown);
     a_menuButton = toolButton(a_toolbar, glyph(GlyphIcon::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     auto* menu = new QMenu(a_menuButton);
@@ -1416,6 +1529,7 @@ void PdfDoc::buildUi()
     bar->addWidget(a_zoomBox);
     bar->addWidget(a_zoomInButton);
     bar->addStretch(1);
+    bar->addWidget(a_digitizeButton);
     bar->addWidget(a_findButton);
     bar->addWidget(a_menuButton);
     layout->addWidget(a_toolbar);
@@ -1724,6 +1838,9 @@ void PdfDoc::documentLoaded()
     a_toolbar->setEnabled(true);
     a_view->setDocument(a_pdf);
     a_pageCount->setText(tr("of %1").arg(a_pdf->pageCount()));
+    // Plots kept with the file come back with it.
+    if (a_digitizer != nullptr) a_digitizer->documentChanged();
+    else if (!a_DocName.isEmpty() && QFileInfo::exists(qucs_s::digitizer::sidecarPath(a_DocName))) setDigitizerShown(true);
     a_side->setTabVisible(1, a_bookmarks->rowCount() > 0);
     a_thumbsDone = 0;
     a_thumbnails->clear();

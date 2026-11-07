@@ -204,6 +204,7 @@ ADD_SUBDIRECTORY( spicecomponents )
 
 SET(QUCS_SRCS
   claudejobs.cpp claudejobswindow.cpp qucscontrol_jobs.cpp
+  qucscontrol_digitizer.cpp
   element.cpp	octave_window.cpp	qucsdoc.cpp
   textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp svgguard.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  rf25/rf25_model.cpp  rf25/rf25_layout.cpp  rf25/rf25_mesh.cpp  rf25/rf25_green.cpp  rf25/rf25_static.cpp  rf25/rf25_sparams.cpp  rf25/rf25_inductance.cpp  rf25/rf25_wave.cpp  rf25/rf25_fullwave.cpp  rf25/rf25_dense.cpp  rf25/rf25_deembed.cpp  rf25/rf25_fast.cpp  rf25/rf25_kept.cpp  rf25/rf25_circuit.cpp  rf25/rf25_edb.cpp  rf25/rf25_hfss.cpp  rf25/rf25_hfss_import.cpp  rf25doc.cpp  rf25panel.cpp  qucs_rf25.cpp  multiphysicsview.cpp  multiphysicsdoc.cpp multiphysicsoptimization.cpp  multiphysicspanel.cpp  multiphysicssettings.cpp  rf25settings.cpp  gpurendering.cpp  qucs_multiphysics.cpp  view3d.cpp  multiphysics3ddoc.cpp  multiphysics3dpanel.cpp  qucs_multiphysics3d.cpp  imagedoc.cpp  pptx.cpp  pptxdoc.cpp  main.cpp	schematic.cpp
   mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_fem.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp  qucscontrol_rf25.cpp qucscontrol_pptx.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
@@ -432,7 +433,7 @@ set(app_icon_resource_windows "${CMAKE_CURRENT_SOURCE_DIR}/qucs_icon.rc")
 # that the application and the unit tests (tests/) link identically.
 #
 if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
-  list(APPEND QUCS_SRCS pdfdoc.cpp)
+  list(APPEND QUCS_SRCS pdfdoc.cpp pdfvector.cpp plotdigitizer.cpp plotdigitizer_trace.cpp plotdigitizerpanel.cpp)
 endif()
 if(QUCS_GPU_VIEW_ON)
   list(APPEND QUCS_SRCS rhicanvas.cpp multiphysicsviewgpu.cpp layoutviewgpu.cpp)
