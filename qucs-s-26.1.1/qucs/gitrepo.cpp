@@ -530,7 +530,9 @@ Repository read(const QString& path)
     QStringList args{QStringLiteral("status"), QStringLiteral("--porcelain=v2"), QStringLiteral("-z"), QStringLiteral("--branch"),
                      QStringLiteral("--untracked-files=normal"), QStringLiteral("--ignore-submodules=dirty")};
     Result st = run(top, args + QStringList{QStringLiteral("--ignored=matching")}, true, 30000);
-    if (!st.ok()) st = run(top, args, true, 30000);   // (a git before --ignored=matching)
+    // (A git before --ignored=matching says so: asked again. One stopped at its
+    // limit, by a pipe named .gitignore, would only wait as long again.)
+    if (!st.ok() && st.exitCode != -1) st = run(top, args, true, 30000);
     if (!st.ok()) return r;
     r.valid = true;
     r.read = QDateTime::currentDateTime();
@@ -594,9 +596,23 @@ Result stage(const QString& root, const QStringList& paths)
 
 QStringList withRenameSources(const QString& root, const QStringList& paths)
 {
+    const auto named = [&paths](const QString& path) {
+        const QString form = lookupForm(path);
+        for (const QString& p : paths) {
+            const QString given = lookupForm(p);
+            if (form == given || form.startsWith(given + QLatin1Char('/'))) return true;
+        }
+        return false;
+    };
     QStringList out = paths;
-    for (const Entry& e : read(root).entries)
-        if (e.staged == QLatin1Char('R') && !e.from.isEmpty() && paths.contains(e.path) && !out.contains(e.from)) out << e.from;
+    for (const Entry& e : read(root).entries) {
+        if (e.staged != QLatin1Char('R') || e.from.isEmpty()) continue;
+        if (named(e.from) && !out.contains(e.path)) out << e.path;
+        if (named(e.path) && !out.contains(e.from)) {
+            const QFileInfo former(fileIn(root, e.from));
+            if (!former.exists() && !former.isSymLink()) out << e.from;
+        }
+    }
     return out;
 }
 
@@ -604,6 +620,7 @@ Result unstage(const QString& root, const QStringList& paths)
 {
     QStringList rel = paths.isEmpty() ? QStringList{QStringLiteral(".")} : relative(root, paths);
     if (rel.isEmpty()) return outside();
+    for (QString& p : rel) p = spelledOnDisk(root, p);
     const bool head = hasHead(root);
     // A name that is no file: said. (git resets a path it does not know in silence.)
     if (!paths.isEmpty()) {
@@ -677,15 +694,21 @@ Result discard(const QString& root, const QStringList& paths, QStringList* trash
             // In an untracked folder: the paths given (files in it), else the folder.
             QStringList targets;
             if (e.isFolder()) {
-                for (const QString& p : rel)
-                    if (!p.isEmpty() && p != QLatin1String(".") && lookupForm(p).startsWith(lookupForm(e.path))) targets << p;
-                if (targets.isEmpty()) targets << e.path.chopped(1);
+                // (The folder, or one around it, given too: all of it.)
+                const QString folder = lookupForm(e.path);
+                bool whole = false;
+                for (const QString& p : rel) {
+                    const QString given = lookupForm(p);
+                    if (p.isEmpty() || p == QLatin1String(".") || folder.startsWith(given + QLatin1Char('/'))) whole = true;
+                    else if (given.startsWith(folder)) targets << p;
+                }
+                if (whole || targets.isEmpty()) targets = {e.path.chopped(1)};
             } else {
                 targets << e.path;
             }
             toTrash << targets;
-        } else if (!head || e.staged == QLatin1Char('A') || e.staged == QLatin1Char('C') || e.staged == QLatin1Char('R')
-                   || (e.conflicted && !inHead(root, e.path))) {   // (a side's alone, HEAD has none: DU, UA, DD)
+        } else if (e.conflicted ? !inHead(root, e.path)   // (HEAD's alone decides: AA is in it, DU not)
+                                : (!head || e.staged == QLatin1Char('A') || e.staged == QLatin1Char('C') || e.staged == QLatin1Char('R'))) {
             forget << e.path;   // not in HEAD: out of the index, then to the trash
             toTrash << e.path;
             if (e.staged == QLatin1Char('R') && !e.from.isEmpty()) restore << e.from;
@@ -1660,16 +1683,20 @@ ConflictVersions conflictVersions(const QString& root, const QString& path)
     ConflictVersions v;
     const QStringList rel = relative(root, {path});
     if (rel.isEmpty()) return v;
-    const Result stages = run(root, {QStringLiteral("ls-files"), QStringLiteral("-u"), QStringLiteral("-z"), QStringLiteral("--"), rel.first()}, true, 15000);
+    // Every file in conflict, and that one found among them as it is spelt: a
+    // path given to git would have to match git's own spelling of its accents.
+    const Result stages = run(root, {QStringLiteral("ls-files"), QStringLiteral("-u"), QStringLiteral("-z")}, true, 15000);
     if (!stages.ok()) return v;
-    // "mode hash stage<TAB>path": 1 the base, 2 ours, 3 theirs. That file's
-    // alone: a folder given names others.
+    const QString wanted = lookupForm(spelledOnDisk(root, rel.first()));
+    // "mode hash stage<TAB>path": 1 the base, 2 ours, 3 theirs.
     for (const QString& l : stages.out.split(QChar(0), Qt::SkipEmptyParts)) {
-        if (l.section(QLatin1Char('\t'), 1) != rel.first()) continue;
+        const QString name = l.section(QLatin1Char('\t'), 1);
+        if (lookupForm(name) != wanted) continue;
         const int stage = l.section(QLatin1Char('\t'), 0, 0).section(QLatin1Char(' '), 2, 2).toInt();
         if (stage < 1 || stage > 3) continue;
         v.inConflict = true;
-        const Result text = run(root, {QStringLiteral("show"), QStringLiteral(":%1:%2").arg(stage).arg(rel.first())}, true, 30000);
+        v.name = name;
+        const Result text = run(root, {QStringLiteral("show"), QStringLiteral(":%1:%2").arg(stage).arg(name)}, true, 30000);
         if (!text.ok()) {
             v.incomplete = true;
             continue;
@@ -1687,14 +1714,15 @@ Result resolve(const QString& root, const QString& path, const QString& side)
     if (rel.isEmpty() || rel.first() == QLatin1String(".")) return outside();
     const ConflictVersions v = conflictVersions(root, path);
     if (!v.inConflict) return failure(tr("error: %1 is not in conflict").arg(rel.first()));
+    const QStringList held{v.name};
     // (A side not read is not a side that deleted it: taken so, the file would go.)
     if (v.incomplete) return failure(tr("error: git could not read the versions of %1").arg(rel.first()));
     // That side deleted it: deleted.
     if (!(side == QLatin1String("ours") ? v.ours : v.theirs).has_value())
-        return run(root, withPaths({QStringLiteral("rm"), QStringLiteral("-q"), QStringLiteral("--ignore-unmatch")}, rel));
-    const Result taken = run(root, withPaths({QStringLiteral("checkout"), QStringLiteral("--") + side}, rel));
+        return run(root, withPaths({QStringLiteral("rm"), QStringLiteral("-q"), QStringLiteral("--ignore-unmatch")}, held));
+    const Result taken = run(root, withPaths({QStringLiteral("checkout"), QStringLiteral("--") + side}, held));
     if (!taken.ok()) return taken;
-    return run(root, withPaths({QStringLiteral("add"), QStringLiteral("-f")}, rel));
+    return run(root, withPaths({QStringLiteral("add"), QStringLiteral("-f")}, held));
 }
 
 // ----------------------------------------------------------------------

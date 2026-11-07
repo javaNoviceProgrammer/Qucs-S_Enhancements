@@ -828,7 +828,7 @@ private:
     /// A path a git tool names: relative, from the open project's folder,
     /// the workspace, the document's folder or the File Browser's - the
     /// first where it is, else the first in a repository.
-    QString gitPath(const QString& path) const;
+    QString gitPath(const QString& path, bool exactName = false) const;
     void gitCommit(const QJsonObject& args, const Done& done);
     void gitRemote(const QJsonObject& args, const Done& done);
     void gitClone(const QJsonObject& args, const Done& done);

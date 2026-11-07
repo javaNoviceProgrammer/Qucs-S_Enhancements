@@ -189,9 +189,12 @@ Result merge(const QString& root, const QString& ref);
 QStringList mergeArgs(const QString& ref);
 /// The folder a clone of \a url makes: the last part of it, no ".git".
 QString folderOfUrl(const QString& url);
-/// \a paths (from the top folder) and, of a staged rename among them, the
-/// former name: the status lists a rename by its new name alone, and a commit
-/// or unstage of that alone would leave the deletion behind.
+/// \a paths (from the top folder; a folder takes what is in it) and, of a
+/// staged rename among them, its other name: the status lists a rename by its
+/// new name alone, and a commit or unstage of that would leave the deletion
+/// behind. Not a former name with a file on the disk again: that file is
+/// nobody's to commit, and git would take it as it stands. Asked before
+/// anything is staged: a new file much like a deletion is no rename of the caller's.
 QStringList withRenameSources(const QString& root, const QStringList& paths);
 /// \a rel (from the top folder) as the file on the disk spells it, where the
 /// disk takes another case of the name; else as it is.
@@ -373,6 +376,7 @@ bool hasConflictMarkers(const QString& path);
 struct ConflictVersions {
     bool inConflict = false;
     bool incomplete = false;   ///< a side git holds could not be read: not to be taken for one that deleted the file
+    QString name;              ///< from the top folder, as git holds it (the path given may be spelt otherwise)
     std::optional<QString> base;
     std::optional<QString> ours;
     std::optional<QString> theirs;

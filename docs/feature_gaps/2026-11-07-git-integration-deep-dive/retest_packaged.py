@@ -6,7 +6,7 @@ import json, os, queue, stat, subprocess, sys, threading, time
 exe, wk = sys.argv[1], os.path.realpath(sys.argv[2])
 MODE = sys.argv[3] if len(sys.argv) > 3 else ""
 CONTROL = MODE == "control"   # (an older build: no link to /dev/zero, the freeze part alone)
-SECOND = MODE == "second"     # (the second review's part alone)
+SECOND = MODE == "second"     # (the second review's part alone; "third", the check's)
 HOME = wk + "/home"; os.makedirs(HOME)
 open(HOME + "/.gitconfig", "w").write("[user]\n\tname = Retest\n\temail = retest@example.invalid\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
 ENV = dict(os.environ, HOME=HOME, GIT_CONFIG_NOSYSTEM="1")
@@ -133,8 +133,73 @@ def second_review(ws):
     git(r, "remote", "add", "my/remote", sl); git(r, "update-ref", "refs/remotes/my/remote/feature", "HEAD"); err, t = s.call("git_branch", path=r, action="switch", name="my/remote/feature"); report("a remote with a slash in its name", state(t).get("branch") == "feature", t)
     s.close()
 
+def third_review(ws):
+    """The check of dd7cfc4 (2026-11-07-claude-git-fixes-check.md)."""
+    s = Server(ws)
+    def in_commit(r): return sorted(git(r, "show", "--name-only", "--format=", "--no-renames", "HEAD").split())
+    def staged(r): return git(r, "diff", "--cached", "--name-status", "--no-renames").split()
+    def conflict(r, name):
+        git(r, "checkout", "-q", "-b", "theirs"); open(r + "/" + name, "w").write("theirs\n"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "theirs")
+        git(r, "checkout", "-q", "main"); open(r + "/" + name, "w").write("mine\n"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "mine")
+        git(r, "merge", "-q", "theirs", check=False)
+    # Regression 1: a new file at a rename's old name.
+    r = repo(ws + "/r1", {"old.txt": "the text of the file\nas it stood\n"}); git(r, "mv", "old.txt", "new.txt"); open(r + "/old.txt", "w").write("nothing like it\n")
+    err, t = s.call("git_commit", path=r, message="r", paths=["new.txt"])
+    report("R1 a file at the old name is not committed", not err and in_commit(r) == ["new.txt"] and "nothing like it" not in git(r, "show", "HEAD"), (t, in_commit(r)))
+    r = repo(ws + "/r1b", {"old.txt": "the text of the file\nas it stood\n"}); git(r, "mv", "old.txt", "new.txt"); open(r + "/old.txt", "w").write("nothing like it\n")
+    err, t = s.call("git_unstage", path=r, paths=["new.txt"]); report("R1 nor taken back in unstage", not err and "D" in staged(r) and open(r + "/old.txt").read() == "nothing like it\n", (t, staged(r)))
+    # Regressions 2, 3: what failed says so.
+    r = repo(ws + "/r2", {"a.txt": "one\n", "b.txt": "b\n", "o": "a file named o\n"})
+    git(r, "checkout", "-q", "-b", "side"); open(r + "/b.txt", "w").write("side\n"); git(r, "commit", "-q", "-am", "side"); git(r, "checkout", "-q", "main"); open(r + "/a.txt", "w").write("two\n"); git(r, "commit", "-q", "-am", "main")
+    git(r, "merge", "-q", "--no-commit", "--no-ff", "side")
+    for commit, action in (("nosuchcommit", "cherry_pick"), ("nosuchcommit", "revert"), ("o", "cherry_pick")):
+        err, t = s.call("git_commit_action", path=r, commit=commit, action=action); report(f"R2 {action} of {commit} in a merge is an error", err and "nothing to apply" not in t, t)
+    r = repo(ws + "/r3", {"a.txt": "one\n"}); conflict(r, "a.txt")
+    for action in ("reset", "check_out", "cherry_pick"):
+        err, t = s.call("git_commit_action", path=r, commit="nosuchcommit", action=action); report(f"R3 {action} of a bad commit in a conflict is an error", err and "resolve the files" not in t, t)
+    # Regression 4: either spelling of a name.
+    for name, given, what in (("\u00e9.txt", "e\u0301.txt", "composed"), ("e\u0301\U0001F600.txt", "\u00e9\U0001F600.txt", "decomposed, with an emoji")):
+        r = repo(ws + "/r4" + what[:3], {"a.txt": "one\n"}); conflict(r, name)
+        err, t = s.call("git_resolve", path=r + "/" + given); report(f"R4 shown by the other spelling ({what})", not err and "not in conflict" not in t, t)
+        err, t = s.call("git_resolve", path=r + "/" + given, action="take_theirs")
+        report(f"R4 resolved by the other spelling ({what})", not err and not [l for l in git(r, "status", "--porcelain").splitlines() if l[:2] in ("UU", "AA")], (t, git(r, "status", "--porcelain")))
+    # 5: both added, discarded.
+    r = repo(ws + "/b5", {"a.txt": "one\n"}); conflict(r, "new.txt")
+    err, t = s.call("git_discard", path=r, paths=["new.txt"])
+    report("5 both added and discarded keeps the branch's file", not err and os.path.exists(r + "/new.txt") and open(r + "/new.txt").read() == "mine\n" and git(r, "status", "--porcelain", "--", "new.txt").strip() == "", (t, git(r, "status", "--porcelain")))
+    # 7: a pipe named .gitignore, asked once.
+    r = repo(ws + "/b7", {"a.txt": "one\n"}); os.mkfifo(r + "/.gitignore"); t0 = time.time()
+    try: s.call("git_status", path=r); took = time.time() - t0
+    except TimeoutError: took = 999
+    report("7 status of a pipe named .gitignore is not asked twice", took < 45, f"{took:.0f} s"); print(f"     it took {took:.0f} s", flush=True); os.remove(r + "/.gitignore")
+    # 8: the rename's gaps.
+    r = repo(ws + "/b8a", {"doomed.txt": "".join(f"line {i}\n" for i in range(30))}); git(r, "rm", "-q", "doomed.txt"); open(r + "/b.txt", "w").write("".join(f"line {i}\n" for i in range(29)))
+    err, t = s.call("git_commit", path=r, message="b", paths=["b.txt"]); report("8 an unrelated deletion stays out of a commit", not err and in_commit(r) == ["b.txt"] and "D" in staged(r), (t, in_commit(r)))
+    r = repo(ws + "/b8b", {"f.txt": "f\n"}); os.makedirs(r + "/o"); open(r + "/o/x.txt", "w").write("the text\nof x\n"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "x"); os.makedirs(r + "/n"); git(r, "mv", "o/x.txt", "n/x.txt")
+    err, t = s.call("git_commit", path=r, message="n", paths=["n"]); report("8 a rename committed by its folder", not err and in_commit(r) == ["n/x.txt", "o/x.txt"] and not staged(r), (t, in_commit(r), staged(r)))
+    r = repo(ws + "/b8c", {"f.txt": "f\n"}); os.makedirs(r + "/o"); open(r + "/o/x.txt", "w").write("the text\nof x\n"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "x"); os.makedirs(r + "/n"); git(r, "mv", "o/x.txt", "n/x.txt")
+    err, t = s.call("git_unstage", path=r, paths=["n"]); report("8 a rename unstaged by its folder", not err and not staged(r), (t, staged(r)))
+    r = repo(ws + "/b8d", {"old.txt": "the text of the file\nas it stood\n"}); git(r, "mv", "old.txt", "new.txt")
+    err, t = s.call("git_commit", path=r, message="o", paths=["old.txt"]); report("8 a rename committed by its old name", not err and in_commit(r) == ["new.txt", "old.txt"] and not staged(r), (t, in_commit(r), staged(r)))
+    # 9: the smaller ones.
+    for i, given in enumerate((["new", "new/x"], [".", "new/x"])):
+        r = repo(ws + f"/b9{i}", {"a.txt": "one\n"}); os.makedirs(r + "/new"); open(r + "/new/x", "w").write("x\n"); open(r + "/new/y", "w").write("y\n")
+        err, t = s.call("git_discard", path=r, paths=given); report(f"9 discard of {given} takes the folder", not err and not os.path.exists(r + "/new"), (t, os.path.exists(r + "/new/y")))
+    r = repo(ws + "/b9u", {"Amp.txt": "a\n"}); open(r + "/Amp.txt", "w").write("b\n"); git(r, "add", "-A")
+    err, t = s.call("git_unstage", path=r, paths=["amp.txt"]); report("9 unstage in another case of the name", not err and not staged(r), (t, staged(r)))
+    r = repo(ws + "/b9m", {"a.txt": "one\n"}); conflict(r, "a.txt")
+    err, t = s.call("git_continue", path=r, skip=True); report("9 a merge has no commit to skip", err and "resolve the files" not in t, t)
+    r = repo(ws + "/b9s", {"a.txt": "one\n"}); open(r + "/a.txt", "w").write("two\n")
+    err, t = s.call("git_stage", paths=[r + "/a.txt "]); report("9 a name with a space at its end is that name, however given", err and not staged(r), (t, staged(r)))
+    r = repo(ws + "/b9t", {"a.txt": "one\n"}); open(r + "/a.txt", "w").write("two\n")
+    err, t = s.call("git_stage", path=r, paths=["a.txt "]); report("9 and given from the folder", err and not staged(r), (t, staged(r)))
+    s.close()
+
 if SECOND:
     ws = wk + "/ws4"; os.makedirs(ws); second_review(ws)
+    print(f"{sum(results)} of {len(results)} as they should be", flush=True); sys.exit(0)
+if MODE == "third":
+    ws = wk + "/ws5"; os.makedirs(ws); third_review(ws)
     print(f"{sum(results)} of {len(results)} as they should be", flush=True); sys.exit(0)
 
 # ---- the freeze
@@ -204,4 +269,5 @@ open(g + "/.git/config", "a").write('[filter "late"]\n\tclean = %s\n' % prog); o
 s.call("git_status", path=g); s.call("git_diff", path=g); report("a filter added just after a look does not run", not os.path.exists(mark))
 s.close()
 ws = wk + "/ws4"; os.makedirs(ws); second_review(ws)
+ws = wk + "/ws5"; os.makedirs(ws); third_review(ws)
 print(f"{sum(results)} of {len(results)} as they should be", flush=True)

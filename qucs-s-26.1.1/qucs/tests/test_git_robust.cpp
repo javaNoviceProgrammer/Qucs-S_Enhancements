@@ -316,6 +316,24 @@ private slots:
 #endif
     }
 
+    // A status stopped at its limit is not asked again: a menu would wait twice
+    // as long. (The retry is for a git before --ignored=matching.)
+    void aStatusPastItsLimitIsNotAskedAgain()
+    {
+        const QString repo = makeRepo();
+        const QString work = folder("shim");
+        const QString shim = work + "/git.sh";
+        const QString runs = work + "/status-runs";
+        QVERIFY(write(shim, "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = status ]; then\n    echo run >> '" + QFile::encodeName(runs)
+                                + "'\n    exec sleep 45\n  fi\ndone\nexec '" + QFile::encodeName(QStandardPaths::findExecutable("git")) + "' \"$@\"\n"));
+        QVERIFY(QFile::setPermissions(shim, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        qputenv("QUCS_GIT", QFile::encodeName(shim));
+        const Repository r = read(repo);
+        qunsetenv("QUCS_GIT");
+        QVERIFY(!r.valid);
+        QCOMPARE(readAll(runs).count('\n'), qsizetype(1));
+    }
+
     void aSideNotReadIsNotASideThatDeleted()
     {
         const QString repo = makeRepo();

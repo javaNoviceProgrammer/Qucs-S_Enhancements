@@ -785,6 +785,8 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& given) co
     // Git: changes thrown away, a branch's commits lost, a stash dropped,
     // the work published - asked about each time.
     if (tool == QLatin1String("git_discard")) return true;
+    // (What was resolved by hand for the commit skipped goes with it.)
+    if (tool == QLatin1String("git_continue")) return a.value(QLatin1String("skip")).toBool();
     if (tool == QLatin1String("git_commit_action"))
         return a.value(QLatin1String("action")).toString() == QLatin1String("reset") && a.value(QLatin1String("mode")).toString() == QLatin1String("hard");
     if (tool == QLatin1String("git_branch"))

@@ -366,6 +366,56 @@ Claude's tools). **As a control,** the same files as they stood before `dd7cfc4`
 answer at all on a pipe named `.gitignore`. Not tried: Git > Continue and Skip This Commit on a real display (a test triggers the
 file's menu item, offscreen), and a real remote (the pulls are from a local bare repository).
 
+## A check of the second review's fixes
+
+The user's check of `dd7cfc4` (`2026-11-07-claude-git-fixes-check.md`), by Claude's tools on the app of `bc0a4b9`. It found
+**four faults that `dd7cfc4` itself brought in**, the worst a commit holding a file nobody named, and older faults the two
+reviews before had missed. Each was reproduced by a test that failed first.
+
+**Brought in by `dd7cfc4`:**
+
+| Severity | Fault | Now |
+|---|---|---|
+| High | **A commit by a rename's new name also committed a new file at its old name:** the old name was added to the paths, and `git commit --only` takes a path as it stands on the disk. | The old name only when no file of that name is there; otherwise its staged deletion stays, and shows in the answer. In `git::commit` as in `git_commit`. |
+| Medium | **A failed cherry-pick or revert said "nothing to apply"** when a merge (or a cherry-pick) was already under way. | Only when this call began the cherry-pick or revert. Otherwise git's error. |
+| Medium | **A bad commit, with files in conflict, was said to be conflicts:** `reset`, `check_out` and `cherry_pick` to `nosuchcommit`. | Conflicts only when there are more than before the call. |
+| Medium | **`git_resolve` no longer found a name spelled in the other form of its accents** (`é` composed against decomposed; an emoji's name, which git leaves decomposed). | Found among the files in conflict by one spelling, and git's own spelling used for `show`, `checkout`, `add` and `rm`, in the windows too. |
+
+**Older, missed before:**
+
+- **High: discarding a both-added conflict (`AA`, `AU`) took the branch's file to the trash and staged its deletion,** so the merge's
+  commit would have removed it. A staged `A` was taken to mean "not in HEAD". A file in conflict is now decided by HEAD alone,
+  and goes back to HEAD's version.
+- **Medium: Skip threw away a hand merge without asking.** `git_continue` with `skip` is now asked about as `git_discard` is, and Git >
+  Skip This Commit asks first, with Cancel as the default.
+- **Medium: a pipe named `.gitignore` held `git_status` for 60 s,** its 30 s limit and a second try meant for a git too old for
+  `--ignored=matching`. A status stopped at its limit is no longer asked again. The 30 s remain: git itself waits on the pipe.
+- **The rename's gaps:** asked before anything is staged, so a new file much like a staged deletion is no longer made a rename of
+  the caller's; a folder takes the renames in it; the old name takes the new.
+- **Smaller:** `git_discard` of a folder with a file in it (`["new", "new/x"]`, `[".", "new/x"]`) takes the whole folder; `git_unstage`
+  in another case of a name; `git_continue` with `skip` in a merge is an error; a name in a list is that name whichever way it is
+  given, so `repo/a.txt ` (with its space) as an absolute path is no longer forgiven as `a.txt`.
+
+**Left:**
+
+- **A staged deletion and a staged new file much like it** are one rename to git's status, and git cannot be asked otherwise:
+  committing or unstaging either takes both.
+- **A pipe named `.gitignore`** still costs one wait of 30 s, in a menu as for Claude.
+- A branch from `origin/main` under another name, `git_resolve` of a submodule, and a translated git, as before.
+
+**Checked** on a clean export of `ab53a48` with only these files on it, as the checkout held other sessions' work: the 16 new
+breaks caught, one only after its test was given a cherry-pick already under way. Nine older breaks no longer found their place,
+being in the code changed, and were rewritten, with two more that now matched twice. All caught but one at first: `Claude's commit of '.'`,
+because `:(literal)` with nothing after it is the whole repository to git too. That break now takes both, and is caught. The full ctest
+in Release, 12 at a time: 167 of 168, `test_library_export` not run (it needs `dos2unix`). Under ASan and UBSan, `test_git_robust`,
+`test_git_fuzz`, `test_git_perf`, `test_claude_git`, `test_qucs_control`, `test_project_folders`, `test_claude_code` and `test_mcp_server`
+passed. `test_git_integration` failed 2 of 3 whole runs with a different function each time: a `git push` in a test's own setup killed at 30 s,
+then a clone stopped at its limit. `claudesGitTools` alone failed 2 of 7, a branch listing past its 15 s. All of it ran while
+other sessions' builds held the load at 40 to 75 on 24 processors; the third whole run passed, and no sanitizer reported anything.
+The fuzzers, 12 seeds, no finding. `retest_packaged.py`, with the check's cases added: 86 of 86 on this build (not packaged), a
+status of the pipe in 30 s. **As a control,** the installed app of `bc0a4b9`: 1 of the 24, the one that was never a fault (a name with a
+space given from the folder, refused then too). Not tried: the Skip question on a real display (a test answers it, offscreen).
+
 ## What could not be verified
 
 - **Linux and Windows:** not built or run. The tests are written for them (the `#ifdef`s), but CI will be their first

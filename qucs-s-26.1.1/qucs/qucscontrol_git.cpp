@@ -129,14 +129,15 @@ QJsonObject commitJson(const git::Commit& c)
 
 } // namespace
 
-QString QucsControl::gitPath(const QString& path) const
+QString QucsControl::gitPath(const QString& path, bool exactName) const
 {
     QStringList bases{QucsSettings.QucsWorkDir.absolutePath(), QucsSettings.qucsWorkspaceDir.absolutePath()};
     if (const QString file = a_app->gitFile(); !file.isEmpty()) bases << QFileInfo(file).absolutePath();
     if (const FileBrowser* fb = a_app->fileBrowserPanel(); fb != nullptr && !fb->location().isEmpty()) bases << fb->location();
     // (A file named with a space at either end is that file: else, a slip of
     // the one calling, and the spaces go.)
-    QString given = path.trimmed();
+    // (\a exactName: a file named in a list is that name, whichever way it is given.)
+    QString given = exactName ? path : path.trimmed();
     if (given != path && !given.isEmpty()) {
         const bool absolutePath = !path.startsWith(QLatin1Char(':')) && QFileInfo(path).isAbsolute();
         if (absolutePath ? QFileInfo::exists(path) : std::any_of(bases.cbegin(), bases.cend(), [&path](const QString& b) { return QFileInfo::exists(git::fileIn(b, path)); }))
@@ -161,7 +162,7 @@ QString QucsControl::gitPath(const QString& path) const
 QString QucsControl::gitRootOf(const QJsonObject& args, QStringList* paths, QString* error)
 {
     const QString path = pathArgument(args);
-    const auto resolve = [this](const QString& p) { return gitPath(p); };
+    const auto resolve = [this](const QString& p) { return gitPath(p, true); };
     if (!path.isEmpty()) {
         const QString root = gitRootOf(path, error);
         *paths = pathsOf(args.value(QLatin1String("paths")), root, resolve);
@@ -530,20 +531,22 @@ void QucsControl::gitCommit(const QJsonObject& args, const Done& done)
     QStringList commitArgs{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
     if (amend) commitArgs << QStringLiteral("--amend");
     if (!paths.isEmpty()) {
+        // (The repository's own folder: "." - an empty path is none to git. A
+        // rename's other name with it, or its other half stays behind; asked
+        // before staging, which could make one of a new file and a deletion.)
+        QStringList rel;
+        for (const QString& p : paths) {
+            const QString one = git::relativePath(root, p);
+            rel << (one.isEmpty() ? QStringLiteral(".") : one);
+        }
+        rel = git::withRenameSources(root, rel);
         const git::Result added = git::stage(root, paths);
         if (!added.ok()) {
             done(errorResult(tr("git could not stage them: %1").arg(added.error())));
             return;
         }
         commitArgs << QStringLiteral("--");
-        // (The repository's own folder: "." - an empty path is none to git. A
-        // rename's former name with it, or its deletion stays behind.)
-        QStringList rel;
-        for (const QString& p : paths) {
-            const QString one = git::relativePath(root, p);
-            rel << (one.isEmpty() ? QStringLiteral(".") : one);
-        }
-        commitArgs << git::literalPaths(git::withRenameSources(root, rel));
+        commitArgs << git::literalPaths(rel);
     } else if (!amend) {
         const git::Repository* repo = git::Tracker::instance()->readNow(root);
         // (A merge's commit records it, nothing staged or not: each file
@@ -787,6 +790,7 @@ QJsonObject QucsControl::gitCommitAction(const QJsonObject& args)
     QString error;
     const QString root = gitRootOf(args.value(QLatin1String("path")).toString(), &error);
     if (root.isEmpty()) return errorResult(error);
+    const git::Repository before = git::read(root);
     git::Result r;
     if (action == QLatin1String("revert")) r = git::revert(root, commit);
     else if (action == QLatin1String("cherry_pick")) r = git::cherryPick(root, commit);
@@ -794,17 +798,20 @@ QJsonObject QucsControl::gitCommitAction(const QJsonObject& args)
     else if (action == QLatin1String("reset")) r = git::reset(root, commit, mode);
     else return errorResult(tr("'action' is revert, cherry_pick, check_out or reset."));
     if (!r.ok()) {
-        // (By what stands in the repository: git's own words for a commit already
-        // applied say "conflict" of a thing that is none.)
+        // (By what this call changed in the repository: git's own words for a
+        // commit already applied say "conflict" of a thing that is none, and
+        // files in conflict from before are none of this call's.)
         const git::Repository after = git::read(root);
-        if (saysConflict(r) || after.conflictCount() > 0) {
+        if (saysConflict(r) || after.conflictCount() > before.conflictCount()) {
             QJsonObject o = gitState(root);
             o.insert(action, afterConflicts(after.operation));
             o.insert(QStringLiteral("git said"), r.error());
             reloadGitChanged(root, &o);
             return jsonResult(o);
         }
-        if (action != QLatin1String("reset") && action != QLatin1String("check_out") && !after.operation.isEmpty()) {
+        // (Begun by this call, and stopped with nothing to do.)
+        if ((action == QLatin1String("cherry_pick") || action == QLatin1String("revert")) && before.operation.isEmpty()
+            && (after.operation == QLatin1String("cherry-pick") || after.operation == QLatin1String("revert"))) {
             QJsonObject o = gitState(root);
             o.insert(action, tr("nothing to apply: its changes are here already. git_continue with 'skip' goes past it, git_abort gives it up."));
             return jsonResult(o);
@@ -841,6 +848,7 @@ QJsonObject QucsControl::gitContinue(const QJsonObject& args)
     if (under.isEmpty()) return errorResult(tr("Nothing is under way in %1 to go on with.").arg(native(root)));
     if (under == QLatin1String("bisect")) return errorResult(tr("A bisect goes on with git's own commands: git_abort ends it."));
     const bool skip = args.value(QLatin1String("skip")).toBool();
+    if (skip && under == QLatin1String("merge")) return errorResult(tr("A merge has no commit to skip: git_abort gives it up."));
     if (!skip && before.conflictCount() > 0)
         return errorResult(tr("%1 file(s) still in conflict: git_resolve takes a side, an edited file is marked resolved with git_stage. git_status lists them.").arg(before.conflictCount()));
     const git::Result r = git::continueOperation(root, under, skip);
