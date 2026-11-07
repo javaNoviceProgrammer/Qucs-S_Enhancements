@@ -35,6 +35,10 @@
 #include "schematic.h"
 #include "extsimkernels/spicecompat.h"
 
+#ifndef Q_OS_WIN
+#include <sys/stat.h>
+#endif
+
 using qucs_s::mcp::Server;
 
 class TestMcpServer : public QObject
@@ -1071,6 +1075,46 @@ private slots:
         const QString text = QString::fromUtf8(plist.readAll()).simplified();
         QVERIFY(text.contains(QLatin1String("<key>CFBundleName</key> <string>Physics Room</string>")));
         QVERIFY(text.contains(QLatin1String("<key>CFBundleExecutable</key> <string>qucs-s</string>")));
+#endif
+    }
+
+    // A pipe named by -i, in every batch mode, is refused like any file that
+    // cannot be read. Opening it to see that it could be read waited for a
+    // writer, for ever.
+    void aPipeGivenAsTheInputIsRefused()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("no pipes in folders here");
+#else
+        const QString program = QStringLiteral(QUCS_BINARY);
+        if (!QFileInfo(program).isExecutable()) QSKIP("qucs-s is not built next to the tests");
+        QTemporaryDir home;
+        QVERIFY(home.isValid());
+        const QString pipe = home.filePath("pipe.sch");
+        QCOMPARE(mkfifo(QFile::encodeName(pipe).constData(), 0600), 0);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("QT_QPA_PLATFORM", "offscreen");
+        env.insert("QUCS_CLAUDE", "/nonexistent/claude");
+        env.insert("QUCS_NO_SHELL_ENV", "1");
+        env.insert("QUCS_SETTINGS_DIR", home.filePath("settings"));
+        env.insert("HOME", home.path());
+        const QList<QStringList> modes{{"-n"}, {"-n", "--ngspice"}, {"-n", "--xyce"}, {"-n", "--cdl"},
+                                       {"-n", "--ngspice", "--run"}, {"-n", "--xyce", "--run"}, {"-p"}};
+        for (const QStringList& mode : modes) {
+            QProcess p;
+            p.setProcessEnvironment(env);
+            p.start(program, mode + QStringList{"-i", pipe, "-o", home.filePath("out.png")});
+            const bool ended = p.waitForFinished(60000);
+            if (!ended) {
+                p.kill();
+                p.waitForFinished(5000);
+            }
+            const QString name = mode.join(' ');
+            QVERIFY2(ended, qPrintable(name + ": still waiting on the pipe"));
+            const QString said = QString::fromUtf8(p.readAllStandardError());
+            QVERIFY2(p.exitCode() != 0 && said.contains(QLatin1String("Could not load schematic")),
+                     qPrintable(name + ": exit " + QString::number(p.exitCode()) + ": " + said.right(300)));
+        }
 #endif
     }
 

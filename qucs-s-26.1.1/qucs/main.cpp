@@ -87,8 +87,9 @@ Schematic* openSchematic(const QString& schematicFileName)
 {
     qDebug() << "*** try to load schematic :" << schematicFileName;
 
+    // (Only a file is opened: opening a pipe waits for a writer, for ever.)
     QFile file(schematicFileName);  // save simulator messages
-    if (file.open(QIODevice::ReadOnly))
+    if (misc::isPlainFile(schematicFileName) && file.open(QIODevice::ReadOnly))
     {
         file.close();
     }
