@@ -5137,8 +5137,7 @@ void QucsApp::slotDocumentRebuilt(Schematic *doc)
                     || MouseReleaseAction == &MouseActions::MReleasePaste;
   const bool dragging = MouseReleaseAction != nullptr
                      && MouseReleaseAction != &MouseActions::MReleaseSelect
-                     && MouseReleaseAction != &MouseActions::MReleaseActivate
-                     && MouseReleaseAction != &MouseActions::MReleaseZoomIn;
+                     && MouseReleaseAction != &MouseActions::MReleaseActivate;
   if (!pasting && (dragging || MouseMoveAction == &MouseActions::MMoveMoveTextB
                             || MouseMoveAction == &MouseActions::MMoveResizePainting)) {
     view->abortToSelectMode(doc);

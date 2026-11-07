@@ -1429,7 +1429,7 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
         &M::MMoveSelect, &M::MMoveElement, &M::MMoveWire1, &M::MMoveWire2, &M::MMovePaste,
         &M::MMovePaste2, &M::MMoveDelete, &M::MMoveLabel, &M::MMoveMarker, &M::MMoveMirrorX,
         &M::MMoveMirrorY, &M::MMoveRotate, &M::MMoveActivate, &M::MMoveOnGrid, &M::MMoveMoveTextB,
-        &M::MMoveMoveText, &M::MMoveZoomIn, &M::MMoveSetLimits};
+        &M::MMoveMoveText, &M::MMoveSetLimits};
     static const std::array moving{&M::MMoveMoving2, &M::MMoveFree2};
     const auto action = a_App->MouseMoveAction;
     a_gesture = std::ranges::find(drawing, action) != drawing.end() ? Gesture::Drawing

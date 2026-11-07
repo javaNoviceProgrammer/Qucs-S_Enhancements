@@ -3420,7 +3420,7 @@ private slots:
         // Zoomed in and out: the view's scale, and nothing of the
         // schematic's.
         const double scale = doc->view()->scale();
-        app->slotZoomIn(true);
+        app->slotZoomIn();
         const double zoomed = doc->view()->scale();
         QVERIFY(zoomed > scale);
         app->slotZoomOut();   // (by two, where Zoom In is by one and a half)

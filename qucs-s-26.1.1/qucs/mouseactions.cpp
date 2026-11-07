@@ -702,23 +702,6 @@ void MouseActions::MMoveMoveText(Schematic *Doc, QMouseEvent *Event)
     Doc->PostPaintEvent(_Rect, MAx1, MAy1, MAx2, MAy2);
 }
 
-/**
- * @brief MouseActions::MMoveZoomIn Paints symbol beside the mouse to show the "Zoom in" modus.
- * @param Doc
- * @param Event
- */
-void MouseActions::MMoveZoomIn(Schematic *Doc, QMouseEvent *Event)
-{
-    auto inModel = Doc->contentsToModel(Event->pos());
-    MAx3 = inModel.x();
-    MAy3 = inModel.y();
-
-    Doc->PostPaintEvent(_Line, MAx3 + 14, MAy3, MAx3 + 22, MAy3);
-    Doc->PostPaintEvent(_Line, MAx3 + 18, MAy3 - 4, MAx3 + 18, MAy3 + 4);
-    Doc->PostPaintEvent(_Ellipse, MAx3 + 12, MAy3 - 6, 13, 13, 0, 0, false);
-    Doc->viewport()->update();
-}
-
 // ************************************************************************
 // **********                                                    **********
 // **********    Functions for serving mouse button clicking     **********
@@ -1452,21 +1435,6 @@ void MouseActions::MPressMoveText(Schematic *Doc, QMouseEvent *, float fX, float
     }
 }
 
-// -----------------------------------------------------------
-void MouseActions::MPressZoomIn(Schematic *Doc, QMouseEvent *, float fX, float fY)
-{
-    qDebug() << "zoom into box";
-    MAx1 = int(fX);
-    MAy1 = int(fY);
-    MAx2 = 0; // rectangle size
-    MAy2 = 0;
-
-    QucsMain->MouseMoveAction = &MouseActions::MMoveSelect;
-    QucsMain->MouseReleaseAction = &MouseActions::MReleaseZoomIn;
-    Doc->grabKeyboard(); // no keyboard inputs during move actions
-    Doc->viewport()->update();
-}
-
 // ***********************************************************************
 // **********                                                   **********
 // **********    Functions for serving mouse button releasing   **********
@@ -1848,25 +1816,6 @@ void MouseActions::MReleaseMoveText(Schematic *Doc, QMouseEvent *Event)
     ((Component *) focusElement)->ty = MAy1 - ((Component *) focusElement)->cy;
     Doc->viewport()->update();
     Doc->setChanged(true, true);
-}
-
-// -----------------------------------------------------------
-void MouseActions::MReleaseZoomIn(Schematic *Doc, QMouseEvent *Event)
-{
-    if (Event->button() != Qt::LeftButton)
-        return;
-
-    MAx1 = Event->pos().x();
-    MAy1 = Event->pos().y();
-
-
-    const QPoint click{Event->pos().x() , Event->pos().y()};
-    // "false" = "coordinates are not relative to viewport"
-    Doc->zoomAroundPoint(1.5, click, false);
-
-    QucsMain->MouseMoveAction = &MouseActions::MMoveZoomIn;
-    QucsMain->MouseReleaseAction = nullptr;
-    Doc->releaseKeyboard(); // allow keyboard inputs again
 }
 
 // ***********************************************************************

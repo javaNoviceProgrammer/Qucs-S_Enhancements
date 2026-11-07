@@ -711,6 +711,7 @@ public slots:
   void slotShowAll();
   void slotZoomToSelection();
   void slotShowOne();
+  void slotZoomIn();  // Zoom in by a step, as slotZoomOut() out
   void slotZoomOut(); // Zoom out by 2
 
   void slotToPage();
@@ -1332,7 +1333,6 @@ public slots:
   void slotShowGrid();     // turn the grid on or off
   void slotOnGrid(bool);   // set selected elements on grid
   void slotMoveText(bool); // move property text of components
-  void slotZoomIn(bool);
   void slotEditUndo();     // makes the last operation undone
   void slotEditRedo();     // makes the last undo undone
   void slotEditFind();     // searches for a piece of text
