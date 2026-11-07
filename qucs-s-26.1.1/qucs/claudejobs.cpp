@@ -378,7 +378,8 @@ QString Registry::taskJob(quint64 caller, const QString& task) const
     return a_tasks.value(QStringLiteral("%1:%2").arg(caller).arg(task));
 }
 
-void Registry::taskEvent(quint64 caller, const QJsonObject& m, const QString& detail, const std::function<bool(const QString&)>& stop)
+void Registry::taskEvent(quint64 caller, const QJsonObject& m, const QString& detail, const QDateTime& began,
+                         const std::function<bool(const QString&)>& stop)
 {
     const QString subtype = m.value(QLatin1String("subtype")).toString();
     const QString task = m.value(QLatin1String("task_id")).toString().left(200);
@@ -399,6 +400,7 @@ void Registry::taskEvent(quint64 caller, const QJsonObject& m, const QString& de
         job.tool = m.value(QLatin1String("tool_use_id")).toString().left(200);
         job.canStop = bool(stop);
         if (status == Status::Queued) job.queued = QDateTime::currentDateTime();
+        else job.began = began;
         id = add(job, stop ? Stop([stop, task] { return stop(task); }) : Stop());
         a_tasks.insert(key, id);
     };
@@ -473,7 +475,11 @@ void Registry::taskEvent(quint64 caller, const QJsonObject& m, const QString& de
         const QString reason = oneLine(m.value(QLatin1String("reason")).toString(), 80);
         update(id, [&](Job& job) {
             if (!file.isEmpty()) job.outputFile = file;
-            if (!summary.isEmpty()) job.outcome = summary;
+            // What it says of its end, unless it is no report: notes meant for
+            // the model (an agent's report handed back: 'handback', with its
+            // own id in them), or its name again (a command's).
+            if (m.contains(QLatin1String("handback"))) job.outcome = tr("Its report went to Claude, as a message.");
+            else if (!summary.isEmpty() && summary != job.name) job.outcome = summary;
             if (!used.isEmpty()) job.said = used;
             if (!reason.isEmpty()) job.said = reason;
             if (status == QLatin1String("completed")) {

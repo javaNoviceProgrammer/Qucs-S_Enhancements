@@ -13,6 +13,7 @@
 #define QUCS_CLAUDECODE_H
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
@@ -657,7 +658,13 @@ private:
     QHash<QString, QString> a_taskOf;            // a tool use's task
     QSet<QString> a_backgroundTasks;             // those in the background
     QHash<QString, QString> a_stopAsked;         // stop_task not answered yet: request id -> task
-    QHash<QString, QString> a_toolSubjects;      // a tool use's command, for the job its task is
+    // A tool use's command and when it began, for the job its task is: a
+    // command becomes a task some seconds after it starts.
+    struct ToolUse {
+        QString subject;
+        QDateTime began;
+    };
+    QHash<QString, ToolUse> a_toolUses;
     ToolHost* a_host = nullptr;
     mcp::Server* a_mcp = nullptr;   // the host's tools as an MCP server, over this stream
     // The host's tools the program was started with allowed beyond those

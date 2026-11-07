@@ -145,9 +145,10 @@ public:
     /// A message of the program's about its tasks (type "system", subtype
     /// task_started, task_updated, task_progress, task_notification) in the
     /// conversation \a caller. \a detail: what its tool use said (the
-    /// command); \a stop: how a task id is stopped. A damaged message is
-    /// left out.
-    void taskEvent(quint64 caller, const QJsonObject& message, const QString& detail,
+    /// command); \a began: when that tool use came, which a foreground
+    /// command's task comes seconds after (invalid: not known); \a stop: how a
+    /// task id is stopped. A damaged message is left out.
+    void taskEvent(quint64 caller, const QJsonObject& message, const QString& detail, const QDateTime& began,
                    const std::function<bool(const QString& task)>& stop);
     /// The task \a task of \a caller, by the program's id: its job's id, or
     /// empty.

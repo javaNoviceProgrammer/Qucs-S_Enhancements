@@ -63,6 +63,12 @@ private:
     QStringList besideSchematic(const QStringList& patterns) const;
 
 public:
+    /// The last percentage in what ngspice printed, or -1 when it says none:
+    /// "%42.00" at a line's start, as ngspice has printed it, or a bar's
+    /// "[=====   ]  26%", as a build of it may ("montecarlo: sample 3/100  [=]
+    /// 12%   (tran  80%)": the whole run's, the bar's, not the sample's).
+    static int lastPercentIn(const QString& output);
+
     /// Where ngspice_mathfunc.inc is in this installation
     /// (share/qucs-s/xspice_cmlib/include), in \a mathf_inc; false when it
     /// is not there.
