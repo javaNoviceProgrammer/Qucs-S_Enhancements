@@ -294,7 +294,7 @@ On the final code:
 
 - **Release, all of CTest:** 167 of 169 passed.
   - `test_library_export` did not run. It needs `qucsconv_rf`, whose build needs `dos2unix`, which is not installed here. It tests nothing changed here, and this is the limit the task named.
-  - `test_file_browser` failed once, in `theFolderShownTakenAwayAndBack`, a 5 s wait on a folder coming back, while the break tests were loading this machine. It then passed three times alone, and passed in the run before. Nothing here touches that code, but it is a wall-clock wait that can go red under load.
+  - `test_file_browser` failed once, in `theFolderShownTakenAwayAndBack`, a 5 s wait on a folder coming back, while the break tests were loading this machine. It then passed three times alone, and passed in the run before. Nothing here touches that code, but it is a wall-clock wait that can go red under load. It turned out to be a real fault of the File Browser, not the wait, and was fixed after this write-up: a folder removed and made again could stop being followed.
 - **ASan and UBSan:** `test_optimizer_core`, `test_fem_optimize`, `test_multiphysics_optimize`, `test_optimization`, `test_ngopt`, `test_multiphysics_doc` (842 s), `test_qucs_control` (237 s): 7 of 7, with no sanitizer report in the log. Only these seven were run under the sanitizers.
 - **Lints:** `check-json-nesting`, `check-shaders` (14 shaders), `check-third-party`, `check-tool-arguments` (144 tools, 0 disagreements).
 
@@ -336,7 +336,6 @@ A Parametric Sweep's **Unit** cell, edited alone, did not reach the model until 
 
 ## Left open
 
-- **`test_file_browser`'s 5 s wait** failed once under load (see "What else ran"). It may go red on a loaded runner, and is left for its own change.
 
 - **`.Opt` could offer the ported methods.** An optimization component still runs DE alone on a schematic. The core is there for
   it; its `Optimizer` is the asynchronous one and would need a driver for them.

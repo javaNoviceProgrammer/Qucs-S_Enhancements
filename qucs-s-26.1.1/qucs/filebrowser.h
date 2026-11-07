@@ -339,6 +339,12 @@ private:
     QString pasteTarget() const;
     /// The folder shown, the views' root again once the model lost it.
     void keepRoot();
+    /// What the folder shown holds, looked at apart from the model's watcher,
+    /// which can stop following a folder removed and made again and can miss a
+    /// change on a busy machine; off this thread, one look at a time.
+    void lookAtFolder();
+    struct FolderLook;
+    void lookedAt(const FolderLook& look);
     /// The Git submenu of \a paths' context menu.
     void addGitMenu(QMenu* menu, const QStringList& paths);
     QAbstractItemView* viewFor(View view) const;
@@ -440,6 +446,14 @@ private:
     QString a_returnTo;                    // the folder shown before it was found gone,
     QString a_returnFrom;                  // the one above it shown instead,
     qint64 a_returnBy = 0;                 // and until when it is gone back into (ms since the epoch)
+    QTimer* a_lookTimer = nullptr;         // the folder shown looked at, whatever the watcher says:
+    bool a_looking = false;                // a look under way (a mount that hangs holds up only that),
+    QString a_lookFolder;                  // the folder the last look was of,
+    qint64 a_lookBorn = 0;                 // when it was made,
+    qint64 a_lookChanged = 0;              // and when its entries last changed;
+    bool a_lookAgain = false;              // its entries differed from the model's at the last look,
+    int a_rereads = 0;                     // and it was read again so many times since it changed
+    QString a_readFolder;                  // the folder the model finished reading last
     // A drag over it.
     QPointer<QWidget> a_dropHighlight;     // the folder it would drop into, lit up
     QTimer* a_springTimer = nullptr;       // a folder held under the drag opens
