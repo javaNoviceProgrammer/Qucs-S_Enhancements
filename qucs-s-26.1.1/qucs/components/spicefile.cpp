@@ -254,7 +254,7 @@ bool SpiceFile::createSpiceSubckt(QTextStream *stream)
 {
     (*stream)<<"\n";
     QFile sub_file(getSubcircuitFile());
-    if (sub_file.open(QIODevice::ReadOnly|QFile::Text)) {
+    if (misc::isPlainFile(sub_file.fileName()) && sub_file.open(QIODevice::ReadOnly|QFile::Text)) {
         QTextStream ts(&sub_file);
         (*stream)<<ts.readAll().remove(QChar(0x1A));
         sub_file.close();

@@ -15,16 +15,30 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+#ifndef Q_OS_WIN
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include "config.h"
 #include "claudecode.h"
 #include "filebrowser.h"
 #include "projectView.h"
+#include "projectlibraries.h"
+#include "schematic.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
@@ -692,6 +706,159 @@ private slots:
                                        .split(QLatin1Char('*'), Qt::SkipEmptyParts);
         QCOMPARE(stored.size(), 2);
         QVERIFY2(stored.first() == QDir(second).absolutePath(), qPrintable(stored.join(QLatin1Char(' '))));
+    }
+
+    // A pipe with a schematic's name, as a downloaded project can hold: nothing
+    // waits on it, opening the project or opening the file. (A reader blocked on
+    // it is seen at once: a writer can then open it, which also lets it go.)
+    void aPipeInAProjectStopsNothing()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("no pipes in folders here");
+#else
+        fresh("pipes");
+        const QString project = workspace + "/pipes_prj";
+        QVERIFY(QDir().mkpath(project + "/Libraries/lib"));
+        const QString pipe = project + "/pipe.sch";
+        QCOMPARE(mkfifo(QFile::encodeName(pipe).constData(), 0600), 0);
+        QVERIFY(QFile::link(pipe, project + "/link.sch"));
+        const QString text = project + "/pipe.txt";
+        QCOMPARE(mkfifo(QFile::encodeName(text).constData(), 0600), 0);
+        const QString record = project + "/Libraries/lib/" + qucs_s::projectlibraries::RecordName;
+        QCOMPARE(mkfifo(QFile::encodeName(record).constData(), 0600), 0);
+        QVERIFY(write(project + "/Libraries/lib/model.va", "module m; endmodule\n"));
+        QVERIFY(write(project + "/real.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n</Components>\n"));
+
+        std::atomic<bool> done{false};
+        std::atomic<int> blocked{0};
+        std::thread watch([&] {
+            while (!done.load()) {
+                for (const QString& p : {pipe, text, record}) {
+                    const int fd = ::open(QFile::encodeName(p).constData(), O_WRONLY | O_NONBLOCK);
+                    if (fd >= 0) {
+                        ++blocked;
+                        ::close(fd);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+        const auto finish = qScopeGuard([&] {
+            done = true;
+            watch.join();
+        });
+
+        QVERIFY(Schematic::testFile(pipe) < 0);
+        QCOMPARE(blocked.load(), 0);
+        QVERIFY(Schematic::testFile(project + "/link.sch") < 0);
+        QCOMPARE(blocked.load(), 0);
+        QVERIFY(Schematic::testFile(project + "/real.sch") >= 0);
+        // A device of no end, through the same name.
+        QVERIFY(QFile::link("/dev/zero", project + "/zero.sch"));
+        QVERIFY(Schematic::testFile(project + "/zero.sch") < 0);
+
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 700);
+        app.show();
+        QVERIFY(app.switchWorkspace(workspace));
+        app.openProject(project);
+        QTest::qWait(300);
+        QCOMPARE(blocked.load(), 0);
+        ProjectView* content = app.projectView();
+        QVERIFY(content != nullptr);
+        QVERIFY(content->model()->rowCount() > 0);
+        qucs_s::projectlibraries::entryOf(project + "/Libraries/lib/model.va");
+        QCOMPARE(blocked.load(), 0);
+
+        // Read as a document, whoever asks.
+        {
+            misc::ErrorCapture capture;
+            Schematic direct(&app, pipe);
+            QVERIFY(!direct.loadDocument());
+            QCOMPARE(blocked.load(), 0);
+        }
+
+        // Opened by name: said, no tab left, and the rest goes on.
+        const int tabs = app.DocumentTab->count();
+        {
+            misc::ErrorCapture capture;
+            QVERIFY(!app.gotoPage(pipe));
+            QVERIFY2(capture.errors().join(" ").contains("is no file"), qPrintable(capture.errors().join(" ")));
+        }
+        QCOMPARE(blocked.load(), 0);
+        {
+            misc::ErrorCapture capture;
+            QVERIFY(!app.gotoPage(text));
+        }
+        QCOMPARE(blocked.load(), 0);
+        QCOMPARE(app.DocumentTab->count(), tabs);
+        QVERIFY(app.gotoPage(project + "/real.sch"));
+#endif
+    }
+
+    // A schematic that names pipes as its parts' files, opened: which reader
+    // waits on one, by name. As aPipeInAProjectStopsNothing sees it.
+    void aSchematicsPartsCanNamePipes()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("no pipes in folders here");
+#else
+        fresh("named");
+        const QString project = workspace + "/named_prj";
+        QVERIFY(QDir().mkpath(project));
+        QStringList pipes;
+        for (const char* name : {"sub.sch", "part.cir", "part.v", "part.vhdl", "lib.lib", "s.txt.cfg"}) {
+            pipes << project + "/" + name;
+            QCOMPARE(mkfifo(QFile::encodeName(pipes.last()).constData(), 0600), 0);
+        }
+        QVERIFY(write(project + "/s.txt", "text\n"));
+        const QString schematic = project + "/hostile.sch";
+        QVERIFY(write(schematic, "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                 "<Sub SUB1 1 100 100 0 0 0 0 \"sub.sch\" 1>\n"
+                                 "<SPICE X1 1 200 100 0 0 0 0 \"part.cir\" 1 \"\" 0 \"yes\" 0 \"none\" 0>\n"
+                                 "<Verilog X2 1 300 100 0 0 0 0 \"part.v\" 0>\n"
+                                 "<VHDL X3 1 400 100 0 0 0 0 \"part.vhdl\" 0>\n"
+                                 "<Lib L1 1 500 100 0 0 0 0 \"lib\" 0 \"x\" 0>\n"
+                                 "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n"));
+        std::atomic<bool> done{false};
+        QMutex mutex;
+        QStringList blocked;
+        std::thread watch([&] {
+            while (!done.load()) {
+                for (const QString& p : pipes) {
+                    const int fd = ::open(QFile::encodeName(p).constData(), O_WRONLY | O_NONBLOCK);
+                    if (fd >= 0) {
+                        QMutexLocker lock(&mutex);
+                        blocked << QFileInfo(p).fileName();
+                        ::close(fd);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+        const auto finish = qScopeGuard([&] {
+            done = true;
+            watch.join();
+        });
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 700);
+        app.show();
+        QVERIFY(app.switchWorkspace(workspace));
+        app.openProject(project);
+        QTimer answers;
+        QObject::connect(&answers, &QTimer::timeout, [] {
+            if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) box->accept();
+        });
+        answers.start(50);
+        app.gotoPage(schematic);
+        app.gotoPage(project + "/s.txt");
+        QTest::qWait(300);
+        QMutexLocker lock(&mutex);
+        blocked.removeDuplicates();
+        QVERIFY2(blocked.isEmpty(), qPrintable("waited on: " + blocked.join(", ")));
+#endif
     }
 
     void theContentPanelOpensTheProjectInTheFileBrowser()

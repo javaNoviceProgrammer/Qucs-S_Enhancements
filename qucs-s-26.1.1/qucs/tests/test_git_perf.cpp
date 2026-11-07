@@ -284,6 +284,10 @@ private slots:
         (void)read(repo);   // (its guards known, as they are but once in 30 s)
 #define AT_MOST(n, ...) { const int programs = programsOf([&] { __VA_ARGS__; }); QVERIFY2(programs <= (n), qPrintable(QStringLiteral(#__VA_ARGS__ ": %1 programs\n").arg(programs) + listOf())); }
         AT_MOST(1, (void)read(repo));
+        // A change in its configuration: found once, then kept again.
+        QVERIFY(gitIn(repo, {"config", "some.setting", "1"}));
+        AT_MOST(2, (void)read(repo));
+        AT_MOST(1, (void)read(repo));
         AT_MOST(5, QCOMPARE(status(repo).upstream, QString()));
         AT_MOST(2, QVERIFY(qucs_s::git::diff(repo, "f1.txt", DiffOf::Unstaged).contains("+changed")));
         AT_MOST(1, QVERIFY(qucs_s::git::diff(repo, "new.txt").contains("+new")));

@@ -822,6 +822,11 @@ bool misc::refusesToWrite(QWidget* parent, const QString& title, const QString& 
   return true;
 }
 
+bool misc::isPlainFile(const QString& path)
+{
+  return QFileInfo(path).isFile();
+}
+
 bool misc::moveToTrash(const QString& path, QString* where)
 {
   const QString kept = qEnvironmentVariable("QUCS_TRASH_DIR");

@@ -151,7 +151,7 @@ void walkFile(const QString& file, Walk& w)
         w.visited.insert(key);
     }
     QFile f(file);
-    if (!f.open(QIODevice::ReadOnly)) return;
+    if (!misc::isPlainFile(file) || !f.open(QIODevice::ReadOnly)) return;
     const QString text = QString::fromUtf8(f.readAll());
     const QString folder = QFileInfo(file).absolutePath();
     // (A schematic of thousands of one subcircuit: its file looked for once.)
@@ -220,7 +220,7 @@ struct Record {
 bool readRecord(const QString& file, Record* out)
 {
     QFile f(file);
-    if (!f.open(QIODevice::ReadOnly)) return false;
+    if (!misc::isPlainFile(file) || !f.open(QIODevice::ReadOnly)) return false;
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
     Record r;
     r.library = o.value(QLatin1String("library")).toString();
@@ -262,7 +262,7 @@ bool readRecordOnce(const QString& file, Record* out)
 QString sumOf(const QString& path)
 {
     QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return {};
+    if (!misc::isPlainFile(path) || !f.open(QIODevice::ReadOnly)) return {};
     QCryptographicHash hash(QCryptographicHash::Sha256);
     if (!hash.addData(&f)) return {};
     return QString::fromLatin1(hash.result().toHex());
@@ -372,7 +372,7 @@ QStringList sourceModulesOf(const QString& file)
     if (it != known.end() && it->modified == info.lastModified() && it->size == info.size()) return it->modules;
     Read read{info.lastModified(), info.size(), {}};
     QFile f(file);
-    if (f.open(QIODevice::ReadOnly)) read.modules = qucs_s::vamodule::sourceModules(QString::fromUtf8(f.readAll()));
+    if (misc::isPlainFile(file) && f.open(QIODevice::ReadOnly)) read.modules = qucs_s::vamodule::sourceModules(QString::fromUtf8(f.readAll()));
     return known.insert(file, read)->modules;
 }
 } // namespace

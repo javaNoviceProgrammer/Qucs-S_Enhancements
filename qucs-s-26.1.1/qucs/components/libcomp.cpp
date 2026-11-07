@@ -117,7 +117,7 @@ int LibComp::loadSectionOf(const QString& libraryFile, const QString& comp, cons
                            QStringList *Includes, QStringList *Attach)
 {
   QFile file(libraryFile);
-  if(!file.open(QIODevice::ReadOnly))
+  if (!misc::isPlainFile(file.fileName()) || !file.open(QIODevice::ReadOnly))
     return -1;
 
   QString libDefaultSymbol;
@@ -505,7 +505,7 @@ const LibraryRead& readLibrary(const QString& libraryFile)
   if (it != known.end() && it->modified == info.lastModified() && it->size == info.size()) return *it;
   LibraryRead read{info.lastModified(), info.size(), {}, {}, {}};
   QFile f(key);
-  if (f.open(QIODevice::ReadOnly)) {
+  if (misc::isPlainFile(f.fileName()) && f.open(QIODevice::ReadOnly)) {
     QTextStream stream(&f);
     const QString text = stream.readAll();   // (read as loadSectionOf() reads it: a byte order mark left out)
     static const QRegularExpression header(QStringLiteral("^<Qucs Library (\\S+) \"([^\"\n]*)\">"));
@@ -544,7 +544,7 @@ const LibraryRead& readLibrary(const QString& libraryFile)
           const QDir folder(info.absolutePath() + QLatin1Char('/') + info.completeBaseName());
           for (const QString& include : std::as_const(part.includes)) {
             QFile lst(folder.absoluteFilePath(include));
-            if (lst.open(QIODevice::ReadOnly)) text += QLatin1Char('\n') + QString::fromUtf8(lst.readAll());
+            if (misc::isPlainFile(lst.fileName()) && lst.open(QIODevice::ReadOnly)) text += QLatin1Char('\n') + QString::fromUtf8(lst.readAll());
           }
           part.qucsDevices = LibComp::qucsDevicesIn(text);
         }
@@ -599,7 +599,7 @@ QString LibComp::newerVersion(const QString& libraryFile)
   if (QucsSettings.IgnoreFutureVersion) return {};
   // Its first line alone (the Libraries panel asks of every library).
   QFile f(libraryFile);
-  if (!f.open(QIODevice::ReadOnly)) return {};
+  if (!misc::isPlainFile(f.fileName()) || !f.open(QIODevice::ReadOnly)) return {};
   QString line = QString::fromUtf8(f.readLine(1024));
   if (line.startsWith(QChar(0xFEFF))) line.remove(0, 1);
   static const QRegularExpression header(QStringLiteral("^<Qucs Library (\\S+) "));
@@ -736,7 +736,7 @@ bool LibComp::createSubNetlist(QTextStream *stream, QStringList &FileList,
     if (FileList.indexOf(key) >= 0) continue;
     FileList.append(key);
     QFile file(s);
-    if (!file.open(QIODevice::ReadOnly)) {
+    if (!misc::isPlainFile(file.fileName()) || !file.open(QIODevice::ReadOnly)) {
       error++;
       continue;
     }

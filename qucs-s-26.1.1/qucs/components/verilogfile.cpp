@@ -96,7 +96,7 @@ QString Verilog_File::loadFile()
     File = QucsSettings.QucsWorkDir.filePath(File);
 
   QFile f(File);
-  if(!f.open(QIODevice::ReadOnly))
+  if (!misc::isPlainFile(f.fileName()) || !f.open(QIODevice::ReadOnly))
     return QString();
 
   QTextStream stream(&f);
@@ -184,7 +184,7 @@ bool Verilog_File::createSubNetlist(QTextStream *stream)
 
   // open file for reading
   QFile f(FileName);
-  if(!f.open(QIODevice::ReadOnly)) {
+  if (!misc::isPlainFile(f.fileName()) || !f.open(QIODevice::ReadOnly)) {
     ErrText += QObject::tr("ERROR: Cannot open %1 file \"%2\".").
       arg(Model).arg(FileName);
     return false;
@@ -212,7 +212,7 @@ Verilog_File_Info::Verilog_File_Info(QString File, bool isfile)
 {
   if (isfile) {
     QFile f(File);
-    if(!f.open(QIODevice::ReadOnly))
+    if (!misc::isPlainFile(f.fileName()) || !f.open(QIODevice::ReadOnly))
       File = "";
     else {
       QByteArray FileContent = f.readAll();

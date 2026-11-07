@@ -340,7 +340,7 @@ bool Schematic::saveSymbolToFile(const QString& path)
 QString Schematic::loadSymbolFromFile(const QString& path)
 {
   QFile file(path);
-  if(!file.open(QIODevice::ReadOnly))
+  if(!misc::isPlainFile(path) || !file.open(QIODevice::ReadOnly))
     return QObject::tr("Cannot read \"%1\".").arg(path);
 
   QString text = QString::fromUtf8(file.readAll());
@@ -1517,7 +1517,7 @@ bool Schematic::loadPaintings(QTextStream *stream, std::list<Painting*> *List)
 bool Schematic::loadDocument()
 {
   QFile file(a_DocName);
-  if(!file.open(QIODevice::ReadOnly)) {
+  if(!misc::isPlainFile(a_DocName) || !file.open(QIODevice::ReadOnly)) {
     /// \todo implement unified error/warning handling GUI and CLI
     if (QucsMain != nullptr)
       misc::reportError(QObject::tr("Cannot load document: ")+a_DocName);
@@ -1839,6 +1839,12 @@ void Schematic::nameUnlabelledPortNets(QStringList& Collect, int& countInit)
 // It returns the number of subcircuit ports.
 int Schematic::testFile(const QString& DocName)
 {
+  // (The Project panel asks this of each .sch as a project opens, on the GUI
+  // thread, and a project can be anyone's: a pipe of that name would stop the
+  // program for good, each time the project opens again, and a device with no
+  // end fill the memory. And no schematic is this long.)
+  constexpr qint64 kMostRead = qint64(256) << 20;
+  if(!misc::isPlainFile(DocName) || QFileInfo(DocName).size() > kMostRead) return -1;
   QFile file(DocName);
   if(!file.open(QIODevice::ReadOnly)) {
     return -1;

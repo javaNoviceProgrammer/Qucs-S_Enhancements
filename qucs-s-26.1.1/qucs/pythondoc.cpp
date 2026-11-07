@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "pythondoc.h"
+#include "misc.h"
 
 #include "config.h"
 #include "main.h"
@@ -788,7 +789,7 @@ RunPlan runPlanFor(const QString& script)
     if (const QString file = settings.envFile.trimmed(); !file.isEmpty()) {
         const QString path = QDir(info.absolutePath()).absoluteFilePath(file);
         QFile env(path);
-        if (!env.open(QIODevice::ReadOnly)) {
+        if (!misc::isPlainFile(path) || !env.open(QIODevice::ReadOnly)) {
             plan.failure = tr("The .env file %1 of its Run Settings could not be read.").arg(QDir::toNativeSeparators(path));
             return plan;
         }

@@ -287,6 +287,28 @@ private slots:
         QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
     }
 
+    // A commit with no changes, or none in the path asked about: its author and
+    // message still come back.
+    void aCommitIsShownWhateverThePath()
+    {
+        const QString repo = makeRepo();
+        QVERIFY(!gitIn(repo, {"commit", "-q", "--allow-empty", "-m", "nothing in it"}).isNull());
+        QVERIFY(show(repo, "HEAD").contains("nothing in it"));
+        for (const QString& path : {QStringLiteral("."), repo, QStringLiteral("a.txt")}) {
+            const QString shown = show(repo, "HEAD", path);
+            QVERIFY2(shown.contains("nothing in it") && shown.contains("Tester"), qPrintable(path + ": " + shown));
+        }
+        // A commit of that file: its changes alone.
+        QVERIFY(write(repo + "/a.txt", "changed\n"));
+        QVERIFY(write(repo + "/b.txt", "other\n"));
+        QVERIFY(stage(repo, {}).ok());
+        QVERIFY(commit(repo, "both").ok());
+        const QString one = show(repo, "HEAD", "a.txt");
+        QVERIFY(one.contains("+changed"));
+        QVERIFY(!one.contains("+other"));
+        QVERIFY(show(repo, "HEAD", ".").contains("+other"));
+    }
+
     // A schematic's lines, damaged: nothing to cut from.
     void aSchematicLineOfOneCharacter()
     {
@@ -489,6 +511,57 @@ private slots:
         QCOMPARE(log(repo).first().hash, hash);
     }
 
+    // A driver added just after a look: the guards kept from that look do not
+    // have it, and they are looked for again. In the repository's configuration,
+    // a linked worktree's common one, and a file it includes.
+    void aFilterAddedJustAfterALookIsGuarded()
+    {
+        const QString marks = folder("marks");
+        const QByteArray clean = "\tclean = " + QFile::encodeName(evilProgram(marks, marks, "clean")) + "\n";
+        const auto looks = [&](const QString& where) {
+            QVERIFY(read(where).valid);
+            QVERIFY(status(where).repository);
+            (void)diff(where);
+        };
+        const auto addFilter = [&](const QString& file) {
+            QVERIFY(write(file, readAll(file) + "[filter \"added\"]\n" + clean));
+        };
+        // (The same size: only a filter's answer tells it from the old one.)
+        const auto armed = [&](const QString& where) {
+            QVERIFY(write(where + "/.gitattributes", "*.txt filter=added\n"));
+            QVERIFY(write(where + "/a.txt", "ONE\ntwo\nthree\n"));
+        };
+        const auto ran = [&] { return QFileInfo::exists(marks + "/clean"); };
+
+        const QString repo = makeRepo();
+        looks(repo);
+        addFilter(repo + "/.git/config");
+        armed(repo);
+        looks(repo);
+        QVERIFY2(!ran(), "a filter added just after a look ran");
+
+        // A linked worktree: the configuration is the common folder's.
+        const QString main = makeRepo();
+        const QString worktree = folder("worktrees") + "/wt";
+        QVERIFY(!gitIn(main, {"worktree", "add", "-q", "-b", "side", worktree}).isNull());
+        looks(worktree);
+        addFilter(main + "/.git/config");
+        armed(worktree);
+        looks(worktree);
+        QVERIFY2(!ran(), "a filter added to a worktree's common configuration ran");
+
+        // A file the configuration includes: its change shows in no stamp.
+        const QString including = makeRepo();
+        const QString included = folder("included") + "/more.cfg";
+        QVERIFY(write(included, "# nothing yet\n"));
+        QVERIFY(!gitIn(including, {"config", "include.path", included}).isNull());
+        looks(including);
+        addFilter(included);
+        armed(including);
+        looks(including);
+        QVERIFY2(!ran(), "a filter added to an included file ran");
+    }
+
     void aFilterNamedWithAnEqualsSign()
     {
         const QString repo = makeRepo();
@@ -646,7 +719,32 @@ private slots:
         QVERIFY(stage(gone, {"a.txt"}).ok());
         const Result deleted = commit(gone, "gone", false, {"a.txt"});
         QVERIFY2(deleted.ok(), qPrintable(deleted.error()));
-        QVERIFY(!stage(gone, {"never-was.txt"}).ok() || read(gone).changedCount() == 0);
+        // No such file anywhere: said, as git says it, whatever else is given.
+        const Result typo = stage(gone, {"never-was.txt"});
+        QVERIFY(!typo.ok());
+        QVERIFY2(typo.error().contains("never-was.txt") && !typo.error().contains(":(literal)"), qPrintable(typo.error()));
+        QVERIFY(write(gone + "/real.txt", "real\n"));
+        QVERIFY(!stage(gone, {"real.txt", "never-was.txt"}).ok());
+        const Result committed = commit(gone, "typo", false, {"never-was.txt"});
+        QVERIFY(!committed.ok());
+        QVERIFY2(!committed.error().contains(":(literal)"), qPrintable(committed.error()));
+        // Discarded alike, nothing done when one name is no file; a file that is
+        // as committed has nothing to discard, and that is no fault.
+        QVERIFY(write(gone + "/kept.txt", "kept\n"));
+        QVERIFY(stage(gone, {"kept.txt"}).ok());
+        QVERIFY(commit(gone, "kept").ok());
+        QVERIFY(write(gone + "/kept.txt", "edited\n"));
+        const Result noSuch = discard(gone, {"kept.txt", "never-was.txt"});
+        QVERIFY(!noSuch.ok());
+        QVERIFY2(noSuch.error().contains("never-was.txt"), qPrintable(noSuch.error()));
+        QCOMPARE(readAll(gone + "/kept.txt"), QByteArray("edited\n"));
+        QVERIFY(discard(gone, {"kept.txt"}).ok());
+        QVERIFY2(discard(gone, {"kept.txt"}).ok(), "as committed: nothing to do");
+        // A staged deletion discarded by name still comes back.
+        QVERIFY(QFile::remove(gone + "/kept.txt"));
+        QVERIFY(stage(gone, {"kept.txt"}).ok());
+        QVERIFY(discard(gone, {"kept.txt"}).ok());
+        QCOMPARE(readAll(gone + "/kept.txt"), QByteArray("kept\n"));
 
         // Detached.
         const QString repo = makeRepo();
