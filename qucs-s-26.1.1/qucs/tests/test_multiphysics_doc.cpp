@@ -1092,6 +1092,47 @@ private slots:
         shoot(app, "13b-sweep-settings");
     }
 
+    // A sweep's third column is its unit, and is the row's as much as the first
+    // two: an edit of it alone reaches the model at once, and Undo takes it back.
+    // A parameter's third column is its value, shown, and writes nothing.
+    void aSweepsUnitIsCommittedAtOnce()
+    {
+        MultiphysicsDoc* doc = open(copyOf("microstrip_sweep.qfem"));
+        QVERIFY(doc != nullptr);
+        auto rowOf = [doc] {
+            Model m = doc->model();
+            for (const qucs_s::fem::Node& c : m.studies().front()->children)
+                if (c.type == QLatin1String("sweep")) return c.value(QStringLiteral("parameters")).toArray().at(0).toArray();
+            return QJsonArray();
+        };
+        QString sweepTag;
+        {
+            Model m = doc->model();
+            for (const qucs_s::fem::Node& c : m.studies().front()->children)
+                if (c.type == QLatin1String("sweep")) sweepTag = c.tag;
+        }
+        QVERIFY(!sweepTag.isEmpty());
+        const QJsonArray before = rowOf();
+        QCOMPARE(before.at(2).toString(), QStringLiteral("mm"));
+        panel()->selectNode(sweepTag);
+        auto* rows = panel()->settingsArea()->findChild<QTableWidget*>(QStringLiteral("mpRows"));
+        QVERIFY(rows != nullptr);
+        rows->item(0, 2)->setText(QStringLiteral("um"));
+        QCOMPARE(rowOf().at(2).toString(), QStringLiteral("um"));
+        QCOMPARE(rowOf().at(0), before.at(0));
+        QCOMPARE(rowOf().at(1), before.at(1));
+        doc->undo();
+        QCOMPARE(rowOf(), before);
+
+        const QByteArray held = doc->model().toJson();
+        panel()->selectNode(QStringLiteral("parameters"));
+        auto* parameters = panel()->settingsArea()->findChild<QTableWidget*>(QStringLiteral("mpRows"));
+        QVERIFY(parameters != nullptr);
+        QCOMPARE(parameters->columnCount(), 4);
+        parameters->item(0, 2)->setText(QStringLiteral("written over"));
+        QCOMPARE(doc->model().toJson(), held);
+    }
+
     // Solid mechanics: drawn where it has moved.
     void aSolidIsDrawnDeformed()
     {

@@ -6,6 +6,9 @@
 # gdstk. In 3D (fem3_*.cpp): layered geometry, the swept mesh, prisms, and
 # heat, electrostatics and currents solved by multigrid (fem_amg.cpp).
 # The window's part (the Multiphysics panel, a model's tab) is in qucs-core.
+# The optimizers (optimizer_core.cpp) are here because this is the library
+# below both of their users: a model's optimization (fem_optimize.cpp) and,
+# in qucs-core, an optimization component's (optimization.cpp).
 
 set(FEM_SRCS
   fem_expr.cpp
@@ -52,6 +55,8 @@ set(FEM_SRCS
   fem_materials.cpp
   fem_material_plot.cpp
   fem_tensor.cpp
+  optimizer_core.cpp
+  fem_optimize.cpp
 )
 
 add_library(fem STATIC ${FEM_SRCS})

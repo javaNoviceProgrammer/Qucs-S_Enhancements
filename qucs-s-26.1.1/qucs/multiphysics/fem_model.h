@@ -85,6 +85,10 @@ struct PropertyDef {
     /// A Choice that takes a value of its unit in its place too (Absorption
     /// per: a length) - its step reads and checks it.
     bool orValue = false;
+    /// A table's (Rows) columns, by column, that are one of these (empty: free
+    /// text): a combo box in its cell, "@parameters" the model's parameters,
+    /// "@studies" its studies.
+    QList<QStringList> columnChoices;
     /// By choice, the spaces it is offered in (empty: every choice in every
     /// space) - a selection's edges, a 3D model's.
     QList<unsigned> choiceSpaces;

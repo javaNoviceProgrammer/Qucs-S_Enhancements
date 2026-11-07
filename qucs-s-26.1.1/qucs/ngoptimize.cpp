@@ -18,6 +18,7 @@
 
 #include "components/component.h"
 #include "ngstatistics.h"
+#include "multiphysics/optimizer_core.h"
 #include "ngsweep.h"
 #include "schematic.h"
 #include "valuereading.h"
@@ -38,55 +39,12 @@ const char* const kFixed[] = {"Method", "MaxIter", "Tol", "Size", "Seed", "Verbo
 const int kFixedCount = 11;
 
 // The methods of ngspice's optimize that find one optimum (not nsga2's
-// Pareto front of several objectives), global first.
-const struct MethodInfo {
-    const char* id;
-    const char* name;
-    const char* note;
-    bool global;
-    bool population;
-} kMethods[] = {
-    {"de", QT_TRANSLATE_NOOP("NgOpt", "Differential evolution (global)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A population of candidates built from differences of its members; finds the global "
-                                "minimum of rugged objectives."),
-     true, true},
-    {"pso", QT_TRANSLATE_NOOP("NgOpt", "Particle swarm (global)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A swarm pulled toward its members' and its own best points; global."), true, true},
-    {"sa", QT_TRANSLATE_NOOP("NgOpt", "Simulated annealing (global)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A single walker that accepts uphill steps while hot; global, one simulation a step. "
-                                "The iterations are its cooling levels."),
-     true, false},
-    {"cmaes", QT_TRANSLATE_NOOP("NgOpt", "CMA-ES evolution strategy (global)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A Gaussian search that learns the scale and the correlation of the parameters from how "
-                                "each generation ranks; the standard choice for 2 to 50 parameters, for parameters over "
-                                "decades and for correlated ones. Automatic population: 4 + 3 ln(parameters)."),
-     true, true},
-    {"bayes", QT_TRANSLATE_NOOP("NgOpt", "Bayesian optimization (global, few simulations)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A Gaussian-process model of every simulation so far chooses the next by expected "
-                                "improvement: tens of simulations where the population methods take thousands, for a slow "
-                                "circuit and up to a dozen parameters. The iterations are its budget of simulations "
-                                "(2000 at most)."),
-     true, false},
-    {"nm", QT_TRANSLATE_NOOP("NgOpt", "Nelder-Mead simplex (local)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A downhill simplex from the initial values; fast on smooth objectives, finds the "
-                                "nearest minimum."),
-     false, false},
-    {"tr", QT_TRANSLATE_NOOP("NgOpt", "Trust region (local)"),
-     QT_TRANSLATE_NOOP("NgOpt", "A quadratic model of the objective from the initial values, one simulation a step, the "
-                                "bounds inside its steps: it runs along a bound rather than stopping at it; finds the "
-                                "nearest minimum."),
-     false, false},
-    {"lm", QT_TRANSLATE_NOOP("NgOpt", "Levenberg-Marquardt least squares (local, targets only)"),
-     QT_TRANSLATE_NOOP("NgOpt", "Gradient least squares: the fastest for fitting targets on smooth responses; "
-                                "needs targets."),
-     false, false},
-};
-
-const MethodInfo* methodInfo(const QString& method)
+// Pareto front of several objectives), global first: the shared table's that
+// a block offers.
+const optimization::SearchMethod* methodInfo(const QString& method)
 {
-    for (const MethodInfo& m : kMethods)
-        if (method == QLatin1String(m.id)) return &m;
-    return nullptr;
+    const optimization::SearchMethod* m = optimization::searchMethod(method);
+    return m != nullptr && m->block ? m : nullptr;
 }
 
 // A value as ngspice reads it: "2.2n", "4.7 uH", "1e-9" are 2.2e-09,
@@ -248,25 +206,26 @@ void Command::write(Component* component) const
 QList<QPair<QString, QString>> methods()
 {
     QList<QPair<QString, QString>> list;
-    for (const MethodInfo& m : kMethods) list << qMakePair(QString::fromLatin1(m.id), tr(m.name));
+    for (const optimization::SearchMethod& m : optimization::searchMethods())
+        if (m.block) list << qMakePair(QString::fromLatin1(m.id), tr(m.name));
     return list;
 }
 
 QString methodNote(const QString& method)
 {
-    const MethodInfo* m = methodInfo(method);
+    const optimization::SearchMethod* m = methodInfo(method);
     return m != nullptr ? tr(m->note) : QString();
 }
 
 bool isGlobal(const QString& method)
 {
-    const MethodInfo* m = methodInfo(method);
+    const optimization::SearchMethod* m = methodInfo(method);
     return m != nullptr && m->global;
 }
 
 bool takesPopulation(const QString& method)
 {
-    const MethodInfo* m = methodInfo(method);
+    const optimization::SearchMethod* m = methodInfo(method);
     return m != nullptr && m->population;
 }
 
@@ -274,8 +233,8 @@ QString propertyNote(const QString& name)
 {
     if (name == QLatin1String("Method")) {
         QStringList each;
-        for (const MethodInfo& m : kMethods)
-            each << QStringLiteral("%1 - %2: %3").arg(QLatin1String(m.id), tr(m.name), tr(m.note));
+        for (const optimization::SearchMethod& m : optimization::searchMethods())
+            if (m.block) each << QStringLiteral("%1 - %2: %3").arg(QLatin1String(m.id), tr(m.name), tr(m.note));
         return tr("The search, one of: %1 Empty: ngspice's own choice (lm for targets, nm for an expression).")
             .arg(each.join(QLatin1Char(' ')));
     }
@@ -336,7 +295,8 @@ bool commandLine(const Command& command, const Schematic* schematic, QString* li
     const QString method = command.method.trimmed();
     if (!method.isEmpty() && methodInfo(method) == nullptr) {
         QStringList ids;
-        for (const MethodInfo& m : kMethods) ids << QLatin1String(m.id);
+        for (const optimization::SearchMethod& m : optimization::searchMethods())
+            if (m.block) ids << QLatin1String(m.id);
         if (method == QLatin1String("nsga2"))
             return fail(tr("the method nsga2 finds a Pareto front of several objectives, not one optimum: the block "
                            "takes one of %1").arg(ids.join(QStringLiteral(", "))));

@@ -16,6 +16,7 @@
 #define QUCS_MULTIPHYSICSDOC_H
 
 #include "fem_material_plot.h"
+#include "fem_optimize.h"
 #include "multiphysicsview.h"
 #include "qucsdoc.h"
 
@@ -44,6 +45,9 @@ class QThread;
 class QTimer;
 class QToolButton;
 class QUndoStack;
+namespace qucs_s::fem {
+class OptimizationPage;
+}
 
 /*!
  * A multiphysics model in a tab. The model (the tree the Multiphysics
@@ -167,6 +171,27 @@ public:
     void compute(const QString& study = {});
     /// Every solution let go.
     void clearSolutions();
+    // An optimization: a study solved again and again, as a job of its own.
+    /// Starts running optimization \a tag (the first: empty) - its geometry
+    /// first, when stale - with its progress and Cancel; what stops it keeps
+    /// the best point so far. What it found stays in its node: a step of Undo,
+    /// saved with the model.
+    void optimize(const QString& tag = {});
+    /// The optimization the job at work runs (empty: none).
+    QString optimizing() const;
+    /// \a tag's last result, as its node keeps it (none: not run).
+    std::optional<qucs_s::fem::OptimizationResult> optimizationResult(const QString& tag = {}) const;
+    /// Whether the model changed since it was found.
+    bool optimizationStale(const QString& tag = {}) const;
+    /// The optimum of \a tag (a Pareto front: its design \a point, from 1)
+    /// written into the parameters, a step of Undo; what was written in
+    /// \a written. False and why where it is not.
+    bool applyOptimum(const QString& tag, int point = 0, QStringList* written = nullptr, QString* error = nullptr);
+    /// The model tab's Optimization page, and the optimization it shows. The
+    /// page is a tab of its own only where the model has an optimization.
+    qucs_s::fem::OptimizationPage* optimizationPage() const { return a_optimizationPage; }
+    QString shownOptimization() const { return a_shownOptimization; }
+    QToolButton* optimizeButton() const { return a_optimize; }
     bool isBusy() const { return a_job != nullptr; }
     /// The job at work, how far: "61 % - Vc = -9.5 V (point 21 of 34):
     /// Solving Stationary - collector at -9.31 V of -9.5 V (step 412,
@@ -338,6 +363,9 @@ private:
     qucs_s::fem::GeometryBuild presentStep(const QString& tag, const qucs_s::fem::GeometryBuild& partial, QString* error);
     void updateState();
     void updateHighlight();
+    void updateOptimizationPage();
+    void showOptimizationPage();
+    void takeOptimizationRows(Job& job);
     void addDefaultPlots(const QString& study);
     void evaluateAll(const QString& study);
     void fillPlotBox();
@@ -396,6 +424,11 @@ private:
     QToolButton* a_buildGeometry = nullptr;
     QToolButton* a_buildMesh = nullptr;
     QToolButton* a_compute = nullptr;
+    QToolButton* a_optimize = nullptr;
+    qucs_s::fem::OptimizationPage* a_optimizationPage = nullptr;
+    QString a_shownOptimization;
+    QString a_jobOptimization;
+    QJsonObject a_pageShows;      // what the page was last given: not drawn again for the same
     QComboBox* a_showBox = nullptr;
     QComboBox* a_plotBox = nullptr;
     QComboBox* a_instanceBox = nullptr;
