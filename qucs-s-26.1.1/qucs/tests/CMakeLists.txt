@@ -24,7 +24,7 @@ if(QUCS_SHARED_TEST_CORE)
   endif()
   # The project's static libraries whole (a test calls what the core does
   # not), the others - Qt, zlib through gdstk, util - as they are.
-  set(QUCS_OWN_LIBRARIES components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat fem gdstk)
+  set(QUCS_OWN_LIBRARIES components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat fem layoutrouter gdstk)
   set(QUCS_OTHER_LIBRARIES ${QUCS_LINK_LIBRARIES})
   list(REMOVE_ITEM QUCS_OTHER_LIBRARIES ${QUCS_OWN_LIBRARIES})
   string(JOIN "," QUCS_OWN_LIBRARIES_LIST ${QUCS_OWN_LIBRARIES})
@@ -87,6 +87,18 @@ function(qucs_add_fem_test name)
     TIMEOUT 900)
 endfunction()
 
+# qucs_add_router_test(<name>) : a test of the layout viewer's metal router
+# alone (layoutrouter/, Qt Core and gdstk): no window, no core.
+function(qucs_add_router_test name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} layoutrouter Qt6::Test)
+  add_test(NAME ${name} COMMAND ${name})
+  set_tests_properties(${name} PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
+    TIMEOUT 900)
+endfunction()
+
+qucs_add_router_test(test_layout_router)
 qucs_add_fem_test(test_fem_engine)
 qucs_add_fem_test(test_optimizer_core)
 qucs_add_fem_test(test_fem_optimize)
@@ -217,6 +229,11 @@ qucs_add_test(test_spreadsheet)
 qucs_add_test(test_sheet_doc)
 qucs_add_test(test_zip_doc)
 qucs_add_test(test_layout_doc)
+# The metal router in the application: Claude's route_* tools, the Route
+# panel, and qucs-s --mcp-server over stdio.
+qucs_add_test(test_layout_routing)
+target_compile_definitions(test_layout_routing PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>")
+add_dependencies(test_layout_routing ${QUCS_NAME})
 qucs_add_test(test_rf25_model)
 qucs_add_test(test_rf25_layout)
 qucs_add_test(test_rf25_mesh)
