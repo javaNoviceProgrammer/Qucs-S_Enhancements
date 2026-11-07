@@ -471,6 +471,74 @@ constexpr int kWrittenAs = kWorksTheView + 1;
 // nor the lines of a prompt (0).
 constexpr qreal kApart = 4.0;
 
+// The words a transcript's lines cannot wrap in reasonable time: a blob of data
+// in a reply, a tool's output or a prompt, 1.1 s to draw at 100 000 characters,
+// 110 s at a million, and again at each step of the dock's resize. Words up to
+// this long are laid out as they are, which costs a millisecond and fills each
+// row. A longer one has a place to break every few letters, so that its rows end
+// close to the view's edge, and it costs what a line of short words costs.
+constexpr qucs_s::markdown::RunBreaks kTranscriptRuns{2000, 8, true};
+
+// Whether \a text has such a word.
+bool hasLongRun(const QString& text)
+{
+    if (text.size() <= kTranscriptRuns.longest) return false;
+    int run = 0;
+    for (const QChar c : text) {
+        run = c.isSpace() ? 0 : run + 1;
+        if (run > kTranscriptRuns.longest) return true;
+    }
+    return false;
+}
+
+// The composer's text is what is sent, so it can hold no places to break. With
+// such a word in it, its lines break anywhere, which costs nothing to find (at
+// 300 000 characters each key took 2.5 s). Set before the text goes in: it is laid
+// out as it goes in, and a million characters would be laid out in a minute.
+void expectInComposer(QPlainTextEdit* composer, const QString& text)
+{
+    if (hasLongRun(text)) composer->setWordWrapMode(QTextOption::WrapAnywhere);
+}
+
+// The prompt being written: what is pasted or dropped looked at as it comes.
+class ComposerEdit : public QPlainTextEdit
+{
+public:
+    using QPlainTextEdit::QPlainTextEdit;
+
+protected:
+    void insertFromMimeData(const QMimeData* source) override
+    {
+        if (source != nullptr && source->hasText()) expectInComposer(this, source->text());
+        QPlainTextEdit::insertFromMimeData(source);
+    }
+};
+
+// The conversation's view: what is copied or dragged from it has no such breaks.
+class TranscriptView : public QTextBrowser
+{
+public:
+    using QTextBrowser::QTextBrowser;
+
+protected:
+    QMimeData* createMimeDataFromSelection() const override
+    {
+        QMimeData* data = QTextBrowser::createMimeDataFromSelection();
+        // (Only where there can be any: elsewhere a space of no width is the
+        // text's own, and is copied as it was written.)
+        const QTextCursor chosen = textCursor();
+        const QTextBlock last = document()->findBlock(chosen.selectionEnd());
+        for (QTextBlock b = document()->findBlock(chosen.selectionStart()); b.isValid(); b = b.next()) {
+            if (b.length() - 1 > kTranscriptRuns.longest) {
+                qucs_s::markdown::removeRunBreaks(data);
+                break;
+            }
+            if (b == last) break;
+        }
+        return data;
+    }
+};
+
 // \a text as it reads: its line breaks as such, without spaces of no width or
 // the places of objects. (A non-breaking space stays: the composer's text, as
 // its document gives it, has a plain one.)
@@ -687,7 +755,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     });
 
     // The conversation.
-    a_view = new QTextBrowser(this);
+    a_view = new TranscriptView(this);
     a_view->setObjectName(QStringLiteral("claudeTranscript"));
     a_view->setFrameShape(QFrame::NoFrame);
     a_view->setOpenLinks(false);
@@ -858,7 +926,10 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
         a_rewinding = false;
         a_rewindIndex = -1;
         a_editStopped = false;
-        if (a_input->toPlainText().trimmed().isEmpty()) a_input->setPlainText(sent);
+        if (a_input->toPlainText().trimmed().isEmpty()) {
+            expectInComposer(a_input, sent);
+            a_input->setPlainText(sent);
+        }
         append({Entry::Problem,
                 tr("Claude Code could not go back to before that prompt (%1): the conversation is as it was, and the edited "
                    "prompt is in the box again.")
@@ -1179,7 +1250,7 @@ void ClaudeCodePanel::buildComposer()
     a_imageStrip = strip;
     a_imageStrip->hide();
     layout->addWidget(a_imageStrip);
-    a_input = new QPlainTextEdit(a_composer);
+    a_input = new ComposerEdit(a_composer);
     a_input->setObjectName(QStringLiteral("claudeInput"));
     a_input->setFrameShape(QFrame::NoFrame);
     a_input->setPlaceholderText(tr("Ask Claude about your circuits, simulations, files or images…"));
@@ -2097,6 +2168,9 @@ void ClaudeCodePanel::updateState()
 
 void ClaudeCodePanel::updateComposer()
 {
+    // (expectInComposer(); and back to whole words once the long one has gone.)
+    const QTextOption::WrapMode wrap = hasLongRun(a_input->toPlainText()) ? QTextOption::WrapAnywhere : QTextOption::WrapAtWordBoundaryOrAnywhere;
+    if (a_input->wordWrapMode() != wrap) a_input->setWordWrapMode(wrap);
     const bool busy = a_session->isBusy();
     a_send->setText(busy ? tr("Stop") : tr("Send"));
     a_send->setToolTip(busy ? tr("Stop Claude (Esc); right-click to send what it waits on to the background") : tr("Send (Enter)"));
@@ -2316,6 +2390,7 @@ bool ClaudeCodePanel::editPrompt(qsizetype index)
     a_entries.resize(index);
     a_draft = a_input->toPlainText();
     a_draftImages = a_images;
+    expectInComposer(a_input, a_setAside.constFirst().text);
     a_input->setPlainText(a_setAside.constFirst().text);
     a_input->moveCursor(QTextCursor::End);
     // (Its images with it, those whose files are there.)
@@ -2341,6 +2416,7 @@ void ClaudeCodePanel::cancelEdit()
     a_setAside.clear();
     a_editing = -1;
     a_editStopped = false;
+    expectInComposer(a_input, a_draft);
     a_input->setPlainText(a_draft);
     a_input->moveCursor(QTextCursor::End);
     a_draft.clear();
@@ -2738,6 +2814,7 @@ void ClaudeCodePanel::quoteInComposer(const QString& text)
     QTextCursor end(a_input->document());
     end.movePosition(QTextCursor::End);
     // (Put in at once: one step to undo.)
+    expectInComposer(a_input, text);
     end.insertText(apart + asQuote(text) + QStringLiteral("\n\n"));
     a_input->setTextCursor(end);
     focusComposer();
@@ -2954,9 +3031,17 @@ void ClaudeCodePanel::render(bool whole)
                 // (Each part starts at the end, in the root frame: else it
                 // could not be taken out alone - drawn whole next time.)
                 if (c.position() != doc->characterCount() - 1 || c.currentFrame() != doc->rootFrame()) apart = false;
-                a_drawn.append({keys.at(k), c.position(), c.blockFormat(), c.blockCharFormat()});
+                const int partAt = c.position();
+                a_drawn.append({keys.at(k), partAt, c.blockFormat(), c.blockCharFormat()});
                 if (a_entries.at(from).kind == Entry::Tool) renderTools(c, from, to, captioned);
                 else renderEntry(c, a_entries.at(from), captioned, from);
+                // Whatever part it is, a reply or a tool's output or a prompt.
+                // (Here, before the next part's place is taken. The mark of a
+                // reply being written moves on with the text before it.)
+                QTextCursor mark(doc);
+                if (a_replyMark >= 0) mark.setPosition(a_replyMark);
+                qucs_s::markdown::breakLongRuns(doc, partAt, kTranscriptRuns);
+                if (a_replyMark >= 0) a_replyMark = mark.position();
             } else {
                 if (a_entries.at(from).kind == Entry::You) captioned = false;
                 else if (a_entries.at(from).kind == Entry::Claude || a_entries.at(from).kind == Entry::Tool) captioned = true;
@@ -3616,7 +3701,12 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
         next.setTopMargin(above);
         first.setBlockFormat(next);
     }
-    // Code on a shade, set off from the text.
+    // Code on a shade, set off from the text, and wrapped at the view's width
+    // as the text is. (The Markdown reader says a fenced block's lines do not
+    // break, and Qt's layout then makes the whole document as wide as the
+    // longest: the conversation scrolled sideways, every line cut off at the
+    // left as it did. A line wrapped is one line still: copied, quoted and
+    // exported whole. What is code goes by its fence and language, which stay.)
     for (QTextBlock b = target->findBlock(from); b.isValid() && b.position() <= c.position(); b = b.next()) {
         const QTextBlockFormat bf = b.blockFormat();
         if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)
@@ -3625,6 +3715,7 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
             QTextBlockFormat shaded = bf;
             shaded.setBackground(col.code);
             shaded.setLeftMargin(bf.leftMargin() + 4);
+            shaded.clearProperty(QTextFormat::BlockNonBreakableLines);
             bc.setBlockFormat(shaded);
         }
         if (b == c.block()) break;
@@ -4448,6 +4539,7 @@ bool ClaudeCodePanel::exportConversation(const QString& path, ExportFormat forma
         QTextBlockFormat next;
         c.insertBlock(next);
         renderConversation(c);
+        qucs_s::markdown::breakLongRuns(&doc, 0, kTranscriptRuns);
     }
 
     QPdfWriter pdf(path);

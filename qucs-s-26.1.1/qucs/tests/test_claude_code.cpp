@@ -5762,9 +5762,9 @@ private slots:
         panel.newConversation();
         panel.renderNow();
         QVERIFY(!view->textCursor().hasSelection());
-        // Sideways too: a line of code wider than the view, scrolled along.
+        // Sideways too: a formula wider than the view, scrolled along.
         panel.newConversation();
-        feedReply(panel, QStringLiteral("Wide:\n\n```\nleft") + QString(600, QLatin1Char('x')) + QStringLiteral("right\n```"));
+        feedReply(panel, QStringLiteral("Wide:\n\n$$") + QStringLiteral("x+").repeated(120) + QStringLiteral("x$$\n\nleft right"));
         feedPiece(panel, QStringLiteral("Written now"), true);
         QScrollBar* across = view->horizontalScrollBar();
         QTRY_VERIFY(across->maximum() > 100);
@@ -5914,10 +5914,10 @@ private slots:
         QVERIFY(view->anchorAt(first).isEmpty());
         QCOMPARE(rightClick(port, first), off);
         // Scrolled along: a link further on in its line than the view has
-        // gone, beside a line of code wider than the view.
+        // gone, beside a formula wider than the view.
         panel.newConversation();
-        feedReply(panel, QStringLiteral("Wide:\n\n```\n") + QString(600, QLatin1Char('x'))
-                             + QStringLiteral("\n```\n\nSome words in front of the link, all on their way to [it](https://example.com/along), and on."));
+        feedReply(panel, QStringLiteral("Wide:\n\n$$") + QStringLiteral("x+").repeated(120)
+                             + QStringLiteral("x$$\n\nSome words in front of the link, all on their way to [it](https://example.com/along), and on."));
         QScrollBar* across = view->horizontalScrollBar();
         QTRY_VERIFY(across->maximum() > 200);
         const auto inTheLink = [view] {   // (between its two letters)
@@ -5974,7 +5974,6 @@ private slots:
         QVERIFY(b.next().blockFormat().topMargin() > 0);
         // Fenced code: as the lines after it, on the same shade.
         b = opening(QStringLiteral("```\nfirst code line\nsecond code line\n```"), QStringLiteral("first code"));
-        QVERIFY(b.blockFormat().nonBreakableLines());
         QVERIFY(b.blockFormat().hasProperty(QTextFormat::BlockCodeFence));
         QCOMPARE(b.blockFormat().background(), b.next().blockFormat().background());
         QCOMPARE(b.blockFormat().leftMargin(), b.next().blockFormat().leftMargin());
@@ -6031,10 +6030,10 @@ private slots:
         panel.newConversation();
         feedPiece(panel, QStringLiteral("```\nwriting first"), true);
         b = doc->find(QStringLiteral("writing first")).block();
-        QVERIFY(b.blockFormat().nonBreakableLines());
+        QVERIFY(b.blockFormat().hasProperty(QTextFormat::BlockCodeFence));
         feedPiece(panel, QStringLiteral("\nwriting second\n```\n\nThen words"));
         b = doc->find(QStringLiteral("writing first")).block();
-        QVERIFY(b.blockFormat().nonBreakableLines());
+        QVERIFY(b.blockFormat().hasProperty(QTextFormat::BlockCodeFence));
         const QTextBlockFormat inPart = b.blockFormat();
         const int countInPart = doc->blockCount();
         panel.renderNow(true);
@@ -6456,6 +6455,437 @@ private slots:
     // least as with none of them. (A QLabel asks for its longest word's width
     // and a row for all its buttons' and pictures': the dock fuzzed on 3
     // November was up to 8,741 pixels wide at its least.)
+    // A long line of code wraps at the view's width, and nothing sideways is
+    // left of it: the user's report of 7 November, a reply's code line taking
+    // the whole conversation sideways, every line cut off at the left.
+    void aLongCodeLineWrapsAndStaysOneLine()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "codewraps");
+        panel.resize(420, 700);
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextBrowser* view = panel.transcript();
+        QTextDocument* doc = view->document();
+        const auto settle = [] {
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            QCoreApplication::processEvents();
+        };
+        // Every line of the conversation within the view, its text as far as
+        // the page's right edge at the most.
+        const auto widest = [doc] {
+            qreal most = 0;
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+                for (int i = 0; i < b.layout()->lineCount(); ++i) most = std::max(most, b.layout()->position().x() + b.layout()->lineAt(i).x() + b.layout()->lineAt(i).naturalTextWidth());
+            return most;
+        };
+        const auto block = [doc](const QString& word) { return doc->find(word, 0, QTextDocument::FindCaseSensitively).block(); };
+        const QString said = QStringLiteral("launchctl setenv SPICE_LIB_DIR \"/Volumes/Archive 01/git/Ngspice_OpenVAF_Enhancements/bin/macos/apple-silicon\"");
+        const QString path = QLatin1Char('/') + QStringLiteral("segment/").repeated(40);
+        const QString solid(400, QLatin1Char('x'));
+        // From the start of the block \a first is in to the end of the one \a last is
+        // in, chosen and copied. (By position: words that repeat are found early.)
+        const auto copied = [view, doc, &block](const QString& first, const QString& last) {
+            const QTextBlock to = block(last);
+            QTextCursor c(doc);
+            c.setPosition(block(first).position());
+            c.setPosition(to.position() + to.length() - 1, QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+            view->copy();
+            return QApplication::clipboard()->text();
+        };
+
+        // The same whichever way the line comes.
+        const QList<std::tuple<QString, QString, QString>> kinds{
+            {"as the user saw it", "```\n" + said + "\n```", said},
+            {"with a language", "```bash\n" + said + "\n```", said},
+            {"among other lines", "```\nshort first\n" + said + "\nshort last\n```", said},
+            {"no spaces at all", "```\n" + solid + "\n```", solid},
+            {"a long path", "```\n" + path + "\n```", path},
+            {"in a list", "- an item\n\n  ```\n  " + said + "\n  ```\n", said},
+            {"in a quote", "> ```\n> " + said + "\n> ```\n", said},
+            {"indented code", "    " + said + "\n", said},
+        };
+        for (const auto& [name, markdown, line] : kinds) {
+            panel.newConversation();
+            feedReply(panel, markdown);
+            settle();
+            const QByteArray what = name.toUtf8();
+            QVERIFY2(view->horizontalScrollBar()->maximum() == 0, what.constData());
+            QVERIFY2(widest() <= view->viewport()->width(), what.constData());
+            const QTextBlock b = block(line.left(12));
+            // One line of the text still, on as many of the view's as it takes.
+            QVERIFY2(b.text() == line, what.constData());
+            QVERIFY2(b.layout()->lineCount() > 1, what.constData());
+            // Code still: its font, its shade, what it is known by.
+            QVERIFY2(b.begin().fragment().charFormat().font().family() == QFontDatabase::systemFont(QFontDatabase::FixedFont).family(), what.constData());
+            QVERIFY2(b.blockFormat().background().style() != Qt::NoBrush, what.constData());
+            QVERIFY2(b.blockFormat().hasProperty(QTextFormat::BlockCodeLanguage), what.constData());
+            // Copied as it was written, with no line breaks put in.
+            QVERIFY2(copied(line.left(12), line.left(12)) == line, what.constData());
+            // (Copied with the block whole, to a program that takes Markdown too:
+            // a fence's line whole in it. A part of a block has no format to go
+            // by, nor indented code a fence, and Qt's writer wraps those at 80
+            // columns as a paragraph. It did before; the plain text is whole.)
+            view->selectAll();
+            view->copy();
+            QVERIFY2(QApplication::clipboard()->text().contains(line), what.constData());
+            if (b.blockFormat().hasProperty(QTextFormat::BlockCodeFence))
+                QVERIFY2(QApplication::clipboard()->mimeData()->data("text/markdown").contains(line.toUtf8()), what.constData());
+            QTextCursor none = view->textCursor();
+            none.clearSelection();
+            view->setTextCursor(none);
+        }
+
+        // As one of several lines, all of them wrapped, the copy theirs.
+        panel.newConversation();
+        feedReply(panel, "```\n" + said + "\n" + solid + "\n" + path + "\n```");
+        settle();
+        QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+        QCOMPARE(copied(said.left(12), path.left(12)), QString(said + "\n" + solid + "\n" + path));
+        // Reply quotes it whole, one line of the quote: as words alone, and among
+        // other lines as code, known by its fence though it wraps.
+        QCOMPARE(quoteOf(panel, said.left(12), said.right(12)), QString("> " + said + "\n\n"));
+        panel.newConversation();
+        feedReply(panel, "```\n" + said + "\nshort after\n```");
+        settle();
+        QCOMPARE(quoteOf(panel, said.left(12), QStringLiteral("short after")), QString(">     " + said + "\n>     short after\n\n"));
+        panel.composer()->clear();
+
+        // Written piece by piece: wrapped at each.
+        panel.newConversation();
+        feedPiece(panel, "```\n" + said.left(60), true);
+        feedPiece(panel, said.mid(60));
+        settle();
+        QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+        QVERIFY(block(said.left(12)).layout()->lineCount() > 1);
+
+        // Its indentation kept, on the line's first row, no empty row for it.
+        // Spaces at its end take no room.
+        const QString indented = QStringLiteral("        ") + solid;
+        panel.newConversation();
+        feedReply(panel, "```\n" + indented + "\nshort" + QString(500, QLatin1Char(' ')) + "\n```");
+        settle();
+        QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+        QCOMPARE(block(QStringLiteral("xxx")).text(), indented);
+        QVERIFY(block(QStringLiteral("xxx")).layout()->lineAt(0).textLength() > 8);
+        QCOMPARE(copied(QStringLiteral("xxx"), QStringLiteral("xxx")), indented);
+
+        // Wrapped again as the dock is sized: on one row where there is room.
+        panel.newConversation();
+        feedReply(panel, "```\n" + said + "\n```");
+        settle();
+        const QTextBlock line = block(said.left(12));
+        const int rows = line.layout()->lineCount();
+        panel.resize(1600, 700);
+        settle();
+        QCOMPARE(line.layout()->lineCount(), 1);
+        QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+        panel.resize(420, 700);
+        settle();
+        QCOMPARE(line.layout()->lineCount(), rows);
+        QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+        QVERIFY(widest() <= view->viewport()->width());
+        // On its shade all the way down, from above its first row to the room to
+        // the right of its last, which ends short of the view's edge.
+        const QRectF drawn = doc->documentLayout()->blockBoundingRect(line).translated(0, -view->verticalScrollBar()->value());
+        const QImage seen = view->viewport()->grab().toImage();
+        const qreal ratio = seen.devicePixelRatio();
+        const QColor shade = line.blockFormat().background().color();
+        // (Within a step or two: a platform's palette may be a little see-through.)
+        const auto shaded = [&seen, ratio, shade](qreal x, qreal y) {
+            const QColor c = seen.pixelColor(int(x * ratio), int(y * ratio));
+            return std::abs(c.red() - shade.red()) <= 2 && std::abs(c.green() - shade.green()) <= 2 && std::abs(c.blue() - shade.blue()) <= 2;
+        };
+        const qreal bottom = drawn.bottom() - line.blockFormat().bottomMargin();
+        QVERIFY(shaded(view->viewport()->width() - 14, drawn.top() + line.blockFormat().topMargin() + 1));
+        QVERIFY(shaded(view->viewport()->width() - 14, bottom - 2));
+        QVERIFY(!shaded(view->viewport()->width() - 14, bottom + line.blockFormat().bottomMargin() + 3));
+
+        // These never took the view sideways, and do not now.
+        const QString tableOfWords = "| " + QString(150, QLatin1Char('a')) + " | " + QString(150, QLatin1Char('b')) + " |\n|---|---|\n| x | y |\n";
+        for (const QString& markdown : {"see `" + said + "` there", "see `" + solid + "` there", solid, "# " + solid, tableOfWords}) {
+            panel.newConversation();
+            feedReply(panel, markdown);
+            settle();
+            QVERIFY2(view->horizontalScrollBar()->maximum() == 0, qPrintable(markdown));
+        }
+
+        // A formula or a table wider than the view has it scroll sideways, as
+        // it must to be seen; the view stays at its start, and the words and
+        // code around it wrapped as ever, not at the wide thing's width.
+        const QString manyColumns = "|" + QStringLiteral("col|").repeated(40) + "\n|" + QStringLiteral("-|").repeated(40) + "\n|" + QStringLiteral("1|").repeated(40) + "\n";
+        const QString words = QStringLiteral("ordinary words ").repeated(30);
+        for (const QString& wide : {"$$" + QStringLiteral("x+").repeated(120) + "x$$", manyColumns}) {
+            panel.newConversation();
+            feedReply(panel, words + "\n\n" + wide + "\n\n```\n" + said + "\n```\n");
+            settle();
+            const QByteArray what = wide.left(20).toUtf8();
+            QVERIFY2(view->horizontalScrollBar()->maximum() > 0, what.constData());
+            QVERIFY2(view->horizontalScrollBar()->value() == 0, what.constData());
+            feedReply(panel, words);
+            settle();
+            QVERIFY2(view->horizontalScrollBar()->value() == 0, what.constData());
+            for (const QString& around : {QStringLiteral("ordinary"), said.left(12)}) {
+                const QTextBlock b = block(around);
+                QVERIFY2(b.layout()->lineCount() > 1, what.constData());
+                for (int i = 0; i < b.layout()->lineCount(); ++i)
+                    QVERIFY2(b.layout()->position().x() + b.layout()->lineAt(i).naturalTextWidth() <= view->viewport()->width(), what.constData());
+            }
+        }
+
+    }
+
+    // A word with no place to break a line costs Qt the square of its length to
+    // lay out, at each layout: a million characters froze the dock for 110 s. So
+    // past 2000 characters it has places to break, wherever in the transcript it
+    // is, and they are in nothing that is read from it. (No time is held to: this
+    // holds the places, which is what the time comes from.)
+    void aLongWordHasPlacesToBreakWhereverItIs()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "longwords");
+        panel.resize(420, 700);
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextBrowser* view = panel.transcript();
+        QTextDocument* doc = view->document();
+        const auto settle = [] {
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            QCoreApplication::processEvents();
+        };
+        const QChar zero(0x200B);
+        // The longest stretch of the document with no place to break a line.
+        const auto longestRun = [doc, zero] {
+            int most = 0;
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+                int run = 0;
+                const QString text = b.text();
+                for (const QChar c : text) {
+                    run = c.isSpace() || c == zero ? 0 : run + 1;
+                    most = std::max(most, run);
+                }
+            }
+            return most;
+        };
+        const auto block = [doc](const QString& word) { return doc->find(word, 0, QTextDocument::FindCaseSensitively).block(); };
+        const auto chooseBlock = [view, doc, &block](const QString& word) {
+            const QTextBlock b = block(word);
+            QTextCursor c(doc);
+            c.setPosition(b.position());
+            c.setPosition(b.position() + b.length() - 1, QTextCursor::KeepAnchor);
+            view->setTextCursor(c);
+        };
+        const QString word(30000, QLatin1Char('w'));
+        const auto shown = [&panel, zero] { return panel.transcriptText().remove(zero); };
+        const auto holds = [&](const char* what) {
+            settle();
+            const QByteArray said = what;
+            if (longestRun() > 2000) qWarning("%s: a run of %d", what, longestRun());
+            QVERIFY2(longestRun() <= 2000, said.constData());
+            QVERIFY2(view->horizontalScrollBar()->maximum() == 0, said.constData());
+            QVERIFY2(shown().contains(word), said.constData());
+        };
+
+        // In a reply, whatever it is written as.
+        const QString half = word.left(15000);
+        const QList<std::pair<const char*, QString>> replies{
+            {"a paragraph", word},
+            {"a paragraph, words before and after", "before " + word + " after"},
+            {"inline code", "see `" + word + "` there"},
+            {"fenced code", "```\n" + word + "\n```"},
+            {"indented code", "    " + word + "\n"},
+            {"a heading", "# " + word},
+            {"a list", "- item\n- " + word},
+            {"a quote", "> " + word},
+            {"a table", "| a | b |\n|---|---|\n| " + word + " | y |\n"},
+            {"a link", "[" + word + "](https://example.com/)"},
+        };
+        for (const auto& [what, markdown] : replies) {
+            panel.newConversation();
+            feedReply(panel, markdown);
+            holds(what);
+        }
+        // Across two formats, one run still.
+        panel.newConversation();
+        feedReply(panel, "**" + half + "**" + half);
+        settle();
+        QVERIFY(longestRun() <= 2000);
+        QVERIFY(shown().contains(word));
+        QCOMPARE(block(half.left(9)).begin().fragment().charFormat().fontWeight(), int(QFont::Bold));
+
+        // Being written: the mark of writing stays after it, and a selection
+        // through it is kept to the word as more comes.
+        panel.newConversation();
+        feedPiece(panel, word, true);
+        holds("being written");
+        QVERIFY(shown().endsWith(word + QStringLiteral(" ▍")));
+        chooseBlock(QStringLiteral("www"));
+        QTextCursor keep = view->textCursor();
+        keep.setPosition(block(QStringLiteral("www")).position());
+        keep.setPosition(doc->find(QStringLiteral(" ▍")).selectionStart(), QTextCursor::KeepAnchor);
+        view->setTextCursor(keep);
+        const QString chosen = view->textCursor().selectedText();
+        feedPiece(panel, QStringLiteral(" and more"));
+        QCOMPARE(view->textCursor().selectedText(), chosen);
+        QVERIFY(shown().endsWith(word + QStringLiteral(" and more ▍")));
+
+        // In a prompt.
+        panel.newConversation();
+        panel.composer()->setPlainText(word);
+        panel.sendButton()->click();
+        panel.renderNow();
+        holds("a prompt");
+
+        // In a tool's input and output, drawn when the tool is opened.
+        panel.newConversation();
+        const auto feed = [&panel](const QJsonObject& m) { panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact)); };
+        feed({{"type", "assistant"},
+              {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_use"}, {"id", "t1"}, {"name", "Bash"}, {"input", QJsonObject{{"command", word}}}}}}}}});
+        feed({{"type", "user"},
+              {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_result"}, {"tool_use_id", "t1"}, {"content", word}, {"is_error", true}}}}}}});
+        panel.renderNow();
+        emit view->anchorClicked(QUrl("toggle:tool:t1"));
+        panel.renderNow();
+        holds("a tool's output");
+
+        // In what Claude Code or the panel says.
+        panel.newConversation();
+        emit panel.session()->failed(word);
+        panel.renderNow();
+        holds("a failure");
+        panel.newConversation();
+        emit panel.session()->notice(word);
+        panel.renderNow();
+        holds("a notice");
+
+        // Words of 2000 letters are as they were, each row full; 2001 is not.
+        panel.newConversation();
+        feedReply(panel, QString(2000, QLatin1Char('k')) + " " + QString(2000, QLatin1Char('l')));
+        settle();
+        QVERIFY(!doc->toRawText().contains(zero));
+        panel.newConversation();
+        feedReply(panel, QString(2001, QLatin1Char('k')));
+        settle();
+        QVERIFY(doc->toRawText().contains(zero));
+        // Its rows end close to the view's edge, every one but its last.
+        panel.newConversation();
+        feedReply(panel, "```\n" + word + "\n```");
+        settle();
+        {
+            const QTextBlock b = block(QStringLiteral("www"));
+            QVERIFY(b.layout()->lineCount() > 100);
+            const qreal letter = QFontMetricsF(b.begin().fragment().charFormat().font()).horizontalAdvance(QLatin1Char('w'));
+            const qreal room = b.layout()->lineAt(0).width();
+            for (int i = 0; i + 1 < b.layout()->lineCount(); ++i)
+                QVERIFY2(b.layout()->lineAt(i).naturalTextWidth() >= room - 8 * letter, qPrintable(QString::number(i)));
+            // Sized again: wrapped again.
+            const int rows = b.layout()->lineCount();
+            panel.resize(800, 700);
+            settle();
+            QVERIFY(b.layout()->lineCount() < rows);
+            QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+            panel.resize(420, 700);
+            settle();
+            QCOMPARE(b.layout()->lineCount(), rows);
+        }
+
+        // Copied as it was written, in every form a program may take.
+        chooseBlock(QStringLiteral("www"));
+        view->copy();
+        const QMimeData* copied = QApplication::clipboard()->mimeData();
+        QCOMPARE(copied->text(), word);
+        QVERIFY(!copied->html().contains(zero));
+        QVERIFY(copied->html().contains(word));
+        QVERIFY(!QString::fromUtf8(copied->data("text/markdown")).contains(zero));
+        QVERIFY(!copied->hasFormat("application/vnd.oasis.opendocument.text"));   // (zipped, with them in it)
+        // A selection with none has all its usual forms.
+        panel.newConversation();
+        feedReply(panel, QStringLiteral("Plain words."));
+        settle();
+        view->selectAll();
+        view->copy();
+        QVERIFY(QApplication::clipboard()->mimeData()->hasFormat("application/vnd.oasis.opendocument.text"));
+        // And a space of no width that is the text's own is copied as written.
+        panel.newConversation();
+        const QString own = QStringLiteral("zero") + zero + QStringLiteral("width");
+        feedReply(panel, own);
+        settle();
+        chooseBlock(own.left(4));
+        view->copy();
+        QCOMPARE(QApplication::clipboard()->text(), own);
+        // Reply quotes it whole.
+        panel.newConversation();
+        feedReply(panel, word);
+        settle();
+        panel.composer()->clear();
+        chooseBlock(QStringLiteral("www"));
+        rightClick(view->viewport(), onSelection(view), QStringLiteral("Reply"));
+        QCOMPARE(panel.composer()->toPlainText(), QString("> " + word + "\n\n"));
+        panel.composer()->clear();
+
+        // The composer's text is what is sent, so it holds no places to break: its
+        // lines break anywhere while it holds such a word, and it says so before
+        // the word is laid out, however it comes.
+        {
+            QPlainTextEdit* composer = panel.composer();
+            QTextOption::WrapMode laidOutWith = QTextOption::NoWrap;
+            connect(composer->document(), &QTextDocument::contentsChange, composer, [&laidOutWith, composer] { laidOutWith = composer->wordWrapMode(); });
+            const QTextOption::WrapMode words = QTextOption::WrapAtWordBoundaryOrAnywhere;
+            QCOMPARE(composer->wordWrapMode(), words);
+            // Pasted.
+            QApplication::clipboard()->setText(word);
+            composer->setFocus();
+            composer->paste();
+            QCOMPARE(laidOutWith, QTextOption::WrapAnywhere);
+            QCOMPARE(composer->wordWrapMode(), QTextOption::WrapAnywhere);
+            QCOMPARE(composer->toPlainText(), word);
+            QVERIFY(composer->height() > 0);
+            // Short again: whole words again.
+            composer->clear();
+            QCOMPARE(composer->wordWrapMode(), words);
+            // Short words pasted, or many of them: as ever.
+            QApplication::clipboard()->setText(QStringLiteral("many short words ").repeated(500));
+            composer->paste();
+            QCOMPARE(laidOutWith, words);
+            QCOMPARE(composer->wordWrapMode(), words);
+            composer->clear();
+            // Typed up to it: the mode changes as the word passes the length.
+            composer->setPlainText(QString(2000, QLatin1Char('t')));
+            QCOMPARE(composer->wordWrapMode(), words);
+            composer->moveCursor(QTextCursor::End);
+            QTest::keyClick(composer, Qt::Key_T);
+            QCOMPARE(composer->wordWrapMode(), QTextOption::WrapAnywhere);
+            composer->clear();
+            // Quoted, by Reply.
+            panel.newConversation();
+            feedReply(panel, word);
+            settle();
+            laidOutWith = QTextOption::NoWrap;
+            chooseBlock(QStringLiteral("www"));
+            rightClick(view->viewport(), onSelection(view), QStringLiteral("Reply"));
+            QCOMPARE(laidOutWith, QTextOption::WrapAnywhere);
+            QCOMPARE(composer->toPlainText(), QString("> " + word + "\n\n"));
+            composer->clear();
+        }
+
+        // Drawn again from the start: the same, not broken twice over.
+        const int size = doc->characterCount();
+        panel.renderNow(true);
+        QCOMPARE(doc->characterCount(), size);
+
+        // A million characters, once.
+        panel.newConversation();
+        const QString blob(1000000, QLatin1Char('q'));
+        feedReply(panel, "```\n" + blob + "\n```\n\nThen words.");
+        settle();
+        QVERIFY(longestRun() <= 2000);
+        QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
+        QVERIFY(shown().contains(blob));
+        // The fragment after it where it was: the words still follow.
+        QVERIFY(shown().endsWith(QStringLiteral("Then words.")));
+    }
+
     void longTextsLeaveTheDockNarrow()
     {
         const QString work = fresh("narrow");
