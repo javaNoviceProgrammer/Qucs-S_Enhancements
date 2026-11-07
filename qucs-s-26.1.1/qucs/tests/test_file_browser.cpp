@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QColumnView>
+#include <QFileSystemModel>
 #include <QHeaderView>
 #include <QLabel>
 #include <QListView>
@@ -56,6 +57,10 @@ QImage imageOf(const QIcon& icon, int side)
 }
 
 } // namespace
+
+// How long a folder's change may take to show: a limit for when it never does, not
+// a measure (a wait ends as soon as it shows; a machine under load takes seconds).
+constexpr int kFolderWait = 30000;
 
 class TestFileBrowser : public QObject
 {
@@ -667,14 +672,14 @@ private slots:
                     }
             });
             QVERIFY(QDir(here).removeRecursively());
-            QTRY_VERIFY_WITH_TIMEOUT(remade, 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(remade, kFolderWait);
             disconnect(c);
-            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), here, 5000);
-            QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), 5000);
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), here, kFolderWait);
+            QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), kFolderWait);
             QCOMPARE(fb.pathOf(fb.currentView()->rootIndex()), here);
             settled(fb, "a.txt");
             touch(here + "/new.txt");
-            QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("new.txt"), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("new.txt"), kFolderWait);
             QVERIFY(QFile::remove(here + "/new.txt"));
         }
         // Removed, and made again a moment after the model saw it go (a
@@ -702,14 +707,14 @@ private slots:
                 });
             });
             QVERIFY(QDir(here).removeRecursively());
-            QTRY_VERIFY_WITH_TIMEOUT(remade, 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(remade, kFolderWait);
             disconnect(c);
-            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), here, 5000);
-            QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), 5000);
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), here, kFolderWait);
+            QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), kFolderWait);
             settled(fb, "a.txt");
             // Gone, and another folder chosen meanwhile: that one stays.
             QVERIFY(QDir(here).removeRecursively());
-            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, 5000);
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, kFolderWait);
             fb.setLocation(top);
             QVERIFY(QDir().mkpath(here));
             touch(here + "/a.txt");
@@ -731,9 +736,9 @@ private slots:
             fb.setLocation(here);
             settled(fb, "a.txt");
             QVERIFY(QDir(here).removeRecursively());
-            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, 5000);
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, kFolderWait);
             QVERIFY(fb.currentView()->rootIndex().isValid());
-            QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("here"), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("here"), kFolderWait);
             if (!above) {
                 // Not made again: the folder above stays - and made again
                 // once two seconds have gone by, it stays too.
@@ -745,6 +750,49 @@ private slots:
                 QCOMPARE(fb.location(), parent);
             }
         }
+    }
+
+    // The model's watcher no help, as when a folder removed and made again leaves
+    // it unwatched, or a busy machine loses its reports: here it is off from the
+    // start, to have without load what otherwise takes load and luck. The folder
+    // shown is still followed.
+    void whatTheWatcherMissesIsStillSeen()
+    {
+        const QString parent = top + "/unwatched";
+        const QString here = parent + "/here";
+        QVERIFY(QDir().mkpath(here));
+        touch(here + "/a.txt");
+        FileBrowser fb;
+        fb.resize(400, 600);
+        fb.setView(FileBrowser::View::List);
+        fb.fileModel()->setOption(QFileSystemModel::DontWatchForChanges);
+        fb.setLocation(parent);
+        settled(fb, "here");
+        fb.setLocation(here);
+        QVERIFY2(settled(fb, "a.txt").contains("a.txt"), qPrintable(fb.shownNames().join(',')));
+        // Something new, and what went.
+        touch(here + "/new.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("new.txt"), kFolderWait);
+        QVERIFY(QFile::remove(here + "/new.txt"));
+        QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("new.txt"), kFolderWait);
+        // The last thing in it gone.
+        QVERIFY(QFile::remove(here + "/a.txt"));
+        QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("a.txt"), kFolderWait);
+        touch(here + "/a.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("a.txt"), kFolderWait);
+        // Another folder of the name, and what then changes in it.
+        QVERIFY(QDir(here).removeRecursively());
+        QVERIFY(QDir().mkpath(here));
+        touch(here + "/b.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("b.txt"), kFolderWait);
+        QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("a.txt"), kFolderWait);
+        QCOMPARE(fb.location(), here);
+        touch(here + "/c.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("c.txt"), kFolderWait);
+        // Gone for good: the folder above.
+        QVERIFY(QDir(here).removeRecursively());
+        QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, kFolderWait);
+        QVERIFY(fb.currentView()->rootIndex().isValid());
     }
 
     // In the application: the left dock's File Browser tab, from the

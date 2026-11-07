@@ -32,6 +32,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDirIterator>
 #include <QEvent>
 #include <QFileInfo>
 #include <QFileSystemModel>
@@ -66,6 +67,7 @@
 #include <QStorageInfo>
 #include <QStyledItemDelegate>
 #include <QTabBar>
+#include <QThreadPool>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
@@ -1222,6 +1224,7 @@ FileBrowser::FileBrowser(QWidget* parent)
       a_recentModel(new QStandardItemModel(this)),
       a_statusTimer(new QTimer(this)),
       a_rootTimer(new QTimer(this)),
+      a_lookTimer(new QTimer(this)),
       a_springTimer(new QTimer(this)),
       a_scrollTimer(new QTimer(this))
 {
@@ -1747,6 +1750,17 @@ void FileBrowser::buildViews()
     a_rootTimer->setInterval(0);   // (once the model is done with its change)
     connect(a_rootTimer, &QTimer::timeout, this, &FileBrowser::keepRoot);
     connect(a_model, &QFileSystemModel::directoryLoaded, this, [this] { a_rootTimer->start(0); });
+    // The model follows a folder by a watcher, armed only when it reads it. A
+    // folder removed and made again can leave it unwatched for good, nothing
+    // that later changes in it showing (the view is right, and stays as it is);
+    // on a busy machine a removal can go unreported too. So the folder shown is
+    // also looked at, once a second.
+    a_lookTimer->setInterval(1000);
+    connect(a_lookTimer, &QTimer::timeout, this, &FileBrowser::lookAtFolder);
+    a_lookTimer->start();
+    connect(a_model, &QFileSystemModel::directoryLoaded, this, [this](const QString& path) {
+        if (QDir::cleanPath(path) == a_location) a_readFolder = a_location;
+    });
     // A tab brought to the front: its Tree's folders opened, its entry
     // selected, as their folders load.
     connect(a_model, &QFileSystemModel::directoryLoaded, this, [this](const QString& path) {
@@ -1822,6 +1836,104 @@ void FileBrowser::applyRoot()
         v->setRootIndex(root);
 }
 
+struct FileBrowser::FolderLook {
+    QString folder;
+    bool there = false;
+    qint64 born = 0, changed = 0;
+    bool listed = false;
+    QSet<QString> names;   // all it holds
+    QSet<QString> plain;   // of them the files and folders, which the model always has
+};
+
+void FileBrowser::lookAtFolder()
+{
+    if (a_looking || a_location.isEmpty() || a_view == View::Recent) return;
+    a_looking = true;
+    const QString folder = a_location;
+    // (A folder's first look lists it too: what changed before it would otherwise
+    // be what later looks take for how it stands.)
+    const qint64 changed = a_lookFolder != folder || a_lookAgain ? -1 : a_lookChanged;
+    const QDir::Filters filter = a_model->filter() | QDir::System;
+    // (Off this thread: a mount that hangs stops this look, not the window. A
+    // look that comes back after the browser went is told to no one.)
+    QThreadPool::globalInstance()->start([guard = QPointer<FileBrowser>(this), folder, changed, filter] {
+        FolderLook look;
+        look.folder = folder;
+        const QFileInfo info(folder);
+        look.there = info.isDir();
+        if (look.there) {
+            look.born = info.birthTime().toMSecsSinceEpoch();
+            look.changed = info.lastModified().toMSecsSinceEpoch();
+            if (look.changed != changed) {
+                look.listed = true;
+                QDirIterator entries(folder, filter);
+                while (entries.hasNext()) {
+                    entries.next();
+                    const QFileInfo entry = entries.fileInfo();
+                    look.names.insert(entry.fileName());
+                    if (entry.isFile() || entry.isDir()) look.plain.insert(entry.fileName());
+                }
+            }
+        }
+        if (QCoreApplication* app = QCoreApplication::instance())
+            QMetaObject::invokeMethod(app, [guard, look] {
+                if (guard) guard->lookedAt(look);
+            }, Qt::QueuedConnection);
+    });
+}
+
+void FileBrowser::lookedAt(const FolderLook& look)
+{
+    a_looking = false;
+    if (look.folder != a_location || a_view == View::Recent) return;
+    if (!look.there || !a_list->rootIndex().isValid()) {
+        a_rootTimer->start(0);   // (gone, or the root lost: what keepRoot is for)
+        return;
+    }
+    const bool first = a_lookFolder != look.folder;
+    if (first) {
+        a_lookFolder = look.folder;
+        a_lookAgain = false;
+        a_rereads = 0;
+    }
+    const bool replaced = !first && look.born != a_lookBorn;
+    if (look.changed != a_lookChanged) a_rereads = 0;
+    a_lookBorn = look.born;
+    a_lookChanged = look.changed;
+    // Another folder of that name: whatever watched the old one is no use.
+    if (replaced) {
+        a_lookAgain = true;
+        a_readFolder.clear();
+        refresh();
+        return;
+    }
+    if (!look.listed) return;
+    if (a_readFolder != a_location) {   // (still being read: nothing to go by yet)
+        a_lookAgain = true;
+        return;
+    }
+    const QModelIndex root = a_model->index(a_location);
+    QSet<QString> shown;
+    for (int r = 0; r < a_model->rowCount(root); ++r) shown.insert(a_model->fileName(a_model->index(r, 0, root)));
+    QSet<QString> unknown = look.plain;
+    unknown.subtract(shown);
+    shown.subtract(look.names);
+    if (unknown.isEmpty() && shown.isEmpty()) {
+        a_lookAgain = false;
+        a_rereads = 0;
+        return;
+    }
+    // Differing once may be the watcher's report on its way; differing a second
+    // later, it is not coming. A difference that reading again does not cure
+    // (what the model will not list) is left until the folder next changes.
+    if (a_lookAgain && a_rereads < 3) {
+        ++a_rereads;
+        a_readFolder.clear();
+        refresh();
+    }
+    a_lookAgain = a_rereads < 3;
+}
+
 void FileBrowser::keepRoot()
 {
     if (a_location.isEmpty() || a_view == View::Recent) return;
@@ -1846,6 +1958,13 @@ void FileBrowser::keepRoot()
     const bool there = QFileInfo(a_location).isDir();
     if (there && a_list->rootIndex().isValid()) return;
     if (there) {
+        // Made again after the model let it go, nothing since telling it so: it
+        // has no entry for the folder, and only reading it anew gives it one.
+        // (Given the same root it would do nothing, so first none.)
+        if (!a_model->index(a_location).isValid()) {
+            a_model->setRootPath(QString());
+            a_model->setRootPath(a_location);
+        }
         applyRoot();
         a_selectPending = !a_selected.isEmpty() && !indexOf(a_selected).isValid();
         selectPath(a_selected);
