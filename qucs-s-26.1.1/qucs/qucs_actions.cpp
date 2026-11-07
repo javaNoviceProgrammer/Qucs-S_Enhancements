@@ -501,19 +501,13 @@ void QucsApp::slotMoveText(bool on) {
 }
 
 // -----------------------------------------------------------------------
-// Is called, when "Zoom in" action is triggered.
-void QucsApp::slotZoomIn(bool on) {
+// Is called, when "Zoom in" action is triggered: a step at once, about the
+// middle of the view, as Zoom Out's. On a schematic or a data display by two,
+// so that one undoes the other, as the status bar's Zoom In does.
+void QucsApp::slotZoomIn() {
+  slotHideEdit(); // disable text edit of component property
   QWidget *w = DocumentTab->currentWidget();
-  if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w) || isLayoutDocument(w)
-      || isImageDocument(w) || isMultiphysicsDocument(w) || isRf25Document(w) || isMultiphysics3DDocument(w)
-      || isPresentationDocument(w)) {
-    docIn(w)->zoomBy(1.5f);
-    magPlus->blockSignals(true);
-    magPlus->setChecked(false);
-    magPlus->blockSignals(false);
-  } else
-    performToggleAction(on, magPlus, 0, &MouseActions::MMoveZoomIn,
-                        &MouseActions::MPressZoomIn);
+  if (QucsDoc *doc = docIn(w)) doc->zoomBy(schematicIn(w) != nullptr ? 2.0f : 1.5f);
 }
 
 void QucsApp::slotEscape() {

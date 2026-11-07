@@ -841,6 +841,50 @@ private slots:
         QCOMPARE(s->contentsY() - y, 3);
     }
 
+    // Zoom In is a step, as Zoom Out is: nothing to click after it, no mode to
+    // leave, and one undoes the other. On a schematic and on a data display.
+    void zoomInIsOneStepAsZoomOutIs()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* views[] = {open(app, write(QStringLiteral("steps.sch"), chain(4))),
+                              oneGraph(app, QStringLiteral("steps"), {0, 1, 0, 1})};
+        for (Schematic* s : views) {
+            QVERIFY(s != nullptr);
+            QVERIFY(app.DocumentTab->currentWidget() == s || (app.DocumentTab->setCurrentWidget(s), true));
+            pump();
+            QVERIFY(!app.magPlus->isCheckable());
+            const auto moving = app.MouseMoveAction;
+            const auto pressing = app.MousePressAction;
+            const double scale = s->getScale();
+            app.magPlus->trigger();
+            pump();
+            const double in = s->getScale();
+            QVERIFY2(std::abs(in - 2 * scale) < 1e-6 * scale, qPrintable(QStringLiteral("%1 to %2").arg(scale).arg(in)));
+            QVERIFY(!app.magPlus->isChecked());
+            QVERIFY(app.select->isChecked());
+            QVERIFY(app.MouseMoveAction == moving);
+            QVERIFY(app.MousePressAction == pressing);
+            // A click on the canvas after it zooms nothing.
+            QTest::mouseClick(s->viewport(), Qt::LeftButton, Qt::NoModifier, s->viewport()->rect().center());
+            pump();
+            QCOMPARE(s->getScale(), in);
+            // The middle of the view stays where it was.
+            const QPoint middle = s->viewport()->rect().center();
+            const QPointF before = s->viewportToModelF(middle);
+            app.magPlus->trigger();
+            pump();
+            QVERIFY(QLineF(before, s->viewportToModelF(middle)).length() < 2.0);
+            // Each press is a step, and Zoom Out takes them back.
+            app.magMinus->trigger();
+            pump();
+            QVERIFY2(std::abs(s->getScale() - in) < 1e-6 * in, qPrintable(QString::number(s->getScale())));
+            app.magMinus->trigger();
+            pump();
+            QVERIFY2(std::abs(s->getScale() - scale) < 1e-6 * scale, qPrintable(QString::number(s->getScale())));
+        }
+    }
+
     void aPlotOfManyCurvesZoomsSmoothly()
     {
         constexpr int points = 2000, states = 20;
@@ -964,11 +1008,11 @@ private slots:
         QVERIFY2(wave->linesPainted() * 2 < wave->drawnLines().size(),
                  qPrintable(QStringLiteral("%1 of %2").arg(wave->linesPainted()).arg(wave->drawnLines().size())));
         const QImage whole = canvasImage(s);
-        app.magPlus->trigger();
-        QVERIFY(app.MouseMoveAction == &MouseActions::MMoveZoomIn);
+        app.setDiagramLimits->trigger();   // (a rectangle over the diagram)
         const QPoint from = s->viewport()->rect().center() - QPoint(100, 100);
         QTest::mousePress(s->viewport(), Qt::LeftButton, Qt::NoModifier, from);
         pump();
+        QVERIFY(app.MouseMoveAction == &MouseActions::MMoveSelect);
         const QPoint to = from + QPoint(8, 6);
         moveTo(s, to, Qt::LeftButton);
         const QImage step = canvasImage(s);

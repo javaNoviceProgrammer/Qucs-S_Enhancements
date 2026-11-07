@@ -396,7 +396,7 @@ class TestGuiMonkey : public QObject
     {
         QucsApp* a = a_app;
         return {a->select, a->select, a->select, a->insWire, a->insLabel, a->insGround, a->insPort,
-                a->insEquation, a->magPlus, a->editRotate, a->editMirror, a->editMirrorY, a->editPaste,
+                a->insEquation, a->editRotate, a->editMirror, a->editMirrorY, a->editPaste,
                 a->editActivate, a->editDelete, a->setMarker, a->moveText, a->onGrid,
                 a->setDiagramLimits, a->resetDiagramLimits, a->editStretch, a->editMove};
     }
@@ -410,7 +410,7 @@ class TestGuiMonkey : public QObject
         return {a->fileNew, a->textNew, a->symNew, a->fileSave, a->fileSaveAll,
                 a->fileClose, a->fileCloseOthers, a->fileCloseAllLeft, a->fileCloseAllRight,
                 a->fileSettings, a->editCut, a->editCopy, a->editCopy, a->magAll, a->magSel,
-                a->magOne, a->magMinus, a->symEdit, a->symEdit, a->intoH, a->popH, a->undo, a->undo,
+                a->magOne, a->magPlus, a->magMinus, a->symEdit, a->symEdit, a->intoH, a->popH, a->undo, a->undo,
                 a->undo, a->redo, a->redo, a->TabFirstAction, a->TabLastAction, a->TabNextAction,
                 a->TabPreviousAction, a->editCopyImage, a->exportAsImage, a->showGrid,
                 a->alignTop, a->alignBottom, a->alignLeft, a->alignRight, a->distrHor, a->distrVert,

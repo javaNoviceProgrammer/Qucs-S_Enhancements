@@ -401,7 +401,7 @@ private slots:
         app->magPlus->trigger();   // View > Zoom In: in frames (zoomIsSmooth)
         QCOMPARE(view->targetZoom(), 1.25);
         QTRY_COMPARE(view->zoom(), 1.25);
-        QVERIFY(!app->magPlus->isChecked());   // not a mode, for a PDF
+        QVERIFY(!app->magPlus->isChecked());   // not a mode
         app->magMinus->trigger();
         QTRY_COMPARE(view->zoom(), 1.0);
         app->magAll->trigger();   // View All: the page whole

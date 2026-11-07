@@ -1174,7 +1174,6 @@ QString StatusPanel::modeHint(Schematic* doc) const
         return join({tr("Drag across a diagram to zoom its axes to that area"), stop});
     if (press == &MouseActions::MPressOnGrid) return join({tr("Click an element to put it on the grid"), stop});
     if (press == &MouseActions::MPressMoveText) return join({tr("Drag a component's text to move it"), stop});
-    if (press == &MouseActions::MPressZoomIn) return join({tr("Drag a box to zoom into it"), stop});
     if (press == &MouseActions::MPressSelect)
         return join({tr("Double-click to edit"), add, tr("drag on empty space to select")});
     return {};   // a drag in progress: the hint of the tool stays

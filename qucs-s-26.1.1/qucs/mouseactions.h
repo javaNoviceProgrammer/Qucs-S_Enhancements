@@ -110,7 +110,6 @@ public:
   void MMoveResizePainting(Schematic*, QMouseEvent*);
   void MMoveMoveText(Schematic*, QMouseEvent*);
   void MMoveMoveTextB(Schematic*, QMouseEvent*);
-  void MMoveZoomIn(Schematic*, QMouseEvent*);
   void MMoveScrollBar(Schematic*, QMouseEvent*);
 
   void MPressSelect(Schematic*, QMouseEvent*, float, float);
@@ -130,7 +129,6 @@ public:
   void MPressSetLimits(Schematic*, QMouseEvent*, float, float);
   void MPressOnGrid(Schematic*, QMouseEvent*, float, float);
   void MPressMoveText(Schematic*, QMouseEvent*, float, float);
-  void MPressZoomIn(Schematic*, QMouseEvent*, float, float);
 
   void MDoubleClickSelect(Schematic*, QMouseEvent*);
   void MDoubleClickWire2(Schematic*, QMouseEvent*);
@@ -144,7 +142,6 @@ public:
   void MReleasePaste(Schematic*, QMouseEvent*);
   void MReleaseResizePainting(Schematic*, QMouseEvent*);
   void MReleaseMoveText(Schematic*, QMouseEvent*);
-  void MReleaseZoomIn(Schematic*, QMouseEvent*);
   void MReleaseSetLimits(Schematic*, QMouseEvent*);
 
   void paintElementsScheme(Schematic*);
