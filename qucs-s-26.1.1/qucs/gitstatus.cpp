@@ -234,24 +234,98 @@ bool Status::operator==(const Status& o) const
     return true;
 }
 
+namespace {
+
+// The repository's own configuration files of the work tree \a root (a linked
+// worktree's: its common folder's too); \a none: there is no .git here at all.
+// Empty, and not none: a .git that cannot be read without git.
+QStringList configFilesOf(const QString& root, bool* none)
+{
+    *none = false;
+    const QFileInfo dotGit(fileIn(root, QStringLiteral(".git")));
+    QString gitDir;
+    if (dotGit.isDir()) {
+        gitDir = dotGit.filePath();
+    } else if (dotGit.isFile()) {
+        QFile file(dotGit.filePath());
+        if (dotGit.size() < 8192 && file.open(QIODevice::ReadOnly)) {
+            const QString text = QString::fromUtf8(file.readAll()).trimmed();
+            if (text.startsWith(QLatin1String("gitdir: ")))
+                gitDir = QFileInfo(text.mid(8)).isAbsolute() ? text.mid(8) : fileIn(root, text.mid(8));
+        }
+        if (gitDir.isEmpty()) return {};
+    } else {
+        *none = !dotGit.exists();
+        return {};
+    }
+    QString common = gitDir;
+    QFile commonDir(gitDir + QStringLiteral("/commondir"));
+    if (QFileInfo(commonDir).isFile() && commonDir.open(QIODevice::ReadOnly)) {
+        const QString where = QString::fromUtf8(commonDir.read(8192)).trimmed();
+        if (!where.isEmpty()) common = QFileInfo(where).isAbsolute() ? where : fileIn(gitDir, where);
+    }
+    QStringList files{common + QStringLiteral("/config"), common + QStringLiteral("/config.worktree"), gitDir + QStringLiteral("/config.worktree")};
+    files.removeDuplicates();
+    return files;
+}
+
+// How \a files stand: a file that changes, or comes, or goes, changes this.
+QString stampOf(const QStringList& files)
+{
+    QString stamp;
+    for (const QString& f : files) {
+        const QFileInfo info(f);
+        stamp += info.exists() ? QStringLiteral("%1 %2 %3\n")
+                                     .arg(info.size())
+                                     .arg(info.lastModified().toMSecsSinceEpoch())
+                                     .arg(info.metadataChangeTime().toMSecsSinceEpoch())
+                               : QStringLiteral("-\n");
+    }
+    return stamp;
+}
+
+// Whether a configuration brings in files of its own: their changes are not
+// in the stamp (they may name others in turn).
+bool includesOthers(const QStringList& files)
+{
+    for (const QString& f : files) {
+        QFile file(f);
+        if (QFileInfo(f).isFile() && file.open(QIODevice::ReadOnly) && file.readAll().toLower().contains("include")) return true;
+    }
+    return false;
+}
+
+} // namespace
+
 QStringList readOnlyGuards(const QString& root)
 {
-    // For a while: they take a git of their own to find.
+    // They take a git of their own to find, and every look needs them: kept
+    // while the configuration they came from stands as it did (a stat of each
+    // file), else a driver added since is not among them and its program runs.
+    // A configuration that includes others, or a .git not read here, is asked
+    // about each time. (Between this look and git's own, a change can still get
+    // in: git itself could be told nothing later.)
     struct Kept {
         QStringList guards;
+        QString stamp;
         qint64 at = 0;
     };
     static QMutex mutex;
     static QHash<QString, Kept> kept;
     static QElapsedTimer clock;
+    bool none = false;
+    const QStringList files = configFilesOf(root, &none);
+    const QString stamp = stampOf(files);   // (before they are read: a change while they are is seen next time)
     QMutexLocker lock(&mutex);
     if (!clock.isValid()) clock.start();
     const auto it = kept.constFind(root);
-    if (it != kept.cend() && clock.elapsed() - it->at < 30000) return it->guards;
+    if (it != kept.cend() && it->stamp == stamp && clock.elapsed() - it->at < 30000) return it->guards;
     lock.unlock();
     const QStringList found = guards(root);
+    const bool lasting = none || (!files.isEmpty() && !includesOthers(files));
     lock.relock();
-    kept.insert(root, {found, clock.elapsed()});
+    if (lasting) kept.insert(root, {found, stamp, clock.elapsed()});
+    else kept.remove(root);
     return found;
 }
 

@@ -3597,6 +3597,9 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
     QTextBlockFormat beyondMargins = opening;
     beyondMargins.clearProperty(QTextFormat::BlockTopMargin);
     beyondMargins.clearProperty(QTextFormat::BlockBottomMargin);
+    // (Qt 6.12's Markdown reader says "not code" on every paragraph, as a
+    // property set to false: a plain paragraph has no format of its own by that.)
+    if (!beyondMargins.nonBreakableLines()) beyondMargins.clearProperty(QTextFormat::BlockNonBreakableLines);
     QTextCursor first(target->findBlock(from));
     const qreal above = first.blockFormat().topMargin();
     if (doc.begin().textList() == nullptr && !beyondMargins.isEmpty()) {

@@ -179,6 +179,10 @@ namespace misc {
   /// there in \a where when known. False, and nothing deleted, when it
   /// cannot.
   bool    moveToTrash(const QString& path, QString* where = nullptr);
+  /// Whether \a path is a regular file, a link followed. To ask before reading
+  /// what a project holds: opening a pipe waits for a writer that never comes,
+  /// and a device such as /dev/zero has no end.
+  bool    isPlainFile(const QString& path);
   /// Copies \a source over \a target so that a copy that fails leaves
   /// target as it was: the copy is written beside target under another
   /// name, then renamed over it. Nothing is done (true) when they are

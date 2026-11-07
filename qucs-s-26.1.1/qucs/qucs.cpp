@@ -2962,6 +2962,12 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   }
 
   QFileInfo Info(Name);
+  // A pipe or a device with a document's name, as a project from anywhere can
+  // hold: opening it would wait for ever, or never end.
+  if (Info.exists() && !Info.isFile() && !Info.isDir()) {
+    misc::reportError(tr("%1 is no file: it is not opened.").arg(QDir::toNativeSeparators(Name)));
+    return false;
+  }
   bool is_sch = false;
   bool is_pdf = false;
   // git's conflict marks in a schematic: no schematic reads them (unknown
@@ -5272,7 +5278,7 @@ void QucsApp::slotChangePage(const QString& DocName, const QString& DataDisplay)
     DocumentTab->setCurrentIndex(i);
 
     QFile file(Name);
-    if(file.open(QIODevice::ReadOnly)) {      // try to load document
+    if(misc::isPlainFile(Name) && file.open(QIODevice::ReadOnly)) {      // try to load document
       file.close();
       if(!d->load()) {
         delete d;
