@@ -400,6 +400,24 @@ target_compile_definitions(test_data_import PRIVATE QUCS_TEST_DATA="${CMAKE_CURR
 qucs_add_test(test_data_export)
 if(TARGET Qt6::Pdf AND QUCS_PDF_VIEWER)
   qucs_add_test(test_pdf_viewer)
+  # The plot digitizer's engine alone: no window, no core of the application.
+  add_executable(test_plot_digitizer test_plot_digitizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/sanitizer_options.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../pdfvector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../plotdigitizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../plotdigitizer_trace.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../zipfile.cpp)
+  target_include_directories(test_plot_digitizer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+  target_compile_definitions(test_plot_digitizer PRIVATE QUCS_REPO_PDF="${CMAKE_CURRENT_SOURCE_DIR}/../python/qucs-py/test1dat.pdf")
+  target_link_libraries(test_plot_digitizer Qt6::Core Qt6::Gui Qt6::Pdf Qt6::Test)
+  add_test(NAME test_plot_digitizer COMMAND test_plot_digitizer)
+  set_tests_properties(test_plot_digitizer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
+    TIMEOUT 600)
+  # In the program: Claude's tools, over stdio too, and the viewer's panel.
+  qucs_add_test(test_plot_digitizer_app)
+  target_compile_definitions(test_plot_digitizer_app PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>")
+  add_dependencies(test_plot_digitizer_app ${QUCS_NAME})
 endif()
 qucs_add_test(test_image_doc)
 qucs_add_test(test_pptx_doc)

@@ -1,0 +1,1873 @@
+/*
+ * The plot digitizer's engine (plotdigitizer.h, pdfvector.h): PDFs written
+ * here from known data - by QPdfWriter, as vector art and as pictures - read
+ * back, and the numbers held to the truth. No window, no core of the
+ * application: only the engine and Qt's PDF module.
+ *
+ * Each plot here is drawn by the same few functions: a frame, ticks with
+ * their labels, curves from functions, so that what the digitizer returns can
+ * be compared with what the function says at that x.
+ */
+#include <QBuffer>
+#include <QFile>
+#include <QFont>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPageSize>
+#include <QPdfDocument>
+#include <QPdfWriter>
+#include <QTemporaryDir>
+#include <QtTest>
+
+#include <cmath>
+#include <functional>
+#include <random>
+
+#include "pdfvector.h"
+#include "plotdigitizer.h"
+
+using namespace qucs_s::digitizer;
+namespace vec = qucs_s::pdf::vec;
+
+namespace {
+
+// Where a plot goes on the page, in points, and what its axes run over.
+struct Axes {
+    QRectF frame{100, 120, 400, 280};
+    double xMin = 0, xMax = 10, yMin = -1, yMax = 1;
+    bool xLog = false, yLog = false;
+    bool xReversed = false;
+    QList<double> xTicks{0, 2, 4, 6, 8, 10};
+    QList<double> yTicks{-1, -0.5, 0, 0.5, 1};
+    bool grid = false;
+    bool labels = true;
+    QString (*format)(double) = nullptr;
+
+    double px(double x) const
+    {
+        double t = xLog ? (std::log10(x) - std::log10(xMin)) / (std::log10(xMax) - std::log10(xMin)) : (x - xMin) / (xMax - xMin);
+        if (xReversed) t = 1 - t;
+        return frame.left() + t * frame.width();
+    }
+    double py(double y) const
+    {
+        const double t = yLog ? (std::log10(y) - std::log10(yMin)) / (std::log10(yMax) - std::log10(yMin)) : (y - yMin) / (yMax - yMin);
+        return frame.bottom() - t * frame.height();
+    }
+    QPointF at(double x, double y) const { return {px(x), py(y)}; }
+};
+
+struct Curve {
+    std::function<double(double)> f;
+    QColor colour = Qt::blue;
+    double width = 1.2;
+    Qt::PenStyle style = Qt::SolidLine;
+    QString name;
+    int samples = 300;
+    bool markers = false;
+    double from = std::numeric_limits<double>::quiet_NaN(), to = std::numeric_limits<double>::quiet_NaN();
+};
+
+QString label(double v)
+{
+    return QString::number(v, 'g', 6).replace(QLatin1Char('-'), QChar(0x2212));
+}
+
+QFont plotFont(double size, double unit)
+{
+    QFont font(QStringLiteral("Helvetica"));
+    font.setPixelSize(int(size * unit));
+    return font;
+}
+
+void drawAxes(QPainter& p, const Axes& a, double unit)
+{
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(Qt::black, 0.8));
+    p.drawRect(a.frame);
+    p.setFont(plotFont(9, unit));
+    for (const double t : a.xTicks) {
+        const double x = a.px(t);
+        if (a.grid) {
+            p.setPen(QPen(QColor(190, 190, 190), 0.5));
+            p.drawLine(QPointF(x, a.frame.top()), QPointF(x, a.frame.bottom()));
+        }
+        p.setPen(QPen(Qt::black, 0.8));
+        p.drawLine(QPointF(x, a.frame.bottom()), QPointF(x, a.frame.bottom() + 4));
+    }
+    for (const double t : a.yTicks) {
+        const double y = a.py(t);
+        if (a.grid) {
+            p.setPen(QPen(QColor(190, 190, 190), 0.5));
+            p.drawLine(QPointF(a.frame.left(), y), QPointF(a.frame.right(), y));
+        }
+        p.setPen(QPen(Qt::black, 0.8));
+        p.drawLine(QPointF(a.frame.left() - 4, y), QPointF(a.frame.left(), y));
+    }
+    if (!a.labels) return;
+    // (Text drawn in a coarser system, so that the font's size is whole.)
+    p.save();
+    p.scale(1 / unit, 1 / unit);
+    p.setPen(Qt::black);
+    const auto text = [&](QRectF box, int align, const QString& s) {
+        p.drawText(QRectF(box.topLeft() * unit, box.size() * unit), align, s);
+    };
+    for (const double t : a.xTicks) {
+        const QString s = a.format != nullptr ? a.format(t) : label(t);
+        text(QRectF(a.px(t) - 30, a.frame.bottom() + 6, 60, 12), Qt::AlignHCenter | Qt::AlignTop, s);
+    }
+    for (const double t : a.yTicks) {
+        const QString s = a.format != nullptr ? a.format(t) : label(t);
+        text(QRectF(a.frame.left() - 66, a.py(t) - 7, 60, 14), Qt::AlignRight | Qt::AlignVCenter, s);
+    }
+    p.restore();
+}
+
+void drawCurve(QPainter& p, const Axes& a, const Curve& c)
+{
+    QPolygonF line;
+    const double from = std::isnan(c.from) ? a.xMin : c.from, to = std::isnan(c.to) ? a.xMax : c.to;
+    for (int i = 0; i < c.samples; ++i) {
+        const double t = double(i) / (c.samples - 1);
+        const double x = a.xLog ? std::pow(10.0, std::log10(from) + t * (std::log10(to) - std::log10(from))) : from + t * (to - from);
+        line << a.at(x, c.f(x));
+    }
+    if (c.markers) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(c.colour);
+        for (const QPointF& q : std::as_const(line)) p.drawEllipse(q, 3, 3);
+        return;
+    }
+    QPen pen(c.colour, c.width, c.style);
+    pen.setCapStyle(Qt::FlatCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawPolyline(line);
+}
+
+void drawLegend(QPainter& p, const Axes& a, const QList<Curve>& curves, double unit)
+{
+    double y = a.frame.top() + 14;
+    const double x = a.frame.right() - 120;
+    for (const Curve& c : curves) {
+        if (c.name.isEmpty()) continue;
+        if (c.markers) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(c.colour);
+            p.drawEllipse(QPointF(x + 12, y), 3, 3);
+        } else {
+            QPen pen(c.colour, c.width, c.style);
+            pen.setCapStyle(Qt::FlatCap);
+            p.setPen(pen);
+            p.drawLine(QPointF(x, y), QPointF(x + 24, y));
+        }
+        p.save();
+        p.scale(1 / unit, 1 / unit);
+        p.setPen(Qt::black);
+        p.setFont(plotFont(9, unit));
+        p.drawText(QRectF(QPointF(x + 28, y - 7) * unit, QSizeF(90, 14) * unit), Qt::AlignLeft | Qt::AlignVCenter, c.name);
+        p.restore();
+        y += 14;
+    }
+}
+
+constexpr double kPageW = 612, kPageH = 792;
+
+// A page in points; the painter measures in points, as in a PDF. (Qt's PDF
+// engine works in 1200ths of an inch by default; a scale makes it points.)
+bool writeVector(const QString& file, const std::function<void(QPainter&, double)>& draw, int pages = 1)
+{
+    QPdfWriter writer(file);
+    writer.setPageSize(QPageSize(QSizeF(kPageW, kPageH), QPageSize::Point));
+    writer.setPageMargins(QMarginsF(0, 0, 0, 0));
+    writer.setResolution(720);
+    QPainter p;
+    if (!p.begin(&writer)) return false;
+    const double k = writer.width() / kPageW;
+    p.scale(k, k);
+    for (int i = 0; i < pages; ++i) {
+        if (i > 0) writer.newPage();
+        draw(p, 8.0);
+    }
+    p.end();
+    return true;
+}
+
+void drawPlot(QPainter& p, const Axes& a, const QList<Curve>& curves, double unit, bool legend = false)
+{
+    drawAxes(p, a, unit);
+    p.setClipRect(a.frame);
+    for (const Curve& c : curves) drawCurve(p, a, c);
+    p.setClipping(false);
+    if (legend) drawLegend(p, a, curves, unit);
+}
+
+// The plot as a picture, placed on the page as a figure or a scan is: at
+// \a dpi, turned by \a degrees about the page's middle.
+QImage plotImage(const Axes& a, const QList<Curve>& curves, double dpi, bool legend = false)
+{
+    const double k = dpi / 72;
+    QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QPainter p(&image);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::TextAntialiasing);
+    p.scale(k, k);
+    drawPlot(p, a, curves, 8.0, legend);
+    p.end();
+    return image;
+}
+
+bool writeScan(const QString& file, const QImage& image, double degrees = 0, int shearPermille = 0, const std::function<void(QPainter&, double)>& after = nullptr)
+{
+    QPdfWriter writer(file);
+    writer.setPageSize(QPageSize(QSizeF(kPageW, kPageH), QPageSize::Point));
+    writer.setPageMargins(QMarginsF(0, 0, 0, 0));
+    writer.setResolution(720);
+    QPainter p;
+    if (!p.begin(&writer)) return false;
+    const double k = writer.width() / kPageW;
+    p.scale(k, k);
+    p.save();
+    p.translate(kPageW / 2, kPageH / 2);
+    p.rotate(degrees);
+    if (shearPermille != 0) p.shear(shearPermille / 1000.0, 0);
+    p.translate(-kPageW / 2, -kPageH / 2);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    p.drawImage(QRectF(0, 0, kPageW, kPageH), image);
+    p.restore();
+    if (after) after(p, 8.0);
+    p.end();
+    return true;
+}
+
+// How far a series' values are from what a function gives at their x, in
+// parts of the axis's span: the worst and the rms.
+struct Errors {
+    double worst = 0, rms = 0;
+    int n = 0;
+};
+
+Errors errorsOf(const Plot& plot, const Series& s, const std::function<double(double)>& f, double ySpan, bool yLog = false)
+{
+    Errors e;
+    double sum = 0;
+    for (const QPointF& v : values(plot, s)) {
+        if (!std::isfinite(v.x()) || !std::isfinite(v.y())) continue;
+        const double d = yLog ? std::abs(std::log10(v.y()) - std::log10(f(v.x()))) / ySpan : std::abs(v.y() - f(v.x())) / ySpan;
+        e.worst = std::max(e.worst, d);
+        sum += d * d;
+        ++e.n;
+    }
+    e.rms = e.n > 0 ? std::sqrt(sum / e.n) : 0;
+    return e;
+}
+
+const Series* named(const Plot& plot, const QString& name)
+{
+    for (const Series& s : plot.series)
+        if (s.name == name) return &s;
+    return nullptr;
+}
+
+// The series whose values lie nearest a function: the one meant by it.
+const Series* nearest(const Plot& plot, const std::function<double(double)>& f, double ySpan)
+{
+    const Series* best = nullptr;
+    double least = 1e300;
+    for (const Series& s : plot.series) {
+        const Errors e = errorsOf(plot, s, f, ySpan);
+        if (e.n >= 10 && e.rms < least) {
+            least = e.rms;
+            best = &s;
+        }
+    }
+    return best;
+}
+
+Plot firstPlot(Source& source, int page = 0)
+{
+    const QList<Plot> plots = findPlots(source, page);
+    if (plots.isEmpty()) return Plot{};
+    return plots.first();
+}
+
+double sine(double x) { return std::sin(x); }
+double cosine(double x) { return 0.5 * std::cos(1.7 * x); }
+
+} // namespace
+
+class TestPlotDigitizer : public QObject
+{
+    Q_OBJECT
+
+private:
+    QTemporaryDir a_dir;
+    QString path(const QString& name) const { return a_dir.filePath(name); }
+
+    // Prints what a case measured, for the write-up.
+    void report(const char* what, const Errors& e) const { qInfo("%-34s rms %.5f %% worst %.5f %% of the span, %d points", what, e.rms * 100, e.worst * 100, e.n); }
+
+private slots:
+    void initTestCase()
+    {
+        QVERIFY(a_dir.isValid());
+        // (To look at what the tests wrote.)
+        if (!qEnvironmentVariableIsEmpty("QUCS_KEEP_TEST_PDFS")) {
+            a_dir.setAutoRemove(false);
+            qInfo("The PDFs are in %s", qPrintable(a_dir.path()));
+        }
+    }
+
+    // ----- Calibration ------------------------------------------------------
+
+    void calibrationOfTwoAxesAlone()
+    {
+        Calibration c;
+        for (const auto& r : {std::pair{QPointF(100, 400), 0.0}, {QPointF(300, 400), 5.0}, {QPointF(500, 400), 10.0}}) {
+            Reference ref;
+            ref.at = r.first;
+            ref.hasX = true;
+            ref.x = r.second;
+            c.references << ref;
+        }
+        for (const auto& r : {std::pair{QPointF(100, 400), -1.0}, {QPointF(100, 120), 1.0}}) {
+            Reference ref;
+            ref.at = r.first;
+            ref.hasY = true;
+            ref.y = r.second;
+            c.references << ref;
+        }
+        QString why;
+        QVERIFY2(c.fit(&why), qPrintable(why));
+        const QPointF v = c.toValue(QPointF(300, 260));
+        QCOMPARE_LE(std::abs(v.x() - 5), 1e-9);
+        QCOMPARE_LE(std::abs(v.y() - 0), 1e-9);
+        const QPointF back = c.toPage(QPointF(5, 0));
+        QCOMPARE_LE(QLineF(back, QPointF(300, 260)).length(), 1e-9);
+        QCOMPARE_LE(c.rms(), 1e-9);
+    }
+
+    void calibrationLogAndReversed()
+    {
+        Calibration c;
+        c.xScale = Scale::Log;
+        c.yScale = Scale::Log;
+        Reference a;
+        a.at = QPointF(100, 100);
+        a.hasX = a.hasY = true;
+        a.x = 1000;      // reversed: a thousand at the left
+        a.y = 1e-3;      // and a thousandth at the top
+        Reference b;
+        b.at = QPointF(500, 100);
+        b.hasX = b.hasY = true;
+        b.x = 1;
+        b.y = 1e-3;
+        Reference d;
+        d.at = QPointF(100, 500);
+        d.hasX = d.hasY = true;
+        d.x = 1000;
+        d.y = 1;
+        c.references = {a, b, d};
+        QString why;
+        QVERIFY2(c.fit(&why), qPrintable(why));
+        const QPointF v = c.toValue(QPointF(300, 300));
+        QCOMPARE_LE(std::abs(std::log10(v.x()) - 1.5), 1e-9);
+        QCOMPARE_LE(std::abs(std::log10(v.y()) + 1.5), 1e-9);
+        QCOMPARE_LE(QLineF(c.toPage(v), QPointF(300, 300)).length(), 1e-6);
+    }
+
+    void calibrationOfATurnedAndShearedPage()
+    {
+        // Three corners fix an affine map; the fourth then has no error.
+        QTransform t;
+        t.rotate(7.5);
+        t.shear(0.08, 0.02);
+        t.translate(30, -12);
+        const auto ref = [&](double x, double y) {
+            Reference r;
+            r.at = t.map(QPointF(100 + 40 * x, 400 - 28 * y));
+            r.hasX = r.hasY = true;
+            r.x = x;
+            r.y = y;
+            return r;
+        };
+        Calibration c;
+        c.references = {ref(0, 0), ref(10, 0), ref(0, 10)};
+        QString why;
+        QVERIFY2(c.fit(&why), qPrintable(why));
+        const QPointF v = c.toValue(t.map(QPointF(100 + 40 * 7, 400 - 28 * 3)));
+        QCOMPARE_LE(std::abs(v.x() - 7), 1e-8);
+        QCOMPARE_LE(std::abs(v.y() - 3), 1e-8);
+        // Four: least squares, and a residual that says one is out.
+        c.references << ref(10, 10);
+        QVERIFY(c.fit(&why));
+        QCOMPARE_LE(c.rms(), 1e-8);
+        c.references[3].at += QPointF(3, 0);
+        QVERIFY(c.fit(&why));
+        QCOMPARE_GE(c.worst(), 0.5);
+    }
+
+    void calibrationProjective()
+    {
+        // A page photographed at an angle: four corners fix it exactly, an
+        // affine map cannot.
+        QTransform t(1, 0.05, 0.0004, 0.02, 1, 0.0003, 20, 30, 1);
+        const auto ref = [&](double x, double y) {
+            Reference r;
+            r.at = t.map(QPointF(100 + 40 * x, 400 - 28 * y));
+            r.hasX = r.hasY = true;
+            r.x = x;
+            r.y = y;
+            return r;
+        };
+        Calibration c;
+        c.model = Model::Projective;
+        c.references = {ref(0, 0), ref(10, 0), ref(10, 10), ref(0, 10)};
+        QString why;
+        QVERIFY2(c.fit(&why), qPrintable(why));
+        const QPointF v = c.toValue(t.map(QPointF(100 + 40 * 3, 400 - 28 * 7)));
+        QCOMPARE_LE(std::abs(v.x() - 3), 1e-6);
+        QCOMPARE_LE(std::abs(v.y() - 7), 1e-6);
+        QCOMPARE_LE(QLineF(c.toPage(QPointF(3, 7)), t.map(QPointF(100 + 40 * 3, 400 - 28 * 7))).length(), 1e-6);
+        // Three: not enough.
+        c.references.removeLast();
+        QVERIFY(!c.fit(&why));
+        QVERIFY(why.contains(QStringLiteral("four")));
+    }
+
+    void calibrationPolar()
+    {
+        // A pattern in dB: -40 at the centre, 0 at the rim, 0° up, clockwise.
+        const QPointF centre(300, 300);
+        const double radius = 200;
+        const auto ref = [&](double r, double theta) {
+            Reference ref;
+            const double rho = (r + 40) / 40 * radius, a = theta * M_PI / 180;
+            ref.at = centre + QPointF(rho * std::sin(a), -rho * std::cos(a));
+            ref.hasX = ref.hasY = true;
+            ref.x = r;
+            ref.y = theta;
+            return ref;
+        };
+        Calibration c;
+        c.kind = Kind::Polar;
+        c.rAtCentre = -40;
+        c.references = {ref(0, 0), ref(0, 90), ref(-40, 0)};
+        QString why;
+        QVERIFY2(c.fit(&why), qPrintable(why));
+        const QPointF v = c.toValue(ref(-10, 135).at);
+        QCOMPARE_LE(std::abs(v.x() + 10), 1e-8);
+        QCOMPARE_LE(std::abs(v.y() - 135), 1e-8);
+    }
+
+    void calibrationThatCannotBe()
+    {
+        QString why;
+        Calibration none;
+        QVERIFY(!none.fit(&why));
+        QVERIFY(!none.valid());
+        QVERIFY(std::isnan(none.toValue(QPointF(1, 1)).x()));
+
+        // One place twice.
+        Calibration same;
+        for (int i = 0; i < 2; ++i) {
+            Reference r;
+            r.at = QPointF(10, 10);
+            r.hasX = r.hasY = true;
+            r.x = i;
+            r.y = i;
+            same.references << r;
+        }
+        QVERIFY(!same.fit(&why));
+
+        // One value everywhere.
+        Calibration flat;
+        for (const QPointF& at : {QPointF(10, 10), QPointF(100, 10), QPointF(10, 100)}) {
+            Reference r;
+            r.at = at;
+            r.hasX = r.hasY = true;
+            r.x = 3;
+            r.y = at.y();
+            flat.references << r;
+        }
+        QVERIFY(!flat.fit(&why));
+
+        // A value a log axis cannot have.
+        Calibration log;
+        log.xScale = Scale::Log;
+        for (const double x : {0.0, 10.0}) {
+            Reference r;
+            r.at = QPointF(100 + x, 50);
+            r.hasX = true;
+            r.x = x;
+            log.references << r;
+        }
+        for (const double y : {0.0, 10.0}) {
+            Reference r;
+            r.at = QPointF(100, 50 + y);
+            r.hasY = true;
+            r.y = y;
+            log.references << r;
+        }
+        QVERIFY(!log.fit(&why));
+        QVERIFY2(why.contains(QStringLiteral("log")), qPrintable(why));
+
+        // Both axes along the same direction.
+        Calibration parallel;
+        for (const QPointF& at : {QPointF(10, 10), QPointF(100, 10)}) {
+            Reference r;
+            r.at = at;
+            r.hasX = r.hasY = true;
+            r.x = at.x();
+            r.y = at.x();
+            parallel.references << r;
+        }
+        QVERIFY(!parallel.fit(&why));
+    }
+
+    // ----- Tick labels ------------------------------------------------------
+
+    void tickLabels_data()
+    {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<bool>("isNumber");
+        QTest::addColumn<double>("value");
+        QTest::newRow("whole") << "10" << true << 10.0;
+        QTest::newRow("decimal") << "0.25" << true << 0.25;
+        QTest::newRow("unicode minus") << QStringLiteral("−1.5") << true << -1.5;
+        QTest::newRow("hyphen") << "-3" << true << -3.0;
+        QTest::newRow("en dash") << QStringLiteral("–2") << true << -2.0;
+        QTest::newRow("exponent") << "1e-3" << true << 1e-3;
+        QTest::newRow("exponent E") << "2.5E+04" << true << 2.5e4;
+        QTest::newRow("caret") << "10^3" << true << 1e3;
+        QTest::newRow("caret minus") << QStringLiteral("10^−3") << true << 1e-3;
+        QTest::newRow("superscript") << QStringLiteral("10⁻³") << true << 1e-3;
+        QTest::newRow("times") << QStringLiteral("2×10^5") << true << 2e5;
+        QTest::newRow("times superscript") << QStringLiteral("1.5×10⁵") << true << 1.5e5;
+        QTest::newRow("kilo") << "100k" << true << 1e5;
+        QTest::newRow("mega") << "1M" << true << 1e6;
+        QTest::newRow("milli") << "100m" << true << 0.1;
+        QTest::newRow("micro") << QStringLiteral("10µ") << true << 1e-5;
+        QTest::newRow("thousands") << "1,000" << true << 1000.0;
+        QTest::newRow("comma decimal") << "0,5" << true << 0.5;
+        QTest::newRow("GHz") << "2.4GHz" << true << 2.4e9;
+        QTest::newRow("percent") << "50%" << true << 50.0;
+        QTest::newRow("dB") << "-3dB" << true << -3.0;
+        QTest::newRow("word") << "Figure" << false << 0.0;
+        QTest::newRow("panel") << "(a)" << false << 0.0;
+        QTest::newRow("empty") << "" << false << 0.0;
+        QTest::newRow("two numbers") << "1 2 3 x" << false << 0.0;
+        QTest::newRow("too long") << QString(100, QLatin1Char('1')) << false << 0.0;
+        QTest::newRow("huge") << "1e999" << false << 0.0;
+    }
+
+    void tickLabels()
+    {
+        QFETCH(QString, text);
+        QFETCH(bool, isNumber);
+        QFETCH(double, value);
+        double v = 0;
+        QCOMPARE(parseTickLabel(text, &v), isNumber);
+        if (isNumber) QCOMPARE_LE(std::abs(v - value), std::abs(value) * 1e-12);
+    }
+
+    // ----- Vector art -------------------------------------------------------
+
+    void vectorPlot()
+    {
+        const QString file = path(QStringLiteral("vector.pdf"));
+        Axes a;
+        a.grid = true;
+        const QList<Curve> curves{Curve{sine, Qt::blue, 1.2, Qt::SolidLine, QStringLiteral("sine")},
+                                  Curve{cosine, Qt::red, 1.2, Qt::SolidLine, QStringLiteral("cosine")}};
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, curves, u, true); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        QVERIFY2(source.hasVectors(), qPrintable(source.vectorProblem()));
+        const QList<Plot> plots = findPlots(source, 0);
+        QCOMPARE(plots.size(), 1);
+        Plot plot = plots.first();
+        QVERIFY(plot.calibration.valid());
+        QCOMPARE_LE(plot.calibration.rms(), 0.05);
+        QCOMPARE(plot.xAxis.scale, Scale::Linear);
+        QCOMPARE(plot.yAxis.scale, Scale::Linear);
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE(plot.route, QStringLiteral("vector"));
+        QCOMPARE(plot.series.size(), 2);
+        const Series* s = named(plot, QStringLiteral("sine"));
+        const Series* c = named(plot, QStringLiteral("cosine"));
+        QVERIFY2(s != nullptr && c != nullptr, "the legend's names");
+        // The file's own vertices: exact to what QPdfWriter rounded them to.
+        const Errors es = errorsOf(plot, *s, sine, 2), ec = errorsOf(plot, *c, cosine, 2);
+        report("vector, linear, sine", es);
+        report("vector, linear, cosine", ec);
+        QCOMPARE_LE(es.worst, 0.0005);
+        QCOMPARE_LE(ec.worst, 0.0005);
+        QCOMPARE_GE(es.n, 250);
+        QCOMPARE(s->colour.name(), QColor(Qt::blue).name());
+        QCOMPARE(c->colour.name(), QColor(Qt::red).name());
+        QCOMPARE_GE(s->agreement, 0.95);
+        const Trust t = assess(plot);
+        QCOMPARE(t.level, QStringLiteral("high"));
+        QCOMPARE_LE(t.totalPoints, 0.1);
+    }
+
+    void vectorLogAxes()
+    {
+        const QString file = path(QStringLiteral("log.pdf"));
+        Axes a;
+        a.xLog = a.yLog = true;
+        a.xMin = 1;
+        a.xMax = 1e6;
+        a.yMin = 1e-3;
+        a.yMax = 10;
+        a.xTicks = {1, 10, 100, 1e3, 1e4, 1e5, 1e6};
+        a.yTicks = {1e-3, 1e-2, 1e-1, 1, 10};
+        a.format = [](double v) { return QStringLiteral("1e%1").arg(int(std::round(std::log10(v)))); };
+        const auto lpf = [](double f) { return 1 / std::sqrt(1 + std::pow(f / 1e3, 2)); };
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{lpf, Qt::black, 1.0}}, u); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QCOMPARE(plot.xAxis.scale, Scale::Log);
+        QCOMPARE(plot.yAxis.scale, Scale::Log);
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE(plot.series.size(), 1);
+        const Errors e = errorsOf(plot, plot.series.first(), lpf, 4, true);
+        report("vector, log-log", e);
+        QCOMPARE_LE(e.worst, 0.0005);
+    }
+
+    void vectorKiloLabelsAndReversedAxis()
+    {
+        const QString file = path(QStringLiteral("reversed.pdf"));
+        Axes a;
+        a.xReversed = true;   // falling x, as a wavenumber axis or a depth
+        a.xMin = 0;
+        a.xMax = 5000;
+        a.xTicks = {0, 1000, 2000, 3000, 4000, 5000};
+        a.format = [](double v) {
+            if (std::abs(v) >= 1000) return QStringLiteral("%1k").arg(v / 1000);
+            return QString::number(v, 'g', 6).replace(QLatin1Char('-'), QChar(0x2212));
+        };
+        const auto f = [](double x) { return std::sin(x / 800); };
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{f, Qt::darkGreen, 1.0}}, u); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QVERIFY(extract(source, plot, Options{}));
+        const Errors e = errorsOf(plot, plot.series.first(), f, 2);
+        report("vector, reversed x, 1k labels", e);
+        QCOMPARE_LE(e.worst, 0.0005);
+        // The left of the page is the high end.
+        const QPointF left = plot.calibration.toValue(QPointF(a.frame.left(), a.frame.center().y()));
+        QCOMPARE_LE(std::abs(left.x() - 5000), 2);
+    }
+
+    void vectorDashedLineAndMarkers()
+    {
+        const QString file = path(QStringLiteral("styles.pdf"));
+        Axes a;
+        a.xMin = 0.5;
+        a.xMax = 9.5;
+        a.xTicks = {1, 3, 5, 7, 9};
+        const auto scatter = [](double x) { return 0.8 * std::sin(0.7 * x) - 0.1; };
+        Curve dashed{sine, Qt::red, 1.2, Qt::DashLine, QStringLiteral("dashed")};
+        Curve dots{scatter, QColor(0, 120, 0), 1, Qt::SolidLine, QStringLiteral("marked"), 19, true};
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {dashed, dots}, u, true); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* d = nullptr;
+        const Series* m = nullptr;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape == Series::Shape::Markers) m = &s;
+            if (s.shape == Series::Shape::Line) d = &s;
+        }
+        QVERIFY2(d != nullptr, "the dashed line");
+        QVERIFY2(m != nullptr, "the markers");
+        QVERIFY(d->dashed);
+        const Errors ed = errorsOf(plot, *d, sine, 2), em = errorsOf(plot, *m, scatter, 2);
+        report("vector, dashed", ed);
+        report("vector, markers", em);
+        QCOMPARE_LE(ed.worst, 0.0005);
+        QCOMPARE_LE(em.worst, 0.002);
+        QCOMPARE(m->points.size(), 19);
+    }
+
+    void severalPlotsOnAPage()
+    {
+        const QString file = path(QStringLiteral("two.pdf"));
+        Axes top;
+        top.frame = QRectF(100, 80, 400, 200);
+        Axes bottom;
+        bottom.frame = QRectF(100, 400, 400, 200);
+        bottom.xMin = 0;
+        bottom.xMax = 100;
+        bottom.xTicks = {0, 25, 50, 75, 100};
+        bottom.yMin = 0;
+        bottom.yMax = 5;
+        bottom.yTicks = {0, 1, 2, 3, 4, 5};
+        const auto rise = [](double x) { return 5 * (1 - std::exp(-x / 30)); };
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawPlot(p, top, {Curve{sine, Qt::blue}}, u);
+            drawPlot(p, bottom, {Curve{rise, Qt::red}}, u);
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        const QList<Plot> plots = findPlots(source, 0);
+        QCOMPARE(plots.size(), 2);
+        Plot a = plots.at(0), b = plots.at(1);
+        QVERIFY(a.calibration.valid() && b.calibration.valid());
+        QVERIFY(extract(source, a, Options{}));
+        QVERIFY(extract(source, b, Options{}));
+        QCOMPARE_LE(errorsOf(a, a.series.first(), sine, 2).worst, 0.0005);
+        QCOMPARE_LE(errorsOf(b, b.series.first(), rise, 5).worst, 0.0005);
+        // A region picks one.
+        Plot only = plotInRegion(source, 0, QRectF(60, 360, 480, 280));
+        QVERIFY(only.calibration.valid());
+        QVERIFY(extract(source, only, Options{}));
+        QCOMPARE_LE(errorsOf(only, only.series.first(), rise, 5).worst, 0.0005);
+    }
+
+    void clippedAtTheFrame()
+    {
+        // A curve that leaves the frame: what is outside was never shown.
+        const QString file = path(QStringLiteral("clipped.pdf"));
+        Axes a;
+        a.yMin = -0.5;
+        a.yMax = 0.5;
+        a.yTicks = {-0.5, -0.25, 0, 0.25, 0.5};
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{sine, Qt::blue}}, u); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* s = nearest(plot, sine, 1);
+        QVERIFY(s != nullptr);
+        for (const QPointF& v : values(plot, *s)) QVERIFY2(std::abs(v.y()) <= 0.51, qPrintable(QString::number(v.y())));
+        QCOMPARE_LE(errorsOf(plot, *s, sine, 1).worst, 0.001);
+        QVERIFY(!s->breaks.isEmpty());
+    }
+
+    // ----- Pictures ---------------------------------------------------------
+
+    void embeddedPicture()
+    {
+        const QString file = path(QStringLiteral("picture.pdf"));
+        Axes a;
+        a.grid = true;
+        const QList<Curve> curves{Curve{sine, Qt::blue, 1.2}, Curve{cosine, Qt::red, 1.2}};
+        // Its labels stay vector text over the picture, as a figure pasted
+        // into a document whose axes were then typeset.
+        Axes labelsOnly = a;
+        QVERIFY(writeScan(file, plotImage(a, curves, 300), 0, 0, [&](QPainter& p, double u) {
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setPen(Qt::black);
+            p.setFont(plotFont(9, u));
+            for (const double t : a.xTicks) p.drawText(QRectF((QPointF(a.px(t) - 30, a.frame.bottom() + 20)) * u, QSizeF(60, 12) * u), Qt::AlignHCenter | Qt::AlignTop, label(t));
+            for (const double t : a.yTicks) p.drawText(QRectF((QPointF(a.frame.left() - 80, a.py(t) - 7)) * u, QSizeF(60, 14) * u), Qt::AlignRight | Qt::AlignVCenter, label(t));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        QVERIFY(source.graphics(0).pictures.size() >= 1);
+        // (Its own labels were not drawn in the picture? They are, and the
+        // vector labels sit further out; the picture's alone would not be read.)
+        Plot plot = firstPlot(source);
+        QVERIFY2(!plot.frame.isNull(), "a frame found in the picture");
+        QCOMPARE(plot.route, QStringLiteral("raster"));
+        QCOMPARE_LE(QLineF(plot.frame.topLeft(), a.frame.topLeft()).length(), 1.0);
+        QVERIFY2(plot.calibration.valid(), qPrintable(plot.notes.join(QLatin1Char(' '))));
+        QCOMPARE_LE(plot.calibration.rms(), 0.5);
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE(plot.route, QStringLiteral("raster"));
+        const Series* s = nearest(plot, sine, 2);
+        const Series* c = nearest(plot, cosine, 2);
+        QVERIFY(s != nullptr && c != nullptr);
+        QVERIFY(s != c);
+        const Errors es = errorsOf(plot, *s, sine, 2), ec = errorsOf(plot, *c, cosine, 2);
+        report("picture 300 dpi, sine", es);
+        report("picture 300 dpi, cosine", ec);
+        QCOMPARE_LE(es.rms, 0.002);
+        QCOMPARE_LE(ec.rms, 0.002);
+        QCOMPARE_LE(es.worst, 0.01);
+        QCOMPARE_LE(ec.worst, 0.01);
+        QCOMPARE_GE(es.n, 100);
+    }
+
+    void pictureOfDashesAndMarkers()
+    {
+        const QString file = path(QStringLiteral("picture_styles.pdf"));
+        Axes a;
+        a.xMin = 0.5;
+        a.xMax = 9.5;
+        a.xTicks = {1, 3, 5, 7, 9};
+        a.labels = false;
+        const auto scatter = [](double x) { return 0.8 * std::sin(0.7 * x) - 0.1; };
+        Curve dashed{sine, Qt::red, 1.2, Qt::DashLine};
+        // (Whole marks: half of one at the frame's edge is no mark for a picture.)
+        Curve dots{scatter, QColor(0, 120, 0), 1, Qt::SolidLine, QString(), 17, true, 1, 9};
+        QVERIFY(writeScan(file, plotImage(a, {dashed, dots}, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY2(!plot.frame.isNull(), "a frame");
+        QVERIFY2(!plot.calibration.valid(), "a page with no labels has none");
+        // By the tick marks found, the values Claude can read off the picture.
+        QString why;
+        QCOMPARE(plot.xAxis.marks.size(), 5);
+        QCOMPARE(plot.yAxis.marks.size(), 5);
+        QVERIFY2(assignTickValues(plot, true, {1, 3, 5, 7, 9}, &why), qPrintable(why));
+        QVERIFY2(assignTickValues(plot, false, {1, 0.5, 0, -0.5, -1}, &why), qPrintable(why));
+        QVERIFY2(calibrateFromAxes(plot, &why), qPrintable(why));
+        QCOMPARE_LE(plot.calibration.rms(), 0.2);
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* d = nullptr;
+        const Series* m = nullptr;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape == Series::Shape::Markers) m = &s;
+            if (s.shape == Series::Shape::Line && s.points.size() > 20) d = &s;
+        }
+        QVERIFY2(m != nullptr, "the markers");
+        QCOMPARE(m->points.size(), 17);
+        const Errors em = errorsOf(plot, *m, scatter, 2);
+        report("picture, markers", em);
+        QCOMPARE_LE(em.worst, 0.005);
+        QVERIFY2(d != nullptr, "the dashed line");
+        const Errors ed = errorsOf(plot, *d, sine, 2);
+        report("picture, dashed", ed);
+        QCOMPARE_LE(ed.rms, 0.003);
+        QCOMPARE_LE(ed.worst, 0.015);
+        QCOMPARE_GE(d->bridged, 5);
+        QVERIFY(d->dashed);
+    }
+
+    void turnedScan()
+    {
+        // A page scanned a little askew, no text on it.
+        const QString file = path(QStringLiteral("turned.pdf"));
+        Axes a;
+        a.grid = false;
+        a.labels = false;
+        const auto f = [](double x) { return 0.8 * std::sin(x * 0.9) * std::exp(-x / 12); };
+        QVERIFY(writeScan(file, plotImage(a, {Curve{f, Qt::black, 1.2}}, 300), 2.4));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY2(!plot.frame.isNull(), "a frame found on the turned page");
+        QCOMPARE_LE(std::abs(plot.angle - 2.4), 0.1);
+        QCOMPARE(plot.xAxis.marks.size(), 6);
+        QCOMPARE(plot.yAxis.marks.size(), 5);
+        QString why;
+        QVERIFY2(assignTickValues(plot, true, {0, 2, 4, 6, 8, 10}, &why), qPrintable(why));
+        QVERIFY2(assignTickValues(plot, false, {1, 0.5, 0, -0.5, -1}, &why), qPrintable(why));
+        QVERIFY2(calibrateFromAxes(plot, &why), qPrintable(why));
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* s = nearest(plot, f, 2);
+        QVERIFY(s != nullptr);
+        const Errors e = errorsOf(plot, *s, f, 2);
+        report("scan turned 2.4 degrees", e);
+        QCOMPARE_LE(e.rms, 0.003);
+        QCOMPARE_LE(e.worst, 0.012);
+    }
+
+    void shearedScanByReferences()
+    {
+        // Sheared: its axes are not square, so no frame is found. Four points
+        // whose values are known (given by hand, or by Claude from a picture).
+        const QString file = path(QStringLiteral("sheared.pdf"));
+        Axes a;
+        a.labels = false;
+        const auto f = [](double x) { return 0.6 * std::cos(x * 0.8); };
+        constexpr double degrees = 3.0;
+        constexpr int shear = 60;
+        QVERIFY(writeScan(file, plotImage(a, {Curve{f, Qt::blue, 1.2}}, 300), degrees, shear));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        QTransform t;
+        t.translate(kPageW / 2, kPageH / 2);
+        t.rotate(degrees);
+        t.shear(shear / 1000.0, 0);
+        t.translate(-kPageW / 2, -kPageH / 2);
+        QRectF region = t.mapRect(a.frame).adjusted(-6, -6, 6, 6);
+        Plot plot = plotInRegion(source, 0, region);
+        QVERIFY(plot.frame.isNull());
+        plot.calibration = Calibration{};
+        for (const auto& corner : {std::pair{0.0, -1.0}, {10.0, -1.0}, {10.0, 1.0}, {0.0, 1.0}}) {
+            Reference r;
+            r.at = t.map(a.at(corner.first, corner.second));
+            r.hasX = r.hasY = true;
+            r.x = corner.first;
+            r.y = corner.second;
+            plot.calibration.references << r;
+        }
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        QCOMPARE_LE(plot.calibration.rms(), 0.05);
+        // A seed on the curve: what Claude or the user points at.
+        Options o;
+        o.seeds << t.map(a.at(4, f(4)));
+        QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+        QCOMPARE(plot.series.size(), 1);
+        const Errors e = errorsOf(plot, plot.series.first(), f, 2);
+        report("scan sheared, by references", e);
+        // (PDFium draws a sheared image as much as 2 points from where the file
+        // puts it, as the frame's corners in its picture show. These references
+        // are where the file puts them; clicked on the picture they would agree
+        // with it. So this bound is PDFium's more than the trace's.)
+        QCOMPARE_LE(e.rms, 0.006);
+        QCOMPARE_LE(e.worst, 0.012);
+        QCOMPARE_GE(e.n, 100);
+    }
+
+    void crossingCurvesInAPicture()
+    {
+        const QString file = path(QStringLiteral("crossing.pdf"));
+        Axes a;
+        a.labels = false;
+        const auto up = [](double x) { return -0.8 + 0.16 * x; };
+        const auto down = [](double x) { return 0.8 - 0.16 * x; };
+        // Same colour: only the direction of the line tells them apart.
+        QVERIFY(writeScan(file, plotImage(a, {Curve{up, Qt::black, 1.2}, Curve{down, Qt::black, 1.2}}, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QString why;
+        QVERIFY(assignTickValues(plot, true, {0, 2, 4, 6, 8, 10}, &why));
+        QVERIFY(assignTickValues(plot, false, {1, 0.5, 0, -0.5, -1}, &why));
+        QVERIFY(calibrateFromAxes(plot, &why));
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* u = nearest(plot, up, 2);
+        const Series* d = nearest(plot, down, 2);
+        QVERIFY(u != nullptr && d != nullptr);
+        QVERIFY2(u != d, "two lines, not one");
+        const Errors eu = errorsOf(plot, *u, up, 2), ed = errorsOf(plot, *d, down, 2);
+        report("crossing, same colour, rising", eu);
+        report("crossing, same colour, falling", ed);
+        QCOMPARE_LE(eu.worst, 0.01);
+        QCOMPARE_LE(ed.worst, 0.01);
+        // Each goes the whole way across.
+        const QList<QPointF> vu = values(plot, *u);
+        double low = 1e9, high = -1e9;
+        for (const QPointF& v : vu) {
+            low = std::min(low, v.x());
+            high = std::max(high, v.x());
+        }
+        QCOMPARE_LE(low, 0.3);
+        QCOMPARE_GE(high, 9.7);
+    }
+
+    void aLoopInAPicture()
+    {
+        // A hysteresis loop: x goes both ways, so no column-by-column trace
+        // would do.
+        const QString file = path(QStringLiteral("loop.pdf"));
+        Axes a;
+        a.labels = false;
+        a.xMin = -1.5;
+        a.xMax = 1.5;
+        a.xTicks = {-1, 0, 1};
+        a.yMin = -1.5;
+        a.yMax = 1.5;
+        a.yTicks = {-1, 0, 1};
+        const auto draw = [&] {
+            const double k = 300.0 / 72;
+            QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+            image.fill(Qt::white);
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(k, k);
+            drawAxes(p, a, 8);
+            QPolygonF loop;
+            for (int i = 0; i <= 400; ++i) {
+                const double t = i * 2 * M_PI / 400;
+                loop << a.at(std::cos(t), std::sin(t + 0.5));
+            }
+            p.setPen(QPen(Qt::blue, 1.2));
+            p.drawPolyline(loop);
+            p.end();
+            return image;
+        };
+        QVERIFY(writeScan(file, draw()));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QString why;
+        QVERIFY2(assignTickValues(plot, true, {-1, 0, 1}, &why), qPrintable(why));
+        QVERIFY2(assignTickValues(plot, false, {1, 0, -1}, &why), qPrintable(why));
+        QVERIFY(calibrateFromAxes(plot, &why));
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE(plot.series.size(), 1);
+        const QList<QPointF> v = values(plot, plot.series.first());
+        QCOMPARE_GE(v.size(), 100);
+        // Every point on the ellipse: x = cos t, y = sin(t + 0.5).
+        double worst = 0;
+        for (const QPointF& q : v) {
+            double best = 1e9;
+            for (int i = 0; i < 2000; ++i) {
+                const double t = i * 2 * M_PI / 2000;
+                best = std::min(best, std::hypot(q.x() - std::cos(t), q.y() - std::sin(t + 0.5)));
+            }
+            worst = std::max(worst, best);
+        }
+        qInfo("%-34s worst %.5f of a span of 3", "loop in a picture", worst);
+        QCOMPARE_LE(worst / 3, 0.006);
+        // It goes the whole way round.
+        double xLow = 1e9, xHigh = -1e9, yLow = 1e9, yHigh = -1e9;
+        for (const QPointF& q : v) {
+            xLow = std::min(xLow, q.x());
+            xHigh = std::max(xHigh, q.x());
+            yLow = std::min(yLow, q.y());
+            yHigh = std::max(yHigh, q.y());
+        }
+        QCOMPARE_LE(xLow, -0.97);
+        QCOMPARE_GE(xHigh, 0.97);
+        QCOMPARE_LE(yLow, -0.97);
+        QCOMPARE_GE(yHigh, 0.97);
+    }
+
+    void legendNamesInAPicture()
+    {
+        const QString file = path(QStringLiteral("legend_picture.pdf"));
+        Axes a;
+        a.labels = false;
+        const QList<Curve> curves{Curve{sine, Qt::blue, 1.2, Qt::SolidLine, QStringLiteral("alpha")},
+                                  Curve{cosine, Qt::red, 1.2, Qt::SolidLine, QStringLiteral("beta")}};
+        // The names as text over the picture, the samples in it.
+        QVERIFY(writeScan(file, [&] {
+            Axes bare = a;
+            QImage image = plotImage(bare, curves, 300);
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            const double k = 300.0 / 72;
+            p.scale(k, k);
+            double y = a.frame.top() + 14;
+            for (const Curve& c : curves) {
+                QPen pen(c.colour, c.width);
+                pen.setCapStyle(Qt::FlatCap);
+                p.setPen(pen);
+                p.drawLine(QPointF(a.frame.right() - 120, y), QPointF(a.frame.right() - 96, y));
+                y += 14;
+            }
+            p.end();
+            return image;
+        }(), 0, 0, [&](QPainter& p, double u) {
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setPen(Qt::black);
+            p.setFont(plotFont(9, u));
+            double y = a.frame.top() + 14;
+            for (const Curve& c : curves) {
+                p.drawText(QRectF(QPointF(a.frame.right() - 92, y - 7) * u, QSizeF(90, 14) * u), Qt::AlignLeft | Qt::AlignVCenter, c.name);
+                y += 14;
+            }
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(!plot.frame.isNull());
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* s = named(plot, QStringLiteral("alpha"));
+        const Series* c = named(plot, QStringLiteral("beta"));
+        QVERIFY2(s != nullptr && c != nullptr, "both named");
+        QCOMPARE_LE(colourDistanceTo(s->colour, Qt::blue), 120);
+        QCOMPARE_LE(colourDistanceTo(c->colour, Qt::red), 120);
+    }
+
+    void aColourAsked()
+    {
+        const QString file = path(QStringLiteral("two_colours.pdf"));
+        Axes a;
+        a.labels = false;
+        const QList<Curve> curves{Curve{sine, Qt::blue, 1.2}, Curve{cosine, Qt::red, 1.2}};
+        QVERIFY(writeScan(file, plotImage(a, curves, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QString why;
+        QVERIFY(assignTickValues(plot, true, {0, 2, 4, 6, 8, 10}, &why));
+        QVERIFY(assignTickValues(plot, false, {1, 0.5, 0, -0.5, -1}, &why));
+        QVERIFY(calibrateFromAxes(plot, &why));
+        Options o;
+        o.colours << QColor(Qt::red);
+        QVERIFY(extract(source, plot, o));
+        QCOMPARE(plot.series.size(), 1);
+        QCOMPARE_LE(errorsOf(plot, plot.series.first(), cosine, 2).rms, 0.002);
+    }
+
+    void polarPlot_data()
+    {
+        QTest::addColumn<bool>("picture");
+        QTest::newRow("vector") << false;
+        QTest::newRow("picture") << true;
+    }
+
+    void polarPlot()
+    {
+        // A pattern in dB, -40 at the centre and 0 at the rim, 0 degrees up and
+        // clockwise; circles and spokes for its grid, as such a plot has.
+        QFETCH(bool, picture);
+        const QPointF centre(306, 300);
+        const double radius = 200;
+        const auto pattern = [](double theta) { return -20 + 15 * std::cos(2 * theta * M_PI / 180); };
+        const auto toPage = [&](double r, double theta) {
+            const double rho = (r + 40) / 40 * radius, a = theta * M_PI / 180;
+            return centre + QPointF(rho * std::sin(a), -rho * std::cos(a));
+        };
+        const auto draw = [&](QPainter& p) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(180, 180, 180), 0.6));
+            for (const double r : {-30.0, -20.0, -10.0, 0.0}) p.drawEllipse(centre, (r + 40) / 40 * radius, (r + 40) / 40 * radius);
+            for (int a = 0; a < 360; a += 30) p.drawLine(centre, toPage(0, a));
+            QPolygonF line;
+            for (int i = 0; i <= 720; ++i) line << toPage(pattern(i / 2.0), i / 2.0);
+            p.setPen(QPen(Qt::blue, 1.2));
+            p.drawPolyline(line);
+        };
+        const QString file = path(picture ? QStringLiteral("polar_picture.pdf") : QStringLiteral("polar.pdf"));
+        if (picture) {
+            const double k = 300.0 / 72;
+            QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+            image.fill(Qt::white);
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(k, k);
+            draw(p);
+            p.end();
+            QVERIFY(writeScan(file, image));
+        } else {
+            QVERIFY(writeVector(file, [&](QPainter& p, double) { draw(p); }));
+        }
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = plotInRegion(source, 0, QRectF(centre - QPointF(radius + 6, radius + 6), QSizeF(2 * radius + 12, 2 * radius + 12)));
+        QVERIFY(plot.frame.isNull());
+        plot.calibration = Calibration{};
+        plot.calibration.kind = Kind::Polar;
+        plot.calibration.rAtCentre = -40;
+        for (const auto& corner : {std::pair{0.0, 0.0}, {0.0, 90.0}, {0.0, 180.0}, {0.0, 270.0}, {-40.0, 0.0}}) {
+            Reference r;
+            r.at = toPage(corner.first, corner.second);
+            r.hasX = r.hasY = true;
+            r.x = corner.first;
+            r.y = corner.second;
+            plot.calibration.references << r;
+        }
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        Options o;
+        o.colours << QColor(Qt::blue);
+        QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+        QVERIFY(!plot.series.isEmpty());
+        // Its points on the pattern, all the way round.
+        const Series& s = plot.series.first();
+        double worst = 0, sum = 0;
+        QList<int> seen(36, 0);
+        int n = 0;
+        for (const QPointF& v : values(plot, s)) {
+            const double error = std::abs(v.x() - pattern(v.y()));
+            worst = std::max(worst, error);
+            sum += error * error;
+            ++n;
+            seen[qBound(0, int((v.y() + 180) / 10), 35)] = 1;
+        }
+        qInfo("%-34s rms %.4f dB worst %.4f dB, %d points", picture ? "polar, picture" : "polar, vector", std::sqrt(sum / std::max(1, n)), worst, n);
+        QCOMPARE_LE(worst, picture ? 0.6 : 0.05);
+        QCOMPARE_GE(std::count(seen.begin(), seen.end(), 1), 34);
+    }
+
+    void barsAndAreasFromTheFile()
+    {
+        const QString file = path(QStringLiteral("bars.pdf"));
+        Axes a;
+        a.xMin = 0;
+        a.xMax = 10;
+        a.yMin = 0;
+        a.yMax = 10;
+        a.yTicks = {0, 2, 4, 6, 8, 10};
+        const QList<double> heights{3, 5, 8, 2, 6};
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawAxes(p, a, u);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(200, 80, 0));
+            for (int i = 0; i < heights.size(); ++i) p.drawRect(QRectF(QPointF(a.px(1.5 + 1.5 * i), a.py(heights.at(i))), QPointF(a.px(2.5 + 1.5 * i), a.py(0))));
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QVERIFY(extract(source, plot, Options{}));
+        const Series* bars = nullptr;
+        for (const Series& s : std::as_const(plot.series))
+            if (s.shape == Series::Shape::Bars) bars = &s;
+        QVERIFY2(bars != nullptr, "the bars");
+        const QList<QPointF> v = values(plot, *bars);
+        QCOMPARE(v.size(), heights.size());
+        for (int i = 0; i < v.size(); ++i) {
+            QCOMPARE_LE(std::abs(v.at(i).x() - (2 + 1.5 * i)), 0.01);
+            QCOMPARE_LE(std::abs(v.at(i).y() - heights.at(i)), 0.01);
+        }
+    }
+
+    void aSecondAxisIsSaid()
+    {
+        const QString file = path(QStringLiteral("second_axis.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawPlot(p, a, {Curve{sine, Qt::blue}}, u);
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setPen(Qt::black);
+            p.setFont(plotFont(9, u));
+            for (int i = 0; i < a.yTicks.size(); ++i)
+                p.drawText(QRectF(QPointF(a.frame.right() + 6, a.py(a.yTicks.at(i)) - 7) * u, QSizeF(60, 14) * u), Qt::AlignLeft | Qt::AlignVCenter, QString::number(100 * i));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        const Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QVERIFY2(plot.notes.join(QLatin1Char(' ')).contains(QStringLiteral("second")), qPrintable(plot.notes.join(QLatin1Char(' '))));
+    }
+
+    void theReaderAgreesWithThePage_data()
+    {
+        QTest::addColumn<QByteArray>("box");
+        QTest::newRow("plain") << QByteArray();
+        QTest::newRow("turned 90") << QByteArray("/Rotate 90");
+        QTest::newRow("turned 180") << QByteArray("/Rotate 180");
+        QTest::newRow("turned 270") << QByteArray("/Rotate 270");
+        QTest::newRow("cropped") << QByteArray("/CropBox [60 100 560 720]");
+        QTest::newRow("cropped and turned") << QByteArray("/CropBox [60 100 560 720] /Rotate 90");
+        QTest::newRow("a user unit") << QByteArray("/UserUnit 2");
+    }
+
+    void theReaderAgreesWithThePage()
+    {
+        // The reader and pdfium read one page: its zigzag's vertices fall on
+        // what pdfium draws, however the page is boxed or turned.
+        QFETCH(QByteArray, box);
+        QByteArray content = "1 0 0 RG 1.5 w 100 200 m ";
+        for (int i = 1; i <= 40; ++i) content += QByteArray::number(100 + i * 10) + ' ' + QByteArray::number(i % 2 == 0 ? 200 : 500) + " l ";
+        content += "S\n";
+        const QByteArray file = "%PDF-1.5\n1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj\n2 0 obj <</Type /Pages /Kids [3 0 R] /MediaBox [0 0 612 792]>> endobj\n"
+                                "3 0 obj <</Type /Page /Parent 2 0 R /Contents 4 0 R " + box + ">> endobj\n"
+                                "4 0 obj <</Length " + QByteArray::number(content.size()) + ">> stream\n" + content + "endstream endobj\ntrailer <</Root 1 0 R>>\n";
+        const QString name = path(QStringLiteral("agree_%1.pdf").arg(QString::fromLatin1(QTest::currentDataTag()).replace(QLatin1Char(' '), QLatin1Char('_'))));
+        QFile out(name);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        out.write(file);
+        out.close();
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(name), QPdfDocument::Error::None);
+        Source source(&pdf, name);
+        QVERIFY2(source.hasVectors(), qPrintable(source.vectorProblem()));
+        const vec::Graphics& g = source.graphics(0);
+        QCOMPARE(g.size, pdf.pagePointSize(0));
+        QCOMPARE(g.paths.size(), 1);
+        const QPolygonF points = g.paths.first().parts.first().points;
+        QCOMPARE(points.size(), 41);
+        const double scale = 3;
+        const QImage image = source.render(0, QRectF(), scale);
+        QVERIFY(!image.isNull());
+        int inked = 0, asked = 0;
+        for (const QPointF& q : points) {
+            const int x = int(q.x() * scale), y = int(q.y() * scale);
+            if (x < 4 || y < 4 || x >= image.width() - 4 || y >= image.height() - 4) continue;
+            ++asked;
+            bool hit = false;
+            for (int dy = -3; dy <= 3 && !hit; ++dy)
+                for (int dx = -3; dx <= 3 && !hit; ++dx) hit = qGreen(image.pixel(x + dx, y + dy)) < 120;
+            inked += hit;
+        }
+        QCOMPARE_GE(asked, 20);
+        QCOMPARE(inked, asked);
+    }
+
+    // ----- Bad input --------------------------------------------------------
+
+    void emptyAndTextOnlyRegions()
+    {
+        const QString file = path(QStringLiteral("text.pdf"));
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setFont(plotFont(11, u));
+            for (int i = 0; i < 40; ++i) p.drawText(QPointF(72, 72 + i * 14) * u, QStringLiteral("A page of text with numbers 1 2 3 in it, and no plot at all."));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        QVERIFY(findPlots(source, 0).isEmpty());
+        QVERIFY(findPlots(source, 99).isEmpty());
+        QVERIFY(findPlots(source, -1).isEmpty());
+        // A region with nothing in it.
+        Plot empty = plotInRegion(source, 0, QRectF(10, 700, 100, 50));
+        QVERIFY(empty.frame.isNull());
+        QVERIFY(!empty.calibration.valid());
+        QString why;
+        QVERIFY(!extract(source, empty, Options{}, &why));
+        QVERIFY(!why.isEmpty());
+        // No region at all.
+        Plot nothing;
+        QVERIFY(!extract(source, nothing, Options{}, &why));
+        // A seed nowhere.
+        Series out;
+        Plot plot = plotInRegion(source, 0, QRectF(300, 650, 100, 100));
+        QVERIFY(!traceFrom(source, plot, QPointF(5, 5), &out, &why));
+        const Trust t = assess(empty);
+        QCOMPARE(t.level, QStringLiteral("none"));
+    }
+
+    void badCalibrationIsLowTrust()
+    {
+        const QString file = path(QStringLiteral("for_bad.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{sine, Qt::blue}}, u); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = plotInRegion(source, 0, a.frame.adjusted(-5, -5, 5, 5));
+        QVERIFY(extract(source, plot, Options{}));
+        // References that disagree by several points: the numbers come, the
+        // trust says what they are worth.
+        plot.calibration = Calibration{};
+        for (const auto& r : {std::tuple{a.at(0, -1), 0.0, -1.0}, std::tuple{a.at(10, -1) + QPointF(12, 0), 10.0, -1.0}, std::tuple{a.at(0, 1), 0.0, 1.0}, std::tuple{a.at(10, 1), 10.0, 1.0}}) {
+            Reference ref;
+            ref.at = std::get<0>(r);
+            ref.hasX = ref.hasY = true;
+            ref.x = std::get<1>(r);
+            ref.y = std::get<2>(r);
+            plot.calibration.references << ref;
+        }
+        QString why;
+        QVERIFY(plot.calibration.fit(&why));
+        const Trust t = assess(plot);
+        QCOMPARE(t.level, QStringLiteral("low"));
+        QVERIFY(!t.reasons.isEmpty());
+        QCOMPARE_GE(t.calibrationPoints, 1.0);
+    }
+
+    void aLabelThatDoesNotFitIsLeftOut()
+    {
+        // A page number under the plot, a stray figure among the ticks.
+        const QString file = path(QStringLiteral("stray.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawPlot(p, a, {Curve{sine, Qt::blue}}, u);
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setPen(Qt::black);
+            p.setFont(plotFont(9, u));
+            p.drawText(QRectF(QPointF(a.px(5) - 30, a.frame.bottom() + 6) * u, QSizeF(60, 12) * u), Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("37"));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QCOMPARE_LE(plot.calibration.rms(), 0.2);
+        int left = 0;
+        for (const Tick& t : std::as_const(plot.xAxis.ticks)) left += t.used ? 0 : 1;
+        QCOMPARE(left, 1);
+    }
+
+    void damagedPdf()
+    {
+        // Each damage: nothing may crash, and what can still be read is.
+        const QString file = path(QStringLiteral("whole.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{sine, Qt::blue}}, u); }));
+        QFile in(file);
+        QVERIFY(in.open(QIODevice::ReadOnly));
+        const QByteArray whole = in.readAll();
+        in.close();
+
+        QString why;
+        QVERIFY(vec::Reader::open(QByteArray(), &why) == nullptr);
+        QVERIFY(vec::Reader::open(QByteArrayLiteral("not a pdf at all, not even close to one"), &why) == nullptr);
+
+        // Its cross-reference gone: the file is searched for its objects.
+        QByteArray noXref = whole;
+        const qsizetype at = noXref.lastIndexOf("startxref");
+        QVERIFY(at > 0);
+        noXref.truncate(at);
+        auto reader = vec::Reader::open(noXref, &why);
+        QVERIFY2(reader != nullptr, qPrintable(why));
+        QCOMPARE(reader->pageCount(), 1);
+        vec::Graphics g;
+        QVERIFY(reader->page(0, &g, &why));
+        QCOMPARE_GE(g.paths.size(), 10);
+
+        // Its offsets all wrong.
+        QByteArray shifted = whole;
+        const qsizetype xrefAt = shifted.lastIndexOf("xref\n0 ");
+        if (xrefAt > 0) {
+            shifted.insert(xrefAt - 1, QByteArray(137, ' '));
+            auto r2 = vec::Reader::open(shifted, &why);
+            QVERIFY(r2 != nullptr);
+            vec::Graphics g2;
+            QVERIFY(r2->page(0, &g2, &why));
+            QCOMPARE_GE(g2.paths.size(), 10);
+        }
+        // A page that is not there.
+        QVERIFY(!reader->page(5, &g, &why));
+        QVERIFY(!reader->page(-1, &g, &why));
+
+        // Cut short anywhere.
+        for (const double share : {0.1, 0.3, 0.5, 0.7, 0.9, 0.99}) {
+            auto r3 = vec::Reader::open(whole.left(qsizetype(whole.size() * share)), &why);
+            if (r3 != nullptr) {
+                for (int i = 0; i < r3->pageCount(); ++i) {
+                    vec::Graphics g3;
+                    r3->page(i, &g3, &why);
+                }
+            }
+        }
+    }
+
+    void handWrittenPdfs()
+    {
+        // What QPdfWriter never writes: a rotated page, a crop box, indirect
+        // lengths, a form drawn as a marker, LZW and ASCII filters, an object
+        // stream, a reference to itself. Written by hand.
+        const QByteArray page = "q 1 0 0 1 100 200 cm 0 0 m 100 50 l 200 0 l S Q\n";
+        const auto writePdf = [&](const QByteArray& pageDict, const QByteArray& extra = {}) {
+            QByteArray out = "%PDF-1.5\n";
+            out += "1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj\n";
+            out += "2 0 obj <</Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800]>> endobj\n";
+            out += "3 0 obj <</Type /Page /Parent 2 0 R /Contents 4 0 R " + pageDict + ">> endobj\n";
+            out += "4 0 obj <</Length 5 0 R>> stream\n" + page + "endstream endobj\n";
+            out += "5 0 obj " + QByteArray::number(page.size()) + " endobj\n";
+            out += extra;
+            out += "trailer <</Root 1 0 R>>\n";
+            return out;
+        };
+        const auto line = [](const QByteArray& pdf, QString* why) {
+            vec::Graphics g;
+            auto r = vec::Reader::open(pdf, why);
+            if (r == nullptr || !r->page(0, &g, why) || g.paths.isEmpty()) return QPolygonF();
+            return g.paths.first().parts.first().points;
+        };
+        QString why;
+        // Plain: y runs down from the top of 800.
+        QPolygonF q = line(writePdf(QByteArray()), &why);
+        QVERIFY2(!q.isEmpty(), qPrintable(why));
+        QCOMPARE(q.first(), QPointF(100, 600));
+        QCOMPARE(q.at(1), QPointF(200, 550));
+        // A crop box moves the origin.
+        q = line(writePdf("/CropBox [50 100 550 700]"), &why);
+        QVERIFY(!q.isEmpty());
+        QCOMPARE(q.first(), QPointF(50, 500));
+        // Rotated pages: where the page shows it.
+        {
+            vec::Graphics g;
+            auto r = vec::Reader::open(writePdf("/Rotate 90"), &why);
+            QVERIFY(r != nullptr);
+            QVERIFY(r->page(0, &g, &why));
+            QCOMPARE(g.size, QSizeF(800, 600));
+            QCOMPARE(g.paths.first().parts.first().points.first(), QPointF(200, 100));
+        }
+        {
+            vec::Graphics g;
+            auto r = vec::Reader::open(writePdf("/Rotate 180"), &why);
+            QVERIFY(r != nullptr);
+            QVERIFY(r->page(0, &g, &why));
+            QCOMPARE(g.paths.first().parts.first().points.first(), QPointF(500, 200));
+        }
+        {
+            vec::Graphics g;
+            auto r = vec::Reader::open(writePdf("/Rotate 270"), &why);
+            QVERIFY(r != nullptr);
+            QVERIFY(r->page(0, &g, &why));
+            QCOMPARE(g.size, QSizeF(800, 600));
+            QCOMPARE(g.paths.first().parts.first().points.first(), QPointF(600, 500));
+        }
+        // Encrypted: said, not misread.
+        {
+            bool encrypted = false;
+            QByteArray pdf = writePdf(QByteArray());
+            pdf.replace("trailer <</Root 1 0 R>>", "trailer <</Root 1 0 R /Encrypt 9 0 R>>");
+            pdf.replace("trailer", "9 0 obj <</Filter /Standard>> endobj\ntrailer");
+            QVERIFY(vec::Reader::open(pdf, &why, &encrypted) == nullptr);
+            QVERIFY(encrypted);
+        }
+        // A page tree that points at itself, a form that draws itself: done
+        // with, not followed for ever.
+        {
+            QByteArray pdf = "%PDF-1.5\n1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj\n"
+                             "2 0 obj <</Type /Pages /Kids [2 0 R 3 0 R] /MediaBox [0 0 100 100]>> endobj\n"
+                             "3 0 obj <</Type /Page /Parent 2 0 R /Contents 4 0 R /Resources <</XObject <</F 5 0 R>>>>>> endobj\n"
+                             "4 0 obj <</Length 22>> stream\n/F Do 0 0 m 10 10 l S \nendstream endobj\n"
+                             "5 0 obj <</Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources <</XObject <</F 5 0 R>>>> /Length 20>> stream\n/F Do 1 1 m 2 2 l S \nendstream endobj\n"
+                             "trailer <</Root 1 0 R>>\n";
+            vec::Graphics g;
+            auto r = vec::Reader::open(pdf, &why);
+            QVERIFY2(r != nullptr, qPrintable(why));
+            QCOMPARE(r->pageCount(), 1);
+            QVERIFY(r->page(0, &g, &why));
+            QCOMPARE(g.paths.size(), 2);
+        }
+        // A marker by form: the origin is where it was put.
+        {
+            QByteArray pdf = "%PDF-1.5\n1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj\n"
+                             "2 0 obj <</Type /Pages /Kids [3 0 R] /MediaBox [0 0 100 100]>> endobj\n"
+                             "3 0 obj <</Type /Page /Parent 2 0 R /Contents 4 0 R /Resources <</XObject <</M 5 0 R>>>>>> endobj\n"
+                             "4 0 obj <</Length 60>> stream\nq 1 0 0 1 30 40 cm /M Do Q q 1 0 0 1 60 70 cm /M Do Q \nendstream endobj\n"
+                             "5 0 obj <</Type /XObject /Subtype /Form /BBox [-5 -5 5 5] /Length 25>> stream\n-3 -3 6 6 re f \nendstream endobj\n"
+                             "trailer <</Root 1 0 R>>\n";
+            vec::Graphics g;
+            auto r = vec::Reader::open(pdf, &why);
+            QVERIFY2(r != nullptr, qPrintable(why));
+            QVERIFY(r->page(0, &g, &why));
+            QCOMPARE(g.paths.size(), 2);
+            QCOMPARE(g.paths.at(0).origin, QPointF(30, 60));
+            QCOMPARE(g.paths.at(1).origin, QPointF(60, 30));
+            QCOMPARE(g.paths.at(0).form, g.paths.at(1).form);
+        }
+        // Filters by hand: ASCIIHex of the same content.
+        {
+            QByteArray pdf = "%PDF-1.5\n1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj\n"
+                             "2 0 obj <</Type /Pages /Kids [3 0 R] /MediaBox [0 0 100 100]>> endobj\n"
+                             "3 0 obj <</Type /Page /Parent 2 0 R /Contents 4 0 R>> endobj\n"
+                             "4 0 obj <</Filter /ASCIIHexDecode /Length " + QByteArray::number(QByteArray("0 0 m 10 10 l S").toHex().size() + 1) + ">> stream\n" +
+                             QByteArray("0 0 m 10 10 l S").toHex() + ">\nendstream endobj\ntrailer <</Root 1 0 R>>\n";
+            vec::Graphics g;
+            auto r = vec::Reader::open(pdf, &why);
+            QVERIFY2(r != nullptr, qPrintable(why));
+            QVERIFY(r->page(0, &g, &why));
+            QCOMPARE(g.paths.size(), 1);
+        }
+    }
+
+    void fuzzTheReader()
+    {
+        // Random damage to a real file and to hand-made ones: never a crash,
+        // never an end that does not come. (Nothing to compare the answer with:
+        // what is under test is that there is one.)
+        const QString file = path(QStringLiteral("fuzz.pdf"));
+        Axes a;
+        a.grid = true;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{sine, Qt::blue}, Curve{cosine, Qt::red, 1, Qt::DashLine}}, u, false); }));
+        QFile in(file);
+        QVERIFY(in.open(QIODevice::ReadOnly));
+        const QByteArray whole = in.readAll();
+        in.close();
+        std::mt19937 random(0x51A7);
+        const auto pick = [&](qsizetype n) { return qsizetype(random() % quint32(std::max<qsizetype>(1, n))); };
+        static const char* const fragments[] = {"<<", ">>", "[", "]", "obj", "endobj", "stream", "endstream", "/Filter /FlateDecode", "/Length 999999999", "/Kids [3 0 R]", "/Type /ObjStm", "/N 99999999", "/First -1",
+                                                "xref", "trailer", "startxref\n1\n", "99999 0 R", "/Prev 0", "/W [8 8 8]", "/Index [0 2147483647]", "/Predictor 15 /Columns 99999999", "(((((", "<ff"};
+        int opened = 0;
+        for (int round = 0; round < 1500; ++round) {
+            QByteArray bytes = whole;
+            const int edits = 1 + int(random() % 24);
+            for (int e = 0; e < edits; ++e) {
+                switch (random() % 5) {
+                case 0: bytes[pick(bytes.size())] = char(random()); break;
+                case 1: bytes.remove(pick(bytes.size()), pick(400)); break;
+                case 2: bytes.insert(pick(bytes.size()), fragments[random() % std::size(fragments)]); break;
+                case 3: {
+                    const qsizetype from = pick(bytes.size());
+                    bytes.insert(pick(bytes.size()), bytes.mid(from, pick(200)));
+                    break;
+                }
+                default: bytes.truncate(std::max<qsizetype>(16, bytes.size() - pick(bytes.size() / 4 + 1))); break;
+                }
+            }
+            QString why;
+            auto reader = vec::Reader::open(bytes, &why);
+            if (reader == nullptr) continue;
+            ++opened;
+            for (int page = 0; page < std::min(reader->pageCount(), 3); ++page) {
+                vec::Graphics g;
+                reader->page(page, &g, &why);
+            }
+        }
+        qInfo("fuzz of the reader: %d of 1500 damaged files still opened", opened);
+        QCOMPARE_GE(opened, 50);
+    }
+
+    void fuzzTheContentStream()
+    {
+        // Operators in any order, with any operands, in a stream Flate never saw.
+        std::mt19937 random(0xC0DE);
+        static const char* const ops[] = {"q", "Q", "cm", "w", "d", "m", "l", "c", "v", "y", "h", "re", "S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n", "W", "W*", "g", "G", "rg", "RG", "k", "K", "cs", "CS", "sc", "SC", "scn", "SCN", "gs", "Do", "BI", "ID", "EI", "BT", "ET", "Tj", "TJ", "sh", "BDC", "EMC", "(", ")", "<", ">", "<<", ">>", "[", "]", "/M", "/", "1e9", "-1e308", "nan", "99999999999999999999", "0.000000001", "0"};
+        for (int round = 0; round < 400; ++round) {
+            QByteArray content;
+            const int n = int(random() % 400);
+            for (int i = 0; i < n; ++i) {
+                content += ops[random() % std::size(ops)];
+                content += ' ';
+            }
+            const QByteArray pdf = "%PDF-1.5\n1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj\n2 0 obj <</Type /Pages /Kids [3 0 R] /MediaBox [0 0 100 100]>> endobj\n"
+                                   "3 0 obj <</Type /Page /Parent 2 0 R /Contents 4 0 R /Resources <</XObject <</M 3 0 R>> /ExtGState <</M 1 0 R>> /ColorSpace <</M [/Indexed]>>>>>> endobj\n"
+                                   "4 0 obj <</Length " + QByteArray::number(content.size()) + ">> stream\n" + content + "\nendstream endobj\ntrailer <</Root 1 0 R>>\n";
+            QString why;
+            auto reader = vec::Reader::open(pdf, &why);
+            QVERIFY2(reader != nullptr, qPrintable(why));
+            vec::Graphics g;
+            QVERIFY(reader->page(0, &g, &why));
+        }
+    }
+
+    // ----- Results ----------------------------------------------------------
+
+    void resultsCsvAndDataset()
+    {
+        Plot plot;
+        Reference a, b;
+        a.at = QPointF(0, 100);
+        a.hasX = a.hasY = true;
+        a.x = 0;
+        a.y = 0;
+        b.at = QPointF(100, 0);
+        b.hasX = b.hasY = true;
+        b.x = 10;
+        b.y = 1;
+        plot.calibration.references = {a, b};
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        Series s;
+        s.name = QStringLiteral("=SUM(A1), \"evil\"");
+        s.points = {QPointF(0, 100), QPointF(50, 50), QPointF(100, 0)};
+        plot.series << s;
+        const QString text = csv(plot);
+        QVERIFY(text.startsWith(QStringLiteral("series,x,y\n")));
+        QCOMPARE(text.count(QLatin1Char('\n')), 4);
+        QVERIFY2(text.contains(QStringLiteral("'\"=SUM")) || text.contains(QStringLiteral("\"=SUM")), qPrintable(text));
+        QVERIFY(text.contains(QStringLiteral(",5,0.5\n")));
+        const QByteArray data = dataset(plot);
+        QVERIFY(data.startsWith("<Qucs Dataset"));
+        QVERIFY2(data.contains("<indep SUM_A1_evil_x 3>"), data.constData());
+        QVERIFY(data.contains("<dep SUM_A1_evil SUM_A1_evil_x>"));
+        // Two of the same name are told apart.
+        plot.series << s;
+        const QByteArray twice = dataset(plot);
+        QVERIFY(twice.contains("<dep SUM_A1_evil_2 SUM_A1_evil_2_x>"));
+        QCOMPARE(variableName(QStringLiteral("1 weird name!")), QStringLiteral("s_1_weird_name"));
+        QCOMPARE(variableName(QString()), QStringLiteral("s_"));
+    }
+
+    void thinnedKeepsTheShape()
+    {
+        QList<QPointF> line;
+        for (int i = 0; i < 5000; ++i) line << QPointF(i * 0.1, i == 2500 ? 40.0 : std::sin(i * 0.002) * 10);
+        const QList<int> kept = thinned(line, 100);
+        QCOMPARE(kept.size(), 100);
+        QCOMPARE(kept.first(), 0);
+        QCOMPARE(kept.last(), 4999);
+        QVERIFY2(kept.contains(2500), "the spike");
+        QVERIFY(std::is_sorted(kept.begin(), kept.end()));
+        QCOMPARE(thinned(line, 0).size(), 5000);
+        QCOMPARE(thinned(line.mid(0, 3), 100).size(), 3);
+        QCOMPARE(thinned({}, 10).size(), 0);
+    }
+
+    // ----- Kept with the PDF ------------------------------------------------
+
+    void savedAndRestored()
+    {
+        const QString file = path(QStringLiteral("kept.pdf"));
+        Axes a;
+        a.xLog = true;
+        a.xMin = 1;
+        a.xMax = 1e4;
+        a.xTicks = {1, 10, 100, 1000, 10000};
+        const auto f = [](double x) { return std::sin(std::log10(x) * 2); };
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{f, Qt::blue, 1.2, Qt::SolidLine, QStringLiteral("name")}}, u, true); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(extract(source, plot, Options{}));
+        plot.name = QStringLiteral("The first");
+        Series hand;
+        hand.name = QStringLiteral("by hand");
+        hand.shape = Series::Shape::ByHand;
+        hand.origin = Series::Origin::Hand;
+        hand.points = {QPointF(150, 200), QPointF(200, 210)};
+        plot.series << hand;
+        QString why;
+        QVERIFY2(saveSidecar(file, {plot}, &why), qPrintable(why));
+        QVERIFY(QFileInfo::exists(sidecarPath(file)));
+        QList<Plot> back;
+        bool stale = true;
+        QVERIFY2(loadSidecar(file, &back, &why, &stale), qPrintable(why));
+        QVERIFY(!stale);
+        QCOMPARE(back.size(), 1);
+        const Plot& p = back.first();
+        QCOMPARE(p.name, plot.name);
+        QCOMPARE(p.page, plot.page);
+        QCOMPARE(p.frame, plot.frame);
+        QVERIFY(p.calibration.valid());
+        QCOMPARE(p.calibration.xScale, Scale::Log);
+        QCOMPARE(p.series.size(), plot.series.size());
+        QCOMPARE(p.series.first().points.size(), plot.series.first().points.size());
+        QCOMPARE(p.series.last().shape, Series::Shape::ByHand);
+        const QPointF was = plot.calibration.toValue(plot.series.first().points.at(10));
+        const QPointF is = p.calibration.toValue(p.series.first().points.at(10));
+        QCOMPARE_LE(QLineF(was, is).length(), 1e-9);
+        // The PDF changes: still there, but said.
+        {
+            QFile touch(file);
+            QVERIFY(touch.open(QIODevice::Append));
+            touch.write("\n% more\n");
+        }
+        QVERIFY(loadSidecar(file, &back, &why, &stale));
+        QVERIFY(stale);
+        // Damaged: refused, said, left where it is.
+        const QString side = sidecarPath(file);
+        {
+            QFile f2(side);
+            QVERIFY(f2.open(QIODevice::WriteOnly));
+            f2.write("{ not json");
+        }
+        why.clear();
+        QVERIFY(!loadSidecar(file, &back, &why, &stale));
+        QVERIFY(!why.isEmpty());
+        QVERIFY(QFileInfo::exists(side));
+        // Nothing left to keep: the file goes.
+        QVERIFY(saveSidecar(file, {}, &why));
+        QVERIFY(!QFileInfo::exists(side));
+        // Nothing kept is no error.
+        QVERIFY(loadSidecar(file, &back, &why));
+        QVERIFY(back.isEmpty());
+    }
+
+    void fuzzTheSavedFile()
+    {
+        Plot plot;
+        plot.page = 2;
+        plot.region = QRectF(1, 2, 300, 200);
+        plot.frame = QRectF(10, 10, 200, 100);
+        plot.name = QStringLiteral("x");
+        Reference a, b;
+        a.at = QPointF(10, 110);
+        a.hasX = a.hasY = true;
+        b.at = QPointF(210, 10);
+        b.hasX = b.hasY = true;
+        b.x = 1;
+        b.y = 1;
+        plot.calibration.references = {a, b};
+        Series s;
+        s.name = QStringLiteral("c");
+        s.points = {QPointF(1, 2), QPointF(3, 4), QPointF(5, 6)};
+        s.breaks = {1};
+        plot.series << s;
+        const QJsonObject root{{QStringLiteral("format"), QStringLiteral("qucs-s plot digitizer")}, {QStringLiteral("version"), 1}, {QStringLiteral("plots"), QJsonArray{toJson(plot)}}};
+        const QByteArray whole = QJsonDocument(root).toJson(QJsonDocument::Compact);
+        QList<Plot> back;
+        QString why;
+        QVERIFY2(parseSidecar(whole, &back, &why), qPrintable(why));
+        QCOMPARE(back.size(), 1);
+        QCOMPARE(back.first().series.first().breaks, QList<int>{1});
+
+        std::mt19937 random(0xFEED);
+        const auto pick = [&](qsizetype n) { return qsizetype(random() % quint32(std::max<qsizetype>(1, n))); };
+        static const char* const values_[] = {"null", "true", "-1", "1e308", "-1e308", "1e400", "\"\"", "[]", "{}", "[1]", "[[[[", "\"polar\"", "\"projective\"", "\"log\"", "0", "99999999999"};
+        int good = 0;
+        for (int round = 0; round < 4000; ++round) {
+            QByteArray bytes = whole;
+            const int edits = 1 + int(random() % 6);
+            for (int e = 0; e < edits; ++e) {
+                switch (random() % 4) {
+                case 0: bytes[pick(bytes.size())] = char(random()); break;
+                case 1: bytes.remove(pick(bytes.size()), pick(30)); break;
+                case 2: bytes.insert(pick(bytes.size()), values_[random() % std::size(values_)]); break;
+                default: {
+                    // A number replaced by another kind of thing.
+                    const qsizetype at = bytes.indexOf(':', pick(bytes.size()));
+                    if (at > 0) {
+                        qsizetype end = at + 1;
+                        while (end < bytes.size() && bytes.at(end) != ',' && bytes.at(end) != '}' && bytes.at(end) != ']') ++end;
+                        bytes.replace(at + 1, end - at - 1, values_[random() % std::size(values_)]);
+                    }
+                }
+                }
+            }
+            QList<Plot> plots;
+            if (parseSidecar(bytes, &plots, &why)) {
+                ++good;
+                // What is taken must be safe to use.
+                for (const Plot& p : std::as_const(plots)) {
+                    (void)assess(p);
+                    (void)csv(p);
+                    (void)dataset(p);
+                    (void)toJson(p);
+                    for (const Series& se : p.series) (void)values(p, se);
+                    QVERIFY(p.page >= 0);
+                }
+            }
+        }
+        qInfo("fuzz of the saved file: %d of 4000 damaged files still read", good);
+        QCOMPARE_GE(good, 100);
+    }
+
+    void aRealPdfFromTheRepository()
+    {
+#ifdef QUCS_REPO_PDF
+        // The repository's own plot: test1.pdf of the Python tools, written by
+        // matplotlib from their sample dataset.
+        const QString file = QStringLiteral(QUCS_REPO_PDF);
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        QVERIFY2(source.hasVectors(), qPrintable(source.vectorProblem()));
+        const QList<Plot> plots = findPlots(source, 0);
+        qInfo("%s: %lld plots on its first page", qPrintable(QFileInfo(file).fileName()), qlonglong(plots.size()));
+        QCOMPARE_GE(plots.size(), 1);
+        Plot plot = plots.first();
+        QVERIFY2(plot.calibration.valid(), qPrintable(plot.notes.join(QLatin1Char(' '))));
+        QCOMPARE_LE(plot.calibration.rms(), 0.5);
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE_GE(plot.series.size(), 1);
+        for (const Series& s : std::as_const(plot.series)) {
+            qInfo("  %s: %lld points, ink under %.3f of them", qPrintable(s.name), qlonglong(s.points.size()), s.agreement);
+            if (s.agreement >= 0) QCOMPARE_GE(s.agreement, 0.9);
+        }
+#else
+        QSKIP("No PDF of the repository's named to this build.");
+#endif
+    }
+
+private:
+    static double colourDistanceTo(const QColor& a, const QColor& b)
+    {
+        return std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue());
+    }
+};
+
+QTEST_MAIN(TestPlotDigitizer)
+#include "test_plot_digitizer.moc"
