@@ -73,7 +73,8 @@ QStringList pathsOf(const QJsonValue& value, const QString& root, const std::fun
     for (const QJsonValue& v : value.toArray()) {
         const QString p = v.toString().trimmed();
         if (p.isEmpty()) continue;
-        out << (!root.isEmpty() && QFileInfo(p).isRelative() ? QDir::cleanPath(QDir(root).filePath(p)) : resolve(p));
+        const bool isRelative = p.startsWith(QLatin1Char(':')) || QFileInfo(p).isRelative();   // (':': a name, not Qt's resource)
+        out << (!root.isEmpty() && isRelative ? QDir::cleanPath(git::fileIn(root, p)) : resolve(p));
     }
     return out;
 }
@@ -98,7 +99,8 @@ QJsonObject commitJson(const git::Commit& c)
 QString QucsControl::gitPath(const QString& path) const
 {
     const QString given = path.trimmed();
-    if (given.isEmpty() || QFileInfo(given).isAbsolute()) return given.isEmpty() ? given : QDir::cleanPath(given);
+    // (':' first: to Qt a resource's path, here a file's name.)
+    if (given.isEmpty() || (!given.startsWith(QLatin1Char(':')) && QFileInfo(given).isAbsolute())) return given.isEmpty() ? given : QDir::cleanPath(given);
     // From the open project's folder, the workspace, the folder of the
     // document in front, the File Browser's: the first where it is - or,
     // for one not there yet (a file to ignore before it is made), the first
@@ -108,7 +110,7 @@ QString QucsControl::gitPath(const QString& path) const
     if (const FileBrowser* fb = a_app->fileBrowserPanel(); fb != nullptr && !fb->location().isEmpty()) bases << fb->location();
     QStringList candidates;
     for (const QString& base : std::as_const(bases))
-        if (const QString c = QDir::cleanPath(QDir(base).filePath(given)); !candidates.contains(c)) candidates << c;
+        if (const QString c = QDir::cleanPath(git::fileIn(base, given)); !candidates.contains(c)) candidates << c;
     for (const QString& c : std::as_const(candidates))
         if (QFileInfo::exists(c)) return c;
     for (const QString& c : std::as_const(candidates))
@@ -184,7 +186,7 @@ QJsonObject QucsControl::gitState(const QString& root)
         o.insert(QStringLiteral("conflicts"), conflicts);
         QJsonArray kept;
         for (const QJsonValue& c : std::as_const(conflicts))
-            if (const QString file = QDir(r.root).filePath(c.toString()); a_app->keptInConflict(file)) kept.append(native(file));
+            if (const QString file = git::fileIn(r.root, c.toString()); a_app->keptInConflict(file)) kept.append(native(file));
         if (!kept.isEmpty())
             o.insert(QStringLiteral("kept in their tabs"),
                      QJsonObject{{QStringLiteral("files"), kept},
@@ -471,7 +473,11 @@ void QucsControl::gitCommit(const QJsonObject& args, const Done& done)
             return;
         }
         commitArgs << QStringLiteral("--");
-        for (const QString& p : paths) commitArgs << git::relativePath(root, p);
+        // (The repository's own folder: "." - an empty path is none to git.)
+        for (const QString& p : paths) {
+            const QString rel = git::relativePath(root, p);
+            commitArgs << git::literalPaths({rel.isEmpty() ? QStringLiteral(".") : rel});
+        }
     } else if (!amend) {
         const git::Repository* repo = git::Tracker::instance()->readNow(root);
         // (A merge's commit records it, nothing staged or not: each file
