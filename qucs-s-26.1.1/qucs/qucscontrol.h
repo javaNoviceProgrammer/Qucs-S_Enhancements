@@ -662,6 +662,11 @@ private:
     /// A PDF's tab shown at a page, a hit, a zoom or a region
     /// (qucscontrol_design.cpp).
     QJsonObject showPdf(const QJsonObject& args);
+    /// find_plots, digitize_plot, get_digitized (qucscontrol_digitizer.cpp):
+    /// a plot's numbers read from a PDF.
+    QJsonObject findPlots(const QJsonObject& args);
+    QJsonObject digitizePlot(const QJsonObject& args);
+    QJsonObject getDigitized(const QJsonObject& args);
     /// read_pptx, show_pptx (qucscontrol_pptx.cpp): a presentation's slides
     /// read - the open one's as its tab shows it -, shown, played.
     QJsonObject readPptx(const QJsonObject& args);

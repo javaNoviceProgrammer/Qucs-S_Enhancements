@@ -635,6 +635,32 @@ const char* const kTools = R"JSON([
 {"name": "read_pdf",
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. 'image' draws the pages too, as pictures (a figure, a scanned page). 'region' is [x1, y1, x2, y2] in points from a page's top left (or fractions of it): it keeps the lines whose box meets it - the boxes get_state gives for what the user selected are in those very points, so the selected lines are read by one call - and crops the picture to it. show_pdf shows a page in its tab.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\", 7 or \"all\"; the first 3 by default (with 'search', all). 200 at a call; what is left out is said"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}, "image": {"type": "boolean", "description": "The pages drawn as pictures too (four at most), at a resolution to read them"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of each page, in points from its top left or as fractions of it: the text is kept to the lines whose box meets it (the boxes get_state gives for a selection are in these points), and a picture with 'image' is cropped to it"}}}},
+{"name": "find_plots",
+ "description": "Finds the plots in a PDF: each one's page, box (points from the page's top left), its axes as read from their labels (linear or log, what they run from and to) and whether it could be calibrated - by the page's paths, or by a picture of it where the plot is an embedded image or a scan. 'pages' narrows it (\"all\" by default). digitize_plot then takes the numbers from one, and needs no find_plots when the page is known. No window is needed.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\", 7 or \"all\" (the default)"}}}},
+{"name": "digitize_plot",
+ "description": "Reads the numbers off a plot in a PDF in one call: finds its frame, calibrates its axes from their tick marks and labels (linear, log, reversed, 1k, 10^-3, a multiplier at the axis's end), and extracts every curve and set of markers, named from the legend where it has one, in the axes' units. A plot drawn as vector art gives the file's own vertices; an embedded image or a scan is traced from a picture of the page (colours told apart, dashes and crossings followed, a turned scan set straight). The answer holds each series, how far to trust it ('trust': its level, why, what a value is good to), how long it took ('ms'), and a picture of the plot with what was extracted drawn over it: look at it, a wrong trace shows. 'page' and 'plot' say which (on a page of several it lists them; without 'page', the first plot from the page in view), or 'region' [x1, y1, x2, y2] marks one. To correct or to supply a calibration: 'x_scale' / 'y_scale'; 'x_values' / 'y_values', one for each tick mark listed in its answer's x_marks_at and y_marks_at, for a scan whose labels have no text; 'references' [{\"at\": [x, y], \"x\": .., \"y\": ..}], points of the page whose values are known (a skewed scan: three or four corners, with 'model': \"projective\" for a page photographed at an angle), and with 'polar', r and theta. To choose what is taken: 'colours', 'seeds' (points on the curves to follow, one series each), 'route'. 'csv' and 'dataset' write every point (a dataset is what add_diagram and add_trace plot); 'max_points' limits what is returned per series, thinned keeping the shape (200 by default, 0 all). 'keep' stores the plot with the PDF, where the viewer's Digitize panel and get_digitized find it; 'show' also opens the panel on it. No window is needed unless 'show'.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"},
+   "page": {"type": "integer", "description": "The page, from 1"}, "plot": {"type": "integer", "description": "Which plot of the page, from 1, as find_plots numbers them"},
+   "region": {"type": "array", "items": {"type": "number"}, "description": "[x1, y1, x2, y2] of the page: points from its top left, or fractions of it. The frame inside it is found; none found, it is the area looked at"},
+   "x_scale": {"type": "string", "description": "linear, log or auto (the default: from its labels)"}, "y_scale": {"type": "string", "description": "linear, log or auto"},
+   "x_values": {"type": "array", "items": {"type": "number"}, "description": "The value of each x tick mark found, left to right"},
+   "y_values": {"type": "array", "items": {"type": "number"}, "description": "The value of each y tick mark found, top to bottom"},
+   "references": {"type": "array", "items": {"type": "object", "properties": {"at": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: points from the page's top left"}, "x": {"type": "number"}, "y": {"type": "number"}, "r": {"type": "number", "description": "Polar: the radius's value"}, "theta": {"type": "number", "description": "Polar: the angle, in degrees"}}, "required": ["at"]}, "description": "Points whose values are known: instead of the labels. Two or more on each axis, or three or more with both"},
+   "polar": {"type": "boolean", "description": "A polar plot: 'references' give r and theta; x_scale is r's"}, "r_at_centre": {"type": "number", "description": "Polar: r's value at the centre (a pattern in dB: -40); 0 by default"},
+   "model": {"type": "string", "description": "affine (the default: takes a turn and a shear) or projective (four references or more)"},
+   "route": {"type": "string", "description": "auto (the default), vector (the file's paths only) or raster (a picture of the page, even if it has paths)"},
+   "colours": {"type": "array", "items": {"type": "string"}, "description": "Only these colours, \"#rrggbb\""},
+   "seeds": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Points on the curves to follow, [[x, y], ...] in points from the page's top left: one series each, nothing else taken"},
+   "names": {"type": "array", "items": {"type": "string"}, "description": "New names for the series, in the order they come"},
+   "trace_scale": {"type": "number", "description": "Pixels a point of the picture a raster route traces from; chosen from the scan's resolution by default, up to 16"},
+   "max_points": {"type": "integer", "minimum": 0, "description": "The most points returned for a series, its shape kept; 200 by default, 0 for all"},
+   "picture": {"type": "boolean", "description": "The overlay's picture: true by default"}, "max_width": {"type": "integer", "description": "Its longer side, in pixels (1000 by default)"}, "scale": {"type": "number", "description": "Its size times this"}, "gray": {"type": "boolean", "description": "It in grey"}, "format": {"type": "string", "description": "png or jpeg"},
+   "csv": {"type": "string", "description": "Writes every point here (series,x,y)"}, "dataset": {"type": "string", "description": "Writes a Qucs dataset (.dat) here: each series a variable, over an independent named after it with _x"},
+   "keep": {"type": "boolean", "description": "Stores it with the PDF (<name>.pdf.digitized.json)"}, "replace": {"type": "integer", "description": "With 'keep': the plot kept to replace, as get_digitized numbers them"}, "show": {"type": "boolean", "description": "Keeps it and opens the viewer's Digitize panel on it"}}}},
+{"name": "get_digitized",
+ "description": "Reads what is kept with a PDF of the plots digitized in it - by the user in the viewer's Digitize panel, by hand or not, or by digitize_plot with 'keep': each plot's page, calibration, series in the axes' units and how far to trust them. 'plot' takes one; with 'picture', a picture of it with the points drawn over the page. No window is needed.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "plot": {"type": "integer", "description": "One of them, from 1"}, "max_points": {"type": "integer", "minimum": 0, "description": "The most points returned for a series, its shape kept; 200 by default, 0 for all"}, "picture": {"type": "boolean", "description": "With 'plot': its picture too"}, "max_width": {"type": "integer", "description": "The picture's longer side, in pixels (1000 by default)"}, "scale": {"type": "number", "description": "The picture's size times this"}, "gray": {"type": "boolean", "description": "The picture in grey"}, "format": {"type": "string", "description": "png or jpeg"}}}},
 {"name": "get_layout",
  "description": "Reads a GDSII or OASIS layout (.gds, .gds2, .gdsii, .gds.gz, .oas, .oasis) - as its tab shows it when it is open, else from its file in the background: the format, the database unit, how many cells, shapes, texts and placements, the top cells with their bounds and size (µm) and how many levels they have, the tree of cells (each cell's cells and how often each is placed; 'depth' levels of it, 3 by default, from 'cell' or from the top cells), the layers (layer/datatype, a name from the file or a KLayout .lyp beside it, the colour it is drawn in, shapes and texts on each), cells placed that the file has not, what gdstk warned of, and, when it is open, what its tab shows (cell, region, levels, hidden layers, the shape selected and the rulers - the user's or Claude's). find_shapes finds its shapes, find_placements where a cell is placed, show_layout shows a part of it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The tree from this cell instead of the top cells"}, "depth": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Levels of the tree listed, 3 by default"}}}},
@@ -1059,6 +1085,9 @@ const struct {
     {"open_document", QT_TRANSLATE_NOOP("QucsControl", "open a document in Qucs-S")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "show a layout in Qucs-S")},
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "show a PDF's page in Qucs-S")},
+    {"find_plots", QT_TRANSLATE_NOOP("QucsControl", "find the plots in a PDF in Qucs-S")},
+    {"digitize_plot", QT_TRANSLATE_NOOP("QucsControl", "read the numbers off a plot in a PDF in Qucs-S")},
+    {"get_digitized", QT_TRANSLATE_NOOP("QucsControl", "read the plots digitized in a PDF in Qucs-S")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "read a presentation's slides in Qucs-S")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "drive a presentation's tab in Qucs-S")},
     {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "read what was drawn with the pen in Qucs-S")},
@@ -1157,7 +1186,7 @@ const struct {
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
-                                 "read_pdf", "read_pptx", "read_drawings", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
+                                 "read_pdf", "find_plots", "get_digitized", "read_pptx", "read_drawings", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
                                  "find_shapes", "find_placements", "list_background_jobs", "get_background_job", "git_status", "git_diff", "git_log", "git_show", "git_blame",
@@ -1169,7 +1198,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
                                  "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
-                                 "show_layout", "show_pdf", "show_pptx", "git_init", "git_clone"};
+                                 "show_layout", "show_pdf", "digitize_plot", "show_pptx", "git_init", "git_clone"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -1257,6 +1286,9 @@ const struct {
     {"find_shapes", QT_TRANSLATE_NOOP("QucsControl", "Finds the shapes and texts of a GDSII or OASIS layout at a point, in a region or on a layer, with their points in µm.")},
     {"find_placements", QT_TRANSLATE_NOOP("QucsControl", "Finds where a cell of a GDSII or OASIS layout is placed: each placement's origin, rotation, mirror and bounds in µm.")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "Shows a cell, a region or some layers of a GDSII or OASIS layout in its tab, for a screenshot.")},
+    {"find_plots", QT_TRANSLATE_NOOP("QucsControl", "Finds the plots in a PDF: each one's page, box and axes as read from their labels.")},
+    {"digitize_plot", QT_TRANSLATE_NOOP("QucsControl", "Reads the numbers off a plot in a PDF in one call: curves and markers in the axes' units, how far to trust them, and a picture to check them by.")},
+    {"get_digitized", QT_TRANSLATE_NOOP("QucsControl", "Reads the plots kept with a PDF: what the user digitized in the viewer, or digitize_plot kept.")},
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "Reads a PowerPoint presentation's slides - titles, text, tables' rows, notes, what is not drawn - and draws them with 'image'.")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Drives a presentation's tab: a slide (next, previous, by title), its find bar, the zoom or a region, its panes; plays it full screen and steps the show; reloads; copies a slide.")},
@@ -1312,7 +1344,7 @@ const char* const kFoldedOptions[] = {"eye", "bathtub", "level_histogram", "cont
 const char* const kModel[] = {"fem_describe", "fem_model", "fem_edit", "fem_solve", "fem_evaluate", "fem_plot"};
 // A PDF's, where one is open: the sessions of 21 and 22 October with a paper
 // open each searched for them first (four of four).
-const char* const kPdf[] = {"read_pdf", "show_pdf"};
+const char* const kPdf[] = {"read_pdf", "show_pdf", "digitize_plot"};
 // A presentation's, where one is open.
 const char* const kPptx[] = {"read_pptx", "show_pptx"};
 const struct {
@@ -1426,6 +1458,9 @@ const struct {
     {"import_library", "import add install bring library lib file vendor colleague spice subckt copy user_lib"},
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
+    {"find_plots", "pdf plot figure graph chart find digitize datasheet paper curves axes"},
+    {"digitize_plot", "pdf plot figure graph chart digitize digitizer extract curve data points values read off datasheet paper scan trace markers scatter log axis calibrate csv"},
+    {"get_digitized", "pdf plot digitized digitizer points kept saved read what the user marked curve data"},
     {"read_pptx", "powerpoint pptx presentation slides deck talk notes text read"},
     {"show_pptx", "powerpoint pptx presentation slide show play deck go to next previous find zoom region notes thumbnails reload copy clipboard"},
     {"read_drawings", "pen drawing drawn draw marks markup annotation ink highlighter circle ring arrow underline sketch layout slide user"},
@@ -4018,7 +4053,7 @@ namespace {
 // docks, raw input, consoles), changes the settings, git, scripts, the
 // Verilog-A compiler. A tool not named here is checked as before.
 const char* const kAutonomous[] = {
-    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "show_pptx", "show_background_jobs",
+    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "digitize_plot", "show_pptx", "show_background_jobs",
     "set_schematic", "add_component", "edit_component", "replace_component", "delete", "move", "arrange", "connect",
     "add_wire", "set_label", "rename_net", "add_analysis", "create_subcircuit", "make_symbol", "set_subcircuit_parameters",
     "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "add_marker",
@@ -4325,7 +4360,7 @@ QString QucsControl::instructions() const
         "write the library's own file), and taken away with its model when no "
         "schematic uses the device; a part named by its library's name is taken from the first library of that name that "
         "has the part (of two that have it, the one the project linked its Verilog-A from: check_schematic warns which); "
-        "read_pdf reads a datasheet's text; read_pptx a presentation's slides and notes (show_pptx drives its tab and plays them; export_image writes slides as pictures or a PDF); fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot and fem_export "
+        "read_pdf reads a datasheet's text; digitize_plot reads the numbers off a plot in a PDF in one call (find_plots lists a document's plots, get_digitized what is kept with it): use it rather than reading values off a picture by eye; read_pptx a presentation's slides and notes (show_pptx drives its tab and plays them; export_image writes slides as pictures or a PDF); fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot and fem_export "
         "read, make, change, solve, show and export a 2D multiphysics model (.qfem: electrostatics, currents, heat at rest or in "
         "time, solid mechanics, magnetic fields at rest - B-H curves - or in frequency - eddy currents -, waveguides' modes "
         "(effective index, loss) and waves in the plane with ports (S-parameters), in the plane or about an axis, swept, its mesh "
@@ -5253,7 +5288,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"), QStringLiteral("get_ui"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
-        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("read_pptx"), QStringLiteral("read_drawings"), QStringLiteral("get_text"),
+        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("find_plots"), QStringLiteral("get_digitized"), QStringLiteral("read_pptx"), QStringLiteral("read_drawings"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
         QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("find_placements"),
@@ -5403,6 +5438,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("set_simulator")) return setSimulator(args);
     if (tool == QLatin1String("read_pdf")) return readPdf(args);
     if (tool == QLatin1String("show_pdf")) return showPdf(args);
+    if (tool == QLatin1String("find_plots")) return findPlots(args);
+    if (tool == QLatin1String("digitize_plot")) return digitizePlot(args);
+    if (tool == QLatin1String("get_digitized")) return getDigitized(args);
     if (tool == QLatin1String("read_pptx")) return readPptx(args);
     if (tool == QLatin1String("show_pptx")) return showPptx(args);
     if (tool == QLatin1String("read_drawings")) return readDrawings(args);
