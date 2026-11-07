@@ -128,6 +128,7 @@ void QucsControl::endSimRun(int id, const QJsonObject& result)
     noteForConversations(tr("Simulation %1 (%2, %3) has ended%4: simulation_status {\"id\": %1} gives its outcome.")
                              .arg(id).arg(QFileInfo(run->schematic).fileName(), run->simulator,
                                           run->stoppedBy.isEmpty() ? QString() : tr(", stopped by %1").arg(run->stoppedBy)));
+    jobSimEnded(id, run->result);
 }
 
 void QucsControl::stopProcess(QObject* process)

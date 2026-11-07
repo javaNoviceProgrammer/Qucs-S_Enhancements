@@ -49,6 +49,7 @@
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextBrowser>
@@ -62,6 +63,8 @@
 #include "claudecode.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
+#include "claudejobs.h"
+#include "claudejobswindow.h"
 #include "isolated_settings.h"
 
 namespace {
@@ -409,7 +412,7 @@ class TestClaudeFuzz : public QObject
         case 1: {
             QJsonObject sys{{QStringLiteral("type"), QStringLiteral("system")},
                             {QStringLiteral("subtype"), d.pickText({QStringLiteral("init"), QStringLiteral("status"), QStringLiteral("permission_denied"),
-                                                                    QStringLiteral("task_started"), QStringLiteral("task_updated"),
+                                                                    QStringLiteral("task_started"), QStringLiteral("task_updated"), QStringLiteral("task_progress"),
                                                                     QStringLiteral("task_notification"), QStringLiteral("compact_boundary"), word(d)})},
                             {QStringLiteral("session_id"), QStringLiteral("s-%1").arg(d.below(3))},
                             {QStringLiteral("model"), d.pickText({QStringLiteral("claude-opus-5-5"), QStringLiteral("claude-haiku-5-5"), word(d)})},
@@ -421,6 +424,18 @@ class TestClaudeFuzz : public QObject
                             {QStringLiteral("status"), d.pickText({QStringLiteral("completed"), QStringLiteral("failed"), word(d)})},
                             {QStringLiteral("is_backgrounded"), d.chance(0.5)},
                             {QStringLiteral("message"), word(d)}};
+            // (The Background Jobs' events: claudejobs.h.)
+            if (d.chance(0.5))
+                sys.insert(QStringLiteral("patch"), QJsonObject{{QStringLiteral("status"), d.pickText({QStringLiteral("pending"), QStringLiteral("running"),
+                                                                                                       QStringLiteral("completed"), QStringLiteral("failed"),
+                                                                                                       QStringLiteral("killed"), QStringLiteral("paused"), word(d)})},
+                                                                {QStringLiteral("description"), d.chance(0.5) ? QJsonValue(word(d)) : anyValue(d)},
+                                                                {QStringLiteral("error"), anyValue(d)}});
+            if (d.chance(0.3))
+                sys.insert(QStringLiteral("usage"), QJsonObject{{QStringLiteral("total_tokens"), anyValue(d)},
+                                                                {QStringLiteral("tool_uses"), anyValue(d)}});
+            if (d.chance(0.3)) sys.insert(QStringLiteral("summary"), d.chance(0.5) ? QJsonValue(word(d)) : anyValue(d));
+            if (d.chance(0.2)) sys.insert(QStringLiteral("output_file"), anyValue(d));
             if (d.chance(0.5)) sys.insert(QStringLiteral("slash_commands"), QJsonArray{QStringLiteral("compact"), QStringLiteral("review"), word(d)});
             return sys;
         }
@@ -1254,6 +1269,19 @@ private slots:
                       box->width(), box->height(), int(box->isVisible()), box->viewport()->width(), box->viewport()->height(),
                       qPrintable(box->font().toString()), qint64(box->document()->blockCount()), int(panel->isEditing()),
                       int(panel->commandList()->isVisible()), QJsonDocument(QJsonArray{box->toPlainText()}).toJson(QJsonDocument::Compact).constData());
+            }
+            // The Background Jobs window over it all: opened, a job stopped, those
+            // over cleared; it lists what the list holds.
+            if (d.chance(0.03)) {
+                using qucs_s::claude::jobs::Registry;
+                step(n, QStringLiteral("the jobs window"));
+                ClaudeJobsWindow* jobs = ClaudeJobsWindow::showWindow(panel);
+                const QList<qucs_s::claude::jobs::Job> listed = Registry::instance().jobs();
+                if (!listed.isEmpty() && d.chance(0.5)) Registry::instance().stop(listed.at(d.below(int(listed.size()))).id);
+                if (d.chance(0.2)) Registry::instance().clearFinished();
+                if (jobs->table()->rowCount() != Registry::instance().count())
+                    found(n, QStringLiteral("the jobs window shows %1 rows of %2 jobs").arg(jobs->table()->rowCount()).arg(Registry::instance().count()));
+                if (d.chance(0.5)) jobs->close();
             }
             const int action = d.below(100);
             if (action < 38) {

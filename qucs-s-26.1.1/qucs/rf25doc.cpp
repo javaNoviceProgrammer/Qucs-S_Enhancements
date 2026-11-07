@@ -2181,6 +2181,14 @@ bool RF25Doc::solvingAlike(const SolveRequest& request) const
     return a_solveRequest.frequencies == request.frequencies && matrixOf(a_solveRequest) == matrixOf(request);
 }
 
+QString RF25Doc::solveCount(int* done, int* of) const
+{
+    const Count c = countNow();
+    *done = c.done;
+    *of = c.of;
+    return c.said;
+}
+
 QString RF25Doc::solvingSaid() const
 {
     return isSolving() ? countNow().said : QString();

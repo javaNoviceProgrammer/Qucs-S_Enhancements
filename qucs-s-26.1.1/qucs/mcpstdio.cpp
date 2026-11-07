@@ -11,6 +11,8 @@
  */
 #include "mcpstdio.h"
 
+#include "claudejobs.h"
+
 #include "main.h"
 #include "mcpserver.h"
 #include "qucs.h"
@@ -110,6 +112,9 @@ int runStdio(QApplication& app, QucsApp* window, QTimer* startupCloser)
         return 1;
     }
     control->setHeadless(true);   // (a message box in a call: answered for no one)
+    // (Its jobs are its own, this run's: the file of the window's jobs is the
+    // application's, which a server neither reads nor writes.)
+    qucs_s::claude::jobs::Registry::instance().reset();
     auto* server = new Server(control, &app);
     // (One conversation: what changed since its last call is told, as the
     // dock's are told.)

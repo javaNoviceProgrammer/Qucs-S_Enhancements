@@ -12,6 +12,7 @@
 
 #include "apptheme.h"
 #include "claudecodepanel.h"
+#include "claudejobs.h"
 #include "settings.h"
 
 #include <QDialog>
@@ -46,6 +47,8 @@ using qucs_s::claude::State;
 ClaudeCodeTabs::ClaudeCodeTabs(QWidget* parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("claudeCodeTabs"));
+    // The jobs that ended, from before Qucs-S was closed.
+    qucs_s::claude::jobs::Registry::instance().setKept(qucs_s::claude::jobs::Registry::keptFile());
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -645,6 +648,7 @@ void ClaudeCodeTabs::updateTab(ClaudeCodePanel* panel)
     const int index = a_tabs->indexOf(panel);
     if (index < 0) return;
     QString title = panel->title();
+    qucs_s::claude::jobs::Registry::instance().nameConversation(panel->session()->caller(), title);
     a_tabs->setTabText(index, title.replace(QLatin1Char('&'), QLatin1String("&&")));
     a_tabs->setTabIcon(index, QIcon(panel->statePixmap()));
     QString tip = panel->title() + QLatin1Char('\n')
