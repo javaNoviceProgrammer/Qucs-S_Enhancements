@@ -14,6 +14,7 @@
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
 
+#include "fem_adapt.h"
 #include "fem_lumerical.h"
 #include "fem_optimize.h"
 #include "fem_material_plot.h"
@@ -57,6 +58,12 @@ QJsonObject nodeJson(const FNode& n, int depth)
         if (n.type == QLatin1String("optimization") && props.contains(QStringLiteral("result"))) {
             props.remove(QStringLiteral("result"));
             o.insert(QStringLiteral("last result"), OptimizationResult::fromJson(n.value(QStringLiteral("result")).toObject()).summary);
+        }
+        // (A mesh convergence check's too: fem_converge action=result reads the rest.)
+        if (n.type == QLatin1String("convergence") && props.contains(QStringLiteral("result"))) {
+            props.remove(QStringLiteral("result"));
+            const ConvergenceResult r = ConvergenceResult::fromJson(n.value(QStringLiteral("result")).toObject());
+            o.insert(QStringLiteral("last result"), r.error.isEmpty() ? r.summary : r.error);
         }
         if (!props.isEmpty()) o.insert(QStringLiteral("props"), props);
     }
@@ -248,6 +255,10 @@ QString formatText()
         "An optimization: top-level \"optimizations\": [{\"type\": \"optimization\", \"tag\": \"opt1\", \"study\": \"std1\", \"method\": \"cmaes\", \"maxiter\": 50, "
         "\"variables\": [[\"d\", \"\", \"0.2[mm]\", \"3[mm]\", \"LOG_DOUBLE\"]], \"objectives\": [[\"es.C11\", \"TARGET\", \"200[pF]\"], [\"ht.Tmax\", \"LE\", \"350[K]\"]]}] - parameters "
         "varied in their ranges, each candidate a solve; fem_optimize runs it, its \"result\" kept in the node by the run. Its kind below lists what it takes.\n"
+        "A mesh convergence check: top-level \"convergences\": [{\"type\": \"convergence\", \"tag\": \"conv1\", \"study\": \"std1\", \"tolerance\": \"0.001\", "
+        "\"values\": [[\"es.C11\", \"\", \"\"], [\"ht.Tmax\", \"1e-4\", \"0.01[K]\"]]}] - each row an expression, its own tolerance, an absolute error enough for it; "
+        "fem_converge with \"method\": \"adaptive\" runs it, its \"result\" kept in the node by the run; \"mesh/adapted\" under the mesh node holds a refined mesh's "
+        "sizes once kept. Its kind below lists what it takes.\n"
         "A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
         "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step - "
         "n_eff = β/k0 (epsilon_eff its square) and epsilon_eff_qs = C/C0; coupled lines: \"terminal\": \"1, 2\" and as many "
@@ -1019,6 +1030,24 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         optimizations.append(so);
     }
     if (!optimizations.isEmpty()) o.insert(QStringLiteral("optimizations"), optimizations);
+    // (Each mesh convergence check: its verdict - fem_converge action=result has the rest.)
+    QJsonArray convergences;
+    for (const FNode* n : convergenceNodes(m)) {
+        QJsonObject so{{QStringLiteral("tag"), n->tag}, {QStringLiteral("name"), n->name()}};
+        if (doc->converging() == n->tag) so.insert(QStringLiteral("running"), true);
+        if (const std::optional<ConvergenceResult> r = doc->convergenceResult(n->tag)) {
+            if (!r->error.isEmpty()) so.insert(QStringLiteral("could not be run"), r->error);
+            else {
+                so.insert(QStringLiteral("status"), r->status);
+                so.insert(QStringLiteral("summary"), r->summary);
+            }
+            if (doc->convergenceStale(n->tag)) so.insert(QStringLiteral("changed since"), true);
+        } else {
+            so.insert(QStringLiteral("status"), tr("not run yet"));
+        }
+        convergences.append(so);
+    }
+    if (!convergences.isEmpty()) o.insert(QStringLiteral("convergences"), convergences);
     // (Building or solving: how far - the APD's review: "Solving Stationary"
     // alone for 42 minutes.)
     if (doc->isBusy()) o.insert(QStringLiteral("at work"), doc->jobProgress());
@@ -1132,7 +1161,8 @@ QStringList unknownModelKeysOf(const QJsonObject& model)
 {
     static const QStringList top{QStringLiteral("format"),     QStringLiteral("title"),      QStringLiteral("description"),
                                  QStringLiteral("parameters"), QStringLiteral("functions"),  QStringLiteral("components"),
-                                 QStringLiteral("studies"),    QStringLiteral("optimizations"), QStringLiteral("results")};
+                                 QStringLiteral("studies"),    QStringLiteral("optimizations"), QStringLiteral("convergences"),
+                                 QStringLiteral("results")};
     static const QStringList component{QStringLiteral("tag"),       QStringLiteral("label"),      QStringLiteral("unit"),
                                        QStringLiteral("thickness"), QStringLiteral("space"),      QStringLiteral("selections"),
                                        QStringLiteral("geometry"),  QStringLiteral("materials"),  QStringLiteral("physics"),
@@ -2811,6 +2841,11 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
         return done(errorResult(error.isEmpty() ? tr("fem_converge checks 2D models alone yet: a 3D model's mesh is refined by its Size and Distribution nodes (fem_edit), and solved again.") : error));
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return done(errorResult(error));
+    // Refined where the error is, until the values settle: a job of the model's
+    // own, its node and page (qucscontrol_fem_adapt.cpp).
+    const QString method = args.value(QLatin1String("method")).toString(QStringLiteral("uniform")).trimmed();
+    if (method == QLatin1String("adaptive")) return femConvergeAdaptive(doc, args, done);
+    if (method != QLatin1String("uniform")) return done(errorResult(tr("'method' is uniform or adaptive, not \"%1\".").arg(method)));
     QStringList watched;
     for (const QJsonValue& v : args.value(QLatin1String("values")).toArray())
         if (const QString e = v.toString().trimmed(); !e.isEmpty()) watched << e;

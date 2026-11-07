@@ -10,6 +10,12 @@
 # added to a shipped example or to a small capacitor that solves in
 # milliseconds, the section alone damaged - its settings, its rows, a kept
 # result's rows - and run by fem_optimize, read, written in and stopped too.
+# Of the rest, one in five (QFEM_CONV_SHARE) is a mesh convergence check's: the
+# "convergences" section (docs/feature_gaps/2026-11-07-multiphysics-mesh-convergence.md)
+# added to a small model or a shipped one, damaged alone (its settings, its
+# rows, a kept result's rows and sizes), a damaged Adapted Sizes feature in the
+# mesh node sometimes, then run by fem_converge's adaptive method, stopped,
+# read, its refined mesh kept and built, and saved.
 #   QUCS=<qucs-s> HUNT_RUNS=<scratch> python3 fuzz_qfem.py SEED COUNT
 import json, os, random, re, select, shutil, subprocess, sys, time
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
@@ -20,6 +26,7 @@ os.makedirs(H, exist_ok=True)
 seed, total = int(sys.argv[1]), int(sys.argv[2])
 rnd = random.Random(seed)
 OPT_SHARE = float(os.environ.get('QFEM_OPT_SHARE', '0.33'))
+CONV_SHARE = float(os.environ.get('QFEM_CONV_SHARE', '0.2'))
 RUN = os.path.join(H, f'runs/{seed}')
 WS = os.path.join(RUN, 'ws')
 FIND = os.path.join(H, 'findings')
@@ -80,6 +87,40 @@ def opt_result():
             'evaluations': 3, 'solves': 3, 'failed': 0, 'seconds': 0.1, 'parameters': [{'name': 'd', 'text': '1 mm', 'value': 1e-3}], 'measured': [{'name': 'es.C11', 'text': '1 pF', 'value': 1e-12}],
             'kinds': ['MIN'], 'units': ['m', 'F'], 'columns': ['d', 'es.C11'], 'history': ['1 0.001 1e-12 1 1 1', '2 0.002 5e-13 0.5 1 1', 'x y z', '3 nan nan nan 0 0'],
             'front': [{'values': [1e-3], 'measured': [1e-12]}] if rnd.random() < 0.5 else []}
+
+# A mesh convergence check's section: every setting, what a row may hold.
+CONV_EXPR = ['es.C11', 'es.W', 'ht.Tmax', 'ec.R', 'nosuch', '1/0', 'es.normE', 'x', 'es.C11/1[pF]', '((', '0/0', '1e308*1e308', 'w*d', 'sensor', 'emw.neff']
+CORNER = {'format': 'qucs-s multiphysics 1',
+          'components': [{'unit': 'mm', 'geometry': [{'type': 'rectangle', 'name': 'square', 'size': ['2', '2']},
+                                                     {'type': 'rectangle', 'name': 'cut', 'position': ['1', '1'], 'size': ['1', '1']},
+                                                     {'type': 'difference', 'name': 'plate', 'input': ['square'], 'tools': ['cut']}],
+                          'materials': [{'label': 'm', 'epsilonr': '1', 'k': '1[W/(m*K)]', 'selection': {'all': True}}],
+                          'physics': [{'type': 'electrostatics', 'tag': 'es', 'order': '1', 'features': [
+                              {'type': 'terminal', 'name': '1', 'V0': '1[V]', 'selection': {'box': [0.99, 0.99, 2.01, 2.01]}},
+                              {'type': 'ground', 'selection': {'box': [-0.01, -0.01, 0.01, 2.01]}}]}],
+                          'mesh': {'size': 'normal', 'custom': True, 'hmax': '0.25'}}],
+          'studies': [{'type': 'study', 'tag': 'std1', 'steps': [{'type': 'stationary'}]}]}
+
+def conv_section():
+    """A check of a few values, within a small budget."""
+    rows = []
+    for _ in range(rnd.randint(1, 3)):
+        e = rnd.choice(['es.W', 'es.C11']) if rnd.random() < 0.8 else rnd.choice(CONV_EXPR)
+        rows.append([e, rnd.choice(['', '', '', '1e-2', '0', '2', 'x']), rnd.choice(['', '', '', '1e-12[J]', '-1', 'nosuch', '1[K]'])])
+    section = {'type': 'convergence', 'tag': 'conv1', 'tolerance': rnd.choice(['1e-2', '1e-3', '1e-4', '0', '1', 'x', '1e-12']),
+               'maxmeshes': rnd.choice([2, 3, 4, 6, 1, 41]), 'maxunknowns': rnd.choice(['2e4', '5e4', '1e5', '50', '1e10']), 'values': rows}
+    extra = {'refine': ['auto', 'goal', 'uniform', 'bogus'], 'check': [True, False, 'x'], 'sweep': ['ends', 'own', 'all', 'middle'],
+             'physics': [['es'], [], ['nosuch'], 'es'], 'study': ['std1', '', 'std9']}
+    for key, values in extra.items():
+        if rnd.random() < 0.3: section[key] = rnd.choice(values)
+    return section
+
+def conv_result():
+    """A kept result, as a run writes one, for the section to carry into its damage."""
+    return {'status': rnd.choice(['converged', 'meshes', 'unknowns', 'cancelled', 'failed', 'x']), 'converged': rnd.choice([True, False]), 'summary': 'x', 'setup': 'x',
+            'method': 'x', 'evidence': ['a', 'b'], 'columns': ['es.W'], 'units': ['J'], 'rows': ['1 0 start 174 106 0.1 0.3 0.2 1.1e-11', '2 0 adaptive 245 145 0.09 0 nan 1.13e-11', 'x y', '3 0 check 1 2 3 4 5 inf'],
+            'values': [{'column': 0, 'value': 1.13e-11, 'limit': 1.13e-11, 'error': 'inf', 'relative': 'nan', 'rate': 1, 'tolerance': 0.01, 'trust': 'bounded', 'why': 'x', 'settled': True},
+                       {'column': 5}], 'solves': 3, 'sizes': ['0.5 0.5 0.01', '1 1 0.001', 'x y z', '1 2', '1e308 1e308 1e-308', '0 0 -1'], 'smallestsize': rnd.choice([0.001, 0, -1, 1e-300])}
 
 def mutate_json(d, n):
     paths = []
@@ -177,7 +218,24 @@ for i in range(total):
     text = open(os.path.join(EX, name), encoding='utf-8').read()
     kind = rnd.random()
     optimized = rnd.random() < OPT_SHARE
-    if optimized:
+    checked = not optimized and rnd.random() < CONV_SHARE
+    if checked:
+        # The check alone damaged, on a model that solves in milliseconds (or a
+        # shipped one), a damaged Adapted Sizes feature in the mesh now and then.
+        d = json.loads(json.dumps(rnd.choice([CORNER, CAPACITOR]))) if rnd.random() < 0.85 else json.loads(text)
+        section = conv_section()
+        if rnd.random() < 0.3: section['result'] = conv_result()
+        ops = mutate_json(section, rnd.choice([0, 0, 0, 1, 1, 2, 3]))
+        d.setdefault('convergences', []).append(section)
+        if rnd.random() < 0.1: d['convergences'].append(rnd.choice([5, 'x', {}, {'type': 'nosuch'}, {'type': 'convergence'}, section]))
+        if rnd.random() < 0.2:
+            mesh = d['components'][0].setdefault('mesh', {})
+            feature = {'type': 'adapted', 'hmin': rnd.choice(['0.001', '0', '-1', 'x', '']), 'points': rnd.choice([['0.5 0.5 0.01', '1 1 1e-9', 'x', '1 2 3 4'], 'x', [5], [], ['1e308 1 1']])}
+            features = mesh.setdefault('features', [])
+            if isinstance(features, list): features.append(feature)
+        name = 'small' if d.get('studies') and d['components'][0].get('mesh', {}).get('hmax') in ('0.25', 'max(d, w)/4') else name
+        text = json.dumps(d, indent=1)
+    elif optimized:
         # The section alone damaged, on a model that solves in milliseconds (or
         # a shipped one, its solves perhaps past the call's time limit).
         d = json.loads(json.dumps(CAPACITOR)) if rnd.random() < 0.9 else json.loads(text)
@@ -217,6 +275,18 @@ for i in range(total):
                       ('fem_optimize', {'path': path, 'action': 'result', 'history': rnd.choice([0, -1])}, 120),
                       ('fem_optimize', {'path': path, 'action': 'apply', 'point': rnd.choice([1, 2, 1000])}, 120),
                       ('save_document', {'path': path}, 120)]
+    if checked:
+        # (Instead of the plain solve: a check, its stop, what it kept, its mesh
+        # kept and built.)
+        calls[2:3] = [('fem_converge', {'path': path, 'method': 'adaptive', 'timeout': 10}, 120),
+                      ('fem_stop', {'path': path, 'timeout': 60}, 120),
+                      ('fem_converge', {'path': path, 'method': 'adaptive', 'action': 'result'}, 120),
+                      ('fem_converge', {'path': path, 'method': 'adaptive', 'action': 'keep'}, 120),
+                      ('fem_build', {'path': path, 'timeout': 20}, 120),
+                      ('fem_converge', {'path': path, 'method': 'adaptive', 'values': [rnd.choice(CONV_EXPR)], 'max_meshes': 3, 'by': rnd.choice(['auto', 'goal', 'uniform']),
+                                        'max_unknowns': rnd.choice([200, 2e4]), 'timeout': 10}, 120),
+                      ('fem_stop', {'path': path, 'timeout': 60}, 120),
+                      ('save_document', {'path': path}, 120)]
     done = []
     bad = None
     for name_, args, limit in calls:
@@ -226,10 +296,10 @@ for i in range(total):
         if isinstance(r, dict) and r.get('result', {}).get('isError'):
             st[1] += 1
             # (What fem_optimize refused and why, in the summary: that the runs do run.)
-            if name_ == 'fem_optimize':
+            if name_ in ('fem_optimize', 'fem_converge'):
                 said = re.sub(r'[0-9.e+-]+', '#', str(r['result'].get('content', [{}])[0].get('text', '')))[:70]
                 refused[said] = refused.get(said, 0) + 1
-        elif name_ == 'fem_optimize' and args.get('action') is None and isinstance(r, dict):
+        elif name_ in ('fem_optimize', 'fem_converge') and args.get('action') is None and isinstance(r, dict):
             refused['(ran)'] = refused.get('(ran)', 0) + 1
         # (A call past 10 s kept beside the findings, not one: a close that
         # waited 45 s for a mesh's smoothing was seen only as the longest -
@@ -254,6 +324,6 @@ for i in range(total):
         s.kill(); s = Server(); pos = os.path.getsize(errpath)
     if i % 20 == 0: print(f'[{seed}] {i} mutants, {findings} findings, {time.time() - t0:.0f} s', flush=True)
 print(' '.join(f'{k}:{v[0]} calls, {v[1]} refused, longest {v[2]:.1f} s' for k, v in sorted(stats.items())))
-for why, count in sorted(refused.items(), key=lambda kv: -kv[1])[:25]: print(f'  fem_optimize {count}: {why}')
+for why, count in sorted(refused.items(), key=lambda kv: -kv[1])[:25]: print(f'  fem_optimize, fem_converge {count}: {why}')
 print(f'[{seed}] {total} mutants, {findings} findings, {time.time() - t0:.0f} s', flush=True)
 s.kill()

@@ -156,6 +156,11 @@ struct OptimizationResult {
     static OptimizationResult fromJson(const QJsonObject& object);
 };
 
+/// An expression of \a solution as it stands (its snapshot selected): its globals
+/// and parameters, and the values of its Derived Values nodes it names (lp1.Z0; a
+/// node of one value by its tag). False and why where it is not one number.
+bool solutionValue(Solution& solution, const QString& text, double* value, Dim* dim, QString* why);
+
 /// What a run tells as it goes, on its thread.
 struct OptimizationListener {
     std::function<void(const OptimizationRow&, const QStringList& columns)> row;
