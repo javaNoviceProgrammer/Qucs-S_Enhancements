@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "githistory.h"
+#include "gitstatus.h"
 
 #include "elidedlabel.h"
 #include "gitui.h"
@@ -712,8 +713,8 @@ HistoryQuery HistoryView::query() const
 QString HistoryView::refsSignature() const
 {
     const Result refs = run(a_root, {QStringLiteral("for-each-ref"), QStringLiteral("--format=%(objectname) %(refname)")}, true, 15000);
-    const Result head = run(a_root, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")}, true, 15000);
-    return head.out.trimmed() + QLatin1Char('\n') + refs.out;
+    const Result head = run(a_root, {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("-q"), QStringLiteral("HEAD")}, true, 15000);
+    return (head.ok() ? head.out.trimmed() : QString()) + QLatin1Char('\n') + refs.out;
 }
 
 void HistoryView::refresh()
@@ -724,7 +725,7 @@ void HistoryView::refresh()
         reload();
         return;
     }
-    const int changes = uncommittedChanges(read(a_root));
+    const int changes = uncommittedChanges(lookedAt());
     const bool shown = a_model->rowCount() > 0 && a_model->row(0).uncommitted;
     if ((changes > 0) != shown) {
         reload();
@@ -749,6 +750,15 @@ int HistoryView::uncommittedChanges(const Repository& repo) const
     return changes;
 }
 
+Repository HistoryView::lookedAt() const
+{
+    // (The tracker's, read a moment ago: it is what said the repository
+    // changed, or a command's own read. A status of a large tree is a third of
+    // a second here, on the GUI thread.)
+    const Repository* repo = Tracker::instance()->fresh(a_root, 1000);
+    return repo != nullptr ? *repo : Repository();
+}
+
 void HistoryView::reload()
 {
     a_reloadTimer->stop();
@@ -756,15 +766,14 @@ void HistoryView::reload()
     const QString chosen = currentRow() >= 0 ? (a_model->row(currentRow()).uncommitted ? kUncommitted : a_model->row(currentRow()).commit.hash)
                                              : QString();
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const Repository repo = read(a_root);
+    const Repository repo = lookedAt();
     fillScopes(repo);
     a_model->clear();
     a_layout.clear();
     a_loaded = 0;
     a_complete = false;
     a_shown = -1;
-    const Result head = run(a_root, {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("-q"), QStringLiteral("HEAD")}, true, 15000);
-    a_head = head.ok() ? head.out.trimmed() : QString();
+    a_head = a_signature.section(QLatin1Char('\n'), 0, 0);
     // The changes not committed: above HEAD's commit, a dashed line to it.
     const QString s = scope();
     const int changes = uncommittedChanges(repo);
@@ -877,7 +886,7 @@ void HistoryView::showRow(int row)
     const HistoryModel::Row& r = a_model->row(row);
     const QPalette pal = palette();
     if (r.uncommitted) {
-        const Repository repo = read(a_root);
+        const Repository repo = lookedAt();
         a_info->setHtml(QStringLiteral("<p><b>%1</b></p><p>%2</p>")
                             .arg(escaped(r.commit.subject),
                                  escaped(tr("On %1: double-click the row to commit them").arg(repo.branchText()))));
@@ -890,7 +899,7 @@ void HistoryView::showRow(int row)
             item->setToolTip(0, e.describe());
             item->setData(0, Qt::UserRole, e.path);
         }
-        const QString parts = schematicChangesOf(a_root, a_path, DiffOf::Head);
+        const QString parts = schematicChangesOf(a_root, a_path, DiffOf::Head, &repo);
         const QString text = diff(a_root, a_path, DiffOf::Head);
         a_details->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
         return;
@@ -955,7 +964,7 @@ void HistoryView::showFile(int fileRow)
     QTreeWidgetItem* item = a_files->topLevelItem(fileRow);
     const int row = currentRow();
     if (item == nullptr || row < 0) return;
-    const QString path = QDir(a_root).filePath(item->data(0, Qt::UserRole).toString());
+    const QString path = fileIn(a_root, item->data(0, Qt::UserRole).toString());
     const HistoryModel::Row& r = a_model->row(row);
     QString parts, text;
     if (r.uncommitted) {
@@ -976,7 +985,7 @@ void HistoryView::openVersion(int fileRow)
     const QString rel = item->data(0, Qt::UserRole).toString();
     const HistoryModel::Row& r = a_model->row(row);
     if (r.uncommitted) {
-        const QString file = QDir(a_root).filePath(rel);
+        const QString file = fileIn(a_root, rel);
         if (QFileInfo(file).isFile()) emit Commands::instance()->openRequested(file);
         return;
     }
@@ -1017,7 +1026,7 @@ QMenu* HistoryView::fileMenuFor(int fileRow)
     const int row = currentRow();
     if (item == nullptr || row < 0) return menu;
     const QString rel = item->data(0, Qt::UserRole).toString();
-    const QString file = QDir(a_root).filePath(rel);
+    const QString file = fileIn(a_root, rel);
     const bool uncommitted = a_model->row(row).uncommitted;
     if (!uncommitted)
         menu->addAction(tr("Open This Version"), this, [this, fileRow] { openVersion(fileRow); })->setObjectName(QStringLiteral("gitOpenVersion"));
@@ -1153,8 +1162,9 @@ QMenu* HistoryView::menuFor(int row)
     menu->addAction(tr("New Tag Here…"), menu, [commands, root, hash] { commands->newTag(root, hash); })
         ->setObjectName(QStringLiteral("gitTagHere"));
     menu->addSeparator();
-    const Repository repo = read(root);
-    const QString into = repo.branch.isEmpty() ? tr("HEAD") : repo.branch;
+    // (A menu's words, as it opens: no status for them.)
+    const Repository* looked = Tracker::instance()->fresh(root, 5000);
+    const QString into = looked == nullptr || looked->branch.isEmpty() ? tr("HEAD") : looked->branch;
     if (hash != a_head) {
         QString what = shortHash;
         for (const Ref& ref : r.commit.refList)

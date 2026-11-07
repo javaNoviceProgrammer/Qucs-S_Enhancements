@@ -623,13 +623,13 @@ GitChangesDialog::GitChangesDialog(const Status& status, QWidget* parent)
     const auto openItem = [this](QListWidgetItem* item) {
         if (item == nullptr) return;
         const QString path = item->data(Qt::UserRole).toString();
-        const QString file = QDir(a_status.root).filePath(path);
+        const QString file = qucs_s::git::fileIn(a_status.root, path);
         if (!path.isEmpty() && QFileInfo(file).isFile()) emit openFileRequested(file);
     };
     connect(a_files, &QListWidget::currentRowChanged, this, [this, open] {
         QListWidgetItem* item = a_files->currentItem();
         const QString path = item != nullptr ? item->data(Qt::UserRole).toString() : QString();
-        open->setEnabled(!path.isEmpty() && QFileInfo(QDir(a_status.root).filePath(path)).isFile());
+        open->setEnabled(!path.isEmpty() && QFileInfo(qucs_s::git::fileIn(a_status.root, path)).isFile());
         showDiff();
     });
     connect(a_files, &QListWidget::itemDoubleClicked, this, openItem);
@@ -662,7 +662,7 @@ void GitChangesDialog::setStatus(const Status& status)
         auto* item = new QListWidgetItem(QStringLiteral("%1   %2%3").arg(f.path, counts, f.untracked ? tr("  new") : QString()),
                                          a_files);
         item->setData(Qt::UserRole, f.path);
-        item->setToolTip(QDir::toNativeSeparators(QDir(status.root).filePath(f.path)));
+        item->setToolTip(QDir::toNativeSeparators(qucs_s::git::fileIn(status.root, f.path)));
         if (f.path == current) row = a_files->count() - 1;
     }
     a_files->setCurrentRow(row);

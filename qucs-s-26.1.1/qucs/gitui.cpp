@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "gitui.h"
+#include "gitstatus.h"
 #include "elidedlabel.h"
 #include "githistory.h"
 #include "schematicdiff.h"
@@ -288,7 +289,7 @@ CommitDialog::CommitDialog(const QString& root, QWidget* parent) : QDialog(paren
             if (item != nullptr) showDiffOf(item, list == a_staged);
         });
         connect(list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
-            const QString path = QDir(a_root).filePath(item->data(Qt::UserRole).toString());
+            const QString path = fileIn(a_root, item->data(Qt::UserRole).toString());
             if (QFileInfo(path).isFile()) emit openRequested(path);
         });
     }
@@ -363,7 +364,7 @@ void CommitDialog::showDiffOf(QListWidgetItem* item, bool staged)
     const QString path = item->data(Qt::UserRole).toString();
     const DiffOf of = staged ? DiffOf::Staged : DiffOf::Unstaged;
     // A schematic: what changed in it part by part, before git's lines.
-    const QString parts = isSchematicFile(path) ? schematicChangesOf(a_root, QDir(a_root).filePath(path), of) : QString();
+    const QString parts = isSchematicFile(path) ? schematicChangesOf(a_root, fileIn(a_root, path), of) : QString();
     const QString text = diff(a_root, path, of);
     a_diff->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
 }
@@ -1204,21 +1205,24 @@ QStringList Commands::openConflictVersions(const QString& root, const QString& p
     // Beside it - its subcircuits, its dataset found as from it - named
     // for what they are (untracked: delete them once it is resolved).
     QStringList written;
-    const auto put = [&](const std::optional<QString>& text, const QString& which) {
-        if (!text.has_value()) return;
+    // (Their bytes, as git has them: a file in Latin-1 is not text to Qt, and
+    // would come out changed.)
+    const auto put = [&](bool there, const QString& stage, const QString& which) {
+        if (!there) return;
+        const QByteArray bytes = fileAt(root, stage, path);
         const QString base = info.completeBaseName() + QStringLiteral(" (%1)").arg(which);
         QString target = info.dir().filePath(base + QLatin1Char('.') + info.suffix());
         for (int n = 2; QFileInfo::exists(target); ++n)
             target = info.dir().filePath(QStringLiteral("%1 (%2 %3).%4").arg(info.completeBaseName(), which).arg(n).arg(info.suffix()));
         QFile f(target);
-        if (!f.open(QIODevice::WriteOnly) || f.write(text->toUtf8()) < 0) {
+        if (!f.open(QIODevice::WriteOnly) || f.write(bytes) < 0) {
             misc::reportError(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), f.errorString()));
             return;
         }
         written << QDir::cleanPath(target);
     };
-    put(v.ours, tr("mine"));
-    put(v.theirs, tr("theirs"));
+    put(v.ours.has_value(), QStringLiteral(":2"), tr("mine"));
+    put(v.theirs.has_value(), QStringLiteral(":3"), tr("theirs"));
     for (const QString& w : std::as_const(written)) emit openVersionRequested(w);
     if (!v.ours.has_value() || !v.theirs.has_value())
         emit message(!v.ours.has_value() ? tr("Your side deleted %1: theirs opened").arg(info.fileName())

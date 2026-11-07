@@ -41,7 +41,8 @@ QStringList schematicChanges(const std::optional<QString>& before, const std::op
 /// The changes of the schematics not committed in \a root - under \a path
 /// alone when given - as \a of has them (DiffOf): a block of text, a
 /// heading per file, empty when none changed.
-QString schematicChangesOf(const QString& root, const QString& path = {}, DiffOf of = DiffOf::Head);
+/// (\a known: the repository as just read, if the caller has it.)
+QString schematicChangesOf(const QString& root, const QString& path = {}, DiffOf of = DiffOf::Head, const Repository* known = nullptr);
 /// The changes a commit made to its schematics (under \a path alone when
 /// given), the same way.
 QString schematicChangesIn(const QString& root, const QString& commit, const QString& path = {});

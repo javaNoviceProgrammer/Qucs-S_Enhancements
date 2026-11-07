@@ -2687,6 +2687,34 @@ private slots:
         for (const char* ro : {"git_status", "git_diff", "git_log", "git_show", "git_blame"})
             QVERIFY2(control->readOnlyTools().contains(ro), ro);
         QVERIFY(!control->readOnlyTools().contains("git_stage"));
+
+        // The repository's own folder as 'paths', and names git would read as
+        // patterns: those files, none other (test_git_robust's on the tools).
+        QVERIFY(write(repo + "/whole.txt", "whole\n"));
+        r = call("git_commit", {{"path", repo}, {"message", "the whole folder"}, {"paths", QJsonArray{"."}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("the whole folder"));
+        QVERIFY(write(repo + "/amp[1].txt", "one\n"));
+        QVERIFY(write(repo + "/amp1.txt", "one\n"));
+        QVERIFY(write(repo + "/:!x", "one\n"));
+        r = call("git_commit", {{"path", repo}, {"message", "names"}, {"paths", QJsonArray{"amp[1].txt", "amp1.txt", ":!x"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(changedFiles(repo, "HEAD").size(), qsizetype(3));
+        for (const char* name : {"amp[1].txt", "amp1.txt", ":!x"}) QVERIFY(write(repo + "/" + name, "edit\n"));
+        r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{"amp[1].txt", ":!x"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(readAll(repo + "/amp[1].txt"), QByteArray("one\n"));
+        QCOMPARE(readAll(repo + "/:!x"), QByteArray("one\n"));
+        QCOMPARE(readAll(repo + "/amp1.txt"), QByteArray("edit\n"));
+        // (A file of that name in the workspace too: 'paths' are the repository's.)
+        const QString elsewhere = QucsSettings.qucsWorkspaceDir.filePath("x") + "/../:!x";
+        QVERIFY(write(QDir::cleanPath(elsewhere), "the workspace's\n"));
+        QVERIFY(write(repo + "/:!x", "edit\n"));
+        r = call("git_discard", {{"path", repo}, {"paths", QJsonArray{":!x"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(readAll(repo + "/:!x"), QByteArray("one\n"));
+        QCOMPARE(readAll(QDir::cleanPath(elsewhere)), QByteArray("the workspace's\n"));
+        QVERIFY(QFile::remove(QDir::cleanPath(elsewhere)));
     }
 };
 

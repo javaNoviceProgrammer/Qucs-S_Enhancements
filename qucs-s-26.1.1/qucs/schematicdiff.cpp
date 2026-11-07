@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "schematicdiff.h"
+#include "gitstatus.h"
 
 #include "components/component.h"
 #include "module.h"
@@ -103,7 +104,7 @@ Parsed parse(const QString& text)
         }
         if (section.isEmpty()) {
             if (line.startsWith(QLatin1Char('<')) && !line.startsWith(QLatin1String("</")) && !line.contains(QLatin1Char(' ')))
-                section = line.mid(1).chopped(1);
+                section = line.sliced(1, std::max<qsizetype>(0, line.size() - 2));   // (a line "<" alone: none)
             continue;
         }
         if (line == QStringLiteral("</%1>").arg(section)) {
@@ -111,7 +112,8 @@ Parsed parse(const QString& text)
             continue;
         }
         if (section == QLatin1String("Properties")) {
-            const QString body = line.mid(1).chopped(line.endsWith(QLatin1Char('>')) ? 1 : 0);
+            // (">" alone: nothing after its first character to cut the last from.)
+            const QString body = line.sliced(1, std::max<qsizetype>(0, line.size() - 1 - (line.endsWith(QLatin1Char('>')) ? 1 : 0)));
             const QString key = body.section(QLatin1Char('='), 0, 0);
             if (key != QLatin1String("View")) p.settings.insert(key, body.section(QLatin1Char('='), 1));
         } else if (section == QLatin1String("Components")) {
@@ -261,16 +263,12 @@ QString activeText(int active)
     }
 }
 
-std::optional<QString> blob(const QString& root, const QString& spec)
-{
-    const Result r = run(root, {QStringLiteral("show"), spec}, true, 30000);
-    if (!r.ok()) return std::nullopt;
-    return r.out;
-}
-
 std::optional<QString> onDisk(const QString& root, const QString& rel)
 {
-    QFile f(QDir(root).filePath(rel));
+    // (A file: a link's target may be a pipe, or a device with no end.)
+    const QFileInfo info(fileIn(root, rel));
+    if (info.isSymLink() || !info.isFile()) return std::nullopt;
+    QFile f(info.filePath());
     if (!f.open(QIODevice::ReadOnly)) return std::nullopt;
     return QString::fromUtf8(f.readAll());
 }
@@ -384,36 +382,75 @@ QStringList schematicChanges(const std::optional<QString>& beforeText, const std
     return said;
 }
 
-QString schematicChangesOf(const QString& root, const QString& path, DiffOf of)
+namespace {
+
+// What \a specs hold in one git, as text; none for a spec "" (no such side).
+QList<std::optional<QString>> texts(const QString& root, const QStringList& specs)
 {
-    const Repository repo = read(root);
+    QStringList asked;
+    for (const QString& spec : specs)
+        if (!spec.isEmpty()) asked << spec;
+    const QList<std::optional<QByteArray>> found = blobs(root, asked);
+    QList<std::optional<QString>> out;
+    qsizetype at = 0;
+    for (const QString& spec : specs) {
+        if (spec.isEmpty() || at >= found.size() || !found.at(at).has_value()) out << std::nullopt;
+        else out << QString::fromUtf8(*found.at(at));
+        if (!spec.isEmpty()) ++at;
+    }
+    return out;
+}
+
+} // namespace
+
+QString schematicChangesOf(const QString& root, const QString& path, DiffOf of, const Repository* known)
+{
+    const Repository repo = known != nullptr ? *known : read(root);
     if (!repo.valid) return {};
     bool inside = true;
     const QString scope = path.isEmpty() ? QString() : relativePath(root, path, &inside);
     if (!inside) return {};
-    QStringList files;
+    // Each file's two sides; those git holds asked for in one program (twenty
+    // schematics changed took 42 of them).
+    struct One {
+        QString name, disk;
+        int before = -1, after = -1;
+    };
+    QList<One> ones;
+    QStringList specs;
+    const auto spec = [&specs](const QString& s) {
+        specs << s;
+        return int(specs.size()) - 1;
+    };
     for (const Entry& e : repo.entries) {
         if (e.ignored || e.conflicted || e.isFolder() || !isSchematicFile(e.path) || !inScope(e.path, scope)) continue;
         const QString was = e.from.isEmpty() ? e.path : e.from;
-        std::optional<QString> before, after;
+        One one;
+        one.name = e.from.isEmpty() ? e.path : QStringLiteral("%1 → %2").arg(e.from, e.path);
         switch (of) {
         case DiffOf::Head:
-            if (!e.untracked) before = blob(root, QStringLiteral("HEAD:") + was);
-            after = onDisk(root, e.path);
+            if (!e.untracked) one.before = spec(QStringLiteral("HEAD:") + was);
+            one.disk = e.path;
             break;
         case DiffOf::Staged:
             if (!e.hasStaged()) continue;
-            before = blob(root, QStringLiteral("HEAD:") + was);
-            after = blob(root, QStringLiteral(":") + e.path);
+            one.before = spec(QStringLiteral("HEAD:") + was);
+            one.after = spec(QStringLiteral(":") + e.path);
             break;
         case DiffOf::Unstaged:
             if (!e.hasUnstaged()) continue;
-            if (!e.untracked) before = blob(root, QStringLiteral(":") + e.path);
-            after = onDisk(root, e.path);
+            if (!e.untracked) one.before = spec(QStringLiteral(":") + e.path);
+            one.disk = e.path;
             break;
         }
-        const QStringList lines = schematicChanges(before, after);
-        if (!lines.isEmpty()) files << fileBlock(e.from.isEmpty() ? e.path : QStringLiteral("%1 → %2").arg(e.from, e.path), lines);
+        ones << one;
+    }
+    const QList<std::optional<QString>> held = texts(root, specs);
+    const auto heldAt = [&held](int i) { return i >= 0 && i < held.size() ? held.at(i) : std::optional<QString>(); };
+    QStringList files;
+    for (const One& one : std::as_const(ones)) {
+        const QStringList lines = schematicChanges(heldAt(one.before), one.disk.isEmpty() ? heldAt(one.after) : onDisk(root, one.disk));
+        if (!lines.isEmpty()) files << fileBlock(one.name, lines);
     }
     return block(files);
 }
@@ -424,22 +461,26 @@ QString schematicChangesIn(const QString& root, const QString& commit, const QSt
     bool inside = true;
     const QString scope = path.isEmpty() ? QString() : relativePath(root, path, &inside);
     if (!inside) return {};
-    const Result changed = run(root, {QStringLiteral("diff-tree"), QStringLiteral("--no-commit-id"), QStringLiteral("--name-status"),
-                                      QStringLiteral("-r"), QStringLiteral("-M"), QStringLiteral("--root"), commit},
-                               true, 30000);
-    if (!changed.ok()) return {};
+    // (Its files as the History lists them: any name, read whole - git's plain
+    // lines quote one with an accent, and it would be no schematic - and a
+    // merge's against its first parent, where plain diff-tree says nothing.)
+    QList<ChangedFile> changed;
+    QStringList specs;
+    for (const ChangedFile& f : changedFiles(root, commit)) {
+        const QString was = f.from.isEmpty() ? f.path : f.from;
+        if (!isSchematicFile(f.path) && !isSchematicFile(was)) continue;
+        if (!inScope(f.path, scope) && !inScope(was, scope)) continue;
+        changed << f;
+        specs << (f.status == QLatin1Char('A') ? QString() : commit + QStringLiteral("^:") + was);
+        specs << (f.status == QLatin1Char('D') ? QString() : commit + QLatin1Char(':') + f.path);
+    }
+    const QList<std::optional<QString>> held = texts(root, specs);
     QStringList files;
-    for (const QString& l : changed.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-        const QStringList f = l.split(QLatin1Char('\t'));
-        if (f.size() < 2) continue;
-        const QChar status = f.at(0).at(0);
-        const QString was = f.at(1), now = f.size() > 2 ? f.at(2) : f.at(1);
-        if (!isSchematicFile(now) && !isSchematicFile(was)) continue;
-        if (!inScope(now, scope) && !inScope(was, scope)) continue;
-        const std::optional<QString> before = status == QLatin1Char('A') ? std::nullopt : blob(root, commit + QStringLiteral("^:") + was);
-        const std::optional<QString> after = status == QLatin1Char('D') ? std::nullopt : blob(root, commit + QLatin1Char(':') + now);
-        const QStringList lines = schematicChanges(before, after);
-        if (!lines.isEmpty()) files << fileBlock(was == now ? now : QStringLiteral("%1 → %2").arg(was, now), lines);
+    for (qsizetype i = 0; i < changed.size() && 2 * i + 1 < held.size(); ++i) {
+        const ChangedFile& f = changed.at(i);
+        const QString was = f.from.isEmpty() ? f.path : f.from;
+        const QStringList lines = schematicChanges(held.at(2 * i), held.at(2 * i + 1));
+        if (!lines.isEmpty()) files << fileBlock(was == f.path ? f.path : QStringLiteral("%1 → %2").arg(was, f.path), lines);
     }
     return block(files);
 }
