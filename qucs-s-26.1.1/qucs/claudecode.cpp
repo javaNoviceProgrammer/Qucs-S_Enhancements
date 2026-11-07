@@ -1351,7 +1351,7 @@ void Session::processFinished(int exitCode)
     a_backgroundAsked.clear();
     a_backgroundAskedOfTask.clear();
     a_stopAsked.clear();
-    a_toolSubjects.clear();
+    a_toolUses.clear();
     // Its tasks it did not say the end of: no one can say it now.
     jobs::Registry::instance().programEnded(a_caller, tr("Claude Code ended without saying how this ended."));
     a_tasks.clear();
@@ -1424,7 +1424,8 @@ void Session::handleSystem(const QJsonObject& m)
     // its tool use said: of an agent's too.)
     if (subtype.startsWith(QLatin1String("task_"))) {
         QPointer<Session> self(this);
-        jobs::Registry::instance().taskEvent(a_caller, m, a_toolSubjects.value(m.value(QLatin1String("tool_use_id")).toString()),
+        const ToolUse use = a_toolUses.value(m.value(QLatin1String("tool_use_id")).toString());
+        jobs::Registry::instance().taskEvent(a_caller, m, use.subject, use.began,
                                              [self](const QString& task) { return self && self->stopTask(task); });
     }
     if (subtype == QLatin1String("init")) {
@@ -1526,11 +1527,12 @@ void Session::handleAssistant(const QJsonObject& m)
         // What a tool use runs, should it become a task. (The last ones: a
         // damaged stream names no end of them.)
         if (kind == QLatin1String("tool_use")) {
-            if (a_toolSubjects.size() > 2000) a_toolSubjects.clear();
+            if (a_toolUses.size() > 2000) a_toolUses.clear();
             const QJsonObject input = block.value(QLatin1String("input")).toObject();
             const QString command = input.value(QLatin1String("command")).toString();
-            a_toolSubjects.insert(block.value(QLatin1String("id")).toString(),
-                                  (command.isEmpty() ? toolSubject(block.value(QLatin1String("name")).toString(), input, a_workDir) : command).left(8000));
+            a_toolUses.insert(block.value(QLatin1String("id")).toString(),
+                              {(command.isEmpty() ? toolSubject(block.value(QLatin1String("name")).toString(), input, a_workDir) : command).left(8000),
+                               QDateTime::currentDateTime()});
         }
         if (subagent) {
             // An agent Claude started: only which tool it uses, for the state.

@@ -29,6 +29,7 @@
 #include <QJsonDocument>
 #include <QMap>
 #include <QProgressBar>
+#include <QTableWidget>
 #include <QTimer>
 
 #include <algorithm>
@@ -72,7 +73,7 @@ bool isNeverAJob(const QString& tool)
 QString whyNoPercentOf(const QString& tool)
 {
     if (tool == QLatin1String("simulate"))
-        return QCoreApplication::translate("QucsControl", "The simulator has said no percentage: ngspice and Xyce say one of a transient, Qucsator of most runs, an optimization of its generations; the other analyses say none.");
+        return QCoreApplication::translate("QucsControl", "The simulator has said no percentage yet: this run may have none to say (a DC operating point, a build of ngspice that prints none).");
     if (tool == QLatin1String("fem_solve") || tool == QLatin1String("fem_build") || tool == QLatin1String("fem_converge"))
         return QCoreApplication::translate("QucsControl", "The model has not said how far it has got yet.");
     if (tool == QLatin1String("rf25_solve"))
@@ -100,9 +101,17 @@ QString outcomeOf(const QJsonObject& result)
 {
     const QJsonObject o = jsonOfResult(result);
     if (o.isEmpty()) return jobs::oneLine(textOfResult(result), 400);
-    for (const char* key : {"error", "stopped by", "note"})
-        if (o.value(QLatin1String(key)).isString()) return jobs::oneLine(o.value(QLatin1String(key)).toString(), 400);
-    return {};
+    if (o.value(QLatin1String("error")).isString()) return jobs::oneLine(o.value(QLatin1String("error")).toString(), 400);
+    const QString note = o.value(QLatin1String("note")).toString();
+    // (Said in full: by what alone was a tool's name, or nothing.)
+    if (o.value(QLatin1String("stopped")).toBool()) {
+        const QString by = o.value(QLatin1String("stopped by")).toString();
+        QString said = by.isEmpty() ? QCoreApplication::translate("QucsControl", "Stopped before it ended.")
+                                    : QCoreApplication::translate("QucsControl", "Stopped by %1.").arg(by);
+        if (!note.isEmpty()) said += QLatin1Char(' ') + note;
+        return jobs::oneLine(said, 400);
+    }
+    return jobs::oneLine(note, 400);
 }
 
 // What the work of a model is at: 0 to 100, or -1 while it has said nothing.
@@ -404,7 +413,11 @@ bool QucsControl::stopJob(quint64 number)
     if (stopped) return true;
     // Gone on after its answer.
     if (it->simRun != 0) {
-        stopSimulation(QJsonObject{{QStringLiteral("id"), it->simRun}}, [](const QJsonObject&) {});
+        const int id = it->simRun;
+        stopSimulation(QJsonObject{{QStringLiteral("id"), id}}, [](const QJsonObject&) {});
+        // (As its outcome and the conversations' note say: not a tool's doing.)
+        if (SimRun* run = simRun(id); run != nullptr && !run->ended.isValid())
+            run->stoppedBy = tr("the Background Jobs window");
         return true;
     }
     if (it->followsDocument) {
@@ -591,9 +604,14 @@ QJsonObject QucsControl::showBackgroundJobs(const QJsonObject& args)
         o.insert(QStringLiteral("note"), headlessNote());
         return jsonResult(o);
     }
-    ClaudeJobsWindow::showWindow(a_app);
-    o.insert(QStringLiteral("shown"), true);
-    o.insert(QStringLiteral("window"), tr("Background Jobs: the user sees it now, and can stop a job or clear those over there."));
+    const ClaudeJobsWindow* window = ClaudeJobsWindow::showWindow(a_app);
+    o.insert(QStringLiteral("shown"), window->isVisible());
+    // (What can be known of it from here, as neither get_dialog nor screenshot
+    // reads it.)
+    o.insert(QStringLiteral("window"), QJsonObject{{QStringLiteral("title"), window->windowTitle()},
+                                                   {QStringLiteral("active"), window->isActiveWindow()},
+                                                   {QStringLiteral("rows"), window->table()->rowCount()},
+                                                   {QStringLiteral("note"), tr("The user can stop a job or clear those over there.")}});
     return jsonResult(o);
 }
 
