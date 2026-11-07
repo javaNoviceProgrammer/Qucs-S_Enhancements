@@ -72,6 +72,17 @@ QString valueText(double v, const Dim& dim)
     return dim.isNone() ? number : number + QLatin1Char('[') + dimName(dim) + QLatin1Char(']');
 }
 
+/// How far \a y misses limit \a o of value \a t, as a share of the value (of 1
+/// for a value of 0), as the search judges it: 0 where it is met. (Not by
+/// max(1, |t|): a limit of 900 pF read a miss of 546 pF as 5e-10.)
+double limitMiss(const OptimizationObjective& o, double y, double t)
+{
+    const double miss = o.kind == OptimizationObjective::LessEqual      ? std::max(0.0, y - t)
+                        : o.kind == OptimizationObjective::GreaterEqual ? std::max(0.0, t - y)
+                                                                        : std::abs(y - t);
+    return miss / (std::abs(t) > 0 ? std::abs(t) : 1.0);
+}
+
 /// A number of the settings: \a text as a plain number, an expression of the
 /// parameters; \a fallback when empty. False and why where it is not one.
 bool settingNumber(const Node& node, const QString& key, const ParameterScope& ps, double* out, QString* error)
@@ -462,6 +473,7 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
                 var.spread = share / 100;
             } else {
                 const std::optional<double> s = rangeValue(text, ps.scope, ps.dims.value(name), tr("%1: %2's spread").arg(plan.name, name), &why);
+                if (!s && why.contains(QLatin1String("give it a unit"))) why += tr(" - or a share of its value: 5 %");
                 if (!s) return std::nullopt;
                 if (!(*s > 0)) return refuse(tr("%1: %2's spread must be above 0").arg(plan.name, name));
                 var.spread = *s;
@@ -496,6 +508,36 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
     }
     if (stepped && (method == QLatin1String("lm") || method == QLatin1String("tr") || method == QLatin1String("tune") || (method.isEmpty() && lm)))
         plan.warnings << tr("whole numbers and preferred values are flat between their steps: a gradient or a quadratic model sees nothing there; a global method suits them");
+    // A target's or a limit's value is read once, before the search: one that a
+    // varied parameter moves would stay at its value there, and the search reach
+    // for something else. Refused, with what to write instead.
+    {
+        std::vector<std::size_t> valued;
+        for (std::size_t i = 0; i < plan.objectives.size(); ++i)
+            if ((plan.objectives[i].kind == OptimizationObjective::Target || plan.objectives[i].isLimit()) && !plan.objectives[i].valueText.isEmpty())
+                valued.push_back(i);
+        const auto valueIn = [](const ParameterScope& scope, const QString& text) -> std::optional<double> {
+            const Expression e = Expression::compile(text, scope.scope);
+            if (!e.isConstant()) return std::nullopt;
+            return e.constant();
+        };
+        for (std::size_t j = 0; j < plan.variables.size() && !valued.empty(); ++j) {
+            const SearchVariable& v = plan.variables[j];
+            if (!v.active) continue;
+            const double now = ps.values.value(v.name);
+            const double other = now != v.max ? v.max : v.min;
+            const std::shared_ptr<ParameterScope> moved = evaluateParameters(model, {{v.name, valueText(other, plan.dims[j])}});
+            if (!moved) continue;
+            for (std::size_t i : valued) {
+                const OptimizationObjective& o = plan.objectives[i];
+                const std::optional<double> a = valueIn(ps, o.valueText), b = valueIn(*moved, o.valueText);
+                if (!a || !b || std::abs(*a - *b) <= 1e-12 * std::max(std::abs(*a), std::abs(*b))) continue;
+                return refuse(tr("%1: %2's value \"%3\" moves with %4, which it varies - a value is read once, before the search. "
+                                 "Write what varies into the expression instead: ht.Tmax - Tb LE 50[K], not ht.Tmax LE Tb + 50[K]")
+                                  .arg(plan.name, o.expression, o.valueText, v.name));
+            }
+        }
+    }
     return plan;
 }
 
@@ -513,7 +555,7 @@ bool OptimizationResult::canApply(QString* why) const
         reason = QCoreApplication::translate("MultiphysicsOptimization", "No evaluation solved: there is nothing to write in.");
         return false;
     }
-    if (status == QLatin1String("infeasible")) {
+    if (status == QLatin1String("infeasible") || (!feasible && front.empty())) {
         reason = QCoreApplication::translate("MultiphysicsOptimization", "A limit could not be met: this is not written in (its values are in the result).");
         return false;
     }
@@ -731,7 +773,9 @@ QString parameterText(const Model& model, const ParameterScope& parameters, cons
             return QStringLiteral("%1[%2]").arg(QString::number((value - u->offset) / u->scale, 'g', 12), m.captured(1));
         break;
     }
-    return valueText(value, dim);
+    // (In SI, as many digits as the unit's above: not 0.010000000003209997[m].)
+    const QString number = QString::number(value, 'g', 12);
+    return dim.isNone() ? number : number + QLatin1Char('[') + dimName(dim) + QLatin1Char(']');
 }
 
 QJsonArray optimizationVariableRow(const Model& model, const ParameterScope& parameters, const QString& name)
@@ -755,8 +799,12 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
     // The values to write: the optimum, or a design of its front.
     QList<QPair<QString, double>> values;
     if (!r.front.empty()) {
-        if (point < 1 || point > int(r.front.size())) {
+        if (point < 1) {
             why = QCoreApplication::translate("MultiphysicsOptimization", "A Pareto front has no one optimum: say which of its %1 designs (from 1).").arg(r.front.size());
+            return false;
+        }
+        if (point > int(r.front.size())) {
+            why = QCoreApplication::translate("MultiphysicsOptimization", "The front has %1 designs: there is no design %2.").arg(r.front.size()).arg(point);
             return false;
         }
         const OptimizationResult::FrontPoint& p = r.front[std::size_t(point - 1)];
@@ -775,6 +823,26 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
     }
     QList<Model::Parameter> parameters = model.parameters();
     const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
+    // The parameters it held at a start of their own, as the run had them: else
+    // the optimum written in is not the one it found.
+    QSet<QString> held;
+    {
+        QSet<QString> named;
+        for (const auto& v : std::as_const(values)) named.insert(v.first);
+        QString ignored;
+        if (const std::optional<OptimizationPlan> plan = optimizationPlan(model, node, *ps, &ignored))
+            for (const QJsonValue& row : node.value(QStringLiteral("variables")).toArray()) {
+                const QJsonArray cells = row.toArray();
+                const QString name = cellText(cells.at(0));
+                if (name.isEmpty() || named.contains(name) || cellText(cells.at(1)).isEmpty()) continue;
+                for (const optimization::Variable& v : plan->variables)
+                    if (v.name == name && !v.active) {
+                        values << qMakePair(name, v.initial);
+                        held.insert(name);
+                    }
+            }
+    }
+    static const QRegularExpression plain(QStringLiteral("^\\s*[-+]?[0-9.]+(?:[eE][-+]?[0-9]+)?\\s*(?:\\[[^\\]]*\\])?\\s*$"));
     QStringList notThere, said;
     for (const auto& [name, value] : std::as_const(values)) {
         if (!std::isfinite(value)) continue;
@@ -783,8 +851,14 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
         for (Model::Parameter& p : parameters) {
             if (p.name.trimmed() != name) continue;
             found = true;
+            // (A formula written over says so: what it followed no longer moves it.)
+            const QString was = p.expression.trimmed();
+            QString line = QStringLiteral("%1 = %2").arg(name, text);
+            if (held.contains(name)) line += QCoreApplication::translate("MultiphysicsOptimization", " (held at it in the run)");
+            if (!was.isEmpty() && !plain.match(was).hasMatch())
+                line += QCoreApplication::translate("MultiphysicsOptimization", " (in place of its expression %1)").arg(was);
             p.expression = text;
-            said << QStringLiteral("%1 = %2").arg(name, text);
+            said << line;
         }
         if (!found) notThere << name;
     }
@@ -1311,7 +1385,7 @@ Evaluated Runner::evaluatedOf(const Measured& m) const
             } else {
                 e.constraints.push_back(y);
             }
-            allMet = allMet && miss / std::max(1.0, t) <= (a_plan.penalty ? 1e-9 : a_plan.search.ctol);
+            allMet = allMet && limitMiss(o, y, a_values[i]) <= a_plan.search.ctol;
             break;
         }
         }
@@ -1338,11 +1412,7 @@ void Runner::record(const Key& values, const Measured& m)
         for (std::size_t i = 0; i < a_plan.objectives.size(); ++i) {
             const OptimizationObjective& o = a_plan.objectives[i];
             if (!o.isLimit()) continue;
-            const double t = std::abs(a_values[i]) > 0 ? std::abs(a_values[i]) : 1.0;
-            const double miss = o.kind == OptimizationObjective::LessEqual      ? std::max(0.0, m.y[i] - a_values[i])
-                                : o.kind == OptimizationObjective::GreaterEqual ? std::max(0.0, a_values[i] - m.y[i])
-                                                                                : std::abs(m.y[i] - a_values[i]);
-            if (!a_plan.center && miss / std::max(1.0, t) > a_plan.search.ctol) row.feasible = false;
+            if (!a_plan.center && limitMiss(o, m.y[i], a_values[i]) > a_plan.search.ctol) row.feasible = false;
         }
         const bool better = (row.feasible && !a_bestFeasible) || (row.feasible == a_bestFeasible && row.cost < a_bestCost);
         if (better) {
@@ -1592,9 +1662,9 @@ OptimizationResult Runner::run()
         for (std::size_t i : limitRows) {
             const OptimizationObjective& o = a_plan.objectives[i];
             const double y = it->second.y[i], t = a_values[i];
-            const bool met = o.kind == OptimizationObjective::LessEqual      ? y <= t
-                             : o.kind == OptimizationObjective::GreaterEqual ? y >= t
-                                                                             : std::abs(y - t) <= 1e-9 * std::max(1.0, std::abs(t));
+            // (Within "Limits met within", as the search judged it: a search on
+            // penalties ends beside an active limit, not on it.)
+            const bool met = std::isfinite(y) && limitMiss(o, y, t) <= a_plan.search.ctol;
             const Dim dim = i < a_dims.size() ? a_dims[i] : Dim();
             result.constraints << tr("%1 %2 %3 - %4, %5")
                                       .arg(o.expression, o.kind == OptimizationObjective::LessEqual ? QStringLiteral("<=") : o.kind == OptimizationObjective::GreaterEqual ? QStringLiteral(">=") : QStringLiteral("="),

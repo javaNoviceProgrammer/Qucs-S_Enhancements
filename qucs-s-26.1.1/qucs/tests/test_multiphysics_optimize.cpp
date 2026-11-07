@@ -733,10 +733,36 @@ private slots:
         r = call("fem_solve", {{"path", file}, {"timeout", int(jobWait() / 1000)}}, jobWait() + 5000);
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(std::abs(*doc->solution()->global(QStringLiteral("es.C11")) - 200e-12) < 1e-3 * 200e-12);
-        // Undone, its step one (and what solving there added).
-        while (doc->undoStack()->canUndo() && expressionOf(doc, QStringLiteral("d")) != QLatin1String("1[mm]")) doc->undo();
+        // (Of the model it ran on: nothing said of a change since.)
+        QVERIFY2(!json(r).contains(QStringLiteral("changed since")), qPrintable(text(r)));
+        // Undone by the undo tool, its step one (and what solving there added):
+        // it takes back a model's steps, not "Undone." of nothing done.
+        for (int i = 0; i < 20 && expressionOf(doc, QStringLiteral("d")) != QLatin1String("1[mm]"); ++i) {
+            r = call("undo", {{"path", file}});
+            QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Undone")), qPrintable(text(r)));
+        }
         QCOMPARE(expressionOf(doc, QStringLiteral("d")), QStringLiteral("1[mm]"));
         QVERIFY(doc->optimizationResult());
+        r = call("redo", {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(expressionOf(doc, QStringLiteral("d")) != QLatin1String("1[mm]"));
+        r = call("undo", {{"path", file}});
+        QCOMPARE(expressionOf(doc, QStringLiteral("d")), QStringLiteral("1[mm]"));
+        // Written in after the model changed: said in the answer, as its result
+        // and its page say it.
+        {
+            QList<Model::Parameter> ps = doc->model().parameters();
+            for (Model::Parameter& p : ps)
+                if (p.name == QLatin1String("w")) p.expression = QStringLiteral("8[mm]");
+            Model changed = doc->model();
+            changed.setParameters(ps);
+            doc->setModel(changed, QStringLiteral("w"));
+        }
+        r = call("fem_optimize", {{"path", file}, {"action", "apply"}});
+        QVERIFY2(!failed(r) && json(r).value("changed since").toString().contains(QStringLiteral("model as it was")), qPrintable(text(r)));
+        while (doc->undoStack()->canUndo() && expressionOf(doc, QStringLiteral("w")) != QLatin1String("4[mm]")) doc->undo();
+        QCOMPARE(expressionOf(doc, QStringLiteral("w")), QStringLiteral("4[mm]"));
+        QCOMPARE(expressionOf(doc, QStringLiteral("d")), QStringLiteral("1[mm]"));
         // Run and written in, in one call.
         r = call("fem_optimize", {{"path", file}, {"apply_optimum", true}, {"history", 0}, {"timeout", int(jobWait() / 1000)}}, jobWait() + 5000);
         QVERIFY2(!failed(r), qPrintable(text(r)));

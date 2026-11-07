@@ -122,6 +122,13 @@ private slots:
     void twoTargetsTwoParameters();
     void limitsAreHeld_data();
     void limitsAreHeld();
+    void limitsInSmallUnits_data();
+    void limitsInSmallUnits();
+    void theHistoryMarksWhatBreaksALimit();
+    void penaltyLimitsAsTheSearchJudgesThem();
+    void heldParametersAreWrittenIn();
+    void aValueThatMovesWithAVariedParameter();
+    void aFormulaWrittenOverIsSaid();
     void penaltiesAsAComponentsGoals();
     void aFeasibilityProblemEndsOnceMet();
     void aParetoFront();
@@ -358,6 +365,175 @@ void TestFemOptimize::limitsAreHeld()
 
 // Goals as an optimization component has them: objectives and limits in one
 // cost, by its weights, its cost variance and its early stop.
+void TestFemOptimize::limitsInSmallUnits_data()
+{
+    QTest::addColumn<QByteArray>("settings");
+    QTest::newRow("nm") << QByteArray(R"("method": "nm", "maxiter": 200)");
+    QTest::newRow("tr") << QByteArray(R"("method": "tr", "maxiter": 200)");
+    QTest::newRow("cmaes") << QByteArray(R"("method": "cmaes", "maxiter": 60, "seed": 1)");
+    QTest::newRow("de") << QByteArray(R"("method": "de", "maxiter": 60, "population": 10, "seed": 2)");
+    QTest::newRow("bayes") << QByteArray(R"("method": "bayes", "maxiter": 30, "seed": 1)");
+    QTest::newRow("penalty") << QByteArray(R"("method": "nm", "maxiter": 200, "constraints": "penalty")");
+}
+
+// A limit in picofarads is judged as a share of its value, as the search judges
+// it: by max(1, |value|), 900 pF read a miss of 546 pF as 5e-10, every limits-only
+// run "converged" at its start, and its violating point could be written in.
+void TestFemOptimize::limitsInSmallUnits()
+{
+    QFETCH(QByteArray, settings);
+    // C = eps0 er w / d: 141.67 pF at d = 1 mm; 400 pF wants d <= 0.3542 mm.
+    const double most = Eps0 * 4 * 4e-3 / 400e-12;
+    const OptimizationResult r = run(capacitor(R"({"type": "optimization", "tag": "opt1", )" + settings + R"(,
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"]],
+        "objectives": [["es.C11", "GE", "400[pF]"]]})"));
+    QVERIFY2(r.error.isEmpty(), qPrintable(said(r)));
+    QVERIFY2(r.feasible, qPrintable(said(r) + r.constraints.join(QLatin1String(" | "))));
+    QVERIFY2(r.solves > 1, qPrintable(said(r)));
+    QVERIFY2(value(r, QStringLiteral("d")) <= most * (1 + 1e-4), qPrintable(QStringLiteral("d %1: ").arg(value(r, QStringLiteral("d"))) + said(r)));
+    QVERIFY2(value(r, QStringLiteral("es.C11")) >= 400e-12 * (1 - 1e-4), qPrintable(said(r)));
+    QVERIFY2(!r.constraints.join(QLatin1Char(' ')).contains(QStringLiteral("VIOLATED")) && !r.constraints.join(QLatin1Char(' ')).contains(QStringLiteral("NOT MET")),
+             qPrintable(r.constraints.join(QLatin1String(" | "))));
+    QVERIFY(r.canApply());
+    // One that cannot be met in the range: not met, and not written in.
+    const OptimizationResult no = run(capacitor(R"({"type": "optimization", "tag": "opt1", )" + settings + R"(,
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"]],
+        "objectives": [["es.C11", "GE", "10[nF]"]]})"));
+    QVERIFY2(!no.feasible, qPrintable(said(no) + no.constraints.join(QLatin1String(" | "))));
+    QVERIFY2(no.status != QLatin1String("converged") || no.constraints.join(QLatin1Char(' ')).contains(QStringLiteral("NOT MET")), qPrintable(said(no)));
+    QString why;
+    QVERIFY2(!no.canApply(&why), qPrintable(said(no)));
+    QVERIFY2(why.contains(QStringLiteral("limit")), qPrintable(why));
+}
+
+// Each row of the history feasible or not as the limit is: by its share of the
+// value, not 631 of 1000 rows breaking 200 pF in bold.
+void TestFemOptimize::theHistoryMarksWhatBreaksALimit()
+{
+    const OptimizationResult r = run(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "cmaes", "maxiter": 40, "seed": 3,
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"]],
+        "objectives": [["d", "MAX"], ["es.C11", "GE", "100[pF]"]]})"));
+    QVERIFY2(r.error.isEmpty() && r.feasible, qPrintable(said(r)));
+    int breaking = 0;
+    for (const OptimizationRow& row : r.history) {
+        if (!std::isfinite(row.cost)) continue;
+        const double c = row.measured.at(1);
+        const bool meets = c >= 100e-12 * (1 - 1e-4);
+        QVERIFY2(row.feasible == meets, qPrintable(QStringLiteral("row %1: C %2, marked %3").arg(row.index).arg(c).arg(row.feasible)));
+        if (row.best) QVERIFY2(row.feasible, qPrintable(QStringLiteral("row %1 best, C %2").arg(row.index).arg(c)));
+        breaking += meets ? 0 : 1;
+    }
+    QVERIFY2(breaking > 0, "the search never crossed the limit: the test proves nothing");
+}
+
+// By penalties the core knows of no limit, and each is said met or not: within
+// "Limits met within", as the search judged it. An EQ that cannot be reached is
+// not met, however small its unit; one beside the bound of an active limit is.
+void TestFemOptimize::penaltyLimitsAsTheSearchJudgesThem()
+{
+    const OptimizationResult eq = run(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "nm", "maxiter": 100, "constraints": "penalty",
+        "variables": [["w", "4[mm]", "1[mm]", "8[mm]"]],
+        "objectives": [["w", "MIN"], ["es.C11", "EQ", "900[pF]"]]})"));
+    QVERIFY2(eq.error.isEmpty(), qPrintable(said(eq)));
+    QVERIFY2(eq.constraints.size() == 1 && eq.constraints.first().contains(QStringLiteral("NOT MET")), qPrintable(eq.constraints.join(QLatin1String(" | "))));
+    QVERIFY2(!eq.feasible, qPrintable(said(eq)));
+    QVERIFY(!eq.canApply());
+    // MIN w with C >= 100 pF: w = 2.823 mm, ending a hair beside the bound.
+    const OptimizationResult ge = run(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "nm", "maxiter": 200, "constraints": "penalty",
+        "variables": [["w", "4[mm]", "1[mm]", "8[mm]"]],
+        "objectives": [["w", "MIN"], ["es.C11", "GE", "100[pF]"]]})"));
+    QVERIFY2(ge.error.isEmpty(), qPrintable(said(ge)));
+    const double c = value(ge, QStringLiteral("es.C11"));
+    QVERIFY2(std::abs(c - 100e-12) < 1e-4 * 100e-12, qPrintable(said(ge)));
+    QVERIFY2(ge.constraints.size() == 1 && ge.constraints.first().endsWith(QStringLiteral(", met")), qPrintable(ge.constraints.join(QLatin1String(" | "))));
+    QVERIFY2(ge.feasible, qPrintable(said(ge)));
+    QVERIFY(ge.canApply());
+    // (The goal of an optimization component, by the same share.)
+    qucs_s::optimization::Goal g;
+    g.type = qucs_s::optimization::GoalType::Equal;
+    g.target = 900e-12;
+    QVERIFY(!g.met(864.58e-12));
+    QVERIFY(g.met(900e-12 * (1 + 1e-12)));
+}
+
+// A parameter held at a start of its own was that in the run: written in with
+// the optimum, else the optimum does not give what the run found.
+void TestFemOptimize::heldParametersAreWrittenIn()
+{
+    // er held at 8 (the model's is 4): C = eps0 8 w / d = 200 pF at d = 1.41667 mm.
+    Model m = modelOf(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "tune", "maxiter": 30,
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"], ["er", "8", "1", "10", "", "no"], ["w", "", "1[mm]", "8[mm]", "", "no"]],
+        "objectives": [["es.C11", "TARGET", "200[pF]"]]})"));
+    const OptimizationResult r = runOptimization(m, QStringLiteral("opt1"), nullptr, nullptr, nullptr);
+    QVERIFY2(std::abs(value(r, QStringLiteral("d")) - Eps0 * 8 * 4e-3 / 200e-12) < 1e-4 * 1.4e-3, qPrintable(said(r)));
+    m.find(QStringLiteral("opt1"))->props.insert(QStringLiteral("result"), r.toJson());
+    QStringList written;
+    QString why;
+    QVERIFY2(applyOptimum(m, *m.find(QStringLiteral("opt1")), 0, &written, &why), qPrintable(why));
+    QVERIFY2(written.size() == 2 && written.at(1).startsWith(QStringLiteral("er = 8")) && written.at(1).contains(QStringLiteral("held")), qPrintable(written.join(QLatin1String(" | "))));
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+    QCOMPARE(ps->values.value(QStringLiteral("er")), 8.0);
+    QCOMPARE(ps->values.value(QStringLiteral("w")), 4e-3);   // (held with no start: its own value, untouched)
+    // Solved there - a run whose first solve is at the model's own values now -:
+    // what the run found.
+    QJsonArray table;
+    table.append(QJsonArray{QStringLiteral("d"), QString(), QStringLiteral("0.2[mm]"), QStringLiteral("3[mm]")});
+    m.find(QStringLiteral("opt1"))->props.insert(QStringLiteral("variables"), table);
+    const OptimizationResult again = runOptimization(m, QStringLiteral("opt1"), nullptr, nullptr, nullptr);
+    QVERIFY2(again.history.size() >= 1 && std::abs(again.history.front().measured.at(0) - 200e-12) < 1e-4 * 200e-12, qPrintable(said(again)));
+}
+
+// A target's or a limit's value is read once: one that a varied parameter moves
+// is refused, with what to write instead - not frozen at its start, the search
+// then "converged" on another answer.
+void TestFemOptimize::aValueThatMovesWithAVariedParameter()
+{
+    QString why;
+    Model m = modelOf(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "nm",
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"]],
+        "objectives": [["es.C11", "TARGET", "200[pF]*d/1[mm]"]]})", R"(, {"name": "gap2", "expression": "2*d"})"));
+    QVERIFY(!optimizationPlan(m, *m.find(QStringLiteral("opt1")), *evaluateParameters(m), &why));
+    QVERIFY2(why.contains(QStringLiteral("moves with d")) && why.contains(QStringLiteral("into the expression")), qPrintable(why));
+    // Through another parameter too.
+    m = modelOf(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "nm",
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"]],
+        "objectives": [["es.C11", "LE", "gap2*1[pF/mm]"]]})", R"(, {"name": "gap2", "expression": "2*d"})"));
+    QVERIFY(!optimizationPlan(m, *m.find(QStringLiteral("opt1")), *evaluateParameters(m), &why));
+    QVERIFY2(why.contains(QStringLiteral("moves with d")), qPrintable(why));
+    // A value of a parameter it does not vary is read as before.
+    m = modelOf(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "nm",
+        "variables": [["d", "1[mm]", "0.2[mm]", "3[mm]"]],
+        "objectives": [["es.C11", "TARGET", "50[pF]*er"]]})"));
+    QVERIFY2(optimizationPlan(m, *m.find(QStringLiteral("opt1")), *evaluateParameters(m), &why), qPrintable(why));
+}
+
+// A parameter whose expression is a formula, written over: said, and the value
+// in a dozen digits, not 0.010000000003209997[m].
+void TestFemOptimize::aFormulaWrittenOverIsSaid()
+{
+    Model m = modelOf(capacitor(R"({"type": "optimization", "tag": "opt1", "method": "tune", "maxiter": 30,
+        "variables": [["half", "", "0.1[mm]", "2[mm]"]],
+        "objectives": [["es.C11", "TARGET", "200[pF]"]]})", R"(, {"name": "half", "expression": "d/2"})"));
+    // (d is half's twice: written as d = 2*half below, so the geometry follows.)
+    QList<Model::Parameter> ps = m.parameters();
+    for (Model::Parameter& p : ps)
+        if (p.name == QLatin1String("d")) p.expression = QStringLiteral("1[mm]");
+    m.setParameters(ps);
+    OptimizationResult r;
+    r.method = QStringLiteral("tune");
+    r.status = QStringLiteral("converged");
+    r.columns = QStringList{QStringLiteral("half"), QStringLiteral("es.C11")};
+    r.kinds = QStringList{QStringLiteral("TARGET")};
+    r.parameters << OptimizationResult::Value{QStringLiteral("half"), 0.010000000003209997, QString()};
+    m.find(QStringLiteral("opt1"))->props.insert(QStringLiteral("result"), r.toJson());
+    QStringList written;
+    QString why;
+    QVERIFY2(applyOptimum(m, *m.find(QStringLiteral("opt1")), 0, &written, &why), qPrintable(why));
+    QCOMPARE(written.size(), 1);
+    QVERIFY2(written.first().startsWith(QStringLiteral("half = 0.0100000000032[m]")), qPrintable(written.first()));
+    QVERIFY2(written.first().contains(QStringLiteral("in place of its expression d/2")), qPrintable(written.first()));
+}
+
 void TestFemOptimize::penaltiesAsAComponentsGoals()
 {
     const OptimizationResult r = run(bar(R"({"type": "optimization", "tag": "opt1", "method": "de", "maxiter": 40, "population": 10, "seed": 3, "strategy": "DE/rand-to-best/1/exp",
@@ -385,7 +561,7 @@ void TestFemOptimize::aFeasibilityProblemEndsOnceMet()
         "variables": [["w", "2[mm]", "1[mm]", "9[mm]"]],
         "objectives": [["ec.R", "LE", "1.5[ohm]"]]})"));
     QVERIFY2(found.feasible, qPrintable(said(found)));
-    QVERIFY2(value(found, QStringLiteral("ec.R")) <= 1.5, qPrintable(said(found)));
+    QVERIFY2(value(found, QStringLiteral("ec.R")) <= 1.5 * (1 + 1e-4), qPrintable(said(found)));   // (within "Limits met within")
     QVERIFY2(found.solves < 8 * 51, qPrintable(said(found)));
 }
 
@@ -796,6 +972,8 @@ void TestFemOptimize::badSetups_data()
     row("no tolerance", range + R"(, "tol": "0", )" + goal, "tolerance");
     row("junk tolerance", range + R"(, "tol": "((", )" + goal, "not a number");
     row("no spreads", range + R"(, "mode": "center", "objectives": [["es.C11", "LE", "1[pF]"]])", "spread");
+    row("a spread with no unit", range + R"(, "mode": "center", "variation": [["d", "gauss", "0.02"]], "objectives": [["es.C11", "LE", "1[pF]"]])", "or a share of its value: 5 %");
+    row("a value that moves with a varied parameter", range + R"(, "objectives": [["es.C11", "TARGET", "200[pF]*d/1[mm]"]])", "moves with d");
     row("a junk spread", range + R"(, "mode": "center", "variation": [["d", "gauss", "(("]], "objectives": [["es.C11", "LE", "1[pF]"]])", "spread");
     row("a spread of nothing", range + R"(, "mode": "center", "variation": [["nosuch", "gauss", "1 %"]], "objectives": [["es.C11", "LE", "1[pF]"]])", "no parameter");
     row("centering with a goal", range + R"(, "mode": "center", "variation": [["d", "gauss", "1 %"]], "objectives": [["es.C11", "MIN"]])", "cannot be combined");
@@ -1166,6 +1344,7 @@ void TestFemOptimize::aFrontsDesignIsChosen()
     QVERIFY(!applyOptimum(m, *m.find(QStringLiteral("opt1")), 0, &written, &why));
     QVERIFY2(why.contains(QStringLiteral("Pareto")), qPrintable(why));
     QVERIFY(!applyOptimum(m, *m.find(QStringLiteral("opt1")), int(r.front.size()) + 1, &written, &why));
+    QVERIFY2(why.contains(QStringLiteral("there is no design %1").arg(r.front.size() + 1)), qPrintable(why));   // (not "say which")
     QVERIFY2(applyOptimum(m, *m.find(QStringLiteral("opt1")), 1, &written, &why), qPrintable(why));
     const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
     QVERIFY(std::abs(ps->values.value(QStringLiteral("w")) - r.front[0].values[0]) < 1e-9 * r.front[0].values[0]);
