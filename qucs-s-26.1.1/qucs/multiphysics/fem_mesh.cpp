@@ -1588,6 +1588,20 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
             std::vector<double>& target = level == Level::Domain ? s.domainMax : level == Level::Boundary ? s.boundaryMax : s.pointMax;
             for (int i : picked)
                 if (i >= 0 && i < int(target.size())) target[std::size_t(i)] = std::min(target[std::size_t(i)], h);
+        } else if (f.type == QLatin1String("mesh/adapted")) {
+            // A mesh convergence check's sizes, kept: "x y h" each.
+            for (const QJsonValue& v : f.value(QStringLiteral("points")).toArray()) {
+                const QStringList cells = v.toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                bool ok = cells.size() == 3, good = false;
+                std::array<double, 3> at{};
+                for (int c = 0; ok && c < 3; ++c) {
+                    at[std::size_t(c)] = cells.at(c).toDouble(&good);
+                    ok = good && std::isfinite(at[std::size_t(c)]);
+                }
+                if (ok && at[2] > 0) s.points.push_back(at);
+            }
+            const double least = length(f.text(QStringLiteral("hmin")), f.name(), Infinity);
+            if (least < s.hmin) s.hmin = least;
         } else if (f.type == QLatin1String("mesh/distribution")) {
             const QVector<int> picked = resolveSelection(topology, model, Level::Boundary, f.selection(), &why);
             if (!why.isEmpty()) problems << tr("%1: %2").arg(f.name(), why);
@@ -1780,8 +1794,8 @@ void splitBoundaryEdge(Mesh& m, int e, QPointF p, double s)
     m.edges.push_back(second);
 }
 
-/// Each periodic condition's two sides made the same node for node: a node
-/// of one moved onto the other where it has none, splitting its edge there.
+} // namespace
+
 void matchPeriodicSides(Mesh& m, const MeshSizes& sizes)
 {
     if (sizes.periodic.empty()) return;
@@ -1836,8 +1850,6 @@ void matchPeriodicSides(Mesh& m, const MeshSizes& sizes)
     }
     if (changed) m.computeStatistics();
 }
-
-} // namespace
 
 MeshBuild buildMesh(std::shared_ptr<const Topology> topology, const MeshSizes& sizes, const Progress& progress)
 {

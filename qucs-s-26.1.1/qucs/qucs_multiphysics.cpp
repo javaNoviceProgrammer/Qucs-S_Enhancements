@@ -89,6 +89,11 @@ void QucsApp::initMultiphysics()
   });
   optimize->setObjectName(QStringLiteral("mpOptimizeAction"));
   optimize->setStatusTip(tr("Run the model's optimization: a study solved again and again to reach its objectives"));
+  QAction *converge = a_multiphysicsMenu->addAction(tr("Check Mesh Convergence"), this, [model] {
+    if (MultiphysicsDoc *doc = model()) doc->checkMeshConvergence();
+  });
+  converge->setObjectName(QStringLiteral("mpConvergeAction"));
+  converge->setStatusTip(tr("Refine the mesh where the error is until the values watched have settled, the model's mesh untouched (a check is added if there is none)"));
   QAction *clear = a_multiphysicsMenu->addAction(tr("Clear Solutions"), this, [model] {
     if (MultiphysicsDoc *doc = model()) doc->clearSolutions();
   });
@@ -121,6 +126,8 @@ void QucsApp::updateMultiphysicsMenu()
     if (name == QLatin1String("mpBuildGeometryAction") || name == QLatin1String("mpBuildMeshAction")
         || name == QLatin1String("mpComputeAction"))
       a->setEnabled(doc != nullptr && !doc->isBusy());
+    else if (name == QLatin1String("mpConvergeAction"))
+      a->setEnabled(doc != nullptr && !doc->isBusy() && !doc->model().is3D());
     else if (name == QLatin1String("mpOptimizeAction"))
       a->setEnabled(doc != nullptr && !doc->isBusy() && !doc->shownOptimization().isEmpty());
     else if (name == QLatin1String("mpClearAction"))

@@ -842,6 +842,15 @@ bool valueOn(Solution& solution, const QString& text, double* value, Dim* dim, Q
     return true;
 }
 
+} // namespace
+
+bool solutionValue(Solution& solution, const QString& text, double* value, Dim* dim, QString* why)
+{
+    return valueOn(solution, text, value, dim, why);
+}
+
+namespace {
+
 class Runner : public optimization::SearchEvaluator
 {
 public:

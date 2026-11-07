@@ -316,6 +316,13 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("study") || icon == QLatin1String("stationary")) letters(QStringLiteral("="), gray, true);
     else if (icon == QLatin1String("results")) letters(QStringLiteral("R"), gray);
     else if (icon == QLatin1String("optimization")) letters(QStringLiteral("O"), gray);
+    else if (icon == QLatin1String("convergence")) {
+        // A value settling as the mesh is refined.
+        p.setPen(QPen(purple, 1.3));
+        p.drawPolyline(QPolygonF{QPointF(1.5, 3), QPointF(5, 12), QPointF(8, 6), QPointF(11, 9.5), QPointF(14.5, 8)});
+        p.setPen(QPen(gray, 0.8, Qt::DashLine));
+        p.drawLine(QPointF(1.5, 8), QPointF(14.5, 8));
+    }
     else if (icon == QLatin1String("plotgroup") || icon == QLatin1String("surface")) {
         QLinearGradient g(0, 0, 16, 0);
         g.setColorAt(0, QColor(30, 60, 200));
@@ -928,6 +935,12 @@ void MultiphysicsPanel::updateStatusColumn()
         } else if (n->type == QLatin1String("optimization")) {
             if (a_doc->optimizing() == tag) status = tr("optimizing");
             else if (const std::optional<OptimizationResult> r = a_doc->optimizationResult(tag)) status = a_doc->optimizationStale(tag) ? tr("old") : r->error.isEmpty() ? r->status : tr("failed");
+        } else if (n->type == QLatin1String("convergence")) {
+            if (a_doc->converging() == tag) status = tr("checking");
+            else if (const std::optional<qucs_s::fem::ConvergenceResult> r = a_doc->convergenceResult(tag)) {
+                status = a_doc->convergenceStale(tag) ? tr("old") : !r->error.isEmpty() ? tr("failed") : r->converged ? tr("converged") : tr("not converged");
+                if (!a_doc->convergenceStale(tag) && r->error.isEmpty()) color = r->converged ? QColor(46, 125, 50) : QColor(198, 40, 40);
+            }
         } else if (!a_doc->geometryStale() && a_doc->geometry().errors.contains(tag)) {
             status = tr("error");
             color = QColor(198, 40, 40);
@@ -963,7 +976,7 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
             menu->addAction(glyph(QStringLiteral("material")), tr("Blank Material"), this, [this, tag] { addNode(tag, QStringLiteral("material")); });
         } else if (!k->children.isEmpty()) {
             // (The model's, and the Optimization node's one kind: in the menu itself.)
-            const bool direct = n->type == QLatin1String("model") || n->type == QLatin1String("optimizations");
+            const bool direct = n->type == QLatin1String("model") || n->type == QLatin1String("optimizations") || n->type == QLatin1String("convergences");
             QMenu* add = direct ? menu : menu->addMenu(tr("Add"));
             // (The kinds of this model's space: not a 3D model's Box.)
             for (const QString& type : childKinds(*n, a_doc->model().spaceUnder(*n))) {
@@ -998,6 +1011,15 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
                 const QString study = a_doc->model().find(tag) ? a_doc->model().find(tag)->text(QStringLiteral("study")) : QString();
                 if (!a_doc->applyOptimum(tag, 0, nullptr, &why)) QMessageBox::information(this, tr("Apply Optimum"), why);
                 else a_doc->compute(study);
+            });
+    }
+    if (n->type == QLatin1String("convergence")) {
+        menu->addAction(tr("Run"), this, [this, tag] { a_doc->converge(tag); });
+        if (a_doc->refinedMesh(tag)) menu->addAction(tr("Show Refined Mesh"), this, [this, tag] { a_doc->showRefinedMesh(tag); });
+        if (const std::optional<qucs_s::fem::ConvergenceResult> r = a_doc->convergenceResult(tag); r && !r->sizes.isEmpty())
+            menu->addAction(tr("Keep Refined Mesh"), this, [this, tag] {
+                QString why;
+                if (!a_doc->keepRefinedMesh(tag, &why)) QMessageBox::information(this, tr("Keep Refined Mesh"), why);
             });
     }
     if (n->type == QLatin1String("plotgroup")) menu->addAction(tr("Plot"), this, [this, tag] {
@@ -1973,6 +1995,12 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
                     break;
                 }
             rows2.append(QJsonArray{name, QStringLiteral("1, 2, 3"), QString()});
+        } else if (node.type == QLatin1String("convergence")) {
+            // A global the solution has, not watched yet.
+            QStringList used;
+            for (const QJsonValue& r : rows2) used << r.toArray().at(0).toString().trimmed();
+            const std::shared_ptr<qucs_s::fem::Solution> solved = a_doc->solution();
+            rows2.append(qucs_s::fem::convergenceValueRow(solved.get(), used));
         } else if (node.type == QLatin1String("optimization")) {
             // Each table's next row, already of use: the first parameter not
             // varied yet, over a factor of two each way, in its own unit.
@@ -2305,6 +2333,13 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
     }
     if (node.type == QLatin1String("mesh") || (k && k->group == QLatin1String("mesh"))) action(tr("Build Mesh"), "mpBuildMeshButton", [this] { a_doc->buildMesh(); });
     if (node.type == QLatin1String("study")) action(tr("Compute"), "mpComputeButton", [this, tag] { a_doc->compute(tag); });
+    if (node.type == QLatin1String("convergence")) {
+        action(tr("Run"), "mpConvergeButton", [this, tag] { a_doc->converge(tag); });
+        action(tr("Keep Refined Mesh"), "mpKeepRefinedMeshAction", [this, tag] {
+            QString why;
+            if (!a_doc->keepRefinedMesh(tag, &why)) QMessageBox::information(this, tr("Keep Refined Mesh"), why);
+        });
+    }
     if (node.type == QLatin1String("optimization")) {
         action(tr("Run"), "mpOptimizeButton", [this, tag] { a_doc->optimize(tag); });
         action(tr("Apply Optimum"), "mpApplyOptimumButton", [this, tag] {
