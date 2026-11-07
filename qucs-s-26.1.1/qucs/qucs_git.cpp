@@ -129,7 +129,8 @@ void QucsApp::initGitMenu()
          "changes: check one out, branch or tag there, merge, revert, cherry-pick, reset"));
   gitMenu->addSeparator();
   add("gitFetch", tr("Fetch"), onRoot([git](const QString &r) { git->fetch(r); }), tr("What the remotes have, without changing your files"));
-  add("gitPull", tr("Pull"), onRoot([git](const QString &r) { git->pull(r); }), tr("The branch's upstream merged into it"));
+  add("gitPull", tr("Pull"), onRoot([git](const QString &r) { git->pull(r); }),
+      tr("The branch's upstream merged into it - or as your git's pull.rebase says, when it says"));
   add("gitPush", tr("Push"), onRoot([git](const QString &r) { git->push(r); }),
       tr("The branch's commits to its upstream (the remote's branch made its upstream the first time)"));
   gitMenu->addSeparator();
@@ -154,6 +155,10 @@ void QucsApp::initGitMenu()
   });
   add("gitNewTag", tr("New Tag..."), onRoot([git](const QString &r) { git->newTag(r); }));
   add("gitAbort", tr("Abort the Merge"), onRoot([git](const QString &r) { git->abortOperation(r); }));
+  add("gitContinue", tr("Continue"), onRoot([git](const QString &r) { git->continueOperation(r); }),
+      tr("Go on with the rebase, merge, cherry-pick or revert under way, once what is in conflict is resolved and staged"));
+  add("gitSkip", tr("Skip This Commit"), onRoot([git](const QString &r) { git->continueOperation(r, true); }),
+      tr("Go past the commit the rebase, cherry-pick or revert stopped at, its changes left out"));
   gitMenu->addSeparator();
   add("gitIgnoreFile", tr("Add This File to .gitignore"), onFile([git](const QString &r, const QString &f) { git->ignore(r, f); }));
   add("gitEditIgnore", tr("Edit .gitignore"), onRoot([this](const QString &r) {
@@ -245,5 +250,11 @@ void QucsApp::updateGitMenu()
     a->setEnabled(inRepo && !r.operation.isEmpty());
     a->setText(r.operation.isEmpty() ? tr("Abort the Merge") : tr("Abort the %1").arg(r.operation));
   }
+  if (QAction *a = gitMenu->findChild<QAction *>(QStringLiteral("gitContinue"))) {
+    a->setEnabled(inRepo && !r.operation.isEmpty() && r.operation != QLatin1String("bisect"));
+    a->setText(r.operation.isEmpty() ? tr("Continue") : tr("Continue the %1").arg(r.operation));
+  }
+  set("gitSkip", inRepo && (r.operation == QLatin1String("rebase") || r.operation == QLatin1String("am") || r.operation == QLatin1String("cherry-pick")
+                            || r.operation == QLatin1String("revert")));
   set("gitInit", !inRepo);
 }

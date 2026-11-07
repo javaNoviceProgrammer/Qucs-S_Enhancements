@@ -343,6 +343,9 @@ void plainEnvironment(QProcessEnvironment& env)
     for (const char* name : {"GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS", "GIT_LITERAL_PATHSPECS"})
         env.remove(QLatin1String(name));
     addConfig(env, QStringLiteral("color.ui"), QStringLiteral("false"));
+    // (Its messages in English: conflicts, "not fully merged", "fatal:" are
+    // looked for in them. LANGUAGE, not LC_ALL: file names keep their encoding.)
+    env.insert(QStringLiteral("LANGUAGE"), QStringLiteral("C"));
 }
 
 void lookingEnvironment(QProcessEnvironment& env)

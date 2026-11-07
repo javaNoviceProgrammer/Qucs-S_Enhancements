@@ -71,12 +71,45 @@ QStringList pathsOf(const QJsonValue& value, const QString& root, const std::fun
 {
     QStringList out;
     for (const QJsonValue& v : value.toArray()) {
-        const QString p = v.toString().trimmed();
-        if (p.isEmpty()) continue;
+        // (As given: "sp " is not sp, and discarding by it took the other file.)
+        const QString p = v.toString();
+        if (p.trimmed().isEmpty()) continue;
         const bool isRelative = p.startsWith(QLatin1Char(':')) || QFileInfo(p).isRelative();   // (':': a name, not Qt's resource)
         out << (!root.isEmpty() && isRelative ? QDir::cleanPath(git::fileIn(root, p)) : resolve(p));
     }
     return out;
+}
+
+// Why \a paths cannot be taken: one is not in the repository. (One such among
+// others was dropped, and the rest done, or worse, as the top folder.)
+QString outsideOf(const QString& root, const QStringList& paths)
+{
+    for (const QString& p : paths) {
+        bool inside = false;
+        git::relativePath(root, p, &inside);
+        if (!inside) return tr("%1 is not in the repository %2: nothing was done.").arg(native(p), native(root));
+    }
+    return {};
+}
+
+// What to do with conflicts, the operation under way being \a operation.
+QString afterConflicts(const QString& operation)
+{
+    const QString next = operation == QLatin1String("rebase") || operation == QLatin1String("am") ? QStringLiteral("git_continue") : QStringLiteral("git_commit");
+    return tr("conflicts: resolve the files in 'conflicts' - git_resolve takes a side whole or shows both; an edited file is marked "
+              "resolved with git_stage - then %1; or git_abort").arg(next);
+}
+
+bool saysConflict(const git::Result& r)
+{
+    return r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT"));
+}
+
+// A tool's 'path': as given, spaces and all (gitPath() tells), or none.
+QString pathArgument(const QJsonObject& args)
+{
+    const QString path = args.value(QLatin1String("path")).toString();
+    return path.trimmed().isEmpty() ? QString() : path;
 }
 
 QJsonObject commitJson(const git::Commit& c)
@@ -98,16 +131,23 @@ QJsonObject commitJson(const git::Commit& c)
 
 QString QucsControl::gitPath(const QString& path) const
 {
-    const QString given = path.trimmed();
+    QStringList bases{QucsSettings.QucsWorkDir.absolutePath(), QucsSettings.qucsWorkspaceDir.absolutePath()};
+    if (const QString file = a_app->gitFile(); !file.isEmpty()) bases << QFileInfo(file).absolutePath();
+    if (const FileBrowser* fb = a_app->fileBrowserPanel(); fb != nullptr && !fb->location().isEmpty()) bases << fb->location();
+    // (A file named with a space at either end is that file: else, a slip of
+    // the one calling, and the spaces go.)
+    QString given = path.trimmed();
+    if (given != path && !given.isEmpty()) {
+        const bool absolutePath = !path.startsWith(QLatin1Char(':')) && QFileInfo(path).isAbsolute();
+        if (absolutePath ? QFileInfo::exists(path) : std::any_of(bases.cbegin(), bases.cend(), [&path](const QString& b) { return QFileInfo::exists(git::fileIn(b, path)); }))
+            given = path;
+    }
     // (':' first: to Qt a resource's path, here a file's name.)
     if (given.isEmpty() || (!given.startsWith(QLatin1Char(':')) && QFileInfo(given).isAbsolute())) return given.isEmpty() ? given : QDir::cleanPath(given);
     // From the open project's folder, the workspace, the folder of the
     // document in front, the File Browser's: the first where it is - or,
     // for one not there yet (a file to ignore before it is made), the first
     // in a repository.
-    QStringList bases{QucsSettings.QucsWorkDir.absolutePath(), QucsSettings.qucsWorkspaceDir.absolutePath()};
-    if (const QString file = a_app->gitFile(); !file.isEmpty()) bases << QFileInfo(file).absolutePath();
-    if (const FileBrowser* fb = a_app->fileBrowserPanel(); fb != nullptr && !fb->location().isEmpty()) bases << fb->location();
     QStringList candidates;
     for (const QString& base : std::as_const(bases))
         if (const QString c = QDir::cleanPath(git::fileIn(base, given)); !candidates.contains(c)) candidates << c;
@@ -120,7 +160,7 @@ QString QucsControl::gitPath(const QString& path) const
 
 QString QucsControl::gitRootOf(const QJsonObject& args, QStringList* paths, QString* error)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     const auto resolve = [this](const QString& p) { return gitPath(p); };
     if (!path.isEmpty()) {
         const QString root = gitRootOf(path, error);
@@ -241,7 +281,7 @@ void QucsControl::reloadGitChanged(const QString& root, QJsonObject* answer)
 
 QJsonObject QucsControl::gitStatus(const QJsonObject& args)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     QString error;
     const QString root = gitRootOf(path, &error);
     if (root.isEmpty()) return errorResult(error);
@@ -251,9 +291,11 @@ QJsonObject QucsControl::gitStatus(const QJsonObject& args)
         bool inside = false;
         const QString rel = git::relativePath(root, file, &inside);
         if (inside && !rel.isEmpty()) {
-            const git::Entry* e = git::Tracker::instance()->entryOf(file);
+            const git::Repository* repo = git::Tracker::instance()->repositoryOf(file);
+            const git::Entry* e = repo == nullptr ? nullptr : repo->entryOf(git::spelledOnDisk(root, rel));
+            const bool there = QFileInfo::exists(file) || QFileInfo(file).isSymLink();
             state.insert(QStringLiteral("path"), QJsonObject{{QStringLiteral("path"), rel},
-                                                            {QStringLiteral("state"), e == nullptr ? tr("as committed") : e->describe()}});
+                                                            {QStringLiteral("state"), e != nullptr ? e->describe() : there ? tr("as committed") : tr("no such file")}});
         }
     }
     return jsonResult(state);
@@ -261,7 +303,7 @@ QJsonObject QucsControl::gitStatus(const QJsonObject& args)
 
 QJsonObject QucsControl::gitDiff(const QJsonObject& args)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     const QString of = args.value(QLatin1String("of")).toString(QStringLiteral("head"));
     if (of != QLatin1String("head") && of != QLatin1String("staged") && of != QLatin1String("unstaged"))
         return errorResult(tr("'of' is head, staged or unstaged."));
@@ -282,7 +324,7 @@ QJsonObject QucsControl::gitDiff(const QJsonObject& args)
 
 QJsonObject QucsControl::gitLog(const QJsonObject& args)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     QString error;
     const QString root = gitRootOf(path, &error);
     if (root.isEmpty()) return errorResult(error);
@@ -292,6 +334,8 @@ QJsonObject QucsControl::gitLog(const QJsonObject& args)
     if (ref.startsWith(QLatin1Char('-'))) return errorResult(tr("%1 is no ref (it begins with '-').").arg(ref));
     const bool all = args.value(QLatin1String("all")).toBool();
     if (all && !ref.isEmpty()) return errorResult(tr("'all' (every branch) or 'ref' (one), not both."));
+    if (!ref.isEmpty() && !git::run(root, {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("-q"), ref + QStringLiteral("^{commit}")}, true, 15000).ok())
+        return errorResult(tr("%1 is no commit, branch or tag of %2.").arg(ref, native(root)));
     const QString file = path.isEmpty() ? QString() : gitPath(path);
     QList<git::Commit> found;
     if (all) {
@@ -314,9 +358,10 @@ QJsonObject QucsControl::gitLog(const QJsonObject& args)
         if (skip > 0) a << QStringLiteral("--skip=%1").arg(skip);
         if (all) a << QStringLiteral("--date-order") << QStringLiteral("--branches") << QStringLiteral("--remotes") << QStringLiteral("--tags") << QStringLiteral("HEAD");
         else if (!ref.isEmpty()) a << ref;
+        a << QStringLiteral("--");
         if (!file.isEmpty()) {
             const QString rel = git::relativePath(root, file);
-            if (!rel.isEmpty()) a << QStringLiteral("--") << rel;
+            if (!rel.isEmpty()) a << rel;
         }
         const git::Result drawn = git::run(root, a, true, 30000);
         if (drawn.ok()) o.insert(QStringLiteral("graph"), QJsonArray::fromStringList(drawn.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts).mid(0, max * 4)));
@@ -339,7 +384,7 @@ QJsonObject QucsControl::gitLog(const QJsonObject& args)
 QJsonObject QucsControl::gitShow(const QJsonObject& args)
 {
     const QString commit = args.value(QLatin1String("commit")).toString().trimmed();
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     if (commit.isEmpty()) return errorResult(tr("Which commit? ('commit': a hash, a branch, HEAD~1)"));
     if (commit.startsWith(QLatin1Char('-'))) return errorResult(tr("%1 is no commit (it begins with '-').").arg(commit));
     QString error;
@@ -354,7 +399,7 @@ QJsonObject QucsControl::gitShow(const QJsonObject& args)
 
 QJsonObject QucsControl::gitBlame(const QJsonObject& args)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     if (path.isEmpty()) return errorResult(tr("Which file? ('path')"));
     QString error;
     const QString root = gitRootOf(path, &error);
@@ -380,7 +425,12 @@ QJsonObject QucsControl::gitBlame(const QJsonObject& args)
         }
         lines.append(o);
     }
-    return jsonResult(QJsonObject{{QStringLiteral("path"), native(file)}, {QStringLiteral("lines"), lines}});
+    QJsonObject blamed{{QStringLiteral("path"), native(file)}, {QStringLiteral("lines"), lines}};
+    if (lines.size() >= 2000) {
+        const int last = lines.last().toObject().value(QStringLiteral("line")).toInt();
+        if (last < all.last().line) blamed.insert(QStringLiteral("more"), tr("there are more: 'from' %1 reads on").arg(last + 1));
+    }
+    return jsonResult(blamed);
 }
 
 // ----------------------------------------------------------------------
@@ -394,6 +444,7 @@ QJsonObject QucsControl::gitStage(const QJsonObject& args)
     const bool all = args.value(QLatin1String("all")).toBool();
     if (paths.isEmpty() && !all) return errorResult(tr("Which files? ('paths', or 'all': every change)"));
     if (root.isEmpty()) return errorResult(error);
+    if (const QString why = all ? QString() : outsideOf(root, paths); !why.isEmpty()) return errorResult(why);
     const git::Result r = git::stage(root, all ? QStringList() : paths);
     if (!r.ok()) return errorResult(tr("git could not stage them: %1").arg(r.error()));
     return jsonResult(gitState(root));
@@ -407,6 +458,7 @@ QJsonObject QucsControl::gitUnstage(const QJsonObject& args)
     const bool all = args.value(QLatin1String("all")).toBool();
     if (paths.isEmpty() && !all) return errorResult(tr("Which files? ('paths', or 'all': everything staged)"));
     if (root.isEmpty()) return errorResult(error);
+    if (const QString why = all ? QString() : outsideOf(root, paths); !why.isEmpty()) return errorResult(why);
     const git::Result r = git::unstage(root, all ? QStringList() : paths);
     if (!r.ok()) return errorResult(tr("git could not unstage them: %1").arg(r.error()));
     return jsonResult(gitState(root));
@@ -420,6 +472,7 @@ QJsonObject QucsControl::gitDiscard(const QJsonObject& args)
     const bool all = args.value(QLatin1String("all")).toBool();
     if (paths.isEmpty() && !all) return errorResult(tr("Which files? ('paths', or 'all': every change)"));
     if (root.isEmpty()) return errorResult(error);
+    if (const QString why = all ? QString() : outsideOf(root, paths); !why.isEmpty()) return errorResult(why);
     QStringList trashed;
     const git::Result r = git::discard(root, all ? QStringList() : paths, &trashed);
     if (!r.ok()) return errorResult(tr("git could not discard them: %1").arg(r.error()));
@@ -464,6 +517,16 @@ void QucsControl::gitCommit(const QJsonObject& args, const Done& done)
         done(errorResult(error));
         return;
     }
+    if (const QString why = outsideOf(root, paths); !why.isEmpty()) {
+        done(errorResult(why));
+        return;
+    }
+    // (In a rebase a commit would stay on its detached HEAD, the rebase unfinished.)
+    if (const QString under = git::read(root).operation; !amend && (under == QLatin1String("rebase") || under == QLatin1String("am"))) {
+        done(errorResult(tr("A %1 is under way: git_continue goes on with it, once what is in conflict is resolved and staged, and makes its commit; "
+                            "git_abort gives it up.").arg(under)));
+        return;
+    }
     QStringList commitArgs{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
     if (amend) commitArgs << QStringLiteral("--amend");
     if (!paths.isEmpty()) {
@@ -473,11 +536,14 @@ void QucsControl::gitCommit(const QJsonObject& args, const Done& done)
             return;
         }
         commitArgs << QStringLiteral("--");
-        // (The repository's own folder: "." - an empty path is none to git.)
+        // (The repository's own folder: "." - an empty path is none to git. A
+        // rename's former name with it, or its deletion stays behind.)
+        QStringList rel;
         for (const QString& p : paths) {
-            const QString rel = git::relativePath(root, p);
-            commitArgs << git::literalPaths({rel.isEmpty() ? QStringLiteral(".") : rel});
+            const QString one = git::relativePath(root, p);
+            rel << (one.isEmpty() ? QStringLiteral(".") : one);
         }
+        commitArgs << git::literalPaths(git::withRenameSources(root, rel));
     } else if (!amend) {
         const git::Repository* repo = git::Tracker::instance()->readNow(root);
         // (A merge's commit records it, nothing staged or not: each file
@@ -617,7 +683,7 @@ void QucsControl::gitRemote(const QJsonObject& args, const Done& done)
             return;
         }
     } else if (action == QLatin1String("pull")) {
-        network = git::pullArgs();
+        network = git::pullArgs(root);
     } else if (action == QLatin1String("push")) {
         QString why;
         network = git::pushArgs(git::read(root), &why, args.value(QLatin1String("tags")).toBool());
@@ -632,6 +698,13 @@ void QucsControl::gitRemote(const QJsonObject& args, const Done& done)
     gitJob(root, network, timeout, {}, [this, root, action](const git::Result& r) -> QJsonObject {
         if (!r.ok()) {
             if (r.exitCode < 0) return errorResult(tr("git's %1 took too long, and was stopped ('timeout' gives it more).").arg(action));
+            if (action == QLatin1String("pull") && saysConflict(r)) {
+                QJsonObject o = gitState(root);
+                o.insert(action, afterConflicts(o.value(QStringLiteral("under way")).toString()));
+                o.insert(QStringLiteral("git said"), r.error());
+                reloadGitChanged(root, &o);
+                return jsonResult(o);
+            }
             return errorResult(tr("git could not %1: %2").arg(action, r.error()));
         }
         QJsonObject o = gitState(root);
@@ -654,7 +727,10 @@ QJsonObject QucsControl::gitStash(const QJsonObject& args)
             list.append(QJsonObject{{QStringLiteral("index"), s.index}, {QStringLiteral("message"), s.message}, {QStringLiteral("date"), s.date.toString(Qt::ISODate)}});
         return jsonResult(QJsonObject{{QStringLiteral("repository"), native(root)}, {QStringLiteral("stashes"), list}});
     }
-    if (action == QLatin1String("show")) return textResult(cut(git::showStash(root, index)));
+    if (action == QLatin1String("show")) {
+        if (index >= git::stashes(root).size()) return errorResult(tr("There is no stash %1 in %2.").arg(index).arg(native(root)));
+        return textResult(cut(git::showStash(root, index)));
+    }
     git::Result r;
     if (action == QLatin1String("push")) {
         r = git::stash(root, args.value(QLatin1String("message")).toString().trimmed(), args.value(QLatin1String("untracked")).toBool(true));
@@ -718,12 +794,19 @@ QJsonObject QucsControl::gitCommitAction(const QJsonObject& args)
     else if (action == QLatin1String("reset")) r = git::reset(root, commit, mode);
     else return errorResult(tr("'action' is revert, cherry_pick, check_out or reset."));
     if (!r.ok()) {
-        if (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("conflict"))) {
+        // (By what stands in the repository: git's own words for a commit already
+        // applied say "conflict" of a thing that is none.)
+        const git::Repository after = git::read(root);
+        if (saysConflict(r) || after.conflictCount() > 0) {
             QJsonObject o = gitState(root);
-            o.insert(action, tr("conflicts: resolve the files in 'conflicts' - git_resolve takes a side whole or shows both; an "
-                                "edited file is marked resolved with git_stage - then git_commit; or git_abort"));
+            o.insert(action, afterConflicts(after.operation));
             o.insert(QStringLiteral("git said"), r.error());
             reloadGitChanged(root, &o);
+            return jsonResult(o);
+        }
+        if (action != QLatin1String("reset") && action != QLatin1String("check_out") && !after.operation.isEmpty()) {
+            QJsonObject o = gitState(root);
+            o.insert(action, tr("nothing to apply: its changes are here already. git_continue with 'skip' goes past it, git_abort gives it up."));
             return jsonResult(o);
         }
         reloadGitChanged(root, nullptr);
@@ -748,9 +831,35 @@ QJsonObject QucsControl::gitAbort(const QJsonObject& args)
     return jsonResult(o);
 }
 
+QJsonObject QucsControl::gitContinue(const QJsonObject& args)
+{
+    QString error;
+    const QString root = gitRootOf(args.value(QLatin1String("path")).toString(), &error);
+    if (root.isEmpty()) return errorResult(error);
+    const git::Repository before = git::read(root);
+    const QString under = before.operation;
+    if (under.isEmpty()) return errorResult(tr("Nothing is under way in %1 to go on with.").arg(native(root)));
+    if (under == QLatin1String("bisect")) return errorResult(tr("A bisect goes on with git's own commands: git_abort ends it."));
+    const bool skip = args.value(QLatin1String("skip")).toBool();
+    if (!skip && before.conflictCount() > 0)
+        return errorResult(tr("%1 file(s) still in conflict: git_resolve takes a side, an edited file is marked resolved with git_stage. git_status lists them.").arg(before.conflictCount()));
+    const git::Result r = git::continueOperation(root, under, skip);
+    if (!r.ok() && git::read(root).conflictCount() > 0) {
+        QJsonObject o = gitState(root);
+        o.insert(under, afterConflicts(under));
+        o.insert(QStringLiteral("git said"), r.error());
+        reloadGitChanged(root, &o);
+        return jsonResult(o);
+    }
+    if (!r.ok()) return errorResult(tr("git could not go on with the %1: %2").arg(under, r.error()));
+    QJsonObject o = gitState(root);
+    reloadGitChanged(root, &o);
+    return jsonResult(o);
+}
+
 QJsonObject QucsControl::gitResolve(const QJsonObject& args)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     const QString action = args.value(QLatin1String("action")).toString(QStringLiteral("show"));
     if (path.isEmpty()) return errorResult(tr("Which file in conflict? ('path')"));
     if (action != QLatin1String("show") && action != QLatin1String("take_ours") && action != QLatin1String("take_theirs")
@@ -760,6 +869,7 @@ QJsonObject QucsControl::gitResolve(const QJsonObject& args)
     const QString root = gitRootOf(path, &error);
     if (root.isEmpty()) return errorResult(error);
     const QString file = gitPath(path);
+    if (QFileInfo(file).isDir()) return errorResult(tr("%1 is a folder: name a file of it in conflict (git_status lists them).").arg(native(file)));
     const git::ConflictVersions v = git::conflictVersions(root, file);
     if (!v.inConflict) return errorResult(tr("%1 is not in conflict (git_status lists the files that are).").arg(native(file)));
     if (action == QLatin1String("show")) {
@@ -791,7 +901,7 @@ QJsonObject QucsControl::gitResolve(const QJsonObject& args)
 QJsonObject QucsControl::gitInit(const QJsonObject& args)
 {
     if (git::program().isEmpty()) return errorResult(tr("git is not installed (nor where Homebrew puts it): Qucs-S's git needs it."));
-    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    const QString given = pathArgument(args);
     QString folder = given.isEmpty() ? QString() : gitPath(given);
     if (folder.isEmpty() && !a_app->ProjName.isEmpty()) folder = QucsSettings.QucsWorkDir.absolutePath();
     if (folder.isEmpty()) return errorResult(tr("Which folder? ('path'; the open project's when one is open)"));
@@ -815,11 +925,9 @@ void QucsControl::gitClone(const QJsonObject& args, const Done& done)
         done(errorResult(url.isEmpty() ? tr("Which repository? ('url')") : tr("%1 is no repository's URL (it begins with '-').").arg(url)));
         return;
     }
-    QString target = args.value(QLatin1String("path")).toString().trimmed();
+    QString target = pathArgument(args);
     if (target.isEmpty()) {
-        QString name = url.section(QLatin1Char('/'), -1).section(QLatin1Char(':'), -1);
-        if (name.endsWith(QLatin1String(".git"))) name.chop(4);
-        target = QucsSettings.qucsWorkspaceDir.filePath(name.isEmpty() ? QStringLiteral("repository") : name);
+        target = QucsSettings.qucsWorkspaceDir.filePath(git::folderOfUrl(url));
     } else {
         target = absolute(target);
     }
@@ -848,7 +956,7 @@ void QucsControl::gitClone(const QJsonObject& args, const Done& done)
 
 QJsonObject QucsControl::gitIgnore(const QJsonObject& args)
 {
-    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    const QString path = pathArgument(args);
     if (path.isEmpty()) return errorResult(tr("Which file or folder? ('path')"));
     QString error;
     const QString root = gitRootOf(path, &error);

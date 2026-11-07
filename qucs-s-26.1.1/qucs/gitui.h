@@ -127,6 +127,7 @@ private:
     QPushButton* a_discard;
     QPointer<Job> a_job;
     bool a_merging = false;   // a merge under way: committed with nothing staged
+    QString a_goesOn;         // a rebase or am under way: its commits are made by going on with it
 };
 
 /// Who last changed each line of a file, and in which commit.
@@ -205,6 +206,9 @@ public:
     void showStash(const QString& root, int index);
     void newTag(const QString& root, const QString& commit = {});
     void abortOperation(const QString& root);
+    /// Goes on with what is under way, what was in conflict resolved and
+    /// staged (\a skip: past the commit it stopped at).
+    void continueOperation(const QString& root, bool skip = false);
     /// \a path's conflict resolved with one side whole ("ours", "theirs"),
     /// asked first.
     void resolveConflict(const QString& root, const QString& path, const QString& side);

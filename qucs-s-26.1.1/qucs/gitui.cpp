@@ -304,6 +304,9 @@ void CommitDialog::reload()
     a_header->setText(repo.valid ? tr("%1  ·  on %2").arg(QDir::toNativeSeparators(a_root), repo.branchText())
                                  : tr("%1 is no git repository").arg(QDir::toNativeSeparators(a_root)));
     a_merging = repo.operation == QLatin1String("merge");
+    a_goesOn = repo.operation == QLatin1String("rebase") || repo.operation == QLatin1String("am") ? repo.operation : QString();
+    if (!a_goesOn.isEmpty())
+        a_header->setText(a_header->text() + QStringLiteral("  ·  ") + tr("a %1 under way: Git > Continue goes on with it").arg(a_goesOn));
     if (a_merging) a_header->setText(a_header->text() + QStringLiteral("  ·  ") + tr("a merge under way: Commit records it"));
     const auto keepSelection = [](QListWidget* list) {
         QStringList chosen;
@@ -417,6 +420,11 @@ void CommitDialog::commitNow(bool push)
         return;
     }
     const bool amend = a_amend->isChecked();
+    // (A commit here would stay on the detached HEAD, the rebase unfinished.)
+    if (!a_goesOn.isEmpty() && !amend) {
+        misc::reportError(tr("A %1 is under way: Git > Continue makes its commit, once what is in conflict is resolved and staged.").arg(a_goesOn));
+        return;
+    }
     // (A merge's commit records it with nothing staged: each file resolved
     // as the branch had it.)
     if (a_staged->count() == 0 && !amend && !a_merging) {
@@ -757,6 +765,9 @@ void Commands::fillFileMenu(QMenu* menu, const QString& file)
     if (!repo.operation.isEmpty())
         menu->addAction(tr("Abort the %1").arg(repo.operation), this, [this, root] { abortOperation(root); })
             ->setObjectName(QStringLiteral("gitAbort"));
+    if (!repo.operation.isEmpty() && repo.operation != QLatin1String("bisect"))
+        menu->addAction(tr("Continue the %1").arg(repo.operation), this, [this, root] { continueOperation(root); })
+            ->setObjectName(QStringLiteral("gitContinue"));
 }
 
 void Commands::fillBranchMenu(QMenu* menu, const QString& root)
@@ -995,7 +1006,14 @@ void Commands::fetch(const QString& root)
 
 void Commands::pull(const QString& root)
 {
-    runJob(root, pullArgs(), tr("Pulling"), [this, root](const Result& r) {
+    runJob(root, pullArgs(root), tr("Pulling"), [this, root](const Result& r) {
+        if (!r.ok() && (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")))) {
+            misc::reportError(tr("The pull left conflicts: resolve them (the files marked !), stage them, then commit or Git > Continue - or Git > "
+                                 "Abort.")
+                              + QStringLiteral("\n\n") + r.error());
+            done(root, {});
+            return;
+        }
         if (report(r, tr("Pull"))) done(root, tr("Pulled"));
     });
 }
@@ -1102,7 +1120,12 @@ void Commands::mergeInto(const QString& root)
                                               tr("Merge into %1:").arg(repo.branch.isEmpty() ? tr("the commit checked out") : repo.branch),
                                               names, 0, false, &ok);
     if (!ok || ref.isEmpty()) return;
-    runJob(root, {QStringLiteral("merge"), QStringLiteral("--no-edit"), ref}, tr("Merging"), [this, root, ref](const Result& r) {
+    const QStringList mergeWith = mergeArgs(ref);
+    if (mergeWith.isEmpty()) {
+        misc::reportError(tr("%1 is not a name git takes here (it begins with '-').").arg(ref));
+        return;
+    }
+    runJob(root, mergeWith, tr("Merging"), [this, root, ref](const Result& r) {
         if (!r.ok() && (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")))) {
             misc::reportError(tr("Merging %1 left conflicts: resolve them (the files marked !), stage them, then commit - or Git > "
                                  "Abort the Merge.").arg(ref)
@@ -1172,6 +1195,22 @@ void Commands::abortOperation(const QString& root)
         != QMessageBox::Yes)
         return;
     if (report(git::abort(root, repo.operation), tr("Abort"))) done(root, tr("The %1 is given up").arg(repo.operation));
+}
+
+void Commands::continueOperation(const QString& root, bool skip)
+{
+    const Repository repo = read(root);
+    if (repo.operation.isEmpty()) {
+        emit message(tr("Nothing is under way"));
+        return;
+    }
+    const Result r = git::continueOperation(root, repo.operation, skip);
+    if (!r.ok() && (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")))) {
+        misc::reportError(tr("The %1 stopped at a conflict again: resolve it, stage it, and Continue.").arg(repo.operation) + QStringLiteral("\n\n") + r.error());
+        done(root, {});
+        return;
+    }
+    if (report(r, tr("Continue"))) done(root, tr("The %1 went on").arg(repo.operation));
 }
 
 void Commands::resolveConflict(const QString& root, const QString& path, const QString& side)
@@ -1326,9 +1365,7 @@ void Commands::cloneRepository(const QString& folder)
                                               QLineEdit::Normal, QString(), &ok)
                             .trimmed();
     if (!ok || url.isEmpty()) return;
-    QString name = url.section(QLatin1Char('/'), -1).section(QLatin1Char(':'), -1);
-    if (name.endsWith(QLatin1String(".git"))) name.chop(4);
-    if (name.isEmpty()) name = QStringLiteral("repository");
+    const QString name = folderOfUrl(url);
     QString target = QDir(folder).filePath(name);
     for (int n = 2; QFileInfo::exists(target); ++n) target = QDir(folder).filePath(QStringLiteral("%1-%2").arg(name).arg(n));
     runJob(folder, cloneArgs(url, target), tr("Cloning"), [this, target](const Result& r) {
