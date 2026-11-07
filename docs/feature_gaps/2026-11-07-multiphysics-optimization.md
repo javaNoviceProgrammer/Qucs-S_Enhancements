@@ -329,6 +329,41 @@ even at the 1.9 times of CI's slowest runner.
   through `runStudy`'s Progress; a parameter that shapes a flow has not been run through an optimization.
 - **A person's eye on it:** driven offscreen, its page looked at by screenshot. No real display, no mouse.
 
+## The review of 7 November
+
+[2026-11-07-claude-qfem-optimization-check.md](qucs-reviews/Multiphysics/2026-11-07-claude-qfem-optimization-check.md),
+black-box runs of `e723e56` against closed forms. Every finding was checked here in the code before it was changed, and every one
+was real. Each has a test that fails on the code before this change.
+
+**B1, the one that mattered: a limit in small SI units counted as met.** A limit's miss was divided by `max(1, |value|)`, so
+for 900 pF a miss of 546 pF read as 5e-10. A limits-only run then "converged" at its start, its own limit line saying VIOLATED,
+and that point could be written in. The history marked rows that broke the limit as feasible, and an EQ goal by penalties read
+met 35 pF away. The search itself judged by a share of the value (`conScale`), so the optimum of a run with an objective was
+right: only what was said about it was wrong. This write-up's tests had their limits at 2.5 Ω, where the two agree.
+
+- Every limit is now judged one way, as the search judges it: its miss as a share of its value (of 1 for a value of 0), against
+  "Limits met within". That covers the end of a limits-only run, the history's marks, and the penalty lines.
+- `Goal::met` for EQ is a share of its target. It is the shared core's, so a schematic's optimization component's EQ goal has
+  the fix too: there a target of 1 mV was met within 1e-9 V before, and is met within 1e-12 V now. A target of 1 V or more is
+  judged as before.
+- Apply refuses a best point that does not meet its limits, as it refused an infeasible status.
+- Tests: `limitsInSmallUnits` (400 pF and 10 nF by six methods and penalties), `theHistoryMarksWhatBreaksALimit`,
+  `penaltyLimitsAsTheSearchJudgesThem`.
+
+| # | Finding | Now |
+|---|---|---|
+| B2 | Apply wrote the varied parameters and not those held at a start of their own, so the optimum did not reproduce | Those are written too, each marked "held at it in the run". A held one with no start is the model's own value and is left as it is. `heldParametersAreWrittenIn` solves there and gets the run's 200 pF. |
+| B3 | A target's or a limit's value using a varied parameter was read once and frozen | Refused before any solve, naming the parameter and what to write instead (`ht.Tmax - Tb LE 50[K]`). Found by moving each varied parameter to its other end and reading the value again, so a dependence through another parameter is found too. Following the candidate was the other choice; refusing is plain and the rewrite is always possible. `aValueThatMovesWithAVariedParameter`. |
+| B4 | `fem_optimize` applied a result of a changed model and said nothing | Its answer has "changed since", as its result already had. The tab's Apply still asks nothing: the page shows the result as old above the button. |
+| B5 | A limit held by penalties read NOT MET at any miss, even 7e-10 pF beside an active bound | Met within "Limits met within", as above. |
+| B6 | Apply wrote over a formula in silence, in 17 digits of SI | The line says "in place of its expression h/2", and a value with no unit of its own is written in 12 digits. `aFormulaWrittenOverIsSaid`. |
+| B7 | The `undo` tool answered "Undone." on a `.qfem` and did nothing | It undoes and redoes the steps of any document that keeps an undo stack: a 2D or 3D model, an RF 2.5D model, a sheet, an archive. One with none says so, instead of "Undone.". Tested in `theToolsRunIt`, through undo and redo. |
+| | `point` past a front's end got the message for no point | "The front has 12 designs: there is no design 99." |
+| | A spread with no unit did not say that a share is taken | "... give it a unit ("0.02[m]") - or a share of its value: 5 %" |
+
+The review's own runs were on the installed app; they were not repeated against it here. Its repro files are in the user's
+workspace, and these tests are the same cases scaled to the test capacitor.
+
 ## Fixed on the way
 
 A Parametric Sweep's **Unit** cell, edited alone, did not reach the model until another cell of the table was edited: `MultiphysicsPanel::parametersEditor` skipped every table's third column, a check meant for the parameters' read-only Value. It now skips that column in the parameters table alone. `aSweepsUnitIsCommittedAtOnce` in `test_multiphysics_doc` failed before the fix and passes after.

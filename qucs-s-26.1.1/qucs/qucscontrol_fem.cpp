@@ -2246,9 +2246,16 @@ void QucsControl::femOptimize(const QJsonObject& args, const Done& given)
     const auto apply = [this, doc, found, point, args]() {
         QStringList written;
         QString why;
+        // (Said before writing: once written in, the result is no longer of a changed model.)
+        const bool old = doc->optimizationStale(found);
         if (!doc->applyOptimum(found, point, &written, &why)) return errorResult(why);
-        return jsonResult(QJsonObject{{QStringLiteral("written in"), QJsonArray::fromStringList(written)},
-                                      {QStringLiteral("note"), why.isEmpty() ? tr("One step of Undo. fem_solve solves the model there.") : why}});
+        QJsonObject answer{{QStringLiteral("written in"), QJsonArray::fromStringList(written)},
+                           {QStringLiteral("note"), why.isEmpty() ? tr("One step of Undo. fem_solve solves the model there.") : why}};
+        if (old)
+            answer.insert(QStringLiteral("changed since"),
+                          tr("The model has changed since this result: these values were the optimum of the model as it was, "
+                             "and may not be of this one. Undo takes them back; run it again for this model's."));
+        return jsonResult(answer);
     };
     if (action == QLatin1String("apply")) {
         if (doc->isBusy()) return given(errorResult(tr("It is busy building or solving; fem_optimize action=apply in a while.")));

@@ -192,7 +192,9 @@ bool Goal::met(double y) const
     switch (type) {
     case GoalType::LessEqual: return y <= target;
     case GoalType::GreaterEqual: return y >= target;
-    case GoalType::Equal: return std::abs(y - target) <= 1e-9 * std::max(1.0, std::abs(target));
+    // (As a share of the target: by max(1, |target|), a target of 900 pF was met
+    // 35 pF away.)
+    case GoalType::Equal: return std::abs(y - target) <= 1e-9 * (target != 0 ? std::abs(target) : 1.0);
     default: return true;
     }
 }

@@ -102,6 +102,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QTextDocument>
 #include <QTextDocumentFragment>
+#include <QUndoStack>
 #include <QTextEdit>
 #include <QSet>
 #include <QTemporaryDir>
@@ -11347,16 +11348,32 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
         steps = std::abs(to - at);
     }
     const QString before = schematicDoc != nullptr ? schematicDoc->snapshot() : QString();
+    // The other documents with steps of their own (a multiphysics model, a sheet,
+    // an archive...) keep them in an undo stack of theirs. One with none said so:
+    // "Undone." of nothing done sent a client on as if it had been.
+    QWidget* const widget = QucsApp::documentWidget(doc);
+    QUndoStack* const stack = schematicDoc == nullptr && qobject_cast<TextDoc*>(widget) == nullptr && widget != nullptr
+                                  ? widget->findChild<QUndoStack*>(QString(), Qt::FindDirectChildrenOnly)
+                                  : nullptr;
+    if (schematicDoc == nullptr && qobject_cast<TextDoc*>(widget) == nullptr && stack == nullptr)
+        return errorResult(tr("This document keeps no steps that undo can take back (Edit > Undo in the window, through trigger_action, "
+                              "where it has any)."));
     int made = 0;
     for (int i = 0; i < steps; ++i) {
         bool ok = true;
         if (auto* sch = dynamic_cast<Schematic*>(doc)) {
             ok = redo ? sch->redo() : sch->undo();
-        } else if (auto* text = qobject_cast<TextDoc*>(QucsApp::documentWidget(doc))) {
+        } else if (auto* text = qobject_cast<TextDoc*>(widget)) {
             ok = redo ? text->document()->isRedoAvailable() : text->document()->isUndoAvailable();
             if (ok) {
                 if (redo) text->redo();
                 else text->undo();
+            }
+        } else if (stack != nullptr) {
+            ok = redo ? stack->canRedo() : stack->canUndo();
+            if (ok) {
+                if (redo) stack->redo();
+                else stack->undo();
             }
         }
         if (!ok) break;
