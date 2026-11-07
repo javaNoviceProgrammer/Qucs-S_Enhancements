@@ -298,6 +298,12 @@ class TestClaudeFuzz : public QObject
             for (int i = 0; i < (big ? 300 : 20); ++i) t += QStringLiteral("Line %1 of many.\n\n").arg(i);
             return t;
         }
+        case 35: {
+            // A long line of code, a run with no break, now and then long
+            // enough to be given places to break.
+            const QString run(d.below(big ? 30000 : 900) + 1, QChar(QLatin1Char('a' + d.below(26))));
+            return QStringLiteral("```\n%1%2 %3\n```").arg(QString(d.below(9), QLatin1Char(' ')), run, word(d));
+        }
         default: {
             QStringList w;
             for (int i = 0, n = d.below(12) + 1; i < n; ++i) w << word(d);
@@ -306,7 +312,23 @@ class TestClaudeFuzz : public QObject
         }
     }
 
-    // A reply's text, and whether it is plain (no markup that may hide a
+    // Every line in the view can wrap in reasonable time: none marked not to, no
+    // word too long, a place to break in each.
+    static bool linesWrap(const ClaudeCodePanel* panel)
+    {
+        for (QTextBlock b = panel->transcript()->document()->begin(); b.isValid(); b = b.next()) {
+            if (b.blockFormat().nonBreakableLines()) return false;
+            if (b.length() <= 2000) continue;
+            qsizetype word = 0;
+            const QString text = b.text();
+            for (const QChar c : text) {
+                word = c.isSpace() || c.unicode() == 0x200B ? 0 : word + 1;
+                if (word > 2000) return false;
+            }
+        }
+        return true;
+    }
+
     // paragraph after it: math, HTML, code).
     QString reply(Draw& d, bool big, bool* plain)
     {
@@ -996,6 +1018,7 @@ private slots:
                         found(n, QStringLiteral("a formula's mark left in the transcript (U+%1)").arg(uint(c.unicode()), 4, 16, QLatin1Char('0')));
                         break;
                     }
+                if (!linesWrap(panel.get())) found(n, QStringLiteral("a line that cannot wrap"));
                 // Following: at the end once something is drawn, near it
                 // (as the panel has it: 16 pixels) else.
                 const bool drew = panel->renderedAt() < panel->transcript()->document()->characterCount() - 1;
@@ -1333,6 +1356,7 @@ private slots:
                         found(n, QStringLiteral("a formula's mark left in the transcript"));
                         break;
                     }
+                if (!linesWrap(panel)) found(n, QStringLiteral("a line that cannot wrap"));
                 const bool drew = panel->renderedAt() < panel->transcript()->document()->characterCount() - 1;
                 if (panel->followsTheEnd() && bar->value() < bar->maximum() - (drew ? 2 : 16))
                     found(n, QStringLiteral("not at the conversation's end: %1 of %2").arg(bar->value()).arg(bar->maximum()));
