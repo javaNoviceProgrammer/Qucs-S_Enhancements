@@ -33,6 +33,7 @@
 
 class QButtonGroup;
 class QFileSystemWatcher;
+class QMimeData;
 class QScrollBar;
 class QTextBrowser;
 class QTextDocument;
@@ -75,6 +76,23 @@ QString anchorOf(const QString& heading);
 /// from the document's resources (the browser's files). Whether any
 /// changed.
 bool fitImages(QTextDocument* document, qreal width);
+
+// Which long runs of letters with no place to break a line are given some, and
+// how often. Qt searches a run to its end for each line it breaks it into, so a
+// run costs the square of its length, at each layout (a million characters: 110 s).
+struct RunBreaks {
+    int longest;   // a run of more than this is broken
+    int every;     // every so many letters
+    bool code;     // in code too (where it is wrapped)
+};
+
+// The blocks of \a document from the position \a from on, their long runs given
+// places to break, as zero-width spaces. They show nowhere; what is copied has
+// them taken out (removeRunBreaks()).
+void breakLongRuns(QTextDocument* document, int from, const RunBreaks& how);
+
+// \a data, as copied from a document given them, without those breaks.
+void removeRunBreaks(QMimeData* data);
 
 /*!
  * A document's images drawn smoothly: each scaled to the device pixels it
