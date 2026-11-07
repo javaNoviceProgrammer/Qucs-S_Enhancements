@@ -193,6 +193,7 @@ ADD_SUBDIRECTORY( qt3_compat )
 ADD_SUBDIRECTORY( components )
 ADD_SUBDIRECTORY( magnetics )
 ADD_SUBDIRECTORY( multiphysics )
+ADD_SUBDIRECTORY( layoutrouter )
 ADD_SUBDIRECTORY( diagrams )
 ADD_SUBDIRECTORY( dialogs )
 ADD_SUBDIRECTORY( geometry )
@@ -208,7 +209,7 @@ SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
   textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp svgguard.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  rf25/rf25_model.cpp  rf25/rf25_layout.cpp  rf25/rf25_mesh.cpp  rf25/rf25_green.cpp  rf25/rf25_static.cpp  rf25/rf25_sparams.cpp  rf25/rf25_inductance.cpp  rf25/rf25_wave.cpp  rf25/rf25_fullwave.cpp  rf25/rf25_dense.cpp  rf25/rf25_deembed.cpp  rf25/rf25_fast.cpp  rf25/rf25_kept.cpp  rf25/rf25_circuit.cpp  rf25/rf25_edb.cpp  rf25/rf25_hfss.cpp  rf25/rf25_hfss_import.cpp  rf25doc.cpp  rf25panel.cpp  qucs_rf25.cpp  multiphysicsview.cpp  multiphysicsdoc.cpp multiphysicsoptimization.cpp  multiphysicspanel.cpp  multiphysicssettings.cpp  rf25settings.cpp  gpurendering.cpp  qucs_multiphysics.cpp  view3d.cpp  multiphysics3ddoc.cpp  multiphysics3dpanel.cpp  qucs_multiphysics3d.cpp  imagedoc.cpp  pptx.cpp  pptxdoc.cpp  main.cpp	schematic.cpp
   multiphysicsconvergence.cpp
-  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_fem.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp  qucscontrol_rf25.cpp qucscontrol_pptx.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
+  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_fem.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp qucscontrol_router.cpp layoutrouting.cpp layoutrouterpanel.cpp  qucscontrol_rf25.cpp qucscontrol_pptx.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
   qucscontrol_fem_adapt.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp qucs_workspace.cpp workspacesession.cpp schematic_file.cpp
@@ -299,6 +300,8 @@ sheetdoc.h
 zipdoc.h
 layout.h
 layoutdoc.h
+layoutrouting.h
+layoutrouterpanel.h
 multiphysicsview.h
 multiphysicsdoc.h
 multiphysicsoptimization.h
@@ -340,6 +343,8 @@ SET(QUCS_MOC_HDRS
   sheetdoc.h
   zipdoc.h
   layoutdoc.h
+  layoutrouting.h
+  layoutrouterpanel.h
   multiphysicsview.h
   multiphysicsdoc.h
   multiphysicsoptimization.h
@@ -465,7 +470,7 @@ endif()
 add_library(qucs-core OBJECT ${QUCS_HDRS} ${QUCS_CORE_SRCS} ${QUCS_MOC_SRCS})
 set(QUCS_LINK_LIBRARIES
     components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
-    fem gdstk
+    fem layoutrouter gdstk
     Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
 if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
   list(APPEND QUCS_LINK_LIBRARIES Qt6::Pdf)

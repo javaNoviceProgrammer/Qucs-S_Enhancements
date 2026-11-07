@@ -718,6 +718,13 @@ private:
     void findShapes(const QJsonObject& args, const Done& done);
     void showLayout(const QJsonObject& args, const Done& done);
     void findPlacements(const QJsonObject& args, const Done& done);
+    /// The metal router's tools (qucscontrol_router.cpp, layoutrouting.h).
+    void routeSetup(const QJsonObject& args, const Done& done);
+    void routeRun(const QJsonObject& args, const Done& done);
+    QJsonObject routeReport(const QJsonObject& args);
+    QJsonObject routeStop(const QJsonObject& args);
+    QJsonObject routeCommit(const QJsonObject& args);
+    QJsonObject routeAssignPads(const QJsonObject& args);
     /// export_image of a layout: whether args name one (its tab, a layout's
     /// file, or the tab in front), and its tab's view written as it shows
     /// it - a picture of 'scale' times its pixels, an SVG or a PDF.

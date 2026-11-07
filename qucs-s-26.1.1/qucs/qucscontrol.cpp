@@ -693,6 +693,60 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The cell whose placements are found"},
    "in": {"type": "string", "description": "The cell searched; the one its tab shows, else the largest top cell"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] in µm: the placements that meet it"},
    "depth": {"type": "integer", "minimum": 0, "description": "Levels below 'in' looked into; all by default (0: the placements in it alone)"}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many are listed, 50 by default"}}, "required": ["cell"]}},
+{"name": "route_setup",
+ "description": "Sets up the metal router for a GDSII or OASIS layout: Manhattan lines on two metals (or more), from device contacts to pads, for DC and low-speed nets - a lattice a metal, A* a net, negotiated congestion between them, each line ending in the middle of its contact and pad. The job is kept beside the layout as <layout>.route.json and edited here call by call: 'technology' (a JSON file: grid, metals bottom first with their layer and direction, vias between neighbours with size, enclosure or landing and spacing, classes of line with width and spacing, spacing same_layer, to_metal and to_terminal, obstacle layers with their clearance and the metals they keep out (landings: a via may sit on a net's own contact there), costs, area; an unknown key is refused by name), nets added or replaced by name, from a CSV, removed; keep-outs (an outline or box, or a pen stroke of the open tab by its number, read_drawings' numbering, its box if 'box'; metals, except_nets, let_through way_in (default: a net with a terminal inside, or named, may take the shortest way in), free or none); guides (a pen stroke or points: the line keeps within 'band' of it as far as its last point). Returns how it read each terminal (where the line will end, its metals, the shape under it, a warning when no line of its class can leave it), where nets look too many for the tracks (before a run), the memory a run needs, and warnings. route_run routes, route_report tells, route_commit writes. Spacing: to_metal applies to metal of no net and to a net's metal that is not the shape its terminal is on; to_terminal to the shape another net's terminal is on.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The layout, relative to the project (else the workspace), or its tab's title; the layout in front when not given"},
+   "technology": {"type": ["string", "object"], "description": "The technology: a JSON file (relative to the layout's folder), or the technology itself"},
+   "cell": {"type": "string", "description": "The cell routed (the largest top cell when not given); routes are committed as a cell placed in it"},
+   "route_cell": {"type": "string", "description": "The name of the cell the routes are committed as (ROUTES)"},
+   "nets": {"type": "array", "items": {"type": "object"}, "description": "Nets added, or replaced by name: {\"name\", \"class\", \"start\", \"pads\": [...], \"guide\": [[x, y], ...], \"band\", \"fixed\"}; a terminal is [x, y] in µm or {\"at\": [x, y]} or {\"text\": a label of the cell}, with \"metal\" and \"mode\" centre (the middle of the shape under it, default), exact (the point) or anywhere (anywhere on its shape and the metal joined to it, its own vias too)"},
+   "nets_csv": {"type": "string", "description": "A CSV of nets (relative to the layout's folder): net, start x, start y, pad x, pad y[, class] a row; or with a header naming net, class, start_x, start_y, start_text, start_layer, pad_x, pad_y, pad_text, pad_layer, mode - a net's further rows add pads"},
+   "replace_nets": {"type": "boolean", "description": "Drop the job's nets first"},
+   "remove_nets": {"type": "array", "items": {"type": "string"}, "description": "Nets taken out of the job"},
+   "keep_outs": {"type": "array", "items": {"type": "object"}, "description": "Keep-outs added, or replaced by name: {\"name\", \"outline\": [[x, y], ...] or \"box\": [x0, y0, x1, y1], \"metals\", \"except_nets\", \"let_through\"} - or {\"from_stroke\": n, \"box\": true or false, ...} from the open tab's pen"},
+   "remove_keep_outs": {"type": "array", "items": {"type": "string"}, "description": "Keep-outs taken out by name (\"*\": all)"},
+   "guides": {"type": "array", "items": {"type": "object"}, "description": "Guides: {\"net\", \"from_stroke\": n or \"points\": [[x, y], ...], \"band\": µm}; points [] takes a net's guide away"},
+   "options": {"type": "object", "description": "{\"passes\" (40), \"stall_passes\" (8: stop when the best has not improved in so many; 0 never), \"threads\" (0: all), \"max_memory_mb\" (4096), \"negotiate\" (true; false: each net once in order), \"search_weight\" (1: least cost; up to 3: faster, dearer routes)}"},
+   "clear": {"type": "boolean", "description": "Start a new job (the technology too)"},
+   "max": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Terminals listed at most (60)"}}}},
+{"name": "route_run",
+ "description": "Routes a layout's nets as route_setup set them, in the background, waiting up to 'timeout' seconds: 'mode' all, changed (the default after a first run: a net whose terminals, class, guide, the shapes near it or the technology changed is routed again, with any net not yet routed; the others keep their routes when they still hold - else everything is negotiated again) or selected ('nets'). Each pass of the negotiation says how many nets found a way, failed and are contested (too near another net's line); a run ends when none is contested, when the best has not improved in stall_passes ('stalled'), at 'passes', at max_memory_mb, or when stopped (route_stop) - the best pass kept, and nets still too near routed again around the others or reported. Returns what it came to: routed, failed, vias, length, the check on the shapes drawn ('clean' true only when every net is routed and nothing is wrong - findings include each net not routed, with why and where), the last passes, time and memory. Past the timeout it says how far it is and goes on: route_report again. The layout's open tab shows the routes over it (its Route panel).",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The layout, relative to the project (else the workspace), or its tab's title; the layout in front when not given"},
+   "mode": {"type": "string", "enum": ["all", "changed", "selected"], "description": "all, changed (the default after a run) or selected"},
+   "nets": {"type": "array", "items": {"type": "string"}, "description": "With mode selected: the nets routed again, the others kept"},
+   "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds it is waited for (120); past them the run goes on"}}}},
+{"name": "route_report",
+ "description": "Tells of a layout's routing: 'what' summary (the job, the run's state - running with its passes so far, or done -, routed and failed, vias, length, clean, the first findings, the last passes, time and memory), passes (the passes alone, as they come during a run), nets (each net's status, length, vias, why it failed), net (one net's runs as metal, x0, y0, x1, y1 in µm, its vias and its findings), findings (each with its kind - unroutable, open, short, spacing, pad, metal, obstacle, keep_out, via_spacing -, net, the other net or what it is too near, where, the distance measured and required and a box to look at), terminals (how each was read) or crowding (where more nets want through than fit, before a run).",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The layout, relative to the project (else the workspace), or its tab's title; the layout in front when not given"},
+   "what": {"type": "string", "enum": ["summary", "passes", "nets", "net", "findings", "terminals", "crowding"], "description": "What is told (summary)"},
+   "net": {"type": "string", "description": "With what net: the net"},
+   "max": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Items listed at most (50)"}}}},
+{"name": "route_commit",
+ "description": "Writes a layout's routes into a GDSII or OASIS file as a cell of their own (route_setup's route_cell, ROUTES), placed once in the cell routed: runs and via landings on their metals, cuts on the via layer. Committed again, the cell's contents are replaced and its one placement kept, so a later run replaces the routes cleanly; 'remove' takes the cell and its placements away. 'save_as' writes a copy (the layout read is left alone, and the job goes beside the copy); 'in_place' writes the layout itself. Refused while the check has findings (a net not routed among them), unless 'allow_findings' (the routed nets are written). The file is read back and its tab, when open, read again. gdstk writes the whole file anew.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The layout, relative to the project (else the workspace), or its tab's title; the layout in front when not given"},
+   "save_as": {"type": "string", "description": "The file written: a .gds or .oas, relative to the layout's folder"},
+   "in_place": {"type": "boolean", "description": "Write the layout itself"},
+   "cell": {"type": "string", "description": "The route cell's name, for this commit (route_setup's route_cell)"},
+   "nets": {"type": "array", "items": {"type": "string"}, "description": "The nets written; every routed one when not given"},
+   "allow_findings": {"type": "boolean", "description": "Commit though the check found something, or the job changed since the run"},
+   "remove": {"type": "boolean", "description": "Take the route cell and its placements away instead"}}}},
+{"name": "route_stop",
+ "description": "Stops a layout's routing run (route_run past its timeout, or the Route panel's Run) and waits up to 'timeout' seconds for it to end: it keeps the best pass so far. Returns how it stands, as route_report's summary.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The layout, relative to the project (else the workspace), or its tab's title; the layout in front when not given"},
+   "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds it is waited for (30)"}}}},
+{"name": "route_assign_pads",
+ "description": "Pairs nets' starts with pads by least total distance (the Hungarian algorithm on Manhattan distance): least-distance pairings cross little and route far more easily - on a chip of 200 nets measured, 18 times faster and a tenth of the vias. Among the pads the nets have now, or 'pads' given; 'fixed' keeps a net's pad. Returns each net's pad before and after and the total distance, as a proposal: pad order is often a system decision. 'apply' sets the job's pads so.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The layout, relative to the project (else the workspace), or its tab's title; the layout in front when not given"},
+   "nets": {"type": "array", "items": {"type": "string"}, "description": "The nets paired (each of one pad); all such when not given"},
+   "pads": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "The free pads [[x, y], ...] in µm; the nets' own pads when not given"},
+   "fixed": {"type": "object", "description": "Nets whose pads are kept: {\"net\": [x, y]}"},
+   "apply": {"type": "boolean", "description": "Set the job's pads as paired"}}}},
 {"name": "show_pdf",
  "description": "Shows a PDF in its tab - opened when it is not, brought to the front - where it is asked: 'page' a number (1 the first), a page's label as printed (\"iv\"; a number is the page's number in the file), or a destination of its outline (a section's title, or its start: \"2.2.1 Modulation\"); 'find' text (\"Figure 2.15:\"): every hit's page returned, the first shown and marked (a figure or a table named, not its page); 'zoom' a percentage (150) or \"fit width\" / \"fit page\"; 'region' [x1, y1, x2, y2] of the page shown as large as the tab takes it - in points from its top left, or as fractions of it (all four between 0 and 1: [0.5, 0, 1, 0.5] its top right quarter). Returns the page shown, the pages there are, the zoom, the hits. screenshot of the PDF then takes a picture of it; screenshot with 'page' and 'region' draws a page or a part without moving the tab.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"},
@@ -1190,7 +1244,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "read_pdf", "find_plots", "get_digitized", "read_pptx", "read_drawings", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
-                                 "find_shapes", "find_placements", "list_background_jobs", "get_background_job", "git_status", "git_diff", "git_log", "git_show", "git_blame",
+                                 "find_shapes", "find_placements", "route_report", "list_background_jobs", "get_background_job", "git_status", "git_diff", "git_log", "git_show", "git_blame",
                                  "fem_describe", "fem_evaluate", "fem_plot"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
@@ -1286,6 +1340,12 @@ const struct {
     {"get_layout", QT_TRANSLATE_NOOP("QucsControl", "Reads a GDSII or OASIS layout: its units, top cells, tree of cells and layers with their shape counts.")},
     {"find_shapes", QT_TRANSLATE_NOOP("QucsControl", "Finds the shapes and texts of a GDSII or OASIS layout at a point, in a region or on a layer, with their points in µm.")},
     {"find_placements", QT_TRANSLATE_NOOP("QucsControl", "Finds where a cell of a GDSII or OASIS layout is placed: each placement's origin, rotation, mirror and bounds in µm.")},
+    {"route_setup", QT_TRANSLATE_NOOP("QucsControl", "Sets up the metal router for a layout: technology, nets, keep-outs and guides; reads the terminals.")},
+    {"route_run", QT_TRANSLATE_NOOP("QucsControl", "Routes a layout's nets on its metals, in the background, and checks the routes drawn.")},
+    {"route_report", QT_TRANSLATE_NOOP("QucsControl", "Tells of a layout's routing: its passes, nets, findings and terminals.")},
+    {"route_commit", QT_TRANSLATE_NOOP("QucsControl", "Writes a layout's routes into the GDS as a cell of their own, replacing the last.")},
+    {"route_stop", QT_TRANSLATE_NOOP("QucsControl", "Stops a layout's routing run, keeping its best pass.")},
+    {"route_assign_pads", QT_TRANSLATE_NOOP("QucsControl", "Pairs nets' starts with pads by least total distance.")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "Shows a cell, a region or some layers of a GDSII or OASIS layout in its tab, for a screenshot.")},
     {"find_plots", QT_TRANSLATE_NOOP("QucsControl", "Finds the plots in a PDF: each one's page, box and axes as read from their labels.")},
     {"digitize_plot", QT_TRANSLATE_NOOP("QucsControl", "Reads the numbers off a plot in a PDF in one call: curves and markers in the axes' units, how far to trust them, and a picture to check them by.")},
@@ -1413,6 +1473,12 @@ const struct {
     {"get_layout", "gds gdsii oasis oas layout chip mask cells hierarchy layers database unit klayout"},
     {"find_shapes", "gds gdsii oasis layout polygon path shape text label at point region layer measure width coordinates search pin name"},
     {"find_placements", "gds gdsii oasis layout cell instance placement reference sref aref array where placed origin rotation mirror hierarchy"},
+    {"route_setup", "gds layout router routing metal wire interconnect net pad contact bond technology rules keep-out guide pen dc bias heater trace"},
+    {"route_run", "gds layout router routing route metal wires nets pads negotiate pathfinder astar congestion vias"},
+    {"route_report", "gds layout router routing report findings drc spacing open short unroutable passes congestion"},
+    {"route_commit", "gds layout router routing commit write cell save routes oasis"},
+    {"route_stop", "gds layout router routing stop cancel"},
+    {"route_assign_pads", "gds layout router routing pads assign pairing pin assignment hungarian least distance"},
     {"show_layout", "gds gdsii oasis layout view show cell region zoom layers hide depth hierarchy screenshot klayout grid select selection ruler measure distance colour color lyp theme dark reload"},
     {"show_pdf", "pdf page go to figure table find search zoom fit region outline bookmark destination thesis paper datasheet show scroll"},
     {"synthesize_filter", "filter synthesis design lowpass highpass bandpass bandstop chebyshev butterworth bessel elliptic cauer lc ladder active sallen key"},
@@ -4833,6 +4899,8 @@ int QucsControl::waitsFor(const QString& tool, const QJsonObject& arguments)
     if (tool == QLatin1String("fem_stop")) return std::clamp(given(30), 1, 600);
     if (tool == QLatin1String("rf25_solve") || tool == QLatin1String("rf25_inductance")) return std::clamp(given(300), 1, 3600);
     if (tool == QLatin1String("rf25_stop")) return std::clamp(given(30), 1, 600);
+    if (tool == QLatin1String("route_run")) return std::clamp(given(120), 1, 3600);
+    if (tool == QLatin1String("route_stop")) return std::clamp(given(30), 1, 600);
     // (The others that wait by themselves, by their defaults too - cut at a
     // caller's 30 s, "no answer in time": the hunt of 22 October, N3.)
     if (tool == QLatin1String("wait_for")) return std::clamp(given(60), 1, 3600);
@@ -5293,7 +5361,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("find_plots"), QStringLiteral("get_digitized"), QStringLiteral("read_pptx"), QStringLiteral("read_drawings"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
-        QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("find_placements"),
+        QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("find_placements"), QStringLiteral("route_report"),
         QStringLiteral("list_background_jobs"), QStringLiteral("get_background_job"), QStringLiteral("show_background_jobs"),
         QStringLiteral("git_status"),
         QStringLiteral("git_diff"), QStringLiteral("git_log"), QStringLiteral("git_show"), QStringLiteral("git_blame")};
@@ -5401,6 +5469,10 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("get_ui")) return getUi(args);
     if (tool == QLatin1String("rf25_solve")) return rf25Solve(args);
     if (tool == QLatin1String("rf25_stop")) return rf25Stop(args);
+    if (tool == QLatin1String("route_report")) return routeReport(args);
+    if (tool == QLatin1String("route_stop")) return routeStop(args);
+    if (tool == QLatin1String("route_commit")) return routeCommit(args);
+    if (tool == QLatin1String("route_assign_pads")) return routeAssignPads(args);
     if (tool == QLatin1String("rf25_export")) return rf25Export(args);
     if (tool == QLatin1String("rf25_circuit")) return rf25Circuit(args);
     if (tool == QLatin1String("rf25_inductance")) return rf25Inductance(args);
@@ -5525,6 +5597,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("find_shapes")) findShapes(args, done);
     else if (tool == QLatin1String("show_layout")) showLayout(args, done);
     else if (tool == QLatin1String("find_placements")) findPlacements(args, done);
+    else if (tool == QLatin1String("route_setup")) routeSetup(args, done);
+    else if (tool == QLatin1String("route_run")) routeRun(args, done);
     else if (tool == QLatin1String("git_commit")) gitCommit(args, done);
     else if (tool == QLatin1String("git_remote")) gitRemote(args, done);
     else if (tool == QLatin1String("git_clone")) gitClone(args, done);

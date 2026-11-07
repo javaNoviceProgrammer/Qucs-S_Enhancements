@@ -15,6 +15,7 @@
 #include "elidedlabel.h"
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
+#include "layoutrouterpanel.h"
 #include "layoutviewgpu.h"
 #endif
 #include "links.h"
@@ -126,7 +127,7 @@ constexpr int AllLevels = 100;   // the depth box's "all"
 class GlyphIcon : public QIconEngine
 {
 public:
-    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down };
+    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down, Route };
     explicit GlyphIcon(Kind kind) : a_kind(kind) {}
     QIconEngine* clone() const override { return new GlyphIcon(a_kind); }
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override
@@ -176,6 +177,12 @@ public:
                 p->drawLine(QPointF(at, 2), QPointF(at, 14));
                 p->drawLine(QPointF(2, at), QPointF(14, at));
             }
+            break;
+        case Route:
+            // Two pads joined by a line with a bend.
+            p->drawRect(QRectF(1.5, 1.5, 4, 4));
+            p->drawRect(QRectF(10.5, 10.5, 4, 4));
+            p->drawPolyline(QPolygonF{QPointF(5.5, 3.5), QPointF(12.5, 3.5), QPointF(12.5, 10.5)});
             break;
         case Search:
             p->drawEllipse(QPointF(7, 7), 4, 4);
@@ -1712,6 +1719,8 @@ void LayoutDoc::buildUi()
     a_labelsButton->setCheckable(true);
     a_gridButton = toolButton(a_toolbar, glyph(GlyphIcon::Grid), tr("Show the grid (G, or View > Show Grid)"));
     a_gridButton->setCheckable(true);
+    a_routeButton = toolButton(a_toolbar, glyph(GlyphIcon::Route), tr("Route: lines on the metals from contacts to pads, before they are written (the metal router)"));
+    a_routeButton->setCheckable(true);
     a_findButton = toolButton(a_toolbar, glyph(GlyphIcon::Search), tr("Find a cell"));
     a_menuButton = toolButton(a_toolbar, glyph(GlyphIcon::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
@@ -1783,6 +1792,7 @@ void LayoutDoc::buildUi()
     bar->addWidget(a_penButton);
     bar->addWidget(a_labelsButton);
     bar->addWidget(a_gridButton);
+    bar->addWidget(a_routeButton);
     bar->addStretch(1);
     bar->addWidget(a_findButton);
     bar->addWidget(a_menuButton);
@@ -1923,6 +1933,7 @@ void LayoutDoc::buildUi()
         QucsSettingsFile().setValue(QLatin1String(kLabelsKey), on);
     });
     connect(a_gridButton, &QToolButton::toggled, this, &LayoutDoc::setGridShown);
+    connect(a_routeButton, &QToolButton::toggled, this, &LayoutDoc::setRoutingShown);
     connect(a_view, &LayoutView::gridToggleRequested, this, [this] { setGridShown(!a_view->gridShown()); });
     connect(a_view, &LayoutView::colorsChanged, this, &LayoutDoc::updateSwatches);
     connect(a_fitButton, &QToolButton::clicked, this, [this] { a_view->fit(); });
@@ -2482,6 +2493,33 @@ void LayoutDoc::setGridStyle(LayoutView::GridStyle style)
 {
     QucsSettingsFile().setValue(QLatin1String(kGridStyleKey), nameOf(style));
     everyLayoutTab([style](LayoutDoc* doc) { doc->a_view->setGridStyle(style); });
+}
+
+void LayoutDoc::showRouting()
+{
+    a_routeButton->setChecked(true);   // (setRoutingShown makes it)
+    if (a_routerPanel) a_routerPanel->refresh();
+}
+
+void LayoutDoc::setRoutingShown(bool shown)
+{
+    if (shown && !a_routerPanel) {
+        a_routerPanel = new qucs_s::routing::RouterPanel(this, a_splitter);
+        a_splitter->addWidget(a_routerPanel);
+        QList<int> sizes = a_splitter->sizes();
+        if (sizes.size() == 3) {
+            const int panel = 300;
+            sizes[1] = std::max(200, sizes[1] - panel);
+            sizes[2] = panel;
+            a_splitter->setSizes(sizes);
+        }
+    }
+    if (a_routerPanel) {
+        a_routerPanel->setVisible(shown);
+        if (shown) a_routerPanel->refresh();
+        else a_view->setOverlays({});
+    }
+    if (a_routeButton->isChecked() != shown) a_routeButton->setChecked(shown);
 }
 
 void LayoutDoc::chooseLayerProperties()

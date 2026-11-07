@@ -41,6 +41,10 @@ class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 
+namespace qucs_s::routing {
+class RouterPanel;
+}
+
 namespace qucs_s::layout {
 
 class LayoutGpu;
@@ -467,6 +471,9 @@ public:
     QToolButton* gridButton() const { return a_gridButton; }
     QToolButton* labelsButton() const { return a_labelsButton; }
     qucs_s::markup::PenButton* penButton() const { return a_penButton; }
+    QToolButton* routeButton() const { return a_routeButton; }
+    /// The Route panel (layoutrouterpanel.h), made when first shown; null before.
+    qucs_s::routing::RouterPanel* routerPanel() const { return a_routerPanel; }
     QWidget* sidebar() const;
 
 public slots:
@@ -484,6 +491,10 @@ public slots:
     void processFlowFromRuler();
     void cancelLoading();
     void chooseLayerProperties();
+    /// The Route panel shown beside the layout (made the first time), its
+    /// session's job and last routes with it.
+    void showRouting();
+    void setRoutingShown(bool shown);
 
 signals:
     void loaded(bool ok);
@@ -536,6 +547,8 @@ private:
     qucs_s::markup::PenButton* a_penButton = nullptr;
     QToolButton* a_labelsButton = nullptr;
     QToolButton* a_gridButton = nullptr;
+    QToolButton* a_routeButton = nullptr;
+    qucs_s::routing::RouterPanel* a_routerPanel = nullptr;
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;
     QLabel* a_cellLabel = nullptr;
