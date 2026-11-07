@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(paneldriver LANGUAGES CXX OBJCXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+add_library(paneldriver SHARED paneldriver.mm)
+target_link_libraries(paneldriver Qt6::Widgets "-framework AppKit")
