@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "multiphysicsdoc.h"
+#include "multiphysicsoptimization.h"
 #include "elidedlabel.h"
 #include "fem_import.h"
 #include "fem_materials.h"
@@ -242,6 +243,11 @@ struct MultiphysicsDoc::Job {
     GeometryBuild geometry;
     std::shared_ptr<Solution> stepSolution;
     qint64 ms = 0;
+    // An optimization's: what it found, and (under its mutex) what it told
+    // since the window last looked.
+    OptimizationResult optimization;
+    std::vector<OptimizationRow> optimizationRows;
+    QStringList optimizationColumns, optimizationLines;
 
     Progress progress(double from, double to)
     {
@@ -372,6 +378,9 @@ void MultiphysicsDoc::buildUi()
     });
     connect(a_buildMesh, &QToolButton::clicked, this, &MultiphysicsDoc::buildMesh);
     connect(a_compute, &QToolButton::clicked, this, [this] { compute(); });
+    a_optimize = button(tr("Optimize"), tr("Run the first optimization of the model: a study solved again and again"), "mpOptimize");
+    connect(a_optimize, &QToolButton::clicked, this, [this] { optimize(a_shownOptimization); });
+    a_optimize->hide();
     row->addSpacing(10);
     row->addWidget(new QLabel(tr("Show:"), bar));
     a_showBox = new QComboBox(bar);
@@ -487,6 +496,20 @@ void MultiphysicsDoc::buildUi()
     a_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     a_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     a_bottom->addTab(a_table, tr("Table"));
+    a_optimizationPage = new OptimizationPage(a_bottom);
+    a_optimizationPage->hide();
+    connect(a_optimizationPage, &OptimizationPage::applyRequested, this, [this](int point) {
+        QString why;
+        const QString tag = a_shownOptimization;
+        QStringList written;
+        if (!applyOptimum(tag, point, &written, &why)) {
+            say(why, true);
+            return;
+        }
+        // (Solved there: the model as it now is, what the run said it would be.)
+        const Node* node = a_model.find(tag);
+        if (node) compute(node->text(QStringLiteral("study")));
+    });
     a_splitter->addWidget(a_view);
     a_splitter->addWidget(a_bottom);
     a_splitter->setStretchFactor(0, 5);
@@ -505,6 +528,7 @@ void MultiphysicsDoc::buildUi()
         // (The job's, else what is built in the background.)
         const std::shared_ptr<Job> job = a_job ? a_job : a_build;
         if (!job) return;
+        if (job == a_job && !a_jobOptimization.isEmpty()) takeOptimizationRows(*job);
         a_progress->setValue(int(job->fraction * 1000));
         QString stage;
         {
@@ -708,6 +732,7 @@ void MultiphysicsDoc::applyModel(const Model& model, bool read)
     if (read) contentRead();
     else edited();
     fillPlotBox();
+    updateOptimizationPage();
     emit modelChanged();
     updateState();
     updateHighlight();
@@ -1320,6 +1345,206 @@ void MultiphysicsDoc::compute(const QString& study)
     });
 }
 
+// ------------------------------------------------------------------ Optimization
+
+QString MultiphysicsDoc::optimizing() const
+{
+    return a_job ? a_jobOptimization : QString();
+}
+
+void MultiphysicsDoc::takeOptimizationRows(Job& job)
+{
+    std::vector<OptimizationRow> rows;
+    QStringList lines, columns;
+    {
+        std::lock_guard<std::mutex> lock(job.mutex);
+        rows.swap(job.optimizationRows);
+        lines.swap(job.optimizationLines);
+        columns = job.optimizationColumns;
+    }
+    for (const QString& line : std::as_const(lines)) say(line);
+    for (const OptimizationRow& row : rows) a_optimizationPage->addRow(row, columns);
+}
+
+void MultiphysicsDoc::optimize(const QString& tag)
+{
+    if (isBusy()) return;
+    const Node* found = optimizationNode(a_model, tag);
+    if (!found) {
+        a_lastError = tag.isEmpty() ? tr("The model has no optimization: add one (the model's menu).") : tr("There is no optimization %1.").arg(tag);
+        say(a_lastError, true);
+        emit stateChanged();
+        return;
+    }
+    const QString opt = found->tag;
+    // What cannot be run, said at once: no geometry built, no job.
+    QString why;
+    if (!optimizationPlan(a_model, *found, *parameters(), &why)) {
+        a_lastError = why;
+        say(why, true);
+        OptimizationResult failed;
+        failed.error = why;
+        a_shownOptimization = opt;
+        updateOptimizationPage();
+        a_optimizationPage->showResult(found->name(), failed, false);
+        a_pageShows = QJsonObject();
+        showOptimizationPage();
+        emit stateChanged();
+        return;
+    }
+    // (A process flow's geometry built first, in the background.)
+    if (a_geometryStale && (slowGeometry(a_model) || a_build)) {
+        a_lastError.clear();
+        say(tr("Running %1 once the geometry is built…").arg(found->name()));
+        requestGeometry([this, opt](bool built) {
+            if (built) return optimize(opt);
+            a_lastError = a_geometryStale ? tr("the geometry was not built: cancelled") : geometryError();
+            emit stateChanged();
+        });
+        return;
+    }
+    // (A geometry that does not build as the model stands is not the end of
+    // it: each candidate builds its own where its values shape it.)
+    if (a_geometryStale) {
+        QString ignored;
+        buildGeometry(&ignored);
+    }
+    say(tr("Running %1…").arg(found->name()));
+    a_shownOptimization = opt;
+    updateOptimizationPage();
+    a_optimizationPage->beginRun(found->name());
+    a_pageShows = QJsonObject();
+    showOptimizationPage();
+    a_jobMeshes = false;
+    a_jobStudy.clear();
+    a_jobOptimization = opt;
+    const bool built = a_geometry.ok();
+    startJob(tr("Optimizing"), [opt, built](Job& job) {
+        OptimizationListener listener;
+        listener.row = [&job](const OptimizationRow& row, const QStringList& columns) {
+            std::lock_guard<std::mutex> lock(job.mutex);
+            job.optimizationRows.push_back(row);
+            job.optimizationColumns = columns;
+        };
+        listener.line = [&job](const QString& line) {
+            std::lock_guard<std::mutex> lock(job.mutex);
+            job.optimizationLines << line;
+        };
+        job.optimization = runOptimization(job.model, opt, job.parameters, built ? job.topology : nullptr, built ? job.mesh : nullptr, job.progress(0, 1), listener);
+    }, [this, opt](Job& job) {
+        takeOptimizationRows(job);
+        a_jobOptimization.clear();
+        const OptimizationResult& result = job.optimization;
+        const Node* now = a_model.find(opt);
+        const QString name = now ? now->name() : opt;
+        if (!result.error.isEmpty()) {
+            a_lastError = result.error;
+            say(tr("%1 could not be run: %2").arg(name, result.error), true);
+            if (now) a_optimizationPage->showResult(name, result, false);
+            a_pageShows = QJsonObject();
+            return;
+        }
+        // Kept in its node, a step of Undo, saved with the model. (The run's own
+        // edit, as a schematic's optimum written into its block.)
+        if (now) {
+            const quint64 editor = QucsDoc::editor();
+            QucsDoc::setEditor(QucsDoc::kSimulation);
+            editNode(opt, [&result](Node& n) { n.props.insert(QStringLiteral("result"), result.toJson()); }, tr("Optimization Result"));
+            QucsDoc::setEditor(editor);
+        }
+        say(tr("%1: %2").arg(name, result.summary));
+        for (const QString& note : result.notes) say(note);
+        // (What is said of the best values, each in a line.)
+        QStringList best;
+        for (const OptimizationResult::Value& v : result.parameters) best << QStringLiteral("%1 = %2").arg(v.name, v.text);
+        if (!best.isEmpty()) say(tr("Best: %1").arg(best.join(QLatin1String(", "))));
+        updateOptimizationPage();
+        showOptimizationPage();
+    });
+}
+
+std::optional<OptimizationResult> MultiphysicsDoc::optimizationResult(const QString& tag) const
+{
+    const Node* node = optimizationNode(a_model, tag);
+    if (!node) return std::nullopt;
+    const QJsonValue kept = node->value(QStringLiteral("result"));
+    if (!kept.isObject() || kept.toObject().isEmpty()) return std::nullopt;
+    return OptimizationResult::fromJson(kept.toObject());
+}
+
+bool MultiphysicsDoc::optimizationStale(const QString& tag) const
+{
+    const Node* node = optimizationNode(a_model, tag);
+    if (!node) return false;
+    const std::optional<OptimizationResult> r = optimizationResult(node->tag);
+    return r && r->setup != optimizationSetup(a_model, *node);
+}
+
+bool MultiphysicsDoc::applyOptimum(const QString& tag, int point, QStringList* written, QString* error)
+{
+    QString local;
+    QString& why = error ? *error : local;
+    const Node* node = optimizationNode(a_model, tag);
+    if (!node) {
+        why = tag.isEmpty() ? tr("The model has no optimization.") : tr("There is no optimization %1.").arg(tag);
+        return false;
+    }
+    Model m = a_model;
+    QStringList said;
+    QString note;
+    if (!qucs_s::fem::applyOptimum(m, *m.find(node->tag), point, &said, &note)) {
+        why = note;
+        return false;
+    }
+    setModel(m, tr("Apply Optimum of %1").arg(node->name()));
+    say(tr("Written in: %1").arg(said.join(QLatin1String(", "))));
+    if (!note.isEmpty()) say(note);
+    if (written) *written = said;
+    return true;
+}
+
+void MultiphysicsDoc::showOptimizationPage()
+{
+    a_bottom->setCurrentWidget(a_optimizationPage);
+    // (Room for its tables: the pane's first height is for a line or two.)
+    const QList<int> sizes = a_splitter->sizes();
+    constexpr int room = 280;
+    if (sizes.size() == 2 && sizes[1] < room && sizes[0] + sizes[1] > 2 * room) a_splitter->setSizes({sizes[0] + sizes[1] - room, room});
+}
+
+void MultiphysicsDoc::updateOptimizationPage()
+{
+    const std::vector<const Node*> nodes = optimizationNodes(a_model);
+    // A tab of its own only where there is something to show.
+    const int at = a_bottom->indexOf(a_optimizationPage);
+    if (nodes.empty()) {
+        if (at >= 0) a_bottom->removeTab(at);
+        a_optimizationPage->hide();
+        a_shownOptimization.clear();
+        return;
+    }
+    if (at < 0) a_bottom->addTab(a_optimizationPage, tr("Optimization"));
+    const Node* shown = a_model.find(a_shownOptimization);
+    if (!shown || shown->type != QLatin1String("optimization")) {
+        shown = nodes.front();
+        a_shownOptimization = shown->tag;
+    }
+    // (A run under way shows its own, as it goes.)
+    if (!a_jobOptimization.isEmpty()) {
+        a_pageShows = QJsonObject();
+        return;
+    }
+    // (Every edit of the model comes by here: a long history's table drawn again
+    // only for a result, a name or an age of its own.)
+    const std::optional<OptimizationResult> r = optimizationResult(shown->tag);
+    const bool old = r && r->setup != optimizationSetup(a_model, *shown);
+    const QJsonObject now{{QStringLiteral("name"), shown->name()}, {QStringLiteral("old"), old}, {QStringLiteral("result"), shown->value(QStringLiteral("result"))}};
+    if (now == a_pageShows) return;
+    a_pageShows = now;
+    if (r) a_optimizationPage->showResult(shown->name(), *r, old);
+    else a_optimizationPage->showNothing(shown->name());
+}
+
 void MultiphysicsDoc::clearSolutions()
 {
     a_solutions.clear();
@@ -1645,6 +1870,8 @@ void MultiphysicsDoc::updateState()
     a_buildGeometry->setEnabled(!busy);
     a_buildMesh->setEnabled(!busy);
     a_compute->setEnabled(!busy);
+    a_optimize->setEnabled(!busy);
+    a_optimize->setVisible(a_model.root.children.end() != std::find_if(a_model.root.children.begin(), a_model.root.children.end(), [](const Node& n) { return n.type == QLatin1String("optimization"); }));
     QString banner;
     const QString shownStudy = a_plotGroup.isEmpty() ? QString() : [this] {
         const Node* g = a_model.find(a_plotGroup);
@@ -1986,6 +2213,10 @@ void MultiphysicsDoc::focusNode(const QString& tag)
             if (a_view->show() != GraphicsView::Show::Results) showGeometry();
             evaluate(tag);
             a_bottom->setCurrentWidget(a_table);
+        } else if (n->type == QLatin1String("optimization")) {
+            a_shownOptimization = tag;
+            updateOptimizationPage();
+            showOptimizationPage();
         } else if ((a_view->show() != GraphicsView::Show::Geometry || a_viewPartial)
                    && (group == QLatin1String("geometry") || group == QLatin1String("material") || group == QLatin1String("physics")
                        || group == QLatin1String("es") || group == QLatin1String("ec") || group == QLatin1String("ht")

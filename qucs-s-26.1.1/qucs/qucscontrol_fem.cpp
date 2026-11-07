@@ -15,6 +15,7 @@
 #include "qucscontrol_p.h"
 
 #include "fem_lumerical.h"
+#include "fem_optimize.h"
 #include "fem_material_plot.h"
 #include "fem_materials.h"
 #include "fem_process_results.h"
@@ -49,7 +50,16 @@ QJsonObject nodeJson(const FNode& n, int depth)
     QJsonObject o{{QStringLiteral("tag"), n.tag}, {QStringLiteral("type"), n.type}, {QStringLiteral("name"), n.name()}};
     if (!n.enabled) o.insert(QStringLiteral("enabled"), false);
     if (n.isDefault) o.insert(QStringLiteral("default"), true);
-    if (!n.props.isEmpty()) o.insert(QStringLiteral("props"), n.props);
+    if (!n.props.isEmpty()) {
+        QJsonObject props = n.props;
+        // (An optimization's last result by what it says, not its rows of
+        // history: fem_optimize action=result reads the rest.)
+        if (n.type == QLatin1String("optimization") && props.contains(QStringLiteral("result"))) {
+            props.remove(QStringLiteral("result"));
+            o.insert(QStringLiteral("last result"), OptimizationResult::fromJson(n.value(QStringLiteral("result")).toObject()).summary);
+        }
+        if (!props.isEmpty()) o.insert(QStringLiteral("props"), props);
+    }
     if (const NodeKind* k = n.kind(); k && k->property(QStringLiteral("selection"))) {
         const Level level = k->property(QStringLiteral("level")) ? levelOf(n.text(QStringLiteral("level"))) : k->selection;
         o.insert(QStringLiteral("selection is"), describeSelection(n.selection(), level));
@@ -235,6 +245,9 @@ QString formatText()
         "active, pf1.Nd, pf1.Na, pf1.I, pf1.x_In, the flow's tag their prefix), with \"sims\" its profile down x on a log axis "
         "(\"measured\": a SIMS CSV with it); fem_evaluate with \"step\" (and \"x\") its values there and down its column: pf1.xj, "
         "pf1.Rs, pf1.tox, pf1.dose_B. "
+        "An optimization: top-level \"optimizations\": [{\"type\": \"optimization\", \"tag\": \"opt1\", \"study\": \"std1\", \"method\": \"cmaes\", \"maxiter\": 50, "
+        "\"variables\": [[\"d\", \"\", \"0.2[mm]\", \"3[mm]\", \"LOG_DOUBLE\"]], \"objectives\": [[\"es.C11\", \"TARGET\", \"200[pF]\"], [\"ht.Tmax\", \"LE\", \"350[K]\"]]}] - parameters "
+        "varied in their ranges, each candidate a solve; fem_optimize runs it, its \"result\" kept in the node by the run. Its kind below lists what it takes.\n"
         "A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
         "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step - "
         "n_eff = β/k0 (epsilon_eff its square) and epsilon_eff_qs = C/C0; coupled lines: \"terminal\": \"1, 2\" and as many "
@@ -988,6 +1001,24 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         studies.append(so);
     }
     o.insert(QStringLiteral("studies"), studies);
+    // (Each optimization: what it last found - fem_optimize action=result has the rest.)
+    QJsonArray optimizations;
+    for (const FNode* n : optimizationNodes(m)) {
+        QJsonObject so{{QStringLiteral("tag"), n->tag}, {QStringLiteral("name"), n->name()}};
+        if (doc->optimizing() == n->tag) so.insert(QStringLiteral("running"), true);
+        if (const std::optional<OptimizationResult> r = doc->optimizationResult(n->tag)) {
+            if (!r->error.isEmpty()) so.insert(QStringLiteral("could not be run"), r->error);
+            else {
+                so.insert(QStringLiteral("status"), r->status);
+                so.insert(QStringLiteral("summary"), r->summary);
+            }
+            if (doc->optimizationStale(n->tag)) so.insert(QStringLiteral("changed since"), true);
+        } else {
+            so.insert(QStringLiteral("status"), tr("not run yet"));
+        }
+        optimizations.append(so);
+    }
+    if (!optimizations.isEmpty()) o.insert(QStringLiteral("optimizations"), optimizations);
     // (Building or solving: how far - the APD's review: "Solving Stationary"
     // alone for 42 minutes.)
     if (doc->isBusy()) o.insert(QStringLiteral("at work"), doc->jobProgress());
@@ -1101,7 +1132,7 @@ QStringList unknownModelKeysOf(const QJsonObject& model)
 {
     static const QStringList top{QStringLiteral("format"),     QStringLiteral("title"),      QStringLiteral("description"),
                                  QStringLiteral("parameters"), QStringLiteral("functions"),  QStringLiteral("components"),
-                                 QStringLiteral("studies"),    QStringLiteral("results")};
+                                 QStringLiteral("studies"),    QStringLiteral("optimizations"), QStringLiteral("results")};
     static const QStringList component{QStringLiteral("tag"),       QStringLiteral("label"),      QStringLiteral("unit"),
                                        QStringLiteral("thickness"), QStringLiteral("space"),      QStringLiteral("selections"),
                                        QStringLiteral("geometry"),  QStringLiteral("materials"),  QStringLiteral("physics"),
@@ -2184,6 +2215,171 @@ QJsonArray valuesAgainst(const QJsonArray& values, const QJsonObject& reference,
 }
 
 } // namespace
+
+void QucsControl::femOptimize(const QJsonObject& args, const Done& given)
+{
+    QString error;
+    if (fem3DocumentFor(args, &error) != nullptr || !error.isEmpty())
+        return given(errorResult(error.isEmpty() ? tr("fem_optimize optimizes 2D models alone yet.") : error));
+    MultiphysicsDoc* doc = femDocument(args, &error);
+    if (doc == nullptr) return given(errorResult(error));
+    const QString action = args.value(QLatin1String("action")).toString(QStringLiteral("run")).trimmed();
+    if (action != QLatin1String("run") && action != QLatin1String("result") && action != QLatin1String("apply"))
+        return given(errorResult(tr("'action' is run, result or apply, not \"%1\".").arg(action)));
+    if (args.contains(QLatin1String("point")) && args.value(QLatin1String("point")).toInt(0) < 1)
+        return given(errorResult(tr("'point' is a design of a Pareto front, from 1.")));
+    if (args.contains(QLatin1String("history")) && args.value(QLatin1String("history")).toInt(-2) < -1)
+        return given(errorResult(tr("'history' is how many of its last rows: 0 none, -1 all it kept.")));
+    if (args.contains(QLatin1String("timeout")) && args.value(QLatin1String("timeout")).toDouble(-1) < 1)
+        return given(errorResult(tr("'timeout' is how many seconds it is waited for, 1 or more (600 when not given).")));
+    const QString tag = args.value(QLatin1String("optimization")).toString().trimmed();
+    const FNode* node = optimizationNode(doc->model(), tag);
+    if (node == nullptr) {
+        QStringList tags;
+        for (const FNode* n : optimizationNodes(doc->model())) tags << n->tag;
+        return given(errorResult(tags.isEmpty() ? tr("The model has no optimization: fem_edit adds one (type optimization, parent model; fem_describe what=format lists what it takes).")
+                                                : tr("There is no optimization %1: the model has %2.").arg(tag, tags.join(QStringLiteral(", ")))));
+    }
+    const QString found = node->tag;
+    if (action == QLatin1String("result")) return given(femOptimized(doc, args, found));
+    const int point = args.value(QLatin1String("point")).toInt(0);
+    const auto apply = [this, doc, found, point, args]() {
+        QStringList written;
+        QString why;
+        if (!doc->applyOptimum(found, point, &written, &why)) return errorResult(why);
+        return jsonResult(QJsonObject{{QStringLiteral("written in"), QJsonArray::fromStringList(written)},
+                                      {QStringLiteral("note"), why.isEmpty() ? tr("One step of Undo. fem_solve solves the model there.") : why}});
+    };
+    if (action == QLatin1String("apply")) {
+        if (doc->isBusy()) return given(errorResult(tr("It is busy building or solving; fem_optimize action=apply in a while.")));
+        return given(apply());
+    }
+    const int timeout = waitsFor(QStringLiteral("fem_optimize"), args);
+    QPointer<MultiphysicsDoc> d(doc);
+    auto begun = std::make_shared<int>(0);   // 1: its run begun, -1: cancelled first
+    const int stop = stoppable(running(), [d, begun] {
+        if (*begun == 1 && d) d->cancelJob();
+        else *begun = -1;
+    });
+    const Done done = [this, stop, given](const QJsonObject& r) {
+        stopped(stop);
+        given(r);
+    };
+    const bool applyAfter = args.value(QLatin1String("apply_optimum")).toBool();
+    const quint64 caller = a_callers.isEmpty() ? 0 : a_callers.last();
+    const auto run = [this, d, found, timeout, args, done, begun, applyAfter, point, caller] {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (*begun == -1) return done(errorResult(tr("Cancelled by the client before it began.")));
+        *begun = 1;
+        d->optimize(found);
+        // (Not begun: what cannot be run, said at once.)
+        d->whenJobEnds(timeout * 1000, [this, d, found, timeout, args, done, applyAfter, point, caller](bool ended) {
+            if (!d) return done(errorResult(tr("The model was closed.")));
+            if (!ended)
+                return done(errorResult(tr("Still optimizing after %1 s, %2: it goes on (fem_describe says how far; fem_stop stops it with the best point so far; fem_optimize action=result reads it once it has ended).")
+                                            .arg(timeout)
+                                            .arg(d->jobProgress())));
+            if (!d->lastError().isEmpty()) return done(errorResult(d->lastError()));
+            QJsonObject answer = femOptimized(d, args, found);
+            if (applyAfter) {
+                QStringList written;
+                QString why;
+                // (Written in for its caller, who asked: its edit.)
+                const quint64 editor = QucsDoc::editor();
+                QucsDoc::setEditor(caller);
+                const bool ok = d->applyOptimum(found, point, &written, &why);
+                QucsDoc::setEditor(editor);
+                QJsonDocument parsed = QJsonDocument::fromJson(answer.value(QStringLiteral("content")).toArray().first().toObject().value(QStringLiteral("text")).toString().toUtf8());
+                QJsonObject o = parsed.object();
+                if (ok) {
+                    o.insert(QStringLiteral("written in"), QJsonArray::fromStringList(written));
+                    if (!why.isEmpty()) o.insert(QStringLiteral("note"), why);
+                } else {
+                    o.insert(QStringLiteral("not written in"), why);
+                }
+                answer = jsonResult(o);
+            }
+            done(answer);
+        });
+    };
+    if (!doc->isBusy()) return run();
+    const quint64 stops = doc->stops();
+    doc->whenJobEnds(1000, [this, d, done, run, stops](bool ended) {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (!ended) return done(errorResult(tr("It is busy building or solving; fem_optimize again in a while.")));
+        if (d->stops() != stops) return done(errorResult(tr("Not run: the work it waited behind was stopped (fem_stop, Cancel), and a stop stops what waits for it too; fem_optimize again to run it.")));
+        run();
+    });
+}
+
+QJsonObject QucsControl::femOptimized(MultiphysicsDoc* doc, const QJsonObject& args, const QString& tag)
+{
+    const std::optional<OptimizationResult> kept = doc->optimizationResult(tag);
+    if (!kept) return errorResult(tr("%1 has not been run: fem_optimize runs it.").arg(tag));
+    const OptimizationResult& r = *kept;
+    if (!r.error.isEmpty()) return errorResult(r.error);
+    QJsonObject o{{QStringLiteral("optimization"), tag},
+                  {QStringLiteral("method"), r.method},
+                  {QStringLiteral("status"), r.status},
+                  {QStringLiteral("summary"), r.summary},
+                  {QStringLiteral("evaluations"), r.evaluations},
+                  {QStringLiteral("solves"), r.solves},
+                  {QStringLiteral("failed"), r.failed},
+                  {QStringLiteral("seconds"), r.seconds}};
+    if (doc->optimizationStale(tag)) o.insert(QStringLiteral("changed since"), tr("The model changed since this run: run it again to see it as it is."));
+    if (!r.feasible) o.insert(QStringLiteral("feasible"), false);
+    auto values = [](const QList<OptimizationResult::Value>& list) {
+        QJsonArray a;
+        for (const OptimizationResult::Value& v : list) {
+            QJsonObject one{{QStringLiteral("name"), v.name}};
+            insertValue(&one, v.text, v.value);
+            a.append(one);
+        }
+        return a;
+    };
+    if (!r.parameters.isEmpty()) o.insert(QStringLiteral("best"), values(r.parameters));
+    if (!r.measured.isEmpty()) o.insert(QStringLiteral("objectives there"), values(r.measured));
+    if (std::isfinite(r.yield)) o.insert(QStringLiteral("yield"), r.yield);
+    if (std::isfinite(r.cpk)) o.insert(QStringLiteral("worst Cpk"), r.cpk);
+    if (!r.constraints.isEmpty()) o.insert(QStringLiteral("limits"), QJsonArray::fromStringList(r.constraints));
+    if (!r.notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(r.notes));
+    if (!r.search.isEmpty()) o.insert(QStringLiteral("search"), QJsonArray::fromStringList(r.search));
+    if (!r.front.empty()) {
+        QJsonArray designs;
+        const int parameters = int(r.columns.size()) - int(r.kinds.size());
+        int number = 0;
+        for (const OptimizationResult::FrontPoint& p : r.front) {
+            QJsonObject values_, measured;
+            for (int i = 0; i < parameters && std::size_t(i) < p.values.size(); ++i) values_.insert(r.columns.at(i), p.values[std::size_t(i)]);
+            for (int i = 0; i < int(r.kinds.size()) && std::size_t(i) < p.measured.size(); ++i)
+                if (std::isfinite(p.measured[std::size_t(i)])) measured.insert(r.columns.value(parameters + i), p.measured[std::size_t(i)]);
+            designs.append(QJsonObject{{QStringLiteral("point"), ++number}, {QStringLiteral("values"), values_}, {QStringLiteral("objectives"), measured}});
+        }
+        o.insert(QStringLiteral("Pareto front"), designs);
+    }
+    const int rows = args.value(QLatin1String("history")).toInt(20);
+    if (rows != 0 && !r.history.empty()) {
+        QJsonArray lines;
+        const std::size_t from = rows < 0 || std::size_t(rows) >= r.history.size() ? 0 : r.history.size() - std::size_t(rows);
+        for (std::size_t i = from; i < r.history.size(); ++i) {
+            const OptimizationRow& row = r.history[i];
+            QJsonArray cells{row.index};
+            for (double v : row.values) cells.append(std::isfinite(v) ? QJsonValue(v) : QJsonValue());
+            for (double v : row.measured) cells.append(std::isfinite(v) ? QJsonValue(v) : QJsonValue());
+            cells.append(std::isfinite(row.cost) ? QJsonValue(row.cost) : QJsonValue());
+            cells.append(row.best);
+            if (!row.why.isEmpty()) cells.append(row.why.section(QLatin1Char('\n'), 0, 0).left(200));
+            lines.append(cells);
+        }
+        QStringList columns{tr("solve")};
+        columns << r.columns << tr("cost") << tr("best so far");
+        o.insert(QStringLiteral("history"), QJsonObject{{QStringLiteral("columns"), QJsonArray::fromStringList(columns)},
+                                                        {QStringLiteral("rows"), lines},
+                                                        {QStringLiteral("kept"), int(r.history.size())}});
+    }
+    if (r.canApply() && r.front.empty()) o.insert(QStringLiteral("applied"), tr("no: fem_optimize action=apply writes it into the parameters (one step of Undo)."));
+    return jsonResult(o);
+}
 
 QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
 {

@@ -1,0 +1,92 @@
+caught  Nelder-Mead expands by less (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheConstraint(nm) 'std::abs(out.evaluations + 1 - evaluations) <= 3' returned FALSE. (converged | converged | cost 0
+caught  Nelder-Mead takes the worst vertex for the best (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(nm) 'std::abs(r1Of(out.best[0]) - r1) < 0.5 * 1e-2 * r1' returned FALSE. (maxiter | stopped at 100 iter
+missed  Levenberg-Marquardt never lowers lambda (test_optimizer_core) -> a test added; run again:
+  caught  Levenberg-Marquardt never lowers lambda (test_optimizer_core): FAIL!  : TestOptimizerCore::aFitAlongACurvedValley() 'out.cost < 1e-12' returned FALSE. (maxiter | stopped at 100 iterations - NOT converged | cost 0.
+missed  a backward difference with the wrong sign (test_optimizer_core) -> a test added; run again:
+  caught  a backward difference with the wrong sign (test_optimizer_core): FAIL!  : TestOptimizerCore::aFitFromItsUpperBound(lm) 'std::abs(out.best[0] - 0.3) < 1e-4 && std::abs(out.best[1] - 0.6) < 1e-4' returned FALSE. (conv
+missed  a swarm without its own best (test_optimizer_core) -> a test added; run again:
+  caught  a swarm without its own best (test_optimizer_core): FAIL!  : TestOptimizerCore::aSwarmKeepsItsOwnBest() 'sum / 40 < 8.25' returned FALSE. (9.89275)
+caught  annealing without its moves per level (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(sa) 'std::abs(out.evaluations + 1 - evaluations) <= std::max(2, evaluations / 10)' returned FALSE. (com
+caught  annealing never climbs (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(sa) 'std::abs(out.cost - cost) < 1e-5 * cost' returned FALSE. (completed | cooling schedule complete (1
+caught  the trust region never grows (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheConstraint(tr) 'std::abs(out.evaluations + 1 - evaluations) <= 3' returned FALSE. (converged | converged | cost 0
+caught  the trust region's model ignores its curvature (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(tr) 'std::abs(out.evaluations + 1 - evaluations) <= std::max(2, evaluations / 10)' returned FALSE. (con
+caught  CMA-ES without its step size (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(cmaes) 'std::abs(out.evaluations + 1 - evaluations) <= std::max(2, evaluations / 10)' returned FALSE. (
+caught  CMA-ES recombines the worst (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(cmaes) 'std::abs(r1Of(out.best[0]) - r1) < 0.5 * 1e-2 * r1' returned FALSE. (converged | converged | co
+missed  the surrogate's improvement of another sign (test_optimizer_core) -> a test added; run again:
+  caught  the surrogate's improvement of another sign (test_optimizer_core): FAIL!  : TestOptimizerCore::theSurrogateLooksWhereItExpectsBetter() 'sum / 10 < 0.08' returned FALSE. (0.20037)
+caught  Bayes hands nothing to the local method (test_optimizer_core): FAIL!  : TestOptimizerCore::portAgainstNgspice(bayes) 'std::abs(r1Of(out.best[0]) - r1) < 0.5 * 1e-2 * r1' returned FALSE. (converged | converged | co
+caught  NSGA-II without crowding (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheParetoFront() Compared values are not the same
+caught  NSGA-II without mutation (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheParetoFront() Compared values are not the same
+missed  NSGA-II's front of the lower ranks too (test_optimizer_core) -> a test added; run again:
+  caught  NSGA-II's front of the lower ranks too (test_optimizer_core): FAIL!  : TestOptimizerCore::anEarlyFrontHoldsOnlyItsFirstRank() '!out.front.empty() && out.front.size() < 40' returned FALSE. (completed | run complet
+caught  NSGA-II ignores limits (test_optimizer_core): FAIL!  : TestOptimizerCore::aParetoFrontUnderAConstraint() 'd.x[0] <= 0.5 * (1 + 1e-4)' returned FALSE. (0.594261)
+caught  differential evolution without its stagnation (test_optimizer_core): FAIL!  : TestOptimizerCore::differentialEvolutionsTenVariants() Compared values are not the same
+missed  the DE variants all one (test_fem_optimize) -> a test added; run again:
+  caught  the DE variants all one (test_optimizer_core): FAIL!  : TestOptimizerCore::eachDifferentialEvolutionSearchesItsOwnWay() 'other != e.asked' returned FALSE. (2)
+caught  the multipliers not updated (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheConstraint(nm) Compared values are not the same
+caught  the first penalty not balanced (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheConstraint(nm) 'std::abs(out.evaluations + 1 - evaluations) <= 3' returned FALSE. (converged | converged | cost 0
+caught  a limit counted by its raw miss (test_fem_optimize): FAIL!  : TestFemOptimize::theShippedExample(as it is) 'std::abs(value(r, QStringLiteral("w")) - w) < tolerance * w' returned FALSE. (w 0.00503923 of 0
+caught  the best not feasible first (test_fem_optimize): FAIL!  : TestFemOptimize::limitsAreHeld(tr) 'std::abs(value(r, QStringLiteral("w")) - 4e-3) < tolerance * 4e-3' returned FALSE. (w 0.0016: error [] st
+caught  a stop not heard (test_optimizer_core): FAIL!  : TestOptimizerCore::stopped(nm) Compared values are not the same
+missed  more starts with all the iterations (test_optimizer_core) -> a test added; run again:
+  caught  more starts with all the iterations (test_optimizer_core): FAIL!  : TestOptimizerCore::startsShareTheIterations(sa, 1) 'several < alone + alone / 2' returned FALSE. (973 alone, 1952 with its starts)
+caught  the polish by another method (test_optimizer_core): FAIL!  : TestOptimizerCore::portOfTheStarts() 'std::abs(out.evaluations + 1 - 126) <= 6' returned FALSE. (converged | converged | cost 1.3411e-15 | 13
+caught  a failed start ends a local method (test_optimizer_core): FAIL!  : TestOptimizerCore::notANumberIsAFailure() 'std::abs(out.best[0] - 0.3) < 1e-2' returned FALSE. (nosolve | NO SOLUTION - no evaluation solved
+caught  a failure counted as a success (test_optimizer_core): FAIL!  : TestOptimizerCore::notANumberIsAFailure() 'out.failed > 0' returned FALSE. (maxiter | stopped at 100 iterations - NOT converged | cost nan |
+caught  false position without Illinois (test_optimizer_core): FAIL!  : TestOptimizerCore::falsePosition() 'out.evaluations <= 25' returned FALSE. (converged | converged | cost 5.4169e-13 | 34 evaluations)
+caught  Broyden without its update (test_optimizer_core): FAIL!  : TestOptimizerCore::broyden() Compared values are not the same
+caught  an end that fails not searched past (test_optimizer_core): FAIL!  : TestOptimizerCore::falsePositionFailedEnd() Compared values are not the same
+caught  an objective that never moved called converged (test_optimizer_core): FAIL!  : TestOptimizerCore::anObjectiveThatNeverMoves() Compared values are not the same
+caught  a log range read as a line (test_fem_optimize): FAIL!  : TestFemOptimize::everyMethodFindsTheGap(automatic) 'std::abs(value(r, QStringLiteral("d")) - exact) < tolerance * exact' returned FALSE. (d 0
+caught  the candidate's values not in the model (test_fem_optimize): FAIL!  : TestFemOptimize::everyMethodFindsTheGap(automatic) 'std::abs(value(r, QStringLiteral("d")) - exact) < tolerance * exact' returned FALSE. (d 0
+caught  a sweep's points read without the candidate (test_fem_optimize): FAIL!  : TestFemOptimize::aSweepCountsByItsWorst() 'std::abs(value(material, QStringLiteral("er")) - er) < 1e-3 * er' returned FALSE. (er 4 of 2.82352
+caught  every candidate on the first mesh (test_fem_optimize): FAIL!  : TestFemOptimize::everyMethodFindsTheGap(automatic) 'std::abs(value(r, QStringLiteral("d")) - exact) < tolerance * exact' returned FALSE. (d 0
+caught  a row's worst as its last (test_fem_optimize): FAIL!  : TestFemOptimize::aSweepCountsByItsWorst() 'std::abs(row.measured.at(0) - 0.5 * C * 9) < 1e-6 * C' returned FALSE. (2.83334e-10 for 6.37502e-1
+caught  Over last read as worst (test_fem_optimize): FAIL!  : TestFemOptimize::aSweepCountsByItsWorst() 'std::abs(row.measured.at(1) - 0.5 * C * 4) < 1e-6 * C' returned FALSE. (6.37502e-10 for 2.83334e-1
+caught  a row's study not read (test_fem_optimize): FAIL!  : TestFemOptimize::anotherStudysValues() 'std::abs(value(r, QStringLiteral("d")) - exact) < 1e-3 * exact' returned FALSE. (error [] status maxi
+caught  a target's miss not relative (test_fem_optimize): FAIL!  : TestFemOptimize::everyMethodFindsTheGap(automatic) 'std::abs(value(r, QStringLiteral("d")) - exact) < tolerance * exact' returned FALSE. (d 0
+caught  weights ignored (test_fem_optimize): FAIL!  : TestFemOptimize::severalObjectivesAreWeighed() 'std::abs(value(r, QStringLiteral("w")) - 4e-3) < 1e-3 * 4e-3' returned FALSE. (w 0.002: error
+caught  MAX as MIN (test_fem_optimize): FAIL!  : TestFemOptimize::severalObjectivesAreWeighed() 'std::abs(value(m, QStringLiteral("w")) - 4e-3) < 1e-3 * 4e-3' returned FALSE. (error [] statu
+caught  a penalty that costs nothing (test_fem_optimize): FAIL!  : TestFemOptimize::penaltiesAsAComponentsGoals() 'std::abs(value(r, QStringLiteral("w")) - 4e-3) < 0.03 * 4e-3' returned FALSE. (w 0.001: error
+caught  a limits-only run does not stop (test_fem_optimize): FAIL!  : TestFemOptimize::aFeasibilityProblemEndsOnceMet() Compared values are not the same
+caught  Cpk from the wrong side (test_fem_optimize): FAIL!  : TestFemOptimize::designCentering() 'std::abs(value(r, QStringLiteral("d")) - exact) < 0.02 * exact' returned FALSE. (d 0.002 of 0.00101191: e
+caught  a yield that counts nothing (test_fem_optimize): FAIL!  : TestFemOptimize::designCentering() 'std::abs(r.yield - 1.0) < 0.1' returned FALSE. (error [] status converged: centering converged - worst-ca
+caught  a spread not applied (test_fem_optimize): FAIL!  : TestFemOptimize::designCentering() 'std::abs(r.cpk - cpk) < 0.25 * cpk' returned FALSE. (Cpk 3.71944e+06 of 2.38095: error [] status converge
+caught  solved again each time (test_fem_optimize): FAIL!  : TestFemOptimize::aFeasibilityProblemEndsOnceMet() 'met.solves == 1' returned FALSE. (error [] status converged: converged, objective = 0 afte
+caught  solves at once given back in another order (test_fem_optimize): FAIL!  : TestFemOptimize::theSameOnAnyNumberOfSolves() Compared values are not the same
+caught  what the results lack not fatal (test_fem_optimize): FAIL!  : TestFemOptimize::whatTheResultsLackEndsTheRun() 'r.error.contains(QStringLiteral("es.nosuch"))' returned FALSE. (error [] status nosolve: NO
+caught  why it did not solve not said (test_fem_optimize): FAIL!  : TestFemOptimize::aFailedSolveDuringARun() 'told' returned FALSE. (error [] status converged: converged, sum-sq residual = 3.24939e-15 (rms 5.
+caught  the maximum may be below the minimum (test_fem_optimize): FAIL!  : TestFemOptimize::badSetups(minimum above maximum) 'r.error.contains(says)' returned FALSE. (error [] status converged: converged, objective =
+caught  a bare number as a length (test_fem_optimize): FAIL!  : TestFemOptimize::badSetups(no unit) 'r.error.contains(says)' returned FALSE. (error [] status converged: converged, objective = 0.5 after 44
+caught  an unknown method runs (test_fem_optimize): FAIL!  : TestFemOptimize::badSetups(no such method) 'r.error.contains(says)' returned FALSE. (error [] status converged: converged, objective = 0.3333
+caught  lm without targets runs (test_fem_optimize): FAIL!  : TestFemOptimize::badSetups(lm without targets) 'r.error.contains(says)' returned FALSE. (error [] status converged: converged, objective = 0.
+caught  the unit of what is written in (test_fem_optimize): FAIL!  : TestFemOptimize::theOptimumIsWrittenIn() 'expression.endsWith(QStringLiteral("[mm]"))' returned FALSE. (0.00070833431222708991[m])
+caught  a front written in without a design (test_fem_optimize): exit -10
+caught  what could not be met written in (test_fem_optimize): FAIL!  : TestFemOptimize::limitsAreHeld(tr) '!no.canApply(&why)' returned FALSE. ()
+caught  the file's rows without those that improved (test_fem_optimize): FAIL!  : TestFemOptimize::aLongHistoryIsCutInTheFile() Compared values are not the same
+missed  a row of too few cells read (test_fem_optimize) -> a test added; run again:
+  caught  a row of too few cells read (test_fem_optimize): exit -11
+caught  the setup of the varied parameters too (test_fem_optimize): FAIL!  : TestFemOptimize::theSetupTellsAnOldResult() Compared values are not the same
+caught  the setup with its result (test_fem_optimize): FAIL!  : TestFemOptimize::theSetupTellsAnOldResult() Compared values are not the same
+caught  the section not written (test_fem_optimize): FAIL!  : TestFemOptimize::oldFilesHaveNoSection() Compared values are not the same
+caught  the section written where there is none (test_fem_optimize): FAIL!  : TestFemOptimize::oldFilesHaveNoSection() Compared values are not the same
+caught  the section not read (test_fem_optimize): FAIL!  : TestFemOptimize::everyMethodFindsTheGap(automatic) 'r.error.isEmpty()' returned FALSE. (error [there is no optimization opt1] status : ; note
+caught  what it found not kept (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::runsInTheBackground() 'r' returned FALSE. ()
+caught  a run's rows not shown as it goes (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::cancelKeepsTheBest() Received a fatal error.
+caught  a Cancel not heard (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::cancelKeepsTheBest() 'doc->waitForJob(jobWait())' returned FALSE. ()
+caught  a bad setup started (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::aBadSetupIsSaidAtOnce() '!doc->isBusy()' returned FALSE. ()
+caught  Apply not a step of Undo (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::theOptimumIsAppliedAndSolved() Compared values are not the same
+caught  Apply does not compute (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::theOptimumIsAppliedAndSolved() 'doc->solution()' returned FALSE. ()
+caught  the page not told of a change (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::addedFromTheTree() Compared values are not the same
+caught  the button always there (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::noOptimizationNoTab() 'doc->optimizeButton()->isHidden()' returned FALSE. ()
+caught  a box's value not collected (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::addedFromTheTree() Compared values are not the same
+caught  no boxes in a table (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::addedFromTheTree() 'type' returned FALSE. ()
+caught  a row without its unit (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::addedFromTheTree() Compared values are not the same
+caught  Apply enabled for what cannot be (test_multiphysics_optimize): exit -11
+caught  a front chosen from nothing (test_multiphysics_optimize): exit -11
+caught  fem_describe gives the history (test_multiphysics_optimize): exit -11
+caught  a whole model's section refused (test_multiphysics_optimize): exit -11
+caught  apply_optimum not read (test_multiphysics_optimize): FAIL!  : TestMultiphysicsOptimize::runsInTheBackground() Compared values are not the same
+caught  a run past its time said as done (test_multiphysics_optimize): exit -11
+caught  a 3D model let through (test_multiphysics_optimize): exit -11
+75 caught and 8 missed of 83 at first; each of the 8 given a test and caught on the second run: 83 of 83.

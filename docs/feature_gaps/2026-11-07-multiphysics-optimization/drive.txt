@@ -1,0 +1,41 @@
+False
+parameters: [('w', '3 mm'), ('h', '1.6 mm'), ('t', '35 µm'), ('box', '48 mm')]
+microstrip w for 50 ohm, tune (opt1): converged, 9 evaluations, 9 solves, 0 failed, 0.69 s
+  best: w = 3.02807 mm
+  there: lp1.Z0 = 50.0036 Ω
+microstrip w for 50 ohm, lm (opt2): converged, 7 evaluations, 7 solves, 0 failed, 0.28 s
+  best: w = 3.02844 mm
+  there: lp1.Z0 = 50 Ω
+microstrip w for 50 ohm, tr (opt3): converged, 9 evaluations, 9 solves, 0 failed, 0.35 s
+  best: w = 3.02844 mm
+  there: lp1.Z0 = 50 Ω
+microstrip w for 50 ohm, bayes (opt4): converged, 24 evaluations, 23 solves, 0 failed, 0.92 s
+  best: w = 3.02844 mm
+  there: lp1.Z0 = 50 Ω
+apply: {'note': 'One step of Undo. fem_solve solves the model there.', 'written in': ['w = 3.02807287762[mm]']}
+solved there: [{'name': 'Line Parameters', 'tag': 'lp1', 'values': {'C': '121.6 pF/m', 'C0': '36.61 pF/m', 'L': '304 nH/m', 'Z0': '50 Ω', 'epsilon_eff': '3.321', 'n_eff': '1.822', 'v': '164.5 Mm/s'}}]
+False
+False
+coax a for 100 pF, tune (closed form 0.46635 mm): converged, 11 evaluations, 11 solves, 0 failed, 0.11 s
+  best: a = 466.306 µm
+  there: es.C11 = 99.9927 pF
+coax a for 100 pF, cmaes (closed form 0.46635 mm): converged, 57 evaluations, 56 solves, 0 failed, 0.56 s
+  best: a = 466.346 µm
+  there: es.C11 = 100 pF
+coax a for 100 pF, nm (closed form 0.46635 mm): converged, 22 evaluations, 20 solves, 0 failed, 0.20 s
+  best: a = 466.309 µm
+  there: es.C11 = 99.9931 pF
+False
+resistor Pareto front: completed, 84 evaluations, 78 solves, 0 failed, 1.15 s
+   1 {'L': 0.001651, 'V0': 0.9972} {'ec.P': 5.982, 'ht.Tmax': 426.4}
+   2 {'L': 0.001793, 'V0': 1.0} {'ec.P': 5.542, 'ht.Tmax': 409.3}
+   3 {'L': 0.002158, 'V0': 1.0} {'ec.P': 4.609, 'ht.Tmax': 377.1}
+   4 {'L': 0.002175, 'V0': 1.0} {'ec.P': 4.575, 'ht.Tmax': 376.0}
+   5 {'L': 0.002334, 'V0': 0.9794} {'ec.P': 4.09, 'ht.Tmax': 363.6}
+   6 {'L': 0.002334, 'V0': 0.9263} {'ec.P': 3.659, 'ht.Tmax': 356.7}
+   7 {'L': 0.002818, 'V0': 0.9322} {'ec.P': 3.071, 'ht.Tmax': 339.6}
+   8 {'L': 0.00272, 'V0': 0.8537} {'ec.P': 2.668, 'ht.Tmax': 335.3}
+   9 {'L': 0.003502, 'V0': 0.7823} {'ec.P': 1.742, 'ht.Tmax': 317.3}
+   10 {'L': 0.003255, 'V0': 0.5675} {'ec.P': 0.9858, 'ht.Tmax': 309.8}
+   11 {'L': 0.003379, 'V0': 0.3357} {'ec.P': 0.3325, 'ht.Tmax': 301.9}
+   12 {'L': 0.003349, 'V0': 0.2365} {'ec.P': 0.1664, 'ht.Tmax': 300.1}

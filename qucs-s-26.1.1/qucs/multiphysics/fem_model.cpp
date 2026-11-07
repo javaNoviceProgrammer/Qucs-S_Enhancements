@@ -9,6 +9,8 @@
  * (at your option) any later version.
  */
 #include "fem_model.h"
+
+#include "optimizer_core.h"
 #include "fem_process.h"
 
 #include <QCoreApplication>
@@ -234,7 +236,7 @@ QList<NodeKind> makeKinds()
     // The tree's own parts.
     add({QStringLiteral("model"), tr("Model"), QString(), QStringLiteral("model"), Level::None,
          {text(QStringLiteral("description"), tr("Description"), QString())},
-         {QStringLiteral("study")}, {}, true, true, QString(), QString()});
+         {QStringLiteral("study"), QStringLiteral("optimization")}, {}, true, true, QString(), QString()});
     add({QStringLiteral("definitions"), tr("Global Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("analytic"), QStringLiteral("interpolation")}, {}, true, true, QString(),
          tr("The parameters and functions every part of the model may use.")});
@@ -3240,6 +3242,105 @@ QList<NodeKind> makeKinds()
                 "where they change. Results show one point of it, or all of them along a 1D plot.")});
     }
 
+    // An optimization: a study solved again and again.
+    {
+        P study;
+        study.key = QStringLiteral("study");
+        study.label = tr("Study");
+        study.kind = P::Study;
+        study.defaultValue = QString();
+        study.tooltip = tr("What each candidate solves; empty: the first");
+        P variables;
+        variables.key = QStringLiteral("variables");
+        variables.label = tr("Parameters to vary");
+        variables.kind = P::Rows;
+        variables.defaultValue = QJsonArray();
+        variables.choiceLabels = {tr("Parameter"), tr("Start"), tr("Min"), tr("Max"), tr("Type"), tr("Active")};
+        variables.columnChoices = {QStringList{QStringLiteral("@parameters")}, {}, {}, {},
+                                   QStringList{QStringLiteral("LIN_DOUBLE"), QStringLiteral("LOG_DOUBLE"), QStringLiteral("LIN_INT"), QStringLiteral("LOG_INT"),
+                                               QStringLiteral("E3"), QStringLiteral("E6"), QStringLiteral("E12"), QStringLiteral("E24"), QStringLiteral("E48"),
+                                               QStringLiteral("E96"), QStringLiteral("E192")},
+                                   QStringList{QStringLiteral("yes"), QStringLiteral("no")}};
+        variables.tooltip = tr("Each a parameter of the model and its range, with its unit: 1[mm], 10[mm]; Start empty: its value now. LOG_DOUBLE searches a range "
+                               "over decades on a logarithmic scale; LIN_INT and LOG_INT whole numbers; E3 to E192 preferred values. Active no: held at its start.");
+        P objectives;
+        objectives.key = QStringLiteral("objectives");
+        objectives.label = tr("Objectives");
+        objectives.kind = P::Rows;
+        objectives.defaultValue = QJsonArray();
+        objectives.choiceLabels = {tr("Expression"), tr("Kind"), tr("Value"), tr("Weight"), tr("Over"), tr("Study")};
+        objectives.columnChoices = {{}, QStringList{QStringLiteral("MIN"), QStringLiteral("MAX"), QStringLiteral("TARGET"), QStringLiteral("LE"), QStringLiteral("GE"),
+                                                    QStringLiteral("EQ"), QStringLiteral("MON")},
+                                    {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last")}, QStringList{QStringLiteral("@studies")}};
+        objectives.tooltip = tr("Each an expression of the results - a global value (es.C11, ht.Tmax), a Derived Values node's (lp1.Z0), the parameters - and what is "
+                                "asked of it: MIN as small and MAX as large as it can be; TARGET at Value, the square of its miss relative to Value counted (least "
+                                "squares); LE, GE and EQ limits at Value; MON only shown. Weight: how much it counts among the others (1). Over: of a sweep, of "
+                                "output times or frequencies, its worst value (as an optimization component's goals) or its last (as ngspice's optimize). Study: "
+                                "read from another study, solved for each candidate too; empty: this one.");
+        P variation;
+        variation.key = QStringLiteral("variation");
+        variation.label = tr("Spreads");
+        variation.kind = P::Rows;
+        variation.defaultValue = QJsonArray();
+        variation.choiceLabels = {tr("Parameter"), tr("Distribution"), tr("Spread")};
+        variation.columnChoices = {QStringList{QStringLiteral("@parameters")}, QStringList{QStringLiteral("gauss"), QStringLiteral("uniform")}, {}};
+        variation.tooltip = tr("Each parameter's spread about its value in design centering: a Gaussian's sigma or half a uniform's width, with its unit (0.1[mm]) or as a share (5 %).");
+        variation.showIf = QStringLiteral("mode=center");
+        // What the last run found: written by the run, not a setting (shown
+        // in the model tab's Optimization page).
+        P result;
+        result.key = QStringLiteral("result");
+        result.label = tr("The last run's result, written by it");
+        result.kind = P::Text;
+        result.defaultValue = QJsonValue(QJsonValue::Undefined);
+        result.showIf = QStringLiteral("result=shown");
+        QStringList methods{QStringLiteral("auto")}, methodLabels{tr("Automatic (Levenberg-Marquardt for targets, else Nelder-Mead)")};
+        for (const optimization::SearchMethod& m : optimization::searchMethods()) {
+            methods << QString::fromLatin1(m.id);
+            methodLabels << QCoreApplication::translate("NgOpt", m.name);
+        }
+        QStringList strategies;
+        for (int i = 1; i <= 10; ++i) {
+            optimization::Settings s;
+            s.method = i;
+            strategies << s.methodName();
+        }
+        add({QStringLiteral("optimization"), tr("Optimization"), QStringLiteral("optimization"), QStringLiteral("optimization"), Level::None,
+             {study,
+              choice(QStringLiteral("mode"), tr("Asks for"), {QStringLiteral("optimize"), QStringLiteral("center")},
+                     {tr("The best values"), tr("Design centering: the most yield under a spread")}, QStringLiteral("optimize")),
+              choice(QStringLiteral("method"), tr("Method"), methods, methodLabels, QStringLiteral("auto")),
+              integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 100,
+                      tr("Iterations; generations of de, pso, cmaes and nsga2; sa's cooling levels; bayes's and tune's budget of solves")),
+              expr(QStringLiteral("tol"), tr("Tolerance"), QString(), QStringLiteral("1e-6"), tr("What it converges to, on the cost's relative change or the step in the scaled range")),
+              shownIf(integer(QStringLiteral("population"), tr("Population"), 0, tr("Of de, pso, cmaes and nsga2; 0: automatic (10 + 4 a parameter; cmaes 4 + 3 ln(parameters); nsga2 20 + 4 a parameter)")),
+                      QStringLiteral("method=de|method=pso|method=cmaes|method=nsga2")),
+              integer(QStringLiteral("seed"), tr("Seed"), 1, tr("The stream of random numbers: a run repeats with the same; another searches differently")),
+              flag(QStringLiteral("polish"), tr("Polish the best point with a local method"), false),
+              integer(QStringLiteral("starts"), tr("More starts"), 0, tr("Also from so many Latin-hypercube points of the ranges, each with a share of the iterations; the best is polished")),
+              choice(QStringLiteral("constraints"), tr("Limits held by"), {QStringLiteral("lagrangian"), QStringLiteral("penalty")},
+                     {tr("An augmented Lagrangian (ngspice's optimize)"), tr("Weighted penalties (an optimization component's)")}, QStringLiteral("lagrangian")),
+              expr(QStringLiteral("ctol"), tr("Limits met within"), QString(), QStringLiteral("1e-4"), tr("How near its bound a limit counts as met, relative to the bound (at least 1)")),
+              shownIf(expr(QStringLiteral("objectiveweight"), tr("Cost of objectives"), QString(), QStringLiteral("10")), QStringLiteral("constraints=penalty")),
+              shownIf(expr(QStringLiteral("constraintweight"), tr("Cost of limits"), QString(), QStringLiteral("100")), QStringLiteral("constraints=penalty")),
+              shownIf(choice(QStringLiteral("strategy"), tr("Variant"), strategies, strategies, QStringLiteral("DE/rand/1/bin")), QStringLiteral("method=de")),
+              shownIf(expr(QStringLiteral("F"), tr("Constant F"), QString(), QStringLiteral("0.8"), tr("The weight of a difference vector")), QStringLiteral("method=de")),
+              shownIf(expr(QStringLiteral("CR"), tr("Crossing over factor"), QString(), QStringLiteral("0"), tr("0: 0.9, or 15/parameters past 16 of them")), QStringLiteral("method=de")),
+              shownIf(expr(QStringLiteral("mincostvariance"), tr("Minimum cost variance"), QString(), QStringLiteral("0"), tr("Converged when the population's costs differ by less; 0: not this way")), QStringLiteral("method=de")),
+              shownIf(expr(QStringLiteral("fdstep"), tr("Finite difference"), QString(), QStringLiteral("1e-3"), tr("Levenberg-Marquardt's step, a share of each range: larger than a mesh's noise where a parameter shapes the geometry")),
+                      QStringLiteral("method=lm|method=auto")),
+              integer(QStringLiteral("parallel"), tr("Solves at once"), 1,
+                      tr("Candidates of a generation solved at the same time, each with its own threads and matrices, its memory too. The search is the same on any number.")),
+              integer(QStringLiteral("refresh"), tr("A line every"), 0, tr("A line in the messages every so many iterations; 0: none")),
+              shownIf(integer(QStringLiteral("samples"), tr("Samples"), 100, tr("Solves of each candidate, every one with the same draws")), QStringLiteral("mode=center")),
+              shownIf(flag(QStringLiteral("lhs"), tr("Latin hypercube samples"), false), QStringLiteral("mode=center")),
+              variables, objectives, variation, result},
+             {}, {}, false, false, QStringLiteral("opt"),
+             tr("Varies parameters of the model within their ranges and solves a study for each candidate - any of the methods ngspice's optimize has, and each of them "
+                "a whole solve - to reach its objectives, targets and limits: the best values and the history in the model tab's Optimization page, kept with the model; "
+                "Apply Optimum writes them into the parameters.")});
+    }
+
     // Results.
     add({QStringLiteral("results"), tr("Results"), QString(), QStringLiteral("results"), Level::None, {},
          {QStringLiteral("plotgroup"), QStringLiteral("plotgroup1d"), QStringLiteral("cutline"), QStringLiteral("cutpoint"),
@@ -4079,6 +4180,8 @@ bool flagsSkipped(const Node& node, const QString& study, bool results)
 {
     if (!node.enabled) return true;
     if (!study.isEmpty() && node.type == QLatin1String("study") && node.tag != study) return true;
+    // (An optimization's are its own to read, not a study's.)
+    if (node.type == QLatin1String("optimization")) return true;
     return !results && node.type == QLatin1String("results");
 }
 
@@ -4865,6 +4968,11 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
         if (!n) continue;
         m.root.children.push_back(*n);
     }
+    for (const QJsonValue& s : o.value(QStringLiteral("optimizations")).toArray()) {
+        std::optional<Node> n = nodeFrom(QStringLiteral("model"), s, problems, QStringLiteral("features"), QStringLiteral("optimization"));
+        if (!n) continue;
+        m.root.children.push_back(*n);
+    }
     Node results;
     results.type = QStringLiteral("results");
     results.tag = QStringLiteral("results");
@@ -4947,6 +5055,11 @@ QJsonObject Model::toObject() const
     for (const Node& s : root.children)
         if (s.type == QLatin1String("study")) studies.append(nodeObject(root, s, QStringLiteral("steps")));
     o.insert(QStringLiteral("studies"), studies);
+    // (Only where there is one: a model without any writes what it wrote before.)
+    QJsonArray optimizations;
+    for (const Node& s : root.children)
+        if (s.type == QLatin1String("optimization")) optimizations.append(nodeObject(root, s));
+    if (!optimizations.isEmpty()) o.insert(QStringLiteral("optimizations"), optimizations);
     QJsonObject r;
     QJsonArray plots, derived, exports;
     for (const Node& p : results().children) {

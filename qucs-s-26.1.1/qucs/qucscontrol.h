@@ -757,6 +757,9 @@ private:
     void femBuild(const QJsonObject& args, const Done& done);
     void femSolve(const QJsonObject& args, const Done& done);
     void femStop(const QJsonObject& args, const Done& done);
+    /// A model's optimization: run, or what it last found (fem_optimize).
+    void femOptimize(const QJsonObject& args, const Done& done);
+    QJsonObject femOptimized(MultiphysicsDoc* doc, const QJsonObject& args, const QString& tag);
     /// fem_build's answer once its geometry is current (and 'until''s).
     QJsonObject femBuilt(MultiphysicsDoc* doc, const QJsonObject& args);
     QJsonObject femMeshBuilt(MultiphysicsDoc* doc);

@@ -11,6 +11,8 @@
  */
 #include "multiphysicspanel.h"
 
+#include "fem_optimize.h"
+
 #include "fem_lumerical.h"
 #include "fem_material_plot.h"
 #include "fem_results.h"
@@ -922,6 +924,9 @@ void MultiphysicsPanel::updateStatusColumn()
         } else if (n->type == QLatin1String("study")) {
             if (a_doc->computing() == tag) status = tr("computing");
             else if (a_doc->solution(tag)) status = a_doc->solutionStale(tag) ? tr("old") : tr("solved");
+        } else if (n->type == QLatin1String("optimization")) {
+            if (a_doc->optimizing() == tag) status = tr("optimizing");
+            else if (const std::optional<OptimizationResult> r = a_doc->optimizationResult(tag)) status = a_doc->optimizationStale(tag) ? tr("old") : r->error.isEmpty() ? r->status : tr("failed");
         } else if (!a_doc->geometryStale() && a_doc->geometry().errors.contains(tag)) {
             status = tr("error");
             color = QColor(198, 40, 40);
@@ -981,6 +986,16 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
     if (n->type == QLatin1String("study")) {
         menu->addAction(tr("Compute"), this, [this, tag] { a_doc->compute(tag); });
         if (a_doc->solution(tag)) menu->addAction(tr("Clear Solutions"), a_doc.data(), &MultiphysicsDoc::clearSolutions);
+    }
+    if (n->type == QLatin1String("optimization")) {
+        menu->addAction(tr("Run"), this, [this, tag] { a_doc->optimize(tag); });
+        if (a_doc->optimizationResult(tag))
+            menu->addAction(tr("Apply Optimum"), this, [this, tag] {
+                QString why;
+                const QString study = a_doc->model().find(tag) ? a_doc->model().find(tag)->text(QStringLiteral("study")) : QString();
+                if (!a_doc->applyOptimum(tag, 0, nullptr, &why)) QMessageBox::information(this, tr("Apply Optimum"), why);
+                else a_doc->compute(study);
+            });
     }
     if (n->type == QLatin1String("plotgroup")) menu->addAction(tr("Plot"), this, [this, tag] {
             QString why;
@@ -1835,6 +1850,34 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
     const QJsonArray rows = node.value(key).toArray();
     table->setRowCount(int(rows.size()));
     std::shared_ptr<ParameterScope> ps = a_doc ? a_doc->parameters() : nullptr;
+    // A column of choices: a box in each of its cells, the model's parameters
+    // or studies where it says.
+    QList<QStringList> columnChoices = p.columnChoices;
+    for (QStringList& choices : columnChoices) {
+        if (choices == QStringList{QStringLiteral("@parameters")}) {
+            choices.clear();
+            if (a_doc)
+                for (const Model::Parameter& par : a_doc->model().parameters()) choices << par.name.trimmed();
+        } else if (choices == QStringList{QStringLiteral("@studies")}) {
+            choices = QStringList{QString()};
+            if (a_doc)
+                for (const Node* s : a_doc->model().studies()) choices << s->tag;
+        }
+    }
+    QPointer<QTableWidget> guarded(table);
+    const auto cellCombo = [this, key, guarded](int r, int c, const QStringList& choices, const QString& value, const std::function<QJsonArray()>& collect) {
+        auto* box = new QComboBox(guarded);
+        box->setObjectName(QStringLiteral("mpRowsChoice"));
+        box->addItems(choices);
+        // (One the file holds that is not a choice: kept, the run says so.)
+        if (!choices.contains(value)) box->addItem(value);
+        box->setCurrentIndex(box->findText(value));
+        guarded->setCellWidget(r, c, box);
+        connect(box, &QComboBox::activated, this, [this, key, collect](int) {
+            a_focusKey = key;
+            commit(key, collect(), tr("Change %1").arg(key));
+        });
+    };
     for (int r = 0; r < rows.size(); ++r) {
         if (parameters) {
             const QJsonObject o = rows.at(r).toObject();
@@ -1866,7 +1909,10 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
     auto collect = [table, parameters, columns]() {
         QJsonArray out;
         for (int r = 0; r < table->rowCount(); ++r) {
-            auto cell = [&](int c) { return table->item(r, c) ? table->item(r, c)->text().trimmed() : QString(); };
+            auto cell = [&](int c) {
+                if (auto* box = qobject_cast<QComboBox*>(table->cellWidget(r, c))) return box->currentText().trimmed();
+                return table->item(r, c) ? table->item(r, c)->text().trimmed() : QString();
+            };
             if (parameters) {
                 if (cell(0).isEmpty() && cell(1).isEmpty()) continue;
                 QJsonObject o{{QStringLiteral("name"), cell(0)}, {QStringLiteral("expression"), cell(1)}};
@@ -1881,8 +1927,18 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
         }
         return out;
     };
-    connect(table, &QTableWidget::itemChanged, this, [this, key, collect](QTableWidgetItem* item) {
-        if (item->column() == 2) return;
+    // (The boxes of its columns of choices, once there is what they collect.)
+    if (!parameters)
+        for (int r = 0; r < table->rowCount(); ++r)
+            for (int c = 0; c < columns && c < columnChoices.size(); ++c)
+                if (!columnChoices.at(c).isEmpty()) {
+                    const QString held = table->item(r, c) ? table->item(r, c)->text() : QString();
+                    cellCombo(r, c, columnChoices.at(c), held, collect);
+                }
+    connect(table, &QTableWidget::itemChanged, this, [this, key, collect, parameters](QTableWidgetItem* item) {
+        // (The parameters' third column is their value, shown; every other
+        // table's columns are all the row's: a sweep's third is its unit.)
+        if (parameters && item->column() == 2) return;
         a_focusKey = key;
         commit(key, collect(), tr("Change Parameters"));
     });
@@ -1914,6 +1970,29 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
                     break;
                 }
             rows2.append(QJsonArray{name, QStringLiteral("1, 2, 3"), QString()});
+        } else if (node.type == QLatin1String("optimization")) {
+            // Each table's next row, already of use: the first parameter not
+            // varied yet, over a factor of two each way, in its own unit.
+            if (key == QLatin1String("objectives")) {
+                QString first;
+                const std::shared_ptr<qucs_s::fem::Solution> solved = a_doc->solution();
+                if (solved && !solved->globals().isEmpty()) first = solved->globals().first().name;
+                rows2.append(QJsonArray{first, QStringLiteral("MIN"), QString(), QString(), QStringLiteral("worst"), QString()});
+            } else {
+                QStringList used;
+                for (const QJsonValue& r : rows2) used << r.toArray().at(0).toString();
+                QString name;
+                for (const Model::Parameter& par : a_doc->model().parameters())
+                    if (!used.contains(par.name.trimmed())) {
+                        name = par.name.trimmed();
+                        break;
+                    }
+                if (key == QLatin1String("variation")) {
+                    rows2.append(QJsonArray{name, QStringLiteral("gauss"), QStringLiteral("5 %")});
+                } else {
+                    rows2.append(optimizationVariableRow(a_doc->model(), *a_doc->parameters(), name));
+                }
+            }
         } else {
             rows2.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
         }
@@ -2223,6 +2302,16 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
     }
     if (node.type == QLatin1String("mesh") || (k && k->group == QLatin1String("mesh"))) action(tr("Build Mesh"), "mpBuildMeshButton", [this] { a_doc->buildMesh(); });
     if (node.type == QLatin1String("study")) action(tr("Compute"), "mpComputeButton", [this, tag] { a_doc->compute(tag); });
+    if (node.type == QLatin1String("optimization")) {
+        action(tr("Run"), "mpOptimizeButton", [this, tag] { a_doc->optimize(tag); });
+        action(tr("Apply Optimum"), "mpApplyOptimumButton", [this, tag] {
+            QString why;
+            const Node* n = a_doc->model().find(tag);
+            const QString study = n ? n->text(QStringLiteral("study")) : QString();
+            if (!a_doc->applyOptimum(tag, 0, nullptr, &why)) QMessageBox::information(this, tr("Apply Optimum"), why);
+            else a_doc->compute(study);
+        });
+    }
     if (k && k->group == QLatin1String("step")) {
         Model m = a_doc->model();
         int at = -1;

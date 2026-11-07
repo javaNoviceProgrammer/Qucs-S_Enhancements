@@ -1,0 +1,51 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A capacitor's width and gap optimized",
+    "description": "The least area w*d that gives 100 pF per metre at 100 V without passing 100 kV/m in the gap. Known in closed form: the field limit sets d = 1 mm, the capacitance w = C d / (eps0 er) = 2.824 mm, the area 2.824 mm2. Run the Optimization node (Optimize in the toolbar); its page shows the best values and the history, Apply Optimum writes them into the parameters.",
+    "parameters": [
+        {"name": "w", "expression": "6[mm]", "description": "the plates' width"},
+        {"name": "d", "expression": "2[mm]", "description": "the gap"},
+        {"name": "er", "expression": "4", "description": "the dielectric's relative permittivity"},
+        {"name": "V0", "expression": "100[V]", "description": "the voltage across it"}
+    ],
+    "components": [
+        {
+            "unit": "mm",
+            "geometry": [{"type": "rectangle", "name": "gap", "size": ["w", "d"]}],
+            "materials": [{"label": "dielectric", "epsilonr": "er", "selection": {"all": true}}],
+            "physics": [
+                {
+                    "type": "electrostatics",
+                    "tag": "es",
+                    "features": [
+                        {"type": "terminal", "name": "1", "V0": "V0", "selection": {"of": ["gap"], "side": "top"}},
+                        {"type": "ground", "selection": {"of": ["gap"], "side": "bottom"}}
+                    ]
+                }
+            ],
+            "mesh": {"size": "normal", "custom": true, "hmax": "max(d, w)/6"}
+        }
+    ],
+    "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "stationary"}]}],
+    "optimizations": [
+        {
+            "type": "optimization",
+            "tag": "opt1",
+            "label": "Least area",
+            "study": "std1",
+            "method": "tr",
+            "maxiter": 400,
+            "tol": "1e-7",
+            "variables": [
+                ["w", "", "0.5[mm]", "10[mm]", "LIN_DOUBLE", "yes"],
+                ["d", "", "0.2[mm]", "5[mm]", "LIN_DOUBLE", "yes"]
+            ],
+            "objectives": [
+                ["w*d", "MIN"],
+                ["es.C11", "GE", "100[pF]"],
+                ["V0/d", "LE", "100[kV/m]"],
+                ["es.W", "MON"]
+            ]
+        }
+    ]
+}

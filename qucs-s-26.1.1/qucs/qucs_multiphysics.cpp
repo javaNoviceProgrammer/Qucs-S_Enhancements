@@ -84,6 +84,11 @@ void QucsApp::initMultiphysics()
   });
   compute->setObjectName(QStringLiteral("mpComputeAction"));
   compute->setStatusTip(tr("Solve the first study (Simulate, F2, does too)"));
+  QAction *optimize = a_multiphysicsMenu->addAction(tr("Optimize"), this, [model] {
+    if (MultiphysicsDoc *doc = model()) doc->optimize(doc->shownOptimization());
+  });
+  optimize->setObjectName(QStringLiteral("mpOptimizeAction"));
+  optimize->setStatusTip(tr("Run the model's optimization: a study solved again and again to reach its objectives"));
   QAction *clear = a_multiphysicsMenu->addAction(tr("Clear Solutions"), this, [model] {
     if (MultiphysicsDoc *doc = model()) doc->clearSolutions();
   });
@@ -116,6 +121,8 @@ void QucsApp::updateMultiphysicsMenu()
     if (name == QLatin1String("mpBuildGeometryAction") || name == QLatin1String("mpBuildMeshAction")
         || name == QLatin1String("mpComputeAction"))
       a->setEnabled(doc != nullptr && !doc->isBusy());
+    else if (name == QLatin1String("mpOptimizeAction"))
+      a->setEnabled(doc != nullptr && !doc->isBusy() && !doc->shownOptimization().isEmpty());
     else if (name == QLatin1String("mpClearAction"))
       a->setEnabled(doc != nullptr && doc->solution() != nullptr);
   }

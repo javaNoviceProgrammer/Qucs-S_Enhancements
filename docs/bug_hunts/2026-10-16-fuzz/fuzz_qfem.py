@@ -5,6 +5,11 @@
 # (its own time limit), described, evaluated and closed. A crash (EOF), a
 # call past its time limit (HANG) or a sanitizer report is a finding: the
 # mutant and the calls kept in findings/.
+# Of its mutants one in three (QFEM_OPT_SHARE) is an optimization's: the
+# "optimizations" section (docs/feature_gaps/2026-11-07-multiphysics-optimization.md)
+# added to a shipped example or to a small capacitor that solves in
+# milliseconds, the section alone damaged - its settings, its rows, a kept
+# result's rows - and run by fem_optimize, read, written in and stopped too.
 #   QUCS=<qucs-s> HUNT_RUNS=<scratch> python3 fuzz_qfem.py SEED COUNT
 import json, os, random, re, select, shutil, subprocess, sys, time
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
@@ -14,6 +19,7 @@ H = os.environ['HUNT_RUNS']   # a scratch folder: the servers' workspaces, setti
 os.makedirs(H, exist_ok=True)
 seed, total = int(sys.argv[1]), int(sys.argv[2])
 rnd = random.Random(seed)
+OPT_SHARE = float(os.environ.get('QFEM_OPT_SHARE', '0.33'))
 RUN = os.path.join(H, f'runs/{seed}')
 WS = os.path.join(RUN, 'ws')
 FIND = os.path.join(H, 'findings')
@@ -25,6 +31,55 @@ HOSTILE = [0, -1, 1, 2**31 - 1, -2**31, 2**53, 1e308, -1e308, 1e-320, 0.5, -0.5,
            '-inf', '1/0', '0/0', 'sqrt(-1)', '1e400[m]', '((((', 'x^', '1[nosuchunit]', 'pi*e', 'w/0', '1e-9[m]', '1e-12[m]',
            '1e9[m]', '-1[mm]', 'a' * 3000, 'Ωµ', '{}', '[]', 'T', 'x', 'y', 'r', 'z', 'nosuch', [], {}, [0], [1e308, -1e308],
            ['a', 'b'], {'of': ['nosuch']}, {'numbers': [99999, -1, 0]}, {'numbers': []}]
+
+# An optimization's section: every setting and table, what a row may hold.
+OPT_METHODS = ['auto', 'de', 'pso', 'sa', 'cmaes', 'bayes', 'nm', 'tr', 'lm', 'nsga2', 'tune']
+OPT_TYPES = ['LIN_DOUBLE', 'LOG_DOUBLE', 'LIN_INT', 'LOG_INT', 'E3', 'E6', 'E12', 'E24', 'E48', 'E96', 'E192']
+OPT_KINDS = ['MIN', 'MAX', 'TARGET', 'LE', 'GE', 'EQ', 'MON']
+OPT_EXPR = ['es.C11', 'es.W', 'ht.Tmax', 'ec.R', 'd', 'w*d', 'nosuch', '1/0', 'es.normE', 'x', 'es.C11/1[pF]', '((', '0/0', '1e308*1e308']
+CAPACITOR = {'format': 'qucs-s multiphysics 1',
+             'parameters': [{'name': 'w', 'expression': '4[mm]'}, {'name': 'd', 'expression': '1[mm]'}, {'name': 'er', 'expression': '4'}],
+             'components': [{'unit': 'mm', 'geometry': [{'type': 'rectangle', 'name': 'gap', 'size': ['w', 'd']}],
+                             'materials': [{'label': 'dielectric', 'epsilonr': 'er', 'selection': {'all': True}}],
+                             'physics': [{'type': 'electrostatics', 'tag': 'es', 'order': '1', 'features': [
+                                 {'type': 'terminal', 'name': '1', 'V0': '5[V]', 'selection': {'of': ['gap'], 'side': 'top'}},
+                                 {'type': 'ground', 'selection': {'of': ['gap'], 'side': 'bottom'}}]}],
+                             'mesh': {'size': 'normal', 'custom': True, 'hmax': 'max(d, w)/4'}}],
+             'studies': [{'type': 'study', 'tag': 'std1', 'steps': [{'type': 'stationary'}]}]}
+
+def opt_section(d):
+    """An optimization of model \a d's own parameters, within a small budget."""
+    names = [p.get('name') for p in d.get('parameters', []) if isinstance(p, dict) and p.get('name')] or ['d']
+    method = rnd.choice(OPT_METHODS)
+    good = {'w': ['1[mm]', '9[mm]'], 'd': ['0.2[mm]', '3[mm]'], 'er': ['1', '9']}
+    rows = []
+    for name in rnd.sample(names, min(len(names), rnd.randint(1, 3))):
+        # (Most of them a range that holds, so that it runs and what follows it is reached.)
+        lo, hi = good.get(name, ['0.5', '10']) if rnd.random() < 0.95 else [rnd.choice(['0.5', '1', '0.2[mm]', '1[V]']), rnd.choice(['10', '5', '3[mm]', '9[V]'])]
+        rows.append([name, rnd.choice(['', '', '', lo]), lo, hi, rnd.choice(['LIN_DOUBLE', 'LOG_DOUBLE', ''] if rnd.random() < 0.85 else OPT_TYPES), rnd.choice(['yes', 'yes', 'yes', 'no', ''])])
+    measured = [['es.C11', 'TARGET', '200[pF]'], ['es.C11', 'MIN'], ['es.W', 'MAX'], ['w*d', 'MIN'], ['es.W', 'LE', '1[uJ]'], ['es.C11', 'GE', '50[pF]'], ['es.W', 'MON'], ['es.C11', 'EQ', '100[pF]']]
+    objectives = [rnd.choice(measured) if rnd.random() < 0.95 else [rnd.choice(OPT_EXPR), rnd.choice(OPT_KINDS), rnd.choice(['', '1', '200[pF]', '350[K]', '1[ohm]']), rnd.choice(['', '1', '2']), rnd.choice(['', 'worst', 'last'])]
+                  for _ in range(rnd.randint(1, 3))]
+    if method == 'nsga2': objectives += [['es.C11', 'MAX'], ['w*d', 'MIN']]
+    if method == 'tune': objectives = [['es.C11', 'TARGET', '200[pF]']] + objectives[1:]
+    section = {'type': 'optimization', 'tag': 'opt1', 'method': method, 'maxiter': rnd.choice([1, 2, 3, 5, 8]), 'population': rnd.choice([0, 4, 6, 8]), 'seed': rnd.randint(0, 99),
+               'variables': rows, 'objectives': objectives}
+    extra = {'polish': [True, False], 'starts': [0, 1], 'tol': ['1e-3', '1e-6'], 'ctol': ['1e-2', '1e-4'], 'constraints': ['lagrangian', 'penalty'],
+             'parallel': [1, 2, 3], 'refresh': [0, 1], 'strategy': ['DE/best/1/exp', 'DE/rand/2/bin'], 'F': ['0.5', '0.9'], 'CR': ['0', '0.5', '1'],
+             'mincostvariance': ['0', '1e-3'], 'fdstep': ['1e-3', '1e-1'], 'objectiveweight': ['1', '10'], 'constraintweight': ['1', '100']}
+    for key, values in extra.items():
+        if rnd.random() < 0.3: section[key] = rnd.choice(values)
+    if method in ('auto', 'nm', 'tr', 'de', 'cmaes') and rnd.random() < 0.15:
+        section['objectives'] = [['es.C11', 'LE', '300[pF]'], ['es.C11', 'GE', '50[pF]']]
+        section.update({'mode': 'center', 'samples': rnd.choice([2, 3, 4]), 'lhs': rnd.choice([True, False]), 'variation': [[rnd.choice(names), rnd.choice(['gauss', 'uniform']), rnd.choice(['5 %', '0.1[mm]', '0.1'])]]})
+    return section
+
+def opt_result():
+    """A kept result, as a run writes one, for the section to carry into its damage."""
+    return {'method': 'de', 'status': rnd.choice(['converged', 'nosolve', 'infeasible', 'maxiter', 'interrupted']), 'summary': 'x', 'setup': 'x', 'settled': True, 'feasible': True,
+            'evaluations': 3, 'solves': 3, 'failed': 0, 'seconds': 0.1, 'parameters': [{'name': 'd', 'text': '1 mm', 'value': 1e-3}], 'measured': [{'name': 'es.C11', 'text': '1 pF', 'value': 1e-12}],
+            'kinds': ['MIN'], 'units': ['m', 'F'], 'columns': ['d', 'es.C11'], 'history': ['1 0.001 1e-12 1 1 1', '2 0.002 5e-13 0.5 1 1', 'x y z', '3 nan nan nan 0 0'],
+            'front': [{'values': [1e-3], 'measured': [1e-12]}] if rnd.random() < 0.5 else []}
 
 def mutate_json(d, n):
     paths = []
@@ -115,13 +170,25 @@ def sanitizer(pos):
     return hits, end
 
 examples = sorted(f for f in os.listdir(EX) if f.endswith('.qfem'))
-s = Server(); pos = os.path.getsize(errpath); findings = 0; t0 = time.time(); stats = {}
+s = Server(); pos = os.path.getsize(errpath); findings = 0; t0 = time.time(); stats = {}; refused = {}
 EXPR = ['es.V', 'ht.T', 'semi.n', 'emr.normE', 'mf.Bz', '1/0', 'sqrt(-1)', 'nosuch', 'x*y', 'es.V^1e308', '((', 'T[degC]', 'abs(es.Ex)']
 for i in range(total):
     name = rnd.choice(examples)
     text = open(os.path.join(EX, name), encoding='utf-8').read()
     kind = rnd.random()
-    if kind < 0.8:
+    optimized = rnd.random() < OPT_SHARE
+    if optimized:
+        # The section alone damaged, on a model that solves in milliseconds (or
+        # a shipped one, its solves perhaps past the call's time limit).
+        d = json.loads(json.dumps(CAPACITOR)) if rnd.random() < 0.9 else json.loads(text)
+        section = opt_section(d)
+        if rnd.random() < 0.3: section['result'] = opt_result()
+        ops = mutate_json(section, rnd.choice([0, 0, 0, 0, 1, 1, 2, 3]))
+        d.setdefault('optimizations', []).append(section)
+        if rnd.random() < 0.1: d['optimizations'].append(rnd.choice([5, 'x', {}, {'type': 'nosuch'}, {'type': 'optimization'}, section]))
+        name = 'capacitor' if d.get('parameters') == CAPACITOR['parameters'] else name
+        text = json.dumps(d, indent=1)
+    elif kind < 0.8:
         d = json.loads(text)
         ops = mutate_json(d, rnd.randint(1, 4))
         text = json.dumps(d, indent=1)
@@ -143,13 +210,27 @@ for i in range(total):
              ('fem_describe', {'path': path, 'what': rnd.choice(['model', 'geometry', 'variables'])}, 120),
              ('fem_evaluate', {'path': path, 'expression': rnd.choice(EXPR)}, 120),
              ('close_document', {'path': path, 'unsaved': 'discard'}, 120)]
+    if optimized:
+        # (Instead of the plain solve: a run, its stop, what it kept, written in.)
+        calls[2:3] = [('fem_optimize', {'path': path, 'timeout': 10, 'history': rnd.choice([0, 5, -1])}, 120),
+                      ('fem_stop', {'path': path, 'timeout': 60}, 120),
+                      ('fem_optimize', {'path': path, 'action': 'result', 'history': rnd.choice([0, -1])}, 120),
+                      ('fem_optimize', {'path': path, 'action': 'apply', 'point': rnd.choice([1, 2, 1000])}, 120),
+                      ('save_document', {'path': path}, 120)]
     done = []
     bad = None
     for name_, args, limit in calls:
         r, took = s.call(name_, args, limit)
         done.append((name_, round(took, 1)))
         st = stats.setdefault(name_, [0, 0, 0.0]); st[0] += 1; st[2] = max(st[2], took)
-        if isinstance(r, dict) and r.get('result', {}).get('isError'): st[1] += 1
+        if isinstance(r, dict) and r.get('result', {}).get('isError'):
+            st[1] += 1
+            # (What fem_optimize refused and why, in the summary: that the runs do run.)
+            if name_ == 'fem_optimize':
+                said = re.sub(r'[0-9.e+-]+', '#', str(r['result'].get('content', [{}])[0].get('text', '')))[:70]
+                refused[said] = refused.get(said, 0) + 1
+        elif name_ == 'fem_optimize' and args.get('action') is None and isinstance(r, dict):
+            refused['(ran)'] = refused.get('(ran)', 0) + 1
         # (A call past 10 s kept beside the findings, not one: a close that
         # waited 45 s for a mesh's smoothing was seen only as the longest -
         # the hunt of 19 October, B2 and T2.)
@@ -173,5 +254,6 @@ for i in range(total):
         s.kill(); s = Server(); pos = os.path.getsize(errpath)
     if i % 20 == 0: print(f'[{seed}] {i} mutants, {findings} findings, {time.time() - t0:.0f} s', flush=True)
 print(' '.join(f'{k}:{v[0]} calls, {v[1]} refused, longest {v[2]:.1f} s' for k, v in sorted(stats.items())))
+for why, count in sorted(refused.items(), key=lambda kv: -kv[1])[:25]: print(f'  fem_optimize {count}: {why}')
 print(f'[{seed}] {total} mutants, {findings} findings, {time.time() - t0:.0f} s', flush=True)
 s.kill()
