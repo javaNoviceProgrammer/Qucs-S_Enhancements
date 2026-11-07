@@ -828,9 +828,10 @@ bool misc::moveToTrash(const QString& path, QString* where)
   if (kept.isEmpty()) return QFile::moveToTrash(path, where);
   if (!QDir().mkpath(kept)) return false;
   const QString name = QFileInfo(path).fileName();
-  QString target = QDir(kept).filePath(name);
+  // (Not QDir::filePath: a name that begins with ':' would lose the folder.)
+  QString target = kept + QLatin1Char('/') + name;
   for (int n = 2; QFileInfo::exists(target) || QFileInfo(target).isSymLink(); ++n)
-    target = QDir(kept).filePath(QStringLiteral("%1 %2").arg(name).arg(n));
+    target = kept + QLatin1Char('/') + QStringLiteral("%1 %2").arg(name).arg(n);
   if (!QDir().rename(path, target)) return false;
   if (where != nullptr) *where = target;
   return true;

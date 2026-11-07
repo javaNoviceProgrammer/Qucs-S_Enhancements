@@ -56,8 +56,14 @@ QProcessEnvironment environment();
 Result run(const QString& dir, const QStringList& args, bool readOnly = false, int timeoutMs = 60000,
            const QByteArray& input = {});
 
+/// \a paths (from the top folder) for after "--" in a git that changes
+/// things: each that file or folder and no pattern. (One that only looks takes
+/// them as they are: lookingEnvironment().)
+QStringList literalPaths(const QStringList& paths);
+
 /// The top folder of the work tree \a path is in (a file's: its folder's),
-/// or empty. Looks for .git upwards: runs nothing.
+/// or empty. Looks for .git upwards, as git does (a folder with no HEAD in it
+/// is passed by): runs nothing.
 QString topLevel(const QString& path);
 /// \a path from \a root, "/" between folders - empty for the root itself
 /// and for a path out of it (\a inside false then).
@@ -96,7 +102,7 @@ struct Repository {
     QString upstream;      ///< "origin/main", or empty
     int ahead = 0;         ///< commits the upstream has not
     int behind = 0;        ///< and it has
-    QString operation;     ///< a merge, rebase, cherry-pick, revert or bisect under way ("merge"...), or empty
+    QString operation;     ///< a merge, rebase, am, cherry-pick, revert or bisect under way ("merge"...), or empty
     QList<Entry> entries;  ///< changed, untracked and ignored
     QDateTime read;        ///< when it was read
 
@@ -123,6 +129,8 @@ private:
 /// The repository \a path is in, as it stands (valid false outside one,
 /// or without git). It only looks; runs git: best not on the GUI thread.
 Repository read(const QString& path);
+/// What git status --porcelain=v2 -z --branch wrote, into \a into.
+void readStatus(const QString& porcelain, Repository& into);
 
 // ----------------------------------------------------------------------
 // What is done with it. Paths: absolute, or from the top folder - paths
@@ -165,6 +173,8 @@ struct Branch {
 };
 /// The local branches, then the remotes' (no origin/HEAD).
 QList<Branch> branches(const QString& root);
+/// What git for-each-ref wrote in this file's format.
+QList<Branch> readBranches(const QString& text);
 /// The tags, newest first.
 QStringList tags(const QString& root);
 /// Checks \a branch out: a remote one ("origin/feature") as a local branch
@@ -175,7 +185,7 @@ Result deleteBranch(const QString& root, const QString& name, bool force = false
 Result renameBranch(const QString& root, const QString& from, const QString& to);
 /// Merges \a ref into the branch checked out.
 Result merge(const QString& root, const QString& ref);
-/// Gives up the merge, rebase, cherry-pick or revert under way.
+/// Gives up the merge, rebase, am, cherry-pick or revert under way.
 Result abort(const QString& root, const QString& operation);
 Result createTag(const QString& root, const QString& name, const QString& message = {}, const QString& commit = {});
 Result deleteTag(const QString& root, const QString& name);
@@ -186,6 +196,8 @@ struct Remote {
     QString pushUrl;
 };
 QList<Remote> remotes(const QString& root);
+/// What git remote -v wrote.
+QList<Remote> readRemotes(const QString& text);
 Result addRemote(const QString& root, const QString& name, const QString& url);
 Result removeRemote(const QString& root, const QString& name);
 
@@ -205,6 +217,8 @@ struct Stash {
     QDateTime date;
 };
 QList<Stash> stashes(const QString& root);
+/// What git stash list wrote in this file's format.
+QList<Stash> readStashes(const QString& text);
 /// The changes put aside (untracked files too with \a untracked).
 Result stash(const QString& root, const QString& message = {}, bool untracked = true);
 /// Stash \a index's changes back (\a pop: and it dropped).
@@ -242,6 +256,9 @@ struct Commit {
 /// The commits of \a ref (HEAD when empty) - those that changed \a path
 /// when given (a file followed through renames) -, newest first.
 QList<Commit> log(const QString& root, const QString& path = {}, int max = 200, const QString& ref = {}, int skip = 0);
+/// What git log wrote in this file's format (its fields apart by NUL, which
+/// no commit holds): a record whose hash is none is left out.
+QList<Commit> readCommits(const QString& text);
 
 /// Which commits a history shows: every branch's (the remotes' and the
 /// tags' too, as asked), the branch checked out's, or one ref's; a
@@ -271,7 +288,9 @@ struct ChangedFile {
     int added = -1;
     int removed = -1;
 };
-QList<ChangedFile> changedFiles(const QString& root, const QString& commit);
+QList<ChangedFile> changedFiles(const QString& root, const QString& commit);   // (of a full hash: remembered)
+/// What git diff-tree -z wrote: --name-status, then --numstat.
+QList<ChangedFile> readChangedFiles(const QString& names, const QString& counts);
 /// A commit's whole message (its subject, a blank line, its body).
 QString commitMessage(const QString& root, const QString& commit);
 /// A commit's changes against its first parent as a unified diff (of \a
@@ -280,6 +299,11 @@ QString commitDiff(const QString& root, const QString& commit, const QString& pa
 /// \a path (from the top folder) as \a commit has it; empty and \a ok
 /// false when it has none.
 QByteArray fileAt(const QString& root, const QString& commit, const QString& path, bool* ok = nullptr);
+/// Each of \a specs ("HEAD:a.sch", ":a.sch") in one git program: its bytes, or
+/// none where there is no such file. Empty when git failed.
+QList<std::optional<QByteArray>> blobs(const QString& root, const QStringList& specs);
+/// What git cat-file --batch wrote for \a count names.
+QList<std::optional<QByteArray>> readBlobs(const QByteArray& out, int count);
 /// A commit: what git show says - its message, its files, its diff (of
 /// \a path alone when given).
 QString show(const QString& root, const QString& commit, const QString& path = {});
@@ -304,6 +328,8 @@ struct BlameLine {
     bool uncommitted = false;
 };
 QList<BlameLine> blame(const QString& root, const QString& path);
+/// What git blame --porcelain wrote.
+QList<BlameLine> readBlame(const QString& porcelain);
 
 /// Checks \a commit out alone (no branch: HEAD detached).
 Result checkOutCommit(const QString& root, const QString& commit);
@@ -391,6 +417,8 @@ private:
     QHash<QString, qint64> a_polled;    // when each was last read for the clock (ms)
     QSet<QString> a_reading;
     QSet<QString> a_waiting;            // to be read (again)
+    QHash<QString, quint64> a_readDirect;   // the turn of each one's last readNow()
+    quint64 a_turn = 0;
     QFileSystemWatcher* a_watcher;
     QTimer* a_soon;
     QTimer* a_every;

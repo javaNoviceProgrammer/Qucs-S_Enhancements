@@ -15,6 +15,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 class QProcessEnvironment;
 
@@ -75,6 +76,30 @@ QStringList readOnlyGuards(const QString& root);
 /// (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE...: Qucs-S started from a git
 /// hook): each path's own found.
 void forgetRepositoryVariables(QProcessEnvironment& env);
+
+/// \a env as every git of Qucs-S's runs in: forgetRepositoryVariables(), and
+/// no colours in what it writes whatever color.ui says.
+void plainEnvironment(QProcessEnvironment& env);
+
+/// And as one that only looks: no lock it can do without (Claude may be
+/// committing meanwhile), nothing fetched that a partial clone lacks (a fetch
+/// runs what the repository's remote names), and a path given to it that file
+/// and no pattern - "amp[1].sch" not amp1.sch too, ":!x" not all but x. (Not
+/// for one that changes things: hooks would inherit it, and their own patterns
+/// stop working. Those paths go as literalPaths().)
+void lookingEnvironment(QProcessEnvironment& env);
+
+/// readOnlyGuards() on their way to a git: before \a args as -c options, and
+/// through \a env the one -c cannot say - a driver whose name holds '=' (it
+/// reads the key to the first '=', and that driver would stay).
+void applyGuards(const QStringList& guards, QStringList& args, QProcessEnvironment& env);
+
+/// What git diff --numstat -z wrote (--no-renames: a file a record).
+QList<FileChange> readNumstat(const QByteArray& out);
+
+/// \a path (from the top folder \a root) as a path. (Not QDir::filePath: a name
+/// that begins with ':' is a resource's to Qt, and the folder would be dropped.)
+QString fileIn(const QString& root, const QString& path);
 
 /// Where \a dir stands (a Status whose repository is false outside a work
 /// tree, or without git). Runs git: best not on the GUI thread.

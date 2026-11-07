@@ -336,6 +336,12 @@ qucs_add_test(test_project_folders)
 qucs_add_test(test_long_file_names)
 qucs_add_test(test_claude_git)
 qucs_add_test(test_git_integration)
+qucs_add_test(test_git_robust)
+# The git integration fuzzed: a short pass of a fixed seed here, long ones by
+# QUCS_FUZZ_SECONDS (test_git_fuzz.cpp).
+qucs_add_test(test_git_fuzz)
+# How many git programs each of the windows' doings starts (test_git_perf.cpp).
+qucs_add_test(test_git_perf)
 qucs_add_test(test_verilog_a_components)
 qucs_add_test(test_optimization)
 qucs_add_test(test_ngopt)

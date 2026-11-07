@@ -195,6 +195,7 @@ private:
     void updateStatus();
     HistoryQuery query() const;
     QString refsSignature() const;
+    Repository lookedAt() const;
     int uncommittedChanges(const Repository& repo) const;
 
     QString a_root;
