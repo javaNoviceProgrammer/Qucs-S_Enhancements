@@ -4,8 +4,8 @@
     python3 breaks.py <build tree> [name ...]
 
 Each break is a text replaced in a source file. The tree is built with it and
-test_claude_jobs and test_mcp_server's theLongToolsAreJobs and
-theProgramServesOverStdio run, offscreen; a break that nothing fails on is said
+test_claude_jobs and test_mcp_server's theLongToolsAreJobs,
+theWindowInTheApplication and theProgramServesOverStdio run, offscreen; a break that nothing fails on is said
 to have survived. The sources are put back whatever happens.
 """
 import os
@@ -79,6 +79,33 @@ BREAKS = [
     ("the server reads the window's jobs", "mcpstdio.cpp",
      "    qucs_s::claude::jobs::Registry::instance().reset();\n",
      ""),
+    ("ngspice's bar not read", "extsimkernels/ngspice.cpp",
+     'R"(\\[[= ]+\\]\\s*(\\d{1,3})%|(?:^|[\\r\\n])%(\\d{1,3}(?:\\.\\d+)?))"',
+     'R"(^%(\\d{1,3}(?:\\.\\d+)?))"'),
+    ("the first percentage of a read", "extsimkernels/ngspice.cpp",
+     "    while (it.hasNext()) {\n        const QRegularExpressionMatch m = it.next();",
+     "    if (it.hasNext()) {\n        const QRegularExpressionMatch m = it.next();"),
+    ("a sample's percentage for the whole", "extsimkernels/ngspice.cpp",
+     'R"(\\[[= ]+\\]\\s*(\\d{1,3})%|',
+     'R"((\\d{1,3})%|'),
+    ("a task's time from its task", "claudejobs.cpp",
+     "        else job.began = began;\n",
+     ""),
+    ("notes for the model as an outcome", "claudejobs.cpp",
+     'if (m.contains(QLatin1String("handback"))) job.outcome = tr("Its report went to Claude, as a message.");\n            else if',
+     "if"),
+    ("its name again as an outcome", "claudejobs.cpp",
+     "else if (!summary.isEmpty() && summary != job.name) job.outcome = summary;",
+     "else if (!summary.isEmpty()) job.outcome = summary;"),
+    ("a window's stop said to be a tool's", "qucscontrol_jobs.cpp",
+     'run->stoppedBy = tr("the Background Jobs window");',
+     ";"),
+    ("a stop's outcome a tool's name", "qucscontrol_jobs.cpp",
+     ': QCoreApplication::translate("QucsControl", "Stopped by %1.").arg(by);',
+     ": by;"),
+    ("the window's rows not said", "qucscontrol_jobs.cpp",
+     '{QStringLiteral("rows"), window->table()->rowCount()}',
+     '{QStringLiteral("rows"), 0}'),
     ("the bar full for an unknown", "claudejobswindow.cpp",
      "        bar->setRange(0, 0);\n",
      "        bar->setRange(0, 100);\n        bar->setValue(100);\n"),
@@ -156,7 +183,7 @@ def run(build, wanted):
                 survived.append(name)
                 continue
             failed = []
-            for test, slots in (("test_claude_jobs", []), ("test_mcp_server", ["theLongToolsAreJobs", "theProgramServesOverStdio"])):
+            for test, slots in (("test_claude_jobs", []), ("test_mcp_server", ["theLongToolsAreJobs", "theWindowInTheApplication", "theProgramServesOverStdio"])):
                 try:
                     done = subprocess.run([os.path.join(build, "qucs", "tests", test)] + slots, capture_output=True, text=True, env=env,
                                           stdin=subprocess.DEVNULL, timeout=420)

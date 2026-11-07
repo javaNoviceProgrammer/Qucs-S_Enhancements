@@ -96,7 +96,7 @@ shows. Nought counts as nothing said, since a bar at 0 for a whole run would cla
 | `run_script` | **none** | A script may do anything: nothing knows how much is left |
 | `tune` | **none** | It runs until the targets are met or its most runs are used, and how many is not known. "Runs of at most N" would not be a percentage of the work |
 | Other tools past two seconds (`read_pdf`, `build_verilog_a`, `git_clone`...) | **none** | They do not say |
-| `simulate`, ngspice | some runs | Its own `%42.00` lines. **Only where it prints them**, which is the transient; a DC or AC run says none and stays unknown |
+| `simulate`, ngspice | some runs | What it prints as it goes: the fork's bar (`[=====   ]  26%`, on any swept analysis; a sweep's whole, in a Monte Carlo) or the older `%42.00`. A run with no sweep (a DC operating point) says none. With several analyses in a run, it is of the one under way |
 | `simulate`, Xyce | some runs | Its "Percent complete" lines |
 | `simulate`, Qucsator | yes | Its own progress marks (`SimProgress`) |
 | `simulate`, an optimization | yes | The optimizer's generations of its total (`Optimizer::progress`) |
@@ -246,15 +246,16 @@ before it could be read. It was no line of this feature's (`stop_task` lines are
 
 - **Qt 6.10.3.** Everything ran on Homebrew's 6.12.0. Nothing new is used in the feature itself; the opt-in `pictures` test
   uses `QStyleHints::setColorScheme`, there since 6.8.
-- **The window on a real display: by the tests and pictures, not by hand.** `pictures` and the whole of `test_claude_jobs` ran
-  on this Mac's own Cocoa display, the windows really shown and clicks sent to them. No person, and no driver, opened the
-  built app and clicked through its real ⋯ menu: the test triggers the menu's action on a panel alone. It has not been seen
-  on Windows or Linux.
+- **The window by hand.** `pictures`, the whole of `test_claude_jobs` and `theWindowInTheApplication` (a real `QucsApp`, the
+  action of the dock's own menu, clicks on the row's Stop and on Clear Finished, a real solve) ran on this Mac's own Cocoa
+  display. No person has opened the built app and clicked the ⋯ menu, and the test triggers the menu's action rather than
+  dropping the menu down. It has not been seen on Windows or Linux.
 - **Stop on workflows, monitors and remote agents.** Not tried against the real program. If it refuses, the row says so.
 - **`rf25_solve`'s percentage and Stop on a real long solve.** Neither is in these suites; both read what its tab's own bar
   and Stop use.
 - **The percentages of Xyce, Qucsator and an optimization in a real run.** They come from the bars those runs already drive.
-  Only ngspice's form was tested, and with a fake simulator printing it.
+  A real ngspice-46 was run for its form (`QUCS_JOBS_NGSPICE=<path> test_mcp_server aRealNgspicesPercentage`); a stock ngspice
+  was not to hand, so its `%42.00` is tested with a fake simulator alone.
 - **Claude Code past 2.1.311.** The events are read defensively, and an older program with none of them lists nothing of its
   own. `stop_task` refused is said.
 - **The cost.** Every tool call now does a little more (a map entry, a timer started). The MCP speed benchmark of 3 November
@@ -269,3 +270,51 @@ before it could be read. It was no line of this feature's (`stop_task` lines are
 - **A Stop for `tune`.** Its two modes each hold a long chain of callbacks, and it deserves a change of its own. It would also
   give `cancelCall` a way to reach it, which it has not today.
 - **A tool that stops jobs.** Not asked for.
+
+## The review of 7 November
+
+[2026-11-07-claude-background-jobs-check.md](qucs-reviews/ClaudeChat/archived/2026-11-07-claude-background-jobs-check.md),
+against the installed app at `bc0a4b9`. Each finding was checked here before it was changed.
+
+**The bug: a real ngspice run showed no percentage, here or in the Simulation dock.** Confirmed: ngspice-46 of
+`Ngspice_OpenVAF_Enhancements` prints ` Reference value :  1.05032e+00  [=============           ]  53%\r` to stdout, several in
+one read, and `Ngspice::slotProcessOutput` looked only for `%42.00` at a read's start. So the dock's own bar had been stuck
+at 0 % with this ngspice since before this feature, and the table above promised what a real run did not do. **This write-up's
+test printed the form the parser already took, and so proved nothing about a real run.** Now
+`Ngspice::lastPercentIn()`:
+- reads both forms, anywhere in a read, and takes the last;
+- reads the fork's sweep line, ` montecarlo: sample  3/100  [===    ]  12%   (tran  80%)`, as 12, the whole's;
+- does not take a percentage in a circuit's own text: the bar must be there.
+
+A worker of an optimization has a kernel of its own, whose `progress` reaches no bar, so the optimizer's generations do not
+fight with it.
+
+Tested with the bytes a real run wrote (`ngspicesPercentageIsRead`), through a fake simulator of that form to the job and the
+dock's bar (`theLongToolsAreJobs`), and against the real program: 1 % on the job and the dock's bar, the log's last line ending
+`[ ] 1%`, stopped and keeping how far it got.
+
+**The smaller ones, all confirmed:**
+
+| # | Finding | Now |
+|---|---|---|
+| 1 | An agent's outcome was text meant for the model, with its id | A notification with `handback` has "harness notes written for the model" as its summary (the program's schema). "Its report went to Claude, as a message." Its text was read in the program; **no real notification with `handback` was seen here**: Haiku's did not use one |
+| 2 | A stopped simulation's outcome was `stop_simulation` | "Stopped by stop_simulation." with its note. And a stop from the window was called `stop_simulation` too, in the outcome and the note to conversations, since it uses that code: now "the Background Jobs window" |
+| 3 | A command's outcome repeated its name | Left out when it is the same |
+| 4 | `sleep 8` recorded as 5 s | A job's time now begins at its tool use, not at the task that comes about 3 s later |
+| 5 | `get_dialog`'s words said it read any other window | They now say which: dialog windows, and `list_background_jobs` for this one |
+
+**"Shown" that nothing could check.** `show_background_jobs` said `shown: true` without looking, and the reviewer could not
+confirm it by any means. It now answers whether the window is visible, with its title, whether it is active and its rows.
+`screenshot` still does not take it: a tool that shows it would be a small addition.
+
+**What the review could not test.** Clear Finished and the row's Stop through the real main window, stopping and stopped, are now
+in `theWindowInTheApplication`. The other statuses and kinds it lists were already in tests here. By hand on the rebuilt app,
+its four steps are still worth doing. Issue 1 needs an agent that hands back, so a model other than Haiku.
+
+**The app the review ran is not rebuilt** by this: `/Applications/qucs-s.app` still has the old parser until the next package.
+
+**Tests after these fixes**, on top of `bc0a4b9`: `test_claude_jobs` 21 pass and 2 skip, `test_mcp_server` 22 pass and 1 skip (the
+opt-in real ngspice, which passes when asked), `test_claude_code` 90 pass and 1 skip, `test_claude_fuzz`'s short pass 4 pass, all in
+Release and under ASan and UBSan; `test_qucs_control` 218 pass and 1 skip, Release only. The four lints are green (148 tools).
+**Breaks:** nine new ones in `breaks.py`, 47 in all. Those nine and two of the older were run on this code, and all were caught; the
+other 36 were last run before these fixes.

@@ -970,6 +970,19 @@ bool Ngspice::findMathFuncInc(QString &mathf_inc)
     return QFile::exists(mathf_inc);
 }
 
+int Ngspice::lastPercentIn(const QString& output)
+{
+    static const QRegularExpression forms(QStringLiteral(R"(\[[= ]+\]\s*(\d{1,3})%|(?:^|[\r\n])%(\d{1,3}(?:\.\d+)?))"));
+    int percent = -1;
+    QRegularExpressionMatchIterator it = forms.globalMatch(output);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const double said = (m.lastCapturedIndex() == 1 ? m.captured(1) : m.captured(2)).toDouble();
+        if (said <= 100) percent = int(std::lround(said));
+    }
+    return percent;
+}
+
 /*!
  * \brief Ngspice::slotProcessOutput Process Ngspice output and report completion
  *        percentage.
@@ -977,11 +990,10 @@ bool Ngspice::findMathFuncInc(QString &mathf_inc)
 void Ngspice::slotProcessOutput()
 {
     QString s = a_simProcess->readAllStandardOutput();
-    QRegularExpression percentage_pattern("^%\\d\\d*\\.\\d\\d.*$");
-    if (percentage_pattern.match(s).hasMatch()) {
-        int percent = round(s.mid(1,5).toFloat());
-        emit progress(percent);
-    }
+    // (Several may come in one read, each ending in \r: the last is how far
+    // it is. Only the start of a read was looked at, and in one form, so a
+    // build of ngspice that draws a bar showed none: the review of 7 November.)
+    if (const int percent = lastPercentIn(s); percent >= 0) emit progress(percent);
     a_output += s;
     if (a_console != nullptr) {
         a_console->insertPlainText(s);

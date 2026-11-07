@@ -47,6 +47,7 @@
 #include "claudecodetabs.h"
 #include "claudejobs.h"
 #include "claudejobswindow.h"
+#include "extsimkernels/ngspice.h"
 #include "isolated_settings.h"
 
 using qucs_s::claude::Session;
@@ -236,6 +237,76 @@ private slots:
         const auto old = Registry::instance().job(Registry::instance().taskJob(s.caller(), "old"));
         QVERIFY(old.has_value());
         QCOMPARE(old->status, Status::Stopped);
+    }
+
+    // What an end says, when it says something: not its name again, nor notes
+    // meant for the model. And its time from the command's start, not its
+    // task's, which comes seconds later.
+    void whatATasksEndSaysIsItsOwn()
+    {
+        Session s;
+        const auto job = [&s](const QString& task) { return *Registry::instance().job(Registry::instance().taskJob(s.caller(), task)); };
+        s.handleLine(line(started("same", "Wait eight seconds")));
+        s.handleLine(line(ended("same", "completed", "Wait eight seconds")));
+        QCOMPARE(job("same").outcome, QString());
+        s.handleLine(line(started("said", "Build")));
+        s.handleLine(line(ended("said", "failed", "failed with exit code 3")));
+        QCOMPARE(job("said").outcome, QStringLiteral("failed with exit code 3"));
+        // (As Claude Code 2.1.311's schema has it: with 'handback', its summary
+        // is "harness notes written for the model".)
+        s.handleLine(line(started("agent", "Read it", "local_agent")));
+        QJsonObject handed = ended("agent", "completed", "This agent's report was delivered to you as a message from \"a2e7\" (its SubagentHandback call).");
+        handed.insert("handback", "delivered");
+        s.handleLine(line(handed));
+        QVERIFY2(!job("agent").outcome.contains("a2e7") && !job("agent").outcome.contains("SubagentHandback"), qPrintable(job("agent").outcome));
+        QVERIFY(!job("agent").outcome.isEmpty());
+
+        // A command that became a task later: from its tool use. (Before and
+        // after, not how long: the clock is only asked which came first.)
+        s.handleLine(line({{"type", "assistant"},
+                           {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_use"}, {"id", "t9"}, {"name", "Bash"},
+                                                                                      {"input", QJsonObject{{"command", "sleep 8"}}}}}}}}}));
+        QTest::qWait(30);
+        const QDateTime afterTheToolUse = QDateTime::currentDateTime().addMSecs(-10);
+        QJsonObject late = started("late", "Sleep");
+        late.insert("tool_use_id", "t9");
+        s.handleLine(line(late));
+        QVERIFY2(job("late").began < afterTheToolUse, qPrintable(job("late").began.toString(Qt::ISODateWithMs)));
+        // One whose tool use is not known: from now.
+        QJsonObject unknown = started("unknown", "Sleep");
+        unknown.insert("tool_use_id", "t-never");
+        s.handleLine(line(unknown));
+        QVERIFY(job("unknown").began >= afterTheToolUse);
+    }
+
+    // What ngspice prints as it goes, by the bytes a real run wrote.
+    void ngspicesPercentageIsRead()
+    {
+        // ngspice-46 of Ngspice_OpenVAF_Enhancements, a transient, as it was read.
+        QCOMPARE(Ngspice::lastPercentIn(" Reference value :  2.64239e+01  [======                  ]  26%\r"), 26);
+        // Several in one read, each ending in \r: the last.
+        QCOMPARE(Ngspice::lastPercentIn(" Reference value :  5.26000e-01  [======                  ]  26%\r"
+                                        " Reference value :  1.05032e+00  [=============           ]  53%\r"
+                                        " Reference value :  1.58150e+00  [===================     ]  79%\r"),
+                 79);
+        QCOMPARE(Ngspice::lastPercentIn("Doing analysis at TEMP = 27\nInitial Transient Solution\n"
+                                        " Reference value :  2.00000e+00  [========================] 100%\r\nNo. of Data Rows : 1000008\n"),
+                 100);
+        // An empty bar is a true nought.
+        QCOMPARE(Ngspice::lastPercentIn(" Reference value :  0.00000e+00  [                        ]   0%\r"), 0);
+        // A sweep's line: the bar's, of the whole, not the sample's in brackets.
+        QCOMPARE(Ngspice::lastPercentIn(" montecarlo: sample  3/100  [===                     ]  12%   (tran  80%)     \r"), 12);
+        // The form ngspice has had, at a line's start, not only a read's.
+        QCOMPARE(Ngspice::lastPercentIn("%42.00%\r"), 42);
+        QCOMPARE(Ngspice::lastPercentIn("Circuit: x\n%7.50%\r%42.60%\r"), 43);
+        // What says none: no bar's length, a line of a circuit's, a part
+        // of one; past the whole.
+        QCOMPARE(Ngspice::lastPercentIn(" Reference value :  2.64239e+01\r"), -1);
+        QCOMPARE(Ngspice::lastPercentIn("tolerance 5% of [v(out)] 50%\n"), -1);
+        QCOMPARE(Ngspice::lastPercentIn("R1 a b 10k ; 5%\n"), -1);
+        QCOMPARE(Ngspice::lastPercentIn(" Reference value :  2.6  [=====   ]  2"), -1);
+        QCOMPARE(Ngspice::lastPercentIn("[===] 900%\r"), -1);
+        QCOMPARE(Ngspice::lastPercentIn(QString()), -1);
     }
 
     // Started moves on to running only because it has not ended.

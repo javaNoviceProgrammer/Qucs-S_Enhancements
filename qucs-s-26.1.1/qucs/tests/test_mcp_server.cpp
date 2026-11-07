@@ -18,15 +18,23 @@
 #include <QPainter>
 #include <QPdfWriter>
 #include <QDirIterator>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QProgressBar>
+#include <QTableWidget>
+#include <QToolButton>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 
+#include "claudecodepanel.h"
+#include "claudecodetabs.h"
 #include "claudejobs.h"
 #include "claudejobswindow.h"
 #include "config.h"
+#include "simulationconsole.h"
 #include "isolated_settings.h"
 #include "main.h"
 #include "mcpserver.h"
@@ -997,6 +1005,8 @@ private slots:
         QCOMPARE(whole.value("tool").toString(), QStringLiteral("fem_solve"));
         const QJsonObject shown = structured(callTool("show_background_jobs"));
         QVERIFY2(shown.value("shown").toBool(), qPrintable(QJsonDocument(shown).toJson()));
+        QCOMPARE(shown.value("window").toObject().value("rows").toInt(), registry.count());
+        QCOMPARE(shown.value("window").toObject().value("title").toString(), QStringLiteral("Background Jobs"));
         QVERIFY(ClaudeJobsWindow::existing() != nullptr);
         QVERIFY(ClaudeJobsWindow::existing()->isVisible());
         QVERIFY(ClaudeJobsWindow::existing()->rowOf(solving.value("id").toString()) >= 0);
@@ -1143,6 +1153,37 @@ private slots:
         QVERIFY(registry.stop(simulated));
         QTRY_COMPARE_WITH_TIMEOUT(registry.job(simulated)->status, Status::Stopped, 30000);
         QCOMPARE(registry.job(simulated)->percent, 42);   // (as far as it got)
+        // Whose doing, in words: no tool's name for an outcome.
+        QVERIFY2(registry.job(simulated)->outcome.startsWith("Stopped by the Background Jobs window."), qPrintable(registry.job(simulated)->outcome));
+        // By stop_simulation: said so, and as a sentence.
+        QVERIFY(structured(callTool("simulate", {{"path", sch}, {"background", true}})).value("running").toBool());
+        const QString byTool = registry.jobs().first().id;
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(byTool)->percent == 42, 20000);
+        QVERIFY(!callTool("stop_simulation").value("isError").toBool());
+        QTRY_COMPARE_WITH_TIMEOUT(registry.job(byTool)->status, Status::Stopped, 30000);
+        QVERIFY2(registry.job(byTool)->outcome.startsWith("Stopped by stop_simulation."), qPrintable(registry.job(byTool)->outcome));
+
+        // As a build of ngspice with a bar prints it (the fork's, the review of
+        // 7 November): several in one read, ending in \r. The dock's own bar too.
+        {
+            const QString barred = write("barred-ngspice.sh", "#!/bin/sh\n"
+                                                              "printf ' Reference value :  1.00000e+00  [======                  ]  26%%\\r"
+                                                              " Reference value :  2.00000e+00  [=============           ]  53%%\\r'\n"
+                                                              "exec sleep 120\n");
+            QFile::setPermissions(barred, QFile::permissions(barred) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+            QucsSettings.NgspiceExecutable = barred;
+            registry.reset();
+            QVERIFY(structured(callTool("simulate", {{"path", sch}, {"background", true}})).value("running").toBool());
+            const QString id = registry.jobs().first().id;
+            QTRY_COMPARE_WITH_TIMEOUT(registry.job(id)->percent, 53, 20000);
+            QCOMPARE(app->simulationConsole()->percent(), 53);
+            QCOMPARE(toJson(*registry.job(id), 0, false).value("percent").toInt(), 53);
+            QTRY_VERIFY_WITH_TIMEOUT(registry.job(id)->canStop, 10000);
+            QVERIFY(registry.stop(id));
+            QTRY_COMPARE_WITH_TIMEOUT(registry.job(id)->status, Status::Stopped, 30000);
+            QCOMPARE(registry.job(id)->percent, 53);   // (a run stopped part way keeps how far it got)
+            QucsSettings.NgspiceExecutable = slow;
+        }
 
         registry.reset();
         answer = begin("simulate", {{"path", sch}, {"timeout", 5}});
@@ -1174,6 +1215,138 @@ private slots:
         registry.reset();
         callTool("close_document", {{"path", model}, {"unsaved", "discard"}});
         callTool("close_document", {{"path", other}, {"unsaved", "discard"}});
+    }
+
+    // The window as the user has it: from the dock's ⋯ menu in the main window,
+    // a real solve in it, its own Stop and Clear Finished pressed.
+    void theWindowInTheApplication()
+    {
+        using namespace qucs_s::claude::jobs;
+        Registry& registry = Registry::instance();
+        registry.reset();
+        delete ClaudeJobsWindow::existing();
+        auto* tabs = app->findChild<ClaudeCodeTabs*>();
+        QVERIFY(tabs != nullptr);
+        ClaudeCodePanel* panel = tabs->current();
+        QVERIFY(panel != nullptr);
+        QAction* item = panel->findChild<QAction*>("claudeShowBackgroundJobs");
+        QVERIFY(item != nullptr);
+        auto* menu = qobject_cast<QMenu*>(item->parent());
+        QVERIFY(menu != nullptr);
+        QVERIFY(menu->actions().contains(item));
+        item->trigger();
+        ClaudeJobsWindow* w = ClaudeJobsWindow::existing();
+        QVERIFY(w != nullptr);
+        QCOMPARE(w->parentWidget(), static_cast<QWidget*>(app));   // (the main window's, not a dock's)
+        QVERIFY(w->isVisible());
+        QVERIFY(!w->isModal());
+        // Asked again, with it behind: comes forward, the same one.
+        item->trigger();
+        QCOMPARE(ClaudeJobsWindow::existing(), w);
+
+        // A real solve.
+        QFile example(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/heater_transient.qfem"));
+        QVERIFY(example.open(QIODevice::ReadOnly));
+        QByteArray text = example.readAll();
+        text.replace("range(0, 2[s], 60[s])", "range(0, 0.5[s], 100000[s])");
+        const QString model = write("window_transient.qfem", text);
+        QVERIFY(!callTool("open_document", {{"path", model}}).value("isError").toBool());
+        QVERIFY(!callTool("fem_build", {{"path", model}, {"what", "mesh"}}).value("isError").toBool());
+        // (Finished: the row a Clear takes.)
+        const QString built = registry.jobs().first().id;
+        QCOMPARE(registry.job(built)->status, Status::Finished);
+        QVERIFY(w->clearButton()->isEnabled());
+
+        auto answer = std::make_shared<std::optional<QJsonObject>>();
+        server->handle({{"jsonrpc", "2.0"}, {"id", 9200}, {"method", "tools/call"},
+                        {"params", QJsonObject{{"name", "fem_solve"}, {"arguments", QJsonObject{{"path", model}, {"timeout", 600}}}}}},
+                       [answer](const QJsonObject& r) { *answer = r; });
+        QTRY_COMPARE_WITH_TIMEOUT(registry.count(), 2, 10000);
+        const QString solving = registry.jobs().first().id;
+        QVERIFY(solving != built);
+        // Its row, live: its bar a real percentage, its button on.
+        const auto cell = [&](int column) { return w->table()->cellWidget(w->rowOf(solving), column); };
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(solving)->percent >= 0 && registry.job(solving)->canStop, 30000);
+        auto* bar = cell(ClaudeJobsWindow::Progress)->findChild<QProgressBar*>("claudeJobProgress");
+        QCOMPARE(bar->maximum(), 100);
+        QTRY_COMPARE_WITH_TIMEOUT(bar->value(), registry.job(solving)->percent, 10000);
+        auto* stop = cell(ClaudeJobsWindow::Stop)->findChild<QToolButton*>("claudeJobStop");
+        QVERIFY(stop->isEnabled());
+
+        // Clear Finished takes what is over, not the solve.
+        QTest::mouseClick(w->clearButton(), Qt::LeftButton);
+        QVERIFY(!registry.job(built).has_value());
+        QCOMPARE(w->rowOf(built), -1);
+        QVERIFY(w->rowOf(solving) >= 0);
+        QVERIFY(!answer->has_value());
+
+        // Its Stop: stopping, then stopped once it has, and its call answered.
+        QStringList said;
+        const QMetaObject::Connection watching = connect(&registry, &Registry::changed, this, [&](const QString& id) {
+            if (id != solving) return;
+            const QString now = statusKey(registry.job(id)->status);
+            if (said.isEmpty() || said.last() != now) said << now;
+        });
+        QTest::mouseClick(stop, Qt::LeftButton);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        disconnect(watching);
+        QVERIFY2(said.size() >= 2 && said.first() == "stopping" && said.last() == "stopped", qPrintable(said.join(' ')));
+        QCOMPARE(w->table()->item(w->rowOf(solving), ClaudeJobsWindow::Status)->text(), QStringLiteral("stopped"));
+        QVERIFY(!cell(ClaudeJobsWindow::Stop)->findChild<QToolButton*>("claudeJobStop")->isVisibleTo(w));
+
+        // Its details, whole.
+        w->table()->selectRow(w->rowOf(solving));
+        QVERIFY(w->details()->toPlainText().contains("window_transient.qfem"));
+        if (QGuiApplication::platformName() != QLatin1String("offscreen")) qInfo("on the %s platform", qPrintable(QGuiApplication::platformName()));
+
+        delete w;
+        registry.reset();
+        callTool("close_document", {{"path", model}, {"unsaved", "discard"}});
+    }
+
+    // Opt in (QUCS_JOBS_NGSPICE=<a real ngspice>): a real transient, its
+    // percentage in the job and the dock's bar as it goes.
+    void aRealNgspicesPercentage()
+    {
+        const QString real = qEnvironmentVariable("QUCS_JOBS_NGSPICE");
+        if (real.isEmpty()) QSKIP("QUCS_JOBS_NGSPICE names a real ngspice");
+        using namespace qucs_s::claude::jobs;
+        Registry& registry = Registry::instance();
+        registry.reset();
+        const QString simulatorWas = QucsSettings.NgspiceExecutable;
+        const auto back = qScopeGuard([simulatorWas] { QucsSettings.NgspiceExecutable = simulatorWas; });
+        QucsSettings.NgspiceExecutable = real;
+        const QString sch = dir.filePath("workspace/jobs-real-rc.sch");
+        QVERIFY(!callTool("new_document", {{"kind", "schematic"}}).value("isError").toBool());
+        const QJsonObject set = callTool("set_schematic", {{"components", QJsonArray{
+            QJsonObject{{"type", "Vdc"}, {"name", "V1"}, {"x", 100}, {"y", 200}},
+            QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}},
+            QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 200}},
+            QJsonObject{{"type", "GND"}, {"name", "G1"}, {"x", 100}, {"y", 300}},
+            QJsonObject{{"type", ".TR"}, {"name", "TR1"}, {"x", 400}, {"y", 300}, {"properties", QJsonObject{{"Stop", "100 s"}, {"Points", "50000000"}}}}}}});
+        QVERIFY2(!set.value("isError").toBool(), qPrintable(QJsonDocument(set).toJson()));
+        QVERIFY(!callTool("save_document", {{"as", sch}}).value("isError").toBool());
+        QVERIFY(!callTool("connect", {{"from", "V1.1"}, {"to", "R1.1"}}).value("isError").toBool());
+        callTool("connect", {{"from", "R1.2"}, {"to", "C1.1"}});
+        callTool("connect", {{"from", "C1.2"}, {"to", "G1.1"}});
+        callTool("connect", {{"from", "V1.2"}, {"to", "G1.1"}});
+        const QJsonObject begun = structured(callTool("simulate", {{"path", sch}, {"background", true}}));
+        QVERIFY2(begun.value("running").toBool(), qPrintable(QJsonDocument(begun).toJson()));
+        const QString id = registry.jobs().first().id;
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(id)->percent > 0 || isOver(registry.job(id)->status), 60000);
+        const Job job = *registry.job(id);
+        qInfo("the job: %s; the console's bar: %d; the log's last: %s", qPrintable(percentText(job)), app->simulationConsole()->percent(),
+              qPrintable(app->simulationConsole()->console()->toPlainText().right(90).simplified()));
+        QVERIFY2(!isOver(job.status), qPrintable(job.outcome));
+        QVERIFY(job.percent > 0 && job.percent < 100);
+        QCOMPARE(app->simulationConsole()->percent() >= job.percent, true);
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(id)->canStop, 10000);
+        const int before = registry.job(id)->percent;
+        QVERIFY(registry.stop(id));
+        QTRY_COMPARE_WITH_TIMEOUT(registry.job(id)->status, Status::Stopped, 30000);
+        QVERIFY(registry.job(id)->percent >= before);
+        registry.reset();
+        callTool("close_document", {{"path", sch}, {"unsaved", "discard"}});
     }
 
     void theProgramServesOverStdio()
