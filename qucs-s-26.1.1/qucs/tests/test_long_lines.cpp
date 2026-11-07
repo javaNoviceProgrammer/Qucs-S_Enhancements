@@ -17,6 +17,9 @@
 
 #include <QtTest>
 #include <QDockWidget>
+#include <QJsonDocument>
+#include <QScrollBar>
+#include <QTextBrowser>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QImage>
@@ -33,6 +36,9 @@
 #include <QToolTip>
 
 #include "config.h"
+#include "apptheme.h"
+#include "claudecode.h"
+#include "claudecodepanel.h"
 #include "elidedlabel.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -81,6 +87,11 @@ QString tipOf(QWidget* w)
 }
 
 } // namespace
+
+static int pictureTheme()
+{
+    return qEnvironmentVariable("QUCS_CLAUDE_PICTURES_THEME") == QStringLiteral("light") ? qucs_s::apptheme::Light : qucs_s::apptheme::Dark;
+}
 
 class TestLongLines : public QObject
 {
@@ -278,6 +289,8 @@ private slots:
         QucsSettings.appFont = QApplication::font();
         QucsSettings.textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         Module::registerModules();
+        // (The pictures' theme, set as the app sets it, before its window.)
+        if (qEnvironmentVariableIsSet("QUCS_CLAUDE_PICTURES")) qucs_s::apptheme::apply(pictureTheme());
         app = new QucsApp(false);
         QucsMain = app;
         app->resize(1300, 900);
@@ -537,6 +550,52 @@ private slots:
             qInfo().noquote() << "  " << found.size() << "of" << probed << "label(s) widen it";
             for (const Widening& w : found)
                 qInfo().noquote() << "  +" << w.grew << "px" << w.where << "|" << w.text;
+        }
+    }
+
+    // Opt in (QUCS_CLAUDE_PICTURES=<folder>, QUCS_CLAUDE_PICTURES_THEME=light or
+    // dark): a reply with a long line of code, as the user reported it on 7
+    // November, in the main window's dock, as pictures to look at - on a real
+    // display when run with the platform's own plugin, not the offscreen one.
+    void pictures()
+    {
+        const QString folder = qEnvironmentVariable("QUCS_CLAUDE_PICTURES");
+        if (folder.isEmpty()) QSKIP("QUCS_CLAUDE_PICTURES names a folder for the pictures");
+        auto* panel = app->claudeDockWidget()->findChild<ClaudeCodePanel*>();
+        QVERIFY(panel != nullptr);
+        const auto feed = [panel](const QString& markdown) {
+            const QJsonObject text{{"type", "text"}, {"text", markdown}};
+            const QJsonObject message{{"content", QJsonArray{text}}};
+            panel->session()->handleLine(QJsonDocument(QJsonObject{{"type", "assistant"}, {"message", message}}).toJson(QJsonDocument::Compact));
+            panel->renderNow();
+        };
+        const QString line = QStringLiteral("launchctl setenv SPICE_LIB_DIR \"/Volumes/Archive 01/git/Ngspice_OpenVAF_Enhancements/bin/macos/apple-silicon\"");
+        const QString reply = QStringLiteral(
+            "| Setting | spinit warning |\n|---|---|\n| `apple-silicon/scripts` | Yes |\n| `apple-silicon` | **No warning, and no errors** |\n\n"
+            "One line in `.zshrc`, which covers ngspice run from a terminal:\n\n"
+            "```bash\nexport SPICE_LIB_DIR=\"/Volumes/Archive 01/git/Ngspice_OpenVAF_Enhancements/bin/macos/apple-silicon\"\n```\n\n"
+            "**Make it visible to the app**, then quit and reopen Qucs-S:\n\n```\n%1\n```\n\n"
+            "Several lines, indented, one with no spaces:\n\n"
+            "```python\ndef first():\n        return \"%2\"\n\nprint(first())\n```\n\n"
+            "Then the words around it: this setting is lost on reboot, so it needs a LaunchAgent to persist.")
+                                  .arg(line, QString(160, QLatin1Char('x')));
+        const QString wide = QStringLiteral("A formula wider than the view, and words after it that still wrap at the view's width, "
+                                            "with nothing cut off at the left:\n\n$$%1x$$\n\nAnd code after it:\n\n```\n%2\n```")
+                                 .arg(QStringLiteral("x+").repeated(120), line);
+        const QString blob = QStringLiteral("A blob of data, with places to break it that show nowhere:\n\n```\n%1\n```\n\nThe same in words: %2.")
+                                 .arg(QStringLiteral("Tm93IGlzIHRoZSB0aW1l").repeated(150), QStringLiteral("Tm93IGlzIHRoZSB0aW1l").repeated(150));
+        for (const auto& [name, markdown] : {std::pair{"code", reply}, std::pair{"wide", wide}, std::pair{"blob", blob}}) {
+            panel->newConversation();
+            feed(markdown);
+            panel->transcript()->verticalScrollBar()->setValue(0);
+            settle();
+            const QString theme = pictureTheme() == qucs_s::apptheme::Dark ? QStringLiteral("dark") : QStringLiteral("light");
+            const QString file = QDir(folder).filePath(QStringLiteral("%1-%2.png").arg(name, theme));
+            QVERIFY(app->grab().save(file));
+            QVERIFY(panel->transcript()->grab().save(QDir(folder).filePath(QStringLiteral("%1-%2-dock.png").arg(name, theme))));
+            QVERIFY(panel->exportConversation(QDir(folder).filePath(QStringLiteral("%1-%2.pdf").arg(name, theme)), ClaudeCodePanel::ExportFormat::Pdf));
+            qInfo("%s (%s): the dock %d wide, sideways %d of %d", qPrintable(file), qPrintable(QApplication::platformName()), app->claudeDockWidget()->width(),
+                  panel->transcript()->horizontalScrollBar()->value(), panel->transcript()->horizontalScrollBar()->maximum());
         }
     }
 };

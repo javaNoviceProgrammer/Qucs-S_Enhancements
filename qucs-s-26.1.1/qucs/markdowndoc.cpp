@@ -69,6 +69,75 @@ constexpr int kLongestRun = 64;
 constexpr char16_t kRunBreak = 0x200B;   // (a zero-width space)
 } // namespace
 
+void breakLongRuns(QTextDocument* document, int from, const RunBreaks& how)
+{
+    for (QTextBlock b = document->findBlock(from); b.isValid(); b = b.next()) {
+        if (b.length() - 1 <= how.longest) continue;
+        const QTextBlockFormat bf = b.blockFormat();
+        if (!how.code && (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence))) continue;
+        const QString text = b.text();
+        const int size = int(text.size());
+        QTextBoundaryFinder finder(QTextBoundaryFinder::Line, text);
+        std::vector<int> at;
+        // (Each run's places known at its end: a run is broken only if it is long.)
+        const auto ended = [&at, &how](int start, int end) {
+            if (end - start > how.longest)
+                for (int k = start + how.every; k < end; k += how.every) at.push_back(k);
+        };
+        int last = 0;
+        for (int i = 1; i < size; ++i) {
+            finder.setPosition(i);
+            if (finder.isAtBoundary() || text.at(i).isSpace()) {
+                ended(last, i);
+                last = i;
+            }
+        }
+        ended(last, size);
+        if (at.empty()) continue;
+        // (Each fragment's text put in again, its breaks in it, from the
+        // block's end: put one at a time, each cost the block's length - 128
+        // kB 3.7 s with no layout at all. Each fragment built in one pass: a
+        // break inserted at a time, the same again within the fragment.)
+        std::vector<QTextFragment> pieces;
+        for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) pieces.push_back(it.fragment());
+        const int start = b.position();
+        for (auto piece = pieces.rbegin(); piece != pieces.rend(); ++piece) {
+            const int first = piece->position() - start, end = first + piece->length();
+            const QTextCharFormat f = piece->charFormat();
+            if (f.isImageFormat() || f.objectType() != QTextFormat::NoObject) continue;
+            auto k = std::upper_bound(at.cbegin(), at.cend(), first);
+            if (k == at.cend() || *k >= end) continue;
+            const QString was = piece->text();
+            QString t;
+            t.reserve(was.size() + was.size() / how.every + 1);
+            int done = first;
+            for (; k != at.cend() && *k < end; ++k) {
+                t += QStringView(was).mid(done - first, *k - done);
+                t += QChar(kRunBreak);
+                done = *k;
+            }
+            t += QStringView(was).mid(done - first);
+            QTextCursor put(document);
+            put.setPosition(piece->position());
+            put.setPosition(piece->position() + piece->length(), QTextCursor::KeepAnchor);
+            put.insertText(t, f);
+        }
+    }
+}
+
+void removeRunBreaks(QMimeData* data)
+{
+    if (data == nullptr || !data->hasText()) return;
+    const QChar mark(kRunBreak);
+    if (!data->text().contains(mark)) return;
+    data->setText(QString(data->text()).remove(mark));
+    if (data->hasHtml()) data->setHtml(QString(data->html()).remove(mark));
+    const QString markdown = QStringLiteral("text/markdown");
+    if (data->hasFormat(markdown)) data->setData(markdown, QString::fromUtf8(data->data(markdown)).remove(mark).toUtf8());
+    // (A zipped file: not to be mended, and a program has the others to take.)
+    data->removeFormat(QStringLiteral("application/vnd.oasis.opendocument.text"));
+}
+
 void render(QTextDocument* document, const QString& markdown, const QFont& font, const Colours& colours, qreal devicePixelRatio)
 {
     // The math out of the way of the Markdown: a mark for each formula.
@@ -105,47 +174,7 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
     // Where a quote or a list narrows the column, Qt broke its lines anywhere,
     // searching the run to its end for each: a letter a line, in the square
     // of its length - 32 kB three quotes deep 8.9 s to open (C2).
-    for (QTextBlock b = staged.begin(); b.isValid(); b = b.next()) {
-        const QTextBlockFormat bf = b.blockFormat();
-        if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)) continue;   // (code: not wrapped)
-        const QString text = b.text();
-        if (text.size() <= kLongestRun) continue;
-        QTextBoundaryFinder finder(QTextBoundaryFinder::Line, text);
-        std::vector<int> at;
-        int last = 0;
-        for (int i = 1; i < int(text.size()); ++i) {
-            finder.setPosition(i);
-            if (finder.isAtBoundary() || text.at(i).isSpace()) last = i;
-            else if (i - last >= kLongestRun) {
-                at.push_back(i);
-                last = i;
-            }
-        }
-        if (at.empty()) continue;
-        // (Each fragment's text put in again, its breaks in it, from the
-        // block's end: put one at a time, each cost the block's length - 128
-        // kB 3.7 s with no layout at all.)
-        std::vector<QTextFragment> pieces;
-        for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) pieces.push_back(it.fragment());
-        const int start = b.position();
-        for (auto piece = pieces.rbegin(); piece != pieces.rend(); ++piece) {
-            const int from = piece->position() - start, to = from + piece->length();
-            const QTextCharFormat f = piece->charFormat();
-            if (f.isImageFormat() || f.objectType() != QTextFormat::NoObject) continue;
-            QString t = piece->text();
-            bool any = false;
-            for (auto k = at.rbegin(); k != at.rend(); ++k)
-                if (*k > from && *k < to) {
-                    t.insert(*k - from, QChar(kRunBreak));
-                    any = true;
-                }
-            if (!any) continue;
-            QTextCursor put(&staged);
-            put.setPosition(piece->position());
-            put.setPosition(piece->position() + piece->length(), QTextCursor::KeepAnchor);
-            put.insertText(t, f);
-        }
-    }
+    breakLongRuns(&staged, 0, RunBreaks{kLongestRun, kLongestRun, false});   // (code: not wrapped)
 
     const QColor shade = colours.code.isValid()
                              ? colours.code
@@ -349,8 +378,7 @@ protected:
     QMimeData* createMimeDataFromSelection() const override
     {
         QMimeData* data = QTextBrowser::createMimeDataFromSelection();
-        if (data != nullptr && data->hasText()) data->setText(QString(data->text()).remove(QChar(kRunBreak)));
-        if (data != nullptr && data->hasHtml()) data->setHtml(QString(data->html()).remove(QChar(kRunBreak)));
+        removeRunBreaks(data);
         return data;
     }
 
