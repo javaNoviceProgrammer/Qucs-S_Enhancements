@@ -10,7 +10,7 @@ targets."
 
 ## What you can do now
 
-Add an **Optimization** node to a 2D model (the model's menu, or `fem_edit` with `type` optimization under `model`). In it:
+Add an optimization under the **Optimization** node of a 2D model's tree (its menu, or `fem_edit` with `type` optimization under `optimizations`). In it:
 
 - **Parameters to vary:** any of the model's parameters, each with a range and a type: linear or logarithmic, whole
   numbers, or preferred values E3 to E192. A parameter that shapes the geometry or the mesh gets a new geometry and mesh for
@@ -168,7 +168,7 @@ one string a row, so a file diffs by the line, and at most 1,000 rows: those tha
 
 ### The window
 
-- **The node** in the tree, between the studies and the results, by the generic settings form. `Rows` gained `columnChoices`: a
+- **The node** in the tree: one Optimization node, between the studies and the results and always there on a 2D model, with each optimization under it, by the generic settings form. The node is the tree's alone: the file keeps its top-level list, and adding to the model still lands under it. `Rows` gained `columnChoices`: a
   box in a cell, or the model's parameters or studies. **Add** fills a row: the first parameter not varied yet, a factor of
   two each way, in its unit.
 - **`multiphysicsoptimization.{h,cpp}`**, the tab's Optimization page. It is there only where the model has an optimization.

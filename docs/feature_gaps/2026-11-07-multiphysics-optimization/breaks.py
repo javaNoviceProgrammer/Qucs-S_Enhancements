@@ -98,7 +98,7 @@ BREAKS = [
     ('Apply not a step of Undo', DOC, 'setModel(m, tr("Apply Optimum of %1").arg(node->name()));', 'applyModel(m);', WINDOW),
     ('Apply does not compute', DOC, 'if (node) compute(node->text(QStringLiteral("study")));', '', WINDOW),
     ('the page not told of a change', DOC, '    updateOptimizationPage();\n    emit modelChanged();', '    emit modelChanged();', WINDOW),
-    ('the button always there', DOC, 'a_optimize->setVisible(a_model.root.children.end() != std::find_if', 'a_optimize->setVisible(true || a_model.root.children.end() != std::find_if', WINDOW),
+    ('the button always there', DOC, 'a_optimize->setVisible(!optimizationNodes(a_model).empty());', 'a_optimize->setVisible(true);', WINDOW),
     ('a box\'s value not collected', PANEL, 'if (auto* box = qobject_cast<QComboBox*>(table->cellWidget(r, c))) return box->currentText().trimmed();', '', WINDOW),
     ('no boxes in a table', PANEL, 'if (!columnChoices.at(c).isEmpty()) {', 'if (false) {', WINDOW),
     ('a row without its range', FEM, 'return QJsonArray{name, QString(), parameterText(model, parameters, name, low), parameterText(model, parameters, name, high), QStringLiteral("LIN_DOUBLE"), QStringLiteral("yes")};', 'return QJsonArray{name, QString(), parameterText(model, parameters, name, high), parameterText(model, parameters, name, low), QStringLiteral("LIN_DOUBLE"), QStringLiteral("yes")};', WINDOW),

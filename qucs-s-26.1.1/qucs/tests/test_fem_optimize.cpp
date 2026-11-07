@@ -903,14 +903,20 @@ void TestFemOptimize::theSectionRoundTrips()
     QCOMPARE(again->toObject(), m.toObject());
     QCOMPARE(again->toJson(), once);
     QVERIFY(m.toObject().value(QStringLiteral("optimizations")).toArray().size() == 1);
-    // Between the studies and the results in the tree, added or read.
+    // Under their node, between the studies and the results in the tree, added or read.
     int study = -1, optimization = -1, results = -1;
     for (int i = 0; i < int(m.root.children.size()); ++i) {
-        if (m.root.children[std::size_t(i)].type == QLatin1String("study")) study = i;
-        if (m.root.children[std::size_t(i)].type == QLatin1String("optimization")) optimization = i;
-        if (m.root.children[std::size_t(i)].type == QLatin1String("results")) results = i;
+        const QString& type = m.root.children[std::size_t(i)].type;
+        QVERIFY(type != QLatin1String("optimization"));
+        if (type == QLatin1String("study")) study = i;
+        if (type == QLatin1String("optimizations")) optimization = i;
+        if (type == QLatin1String("results")) results = i;
     }
-    QVERIFY(study < optimization && optimization < results);
+    QVERIFY(study >= 0 && study < optimization && optimization < results);
+    const Node* group = m.root.child(QStringLiteral("optimizations"));
+    QCOMPARE(int(group->children.size()), 1);
+    QCOMPARE(group->children.front().type, QStringLiteral("optimization"));
+    QVERIFY(m.root.child(QStringLiteral("optimizations"))->kind()->fixed);
     // Added as any node.
     Model blank = Model::blank();
     Node made = blank.make(QStringLiteral("optimization"));
@@ -920,8 +926,24 @@ void TestFemOptimize::theSectionRoundTrips()
     QVERIFY2(added, qPrintable(refused));
     QCOMPARE(added->tag, QStringLiteral("opt1"));
     QVERIFY(blank.root.children.back().type == QLatin1String("results"));
+    // There from the start, under it whichever way it is asked for, and no file's
+    // business while it is empty.
+    QCOMPARE(added, &blank.root.child(QStringLiteral("optimizations"))->children.front());
+    QVERIFY(blank.add(QStringLiteral("optimizations"), blank.make(QStringLiteral("optimization")), -1, &refused));
+    QCOMPARE(int(blank.root.child(QStringLiteral("optimizations"))->children.size()), 2);
+    QVERIFY(!Model::blank().toObject().contains(QStringLiteral("optimizations")));
+    QVERIFY(Model::blank().root.child(QStringLiteral("optimizations")));
+    // A study added comes before it.
+    QVERIFY(blank.add(QStringLiteral("model"), blank.make(QStringLiteral("study")), -1, &refused));
+    int lastStudy = -1, node = -1;
+    for (int i = 0; i < int(blank.root.children.size()); ++i) {
+        if (blank.root.children[std::size_t(i)].type == QLatin1String("study")) lastStudy = i;
+        if (blank.root.children[std::size_t(i)].type == QLatin1String("optimizations")) node = i;
+    }
+    QVERIFY(lastStudy >= 0 && lastStudy < node);
     // Not a 3D model's.
     Model three = Model::blank3d();
+    QVERIFY(!three.root.child(QStringLiteral("optimizations")));
     QVERIFY(!three.add(QStringLiteral("model"), three.make(QStringLiteral("optimization")), -1, &refused));
     // Its plan as the setting says.
     const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);

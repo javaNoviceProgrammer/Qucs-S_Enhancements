@@ -2237,7 +2237,7 @@ void QucsControl::femOptimize(const QJsonObject& args, const Done& given)
     if (node == nullptr) {
         QStringList tags;
         for (const FNode* n : optimizationNodes(doc->model())) tags << n->tag;
-        return given(errorResult(tags.isEmpty() ? tr("The model has no optimization: fem_edit adds one (type optimization, parent model; fem_describe what=format lists what it takes).")
+        return given(errorResult(tags.isEmpty() ? tr("The model has no optimization: fem_edit adds one (type optimization, parent optimizations; fem_describe what=format lists what it takes).")
                                                 : tr("There is no optimization %1: the model has %2.").arg(tag, tags.join(QStringLiteral(", ")))));
     }
     const QString found = node->tag;

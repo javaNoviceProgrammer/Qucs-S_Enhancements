@@ -236,7 +236,7 @@ QList<NodeKind> makeKinds()
     // The tree's own parts.
     add({QStringLiteral("model"), tr("Model"), QString(), QStringLiteral("model"), Level::None,
          {text(QStringLiteral("description"), tr("Description"), QString())},
-         {QStringLiteral("study"), QStringLiteral("optimization")}, {}, true, true, QString(), QString()});
+         {QStringLiteral("study")}, {}, true, true, QString(), QString()});
     add({QStringLiteral("definitions"), tr("Global Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("analytic"), QStringLiteral("interpolation")}, {}, true, true, QString(),
          tr("The parameters and functions every part of the model may use.")});
@@ -3305,6 +3305,10 @@ QList<NodeKind> makeKinds()
             s.method = i;
             strategies << s.methodName();
         }
+        // The tree's node they all go under; the file has them in a list of its own.
+        add({QStringLiteral("optimizations"), tr("Optimization"), QString(), QStringLiteral("optimization"), Level::None, {},
+             {QStringLiteral("optimization")}, {}, true, true, QString(),
+             tr("Each optimization under it varies the model's parameters to reach what it asks of the results.")});
         add({QStringLiteral("optimization"), tr("Optimization"), QStringLiteral("optimization"), QStringLiteral("optimization"), Level::None,
              {study,
               choice(QStringLiteral("mode"), tr("Asks for"), {QStringLiteral("optimize"), QStringLiteral("center")},
@@ -4292,6 +4296,7 @@ Model Model::blank3d()
 {
     Model m;
     m.component().props.insert(QStringLiteral("space"), QStringLiteral("3D"));
+    m.normalise();   // (no Optimization node: not a 3D model's)
     // (A study at rest, as a 2D model's: its physics solved by Compute.)
     Node study = m.make(QStringLiteral("study"));
     m.add(QStringLiteral("model"), study);
@@ -4468,6 +4473,9 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
         if (error) *error = tr("there is no node %1").arg(parentTag);
         return nullptr;
     }
+    // (Added to the model: under the node its optimizations go under.)
+    if (parent == &root && node.type == QLatin1String("optimization"))
+        if (Node* group = root.child(QStringLiteral("optimizations"))) parent = group;
     const NodeKind* pk = parent->kind();
     const NodeKind* k = node.kind();
     if (!k) {
@@ -4533,7 +4541,7 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
     // the physics, the studies before the results, Derived Values last of them.
     const QString last = parent->type == QLatin1String("geometry")    ? QStringLiteral("form union")
                          : parent->type == QLatin1String("component") ? QStringLiteral("mesh")
-                         : parent->type == QLatin1String("model")     ? QStringLiteral("results")
+                         : parent->type == QLatin1String("model")     ? (parent->child(QStringLiteral("optimizations")) ? QStringLiteral("optimizations") : QStringLiteral("results"))
                          : parent->type == QLatin1String("results")   ? QStringLiteral("derived")
                                                                       : QString();
     // (Results: before Derived Values and Export.)
@@ -4790,6 +4798,32 @@ void Model::normalise(QStringList* notes)
             fin.tag = QStringLiteral("fin");
         }
         geometry.children.push_back(fin);
+    }
+    // The optimizations under their node, after the studies. (A 2D model's: a 3D
+    // one has none to offer, and what a file gives it stays where it can be refused.)
+    {
+        Node group;
+        group.type = QStringLiteral("optimizations");
+        group.tag = QStringLiteral("optimizations");
+        const auto isGroup = [](const Node& n) { return n.type == QLatin1String("optimizations"); };
+        const auto it = std::find_if(root.children.begin(), root.children.end(), isGroup);
+        if (it != root.children.end()) {
+            group = *it;
+            root.children.erase(it);
+        }
+        if (is3D()) {
+            for (const Node& n : group.children) root.children.push_back(n);
+        } else {
+            for (auto c = root.children.begin(); c != root.children.end();) {
+                if (c->type == QLatin1String("optimization")) {
+                    group.children.push_back(*c);
+                    c = root.children.erase(c);
+                } else {
+                    ++c;
+                }
+            }
+            root.children.push_back(group);
+        }
     }
     // Results after the studies, Derived Values in them.
     {
@@ -5057,8 +5091,11 @@ QJsonObject Model::toObject() const
     o.insert(QStringLiteral("studies"), studies);
     // (Only where there is one: a model without any writes what it wrote before.)
     QJsonArray optimizations;
-    for (const Node& s : root.children)
+    for (const Node& s : root.children) {
         if (s.type == QLatin1String("optimization")) optimizations.append(nodeObject(root, s));
+        if (s.type == QLatin1String("optimizations"))
+            for (const Node& c : s.children) optimizations.append(nodeObject(root, c));
+    }
     if (!optimizations.isEmpty()) o.insert(QStringLiteral("optimizations"), optimizations);
     QJsonObject r;
     QJsonArray plots, derived, exports;

@@ -1371,7 +1371,7 @@ void MultiphysicsDoc::optimize(const QString& tag)
     if (isBusy()) return;
     const Node* found = optimizationNode(a_model, tag);
     if (!found) {
-        a_lastError = tag.isEmpty() ? tr("The model has no optimization: add one (the model's menu).") : tr("There is no optimization %1.").arg(tag);
+        a_lastError = tag.isEmpty() ? tr("The model has no optimization: add one (the menu of its Optimization node).") : tr("There is no optimization %1.").arg(tag);
         say(a_lastError, true);
         emit stateChanged();
         return;
@@ -1877,7 +1877,7 @@ void MultiphysicsDoc::updateState()
     a_buildMesh->setEnabled(!busy);
     a_compute->setEnabled(!busy);
     a_optimize->setEnabled(!busy);
-    a_optimize->setVisible(a_model.root.children.end() != std::find_if(a_model.root.children.begin(), a_model.root.children.end(), [](const Node& n) { return n.type == QLatin1String("optimization"); }));
+    a_optimize->setVisible(!optimizationNodes(a_model).empty());
     QString banner;
     const QString shownStudy = a_plotGroup.isEmpty() ? QString() : [this] {
         const Node* g = a_model.find(a_plotGroup);
