@@ -24,6 +24,8 @@
 #include <QTemporaryDir>
 #include <QTimer>
 
+#include "claudejobs.h"
+#include "claudejobswindow.h"
 #include "config.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -920,6 +922,260 @@ private slots:
         QCOMPARE(a.value("error").toObject().value("code").toInt(), -32600);
     }
 
+    // The Qucs-S tools' jobs, with what really does the work: a model's solve
+    // says its own percentage, Stop stops it, and the tools tell of it.
+    void theLongToolsAreJobs()
+    {
+        using namespace qucs_s::claude::jobs;
+        Registry& registry = Registry::instance();
+        registry.reset();
+        using Answer = std::shared_ptr<std::optional<QJsonObject>>;
+        int next = 9100;
+        const auto begin = [this, &next](const QString& tool, const QJsonObject& arguments) {
+            Answer answer = std::make_shared<std::optional<QJsonObject>>();
+            server->handle({{"jsonrpc", "2.0"}, {"id", ++next}, {"method", "tools/call"},
+                            {"params", QJsonObject{{"name", tool}, {"arguments", arguments}}}},
+                           [answer](const QJsonObject& r) { *answer = r; });
+            return answer;
+        };
+        const auto jobOf = [this](const QString& tool) {
+            const QJsonArray listed = structured(callTool("list_background_jobs")).value("jobs").toArray();
+            for (const QJsonValue& v : listed)
+                if (v.toObject().value("name").toString().startsWith(tool)) return v.toObject();
+            return QJsonObject();
+        };
+
+        // In the tools' lists, as their kin are.
+        QVERIFY(control->readOnlyTools().contains("list_background_jobs"));
+        QVERIFY(control->readOnlyTools().contains("get_background_job"));
+        QVERIFY(!control->readOnlyTools().contains("show_background_jobs"));
+        QVERIFY(control->autonomousTools().contains("show_background_jobs"));
+
+        // Nothing yet; and what is refused is said.
+        QJsonObject none = structured(callTool("list_background_jobs"));
+        QCOMPARE(none.value("jobs").toArray().size(), 0);
+        QCOMPARE(none.value("going").toInt(), 0);
+        QVERIFY(callTool("list_background_jobs", {{"status", "soon"}}).value("isError").toBool());
+        QVERIFY(callTool("list_background_jobs", {{"max", 0}}).value("isError").toBool());
+        QVERIFY(callTool("get_background_job", {{"id", "job-0"}}).value("isError").toBool());
+        QVERIFY(callTool("get_background_job").value("isError").toBool());
+        // A quick tool's call is no job, nor the tools that tell of them.
+        QVERIFY(!callTool("get_state").value("isError").toBool());
+        QCOMPARE(registry.count(), 0);
+
+        // A model's long transient.
+        QFile example(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/heater_transient.qfem"));
+        QVERIFY(example.open(QIODevice::ReadOnly));
+        QByteArray text = example.readAll();
+        QVERIFY(text.contains("range(0, 2[s], 60[s])"));
+        text.replace("range(0, 2[s], 60[s])", "range(0, 0.5[s], 100000[s])");
+        const QString model = write("jobs_transient.qfem", text);
+        QVERIFY(!callTool("open_document", {{"path", model}}).value("isError").toBool());
+        QVERIFY(!callTool("fem_build", {{"path", model}, {"what", "mesh"}}).value("isError").toBool());
+        // (The build above: a job, over, finished.)
+        QJsonObject built = jobOf("fem_build");
+        QCOMPARE(built.value("status").toString(), QStringLiteral("finished"));
+        QCOMPARE(built.value("percent").toInt(), 100);
+        QCOMPARE(built.value("kind").toString(), QStringLiteral("build"));
+        QCOMPARE(registry.clearFinished(), 1);
+
+        Answer answer = begin("fem_solve", {{"path", model}, {"timeout", 600}});
+        QJsonObject solving;
+        QTRY_VERIFY_WITH_TIMEOUT((solving = jobOf("fem_solve"), !solving.isEmpty()), 10000);
+        QCOMPARE(solving.value("kind").toString(), QStringLiteral("solve"));
+        QVERIFY(solving.value("source").toString() == QLatin1String("qucs-s"));
+        QVERIFY(solving.value("yours").toBool());   // (the server's conversation)
+        QVERIFY(!solving.value("started").toString().isEmpty());
+        // Its own percentage, once it has said one: the time steps it has done.
+        QTRY_VERIFY_WITH_TIMEOUT((solving = jobOf("fem_solve"), solving.value("percent").isDouble()), 30000);
+        QCOMPARE(solving.value("status").toString() == QLatin1String("running") || solving.value("status").toString() == QLatin1String("started"), true);
+        QVERIFY(solving.value("percent").toInt() >= 0 && solving.value("percent").toInt() < 100);
+        QVERIFY(solving.value("can_stop").toBool());
+        // Its details, and the window shows it, live.
+        const QJsonObject whole = structured(callTool("get_background_job", {{"id", solving.value("id").toString()}}));
+        QVERIFY2(whole.value("detail").toString().contains("jobs_transient.qfem"), qPrintable(QJsonDocument(whole).toJson()));
+        QCOMPARE(whole.value("tool").toString(), QStringLiteral("fem_solve"));
+        const QJsonObject shown = structured(callTool("show_background_jobs"));
+        QVERIFY2(shown.value("shown").toBool(), qPrintable(QJsonDocument(shown).toJson()));
+        QVERIFY(ClaudeJobsWindow::existing() != nullptr);
+        QVERIFY(ClaudeJobsWindow::existing()->isVisible());
+        QVERIFY(ClaudeJobsWindow::existing()->rowOf(solving.value("id").toString()) >= 0);
+        QCOMPARE(shown.value("going").toInt(), 1);
+        QCOMPARE(shown.value("jobs").toArray().first().toObject().value("id"), solving.value("id"));
+        // Only going, only over.
+        QCOMPARE(structured(callTool("list_background_jobs", {{"status", "over"}})).value("jobs").toArray().size(), 0);
+        QCOMPARE(structured(callTool("list_background_jobs", {{"status", "going"}})).value("jobs").toArray().size(), 1);
+        QVERIFY(structured(callTool("list_background_jobs", {{"mine", true}})).value("jobs").toArray().size() == 1);
+        // Stopped: from the window's button, and it says so when it has.
+        const QString id = solving.value("id").toString();
+        QVERIFY(!answer->has_value());
+        QVERIFY(registry.stop(id));
+        QVERIFY(registry.job(id)->stopAsked);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QCOMPARE(registry.job(id)->status, Status::Stopped);
+        QVERIFY(registry.job(id)->ended.isValid());
+        QVERIFY(!registry.job(id)->canStop);
+        // (Its call answered as any call stopped is: Claude is told.)
+        QVERIFY(answer->value().contains("result"));
+        QVERIFY2(!structured(callTool("fem_stop", {{"path", model}})).value("stopped").toBool(true), "the model is still at work");
+
+        // Past its call's timeout: answered, the job goes on and is still
+        // stopped by its button.
+        registry.reset();
+        answer = begin("fem_solve", {{"path", model}, {"timeout", 1}});
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QVERIFY(answer->value().value("result").toObject().value("isError").toBool());
+        QVERIFY(QJsonDocument(answer->value()).toJson().contains("Still solving"));
+        QCOMPARE(registry.count(), 1);
+        const QString past = registry.jobs().first().id;
+        QVERIFY(!isOver(registry.job(past)->status));
+        QVERIFY(registry.job(past)->background);
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(past)->canStop, 10000);
+        QVERIFY(registry.stop(past));
+        QTRY_COMPARE_WITH_TIMEOUT(registry.job(past)->status, Status::Stopped, 30000);
+
+        // Of two in a batch: a count of its calls. Then one queued behind it,
+        // stopped alone. The batch stopped: its later call never begun.
+        registry.reset();
+        answer = begin("batch", {{"keep_going", true},
+                                 {"calls", QJsonArray{QJsonObject{{"tool", "get_state"}},
+                                                      QJsonObject{{"tool", "fem_solve"}, {"arguments", QJsonObject{{"path", model}}}},
+                                                      QJsonObject{{"tool", "fem_solve"}, {"arguments", QJsonObject{{"path", model}}}},
+                                                      QJsonObject{{"tool", "get_state"}}}}});
+        const Answer behind = begin("simulate", {{"path", model}});
+        QTRY_VERIFY_WITH_TIMEOUT(registry.count() >= 1, 10000);
+        QString queuedId;
+        for (const Job& job : registry.jobs())
+            if (job.tool == "simulate") queuedId = job.id;
+        QVERIFY(!queuedId.isEmpty());
+        QCOMPARE(registry.job(queuedId)->status, Status::Queued);
+        QVERIFY(!registry.job(queuedId)->began.isValid());
+        QVERIFY(registry.job(queuedId)->queued.isValid());
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(queuedId)->canStop, 10000);
+        QVERIFY(registry.stop(queuedId));
+        QTRY_VERIFY_WITH_TIMEOUT(behind->has_value(), 5000);
+        QCOMPARE(registry.job(queuedId)->status, Status::Stopped);
+        QVERIFY(QJsonDocument(behind->value()).toJson().contains("before it began"));
+        // The batch's job shows past two seconds, its calls counted.
+        QString batchId;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const Job& job : registry.jobs())
+                if (job.tool == "batch") batchId = job.id;
+            return !batchId.isEmpty();
+        }()), 20000);
+        QCOMPARE(registry.job(batchId)->kind, QStringLiteral("batch"));
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(batchId)->percent >= 25, 10000);
+        QVERIFY(registry.job(batchId)->percent < 100);
+        QVERIFY(registry.stop(batchId));
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QCOMPARE(registry.job(batchId)->status, Status::Stopped);
+
+        // A tool refused at once: a job all the same, as it is one of those
+        // listed as they begin, and it failed. No Stop.
+        registry.reset();
+        QVERIFY(callTool("tune", {{"max_runs", 1}}).value("isError").toBool());
+        QCOMPARE(registry.count(), 1);
+        QCOMPARE(registry.jobs().first().status, Status::Failed);
+        QCOMPARE(registry.jobs().first().kind, QStringLiteral("tune"));
+        QVERIFY(!registry.jobs().first().outcome.isEmpty());
+        QVERIFY(!registry.jobs().first().canStop);
+        // A wait is no job, past two seconds too.
+        registry.reset();
+        answer = begin("wait_for", {{"event", "file_written"}, {"path", "never.txt"}, {"timeout", 3}});
+        QTest::qWait(2600);
+        QCOMPARE(registry.count(), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 20000);
+        // Sent to the background: listed, whatever it is.
+        answer = begin("wait_for", {{"event", "file_written"}, {"path", "never.txt"}, {"timeout", 30}});
+        control->callSentToBackground(7, "wait_for");
+        QCOMPARE(registry.count(), 1);
+        QVERIFY(registry.jobs().first().background);
+        QCOMPARE(registry.jobs().first().kind, QStringLiteral("tool"));
+        QTRY_VERIFY_WITH_TIMEOUT(registry.jobs().first().canStop, 10000);
+        QVERIFY(registry.stop(registry.jobs().first().id));
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 10000);
+        QVERIFY(isOver(registry.jobs().first().status));
+
+        // Two of a name in one conversation: Stop stops the one.
+        registry.reset();
+        const QString other = write("jobs_transient_b.qfem", text);
+        QVERIFY(!callTool("open_document", {{"path", other}}).value("isError").toBool());
+        QVERIFY(!callTool("fem_build", {{"path", other}, {"what", "mesh"}}).value("isError").toBool());
+        registry.clearFinished();
+        const Answer one = begin("fem_solve", {{"path", model}, {"timeout", 600}});
+        const Answer two = begin("fem_solve", {{"path", other}, {"timeout", 600}});
+        QTRY_COMPARE_WITH_TIMEOUT(registry.count(), 2, 10000);
+        const QList<Job> both = registry.jobs();
+        const Job newest = both.first(), oldest = both.last();
+        QVERIFY(newest.detail.contains("jobs_transient_b"));
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(newest.id)->canStop && registry.job(oldest.id)->canStop, 10000);
+        QVERIFY(registry.stop(newest.id));
+        QTRY_VERIFY_WITH_TIMEOUT(two->has_value(), 30000);
+        QCOMPARE(registry.job(newest.id)->status, Status::Stopped);
+        QVERIFY(!one->has_value());
+        QVERIFY(!isOver(registry.job(oldest.id)->status));
+        QVERIFY(registry.stop(oldest.id));
+        QTRY_VERIFY_WITH_TIMEOUT(one->has_value(), 30000);
+
+#ifndef Q_OS_WIN
+        // A simulation, with a simulator that says a percentage as ngspice does
+        // and then takes its time: in the background (answered at once, the job
+        // going on, stopped by its button), and past its call's timeout.
+        const QString simulatorWas = QucsSettings.NgspiceExecutable;
+        const auto back = qScopeGuard([simulatorWas] { QucsSettings.NgspiceExecutable = simulatorWas; });
+        const QString slow = write("slow-ngspice.sh", "#!/bin/sh\nprintf '%%42.00%%\\n'\nexec sleep 120\n");
+        QFile::setPermissions(slow, QFile::permissions(slow) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+        QucsSettings.NgspiceExecutable = slow;
+        const QString sch = dir.filePath("workspace/jobs-simulated.sch");
+        QFile::remove(sch);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"), sch));
+        QVERIFY(!callTool("open_document", {{"path", sch}}).value("isError").toBool());
+        registry.reset();
+        const QJsonObject begun = structured(callTool("simulate", {{"path", sch}, {"background", true}}));
+        QVERIFY2(begun.value("running").toBool(), qPrintable(QJsonDocument(begun).toJson()));
+        QCOMPARE(registry.count(), 1);
+        const QString simulated = registry.jobs().first().id;
+        QCOMPARE(registry.job(simulated)->kind, QStringLiteral("simulation"));
+        QVERIFY(registry.job(simulated)->background);
+        QTRY_COMPARE_WITH_TIMEOUT(registry.job(simulated)->percent, 42, 20000);
+        QVERIFY(!isOver(registry.job(simulated)->status));
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(simulated)->canStop, 10000);
+        QVERIFY(registry.stop(simulated));
+        QTRY_COMPARE_WITH_TIMEOUT(registry.job(simulated)->status, Status::Stopped, 30000);
+        QCOMPARE(registry.job(simulated)->percent, 42);   // (as far as it got)
+
+        registry.reset();
+        answer = begin("simulate", {{"path", sch}, {"timeout", 5}});
+        QCOMPARE(registry.count(), 1);
+        const QString pastTimeout = registry.jobs().first().id;
+        QVERIFY(!registry.job(pastTimeout)->background);
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(pastTimeout)->canStop, 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QVERIFY(!isOver(registry.job(pastTimeout)->status));   // (it goes on)
+        QVERIFY(registry.job(pastTimeout)->background);
+        QVERIFY(registry.job(pastTimeout)->canStop);
+        QVERIFY(registry.stop(pastTimeout));
+        QTRY_COMPARE_WITH_TIMEOUT(registry.job(pastTimeout)->status, Status::Stopped, 30000);
+
+        // In the foreground, stopped: its call answered, and Stopped.
+        registry.reset();
+        answer = begin("simulate", {{"path", sch}, {"timeout", 300}});
+        const QString waited = registry.jobs().first().id;
+        QTRY_VERIFY_WITH_TIMEOUT(registry.job(waited)->canStop && registry.job(waited)->percent == 42, 20000);
+        QVERIFY(!answer->has_value());
+        QVERIFY(registry.stop(waited));
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QCOMPARE(registry.job(waited)->status, Status::Stopped);
+        callTool("close_document", {{"path", sch}, {"unsaved", "discard"}});
+#endif
+
+        // Each document as it was found: nothing is left to run.
+        delete ClaudeJobsWindow::existing();
+        registry.reset();
+        callTool("close_document", {{"path", model}, {"unsaved", "discard"}});
+        callTool("close_document", {{"path", other}, {"unsaved", "discard"}});
+    }
+
     void theProgramServesOverStdio()
     {
         const QString program = QStringLiteral(QUCS_BINARY);
@@ -936,6 +1192,15 @@ private slots:
         // (And a home of its own: with no workspace in its settings, it
         // makes ~/QucsWorkspace - here, not the user's.)
         env.insert("HOME", home.path());
+        // (And the jobs of the window, beside its conversations: not its own.)
+        env.insert("QUCS_CLAUDE_HISTORY", home.filePath("history"));
+        QDir().mkpath(home.filePath("history"));
+        const QByteArray windowsJobs = R"({"jobs":[{"name":"The window's own","status":"finished"}]})";
+        {
+            QFile jobs(home.filePath("history/background-jobs.json"));
+            QVERIFY(jobs.open(QIODevice::WriteOnly));
+            jobs.write(windowsJobs);
+        }
 #ifndef Q_OS_WIN
         QDir().mkpath(home.filePath("bin"));
         QFile ngspice(home.filePath("bin/ngspice"));
@@ -959,7 +1224,10 @@ private slots:
                 QJsonObject{{"type", ".DC"}, {"name", "DC1"}, {"x", 300}, {"y", 300}}}}}}}}},
             {{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "save_document"}, {"arguments", QJsonObject{{"as", schematic}}}}}},
             {{"jsonrpc", "2.0"}, {"id", 6}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "get_netlist"}, {"arguments", QJsonObject{{"map", true}}}}}},
-            {{"jsonrpc", "2.0"}, {"id", 7}, {"method", "no/such"}}};
+            {{"jsonrpc", "2.0"}, {"id", 7}, {"method", "no/such"}},
+            // No window can show here: said, and the list is given.
+            {{"jsonrpc", "2.0"}, {"id", 70}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "show_background_jobs"}, {"arguments", QJsonObject{}}}}},
+            {{"jsonrpc", "2.0"}, {"id", 71}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "list_background_jobs"}, {"arguments", QJsonObject{}}}}}};
         QHash<int, QJsonObject> answers;
         for (const QJsonObject& m : messages) {
             p.write(QJsonDocument(m).toJson(QJsonDocument::Compact) + '\n');
@@ -976,6 +1244,20 @@ private slots:
                 }
             }
             QVERIFY2(answers.contains(id), qPrintable(QStringLiteral("no answer to %1; stderr: %2").arg(id).arg(QString::fromUtf8(p.readAllStandardError()).right(800))));
+        }
+        {
+            const QJsonObject shown = answers.value(70).value("result").toObject().value("structuredContent").toObject();
+            QVERIFY2(shown.contains("shown") && !shown.value("shown").toBool(), qPrintable(QJsonDocument(answers.value(70)).toJson()));
+            QVERIFY(shown.value("jobs").isArray());
+            QVERIFY(shown.value("note").toString().contains("--mcp-server"));
+            const QJsonObject listed = answers.value(71).value("result").toObject().value("structuredContent").toObject();
+            QVERIFY2(listed.value("jobs").isArray(), qPrintable(QJsonDocument(answers.value(71)).toJson()));
+            QVERIFY(listed.value("note").toString().contains("--mcp-server"));
+            // Its own, this run's: not the window's file, which it leaves alone.
+            QVERIFY2(!QJsonDocument(answers.value(71)).toJson().contains("The window's own"), qPrintable(QJsonDocument(answers.value(71)).toJson()));
+            QFile jobs(home.filePath("history/background-jobs.json"));
+            QVERIFY(jobs.open(QIODevice::ReadOnly));
+            QCOMPARE(jobs.readAll(), windowsJobs);
         }
         // Sent together, without waiting: taken in turn - the list after
         // a save finds the file saved.

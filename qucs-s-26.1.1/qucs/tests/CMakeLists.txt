@@ -376,6 +376,7 @@ qucs_add_test(test_claude_code)
 # The Claude Code panel fuzzed: a short pass of a fixed seed here, long ones by
 # QUCS_FUZZ_SECONDS (test_claude_fuzz.cpp).
 qucs_add_test(test_claude_fuzz)
+qucs_add_test(test_claude_jobs)
 qucs_add_test(test_qucs_control)
 # (731 s of its 900, 300 times the scale of 3, on an EPYC 7763, as the
 # semiconductors' above.)

@@ -2891,6 +2891,7 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
     *step = [run, step, finish](int i) {
         if (!run->doc) return (*finish)(errorResult(tr("The model was closed.")));
         if (run->cancelled) return (*finish)(errorResult(tr("Cancelled by the client.")));
+        run->control->jobStep(run->call, i, int(run->finer.size()) + 1);
         MultiphysicsDoc* d = run->doc;
         const double factor = i == 0 ? 1.0 : run->finer.at(i - 1);
         const double h = run->h0 / factor;

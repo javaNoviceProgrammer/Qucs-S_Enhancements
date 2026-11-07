@@ -155,6 +155,9 @@ public:
     bool idle() const;
     /// How far the work going on is ("Solving, 42 %"); empty: none.
     QString jobProgress() const;
+    /// How much of what it works at is done, 0 to 1, as its bar shows it; -1
+    /// when it works at nothing.
+    double jobFraction() const;
     /// How many times its work was asked to stop (Cancel, cancel()).
     quint64 stops() const { return a_stops; }
 

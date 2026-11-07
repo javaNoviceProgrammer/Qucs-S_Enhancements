@@ -197,6 +197,9 @@ public:
     /// Solving Stationary - collector at -9.31 V of -9.5 V (step 412,
     /// 300 µV); Newton's step 6, its residual 2.1e-05" (empty: none).
     QString jobProgress() const;
+    /// How much of what it works at is done, 0 to 1, as its bar shows it; -1
+    /// when it works at nothing.
+    double jobFraction() const;
     /// While a job runs: whether it makes the mesh (Build Mesh, or a study
     /// whose mesh is old), and the study it computes (empty: none).
     bool meshBeingMade() const { return a_job && a_jobMeshes; }

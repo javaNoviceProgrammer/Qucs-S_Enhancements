@@ -152,6 +152,11 @@ QWidget* SimulationConsole::host() const
     return inDock() ? static_cast<QWidget*>(a_dock) : static_cast<QWidget*>(a_window);
 }
 
+int SimulationConsole::percent() const
+{
+    return a_progress->value();
+}
+
 bool SimulationConsole::isRunning() const
 {
     return !a_run.isNull() && a_run->isRunning();

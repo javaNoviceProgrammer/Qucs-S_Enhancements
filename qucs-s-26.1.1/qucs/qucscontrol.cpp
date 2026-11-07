@@ -373,6 +373,15 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"on": {"type": "object", "properties": {"part": {"type": "string"}, "diagram": {"type": ["integer", "string"]}, "canvas": {"type": "array", "items": {"type": "number"}}, "project_item": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"}, "file": {"type": "string"}, "slide": {"type": "integer"}, "node": {"type": "string"}}, "description": "What is right-clicked: one of part, diagram, canvas, project_item, project, tab, file, slide, node"},
    "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
    "path": {"type": "string", "description": "The schematic, for part, diagram and canvas, or the presentation, for slide: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
+{"name": "list_background_jobs",
+ "description": "The jobs Claude has run, the newest first, as the Background Jobs window lists them (the dock's ⋯ menu, show_background_jobs opens it): Claude Code's own commands and agents, in every conversation of the dock, and the long Qucs-S tools - simulate, fem_solve, fem_build, fem_converge, rf25_solve, tune as they begin, any other past two seconds or sent to the background. Each with its id, kind, name, conversation ('yours' when it is of this one), status (queued, started, running, stopping, finished, failed, stopped, lost), percent (null when the job has not said or cannot say: why_no_percent says why, and nothing is worked out from the time taken), can_stop, its times and what it said last. get_background_job gives the whole of one. The user stops a job in the window; these tools do not stop any.",
+ "inputSchema": {"type": "object", "properties": {"status": {"type": "string", "description": "Only these: all (the default), going, over, or a job's status (running, failed...)"}, "mine": {"type": "boolean", "description": "Only this conversation's"}, "max": {"type": "integer", "minimum": 1, "description": "How many at most, the newest (50)"}}}},
+{"name": "get_background_job",
+ "description": "All that is known of one job of list_background_jobs: as it lists it, and the whole command, prompt or arguments ('detail'), the file Claude Code writes its output to ('output_file': read it there), the agent it runs under, and how it ended.",
+ "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "description": "The job's id, as list_background_jobs gives it (\"job-3\")"}}, "required": ["id"]}},
+{"name": "show_background_jobs",
+ "description": "Opens the Background Jobs window for the user - or brings it forward - where each job's status and progress bar show live, with a button to stop each and one to clear those over; and answers with the list, as list_background_jobs does. Under qucs-s --mcp-server no window can show: 'shown' is false, and the list is still given.",
+ "inputSchema": {"type": "object", "properties": {}}},
 {"name": "simulate",
  "description": "Simulates a schematic (the one in front unless 'path' names another - a file not open is opened first, as open_document opens it, and the answer says so; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. 'background' answers at once with the run's id - for a long run (Monte Carlo, a long transient): simulation_status gives how it goes and its outcome once it has ended, wait_for waits for its end, stop_simulation stops it; meanwhile other calls go on. A run still going at its timeout goes on the same way, the answer giving its id. A run going - the user's too - is stopped by stop_simulation (as Simulation > Stop Simulation).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); a run still going then goes on, followed by the id the answer gives. With background: the most it may run, stopped then (none unless given)"},
@@ -1074,6 +1083,9 @@ const struct {
     {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "change the settings of Qucs-S")},
     {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "use a right-click menu of Qucs-S")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "run a simulation in Qucs-S")},
+    {"list_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "list the jobs Claude has run in Qucs-S")},
+    {"get_background_job", QT_TRANSLATE_NOOP("QucsControl", "read a job's details in Qucs-S")},
+    {"show_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "show the Background Jobs window in Qucs-S")},
     {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "stop a simulation in Qucs-S")},
     {"send_input", QT_TRANSLATE_NOOP("QucsControl", "click or type in Qucs-S as the mouse and keyboard would")},
     {"add_diagram", QT_TRANSLATE_NOOP("QucsControl", "add a diagram in Qucs-S")},
@@ -1148,7 +1160,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "read_pdf", "read_pptx", "read_drawings", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
-                                 "find_shapes", "find_placements", "git_status", "git_diff", "git_log", "git_show", "git_blame",
+                                 "find_shapes", "find_placements", "list_background_jobs", "get_background_job", "git_status", "git_diff", "git_log", "git_show", "git_blame",
                                  "fem_describe", "fem_evaluate", "fem_plot"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
@@ -1203,6 +1215,9 @@ const struct {
     {"console", QT_TRANSLATE_NOOP("QucsControl", "Types a line into the Octave, Python Shell or Terminal dock and returns what it printed.")},
     {"wait_for", QT_TRANSLATE_NOOP("QucsControl", "Waits until a simulation ends, a dialog comes up, a document changes or a file is written, and returns then.")},
     {"simulation_status", QT_TRANSLATE_NOOP("QucsControl", "Tells how a simulation run in the background goes, and its outcome once it has ended.")},
+    {"list_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "Lists what Claude has run - commands, agents, simulations, solves - with each one's status and percent, as the Background Jobs window does.")},
+    {"get_background_job", QT_TRANSLATE_NOOP("QucsControl", "All that is known of one job: its whole command, output file, times and how it ended.")},
+    {"show_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "Opens the Background Jobs window for the user, and gives the list.")},
     {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "Stops a simulation (one followed by its id, or the one running) and returns its outcome.")},
     {"send_input", QT_TRANSLATE_NOOP("QucsControl", "Raw mouse and keyboard input on the canvas, a layout's view, slides or a part of the window - the last resort - with a picture after.")},
     {"read_help", QT_TRANSLATE_NOOP("QucsControl", "Finds what this build's help says on a topic: menu actions' help, component types, examples, papers.")},
@@ -1355,6 +1370,9 @@ const struct {
     {"console", "octave python shell terminal console command type run repl interpreter"},
     {"wait_for", "wait event notify until simulation finished dialog document changed file written watch poll"},
     {"simulation_status", "simulation status background progress running outcome result id long monte carlo"},
+    {"list_background_jobs", "background jobs tasks list running status progress percent queued finished failed stopped commands agents simulations solves what is running"},
+    {"get_background_job", "background job task details status progress percent output file command how did it end"},
+    {"show_background_jobs", "background jobs window show open tasks progress bar stop kill clear finished"},
     {"stop_simulation", "stop abort cancel kill simulation run background"},
     {"send_input", "click mouse keyboard keys type drag double click raw input shortcut press reproduce draw stroke pen layout slide"},
     {"read_help", "help documentation manual docs whats this tutorial examples paper"},
@@ -4000,7 +4018,7 @@ namespace {
 // docks, raw input, consoles), changes the settings, git, scripts, the
 // Verilog-A compiler. A tool not named here is checked as before.
 const char* const kAutonomous[] = {
-    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "show_pptx",
+    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "show_pptx", "show_background_jobs",
     "set_schematic", "add_component", "edit_component", "replace_component", "delete", "move", "arrange", "connect",
     "add_wire", "set_label", "rename_net", "add_analysis", "create_subcircuit", "make_symbol", "set_subcircuit_parameters",
     "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "add_marker",
@@ -4511,6 +4529,7 @@ bool QucsControl::runsAlone(const QString& tool, const QJsonObject& arguments)
 
 void QucsControl::cancelCall(quint64 caller, const QString& tool)
 {
+    jobCancelled(caller, tool);   // (what it ends with is then that it was stopped)
     // Waiting its turn behind one that runs alone: taken out (the answer
     // goes nowhere).
     for (qsizetype i = 0; i < a_waiting.size(); ++i)
@@ -4550,24 +4569,31 @@ void QucsControl::runWaiting()
 {
     while (a_alone == 0 && !a_waiting.isEmpty()) {
         Waiting w = a_waiting.takeFirst();
-        callToolFor(w.caller, w.tool, w.arguments, w.done, true);
+        callToolFor(w.caller, w.tool, w.arguments, w.done, true, w.job);
     }
 }
 
 void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
                               std::function<void(const QJsonObject&)> done)
 {
-    callToolFor(caller, tool, arguments, std::move(done), false);
+    // (A job: told how it goes, and of its answer before it is given.)
+    const quint64 job = jobBegins(caller, tool, arguments);
+    if (job == 0) return callToolFor(caller, tool, arguments, std::move(done), false, 0);
+    callToolFor(caller, tool, arguments, [this, job, done = std::move(done)](const QJsonObject& r) {
+        jobAnswered(job, r);
+        done(r);
+    }, false, job);
 }
 
 void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
-                              std::function<void(const QJsonObject&)> done, bool waited)
+                              std::function<void(const QJsonObject&)> done, bool waited, quint64 job)
 {
     // Behind one that runs alone (and those waiting already, in order) -
     // but a dialog's own tools, which may be what it waits for.
     const bool dialogs = tool == QLatin1String("get_dialog") || tool == QLatin1String("set_dialog");
     if (!dialogs && (a_alone > 0 || (!waited && !a_waiting.isEmpty()))) {
-        a_waiting.append(Waiting{caller, tool, arguments, std::move(done)});
+        a_waiting.append(Waiting{caller, tool, arguments, std::move(done), job});
+        jobQueued(job);
         return;
     }
     const bool alone = runsAlone(tool, arguments);
@@ -4594,7 +4620,8 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         a_driving.append(guard);
     }
     const CallGuard before = std::exchange(a_callGuard, guard);
-    const Running outerCall = std::exchange(a_running, Running{caller, tool});
+    jobRuns(job);
+    const Running outerCall = std::exchange(a_running, Running{caller, tool, job});
     auto over = std::make_shared<bool>(false), released = std::make_shared<bool>(false);
     a_lookedOnDisk = true;   // (above: callTool() need not look again)
     callTool(tool, arguments, [this, caller, changes, done, alone, over, released, before, id = guard.id](const QJsonObject& r) {
@@ -5230,6 +5257,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
         QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("find_placements"),
+        QStringLiteral("list_background_jobs"), QStringLiteral("get_background_job"), QStringLiteral("show_background_jobs"),
         QStringLiteral("git_status"),
         QStringLiteral("git_diff"), QStringLiteral("git_log"), QStringLiteral("git_show"), QStringLiteral("git_blame")};
     // (send_input with 'target' dialog: the dialog's own clicks and keys.)
@@ -5406,6 +5434,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("synthesize_power_combiner")) return synthesizePowerCombiner(args);
     if (tool == QLatin1String("line_calc")) return lineCalc(args);
     if (tool == QLatin1String("receiver_budget")) return receiverBudget(args);
+    if (tool == QLatin1String("list_background_jobs")) return listBackgroundJobs(args);
+    if (tool == QLatin1String("get_background_job")) return getBackgroundJob(args);
+    if (tool == QLatin1String("show_background_jobs")) return showBackgroundJobs(args);
     if (tool == QLatin1String("git_status")) return gitStatus(args);
     if (tool == QLatin1String("git_diff")) return gitDiff(args);
     if (tool == QLatin1String("git_log")) return gitLog(args);
@@ -12297,6 +12328,7 @@ public:
             return;
         }
         const int index = a_next++;
+        a_control->jobStep(a_call, index, int(a_calls.size()));
         const QJsonObject call = a_calls.at(index).toObject();
         const QString tool = call.value(QLatin1String("tool")).toString();
         QJsonObject arguments = call.value(QLatin1String("arguments")).toObject();

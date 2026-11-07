@@ -678,6 +678,11 @@ QString Multiphysics3DDoc::jobProgress() const
     return tr("%1, %2 %").arg(a_stage->text()).arg(a_job->permille.load() / 10);
 }
 
+double Multiphysics3DDoc::jobFraction() const
+{
+    return a_job ? a_job->permille.load() / 1000.0 : -1;
+}
+
 void Multiphysics3DDoc::whenJobEnds(int ms, std::function<void(bool)> then)
 {
     if (a_closed) {

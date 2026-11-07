@@ -11,6 +11,8 @@
  */
 #include "claudecode.h"
 
+#include "claudejobs.h"
+
 #include "svgguard.h"
 #include "mcpserver.h"
 #include "main.h"
@@ -615,6 +617,7 @@ Session::~Session()
         a_process->kill();
         a_process->waitForFinished(1000);
     }
+    jobs::Registry::instance().programEnded(a_caller, tr("Its conversation was closed: Claude Code ended without saying how this ended."));
 }
 
 void Session::setProgram(const QString& program)
@@ -798,6 +801,16 @@ void Session::handleControlResponse(const QJsonObject& m)
     // A tool asked to go to the background (askBackground()): sent, or -
     // not a task yet - asked again when it is one (handleSystem()), or not.
     const QString requestId = response.value(QLatin1String("request_id")).toString();
+    // A task asked to stop (stopTask()): that it was asked is all a success
+    // says (the program says the same of a task over already); its end comes
+    // as a task's end. Refused: it goes on, and the window says so.
+    if (const QString task = a_stopAsked.take(requestId); !task.isEmpty()) {
+        if (response.value(QLatin1String("subtype")).toString() != QLatin1String("success")) {
+            jobs::Registry& registry = jobs::Registry::instance();
+            registry.stopRefused(registry.taskJob(a_caller, task), response.value(QLatin1String("error")).toString());
+        }
+        return;
+    }
     if (const QString toolUse = a_backgroundAsked.take(requestId); !toolUse.isEmpty()) {
         const bool ok = response.value(QLatin1String("subtype")).toString() == QLatin1String("success");
         // (Final only when asked of the task: a refusal of a request made
@@ -1140,6 +1153,7 @@ int Session::sendToBackground()
             if (call->background) continue;
             // Answered now; its own answer, when it comes, a message.
             call->background = true;
+            if (a_host != nullptr) a_host->callSentToBackground(a_caller, call->tool);
             const QString text = tr("The user sent this call to the background: it goes on in Qucs-S, and its result comes "
                                     "in a message of its own when it is done. Do not call it again meanwhile; go on with "
                                     "what does not need it, or end your turn.");
@@ -1156,6 +1170,19 @@ int Session::sendToBackground()
         }
     }
     return sent;
+}
+
+bool Session::stopTask(const QString& task)
+{
+    if (!isRunning() || task.isEmpty()) return false;
+    static int count = 0;
+    const QString request = QStringLiteral("qucs-stop-task-%1").arg(++count);
+    a_stopAsked.insert(request, task);
+    write({{QStringLiteral("type"), QStringLiteral("control_request")},
+           {QStringLiteral("request_id"), request},
+           {QStringLiteral("request"), QJsonObject{{QStringLiteral("subtype"), QStringLiteral("stop_task")},
+                                                   {QStringLiteral("task_id"), task}}}});
+    return true;
 }
 
 bool Session::asksBackground(const QString& id) const
@@ -1323,6 +1350,10 @@ void Session::processFinished(int exitCode)
     a_hostCalls.clear();
     a_backgroundAsked.clear();
     a_backgroundAskedOfTask.clear();
+    a_stopAsked.clear();
+    a_toolSubjects.clear();
+    // Its tasks it did not say the end of: no one can say it now.
+    jobs::Registry::instance().programEnded(a_caller, tr("Claude Code ended without saying how this ended."));
     a_tasks.clear();
     a_taskOf.clear();
     a_backgroundTasks.clear();
@@ -1389,6 +1420,13 @@ void Session::handleLine(const QByteArray& line)
 void Session::handleSystem(const QJsonObject& m)
 {
     const QString subtype = m.value(QLatin1String("subtype")).toString();
+    // A task's events, for the Background Jobs window. (Its command is what
+    // its tool use said: of an agent's too.)
+    if (subtype.startsWith(QLatin1String("task_"))) {
+        QPointer<Session> self(this);
+        jobs::Registry::instance().taskEvent(a_caller, m, a_toolSubjects.value(m.value(QLatin1String("tool_use_id")).toString()),
+                                             [self](const QString& task) { return self && self->stopTask(task); });
+    }
     if (subtype == QLatin1String("init")) {
         a_initSeen = true;
         a_sessionId = m.value(QLatin1String("session_id")).toString();
@@ -1485,6 +1523,15 @@ void Session::handleAssistant(const QJsonObject& m)
     for (const QJsonValue& v : content) {
         const QJsonObject block = v.toObject();
         const QString kind = block.value(QLatin1String("type")).toString();
+        // What a tool use runs, should it become a task. (The last ones: a
+        // damaged stream names no end of them.)
+        if (kind == QLatin1String("tool_use")) {
+            if (a_toolSubjects.size() > 2000) a_toolSubjects.clear();
+            const QJsonObject input = block.value(QLatin1String("input")).toObject();
+            const QString command = input.value(QLatin1String("command")).toString();
+            a_toolSubjects.insert(block.value(QLatin1String("id")).toString(),
+                                  (command.isEmpty() ? toolSubject(block.value(QLatin1String("name")).toString(), input, a_workDir) : command).left(8000));
+        }
         if (subagent) {
             // An agent Claude started: only which tool it uses, for the state.
             if (kind == QLatin1String("tool_use") && a_busy)

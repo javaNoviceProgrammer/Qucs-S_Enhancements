@@ -203,6 +203,13 @@ public:
         Q_UNUSED(caller);
         Q_UNUSED(tool);
     }
+    /// The user sent the conversation \a caller's call of \a tool to the
+    /// background (Session::sendToBackground()): it goes on, answered already.
+    virtual void callSentToBackground(quint64 caller, const QString& tool)
+    {
+        Q_UNUSED(caller);
+        Q_UNUSED(tool);
+    }
     /// \a arguments for a conversation pinned to \a document (a file;
     /// empty: none): a tool that acts on the document in front when it is
     /// given none is given that one. As they are, unless the host says
@@ -478,6 +485,11 @@ public:
     /// answer is a message to Claude when it comes (backgroundFinished()).
     /// How many it sent: 0 when none was waited on.
     int sendToBackground();
+    /// Asks the program to stop its task \a task - a command or an agent, in
+    /// the background or waited on (stop_task): its end is then told as any
+    /// task's is (task_notification, status stopped), and only that says it
+    /// stopped. False when no program runs to ask.
+    bool stopTask(const QString& task);
     /// Ends the program; the next prompt continues the conversation.
     void stop();
     /// Ends the program and forgets the conversation.
@@ -644,6 +656,8 @@ private:
     QHash<QString, QString> a_tasks;             // the program's tasks (commands, agents): id -> what
     QHash<QString, QString> a_taskOf;            // a tool use's task
     QSet<QString> a_backgroundTasks;             // those in the background
+    QHash<QString, QString> a_stopAsked;         // stop_task not answered yet: request id -> task
+    QHash<QString, QString> a_toolSubjects;      // a tool use's command, for the job its task is
     ToolHost* a_host = nullptr;
     mcp::Server* a_mcp = nullptr;   // the host's tools as an MCP server, over this stream
     // The host's tools the program was started with allowed beyond those

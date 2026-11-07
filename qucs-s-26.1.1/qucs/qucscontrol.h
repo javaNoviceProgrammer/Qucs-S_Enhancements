@@ -105,16 +105,20 @@ public:
                      std::function<void(const QJsonObject&)> done) override;
     /// As callToolFor(); \a waited: one that waited its turn, run now.
     void callToolFor(quint64 caller, const QString& tool, const QJsonObject& arguments,
-                     std::function<void(const QJsonObject&)> done, bool waited);
+                     std::function<void(const QJsonObject&)> done, bool waited, quint64 job = 0);
     /// A call cancelled by its client: one waiting its turn taken out; one
     /// under way stopped where it waits - a model's solve or build, an RF
     /// 2.5D solve, a simulation, wait_for, a script, and those of a batch -,
     /// its answer then going nowhere.
     void cancelCall(quint64 caller, const QString& tool) override;
-    /// A call by a conversation (callToolFor()'s), as it began.
+    void callSentToBackground(quint64 caller, const QString& tool) override;
+    /// A call by a conversation (callToolFor()'s), as it began. \a job: its
+    /// number among the jobs (qucscontrol_jobs.cpp), by which it is stopped
+    /// alone, another of its name going on.
     struct Running {
         quint64 caller = 0;
         QString tool;
+        quint64 job = 0;
     };
     Running running() const { return a_running; }
     /// \a tool called as a part of \a call, later than it began - a batch's
@@ -122,6 +126,9 @@ public:
     /// when \a call is cancelled.
     void callToolWithin(const Running& call, const QString& tool, const QJsonObject& arguments,
                         std::function<void(const QJsonObject&)> done);
+    /// How far \a call has got of those it counts, for its job: a batch's
+    /// calls, a convergence's meshes.
+    void jobStep(const Running& call, int done, int of);
     /// The tools that take the document they act on as 'path' (the one in
     /// front when not given) are given \a document, and get_state names
     /// it; open_document and show_document name theirs, reload_data
@@ -443,6 +450,7 @@ private:
         QString tool;
         QJsonObject arguments;
         Done done;
+        quint64 job = 0;
     };
     QList<Waiting> a_waiting;
     int a_alone = 0;   // calls that run alone, under way
@@ -462,6 +470,28 @@ private:
     int a_lastStopper = 0;
     int stoppable(const Running& call, std::function<void()> stop);
     void stopped(int id);
+
+    // The calls as jobs (qucscontrol_jobs.cpp): told when each begins, waits,
+    // runs and is answered, and when what goes on past its answer ends.
+    struct Jobs;
+    std::shared_ptr<Jobs> a_jobs;
+    Jobs& jobsOfCalls();
+    quint64 jobBegins(quint64 caller, const QString& tool, const QJsonObject& arguments);
+    void listJob(quint64 number);
+    void jobQueued(quint64 number);
+    void jobRuns(quint64 number);
+    void jobCancelled(quint64 caller, const QString& tool);
+    void jobAnswered(quint64 number, const QJsonObject& result);
+    void endJob(quint64 number, const QJsonObject& result);
+    void jobSimEnded(int simRunId, const QJsonObject& result);
+    bool stopJob(quint64 number);
+    QucsDoc* jobDocument(quint64 number);
+    void pollJobs();
+    void pollJobsIfAny();
+    QJsonObject listBackgroundJobs(const QJsonObject& args);
+    QJsonObject getBackgroundJob(const QJsonObject& args);
+    QJsonObject showBackgroundJobs(const QJsonObject& args);
+
     bool a_headless = false;
     int a_activationWait = 500;   // ms (setActivationWait)
     // Event loops a call runs while it waits (a script's call of a
