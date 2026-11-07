@@ -332,8 +332,12 @@ private slots:
         QVERIFY(retyped(py, "x = 1\nprint((x, 2)\n"));
         QCOMPARE(py->diagnostics().size(), 1);
         if (spans) QVERIFY2(py->diagnostics().first().message.contains("never closed"), qPrintable(py->diagnostics().first().message));
-        if (py->diagnostics().first().endLine == 0)
-            QCOMPARE(underline().selectedText(), QString("print((x, 2)").mid(py->diagnostics().first().column - 1));
+        // (Python 3.9 says the place past the line's end: the whole line is marked, not nothing.)
+        if (py->diagnostics().first().endLine == 0) {
+            const QString wholeLine("print((x, 2)");
+            const QString rest = wholeLine.mid(py->diagnostics().first().column - 1);
+            QCOMPARE(underline().selectedText(), rest.isEmpty() ? wholeLine : rest);
+        }
 
         // Fixed: nothing found.
         QVERIFY(retyped(py, "x = 1\nprint((x, 2))\n"));

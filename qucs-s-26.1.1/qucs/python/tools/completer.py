@@ -26,7 +26,21 @@ try:
 except Exception:
     jedi = None
     ENGINE = ''
-STDLIB = set(getattr(sys, 'stdlib_module_names', ())) | set(sys.builtin_module_names)
+def standard_modules():
+    names = set(sys.builtin_module_names)
+    if hasattr(sys, 'stdlib_module_names'):
+        return names | set(sys.stdlib_module_names)
+    # (Before Python 3.10, as macOS's own: what stands in the standard library's
+    # folders. The builtins alone leave out math, json and os, and each answers
+    # nothing.)
+    try:
+        folders = {sysconfig.get_path('stdlib'), sysconfig.get_path('platstdlib')}
+        folders |= {os.path.join(folder, 'lib-dynload') for folder in set(folders)}
+        names |= {m.name for m in pkgutil.iter_modules(sorted(folders))}
+    except Exception:
+        pass
+    return names
+STDLIB = standard_modules()
 NEVER_IMPORTED = {'antigravity', 'this', '__hello__', '__phello__', 'idlelib', 'turtledemo'}
 MOST = 500
 
