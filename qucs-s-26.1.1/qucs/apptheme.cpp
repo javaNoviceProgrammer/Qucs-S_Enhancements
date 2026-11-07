@@ -16,12 +16,16 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPointer>
 #include <QStyle>
 #include <QStyleFactory>
 #include <QStyleHints>
+#include <QTimer>
+#include <QWidget>
 
 namespace qucs_s::apptheme {
 
@@ -43,6 +47,44 @@ QString g_nativeStyle;
 bool platformShows(Qt::ColorScheme scheme)
 {
     return QGuiApplication::styleHints()->colorScheme() == scheme;
+}
+
+// The application's new palette taken to every widget. Qt tells its windows
+// and the widgets of a few classes (labels, buttons, item views...); a window
+// passes it on only to children with no style sheet, and everything under a
+// window or a panel with one - the main window has - counts as having one.
+// They kept the old colours, their text the new: black on a dark Claude Code
+// dock in Light on a dark Mac. Whatever changes the palette: a theme, or the
+// system's appearance with no apply() at all. A palette a widget set for
+// itself stays its own: the event only makes it resolve its palette again.
+class PalettePasser : public QObject
+{
+public:
+    explicit PalettePasser(QObject* parent) : QObject(parent) { parent->installEventFilter(this); }
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::ApplicationPaletteChange && watched == parent() && !m_due) {
+            // Once, for the several a switch sends, with the palette settled.
+            m_due = true;
+            QTimer::singleShot(0, this, [this] {
+                m_due = false;
+                QEvent change(QEvent::ApplicationPaletteChange);
+                const QWidgetList widgets = QApplication::allWidgets();
+                for (QWidget* w : widgets) QCoreApplication::sendEvent(w, &change);
+            });
+        }
+        return false;
+    }
+
+private:
+    bool m_due = false;
+};
+
+void passPalettesOn()
+{
+    static QPointer<PalettePasser> passer;
+    if (passer == nullptr && qApp != nullptr) passer = new PalettePasser(qApp);
 }
 
 void forcePalette(const QPalette& palette)
@@ -207,6 +249,7 @@ int bounded(int theme)
 
 void apply(int theme)
 {
+    passPalettesOn();
     theme = bounded(theme);
     g_current = theme;
     QStyleHints* hints = QGuiApplication::styleHints();
