@@ -66,6 +66,7 @@ NESTED = {
     ("edit_diagram", "panes"): ("applyPane", "pane"),
     ("add_diagram", "limits"): ("applyLimit", "limit"),
     ("edit_diagram", "limits"): ("applyLimit", "limit"),
+    ("digitize_plot", "references"): ("readDigitizerReference", "item"),
 }
 
 # A nested item's key read for another tool sharing the reader: set_ui's

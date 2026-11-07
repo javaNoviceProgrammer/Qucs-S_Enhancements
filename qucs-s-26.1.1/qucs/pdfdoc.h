@@ -40,7 +40,35 @@ class QVariantAnimation;
 class QToolButton;
 class QTreeView;
 
+namespace qucs_s::digitizer {
+class Panel;
+}
+
 namespace qucs_s::pdf {
+
+/*!
+ * What may lie over the pages and take the mouse: the plot digitizer's marks
+ * and modes. It draws into a picture, which either of the view's surfaces can
+ * show.
+ */
+class PageTool
+{
+public:
+    virtual ~PageTool() = default;
+    /// The left button is the tool's, not the selection's.
+    virtual bool takesMouse() const = 0;
+    virtual void pressed(int page, QPointF point) = 0;
+    /// The pointer moved, the button down or not; off the pages, \a page -1.
+    virtual void moved(int page, QPointF point, bool down) = 0;
+    virtual void released(int page, QPointF point) = 0;
+    /// A key while the view has the focus; true when it was the tool's.
+    virtual bool keyPressed(QKeyEvent* event) = 0;
+    /// Whether it would take this key: asked before the window's shortcuts.
+    virtual bool wantsKey(QKeyEvent* event) const = 0;
+    /// What lies over page \a page where \a visible (points) is in sight, at
+    /// \a scale device pixels a point, its corner at \a at (points); null: nothing.
+    virtual QImage painted(int page, const QRectF& visible, qreal scale, QPointF* at) = 0;
+};
 
 /// Page \a page of \a pdf drawn at \a scale pixels a point on white,
 /// \a region of it alone (points from its top left; empty: all of it).
@@ -145,6 +173,9 @@ public:
     /// pdfium's, on the CPU.
     void setGpu(bool on);
     bool gpu() const;
+    /// What lies over the pages and takes the mouse (not owned; null: none).
+    void setTool(PageTool* tool);
+    PageTool* tool() const { return a_tool; }
     /// What the pages are drawn on (pdfdoc.cpp): the CPU's painter on the
     /// viewport, or the GPU's frame.
     class Surface;
@@ -173,6 +204,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     bool viewportEvent(QEvent* event) override;
+    bool event(QEvent* event) override;
 
 private:
     struct Link {
@@ -229,6 +261,8 @@ private:
     void selectWordAt(int page, QPointF point);
     void setSelection(int page, const QString& text, const QList<QPolygonF>& bounds);
 
+    PageTool* a_tool = nullptr;
+    bool a_toolDown = false;
     QPdfDocument* a_document = nullptr;
     QPdfSearchModel* a_search = nullptr;
     int a_searchIndex = -1;
@@ -363,6 +397,16 @@ public:
     /// Opens it with \a password (one it asked for).
     bool unlock(const QString& password);
 
+    /// The plot digitizer's panel beside the pages (made when first asked for).
+    qucs_s::digitizer::Panel* digitizer();
+    bool digitizerShown() const;
+    void setDigitizerShown(bool shown);
+    /// What is kept with the file has changed (by Claude's tools): read it again.
+    void digitizedChanged();
+    /// The panel open on kept plot \a index, in sight.
+    void showDigitized(int index);
+    QToolButton* digitizeButton() const { return a_digitizeButton; }
+
     // For the tests.
     QLineEdit* pageField() const { return a_pageField; }
     QLineEdit* searchField() const { return a_searchField; }
@@ -421,6 +465,8 @@ private:
     QComboBox* a_zoomBox = nullptr;
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;
+    QToolButton* a_digitizeButton = nullptr;
+    qucs_s::digitizer::Panel* a_digitizer = nullptr;
     QWidget* a_searchBar = nullptr;
     QLineEdit* a_searchField = nullptr;
     QLabel* a_searchLabel = nullptr;

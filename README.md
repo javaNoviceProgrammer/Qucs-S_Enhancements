@@ -312,6 +312,13 @@ percentage against an unknown one, Stop and Clear Finished. Only its opt-in
 `QUCS_JOBS_REAL=1` reaches the `claude` on the machine; a test run leaves it
 alone.
 
+`qucs/tests/test_plot_digitizer` holds the PDF viewer's plot digitizer to the
+truth: PDFs written from known functions (vector art, pictures, a turned scan,
+log and polar axes, dashes, markers) and the numbers read back, with a fuzz of
+the PDF reader and of the file kept beside a PDF. `test_plot_digitizer_app`
+drives its panel and Claude's `find_plots`, `digitize_plot` and `get_digitized`,
+over stdio too.
+
 `qucs/tests/test_netlist_audit` places every built-in component on a
 schematic and checks that it netlists in every flavour without a crash and
 survives a save/load and a properties-dialog Apply unchanged. With
