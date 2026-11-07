@@ -4996,7 +4996,7 @@ private slots:
         line({{"type", "user"}, {"cwd", work}, {"sessionId", id}, {"message", msg("Explain the filter")}});
         line({{"type", "user"}, {"isMeta", true}, {"cwd", work}, {"message", msg("meta stuff")}});
         line({{"type", "assistant"}, {"cwd", work}, {"message", QJsonObject{{"content", QJsonArray{
-             QJsonObject{{"type", "thinking"}, {"thinking", "hmm"}}, QJsonObject{{"type", "text"}, {"text", "It is a **low-pass**."}}}}}}});
+             QJsonObject{{"type", "thinking"}, {"thinking", "only-in-its-thinking"}}, QJsonObject{{"type", "text"}, {"text", "It is a **low-pass**."}}}}}}});
         line({{"type", "assistant"}, {"cwd", work}, {"message", QJsonObject{{"content", QJsonArray{
              QJsonObject{{"type", "tool_use"}, {"id", "tu1"}, {"name", "Bash"}, {"input", QJsonObject{{"command", "ls"}}}}}}}}});
         line({{"type", "user"}, {"cwd", work}, {"message", msg(QJsonArray{QJsonObject{{"type", "tool_result"}, {"tool_use_id", "tu1"}, {"content", "a.sch\nb.sch"}}})}});
@@ -5094,7 +5094,7 @@ private slots:
         QVERIFY(!md.contains("meta stuff"));
         QVERIFY(!md.contains("subagent says"));
         QVERIFY(!md.contains("Compacted"));
-        QVERIFY(!md.contains("hmm"));
+        QVERIFY(!md.contains("only-in-its-thinking"));   // (not a short word: the export names the folder, and a temporary folder's name can hold it)
         // Open already: the same, in front.
         QCOMPARE(tabs.resume(sessions.first()), panel);
         const int tabsNow = tabs.count();

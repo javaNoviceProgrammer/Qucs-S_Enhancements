@@ -8,7 +8,7 @@ on a break that escapes: it says so at the end.
 import os, subprocess, sys
 
 Q = "qucs-s-26.1.1/qucs/"
-R, F, P, I = "test_git_robust", "test_git_fuzz", "test_git_perf", "test_git_integration"
+R, F, P, I, PF = "test_git_robust", "test_git_fuzz", "test_git_perf", "test_git_integration", "test_project_folders"
 B = [
  ("literal paths", "gitrepo.cpp", 'for (const QString& p : paths) out << (p == QLatin1String(".") ? p : QStringLiteral(":(literal)") + p);', 'out = paths;', R, "aFileNameIsNoPattern"),
  ("literal paths, conflicts", "gitrepo.cpp", 'for (const QString& p : paths) out << (p == QLatin1String(".") ? p : QStringLiteral(":(literal)") + p);', 'out = paths;', R, "aConflictsNameIsNoPattern"),
@@ -52,8 +52,23 @@ B = [
  ("a new file's mode", "gitrepo.cpp", 'info.isExecutable() ? QStringLiteral("100755") : QStringLiteral("100644")', 'QStringLiteral("100644")', R, "aNewFilesDiffIsAsGitWritesIt"),
  ("more new files than shown", "gitrepo.cpp", 'if (untracked.size() > kNewFilesShown) text +=', 'if (false) text +=', R, "aNewFilesDiffIsAsGitWritesIt"),
  ("schematics by plain lines", "schematicdiff.cpp", 'for (const ChangedFile& f : changedFiles(root, commit)) {', 'QList<ChangedFile> plain;\n    for (const QString& l : run(root, {QStringLiteral("diff-tree"), QStringLiteral("--no-commit-id"), QStringLiteral("--name-status"), QStringLiteral("-r"), QStringLiteral("-M"), QStringLiteral("--root"), commit}, true, 30000).out.split(QLatin1Char(\'\\n\'), Qt::SkipEmptyParts)) {\n        ChangedFile f;\n        f.status = l.at(0);\n        f.path = l.section(QLatin1Char(\'\\t\'), 1, 1);\n        plain << f;\n    }\n    for (const ChangedFile& f : plain) {', R, "aSchematicOfAnyNameAndAMergesAreSummed"),
+ ("project: a pipe tested as a schematic", "schematic_file.cpp", 'if(!misc::isPlainFile(DocName) || QFileInfo(DocName).size() > kMostRead) return -1;', '', PF, "aPipeInAProjectStopsNothing"),
+ ("project: a pipe's library record", "projectlibraries.cpp", 'if (!misc::isPlainFile(file) || !f.open(QIODevice::ReadOnly)) return false;', 'if (!f.open(QIODevice::ReadOnly)) return false;', PF, "aPipeInAProjectStopsNothing"),
+ ("project: a pipe opened by name", "qucs.cpp", 'if (Info.exists() && !Info.isFile() && !Info.isDir()) {', 'if (false) {', PF, "aPipeInAProjectStopsNothing"),
+ ("project: a subcircuit's pipe", "components/subcircuit.cpp", 'if (!misc::isPlainFile(file.fileName()) || !file.open(QIODevice::ReadOnly))\n', 'if (!file.open(QIODevice::ReadOnly))\n', PF, "aSchematicsPartsCanNamePipes"),
+ ("project: a Verilog part's pipe", "components/verilogfile.cpp", '\n  if (!misc::isPlainFile(f.fileName()) || !f.open(QIODevice::ReadOnly))\n', '\n  if (!f.open(QIODevice::ReadOnly))\n', PF, "aSchematicsPartsCanNamePipes"),
+ ("project: a VHDL part's pipe", "components/vhdlfile.cpp", '\n  if (!misc::isPlainFile(f.fileName()) || !f.open(QIODevice::ReadOnly))\n', '\n  if (!f.open(QIODevice::ReadOnly))\n', PF, "aSchematicsPartsCanNamePipes"),
+ ("project: a text's .cfg pipe", "textdoc.cpp", 'if (!misc::isPlainFile (file.fileName ()) || !file.open (QIODevice::ReadOnly))', 'if (!file.open (QIODevice::ReadOnly))', PF, "aSchematicsPartsCanNamePipes"),
+ ("project: a pipe read as a document", "schematic_file.cpp", 'if(!misc::isPlainFile(a_DocName) || !file.open(QIODevice::ReadOnly)) {', 'if(!file.open(QIODevice::ReadOnly)) {', PF, "aPipeInAProjectStopsNothing"),
+ ("guards: kept whatever the config", "gitstatus.cpp", 'if (it != kept.cend() && it->stamp == stamp && clock.elapsed() - it->at < 30000) return it->guards;', 'if (it != kept.cend() && clock.elapsed() - it->at < 30000) return it->guards;', R, "aFilterAddedJustAfterALookIsGuarded"),
+ ("guards: a worktree's own folder only", "gitstatus.cpp", 'if (!where.isEmpty()) common = QFileInfo(where).isAbsolute() ? where : fileIn(gitDir, where);', '', R, "aFilterAddedJustAfterALookIsGuarded"),
+ ("guards: an include not noticed", "gitstatus.cpp", 'const bool lasting = none || (!files.isEmpty() && !includesOthers(files));', 'const bool lasting = true;', R, "aFilterAddedJustAfterALookIsGuarded"),
+ ("review: a typo staged in silence", "gitrepo.cpp", 'if (!known.ok() || !known.out.trimmed().isEmpty() || !inHead(root, p)) some << p;', 'if (!known.ok() || !known.out.trimmed().isEmpty()) some << p;', R, "aRepositoryInEveryState"),
+ ("review: a typo discarded in silence", "gitrepo.cpp", 'return failure(QStringLiteral("error: pathspec \'%1\' did not match any file(s) known to git").arg(p));', 'continue;', R, "aRepositoryInEveryState"),
+ ("review: the prefix in git's words", "gitrepo.cpp", 'const QString err = QString(this->err).remove(QStringLiteral(":(literal)"));', 'const QString err = this->err;', R, "aRepositoryInEveryState"),
+ ("review: show of a path it did not change", "gitrepo.cpp", 'if (limited && r.out.trimmed().isEmpty()) {', 'if (false) {', R, "aCommitIsShownWhateverThePath"),
  ("a read that asks for its folder", "gitrepo.cpp", 'if (!dotGit.isSymLink()) {\n        if (dotGit.isDir())', 'if (false) {\n        if (dotGit.isDir())', P, "theProgramsEachStarts"),
- ("guards not kept", "gitstatus.cpp", 'if (it != kept.cend() && clock.elapsed() - it->at < 30000) return it->guards;', '', P, "theProgramsEachStarts"),
+ ("guards not kept", "gitstatus.cpp", 'if (it != kept.cend() && it->stamp == stamp && clock.elapsed() - it->at < 30000) return it->guards;', '', P, "theProgramsEachStarts"),
  ("a commit's files not kept", "gitrepo.cpp", 'const bool lasting = isHash(commit);', 'const bool lasting = false;', P, "theProgramsEachStarts"),
  ("a batch of blobs a git each", "gitrepo.cpp", 'if (!specs.at(i).contains(QLatin1Char(\'\\n\'))) {\n            input +=', 'if (false) {\n            input +=', P, "theProgramsEachStarts"),
  ("a diff's whole status", "gitrepo.cpp", 'const QStringList rel = path.isEmpty() ? QStringList() : relative(root, {path});\n    if (!path.isEmpty() && rel.isEmpty()) return {};\n    // The untracked files', '(void)read(root);\n    const QStringList rel = path.isEmpty() ? QStringList() : relative(root, {path});\n    if (!path.isEmpty() && rel.isEmpty()) return {};\n    // The untracked files', P, "theProgramsEachStarts"),

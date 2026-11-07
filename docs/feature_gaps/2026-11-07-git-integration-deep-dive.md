@@ -6,7 +6,7 @@ CI pins Qt 6.10.3 and none of this has run on it (see "What could not be verifie
 The user asked for a focused quality pass on the git integration: a bug hunt that drives it, fuzzing, optimization by
 measurement, and a plan for what to add. The plan is at the end. Nothing in it is built.
 
-Everything here is in the working tree on `main`, **not committed**.
+This work was committed as `e2ae5dd`; the review of it below came after, and its fixes after that.
 
 ## What was checked
 
@@ -87,7 +87,8 @@ and a branch `--web` into `gh pr view`. All are refused now.
 These follow from the fixes above, and you may want some differently:
 
 1. **Claude's `git_stage` and `git_commit` no longer expand patterns.** `paths: ["*.sch"]` used to work by accident. The
-   schema always said files. It now fails with git's "did not match".
+   schema always said files. It now fails with git's "did not match". (As first committed, `git_stage` said nothing about
+   it: see "A review of this" below.)
 2. **In a partial clone, looking does not fetch** (git 2.45 and later). A diff of an older commit whose file is not local
    shows git's "could not fetch" until the file is fetched. To undo it, remove one line in `lookingEnvironment`, but then
    looking at a downloaded partial clone can run what its remote names. I judged that worse, since this is rare in an
@@ -95,7 +96,7 @@ These follow from the fixes above, and you may want some differently:
 3. **A submodule with modified files inside no longer shows as changed** in the File Browser and the Commit window. New
    commits in it still do. The dock's bar has always worked this way.
 4. **Show Changes writes a new file's diff itself.** No `index` line, and a name is shown as it is, not quoted by git. A
-   test compares the rest with `git diff --no-index` line for line.
+   test compares the rest with `git diff --no-index` line for line. A new text file over 32 MB now shows as binary.
 5. **A `.gitignore` line for a name with accents can be two lines** on macOS.
 6. **`Status::root` is the folder as found, not its real path,** and `Status::head` is seven characters, not git's
    `--short`.
@@ -250,8 +251,64 @@ next to them).
   signature or help. Fixed in `completer.py`, with a test that plays an older Python on any Python.
 - **`test_library_export` was not run.** It needs `qucsconv_rf`, whose build needs `dos2unix`, which is not installed here
   and was outside the approved install. It reaches the changed code only through `misc::moveToTrash`.
-- **The full ctest was not run**, only these.
+- **The full ctest, after the review's fixes:** 162 of 163 in Release, on a clean export with only this work on it (the checkout was also holding
+  another session's unfinished work, which did not build). The one is `test_library_export` (above). Under ASan and UBSan on
+  that tree: `test_claude_code`, `test_claude_fuzz`, `test_claude_git`, `test_git_robust`, `test_git_integration`,
+  `test_project_folders`.
+- **`test_claude_code`** failed two functions here, on an untouched export of `3972088` too, and both are fixed.
+  `aReplyOpensAsItsMarkdownHasIt` was a real fault on Qt 6.12: its Markdown reader sets `NonBreakableLines` to false on every
+  paragraph (not in 6.10.3), so a reply's plain first paragraph counted as having a format of its own and took a 6 px bottom
+  margin. `claudeCodesOwnSessionsAreResumed` checked that the export lacks "hmm", and the export names the working folder:
+  this machine's temporary folder happens to hold those letters. The test's thinking text is now a longer word.
 - **The four lints** are green (143 tools checked).
+
+## A review of this
+
+The user's review of `e2ae5dd` (`2026-11-07-claude-git-integration-check.md`), run on the installed app, found what this
+pass had not. Each is reproduced by a test that failed on `e976776` first, and fixed.
+
+| Severity | Fault | Now |
+|---|---|---|
+| High | **A pipe named `.sch` in a project froze the whole app, and again on restart.** The Project panel asks `Schematic::testFile` about every schematic on the GUI thread, and opening a pipe waits for a writer. The git code handled the same file, which is what this pass had tested; the panel reads it by another path. | `testFile` reads only regular files, links followed, of at most 256 MB. |
+| High, found following it | **The same freeze by other readers.** Seen to block, each with a break that its test catches: a pipe opened by name, a library's `.qucs-library.json` in a project, a text file's `.cfg`, and, opening a schematic, the files its subcircuit, Verilog and VHDL parts name. | `misc::isPlainFile` before each of them; a file opened by name says it is no file. Guarded alike, though not seen to block in the test: the SPICE and library parts' files and a Python file's `.env` (not driven). |
+| Medium | **`git_stage` said nothing about a path that does not exist,** which behaviour change 1 above claimed it did. My test was written to pass either way (`!ok() \|\| nothing changed`), so it could not catch this. | Git's "did not match". A deletion already staged still works: the file has to be in HEAD. |
+| Medium | **`git_show` with the top folder, or a path the commit did not change, returned nothing at all,** not even its author and message. The review left this open, as it happened as the app froze. It was a fault of its own. | The top folder is no path, and a commit with nothing there still comes back. |
+| Low | **`git_discard` said nothing about a path that does not exist.** | Said, before anything is thrown away. A file as committed is still no fault. |
+| Low | **`:(literal)` in git's error text.** | Taken out of what is shown. |
+| Low | **This write-up said its work was not committed.** | Corrected. |
+
+Still open: this is every reader I found that runs when a project or a document opens, not a proof that there are no
+others. Those that run only at a user's command, such as a simulation's netlist (`schematic_file.cpp`'s `.lst` and
+Verilog-A reads), are not guarded. The review's folders are the reviewer's own and were left
+alone.
+
+### The guards were kept past a change in the configuration
+
+The other session's bug, reproduced on the packaged `e2ae5dd` by its `guards_race.py`. `readOnlyGuards()` kept a
+repository's guards for 30 s, and which filter drivers to unset is worked out only when they are found. A driver added to
+`.git/config` in that window was not unset, so the next look ran its `clean` program. The tracker's background reads
+refill the cache with no tool call, so a repository could be in the window with nothing having asked about it.
+
+**How it came about:** `3972088` had the same 30 s cache in `gitrepo.cpp`, so `read()`, `log()` and the rest had this
+already. `status()` and `diff(Status)`, the dock's bar, found their guards anew each time. Moving them onto the cache, in
+this pass's optimization, widened it to them.
+
+**Now:** the guards are kept only while the configuration they came from stands as it did, by a stat of each file (size,
+modified and changed times, to the millisecond): the repository's `config`, `config.worktree`, and a linked worktree's
+common folder's. A configuration that includes other files, or a `.git` file that cannot be read without git, is asked
+about at each look, since those changes show in no stamp. `aFilterAddedJustAfterALookIsGuarded` covers the first three, and
+`guards_race.py` on this build answers "filter ran = False" in all four cases.
+
+**Program counts:** unchanged when nothing changes (`read()` stays 1). The first look after a change in the configuration
+takes one more, and a repository with an `include` takes one more at every look.
+
+**What it does not close:**
+
+- A change between the stat and git's own read of the file. That window is short, and cannot be closed from outside git.
+- A same-size edit within the same millisecond of both times.
+- A filter driver in the user's own global configuration is left alone on purpose, as git-lfs's is.
+
+For the other session: its one `git_e2e.py` run that hung until the script's limit is not explained by this.
 
 ## What could not be verified
 

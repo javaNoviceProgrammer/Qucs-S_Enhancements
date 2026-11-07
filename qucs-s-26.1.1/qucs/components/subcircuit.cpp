@@ -128,7 +128,7 @@ void Subcircuit::remakeSymbol(int No) {
 // returns the number of painting elements.
 int Subcircuit::loadSymbol(const QString &DocName) {
   QFile file(DocName);
-  if (!file.open(QIODevice::ReadOnly))
+  if (!misc::isPlainFile(file.fileName()) || !file.open(QIODevice::ReadOnly))
     return -1;
 
   QString Line;
@@ -234,7 +234,7 @@ void Subcircuit::readPortDirections(const QString& fileString) {
 QList<Subcircuit::Parameter> Subcircuit::symbolParameters() {
   QList<Parameter> found;
   QFile file(getSubcircuitFile());
-  if (!file.open(QIODevice::ReadOnly)) return found;
+  if (!misc::isPlainFile(file.fileName()) || !file.open(QIODevice::ReadOnly)) return found;
   QTextStream stream(&file);
   bool inSymbol = false;
   while (!stream.atEnd()) {

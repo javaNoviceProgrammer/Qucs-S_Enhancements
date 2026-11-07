@@ -2715,6 +2715,23 @@ private slots:
         QCOMPARE(readAll(repo + "/:!x"), QByteArray("one\n"));
         QCOMPARE(readAll(QDir::cleanPath(elsewhere)), QByteArray("the workspace's\n"));
         QVERIFY(QFile::remove(QDir::cleanPath(elsewhere)));
+
+        // A name that is no file: said by each tool, git's words, its own path.
+        for (const char* tool : {"git_stage", "git_discard"}) {
+            r = call(tool, {{"path", repo}, {"paths", QJsonArray{"typo.sch"}}});
+            QVERIFY2(failed(r) && text(r).contains("typo.sch"), qPrintable(tool + QStringLiteral(": ") + text(r)));
+        }
+        QVERIFY(failed(call("git_stage", {{"path", repo}, {"paths", QJsonArray{"*.sch"}}})));
+        r = call("git_commit", {{"path", repo}, {"message", "typo"}, {"paths", QJsonArray{"typo.sch"}}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("typo.sch") && !text(r).contains(":(literal)"), qPrintable(text(r)));
+        // A deletion committed by name; an empty commit shown by the top folder.
+        QVERIFY(QFile::remove(repo + "/whole.txt"));
+        r = call("git_commit", {{"path", repo}, {"message", "whole.txt gone"}, {"paths", QJsonArray{"whole.txt"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!gitIn(repo, {"commit", "-q", "--allow-empty", "-m", "an empty one"}).isNull());
+        r = call("git_show", {{"path", repo}, {"commit", "HEAD"}});
+        QVERIFY2(text(r).contains("an empty one") && text(r).contains("Tester"), qPrintable(text(r)));
     }
 };
 

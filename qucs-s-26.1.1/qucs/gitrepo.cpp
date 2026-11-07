@@ -141,6 +141,9 @@ QStringList literalPaths(const QStringList& paths)
 
 QString Result::error() const
 {
+    // (What we write before a path, in what git says back of it.)
+    const QString err = QString(this->err).remove(QStringLiteral(":(literal)"));
+    const QString out = QString(this->out).remove(QStringLiteral(":(literal)"));
     // Paths git would not stage, being ignored: which, not the last line.
     if (const qsizetype at = err.indexOf(QLatin1String("ignored by one of your .gitignore files")); at >= 0) {
         QStringList names;
@@ -537,8 +540,15 @@ Repository read(const QString& path)
 
 namespace {
 
-// git add -A of \a rel, but for a file gone from the disk and the index
-// alike: its deletion is staged already, and git says it matches nothing.
+// Whether the last commit holds \a rel.
+bool inHead(const QString& root, const QString& rel)
+{
+    return run(root, {QStringLiteral("cat-file"), QStringLiteral("-e"), QStringLiteral("HEAD:") + rel}, true, 15000).ok();
+}
+
+// git add -A of \a rel, but for a file gone from the disk and the index and
+// in the last commit: its deletion is staged already, and git would say it
+// matches nothing. A name that is nowhere goes to git, which says so.
 Result addAll(const QString& root, const QStringList& rel)
 {
     QStringList some;
@@ -549,7 +559,7 @@ Result addAll(const QString& root, const QStringList& rel)
             continue;
         }
         const Result known = run(root, {QStringLiteral("ls-files"), QStringLiteral("--"), p}, true, 15000);
-        if (!known.ok() || !known.out.trimmed().isEmpty()) some << p;
+        if (!known.ok() || !known.out.trimmed().isEmpty() || !inHead(root, p)) some << p;
     }
     if (some.isEmpty()) {
         Result nothing;
@@ -596,19 +606,31 @@ Result discard(const QString& root, const QStringList& paths, QStringList* trash
     QList<Entry> chosen;
     const QStringList rel = paths.isEmpty() ? QStringList{QString()} : relative(root, paths);
     if (rel.isEmpty()) return outside();
+    QSet<QString> taken;   // the names given that took in an entry
     for (const Entry& e : repo.entries) {
         if (e.ignored) continue;
-        for (QString p : rel) {
-            if (p == QLatin1String(".")) p.clear();
+        bool in = false;
+        for (const QString& given : rel) {
             // (Compared in one spelling of their accents: a name that matches
             // none would be left as it is, and said done.)
-            p = lookupForm(p);
+            const QString p = given == QLatin1String(".") ? QString() : lookupForm(given);
             const QString path = lookupForm(e.path);
             const QString bare = e.isFolder() ? path.chopped(1) : path;
             if (p.isEmpty() || bare == p || bare.startsWith(p + QLatin1Char('/')) || (e.isFolder() && p.startsWith(path))) {
-                chosen << e;
-                break;
+                taken.insert(given);
+                in = true;
             }
+        }
+        if (in) chosen << e;
+    }
+    // A name that is no file - not changed, not on the disk, not committed: a
+    // slip, said, as git would, before anything is thrown away. (A file as
+    // committed has nothing to discard, and that is no fault.)
+    if (!paths.isEmpty()) {
+        for (const QString& p : rel) {
+            const QFileInfo info(fileIn(root, p));
+            if (p == QLatin1String(".") || taken.contains(p) || info.exists() || info.isSymLink() || (head && inHead(root, p))) continue;
+            return failure(QStringLiteral("error: pathspec '%1' did not match any file(s) known to git").arg(p));
         }
     }
     QStringList restore, forget, toTrash;
@@ -1337,9 +1359,19 @@ QString show(const QString& root, const QString& commit, const QString& path)
     if (optionLike(commit)) return optionRefused(commit).error();
     QStringList args{QStringLiteral("show"), QStringLiteral("--stat"), QStringLiteral("--patch"), QStringLiteral("--format=fuller"),
                      QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"), commit};
-    if (!path.isEmpty()) args << QStringLiteral("--") << relative(root, {path});
+    // (The top folder is the whole repository: no path, as in log().)
+    const QStringList rel = path.isEmpty() ? QStringList() : relative(root, {path});
+    const bool limited = !rel.isEmpty() && rel.first() != QLatin1String(".");
+    if (limited) args << QStringLiteral("--") << rel;
     const Result r = run(root, args, true, 30000);
-    return r.ok() ? r.out : r.error();
+    if (!r.ok()) return r.error();
+    // A commit that changed nothing there: git says nothing at all with a path
+    // given. Who made it and why still come back.
+    if (limited && r.out.trimmed().isEmpty()) {
+        const Result alone = run(root, {QStringLiteral("show"), QStringLiteral("-s"), QStringLiteral("--format=fuller"), commit}, true, 30000);
+        return alone.ok() ? alone.out : alone.error();
+    }
+    return r.out;
 }
 
 namespace {

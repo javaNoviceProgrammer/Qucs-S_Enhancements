@@ -219,7 +219,7 @@ bool TextDoc::writesSettings () const
 bool TextDoc::loadSettings (void)
 {
   QFile file (a_DocName + ".cfg");
-  if (!file.open (QIODevice::ReadOnly))
+  if (!misc::isPlainFile (file.fileName ()) || !file.open (QIODevice::ReadOnly))   // (a pipe would wait for ever)
     return false;
 
   QTextStream stream (&file);
@@ -444,7 +444,7 @@ bool TextDoc::load ()
   const QFileInfo asRead(a_DocName);
   const QDateTime dated = asRead.lastModified();
   QFile file (a_DocName);
-  if (!file.open (QIODevice::ReadOnly))
+  if (!asRead.isFile () || !file.open (QIODevice::ReadOnly))   // (a pipe would wait for ever)
     return false;
   setLanguage (a_DocName);
 
