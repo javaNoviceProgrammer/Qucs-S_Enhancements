@@ -526,6 +526,35 @@ private slots:
     // F12 (and Ctrl+click): the script's own function, a module beside it
     // (opened there), Python's library (opened read-only, not checked); a
     // builtin said; Go Back where it left, again and again.
+    // A Python before 3.10 has no sys.stdlib_module_names (macOS's own is 3.9):
+    // a standard module is known all the same, by where it stands. Any Python
+    // here plays one, with the name taken away first.
+    void aPythonBefore310KnowsItsStandardModules()
+    {
+        if (python.isEmpty()) QSKIP("no python3 here");
+        QProcess p;
+        p.setWorkingDirectory(dir.path());
+        const QString program = QStringLiteral("import sys\nif hasattr(sys, 'stdlib_module_names'):\n    del sys.stdlib_module_names\n")
+                                + qucs_s::python::completerProgram();
+        p.start(python, {"-u", "-c", program});
+        QVERIFY(p.waitForStarted(10000));
+        const auto asked = [&p](int id, const char* kind, const char* source, int line, int column) {
+            p.write(QJsonDocument(QJsonObject{{"id", id}, {"kind", kind}, {"source", source}, {"line", line}, {"column", column}, {"path", ""}})
+                        .toJson(QJsonDocument::Compact) + '\n');
+        };
+        asked(1, "help", "import math\ny = math.sqrt(2)\n", 2, 10);
+        asked(2, "signature", "import json\njson.dumps(", 2, 11);
+        p.closeWriteChannel();
+        QVERIFY(p.waitForFinished(30000));
+        const QList<QByteArray> lines = p.readAllStandardOutput().trimmed().split('\n');
+        QCOMPARE(lines.size(), qsizetype(2));
+        const QJsonObject help = QJsonDocument::fromJson(lines.at(0)).object().value("help").toObject();
+        QVERIFY2(help.value("title").toString().startsWith("math.sqrt("), lines.at(0).constData());
+        const QJsonObject signature = QJsonDocument::fromJson(lines.at(1)).object().value("signature").toObject();
+        QCOMPARE(signature.value("name").toString(), QStringLiteral("dumps"));
+        QVERIFY2(!signature.value("params").toArray().isEmpty(), lines.at(1).constData());
+    }
+
     void goesToTheDefinition()
     {
         if (python.isEmpty()) QSKIP("no python3 here");
