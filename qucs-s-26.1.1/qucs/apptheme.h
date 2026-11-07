@@ -98,7 +98,9 @@ QString name(int theme);
 /// A stored value made valid: System when it is no theme.
 int bounded(int theme);
 
-/// Gives the running application the look of \a theme.
+/// Gives the running application the look of \a theme. From the first call
+/// on, every palette change reaches every widget, whatever made it: Qt alone
+/// leaves those with or under a style sheet in the old colours.
 void apply(int theme);
 /// The theme last applied.
 int current();
