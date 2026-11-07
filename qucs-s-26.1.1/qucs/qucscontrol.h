@@ -809,6 +809,9 @@ private:
     /// A study solved at the mesh as it is and at finer ones, and how far
     /// the values watched moved between them (MCP wishlist N7).
     void femConverge(const QJsonObject& args, const Done& done);
+    /// fem_converge's adaptive check (qucscontrol_fem_adapt.cpp), and its result.
+    void femConvergeAdaptive(MultiphysicsDoc* doc, const QJsonObject& args, const Done& done);
+    QJsonObject femConverged(MultiphysicsDoc* doc, const QString& tag);
     QJsonObject femPlot(const QJsonObject& args);
     QJsonObject femExport(const QJsonObject& args);
     // A 3D model's (.qfem3d, Multiphysics 3D's): the same tools.

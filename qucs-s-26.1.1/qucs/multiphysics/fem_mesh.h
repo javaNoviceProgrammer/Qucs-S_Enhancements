@@ -131,6 +131,10 @@ using Progress = std::function<bool(double fraction, const QString& what)>;
 
 /// Meshes \a topology to \a sizes.
 MeshBuild buildMesh(std::shared_ptr<const Topology> topology, const MeshSizes& sizes, const Progress& progress = {});
+/// Each periodic condition of \a sizes' two sides made the same node for node:
+/// a node of one moved onto the other where it has none, splitting its edge
+/// there.
+void matchPeriodicSides(Mesh& mesh, const MeshSizes& sizes);
 /// Meshes \a model's geometry as its mesh node says.
 MeshBuild buildMesh(const Model& model, const ParameterScope& parameters, std::shared_ptr<const Topology> topology,
                     const Progress& progress = {});

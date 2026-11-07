@@ -2827,7 +2827,7 @@ QList<NodeKind> makeKinds()
                        tr("An element on a curve at most this times its radius")), QStringLiteral("custom=true")),
           shownIf(expr(QStringLiteral("narrow"), tr("Resolution of narrow regions"), QString(), QString(),
                        tr("Elements across a gap between boundaries, at least")), QStringLiteral("custom=true"))},
-         {QStringLiteral("mesh/size"), QStringLiteral("mesh/distribution"), QStringLiteral("mesh/layered"), QStringLiteral("mesh/zdistribution")},
+         {QStringLiteral("mesh/size"), QStringLiteral("mesh/distribution"), QStringLiteral("mesh/layered"), QStringLiteral("mesh/zdistribution"), QStringLiteral("mesh/adapted")},
          {}, true, true, QString(),
          tr("Triangles, Delaunay, refined till their angles are good and their sizes as asked.")});
     add({QStringLiteral("mesh/size"), tr("Size"), QStringLiteral("mesh"), QStringLiteral("meshsize"), Level::Domain,
@@ -2835,6 +2835,18 @@ QList<NodeKind> makeKinds()
                  {tr("Domains"), tr("Boundaries"), tr("Points")}, QStringLiteral("domain")),
           selectionProp(none), expr(QStringLiteral("hmax"), tr("Maximum element size"), QStringLiteral("length"), QStringLiteral("0.1"))},
          {}, {}, false, false, QStringLiteral("size"), tr("Smaller elements where it says.")});
+    {
+        P points;
+        points.key = QStringLiteral("points");
+        points.label = tr("Sizes at points");
+        points.kind = P::Text;
+        points.defaultValue = QJsonArray();
+        points.showIf = QStringLiteral("points=shown");
+        add({QStringLiteral("mesh/adapted"), tr("Adapted Sizes"), QStringLiteral("mesh"), QStringLiteral("meshsize"), Level::None,
+             {expr(QStringLiteral("hmin"), tr("Minimum element size"), QStringLiteral("length"), QString(), tr("In place of the mesh's, where it is smaller")), points},
+             {}, {}, false, false, QStringLiteral("adapt"),
+             tr("The element sizes a mesh convergence check found, kept by its Keep Refined Mesh: where it refined, a size at each point. Delete it for the mesh as it was.")});
+    }
     add({QStringLiteral("mesh/distribution"), tr("Distribution"), QStringLiteral("mesh"), QStringLiteral("meshdistribution"),
          Level::Boundary, {selectionProp(none), integer(QStringLiteral("count"), tr("Number of elements"), 10)},
          {}, {}, false, false, QStringLiteral("dis"), tr("A number of elements along boundaries.")});
@@ -3304,6 +3316,56 @@ QList<NodeKind> makeKinds()
             optimization::Settings s;
             s.method = i;
             strategies << s.methodName();
+        }
+        // A mesh convergence check: its tree's node, as the optimizations'.
+        {
+            P watched;
+            watched.key = QStringLiteral("values");
+            watched.label = tr("Values to watch");
+            watched.kind = P::Rows;
+            watched.defaultValue = QJsonArray();
+            watched.choiceLabels = {tr("Expression"), tr("Tolerance"), tr("Settled below")};
+            watched.columnChoices = {{}, {}, {}};
+            watched.tooltip = tr("Each an expression of the results - a global value (es.C11, ec.R, emw.neff), a Derived Values node's (lp1.Z0) - read on each mesh, at the study's "
+                                 "last time or frequency, of the mode its step chose. Tolerance: its own relative error asked, in place of the check's. Settled below: an absolute "
+                                 "error that is enough however small it is, for a value near nought: 1e-3[K], the value's unit.");
+            P kept;
+            kept.key = QStringLiteral("result");
+            kept.label = tr("The last run's result, written by it");
+            kept.kind = P::Text;
+            kept.defaultValue = QJsonValue(QJsonValue::Undefined);
+            kept.showIf = QStringLiteral("result=shown");
+            P physicsTags;
+            physicsTags.key = QStringLiteral("physics");
+            physicsTags.label = tr("Refine by the physics");
+            physicsTags.kind = P::Physics;
+            physicsTags.defaultValue = QJsonArray();
+            physicsTags.tooltip = tr("Whose error the mesh is refined by. None chosen: every physics solved, each weighing the same.");
+            add({QStringLiteral("convergences"), tr("Mesh Convergence"), QString(), QStringLiteral("convergence"), Level::None, {},
+                 {QStringLiteral("convergence")}, {}, true, true, QString(),
+                 tr("Each check under it refines the mesh until the values it watches have settled, and says what stands behind that.")});
+            add({QStringLiteral("convergence"), tr("Mesh Convergence"), QStringLiteral("convergence"), QStringLiteral("convergence"), Level::None,
+                 {study,
+                  expr(QStringLiteral("tolerance"), tr("Tolerance"), QString(), QStringLiteral("0.01"), tr("The relative error asked of each value: 0.01 is 1 %")),
+                  choice(QStringLiteral("refine"), tr("Refine by"), {QStringLiteral("auto"), QStringLiteral("goal"), QStringLiteral("uniform")},
+                         {tr("The error of the fields (fall back on every element where a field gives none)"), tr("The values watched, where an adjoint can be solved"), tr("Every element")},
+                         QStringLiteral("auto"), tr("Goal-oriented refinement reads how much each element's error reaches the value watched, with a second solve on each mesh: "
+                                                    "a linear physics' integral or point value. Others fall back on the fields' error, and it says so.")),
+                  physicsTags,
+                  expr(QStringLiteral("maxunknowns"), tr("Unknowns at most"), QString(), QStringLiteral("2e6"), tr("No mesh past this is solved; it stops and says so")),
+                  integer(QStringLiteral("maxmeshes"), tr("Meshes at most"), 12, tr("Solves of each point checked, from 2 to 40")),
+                  flag(QStringLiteral("check"), tr("End with a refinement the error indicator did not choose"), true,
+                       tr("Once the values have settled, every element is cut once and they are read again. Values that agree on meshes refined somewhere else do not survive it. "
+                          "It costs about twice the last mesh; off, the agreement of those meshes is all there is, and the result says so.")),
+                  choice(QStringLiteral("sweep"), tr("Of a Parametric Sweep"),
+                         {QStringLiteral("ends"), QStringLiteral("first"), QStringLiteral("last"), QStringLiteral("all"), QStringLiteral("own")},
+                         {tr("Its first and last points"), tr("Its first point"), tr("Its last point"), tr("Every point"), tr("None: the model's own values")}, QStringLiteral("ends"),
+                         tr("Each point checked has its own meshes and its own verdict; the check's is the worst of them.")),
+                  watched, kept},
+                 {}, {}, false, false, QStringLiteral("conv"),
+                 tr("Refines the mesh locally, where the error is, until the values it watches have settled or a limit is reached - each value's estimated limit and error from the rate it "
+                    "converges at, and a last refinement no indicator chose - the mesh of the model not touched. The table and the graph in the model tab's Mesh Convergence page, kept "
+                    "with the model; Keep Refined Mesh writes that mesh's sizes into the mesh node.")});
         }
         // The tree's node they all go under; the file has them in a list of its own.
         add({QStringLiteral("optimizations"), tr("Optimization"), QString(), QStringLiteral("optimization"), Level::None, {},
@@ -4185,7 +4247,7 @@ bool flagsSkipped(const Node& node, const QString& study, bool results)
     if (!node.enabled) return true;
     if (!study.isEmpty() && node.type == QLatin1String("study") && node.tag != study) return true;
     // (An optimization's are its own to read, not a study's.)
-    if (node.type == QLatin1String("optimization")) return true;
+    if (node.type == QLatin1String("optimization") || node.type == QLatin1String("convergence")) return true;
     return !results && node.type == QLatin1String("results");
 }
 
@@ -4476,6 +4538,8 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
     // (Added to the model: under the node its optimizations go under.)
     if (parent == &root && node.type == QLatin1String("optimization"))
         if (Node* group = root.child(QStringLiteral("optimizations"))) parent = group;
+    if (parent == &root && node.type == QLatin1String("convergence"))
+        if (Node* group = root.child(QStringLiteral("convergences"))) parent = group;
     const NodeKind* pk = parent->kind();
     const NodeKind* k = node.kind();
     if (!k) {
@@ -4799,13 +4863,15 @@ void Model::normalise(QStringList* notes)
         }
         geometry.children.push_back(fin);
     }
-    // The optimizations under their node, after the studies. (A 2D model's: a 3D
-    // one has none to offer, and what a file gives it stays where it can be refused.)
-    {
+    // The mesh convergence checks and the optimizations each under their node,
+    // after the studies. (A 2D model's: a 3D one has none to offer, and what a
+    // file gives it stays where it can be refused.)
+    for (const char* kinds : {"convergence", "optimization"}) {
+        const QString each = QLatin1String(kinds), all = each + QLatin1Char('s');
         Node group;
-        group.type = QStringLiteral("optimizations");
-        group.tag = QStringLiteral("optimizations");
-        const auto isGroup = [](const Node& n) { return n.type == QLatin1String("optimizations"); };
+        group.type = all;
+        group.tag = all;
+        const auto isGroup = [&all](const Node& n) { return n.type == all; };
         const auto it = std::find_if(root.children.begin(), root.children.end(), isGroup);
         if (it != root.children.end()) {
             group = *it;
@@ -4815,7 +4881,7 @@ void Model::normalise(QStringList* notes)
             for (const Node& n : group.children) root.children.push_back(n);
         } else {
             for (auto c = root.children.begin(); c != root.children.end();) {
-                if (c->type == QLatin1String("optimization")) {
+                if (c->type == each) {
                     group.children.push_back(*c);
                     c = root.children.erase(c);
                 } else {
@@ -5007,6 +5073,11 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
         if (!n) continue;
         m.root.children.push_back(*n);
     }
+    for (const QJsonValue& s : o.value(QStringLiteral("convergences")).toArray()) {
+        std::optional<Node> n = nodeFrom(QStringLiteral("model"), s, problems, QStringLiteral("features"), QStringLiteral("convergence"));
+        if (!n) continue;
+        m.root.children.push_back(*n);
+    }
     Node results;
     results.type = QStringLiteral("results");
     results.tag = QStringLiteral("results");
@@ -5097,6 +5168,14 @@ QJsonObject Model::toObject() const
             for (const Node& c : s.children) optimizations.append(nodeObject(root, c));
     }
     if (!optimizations.isEmpty()) o.insert(QStringLiteral("optimizations"), optimizations);
+    // (As theirs: written only where there is one.)
+    QJsonArray convergences;
+    for (const Node& s : root.children) {
+        if (s.type == QLatin1String("convergence")) convergences.append(nodeObject(root, s));
+        if (s.type == QLatin1String("convergences"))
+            for (const Node& c : s.children) convergences.append(nodeObject(root, c));
+    }
+    if (!convergences.isEmpty()) o.insert(QStringLiteral("convergences"), convergences);
     QJsonObject r;
     QJsonArray plots, derived, exports;
     for (const Node& p : results().children) {

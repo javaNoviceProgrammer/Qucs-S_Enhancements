@@ -57,6 +57,7 @@ set(FEM_SRCS
   fem_tensor.cpp
   optimizer_core.cpp
   fem_optimize.cpp
+  fem_adapt.cpp
 )
 
 add_library(fem STATIC ${FEM_SRCS})
