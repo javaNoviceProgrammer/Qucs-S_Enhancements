@@ -239,7 +239,21 @@ private slots:
         MultiphysicsDoc* doc = model(section);
         QVERIFY(doc);
         panel()->setDocument(doc);
-        QMenu* menu = panel()->menuFor(QStringLiteral("model"));
+        // The tree: its node after the studies and before the results, with nothing
+        // under it yet, and offering what goes there; the model's own menu does not.
+        QTreeWidget* tree = panel()->findChild<QTreeWidget*>();
+        QVERIFY(tree);
+        QStringList topLevel;
+        for (int i = 0; i < tree->topLevelItem(0)->childCount(); ++i) topLevel << tree->topLevelItem(0)->child(i)->text(0);
+        const int node = topLevel.indexOf(QStringLiteral("Optimization"));
+        QVERIFY2(node > topLevel.indexOf(QStringLiteral("Study")) && node < topLevel.indexOf(QStringLiteral("Results")), qPrintable(topLevel.join(',')));
+        QTreeWidgetItem* group = tree->topLevelItem(0)->child(node);
+        QCOMPARE(group->childCount(), 0);
+        QMenu* rootMenu = panel()->menuFor(QStringLiteral("model"));
+        QVERIFY(rootMenu);
+        for (QAction* a : rootMenu->actions()) QVERIFY(a->text() != QLatin1String("Add Optimization"));
+        delete rootMenu;
+        QMenu* menu = panel()->menuFor(QStringLiteral("optimizations"));
         QVERIFY(menu);
         QAction* add = nullptr;
         for (QAction* a : menu->actions())
@@ -247,8 +261,15 @@ private slots:
         QVERIFY(add);
         delete menu;
         const int steps = doc->undoStack()->count();
-        const QString tag = panel()->addNode(QStringLiteral("model"), QStringLiteral("optimization"));
+        const QString tag = panel()->addNode(QStringLiteral("optimizations"), QStringLiteral("optimization"));
         QCOMPARE(tag, QStringLiteral("opt1"));
+        // Under it.
+        group = nullptr;
+        for (int i = 0; i < tree->topLevelItem(0)->childCount(); ++i)
+            if (tree->topLevelItem(0)->child(i)->text(0) == QLatin1String("Optimization")) group = tree->topLevelItem(0)->child(i);
+        QVERIFY(group);
+        QCOMPARE(group->childCount(), 1);
+        shoot(panel(), QStringLiteral("optimization_tree"));
         QCOMPARE(doc->undoStack()->count(), steps + 1);
         QVERIFY(!doc->optimizeButton()->isHidden());
         QCOMPARE(doc->bottomTabs()->count(), 3);

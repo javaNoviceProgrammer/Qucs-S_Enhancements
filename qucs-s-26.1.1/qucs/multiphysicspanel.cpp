@@ -315,6 +315,7 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("meshdistribution")) letters(QStringLiteral("n"), purple);
     else if (icon == QLatin1String("study") || icon == QLatin1String("stationary")) letters(QStringLiteral("="), gray, true);
     else if (icon == QLatin1String("results")) letters(QStringLiteral("R"), gray);
+    else if (icon == QLatin1String("optimization")) letters(QStringLiteral("O"), gray);
     else if (icon == QLatin1String("plotgroup") || icon == QLatin1String("surface")) {
         QLinearGradient g(0, 0, 16, 0);
         g.setColorAt(0, QColor(30, 60, 200));
@@ -961,13 +962,15 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
             }
             menu->addAction(glyph(QStringLiteral("material")), tr("Blank Material"), this, [this, tag] { addNode(tag, QStringLiteral("material")); });
         } else if (!k->children.isEmpty()) {
-            QMenu* add = n->type == QLatin1String("model") ? menu : menu->addMenu(tr("Add"));
+            // (The model's, and the Optimization node's one kind: in the menu itself.)
+            const bool direct = n->type == QLatin1String("model") || n->type == QLatin1String("optimizations");
+            QMenu* add = direct ? menu : menu->addMenu(tr("Add"));
             // (The kinds of this model's space: not a 3D model's Box.)
             for (const QString& type : childKinds(*n, a_doc->model().spaceUnder(*n))) {
                 const NodeKind* ck = nodeKind(type);
                 if (!ck || ck->fixed) continue;
                 if (ck->unique && n->child(type)) continue;
-                add->addAction(glyph(ck->icon), n->type == QLatin1String("model") ? tr("Add %1").arg(ck->title) : ck->title, this,
+                add->addAction(glyph(ck->icon), direct ? tr("Add %1").arg(ck->title) : ck->title, this,
                                [this, tag, type] { addNode(tag, type); });
             }
         }

@@ -204,8 +204,11 @@ std::vector<int> OptimizationPlan::active() const
 std::vector<const Node*> optimizationNodes(const Model& model)
 {
     std::vector<const Node*> out;
-    for (const Node& c : model.root.children)
+    for (const Node& c : model.root.children) {
         if (c.type == QLatin1String("optimization")) out.push_back(&c);
+        if (c.type == QLatin1String("optimizations"))
+            for (const Node& o : c.children) out.push_back(&o);
+    }
     return out;
 }
 
