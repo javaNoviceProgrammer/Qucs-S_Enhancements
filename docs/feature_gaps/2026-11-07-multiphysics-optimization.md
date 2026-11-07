@@ -143,7 +143,7 @@ goals and the method table have one implementation for both of Qucs-S's users.
 | The best point reported is the best seen, feasible first, not the method's last point | With limits an earlier round may have met them better. Without limits the two are the same, as the check shows. |
 | A local method whose start does not solve looks over the range (`findStart`) before it gives up | The fork's simplex and fit stop there, with NO SOLUTION from one bad corner. A whole solve has many ways to fail at one point. |
 | `nsga2` takes limits, by Deb's rule: a design that breaks one loses to one that does not | The fork refuses them. A front that breaks a limit is of no use. |
-| A failed design is dominated by every other under `nsga2`, a maximized objective too | **The fork has a fault here, left as it is:** `opt_eval_objs` sets a failed value to 1e15 and then negates it for `-maximize`, so a design that did not solve reads as the best of all there. Read, not run. |
+| A failed design is dominated by every other under `nsga2`, a maximized objective too | The fork had this fault, found while porting: a failed value was set to 1e15 and then negated for `-maximize`, so a design that did not solve read as the best of all. Reproduced and fixed there afterwards as its Enhancement-918. |
 | A target's miss is relative: `w (y - t) / t`, or to its value at the start for a target of 0 | The fork's is absolute, with the weight to make it relative. In SI a capacitance is 1e-10: its square, 1e-20, is under the tolerance's floor and every search "converges" at once. So a weight here is how much a row counts, a number. |
 
 ### A model's optimization: `multiphysics/fem_optimize.{h,cpp}`
@@ -327,7 +327,6 @@ even at the 1.9 times of CI's slowest runner.
   solves have not been run, nor `parallel` on a model of gigabytes.
 - **Process flows as candidates.** `optimize()` builds a flow's geometry first, as Compute does, and a stop reaches a flow's anneal
   through `runStudy`'s Progress; a parameter that shapes a flow has not been run through an optimization.
-- **The fork's `nsga2` fault** above was read, not run.
 - **A person's eye on it:** driven offscreen, its page looked at by screenshot. No real display, no mouse.
 
 ## Fixed on the way
