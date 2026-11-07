@@ -244,9 +244,10 @@ next to them).
   `test_claude_git`.
 - **The others that reach the changed code**, passed in both: `test_file_browser_drop`, `test_project_folders`,
   `test_mcp_server`, `test_multiphysics_doc`, `test_qucs_control`.
-- **`test_python_tools`** fails two functions, `theCallsSignature` and `whatANameIs`, in both builds. It fails the same two
-  on an untouched export of `3972088`, built apart, so this work did not cause it. It is left alone. The system Python here
-  is 3.9.6, which may be why; that was not looked into.
+- **`test_python_tools`** failed two functions here, `theCallsSignature` and `whatANameIs`, as it did on an untouched
+  export of `3972088`, so this work did not cause it. Found afterwards: `completer.py` took its list of standard modules
+  from `sys.stdlib_module_names`, which Python only has from 3.10, so on macOS's own 3.9.6 `math`, `json` and `os` gave no
+  signature or help. Fixed in `completer.py`, with a test that plays an older Python on any Python.
 - **`test_library_export` was not run.** It needs `qucsconv_rf`, whose build needs `dos2unix`, which is not installed here
   and was outside the approved install. It reaches the changed code only through `misc::moveToTrash`.
 - **The full ctest was not run**, only these.
