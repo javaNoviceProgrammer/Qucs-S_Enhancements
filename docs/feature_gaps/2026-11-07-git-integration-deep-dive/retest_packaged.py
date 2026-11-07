@@ -4,14 +4,16 @@ retest.py <qucs-s binary> <empty work folder>. Own HOME, settings, trash and
 workspace. A reader blocked on a pipe is seen at once, and let go."""
 import json, os, queue, stat, subprocess, sys, threading, time
 exe, wk = sys.argv[1], os.path.realpath(sys.argv[2])
-CONTROL = len(sys.argv) > 3   # (an older build: no link to /dev/zero, the freeze part alone)
+MODE = sys.argv[3] if len(sys.argv) > 3 else ""
+CONTROL = MODE == "control"   # (an older build: no link to /dev/zero, the freeze part alone)
+SECOND = MODE == "second"     # (the second review's part alone)
 HOME = wk + "/home"; os.makedirs(HOME)
 open(HOME + "/.gitconfig", "w").write("[user]\n\tname = Retest\n\temail = retest@example.invalid\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
 ENV = dict(os.environ, HOME=HOME, GIT_CONFIG_NOSYSTEM="1")
 for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL"): ENV.pop(k, None)
 results = []
 def report(name, ok, note=""):
-    results.append(ok); print(("ok   " if ok else "FAIL ") + name + (" - " + str(note)[:170] if note and not ok else ""), flush=True)
+    ok = bool(ok); results.append(ok); print(("ok   " if ok else "FAIL ") + name + (" - " + str(note)[:170] if note and not ok else ""), flush=True)
 def git(repo, *a, check=True):
     return subprocess.run(["git", "-C", repo, *a], env=ENV, check=check, capture_output=True, text=True).stdout
 class Server:
@@ -53,6 +55,87 @@ def repo(path, files={"a.txt": "one\ntwo\n"}):
     os.makedirs(path); git(path, "init", "-q")
     for n, t in files.items(): open(path + "/" + n, "w").write(t)
     git(path, "add", "-A"); git(path, "commit", "-q", "-m", "first"); return path
+
+def second_review(ws):
+    """The review at 86a8458 (2026-11-07-claude-git-integration-review.md)."""
+    s = Server(ws)
+    def lines(r): return git(r, "log", "-1", "--format=%s").strip()
+    def state(t):
+        try: return json.loads(t)
+        except Exception: return {}
+    # 1. A path outside the repository.
+    r = repo(ws + "/out", {"a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n"}); open(ws + "/outside.txt", "w").write("x\n")
+    for n in "abc": open(r + "/" + n + ".txt", "w").write("edit\n")
+    head = git(r, "rev-parse", "HEAD")
+    err, t = s.call("git_commit", path=r, message="only a", paths=["a.txt", "../outside.txt"]); report("1 a commit with a path outside commits nothing", err and git(r, "rev-parse", "HEAD") == head, t)
+    # 2. Pull on diverged branches.
+    b = ws + "/d/o.git"; os.makedirs(ws + "/d"); subprocess.run(["git", "init", "-q", "--bare", b], env=ENV, check=True)
+    one = repo(ws + "/d/one", {"f.txt": "base\n", "g.txt": "base\n"}); git(one, "remote", "add", "origin", b); git(one, "push", "-q", "-u", "origin", "main")
+    two = ws + "/d/two"; subprocess.run(["git", "clone", "-q", b, two], env=ENV, check=True)
+    def both(file, mine, theirs):
+        open(two + "/" + file, "w").write(mine); git(two, "commit", "-q", "-am", "mine")
+        open(one + "/" + file, "w").write(theirs); git(one, "commit", "-q", "-am", "theirs"); git(one, "pull", "-q", "--no-rebase", "--no-edit"); git(one, "push", "-q")
+    open(two + "/m.txt", "w").write("m\n"); git(two, "add", "-A"); git(two, "commit", "-q", "-m", "mine")
+    open(one + "/g.txt", "w").write("theirs\n"); git(one, "commit", "-q", "-am", "theirs"); git(one, "push", "-q")
+    err, t = s.call("git_remote", path=two, action="pull"); report("2 a pull of diverged branches merges", not err and len(git(two, "log", "-1", "--format=%P").split()) == 2, t)
+    both("f.txt", "mine\n", "theirs\n")
+    err, t = s.call("git_remote", path=two, action="pull"); report("2 a pull in conflict is said", not err and state(t).get("conflicts") == ["f.txt"], t)
+    err, t = s.call("git_abort", path=two)
+    git(two, "config", "pull.rebase", "true"); err, t = s.call("git_remote", path=two, action="pull"); report("2 pull.rebase stands", state(t).get("under way") == "rebase", t)
+    # 9. A rebase goes on.
+    err, t = s.call("git_resolve", path=two + "/f.txt", action="take_theirs")
+    err, t = s.call("git_commit", path=two, message="not this"); report("9 a commit in a rebase is refused", err and "git_continue" in t, t)
+    err, t = s.call("git_continue", path=two); report("9 git_continue finishes the rebase", not err and "under way" not in state(t) and state(t).get("branch") == "main", t)
+    # 3. A name with a space.
+    r = repo(ws + "/sp", {"sp": "one\n", "sp ": "one\n"})
+    for n in ("sp", "sp "): open(r + "/" + n, "w").write("edit\n")
+    err, t = s.call("git_discard", path=r, paths=["sp "]); report("3 discard of 'sp ' takes that file", not err and open(r + "/sp ").read() == "one\n" and open(r + "/sp").read() == "edit\n", t)
+    # 5. An untracked folder.
+    os.makedirs(r + "/new")
+    for n in "xyz": open(r + "/new/" + n + ".sch", "w").write(n)
+    err, t = s.call("git_discard", path=r, paths=["new/typo.sch"]); report("5 a name in an untracked folder that is no file is said", err, t)
+    err, t = s.call("git_discard", path=r, paths=["new/x.sch", "new/y.sch"]); report("5 discard takes each file in an untracked folder", not err and not os.path.exists(r + "/new/x.sch") and not os.path.exists(r + "/new/y.sch") and os.path.exists(r + "/new/z.sch"), t)
+    # 4. Discard all in a merge.
+    r = repo(ws + "/m", {"d.txt": "d\n", "z.txt": "z\n"}); git(r, "checkout", "-q", "-b", "t"); open(r + "/d.txt", "w").write("c\n"); open(r + "/new.txt", "w").write("t\n"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "t")
+    git(r, "checkout", "-q", "main"); git(r, "rm", "-q", "d.txt"); open(r + "/new.txt", "w").write("m\n"); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "m"); git(r, "merge", "--no-edit", "t", check=False); open(r + "/z.txt", "w").write("edit\n")
+    err, t = s.call("git_discard", path=r, all=True); report("4 discard all in a merge finishes", not err and open(r + "/z.txt").read() == "z\n" and not state(t).get("conflicts"), t)
+    # 6, 7. .gitignore no plain file.
+    r = repo(ws + "/ig", {"t.txt": "t\n"}); out = ws + "/ig-outside"; open(out, "w").write("kept\n"); os.symlink(out, r + "/.gitignore")
+    err, t = s.call("git_ignore", path=r + "/t.txt"); report("7 git_ignore writes nothing through a link", err and open(out).read() == "kept\n", (t, open(out).read()))
+    os.remove(r + "/.gitignore"); os.mkfifo(r + "/.gitignore"); w = Watch([r + "/.gitignore"])
+    try:
+        err, t = s.call("git_ignore", path=r + "/t.txt")
+    except TimeoutError:   # (an older build: it waits for ever, so it is started anew)
+        err, t = False, "no answer"; s.p.kill(); os.makedirs(ws + "-again"); s = Server(ws + "-again")
+    hits = w.stop(); report("6 a pipe named .gitignore: answered, nothing waits", err and not hits, (t, hits)); os.remove(r + "/.gitignore")
+    # 8. A commit already applied.
+    r = repo(ws + "/ap", {"a.txt": "a\n"}); git(r, "checkout", "-q", "-b", "side"); open(r + "/a.txt", "w").write("same\n"); git(r, "commit", "-q", "-am", "the change"); h = git(r, "rev-parse", "HEAD").strip()
+    git(r, "checkout", "-q", "main"); open(r + "/a.txt", "w").write("same\n"); git(r, "commit", "-q", "-am", "by hand")
+    err, t = s.call("git_commit_action", path=r, commit=h, action="cherry_pick"); report("8 no conflict is called one", "conflicts:" not in state(t).get("cherry_pick", "") and "git_continue" in t, t)
+    err, t = s.call("git_continue", path=r, skip=True); report("8 git_continue skip goes past it", not err and "under way" not in state(t), t)
+    # The smaller ones.
+    r = repo(ws + "/sm", {"a.txt": "a\n", "main": "a file\n"})
+    err, t = s.call("git_unstage", path=r, paths=["typo.txt"]); report("unstage of a name that is no file is said", err, t)
+    err, t = s.call("git_status", path=r + "/nowhere.txt"); report("git_status of a file not there", "as committed" not in state(t).get("path", {}).get("state", ""), t)
+    err, t = s.call("git_log", path=r, ref="no-such-ref"); report("git_log of an unknown ref fails", err, t)
+    err, t = s.call("git_stash", path=r, action="show", index=5); report("git_stash show of a stash not there fails", err, t)
+    err, t = s.call("git_log", path=r, ref="main"); report("git_log of a ref a file is named as", not err and state(t).get("commits"), t)
+    err, t = s.call("git_show", path=r, commit="main"); report("git_show of a commit a file is named as", not err and "first" in t, t)
+    err, t = s.call("git_commit_action", path=r, commit="main", action="reset", mode="mixed"); report("reset to a commit a file is named as", not err, t)
+    open(r + "/only-new.txt", "w").write("stashed line\n"); s.call("git_stash", path=r, action="push"); err, t = s.call("git_stash", path=r, action="show"); report("git_stash show of new files alone", "stashed line" in t, t); s.call("git_stash", path=r, action="drop")
+    git(r, "mv", "a.txt", "b.txt"); err, t = s.call("git_commit", path=r, message="moved", paths=["b.txt"]); report("a rename committed by its new name", not err and not state(t).get("staged") and "a.txt" not in git(r, "ls-tree", "--name-only", "HEAD"), t)
+    open(r + "/long.txt", "w").write("line\n" * 2100); git(r, "add", "-A"); git(r, "commit", "-q", "-m", "long")
+    err, t = s.call("git_blame", path=r + "/long.txt"); report("blame's cut is said", "more" in state(t), t[:120])
+    f = ws + "/fresh"; os.makedirs(f); git(f, "init", "-q"); err, t = s.call("git_unstage", path=f, all=True); report("unstage all before a first commit", not err, t)
+    os.makedirs(r + "/fold"); err, t = s.call("git_resolve", path=r + "/fold"); report("git_resolve of a folder says so", err and "folder" in t, t)
+    sl = ws + "/slash.git"; subprocess.run(["git", "init", "-q", "--bare", sl], env=ENV, check=True); git(r, "remote", "add", "up", sl); git(r, "push", "-q", "up", "HEAD:main")
+    err, t = s.call("git_clone", url=sl + "/"); report("a clone URL ending in a slash", not err and os.path.isdir(ws + "/slash"), t)
+    git(r, "remote", "add", "my/remote", sl); git(r, "update-ref", "refs/remotes/my/remote/feature", "HEAD"); err, t = s.call("git_branch", path=r, action="switch", name="my/remote/feature"); report("a remote with a slash in its name", state(t).get("branch") == "feature", t)
+    s.close()
+
+if SECOND:
+    ws = wk + "/ws4"; os.makedirs(ws); second_review(ws)
+    print(f"{sum(results)} of {len(results)} as they should be", flush=True); sys.exit(0)
 
 # ---- the freeze
 ws = wk + "/ws"; os.makedirs(ws); prj = ws + "/pipes_prj"; os.makedirs(prj + "/Libraries/lib")
@@ -120,4 +203,5 @@ g = repo(ws + "/late", {"a.txt": "one\n"}); s.call("git_status", path=g)
 open(g + "/.git/config", "a").write('[filter "late"]\n\tclean = %s\n' % prog); open(g + "/.gitattributes", "w").write("* filter=late\n"); open(g + "/a.txt", "w").write("TWO\n")
 s.call("git_status", path=g); s.call("git_diff", path=g); report("a filter added just after a look does not run", not os.path.exists(mark))
 s.close()
+ws = wk + "/ws4"; os.makedirs(ws); second_review(ws)
 print(f"{sum(results)} of {len(results)} as they should be", flush=True)

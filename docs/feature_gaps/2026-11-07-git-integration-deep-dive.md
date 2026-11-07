@@ -359,8 +359,12 @@ breaks caught; `test_git_robust`, `test_git_fuzz`, `test_git_perf`, `test_git_in
 `aCancelledCallStopsAndIsNotAnswered` went past its 20 s). The full ctest in Release, 12 at a time on Qt 6.12.0, twice: `test_library_export` not run
 both times (it needs `dos2unix`), and one or two others failing, not the same ones: `test_qucs_control` and `test_claude_code` the first time, whose reasons were not kept,
 and `test_file_browser`'s `theFolderShownTakenAwayAndBack`, a wait, the second, with the machine's load above 40 on 24 processors. Each passes alone.
-The fuzzers, 16 seeds, no finding; `retest_packaged.py` on this build, 34 of 34. **Not run on a packaged app** with this review's own
-cases: the tests drive the same tools. The DMG predates all of it.
+The fuzzers, 16 seeds, no finding; `retest_packaged.py` on this build, 34 of 34. 
+**Retested on the packaged app**, the DMG of `bc0a4b9`, which holds `dd7cfc4`, by `retest_packaged.py`, with this review's cases
+added: 62 of 62 as they should be, 34 of the first review and 28 of this one, no reader blocked (`--mcp-server`, offscreen, through
+Claude's tools). **As a control,** the same files as they stood before `dd7cfc4`, on the clean export: 0 of those 28, including no
+answer at all on a pipe named `.gitignore`. Not tried: Git > Continue and Skip This Commit on a real display (a test triggers the
+file's menu item, offscreen), and a real remote (the pulls are from a local bare repository).
 
 ## What could not be verified
 
