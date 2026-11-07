@@ -1204,6 +1204,18 @@ void Commands::continueOperation(const QString& root, bool skip)
         emit message(tr("Nothing is under way"));
         return;
     }
+    // (What was resolved by hand for that commit goes with it.)
+    if (skip) {
+        QMessageBox box(QMessageBox::Warning, tr("Skip This Commit"),
+                        tr("Go past the commit the %1 stopped at? Its changes are left out, and whatever you resolved or staged for it is thrown away.").arg(repo.operation),
+                        QMessageBox::NoButton, window());
+        box.setObjectName(QStringLiteral("gitSkipQuestion"));
+        QPushButton* yes = box.addButton(tr("Skip"), QMessageBox::DestructiveRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != yes) return;
+    }
     const Result r = git::continueOperation(root, repo.operation, skip);
     if (!r.ok() && (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")))) {
         misc::reportError(tr("The %1 stopped at a conflict again: resolve it, stage it, and Continue.").arg(repo.operation) + QStringLiteral("\n\n") + r.error());
@@ -1248,7 +1260,7 @@ QStringList Commands::openConflictVersions(const QString& root, const QString& p
     // would come out changed.)
     const auto put = [&](bool there, const QString& stage, const QString& which) {
         if (!there) return;
-        const QByteArray bytes = fileAt(root, stage, path);
+        const QByteArray bytes = fileAt(root, stage, v.name);
         const QString base = info.completeBaseName() + QStringLiteral(" (%1)").arg(which);
         QString target = info.dir().filePath(base + QLatin1Char('.') + info.suffix());
         for (int n = 2; QFileInfo::exists(target); ++n)
