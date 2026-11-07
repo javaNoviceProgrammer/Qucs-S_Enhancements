@@ -224,6 +224,9 @@ public:
     /// full-wave one at its next frequency.
     void stopSolving();
     bool isSolving() const { return a_solveJob != nullptr || a_solveWhenPrepared; }
+    /// What a solve under way is at, in words, and the count its bar shows:
+    /// \a done of \a of (nought of nought: it cannot be counted now).
+    QString solveCount(int* done, int* of) const;
     /// Whether a solve is going on, or waiting for its mesh, that \a request
     /// asks for too - the same solver, the study's when it names none, and
     /// a full-wave one's frequencies and matrix: rf25_solve and
