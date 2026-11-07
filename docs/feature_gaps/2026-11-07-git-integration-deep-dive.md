@@ -282,6 +282,15 @@ others. Those that run only at a user's command, such as a simulation's netlist 
 Verilog-A reads), are not guarded. The review's folders are the reviewer's own and were left
 alone.
 
+**Retested on the packaged app**, the DMG of `4a7186b`, by `2026-11-07-git-integration-deep-dive/retest_packaged.py`
+(`--mcp-server`, offscreen, its own HOME, settings and workspace; a reader blocked on a pipe is seen at once and let go):
+34 of 34 as they should be, no reader blocked. That covers opening the project, starting again on it, each pipe by name, a
+schematic naming pipes, the review's git faults, and what it left unchecked except the windows: a staged deletion by name,
+`git_commit paths: ["."]`, `git_ignore`, `git_remote` add and push, tags, blame, stash, a merge in conflict and `git_resolve`,
+and the filter faults. **As a control,** the app installed at 07:36, before these fixes, on the same freeze part: 4 of 10
+fail, and it blocks on the pipe, the library record, the `.cfg`, and the subcircuit, Verilog and VHDL files; started again
+on the project, it blocks again. Not tried: the windows on a real display, and `/dev/zero` on the older app, for the memory.
+
 ### The guards were kept past a change in the configuration
 
 The other session's bug, reproduced on the packaged `e2ae5dd` by its `guards_race.py`. `readOnlyGuards()` kept a
