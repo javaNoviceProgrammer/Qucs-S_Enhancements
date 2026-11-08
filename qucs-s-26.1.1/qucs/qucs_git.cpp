@@ -141,6 +141,8 @@ void QucsApp::initGitMenu()
     if (const QString root = gitRoot(); !root.isEmpty()) Commands::instance()->fillBranchMenu(branches, root);
   });
   add("gitNewBranch", tr("New Branch..."), onRoot([git](const QString &r) { git->newBranch(r); }));
+  add("gitNewWorktree", tr("New Worktree..."), onRoot([git](const QString &r) { git->newWorktree(r); }),
+      tr("A second folder of the repository with a branch of its own checked out, to work on beside this one"));
   add("gitRenameBranch", tr("Rename Branch..."), onRoot([git](const QString &r) { git->renameBranch(r); }));
   add("gitDeleteBranch", tr("Delete Branch..."), onRoot([git](const QString &r) { git->deleteBranch(r); }));
   add("gitMerge", tr("Merge into the Current Branch..."), onRoot([git](const QString &r) { git->mergeInto(r); }));
@@ -243,6 +245,7 @@ void QucsApp::updateGitMenu()
                            "gitNewTag", "gitRemotes", "gitEditIgnore"})
     set(name, inRepo);
   set("gitNewBranch", head);
+  set("gitNewWorktree", head);
   set("gitNewTag", head);
   set("gitStash", head && r.changedCount() > 0);
   set("gitIgnoreFile", fileIn && (e == nullptr || !e->ignored));

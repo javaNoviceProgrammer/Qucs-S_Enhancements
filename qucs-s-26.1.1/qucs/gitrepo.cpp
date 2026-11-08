@@ -929,6 +929,31 @@ Result createBranch(const QString& root, const QString& name, const QString& sta
     return run(root, args);
 }
 
+QStringList worktreeArgs(const QString& folder, const QString& branch, bool create, const QString& start)
+{
+    if (folder.isEmpty() || branch.isEmpty() || optionLike(branch) || optionLike(start)) return {};
+    QStringList args{QStringLiteral("worktree"), QStringLiteral("add")};
+    if (create) args << QStringLiteral("-b") << branch;
+    args << QStringLiteral("--") << folder;
+    if (!create) args << branch;
+    else if (!start.isEmpty()) args << start;
+    return args;
+}
+
+QString worktreeFolder(const QString& root, const QString& branch)
+{
+    const QFileInfo top(QDir::cleanPath(root));
+    QString leaf = branch.trimmed();
+    leaf.replace(QLatin1Char('/'), QLatin1Char('-')).replace(QLatin1Char('\\'), QLatin1Char('-'));
+    const QString name = leaf.isEmpty() ? top.fileName() : top.fileName() + QLatin1Char('-') + leaf;
+    // (By hand, not QDir::filePath: a name beginning with ':' would be a resource.)
+    QString beside = top.absolutePath();
+    if (!beside.endsWith(QLatin1Char('/'))) beside += QLatin1Char('/');
+    QString target = beside + name;
+    for (int n = 2; QFileInfo::exists(target) || QFileInfo(target).isSymLink(); ++n) target = beside + name + QLatin1Char('-') + QString::number(n);
+    return target;
+}
+
 Result deleteBranch(const QString& root, const QString& name, bool force)
 {
     if (optionLike(name)) return optionRefused(name);

@@ -22,6 +22,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
@@ -172,6 +173,33 @@ void answerInput(const QString& text)
             if (d->comboBoxItems().isEmpty()) d->setTextValue(text);
             else d->setTextValue(text);
             d->accept();
+            return;
+        }
+    });
+    timer->start();
+}
+
+// Fills the next New Worktree window: \a branch, then \a folder when given;
+// Cancel when \a cancel, else accepted.
+void answerWorktree(const QString& branch, const QString& folder = {}, bool cancel = false)
+{
+    auto* timer = new QTimer(qApp);
+    auto tries = std::make_shared<int>(0);
+    timer->setInterval(20);
+    QObject::connect(timer, &QTimer::timeout, [timer, tries, branch, folder, cancel] {
+        if (++*tries > 500) {
+            timer->deleteLater();
+            return;
+        }
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            auto* d = qobject_cast<QDialog*>(w);
+            if (d == nullptr || !d->isVisible() || d->objectName() != QLatin1String("gitWorktreeDialog")) continue;
+            timer->stop();
+            timer->deleteLater();
+            d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText(branch);
+            if (!folder.isEmpty()) d->findChild<QLineEdit*>("gitWorktreeFolder")->setText(folder);
+            if (cancel) d->reject();
+            else d->accept();
             return;
         }
     });
@@ -992,7 +1020,7 @@ private slots:
         };
         for (const char* name : {"gitCommit", "gitShowAllChanges", "gitFileChanges", "gitStageFile", "gitDiscardFile", "gitFileHistory",
                                  "gitBlame", "gitStageAll", "gitDiscardAll", "gitHistory", "gitFetch", "gitPull", "gitPush",
-                                 "gitNewBranch", "gitStash", "gitNewTag", "gitIgnoreFile", "gitRemotes", "gitRefresh"})
+                                 "gitNewBranch", "gitNewWorktree", "gitStash", "gitNewTag", "gitIgnoreFile", "gitRemotes", "gitRefresh"})
             QVERIFY2(on(name), name);
         for (const char* name : {"gitUnstageFile", "gitUnstageAll", "gitAbort", "gitInit"}) QVERIFY2(!on(name), name);
         QVERIFY(submenuNamed(git, "gitSwitchMenu") != nullptr && submenuNamed(git, "gitSwitchMenu")->menuAction()->isEnabled());
@@ -2955,6 +2983,109 @@ private slots:
         QVERIFY(!run(repo, {"merge", "--no-edit", "side"}).ok());
         QJsonObject r = call("git_continue", {{"path", repo}, {"skip", true}});
         QVERIFY2(failed(r), qPrintable(text(r)));
+    }
+
+    // New Worktree...: a second folder of the repository, on a branch of its
+    // own, from the File Browser's Git menu, the file's, History's.
+    void aWorktreeFromTheMenus()
+    {
+        const QString repo = makeRepo("trees");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/a.txt", "one\ntwo\nthree\nfour\n"));
+        QVERIFY(commit(repo, "four", false, {repo + "/a.txt"}).ok());
+        QVERIFY(write(repo + "/b.txt", "not committed\n"));
+        Commands* commands = Commands::instance();
+        QSignalSpy shown(commands, &Commands::showFolderRequested);
+        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 30000); };
+        const auto trees = [&] { return gitIn(repo, {"worktree", "list", "--porcelain"}).count("worktree "); };
+        QMenu entry;
+        commands->fillEntryMenu(&entry, {repo});
+        QAction* a = entry.findChild<QAction*>("gitNewWorktree");
+        QVERIFY(a != nullptr && a->isEnabled());
+        QMenu file;
+        commands->fillFileMenu(&file, repo + "/a.txt");
+        QVERIFY(file.findChild<QAction*>("gitNewWorktree") != nullptr && file.findChild<QAction*>("gitNewWorktree")->isEnabled());
+
+        // Cancel: nothing.
+        answerWorktree("never", {}, true);
+        a->trigger();
+        QCOMPARE(trees(), 1);
+        QVERIFY(gitIn(repo, {"branch", "--list", "never"}).isEmpty());
+
+        // A new branch, beside the repository, named for it; this folder as it was.
+        QCOMPARE(worktreeFolder(repo, "topic/one"), repo + "-topic-one");
+        answerWorktree("topic/one");
+        a->trigger();
+        made();
+        const QString one = repo + "-topic-one";
+        QCOMPARE(read(one).branch, QStringLiteral("topic/one"));
+        QCOMPARE(readAll(one + "/a.txt"), QByteArray("one\ntwo\nthree\nfour\n"));
+        QCOMPARE(readAll(one + "/b.txt"), QByteArray("bee\n"));   // (as committed: the change here stays here)
+        QCOMPARE(read(repo).branch, QStringLiteral("main"));
+        QCOMPARE(readAll(repo + "/b.txt"), QByteArray("not committed\n"));
+        QCOMPARE(trees(), 2);
+        QVERIFY(!shown.isEmpty());
+        QCOMPARE(canonical(shown.last().first().toString()), one);
+        QCOMPARE(worktreeFolder(repo, "topic/one"), repo + "-topic-one-2");   // (taken now)
+
+        // A branch there already, as it is, in a folder named.
+        QVERIFY(!gitIn(repo, {"branch", "old", "main~1"}).isNull());
+        const QString named = canonical(dir.path()) + "/elsewhere/old tree";
+        answerWorktree("old", named);
+        a->trigger();
+        made();
+        QCOMPARE(read(named).branch, QStringLiteral("old"));
+        QCOMPARE(readAll(named + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
+        QCOMPARE(trees(), 3);
+
+        // Refused, nothing made: the branch checked out here; a name that is no
+        // branch's; a folder inside the repository; one in use by git already.
+        {
+            misc::ErrorCapture errors;
+            answerWorktree("main");   // (the window's button is off for it)
+            a->trigger();
+            QVERIFY2(errors.errors().isEmpty(), qPrintable(errors.errors().join('\n')));
+            QCOMPARE(trees(), 3);
+            answerWorktree("no good");
+            a->trigger();
+            QCOMPARE(errors.errors().size(), 1);
+            QVERIFY2(errors.errors().last().contains("cannot be a branch's name"), qPrintable(errors.errors().last()));
+            answerWorktree("inside", repo + "/sub");
+            a->trigger();
+            QCOMPARE(errors.errors().size(), 2);
+            QVERIFY2(errors.errors().last().contains("inside the repository"), qPrintable(errors.errors().last()));
+            QVERIFY(!QFileInfo::exists(repo + "/sub"));
+            answerWorktree("topic/one", repo + "-again");   // (checked out in the first)
+            a->trigger();
+            made();
+            QCOMPARE(errors.errors().size(), 3);
+            QVERIFY2(errors.errors().last().contains("already"), qPrintable(errors.errors().last()));
+        }
+        QCOMPARE(trees(), 3);
+        QVERIFY(gitIn(repo, {"branch", "--list", "no good", "inside"}).isEmpty());
+
+        // History's New Worktree Here...: a new branch at that commit.
+        HistoryView history(repo);
+        const int first = history.model()->rowOf(log(repo).value(1).hash);
+        QVERIFY(first >= 0);
+        QMenu* menu = history.menuFor(first);
+        QVERIFY(menu != nullptr);
+        QAction* here = menu->findChild<QAction*>("gitWorktreeHere");
+        QVERIFY(here != nullptr);
+        answerWorktree("at-first");
+        here->trigger();
+        made();
+        delete menu;
+        QCOMPARE(gitIn(repo + "-at-first", {"rev-parse", "HEAD"}), log(repo).value(1).hash);
+        QCOMPARE(read(repo + "-at-first").branch, QStringLiteral("at-first"));
+
+        // Before a first commit there is nothing to check out.
+        const QString empty = canonical(dir.path()) + "/no-commit";
+        QVERIFY(QDir().mkpath(empty));
+        QVERIFY(!gitIn(empty, {"init", "-q"}).isNull());
+        QMenu none;
+        commands->fillEntryMenu(&none, {empty});
+        QVERIFY(none.findChild<QAction*>("gitNewWorktree") != nullptr && !none.findChild<QAction*>("gitNewWorktree")->isEnabled());
     }
 
     void claudesGitTools()
