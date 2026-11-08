@@ -316,6 +316,108 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("study") || icon == QLatin1String("stationary")) letters(QStringLiteral("="), gray, true);
     else if (icon == QLatin1String("results")) letters(QStringLiteral("R"), gray);
     else if (icon == QLatin1String("optimization")) letters(QStringLiteral("O"), gray);
+    else if (icon.startsWith(QLatin1String("opt-"))) {
+        // An optimization by its method: a colour of its own and a picture of
+        // how it searches, white on it, so that a list of them reads at a glance.
+        const QString m = icon.mid(4);
+        const QHash<QString, QColor> fill{
+            {QStringLiteral("auto"), QColor(96, 110, 135)},   {QStringLiteral("nm"), QColor(46, 160, 67)},
+            {QStringLiteral("tr"), QColor(0, 160, 190)},      {QStringLiteral("lm"), QColor(190, 150, 0)},
+            {QStringLiteral("de"), QColor(115, 140, 20)},      {QStringLiteral("pso"), QColor(25, 135, 230)},
+            {QStringLiteral("sa"), QColor(240, 110, 0)},      {QStringLiteral("cmaes"), QColor(126, 76, 200)},
+            {QStringLiteral("bayes"), QColor(63, 81, 181)},   {QStringLiteral("nsga2"), QColor(200, 40, 120)},
+            {QStringLiteral("tune"), QColor(141, 98, 60)},    {QStringLiteral("center"), QColor(205, 35, 35)}};
+        p.setPen(Qt::NoPen);
+        p.setBrush(fill.value(m, gray));
+        p.drawRoundedRect(QRectF(0.5, 0.5, 15, 15), 3.5, 3.5);
+        QPen white(Qt::white, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(white);
+        p.setBrush(Qt::NoBrush);
+        const auto dot = [&](qreal x, qreal y, qreal r = 1.25) {
+            p.save();
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            p.drawEllipse(QPointF(x, y), r, r);
+            p.restore();
+        };
+        if (m == QLatin1String("nm")) {
+            // A simplex: a triangle, one corner moving.
+            p.drawPolygon(QPolygonF{QPointF(3.5, 12), QPointF(12.5, 12), QPointF(6, 4)});
+            dot(6, 4, 1.6);
+        } else if (m == QLatin1String("tr")) {
+            // A trust region: a circle about the point, a step inside it.
+            p.drawEllipse(QPointF(8, 8), 5, 5);
+            dot(6.5, 9.5);
+            p.drawLine(QPointF(6.5, 9.5), QPointF(10, 6));
+        } else if (m == QLatin1String("lm")) {
+            // A fit: points and the line through them.
+            dot(4, 11.5, 1.1);
+            dot(7, 8.5, 1.1);
+            dot(10, 7.5, 1.1);
+            dot(12.5, 4, 1.1);
+            p.drawLine(QPointF(2.5, 12.5), QPointF(13.5, 3.5));
+        } else if (m == QLatin1String("de")) {
+            // Differential evolution: a member moved by two others' difference.
+            dot(4, 11);
+            dot(12, 11);
+            dot(4, 4.5);
+            p.drawLine(QPointF(4, 4.5), QPointF(10.5, 4.5));
+            p.drawPolyline(QPolygonF{QPointF(9, 3), QPointF(11, 4.5), QPointF(9, 6)});
+        } else if (m == QLatin1String("pso")) {
+            // A swarm: particles, each with its trail.
+            for (const QPointF& at : {QPointF(4.5, 5), QPointF(11, 4.5), QPointF(8, 8.5), QPointF(4, 12), QPointF(12, 11.5)}) {
+                dot(at.x(), at.y(), 1.1);
+                p.drawLine(at + QPointF(-1.8, 1.2), at + QPointF(-0.9, 0.6));
+            }
+        } else if (m == QLatin1String("sa")) {
+            // Annealing: a thermometer.
+            p.drawLine(QPointF(8, 3), QPointF(8, 9.5));
+            p.drawLine(QPointF(9.5, 4.5), QPointF(11, 4.5));
+            p.drawLine(QPointF(9.5, 7), QPointF(11, 7));
+            dot(8, 11.5, 2.3);
+        } else if (m == QLatin1String("cmaes")) {
+            // CMA-ES: its distribution, an ellipse leaning toward the way down.
+            p.save();
+            p.translate(8, 8);
+            p.rotate(-35);
+            p.drawEllipse(QPointF(0, 0), 5.5, 3);
+            p.restore();
+            dot(8, 8, 1.1);
+        } else if (m == QLatin1String("bayes")) {
+            // Bayesian: the surrogate's bell.
+            QPainterPath bell;
+            bell.moveTo(2.5, 12.5);
+            bell.cubicTo(6, 12.5, 6, 3.5, 8, 3.5);
+            bell.cubicTo(10, 3.5, 10, 12.5, 13.5, 12.5);
+            p.drawPath(bell);
+        } else if (m == QLatin1String("nsga2")) {
+            // A Pareto front: its designs along a curve.
+            QPainterPath front;
+            front.moveTo(3.5, 3);
+            front.quadTo(4.5, 11.5, 13, 12.5);
+            p.drawPath(front);
+            dot(3.8, 4.5, 1.2);
+            dot(5.6, 9.2, 1.2);
+            dot(9, 11.6, 1.2);
+            dot(12.6, 12.4, 1.2);
+        } else if (m == QLatin1String("tune")) {
+            // Tuning: a knob and its mark.
+            p.drawEllipse(QPointF(8, 8.5), 4.5, 4.5);
+            p.drawLine(QPointF(8, 8.5), QPointF(10.8, 5.7));
+            p.drawLine(QPointF(8, 1.8), QPointF(8, 2.8));
+        } else if (m == QLatin1String("center")) {
+            // Design centering: a target.
+            p.drawEllipse(QPointF(8, 8), 5.2, 5.2);
+            p.drawEllipse(QPointF(8, 8), 2.8, 2.8);
+            dot(8, 8, 1.0);
+        } else {
+            // Automatic: a spark, the method chosen for it.
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            p.drawPolygon(QPolygonF{QPointF(8, 2.5), QPointF(9.4, 6.6), QPointF(13.5, 8), QPointF(9.4, 9.4), QPointF(8, 13.5),
+                                    QPointF(6.6, 9.4), QPointF(2.5, 8), QPointF(6.6, 6.6)});
+        }
+    }
     else if (icon == QLatin1String("convergence")) {
         // A value settling as the mesh is refined.
         p.setPen(QPen(purple, 1.3));
@@ -840,13 +942,32 @@ void MultiphysicsPanel::addItems(QTreeWidgetItem* parent, const Node& node)
         QString shown = c.name();
         if (c.label.isEmpty() && k && ofType.value(c.type) > 1) shown = k->title + QLatin1Char(' ') + QString::number(++seen[c.type]);
         item->setText(0, shown);
-        item->setIcon(0, glyph(k ? k->icon : QString()));
+        // (An optimization by its method, design centering apart: told from the others at a glance.)
+        QString icon = k ? k->icon : QString();
+        QString method;
+        if (c.type == QLatin1String("optimization")) {
+            const bool center = c.text(QStringLiteral("mode")) == QLatin1String("center");
+            method = c.text(QStringLiteral("method")).trimmed();
+            if (method.isEmpty()) method = QStringLiteral("auto");
+            icon = QStringLiteral("opt-") + (center ? QStringLiteral("center") : method);
+            if (center) method = QStringLiteral("center");
+        }
+        item->setIcon(0, glyph(icon));
         item->setData(0, TagRole, c.tag);
         Qt::ItemFlags flags = item->flags();
         if (k && !k->fixed) flags |= Qt::ItemIsEditable;
         item->setFlags(flags);
         QStringList tip;
         if (k) tip << k->title;
+        // (Its method, as the settings name it.)
+        if (!method.isEmpty() && k) {
+            if (method == QLatin1String("center")) {
+                tip << tr("design centering");
+            } else if (const PropertyDef* m = k->property(QStringLiteral("method"))) {
+                const int at = int(m->choices.indexOf(method));
+                tip << (at >= 0 && at < m->choiceLabels.size() ? m->choiceLabels.at(at) : method);
+            }
+        }
         if (k && k->property(QStringLiteral("selection")))
             tip << describeSelection(c.selection(), k->property(QStringLiteral("level")) ? levelOf(c.text(QStringLiteral("level"))) : k->selection);
         item->setToolTip(0, tip.join(QLatin1String(": ")));

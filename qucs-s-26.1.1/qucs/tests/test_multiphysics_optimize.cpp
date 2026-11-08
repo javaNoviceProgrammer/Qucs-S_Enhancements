@@ -25,6 +25,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -208,6 +209,66 @@ private slots:
     }
 
     // A model without one: nothing of it to see, and it says so if asked.
+    // Each method a symbol of its own in the tree, design centering one too: a list
+    // of optimizations told apart at a glance. Its tip names the method; a method
+    // changed changes it.
+    void eachMethodHasItsSymbol()
+    {
+        const QStringList methods{QStringLiteral("auto"), QStringLiteral("nm"), QStringLiteral("tr"), QStringLiteral("lm"), QStringLiteral("de"),
+                                  QStringLiteral("pso"), QStringLiteral("sa"), QStringLiteral("cmaes"), QStringLiteral("bayes"), QStringLiteral("nsga2"),
+                                  QStringLiteral("tune")};
+        QByteArray section;
+        for (int i = 0; i < methods.size(); ++i)
+            section += QStringLiteral(R"(%1{"type": "optimization", "tag": "opt%2", "label": "by %3", "method": "%3"})")
+                           .arg(i ? QStringLiteral(", ") : QString()).arg(i + 1).arg(methods.at(i)).toUtf8();
+        section += R"(, {"type": "optimization", "tag": "optc", "label": "by center", "method": "cmaes", "mode": "center"})";
+        MultiphysicsDoc* doc = model(section);
+        QVERIFY(doc);
+        panel()->setDocument(doc);
+        QTreeWidget* tree = panel()->findChild<QTreeWidget*>();
+        QVERIFY(tree);
+        QTreeWidgetItem* group = nullptr;
+        for (int i = 0; i < tree->topLevelItem(0)->childCount(); ++i)
+            if (tree->topLevelItem(0)->child(i)->text(0) == QLatin1String("Optimization")) group = tree->topLevelItem(0)->child(i);
+        QVERIFY(group);
+        QCOMPARE(group->childCount(), int(methods.size()) + 1);
+        const QImage plain = group->icon(0).pixmap(16, 16).toImage();
+        QList<QImage> seen;
+        for (int i = 0; i < group->childCount(); ++i) {
+            QTreeWidgetItem* item = group->child(i);
+            const QImage image = item->icon(0).pixmap(16, 16).toImage();
+            QVERIFY2(!image.isNull() && image != plain, qPrintable(item->text(0)));
+            for (int j = 0; j < seen.size(); ++j) QVERIFY2(seen.at(j) != image, qPrintable(item->text(0) + QStringLiteral(" looks like ") + group->child(j)->text(0)));
+            seen << image;
+        }
+        QVERIFY2(group->child(7)->toolTip(0).contains(QStringLiteral("CMA")), qPrintable(group->child(7)->toolTip(0)));
+        QVERIFY2(group->child(int(methods.size()))->toolTip(0).contains(QStringLiteral("design centering")), qPrintable(group->child(int(methods.size()))->toolTip(0)));
+        shoot(panel(), QStringLiteral("optimization_symbols"));
+        if (!qEnvironmentVariableIsEmpty("QUCS_MP_SHOTS")) {
+            // (The symbols large, each with its name, to be looked at.)
+            QImage sheet(6 * 120, 2 * 110, QImage::Format_ARGB32);
+            sheet.fill(QColor(30, 31, 34));
+            QPainter painter(&sheet);
+            painter.setPen(Qt::white);
+            for (int i = 0; i < group->childCount(); ++i) {
+                const QRect cell((i % 6) * 120, (i / 6) * 110, 120, 110);
+                painter.drawPixmap(cell.x() + 28, cell.y() + 8, group->child(i)->icon(0).pixmap(64, 64));
+                painter.drawText(QRect(cell.x(), cell.y() + 80, 120, 24), Qt::AlignCenter, group->child(i)->text(0));
+            }
+            painter.end();
+            sheet.save(qEnvironmentVariable("QUCS_MP_SHOTS") + QStringLiteral("/optimization_symbols_large.png"));
+        }
+        // nm made pso: its symbol is pso's now.
+        Model changed = doc->model();
+        changed.find(QStringLiteral("opt2"))->props.insert(QStringLiteral("method"), QStringLiteral("pso"));
+        doc->setModel(changed, QStringLiteral("method"));
+        group = nullptr;
+        for (int i = 0; i < tree->topLevelItem(0)->childCount(); ++i)
+            if (tree->topLevelItem(0)->child(i)->text(0) == QLatin1String("Optimization")) group = tree->topLevelItem(0)->child(i);
+        QVERIFY(group);
+        QTRY_VERIFY(group->child(1)->icon(0).pixmap(16, 16).toImage() == group->child(5)->icon(0).pixmap(16, 16).toImage());
+    }
+
     void noOptimizationNoTab()
     {
         const QString file = path(QStringLiteral("old.qfem"));
