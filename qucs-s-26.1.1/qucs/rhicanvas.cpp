@@ -240,6 +240,10 @@ std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDesc
     blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
     blend.srcAlpha = QRhiGraphicsPipeline::One;
     blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+    if (spec.blendOp != QRhiGraphicsPipeline::Add) {
+        blend.opColor = blend.opAlpha = spec.blendOp;
+        blend.srcColor = blend.dstColor = blend.srcAlpha = blend.dstAlpha = QRhiGraphicsPipeline::One;
+    }
     p->setTargetBlends({blend});
     if (spec.scissor) p->setFlags(QRhiGraphicsPipeline::UsesScissor);
     if (!p->create()) return nullptr;

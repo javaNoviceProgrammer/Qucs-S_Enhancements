@@ -92,6 +92,8 @@ const char* const kBackgroundKey = "LayoutViewer/background";   // app, light or
 const char* const kContrastKey = "LayoutViewer/contrast";       // the layers' colours adapted to it
 const char* const kGridKey = "LayoutViewer/grid";
 const char* const kGridStyleKey = "LayoutViewer/gridStyle";     // dots, lines or crosses
+const char* const kLookKey = "LayoutViewer/lypLook";            // a .lyp drawn as klayout does, or the viewer's own way
+const char* const kRecentKey = "LayoutViewer/recent";           // the layouts opened lately, the latest first
 
 LayoutView::Theme themeNamed(const QString& name)
 {
@@ -326,6 +328,19 @@ LayoutView::LayoutView(QWidget* parent) : QWidget(parent)
     connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
         if (viewer == gpu::Viewer::Layout) setGpu(gpu::used(gpu::Viewer::Layout));
     });
+    // KLayout's animations: a step a quarter second while a layer shown
+    // scrolls or blinks.
+    a_animation = new QTimer(this);
+    a_animation->setInterval(AnimationStep);
+    connect(a_animation, &QTimer::timeout, this, [this] {
+        ++a_tick;
+        invalidate();
+    });
+}
+
+bool LayoutView::animating() const
+{
+    return std::any_of(a_styles.cbegin(), a_styles.cend(), [](const LayerStyle& s) { return s.klayout && s.visible && s.animation != 0; });
 }
 
 void LayoutView::setGpu(bool on)
@@ -380,6 +395,10 @@ void LayoutView::setLayout(std::shared_ptr<const Layout> layout)
 void LayoutView::setStyles(const QVector<LayerStyle>& styles)
 {
     a_styles = styles;
+    if (animating() != a_animation->isActive()) {
+        if (animating()) a_animation->start();
+        else a_animation->stop();
+    }
     invalidate();
 }
 
@@ -492,6 +511,8 @@ RenderOptions LayoutView::renderOptions() const
     o.frames = c.frames;
     o.text = c.ink;
     if (a_adapted) o.background = c.background;
+    o.canvas = c.background;
+    o.tick = a_tick;
     return o;
 }
 
@@ -1622,6 +1643,13 @@ void LayoutDoc::buildUi()
     a_menuButton = toolButton(a_toolbar, glyph(GlyphIcon::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     auto* menu = new QMenu(a_menuButton);
+    // The layouts opened lately, to open again - each in a tab of its own.
+    a_recentMenu = menu->addMenu(tr("Recent"));
+    a_recentMenu->setObjectName(QStringLiteral("layoutRecent"));
+    a_recentMenu->setToolTipsVisible(true);
+    connect(a_recentMenu, &QMenu::aboutToShow, this, &LayoutDoc::fillRecentMenu);
+    fillRecentMenu();
+    menu->addSeparator();
     QAction* kLayout = menu->addAction(tr("Open in KLayout"), this, &LayoutDoc::openInKLayout);
     connect(menu, &QMenu::aboutToShow, this, [kLayout] { kLayout->setEnabled(!kLayoutProgram().isEmpty()); });
     menu->addAction(tr("Open with the System's Application"), this, &LayoutDoc::openExternally);
@@ -1630,6 +1658,17 @@ void LayoutDoc::buildUi()
     menu->addSeparator();
     menu->addAction(tr("Load Layer Properties…"), this, &LayoutDoc::chooseLayerProperties);
     menu->addAction(tr("Colours of the Palette"), this, &LayoutDoc::usePalette);
+    // A .lyp drawn as KLayout draws it, or the viewer's own way.
+    QAction* look = menu->addAction(tr("Draw the .lyp as KLayout Does"), this, [this](bool on) { setKLayoutLook(on); });
+    look->setObjectName(QStringLiteral("layoutKLayoutLook"));
+    look->setCheckable(true);
+    look->setToolTip(tr("The layers in the .lyp's own patterns, frames, transparency, groups and order, as KLayout shows them - "
+                        "else in its colours on the viewer's patterns, made to stand out from the background"));
+    menu->setToolTipsVisible(true);
+    connect(menu, &QMenu::aboutToShow, this, [this, look] {
+        look->setChecked(klayoutLook());
+        look->setEnabled(!a_lyp.isEmpty());
+    });
     // The canvas light or dark whatever the application's theme.
     QMenu* background = menu->addMenu(tr("Background"));
     background->setObjectName(QStringLiteral("layoutBackground"));
@@ -1894,7 +1933,21 @@ void LayoutDoc::buildUi()
         if (column != 0) return;
         const int layer = item->data(0, Qt::UserRole).toInt();
         const bool on = item->checkState(0) == Qt::Checked;
-        if (layer >= 0 && layer < a_view->styles().size() && a_view->styles().at(layer).visible != on) setLayerVisible(layer, on);
+        if (layer < 0) {
+            // A group (KLayout's look): its layers all shown or hidden.
+            QList<int> layers;
+            const std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* it) {
+                for (int i = 0; i < it->childCount(); ++i) {
+                    const int l = it->child(i)->data(0, Qt::UserRole).toInt();
+                    if (l >= 0) layers << l;
+                    else collect(it->child(i));
+                }
+            };
+            collect(item);
+            setLayersVisible(layers, on);
+            return;
+        }
+        if (layer < a_view->styles().size() && a_view->styles().at(layer).visible != on) setLayerVisible(layer, on);
     });
     connect(a_layers, &QTreeWidget::customContextMenuRequested, this, [this](QPoint at) {
         QTreeWidgetItem* item = a_layers->itemAt(at);
@@ -1919,6 +1972,10 @@ void LayoutDoc::buildUi()
         menu->addSeparator();
         menu->addAction(tr("Load Layer Properties…"), this, &LayoutDoc::chooseLayerProperties);
         menu->addAction(tr("Colours of the Palette"), this, &LayoutDoc::usePalette);
+        QAction* look = menu->addAction(tr("Draw the .lyp as KLayout Does"), this, [this](bool on) { setKLayoutLook(on); });
+        look->setCheckable(true);
+        look->setChecked(klayoutLook());
+        look->setEnabled(!a_lyp.isEmpty());
         qucs_s::popUp(menu, a_layers->viewport()->mapToGlobal(at));
     });
 
@@ -2045,11 +2102,11 @@ bool LayoutDoc::load()
     }
     if (!a_watcher->files().contains(a_DocName)) a_watcher->addPath(a_DocName);
     // Its colours: a .lyp beside it.
-    a_lyp.clear();
+    a_lyp = LayerProperties();
     a_lypFile = layerPropertiesBeside(a_DocName);
     if (!a_lypFile.isEmpty()) {
         QString error;
-        a_lyp = readLayerProperties(a_lypFile, &error);
+        a_lyp = readLayerPropertiesFile(a_lypFile, &error);
         if (a_lyp.isEmpty()) a_lypFile.clear();
     }
     a_keepView = false;
@@ -2130,6 +2187,7 @@ void LayoutDoc::readingDone()
     }
     const bool keep = a_keepView && a_layout;
     a_layout = job->result;
+    if (!keep) noteRecentLayout(a_DocName);
     layoutReady(keep);
     emit loaded(true);
     if (keep) emit reloaded();
@@ -2144,7 +2202,8 @@ void LayoutDoc::layoutReady(bool keepView)
     if (keepView && a_view->layout())
         for (int i = 0; i < a_view->layout()->layers.size() && i < a_view->styles().size(); ++i)
             shown.insert(a_view->layout()->layers.at(i).key, a_view->styles().at(i).visible);
-    QVector<LayerStyle> styles = stylesFor(*a_layout, a_lyp);
+    a_plan = planLayers(*a_layout, a_lyp, drawsKLayoutLook());
+    QVector<LayerStyle>& styles = a_plan.styles;
     for (int i = 0; i < styles.size(); ++i)
         if (shown.contains(a_layout->layers.at(i).key)) styles[i].visible = shown.value(a_layout->layers.at(i).key);
     a_view->setLayout(a_layout);
@@ -2297,6 +2356,27 @@ void LayoutDoc::fillCellChildren(QTreeWidgetItem* item)
 
 QPixmap LayoutDoc::swatchPixmap(const LayerStyle& style, const QColor& background, qreal ratio)
 {
+    if (style.klayout) {
+        // As the canvas draws it: the pattern at the screen's pixels, the
+        // frame a pixel wide (dashed as it is) round it.
+        const int k = stipplePixels(ratio);
+        QImage image((QSizeF(16, 12) * ratio).toSize(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(background);
+        const int w = image.width(), h = image.height();
+        const QRgb fill = style.fill.rgba(), frame = style.frame.rgba();
+        for (int y = k; y < h - k; ++y)
+            for (int x = k; x < w - k; ++x)
+                if (style.stipple && style.stipple->at(x / k, y / k)) image.setPixel(x, y, fill);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const bool edge = x < k || y < k || x >= w - k || y >= h - k;
+                const bool across = y < k || y >= h - k;
+                if (edge && style.line.on(across ? x / k : (h - 1 - y) / k)) image.setPixel(x, y, frame);
+            }
+        QPixmap pm = QPixmap::fromImage(image);
+        pm.setDevicePixelRatio(ratio);
+        return pm;
+    }
     // (Its frame filled, a pixel wide at its edge, whole at any ratio:
     // stroked - a rectangle through the pixels' centres - at a Retina
     // screen's 2, its left corners' outer device pixels stayed the
@@ -2319,45 +2399,119 @@ QIcon LayoutDoc::swatch(const LayerStyle& given) const
 
 void LayoutDoc::updateSwatches()
 {
-    for (int i = 0; i < a_layers->topLevelItemCount(); ++i) updateLayerItem(i);
+    for (int i = 0; i < a_layerItems.size(); ++i) updateLayerItem(i);
 }
 
 void LayoutDoc::fillLayers()
 {
     const QSignalBlocker block(a_layers);
     a_layers->clear();
+    a_layerItems.clear();
     if (!a_layout) return;
-    for (int i = 0; i < a_layout->layers.size(); ++i) {
+    a_layerItems.resize(a_layout->layers.size(), nullptr);
+    const auto layerRow = [this](int i) {
         auto* item = new QTreeWidgetItem();
         item->setData(0, Qt::UserRole, i);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        a_layers->addTopLevelItem(item);
-        updateLayerItem(i);
+        a_layerItems[i] = item;
+        return item;
+    };
+    bool groups = false;
+    if (!a_plan.rows.isEmpty()) {
+        // KLayout's look: the .lyp's groups and layers in its order.
+        const std::function<QTreeWidgetItem*(const LayerPlan::Row&)> build = [&](const LayerPlan::Row& row) -> QTreeWidgetItem* {
+            if (row.layer >= 0) return row.layer < a_layerItems.size() ? layerRow(row.layer) : nullptr;
+            groups = true;
+            auto* item = new QTreeWidgetItem({row.name});
+            item->setData(0, Qt::UserRole, -1);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+            for (const LayerPlan::Row& child : row.children)
+                if (QTreeWidgetItem* c = build(child)) item->addChild(c);
+            return item;
+        };
+        for (const LayerPlan::Row& row : std::as_const(a_plan.rows))
+            if (QTreeWidgetItem* item = build(row)) a_layers->addTopLevelItem(item);
+    } else {
+        for (int i = 0; i < a_layout->layers.size(); ++i) a_layers->addTopLevelItem(layerRow(i));
     }
+    a_layers->setRootIsDecorated(groups);
+    if (groups) a_layers->expandAll();
+    for (int i = 0; i < a_layout->layers.size(); ++i) updateLayerItem(i);
+    updateGroupItems();
 }
 
 void LayoutDoc::updateLayerItem(int layer)
 {
-    if (!a_layout || layer < 0 || layer >= a_layers->topLevelItemCount() || layer >= a_view->styles().size()) return;
+    QTreeWidgetItem* item = layerItem(layer);
+    if (!a_layout || item == nullptr || layer >= a_view->styles().size()) return;
     const QSignalBlocker block(a_layers);
-    QTreeWidgetItem* item = a_layers->topLevelItem(layer);
     const LayerInfo& info = a_layout->layers.at(layer);
     const LayerStyle& style = a_view->styles().at(layer);
     item->setText(0, style.name.isEmpty() ? info.key.text() : QStringLiteral("%1  %2").arg(info.key.text(), style.name));
     item->setText(1, QLocale().toString(info.shapes + info.labels));
     item->setToolTip(1, tr("%1 shapes, %2 texts").arg(QLocale().toString(info.shapes), QLocale().toString(info.labels)));
+    // (Not valid, the .lyp says: KLayout shows it so, and draws it all the same.)
+    QFont font = item->font(0);
+    font.setItalic(!style.valid);
+    item->setFont(0, font);
+    item->setToolTip(0, style.valid ? QString() : tr("Not valid, the layer properties file says; drawn all the same, as KLayout draws it"));
     item->setIcon(0, swatch(style));
     item->setCheckState(0, style.visible ? Qt::Checked : Qt::Unchecked);
 }
 
+void LayoutDoc::updateGroupItems()
+{
+    const QSignalBlocker block(a_layers);
+    // Each group as its layers are: all shown, none, or some; its shapes
+    // theirs together.
+    const std::function<QPair<int, int>(QTreeWidgetItem*, quint64*)> update = [&](QTreeWidgetItem* item, quint64* shapes) -> QPair<int, int> {
+        const int layer = item->data(0, Qt::UserRole).toInt();
+        if (layer >= 0) {
+            *shapes += a_layout->layers.at(layer).shapes + a_layout->layers.at(layer).labels;
+            return {item->checkState(0) == Qt::Checked ? 1 : 0, 1};
+        }
+        QPair<int, int> n{0, 0};
+        quint64 mine = 0;
+        for (int i = 0; i < item->childCount(); ++i) {
+            const QPair<int, int> c = update(item->child(i), &mine);
+            n.first += c.first;
+            n.second += c.second;
+        }
+        item->setCheckState(0, n.first == 0 ? Qt::Unchecked : n.first == n.second ? Qt::Checked : Qt::PartiallyChecked);
+        item->setText(1, QLocale().toString(mine));
+        *shapes += mine;
+        return n;
+    };
+    if (!a_layout) return;
+    for (int i = 0; i < a_layers->topLevelItemCount(); ++i) {
+        quint64 shapes = 0;
+        update(a_layers->topLevelItem(i), &shapes);
+    }
+}
+
 void LayoutDoc::setLayerVisible(int layer, bool visible)
 {
+    setLayersVisible({layer}, visible);
+}
+
+void LayoutDoc::setLayersVisible(const QList<int>& layers, bool visible)
+{
     QVector<LayerStyle> styles = a_view->styles();
-    if (layer < 0 || layer >= styles.size()) return;
-    styles[layer].visible = visible;
+    bool changed = false;
+    for (int layer : layers) {
+        if (layer < 0 || layer >= styles.size() || styles[layer].visible == visible) continue;
+        styles[layer].visible = visible;
+        changed = true;
+    }
+    if (!changed) {
+        updateGroupItems();
+        return;
+    }
     a_view->setStyles(styles);
-    updateLayerItem(layer);
+    for (int layer : layers) updateLayerItem(layer);
+    updateGroupItems();
 }
 
 void LayoutDoc::setLayerColour(int layer, const QColor& colour)
@@ -2372,28 +2526,117 @@ void LayoutDoc::setLayerColour(int layer, const QColor& colour)
 bool LayoutDoc::loadLayerProperties(const QString& path, QString* error)
 {
     QString why;
-    const QHash<LayerKey, LayerStyle> lyp = readLayerProperties(path, &why);
+    const LayerProperties lyp = readLayerPropertiesFile(path, &why);
     if (lyp.isEmpty()) {
         if (error != nullptr) *error = why;
         return false;
     }
     a_lyp = lyp;
     a_lypFile = QFileInfo(path).absoluteFilePath();
-    if (a_layout) {
-        QVector<LayerStyle> styles = stylesFor(*a_layout, a_lyp);
-        a_view->setStyles(styles);
-        fillLayers();
-    }
+    applyStyles(false);
     return true;
 }
 
 void LayoutDoc::usePalette()
 {
-    a_lyp.clear();
+    a_lyp = LayerProperties();
     a_lypFile.clear();
+    applyStyles(false);
+}
+
+void LayoutDoc::applyStyles(bool keepShown)
+{
     if (!a_layout) return;
-    a_view->setStyles(stylesFor(*a_layout, a_lyp));
+    QHash<LayerKey, bool> shown;
+    if (keepShown && a_view->layout() == a_layout)
+        for (int i = 0; i < a_layout->layers.size() && i < a_view->styles().size(); ++i) shown.insert(a_layout->layers.at(i).key, a_view->styles().at(i).visible);
+    a_plan = planLayers(*a_layout, a_lyp, drawsKLayoutLook());
+    for (int i = 0; i < a_plan.styles.size(); ++i)
+        if (shown.contains(a_layout->layers.at(i).key)) a_plan.styles[i].visible = shown.value(a_layout->layers.at(i).key);
+    a_view->setStyles(a_plan.styles);
     fillLayers();
+}
+
+bool LayoutDoc::klayoutLook()
+{
+    return QucsSettingsFile().value(QLatin1String(kLookKey), QStringLiteral("klayout")).toString() != QLatin1String("viewer");
+}
+
+void LayoutDoc::setKLayoutLook(bool on)
+{
+    QucsSettingsFile().setValue(QLatin1String(kLookKey), on ? QStringLiteral("klayout") : QStringLiteral("viewer"));
+    everyLayoutTab([](LayoutDoc* doc) { doc->applyStyles(true); });
+}
+
+bool LayoutDoc::drawsKLayoutLook() const
+{
+    return !a_lyp.isEmpty() && klayoutLook();
+}
+
+QStringList LayoutDoc::recentLayouts()
+{
+    return QucsSettingsFile().value(QLatin1String(kRecentKey)).toStringList();
+}
+
+void LayoutDoc::noteRecentLayout(const QString& file)
+{
+    if (file.isEmpty()) return;
+    const QString path = QFileInfo(file).absoluteFilePath();
+    QStringList list = recentLayouts();
+    list.removeAll(path);
+    list.prepend(path);
+    while (list.size() > MostRecent) list.removeLast();
+    QucsSettingsFile().setValue(QLatin1String(kRecentKey), list);
+}
+
+void LayoutDoc::clearRecentLayouts()
+{
+    QucsSettingsFile().remove(QLatin1String(kRecentKey));
+}
+
+void LayoutDoc::fillRecentMenu()
+{
+    a_recentMenu->clear();
+    const QStringList list = recentLayouts();
+    if (list.isEmpty()) {
+        a_recentMenu->addAction(tr("No Layouts Opened Lately"))->setEnabled(false);
+    } else {
+        const QFontMetrics fm(a_recentMenu->font());
+        for (const QString& file : list) {
+            const QFileInfo info(file);
+            const bool there = info.isFile();
+            // Its name, its folder beside it (where the shortcut would be);
+            // one no longer there said so, and not to be chosen.
+            QString text = info.fileName();
+            text.replace(QLatin1Char('&'), QStringLiteral("&&"));
+            if (!there) text += QLatin1Char(' ') + tr("(missing)");
+            QString folder = info.absolutePath();
+            if (const QString home = QDir::homePath(); folder == home || folder.startsWith(home + QLatin1Char('/')))
+                folder = QLatin1Char('~') + folder.mid(home.size());
+            text += QLatin1Char('\t') + fm.elidedText(QDir::toNativeSeparators(folder), Qt::ElideMiddle, 280).replace(QLatin1Char('&'), QStringLiteral("&&"));
+            QAction* a = a_recentMenu->addAction(text, this, [this, file] { openRecent(file); });
+            a->setData(file);
+            a->setEnabled(there);
+            a->setToolTip(there ? QDir::toNativeSeparators(file) : tr("%1 is no longer there").arg(QDir::toNativeSeparators(file)));
+        }
+    }
+    a_recentMenu->addSeparator();
+    QAction* clear = a_recentMenu->addAction(tr("Clear the List"), this, [] { clearRecentLayouts(); });
+    clear->setObjectName(QStringLiteral("layoutRecentClear"));
+    clear->setEnabled(!list.isEmpty());
+}
+
+bool LayoutDoc::openRecent(const QString& file)
+{
+    if (a_App == nullptr) return false;
+    const QString path = QFileInfo(file).absoluteFilePath();
+    if (!QFileInfo(path).isFile()) {
+        a_App->statusBar()->showMessage(tr("%1 is no longer there.").arg(QDir::toNativeSeparators(path)), 6000);
+        return false;
+    }
+    // As File > Open does: open already, its tab brought to the front;
+    // else in a new tab.
+    return a_App->gotoPage(path);
 }
 
 void LayoutDoc::everyLayoutTab(const std::function<void(LayoutDoc*)>& apply)
@@ -2592,7 +2835,7 @@ bool LayoutDoc::reload()
     // Its .lyp too, which may have changed with it.
     if (!a_lypFile.isEmpty()) {
         QString error;
-        const auto lyp = readLayerProperties(a_lypFile, &error);
+        const LayerProperties lyp = readLayerPropertiesFile(a_lypFile, &error);
         if (!lyp.isEmpty()) a_lyp = lyp;
     }
     startReading();

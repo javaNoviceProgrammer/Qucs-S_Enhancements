@@ -47,6 +47,8 @@ struct Flattened {
         std::vector<float> fills;      // x y, three a triangle
         std::vector<float> outlines;   // x0 y0 x1 y1
         std::vector<float> dots;       // x y size (its larger side, µm)
+        std::vector<float> xfills;     // (KLayout's xfill) a box's diagonals: x0 y0 x1 y1
+        std::vector<float> marks;      // (KLayout's marked) each corner: x y 0
     };
     std::vector<Layer> layers;         // by Layout::layers' index
     std::vector<float> frames;         // x0 y0 x1 y1
@@ -111,11 +113,13 @@ private:
         int count = 0;   // vertices (fills, outlines) or instances (dots)
     };
     struct LayerBatches {
-        Batch fills, outlines, dots;
+        Batch fills, outlines, dots, xfills, marks;
     };
     void sync();
     void upload(Batch& b, const std::vector<float>& data, int components);
     QRhiTexture* patternTexture(Qt::BrushStyle style);
+    /// A KLayout pattern's bitmap: a texel a pixel of it.
+    QRhiTexture* stippleTexture(const Stipple& stipple);
     QRhiShaderResourceBindings* bindingsFor(QRhiTexture* pattern);
 
     LayoutView* a_view;
@@ -128,9 +132,14 @@ private:
     std::unique_ptr<QRhiSampler> a_nearest;
     std::unique_ptr<QRhiTexture> a_plain;   // no pattern
     QHash<int, std::shared_ptr<QRhiTexture>> a_patterns;   // by Qt::BrushStyle: 8 by 8, a byte each
+    QHash<QByteArray, std::shared_ptr<QRhiTexture>> a_stipples;   // KLayout's, by their bits
     QHash<QRhiTexture*, std::shared_ptr<QRhiShaderResourceBindings>> a_bindings;
     std::unique_ptr<QRhiShaderResourceBindings> a_layoutBindings;
-    std::unique_ptr<QRhiGraphicsPipeline> a_fill, a_line, a_dot;
+    // Each blended over what is there [0], or the lesser [1] or greater [2]
+    // of each channel (KLayout's transparent layers: AND on a light
+    // canvas, OR on a dark one, as near as the GPU's blending comes); the
+    // quads KLayout's thick and dashed frames.
+    std::unique_ptr<QRhiGraphicsPipeline> a_fill[3], a_line[3], a_dot[3], a_quad[3];
     Flattened a_flat;
     // What the buffers were made of.
     const Layout* a_madeOf = nullptr;
@@ -138,6 +147,7 @@ private:
     int a_cell = -2, a_depth = -1;
     bool a_labels = false;
     std::vector<char> a_made;    // by layer: flattened into the buffers
+    std::vector<char> a_extras;  // by layer: its crosses (1) and marks (2) flattened
     std::vector<char> a_shown;   // by layer: shown at the last whole build
 };
 
