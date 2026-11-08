@@ -331,7 +331,7 @@ even at the 1.9 times of CI's slowest runner.
 
 ## The review of 7 November
 
-[2026-11-07-claude-qfem-optimization-check.md](qucs-reviews/Multiphysics/2026-11-07-claude-qfem-optimization-check.md),
+[2026-11-07-claude-qfem-optimization-check.md](qucs-reviews/Multiphysics/archived/2026-11-07-claude-qfem-optimization-check.md),
 black-box runs of `e723e56` against closed forms. Every finding was checked here in the code before it was changed, and every one
 was real. Each has a test that fails on the code before this change.
 
