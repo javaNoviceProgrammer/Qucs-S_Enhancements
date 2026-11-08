@@ -32,6 +32,9 @@ Nothing here was built or run against 6.10.3; see "What could not be verified".*
   only). That would be a new dependency, so I did not add one; whether to is the user's call.
 - **No encrypted files on the vector route.** Their paths are not read: a PDF with any `/Encrypt` goes to the raster route,
   and the answer says why. The standard security handler would need RC4/AES and key derivation, which I did not write.
+- **Scanned papers (the review of 7 November) are better, not solved.** See "The first test on a scanned paper":
+  touching ring markers, lines under them, insets and legends are handled now; black lines traced through the densest
+  marker rows still come back with the data.
 - **Axes without a box are not found automatically.** Detection needs a frame, or at least two edges meeting at a corner
   (an L of spines). Spines detached from each other, and axes through the middle of the plot, are digitized by region plus
   references.
@@ -267,6 +270,124 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
   - The two `CMakeLists.txt`.
   - `check-tool-arguments.py`.
 - **Not touched:** `qucscontrol_fem.cpp` and the multiphysics files.
+
+## The first test on a scanned paper, and what came of it (8 November)
+
+**The review:** `qucs-reviews/PdfViewer/2026-11-07-claude-pdf-digitizer-check.md` tried the digitizer on a real paper. The
+paper's figures are pictures, MATLAB-style:
+- boxed frames with ticks inside;
+- black ring markers over the model lines, touching along the flanks and piled up in the tail;
+- a legend in a box;
+- in Fig. 5, a grey inset with red annotations and circled labels.
+
+It found that nothing calibrated itself, the model lines were lost under the markers, most markers were missed, and
+insets, legends and labels came back as data. Ten findings, D1 to D10.
+
+**The rework:** the raster route was rebuilt in its own file, `plotdigitizer_raster.cpp`. `retest_scanned_paper.py` in
+this note's folder reruns the review's three figures through the tools over stdio, with the review's own references. The
+paper is not in the repository.
+
+**The same figures, before and after** (marker counts by eye from the overlays; about 100–150 per figure):
+
+| | Review (cdef951) | Now |
+|---|---|---|
+| Fig. 5 markers | 25 | 82 |
+| Fig. 5 red model line | 3 pieces, runs into the circled 2 (up to 0.89; true peak about 0.81) | one piece to 0.815, stops at the peak |
+| Fig. 5 inset | 12 or more junk series from it | left out, hatched in the picture |
+| Fig. 4(a) markers | about 15 | 61 |
+| Fig. 4(a) series | legend line and dots as data, a few pieces | 61 markers and the two blue peaks; the legend left out; 2 short black scraps |
+| Fig. 4(b) markers | about 7, nearly all the legend's | 68 |
+
+**A synthetic version of the same kind of figure** (`aPapersFigure` in `test_plot_digitizer`: a 300 dpi scan with no
+text, drawn from known functions, its truth known):
+- 137 of 141 markers found, and 138 of the 139 found within a point of a true one;
+- the blue line under them followed to 0.365 against a true 0.363, every point within 0.012 of the curve;
+- the red peak 0.302, as drawn;
+- legend and inset left out, nothing from them.
+
+**Finding by finding:**
+- **D3, colour by darkness:** done. A family is a direction of colour and a band of darkness, measured from the darkest
+  pixel near each one, so a line's soft edge counts as the line. A colour asked for is a band too. Black and #7f7f7f are
+  two families (`blackIsNotGrey`), and a series of a colour not asked for is dropped after the trace as well.
+- **D8, legends in boxes:** done for boxed legends, by the box's outline. The box is drawn on three or four sides (a thin
+  line can fall between two rows of pixels) and has something inside it, which a square pulse of a curve has not.
+  Everything inside it is left out. **Not done:** a legend with no box, unless the PDF has text for it; then the samples
+  beside its words are used as before.
+- **D4, regions left out:**
+  - `exclude` on `digitize_plot` (page points or fractions; given, it replaces what is found; `[]` leaves nothing out).
+  - A **Leave Out Region** tool in the panel, and a **Leave out insets and legends** checkbox with **Clear**.
+  - Kept in the JSON (`exclude`, `left_out`), drawn hatched in both overlays.
+  - Insets found: a large region of one colour, mostly filled, wider and taller than an eighth of the frame, not
+    standing on the axis (bars and filled areas do).
+  - Short lines in an inset's own colour are dropped with it.
+- **D9, touching markers:**
+  - Ring markers are found by their holes. The frame's line is a wall, so a ring sitting on the axis keeps its hole.
+  - Rings packed so tightly their holes are gone, and filled discs, are found by the peaks of a distance transform, a
+    marker's radius apart.
+  - Markers are found for every colour in two passes. In the second, a candidate touching another colour's markers is a
+    bit of line seen between them, not a marker.
+  - Markers are then lifted out and left as "covered".
+- **D5, lines under markers:**
+  - The line is followed through what covers it, curving as it was curving, to where its own ink comes out, within a
+    narrow lateral and directional band. That keeps it from crossing to the other side of a narrow peak.
+  - Pieces still parted are joined when one's end points at the other's start, or when one goes up and the other comes
+    down near an apex.
+  - What is left of a colour's own row of markers, once lifted out, is no line and is dropped.
+- **D10, glyphs:**
+  - Circled labels and letters with holes are found as compact pieces with a hole, together with what sits inside them.
+  - Words are found as small pieces of one height on one baseline, three or more side by side.
+  - Both are left covered.
+  - Hues that lie between two stronger hues are not families: a red line under black rings is dark red there, and before
+    this it became a family of its own, traced into junk.
+  - **Not done:** cutting a series where it jumps.
+- **D6, seeds and peaks:**
+  - A seed honours `colours` and the markers lifted out.
+  - The rest of its colour is followed too, and whatever meets the seeded line is joined to it. A seed on one side of a
+    narrow peak gets both sides (`aSeedRoundANarrowPeak`).
+  - A function of x comes back in order of x, with a note.
+  - "Seen" now means walked by another walk, or longer ago than the last few steps.
+  - A walk that cannot go on also tries turning back at a narrow peak's top.
+- **D7, names:** with `colours`, `names[i]` goes to the series of `colours[i]`, and repeats are numbered. Otherwise names
+  go in the order the series come. A note says which name went where.
+- **D1, scanned labels:**
+  - `x_range` and `y_range`: the values at the frame's edges, four numbers, the quickest calibration of a scan.
+  - The panel prefills four references at the frame's corners of a plot with no calibration, for the user to type the ends
+    of its axes into.
+  - Tick marks in a picture are now looked for both outside and inside the frame (MATLAB draws them inside), must be
+    attached to the frame's line, and are kept to the evenly spaced ones when most are.
+  - A figure placed in a typeset page is no longer "straightened": the two-column text around it made a skew test read
+    0.4°.
+  - **Not done:** OCR, which is still the user's decision. On this paper the tick marks inside the frame are partly hidden
+    by markers, so the references from the review (or `x_range`/`y_range`) are what calibrates it.
+- **D2, label and title reach:**
+  - A label must stand by a tick mark (within half the marks' spacing), or, with no marks, be one of an evenly spaced row
+    of one size.
+  - Labels on the top or right side are not taken when that side has no marks and the other does. The paper's running
+    header is no longer taken for labels.
+  - "8," and "25," are no numbers.
+  - Two labels with no marks give no axis.
+  - A title is the first line of words beyond the labels, never one starting "Fig." or "(a)".
+- **Smaller points:**
+  - `show` without `keep` no longer writes the file: the plot is shown as not kept, and written once the user changes it
+    in the panel.
+  - Trust drops to low when most curves are scraps beside the longest, and to medium when more than ten series come back.
+  - Fig. 1 on page 2 is no longer listed.
+
+**Bugs found on the way:**
+- **Panel undo:** several panel actions took a pointer to the plot before saving the undo state, so after the copy their
+  edits went into the undo copy.
+- **False grid lines:** a band of markers along the axis inks whole rows, and was cleared as a grid line. A grid line is
+  now thin and stands alone, and is at most of the marks, not at one.
+- **Ticks at the frame:** clearing ticks inside the frame cut off a peak that touched it.
+- **Reading words:** text is now read a word at a time, not a character at a time. Finding the plots on the paper's page
+  went from 5.5 s to about 0.7–2 s in the engine alone. Through the tools on a loaded machine one run took 4.8 s, the
+  first call on the page; later calls reuse what was read.
+
+**What still falls short on this paper:**
+- Black lines are traced through the densest marker rows in Fig. 5 and 4(b), and Fig. 5 returns 13 series. Trust says
+  "medium" and points at the picture.
+- The blue model line in Fig. 4 is wholly covered in the tail, so only its peaks come back, in a few pieces each.
+- Nothing calibrates itself without a text layer.
 
 ## What could not be verified
 

@@ -18,6 +18,7 @@
 #include <QElapsedTimer>
 #include <QPainter>
 #include <QPdfDocument>
+#include <QPdfSelection>
 
 #include <algorithm>
 #include <cmath>
@@ -28,6 +29,8 @@ namespace qucs_s::digitizer {
 namespace {
 
 QString tr(const char* text) { return QCoreApplication::translate("PlotDigitizer", text); }
+
+} // namespace
 
 double colourDistance(const QColor& a, const QColor& b)
 {
@@ -69,12 +72,6 @@ bool overlaps(const QRectF& a, const QRectF& b)
     return a.right() >= b.left() && a.left() <= b.right() && a.bottom() >= b.top() && a.top() <= b.bottom();
 }
 
-// Text on the plot, words on a line joined.
-struct Phrase {
-    QString text;
-    QRectF box;
-};
-
 QList<Phrase> phrasesOf(QList<Token> tokens)
 {
     std::sort(tokens.begin(), tokens.end(), [](const Token& a, const Token& b) { return a.box.center().y() < b.box.center().y(); });
@@ -99,6 +96,8 @@ QList<Phrase> phrasesOf(QList<Token> tokens)
     }
     return out;
 }
+
+namespace {
 
 // Keeps a run of points inside a box: its pieces, with the points where it
 // crosses the edge (Liang and Barsky's).
@@ -610,18 +609,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
 
 // --- From a picture --------------------------------------------------------
 
-struct Pixels {
-    int w = 0, h = 0;
-    QImage image;             // Format_RGB32
-    double scale = 1;         // pixels a working point
-    QPointF origin;           // the image's corner, in working points
-    QTransform pageToWork;
-    QTransform workToPage;
-
-    QPointF toWork(QPointF pixel) const { return origin + pixel / scale; }
-    QPointF toPixel(QPointF work) const { return (work - origin) * scale; }
-    QPointF toPage(QPointF pixel) const { return workToPage.map(toWork(pixel)); }
-};
+} // namespace
 
 // A part of the page (working points) drawn in working coordinates.
 Pixels workImage(Source& source, const Plot& plot, const QRectF& area, double scale)
@@ -667,7 +655,7 @@ double luminanceDark(QRgb v) { return 255 - (0.299 * qRed(v) + 0.587 * qGreen(v)
 
 // The angle (degrees) the text and lines of a page lie at, by where their
 // dark pixels pile up in rows when the page is turned back by it.
-double skewOf(const QImage& image)
+static double skewOf(const QImage& image)
 {
     std::vector<QPointF> dark;
     dark.reserve(200000);
@@ -716,15 +704,18 @@ double skewOf(const QImage& image)
 
 // The runs of dark pixels along rows (or along columns): long ones are lines;
 // short ones, joined across rows, ticks.
-void linesAlong(const QImage& image, bool rows, double scale, QPointF origin, QList<HLine>* longs, QList<HLine>* shorts)
+void linesAlong(const QImage& image, bool rows, double scale, QPointF origin, QList<HLine>* longs, QList<HLine>* shorts, double minLong)
 {
     const int w = image.width(), h = image.height();
     const int outer = rows ? h : w, inner = rows ? w : h;
-    const auto dark = [&](int o, int i) {
-        const int x = rows ? i : o, y = rows ? o : i;
-        return luminanceDark(reinterpret_cast<const QRgb*>(image.constScanLine(y))[x]) > 55;
-    };
-    const int longest = int(kMostTickLength * scale);
+    // (Each pixel's darkness once: a page is millions of them.)
+    std::vector<uchar> darkness(size_t(w) * h, 0);
+    for (int y = 0; y < h; ++y) {
+        const QRgb* row = reinterpret_cast<const QRgb*>(image.constScanLine(y));
+        for (int x = 0; x < w; ++x) darkness[size_t(y) * w + x] = luminanceDark(row[x]) > 55;
+    }
+    const auto dark = [&](int o, int i) { return darkness[rows ? size_t(o) * w + i : size_t(i) * w + o] != 0; };
+    const int longest = int((minLong > 0 ? minLong : kMostTickLength) * scale);
     const int shortest = std::max(3, int(1.0 * scale));
     const int widest = std::max(3, int(3.0 * scale));
     const double baseAt = rows ? origin.y() : origin.x(), baseAlong = rows ? origin.x() : origin.y();
@@ -747,6 +738,7 @@ void linesAlong(const QImage& image, bool rows, double scale, QPointF origin, QL
     };
     for (int o = 0; o < outer; ++o) {
         next.clear();
+        size_t cursor = 0;
         int i = 0;
         while (i < inner) {
             while (i < inner && !dark(o, i)) ++i;
@@ -770,10 +762,13 @@ void linesAlong(const QImage& image, bool rows, double scale, QPointF origin, QL
                 continue;
             }
             if (length < shortest) continue;
-            // Join to an open stroke it overlaps.
+            // Join to an open stroke it overlaps. (The open ones come in order
+            // of where they start, as the runs do: no need to look at all.)
             bool joined = false;
-            for (Open& op : open) {
-                if (op.last != o - 1 || op.end < start || op.start > last) continue;
+            while (cursor < open.size() && open[cursor].end < start) ++cursor;
+            for (size_t k = cursor; k < open.size() && open[k].start <= last; ++k) {
+                Open& op = open[k];
+                if (op.last != o - 1 || op.end < start) continue;
                 op.start = std::min(op.start, start);
                 op.end = std::max(op.end, last);
                 op.last = o;
@@ -793,8 +788,6 @@ void linesAlong(const QImage& image, bool rows, double scale, QPointF origin, QL
     for (const Open& op : open) closeOpen(op);
 }
 
-} // namespace
-
 RasterLines rasterLines(Source& source, int page, const QRectF& within)
 {
     RasterLines out;
@@ -807,7 +800,19 @@ RasterLines rasterLines(Source& source, int page, const QRectF& within)
     // The page's angle from a small picture of it, then fine.
     const QImage small = source.render(page, area, 1.5);
     if (small.isNull()) return out;
-    const double angle = skewOf(small);
+    // Set straight only a scan: a page whose picture is most of it, or that
+    // has no text of its own. A figure placed in a typeset page is upright,
+    // and the text around it - two columns, a caption - can lean a skew test.
+    double angle = 0;
+    {
+        double share = 0;
+        for (const pdf::vec::Picture& pic : source.graphics(page).pictures) {
+            const QRectF box = pic.corners.boundingRect().intersected(whole);
+            share = std::max(share, box.width() * box.height() / std::max(1.0, whole.width() * whole.height()));
+        }
+        const bool typeset = source.pdf()->getAllText(page).text().trimmed().size() > 40;
+        if (share > 0.5 || !typeset) angle = skewOf(small);
+    }
     const double scale = std::clamp(std::sqrt(double(kMostPixels) / 2 / std::max(1.0, area.width() * area.height())), 2.0, 4.0);
     Plot plot;
     plot.page = page;
@@ -835,6 +840,40 @@ RasterLines rasterLines(Source& source, int page, const QRectF& within)
     out.origin = pixels.origin;
     out.valid = true;
     return out;
+}
+
+// Marks found in a picture, kept to those evenly spaced when most of them are:
+// a marker hanging over the axis, a scan's speck, falls off the ticks' beat.
+// (A log axis's minor marks are not evenly spaced; its decades are, and if they
+// are not most of the marks, all are kept.)
+QList<double> regularMarks(const QList<double>& marks, double tolerance)
+{
+    if (marks.size() < 5) return marks;
+    int bestCount = 0;
+    double bestStep = 0, bestStart = 0;
+    for (int i = 0; i < marks.size(); ++i)
+        for (int j = i + 1; j < marks.size(); ++j) {
+            const double step = marks.at(j) - marks.at(i);
+            if (step < 3 * tolerance) continue;
+            int count = 0;
+            for (const double m : marks) {
+                const double k = (m - marks.at(i)) / step;
+                count += std::abs(k - std::round(k)) * step <= tolerance;
+            }
+            // (The smaller step of two that explain as many: one beat, not every other.)
+            if (count > bestCount || (count == bestCount && step < bestStep)) {
+                bestCount = count;
+                bestStep = step;
+                bestStart = marks.at(i);
+            }
+        }
+    if (bestCount < 4 || bestCount < 0.6 * marks.size()) return marks;
+    QList<double> kept;
+    for (const double m : marks) {
+        const double k = (m - bestStart) / bestStep;
+        if (std::abs(k - std::round(k)) * bestStep <= tolerance) kept << m;
+    }
+    return kept;
 }
 
 void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>* shortV, QList<HLine>* shortH)
@@ -867,7 +906,8 @@ void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>*
             }
             strength.push_back(dark / depth);
         }
-        const int widest = std::max(2, int(3 * scale));
+        // (A tick is thin; what is wider - a marker hanging over the axis - is not one.)
+        const int widest = std::max(2, int(1.6 * scale));
         for (size_t i = 0; i < strength.size();) {
             if (strength[i] < 0.08) {
                 ++i;
@@ -882,18 +922,30 @@ void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>*
                 peak = std::max(peak, strength[j]);
                 ++j;
             }
-            if (peak >= 0.3 && int(j - i) <= widest && weight > 0) found << along0 + (from + moment / weight) / scale;
+            // Joined to the frame's line: dark too just outside it, where a
+            // label's stroke, or a speck, is not.
+            double attached = 0;
+            const int inner = std::max(1, int(0.45 * scale)), outer = std::max(inner + 1, int(0.9 * scale));
+            for (size_t k = i; k < j; ++k)
+                for (int d = inner; d < outer; ++d) {
+                    const int across = at0 + int(sign) * d, a = from + int(k);
+                    attached = std::max(attached, (xAxis ? darkAt(a, across) : darkAt(across, a)) / 255);
+                }
+            if (peak >= 0.3 && attached >= 0.3 && int(j - i) <= widest && weight > 0) found << along0 + (from + moment / weight) / scale;
             i = j;
         }
         return found;
     };
     const auto addMarks = [&](bool xAxis, double edge, double low, double high, double outward, QList<HLine>* out) {
-        QList<double> marks = scan(xAxis, edge, low, high, outward);
-        // No ticks outside: perhaps inside. (Less sure: a curve may cross there.)
-        if (marks.size() < 2) {
-            const QList<double> inner = scan(xAxis, edge, low, high, -outward);
-            if (inner.size() >= 3) marks = inner;
-        }
+        // Ticks outside the frame, or inside it (MATLAB's): whichever keeps the
+        // steadier beat - outside, a label's stroke can stand by the frame;
+        // inside, a curve can cross. Outside when they tie.
+        const QList<double> outer = scan(xAxis, edge, low, high, outward), inner = scan(xAxis, edge, low, high, -outward);
+        const QList<double> outerKept = regularMarks(outer, 0.6), innerKept = regularMarks(inner, 0.6);
+        const auto beat = [](const QList<double>& all, const QList<double>& kept) { return kept.size() < all.size() || all.size() >= 5 ? int(kept.size()) : int(kept.size()) - 1; };
+        QList<double> marks = outerKept;
+        if (beat(inner, innerKept) > beat(outer, outerKept) && innerKept.size() >= 3) marks = innerKept;
+        if (marks.size() < 2 && innerKept.size() >= 3) marks = innerKept;
         for (const double m : std::as_const(marks)) {
             HLine l;
             l.at = m;
@@ -910,956 +962,7 @@ void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>*
     addMarks(false, frame.right(), frame.top(), frame.bottom(), 1, shortH);
 }
 
-namespace {
-
-// What the picture of a plot's frame holds, prepared for tracing.
-struct Traced {
-    Pixels px;
-    std::vector<uchar> label;    // the colour family of each pixel; 0: none
-    std::vector<uchar> alpha;    // how much of it
-    QList<QColor> families;      // [i] is label i + 1
-    QRgb background = qRgb(255, 255, 255);
-    QRectF box;                  // in pixels: where to look
-
-    inline int at(int x, int y) const { return y * px.w + x; }
-    inline bool inBounds(int x, int y) const { return x >= 0 && y >= 0 && x < px.w && y < px.h; }
-};
-
-// Pixels to leave alone: the frame's outside, the grid, words on the plot.
-void prepare(Traced& t, const Plot& plot, const QList<Token>& words, const Options& options)
-{
-    Pixels& p = t.px;
-    t.label.assign(size_t(p.w) * p.h, 0);
-    t.alpha.assign(size_t(p.w) * p.h, 0);
-    // The background: the commonest colour just inside the frame.
-    {
-        QHash<QRgb, int> counts;
-        const int stepX = std::max(1, p.w / 400), stepY = std::max(1, p.h / 400);
-        for (int y = 0; y < p.h; y += stepY) {
-            const QRgb* row = reinterpret_cast<const QRgb*>(p.image.constScanLine(y));
-            for (int x = 0; x < p.w; x += stepX) ++counts[row[x] & 0xF0F0F0];
-        }
-        int most = 0;
-        QRgb common = 0xF0F0F0;
-        for (auto i = counts.cbegin(); i != counts.cend(); ++i)
-            if (i.value() > most) {
-                most = i.value();
-                common = i.key();
-            }
-        t.background = (common & 0xF0F0F0) | 0x0F0F0F;
-        // (White stays white: it is nearly always that.)
-        if (qRed(t.background) >= 0xE0 && qGreen(t.background) >= 0xE0 && qBlue(t.background) >= 0xE0) t.background = qRgb(255, 255, 255);
-    }
-    const int br = qRed(t.background), bg = qGreen(t.background), bb = qBlue(t.background);
-
-    // Grid lines: rows and columns mostly inked. Where a mark is, a third of
-    // the way across will do; elsewhere - a flat curve looks like this too -
-    // nearly all of it must be.
-    const double frameThickness = 2.0 * p.scale;
-    const QRectF box = t.box;
-    const int x0 = std::clamp(int(box.left()), 0, p.w), x1 = std::clamp(int(box.right()), 0, p.w);
-    const int y0 = std::clamp(int(box.top()), 0, p.h), y1 = std::clamp(int(box.bottom()), 0, p.h);
-    std::vector<int> rowInk(size_t(p.h), 0), colInk(size_t(p.w), 0);
-    std::vector<uchar> mag(size_t(p.w) * p.h, 0);
-    std::vector<float> chroma0(size_t(p.w) * p.h, 0.f), chroma1(size_t(p.w) * p.h, 0.f);
-    for (int y = y0; y < y1; ++y) {
-        const QRgb* row = reinterpret_cast<const QRgb*>(p.image.constScanLine(y));
-        for (int x = x0; x < x1; ++x) {
-            const int dr = std::max(0, br - qRed(row[x])), dg = std::max(0, bg - qGreen(row[x])), db = std::max(0, bb - qBlue(row[x]));
-            const int m = std::max({dr, dg, db});
-            if (m < 30) continue;
-            const int sum = dr + dg + db;
-            mag[size_t(t.at(x, y))] = uchar(std::min(m, 255));
-            chroma0[size_t(t.at(x, y))] = float(dr) / sum;
-            chroma1[size_t(t.at(x, y))] = float(dg) / sum;
-            ++rowInk[size_t(y)];
-            ++colInk[size_t(x)];
-        }
-    }
-    const auto isMark = [&](const Axis& axis, double workPosition) {
-        for (const double m : axis.marks)
-            if (std::abs(m - workPosition) < 1.2) return true;
-        for (const Tick& tick : axis.ticks)
-            if (std::abs(tick.position - workPosition) < 1.2) return true;
-        return false;
-    };
-    const double spanX = std::max(1, x1 - x0), spanY = std::max(1, y1 - y0);
-    std::vector<uchar> gridRow(size_t(p.h), 0), gridCol(size_t(p.w), 0);
-    const bool cartesian = plot.calibration.kind == Kind::Cartesian;
-    if (cartesian) {
-        for (int y = y0; y < y1; ++y) {
-            const double share = rowInk[size_t(y)] / spanX;
-            const double workY = p.origin.y() + (y + 0.5) / p.scale;
-            if (share >= 0.9 || (share >= 0.33 && isMark(plot.yAxis, workY))) gridRow[size_t(y)] = 1;
-        }
-        for (int x = x0; x < x1; ++x) {
-            const double share = colInk[size_t(x)] / spanY;
-            const double workX = p.origin.x() + (x + 0.5) / p.scale;
-            if (share >= 0.9 || (share >= 0.33 && isMark(plot.xAxis, workX))) gridCol[size_t(x)] = 1;
-        }
-    }
-    // The colour the grid is drawn in, to leave a curve of another over it.
-    double gridChroma0 = 1.0 / 3, gridChroma1 = 1.0 / 3;
-    {
-        double a = 0, b = 0, n = 0;
-        for (int y = y0; y < y1; ++y) {
-            if (gridRow[size_t(y)] == 0) continue;
-            for (int x = x0; x < x1; x += 3) {
-                const size_t i = size_t(t.at(x, y));
-                if (mag[i] > 0 && gridCol[size_t(x)] == 0) {
-                    a += chroma0[i];
-                    b += chroma1[i];
-                    ++n;
-                }
-            }
-        }
-        if (n > 0) {
-            gridChroma0 = a / n;
-            gridChroma1 = b / n;
-        }
-    }
-    // (A line's soft edge is fainter than the rows counted: a pixel or two more.)
-    std::vector<uchar> nearRow(gridRow.size(), 0), nearCol(gridCol.size(), 0);
-    const int soft = std::max(2, int(std::ceil(0.4 * p.scale)));
-    for (int y = 0; y < p.h; ++y)
-        if (gridRow[size_t(y)] != 0)
-            for (int k = std::max(0, y - soft); k <= std::min(p.h - 1, y + soft); ++k) nearRow[size_t(k)] = 1;
-    for (int x = 0; x < p.w; ++x)
-        if (gridCol[size_t(x)] != 0)
-            for (int k = std::max(0, x - soft); k <= std::min(p.w - 1, x + soft); ++k) nearCol[size_t(k)] = 1;
-    for (int y = y0; y < y1; ++y)
-        for (int x = x0; x < x1; ++x) {
-            const size_t i = size_t(t.at(x, y));
-            if (mag[i] == 0 || (nearRow[size_t(y)] == 0 && nearCol[size_t(x)] == 0)) continue;
-            if (std::hypot(chroma0[i] - gridChroma0, chroma1[i] - gridChroma1) < 0.12) mag[i] = 0;
-        }
-    Q_UNUSED(frameThickness)
-    // Ticks inside the frame, by the marks found: a sliver at each edge goes.
-    if (!plot.frame.isNull()) {
-        const double reach = 8 * p.scale;
-        const auto clearColumnAt = [&](double workX, bool bottom) {
-            const int cx = int((workX - p.origin.x()) * p.scale);
-            const int half = int(std::ceil(1.0 * p.scale));
-            const int from = bottom ? std::max(y0, y1 - int(reach)) : y0, to = bottom ? y1 : std::min(y1, y0 + int(reach));
-            // Only what goes from the edge inward, unbroken.
-            for (int x = std::max(x0, cx - half); x <= std::min(x1 - 1, cx + half); ++x) {
-                if (bottom) {
-                    for (int y = to - 1; y >= from; --y) {
-                        const size_t i = size_t(t.at(x, y));
-                        if (mag[i] == 0 && y < to - int(1.5 * p.scale)) break;
-                        mag[i] = 0;
-                    }
-                } else {
-                    for (int y = from; y < to; ++y) {
-                        const size_t i = size_t(t.at(x, y));
-                        if (mag[i] == 0 && y > from + int(1.5 * p.scale)) break;
-                        mag[i] = 0;
-                    }
-                }
-            }
-        };
-        const auto clearRowAt = [&](double workY, bool right) {
-            const int cy = int((workY - p.origin.y()) * p.scale);
-            const int half = int(std::ceil(1.0 * p.scale));
-            const int from = right ? std::max(x0, x1 - int(reach)) : x0, to = right ? x1 : std::min(x1, x0 + int(reach));
-            for (int y = std::max(y0, cy - half); y <= std::min(y1 - 1, cy + half); ++y) {
-                if (right) {
-                    for (int x = to - 1; x >= from; --x) {
-                        const size_t i = size_t(t.at(x, y));
-                        if (mag[i] == 0 && x < to - int(1.5 * p.scale)) break;
-                        mag[i] = 0;
-                    }
-                } else {
-                    for (int x = from; x < to; ++x) {
-                        const size_t i = size_t(t.at(x, y));
-                        if (mag[i] == 0 && x > from + int(1.5 * p.scale)) break;
-                        mag[i] = 0;
-                    }
-                }
-            }
-        };
-        for (const double m : plot.xAxis.marks) {
-            clearColumnAt(m, true);
-            clearColumnAt(m, false);
-        }
-        for (const double m : plot.yAxis.marks) {
-            clearRowAt(m, false);
-            clearRowAt(m, true);
-        }
-    }
-    // Words on the plot.
-    for (const Token& word : words) {
-        const QRect r = QRectF(p.toPixel(word.box.topLeft()), p.toPixel(word.box.bottomRight())).adjusted(-p.scale, -p.scale, p.scale, p.scale).toAlignedRect();
-        for (int y = std::max(0, r.top()); y <= std::min(p.h - 1, r.bottom()); ++y)
-            for (int x = std::max(0, r.left()); x <= std::min(p.w - 1, r.right()); ++x) mag[size_t(t.at(x, y))] = 0;
-    }
-
-    // The colour families: where the colour of what is drawn, whatever its
-    // coverage, gathers. A pixel half covered by a line lies between the
-    // background and the line's colour, so its share of each channel of the
-    // difference from the background is the same as the line's own.
-    constexpr int bins = 24;
-    std::vector<double> hist(size_t(bins) * bins, 0.0);
-    double total = 0;
-    for (int y = y0; y < y1; ++y)
-        for (int x = x0; x < x1; ++x) {
-            const size_t i = size_t(t.at(x, y));
-            if (mag[i] < 60) continue;
-            const int a = std::min(bins - 1, int(chroma0[i] * bins)), b = std::min(bins - 1, int(chroma1[i] * bins));
-            hist[size_t(a) * bins + b] += mag[i];
-            total += mag[i];
-        }
-    struct Family {
-        double c0, c1;
-    };
-    std::vector<Family> families;
-    for (int k = 0; k < 14 && total > 0; ++k) {
-        size_t top = 0;
-        for (size_t i = 1; i < hist.size(); ++i)
-            if (hist[i] > hist[top]) top = i;
-        if (hist[top] <= 0 || hist[top] < 0.004 * total) break;
-        const int ta = int(top / bins), tb = int(top % bins);
-        double sum = 0, ma = 0, mb = 0;
-        for (int a = std::max(0, ta - 1); a <= std::min(bins - 1, ta + 1); ++a)
-            for (int b = std::max(0, tb - 1); b <= std::min(bins - 1, tb + 1); ++b) {
-                const double v = hist[size_t(a) * bins + b];
-                sum += v;
-                ma += v * (a + 0.5) / bins;
-                mb += v * (b + 0.5) / bins;
-                hist[size_t(a) * bins + b] = 0;
-            }
-        if (sum <= 0) break;
-        Family f{ma / sum, mb / sum};
-        bool close = false;
-        for (const Family& o : families) close = close || std::hypot(o.c0 - f.c0, o.c1 - f.c1) < 0.05;
-        if (!close) families.push_back(f);
-    }
-    // A colour asked for is one, and then only those.
-    if (!options.colours.isEmpty()) {
-        families.clear();
-        for (const QColor& c : options.colours) {
-            const int dr = std::max(0, br - c.red()), dg = std::max(0, bg - c.green()), db = std::max(0, bb - c.blue());
-            const int sum = dr + dg + db;
-            if (sum > 0) families.push_back(Family{double(dr) / sum, double(dg) / sum});
-        }
-    }
-    if (families.size() > 250) families.resize(250);
-    for (int y = y0; y < y1; ++y)
-        for (int x = x0; x < x1; ++x) {
-            const size_t i = size_t(t.at(x, y));
-            const int m = mag[i];
-            if (m == 0) continue;
-            int best = -1;
-            double bestD = m >= 90 ? 0.11 : 0.15;
-            for (size_t f = 0; f < families.size(); ++f) {
-                const double d = std::hypot(chroma0[i] - families[f].c0, chroma1[i] - families[f].c1);
-                if (d < bestD) {
-                    bestD = d;
-                    best = int(f);
-                }
-            }
-            if (best < 0) continue;
-            t.label[i] = uchar(best + 1);
-            t.alpha[i] = uchar(m);
-        }
-    t.families.clear();
-    for (const Family& f : families) {
-        // (Its colour: of the strongest pixels; the series take theirs from
-        // their own.)
-        const double c2 = std::max(0.0, 1 - f.c0 - f.c1);
-        const double most = std::max({f.c0, f.c1, c2});
-        const double k = most > 0 ? 255 / most : 0;
-        t.families << QColor(std::clamp(int(br - f.c0 * k), 0, 255), std::clamp(int(bg - f.c1 * k), 0, 255), std::clamp(int(bb - c2 * k), 0, 255));
-    }
-}
-
-// Follows lines in one colour family.
-class Follower
-{
-public:
-    Follower(Traced& t, int family, double thickness, std::vector<uchar>& visited, const std::vector<uchar>* blocked)
-        : a_t(t), a_family(family), a_thickness(thickness), a_visited(visited), a_blocked(blocked)
-    {
-        a_step = std::max(1.5, thickness);
-        a_gap = 14 * t.px.scale;
-        a_breakAt = 8 * t.px.scale;
-    }
-
-    // The ink's strength here, sub-pixel.
-    double sample(double x, double y) const
-    {
-        const int ix = int(std::floor(x - 0.5)), iy = int(std::floor(y - 0.5));
-        const double fx = x - 0.5 - ix, fy = y - 0.5 - iy;
-        const auto value = [&](int a, int b) -> double {
-            if (!a_t.inBounds(a, b)) return 0;
-            const size_t i = size_t(a_t.at(a, b));
-            return a_t.label[i] == a_family ? a_t.alpha[i] : 0;
-        };
-        return value(ix, iy) * (1 - fx) * (1 - fy) + value(ix + 1, iy) * fx * (1 - fy) + value(ix, iy + 1) * (1 - fx) * fy + value(ix + 1, iy + 1) * fx * fy;
-    }
-
-    // Across the line at \a p: the middle of the ink nearest, and how wide it
-    // is. False when there is none within reach.
-    bool centre(QPointF p, QPointF direction, QPointF* out, double* width) const
-    {
-        const QPointF n(-direction.y(), direction.x());
-        const double reach = std::max(3.0, 2.5 * a_thickness);
-        constexpr double d = 0.5;
-        const int count = int(reach / d);
-        double values[512];
-        const int size = std::min(2 * count + 1, 512);
-        const int mid = size / 2;
-        double peak = 0;
-        for (int k = 0; k < size; ++k) {
-            const QPointF q = p + n * ((k - mid) * d);
-            values[k] = sample(q.x(), q.y());
-            peak = std::max(peak, values[k]);
-        }
-        if (peak < 45) return false;
-        const double floor = std::max(30.0, 0.3 * peak);
-        // The run nearest the middle.
-        int centreIndex = -1;
-        for (int k = 0; k <= mid; ++k) {
-            if (values[mid + k] >= floor) {
-                centreIndex = mid + k;
-                break;
-            }
-            if (values[mid - k] >= floor) {
-                centreIndex = mid - k;
-                break;
-            }
-        }
-        if (centreIndex < 0) return false;
-        int a = centreIndex, b = centreIndex;
-        while (a > 0 && values[a - 1] >= floor) --a;
-        while (b + 1 < size && values[b + 1] >= floor) ++b;
-        double sum = 0, moment = 0;
-        for (int k = a; k <= b; ++k) {
-            sum += values[k];
-            moment += values[k] * (k - mid) * d;
-        }
-        if (sum <= 0) return false;
-        *out = p + n * (moment / sum);
-        *width = (b - a + 1) * d;
-        return true;
-    }
-
-    // Marks where it has been, so a line is walked once.
-    void stamp(QPointF p, QPointF direction, double width)
-    {
-        const QPointF n(-direction.y(), direction.x());
-        const double half = width / 2 + 1.5;
-        for (double along = -a_step / 2 - 0.5; along <= a_step / 2 + 0.5; along += 0.75)
-            for (double across = -half; across <= half; across += 0.75) {
-                const QPointF q = p + direction * along + n * across;
-                const int x = int(q.x()), y = int(q.y());
-                if (a_t.inBounds(x, y)) a_visited[size_t(a_t.at(x, y))] = 1;
-            }
-    }
-
-    bool seen(QPointF p) const
-    {
-        const int x = int(p.x()), y = int(p.y());
-        return a_t.inBounds(x, y) && a_visited[size_t(a_t.at(x, y))] != 0;
-    }
-
-    bool isBlocked(QPointF p) const
-    {
-        if (a_blocked == nullptr) return false;
-        const int x = int(p.x()), y = int(p.y());
-        return a_t.inBounds(x, y) && (*a_blocked)[size_t(a_t.at(x, y))] != 0;
-    }
-
-    // One way from \a start; each point in \a out (not \a start itself),
-    // pieces parted in \a breaks.
-    void walk(QPointF start, QPointF direction, QList<QPointF>* out, QList<int>* breaks, int* bridged)
-    {
-        QPointF p = start;
-        QPointF d = normal(direction);
-        const double most = 3.0 * std::max(a_thickness, 1.5);
-        const int retrace = std::max(3, int(std::ceil(std::max(4 * a_thickness, 6.0) / a_step)));
-        int overSeen = 0;
-        double through = 0;
-        for (int guard = 0; guard < 200000; ++guard) {
-            QPointF c;
-            double width = 0;
-            const QPointF q = p + d * a_step;
-            bool go = centre(q, d, &c, &width);
-            if (go && width > most) {
-                // Wider than the line: another crossing it, a marker on it.
-                // Straight on, no point made there.
-                through += a_step;
-                if (through > a_gap) return;
-                p = q;
-                continue;
-            }
-            if (go && QLineF(c, p).length() > 2.2 * a_step) go = false;
-            bool jumped = false;
-            if (!go) {
-                // A bend.
-                bool turned_ = false;
-                for (const double a : {15.0, -15.0, 30.0, -30.0, 45.0, -45.0, 60.0, -60.0, 80.0, -80.0}) {
-                    const QPointF dd = turned(d, a);
-                    if (centre(p + dd * a_step, dd, &c, &width) && width <= most && QLineF(c, p).length() <= 2.2 * a_step && QPointF::dotProduct(c - p, d) > -0.2 * a_step) {
-                        turned_ = true;
-                        break;
-                    }
-                }
-                if (!turned_) {
-                    // A gap: a dash, a crossing, a mark over the line.
-                    bool found = false;
-                    for (double g = 2 * a_step; g <= a_gap && !found; g += a_step)
-                        for (const double a : {0.0, 4.0, -4.0, 8.0, -8.0, 12.0, -12.0}) {
-                            const QPointF dd = turned(d, a);
-                            if (centre(p + dd * g, dd, &c, &width) && width <= most) {
-                                found = true;
-                                jumped = true;
-                                ++*bridged;
-                                if (g >= a_breakAt) breaks->append(int(out->size()));
-                                break;
-                            }
-                        }
-                    if (!found) return;
-                }
-            }
-            through = 0;
-            const QPointF move = c - p;
-            d = normal(d * (jumped ? 0.9 : 0.72) + normal(move) * (jumped ? 0.1 : 0.28));
-            if (seen(c)) {
-                if (++overSeen > retrace) {
-                    // On a line already walked: back to where that began.
-                    for (int k = 0; k < retrace && !out->isEmpty(); ++k) out->removeLast();
-                    return;
-                }
-            } else if (overSeen > 0) {
-                // (Between a walked line's dashes it is not seen: one step back
-                // only, or a line would be walked twice a dash at a time.)
-                --overSeen;
-            }
-            stamp(c, d, width);
-            p = c;
-            // No point where the cut across the line is cut short - a dash's end,
-            // where its middle is not the line's - nor on landing after a gap.
-            if (!isBlocked(c) && !jumped && width >= 0.6 * a_thickness) out->append(c);
-        }
-    }
-
-    // The direction a line goes at \a p: the long axis of the ink nearby.
-    QPointF directionAt(QPointF p) const
-    {
-        const double r = std::max(4.0, 2.5 * a_thickness);
-        double xx = 0, xy = 0, yy = 0, w = 0;
-        const int cx = int(p.x()), cy = int(p.y()), ir = int(std::ceil(r));
-        for (int y = cy - ir; y <= cy + ir; ++y)
-            for (int x = cx - ir; x <= cx + ir; ++x) {
-                if (!a_t.inBounds(x, y)) continue;
-                const size_t i = size_t(a_t.at(x, y));
-                if (a_t.label[i] != a_family) continue;
-                const double dx = x + 0.5 - p.x(), dy = y + 0.5 - p.y();
-                if (dx * dx + dy * dy > r * r) continue;
-                const double a = a_t.alpha[i];
-                xx += a * dx * dx;
-                xy += a * dx * dy;
-                yy += a * dy * dy;
-                w += a;
-            }
-        if (w <= 0) return {1, 0};
-        const double theta = 0.5 * std::atan2(2 * xy, xx - yy);
-        return {std::cos(theta), std::sin(theta)};
-    }
-
-    double step() const { return a_step; }
-
-private:
-    Traced& a_t;
-    int a_family;
-    double a_thickness;
-    std::vector<uchar>& a_visited;
-    const std::vector<uchar>* a_blocked;
-    double a_step = 2, a_gap = 40, a_breakAt = 20;
-};
-
-// A line followed both ways from \a seed, in page points.
-bool followFrom(Traced& t, int family, double thickness, QPointF seed, std::vector<uchar>& visited, const std::vector<uchar>* blocked, Series* out)
-{
-    Follower f(t, family, thickness, visited, blocked);
-    const QPointF d = f.directionAt(seed);
-    QPointF start = seed;
-    double width = 0;
-    QPointF c;
-    if (f.centre(seed, d, &c, &width)) start = c;
-    // The edge of a line already walked is no line of its own.
-    if (f.seen(start)) {
-        f.stamp(seed, d, std::max(width, 2.0));
-        out->points.clear();
-        return false;
-    }
-    QList<QPointF> ahead, behind;
-    QList<int> breaksAhead, breaksBehind;
-    int bridged = 0;
-    f.stamp(start, d, width);
-    f.walk(start, d, &ahead, &breaksAhead, &bridged);
-    f.walk(start, QPointF(-d.x(), -d.y()), &behind, &breaksBehind, &bridged);
-    QList<QPointF> line;
-    QList<int> breaks;
-    line.reserve(ahead.size() + behind.size() + 1);
-    for (int i = int(behind.size()) - 1; i >= 0; --i) line << behind.at(i);
-    for (const int b : std::as_const(breaksBehind)) breaks << int(behind.size()) - b;
-    line << start;
-    const int shift = int(line.size());
-    line << ahead;
-    for (const int b : std::as_const(breaksAhead)) breaks << shift + b;
-    std::sort(breaks.begin(), breaks.end());
-    // Left to right, when that is how it goes.
-    if (line.size() >= 2 && line.first().x() > line.last().x()) {
-        std::reverse(line.begin(), line.end());
-        for (int& b : breaks) b = int(line.size()) - b;
-        std::sort(breaks.begin(), breaks.end());
-    }
-    out->points.clear();
-    out->points.reserve(line.size());
-    for (const QPointF& p : std::as_const(line)) out->points << t.px.toPage(p);
-    out->breaks.clear();
-    for (const int b : std::as_const(breaks))
-        if (b > 0 && b < line.size() && !out->breaks.contains(b)) out->breaks << b;
-    out->bridged = bridged;
-    out->origin = Series::Origin::Raster;
-    out->shape = Series::Shape::Line;
-    out->width = thickness / t.px.scale;
-    out->dashed = bridged >= 3;
-    // Its colour: its darkest pixels'.
-    QList<int> reds, greens, blues;
-    for (int i = 0; i < line.size(); i += std::max<int>(1, int(line.size()) / 60)) {
-        const int x = int(line.at(i).x()), y = int(line.at(i).y());
-        if (!t.inBounds(x, y)) continue;
-        const QRgb v = reinterpret_cast<const QRgb*>(t.px.image.constScanLine(y))[x];
-        reds << qRed(v);
-        greens << qGreen(v);
-        blues << qBlue(v);
-    }
-    if (!reds.isEmpty()) {
-        std::sort(reds.begin(), reds.end());
-        std::sort(greens.begin(), greens.end());
-        std::sort(blues.begin(), blues.end());
-        out->colour = QColor(reds.at(reds.size() / 3), greens.at(greens.size() / 3), blues.at(blues.size() / 3));
-    }
-    return true;
-}
-
-// What to trace at, in pixels a point: enough to see a thin line's middle,
-// and a scan's own resolution.
-double scaleFor(Source& source, const Plot& plot, const QRectF& workArea, const Options& options)
-{
-    if (options.scale > 0) return std::clamp(options.scale, 1.0, 16.0);
-    double native = 0;
-    const QRectF box = plot.pageBox();
-    for (const pdf::vec::Picture& pic : source.graphics(plot.page).paths.isEmpty() ? source.graphics(plot.page).pictures : source.graphics(plot.page).pictures) {
-        const QRectF onPage = pic.corners.boundingRect();
-        if (!onPage.intersects(box) || onPage.width() <= 0) continue;
-        native = std::max(native, pic.width / std::max(1.0, QLineF(pic.corners.at(0), pic.corners.at(1)).length()));
-    }
-    double s = native > 0 ? std::clamp(native, 4.0, 10.0) : 6.0;
-    const double fit = std::sqrt(double(kMostPixels) / std::max(1.0, workArea.width() * workArea.height()));
-    return std::clamp(std::min(s, fit), 1.0, 16.0);
-}
-
-void setUpTraced(Traced& t, Source& source, const Plot& plot, const Options& options, QList<Token>* wordsOut)
-{
-    const QRectF pageBox = plot.pageBox();
-    const QRectF workFrame = plot.frame.isNull() ? (plot.work.isIdentity() ? pageBox : plot.work.mapRect(pageBox)) : plot.frame;
-    const double scale = scaleFor(source, plot, workFrame, options);
-    t.px = workImage(source, plot, workFrame, scale);
-    if (t.px.image.isNull()) return;
-    // A little inside the frame: its own line and no more.
-    const double inset = plot.frame.isNull() ? 0 : 1.1 * scale;
-    t.box = QRectF(QPointF(0, 0), QSizeF(t.px.w, t.px.h)).adjusted(inset, inset, -inset, -inset);
-    QList<Token> words = source.tokens(plot.page, plot.pageBox());
-    if (!plot.work.isIdentity())
-        for (Token& w : words) w.box = plot.work.mapRect(w.box);
-    QList<Token> onPlot;
-    for (const Token& w : std::as_const(words))
-        if (workFrame.adjusted(-1, -1, 1, 1).contains(w.box.center())) onPlot << w;
-    prepare(t, plot, onPlot, options);
-    if (wordsOut != nullptr) *wordsOut = onPlot;
-}
-
-bool extractRaster(Source& source, Plot& plot, const Options& options, QStringList* notes)
-{
-    Traced t;
-    QList<Token> words;
-    setUpTraced(t, source, plot, options, &words);
-    if (t.px.image.isNull() || t.px.w < 8 || t.px.h < 8) return false;
-    const int w = t.px.w, h = t.px.h;
-    plot.renderScale = t.px.scale;
-    const double scale = t.px.scale;
-
-    // A legend: words on the plot with a sample of a colour just before them.
-    QHash<int, QStringList> legendNames;
-    {
-        const QList<Phrase> phrases = phrasesOf(words);
-        for (const Phrase& ph : phrases) {
-            bool numeric = false;
-            double v = 0;
-            numeric = parseTickLabel(ph.text, &v);
-            if (numeric) continue;
-            const QRectF band(ph.box.left() - 45, ph.box.center().y() - std::max(ph.box.height() * 0.7, 4.0), 43, 2 * std::max(ph.box.height() * 0.7, 4.0));
-            const QRect pixels = QRectF(t.px.toPixel(band.topLeft()), t.px.toPixel(band.bottomRight())).toAlignedRect().intersected(QRect(0, 0, w, h));
-            QHash<int, int> counts;
-            for (int y = pixels.top(); y <= pixels.bottom(); ++y)
-                for (int x = pixels.left(); x <= pixels.right(); ++x) {
-                    const int l = t.label[size_t(t.at(x, y))];
-                    if (l != 0) ++counts[l];
-                }
-            int top = 0, most = 0;
-            for (auto i = counts.cbegin(); i != counts.cend(); ++i)
-                if (i.value() > most) {
-                    most = i.value();
-                    top = i.key();
-                }
-            if (top == 0 || most < 3 * scale) continue;
-            legendNames[top] << ph.text;
-            // The sample goes, and so does what is beside it: only the sample
-            // is there, as far as the eye can tell.
-            for (int y = pixels.top(); y <= pixels.bottom(); ++y)
-                for (int x = pixels.left(); x <= pixels.right(); ++x) {
-                    t.label[size_t(t.at(x, y))] = 0;
-                    t.alpha[size_t(t.at(x, y))] = 0;
-                }
-        }
-    }
-
-    // Run lengths, to tell a line from what is thick.
-    std::vector<int> hrun(size_t(w) * h, 0), vrun(size_t(w) * h, 0);
-    for (int y = 0; y < h; ++y) {
-        int x = 0;
-        while (x < w) {
-            const int l = t.label[size_t(t.at(x, y))];
-            if (l == 0) {
-                ++x;
-                continue;
-            }
-            int e = x + 1;
-            while (e < w && t.label[size_t(t.at(e, y))] == l) ++e;
-            for (int k = x; k < e; ++k) hrun[size_t(t.at(k, y))] = e - x;
-            x = e;
-        }
-    }
-    for (int x = 0; x < w; ++x) {
-        int y = 0;
-        while (y < h) {
-            const int l = t.label[size_t(t.at(x, y))];
-            if (l == 0) {
-                ++y;
-                continue;
-            }
-            int e = y + 1;
-            while (e < h && t.label[size_t(t.at(x, e))] == l) ++e;
-            for (int k = y; k < e; ++k) vrun[size_t(t.at(x, k))] = e - y;
-            y = e;
-        }
-    }
-
-    QList<Series> found;
-    int lineCount = 0, markerCount = 0;
-    QElapsedTimer clock;
-    clock.start();
-    const int families = int(t.families.size());
-    std::vector<uchar> visited(size_t(w) * h, 0);
-    std::vector<int> stack;
-    stack.reserve(4096);
-    const double frameMin = std::min(w, h);
-    for (int family = 1; family <= families; ++family) {
-        // Connected pieces of it, whole.
-        std::vector<int> ids(size_t(w) * h, 0);
-        struct Piece {
-            int area = 0, x0 = 1 << 30, x1 = -1, y0 = 1 << 30, y1 = -1;
-            double sx = 0, sy = 0;
-        };
-        std::vector<Piece> piecesOf(1);
-        for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x) {
-                const size_t i = size_t(t.at(x, y));
-                if (t.label[i] != family || ids[i] != 0) continue;
-                const int id = int(piecesOf.size());
-                piecesOf.emplace_back();
-                Piece& piece = piecesOf.back();
-                stack.clear();
-                stack.push_back(int(i));
-                ids[i] = id;
-                while (!stack.empty()) {
-                    const int cur = stack.back();
-                    stack.pop_back();
-                    const int cx = cur % w, cy = cur / w;
-                    ++piece.area;
-                    piece.x0 = std::min(piece.x0, cx);
-                    piece.x1 = std::max(piece.x1, cx);
-                    piece.y0 = std::min(piece.y0, cy);
-                    piece.y1 = std::max(piece.y1, cy);
-                    piece.sx += cx + 0.5;
-                    piece.sy += cy + 0.5;
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            const int nx = cx + dx, ny = cy + dy;
-                            if (!t.inBounds(nx, ny)) continue;
-                            const size_t ni = size_t(t.at(nx, ny));
-                            if (t.label[ni] == family && ids[ni] == 0) {
-                                ids[ni] = id;
-                                stack.push_back(int(ni));
-                            }
-                        }
-                }
-            }
-        // Marks: pieces small and about as wide as tall, alike in size, their
-        // ink not drawn out along a line. (A dash slanting has a square box too;
-        // a word's speck is smaller than a mark.)
-        const double markerMost = std::clamp(frameMin * 0.07, 14 * scale * 0.5, 22 * scale);
-        std::vector<int> candidates;
-        std::vector<double> sizes;
-        for (size_t id = 1; id < piecesOf.size(); ++id) {
-            const Piece& q = piecesOf[id];
-            const double a = q.x1 - q.x0 + 1, b = q.y1 - q.y0 + 1;
-            if (std::max(a, b) > markerMost || std::max(a, b) < std::max(3.0, 0.8 * scale)) continue;
-            if (std::max(a, b) / std::min(a, b) > 2.0) continue;
-            // Its long axis against its short one, by the moments of its ink.
-            double xx = 0, xy = 0, yy = 0;
-            const double mx = q.sx / q.area, my = q.sy / q.area;
-            for (int y = q.y0; y <= q.y1; ++y)
-                for (int x = q.x0; x <= q.x1; ++x)
-                    if (ids[size_t(t.at(x, y))] == int(id)) {
-                        const double dx = x + 0.5 - mx, dy = y + 0.5 - my;
-                        xx += dx * dx;
-                        xy += dx * dy;
-                        yy += dy * dy;
-                    }
-            const double spread = std::sqrt(std::max(0.0, (xx - yy) * (xx - yy) + 4 * xy * xy));
-            const double along = (xx + yy + spread) / 2, across = (xx + yy - spread) / 2;
-            if (along > 3.5 * std::max(across, 1e-9)) continue;
-            candidates.push_back(int(id));
-            sizes.push_back(std::max(a, b));
-        }
-        std::vector<uchar> isMarkerPiece(piecesOf.size(), 0);
-        Series markers;
-        if (candidates.size() >= 3) {
-            std::vector<double> sorted = sizes;
-            std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
-            const double typical = sorted[sorted.size() / 2];
-            for (size_t k = 0; k < candidates.size(); ++k) {
-                if (std::abs(sizes[k] - typical) > std::max(0.35 * typical, 1.5)) continue;
-                const Piece& q = piecesOf[size_t(candidates[k])];
-                isMarkerPiece[size_t(candidates[k])] = 1;
-                // The middle of its box: a hollow mark's mass is its ring, and
-                // any mark's centre is its box's.
-                markers.points << QPointF((q.x0 + q.x1 + 1) / 2.0, (q.y0 + q.y1 + 1) / 2.0);
-            }
-        }
-        // How thick this family's lines are, its marks aside.
-        std::vector<int> thin;
-        for (size_t i = 0; i < t.label.size(); i += 3)
-            if (t.label[i] == family && t.alpha[i] >= 90 && isMarkerPiece[size_t(ids[i])] == 0) thin.push_back(std::min(hrun[i], vrun[i]));
-        double thickness = std::max(1.0, 0.5 * scale);
-        if (thin.size() >= 4) {
-            std::nth_element(thin.begin(), thin.begin() + thin.size() / 2, thin.end());
-            thickness = std::clamp(double(thin[thin.size() / 2]), 1.0, 12 * scale);
-        }
-        // Marks on a line: thick where a line is thin both ways.
-        std::vector<uchar> blocked(size_t(w) * h, 0);
-        {
-            const double thick = 2.2 * thickness;
-            std::vector<int> blobIds(size_t(w) * h, 0);
-            struct Blob {
-                int area = 0, x0 = 1 << 30, x1 = -1, y0 = 1 << 30, y1 = -1;
-            };
-            std::vector<Blob> blobs(1);
-            for (int y = 0; y < h; ++y)
-                for (int x = 0; x < w; ++x) {
-                    const size_t i = size_t(t.at(x, y));
-                    if (t.label[i] != family || blobIds[i] != 0 || hrun[i] < thick || vrun[i] < thick) continue;
-                    if (isMarkerPiece[size_t(ids[i])] != 0) continue;
-                    const int id = int(blobs.size());
-                    blobs.emplace_back();
-                    Blob& b = blobs.back();
-                    stack.clear();
-                    stack.push_back(int(i));
-                    blobIds[i] = id;
-                    while (!stack.empty()) {
-                        const int cur = stack.back();
-                        stack.pop_back();
-                        const int cx = cur % w, cy = cur / w;
-                        ++b.area;
-                        b.x0 = std::min(b.x0, cx);
-                        b.x1 = std::max(b.x1, cx);
-                        b.y0 = std::min(b.y0, cy);
-                        b.y1 = std::max(b.y1, cy);
-                        for (int dy = -1; dy <= 1; ++dy)
-                            for (int dx = -1; dx <= 1; ++dx) {
-                                const int nx = cx + dx, ny = cy + dy;
-                                if (!t.inBounds(nx, ny)) continue;
-                                const size_t ni = size_t(t.at(nx, ny));
-                                if (t.label[ni] == family && blobIds[ni] == 0 && hrun[ni] >= thick && vrun[ni] >= thick) {
-                                    blobIds[ni] = id;
-                                    stack.push_back(int(ni));
-                                }
-                            }
-                    }
-                }
-            std::vector<double> blobSizes;
-            for (size_t k = 1; k < blobs.size(); ++k) {
-                const Blob& b = blobs[k];
-                const double a = b.x1 - b.x0 + 1, c = b.y1 - b.y0 + 1;
-                if (std::max(a, c) <= markerMost && std::max(a, c) / std::min(a, c) <= 2 && b.area >= thick * thick * 0.5) blobSizes.push_back(std::max(a, c));
-            }
-            if (blobSizes.size() >= 3) {
-                std::nth_element(blobSizes.begin(), blobSizes.begin() + blobSizes.size() / 2, blobSizes.end());
-                const double typical = blobSizes[blobSizes.size() / 2];
-                for (size_t k = 1; k < blobs.size(); ++k) {
-                    const Blob& b = blobs[k];
-                    const double a = b.x1 - b.x0 + 1, c = b.y1 - b.y0 + 1;
-                    if (std::abs(std::max(a, c) - typical) > std::max(0.35 * typical, 1.5) || std::max(a, c) / std::min(a, c) > 2) continue;
-                    markers.points << QPointF((b.x0 + b.x1 + 1) / 2.0, (b.y0 + b.y1 + 1) / 2.0);
-                    for (int y = b.y0; y <= b.y1; ++y)
-                        for (int x = b.x0; x <= b.x1; ++x) blocked[size_t(t.at(x, y))] = 1;
-                }
-            }
-        }
-        // What is left: lines, each followed from its leftmost point not
-        // walked yet.
-        const double keepAt = std::max({4 * thickness, 4.0 * scale, 0.02 * std::max(w, h)});
-        const int foundBefore = int(found.size());
-        int tracks = 0;
-        const int mostTracks = std::max(1, options.maxSeries);
-        for (int x = 0; x < w && tracks < mostTracks * 4; ++x)
-            for (int y = 0; y < h && tracks < mostTracks * 4; ++y) {
-                const size_t i = size_t(t.at(x, y));
-                if (t.label[i] != family || visited[i] != 0 || t.alpha[i] < 60) continue;
-                if (isMarkerPiece[size_t(ids[i])] != 0) continue;
-                if (blocked[i] != 0) continue;
-                if (clock.elapsed() > 20000) {
-                    notes->append(tr("The trace stopped after 20 s: what was found so far is here."));
-                    x = w;
-                    break;
-                }
-                Series s;
-                followFrom(t, family, thickness, QPointF(x + 0.5, y + 0.5), visited, &blocked, &s);
-                double length = 0;
-                for (int k = 0; k + 1 < s.points.size(); ++k) length += QLineF(s.points.at(k), s.points.at(k + 1)).length();
-                ++tracks;
-                if (length * scale < keepAt) continue;
-                found << s;
-            }
-        // A scrap beside a long line - where it touches the frame, or a stroke
-        // of a word - is no curve; a short line alone may be one.
-        {
-            double longest = 0;
-            const auto lengthIn = [](const Series& s) {
-                double length = 0;
-                for (int k = 0; k + 1 < s.points.size(); ++k) length += QLineF(s.points.at(k), s.points.at(k + 1)).length();
-                return length;
-            };
-            for (int k = foundBefore; k < found.size(); ++k) longest = std::max(longest, lengthIn(found.at(k)));
-            int scraps = 0;
-            for (int k = int(found.size()) - 1; k >= foundBefore; --k)
-                if (lengthIn(found.at(k)) < 0.12 * longest && lengthIn(found.at(k)) * scale < 0.08 * std::max(w, h)) {
-                    found.removeAt(k);
-                    ++scraps;
-                }
-            if (scraps > 0) notes->append(tr("%1 scraps much shorter than the lines of their colour were left out.").arg(scraps));
-        }
-        if (!markers.points.isEmpty()) {
-            QList<QPointF> pagePoints;
-            for (const QPointF& pixel : std::as_const(markers.points)) pagePoints << t.px.toPage(pixel);
-            std::sort(pagePoints.begin(), pagePoints.end(), [](const QPointF& a, const QPointF& b) { return a.x() < b.x(); });
-            markers.points = pagePoints;
-            markers.shape = Series::Shape::Markers;
-            markers.origin = Series::Origin::Raster;
-            markers.colour = t.families.value(family - 1);
-            // (A mark's strongest pixels show its colour better than the family's.)
-            markers.width = thickness / scale;
-            found << markers;
-        }
-        // The legend's names for this family's series.
-        QStringList names = legendNames.value(family);
-        if (!names.isEmpty()) {
-            QList<int> ofFamily;
-            // (The family's own series are the latest added.)
-            Q_UNUSED(ofFamily)
-        }
-    }
-
-    // Names, from the legend by colour.
-    {
-        // Which family each series is of: nearest by colour.
-        QHash<int, QStringList> left = legendNames;
-        for (Series& s : found) {
-            int bestFamily = 0;
-            double bestD = 1e18;
-            for (int f = 0; f < families; ++f) {
-                const double d = colourDistance(t.families.at(f), s.colour);
-                if (d < bestD) {
-                    bestD = d;
-                    bestFamily = f + 1;
-                }
-            }
-            QStringList& names = left[bestFamily];
-            if (!names.isEmpty()) s.name = names.takeFirst();
-        }
-    }
-    // A straight black or grey line at a mark that survived is grid; so is a
-    // rectangle, a legend's frame. Said, not hidden.
-    {
-        int dropped = 0;
-        QList<Series> kept;
-        for (const Series& s : std::as_const(found)) {
-            if (s.shape != Series::Shape::Line || !achromatic(s.colour)) {
-                kept << s;
-                continue;
-            }
-            // (Its box by hand: QRectF's union takes a point for nothing.)
-            QPolygonF inWork;
-            for (const QPointF& q : s.points) inWork << plot.work.map(q);
-            const QRectF box = inWork.boundingRect();
-            const bool axisAligned = box.width() < 0.8 || box.height() < 0.8;
-            // Its points on a box's four sides, nearly all: a legend's frame.
-            int onEdges = 0;
-            for (const QPointF& q0 : s.points) {
-                const QPointF q = plot.work.map(q0);
-                if (std::abs(q.x() - box.left()) < 1 || std::abs(q.x() - box.right()) < 1 || std::abs(q.y() - box.top()) < 1 || std::abs(q.y() - box.bottom()) < 1) ++onEdges;
-            }
-            const bool boxOutline = !axisAligned && box.width() > 8 && box.height() > 8 && onEdges >= 0.9 * s.points.size();
-            if (axisAligned || boxOutline) {
-                ++dropped;
-                continue;
-            }
-            kept << s;
-        }
-        found = kept;
-        if (dropped > 0) notes->append(tr("%1 straight or boxed black or grey lines were taken for the grid or a legend's frame and left out.").arg(dropped));
-    }
-    if (found.size() > options.maxSeries) {
-        std::stable_sort(found.begin(), found.end(), [](const Series& a, const Series& b) { return a.points.size() > b.points.size(); });
-        notes->append(tr("%1 series were found; the %2 with the most points are kept.").arg(found.size()).arg(options.maxSeries));
-        found = found.mid(0, options.maxSeries);
-    }
-    int lineNumber = 0, markerNumber = 0;
-    QSet<QString> taken;
-    for (Series& s : found) {
-        if (s.shape == Series::Shape::Markers) ++markerNumber;
-        else ++lineNumber;
-        if (s.name.isEmpty()) s.name = s.shape == Series::Shape::Markers ? tr("Markers %1").arg(markerNumber) : tr("Curve %1").arg(lineNumber);
-        QString name = s.name;
-        for (int k = 2; taken.contains(name); ++k) name = s.name + QLatin1Char(' ') + QString::number(k);
-        s.name = name;
-        taken.insert(name);
-    }
-    Q_UNUSED(lineCount)
-    Q_UNUSED(markerCount)
-    plot.series = found;
-    plot.route = QStringLiteral("raster");
-    return !found.isEmpty();
-}
-
-} // namespace
-
-bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* why)
+bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* why, const Options* options)
 {
     if (!plot.pageBox().adjusted(-3, -3, 3, 3).contains(seed)) {
         if (why != nullptr) *why = tr("The point is outside the plot.");
@@ -1909,59 +1012,7 @@ bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* w
         }
     }
     // In the picture.
-    Traced t;
-    Options all;
-    setUpTraced(t, source, plot, all, nullptr);
-    if (t.px.image.isNull()) {
-        if (why != nullptr) *why = tr("The page could not be drawn.");
-        return false;
-    }
-    const QPointF pixel = t.px.toPixel(plot.work.map(seed));
-    int bestX = -1, bestY = -1;
-    double nearest = 1e18;
-    const int radius = int(std::ceil(5 * t.px.scale));
-    const int cx = int(pixel.x()), cy = int(pixel.y());
-    for (int y = cy - radius; y <= cy + radius; ++y)
-        for (int x = cx - radius; x <= cx + radius; ++x) {
-            if (!t.inBounds(x, y) || t.label[size_t(t.at(x, y))] == 0) continue;
-            const double d = std::hypot(x + 0.5 - pixel.x(), y + 0.5 - pixel.y());
-            if (d < nearest) {
-                nearest = d;
-                bestX = x;
-                bestY = y;
-            }
-        }
-    if (bestX < 0) {
-        if (why != nullptr) *why = tr("There is no line within five points of there.");
-        return false;
-    }
-    const int family = t.label[size_t(t.at(bestX, bestY))];
-    // Thickness here: the narrower way across, the middle of what is nearby (a
-    // click lands on a line's soft edge as often as on its middle).
-    QList<int> widths;
-    const int around = int(std::ceil(3 * t.px.scale));
-    for (int y = bestY - around; y <= bestY + around; y += 2)
-        for (int x = bestX - around; x <= bestX + around; x += 2) {
-            if (!t.inBounds(x, y) || t.label[size_t(t.at(x, y))] != family) continue;
-            int across = 1, down = 1;
-            for (int k = x + 1; t.inBounds(k, y) && t.label[size_t(t.at(k, y))] == family; ++k) ++across;
-            for (int k = x - 1; t.inBounds(k, y) && t.label[size_t(t.at(k, y))] == family; --k) ++across;
-            for (int k = y + 1; t.inBounds(x, k) && t.label[size_t(t.at(x, k))] == family; ++k) ++down;
-            for (int k = y - 1; t.inBounds(x, k) && t.label[size_t(t.at(x, k))] == family; --k) ++down;
-            widths << std::min(across, down);
-        }
-    std::sort(widths.begin(), widths.end());
-    const double thickness = std::clamp(widths.isEmpty() ? 1.0 : double(widths.at(widths.size() * 3 / 4)), 1.0, 12 * t.px.scale);
-    std::vector<uchar> visited(size_t(t.px.w) * t.px.h, 0);
-    Series s;
-    followFrom(t, family, thickness, QPointF(bestX + 0.5, bestY + 0.5), visited, nullptr, &s);
-    if (s.points.size() < 2) {
-        if (why != nullptr) *why = tr("The line there could not be followed.");
-        return false;
-    }
-    plot.renderScale = t.px.scale;
-    *out = s;
-    return true;
+    return traceRaster(source, plot, seed, options != nullptr ? *options : Options{}, out, why);
 }
 
 bool extract(Source& source, Plot& plot, const Options& options, QString* why)
@@ -1981,7 +1032,7 @@ bool extract(Source& source, Plot& plot, const Options& options, QString* why)
             ++n;
             Series s;
             QString reason;
-            if (traceFrom(source, plot, seed, &s, &reason)) {
+            if (traceFrom(source, plot, seed, &s, &reason, &options)) {
                 s.name = tr("Curve %1").arg(n);
                 traced << s;
             } else misses << tr("seed %1: %2").arg(n).arg(reason);
@@ -1999,6 +1050,8 @@ bool extract(Source& source, Plot& plot, const Options& options, QString* why)
         if (tryVector && extractVector(source, plot, options, &notes)) done = true;
         if (!done && options.route != Options::Route::Vector) done = extractRaster(source, plot, options, &notes);
     }
+    // What lies in a region left out goes, whichever way it was found.
+    dropExcluded(plot, &notes);
     // In a polar plot, a circle about the centre or a spoke through it is grid.
     if (plot.calibration.kind == Kind::Polar && plot.calibration.valid()) {
         QList<Series> kept;

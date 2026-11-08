@@ -42,6 +42,7 @@ class QTreeView;
 
 namespace qucs_s::digitizer {
 class Panel;
+struct Plot;
 }
 
 namespace qucs_s::pdf {
@@ -405,6 +406,8 @@ public:
     void digitizedChanged();
     /// The panel open on kept plot \a index, in sight.
     void showDigitized(int index);
+    /// The panel open on \a plot, shown but not kept (Claude's show without keep).
+    void showTransient(const qucs_s::digitizer::Plot& plot);
     QToolButton* digitizeButton() const { return a_digitizeButton; }
 
     // For the tests.

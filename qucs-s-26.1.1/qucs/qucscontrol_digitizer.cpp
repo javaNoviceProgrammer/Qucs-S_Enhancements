@@ -461,9 +461,9 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
     const bool polar = args.value(QLatin1String("polar")).toBool();
     const QString model = args.value(QLatin1String("model")).toString().trimmed().toLower();
     if (!model.isEmpty() && model != QLatin1String("affine") && model != QLatin1String("projective")) return errorResult(tr("'model' is affine or projective."));
-    bool useReferences = !references.isEmpty();
-    if (polar && !useReferences) return errorResult(tr("A polar plot takes 'references': three or more points with r and theta (degrees), one may be the centre."));
-    if (model == QLatin1String("projective") && !useReferences) return errorResult(tr("A projective fit takes 'references': four or more points with both x and y."));
+    bool useReferences = !references.isEmpty() || args.contains(QLatin1String("x_range")) || args.contains(QLatin1String("y_range"));
+    if (polar && references.isEmpty()) return errorResult(tr("A polar plot takes 'references': three or more points with r and theta (degrees), one may be the centre."));
+    if (model == QLatin1String("projective") && references.isEmpty()) return errorResult(tr("A projective fit takes 'references': four or more points with both x and y."));
     const auto readValues = [&](const QJsonArray& given, bool xAxis) {
         QList<double> list;
         for (const QJsonValue& v : given) {
@@ -477,6 +477,16 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
     };
     if (!xValues.isEmpty() && !readValues(xValues, true)) return errorResult(error);
     if (!yValues.isEmpty() && !readValues(yValues, false)) return errorResult(error);
+    // The values at the frame's edges: the quickest calibration of a scan, the
+    // four numbers at the ends of its axes.
+    const QJsonArray xRange = args.value(QLatin1String("x_range")).toArray(), yRange = args.value(QLatin1String("y_range")).toArray();
+    const bool ranges = args.contains(QLatin1String("x_range")) || args.contains(QLatin1String("y_range"));
+    if (ranges && !references.isEmpty()) return errorResult(tr("'x_range' and 'y_range' or 'references': one or the other."));
+    if (ranges) {
+        if (xRange.size() != 2 || yRange.size() != 2 || !xRange.at(0).isDouble() || !xRange.at(1).isDouble() || !yRange.at(0).isDouble() || !yRange.at(1).isDouble())
+            return errorResult(tr("'x_range' is [left, right] and 'y_range' [bottom, top]: the values at the frame's edges, both given."));
+        if (plot.frame.isNull()) return errorResult(tr("No frame was found to put 'x_range' and 'y_range' on: give 'references'."));
+    }
     if (useReferences) {
         dg::Calibration c;
         c.xScale = xSet || !plot.xAxis.found ? xScale : plot.xAxis.scale;
@@ -486,6 +496,21 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
             c.rAtCentre = args.value(QLatin1String("r_at_centre")).toDouble(0);
         }
         if (model == QLatin1String("projective")) c.model = dg::Model::Projective;
+        if (args.contains(QLatin1String("x_range"))) {
+            const QTransform back = plot.work.inverted();
+            const QRectF f = plot.frame;
+            const auto ref = [&](QPointF at, bool x, double value) {
+                dg::Reference r;
+                r.at = back.map(at);
+                (x ? r.hasX : r.hasY) = true;
+                (x ? r.x : r.y) = value;
+                c.references << r;
+            };
+            ref(f.bottomLeft(), true, xRange.at(0).toDouble());
+            ref(f.bottomRight(), true, xRange.at(1).toDouble());
+            ref(f.bottomLeft(), false, yRange.at(0).toDouble());
+            ref(f.topLeft(), false, yRange.at(1).toDouble());
+        }
         int number = 0;
         for (const QJsonValue& v : references) {
             ++number;
@@ -532,6 +557,19 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
         if (at.size() != 2 || !at.at(0).isDouble() || !at.at(1).isDouble()) return errorResult(tr("'seeds' holds points on the curves: [[x, y], ...], in points from the page's top left."));
         options.seeds << QPointF(at.at(0).toDouble(), at.at(1).toDouble());
     }
+    // Regions to leave out, given: then only those (an empty list, none).
+    if (args.contains(QLatin1String("exclude"))) {
+        plot.exclude.clear();
+        options.findLeftOut = false;
+        const QSizeF paper = pdf.pagePointSize(plot.page);
+        for (const QJsonValue& v : args.value(QLatin1String("exclude")).toArray()) {
+            QList<double> corners;
+            for (const QJsonValue& n : v.toArray()) corners << n.toDouble();
+            const QRectF r = qucs_s::pdf::regionOf(corners, paper);
+            if (r.isEmpty()) return errorResult(tr("'exclude' holds regions [x1, y1, x2, y2] of the page: points from its top left, or fractions of it."));
+            plot.exclude << r;
+        }
+    }
     const double wantedScale = args.value(QLatin1String("trace_scale")).toDouble(0);
     if (wantedScale < 0 || wantedScale > 16) return errorResult(tr("'trace_scale' is the pixels a point of the picture to trace from, up to 16."));
     options.scale = wantedScale;
@@ -539,10 +577,42 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
     dg::extract(source, plot, options, &why);
     if (plot.series.isEmpty() && !why.isEmpty()) notes << why;
     const qint64 extractedAt = clock.elapsed();
-    int nameNumber = 0;
-    for (const QJsonValue& v : args.value(QLatin1String("names")).toArray()) {
-        if (nameNumber < plot.series.size() && v.isString()) plot.series[nameNumber].name = v.toString().left(200);
-        ++nameNumber;
+    // New names: by the colours asked for, the first name for the first
+    // colour's series; else in the order the series come. Said, either way.
+    {
+        const QJsonArray names = args.value(QLatin1String("names")).toArray();
+        QStringList given;
+        if (!names.isEmpty() && !options.colours.isEmpty()) {
+            for (int k = 0; k < names.size() && k < options.colours.size(); ++k) {
+                if (!names.at(k).isString()) continue;
+                const QString name = names.at(k).toString().left(200);
+                int count = 0;
+                for (dg::Series& series : plot.series) {
+                    int nearest = -1;
+                    double best = 1e9;
+                    for (int j = 0; j < options.colours.size(); ++j) {
+                        const QColor& c = options.colours.at(j);
+                        const double d = std::abs(c.red() - series.colour.red()) + std::abs(c.green() - series.colour.green()) + std::abs(c.blue() - series.colour.blue());
+                        if (d < best) {
+                            best = d;
+                            nearest = j;
+                        }
+                    }
+                    if (nearest != k) continue;
+                    series.name = count == 0 ? name : QStringLiteral("%1 %2").arg(name).arg(count + 1);
+                    given << QStringLiteral("%1 (%2)").arg(series.name, series.colour.name());
+                    ++count;
+                }
+            }
+            if (!given.isEmpty()) notes << tr("Named by the colours asked for: %1.").arg(given.join(QStringLiteral(", ")));
+        } else {
+            for (int k = 0; k < names.size() && k < plot.series.size(); ++k)
+                if (names.at(k).isString()) {
+                    plot.series[k].name = names.at(k).toString().left(200);
+                    given << QStringLiteral("%1 (%2)").arg(plot.series.at(k).name, plot.series.at(k).colour.name());
+                }
+            if (!given.isEmpty()) notes << tr("Named in the order the series came: %1. With 'colours', names go by colour.").arg(given.join(QStringLiteral(", ")));
+        }
     }
     if (!source.hasVectors() && !source.vectorProblem().isEmpty()) notes << source.vectorProblem();
     plot.notes << notes;
@@ -566,10 +636,8 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
         if (!writeOut(datasetFile, dg::dataset(plot), &error)) return errorResult(error);
         result.insert(QStringLiteral("dataset"), QDir::toNativeSeparators(datasetFile));
     }
-    bool keep = args.value(QLatin1String("keep")).toBool();
+    const bool keep = args.value(QLatin1String("keep")).toBool();
     const bool show = args.value(QLatin1String("show")).toBool();
-    // Shown in the tab, it is kept as what is there is.
-    if (show) keep = true;
     if (keep) {
         QList<dg::Plot> kept;
         QString loadWhy;
@@ -593,7 +661,15 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
         if (opened2 == nullptr && a_app->gotoPage(file, false, false)) opened2 = a_app->getDoc();
         if (auto* p = dynamic_cast<PdfDoc*>(opened2)) {
             a_app->showDocument(QucsApp::documentWidget(p));
-            p->showDigitized(result.value(QStringLiteral("kept_as")).toInt() - 1);
+            // Kept: the panel on what is kept. Not: shown alone, written with
+            // the rest only once the user changes it.
+            if (keep) p->showDigitized(result.value(QStringLiteral("kept_as")).toInt() - 1);
+            else {
+                dg::Plot shown = plot;
+                shown.transient = true;
+                p->showTransient(shown);
+                result.insert(QStringLiteral("kept"), tr("not kept: written beside the PDF only if it is changed in the panel, or with 'keep'"));
+            }
             result.insert(QStringLiteral("shown"), true);
         }
     }

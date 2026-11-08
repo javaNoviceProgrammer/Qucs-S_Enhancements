@@ -18,6 +18,7 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -33,6 +34,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string_view>
 
 namespace qucs_s::digitizer {
 
@@ -503,11 +505,12 @@ bool parseTickLabel(const QString& input, double* value)
         else t += c;
     }
     if (t.isEmpty()) return false;
-    static const QRegularExpression plain(QStringLiteral("^([+-]?(?:\\d+(?:[.,]\\d*)?|[.,]\\d+))(?:[eE]([+-]?\\d+))?$"));
+    // (A comma only between digits: "8," is a word of a sentence, not a number.)
+    static const QRegularExpression plain(QStringLiteral("^([+-]?(?:\\d+(?:,\\d+|\\.\\d*)?|\\.\\d+))(?:[eE]([+-]?\\d+))?$"));
     static const QRegularExpression power(QStringLiteral("^([+-]?)10(?:\\^|\\*\\*)?\\{?([+-]?\\d+)\\}?$"));
     static const QRegularExpression timesPower(QStringLiteral("^([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))x10(?:\\^|\\*\\*)?\\{?([+-]?\\d+)\\}?$"));
     static const QRegularExpression withUnit(
-        QStringLiteral("^([+-]?(?:\\d+(?:[.,]\\d*)?|[.,]\\d+))([fpnumkKMGT]?)(Hz|V|A|W|s|\\x{03A9}|F|H|dBm|dB|%|\\x{00B0}C|\\x{00B0})?$"));
+        QStringLiteral("^([+-]?(?:\\d+(?:,\\d+|\\.\\d*)?|\\.\\d+))([fpnumkKMGT]?)(Hz|V|A|W|s|\\x{03A9}|F|H|dBm|dB|%|\\x{00B0}C|\\x{00B0})?$"));
     const auto number = [](QString text, double* out) {
         // A comma: thousands where three digits follow and something other
         // than a lone zero leads; otherwise a decimal point.
@@ -561,6 +564,7 @@ struct Source::Text {
     int last = -1;
     QPointF lastAt;
     QHash<int, QRectF> boxes;
+    QHash<qint64, QRectF> words;   // by start << 20 | length
     int calls = 0;
 };
 
@@ -712,9 +716,49 @@ QList<Token> Source::tokens(int page, const QRectF& within)
         curHeight = 0;
         raised = false;
     };
+    const auto isGap = [](QChar c) { return c.isSpace() || c == QChar(0xFFFE) || c == QChar(0xFFFF) || c.isNull(); };
+    // A word's box takes one call to pdfium, a character's one each: words are
+    // read whole, but where a power of ten may be raised in one ("10-3",
+    // "104" set as 10 and a raised 4), character by character.
+    static const QRegularExpression maybeRaised(QStringLiteral("10[-+\\x{2212}]?\\d"));
+    int pendingChars = -1;   // read character by character up to here
     for (int i = from; i <= to; ++i) {
         const QChar c = t.all.at(i);
-        if (c.isSpace() || c == QChar(0xFFFE) || c == QChar(0xFFFF) || c.isNull()) {
+        if (i > pendingChars && !isGap(c) && cur.text.isEmpty() && (i == from || isGap(t.all.at(i - 1)))) {
+            int e = i;
+            while (e + 1 <= to && !isGap(t.all.at(e + 1))) ++e;
+            const QString word = t.all.mid(i, e - i + 1);
+            // (Short ones - most tick labels - are as cheap by their characters;
+            // and the text may run two lines together with nothing between,
+            // which a word's box taller than its first letter shows.)
+            if (word.size() > 3 && (!word.contains(maybeRaised) || word.size() > 12)) {
+                const qint64 key = (qint64(i) << 20) | qint64(e - i + 1);
+                QRectF b;
+                if (const auto have = t.words.constFind(key); have != t.words.cend()) b = *have;
+                else {
+                    b = a_pdf->getSelectionAtIndex(page, i, e - i + 1).boundingRectangle();
+                    t.words.insert(key, b);
+                }
+                const QRectF first = boxOf(i);
+                const bool oneLine = !first.isNull() && b.height() <= 1.6 * std::max(first.height(), 3.0);
+                if (!oneLine) {
+                    // Character by character, as below.
+                    --i;
+                    cur.text = QString();
+                    pendingChars = e;
+                    continue;
+                }
+                if (!b.isNull() && (b.adjusted(-0.5, -0.5, 0.5, 0.5).intersects(within) || within.contains(b.center()))) {
+                    Token word_;
+                    word_.text = word;
+                    word_.box = b;
+                    out.append(word_);
+                }
+                i = e;
+                continue;
+            }
+        }
+        if (isGap(c)) {
             flush();
             continue;
         }
@@ -829,6 +873,8 @@ void collectVectorLines(const pdf::vec::Graphics& g, const QTransform& work, QLi
 
 namespace {
 
+} // namespace
+
 // Lines at one place and overlapping or touching, as one.
 QList<HLine> merged(QList<HLine> lines, double tolerance, double gap)
 {
@@ -913,10 +959,12 @@ QList<QRectF> rectanglesOf(const QList<HLine>& h, const QList<HLine>& v, double 
     return out;
 }
 
+namespace {
+
 // The marks along an edge: short strokes meeting it, and grid lines crossing
 // the frame. A side's marks are its own plus the grid's. \a vertical: an x
 // axis's marks, which are vertical strokes.
-QList<double> marksOn(const QRectF& frame, bool xAxis, int side, const QList<HLine>& shorts, const QList<HLine>& longs)
+QList<double> marksOn(const QRectF& frame, bool xAxis, int side, const QList<HLine>& shorts, const QList<HLine>& longs, double gridSpan = 0.5)
 {
     QList<double> out;
     constexpr double t = 2.2;
@@ -933,7 +981,7 @@ QList<double> marksOn(const QRectF& frame, bool xAxis, int side, const QList<HLi
         if (g.at < low - 1 || g.at > high + 1) continue;
         // (A grid line, not the frame's own edge - which is no tick unless
         // it is one, as an end of the axis often is.)
-        if (g.to - g.from < 0.5 * span) continue;
+        if (g.to - g.from < gridSpan * span) continue;
         if (std::abs(g.at - low) < 1.5 || std::abs(g.at - high) < 1.5) continue;
         if (g.from > crossLow + 0.6 * span) continue;
         out << g.at;
@@ -943,13 +991,6 @@ QList<double> marksOn(const QRectF& frame, bool xAxis, int side, const QList<HLi
     for (const double v : std::as_const(out))
         if (unique.isEmpty() || v - unique.last() > 0.4) unique << v;
     return unique;
-}
-
-QStringList titlesFrom(const QList<Token>& tokens)
-{
-    QStringList words;
-    for (const Token& t : tokens) words << t.text;
-    return words;
 }
 
 // A straight line through position and scale(value), robustly: the pair that
@@ -1105,6 +1146,8 @@ bool fitAxisFrom(const QList<Token>& labels, const QList<double>& marks, bool xA
         }
         useLog = allPositive && looksLog;
         axis->scaleGuessed = true;
+        // Two labels and no marks to place them by: nothing to go on.
+        if (marks.isEmpty()) return false;
     }
     axis->scale = useLog ? Scale::Log : Scale::Linear;
     const AxisLine& line = useLog ? lg : lin;
@@ -1187,6 +1230,42 @@ double multiplierFor(const QList<Token>& tokens, const QRectF& frame, bool xAxis
 
 bool operator==(const Token& a, const Token& b) { return a.text == b.text && a.box == b.box; }
 
+// The labels that stand by a tick mark - within half the marks' spacing of
+// one - or, where no marks were found, evenly spaced in one row of one size.
+// The rest is text that happens to be near: a page number, a caption.
+static QList<Token> alignedLabels(const QList<Token>& labels, const QList<double>& marks, bool xAxis)
+{
+    if (labels.isEmpty()) return labels;
+    const auto along = [xAxis](const Token& t) { return xAxis ? t.box.center().x() : t.box.center().y(); };
+    if (marks.size() >= 2) {
+        QList<double> gaps;
+        for (int i = 0; i + 1 < marks.size(); ++i) gaps << marks.at(i + 1) - marks.at(i);
+        std::sort(gaps.begin(), gaps.end());
+        const double reach = std::clamp(gaps.at(gaps.size() / 2) / 2, 2.0, 12.0);
+        QList<Token> kept;
+        for (const Token& t : labels) {
+            double nearest = 1e9;
+            for (const double m : marks) nearest = std::min(nearest, std::abs(m - along(t)));
+            if (nearest <= reach) kept << t;
+        }
+        return kept;
+    }
+    if (labels.size() < 3) return {};
+    QList<Token> sorted = labels;
+    std::sort(sorted.begin(), sorted.end(), [&](const Token& a, const Token& b) { return along(a) < along(b); });
+    QList<double> gaps;
+    for (int i = 0; i + 1 < sorted.size(); ++i) gaps << along(sorted.at(i + 1)) - along(sorted.at(i));
+    const auto [low, high] = std::minmax_element(gaps.begin(), gaps.end());
+    if (*low <= 0 || *high > 1.25 * *low) return {};
+    double hLow = 1e9, hHigh = 0;
+    for (const Token& t : std::as_const(sorted)) {
+        hLow = std::min(hLow, t.box.height());
+        hHigh = std::max(hHigh, t.box.height());
+    }
+    if (hHigh > 1.3 * hLow + 1) return {};
+    return sorted;
+}
+
 void readAxes(Plot& plot, const QList<Token>& tokens, const QList<HLine>& shortV, const QList<HLine>& shortH, const QList<HLine>& longV, const QList<HLine>& longH)
 {
     const QRectF& frame = plot.frame;
@@ -1194,9 +1273,17 @@ void readAxes(Plot& plot, const QList<Token>& tokens, const QList<HLine>& shortV
     for (const bool xAxis : {true, false}) {
         Axis best;
         int bestCount = -1;
+        // (In a picture a steep curve is a long run too: a grid line there runs
+        // the whole frame.)
+        const double gridSpan = plot.route == QLatin1String("raster") ? 0.92 : 0.5;
+        const QList<double> marksAt[2] = {marksOn(frame, xAxis, 0, xAxis ? shortV : shortH, xAxis ? longV : longH, gridSpan),
+                                          marksOn(frame, xAxis, 1, xAxis ? shortV : shortH, xAxis ? longV : longH, gridSpan)};
         for (const int side : {0, 1}) {
-            const QList<Token> labels = labelsOn(tokens, frame, xAxis, side);
-            const QList<double> marks = marksOn(frame, xAxis, side, xAxis ? shortV : shortH, xAxis ? longV : longH);
+            const QList<double> marks = marksAt[side];
+            QList<Token> labels = alignedLabels(labelsOn(tokens, frame, xAxis, side), marks, xAxis);
+            // Labels at the top (or the right) with no marks there, and marks
+            // at the bottom (or the left): a running header, a caption.
+            if (side == 1 && marks.size() < 2 && marksAt[0].size() >= 2) labels.clear();
             Axis axis;
             axis.side = side;
             fitAxisFrom(labels, marks, xAxis, &axis, 0);
@@ -1223,7 +1310,7 @@ void readAxes(Plot& plot, const QList<Token>& tokens, const QList<HLine>& shortV
             if (best.found && other.size() >= 2) {
                 Axis second;
                 second.side = best.side == 0 ? 1 : 0;
-                const QList<double> marks = marksOn(frame, xAxis, second.side, xAxis ? shortV : shortH, xAxis ? longV : longH);
+                const QList<double> marks = marksOn(frame, xAxis, second.side, xAxis ? shortV : shortH, xAxis ? longV : longH, gridSpan);
                 bool differs = fitAxisFrom(other, marks, xAxis, &second, 0) && second.ticks.size() != best.ticks.size();
                 for (int i = 0; second.found && !differs && i < second.ticks.size(); ++i)
                     differs = std::abs(second.ticks.at(i).value - best.ticks.at(i).value) > 1e-12 * std::abs(best.ticks.at(i).value);
@@ -1233,20 +1320,44 @@ void readAxes(Plot& plot, const QList<Token>& tokens, const QList<HLine>& shortV
                                            xAxis ? (best.side == 0 ? QStringLiteral("bottom") : QStringLiteral("top")) : (best.side == 0 ? QStringLiteral("left") : QStringLiteral("right")));
             }
         }
-        // A title: the words beyond the labels, on the side the labels are.
-        QStringList title;
-        for (const Token& t : tokens) {
-            if (t.numeric) continue;
-            const QPointF c = t.box.center();
-            if (xAxis) {
-                const double d = best.side == 0 ? c.y() - frame.bottom() : frame.top() - c.y();
-                if (d > 2 && d < 55 && c.x() > frame.left() && c.x() < frame.right()) title << t.text;
-            } else {
-                const double d = best.side == 0 ? frame.left() - c.x() : c.x() - frame.right();
-                if (d > 2 && d < 110 && c.y() > frame.top() && c.y() < frame.bottom()) title << t.text;
+        // A title: the first line of words beyond the labels, on their side -
+        // not the caption under it, nor a page's running header.
+        {
+            double far = 0;   // how far out the labels reach
+            for (const Token& t : labelsOn(tokens, frame, xAxis, best.side)) {
+                const double d = xAxis ? (best.side == 0 ? t.box.bottom() - frame.bottom() : frame.top() - t.box.top())
+                                       : (best.side == 0 ? frame.left() - t.box.left() : t.box.right() - frame.right());
+                far = std::max(far, d);
             }
+            QList<Token> words;
+            for (const Token& t : tokens) {
+                if (t.numeric) continue;
+                const QPointF c = t.box.center();
+                const double d = xAxis ? (best.side == 0 ? c.y() - frame.bottom() : frame.top() - c.y()) : (best.side == 0 ? frame.left() - c.x() : c.x() - frame.right());
+                const bool along = xAxis ? (c.x() > frame.left() && c.x() < frame.right()) : (c.y() > frame.top() && c.y() < frame.bottom());
+                if (along && d > std::max(2.0, far - 2) && d < far + (xAxis ? 22 : 30)) words << t;
+            }
+            // The nearest line of them.
+            std::sort(words.begin(), words.end(), [&](const Token& a, const Token& b) {
+                return xAxis ? std::abs(a.box.center().y() - frame.center().y()) < std::abs(b.box.center().y() - frame.center().y())
+                             : std::abs(a.box.center().x() - frame.center().x()) < std::abs(b.box.center().x() - frame.center().x());
+            });
+            QList<Token> line;
+            for (const Token& t : std::as_const(words)) {
+                if (line.isEmpty()) {
+                    line << t;
+                    continue;
+                }
+                const double off = xAxis ? std::abs(t.box.center().y() - line.first().box.center().y()) : std::abs(t.box.center().x() - line.first().box.center().x());
+                if (off <= 0.6 * std::max(4.0, xAxis ? line.first().box.height() : line.first().box.width())) line << t;
+            }
+            std::sort(line.begin(), line.end(), [&](const Token& a, const Token& b) { return xAxis ? a.box.left() < b.box.left() : a.box.bottom() > b.box.bottom(); });
+            QStringList title;
+            for (const Token& t : std::as_const(line)) title << t.text;
+            static const QRegularExpression caption(QStringLiteral("^(Fig\\.?|Figure|FIG\\.?|\\([a-z]\\))"));
+            if (!title.isEmpty() && caption.match(title.first()).hasMatch()) title.clear();
+            best.title = title.join(QLatin1Char(' ')).left(120);
         }
-        best.title = title.join(QLatin1Char(' ')).left(120);
         (xAxis ? plot.xAxis : plot.yAxis) = best;
     }
 }
@@ -1554,6 +1665,25 @@ Trust assess(const Plot& plot)
     axisCheck(plot.yAxis, QStringLiteral("y"));
     if (plot.angle != 0) t.reasons << tr("The scan is turned by %1°, set straight first.").arg(plot.angle, 0, 'f', 2);
     if (plot.series.isEmpty()) lower(0, tr("Nothing was extracted."));
+    // Precision is not all: many series, most of them scraps, are mostly
+    // junk - an inset's outlines, a legend, labels drawn as pictures.
+    {
+        QList<double> lengths;
+        for (const Series& s : plot.series) {
+            if (s.shape != Series::Shape::Line) continue;
+            double length = 0;
+            for (int k = 0; k + 1 < s.points.size(); ++k)
+                if (!s.breaks.contains(k + 1)) length += QLineF(s.points.at(k), s.points.at(k + 1)).length();
+            lengths << length;
+        }
+        const double longest = lengths.isEmpty() ? 0 : *std::max_element(lengths.begin(), lengths.end());
+        int scraps = 0;
+        for (const double l : std::as_const(lengths)) scraps += l < 0.1 * longest;
+        if (lengths.size() >= 4 && scraps * 2 >= lengths.size())
+            lower(0, tr("%1 of the %2 curves are scraps beside the longest: much of this may not be data. Look at the picture; 'exclude', 'colours' or 'seeds' narrow it.").arg(scraps).arg(lengths.size()));
+        else if (plot.series.size() > 10)
+            lower(1, tr("%1 series were found: more than most plots have. Look at the picture.").arg(plot.series.size()));
+    }
     int bridged = 0;
     double worstAgreement = 1;
     for (const Series& s : plot.series) {
@@ -1707,6 +1837,17 @@ void paintMarks(QPainter& painter, const Plot& plot, double ppp, int selectedSer
     painter.setPen(framePen);
     painter.setBrush(Qt::NoBrush);
     painter.drawPolyline(frame);
+    // Regions left out: hatched grey, so that what was not looked at shows.
+    {
+        QList<QRectF> regions = plot.exclude;
+        regions << plot.leftOut;
+        painter.setPen(QPen(QColor(120, 120, 120, 200), 1.0 * px, Qt::DotLine));
+        QBrush hatch(QColor(120, 120, 120, 110), Qt::BDiagPattern);
+        hatch.setTransform(QTransform::fromScale(px, px));
+        painter.setBrush(hatch);
+        for (const QRectF& r : std::as_const(regions)) painter.drawRect(r);
+        painter.setBrush(Qt::NoBrush);
+    }
     // The references: a cross each.
     const Calibration& c = plot.calibration;
     QPen refPen(QColor(230, 0, 180), 1.5 * px);
@@ -1852,6 +1993,13 @@ QJsonObject toJson(const Plot& plot)
     if (!plot.work.isIdentity())
         o.insert(QStringLiteral("work"), QJsonArray{plot.work.m11(), plot.work.m12(), plot.work.m21(), plot.work.m22(), plot.work.dx(), plot.work.dy()});
     if (plot.angle != 0) o.insert(QStringLiteral("angle"), plot.angle);
+    const auto rects = [](const QList<QRectF>& list) {
+        QJsonArray a;
+        for (const QRectF& r : list) a.append(QJsonArray{r.left(), r.top(), r.right(), r.bottom()});
+        return a;
+    };
+    if (!plot.exclude.isEmpty()) o.insert(QStringLiteral("exclude"), rects(plot.exclude));
+    if (!plot.leftOut.isEmpty()) o.insert(QStringLiteral("left_out"), rects(plot.leftOut));
     if (plot.renderScale > 0) o.insert(QStringLiteral("render_scale"), plot.renderScale);
     const Calibration& c = plot.calibration;
     QJsonArray refs;
@@ -1930,6 +2078,15 @@ bool fromJson(const QJsonObject& o, Plot* out, QString* why)
         }
         plot.work = QTransform(n[0], n[1], n[2], n[3], n[4], n[5]);
         if (!plot.work.isInvertible()) return fail(tr("A plot's turn is not a transform."));
+    }
+    for (const char* key : {"exclude", "left_out"}) {
+        const QJsonArray list = o.value(QLatin1String(key)).toArray();
+        if (list.size() > 1000) return fail(tr("A plot has too many regions left out."));
+        for (const QJsonValue& v : list) {
+            QRectF r;
+            if (!rectOf(v, &r)) return fail(tr("A region left out is not a rectangle."));
+            (key == std::string_view("exclude") ? plot.exclude : plot.leftOut) << r;
+        }
     }
     const double angle = o.value(QLatin1String("angle")).toDouble(0);
     if (std::isfinite(angle) && std::abs(angle) <= 360) plot.angle = angle;
@@ -2019,7 +2176,9 @@ bool saveSidecar(const QString& pdfFile, const QList<Plot>& plots, QString* why)
 {
     const QFileInfo info(pdfFile);
     const QString path = sidecarPath(pdfFile, true);
-    if (plots.isEmpty()) {
+    bool anyKept = false;
+    for (const Plot& p : plots) anyKept = anyKept || !p.transient;
+    if (!anyKept) {
         if (QFileInfo::exists(path) && !QFile::remove(path)) {
             if (why != nullptr) *why = tr("%1 could not be removed.").arg(QDir::toNativeSeparators(path));
             return false;
@@ -2027,7 +2186,8 @@ bool saveSidecar(const QString& pdfFile, const QList<Plot>& plots, QString* why)
         return true;
     }
     QJsonArray all;
-    for (const Plot& p : plots) all.append(toJson(p));
+    for (const Plot& p : plots)
+        if (!p.transient) all.append(toJson(p));
     const QJsonObject root{{QStringLiteral("format"), QStringLiteral("qucs-s plot digitizer")},
                            {QStringLiteral("version"), 1},
                            {QStringLiteral("pdf"), info.fileName()},

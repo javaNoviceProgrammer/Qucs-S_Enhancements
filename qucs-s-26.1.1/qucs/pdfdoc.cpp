@@ -1454,6 +1454,12 @@ void PdfDoc::showDigitized(int index)
     a_digitizer->selectPlot(index);
 }
 
+void PdfDoc::showTransient(const qucs_s::digitizer::Plot& plot)
+{
+    setDigitizerShown(true);
+    a_digitizer->addTransient(plot);
+}
+
 PdfDoc::~PdfDoc()
 {
     // The tool goes with its panel: the view lets go of it first.

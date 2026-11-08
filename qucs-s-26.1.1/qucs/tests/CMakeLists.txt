@@ -433,6 +433,7 @@ if(TARGET Qt6::Pdf AND QUCS_PDF_VIEWER)
     ${CMAKE_CURRENT_SOURCE_DIR}/../pdfvector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../plotdigitizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../plotdigitizer_trace.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../plotdigitizer_raster.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../zipfile.cpp)
   target_include_directories(test_plot_digitizer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
   target_compile_definitions(test_plot_digitizer PRIVATE QUCS_REPO_PDF="${CMAKE_CURRENT_SOURCE_DIR}/../python/qucs-py/test1dat.pdf")
