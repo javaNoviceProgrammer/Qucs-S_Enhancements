@@ -158,6 +158,9 @@ struct SolveOptions {
     /// A mode analysis's: those kept - an effective index above minNeff,
     /// a loss (of the power, 1/m) below maxAlpha.
     double minNeff = 0, maxAlpha = std::numeric_limits<double>::infinity();
+    /// A mode analysis's: its perfectly matched layers' own modes kept too,
+    /// as an eigenmode expansion wants them (its radiation's), not left out.
+    bool keepLayers = false;
     /// A mode analysis's mode chosen of those kept (the one shown, evaluated
     /// and lit by default): 0 the first (the highest effective index), 1
     /// the most in the domains tracked, 2 the most TE, 3 the most TM.

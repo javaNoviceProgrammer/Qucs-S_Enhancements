@@ -346,6 +346,8 @@ std::vector<Instance3> instances3(const Solutions3& set, bool all, int point, co
             QStringList label;
             if (swept) label << s.label;
             if (snapshot >= 0 && s.timeDependent) label << QStringLiteral("t = %1").arg(formatQuantity(in.time, Dim::of(0, 0, 1)));
+            if (snapshot >= 0 && s.spectral)
+                label << QStringLiteral("λ = %1").arg(formatQuantity(299792458.0 / s.snapshotFrequency(snapshot), Dim::length()));
             in.label = label.join(QLatin1String(", "));
         }
         out.push_back(in);
@@ -361,6 +363,22 @@ std::vector<Instance3> instances3(const Solutions3& set, bool all, int point, co
     const int p = point <= 0 || point > int(set.size()) ? int(set.size()) - 1 : point - 1;
     const Solution3& s = *set[std::size_t(p)];
     int snapshot = s.snapshotCount() > 0 ? s.snapshotCount() - 1 : -1;
+    if (!time.trimmed().isEmpty() && s.snapshotCount() > 0 && s.spectral) {
+        // (Over wavelengths: the one nearest a wavelength, or a frequency.)
+        QString why, whyHz;
+        const std::optional<double> lambda = evaluateConstant(time, s.parameters().scope, Dim::length(), &why);
+        const std::optional<double> f = lambda ? std::optional<double>(299792458.0 / *lambda)
+                                               : evaluateConstant(time, s.parameters().scope, Dim::of(0, 0, -1), &whyHz);
+        if (!f || !(*f > 0)) {
+            if (error) *error = QCoreApplication::translate("Results3", "the wavelength %1: %2").arg(time, why);
+            return out;
+        }
+        snapshot = 0;
+        for (int i = 1; i < s.snapshotCount(); ++i)
+            if (std::abs(s.snapshotFrequency(i) - *f) < std::abs(s.snapshotFrequency(snapshot) - *f)) snapshot = i;
+        add(p, snapshot);
+        return out;
+    }
     if (!time.trimmed().isEmpty() && s.snapshotCount() > 0) {
         QString why;
         const std::optional<double> t = evaluateConstant(time, s.parameters().scope, Dim::of(0, 0, 1), &why);

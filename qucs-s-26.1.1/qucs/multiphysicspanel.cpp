@@ -177,6 +177,8 @@ QIcon glyph(const QString& icon)
     } else if (icon == QLatin1String("frequency")) letters(QStringLiteral("f"), gray, true);
     else if (icon == QLatin1String("mode")) letters(QStringLiteral("β"), gray, true);
     else if (icon == QLatin1String("emw")) letters(QStringLiteral("emw"), dark ? QColor(240, 150, 210) : QColor(173, 20, 87), true);
+    else if (icon == QLatin1String("eme")) letters(QStringLiteral("eme"), dark ? QColor(240, 150, 210) : QColor(173, 20, 87), true);
+    else if (icon == QLatin1String("wavelength")) letters(QStringLiteral("λ"), gray, true);
     else if (icon == QLatin1String("ewfd")) {
         // A wave.
         p.setPen(QPen(dark ? QColor(240, 150, 210) : QColor(173, 20, 87), 1.6));
@@ -2496,7 +2498,9 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
     }
     if (node.type == QLatin1String("component"))
         for (const QString& type : physicsTypes())
-            if (const NodeKind* pk = nodeKind(type)) action(tr("Add %1").arg(pk->title), "mpAddPhysics", [this, tag, type] { addNode(tag, type); });
+            // (A 3D model's alone - an eigenmode expansion's - not offered here.)
+            if (const NodeKind* pk = nodeKind(type); pk && (pk->spaces & Spaces::TwoD))
+                action(tr("Add %1").arg(pk->title), "mpAddPhysics", [this, tag, type] { addNode(tag, type); });
     row->addStretch(1);
     layout->addLayout(row);
 }

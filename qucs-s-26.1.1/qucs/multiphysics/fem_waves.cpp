@@ -187,6 +187,10 @@ public:
     /// stretching a cylinder's - r̃ = ∫ s_r, Λ = ((r̃/r) s_z/s_r, (r̃/r)
     /// s_r/s_z, (r/r̃) s_r s_z) along r, z, φ.
     bool cylindrical = false;
+    /// A bend's cross-section (a mode analysis's Bend radius): its axis at
+    /// x = bendCenter (m), β taken along the arc of radius bendRadius (m);
+    /// 0: straight.
+    double bendRadius = 0, bendCenter = 0;
 
     /// What is said where an index is taken at \a omega outside where its
     /// material holds it - each material once.
@@ -507,6 +511,21 @@ public:
                     out.mu[k] *= f[k];
                     out.eps[k] = out.epsT[k][k];
                 }
+            }
+        }
+        if (bendRadius > 0) {
+            // A bend's cross-section, transformed: its plane's x the distance
+            // ρ = |x - centre| from the bend's axis, z along the arc of radius
+            // R (β of e^-jβs, s = Rφ): ε' = f ε c c with c = (1, 1, 1/f), µ'
+            // alike, f = ρ/R - as a straight guide's of these media.
+            const double rho = std::abs(e.point().x() - bendCenter);
+            const double f = std::max(rho, 1e-300) / bendRadius;
+            const double c[3] = {1, 1, 1 / f};
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) out.epsT[i][j] *= f * c[i] * c[j];
+            for (int k = 0; k < 3; ++k) {
+                out.mu[k] *= f * c[k] * c[k];
+                out.eps[k] = out.epsT[k][k];
             }
         }
         const double scale = std::abs(out.eps[0]) + std::abs(out.eps[1]) + std::abs(out.eps[2]);
@@ -1167,6 +1186,23 @@ bool ModeProblem::setup(QString* error)
     for (int d : domains) f.domains[std::size_t(d)] = 1;
     if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
     a_media.setup(a_s, *a_node, f.domains, materials(), mediaHooks());
+    // A bend's: its radius and its axis's x (the geometry's unit; the axis
+    // at -R where not given).
+    a_media.bendRadius = 0;
+    if (const QString radius = a_node->text(QStringLiteral("bendradius")).trimmed(); !radius.isEmpty()) {
+        Expression::Options inUnit;
+        inUnit.lengthUnit = a_s.mesh().unitScale;
+        inUnit.numbersAreLengths = true;
+        const Expression R = Expression::compile(radius, a_s.parameters().scope, inUnit);
+        const QString centre = a_node->text(QStringLiteral("bendcenter")).trimmed();
+        const Expression C = Expression::compile(centre.isEmpty() ? QStringLiteral("0") : centre, a_s.parameters().scope, inUnit);
+        if (!R.isValid() || !R.isConstant() || !(R.constant() > 0)) problem(tr("%1: its bend radius: a length more than nought").arg(a_node->name()));
+        else if (!C.isValid() || !C.isConstant()) problem(tr("%1: its bend's axis: a constant").arg(a_node->name()));
+        else {
+            a_media.bendRadius = R.constant() * a_s.mesh().unitScale;
+            a_media.bendCenter = centre.isEmpty() ? -a_media.bendRadius : C.constant() * a_s.mesh().unitScale;
+        }
+    }
     a_electroabsorption = false;
     for (const Media::Domain& m : a_media.domains) a_electroabsorption = a_electroabsorption || (m.defined && m.electroabsorption);
     // For the variables: the index (its real part, as asked) by domain.
@@ -1433,6 +1469,8 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     // fields in the layers mostly) are left out.
     bool layers = false;
     for (std::size_t d = 0; d < a_media.domains.size(); ++d) layers = layers || (f.domains[d] && a_media.domains[d].pml);
+    // (Kept as they are where asked: an eigenmode expansion's basis.)
+    if (o.keepLayers) layers = false;
     const int wanted = std::max(1, count);
     // The share of a mode's |E|² in the layers.
     // A mode's share of |E|² in the domains \a in picks.

@@ -14,6 +14,7 @@
 #ifndef QUCS_FEM3_SOLVER_H
 #define QUCS_FEM3_SOLVER_H
 
+#include "fem3_eme.h"
 #include "fem3_estimate.h"
 #include "fem3_fe.h"
 #include "fem_expr.h"
@@ -101,6 +102,22 @@ public:
     std::vector<double> globalSeries(const QString& text, Dim* dim, QString* why) const;
     /// Its snapshots are of output times (a Time Dependent step's).
     bool timeDependent = false;
+    /// Its snapshots are of wavelengths (a Wavelength Domain step's), each of
+    /// its frequency (Hz).
+    bool spectral = false;
+    double snapshotFrequency(int i) const { return a_snapshots[std::size_t(i)].frequency; }
+    /// The frequency the globals are of (Hz; 0: none).
+    double frequency() const { return a_frequency; }
+    void setFrequency(double f) { a_frequency = f; }
+    /// An eigenmode expansion's results, by physics: its device as read, and
+    /// its S-parameters and ports' modes at each wavelength solved (the
+    /// snapshots' order).
+    struct Optics {
+        QString physics;
+        EmeDevice device;
+        std::vector<EmeResult> results;
+    };
+    std::vector<Optics> optics;
 
     /// The scope of point expressions: x, y, z, t, dom, the fields'
     /// variables.
@@ -166,6 +183,7 @@ private:
     std::vector<Field3> a_fields;
     std::vector<Coefficients> a_coefficients;
     double a_time = 0;
+    double a_frequency = 0;
     std::unique_ptr<Scope> a_pointScope, a_globalScope;
     std::vector<VariableDef> a_defs;
     struct Global {
@@ -177,6 +195,7 @@ private:
     QStringList a_globalOrder;
     struct Snapshot {
         double time = 0;
+        double frequency = 0;
         std::vector<std::vector<double>> values;                  // by field
         std::vector<std::vector<Field3::Terminal>> terminals;     // by field
         std::vector<std::vector<std::vector<double>>> matrices;   // by field
