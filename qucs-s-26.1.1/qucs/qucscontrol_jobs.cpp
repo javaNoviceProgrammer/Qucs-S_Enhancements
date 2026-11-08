@@ -22,7 +22,9 @@
 #include "qucs.h"
 #include "rf25doc.h"
 #include "simulationconsole.h"
+#include "simulationruns.h"
 
+#include <QComboBox>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -293,7 +295,11 @@ QucsDoc* QucsControl::jobDocument(quint64 number)
     const QString path = it->arguments.value(QLatin1String("path")).toString();
     if (path.isEmpty()) return nullptr;
     // (Its file, else - a path relative to a folder not known here - its name.)
-    const QList<QucsDoc*> documents = a_app->allDocuments();
+    QList<QucsDoc*> documents = a_app->allDocuments();
+    // (Kept running with its tab closed: still what it works on.)
+    if (const qucs_s::runs::Tracker* runs = a_app->runTracker())
+        for (QWidget* w : runs->parked())
+            if (auto* kept = dynamic_cast<QucsDoc*>(w)) documents << kept;
     for (const bool exact : {true, false})
         for (QucsDoc* doc : documents) {
             const QString name = doc->getDocName();
@@ -303,6 +309,28 @@ QucsDoc* QucsControl::jobDocument(quint64 number)
             }
         }
     return nullptr;
+}
+
+QString QucsControl::jobWorkingOn(QObject* document, quint64* caller)
+{
+    if (caller != nullptr) *caller = 0;
+    if (!a_jobs || document == nullptr) return {};
+    // (The newest first: a later call is the one that began this run.)
+    for (auto it = a_jobs->all.end(); it != a_jobs->all.begin();) {
+        --it;
+        if (it->queued) continue;
+        QucsDoc* doc = jobDocument(it.key());
+        if (doc == nullptr || dynamic_cast<QObject*>(doc) != document) continue;
+        if (caller != nullptr && *caller == 0) *caller = it->caller;
+        // A tool that follows its run, or a batch or script that waits on the
+        // calls in it: their job is the run's. (Any other - a menu action -
+        // ends before the run does: the run is a job of its own, Claude's.)
+        const bool waitsOnIt = it->tool == QLatin1String("batch") || it->tool == QLatin1String("run_script");
+        if (!isListedAtOnce(it->tool) && !waitsOnIt) continue;
+        listJob(it.key());
+        return it->id;
+    }
+    return {};
 }
 
 void QucsControl::jobAnswered(quint64 number, const QJsonObject& result)
@@ -474,12 +502,15 @@ void QucsControl::pollJobs()
         for (const Waiting& w : std::as_const(a_waiting))
             if (w.job == number) stoppableNow = true;
 
-        jobs::Registry::instance().update(it->id, [percent, said, stoppableNow](jobs::Job& job) {
+        const QString file = doc != nullptr ? doc->getDocName() : QString();
+        jobs::Registry::instance().update(it->id, [percent, said, stoppableNow, file](jobs::Job& job) {
             // (A later part may say nothing where an earlier said something:
             // what was said stands, as the last known.)
             if (percent >= 0) job.percent = percent;
             if (!said.isEmpty()) job.said = said;
             job.canStop = stoppableNow;
+            // (What it works on, for the window's Show.)
+            if (!file.isEmpty()) job.document = file;
         });
 
         // A solve followed past its answer: over when its document is free.
@@ -552,6 +583,9 @@ QJsonObject QucsControl::listBackgroundJobs(const QJsonObject& args)
         return errorResult(tr("'status' is all, going, over, or a job's status (queued, started, running, stopping, finished, failed, "
                               "stopped, lost): %1 is none of them. Nothing was listed.").arg(status));
     const bool mine = args.value(QLatin1String("mine")).toBool();
+    const QString by = args.value(QLatin1String("started_by")).toString().trimmed();
+    if (!by.isEmpty() && by != QLatin1String("any") && by != QLatin1String("user") && by != QLatin1String("claude"))
+        return errorResult(tr("'started_by' is any, user or claude: %1 is none of them. Nothing was listed.").arg(by));
     if (args.contains(QLatin1String("max")) && args.value(QLatin1String("max")).toInt(0) < 1)
         return errorResult(tr("'max' is how many at most, 1 or more. Nothing was listed."));
     const int most = args.value(QLatin1String("max")).toInt(50);
@@ -561,6 +595,7 @@ QJsonObject QucsControl::listBackgroundJobs(const QJsonObject& args)
     for (const jobs::Job& job : jobs::Registry::instance().jobs()) {
         jobs::isOver(job.status) ? ++over : ++going;
         if (mine && job.caller != caller) continue;
+        if ((by == QLatin1String("user") || by == QLatin1String("claude")) && jobs::startedBy(job) != by) continue;
         if (status == QLatin1String("going") ? jobs::isOver(job.status)
             : status == QLatin1String("over") ? !jobs::isOver(job.status)
             : !status.isEmpty() && status != QLatin1String("all") ? jobs::statusKey(job.status) != status
@@ -589,8 +624,11 @@ QJsonObject QucsControl::getBackgroundJob(const QJsonObject& args)
 
 QJsonObject QucsControl::showBackgroundJobs(const QJsonObject& args)
 {
-    Q_UNUSED(args);
     pollJobsIfAny();
+    const QString filter = args.value(QLatin1String("filter")).toString().trimmed();
+    static const QStringList filters{QStringLiteral("all"), QStringLiteral("simulations"), QStringLiteral("user"), QStringLiteral("claude")};
+    if (!filter.isEmpty() && !filters.contains(filter))
+        return errorResult(tr("'filter' is all, simulations, user or claude: %1 is none of them. The window was not opened.").arg(filter));
     QJsonArray list;
     const QList<jobs::Job> all = jobs::Registry::instance().jobs();
     int going = 0;
@@ -604,13 +642,20 @@ QJsonObject QucsControl::showBackgroundJobs(const QJsonObject& args)
         o.insert(QStringLiteral("note"), headlessNote());
         return jsonResult(o);
     }
-    const ClaudeJobsWindow* window = ClaudeJobsWindow::showWindow(a_app);
+    if (qucs_s::runs::Tracker* runs = a_app->runTracker()) runs->pollNow();
+    ClaudeJobsWindow* window = ClaudeJobsWindow::showWindow(a_app);
+    if (!filter.isEmpty())
+        window->setFilter(filter == QLatin1String("simulations") ? ClaudeJobsWindow::Simulations
+                          : filter == QLatin1String("user")      ? ClaudeJobsWindow::Yours
+                          : filter == QLatin1String("claude")    ? ClaudeJobsWindow::Claudes
+                                                                 : ClaudeJobsWindow::AllJobs);
     o.insert(QStringLiteral("shown"), window->isVisible());
     // (What can be known of it from here, as neither get_dialog nor screenshot
     // reads it.)
     o.insert(QStringLiteral("window"), QJsonObject{{QStringLiteral("title"), window->windowTitle()},
                                                    {QStringLiteral("active"), window->isActiveWindow()},
                                                    {QStringLiteral("rows"), window->table()->rowCount()},
+                                                   {QStringLiteral("filter"), window->filter()->currentText()},
                                                    {QStringLiteral("note"), tr("The user can stop a job or clear those over there.")}});
     return jsonResult(o);
 }
@@ -618,4 +663,7 @@ QJsonObject QucsControl::showBackgroundJobs(const QJsonObject& args)
 void QucsControl::pollJobsIfAny()
 {
     if (a_jobs && !a_jobs->all.isEmpty()) pollJobs();
+    // (And the user's runs, read now rather than at the next turn.)
+    if (!a_headless)
+        if (qucs_s::runs::Tracker* runs = a_app->runTracker()) runs->pollNow();
 }

@@ -121,6 +121,7 @@
 #include "dialogs/displaydialog.h"
 #include "extsimkernels/simulationrun.h"
 #include "simulationconsole.h"
+#include "simulationruns.h"
 #include "processconsole.h"
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
@@ -467,6 +468,7 @@ QucsApp::~QucsApp()
   // The focus moves about as the widgets go; not our concern any more
   // (and the slot must not run on a half-destroyed window).
   disconnect(qApp, &QApplication::focusChanged, this, nullptr);
+  endRuns();   // (likewise the jobs' signals, as the widgets that tell of jobs go: qucs_runs.cpp)
   Module::unregisterModules ();
 }
 
@@ -2961,6 +2963,11 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     return true;
   }
 
+  // Kept running with its tab closed: the same document back, with its run
+  // and its results - not a copy read from its file (qucs_runs.cpp).
+  if (a_runs != nullptr)
+    if (QWidget *kept = a_runs->parkedFile(Name)) return bringBackDocument(kept);
+
   QFileInfo Info(Name);
   // A pipe or a device with a document's name, as a project from anywhere can
   // hold: opening it would wait for ever, or never end.
@@ -3624,7 +3631,16 @@ void QucsApp::closeFile(int index)
       return;
     const QString closingName = Doc->getDocName();
     const bool closingSchematic = schematicIn(DocumentTab->widget(index)) != nullptr;
-    if(Doc->getDocChanged()) {
+    const QString closingTitle = DocumentTab->tabText(index).replace(QLatin1String("&&"), QLatin1String("&"));
+    // Still running: kept running without its tab, stopped, or not closed
+    // (qucs_runs.cpp). Kept, nothing is lost - its changes neither.
+    const RunningChoice running = askAboutRunning({Doc});
+    if (running == RunningChoice::Cancel) {
+      statusBar()->clearMessage();
+      return;
+    }
+    const bool keepRunning = running == RunningChoice::Keep;
+    if(Doc->getDocChanged() && !keepRunning) {
       switch(QMessageBox::warning(this,tr("Closing Qucs document"),
         tr("The document contains unsaved changes!\n")+
         tr("Do you want to save the changes before closing?"),
@@ -3647,16 +3663,21 @@ void QucsApp::closeFile(int index)
     // (A multiphysics model waited for - a tool waiting on its geometry,
     // built in the background, or on its solve, the window going on -: its
     // work stopped, let go once the wait is over, not deleted under it.)
-    if (auto *model = dynamic_cast<MultiphysicsDoc *>(Doc); model && model->beingWaitedFor())
+    if (keepRunning)
+      keepRunningWithoutTab(Doc, closingTitle);   // (its autosave copy kept: its changes are not saved)
+    else if (auto *model = dynamic_cast<MultiphysicsDoc *>(Doc); model && model->beingWaitedFor())
       model->closeWhenFree();
     else
       delete Doc;
-    misc::releaseFreedMemory();   // (its parts' memory, offered back to the system)
-    // Saved or discarded on purpose: the autosave copy is obsolete.
-    if (closingName.isEmpty())
-      qucs_s::autosave::removeUntitled(docIndex, closingSchematic);
-    else
-      qucs_s::autosave::remove(closingName);
+    if (!keepRunning) {
+      misc::releaseFreedMemory();   // (its parts' memory, offered back to the system)
+      // Saved or discarded on purpose: the autosave copy is obsolete.
+      if (closingName.isEmpty())
+        qucs_s::autosave::removeUntitled(docIndex, closingSchematic);
+      else
+        qucs_s::autosave::remove(closingName);
+      if (a_runs != nullptr) a_runs->noteClosed(closingName, closingTitle);   // (Reopen Closed Tab)
+    }
 
     if(pane->count() < 1) {        // if no document left ...
       if (panes().size() > 1) {    // ... the pane goes, a neighbour takes over
@@ -3684,10 +3705,22 @@ bool QucsApp::closeAllFiles(int exceptTab)
     return true;  // no documents to close
   }
 
+  // Those still running: kept running without their tabs (their changes
+  // kept with them, not asked about), stopped, or nothing closed.
+  QList<QucsDoc *> closing;
+  for (QucsDoc *doc : docs)
+    if (doc != docToKeep) closing << doc;
+  const RunningChoice running = askAboutRunning(closing);
+  if (running == RunningChoice::Cancel) return false;
+  QSet<QucsDoc *> keptRunning;
+  if (running == RunningChoice::Keep)
+    for (QucsDoc *doc : std::as_const(closing))
+      if (a_runs->isBusy(doc)) keptRunning.insert(doc);
+
   SaveDialog *sd = new SaveDialog(this);
   sd->setApp(this);
   for (QucsDoc *doc : docs)
-    if (doc->getDocChanged() && doc != docToKeep)
+    if (doc->getDocChanged() && doc != docToKeep && !keptRunning.contains(doc))
       sd->addUnsavedDoc(doc);
   int Result = SaveDialog::DontSave;
   if(!sd->isEmpty())
@@ -3708,7 +3741,16 @@ bool QucsApp::closeAllFiles(int exceptTab)
   // its own call has returned; the others as before.
   for (QucsDoc *doc : docs)
     if (doc != docToKeep) {
-      if (doc->inADialog()) documentWidget(doc)->deleteLater();
+      QWidget *w = documentWidget(doc);
+      ContextMenuTabWidget *pane = paneOf(w);
+      const QString title = pane != nullptr ? pane->tabText(pane->indexOf(w)).replace(QLatin1String("&&"), QLatin1String("&")) : QString();
+      if (keptRunning.contains(doc)) {
+        if (pane != nullptr) pane->removeTab(pane->indexOf(w));
+        keepRunningWithoutTab(doc, title);
+        continue;
+      }
+      if (a_runs != nullptr && !a_runs->quitting()) a_runs->noteClosed(doc->getDocName(), title);   // (Reopen Closed Tab)
+      if (doc->inADialog()) w->deleteLater();
       else delete doc;
     }
 
@@ -3749,9 +3791,24 @@ bool QucsApp::closeTabsRange(int startTab, int stopTab, int exceptTab)
   Q_ASSERT(startTab >= 0);
   Q_ASSERT(stopTab < DocumentTab->count());
 
+  // Those still running: kept running without their tabs, stopped, or
+  // nothing closed (as closeAllFiles()).
+  QList<QucsDoc *> closing;
+  for (int i = startTab; i <= stopTab; ++i)
+    if (getDoc(i) != docToKeep) closing << getDoc(i);
+  const RunningChoice running = askAboutRunning(closing);
+  if (running == RunningChoice::Cancel) {
+    delete sd;
+    return false;
+  }
+  QSet<QucsDoc *> keptRunning;
+  if (running == RunningChoice::Keep)
+    for (QucsDoc *doc : std::as_const(closing))
+      if (a_runs->isBusy(doc)) keptRunning.insert(doc);
+
   for(int i=startTab; i <= stopTab; ++i) {
     QucsDoc *doc = getDoc(i);
-    if ((doc->getDocChanged()) && (doc != docToKeep))
+    if ((doc->getDocChanged()) && (doc != docToKeep) && !keptRunning.contains(doc))
       sd->addUnsavedDoc(doc);
   }
   int Result = SaveDialog::DontSave;
@@ -3769,9 +3826,14 @@ bool QucsApp::closeTabsRange(int startTab, int stopTab, int exceptTab)
   int i = 0;
   do {
     doc = getDoc(startTab+i);
+    const QString title = DocumentTab->tabText(startTab + i).replace(QLatin1String("&&"), QLatin1String("&"));
     if (doc == docToKeep) {
       i++; // skip to next doc
+    } else if (keptRunning.contains(doc)) {
+      DocumentTab->removeTab(startTab + i);   // (the next comes to this index, as when one is deleted)
+      keepRunningWithoutTab(doc, title);
     } else {
+      if (a_runs != nullptr) a_runs->noteClosed(doc->getDocName(), title);   // (Reopen Closed Tab)
       delete doc;
     }
   } while (doc != stopDoc);
@@ -4699,9 +4761,17 @@ void QucsApp::slotFileQuit()
   slotHideEdit(); // disable text edit of component property
 
   saveSettings();
+  // Runs going: asked first (qucs_runs.cpp).
+  if (!confirmQuitWithRuns()) {
+    statusBar()->clearMessage();
+    return;
+  }
   if(closeAllFiles()) {
+    quitEnded(true);
     emit signalKillEmAll();   // kill all subprocesses
     qApp->quit();
+  } else {
+    quitEnded(false);
   }
 
   statusBar()->clearMessage();
@@ -4713,7 +4783,14 @@ void QucsApp::closeEvent(QCloseEvent* Event)
 {
    saveWorkspace();   // what is open, before it is closed
    saveSettings();
+   // Runs going: asked (qucs_runs.cpp). (After the workspace: a document
+   // kept without its tab, brought back for its save question, is no tab of it.)
+   if (!confirmQuitWithRuns()) {
+      Event->ignore();
+      return;
+   }
    if(closeAllFiles()) {
+      quitEnded(true);
       emit signalKillEmAll();   // kill all subprocesses
       Event->accept();
       // Quit only once this close event has been fully processed. Qt on
@@ -4726,8 +4803,10 @@ void QucsApp::closeEvent(QCloseEvent* Event)
       // session-end marker for the crash handler.
       QTimer::singleShot(0, qApp, &QCoreApplication::quit);
    }
-   else
+   else {
+      quitEnded(false);
       Event->ignore();
+   }
 }
 
 //-----------------------------------------------------------------
@@ -5112,6 +5191,7 @@ void QucsApp::slotSimulate(QWidget *w)
       return;
   }
 
+  if (a_runs != nullptr) a_runs->watchQucsatorRun(sim, w);   // (in the Jobs window)
   // to kill it before qucs ends
   connect(this, SIGNAL(signalKillEmAll()), sim, SLOT(slotClose()));
 }
@@ -5174,10 +5254,13 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
   // Is the page still open? DocWidget is a QPointer and goes null when
   // the document is destroyed.
   QWidget *w = sim->DocWidget;
+  // Kept running with its tab closed: its results loaded, nothing opened or
+  // switched to for it (qucs_runs.cpp).
+  const bool keptWithoutTab = a_runs != nullptr && w != nullptr && a_runs->isParked(w);
 
   if(sim->showBias == 0) {  // paint dc bias into schematic ?
     sim->slotClose();   // close and delete simulation window
-    if(w) {  // schematic still open ?
+    if(w && !keptWithoutTab) {  // schematic still open ?
       SweepDialog *Dia = new SweepDialog(sim->schematicDoc());
 
       // silence warning about unused variable.
@@ -5190,7 +5273,7 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
       octave->startOctave();
       octave->runOctaveScript(sim->Script);
     }
-    if(sim->SimOpenDpl) {
+    if(sim->SimOpenDpl && !keptWithoutTab) {
       // switch to data display
       if(sim->DataDisplay.right(2) == ".m" ||
         sim->DataDisplay.right(4) == ".oct") {  // Is it an Octave script?
@@ -5204,9 +5287,11 @@ void QucsApp::slotAfterSimulation(int Status, SimMessage *sim)
     else {
         if(w) {
             if(!isTextDocument (sim->DocWidget)) {
-                int idx = Category::getModulesNr (QObject::tr("diagrams"));
-                CompChoose->setCurrentIndex(idx);   // switch to diagrams
-                slotSetCompView (idx);
+                if (!keptWithoutTab) {
+                  int idx = Category::getModulesNr (QObject::tr("diagrams"));
+                  CompChoose->setCurrentIndex(idx);   // switch to diagrams
+                  slotSetCompView (idx);
+                }
                 // load recent simulation data (if document is still open)
                 if (Schematic *sch = sim->schematicDoc()) sch->reloadGraphs();
             }
@@ -6637,6 +6722,7 @@ void QucsApp::slotSimulateWithSpice()
         run->setOptimizationAllowed(!TuningMode && schematic->getShowBias() != 0);
         connect(run, &SimulationRun::simulated, this, &QucsApp::slotAfterSpiceSimulation);
         a_status->watchRun(run, schematic->getDocName());
+        if (a_runs != nullptr) a_runs->watchSpiceRun(run, schematic);   // (in the Jobs window)
         run->start();
         simConsole->runLegacyWindow();   // legacy mode: modal until closed
     }
@@ -6787,7 +6873,10 @@ void QucsApp::slotAfterSpiceSimulation(SimulationRun *run)
         simConsole->showConsole();
         return;
     }
-    if (run->wasSimulated()) {
+    // Kept running with its tab closed: its graphs and scripts as ever, but
+    // no data page opened, no palette switched for it (qucs_runs.cpp).
+    const bool keptWithoutTab = a_runs != nullptr && a_runs->isParked(sch);
+    if (run->wasSimulated() && !keptWithoutTab) {
         if(sch->getSimOpenDpl()) {
             if (sch->getShowBias() < 1) {
                 if (!TuningMode) {
@@ -6807,7 +6896,7 @@ void QucsApp::slotAfterSpiceSimulation(SimulationRun *run)
 
     // A DC bias run: the operating point of its devices on the tab (not
     // brought up - the labels on the schematic are what was asked for).
-    if (run->wasSimulated() && sch->getShowBias() > 0)
+    if (run->wasSimulated() && sch->getShowBias() > 0 && !keptWithoutTab)
         messageDock->showOperatingPoint(sch, false);
 
     sch->reloadGraphs();

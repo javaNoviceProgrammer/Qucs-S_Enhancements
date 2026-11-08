@@ -1508,6 +1508,8 @@ void QucsApp::initToolBar() {
 
   // Python, after them: shown while a Python script is in front.
   initPythonToolbar();
+  // Running Jobs and Reopen Closed Tab, with their menu items (qucs_runs.cpp).
+  initRuns();
 
   fileToolbar->setObjectName("fileToolbar");
   editToolbar->setObjectName("editToolbar");
@@ -1527,7 +1529,7 @@ bool QucsApp::toolbarsLocked() const {
 }
 
 QList<QToolBar *> QucsApp::toolbars() const {
-  return {fileToolbar, editToolbar, viewToolbar, workToolbar, simulateToolbar, hierarchyToolbar, pythonToolbar};
+  return {fileToolbar, editToolbar, viewToolbar, workToolbar, simulateToolbar, hierarchyToolbar, pythonToolbar, runsToolbar};
 }
 
 void QucsApp::setToolbarsLocked(bool locked) {

@@ -124,6 +124,10 @@ public:
     bool geometryBeingBuilt() const { return a_build && a_buildWhole; }
     /// A geometry, or a flow's step's state, being built in the background.
     bool building() const { return a_build != nullptr; }
+    /// Whether what is built in the background is waited for - a Compute or a
+    /// Build Mesh asked for, to start once it is - rather than only shown or
+    /// made again after an edit (the Jobs window's runs, simulationruns.h).
+    bool buildAwaited() const { return a_build != nullptr && !a_afterBuild.empty(); }
     std::shared_ptr<const qucs_s::fem::Mesh> mesh() const { return a_mesh; }
     bool meshStale() const { return a_meshStale || a_geometryStale; }
     /// The solution of study \a study (empty: the first) - its sweep's last

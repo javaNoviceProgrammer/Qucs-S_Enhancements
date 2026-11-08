@@ -12,6 +12,9 @@
  * (at your option) any later version.
  */
 #include "statusbar.h"
+
+#include "claudejobs.h"
+#include "simulationruns.h"
 #include "gitui.h"
 
 #include "apptheme.h"
@@ -693,6 +696,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_zoom = makeChip(a_row, "statusZoom");
     a_problems = makeChip(a_row, "statusProblems");
     a_run = makeChip(a_row, "statusRun");
+    a_jobs = makeChip(a_row, "statusJobs");
     a_simulator = makeChip(a_row, "statusSimulator");
     a_git = makeChip(a_row, "statusGit");
     a_saved = makeChip(a_row, "statusSaved");
@@ -713,6 +717,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
     a_row->add(a_zoom, 4);
     a_row->add(a_problems, 1);
     a_row->add(a_run, 0);
+    a_row->add(a_jobs, 0);
     a_row->add(a_simulator, 6);
     a_row->add(a_git, 5);
     a_row->add(a_saved, 7);
@@ -755,6 +760,7 @@ StatusPanel::StatusPanel(QucsApp* app) : QObject(app), a_app(app)
         if (a_runExternal) a_app->simulationConsole()->showConsole();
         else a_app->slotShowLastMsg();
     });
+    connect(a_jobs, &QToolButton::clicked, this, [this] { a_app->showRunningJobs(); });
     connect(a_simulator, &QToolButton::clicked, this, [this] { popUp(a_simulator, simulatorMenu()); });
     connect(a_saved, &QToolButton::clicked, this, [this] {
         QucsDoc* doc = a_app->getDoc();
@@ -925,6 +931,7 @@ void StatusPanel::refresh()
         a_row->setWanted(a_readout, false);
     }
     updateRun();
+    updateJobs();
     updateSimulator();
     updateSaved();
     updateGit();
@@ -1464,6 +1471,43 @@ void StatusPanel::updateRun()
         a_run->setToolTip(tr("The simulation of %1 was stopped.").arg(document) + QLatin1Char('\n') + console);
         break;
     }
+}
+
+void StatusPanel::jobsChanged()
+{
+    updateJobs();
+    a_row->fit();
+}
+
+void StatusPanel::updateJobs()
+{
+    // What runs now - every simulation and solve, the user's and Claude's,
+    // and Claude's other jobs -, and the documents kept with their tab closed.
+    int going = 0, mine = 0;
+    QStringList lines;
+    for (const qucs_s::claude::jobs::Job& job : qucs_s::claude::jobs::Registry::instance().jobs()) {
+        if (qucs_s::claude::jobs::isOver(job.status)) continue;
+        ++going;
+        if (qucs_s::claude::jobs::startedBy(job) == QLatin1String("user")) ++mine;
+        if (lines.size() < 8)
+            lines << (job.percent >= 0 ? QStringLiteral("%1  (%2 %)").arg(job.name).arg(job.percent) : job.name);
+    }
+    const qucs_s::runs::Tracker* runs = a_app->runTracker();
+    const int kept = runs != nullptr ? int(runs->parked().size()) : 0;
+    a_row->setWanted(a_jobs, going > 0 || kept > 0);
+    if (going == 0 && kept == 0) return;
+    QString tip;
+    if (going > 0) {
+        setChip(a_jobs, plural(going, "1 running", "%1 running"), Tone::Busy);
+        tip = lines.join(QLatin1Char('\n'));
+        if (going > lines.size()) tip += QLatin1Char('\n') + tr("and %1 more").arg(going - lines.size());
+        if (mine < going) tip += QLatin1Char('\n') + tr("(%1 of them Claude's)").arg(going - mine);
+    } else {
+        setChip(a_jobs, plural(kept, "1 kept in the background", "%1 kept in the background"), Tone::Ok);
+    }
+    if (kept > 0) tip += (tip.isEmpty() ? QString() : QStringLiteral("\n")) + tr("%n document(s) kept with the tab closed", nullptr, kept);
+    tip += QLatin1Char('\n') + tr("Click to show the Jobs window");
+    a_jobs->setToolTip(tip);
 }
 
 // ----------------------------------------------------------------------

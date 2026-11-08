@@ -110,7 +110,7 @@ private slots:
         app.show();
         QVERIFY(QTest::qWaitForWindowExposed(&app));
 
-        QCOMPARE(app.toolbars().size(), 7);   // (the Python one's too, shown for a script)
+        QCOMPARE(app.toolbars().size(), 8);   // (the Python one's too, shown for a script, and Running Jobs)
         QAction* lock = app.findChild<QAction*>(QStringLiteral("lockToolbars"));
         QVERIFY(lock != nullptr);
         QVERIFY(lock->isCheckable());
@@ -202,8 +202,8 @@ private slots:
         QList<QAction*> items;
         for (QAction* a : menu->actions())
             if (!a->isSeparator()) items << a;
-        QCOMPARE(items.size(), 8);
-        for (int i = 0; i < 7; ++i) QCOMPARE(items.at(i), app.toolbars().at(i)->toggleViewAction());
+        QCOMPARE(items.size(), 9);
+        for (int i = 0; i < 8; ++i) QCOMPARE(items.at(i), app.toolbars().at(i)->toggleViewAction());
         QCOMPARE(items.last(), lock);
         // A toolbar hidden and shown again from there.
         QToolBar* simulate = app.findChild<QToolBar*>(QStringLiteral("simulateToolbar"));

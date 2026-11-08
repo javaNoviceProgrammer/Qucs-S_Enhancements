@@ -229,6 +229,12 @@ public:
     /// keys (ms, 500): 0 gives them before it comes, as a loaded runner's
     /// does (tests).
     void setActivationWait(int ms) { a_activationWait = ms; }
+    /// The listed job of a call of Claude's that follows the work on
+    /// \a document now (simulate, fem_solve, fem_build, fem_converge,
+    /// rf25_solve, tune), its id; empty: none. \a caller, given, is set to the
+    /// conversation of any call under way on it (0: none). For the Jobs
+    /// window's runs (simulationruns.h): a run is not listed twice.
+    QString jobWorkingOn(QObject* document, quint64* caller = nullptr);
 
 protected:
     /// A message box that opens while a tool call runs (one no one would
