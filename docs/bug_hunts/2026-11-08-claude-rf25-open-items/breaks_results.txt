@@ -1,4 +1,4 @@
-# Each break's last run (breaks.py; earlier runs of a break whose test was then strengthened are not kept).
+# Each break's last run (breaks.py; earlier runs of a break whose test was then strengthened, or written wrong, are not kept).
 B6-never-waited-for: CAUGHT: FAIL!  : TestQucsControl::anRf25ModelClosedWhileItsSolveIsWaitedForIsLeftAlone() 'failed(solved) && text(solved).contains(QStringLiteral("was closed"))' returned FALSE. (It is still solving after 300 s ...)
 B1-union-no-join: CAUGHT: FAIL!  : TestRf25Layout::shapesTouchingAlongAnEdgeAreOneShape() Compared values are not the same
 B1-touch-test-blind: CAUGHT: FAIL!  : TestRf25Layout::shapesTouchingAlongAnEdgeAreOneShape() Compared values are not the same
@@ -24,3 +24,20 @@ B3-no-progress: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsR
 B3-no-near-miss: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'near.ok() && near.warnings.size() == 1 && near.warnings.first().contains(QStringLiteral("near its limit"))' returned FALSE. ()
 B3-short-is-failure: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'shortOf.ok() && shortOf.z.size() == 2' returned FALSE. (At 50 GHz the compressed solve did not converge: GMRES left a residual of 1.3e-05 after 12 iterati
 B3-warnings-not-gathered: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'near.ok() && near.warnings.size() == 1 && near.warnings.first().contains(QStringLiteral("near its limit"))' returned FALSE. ()
+B2-no-walls-full-wave: CAUGHT: FAIL!  : TestRf25Fullwave::theSideWallsChargeIsInAThickCombsCapacitance() 'std::abs(c1 - 31.8e-15) < 0.03 * 31.8e-15' returned FALSE. (25.6758)
+B2-no-walls-quasi-static: CAUGHT: FAIL!  : TestRf25Fullwave::theSideWallsChargeIsInAThickCombsCapacitance() 'std::abs(e.c.at(0).at(1) - capacitance(w3, 0, 1e9)) < 0.01 * e.c.at(0).at(1)' returned FALSE. (2.50123e-14 against 3.07185e-14)
+B2-excess-halved: CAUGHT: FAIL!  : TestRf25Mesh::theWallsAcrossANarrowGapAreItsCapacitance() 'std::abs(rf::wallExcess(1.0) - 0.3489) < 1e-9' returned FALSE. ()
+B2-thin-faces-kept: CAUGHT: FAIL!  : TestRf25Fullwave::theSideWallsChargeIsInAThickCombsCapacitance() 'std::abs(cf - cs) < 1e-3 * cs && std::abs(cf - 14.45e-15) < 0.01 * 14.45e-15' returned FALSE. (14.5797 14.3645)
+B2-not-nearest: CAUGHT: FAIL!  : TestRf25Mesh::theWallsAcrossANarrowGapAreItsCapacitance() 'std::abs(g.gap - 1e-6) < 1e-12' returned FALSE. (3e-06)
+B5-strip-warnings-dropped: CAUGHT: FAIL!  : TestRf25Deembed::aCalibrationSaysWhatItsStripsSolvesSaid() '!shortOf.warnings.isEmpty() && shortOf.warnings.first().contains(QStringLiteral("A calibration strip")) && shortOf.warnings.first().contains(QStringLit
+S-face-terminal-anywhere: CAUGHT: FAIL!  : TestRf25Returns::whatAPortThatNamesItsReturnsCannotBeIsSaid() Compared values are not the same
+S-overlap-unsaid: CAUGHT: FAIL!  : TestRf25Returns::whatAPortThatNamesItsReturnsCannotBeIsSaid() 'w.warnings.size() == 1 && w.warnings.first().contains(QStringLiteral("P1's return T7 is over cells that T1 is over too"))' returned FALSE. ()
+S-idle-terminal-unsaid: CAUGHT: FAIL!  : TestQucsControl::anRf25PortsReturnsAreNamedThroughTheTools() '!failed(solved) && text(solved).contains(QStringLiteral("T9 is named by no port's returns"))' returned FALSE. ({"checks":{"asymmetry":7.9082669233006
+S-dataset-equivalent: CAUGHT: FAIL!  : TestQucsControl::anRf25ModelIsSolvedFullWaveThroughItsTool() 'schText.contains("<DataSet=wave_part.dat>") && schText.contains("<DataDisplay=wave_part.dpl>")' returned FALSE. (<Qucs Schematic 27.0.8>
+S-at-a-time-unsaid: CAUGHT: FAIL!  : TestRf25Doc::aSolveShowsHowFarItHasGot() 'doc->solvingSaid().contains((QString(QtPrivate::qMakeStringPrivate(u"" " at a time, each counted as it ends"))))' returned FALSE. (Solving full-wave: 0 of 3 frequencies…
+B2-walls-are-joins: CAUGHT: FAIL!  : TestRf25Returns::aPortReturningThroughTheFacesBesideItIsTheCoplanarOne() 'a.ok() && b.ok()' returned FALSE. (P1's return T1 is next to the cells P1 drives: it would short the source. Put it apart from them - fur
+S-spin-words-unread: CAUGHT: FAIL!  : TestQucsControl::aSpinBoxsWordsAndSuffixAreReadAsItsValue() '!failed(automatic) && !text(automatic).contains(QStringLiteral("does not take")) && !text(automatic).contains(QStringLiteral("it took"))' returned FAL
+S-spin-suffix-compared: CAUGHT: FAIL!  : TestQucsControl::aSpinBoxsWordsAndSuffixAreReadAsItsValue() '!failed(number) && !text(number).contains(QStringLiteral("it took"))' returned FALSE. (Set: Held dense up to (it took 20000 runs and cells, not 20000)
+       |                                                                                                                ^
+1 warning and 5 errors generated.
+ninja: build stopped: subcommand failed.

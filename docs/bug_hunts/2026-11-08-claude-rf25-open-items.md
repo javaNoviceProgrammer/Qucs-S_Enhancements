@@ -1,10 +1,10 @@
-# Bug hunt: RF 2.5D's open items of 8 November, first batch
+# Bug hunt: RF 2.5D's open items of 8 November
 
 *8 November 2026 - on `main` at `719cd9ae`, in the worktree `claude/kind-goodall-0b21d2`. The items are the
 reviewer's `qucs-reviews/RF2p5D/2026-11-08-claude-rf25-open-items.md` (its sources in
-`archived/`, and `2026-11-08-claude-rf25-palace-benchmark.md`). This batch: B6, B1, B7, B2's warning, B4 and B3,
-each fixed with tests built from its acceptance criteria and broken in turn. Still open: B2's physics, B5, the
-accuracy items, the small items, the feature plans and the two QFEM findings' routing (end of this report).*
+`archived/`, and `2026-11-08-claude-rf25-palace-benchmark.md`). Two batches: the first (commit `2849717a`) B6, B1,
+B7, B2's warning, B4 and B3; the second B2's physics, B5, the small items, and the accuracy items and feature plans
+reported. Each fix has tests built from its acceptance criteria and was broken in turn.*
 
 The order was agreed with the user after the triage: B6, B1, B7, B2's warning, B4, B3, B2's physics, B5.
 
@@ -26,9 +26,12 @@ touching shapes (`b1.py`), the shorted coplanar line (`b7.py`), the line drawn i
 | **B2** (warning) | Thick metal in narrow gaps: no word that the walls' capacitance is missing | Nothing said on the comb (1 µm in 1 µm gaps) | Said at thickness/gap 1/4 and over, on both models |
 | **B4** | One cross-section, two meshes: cells sized from the whole conductor's 2A/P | The line in its pads 1.4 % (3 across) and 3.3 % (6 across) from the line alone by L-2L | Slanted shapes cut at their corners, each piece by its own width; the line's mesh the line alone's |
 | **B3** | GMRES stalls as the mesh is refined | Worse than reported: 10 and 12 across converge at no frequency | The near field's preconditioner a cell further; progress, a near miss and a sweep that goes on |
+| **B2** (physics) | The side walls' charge missing | The comb 25.7 fF against Palace's 31.8 | A capacitance between facing wall cells from a 2D solve: 31.40 fF, the rise 1.137; films solved as a sheet |
+| **B5** | The two-face CPW's εeff moving with the mesh | 2.3395 (6 across) and 2.4012 (12) | Was the compressed solve of the ports' calibration strips: 2.3521 and 2.3602 since B3; a strip's own warnings now said |
+| Small items | Seven of eleven | - | A face terminal off the metal refused, an idle terminal and overlapping returns said, the count at a time, datasets named, two `set_dialog` faults |
 
-Every rf25 suite and `test_qucs_control` pass in Release; the full suite, the rf25 suites under ASan/UBSan and the
-four lints are at the end.
+The accuracy items A1-A4 are modelling limits or not reproducible here, with numbers; F1-F6 are planned, not built.
+The checks of each batch are at the end.
 
 ## B6: the crash in a backgrounded `rf25_solve`
 
@@ -127,7 +130,7 @@ and εeff within 3 % of Palace, the ways within 1 %, the note; the contiguous ca
 `whatAPortThatNamesItsReturnsCannotBeIsSaid` (on its cells, next to them, apart), and `test_qucs_control`'s through
 the tool. Five breaks, all caught.
 
-## B2: the warning (the physics is the next batch)
+## B2: the warning (the physics: the second batch)
 
 The comb (`momcap.py`: 12 fingers, W = S = 1 µm, 40 µm overlap, oxide εr 4.1 from a perfect plane to 8 µm, metal
 bottom at 4 µm) reproduces the report within about 2 %: at 6 across, two faces 25.71 fF and the sheet 14.41 fF at 1
@@ -231,19 +234,156 @@ held short of its residual both frequencies solved and said near, S within 1e-3)
   90 and 100 GHz, continuing its curve. Sorting by nearness to neff, or following a mode by its field across a sweep,
   would answer the reviewer's runner.
 
-## Still open, the next batch
+## Second batch
 
-- **B2's physics:** the walls' charge. The plan, measured so far: a 2D field solve (`walls2d.py`) of two conductors
-  across a gap, solid against two faces with no walls, gives the excess per gap as h(t/S)·ε - 0.005, 0.016, 0.043,
-  0.118, 0.34 and 0.96 at t/S 1/16, 1/8, 1/4, 1/2, 1 and 2 at S/64 (the reviewer's comb implies 0.36 at 1) - to be
-  added as a lumped capacitance between facing wall cells: in the full wave a run of no length and no width (no
-  inductance, its own impedance 1/jωC), in the quasi-static solve between the two nets.
-- **B5**, the two-face CPW's εeff moving with the mesh: reproduced (2.3395 at 6 across, 2.4012 at 12 at 50 GHz,
-  the report's to the digit). Note: the thin line's εeff by L-2L moves too here, 2.387 (3 across) to 2.470 (6) at 10
-  GHz, against its quasi-static 2.40.
-- A1-A4, the small items, and the plans for F1-F6.
+### B2's physics: the side walls' charge
 
-## Checks of this batch
+**Fixed.** Neither the sheet nor the two faces held charge on a metal's side walls. Now, for a metal solved as its
+two faces, each wall along x or y faces the nearest wall across a gap no wider than 16 times the thickness. The
+two walls' edge cells get a capacitance between them (`wallGapsOf()`, `rf25_mesh.cpp`): the gap's length times
+ε0·εr times h(t/S). The εr is that of what fills the room beside the walls. h(t/S) is the excess a 2D solve finds
+of solid metal over its two faces with no walls (`walls2d.py`, finite differences at S/32 and S/64, extrapolated in
+the grid): 0.008, 0.020, 0.049, 0.126, 0.349, 0.981 and 2.60 at t/S 1/16, 1/8, 1/4, 1/2, 1, 2 and 4, as t/S squared
+below and nought under 1/32 (`wallExcess()`).
+- **The full wave:** each such capacitance is a run of its own after the vias, with no length, direction or
+  inductance and an impedance of 1/jωC. The dense and compressed solves take it as a run: its own impedance and its
+  charges, no kernel. It is said: "The side walls across their narrow gaps ...: 1483 capacitance(s) between facing
+  edge cells, 5.742 fF in all ...".
+- **The quasi-static solve:** the capacitance goes into the Maxwell matrix between the two nets. The vacuum matrix
+  takes it over εr, and the per-metre matrices take those gaps whose walls run along the line through its middle.
+  This happens after the lossy layers' derivatives, so a wall's field in a lossy layer is not in the loss.
+- **The thin limit:** two faces under 2 % of the layer's narrowest conductor's width (2·area/perimeter) are a film,
+  solved as a sheet and said. 0.01 µm on the comb's 1 µm fingers, as two faces, took GMRES 2492 iterations (the
+  small comb) or never converged (the reviewers' comb) and read 1.5 % over the sheet. A first try measured against
+  the finest cell instead turned 3 µm metal on 12.5 µm cells into a sheet and failed six tests; the conductor's
+  width is what decides whether a metal is a film.
+- B2's warning now says, for two faces, that the walls are in the answer from a 2D solve of straight walls; for a
+  sheet it keeps saying they are missing, and that two faces would have them. The `model` tooltip says the same.
+
+**Acceptance:**
+
+| | asked | found |
+|---|---|---|
+| The comb, 1 µm metal, 6 across | within 3 % of 31.8 fF | **31.40 fF (-1.3 %)** in the test, 31.44 through the tool; 3 across 30.84 (-3.0 %) |
+| C(100)/C(1) | within 1 % of 1.135 | **1.1368 (+0.2 %)**; at 100 GHz 35.70 fF against Palace's 36.1 (-1.1 %) |
+| The thin limit, 0.01 µm on two faces | the sheet's, not over 14.45 by 1 % | **14.365 fF, the sheet's 14.364**: -0.6 % from Palace's |
+| Quasi-static against full wave | - | 30.737 against 30.719 fF at 3 across |
+| 3 µm in 50 µm gaps keeps its 2-3 % | unchanged | 50 µm is past 16 thicknesses (48 µm): no wall added; in 40 µm gaps h is 0.0098, about a hundredth of ε per metre |
+| The endless comb, per gap | within 3 % of 74.3 pF/m | **not met as stated**: 67.1 pF/m (4 across, eight 40 µm strips, the middle strip's mutuals to its odd neighbours) |
+| The warning | at t/S 1, not at 3/50 | yes (first batch), reworded for two faces |
+
+On the endless comb: the same strips as thin sheets give 30.3 pF/m per gap, where the reviewer's finite-difference
+figure for thin metal is 36.3, and that figure is hard to square with Palace's own comb. Eleven gaps of 40 µm at
+36.3 pF/m are 16.0 fF before the fingers' tips and the buses, against Palace's 14.45 fF in all; RF 2.5D's 30.3 gives
+13.2 fF plus the ends, its 14.38 within 0.5 % of Palace. Read as thick over thin, the reviewer's ratio is 2.05 and
+RF 2.5D's 2.21 (+8 %): the 2D excess is of an isolated gap, where a comb's walls also face a second neighbour's.
+The finite comb, which Palace solved, is within 1.3 %.
+
+**Tests:** `test_rf25_mesh::theWallsAcrossANarrowGapAreItsCapacitance` (the table, three strips' two gaps of 40 µm
+each the closed form, nearest walls only, 3 µm in 40 µm about 0.01 ε, a sheet none);
+`test_rf25_fullwave::theSideWallsChargeIsInAThickCombsCapacitance` (the comb at 6 across, the rise, the
+quasi-static against the full wave at 3 across, the thin limit, both said). Seven breaks, all caught.
+
+### B5: the two-face line's εeff moving with the mesh
+
+**Cause, found:** the compressed solve, not the line. The CPW's ports are calibrated by strips of their feeds, 4.1,
+8.2 and 6.6 mm long, which at 12 across are past the dense limit and solved compressed. With the near field
+reaching half a box's side (main), GMRES on them crawled: this branch with `kNear` set back to 0.5 reads εeff
+2.4098 at 50 GHz in 601 s, and main read 2.4012 in 467 s. With the first batch's B3 change (`kNear` 1.5) the same
+model reads 2.3602 in 84 s (2.3514 with the walls turned off). The installed 27.0.8, whose RF 2.5D source is main's,
+gives 2.3514 in 54 s from the same copy of the model. So the path through the solver depended on something outside
+the source, most likely the RF 2.5D settings the app reads (the dense limit decides whether the strips go dense);
+that was not pinned down.
+
+**On this branch, 50 GHz** (copies of the Palace benchmark's models):
+
+| | 6 across | 12 across |
+|---|---|---|
+| `cmp500/rf25_cpw_c*` (2-100 GHz study), one length | 2.3521 | 2.3602 (+0.34 %) |
+| `rf25/cpw_auf_c*` (5-50 GHz), one length, 500 µm | 2.3527 | 2.3602 |
+| the same, L-2L 500 / 1000 µm | 2.3538 | 2.3612 |
+| Palace 2D / QFEM | 2.345 / 2.350 | |
+
+The walls add 0.38 % here (2 µm in 20 µm gaps, t/S 0.1). Z0 72.26 Ω at 12 across against QFEM's 70.44 and Palace
+2D's 70.35 (+2.6 %; 72.40 without walls): A1, below.
+
+**Also fixed:** a strip whose GMRES stops short of its residual (taken since the first batch, said in its own
+solve's warnings) was used by the calibration with nothing said. Its warnings are now the calibration's and the
+solve's ("A calibration strip 4100 µm long: At 50 GHz GMRES stopped short ..."):
+`test_rf25_deembed::aCalibrationSaysWhatItsStripsSolvesSaid`, one break, caught.
+
+**And a measurement caution found on the way:** εeff by L-2L from GSG tips 10 µm square on a thin line, at 3, 6, 9
+and 12 across, came out 2.387, 2.470, 2.437 and 2.382, not monotone. A tip covers a part of a cell whose length
+along the line changes with the mesh and with the line's length, so the two lengths' ends are not alike, which L-2L
+needs. Edge ports at the lines' ends (B5's models) do not have this, and B4's pairs compare like with like.
+
+### The small items
+
+| Item | Done |
+|---|---|
+| A face terminal on no conductor solved | **Fixed**: refused unless within a thousandth of the face found ("is on no face of M1"); it took the nearest face facing its way, however far |
+| A terminal nothing names solved without a word | **Fixed**: "T9 is named by no port's returns, so it does nothing in this solve." in the solve's notes |
+| Two returns over the same cells solved without a word | **Fixed**: "P1's return T7 is over cells that T1 is over too: ... those cells carry it twice." among the warnings |
+| The count sits at "0 of 11" when the frequencies run at once | **Fixed**: "Solving full-wave: 0 of 3 frequencies… 3 at a time, each counted as it ends." |
+| Every exported circuit's dataset `equivalent.dat` | **Fixed**: the schematic's own name (`wave_part.sch` → `wave_part.dat`, `.dpl`) |
+| `set_dialog`: "Held dense up to does not take Automatic", the dialog then reading Automatic | **Fixed** (`qucscontrol.cpp`, any spin box): a spin box takes its special value's words, and a word it cannot read sets nothing (it was set to nought, which read "Automatic") |
+| "it took 20000 runs and cells, not 20000" | **Fixed**: a spin box's value compared without its prefix and suffix |
+| `get_ui statusbar` does not see the bar | open: the bar is the RF 2.5D tab's own widget, not the main window's status bar |
+| Memory not given back after Stop (18.9 GB) | open: not reproduced here; `misc::releaseFreedMemory()` is called when a tab closes, not when a solve stops |
+| The RF 2.5D settings not among `get_settings`' keys | open: `get_settings` reads the general settings; the RF 2.5D ones are `RF25/lu`, `RF25/denseLimit`, `RF25/sweepMemory` |
+| `show_layout`'s overlays missing on the first call on a model just opened | open: not looked at in this batch |
+
+Tests: `test_rf25_returns::whatAPortThatNamesItsReturnsCannotBeIsSaid` (the face terminal, the overlap),
+`test_qucs_control::anRf25PortsReturnsAreNamedThroughTheTools` (the idle terminal),
+`anRf25ModelIsSolvedFullWaveThroughItsTool` (the dataset), `aSpinBoxsWordsAndSuffixAreReadAsItsValue` (new),
+`test_rf25_doc::aSolveShowsHowFarItHasGot` (at a time). Seven breaks, all caught.
+
+### The accuracy items: modelling limits, with numbers
+
+- **A1, Z0 high.** The two-face quartz CPW at 12 across reads 72.26 Ω (calibrated, 50 GHz) against QFEM's 70.44 and
+  Palace's 70.35 (+2.6 %), where εeff is within 0.5 %: C' is right and L' is high. As `47798dbc` found in its 2D
+  emulator, the walls carry no current in the two-face model: L comes out 3-6 % over, and current down half the wall
+  would mend it. The walls' charge (B2) does not touch L. The thin PEC line's quasi-static Z0 (75.71 / 75.03 / 74.70 Ω
+  at 6 / 12 / 24 across) halves its step at each doubling: first-order convergence, extrapolating to about 74.37 Ω,
+  +0.9 % over Palace's 73.72. That fits piecewise-constant charge against the edge singularity. Both are modelling
+  limits; the first is the open item of `47798dbc` (current on the walls).
+- **A2, thin-metal loss** -14 % against QFEM at 5-10 GHz on the plain CPW, -2 % at 60 GHz, within 10 % over 2-100 GHz
+  in comparison 1. This is the edge-crowding emulator's accuracy (`crowding()`, 8.6 % from its 2D solves on average,
+  `47798dbc`), a modelling limit.
+- **A3, loss through pads above 35 GHz:** not reproduced to a cause. B4 makes the line in its pads meshed as the line
+  alone, so what is left is the ends' own structures. On lossless metal (σ 1e12) the L-2L α of the pad pair at 30 GHz
+  is 3.7 dB/m at 3 across and 0.07 at 6, against the plain line's 0.75 and 0.31: noise of the same size as the
+  reviewer's 0.01-0.05 dB errors. The ground-path coupling the reviewer suspected (-45 dB) is a candidate this batch
+  did not test.
+- **A4, the bandstop filter's shift of 1.4-2.1 %:** not reproducible here; it needs a design that is
+  not on this machine. Of it, 0.35 % is the strip's εeff (the reviewer). Steps 3-4 of the Palace
+  benchmark would settle it.
+
+### The features: plans, smallest first (not built)
+
+1. **F6, the circuit fitted jointly on S** after the per-branch fit (about a day): a Levenberg-Marquardt pass over every
+   element at once, minimizing the rms of S over the sweep, starting from today's fit; kept only where it lowers the rms
+   (the reviewer's 0.010 against 0.022); its rms said beside the per-branch one. In `rf25_circuit.cpp`.
+2. **F5, `rf25_inductance` past the dense limit** (about a day): its loop solve on the compressed matrices of the full
+   wave's L (rf25_fast's H-matrices, GMRES with the near field's LU) instead of a dense LU; the same answer on a case both
+   can do.
+3. **F1 (1)-(3), mesh convergence** (two to three days): `rf25_converge` - solve at 3, 6, 12 (or given) across, each
+   value of interest (S at the ports, εeff, Z0, C), whether the changes shrink (a ratio under 0.7), and a Richardson
+   extrapolation only where they do - modelled on Multiphysics' `fem_converge` (its uniform method; the
+   mesh-convergence worktree's adaptive check for (4)); a mesh note in every solve with its finest and coarsest cell
+   against the narrowest width and gap present (B4 has the pieces' widths); the adaptive sweep option, which does
+   nothing, either hidden or made to work (rational fitting of S on a few frequencies, as Palace's adaptive sweep).
+4. **F2, a dielectric with a lateral end** (about a week): layers of finite extent need either a volume term for the
+   difference (a polarization current on cells of the cut layer) or a 2.5D-plus-boundary formulation. A smaller first
+   step: a finite ground plate is already possible as a conductor, which the reviewer used.
+5. **F3, GSG pad de-embedding and a multiline (TRL-style) calibration** (about a week): the strips' calibration
+   generalized to user-given standards (thru, line(s), reflect) solved by RF 2.5D, NIST multiline TRL on them, and its
+   error boxes taken out of the DUT's S; the pads' own box as the error.
+6. **F4, drawing shapes and vias in the tool** (one to two weeks): the RF 2.5D tab's layout view made editable -
+   rectangles, polygons, vias on a grid, written to the GDS beside the model -, reusing the layout editor's tools
+   where they fit; an MCP tool to add shapes as `rf25_` calls.
+
+## Checks of the first batch
 
 - Every rf25 suite and `test_qucs_control`, 18 of 18, in Release (after each fix, and on the final source).
 - The same 18 under ASan/UBSan: no sanitizer report; `test_rf25_wave` past its 300 s with the machine at a load of
@@ -254,3 +394,13 @@ held short of its residual both frequencies solved and said near, S within 1e-3)
 - No new compiler warning in the files changed (the changed `.cpp` files rebuilt; the warnings left are older lines).
 - 26 deliberate breaks, all caught: `breaks_results.txt`, made by `breaks.py` from the `breaks_*.json` beside this
   report (B6's run by hand: the same change).
+
+## Checks of the second batch
+
+- Every rf25 suite and `test_qucs_control`, 18 of 18, in Release on the final source.
+- The same 18 under ASan/UBSan: no sanitizer report; `test_rf25_wave` past its 300 s at a load of 45-58 from other
+  sessions, as in the first batch, and passing alone in 176 s.
+- The full Release suite: 181 of 181.
+- The four lints in `scripts/ci/`: green.
+- 16 more deliberate breaks, all caught; with the first batch's 26, 42 in `breaks_results.txt` (`breaks_b2.json`,
+  `breaks_b5.json`, `breaks_small.json`).

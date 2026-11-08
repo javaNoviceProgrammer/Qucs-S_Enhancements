@@ -345,6 +345,10 @@ struct FullWaveControl {
     /// "0 of 1 frequencies" for fifteen minutes said nothing of it).
     std::atomic_int* gmresIterations = nullptr;
     std::atomic<double>* gmresResidual = nullptr;
+    /// How many frequencies it solves at a time, once it knows: a sweep of
+    /// them all at once counts none done until they end together, which its
+    /// bar says (the review of 2 November, W1: "0 of 11" throughout).
+    std::atomic_int* atOnce = nullptr;
     /// Tests: the most GMRES iterations a port's compressed solve takes; 0:
     /// the build's own (3000). (Lower, a test meets the limit.)
     int mostIterations = 0;

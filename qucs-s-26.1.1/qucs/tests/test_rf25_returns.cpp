@@ -675,6 +675,17 @@ private slots:
         QCOMPARE(refused({portNamed(QStringLiteral("P7"))}, QStringLiteral("P1 returns through P7, and there is no port called that")), QString());
         QCOMPARE(refused({portNamed(QStringLiteral("P1"))}, QStringLiteral("P1 returns through itself")), QString());
         QCOMPARE(refused({ground, ground}, QStringLiteral("P1 names T1 twice among its returns")), QString());
+        // A face terminal far from any face: refused, not taken to the
+        // nearest face facing its way (the returns check of 4 November).
+        QCOMPARE(refused({face(QStringLiteral("T6"), QPointF(0, 900), QPointF(-1, 0))}, QStringLiteral("P1's return T6, at 0, 900 µm, is on no face of M1")),
+                 QString());
+        // Two returns over the same cells: solved, and said.
+        {
+            const rf::FullWave w = rf::fullWaveOf(mesh, line, open, {returning(p1, {ground, patch(QStringLiteral("T7"), QPointF(40, 125), 20)})}, {20e9});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            QVERIFY2(w.warnings.size() == 1 && w.warnings.first().contains(QStringLiteral("P1's return T7 is over cells that T1 is over too")),
+                     qPrintable(w.warnings.join(" | ")));
+        }
         QCOMPARE(refused({ground}, QStringLiteral("P1 returns through the terminals it names (T1), and its own discontinuity cannot be taken out"), true),
                  QString());
         // A plane is wanted by none of them, and one under the stack is no

@@ -177,12 +177,40 @@ struct Thickened {
     int walls = 0;                 ///< the walls' cells, which come last
     QHash<int, int> topOf;         ///< a bottom face's cell, and the same cell of its top
     QHash<int, int> bottomOf;      ///< and back
+    QHash<int, int> wallOn;        ///< each wall's cell, and the cell (its bottom face's) it stands on
     QStringList said;              ///< what was done, in words
     /// Whether \a layer of the stack is a metal's top face or its walls:
     /// what the solvers made and the caller did not.
     bool made(const QString& layer) const;
 };
 Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, const Mesh& mesh);
+
+/*!
+ * The charge on the side walls of a metal solved as its two faces, which
+ * neither face holds: across each narrow gap, a capacitance between the
+ * edge cells of the two walls that face each other (WallGap), what a 2D
+ * field solve of solid metal against its two faces alone leaves between
+ * walls of that thickness that far apart (wallExcess()). Walls along x or
+ * y, each with the nearest wall facing it across a gap no wider than
+ * sixteen times the metal's thickness (past which it is under a per cent of
+ * the gap's). \a micrometre is how many metres one unit of the mesh is.
+ */
+struct WallGap {
+    int a = -1, b = -1;   ///< the two edge cells, of the thickened mesh
+    double capacitance = 0;   ///< F
+    double gap = 0, length = 0;   ///< m
+    double epsr = 1;          ///< of what fills the gap
+    bool alongX = false;      ///< its walls run along x (else along y)
+    double lo = 0, hi = 0;    ///< where they face each other along them, the mesh's units
+};
+QList<WallGap> wallGapsOf(const Thickened& thick, double micrometre);
+/// The capacitance per length a gap of \a tau = thickness / gap between two
+/// metals' walls has beyond what their two faces alone hold, over the
+/// permittivity of what fills it: a 2D finite-difference solve of two
+/// conductors across a gap, solid against each as its two faces with no
+/// walls, extrapolated in its grid (docs/bug_hunts/
+/// 2026-11-08-claude-rf25-open-items/walls2d.py). Nought below 1/32.
+double wallExcess(double tau);
 
 } // namespace qucs_s::rf25
 

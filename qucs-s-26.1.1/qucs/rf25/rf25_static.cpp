@@ -490,7 +490,8 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, const QList<int>& signal
  * R from it at direct current is through the whole metal, as a sheet's is.
  */
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control);
+                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control,
+                         const QList<WallGap>& walls = {});
 
 } // namespace
 
@@ -520,7 +521,10 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     // them, which is what the rest solves (thickened()).
     const Thickened thick = thickened(stack, conductors, mesh);
     if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {}, returns, control);
-    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns, control);
+    // (And the side walls' charge across narrow gaps, which neither face
+    //  holds: wallGapsOf(), as the full wave has it.)
+    Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns, control,
+                                   wallGapsOf(thick, micrometre));
     out.lines = thick.said + out.lines;
     return out;
 }
@@ -528,7 +532,8 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
 namespace {
 
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control)
+                         const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control,
+                         const QList<WallGap>& walls)
 {
     Extraction out;
     // Stopped: said, and nothing more done.
@@ -1154,6 +1159,43 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                          "the full-wave solve's.");
         }
         out.lines << pm.said;
+    }
+    // The side walls' capacitance across narrow gaps between two nets
+    // (wallGapsOf()): the whole structure's, its vacuum's over the gap's
+    // permittivity, and per metre those whose walls run along the line
+    // through its middle - after the lossy layers' derivatives, which are of
+    // the faces' field alone (a wall's in a lossy layer is not in the loss).
+    // Left out, a MOM comb of 1 µm metal in 1 µm gaps read 19 % under its
+    // capacitance (B2 of the open items of 8 November).
+    if (!walls.isEmpty()) {
+        QHash<int, int> netOfCell;
+        for (int k = 0; k < n; ++k) netOfCell.insert(which.at(k), netOf.at(k));
+        const auto add = [](QList<QList<double>>& m, int a, int b, double c) {
+            if (a >= m.size() || b >= m.size()) return;
+            m[a][a] += c;
+            m[b][b] += c;
+            m[a][b] -= c;
+            m[b][a] -= c;
+        };
+        double total = 0;
+        int count = 0;
+        for (const WallGap& g : walls) {
+            const int a = netOfCell.value(g.a, -1), b = netOfCell.value(g.b, -1);
+            if (a < 0 || b < 0 || a == b) continue;
+            add(out.maxwell, a, b, g.capacitance);
+            add(out.maxwell0, a, b, g.capacitance / g.epsr);
+            total += g.capacitance;
+            ++count;
+            if (uniform && g.alongX == alongX && g.lo <= middle && middle < g.hi && g.length > 0) {
+                add(out.perMetre.maxwell, a, b, g.capacitance / g.length);
+                add(out.perMetre.maxwell0, a, b, g.capacitance / g.length / g.epsr);
+            }
+        }
+        if (count > 0)
+            out.lines << tr("The side walls across their narrow gaps: %1 capacitance(s) between facing edge cells of "
+                            "different conductors, %2 fF in all - the field between the walls that their two faces "
+                            "leave out, by a 2D solve of straight walls (corners and tips are taken as straight).")
+                             .arg(count).arg(total * 1e15, 0, 'g', 4);
     }
     // One net's own loss tangent, for a single line: its row of the loss
     // matrix over its row of the capacitance - of the line's middle where

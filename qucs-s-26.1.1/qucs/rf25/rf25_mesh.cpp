@@ -90,6 +90,9 @@ constexpr double kGapShare = 0.25;
 /// A metal's thickness, as a share of the narrowest gap beside it, from
 /// which the side walls' missing capacitance is said (meshOf()).
 constexpr double kThickBesideGap = 0.25;
+/// A metal solved as its two faces whose thickness is under this share of
+/// its narrowest conductor's width is solved as a sheet (thickened()).
+constexpr double kFacesApart = 0.02;
 
 QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh, double finestLow = 0,
                         double finestHigh = 0)
@@ -1077,12 +1080,19 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             if (metal == nullptr || metal->kind != Layer::Metal || !(metal->thickness > 0)) continue;
             const double t = metal->thickness / perUnit, gap = it.value();
             if (t < kThickBesideGap * gap) continue;
-            const QString w = tr("%1 is %2 µm thick beside gaps as narrow as %3 µm: the field between its side walls is "
-                                 "not in this answer - %4 - so the capacitance across its gaps reads low, by some 20 % "
-                                 "where it is as thick as the gap is wide.")
-                                  .arg(it.key()).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
-                                  .arg(metal->twoSheets ? tr("its two faces' walls carry no charge")
-                                                        : tr("a sheet has no walls"));
+            // (Solved as its two faces, the walls' charge is added as
+            //  capacitance between facing edges - wallGapsOf() - from a 2D
+            //  solve of straight walls, which is still an approximation.)
+            const QString w = metal->twoSheets
+                                  ? tr("%1 is %2 µm thick beside gaps as narrow as %3 µm: the field between its side walls "
+                                       "is in this answer as capacitances between facing edge cells, from a 2D solve of "
+                                       "straight walls - its corners, finger tips and slanted walls are taken as straight.")
+                                        .arg(it.key()).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
+                                  : tr("%1 is %2 µm thick beside gaps as narrow as %3 µm: the field between its side walls "
+                                       "is not in this answer - a sheet has no walls - so the capacitance across its gaps "
+                                       "reads low, by some 20 % where it is as thick as the gap is wide. Solved as its two "
+                                       "faces (the metal's Solved as), they are in it.")
+                                        .arg(it.key()).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3);
             mesh.warnings << w;
             mesh.lines << w;
         }
@@ -1152,6 +1162,32 @@ Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, cons
     QStringList metals;
     for (const Layer& l : stack.layers)
         if (l.kind == Layer::Metal && l.twoSheets && l.thickness > 0 && l.face == Layer::Whole) metals << l.name;
+    // A film - a metal under a fiftieth of its narrowest conductor's width
+    // (twice its area over its perimeter) - is one sheet, its thickness in
+    // its loss: two faces that close are a pair of sheets whose charges
+    // nearly the same potentials cannot tell apart - 0.01 µm on a comb's 1
+    // µm fingers took GMRES 2492 iterations at six across, and the reviewers'
+    // twelve-finger comb never converged, where the sheet it is in the limit
+    // solves in 22 (B2 of the open items of 8 November) -, and what they add
+    // to it is under a per cent.
+    for (qsizetype i = metals.size() - 1; i >= 0; --i) {
+        double narrowest = 0;
+        for (const Conductor& c : conductors) {
+            if (c.layer != metals.at(i)) continue;
+            const double around = perimeterOf(c.outline), width = around > 0 ? 2 * areaOf(c.outline) / around : 0;
+            if (width > 0 && (narrowest <= 0 || width < narrowest)) narrowest = width;
+        }
+        const Layer* l = stack.named(metals.at(i));
+        const double t = l->thickness * 1e6;   // µm, as the mesh
+        if (narrowest > 0 && t < kFacesApart * narrowest) {
+            out.said << tr("%1 is solved as a sheet, its thickness in its loss: %2 µm thick on conductors as narrow as %3 "
+                           "µm, it is a film, its two faces as good as one.")
+                            .arg(metals.at(i)).arg(t, 0, 'g', 3).arg(narrowest, 0, 'g', 3);
+            for (Layer& layer : out.stack.layers)
+                if (layer.name == metals.at(i)) layer.twoSheets = false;
+            metals.removeAt(i);
+        }
+    }
     if (metals.isEmpty()) return out;
     out.any = true;
 
@@ -1292,8 +1328,113 @@ Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, cons
             wall.centre = middle + in / 2;
             wall.area = length * 0.1 * deep;
             wall.onEdge = true;
+            out.wallOn.insert(int(out.mesh.cells.size()), c);
             out.mesh.cells << wall;
             ++out.walls;
+        }
+    }
+    return out;
+}
+
+
+double wallExcess(double tau)
+{
+    // (t / S, and the excess capacitance per length over eps: the 2D
+    //  solve's at S/32 and S/64, extrapolated linearly in the grid.)
+    static const double points[][2] = {{0.0625, 0.0080}, {0.125, 0.0203}, {0.25, 0.0492}, {0.5, 0.1258},
+                                       {1.0, 0.3489},    {2.0, 0.9806},   {4.0, 2.60}};
+    constexpr int n = int(sizeof(points) / sizeof(points[0]));
+    if (!(tau >= 1.0 / 32)) return 0;
+    if (tau <= points[0][0]) return points[0][1] * std::pow(tau / points[0][0], 2);   // (as tau squared, in the limit)
+    if (tau >= points[n - 1][0])
+        return points[n - 1][1] + (tau - points[n - 1][0]) * (points[n - 1][1] - points[n - 2][1]) / (points[n - 1][0] - points[n - 2][0]);
+    int i = 0;
+    while (points[i + 1][0] < tau) ++i;
+    const double f = std::log(tau / points[i][0]) / std::log(points[i + 1][0] / points[i][0]);
+    return std::exp(std::log(points[i][1]) + f * (std::log(points[i + 1][1]) - std::log(points[i][1])));
+}
+
+QList<WallGap> wallGapsOf(const Thickened& thick, double micrometre)
+{
+    QList<WallGap> out;
+    if (!thick.any || thick.wallOn.isEmpty()) return out;
+    const double perUnit = micrometre > 0 ? micrometre : 1e-6;
+    // Each wall: its metal, its side's line and extent, and which way it
+    // faces (0 +x, 1 -x, 2 +y, 3 -y).
+    struct Wall {
+        int cell, on;
+        QString metal;
+        int facing;
+        double line, lo, hi;
+    };
+    QHash<QString, QList<Wall>> byMetal;
+    for (auto it = thick.wallOn.constBegin(); it != thick.wallOn.constEnd(); ++it) {
+        const MeshCell& wall = thick.mesh.cells.at(it.key());
+        if (wall.outline.size() < 4) continue;
+        const QPointF a = wall.outline.at(0), b = wall.outline.at(1), in = wall.outline.at(2) - wall.outline.at(1);
+        const QPointF d = b - a;
+        const double len = std::hypot(d.x(), d.y());
+        if (!(len > 0)) continue;
+        const Layer* layer = thick.stack.named(wall.layer);
+        if (layer == nullptr) continue;
+        Wall w{it.key(), it.value(), layer->faceOf, -1, 0, 0, 0};
+        if (std::abs(d.y()) <= 1e-9 * len) {   // along x: facing +y or -y
+            w.facing = in.y() < 0 ? 2 : 3;
+            w.line = a.y();
+            w.lo = std::min(a.x(), b.x());
+            w.hi = std::max(a.x(), b.x());
+        } else if (std::abs(d.x()) <= 1e-9 * len) {   // along y: facing +x or -x
+            w.facing = in.x() < 0 ? 0 : 1;
+            w.line = a.x();
+            w.lo = std::min(a.y(), b.y());
+            w.hi = std::max(a.y(), b.y());
+        } else {
+            continue;   // (a slanted wall: none)
+        }
+        byMetal[w.metal] << w;
+    }
+    for (auto it = byMetal.constBegin(); it != byMetal.constEnd(); ++it) {
+        const Layer* metal = thick.stack.named(it.key());
+        if (metal == nullptr || !(metal->thickness > 0)) continue;
+        const double t = metal->thickness / perUnit;   // mesh units
+        // What fills the room beside the walls: the layer made for it.
+        double epsr = 1;
+        for (const Layer& l : thick.stack.layers)
+            if (l.kind == Layer::Dielectric && l.faceOf == it.key()) epsr = l.epsr;
+        const QList<Wall>& walls = it.value();
+        for (const int axis : {0, 2}) {
+            // Walls facing + on this axis, each with the nearest facing -.
+            QList<const Wall*> plus, minus;
+            for (const Wall& w : walls) {
+                if (w.facing == axis) plus << &w;
+                if (w.facing == axis + 1) minus << &w;
+            }
+            std::sort(minus.begin(), minus.end(), [](const Wall* x, const Wall* y) { return x->line < y->line; });
+            for (const Wall* p : std::as_const(plus)) {
+                const auto first = std::lower_bound(minus.begin(), minus.end(), p->line + 1e-9 * t,
+                                                    [](const Wall* w, double v) { return w->line < v; });
+                double nearest = -1;
+                for (auto m = first; m != minus.end() && (*m)->line - p->line <= 16 * t; ++m) {
+                    if (nearest >= 0 && (*m)->line > nearest + 1e-9 * t) break;
+                    const double overlap = std::min(p->hi, (*m)->hi) - std::max(p->lo, (*m)->lo);
+                    if (!(overlap > 1e-9 * t)) continue;
+                    nearest = (*m)->line;
+                    const double gap = (*m)->line - p->line;
+                    const double excess = wallExcess(t / gap);
+                    if (!(excess > 0)) continue;
+                    WallGap g;
+                    g.a = p->on;
+                    g.b = (*m)->on;
+                    g.gap = gap * perUnit;
+                    g.length = overlap * perUnit;
+                    g.capacitance = 8.8541878128e-12 * epsr * excess * g.length;   // (eps0)
+                    g.epsr = epsr;
+                    g.alongX = axis == 2;
+                    g.lo = std::max(p->lo, (*m)->lo);
+                    g.hi = std::min(p->hi, (*m)->hi);
+                    out << g;
+                }
+            }
         }
     }
     return out;

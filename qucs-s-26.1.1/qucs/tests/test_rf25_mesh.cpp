@@ -545,8 +545,9 @@ private slots:
         };
         for (const bool faces : {false, true}) {
             const QString one = warned(1, 1, faces);
-            QVERIFY2(one.contains(QStringLiteral("M1 is 1 µm thick beside gaps as narrow as 1 µm")) && one.contains(QStringLiteral("reads low"))
-                         && one.contains(faces ? QStringLiteral("walls carry no charge") : QStringLiteral("a sheet has no walls")),
+            QVERIFY2(one.contains(QStringLiteral("M1 is 1 µm thick beside gaps as narrow as 1 µm"))
+                         && (faces || one.contains(QStringLiteral("reads low")))
+                         && one.contains(faces ? QStringLiteral("as capacitances between facing edge cells") : QStringLiteral("a sheet has no walls")),
                      qPrintable(one));
             QVERIFY2(!warned(0.3, 1, faces).isEmpty(), "a quarter of the gap is said");
             QVERIFY2(warned(0.2, 1, faces).isEmpty(), qPrintable(warned(0.2, 1, faces)));
@@ -653,6 +654,67 @@ private slots:
             if (b.left() >= 2150 - 1e-9 && b.right() <= 2250 + 1e-9 && b.top() < -4000 && b.bottom() > -4000) ++acrossStub;
         }
         QVERIFY2(acrossStub >= 3, qPrintable(QString::number(acrossStub)));
+    }
+
+    // The charge on a two-face metal's side walls across a narrow gap, which
+    // neither face holds: a capacitance between facing edge cells, what a 2D
+    // solve of solid metal against its two faces leaves between walls that
+    // far apart - 0.349 eps per metre at thickness / gap 1, growing as the
+    // square of it below and nought under 1/32 (B2 of the open items of 8
+    // November: a MOM comb of 1 µm metal in 1 µm gaps 19 % under Palace's
+    // capacitance without it). Each wall with the nearest one facing it.
+    void theWallsAcrossANarrowGapAreItsCapacitance()
+    {
+        QVERIFY(std::abs(rf::wallExcess(1.0) - 0.3489) < 1e-9);
+        QCOMPARE(rf::wallExcess(0.02), 0.0);
+        double was = 0;
+        for (const double tau : {0.04, 0.0625, 0.1, 0.25, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0}) {
+            const double h = rf::wallExcess(tau);
+            QVERIFY2(h > was, qPrintable(QStringLiteral("%1 at %2").arg(h).arg(tau)));
+            was = h;
+        }
+        rf::Model m = stacked();
+        rf::Stack stack = m.stack();
+        double roomEps = 1;
+        for (rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("M1")) {
+                l.thickness = 1e-6;
+                l.twoSheets = true;
+            }
+        for (const rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("ILD2")) roomEps = l.epsr;
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        // Three strips 40 µm long, 1 µm wide, 1 µm apart: two gaps, each its
+        // walls' 40 µm; the outer two strips do not face each other.
+        const QList<rf::Conductor> strips = {on(QStringLiteral("M1"), 0, 0, 40, 1), on(QStringLiteral("M1"), 0, 2, 40, 1),
+                                             on(QStringLiteral("M1"), 0, 4, 40, 1)};
+        const rf::Mesh mesh = rf::meshOf(strips, how, stack, 100e9);
+        const rf::Thickened thick = rf::thickened(stack, strips, mesh);
+        QVERIFY(thick.any && !thick.wallOn.isEmpty());
+        const QList<rf::WallGap> gaps = rf::wallGapsOf(thick, 1e-6);
+        double total = 0, length = 0;
+        for (const rf::WallGap& g : gaps) {
+            QVERIFY2(std::abs(g.gap - 1e-6) < 1e-12, qPrintable(QString::number(g.gap)));
+            total += g.capacitance;
+            length += g.length;
+        }
+        QVERIFY2(std::abs(length - 80e-6) < 1e-12, qPrintable(QString::number(length)));
+        const double expected = 8.8541878128e-12 * roomEps * rf::wallExcess(1.0) * 80e-6;
+        QVERIFY2(std::abs(total - expected) < 1e-9 * expected, qPrintable(QStringLiteral("%1 against %2").arg(total).arg(expected)));
+        // 3 µm in 40 µm gaps: about a hundredth of eps per metre (past 16
+        // times the thickness, 48 µm here, none at all).
+        for (rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("M1")) l.thickness = 3e-6;
+        const QList<rf::Conductor> wide = {on(QStringLiteral("M1"), 0, 0, 400, 50), on(QStringLiteral("M1"), 0, 90, 400, 50)};
+        const rf::Thickened apart = rf::thickened(stack, wide, rf::meshOf(wide, how, stack, 30e9));
+        double far = 0;
+        for (const rf::WallGap& g : rf::wallGapsOf(apart, 1e-6)) far += g.capacitance;
+        QVERIFY2(far > 0 && far < 8.8541878128e-12 * roomEps * 0.02 * 400e-6, qPrintable(QString::number(far)));
+        // A sheet has no walls.
+        for (rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("M1")) l.twoSheets = false;
+        QVERIFY(rf::wallGapsOf(rf::thickened(stack, strips, mesh), 1e-6).isEmpty());
     }
 
     // As many across as asked - or as many as the solver takes, said: a

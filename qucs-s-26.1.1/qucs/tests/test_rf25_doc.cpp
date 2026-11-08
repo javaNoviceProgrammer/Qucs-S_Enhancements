@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QThread>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QFileDialog>
@@ -3223,6 +3224,11 @@ private slots:
         QTRY_VERIFY(bar->isVisible());
         QCOMPARE(bar->maximum(), 3);
         QCOMPARE(bar->value(), 0);
+        // Several at a time, none counted until it ends: said, so that a
+        // count standing at nought is not taken for a solve standing still
+        // (the review of 2 November, W1: "0 of 11" throughout).
+        if (QThread::idealThreadCount() > 1)
+            QTRY_VERIFY2(doc->solvingSaid().contains(QStringLiteral(" at a time, each counted as it ends")), qPrintable(doc->solvingSaid()));
         // (The solver's waits bounded by qWaitFor: a QTRY that fails waits
         //  twice as long again to say whether it would have passed later.)
         doc->allowFrequencies(1);

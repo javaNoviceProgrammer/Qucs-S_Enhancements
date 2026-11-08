@@ -204,9 +204,10 @@ QList<NodeKind> makeKinds()
                  QStringLiteral("sheet"),
                  tr("A sheet is quickest, and right where the metal is thin beside its gaps. Its two faces put its "
                     "thickness in the field too - its top face higher, what is beside its walls, and how its current "
-                    "shares its top and bottom - at twice its cells. Neither holds the charge on its side walls: in "
-                    "gaps as narrow as the metal is thick, the capacitance across them reads low (some 20 % where "
-                    "they are equal), and the solve says so."))},
+                    "shares its top and bottom - at twice its cells, and the charge on its side walls across narrow "
+                    "gaps, as capacitance between facing edges from a 2D solve of straight walls. A sheet has no walls: "
+                    "in gaps as narrow as the metal is thick its capacitance reads low (some 20 % where they are "
+                    "equal), and the solve says so."))},
          {}, {}, false, false, QStringLiteral("m"),
          tr("A metal layer. The layout's polygons on the layers mapped to it are its conductors; its name (the label) "
             "is what the layer map and the ports call it.")});
