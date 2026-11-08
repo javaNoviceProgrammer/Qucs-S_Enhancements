@@ -21,7 +21,9 @@
 #include <QFrame>
 #include <QImage>
 #include <QPointer>
+#include <QSet>
 
+#include <atomic>
 #include <memory>
 
 class QComboBox;
@@ -148,7 +150,16 @@ private:
     void eraseAt(QPointF pos);
     void relayout();
     void updateCurrent();
-    QImage drawn(int index, qreal scale, bool* fresh);
+    /// Slide \a index's \a piece (pixels) drawn \a scale pixels a point,
+    /// kept for the next paint.
+    QImage drawn(int index, qreal scale, const QRect& piece, bool* fresh);
+    static QString keyOf(int index, qreal scale, const QRect& piece);
+    /// What of a slide in sight at \a r (viewport) is drawn, \a full its
+    /// pixels: it whole, or the tiles in sight.
+    QList<QRect> piecesOf(const QRect& r, const QSize& full) const;
+    /// The pictures of the slides next to the one in sight decoded on
+    /// another thread, for drawing at \a scale.
+    void prefetch(qreal scale);
     QRectF contentRect(int index) const;   // in the content's pixels
 
     std::shared_ptr<const Presentation> a_presentation;
@@ -157,6 +168,7 @@ private:
     int a_current = 0;
     QSize a_content;
     QCache<QString, QImage> a_cache;
+    QSet<QString> a_prepared;   // the slides and scales prefetch() asked for
     int a_drawn = 0;
     bool a_relaying = false;
     bool a_pen = false;
@@ -319,6 +331,8 @@ private:
     void watch();
     void fillThumbnails();
     void renderSomeThumbnails();
+    /// Pixels a point a thumbnail is drawn at: the slide inside its icon.
+    qreal thumbnailScale() const;
     void updateSlideField();
     void updateZoomBox();
     void updateNotes();
@@ -334,6 +348,9 @@ private:
     QTimer* a_reloadTimer = nullptr;
     QTimer* a_thumbTimer = nullptr;
     int a_thumbsDone = 0;
+    /// Set when the thumbnails' pictures, being decoded on another thread,
+    /// are no longer wanted (the file read again, the tab closed).
+    std::shared_ptr<std::atomic<bool>> a_thumbsCancelled;
     QList<int> a_hits;   // the slides the search found
     int a_hit = -1;
     QPointer<qucs_s::pptx::SlideShow> a_show;

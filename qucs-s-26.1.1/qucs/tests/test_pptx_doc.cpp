@@ -24,10 +24,14 @@
 #include <QPainter>
 #include <QPdfWriter>
 #include <QPrinter>
+#include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTextBrowser>
+#include <QThreadPool>
+#include <QTimer>
 
 #include "config.h"
 #include "main.h"
@@ -45,7 +49,12 @@
 #include "isolated_settings.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+
+#ifdef Q_OS_MACOS
+#include <mach/mach.h>
+#endif
 
 using namespace qucs_s;
 namespace markup = qucs_s::markup;
@@ -308,6 +317,20 @@ std::pair<int, int> inkRows(const QImage& image, const QRectF& region, const QCo
     return {first, last};
 }
 
+/// The memory the process holds now, in MB (0 where it is not known).
+long residentMB()
+{
+#ifdef Q_OS_MACOS
+    mach_task_basic_info info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, task_info_t(&info), &count) == KERN_SUCCESS) return long(info.resident_size / (1024 * 1024));
+#elif defined(Q_OS_LINUX)
+    QFile statm(QStringLiteral("/proc/self/statm"));
+    if (statm.open(QIODevice::ReadOnly)) return statm.readAll().split(' ').value(1).toLong() * 4 / 1024;
+#endif
+    return 0;
+}
+
 QString str(const QColor& c)
 {
     return c.name();
@@ -339,6 +362,128 @@ private slots:
     }
 
     // Which files are presentations.
+    // The tab timed on decks of one's own (QUCS_PPTX_BENCH, separated by
+    // ';'): opening, the first slide shown, going from slide to slide,
+    // zooming, scrolling, the thumbnails, the memory. Each step painted
+    // there and then (repaint()), as the screen would show it.
+    void benchDecksGiven()
+    {
+        const QStringList files = qEnvironmentVariable("QUCS_PPTX_BENCH").split(QLatin1Char(';'), Qt::SkipEmptyParts);
+        if (files.isEmpty()) QSKIP("QUCS_PPTX_BENCH names decks to time");
+        for (const QString& file : files) {
+            QucsApp app(false);
+            MainGuard guard(&app);
+            app.resize(1400, 900);
+            app.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&app));
+            const long before = residentMB();
+            QElapsedTimer clock;
+            clock.start();
+            QVERIFY(app.gotoPage(file));
+            const qint64 openMs = clock.elapsed();
+            auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+            QVERIFY(doc != nullptr);
+            QWidget* port = doc->view()->viewport();
+            clock.restart();
+            port->repaint();
+            const qint64 firstMs = clock.elapsed();
+            const long opened = residentMB();
+            // The thumbnails: how long till all are drawn, and the longest
+            // the event loop was held meanwhile.
+            const int n = doc->slideCount();
+            QListWidget* thumbs = doc->thumbnails();
+            const QImage blank = thumbs->item(n - 1)->icon().pixmap(thumbs->iconSize()).toImage();
+            qint64 stall = 0;
+            QElapsedTimer beat;
+            beat.start();
+            QTimer ticker;
+            QObject::connect(&ticker, &QTimer::timeout, [&] {
+                stall = std::max(stall, beat.elapsed());
+                beat.restart();
+            });
+            ticker.start(5);
+            clock.restart();
+            while (clock.elapsed() < 120000 && thumbs->item(n - 1)->icon().pixmap(thumbs->iconSize()).toImage() == blank) QTest::qWait(10);
+            const qint64 thumbsMs = clock.elapsed();
+            ticker.stop();
+            // From slide to slide, each new to the view; then back to one seen.
+            qint64 switchAll = 0, switchWorst = 0;
+            const int steps = std::min(20, n - 1);
+            for (int k = 1; k <= steps; ++k) {
+                clock.restart();
+                doc->goToSlide(k * (n - 1) / std::max(1, steps));
+                port->repaint();
+                const qint64 ms = clock.elapsed();
+                switchAll += ms;
+                switchWorst = std::max(switchWorst, ms);
+            }
+            clock.restart();
+            doc->goToSlide(0);
+            port->repaint();
+            const qint64 backMs = clock.elapsed();
+            // On to the next slide, a person's pace apart (as the arrow keys
+            // are pressed): 15 steps from a slide not yet shown.
+            qint64 paceAll = 0, paceWorst = 0;
+            const int paced = std::min(15, n - 1);
+            doc->goToSlide(std::max(0, n / 2 - paced));
+            port->repaint();
+            QTest::qWait(120);
+            for (int k = 0; k < paced; ++k) {
+                clock.restart();
+                doc->nextSlide();
+                port->repaint();
+                const qint64 ms = clock.elapsed();
+                paceAll += ms;
+                paceWorst = std::max(paceWorst, ms);
+                QTest::qWait(120);
+            }
+            // Zoomed in step by step to 800 %, then out to 25 %.
+            qint64 zoomAll = 0, zoomWorst = 0;
+            int zooms = 0;
+            doc->goToSlide(std::min(1, n - 1));
+            doc->view()->setZoom(1);
+            port->repaint();
+            for (bool in : {true, false})
+                for (int k = 0; k < 7; ++k) {
+                    clock.restart();
+                    doc->view()->zoomStep(in);
+                    port->repaint();
+                    const qint64 ms = clock.elapsed();
+                    zoomAll += ms;
+                    zoomWorst = std::max(zoomWorst, ms);
+                    ++zooms;
+                }
+            // Scrolled at 800 % (what a hand on a trackpad does), and at the
+            // width of the view through the deck.
+            const auto scroll = [&](int by, int count) {
+                qint64 all = 0, worst = 0;
+                for (int k = 0; k < count; ++k) {
+                    clock.restart();
+                    doc->view()->verticalScrollBar()->setValue(doc->view()->verticalScrollBar()->value() + by);
+                    port->repaint();
+                    const qint64 ms = clock.elapsed();
+                    all += ms;
+                    worst = std::max(worst, ms);
+                }
+                return std::make_pair(all, worst);
+            };
+            doc->goToSlide(std::min(1, n - 1));
+            doc->view()->setZoom(8);
+            port->repaint();
+            const auto [deepAll, deepWorst] = scroll(60, 40);
+            doc->view()->setFit(pptx::SlideView::Fit::Width);
+            doc->goToSlide(0);
+            port->repaint();
+            const auto [wideAll, wideWorst] = scroll(150, 60);
+            qInfo("%s: %d slides, open %lld ms, first slide %lld ms, slide switch %lld ms average (%lld worst), back %lld ms, next slide at a person's pace %lld ms average (%lld worst), zoom %lld ms average (%lld "
+                  "worst), scroll at 800%% %lld ms a step (%lld worst), scroll at fit width %lld ms a step (%lld worst), thumbnails %lld ms (event loop held "
+                  "%lld ms at most), memory %ld MB opened, %ld MB at the end, dpr %.1f",
+                  qPrintable(QFileInfo(file).fileName()), n, openMs, firstMs, switchAll / std::max(1, steps), switchWorst, backMs, paceAll / std::max(1, paced), paceWorst, zoomAll / zooms, zoomWorst,
+                  deepAll / 40, deepWorst, wideAll / 60, wideWorst, thumbsMs, stall, opened - before, residentMB() - before, doc->devicePixelRatioF());
+            app.closeAllFiles();
+        }
+    }
+
     void presentationFiles()
     {
         for (const char* name : {"a.pptx", "b.PPTX", "c.pptm", "d.ppsx", "e.potx", "f.ppsm", "g.potm"}) QVERIFY2(pptx::isPresentationFile(QString::fromLatin1(name)), name);
@@ -1197,6 +1342,257 @@ private slots:
         }
     }
 
+    // An SVG picture as PowerPoint keeps it: a PNG as the blip's own
+    // picture, for readers that know no SVG, and the SVG in the blip's
+    // extension list (asvg:svgBlip) - or, for an icon inserted on a Mac,
+    // the SVG alone, the blip with no picture of its own at all (which is
+    // what the user's deck held: "a picture not in the file" in its place).
+    // The SVG is drawn where it can be - sharp at any zoom -, else its PNG.
+    void svgPicturesDrawnAsPowerPointKeepsThem()
+    {
+        const QByteArray halves = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"96\" height=\"96\" viewBox=\"0 0 96 96\">"
+                                  "<rect width=\"48\" height=\"96\" fill=\"#ff0000\"/><rect x=\"48\" width=\"48\" height=\"96\" fill=\"#0000ff\"/></svg>";
+        QImage grey(96, 96, QImage::Format_RGB32);
+        grey.fill(QColor(128, 128, 128));
+        // A thin black line down the middle of white, 1 of 100 units wide.
+        const QByteArray line = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><rect width=\"100\" height=\"100\" fill=\"#ffffff\"/>"
+                                "<rect x=\"49.5\" width=\"1\" height=\"100\" fill=\"#000000\"/></svg>";
+        // Fifteen levels of four <use>s: too much to draw.
+        QByteArray defs = "<rect id=\"r0\" width=\"1\" height=\"1\"/>";
+        for (int i = 1; i <= 15; ++i) {
+            defs += "<g id=\"r" + QByteArray::number(i) + "\">";
+            for (int k = 0; k < 4; ++k) defs += "<use xlink:href=\"#r" + QByteArray::number(i - 1) + "\"/>";
+            defs += "</g>";
+        }
+        const QByteArray bomb = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"100\" height=\"100\">"
+                                "<defs>" + defs + "</defs><use xlink:href=\"#r15\"/></svg>";
+        Deck d;
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image1.png"), png(grey)};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image2.svg"), halves};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image3.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><rect width='10'"};   // cut short
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image4.svg"), bomb};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image5.svg"), line};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image6.svg"), "<svg xmlns='http://www.w3.org/2000/svg' width='0' height='0'/>"};
+        const auto svgBlip = [](const QByteArray& rel) {
+            return "<a:extLst><a:ext uri=\"{96DAC541-7B7A-43D3-8B79-37D633B846F1}\"><asvg:svgBlip "
+                   "xmlns:asvg=\"http://schemas.microsoft.com/office/drawing/2016/SVG/main\" r:embed=\"" + rel + "\"/></a:ext></a:extLst>";
+        };
+        // A picture whose blip has its own picture \a own (none: empty) and
+        // the SVG \a svg in its extensions (none: empty).
+        const auto pic = [&svgBlip](int id, const QByteArray& own, const QByteArray& svg, const QByteArray& xf, const QByteArray& src = QByteArray()) {
+            const QByteArray blip = "<a:blip" + (own.isEmpty() ? QByteArray() : " r:embed=\"" + own + "\"") + ">" + (svg.isEmpty() ? QByteArray() : svgBlip(svg)) + "</a:blip>";
+            return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + QByteArray::number(id) + "\" name=\"Graphic " + QByteArray::number(id) + "\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>"
+                   "<p:blipFill>" + blip + src + "<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>" + xf
+                   + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+        };
+        const QByteArray rels = "<Relationship Id=\"rPng\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image1.png\"/>"
+                                "<Relationship Id=\"rSvg\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image2.svg\"/>"
+                                "<Relationship Id=\"rCut\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image3.svg\"/>"
+                                "<Relationship Id=\"rBomb\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image4.svg\"/>"
+                                "<Relationship Id=\"rLine\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image5.svg\"/>"
+                                "<Relationship Id=\"rEmpty\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image6.svg\"/>"
+                                "<Relationship Id=\"rGone\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image9.svg\"/>"
+                                "<Relationship Id=\"rFar\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"http://example.invalid/a.svg\" TargetMode=\"External\"/>";
+        Deck::SlideSpec one;
+        one.rels = rels;
+        one.tree = pic(2, "rPng", "rSvg", xfrm(20, 20, 100, 100))            // PowerPoint 365: the SVG over its PNG
+                   + pic(3, QByteArray(), "rSvg", xfrm(140, 20, 100, 100))   // PowerPoint for Mac's icon: the SVG alone
+                   + pic(4, "rSvg", QByteArray(), xfrm(260, 20, 100, 100))   // another tool's: the SVG as the blip's own
+                   + pic(5, "rPng", "rCut", xfrm(380, 20, 100, 100))         // an SVG cut short: its PNG
+                   + pic(6, "rPng", "rBomb", xfrm(500, 20, 100, 100))        // one asking too much: its PNG
+                   + pic(7, "rPng", "rGone", xfrm(620, 20, 100, 100))        // one not in the file: its PNG
+                   + pic(8, "rPng", "rFar", xfrm(740, 20, 100, 100))         // one linked from outside: its PNG
+                   + pic(9, "rPng", "rEmpty", xfrm(20, 140, 100, 100))       // one of no size: its PNG
+                   + pic(10, "rPng", "rSvg", xfrm(140, 140, 100, 100), "<a:srcRect l=\"50000\"/>");   // cropped: its right half
+        Deck::SlideSpec two;
+        two.rels = rels;
+        two.tree = pic(2, QByteArray(), "rCut", xfrm(20, 20, 100, 100))       // an SVG cut short, alone: a box
+                   + pic(3, QByteArray(), "rBomb", xfrm(140, 20, 100, 100));  // asking too much, alone: a box, and why
+        Deck::SlideSpec three;
+        three.rels = rels;
+        three.tree = pic(2, "rPng", "rLine", xfrm(0, 0, 100, 100));
+        // As a shape's picture fill, clipped to its ellipse, and as the
+        // slide's background.
+        Deck::SlideSpec four;
+        four.rels = rels;
+        four.bg = "<p:bg><p:bgPr><a:blipFill><a:blip>" + svgBlip("rSvg") + "</a:blip><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:effectLst/></p:bgPr></p:bg>";
+        four.tree = shape(2, xfrm(300, 100, 200, 200) + "<a:prstGeom prst=\"ellipse\"><a:avLst/></a:prstGeom><a:blipFill><a:blip r:embed=\"rPng\">" + svgBlip("rLine")
+                                 + "</a:blip><a:stretch><a:fillRect/></a:stretch></a:blipFill>");
+        d.slides << one << two << three << four;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage image = deck->render(0, 1);
+        const QColor red(255, 0, 0), blue(0, 0, 255), greyed(128, 128, 128);
+        for (const qreal x : {20.0, 140.0, 260.0}) {
+            QVERIFY2(near(at(image, {x + 20, 70}), red), qPrintable(QStringLiteral("at %1: %2").arg(x).arg(str(at(image, {x + 20, 70})))));
+            QVERIFY2(near(at(image, {x + 80, 70}), blue), qPrintable(QStringLiteral("at %1: %2").arg(x).arg(str(at(image, {x + 80, 70})))));
+        }
+        for (const qreal x : {380.0, 500.0, 620.0, 740.0})
+            QVERIFY2(near(at(image, {x + 50, 70}), greyed), qPrintable(QStringLiteral("at %1: %2").arg(x).arg(str(at(image, {x + 50, 70})))));
+        QVERIFY2(near(at(image, {70, 190}), greyed), qPrintable(str(at(image, {70, 190}))));
+        // Cropped to its right half, stretched over the box: blue throughout.
+        QVERIFY2(near(at(image, {150, 190}), blue), qPrintable(str(at(image, {150, 190}))));
+        QVERIFY2(near(at(image, {230, 190}), blue), qPrintable(str(at(image, {230, 190}))));
+        QCOMPARE(deck->slide(0).pictures, 9);
+        QCOMPARE(ofTheDeck(deck->slide(0).notShown), QStringList());
+        // Alone and not drawable: a box, and what it is.
+        const QImage boxes = deck->render(1, 1);
+        QVERIFY(!near(at(boxes, {25, 25}), Qt::white, 2) && at(boxes, {25, 25}).lightness() > 200);
+        const QStringList said = ofTheDeck(deck->slide(1).notShown);
+        QVERIFY2(said.join(QLatin1Char('|')).contains(QStringLiteral("pictures in SVG, not drawn")), qPrintable(said.join(QLatin1Char('|'))));
+        QVERIFY2(said.join(QLatin1Char('|')).contains(QStringLiteral("an SVG picture is not drawn")), qPrintable(said.join(QLatin1Char('|'))));
+        // Sharp at any zoom: at 8 pixels a point the line is 8 pixels wide,
+        // black in its middle and white 8 pixels off it - drawn from the
+        // SVG, not the grey PNG scaled up.
+        const QImage sharp = deck->render(2, 8);
+        QVERIFY2(near(at(sharp, {50, 50}, 8), Qt::black, 20), qPrintable(str(at(sharp, {50, 50}, 8))));
+        QVERIFY2(near(sharp.pixelColor(400 - 9, 400), Qt::white, 20), qPrintable(str(sharp.pixelColor(400 - 9, 400))));
+        QVERIFY2(near(sharp.pixelColor(400 + 9, 400), Qt::white, 20), qPrintable(str(sharp.pixelColor(400 + 9, 400))));
+        // Where a slide is drawn in tiles, the line where it is.
+        const QImage tile = deck->render(2, 8, QRect(380, 380, 40, 40));
+        QCOMPARE(tile.size(), QSize(40, 40));
+        QVERIFY2(near(tile.pixelColor(20, 20), Qt::black, 20), qPrintable(str(tile.pixelColor(20, 20))));
+        QVERIFY(near(tile.pixelColor(2, 20), Qt::white, 20));
+        // The fill: the line in the ellipse, the background's halves round it.
+        const QImage filled = deck->render(3, 1);
+        QVERIFY2(near(at(filled, {400, 200}), Qt::black, 60), qPrintable(str(at(filled, {400, 200}))));
+        QVERIFY2(near(at(filled, {350, 200}), Qt::white, 20), qPrintable(str(at(filled, {350, 200}))));
+        QVERIFY2(near(at(filled, {305, 105}), red), qPrintable(str(at(filled, {305, 105}))));   // the ellipse's corner: the background
+        QVERIFY2(near(at(filled, {900, 500}), blue), qPrintable(str(at(filled, {900, 500}))));
+    }
+
+    // Pictures are decoded when drawn, no larger than drawn: a slide drawn
+    // small and then large gets its picture right at both; a picture whose
+    // header reads but whose pixels do not is a light box, not a crash.
+    void picturesDecodedAsLargeAsDrawn()
+    {
+        QImage quarters(1600, 1200, QImage::Format_RGB32);
+        quarters.fill(Qt::red);
+        {
+            QPainter p(&quarters);
+            p.fillRect(800, 0, 800, 600, Qt::blue);
+            p.fillRect(0, 600, 800, 600, Qt::green);
+            p.fillRect(800, 600, 800, 600, Qt::black);
+        }
+        QByteArray broken = png(quarters);
+        broken.truncate(200);   // its header whole, its pixels cut off
+        QByteArray jpeg;
+        {
+            QBuffer buffer(&jpeg);
+            buffer.open(QIODevice::WriteOnly);
+            quarters.save(&buffer, "JPEG", 90);
+        }
+        Deck d;
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image1.png"), png(quarters)};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image2.png"), broken};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image3.jpeg"), jpeg};
+        const auto pic = [](int id, const QByteArray& rel, const QByteArray& xf) {
+            return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + QByteArray::number(id) + "\" name=\"p\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"" + rel
+                   + "\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>" + xf + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+        };
+        Deck::SlideSpec s;
+        s.tree = pic(2, "rP1", xfrm(40, 40, 400, 300)) + pic(3, "rP2", xfrm(480, 40, 200, 150)) + pic(4, "rP3", xfrm(500, 300, 400, 200));
+        s.rels = "<Relationship Id=\"rP1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image1.png\"/>"
+                 "<Relationship Id=\"rP2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image2.png\"/>"
+                 "<Relationship Id=\"rP3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image3.jpeg\"/>";
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        for (const qreal scale : {0.1, 0.5, 1.0, 4.0, 0.25}) {
+            const QImage image = deck->render(0, scale);
+            QVERIFY(!image.isNull());
+            const struct {
+                QPointF at;
+                QColor colour;
+            } expected[] = {{{140, 115}, Qt::red}, {{340, 115}, Qt::blue}, {{140, 265}, Qt::green}, {{340, 265}, Qt::black},
+                            {{600, 350}, Qt::red}, {{800, 350}, Qt::blue}, {{600, 450}, Qt::green}, {{800, 450}, Qt::black}};
+            for (const auto& e : expected)
+                QVERIFY2(near(at(image, e.at, scale), e.colour, 40),
+                         qPrintable(QStringLiteral("at %1, %2 at scale %3: %4").arg(e.at.x()).arg(e.at.y()).arg(scale).arg(str(at(image, e.at, scale)))));
+            // The broken one: a light box (whatever its header promised).
+            QVERIFY2(at(image, {580, 115}, scale).lightness() > 200, qPrintable(str(at(image, {580, 115}, scale))));
+            // Decoded large enough for the scale: the edge between red and
+            // blue (240 points across) sharp within a few pixels of it.
+            const int edge = int(240 * scale), row = int(115 * scale);
+            QVERIFY2(near(image.pixelColor(edge - 4, row), Qt::red, 40), qPrintable(QStringLiteral("scale %1: %2").arg(scale).arg(str(image.pixelColor(edge - 4, row)))));
+            QVERIFY2(near(image.pixelColor(edge + 4, row), Qt::blue, 40), qPrintable(QStringLiteral("scale %1: %2").arg(scale).arg(str(image.pixelColor(edge + 4, row)))));
+        }
+        // Drawn on another thread at the same time as here (the tab decodes
+        // the next slides' pictures so), the same pictures come out.
+        const QImage alone = deck->render(0, 2);
+        std::atomic<bool> stop{false};
+        QThreadPool pool;
+        for (int t = 0; t < 4; ++t)
+            pool.start([&deck, &stop, t] {
+                for (int k = 0; !stop && k < 40; ++k) deck->prepare(0, 0.1 + 0.37 * ((k + t) % 9));
+            });
+        for (int k = 0; k < 10; ++k) QCOMPARE(deck->render(0, 2), alone);
+        stop = true;
+        pool.waitForDone();
+    }
+
+    // A part of a slide drawn alone (a tile) is that part of the slide
+    // drawn whole; and what a tile leaves out is left out.
+    void aTileIsThatPartOfTheSlide()
+    {
+        Deck d;
+        Deck::SlideSpec s;
+        s.tree = shape(2, xfrm(100, 100, 300, 200) + "<a:prstGeom prst=\"ellipse\"><a:avLst/></a:prstGeom>" + solid("FF0000"), text(para(run("A title, long enough to wrap"))))
+                 + shape(3, xfrm(600, 50, 300, 400) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + solid("00AA00"))
+                 + shape(4, xfrm(50, 400, 860, 2) + "<a:prstGeom prst=\"line\"><a:avLst/></a:prstGeom><a:ln w=\"38100\"><a:solidFill><a:srgbClr val=\"0000FF\"/></a:solidFill>"
+                               "<a:tailEnd type=\"triangle\"/></a:ln>");
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        QCOMPARE(deck->pixels(2), QSize(1920, 1080));
+        QCOMPARE(deck->pixels(0.001), QSize(1, 1));
+        QVERIFY(!deck->pixels(0).isValid());
+        const QImage whole = deck->render(0, 2);
+        for (const QRect& part : {QRect(0, 0, 512, 512), QRect(512, 0, 512, 512), QRect(1024, 512, 512, 512), QRect(1536, 512, 512, 512), QRect(100, 700, 1700, 200)}) {
+            const QImage tile = deck->render(0, 2, part);
+            const QRect kept = part & whole.rect();
+            QCOMPARE(tile.size(), kept.size());
+            int differ = 0;
+            for (int y = 0; y < kept.height(); y += 3)
+                for (int x = 0; x < kept.width(); x += 3)
+                    if (!near(tile.pixelColor(x, y), whole.pixelColor(kept.x() + x, kept.y() + y), 24)) ++differ;
+            // (Antialiased edges may differ by a hair where a tile's own
+            // clip cuts them.)
+            QVERIFY2(differ < kept.width() * kept.height() / 9 / 200, qPrintable(QStringLiteral("%1 pixels differ in %2,%3").arg(differ).arg(part.x()).arg(part.y())));
+        }
+        QVERIFY(deck->render(0, 2, QRect(5000, 5000, 10, 10)).isNull());
+        QVERIFY(deck->render(0, 2, QRect()).isNull());
+        QVERIFY(deck->render(7, 2, QRect(0, 0, 10, 10)).isNull());
+    }
+
+    // The layouts of text are kept for the slides drawn last, the others'
+    // let go and made again: a slide drawn after many others comes out
+    // the same, and so do its parts.
+    void textLaidOutAgainComesOutTheSame()
+    {
+        Deck d;
+        for (int i = 0; i < 40; ++i) {
+            Deck::SlideSpec s;
+            for (int k = 0; k < 150; ++k)
+                s.tree += shape(10 + k, xfrm((k % 15) * 62 + 8, (k / 15) * 52 + 10, 58, 46) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>",
+                                text(para(run(QStringLiteral("s%1 k%2 words to wrap").arg(i).arg(k)))));
+            d.slides << s;
+        }
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage first = deck->render(0, 1);
+        const QList<pptx::SlidePart> parts = deck->parts(0);
+        for (int i = 1; i < 40; ++i) (void)deck->render(i, 1);
+        for (int i = 1; i < 40; ++i) (void)deck->render(i, 0.1);   // (thumbnails)
+        QCOMPARE(deck->render(0, 1), first);
+        const QList<pptx::SlidePart> again = deck->parts(0);
+        QCOMPARE(again.size(), parts.size());
+        for (int k = 0; k < parts.size(); ++k) {
+            QCOMPARE(again.at(k).text, parts.at(k).text);
+            QCOMPARE(again.at(k).outline, parts.at(k).outline);
+        }
+    }
+
     void shadowsDrawn()
     {
         Deck d;
@@ -1489,6 +1885,287 @@ private slots:
         QVERIFY2(!said.value(QStringLiteral("isError")).toBool(), qPrintable(QucsControl::textOf(said)));
         QCOMPARE(doc->currentSlide(), 4);
         app.closeAllFiles();
+    }
+
+    // Zoomed out on the last slide, in a view taller than the deck's end
+    // can be scrolled to: the view stops at the end, where a third of the
+    // way down lies the slide before - and that one used to become the
+    // slide shown. Seen on the screen ("slide 7 at zoom 0.5 became 6",
+    // 2026-11-07), not offscreen, whose view was shorter.
+    void aZoomOutAtTheLastSlideKeepsIt()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 1500);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        for (int i = 0; i < 7; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            d.slides << s;
+        }
+        const QString file = dir.filePath("workspace/zooming-tall.pptx");
+        QVERIFY(write(file, d.build()));
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        // (Tall enough that the end of the deck at 50 % stops short.)
+        QVERIFY2(doc->view()->viewport()->height() > 500, qPrintable(QString::number(doc->view()->viewport()->height())));
+        for (const int slide : {6, 5}) {
+            doc->view()->setFit(pptx::SlideView::Fit::Width);
+            doc->goToSlide(slide);
+            QCOMPARE(doc->currentSlide(), slide);
+            for (const qreal zoom : {1.0, 0.5, 0.25, 0.1, 2.0}) {
+                doc->view()->setZoom(zoom);
+                QApplication::processEvents();
+                QVERIFY2(doc->currentSlide() == slide,
+                         qPrintable(QStringLiteral("slide %1 at zoom %2 became %3").arg(slide + 1).arg(zoom).arg(doc->currentSlide() + 1)));
+                QCOMPARE(doc->slideField()->text(), QString::number(slide + 1));
+            }
+            // And stepped, as Ctrl and the wheel step it.
+            doc->view()->zoomStep(false);
+            QCOMPARE(doc->currentSlide(), slide);
+        }
+        app.closeAllFiles();
+    }
+
+    // A slide too large for one image at the zoom shown - PowerPoint's
+    // largest, 56 inches square, at 800 % is a billion pixels; a 16:9 slide
+    // at 800 % on a screen of two pixels a point is 133 million - is drawn
+    // in tiles, those in sight. It was left white, and asked to be drawn
+    // again every frame.
+    void aSlideTooLargeForOneImageIsDrawnInTiles()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        Deck::SlideSpec s;
+        // A red square in the middle of a 4032-point slide, a blue one at
+        // its top left.
+        s.tree = shape(2, xfrm(1916, 1916, 200, 200) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + solid("FF0000"))
+                 + shape(3, xfrm(0, 0, 40, 40) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + solid("0000FF"));
+        d.slides << s << s;
+        QByteArray bytes = d.build();
+        // (The deck's size: 51206400 EMU a side.)
+        QList<zip::Entry> entries = zip::read(bytes);
+        for (zip::Entry& e : entries)
+            if (e.name == QLatin1String("ppt/presentation.xml")) e.data.replace("<p:sldSz cx=\"12192000\" cy=\"6858000\"/>", "<p:sldSz cx=\"51206400\" cy=\"51206400\"/>");
+        const QString file = dir.filePath("workspace/huge-slide.pptx");
+        QVERIFY(write(file, zip::write(entries)));
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->presentation()->slideSize(), QSizeF(4032, 4032));
+        doc->view()->setZoom(pptx::SlideView::MaxZoom);
+        doc->view()->centerOn(0, QPointF(2016, 2016));
+        QWidget* port = doc->view()->viewport();
+        // Drawn within a few frames (a quarter second of drawing a frame).
+        QImage seen;
+        QTRY_VERIFY_WITH_TIMEOUT((seen = port->grab().toImage(), near(seen.pixelColor(seen.width() / 2, seen.height() / 2), Qt::red)), 10000);
+        // And then left alone: no slide drawn again frame after frame.
+        QTest::qWait(300);
+        const int drawn = doc->view()->slidesDrawn();
+        QTest::qWait(300);
+        QCOMPARE(doc->view()->slidesDrawn(), drawn);
+        // Scrolled to its top left corner: the blue square.
+        doc->view()->centerOn(0, QPointF(30, 30));
+        QTRY_VERIFY_WITH_TIMEOUT((seen = port->grab().toImage(), !seen.isNull()), 5000);
+        const QPoint corner = doc->view()->toViewport(0, QPointF(20, 20)).toPoint();
+        QTRY_VERIFY_WITH_TIMEOUT((seen = port->grab().toImage(), near(seen.pixelColor(corner * seen.devicePixelRatio()), Qt::blue)), 10000);
+        // The pen on it, where it is drawn.
+        markup::Stroke stroke;
+        stroke.on = pptx::SlideView::partOf(0);
+        stroke.color = Qt::red;
+        stroke.width = 2;
+        stroke.points = {QPointF(25, 25), QPointF(35, 35)};
+        doc->view()->addStroke(stroke);
+        QCOMPARE(doc->view()->drawing().on(pptx::SlideView::partOf(0)).size(), 1);
+        app.closeAllFiles();
+    }
+
+    // The tab used fast and every which way - slides, zooms, fits, regions,
+    // scrolling, the pen, the find bar, a reload - on a deck of pictures,
+    // shapes and text: nothing lost, nothing out of range.
+    void theTabHoldsUnderFastUse()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1100, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QImage photo(1200, 800, QImage::Format_RGB32);
+        photo.fill(QColor(30, 120, 200));
+        Deck d;
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image1.png"), png(photo)};
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image2.svg"),
+                              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"#ff8800\"/></svg>"};
+        for (int i = 0; i < 30; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1 of the stress").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            for (int k = 0; k < 20; ++k)
+                s.tree += shape(10 + k, xfrm((k % 10) * 90 + 20, 300 + (k / 10) * 100, 80, 80) + "<a:prstGeom prst=\"roundRect\"><a:avLst/></a:prstGeom>" + solid("70AD47"),
+                                text(para(run(QStringLiteral("box %1").arg(k)))));
+            s.tree += "<p:pic><p:nvPicPr><p:cNvPr id=\"50\" name=\"p\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rP\"><a:extLst>"
+                      "<a:ext uri=\"{96DAC541-7B7A-43D3-8B79-37D633B846F1}\"><asvg:svgBlip xmlns:asvg=\"http://schemas.microsoft.com/office/drawing/2016/SVG/main\" "
+                      "r:embed=\"" + QByteArray(i % 2 ? "rS" : "rP") + "\"/></a:ext></a:extLst></a:blip><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>"
+                      + xfrm(600, 120, 300, 160) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+            s.rels = "<Relationship Id=\"rP\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image1.png\"/>"
+                     "<Relationship Id=\"rS\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image2.svg\"/>";
+            s.notes = QStringLiteral("Notes of slide %1").arg(i + 1);
+            d.slides << s;
+        }
+        const QString file = dir.filePath("workspace/stress.pptx");
+        QVERIFY(write(file, d.build()));
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        pptx::SlideView* view = doc->view();
+        QRandomGenerator random(2611);
+        for (int step = 0; step < 400; ++step) {
+            const int n = doc->slideCount();
+            switch (random.bounded(12)) {
+            case 0: doc->goToSlide(random.bounded(n)); break;
+            case 1: doc->nextSlide(); break;
+            case 2: doc->previousSlide(); break;
+            case 3: view->zoomStep(random.bounded(2) == 0); break;
+            case 4: view->setZoom(pptx::SlideView::MinZoom + random.generateDouble() * (pptx::SlideView::MaxZoom - pptx::SlideView::MinZoom)); break;
+            case 5: view->setFit(random.bounded(2) ? pptx::SlideView::Fit::Width : pptx::SlideView::Fit::Slide); break;
+            case 6: view->verticalScrollBar()->setValue(random.bounded(view->verticalScrollBar()->maximum() + 1)); break;
+            case 7: view->horizontalScrollBar()->setValue(random.bounded(view->horizontalScrollBar()->maximum() + 1)); break;
+            case 8: view->showRegion(random.bounded(n), QRectF(random.bounded(900), random.bounded(500), 1 + random.bounded(400), 1 + random.bounded(300))); break;
+            case 9: {
+                markup::Stroke stroke;
+                stroke.on = pptx::SlideView::partOf(random.bounded(n));
+                stroke.color = Qt::red;
+                stroke.width = 2;
+                stroke.points = {QPointF(random.bounded(960), random.bounded(540)), QPointF(random.bounded(960), random.bounded(540))};
+                if (random.bounded(3) == 0) view->undoDrawing();
+                else view->addStroke(stroke);
+                break;
+            }
+            case 10: doc->find(QStringLiteral("slide %1").arg(random.bounded(n) + 1)); break;
+            case 11:
+                if (step % 97 == 0) QVERIFY(doc->reload());
+                else doc->zoomBy(random.bounded(2) ? 1.25 : 0.8);
+                break;
+            }
+            if (step % 3 == 0) view->viewport()->repaint();
+            if (step % 7 == 0) QApplication::processEvents();
+            QVERIFY(doc->currentSlide() >= 0 && doc->currentSlide() < doc->slideCount());
+            QVERIFY(view->zoom() >= pptx::SlideView::MinZoom - 1e-9 && view->zoom() <= pptx::SlideView::MaxZoom + 1e-9);
+            QCOMPARE(doc->slideField()->text(), QString::number(doc->currentSlide() + 1));
+        }
+        app.closeAllFiles();
+    }
+
+    // Tabs closed, and the file read again, while their thumbnails are
+    // still being drawn and their pictures decoded on another thread; many
+    // decks open at once, closed in another order.
+    void tabsClosedWhileTheirPicturesAreDecoded()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1100, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QStringList files;
+        for (int f = 0; f < 6; ++f) {
+            Deck d;
+            for (int i = 0; i < 60; ++i) {
+                QImage photo(900, 600, QImage::Format_RGB32);
+                photo.fill(QColor::fromHsv((i * 37 + f * 11) % 360, 200, 200));
+                d.extra << zip::Entry{QStringLiteral("ppt/media/image%1.png").arg(i + 1), png(photo)};
+                Deck::SlideSpec s;
+                s.tree = "<p:pic><p:nvPicPr><p:cNvPr id=\"5\" name=\"p\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rP\"/><a:stretch><a:fillRect/></a:stretch>"
+                         "</p:blipFill><p:spPr>" + xfrm(100, 50, 760, 440) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+                s.rels = "<Relationship Id=\"rP\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image"
+                         + QByteArray::number(i + 1) + ".png\"/>";
+                d.slides << s;
+            }
+            files << dir.filePath(QStringLiteral("workspace/many-%1.pptx").arg(f));
+            QVERIFY(write(files.last(), d.build()));
+        }
+        // Opened and closed at once, again and again.
+        for (int k = 0; k < 4; ++k) {
+            QVERIFY(app.gotoPage(files.at(k % files.size())));
+            QApplication::processEvents();
+            app.closeAllFiles();
+        }
+        // All open; the file of one replaced while its thumbnails are drawn;
+        // the tabs gone through and closed, the last first.
+        for (const QString& f : files) QVERIFY(app.gotoPage(f));
+        QCOMPARE(app.DocumentTab->count() >= files.size(), true);
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->reload());
+        QVERIFY(doc->reload());
+        for (int i = 0; i < app.DocumentTab->count(); ++i) {
+            app.DocumentTab->setCurrentIndex(i);
+            if (auto* d = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget())) {
+                d->goToSlide(30);
+                d->view()->viewport()->repaint();
+            }
+        }
+        // (The window keeps one tab: the last is closed with the rest.)
+        while (app.DocumentTab->count() > 1) {
+            app.DocumentTab->setCurrentIndex(app.DocumentTab->count() - 1);
+            QApplication::processEvents();
+            const int before = app.DocumentTab->count();
+            menu_owner_close::clickClose(app.DocumentTab, app.DocumentTab->widget(before - 1));
+            QTRY_COMPARE(app.DocumentTab->count(), before - 1);
+        }
+        app.closeAllFiles();
+        QThreadPool::globalInstance()->waitForDone();
+    }
+
+    // Slide sizes past anything PowerPoint makes - huge, tiny, of no size -
+    // in the tab: held within what the view can scroll, every zoom drawn.
+    void absurdSlideSizesInTheTab()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        int k = 0;
+        for (const QByteArray& size : QList<QByteArray>{"cx=\"99999999999999\" cy=\"99999999999999\"", "cx=\"1\" cy=\"1\"", "cx=\"0\" cy=\"-5\"",
+                                                       "cx=\"51206400\" cy=\"1\"", "cx=\"1\" cy=\"51206400\"", "cx=\"1e300\" cy=\"NaN\""}) {
+            Deck d;
+            for (int i = 0; i < 40; ++i) {
+                Deck::SlideSpec s;
+                s.tree = shape(2, xfrm(10, 10, 100, 50) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + solid("FF0000"), text(para(run("x"))));
+                d.slides << s;
+            }
+            QList<zip::Entry> entries = zip::read(d.build());
+            for (zip::Entry& e : entries)
+                if (e.name == QLatin1String("ppt/presentation.xml")) e.data.replace("cx=\"12192000\" cy=\"6858000\"", size);
+            const QString file = dir.filePath(QStringLiteral("workspace/size-%1.pptx").arg(k++));
+            QVERIFY(write(file, zip::write(entries)));
+            QVERIFY2(app.gotoPage(file), size.constData());
+            auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+            QVERIFY(doc != nullptr);
+            const QSizeF s = doc->presentation()->slideSize();
+            QVERIFY2(s.width() >= 1 && s.width() <= 40320 && s.height() >= 1 && s.height() <= 40320, size.constData());
+            // Its thumbnails no taller than four times their width (a slide 1
+            // point by 40,320 made icons of 150 x 6 million pixels, 3.6 GB
+            // each), the slide drawn inside.
+            QVERIFY2(doc->thumbnails()->iconSize().height() <= 600, size.constData());
+            for (const qreal zoom : {pptx::SlideView::MinZoom, 1.0, pptx::SlideView::MaxZoom}) {
+                doc->view()->setZoom(zoom);
+                doc->goToSlide(39);
+                doc->view()->viewport()->repaint();
+                QCOMPARE(doc->currentSlide(), 39);
+                doc->view()->verticalScrollBar()->setValue(doc->view()->verticalScrollBar()->maximum());
+                doc->view()->viewport()->repaint();
+            }
+            doc->view()->setFit(pptx::SlideView::Fit::Slide);
+            doc->view()->viewport()->repaint();
+            app.closeAllFiles();
+        }
     }
 
     // The window closed while a tab's own dialog is open: the tab is freed
