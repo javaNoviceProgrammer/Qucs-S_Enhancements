@@ -51,6 +51,7 @@ public:
     QPlainTextEdit* details() const { return a_details; }
     QLabel* summary() const { return a_summary; }
     QPushButton* showButton() const { return a_show; }
+    QPushButton* killButton() const { return a_kill; }
     QComboBox* filter() const { return a_filter; }
     /// The rows shown: every job, the simulations alone (runs, solves,
     /// sweeps, optimizations, tuning), the user's own, Claude's.
@@ -64,6 +65,10 @@ public:
     static void setDocumentShower(DocumentShower shower);
     /// Show for the chosen row, as its button does; whether it was shown.
     bool showChosenDocument();
+    /// Kill for the chosen row, as its button does: the job stopped as its
+    /// row's Stop stops it (a simulator's or a command's process killed, a
+    /// solve in Qucs-S cancelled at its next step); whether it was asked.
+    bool killChosen();
     /// The table's row of the job \a id, or -1.
     int rowOf(const QString& id) const;
     /// Whether the Job column takes the room the others leave, as it does
@@ -95,13 +100,15 @@ private:
     void fitName();
     void saveWidths() const;
     void applyFilter();
-    void updateShowButton();
+    /// Show and Kill on or off, for the chosen row.
+    void updateButtons();
 
     QTableWidget* a_table = nullptr;
     QPlainTextEdit* a_details = nullptr;
     QLabel* a_summary = nullptr;
     QPushButton* a_clear = nullptr;
     QPushButton* a_show = nullptr;
+    QPushButton* a_kill = nullptr;
     QComboBox* a_filter = nullptr;
     QTimer* a_clock = nullptr;
     bool a_nameFills = true;   // the Job column follows the window, until the user sizes it
