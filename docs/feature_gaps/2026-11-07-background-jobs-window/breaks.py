@@ -157,6 +157,21 @@ BREAKS = [
     ("the window opened under --mcp-server", "qucscontrol_jobs.cpp",
      "    if (a_headless) {\n        o.insert(QStringLiteral(\"shown\"), false);",
      "    if (false) {\n        o.insert(QStringLiteral(\"shown\"), false);"),
+    ("no Kill button", "claudejobswindow.cpp",
+     "    bottom->addWidget(a_kill);\n",
+     ""),
+    ("Kill on for what cannot stop", "claudejobswindow.cpp",
+     "const bool kill = job && job->canStop && job->status != Status::Stopping && !isOver(job->status);",
+     "const bool kill = bool(job);"),
+    ("Kill on with nothing chosen at first", "claudejobswindow.cpp",
+     "    updateButtons();   // (off with nothing chosen: buttons begin on)\n",
+     ""),
+    ("Kill stops the first row", "claudejobswindow.cpp",
+     "    const bool asked = Registry::instance().stop(job->id, &why);",
+     "    const bool asked = Registry::instance().stop(a_table->item(0, Name)->data(Qt::UserRole).toString(), &why);"),
+    ("a refused Kill not said", "claudejobswindow.cpp",
+     "    if (!asked && !why.isEmpty()) a_summary->setText(why);\n    updateButtons();\n    return asked;",
+     "    updateButtons();\n    return asked;"),
 ]
 
 
