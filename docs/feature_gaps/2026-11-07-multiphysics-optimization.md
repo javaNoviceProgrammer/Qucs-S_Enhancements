@@ -368,7 +368,7 @@ workspace, and these tests are the same cases scaled to the test capacitor.
 
 ## The recheck of 7 November
 
-[2026-11-07-claude-qfem-optimization-recheck.md](qucs-reviews/Multiphysics/2026-11-07-claude-qfem-optimization-recheck.md),
+[2026-11-07-claude-qfem-optimization-recheck.md](qucs-reviews/Multiphysics/archived/2026-11-07-claude-qfem-optimization-recheck.md),
 on the app of `4eaf02f`: all seven findings fixed, each original repro as it should be. It found one fault more, and four small points.
 
 **M1: a row on a mode analysis read every mode, by the worst.** Confirmed: each objective was read on `instances(...)` with every
