@@ -12,6 +12,7 @@
  */
 #include "layoutdoc.h"
 
+#include "apptheme.h"
 #include "elidedlabel.h"
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
@@ -1974,7 +1975,8 @@ void LayoutDoc::restyle()
                               "QToolButton[layoutTool=\"true\"]:hover { background: %2; }"
                               "QToolButton[layoutTool=\"true\"]:checked { background: %3; }"
                               "QToolButton[layoutTool=\"true\"]::menu-indicator { image: none; }")
-                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name());
+                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name())
+        + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton[layoutTool=\"true\"]"));
     if (sheet != styleSheet()) setStyleSheet(sheet);
     a_view->update();
 }

@@ -11,6 +11,7 @@
 
 #include "pptxdoc.h"
 
+#include "apptheme.h"
 #include "elidedlabel.h"
 #include "links.h"
 #include "main.h"
@@ -1123,7 +1124,8 @@ void PptxDoc::restyle()
                               "QToolButton[pptxTool=\"true\"]:checked { background: %3; }"
                               "QToolButton[pptxTool=\"true\"]::menu-indicator { image: none; }")
                               .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name(),
-                                   pal.color(QPalette::PlaceholderText).name());
+                                   pal.color(QPalette::PlaceholderText).name())
+        + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton[pptxTool=\"true\"]"));
     if (sheet != styleSheet()) setStyleSheet(sheet);
     if (a_view != nullptr) a_view->viewport()->update();
 }
