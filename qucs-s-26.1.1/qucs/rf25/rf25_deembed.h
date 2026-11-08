@@ -114,6 +114,7 @@ struct Calibration {
     double reach = 0;
     QStringList problems;
     QStringList lines;             ///< what it did, for the panel
+    QStringList warnings;          ///< what makes it doubtful: its strips' solves'
     bool ok() const { return problems.isEmpty() && !discontinuity.isEmpty(); }
     /// The index of \a frequency among those asked (to a part in 1e9), or -1.
     int indexOf(double frequency) const;

@@ -644,7 +644,7 @@ void down(Sheet& sheet, const CircuitBranch& b, int x, int y, int side)
 
 } // namespace
 
-QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment)
+QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment, const QString& name)
 {
     Sheet sheet;
     // Its first port at the left of the line at y 100; the branch between
@@ -668,8 +668,10 @@ QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment
     down(sheet, circuit.toGround[0], left, y, -60);
     QString text = comment.join(QStringLiteral("\\n"));
     text.replace(QLatin1Char('"'), QLatin1Char('\''));
+    const QString base = name.isEmpty() ? QStringLiteral("equivalent") : name;
     QString out = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,-60,800,600,1,0,0>\n  <Grid=10,10,1>\n"
-                                 "  <DataSet=equivalent.dat>\n  <DataDisplay=equivalent.dpl>\n  <OpenDisplay=0>\n</Properties>\n");
+                                 "  <DataSet=%1.dat>\n  <DataDisplay=%1.dpl>\n  <OpenDisplay=0>\n</Properties>\n")
+                      .arg(base);
     // Its symbol as a part: a box, a pin each side (one, for a one-port).
     out += QStringLiteral("<Symbol>\n  <.ID -20 24 SUB>\n  <Line -20 -10 40 0 #000080 2 1>\n  <Line 20 -10 0 20 #000080 2 1>\n"
                           "  <Line -20 10 40 0 #000080 2 1>\n  <Line -20 -10 0 20 #000080 2 1>\n  <Line -30 0 10 0 #000080 2 1>\n"

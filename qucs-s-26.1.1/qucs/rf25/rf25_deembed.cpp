@@ -114,6 +114,7 @@ struct Strips {
     QList<double> residual;
     QList<double> halfWaves, gains;   ///< Hz
     QString problem;
+    QStringList warnings;          ///< its strips' solves' (GMRES short of its residual, near its limit)
     bool tooLarge = false;
     int facing = 0;                ///< the sides its meshes graded where they face a gap (Mesh::facing)
     int indexOf(double f) const { return int(std::lower_bound(at.begin(), at.end(), f) - at.begin()); }
@@ -228,6 +229,9 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
             return out;
         }
         for (const QList<QList<Complex>>& z : fw.z) chains[i] << chainOf(z);
+        // (What makes a strip's answer doubtful is the calibration's too:
+        //  a strip's GMRES short of its residual was taken as solved, unsaid.)
+        for (const QString& w : fw.warnings) out.warnings << tr("A calibration strip %1 µm long: %2").arg(l, 0, 'g', 4).arg(w);
     }
 
     // At each frequency, up from the lowest: E from E E' = T_l T_2l^-1 T_l,
@@ -406,6 +410,7 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
         out.stripAt << s.strip;
         if (b > 0 && (shorterFrom == 0 || f < shorterFrom)) shorterFrom = f;
     }
+    for (const Strips& s : std::as_const(sets)) out.warnings << s.warnings;
     out.length = base.between;
     out.strip = base.strip;
     out.third = base.third;
