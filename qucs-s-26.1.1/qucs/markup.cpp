@@ -11,6 +11,7 @@
 #include "markup.h"
 
 #include "settings.h"
+#include "strokeshape.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -46,6 +47,8 @@ const char* const kHighlighterKey = "Viewers/highlighterWidth";
 
 /// How much of a highlighter's colour covers what is under it.
 constexpr double HighlighterCover = 0.4;
+/// How much of its colour a stroke marked addressed keeps.
+constexpr double AddressedCover = 0.3;
 /// The broadest a stroke is drawn, pixels: zoomed far in, one covers the
 /// view at that already, and the stroker is spared lines of a million.
 constexpr double BroadestPixels = 1e4;
@@ -203,6 +206,25 @@ void Drawing::add(const Stroke& stroke)
 {
     remember();
     a_strokes << stroke;
+    a_strokes.last().id = ++a_lastId[stroke.on];
+}
+
+int Drawing::setAddressed(const QString& part, const QList<int>& ids, bool addressed)
+{
+    QList<int> which;
+    for (int i = 0; i < a_strokes.size(); ++i)
+        if (a_strokes.at(i).on == part && ids.contains(a_strokes.at(i).id) && a_strokes.at(i).addressed != addressed) which << i;
+    if (which.isEmpty()) return 0;
+    remember();
+    for (const int i : which) a_strokes[i].addressed = addressed;
+    return int(which.size());
+}
+
+const Stroke* Drawing::find(const QString& part, int id) const
+{
+    for (const Stroke& s : a_strokes)
+        if (s.on == part && s.id == id) return &s;
+    return nullptr;
 }
 
 bool Drawing::eraseAt(const QString& part, QPointF point, double reach)
@@ -256,7 +278,10 @@ void paint(QPainter& p, const QList<Stroke>& strokes, const std::function<QPoint
     QPolygonF shown;
     for (const Stroke& s : strokes) {
         if (s.points.isEmpty()) continue;
-        p.setPen(QPen(s.color, std::clamp(s.width * pixelsPerUnit, 1.0, BroadestPixels), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        // (One marked addressed, faded: what was done is still seen.)
+        QColor color = s.color;
+        if (s.addressed) color.setAlphaF(color.alphaF() * AddressedCover);
+        p.setPen(QPen(color, std::clamp(s.width * pixelsPerUnit, 1.0, BroadestPixels), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         // (A click is a dot, as broad as the pen.)
         if (s.points.size() == 1) {
             p.drawPoint(toPixel(s.points.first()));
@@ -490,6 +515,56 @@ QString said(const QJsonValue& v)
     return parts.join(QStringLiteral(", "));
 }
 
+/// A feature of a layout's shape, or a text, as a reading has it (a
+/// vertex, an end, a corner, a segment or an edge of a shape on a layer),
+/// in words: "the vertex at (0, 40) of the 2/0 path in TRACE, a 53° corner".
+QString featureSaid(const QJsonObject& o)
+{
+    const auto at = [](const QJsonValue& v) { return pointSaid(QPointF(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble())); };
+    if (o.contains(QStringLiteral("text"))) return QStringLiteral("the text %1 at %2").arg(o.value(QStringLiteral("text")).toString(), at(o.value(QStringLiteral("at"))));
+    QString of = QStringLiteral("the %1 %2").arg(o.value(QStringLiteral("layer")).toString(), o.value(QStringLiteral("kind")).toString());
+    if (o.contains(QStringLiteral("in"))) of += QStringLiteral(" in ") + o.value(QStringLiteral("in")).toString();
+    const QString angle = o.contains(QStringLiteral("angle")) ? QStringLiteral(", a %1° corner").arg(numberSaid(o.value(QStringLiteral("angle")).toDouble())) : QString();
+    QString side = o.value(QStringLiteral("side")).toString();
+    if (!side.isEmpty()) side = QStringLiteral(", from %1").arg(side == QLatin1String("left") || side == QLatin1String("right") ? QStringLiteral("the ") + side : side);
+    for (const char* key : {"vertex", "end", "corner"})
+        if (o.contains(QLatin1String(key))) return QStringLiteral("the %1 at %2 of %3%4").arg(QLatin1String(key), at(o.value(QLatin1String(key))), of, angle);
+    for (const char* key : {"segment", "edge"})
+        if (o.contains(QLatin1String(key))) {
+            const QJsonArray e = o.value(QLatin1String(key)).toArray();
+            return QStringLiteral("the %1 from %2 to %3 of %4%5").arg(QLatin1String(key), at(e.at(0)), at(e.at(1)), of, side);
+        }
+    return of;
+}
+
+QString featuresSaid(const QJsonValue& v)
+{
+    QStringList parts;
+    for (const QJsonValue& one : v.toArray()) parts << featureSaid(one.toObject());
+    return parts.join(QStringLiteral("; "));
+}
+
+/// How a line or a mark follows a shape, in words: "following the 2/0 path
+/// in TRACE from (-50, 0) to (50, 0), leaving it between (-33, 0) and
+/// (36, 0) to go 40 µm above it".
+QString followSaid(const QJsonObject& o)
+{
+    const auto at = [](const QJsonValue& v) { return pointSaid(QPointF(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble())); };
+    QString s = QStringLiteral("following the %1 %2").arg(o.value(QStringLiteral("layer")).toString(), o.value(QStringLiteral("kind")).toString());
+    if (o.contains(QStringLiteral("in"))) s += QStringLiteral(" in ") + o.value(QStringLiteral("in")).toString();
+    s += QStringLiteral(" from %1 to %2").arg(at(o.value(QStringLiteral("from"))), at(o.value(QStringLiteral("to"))));
+    QStringList leaves;
+    for (const QJsonValue& v : o.value(QStringLiteral("leaves")).toArray()) {
+        const QJsonObject l = v.toObject();
+        const QString side = l.value(QStringLiteral("side")).toString();
+        leaves << QStringLiteral("leaving it between %1 and %2 to go %3 µm %4 it")
+                      .arg(at(l.value(QStringLiteral("at"))), at(l.value(QStringLiteral("back"))), numberSaid(l.value(QStringLiteral("by")).toDouble()),
+                           side == QLatin1String("left") || side == QLatin1String("right") ? QStringLiteral("to the %1 of").arg(side) : side);
+    }
+    if (!leaves.isEmpty()) s += QStringLiteral(", ") + leaves.join(QStringLiteral(", then "));
+    return s;
+}
+
 } // namespace
 
 QString nameOf(Gesture gesture)
@@ -640,11 +715,12 @@ double reachOf(const Stroke& stroke)
 
 QJsonObject readingOf(const Stroke& stroke, int number, Gesture gesture, bool points)
 {
-    QJsonObject o{{QStringLiteral("stroke"), number},
+    QJsonObject o{{QStringLiteral("stroke"), stroke.id > 0 ? stroke.id : number},
                   {QStringLiteral("drawn as"), nameOf(gesture)},
                   {QStringLiteral("tool"), stroke.highlighter ? QStringLiteral("highlighter") : QStringLiteral("pen")},
                   {QStringLiteral("colour"), stroke.color.name(QColor::HexRgb)},
                   {QStringLiteral("box"), boxJson(stroke.bounds())}};
+    if (stroke.addressed) o.insert(QStringLiteral("addressed"), true);
     if (points && !stroke.points.isEmpty()) {
         // A few dozen points at most: its shape, not its every wobble.
         double tolerance = std::max(stroke.width / 2, 0.01 * sizeOf(stroke.points));
@@ -670,7 +746,11 @@ QJsonArray readPage(const QList<Stroke>& strokes, const QList<Target>& targets, 
         if (s.points.isEmpty()) continue;
         const double reach = reachOf(s);
         switch (g) {
-        case Gesture::Arrowhead: o.insert(QStringLiteral("of stroke"), heads.at(i) + 1); break;
+        case Gesture::Arrowhead: {
+            const Stroke& shaft = strokes.at(heads.at(i));
+            o.insert(QStringLiteral("of stroke"), shaft.id > 0 ? shaft.id : heads.at(i) + 1);
+            break;
+        }
         case Gesture::Dot:
             if (const QJsonObject on = pointedAt(targets, s.points.first(), QPointF(), 0, reach); !on.isEmpty())
                 o.insert(QStringLiteral("on"), on);
@@ -740,29 +820,77 @@ QString sentenceOf(const QJsonObject& reading, const QString& where, const QStri
                     .arg(QStringLiteral("aeiou").contains(colour.left(1)) ? QStringLiteral("an") : QStringLiteral("a"), colour,
                          reading.value(QStringLiteral("tool")).toString(), drawn);
     if (drawn == QLatin1String("arrowhead")) return s + QStringLiteral(" of stroke %1").arg(reading.value(QStringLiteral("of stroke")).toInt());
+    const auto has = [&reading](const char* key) { return reading.contains(QLatin1String(key)); };
+    const auto value = [&reading](const char* key) { return reading.value(QLatin1String(key)); };
     const std::pair<const char*, const char*> fields[] = {{"around", "around"},       {"underlines", "under"}, {"strikes through", "through"},
                                                           {"highlights", "over"},     {"on", "on"},            {"from", "from"},
                                                           {"points at", "pointing at"}, {"at", "at"}};
-    for (const auto& [key, words] : fields)
-        if (reading.contains(QLatin1String(key))) s += QStringLiteral(" %1 %2").arg(QLatin1String(words), said(reading.value(QLatin1String(key))));
-    const QJsonArray b = reading.value(QStringLiteral("box")).toArray();
+    for (const auto& [key, words] : fields) {
+        if (has(key)) s += QStringLiteral(" %1 %2").arg(QLatin1String(words), said(value(key)));
+        // (A ring round part of something large: which part.)
+        if (QLatin1String(key) == QLatin1String("around") && has("holds part of"))
+            s += QStringLiteral(" %1 %2").arg(has("around") ? QStringLiteral("and") : QStringLiteral("around"), featuresSaid(value("holds part of")));
+    }
+    // An arrow's tip: the nearest feature to it, the way it comes from, and
+    // its tip and tail.
+    if (has("nearest its tip")) s += QStringLiteral(", nearest its tip %1").arg(featureSaid(value("nearest its tip").toObject()));
+    if (has("tip") && has("tail")) {
+        const QJsonArray tip = value("tip").toArray(), tail = value("tail").toArray();
+        s += QStringLiteral(", %1its tip at (%2, %3), its tail at (%4, %5)")
+                 .arg(has("comes from") ? QStringLiteral("coming from %1, ").arg(value("comes from").toString()) : QString())
+                 .arg(tip.at(0).toDouble()).arg(tip.at(1).toDouble()).arg(tail.at(0).toDouble()).arg(tail.at(1).toDouble());
+    }
+    // A line or a mark along a shape: where it follows it and where it
+    // leaves it.
+    if (has("follows")) {
+        QStringList parts;
+        for (const QJsonValue& v : value("follows").toArray()) parts << followSaid(v.toObject());
+        s += QStringLiteral(", ") + parts.join(QStringLiteral("; "));
+    }
+    // What lies under all of it, much larger than it: a frame, a die, a
+    // well - seldom what it is about.
+    if (has("over")) s += QStringLiteral(", all of it over %1 that covers it").arg(said(value("over")));
+    // A freehand stroke as the polyline it was meant to be.
+    if (has("polyline")) s += QStringLiteral(", ") + polylineSaid(value("polyline").toObject());
+    const QJsonArray b = value("box").toArray();
     if (b.size() == 4)
         s += QStringLiteral(" (its box %1, %2 to %3, %4 %5)")
                  .arg(b.at(0).toDouble()).arg(b.at(1).toDouble()).arg(b.at(2).toDouble()).arg(b.at(3).toDouble()).arg(unit);
+    // Its points, when they are few (and no polyline gave its corners).
+    const QJsonArray points = value("points").toArray();
+    if (!has("polyline") && !points.isEmpty() && points.size() <= MostPointsSaid) {
+        QStringList said;
+        for (const QJsonValue& v : points) said << QStringLiteral("(%1, %2)").arg(v.toArray().at(0).toDouble()).arg(v.toArray().at(1).toDouble());
+        s += QStringLiteral("; its points %1").arg(said.join(QLatin1Char(' ')));
+    }
     return s;
 }
 
 QString sentencesOf(const QJsonArray& readings, bool slides, int most)
 {
     QStringList lines;
-    const int from = std::max(0, int(readings.size()) - most);
+    QJsonArray open;
+    QStringList addressed;
+    for (const QJsonValue& v : readings) {
+        const QJsonObject r = v.toObject();
+        if (!r.value(QStringLiteral("addressed")).toBool()) {
+            open.append(r);
+            continue;
+        }
+        addressed << QStringLiteral("%1 %2").arg(slides ? QStringLiteral("slide %1").arg(r.value(QStringLiteral("slide")).toInt())
+                                                        : QStringLiteral("cell %1").arg(r.value(QStringLiteral("cell")).toString()))
+                                             .arg(r.value(QStringLiteral("stroke")).toInt());
+    }
+    const int from = std::max(0, int(open.size()) - most);
     if (from > 0) lines << QStringLiteral("(%1 earlier stroke(s) left out: read_drawings has them all)").arg(from);
-    for (int i = from; i < readings.size(); ++i) {
-        const QJsonObject r = readings.at(i).toObject();
+    for (int i = from; i < open.size(); ++i) {
+        const QJsonObject r = open.at(i).toObject();
         lines << sentenceOf(r, slides ? QStringLiteral("slide %1").arg(r.value(QStringLiteral("slide")).toInt())
                                       : QStringLiteral("cell %1").arg(r.value(QStringLiteral("cell")).toString()),
                             slides ? QStringLiteral("points") : QStringLiteral("µm"));
     }
+    if (!addressed.isEmpty())
+        lines << QStringLiteral("(%1 stroke(s) marked addressed, left out: %2)").arg(addressed.size()).arg(addressed.join(QStringLiteral(", ")));
     return lines.join(QLatin1Char('\n'));
 }
 
