@@ -13925,8 +13925,11 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
         } else if (auto* t = qobject_cast<QTextEdit*>(w)) {
             t->setPlainText(text);
         } else if (auto* c = qobject_cast<QComboBox*>(w)) {
-            int index = c->findText(text, Qt::MatchFixedString);
-            if (index < 0) index = c->findText(text, Qt::MatchContains);
+            // (One the user may type in takes the text typed unless an item
+            // is just that: "dup" is not origin/dup, nor upper Upper - the
+            // recheck of New Worktree, 8 November 2026.)
+            int index = c->isEditable() ? c->findText(text, Qt::MatchExactly | Qt::MatchCaseSensitive) : c->findText(text, Qt::MatchFixedString);
+            if (index < 0 && !c->isEditable()) index = c->findText(text, Qt::MatchContains);
             if (index >= 0) chooseItem(c, index);
             else if (c->isEditable()) c->setEditText(text);
             else ok = false;

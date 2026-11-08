@@ -941,14 +941,14 @@ QStringList worktreeArgs(const QString& folder, const QString& branch, bool crea
     return args;
 }
 
-QString worktreeFolder(const QString& root, const QString& branch)
+QString worktreeFolder(const QString& root, const QString& branch, const QString& in)
 {
     const QFileInfo top(QDir::cleanPath(root));
     QString leaf = branch.trimmed();
     leaf.replace(QLatin1Char('/'), QLatin1Char('-')).replace(QLatin1Char('\\'), QLatin1Char('-'));
     const QString name = leaf.isEmpty() ? top.fileName() : top.fileName() + QLatin1Char('-') + leaf;
     // (By hand, not QDir::filePath: a name beginning with ':' would be a resource.)
-    QString beside = top.absolutePath();
+    QString beside = in.isEmpty() ? top.absolutePath() : QDir::cleanPath(in);
     if (!beside.endsWith(QLatin1Char('/'))) beside += QLatin1Char('/');
     QString target = beside + name;
     for (int n = 2; QFileInfo::exists(target) || QFileInfo(target).isSymLink(); ++n) target = beside + name + QLatin1Char('-') + QString::number(n);
@@ -1854,7 +1854,14 @@ const Repository* Tracker::readNow(const QString& path)
 
 const Repository* Tracker::fresh(const QString& path, int maxAgeMs)
 {
-    const QString root = rootOf(path);
+    QString root = rootOf(path);
+    // (None, as last looked for: looked for again, since this is asked as a
+    // menu opens - a repository made elsewhere a moment ago was off in the
+    // Git menu for up to 5 s: the recheck of New Worktree, 8 November 2026.)
+    if (root.isEmpty()) {
+        a_roots.remove(path);
+        root = rootOf(path);
+    }
     if (root.isEmpty()) return nullptr;
     const auto it = a_repos.constFind(root);
     if (it != a_repos.cend() && it->read.isValid() && it->read.msecsTo(QDateTime::currentDateTime()) < maxAgeMs

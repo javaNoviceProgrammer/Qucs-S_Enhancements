@@ -3213,9 +3213,12 @@ QStringList FileBrowser::selectedPaths() const
     QStringList paths;
     QAbstractItemView* v = currentView();
     if (v == nullptr || v->selectionModel() == nullptr) return paths;
+    // (Those of the folder shown: one chosen in a folder left stays in the
+    // selection, out of sight - Copy, and the menu's Git, took it with the
+    // one clicked: the recheck of New Worktree, 8 November 2026.)
     for (const QModelIndex& index : v->selectionModel()->selectedIndexes())
         if (index.column() == 0)
-            if (const QString p = pathOf(index); !p.isEmpty() && !paths.contains(p)) paths << p;
+            if (const QString p = pathOf(index); !p.isEmpty() && !paths.contains(p) && inView(p)) paths << p;
     return paths;
 }
 
