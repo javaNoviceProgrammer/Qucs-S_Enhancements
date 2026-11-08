@@ -55,8 +55,9 @@ struct CrossSection {
     /// its axis at u = bendCenter. 0: a straight cut.
     double bendRadius = 0, bendCenter = 0;
     /// Whether \a o is the same cut: the same domains in rectangles whose
-    /// edges are within \a tolerance (the geometry's unit).
-    bool sameAs(const CrossSection& o, double tolerance) const;
+    /// edges are within \a tolerance (the geometry's unit) - or, given \a
+    /// classes (by domain), domains of the same class: of one material.
+    bool sameAs(const CrossSection& o, double tolerance, const std::vector<int>* classes = nullptr) const;
 };
 
 /// The cut of \a topology across the line through plan point \a origin along
@@ -210,6 +211,9 @@ SMatrix propagationS(const std::vector<std::complex<double>>& beta, double lengt
 SMatrix cascade(const SMatrix& a, const SMatrix& b);
 /// The identity of \a n modes (no interface).
 SMatrix identityS(int n);
+/// \a s cascaded with itself \a n times (n ≥ 1; its two sides the same
+/// basis), by squaring: log2 n products for a grating's thousand periods.
+SMatrix powerS(const SMatrix& s, long long n);
 
 /// A port of an eigenmode expansion: at the start or the end of its axis,
 /// over its whole window or a box of it, the modes of its cut it takes.
@@ -234,6 +238,15 @@ struct EmePiece {
     double length = 0;
 };
 
+/// A section of a device repeated: its cells from s0 to s1 along the axis -
+/// one period, as drawn - taken \a periods times in a row in their place, the
+/// period's S-matrix with the junction back to its start raised to that
+/// power by squaring: a grating or a Bragg mirror of many periods drawn once.
+struct EmePeriodic {
+    double s0 = 0, s1 = 0;   ///< along the axis (the geometry's unit)
+    long long periods = 1;
+};
+
 /// What an eigenmode expansion solves: an axis of the plan (from origin, s
 /// along `along`) - or a path of straight pieces and arcs, s its length -,
 /// its range, the window of its cuts (u across it, to the left), its ports.
@@ -247,6 +260,9 @@ struct EmeDevice {
     double maxCell = 0;                      ///< the longest cell where the cut changes (0: one per piece)
     double unitScale = 1e-6;
     std::vector<EmePort> ports;
+    /// Sections repeated, in order along the axis and apart: no cell crosses
+    /// their ends.
+    std::vector<EmePeriodic> periodic;
     EmeSettings settings;
 };
 
@@ -258,8 +274,11 @@ struct EmeCell {
 /// The cells of \a device: a cell from each change of the cut to the next -
 /// a vertex of the plan, or where it meets the axis -, a piece where the cut
 /// changes all along it (a taper, a curve) divided into cells no longer than
-/// maxCell; and its distinct cuts.
-std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device, std::vector<CrossSection>* sections, QString* error);
+/// maxCell; and its distinct cuts - given \a materialOf (each domain's
+/// material's class), cuts alike in their rectangles and those rectangles'
+/// materials one (a drawn grating's teeth, each a domain of its own: two).
+std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device, std::vector<CrossSection>* sections, QString* error,
+                              const std::vector<int>* materialOf = nullptr);
 
 /// One frequency's expansion: the S-matrix between the ports' modes, each
 /// port mode a column of what it feeds.

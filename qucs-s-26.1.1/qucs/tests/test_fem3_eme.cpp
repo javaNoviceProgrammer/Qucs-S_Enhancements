@@ -160,6 +160,28 @@ double slabTE0(double n1, double n2, double d, double lambda)
     return (lo + hi) / 2;
 }
 
+/// The reflection and transmission of \a layers (index, thickness) between
+/// media \a n0 and \a ns at \a lambda, at normal incidence: the transfer
+/// (characteristic) matrices' product, each layer [cos φ, j sin φ / n; j n
+/// sin φ, cos φ], φ = k0 n d.
+void transferMatrix(const std::vector<std::pair<double, double>>& layers, double n0, double ns, double lambda, cd* r, cd* t)
+{
+    const double k0 = 2 * M_PI / lambda;
+    cd m11 = 1, m12 = 0, m21 = 0, m22 = 1;
+    for (const auto& [n, d] : layers) {
+        const double ph = k0 * n * d;
+        const cd a11 = std::cos(ph), a12 = cd(0, 1) * std::sin(ph) / n, a21 = cd(0, 1) * n * std::sin(ph), a22 = std::cos(ph);
+        const cd b11 = m11 * a11 + m12 * a21, b12 = m11 * a12 + m12 * a22, b21 = m21 * a11 + m22 * a21, b22 = m21 * a12 + m22 * a22;
+        m11 = b11;
+        m12 = b12;
+        m21 = b21;
+        m22 = b22;
+    }
+    const cd den = n0 * m11 + n0 * ns * m12 + m21 + ns * m22;
+    *r = (n0 * m11 + n0 * ns * m12 - m21 - ns * m22) / den;
+    *t = 2.0 * n0 / den;
+}
+
 } // namespace
 
 class TestFem3Eme : public QObject
@@ -962,6 +984,350 @@ private slots:
             QVERIFY2(std::abs(back / c.back - 1) < 0.03, qPrintable(QString::number(back / c.back - 1)));
             // (Symmetric: nothing in the odd one.)
             QVERIFY(std::norm(r.S(2, 0)) < 1e-4);
+        }
+    }
+
+    // A quarter-wave Bragg mirror filling the window - magnetic sides, metal
+    // floors: its one propagating mode a plane wave, E along z, its index the
+    // layer's - against the transfer matrix, exact for it: oxide, (H L)^N H of
+    // index 2 and 1.444, each a quarter of 1550 nm in it, oxide. Drawn layer
+    // by layer (2N + 3 cells of two cuts: each layer a domain of its own, of
+    // one of two materials) and as a Periodic Section of the one period drawn:
+    // S11 and S21, their phases with them, within 1e-11 at 10 periods (1e-14
+    // found) and 1e-9 at 1,000 (7e-12 by the section's squaring, 2e-10 drawn:
+    // the rounding of 2,000 products), in the stopband and out of it. A
+    // period that begins as the guide before it does (L H after oxide) kept
+    // apart from it; S to the n by squaring as by n products; a section past
+    // the device's end, of no whole number of periods, or over another,
+    // refused.
+    void aBraggStackAgreesWithTheTransferMatrix()
+    {
+        const double nH = 2.0, nL = 1.444, dH = 1.55 / (4 * nH), dL = 1.55 / (4 * nL), a = 1.0, W = 0.3, H = 0.3;
+        // drawn periods drawn (L H, or H L and a last H); a Periodic Section
+        // of `periods` over the first one when `section`.
+        auto stack = [&](int drawn, bool lowFirst, long long periods, bool section, Model* out) {
+            Model m = model3d();
+            QStringList hs, ls;
+            double x = 0;
+            auto layer = [&](const QString& name, double w, bool high) {
+                addBox(m, name, x, -W / 2, 0, w, W, H);
+                (high ? hs : ls) << name;
+                x += w;
+            };
+            layer(QStringLiteral("in"), a, false);
+            for (int i = 0; i < drawn; ++i) {
+                layer(QStringLiteral("p%1a").arg(i), lowFirst ? dL : dH, !lowFirst);
+                layer(QStringLiteral("p%1b").arg(i), lowFirst ? dH : dL, lowFirst);
+            }
+            if (!lowFirst) layer(QStringLiteral("last"), dH, true);
+            layer(QStringLiteral("out"), a, false);
+            addMaterial(m, QStringLiteral("low"), QString::number(nL), ls);
+            addMaterial(m, QStringLiteral("high"), QString::number(nH), hs);
+            Node eme = m.make(QStringLiteral("eme"));
+            eme.props.insert(QStringLiteral("sides"), QStringLiteral("pmc"));
+            eme.props.insert(QStringLiteral("floors"), QStringLiteral("pec"));
+            eme.props.insert(QStringLiteral("modes"), 4);
+            eme.props.insert(QStringLiteral("resolution"), QStringLiteral("10"));
+            const QString tag = eme.tag;
+            m.add(m.component().tag, eme);
+            for (const char* end : {"start", "end"}) {
+                Node p = m.make(QStringLiteral("eme/port"));
+                p.props.insert(QStringLiteral("name"), QLatin1String(end) == QLatin1String("start") ? QStringLiteral("1") : QStringLiteral("2"));
+                p.props.insert(QStringLiteral("end"), QString::fromLatin1(end));
+                p.props.insert(QStringLiteral("modes"), QStringLiteral("1"));
+                m.add(tag, p);
+            }
+            if (section) {
+                Node per = m.make(QStringLiteral("eme/periodic"));
+                per.props.insert(QStringLiteral("from"), QString::number(a, 'g', 17));
+                per.props.insert(QStringLiteral("to"), QString::number(a + dH + dL, 'g', 17));
+                per.props.insert(QStringLiteral("periods"), QString::number(periods));
+                m.add(tag, per);
+            }
+            *out = m;
+            return tag;
+        };
+        auto check = [&](int drawn, bool lowFirst, long long periods, bool section, double tolerance, int cells) {
+            Model m;
+            const QString tag = stack(drawn, lowFirst, periods, section, &m);
+            const Built b = build(m);
+            std::vector<std::pair<double, double>> layers;
+            for (long long i = 0; i < periods; ++i) {
+                layers.push_back(lowFirst ? std::make_pair(nL, dL) : std::make_pair(nH, dH));
+                layers.push_back(lowFirst ? std::make_pair(nH, dH) : std::make_pair(nL, dL));
+            }
+            if (!lowFirst) layers.push_back({nH, dH});
+            for (double lambda : {1.55, 1.40, 1.25}) {
+                EmeDevice device;
+                QString why;
+                QVERIFY2(readEmeDevice(m, *m.find(tag), *b.topology, *b.parameters, C0 / (lambda * 1e-6), &device, &why), qPrintable(why));
+                const EmeResult r = solveEme(m, b.parameters, *b.topology, device, C0 / (lambda * 1e-6));
+                QVERIFY2(r.ok(), qPrintable(r.error));
+                QCOMPARE(int(r.cells.size()), cells);
+                QCOMPARE(r.sections, 2);
+                cd rt, tt;
+                transferMatrix(layers, nL, nL, lambda, &rt, &tt);
+                // (The ports a from the stack's faces, in oxide.)
+                const cd shift = std::exp(cd(0, -2 * 2 * M_PI / lambda * nL * a));
+                const double e11 = std::abs(r.S(0, 0) - rt * shift), e21 = std::abs(r.S(1, 0) - tt * shift);
+                qInfo("%s %lld periods (%s), %.2f µm: |S11|² %.10f (the matrix's %.10f), errors %.2g, %.2g", section ? "a section of" : "drawn,",
+                      periods, lowFirst ? "L H" : "H L", lambda, std::norm(r.S(0, 0)), std::norm(rt), e11, e21);
+                QVERIFY2(e11 < tolerance && e21 < tolerance, qPrintable(QStringLiteral("%1 %2").arg(e11).arg(e21)));
+                QVERIFY(std::abs(r.S(1, 0) - r.S(0, 1)) < tolerance);
+            }
+        };
+        check(10, false, 10, false, 1e-11, 23);
+        check(1, false, 10, true, 1e-11, 5);
+        check(1, false, 1000, true, 1e-9, 5);
+        if (!slowBuild()) check(200, false, 200, false, 1e-9, 403);
+        // A period that begins as the guide before it: oxide, then (L H)^N.
+        check(1, true, 10, true, 1e-11, 4);
+        // S to the n by squaring.
+        {
+            Eigen::MatrixXcd O(2, 2);
+            O << 0.95, 0.12, -0.08, 0.9;
+            const SMatrix P = cascade(interfaceS(O), propagationS({cd(8e6, -1e3), cd(5e6, -2e4)}, 1e-6));
+            SMatrix product = P;
+            for (int n = 1; n <= 9; ++n) {
+                if (n > 1) product = cascade(product, P);
+                const SMatrix power = powerS(P, n);
+                const double e = std::max({(power.s11 - product.s11).cwiseAbs().maxCoeff(), (power.s12 - product.s12).cwiseAbs().maxCoeff(),
+                                           (power.s21 - product.s21).cwiseAbs().maxCoeff(), (power.s22 - product.s22).cwiseAbs().maxCoeff()});
+                QVERIFY2(e < 1e-12, qPrintable(QStringLiteral("n %1: %2").arg(n).arg(e)));
+            }
+        }
+        // Refused: past the end, no whole number, over another.
+        Model m;
+        const QString tag = stack(1, false, 10, true, &m);
+        const Built b = build(m);
+        Node* per = nullptr;
+        for (Node& c : m.find(tag)->children)
+            if (c.type == QLatin1String("eme/periodic")) per = &c;
+        QVERIFY(per);
+        auto refused = [&](const char* expected) {
+            EmeDevice device;
+            QString why;
+            const bool ok = readEmeDevice(m, *m.find(tag), *b.topology, *b.parameters, C0 / 1.55e-6, &device, &why);
+            QVERIFY2(!ok && why.contains(QLatin1String(expected)), qPrintable(why));
+        };
+        per->props.insert(QStringLiteral("to"), QStringLiteral("9"));
+        refused("reaches outside the device");
+        per->props.insert(QStringLiteral("to"), QString::number(a + dH + dL, 'g', 17));
+        per->props.insert(QStringLiteral("periods"), QStringLiteral("2.5"));
+        refused("a whole number");
+        per->props.insert(QStringLiteral("periods"), QStringLiteral("10"));
+        Node again = m.make(QStringLiteral("eme/periodic"));
+        again.props.insert(QStringLiteral("from"), QString::number(a + dH, 'g', 17));
+        again.props.insert(QStringLiteral("to"), QString::number(a + 2 * dH + dL, 'g', 17));
+        QVERIFY(m.add(tag, again));
+        refused("overlap");
+    }
+
+    // A waveguide Bragg grating uniform in z (a 2D problem in the plan)
+    // against the 2D full-wave solver: a core of index 2 (or 2.848, a
+    // silicon slab's), its width alternating w2 and w1 at the period of the
+    // slab's indices (L (n1 + n2) = 1550 nm), access guides of the mean width
+    // 2 µm long, 1.5 µm of clear oxide beside it, 1 µm of absorber in four
+    // steps beyond, metal beyond that; ports at both ends.
+    // - E along the steps (E along z, metal floors), 30 periods of 0.42 and
+    //   0.50 µm: |S11|² 0.348197 against 0.348139 at the stopband's centre,
+    //   within 2.3e-4 across it at 40 elements per wavelength - at 15 its
+    //   stopband sat 0.4 nm short (3.2e-3 off): its indices must be right to
+    //   1e-4. The drawn grating and the Periodic Section alike.
+    // - E across them (in the plane, magnetic floors - a silicon wire's TE
+    //   sidewall grating's), 100 periods of 0.49 and 0.51 µm: the 2D solve's
+    //   0.1497 (0.1492, 0.1499, 0.1497 at h 0.06, 0.04, 0.025 µm), the
+    //   effective indices' coupled-mode estimate tanh²(2Δn N L/λ) 0.607 - the
+    //   steps couple far more weakly than their indices say, E normal to them
+    //   -, and the expansion 0.128 with 30 modes at 30 per wavelength (0.136
+    //   with 60 at 40, 0.139 at 80): its κ 4 to 8 % low, slow in the modes
+    //   and the mesh where E crosses a step's corner.
+    void aGratingAgreesWithTheFullWaveSolve()
+    {
+        if (slowBuild()) QSKIP("a sanitized build: the 2D solves' 200,000 triangles take minutes");
+        struct Grating {
+            double w1, w2, nc;
+            bool hz;
+            int periods, modes;
+            QString resolution;
+        };
+        // The 2D solve's |S11|², |S21|² at each wavelength; the expansion's
+        // (a Periodic Section, or drawn tooth by tooth).
+        auto solve = [](const Grating& gr, const std::vector<double>& lambdas, bool drawn, std::vector<double>* fem11, std::vector<double>* fem21,
+                        std::vector<cd>* eme11, std::vector<cd>* eme21) {
+            const double no = 1.444, k0 = 2 * M_PI / 1.55;
+            auto slab = [&](double w) {
+                double lo = no + 1e-12, hi = gr.nc - 1e-12;
+                for (int i = 0; i < 200; ++i) {
+                    const double n = (lo + hi) / 2, kx = k0 * std::sqrt(gr.nc * gr.nc - n * n), g = k0 * std::sqrt(n * n - no * no);
+                    const double ratio = gr.hz ? gr.nc * gr.nc / (no * no) : 1.0;
+                    if (kx * w / 2 >= M_PI / 2 || std::tan(kx * w / 2) - ratio * g / kx > 0) lo = n;
+                    else hi = n;
+                }
+                return (lo + hi) / 2;
+            };
+            const double L = 1.55 / (slab(gr.w1) + slab(gr.w2)), wa = (gr.w1 + gr.w2) / 2, a = 2, U = gr.w2 / 2 + 1.5, d = 1.0, t = 0.2;
+            const int steps = 4, N = gr.periods;
+            auto kappaOf = [&](int i) { return std::pow((i + 0.5) / steps, 2); };
+            auto num = [](double v) { return QString::number(v, 'g', 17); };
+            if (fem11) {
+                auto rect = [&](const QString& name, double x, double y, double w, double h) {
+                    return QJsonObject{{QStringLiteral("type"), QStringLiteral("rectangle")}, {QStringLiteral("name"), name},
+                                       {QStringLiteral("position"), pairOf(x, y)}, {QStringLiteral("size"), pairOf(w, h)}};
+                };
+                const double xe = a + N * L + a;
+                QJsonArray geometry{rect(QStringLiteral("clear"), 0, -U, xe, 2 * U)}, cores{QStringLiteral("coreIn"), QStringLiteral("coreOut")};
+                QJsonArray ports1{QStringLiteral("clear"), QStringLiteral("coreIn")}, ports2{QStringLiteral("clear"), QStringLiteral("coreOut")};
+                QJsonArray materials{QJsonObject{{QStringLiteral("label"), QStringLiteral("oxide")}, {QStringLiteral("n"), num(no)},
+                                                 {QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("clear")}}}}}};
+                for (int i = 0; i < steps; ++i) {
+                    const QString lo = QStringLiteral("abL%1").arg(i), hi = QStringLiteral("abH%1").arg(i);
+                    geometry.append(rect(lo, 0, -U - (i + 1) * d / steps, xe, d / steps));
+                    geometry.append(rect(hi, 0, U + i * d / steps, xe, d / steps));
+                    for (QJsonArray* p : {&ports1, &ports2}) {
+                        p->append(lo);
+                        p->append(hi);
+                    }
+                    materials.append(QJsonObject{{QStringLiteral("label"), QStringLiteral("absorber%1").arg(i)}, {QStringLiteral("n"), num(no)},
+                                                 {QStringLiteral("kappa"), num(kappaOf(i))},
+                                                 {QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), QJsonArray{lo, hi}}}}});
+                }
+                geometry.append(rect(QStringLiteral("coreIn"), 0, -wa / 2, a, wa));
+                for (int p = 0; p < N; ++p) {
+                    geometry.append(rect(QStringLiteral("w%1").arg(p), a + p * L, -gr.w2 / 2, L / 2, gr.w2));
+                    geometry.append(rect(QStringLiteral("n%1").arg(p), a + p * L + L / 2, -gr.w1 / 2, L / 2, gr.w1));
+                    cores.append(QStringLiteral("w%1").arg(p));
+                    cores.append(QStringLiteral("n%1").arg(p));
+                }
+                geometry.append(rect(QStringLiteral("coreOut"), a + N * L, -wa / 2, a, wa));
+                materials.append(QJsonObject{{QStringLiteral("label"), QStringLiteral("core")}, {QStringLiteral("n"), num(gr.nc)},
+                                             {QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), cores}}}});
+                QStringList fs;
+                for (double l : lambdas) fs << num(C0 / (l * 1e-6));
+                auto port = [](const QString& name, const QJsonArray& of, const QString& side, bool excite) {
+                    return QJsonObject{{QStringLiteral("type"), QStringLiteral("port")}, {QStringLiteral("name"), name}, {QStringLiteral("excite"), excite},
+                                       {QStringLiteral("selection"), QJsonObject{{QStringLiteral("of"), of}, {QStringLiteral("side"), side}}}};
+                };
+                const QJsonObject root{
+                    {QStringLiteral("format"), QStringLiteral("qucs-s multiphysics 1")},
+                    {QStringLiteral("components"),
+                     QJsonArray{QJsonObject{
+                         {QStringLiteral("unit"), QStringLiteral("um")},
+                         {QStringLiteral("geometry"), geometry},
+                         {QStringLiteral("materials"), materials},
+                         {QStringLiteral("physics"),
+                          QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("waves")},
+                                                 {QStringLiteral("tag"), QStringLiteral("ewfd")},
+                                                 {QStringLiteral("polarization"), gr.hz ? QStringLiteral("hz") : QStringLiteral("ez")},
+                                                 {QStringLiteral("order"), QStringLiteral("2")},
+                                                 {QStringLiteral("features"), QJsonArray{port(QStringLiteral("1"), ports1, QStringLiteral("left"), true),
+                                                                                         port(QStringLiteral("2"), ports2, QStringLiteral("right"), false)}}}}},
+                         {QStringLiteral("mesh"),
+                          QJsonObject{{QStringLiteral("size"), QStringLiteral("normal")},
+                                      {QStringLiteral("custom"), true},
+                                      {QStringLiteral("hmax"), QStringLiteral("0.06")},
+                                      {QStringLiteral("features"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("size")},
+                                                                                          {QStringLiteral("level"), QStringLiteral("domain")},
+                                                                                          {QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), cores}}},
+                                                                                          {QStringLiteral("hmax"), QStringLiteral("0.02")}}}}}}}}},
+                    {QStringLiteral("studies"),
+                     QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("study")},
+                                            {QStringLiteral("steps"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("frequency")},
+                                                                                             {QStringLiteral("frequencies"), fs.join(QLatin1String(", "))}}}}}}}};
+                QString why;
+                std::optional<Model> m2 = Model::fromJson(QJsonDocument(root).toJson(), &why);
+                if (!m2) qFatal("%s", qPrintable(why));
+                auto ps2 = evaluateParameters(*m2);
+                const GeometryBuild g2 = buildGeometry(*m2, *ps2);
+                if (!g2.ok()) qFatal("the 2D grating's geometry");
+                StudyRun run2 = runStudy(*m2, ps2, g2.topology, nullptr, QString(), {});
+                if (!run2.ok()) qFatal("%s", qPrintable(run2.error));
+                auto s2 = run2.solutions.back();
+                for (std::size_t k = 0; k < lambdas.size(); ++k) {
+                    s2->select(int(k));
+                    fem11->push_back(std::norm(cd(*s2->global(QStringLiteral("ewfd.S11")), *s2->global(QStringLiteral("ewfd.S11_im")))));
+                    fem21->push_back(std::norm(cd(*s2->global(QStringLiteral("ewfd.S21")), *s2->global(QStringLiteral("ewfd.S21_im")))));
+                }
+            }
+            // The expansion: the cores extruded through the window's height.
+            Model m = model3d();
+            const int drawnPeriods = drawn ? N : 1;
+            addBox(m, QStringLiteral("oxide"), 0, -U, 0, a + drawnPeriods * L + a, 2 * U, t);
+            QStringList cores{QStringLiteral("coreIn"), QStringLiteral("coreOut")};
+            addBox(m, QStringLiteral("coreIn"), 0, -wa / 2, 0, a, wa, t);
+            for (int p = 0; p < drawnPeriods; ++p) {
+                addBox(m, QStringLiteral("w%1").arg(p), a + p * L, -gr.w2 / 2, 0, L / 2, gr.w2, t);
+                addBox(m, QStringLiteral("n%1").arg(p), a + p * L + L / 2, -gr.w1 / 2, 0, L / 2, gr.w1, t);
+                cores << QStringLiteral("w%1").arg(p) << QStringLiteral("n%1").arg(p);
+            }
+            addBox(m, QStringLiteral("coreOut"), a + drawnPeriods * L, -wa / 2, 0, a, wa, t);
+            addMaterial(m, QStringLiteral("oxide"), num(no), {QStringLiteral("oxide")});
+            addMaterial(m, QStringLiteral("core"), num(gr.nc), cores);
+            Node eme = m.make(QStringLiteral("eme"));
+            eme.props.insert(QStringLiteral("window"), QStringLiteral("box"));
+            eme.props.insert(QStringLiteral("across"), pairOf(-U, U));
+            eme.props.insert(QStringLiteral("height"), pairOf(0, t));
+            eme.props.insert(QStringLiteral("sides"), QStringLiteral("absorbing"));
+            eme.props.insert(QStringLiteral("floors"), gr.hz ? QStringLiteral("pmc") : QStringLiteral("pec"));
+            eme.props.insert(QStringLiteral("absorberthickness"), num(d));
+            eme.props.insert(QStringLiteral("absorberkappa"), QStringLiteral("1"));
+            eme.props.insert(QStringLiteral("absorbersteps"), steps);
+            eme.props.insert(QStringLiteral("modes"), gr.modes);
+            eme.props.insert(QStringLiteral("resolution"), gr.resolution);
+            const QString tag = eme.tag;
+            m.add(m.component().tag, eme);
+            for (const char* end : {"start", "end"}) {
+                Node p = m.make(QStringLiteral("eme/port"));
+                p.props.insert(QStringLiteral("name"), QLatin1String(end) == QLatin1String("start") ? QStringLiteral("1") : QStringLiteral("2"));
+                p.props.insert(QStringLiteral("end"), QString::fromLatin1(end));
+                p.props.insert(QStringLiteral("modes"), QStringLiteral("1"));
+                m.add(tag, p);
+            }
+            if (!drawn) {
+                Node per = m.make(QStringLiteral("eme/periodic"));
+                per.props.insert(QStringLiteral("from"), num(a));
+                per.props.insert(QStringLiteral("to"), num(a + L));
+                per.props.insert(QStringLiteral("periods"), QString::number(N));
+                m.add(tag, per);
+            }
+            const Built b = build(m);
+            for (double l : lambdas) {
+                EmeDevice device;
+                QString why;
+                if (!readEmeDevice(m, *m.find(tag), *b.topology, *b.parameters, C0 / (l * 1e-6), &device, &why)) qFatal("%s", qPrintable(why));
+                const EmeResult r = solveEme(m, b.parameters, *b.topology, device, C0 / (l * 1e-6));
+                if (!r.ok()) qFatal("%s", qPrintable(r.error));
+                eme11->push_back(r.S(0, 0));
+                eme21->push_back(r.S(1, 0));
+            }
+        };
+        // E along the steps.
+        {
+            const Grating gr{0.42, 0.50, 2.0, false, 30, 30, QStringLiteral("40")};
+            const std::vector<double> lambdas{1.535, 1.550, 1.565};
+            std::vector<double> f11, f21;
+            std::vector<cd> e11, e21, d11, d21;
+            solve(gr, lambdas, false, &f11, &f21, &e11, &e21);
+            solve(gr, {1.550}, true, nullptr, nullptr, &d11, &d21);
+            for (std::size_t k = 0; k < lambdas.size(); ++k) {
+                qInfo("grating, E along its steps, %.3f µm: |S11|² %.6f |S21|² %.6f; the 2D solve's %.6f %.6f", lambdas[k], std::norm(e11[k]), std::norm(e21[k]),
+                      f11[k], f21[k]);
+                QVERIFY2(std::abs(std::norm(e11[k]) - f11[k]) < 5e-4 && std::abs(std::norm(e21[k]) - f21[k]) < 5e-4,
+                         qPrintable(QStringLiteral("%1 %2").arg(std::norm(e11[k]) - f11[k]).arg(std::norm(e21[k]) - f21[k])));
+            }
+            qInfo("drawn tooth by tooth: |S11 - the section's| %.2g", std::abs(d11[0] - e11[1]));
+            QVERIFY(std::abs(d11[0] - e11[1]) < 1e-9 && std::abs(d21[0] - e21[1]) < 1e-9);
+        }
+        // E across them.
+        {
+            const Grating gr{0.49, 0.51, 2.84778, true, 100, 30, QStringLiteral("30")};
+            std::vector<double> f11, f21;
+            std::vector<cd> e11, e21;
+            solve(gr, {1.550}, false, &f11, &f21, &e11, &e21);
+            const double R = std::norm(e11[0]);
+            qInfo("grating, E across its steps: |S11|² %.4f; the 2D solve's %.4f; the effective indices' estimate 0.607", R, f11[0]);
+            QVERIFY2(std::abs(R - f11[0]) < 0.03, qPrintable(QString::number(R - f11[0])));
+            QVERIFY(R < 0.4 * 0.607);
         }
     }
 
