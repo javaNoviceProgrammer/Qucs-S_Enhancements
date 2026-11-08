@@ -577,6 +577,7 @@ void RouterPanel::showPass(const PassRow& row)
 {
     a_progress->setValue(std::min(a_progress->maximum(), row.pass));
     a_status->setText(row.cleanup ? tr("Clean-up: %1 routed, %2 failed").arg(row.routed).arg(row.failed)
+                      : row.partial ? tr("Pass %1, stopped part way: %2 contested; cleaning up…").arg(row.pass).arg(row.contested)
                                   : tr("Pass %1: %2 routed, %3 failed, %4 contested (%5 s)")
                                         .arg(row.pass)
                                         .arg(row.routed)
