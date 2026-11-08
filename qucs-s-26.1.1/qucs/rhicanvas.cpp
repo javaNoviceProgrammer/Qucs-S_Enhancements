@@ -188,16 +188,30 @@ bool rhiAvailable()
 #elif defined(Q_OS_WIN)
         QRhiD3D11InitParams params;
         rhi.reset(QRhi::create(QRhi::D3D11, &params));
-#else
-        QRhiGles2InitParams params;
-        std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());
-        params.fallbackSurface = surface.get();
-        rhi.reset(QRhi::create(QRhi::OpenGLES2, &params));
+#elif QT_CONFIG(opengl)
+        return openGLFit();
 #endif
         return rhi != nullptr && fitForTheShaders(rhi.get());
     }();
     return can;
 }
+
+#if QT_CONFIG(opengl)
+bool openGLFit()
+{
+    // (The surface first, so it is freed last: ~QRhi makes its context
+    // current on it to free what it made. Declared after the QRhi, it was
+    // freed first - and on Linux the first to ask, the Viewers tab of
+    // Application Settings with every viewer on the CPU, ended the program:
+    // a pure virtual function called on the surface gone, docs/bug_hunts/
+    // 2026-11-08-linux-debug-ci.md, F8.)
+    std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());
+    QRhiGles2InitParams params;
+    params.fallbackSurface = surface.get();
+    std::unique_ptr<QRhi> rhi(QRhi::create(QRhi::OpenGLES2, &params));
+    return rhi != nullptr && fitForTheShaders(rhi.get());
+}
+#endif
 
 bool fitForTheShaders(QRhi* rhi)
 {

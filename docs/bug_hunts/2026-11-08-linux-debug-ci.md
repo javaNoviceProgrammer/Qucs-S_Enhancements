@@ -4,7 +4,8 @@
 tests" (Qt 6.10.3, GCC 11.4, Debug, ASan and UBSan with `halt_on_error=1`) passed at v27.0.6 (`86a8458`) and
 failed 6 of 177 suites at v27.0.8 (run 42432357248). Each failure read from that run's log, reproduced here
 where it could be, and fixed in the commit that adds this report, each fix with a test and broken in turn
-([breaks.py](2026-11-08-linux-debug-ci/breaks.py): 4 of 4 caught).*
+([breaks.py](2026-11-08-linux-debug-ci/breaks.py): 5 of 5 caught). F8, the AppImage's crash in Application
+Settings that the user found on Linux the same day, added after.*
 
 ## Summary
 
@@ -17,6 +18,7 @@ where it could be, and fixed in the commit that adds this report, each fix with 
 | **F5** | `test_fem_adapt` (4) and `test_multiphysics_converge` (3): asserted outcomes of one mesh's numerics, macOS's; `test_fem_waves`' fine-mesh constants, after F3 | tests tuned to one platform's meshes | `063142f`, `73bf6fe` | room for the check; the rates compared at the same accuracy; the goal reference without its own check; the constants of the new meshes |
 | **F6** | `test_font_settings` (4): picked Menlo, which Linux does not have; Qt's dialog gives the nearest family it has, "Sans Serif" | test assumed macOS | `72f7579` (the font panel, 7 Nov) | a family the dialog lists |
 | **F7** | `test_claude_code::replyFromThePermissionCard`: a Reply moved the focus to the composer, the label lost its selection with it, and the next "Copy" was off: the click on it left the menu up for a minute | test assumed macOS's focus | `4cd382d` (4 Nov) | Copy before Reply; the helper closes a menu whose chosen item is off |
+| **F8** | The Linux AppImage ended as Application Settings opened: the check of whether OpenGL can draw the viewers freed its surface before its `QRhi`, and `~QRhi` used it | real bug (a crash, Linux and the BSDs) | `d01d425d` (the viewers on Qt's RHI, 17 Oct) | the surface freed last; `test_gpu_probe` runs the check on a display |
 | **N1** | Accelerate's threaded sparse factorization rounds differently from one run to the next: an adaptive run on macOS is not reproducible (two runs of one model, two meshes after 16 rounds) | finding, not fixed | - | a follow-up (below) |
 | **N3** | After the merge of `f3c591c`: the uniform corner "converged" at 1e-3 with an error of 1.23e-3 in slow builds; the error said below the error made in Release | finding in main's newest change | `f3c591c` (8 Nov) | fixed by the mesh convergence session (`e1eaa8a7`, merged in `b18627cd`); `reentrantCornerRates` asserts the verdict |
 | **N2** | macOS CI at v27.0.8 (run 42472828553): `test_running_jobs::anRf25ModelSolvesWithItsTabClosed`, `doc->isSolving()` false straight after `solve()` | not reproduced here | `276570d` (running simulations, 7 Nov) | the assertion now says why the solve declined |
@@ -211,6 +213,26 @@ open 60 s"). Not a bug: the label behaves as Qt's labels do.
 **Fix.** Copy first, then Reply, as the single-line part above it already did. And `rightClick` closes the
 menu when the item asked for is there but off, so such a test fails at once, at its own check.
 
+## F8 - Application Settings ended the program on Linux
+
+The user, the same day: the Linux AppImage crashes as "Application Settings..." opens. Its Viewers tab
+says whether the GPU can draw (`gpu::hindrance()`, then `rhiAvailable()`), and with every viewer on the
+CPU - the default - it is the first to ask: the viewers ask only for one the GPU is chosen for. On Linux
+the check makes a `QRhi` on OpenGL with a fallback `QOffscreenSurface`, both locals, the surface declared
+after the `QRhi`: so freed before it, and `~QRhi` makes its context current on the fallback surface to free
+what it made. On macOS and Windows the check is Metal's and Direct3D's, with no surface; in the tests,
+on the offscreen platform, it returns before making anything. So no test and no platform but Linux's ran
+it.
+
+Not run on Linux (no Linux machine with a display here): reproduced on macOS by the same code on its
+OpenGL - a probe under ASan ended "Pure virtual function called!" (exit 134) with the source's order, and
+cleanly with the surface first. The check is now `openGLFit()`, compiled wherever Qt has OpenGL, the
+surface declared first. `test_gpu_probe` runs it in a process of its own on the machine's own platform
+(Cocoa, Windows, X11 or Wayland; skipped on Linux without a display, as on CI's runners): with the old
+order the process died on signal 11 and the test failed; with the fix it ends cleanly ("OpenGL checked on
+cocoa: not fit" - macOS's default context is OpenGL 2.1, the `QRhi` made and freed all the same).
+Multiphysics > Settings… asks the same check and would have ended the same way.
+
 ## N1 - adaptive runs on macOS are not reproducible
 
 Two runs of `goalOrientedRefinesForTheValue`'s reference in one Release build agreed on every value to 12
@@ -272,6 +294,8 @@ jobs window's columns; no conflict), the nine suites this commit changes, throug
 - Debug + ASan/UBSan (Apple clang): 9 of 9 - `reentrantCornerRates` among them, N3 fixed.
 - The four lints: green (158 tools).
 
+F8, after: `test_gpu_probe` in Release and on ASan, passing; breaks.py's fifth break caught.
+
 ## Not checked
 
 - CI itself: nothing was pushed. The Linux job takes about 5.5 hours; the GCC tree here stands in for its
@@ -280,6 +304,8 @@ jobs window's columns; no conflict), the nine suites this commit changes, throug
   link against Homebrew's Qt; it passes in Release and on ASan here.
 - The font test's non-macOS branch: compiled and reasoned from Qt's `QFontDialog`, not run.
 - Windows.
+- F8 on Linux itself: the AppImage was not rebuilt or run; the fix is of the cause reproduced on macOS's
+  OpenGL.
 
 ## Follow-ups
 
