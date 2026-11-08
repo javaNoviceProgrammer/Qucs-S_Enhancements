@@ -915,11 +915,14 @@ private slots:
                                .arg(kind, hmax)
                                .toUtf8());
         };
-        // (Sanitized, 0.5 and 1 nm: 2.6 % apart there, the finer pair's
-        // runs past QtTest's 300 s.)
+        // (Sanitized, 0.5 and 1 nm: 2.6 % apart there on macOS's meshes before
+        // 8 November, 3.3 % on the meshes every standard library makes since -
+        // at 1 nm the interface's first triangles decide a few per cent; the
+        // finer pair's runs past QtTest's 300 s. docs/bug_hunts/
+        // 2026-11-08-linux-debug-ci.md, F5.)
         const bool slow = slowBuild();
         const QString fine = slow ? QStringLiteral("0.5") : QStringLiteral("0.25"), coarse = slow ? QStringLiteral("1") : QStringLiteral("0.5");
-        const double within = slow ? 0.03 : 0.01;
+        const double within = slow ? 0.04 : 0.01;
         const Run dd = run(junction(QStringLiteral("abrupt"), fine)), te = run(junction(QStringLiteral("thermionic"), fine));
         const Run teCoarse = run(junction(QStringLiteral("thermionic"), coarse)), tun = run(junction(QStringLiteral("tunnelling"), fine));
         for (const Run* r : {&dd, &te, &teCoarse, &tun}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));

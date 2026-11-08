@@ -38,11 +38,15 @@ namespace {
 constexpr double C0 = 299792458.0;
 using cd = std::complex<double>;
 /// The L-shaped gap's energy (J per metre, 1 V) on a uniform mesh of
-/// 104,215 triangles (hmax 0.01 mm), linear elements.
-constexpr double FineCornerEnergy = 1.132892e-11;
-/// The iris's S21 at 20 GHz on a uniform mesh of 34,488 triangles (hmax
+/// 104,386 triangles (hmax 0.01 mm), linear elements.
+/// (Both of the meshes of 8 November, the same on every standard library
+/// now: docs/bug_hunts/2026-11-08-linux-debug-ci.md, F3. The iris's moved
+/// by 3e-3 from the mesh before, 34,488 triangles: its tolerance below
+/// tells meshes apart, not the error.)
+constexpr double FineCornerEnergy = 1.132889e-11;
+/// The iris's S21 at 20 GHz on a uniform mesh of 34,511 triangles (hmax
 /// 0.2 mm), quadratic elements.
-const std::complex<double> FineIrisS21(-0.29350589, 0.20824795);
+const std::complex<double> FineIrisS21(-0.29448092, 0.21103677);
 
 bool slowBuild()
 {
@@ -1796,9 +1800,9 @@ private slots:
             return cd(global(*r.solution, QStringLiteral("ewfd.S21")), global(*r.solution, QStringLiteral("ewfd.S21_im")));
         };
         // (A sanitized build: the fine mesh's S21 as an optimized one finds
-        // it, 34,488 triangles; its complex LU takes minutes there.)
+        // it, 34,511 triangles; its complex LU takes minutes there.)
         cd ref = FineIrisS21;
-        int nf = 34488;
+        int nf = 34511;
         if (!slowBuild()) {
             const Run fine = run(modelOf(iris(QStringLiteral("0.2"), false)));
             QVERIFY2(fine.error.isEmpty(), qPrintable(fine.error));
@@ -1953,9 +1957,9 @@ private slots:
             const double w = global(*r.solution, QStringLiteral("es.W"));
             const int n = int(r.solution->mesh().triangles.size());
             // (A sanitized build: the fine mesh's energy as an optimized one
-            // finds it, 104,215 triangles.)
+            // finds it, 104,386 triangles.)
             double ref = FineCornerEnergy;
-            int nf = 104215;
+            int nf = 104386;
             if (!slowBuild()) {
                 Model fine = m;
                 fine.find(fine.mesh().tag)->props.insert(QStringLiteral("hmax"), QStringLiteral("0.01"));

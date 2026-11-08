@@ -1792,7 +1792,12 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
 
     for (;;) {
         if (solvedHere >= a_plan.maxMeshes) {
-            stop(QStringLiteral("meshes"), tr("it stopped at its limit of %1 meshes, the values not yet settled").arg(a_plan.maxMeshes));
+            // (Settled on the last mesh allowed, the check to come: said so, not
+            // "not yet settled" - a corner's L had settled to 4e-4 of 1e-3 there.)
+            if (checking)
+                stop(QStringLiteral("meshes"), tr("it stopped at its limit of %1 meshes: the values settled on the last of them, but the check that confirms them, every element cut, would be one more").arg(a_plan.maxMeshes));
+            else
+                stop(QStringLiteral("meshes"), tr("it stopped at its limit of %1 meshes, the values not yet settled").arg(a_plan.maxMeshes));
             break;
         }
         // The solve.
@@ -2208,6 +2213,8 @@ ConvergenceResult Runner::run(const Model& original)
         parts << tr("Not converged: settling would take far more unknowns than allowed");
     } else if (a_result.status == QLatin1String("unknowns")) {
         parts << tr("Not converged: stopped at the limit on unknowns");
+    } else if (worst.isEmpty()) {
+        parts << tr("Not converged: stopped at the limit on meshes before its check");
     } else {
         parts << tr("Not converged: stopped at the limit on meshes");
     }

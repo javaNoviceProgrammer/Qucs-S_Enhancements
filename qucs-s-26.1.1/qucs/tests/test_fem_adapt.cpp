@@ -254,6 +254,7 @@ private slots:
     void aSweepsEndsEachChecked();
     void theModelIsNotTouched();
     void theRefinedMeshKept();
+    void settledOnTheLastMeshIsSaid();
     void resultInTheFile();
     void aDamagedResultIsReadAsFarAsItGoes();
     void oldFilesLoadUnchanged();
@@ -923,6 +924,39 @@ void TestFemAdapt::theModelIsNotTouched()
     QCOMPARE(QJsonDocument(m.toObject()).toJson(), before);
 }
 
+void TestFemAdapt::settledOnTheLastMeshIsSaid()
+{
+    // The values settled on the last mesh allowed, the check one past it: not
+    // converged, and said so - not "the values not yet settled".
+    Model m = modelOf(corner());
+    const QString tag = addCheck(m, {QStringLiteral("es.W")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-3")}, {QStringLiteral("maxmeshes"), 30}});
+    const ConvergenceResult free = check(m, tag);
+    QVERIFY2(free.converged, qPrintable(free.summary));
+    // (The mesh before its check; after the check one more may come, every
+    // element cut again, where an error is still just above its tolerance.)
+    int checkAt = 0;
+    for (const ConvergenceRow& row : free.rows)
+        if (row.kind == QLatin1String("check") && checkAt == 0) checkAt = row.index;
+    QVERIFY(checkAt >= 3);
+    const int settledOn = checkAt - 1;
+    Model capped = modelOf(corner());
+    const QString ct = addCheck(capped, {QStringLiteral("es.W")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-3")}, {QStringLiteral("maxmeshes"), settledOn}});
+    const ConvergenceResult r = check(capped, ct);
+    QVERIFY(!r.converged);
+    QCOMPARE(r.status, QStringLiteral("meshes"));
+    QCOMPARE(int(r.rows.size()), settledOn);
+    QVERIFY2(r.summary.contains(QStringLiteral("before its check")), qPrintable(r.summary));
+    QVERIFY2(!r.summary.contains(QStringLiteral("not settled")), qPrintable(r.summary));
+    const QString notes = r.notes.join(QStringLiteral(" | "));
+    QVERIFY2(notes.contains(QStringLiteral("would be one more")) && !notes.contains(QStringLiteral("not yet settled")), qPrintable(notes));
+    // One mesh fewer: not settled, said as before.
+    Model fewer = modelOf(corner());
+    const QString ft = addCheck(fewer, {QStringLiteral("es.W")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-3")}, {QStringLiteral("maxmeshes"), settledOn - 1}});
+    const ConvergenceResult f = check(fewer, ft);
+    QCOMPARE(f.status, QStringLiteral("meshes"));
+    QVERIFY2(f.notes.join(QString()).contains(QStringLiteral("not yet settled")), qPrintable(f.notes.join(QStringLiteral(" | "))));
+}
+
 void TestFemAdapt::theRefinedMeshKept()
 {
     // Kept, built again from the sizes: about as fine, and of the same value
@@ -930,7 +964,7 @@ void TestFemAdapt::theRefinedMeshKept()
     Model m = modelOf(corner());
     const QString tag = addCheck(m, {QStringLiteral("es.W")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-3")}});
     const ConvergenceResult r = check(m, tag);
-    QVERIFY(r.converged && !r.sizes.isEmpty());
+    QVERIFY2(r.converged && !r.sizes.isEmpty(), qPrintable(r.summary));
     // The coarsest mesh within the tolerance is kept, not the check's when a coarser
     // one is enough (the review of 063142f, K1): here every mesh before the check
     // is off its limit by more than the room the finest's error leaves.
@@ -1104,7 +1138,10 @@ void TestFemAdapt::adaptiveStepsStillWork()
     StudyRun run = runStudy(m, ps, g.topology, nullptr, QString());
     QVERIFY(run.ok());
     QVERIFY(run.log.join(QString()).contains(QStringLiteral("Adaptive mesh refinement")));
-    QCOMPARE(int(run.solutions.front()->mesh().triangles.size()), 1168);
+    // (The same with clang and libc++ on macOS and with GCC and libstdc++, now
+    // that the mesher's and the step's sorts break their ties: before, 1168 on
+    // macOS, 1111 on CI's Linux, 1094 with GCC 16 on macOS.)
+    QCOMPARE(int(run.solutions.front()->mesh().triangles.size()), 1107);
 }
 
 QTEST_GUILESS_MAIN(TestFemAdapt)

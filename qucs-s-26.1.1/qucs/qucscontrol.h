@@ -213,6 +213,10 @@ public:
     static int waitsFor(const QString& tool, const QJsonObject& arguments);
     /// The text of a result (its text parts, joined).
     static QString textOf(const QJsonObject& result);
+    /// The PDFs find_plots, digitize_plot and get_digitized keep read
+    /// (qucscontrol_digitizer.cpp), at most four: none once the application
+    /// is gone - freed with it, not at the program's end.
+    static int digitizerPdfsHeld();
     /// Whether run_script is in this build (Qt's Qml module found).
     static bool scriptingBuilt();
     /// Something every conversation is told with its next call's result

@@ -512,7 +512,8 @@ private slots:
         QVERIFY(doc->waitForPrepared(120000));
         QPointer<RF25Doc> kept(doc);
         doc->solve();
-        QVERIFY(doc->isSolving());
+        // (Why it declined, if it did: on macOS CI at v27.0.8 it did, and passed here.)
+        QVERIFY2(doc->isSolving(), qPrintable(doc->solveProblem() + QStringLiteral(" | ") + doc->preparedLines().join(QStringLiteral(" | "))));
         answerWith("keepRunning");
         closeTabOf(doc);
         QCOMPARE(answered, QStringLiteral("keepRunning "));

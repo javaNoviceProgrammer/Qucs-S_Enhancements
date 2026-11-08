@@ -11,7 +11,9 @@
  * OK and Cancel.
  */
 #include <QtTest>
+#include <QFontDatabase>
 #include <QFontDialog>
+#include <QFontInfo>
 #include <QGridLayout>
 #include <QPushButton>
 #include <QStandardPaths>
@@ -75,6 +77,25 @@ bool pressAndWork(QPushButton* button, const std::function<void(QFontDialog*)>& 
     return seen;
 }
 
+// A family to pick. macOS's panel is told one (Menlo, there on every Mac).
+// Qt's own dialog picks only among the families it lists: one it lacks comes
+// back as the nearest it has - Menlo as "Sans Serif" on CI's Linux, where the
+// tests asked for Menlo and saw that. So there, a family of its list: the
+// fixed-pitch font's if listed, else the first scalable one.
+QString aFamily()
+{
+#ifdef Q_OS_MACOS
+    return QStringLiteral("Menlo");
+#else
+    const QStringList families = QFontDatabase::families();
+    const QString fixed = QFontInfo(QFontDatabase::systemFont(QFontDatabase::FixedFont)).family();
+    if (families.contains(fixed) && QFontDatabase::isSmoothlyScalable(fixed)) return fixed;
+    for (const QString& f : families)
+        if (!QFontDatabase::isPrivateFamily(f) && QFontDatabase::isSmoothlyScalable(f) && !f.contains(u'[')) return f;
+    return {};
+#endif
+}
+
 QFont& setting(int row)
 {
     return row == 0 ? QucsSettings.font : row == 1 ? QucsSettings.appFont : QucsSettings.textFont;
@@ -111,16 +132,18 @@ private slots:
     void aPickedFontReachesTheButtonAndApplySavesIt()
     {
         QFETCH(int, row);
+        const QString family = aFamily();
+        if (family.isEmpty()) QSKIP("No scalable font family here to pick.");
         FontsGuard guard;
-        setting(row) = QFont("Menlo", 10);
+        setting(row) = QFont(family, 10);
         QucsApp app(false);
         MainGuard main(&app);
         QucsSettingsDialog dlg(&app);
         QPushButton* button = fontButton(dlg, row);
         QVERIFY(button != nullptr);
-        QVERIFY(button->text().startsWith("Menlo,10"));
+        QVERIFY(button->text().startsWith(family + ",10"));
 
-        const QFont fourteen("Menlo", 14);
+        const QFont fourteen(family, 14);
         QVERIFY(pressAndWork(button, [&](QFontDialog* dialog) {
 #ifdef Q_OS_MACOS
             QVERIFY(dialog->testOption(QFontDialog::NoButtons));   // the panel's own form
@@ -132,25 +155,27 @@ private slots:
             dialog->accept();
 #endif
         }));
-        QCOMPARE(button->text(), QString("Menlo,14"));
+        QCOMPARE(button->text().section(u',', 0, 1), family + ",14");   // (then a style, if the dialog names one)
         QCOMPARE(setting(row).pointSize(), 10);                    // not before Apply
 
         QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
-        QCOMPARE(setting(row).family(), QString("Menlo"));
+        QCOMPARE(setting(row).family(), family);
         QCOMPARE(setting(row).pointSize(), 14);
     }
 
     // The settings' Cancel is what undoes it.
     void cancelInTheSettingsDropsIt()
     {
+        const QString family = aFamily();
+        if (family.isEmpty()) QSKIP("No scalable font family here to pick.");
         FontsGuard guard;
-        QucsSettings.textFont = QFont("Menlo", 10);
+        QucsSettings.textFont = QFont(family, 10);
         QucsApp app(false);
         MainGuard main(&app);
         QucsSettingsDialog dlg(&app);
         QPushButton* button = fontButton(dlg, 2);
         QVERIFY(button != nullptr);
-        const QFont fourteen("Menlo", 14);
+        const QFont fourteen(family, 14);
         QVERIFY(pressAndWork(button, [&](QFontDialog* dialog) {
 #ifdef Q_OS_MACOS
             emit dialog->currentFontChanged(fourteen);
@@ -161,7 +186,7 @@ private slots:
             dialog->accept();
 #endif
         }));
-        QCOMPARE(button->text(), QString("Menlo,14"));
+        QCOMPARE(button->text().section(u',', 0, 1), family + ",14");   // (then a style, if the dialog names one)
         dlg.reject();
         QCOMPARE(QucsSettings.textFont.pointSize(), 10);
     }

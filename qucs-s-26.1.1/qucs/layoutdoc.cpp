@@ -1596,6 +1596,13 @@ LayoutDoc::~LayoutDoc()
 {
     // A read still going: it stops at its next step, and nothing waits for it.
     if (a_job) a_job->cancelled = true;
+    // The Route panel first, while this is still a LayoutDoc and its view is
+    // there: its destructor gives the view back its mode and overlays. Left to
+    // ~QWidget's children, it reached them through a document already past
+    // this destructor (UBSan on Linux: a downcast of an object that is no
+    // longer a LayoutDoc; docs/bug_hunts/2026-11-08-linux-debug-ci.md).
+    delete a_routerPanel;
+    a_routerPanel = nullptr;
 }
 
 void LayoutDoc::buildUi()

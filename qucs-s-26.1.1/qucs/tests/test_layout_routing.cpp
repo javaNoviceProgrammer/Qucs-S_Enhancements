@@ -440,6 +440,40 @@ private slots:
         QVERIFY(doc->view()->overlays().isEmpty());
     }
 
+    // The tab closed with its Route panel up and a net being clicked: the
+    // panel goes while its document is still a LayoutDoc, view and all. (Left
+    // to ~QWidget's children it went after ~LayoutDoc, and its destructor
+    // reached the view through what was no longer a LayoutDoc: UBSan's
+    // downcast on Linux, nothing seen on macOS. The cast below fails there on
+    // every platform.)
+    void thePanelGoesBeforeItsDocument()
+    {
+        MainGuard guard(app);
+        const QString chip = path("closed.gds");
+        writeChip(chip);
+        LayoutDoc* doc = open(chip);
+        QVERIFY(doc);
+        doc->routeButton()->click();
+        auto* panel = doc->routerPanel();
+        QVERIFY(panel);
+        panel->beginNet();
+        QCOMPARE(doc->view()->mode(), LayoutView::Mode::PickPoint);
+        QObject* const whole = doc;
+        bool wasLayoutDoc = false, viewThere = false, gone = false;
+        connect(panel, &QObject::destroyed, this, [&] {
+            gone = true;
+            auto* d = qobject_cast<LayoutDoc*>(whole);
+            wasLayoutDoc = d != nullptr;
+            viewThere = d != nullptr && d->view() != nullptr;
+        });
+        QSignalSpy docGone(doc, &QObject::destroyed);
+        app->slotFileClose(app->DocumentTab->indexOf(doc));   // (its tab's close button)
+        QTRY_COMPARE(docGone.count(), 1);
+        QVERIFY(gone);
+        QVERIFY(wasLayoutDoc);
+        QVERIFY(viewThere);
+    }
+
     // Pictures of the panel for the write-up, where QUCS_ROUTER_PICTURES
     // names a folder (run on the display: QT_QPA_PLATFORM=cocoa). A small
     // chip: three two-metal capacitors, twelve pads, a pen ring made a
