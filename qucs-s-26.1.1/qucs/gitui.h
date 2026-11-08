@@ -196,6 +196,11 @@ public:
     void pull(const QString& root);
     void push(const QString& root);
     void newBranch(const QString& root, const QString& start = {});
+    /// A worktree of \a root: a second folder of the repository with a branch
+    /// of its own checked out (a new one from \a start, else from the commit
+    /// checked out; or one there already), asked in a window. Shown in the
+    /// File Browser once made.
+    void newWorktree(const QString& root, const QString& start = {});
     void switchBranch(const QString& root, const QString& branch);
     void renameBranch(const QString& root);
     void deleteBranch(const QString& root);

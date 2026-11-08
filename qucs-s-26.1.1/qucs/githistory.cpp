@@ -1159,6 +1159,8 @@ QMenu* HistoryView::menuFor(int row)
     })->setObjectName(QStringLiteral("gitCheckOutCommit"));
     menu->addAction(tr("New Branch Here…"), menu, [commands, root, hash] { commands->newBranch(root, hash); })
         ->setObjectName(QStringLiteral("gitBranchHere"));
+    menu->addAction(tr("New Worktree Here…"), menu, [commands, root, hash] { commands->newWorktree(root, hash); })
+        ->setObjectName(QStringLiteral("gitWorktreeHere"));
     menu->addAction(tr("New Tag Here…"), menu, [commands, root, hash] { commands->newTag(root, hash); })
         ->setObjectName(QStringLiteral("gitTagHere"));
     menu->addSeparator();

@@ -24,15 +24,19 @@
 #include <QBoxLayout>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
 #include <QCryptographicHash>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QFontDatabase>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QLocale>
 #include <QMainWindow>
@@ -695,6 +699,9 @@ void Commands::fillEntryMenu(QMenu* menu, const QStringList& paths)
         fillBranchMenu(branches, root);
     });
     menu->addAction(tr("New Branch…"), this, [this, root] { newBranch(root); })->setObjectName(QStringLiteral("gitNewBranch"));
+    a = menu->addAction(tr("New Worktree…"), this, [this, root] { newWorktree(root); });
+    a->setObjectName(QStringLiteral("gitNewWorktree"));
+    a->setEnabled(!repo.head.isEmpty());
     a = menu->addAction(tr("Stash Changes…"), this, [this, root] { stashChanges(root); });
     a->setObjectName(QStringLiteral("gitStash"));
     a->setEnabled(repo.changedCount() > 0 && !repo.head.isEmpty());
@@ -762,6 +769,9 @@ void Commands::fillFileMenu(QMenu* menu, const QString& file)
         fillBranchMenu(branches, root);
     });
     menu->addAction(tr("New Branch…"), this, [this, root] { newBranch(root); })->setObjectName(QStringLiteral("gitNewBranch"));
+    a = menu->addAction(tr("New Worktree…"), this, [this, root] { newWorktree(root); });
+    a->setObjectName(QStringLiteral("gitNewWorktree"));
+    a->setEnabled(!repo.head.isEmpty());
     if (!repo.operation.isEmpty())
         menu->addAction(tr("Abort the %1").arg(repo.operation), this, [this, root] { abortOperation(root); })
             ->setObjectName(QStringLiteral("gitAbort"));
@@ -1046,6 +1056,111 @@ void Commands::newBranch(const QString& root, const QString& start)
         return;
     }
     if (report(createBranch(root, name, start, true), tr("New Branch"))) done(root, tr("On the new branch %1").arg(name));
+}
+
+void Commands::newWorktree(const QString& root, const QString& start)
+{
+    QStringList local;
+    QString here;
+    for (const Branch& b : branches(root)) {
+        if (b.remote) continue;
+        if (b.current) here = b.name;
+        else local << b.name;
+    }
+    QDialog dialog(window());
+    dialog.setObjectName(QStringLiteral("gitWorktreeDialog"));
+    dialog.setWindowTitle(tr("New Worktree"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* about = new QLabel(tr("A second folder of %1, with a branch of its own checked out: work there while this folder stays as it is. "
+                                "Its commits are the repository's, seen from both.").arg(QFileInfo(root).fileName()),
+                             &dialog);
+    about->setWordWrap(true);
+    layout->addWidget(about);
+    auto* form = new QFormLayout;
+    auto* branch = new QComboBox(&dialog);
+    branch->setObjectName(QStringLiteral("gitWorktreeBranch"));
+    branch->setEditable(true);
+    branch->setInsertPolicy(QComboBox::NoInsert);
+    branch->addItems(local);
+    branch->setCurrentIndex(-1);
+    branch->lineEdit()->setPlaceholderText(local.isEmpty() ? tr("a new branch's name") : tr("a new branch's name, or one of these"));
+    form->addRow(tr("Branch:"), branch);
+    auto* folderRow = new QHBoxLayout;
+    auto* folder = new QLineEdit(&dialog);
+    folder->setObjectName(QStringLiteral("gitWorktreeFolder"));
+    auto* choose = new QPushButton(tr("Choose…"), &dialog);
+    choose->setObjectName(QStringLiteral("gitWorktreeChoose"));
+    folderRow->addWidget(folder, 1);
+    folderRow->addWidget(choose);
+    form->addRow(tr("Folder:"), folderRow);
+    layout->addLayout(form);
+    auto* note = new QLabel(&dialog);
+    note->setObjectName(QStringLiteral("gitWorktreeNote"));
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Make Worktree"));
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    // (The folder follows the branch's name until it is typed in.)
+    auto typed = std::make_shared<bool>(false);
+    connect(folder, &QLineEdit::textEdited, &dialog, [typed] { *typed = true; });
+    const auto update = [=] {
+        const QString name = branch->currentText().trimmed();
+        if (name.isEmpty()) note->setText(QString());
+        else if (name == here) note->setText(tr("%1 is checked out here: a worktree needs a branch of its own.").arg(name));
+        else if (local.contains(name)) note->setText(tr("The branch %1, as it is.").arg(name));
+        else if (start.isEmpty()) note->setText(tr("A new branch %1, from the commit checked out here.").arg(name));
+        else note->setText(tr("A new branch %1, at %2.").arg(name, start.left(7)));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!name.isEmpty() && name != here && !folder->text().trimmed().isEmpty());
+    };
+    connect(branch, &QComboBox::currentTextChanged, &dialog, [=] {
+        if (!*typed) folder->setText(QDir::toNativeSeparators(worktreeFolder(root, branch->currentText().trimmed())));
+        update();
+    });
+    connect(folder, &QLineEdit::textChanged, &dialog, update);
+    connect(choose, &QPushButton::clicked, &dialog, [=, &dialog] {
+        const QString name = branch->currentText().trimmed();
+        const QString in = QFileDialog::getExistingDirectory(&dialog, tr("The Folder the Worktree Goes In"), QFileInfo(root).absolutePath());
+        if (in.isEmpty()) return;
+        *typed = true;
+        folder->setText(QDir::toNativeSeparators(QDir(in).absoluteFilePath(QFileInfo(worktreeFolder(root, name)).fileName())));
+    });
+    folder->setText(QDir::toNativeSeparators(worktreeFolder(root, QString())));
+    update();
+    branch->setFocus();
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    const QString name = branch->currentText().trimmed();
+    const bool create = !local.contains(name);
+    if (name.isEmpty() || name == here) return;
+    if (create && !run(root, {QStringLiteral("check-ref-format"), QStringLiteral("--branch"), name}, true, 15000).ok()) {
+        misc::reportError(tr("%1 cannot be a branch's name (no spaces, no ~ ^ : ? * [ \\, not ending in .lock...).").arg(name));
+        return;
+    }
+    QString target = QDir::fromNativeSeparators(folder->text().trimmed());
+    if (target.isEmpty()) return;
+    if (QDir::isRelativePath(target)) target = QFileInfo(root).absolutePath() + QLatin1Char('/') + target;
+    target = QDir::cleanPath(target);
+    // (Inside the repository it would be one of its untracked folders.)
+    const QString top = QDir::cleanPath(root);
+    if (target == top || target.startsWith(top + QLatin1Char('/'))) {
+        misc::reportError(tr("%1 is inside the repository: a worktree goes in a folder of its own, outside it.").arg(QDir::toNativeSeparators(target)));
+        return;
+    }
+    const QStringList args = worktreeArgs(target, name, create, start);
+    if (args.isEmpty()) {
+        misc::reportError(tr("%1 is not a name git takes here (it begins with '-').").arg(name.startsWith(QLatin1Char('-')) ? name : start));
+        return;
+    }
+    runJob(root, args, tr("Making the worktree"), [this, root, target, name](const Result& r) {
+        if (!report(r, tr("New Worktree"))) return;
+        Tracker::instance()->refresh(target);
+        done(root, {});
+        emit showFolderRequested(target);
+        emit message(tr("A worktree on %1 at %2").arg(name, QDir::toNativeSeparators(target)));
+    });
 }
 
 void Commands::switchBranch(const QString& root, const QString& branch)
