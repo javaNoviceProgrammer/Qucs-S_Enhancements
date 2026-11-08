@@ -14,6 +14,7 @@
 #include "elidedlabel.h"
 #include "filebrowser.h"
 #include "misc.h"
+#include "popupmenu.h"
 #include "settings.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -371,8 +372,7 @@ XmlDoc::XmlDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     connect(a_tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         const QModelIndex at = a_tree->indexAt(pos);
         QMenu* menu = treeMenuFor(at.isValid() ? a_model->nodeOf(a_filter->mapToSource(at)) : 0);
-        menu->exec(a_tree->viewport()->mapToGlobal(pos));
-        menu->deleteLater();
+        qucs_s::popUp(menu, a_tree->viewport()->mapToGlobal(pos));
     });
 
     a_handle = new QWidget(this);

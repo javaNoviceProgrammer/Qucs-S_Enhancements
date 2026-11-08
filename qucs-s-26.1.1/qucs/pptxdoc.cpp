@@ -15,6 +15,7 @@
 #include "links.h"
 #include "main.h"
 #include "misc.h"
+#include "popupmenu.h"
 #include "pptx.h"
 #include "qucs.h"
 #include "settings.h"
@@ -1347,13 +1348,13 @@ void PptxDoc::showMenu(QPoint globalPos, int slide)
 {
     if (a_presentation == nullptr) return;
     if (slide >= 0 && slide != a_view->currentSlide()) a_view->goToSlide(slide);
-    QMenu menu(this);
-    fillMenu(&menu);
+    auto* menu = new QMenu(this);
+    fillMenu(menu);
     if (a_view->drawing().count(SlideView::partOf(a_view->currentSlide())) > 0) {
-        menu.addSeparator();
-        menu.addAction(tr("Clear the Drawings on This Slide"), this, [this] { a_view->clearDrawing(a_view->currentSlide()); });
+        menu->addSeparator();
+        menu->addAction(tr("Clear the Drawings on This Slide"), this, [this] { a_view->clearDrawing(a_view->currentSlide()); });
     }
-    menu.exec(globalPos);
+    qucs_s::popUp(menu, globalPos);
 }
 
 void PptxDoc::fillMenu(QMenu* menu)

@@ -14,6 +14,7 @@
 
 #include "ink.h"
 #include "misc.h"
+#include "popupmenu.h"
 #include "settings.h"
 #ifdef QUCS_GPU_VIEW
 #include "multiphysicsviewgpu.h"
@@ -509,16 +510,16 @@ void GraphicsView::leaveEvent(QEvent* event)
 
 void GraphicsView::contextMenuEvent(QContextMenuEvent* event)
 {
-    QMenu menu(this);
-    menu.addAction(tr("Fit"), this, [this] { fit(); });
-    QAction* gpuAction = menu.addAction(tr("Draw with the GPU"));
+    auto* menu = new QMenu(this);
+    menu->addAction(tr("Fit"), this, [this] { fit(); });
+    QAction* gpuAction = menu->addAction(tr("Draw with the GPU"));
     gpuAction->setCheckable(true);
     gpuAction->setChecked(gpu());
     gpuAction->setEnabled(gpuAvailable() && !a_gpuBroken);
     // (The setting, every open view told: set here alone, the others kept
     // theirs.)
     connect(gpuAction, &QAction::toggled, this, [](bool on) { gpu::setWanted(gpu::Viewer::Multiphysics, on); });
-    menu.exec(event->globalPos());
+    qucs_s::popUp(menu, event->globalPos());
 }
 
 QImage GraphicsView::picture()
