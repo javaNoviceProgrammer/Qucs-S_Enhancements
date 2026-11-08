@@ -52,9 +52,28 @@ struct Opened {
     std::unique_ptr<dg::Source> source;
 };
 
+// The PDFs kept read, freed with the application. (A static of this file, freed
+// at the program's end, outlived QtPdf's lock - a static of its library, gone
+// first: ~QPdfDocument locked a null mutex, and on Linux with Qt 6.10 the
+// program ended in "terminate called after throwing an instance of
+// 'std::system_error'" after the work was done. docs/bug_hunts/
+// 2026-11-08-linux-debug-ci.md)
+QCache<QString, Opened>*& openedCache()
+{
+    static QCache<QString, Opened>* cache = nullptr;
+    return cache;
+}
+
 Opened* openedPdf(const QString& file, QString* error)
 {
-    static QCache<QString, Opened> cache(4);
+    if (openedCache() == nullptr) {
+        openedCache() = new QCache<QString, Opened>(4);
+        qAddPostRoutine([] {
+            delete openedCache();
+            openedCache() = nullptr;
+        });
+    }
+    QCache<QString, Opened>& cache = *openedCache();
     const QFileInfo info(file);
     const QString key = file + QLatin1Char('|') + QString::number(info.size()) + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
     if (Opened* have = cache.object(key)) return have;
@@ -738,7 +757,11 @@ QJsonObject QucsControl::getDigitized(const QJsonObject& args)
     return jsonResult(result);
 }
 
+int QucsControl::digitizerPdfsHeld() { return openedCache() != nullptr ? int(openedCache()->size()) : 0; }
+
 #else // QUCS_HAVE_QTPDF
+
+int QucsControl::digitizerPdfsHeld() { return 0; }
 
 QJsonObject QucsControl::findPlots(const QJsonObject&) { return errorResult(tr("This build of Qucs-S has no PDF reader (Qt PDF).")); }
 QJsonObject QucsControl::digitizePlot(const QJsonObject&) { return errorResult(tr("This build of Qucs-S has no PDF reader (Qt PDF).")); }

@@ -27,6 +27,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <cstdio>
 #include <functional>
 
 #include "config.h"
@@ -592,7 +593,14 @@ private slots:
         QCOMPARE_LE(worst(o.value("series").toArray().first().toObject(), sine), 0.0005);
         QVERIFY(!picture(result).isNull());
         p.closeWriteChannel();
-        if (!p.waitForFinished(15000)) p.kill();
+        // And it ends as a program should: what was asked is not all.
+        const bool finished = p.waitForFinished(15000);
+        if (!finished) p.kill();
+        QVERIFY(finished);
+        const QByteArray errors = p.readAllStandardError();
+        QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0,
+                 qPrintable(QStringLiteral("exit %1: %2").arg(p.exitCode()).arg(QString::fromUtf8(errors.right(2000)))));
+        QVERIFY2(!errors.contains("terminate called"), errors.right(2000).constData());
 #else
         QSKIP("The program's path is not known to this test.");
 #endif
@@ -1007,8 +1015,22 @@ private slots:
 
 int main(int argc, char** argv)
 {
-    QApplication app(argc, argv);
-    TestPlotDigitizerApp test;
-    return QTest::qExec(&test, argc, argv);
+    int failed = 0;
+    {
+        QApplication app(argc, argv);
+        TestPlotDigitizerApp test;
+        failed = QTest::qExec(&test, argc, argv);
+        // The tools kept PDFs read (digitizeInOneCall and the calls after it;
+        // not when only functions without them were asked for).
+        if (QucsControl::digitizerPdfsHeld() == 0) std::fprintf(stderr, "Note: the tools kept no PDF read; the check after the application went checks nothing\n");
+    }
+    // The application gone: so are they, not left to the program's end, where
+    // QtPdf's own lock went first (on Linux, Qt 6.10: an abort after the last
+    // test, docs/bug_hunts/2026-11-08-linux-debug-ci.md).
+    if (QucsControl::digitizerPdfsHeld() != 0) {
+        std::fprintf(stderr, "FAIL: %d PDFs still held by the digitizer's tools after the application went\n", QucsControl::digitizerPdfsHeld());
+        failed = 1;
+    }
+    return failed;
 }
 #include "test_plot_digitizer_app.moc"

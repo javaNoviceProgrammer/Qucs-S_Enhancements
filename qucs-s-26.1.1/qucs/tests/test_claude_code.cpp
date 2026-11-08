@@ -772,7 +772,10 @@ class TestClaudeCode : public QObject
                 items << text + (a->isEnabled() ? QString() : QStringLiteral(" (off)"));
                 if (text == chosen) item = a;
             }
-            if (item == nullptr) menu->close();
+            // (An item there but off: a click on it leaves the menu up, for the
+            // watchdog to close a minute later. Closed now, as the click would
+            // have done nothing; the test's check after it fails at once.)
+            if (item == nullptr || !item->isEnabled()) menu->close();
             else QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(item).center());
         });
         return items;
@@ -6165,11 +6168,14 @@ private slots:
         subject->setText(QStringLiteral("line one\nline two"));
         subject->setSelection(5, 7);
         QCOMPARE(subject->selectedText(), QStringLiteral("one\u2029lin"));
+        // (Copied first: Reply puts the focus in the composer, and a label that
+        // loses the focus may lose its selection with it - on Linux it does,
+        // and Copy was off there.)
+        rightClick(subject, on, "Copy");
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("one\nlin"));
         composer->clear();
         rightClick(subject, on, "Reply");
         QCOMPARE(composer->toPlainText(), QStringLiteral("> one\n> lin\n\n"));
-        rightClick(subject, on, "Copy");
-        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("one\nlin"));
         subject->setText(wholeSubject);
         // The details: a line to a line, the box's own items under it.
         QVERIFY(detail->isVisible());

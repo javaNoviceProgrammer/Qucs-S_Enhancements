@@ -4227,7 +4227,7 @@ StudyResult solveAdaptive(const Model& model, std::shared_ptr<ParameterScope> pa
             if (eta[std::size_t(t)] > 0) order.push_back(t);
         }
         said << tr("%1 triangles, error %2").arg(m.triangles.size()).arg(std::sqrt(total), 0, 'g', 3);
-        std::sort(order.begin(), order.end(), [&](int a, int b) { return eta[std::size_t(a)] > eta[std::size_t(b)]; });
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return eta[std::size_t(a)] != eta[std::size_t(b)] ? eta[std::size_t(a)] > eta[std::size_t(b)] : a < b; });
         double marked = 0;
         for (int t : order) {
             if (marked >= 0.5 * total) break;
