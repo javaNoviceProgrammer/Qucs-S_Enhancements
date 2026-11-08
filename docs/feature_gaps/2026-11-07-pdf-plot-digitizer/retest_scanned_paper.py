@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """The review of 7 November (qucs-reviews/PdfViewer/2026-11-07-claude-pdf-
-digitizer-check.md), rerun: Fig. 4(a), 4(b) and 5 of the scanned paper it used,
-through Claude's tools over stdio with no window, with the references it gave.
+digitizer-check.md) and its recheck of 8 November (2026-11-08-claude-pdf-
+digitizer-recheck.md), rerun: Fig. 4(a), 4(b) and 5 of the scanned paper they
+used, through Claude's tools over stdio with no window - with the references
+the review gave, then the recheck's runs: colours and names, one colour with
+x_range and y_range, two seeds on one curve. Each line is checked to come back
+in order of x.
 
     python3 retest_scanned_paper.py <qucs-s program> <the paper's PDF> [<folder for the pictures>]
 
@@ -15,6 +19,17 @@ import subprocess
 import sys
 import tempfile
 import time
+
+BLUE4, BLACK = "#3550a4", "#000000"
+# The recheck's runs: (what, figure, arguments besides the plot; references
+# given unless the run has x_range).
+RUNS = [
+    ("Fig. 5, three colours", "Fig. 5", dict(colours=["#e11e25", "#425396", BLACK])),
+    ("Fig. 4(a), names by colour", "Fig. 4(a)", dict(colours=[BLUE4, BLACK], names=["Model", "COMSOL"])),
+    ("Fig. 4(b), names by colour", "Fig. 4(b)", dict(colours=[BLUE4, BLACK], names=["Model", "COMSOL"])),
+    ("Fig. 5, blue alone, ranges", "Fig. 5", dict(colours=["#425396"], x_range=[0.6, 2], y_range=[0, 1])),
+    ("Fig. 4(a), two seeds", "Fig. 4(a)", dict(colours=[BLUE4], seeds=[[140.9, 113.3], [88.42, 94.5]])),
+]
 
 FIGURES = {
     "Fig. 5": [([354, 156.88], 0.6, 0), ([534.5, 156.88], 2, 0), ([354, 56.6], 0.6, 1)],
@@ -58,10 +73,16 @@ def main():
         print(f"find_plots page 3: {ms:.0f} ms, {len(found['plots'])} plots")
         for plot in found["plots"]:
             print("   ", plot["plot"], plot["box"], plot["calibration"].get("x_axis", {}).get("title", ""), plot.get("notes", [])[:1])
-        for name, refs in FIGURES.items():
-            references = [{"at": at, "x": x, "y": y} for at, x, y in refs]
+        runs = [(name, name, {}) for name in FIGURES] + RUNS
+        for title, name, extra in runs:
+            refs = FIGURES[name]
             box = next(pl for pl in found["plots"] if pl["box"][0] - 1 <= refs[0][0][0] <= pl["box"][2] + 1)
-            ms, d, images = tool("digitize_plot", path=pdf, page=3, plot=box["plot"], references=references, picture=pictures is not None)
+            args = dict(path=pdf, page=3, plot=box["plot"], picture=pictures is not None, max_points=100000)
+            if "x_range" not in extra:
+                args["references"] = [{"at": at, "x": x, "y": y} for at, x, y in refs]
+            args.update(extra)
+            ms, d, images = tool("digitize_plot", **args)
+            name = title
             if isinstance(d, str):
                 print(name, "refused:", d)
                 continue
@@ -69,8 +90,10 @@ def main():
             for s in d["series"]:
                 ys = [y for y in s.get("y", []) if y is not None]
                 xs = [x for x in s.get("x", []) if x is not None]
+                back = sum(1 for a, b in zip(xs, xs[1:]) if b < a) if s["shape"] == "line" else 0
                 print(f"   {s['name']:<12} {s['shape']:<8} {s['colour']} {s['points_in_all']:>4} points, "
-                      f"x {min(xs):.3f}..{max(xs):.3f}, y up to {max(ys):.3f}" if xs else f"   {s['name']}: no points")
+                      f"x {min(xs):.3f}..{max(xs):.3f}, y up to {max(ys):.3f}" + (f", NOT IN ORDER OF X ({back} steps back)" if back else "")
+                      if xs else f"   {s['name']}: no points")
             for note in d.get("notes", []):
                 print("   note:", note)
             for reason in d["trust"].get("reasons", []):

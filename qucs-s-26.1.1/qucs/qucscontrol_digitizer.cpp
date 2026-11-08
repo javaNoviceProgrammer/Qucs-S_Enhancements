@@ -588,8 +588,10 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
                 const QString name = names.at(k).toString().left(200);
                 int count = 0;
                 for (dg::Series& series : plot.series) {
-                    int nearest = -1;
-                    double best = 1e9;
+                    // (By the colour it was traced as, where it says; else the
+                    // nearest - a file's own colours are the colours named.)
+                    int nearest = series.asked;
+                    double best = nearest >= 0 ? -1 : 1e9;
                     for (int j = 0; j < options.colours.size(); ++j) {
                         const QColor& c = options.colours.at(j);
                         const double d = std::abs(c.red() - series.colour.red()) + std::abs(c.green() - series.colour.green()) + std::abs(c.blue() - series.colour.blue());
