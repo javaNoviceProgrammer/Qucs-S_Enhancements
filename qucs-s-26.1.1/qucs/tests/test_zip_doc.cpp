@@ -8,6 +8,7 @@
  * copy, followed: saved, it is in the archive again; nothing run.
  */
 #include <QtTest>
+#include <array>
 #include <QAction>
 #include <QFileDialog>
 #include <QHeaderView>
@@ -130,6 +131,29 @@ private slots:
     // The archive's directory read without inflating; a file extracted on
     // its own; packed bytes copied as they are keep the archive as it was:
     // times, a Unix mode, comments.
+    // The checksum taken eight bytes at a time (2026-11-08) is the one
+    // taken a byte at a time: the standard's check value, and every length
+    // round the eight-byte steps, of every byte value.
+    void theChecksumIsZipsCrc32()
+    {
+        QCOMPARE(zip::crc32(QByteArrayLiteral("123456789")), 0xCBF43926u);
+        QCOMPARE(zip::crc32(QByteArray()), 0u);
+        std::array<quint32, 256> table{};
+        for (quint32 n = 0; n < 256; ++n) {
+            quint32 c = n;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[n] = c;
+        }
+        QByteArray bytes;
+        for (int i = 0; i < 70; ++i) bytes.append(char((i * 151 + 7) & 0xFF));
+        for (int length = 0; length <= bytes.size(); ++length) {
+            const QByteArray part = bytes.left(length);
+            quint32 c = 0xFFFFFFFFu;
+            for (const char ch : part) c = table[(c ^ uchar(ch)) & 0xFF] ^ (c >> 8);
+            QCOMPARE(zip::crc32(part), c ^ 0xFFFFFFFFu);
+        }
+    }
+
     void theArchiveLayer()
     {
         const QByteArray archive = sampleArchive();

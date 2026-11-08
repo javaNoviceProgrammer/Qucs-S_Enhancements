@@ -23,13 +23,17 @@
 #include "zipfile.h"
 
 #include <QAbstractTextDocumentLayout>
+#include <QBuffer>
+#include <QCache>
 #include <QDir>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QHash>
+#include <QImageReader>
 #include <QLocale>
 #include <QMap>
+#include <QMutex>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegularExpression>
@@ -44,6 +48,7 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <functional>
@@ -56,6 +61,7 @@ namespace qucs_s::pptx {
 namespace {
 
 constexpr qreal kEmuPerPoint = 12700.0;
+constexpr qreal kMaxSlideSide = 40320;   // points: ten times PowerPoint's largest
 constexpr qreal kPi = 3.14159265358979323846;
 
 qreal pt(double emu)
@@ -247,10 +253,41 @@ public:
         return doc != nullptr && !doc->kids.empty() ? doc->kids.front().get() : nullptr;
     }
 
-    QList<Rel> rels(const QString& part) const
+    /// \a part's relationships, as its .rels part lists them.
+    const QList<Rel>& rels(const QString& part) const { return relSet(part).list; }
+    std::optional<Rel> rel(const QString& part, const QString& id) const
     {
-        if (auto it = a_rels.constFind(part); it != a_rels.constEnd()) return *it;
-        QList<Rel> out;
+        if (id.isEmpty()) return std::nullopt;
+        const RelSet& set = relSet(part);
+        const auto it = set.byId.constFind(id);
+        return it == set.byId.constEnd() ? std::nullopt : std::optional<Rel>(set.list.at(*it));
+    }
+    /// The first of \a part's relationships whose type ends in \a kind
+    /// ("/slideLayout").
+    std::optional<Rel> relOfType(const QString& part, QStringView kind) const
+    {
+        for (const Rel& r : relSet(part).list)
+            if (r.type.endsWith(kind)) return r;
+        return std::nullopt;
+    }
+
+    /// The parts not read for nesting deeper than kMaxXmlDepth.
+    const QStringList& tooDeep() const { return a_tooDeep; }
+
+private:
+    /// A part's relationships, and where each id first stands among them.
+    /// Looked up by id: going through a list of them for each slide - and
+    /// copying it whole each time, a loop over a list shared with the
+    /// cache - took the square of the slides (a deck of 3,000 slides spent
+    /// a quarter of its reading there, 2026-11-08).
+    struct RelSet {
+        QList<Rel> list;
+        QHash<QString, qsizetype> byId;
+    };
+    const RelSet& relSet(const QString& part) const
+    {
+        if (auto it = a_rels.find(part); it != a_rels.end()) return it->second;
+        RelSet set;
         const int slash = int(part.lastIndexOf(QLatin1Char('/')));
         const QString folder = slash < 0 ? QString() : part.left(slash);
         const QString relsPart = (folder.isEmpty() ? QString() : folder + QLatin1Char('/')) + QStringLiteral("_rels/")
@@ -263,31 +300,15 @@ public:
                 rel.external = r->attr(u"TargetMode") == QLatin1String("External");
                 const QString target = r->attr(u"Target");
                 rel.target = rel.external ? target : resolve(folder, target);
-                out << rel;
+                // (An id twice: the first, as a reader going down the list
+                // finds it.)
+                if (!set.byId.contains(rel.id)) set.byId.insert(rel.id, set.list.size());
+                set.list << rel;
             }
-        a_rels.insert(part, out);
-        return out;
-    }
-    std::optional<Rel> rel(const QString& part, const QString& id) const
-    {
-        if (id.isEmpty()) return std::nullopt;
-        for (const Rel& r : rels(part))
-            if (r.id == id) return r;
-        return std::nullopt;
-    }
-    /// The first of \a part's relationships whose type ends in \a kind
-    /// ("/slideLayout").
-    std::optional<Rel> relOfType(const QString& part, QStringView kind) const
-    {
-        for (const Rel& r : rels(part))
-            if (r.type.endsWith(kind)) return r;
-        return std::nullopt;
+        // (A map: what it gives stays where it is as more are added.)
+        return a_rels.emplace(part, std::move(set)).first->second;
     }
 
-    /// The parts not read for nesting deeper than kMaxXmlDepth.
-    const QStringList& tooDeep() const { return a_tooDeep; }
-
-private:
     static QString resolve(const QString& folder, const QString& target)
     {
         QString t = QUrl::fromPercentEncoding(target.toUtf8());
@@ -295,7 +316,7 @@ private:
         return QDir::cleanPath(folder.isEmpty() ? t : folder + QLatin1Char('/') + t);
     }
     mutable std::map<QString, std::unique_ptr<Node>> a_xml;
-    mutable QHash<QString, QList<Rel>> a_rels;
+    mutable std::map<QString, RelSet> a_rels;
     mutable QStringList a_tooDeep;
 };
 
@@ -408,21 +429,44 @@ QColor modified(QColor c, const Node* clr)
 }
 
 // ---------------------------------------------------------------------------
-// Pictures: decoded once, when first drawn.
+// Pictures: looked at when the deck is read - what they are, how large -
+// and decoded when drawn, no larger than they are drawn, kept within a
+// budget all the decks open share. Decoded at reading, a deck of 200
+// photographs took 3.4 GB and 4.9 s to open (2026-11-08).
+
+/// The pictures decoded, by their media's serial and how far each was
+/// shrunk: the least recently drawn let go past the budget.
+struct DecodedPictures {
+    QMutex lock;
+    QCache<quint64, QImage> kept{256 * 1024};   // kB: 256 MB
+    std::atomic<quint64> serials{0};
+};
+DecodedPictures& decodedPictures()
+{
+    static DecodedPictures pictures;
+    return pictures;
+}
 
 struct Media {
     QString name;
     QByteArray bytes;
     QString suffix;
-    mutable bool decoded = false;
-    mutable QImage image;
+    quint64 serial = ++decodedPictures().serials;   ///< its key among the pictures decoded
+    mutable QMutex lock;   ///< (drawn on more than one thread: its SVG, its decoding)
+    mutable bool probed = false;
+    mutable QSize size;   ///< a raster picture's, as its header says (invalid: none readable)
+    mutable std::atomic<bool> broken{false};   ///< a raster picture whose header read but whose pixels did not
     mutable std::shared_ptr<QSvgRenderer> svg;
     mutable bool tooFar = false;   ///< an SVG whose <use> references ask for too much
 
-    void decode() const
+    /// What it is and how large, from its bytes; an SVG read (it is drawn
+    /// from its tree at any size). At reading, so a picture that cannot be
+    /// drawn is said to be.
+    void probe() const
     {
-        if (decoded) return;
-        decoded = true;
+        const QMutexLocker locked(&lock);
+        if (probed) return;
+        probed = true;
         static const QSet<QString> raster{QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("jpeg"), QStringLiteral("jpe"),
                                           QStringLiteral("gif"), QStringLiteral("bmp"), QStringLiteral("tif"), QStringLiteral("tiff"),
                                           QStringLiteral("webp")};
@@ -433,27 +477,82 @@ struct Media {
             else if (bytes.startsWith("\xFF\xD8\xFF")) kind = QStringLiteral("jpeg");
             else if (bytes.startsWith("GIF8")) kind = QStringLiteral("gif");
             else if (bytes.startsWith("BM")) kind = QStringLiteral("bmp");
-            else if (bytes.startsWith("II*") || bytes.startsWith("MM\x00*")) kind = QStringLiteral("tiff");
+            else if (bytes.startsWith("II*") || bytes.startsWith(QByteArrayView("MM\x00*", 4))) kind = QStringLiteral("tiff");
             else if (bytes.left(512).contains("<svg")) kind = QStringLiteral("svg");
         }
-        // QSvgRenderer and QImage::fromData both read by what the bytes
-        // are, not by what the name says, and QtSvg expands every <use>
+        // QSvgRenderer and QImageReader both read by what the bytes are,
+        // not by what the name says, and QtSvg expands every <use>
         // reference as it reads: an SVG asking for too many is not drawn,
-        // whatever it is called.
-        if (qucs_s::svg::expandsTooFar(bytes)) {
+        // whatever it is called. (Bytes that begin as a raster picture's
+        // are none: looked through, a megabyte photograph's took 9 ms.)
+        const bool rasterBytes = bytes.startsWith("\x89PNG") || bytes.startsWith("\xFF\xD8\xFF") || bytes.startsWith("GIF8") || bytes.startsWith("BM")
+                                 || bytes.startsWith("II*") || bytes.startsWith(QByteArrayView("MM\x00*", 4))
+                                 || (bytes.startsWith("RIFF") && bytes.mid(8, 4) == "WEBP");
+        if (!rasterBytes && qucs_s::svg::expandsTooFar(bytes)) {
             tooFar = true;
             return;
         }
         if (kind == QLatin1String("svg")) {
-            if (auto r = std::make_shared<QSvgRenderer>(bytes); r->isValid()) svg = r;
+            if (auto r = std::make_shared<QSvgRenderer>(bytes); r->isValid() && !r->viewBoxF().isEmpty()) svg = r;
         } else if (raster.contains(kind)) {
-            image = QImage::fromData(bytes);
+            QBuffer buffer;
+            buffer.setData(bytes);
+            buffer.open(QIODevice::ReadOnly);
+            QImageReader reader(&buffer);
+            if (reader.canRead()) size = reader.size();
+            if (!size.isEmpty()) return;
+            // A reader that cannot tell its size from its header: decoded
+            // whole, once, to know.
+            size = QSize();
+            const QImage whole = reader.canRead() ? reader.read() : QImage();
+            if (!whole.isNull()) size = whole.size();
         }
     }
     bool drawable() const
     {
-        decode();
-        return svg != nullptr || !image.isNull();
+        probe();
+        return svg != nullptr || !size.isEmpty();
+    }
+
+    /// The raster picture decoded at least \a atLeast large (pixels; it
+    /// whole when that is empty), shrunk by a power of two where it is
+    /// larger than that - so one decoding serves zooms near each other. A
+    /// null image when it cannot be decoded.
+    QImage image(QSize atLeast = QSize()) const
+    {
+        probe();
+        if (size.isEmpty() || broken) return QImage();
+        int level = 0;
+        QSize shrunk = size;
+        while (level < 8 && atLeast.isValid() && shrunk.width() / 2 >= std::max(1, atLeast.width()) && shrunk.height() / 2 >= std::max(1, atLeast.height())) {
+            shrunk /= 2;
+            ++level;
+        }
+        const quint64 key = serial << 4 | quint64(level);
+        DecodedPictures& pictures = decodedPictures();
+        {
+            const QMutexLocker held(&pictures.lock);
+            if (const QImage* kept = pictures.kept.object(key)) return *kept;
+        }
+        // (One decoding of it at a time: the next finds it kept.)
+        const QMutexLocker locked(&lock);
+        {
+            const QMutexLocker held(&pictures.lock);
+            if (const QImage* kept = pictures.kept.object(key)) return *kept;
+        }
+        QBuffer buffer;
+        buffer.setData(bytes);
+        buffer.open(QIODevice::ReadOnly);
+        QImageReader reader(&buffer);
+        if (level > 0) reader.setScaledSize(shrunk);
+        QImage decoded = reader.read();
+        if (decoded.isNull()) {
+            broken = true;
+            return QImage();
+        }
+        const QMutexLocker held(&pictures.lock);
+        pictures.kept.insert(key, new QImage(decoded), std::max<qsizetype>(1, decoded.sizeInBytes() / 1024));
+        return decoded;
     }
     /// What it is, when it is not drawn ("an EMF picture").
     QString kind() const
@@ -850,6 +949,26 @@ struct Slide {
     SlideInfo info;
 };
 
+/// The layouts of \a e's text let go (made again when next drawn).
+void forgetLayouts(const Element& e)
+{
+    if (e.text != nullptr) e.text->a_doc.reset();
+    if (e.table != nullptr)
+        for (const Cell& c : e.table->cells)
+            if (c.text != nullptr) c.text->a_doc.reset();
+    for (const Element& k : e.children) forgetLayouts(k);
+}
+
+/// How many text frames \a e has (its own, its cells', its children's).
+int textFrames(const Element& e)
+{
+    int n = e.text != nullptr ? 1 : 0;
+    if (e.table != nullptr)
+        for (const Cell& c : e.table->cells) n += c.text != nullptr ? 1 : 0;
+    for (const Element& k : e.children) n += textFrames(k);
+    return n;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -874,6 +993,36 @@ struct Presentation::Data {
         }
         return *it;
     }
+
+    /// Slide \a index's text laid out (drawn, or its parts found): the
+    /// layouts of the slides laid out last are kept - a zoom or a tile draws
+    /// them again -, some 4,000 text frames' (about 90 MB), the others' let
+    /// go. Kept for every slide drawn, the 15,000 text frames of 50 slides
+    /// took some 320 MB (2026-11-08).
+    void laidOut(int index)
+    {
+        constexpr int kFramesKept = 4000;
+        laid.removeOne(index);
+        laid.prepend(index);
+        const auto framesOf = [this](int slide) {
+            int n = 0;
+            for (const Element& e : slides.at(slide).elements) n += textFrames(e);
+            return n;
+        };
+        int frames = 0;
+        for (int k = 0; k < laid.size(); ++k) {
+            frames += framesOf(laid.at(k));
+            // (The two laid out last kept, however many they have.)
+            if (k >= 2 && frames > kFramesKept) {
+                while (laid.size() > k) {
+                    const int gone = laid.takeLast();
+                    for (const Element& e : slides.at(gone).elements) forgetLayouts(e);
+                }
+                break;
+            }
+        }
+    }
+    QList<int> laid;   ///< the slides whose layouts are kept, the last laid out first
 };
 
 namespace {
@@ -995,6 +1144,36 @@ std::optional<QColor> colorOf(const Node* holder, const Ctx& c, const std::optio
     return std::nullopt;
 }
 
+/// The extension of a blip that holds an SVG (asvg:svgBlip): PowerPoint's
+/// since 2016.
+constexpr QLatin1StringView kSvgBlipExtension("{96DAC541-7B7A-43D3-8B79-37D633B846F1}");
+
+/// The picture a blip (a:blip) shows. PowerPoint keeps an SVG picture in
+/// the blip's extension list (asvg:svgBlip), and a PNG of it as the blip's
+/// own picture for readers that know no SVG - or, for an icon inserted on a
+/// Mac, the SVG alone, with no picture of the blip's own at all. Other tools
+/// make the SVG the blip's own. So: the SVG when it can be drawn - sharp at
+/// any zoom -, else the blip's own picture, else (neither can be drawn) the
+/// one whose kind is said in its place - an SVG asking too much, else the
+/// blip's own, else the SVG. Null where it names no picture in the file.
+std::shared_ptr<const Media> blipMedia(const Node* blip, const Ctx& c)
+{
+    if (blip == nullptr) return nullptr;
+    std::shared_ptr<const Media> own, svg;
+    if (const auto r = c.d->pkg.rel(c.part, blip->rel(u"embed")); r && !r->external) own = c.d->mediaOf(r->target);
+    if (const Node* list = blip->child(u"extLst"))
+        for (const Node* ext : list->children(u"ext")) {
+            if (svg != nullptr) break;
+            if (ext->attr(u"uri").compare(kSvgBlipExtension, Qt::CaseInsensitive) != 0) continue;
+            if (const Node* s = ext->child(u"svgBlip"))
+                if (const auto r = c.d->pkg.rel(c.part, s->rel(u"embed")); r && !r->external) svg = c.d->mediaOf(r->target);
+        }
+    if (svg != nullptr && svg->drawable()) return svg;
+    if (own != nullptr && own->drawable()) return own;
+    if (svg != nullptr && svg->tooFar) return svg;
+    return own != nullptr ? own : svg;
+}
+
 /// A fill element (solidFill, gradFill, blipFill ...) read; \a known false
 /// for an element that is no fill.
 Fill fillElement(const Node* k, const Ctx& c, const std::optional<QColor>& ph, bool* known = nullptr)
@@ -1024,11 +1203,9 @@ Fill fillElement(const Node* k, const Ctx& c, const std::optional<QColor>& ph, b
         f.kind = Fill::Solid;
         f.color = QColor((fore.red() + back.red()) / 2, (fore.green() + back.green()) / 2, (fore.blue() + back.blue()) / 2);
     } else if (n == QLatin1String("blipFill")) {
-        const Node* blip = k->child(u"blip");
-        const auto r = blip != nullptr ? c.d->pkg.rel(c.part, blip->rel(u"embed")) : std::nullopt;
-        if (r && !r->external) {
+        if (auto media = blipMedia(k->child(u"blip"), c); media != nullptr && media->drawable()) {
             f.kind = Fill::Picture;
-            f.media = c.d->mediaOf(r->target);
+            f.media = std::move(media);
             f.tile = k->child(u"tile") != nullptr;
         }
         if (f.media == nullptr) f.kind = Fill::None;
@@ -2630,9 +2807,7 @@ Element buildPicture(const Node* pic, Layer layer, Ctx& c, bool* skip)
     if (spPr != nullptr && spPr->child(u"effectLst") != nullptr) e.shadow = shadowOf(spPr->child(u"effectLst"), c);
     if (e.stroke.kind == Stroke::Unset) e.stroke.kind = Stroke::None;
     const Node* blipFill = pic->child(u"blipFill");
-    const Node* blip = blipFill != nullptr ? blipFill->child(u"blip") : nullptr;
-    const auto r = blip != nullptr ? c.d->pkg.rel(c.part, blip->rel(u"embed")) : std::nullopt;
-    if (r && !r->external) e.media = c.d->mediaOf(r->target);
+    e.media = blipMedia(blipFill != nullptr ? blipFill->child(u"blip") : nullptr, c);
     if (const Node* src = blipFill != nullptr ? blipFill->child(u"srcRect") : nullptr)
         e.crop = QRectF(src->num(u"l") / 100000, src->num(u"t") / 100000, src->num(u"r") / 100000, src->num(u"b") / 100000);
     if (layer == Layer::Slide && c.counting && c.info != nullptr) ++c.info->pictures;
@@ -2959,44 +3134,76 @@ QBrush brushOf(const Fill& f, const QRectF& box)
     return QBrush(Qt::NoBrush);
 }
 
+/// Where raster picture \a m is drawn into \a target, \a crop cut off it
+/// (fractions of each side; one negative a margin): the part of it drawn
+/// (\a source, in its pixels as its header gives them), where (\a dest),
+/// and how large it is decoded (\a wanted) for the device \a world maps
+/// onto - as large as the part shown lands there, at most. False where
+/// nothing of it shows.
+bool placed(const Media& m, const QRectF& target, const QRectF& crop, const QTransform& world, QRectF* source, QRectF* dest, QSize* wanted)
+{
+    if (m.size.isEmpty()) return false;
+    const QSizeF s = m.size;
+    QRectF& from = *source;
+    QRectF& to = *dest;
+    from = QRectF(s.width() * crop.x(), s.height() * crop.y(), s.width() * (1 - crop.x() - crop.width()), s.height() * (1 - crop.y() - crop.height()));
+    to = target;
+    // A negative crop is a margin: the picture smaller in its box.
+    if (from.left() < 0) {
+        to.setLeft(to.left() + (-from.left()) / from.width() * target.width());
+        from.setLeft(0);
+    }
+    if (from.top() < 0) {
+        to.setTop(to.top() + (-from.top()) / from.height() * target.height());
+        from.setTop(0);
+    }
+    if (from.right() > s.width()) {
+        to.setRight(to.right() - (from.right() - s.width()) / from.width() * target.width());
+        from.setRight(s.width());
+    }
+    if (from.bottom() > s.height()) {
+        to.setBottom(to.bottom() - (from.bottom() - s.height()) / from.height() * target.height());
+        from.setBottom(s.height());
+    }
+    if (from.isEmpty() || to.isEmpty()) return false;
+    const QRectF device = world.mapRect(to);
+    *wanted = QSize(int(std::ceil(std::clamp(device.width() * s.width() / from.width(), 0.0, 1e6))),
+                    int(std::ceil(std::clamp(device.height() * s.height() / from.height(), 0.0, 1e6))));
+    return true;
+}
+
 void drawMedia(QPainter& p, const Media& m, const QRectF& target, const QRectF& crop)
 {
-    m.decode();
+    m.probe();
     if (m.svg != nullptr) {
-        // The part left of it after the crop, stretched into the target.
+        // The part left of it after the crop, stretched into the target:
+        // drawn from its tree, as sharp as the device is fine.
         const QRectF kept(crop.x(), crop.y(), 1 - crop.x() - crop.width(), 1 - crop.y() - crop.height());
-        if (kept.width() <= 0 || kept.height() <= 0) return;
+        if (!(kept.width() > 0) || !(kept.height() > 0)) return;
         const QRectF drawn(target.x() - kept.x() / kept.width() * target.width(), target.y() - kept.y() / kept.height() * target.height(),
                            target.width() / kept.width(), target.height() / kept.height());
+        if (!drawn.isValid() || !std::isfinite(drawn.width()) || !std::isfinite(drawn.height())) return;
         p.save();
         p.setClipRect(target, Qt::IntersectClip);
-        m.svg->render(&p, drawn);
+        {
+            // (Its tree is walked as it is drawn: one painter at a time.)
+            const QMutexLocker locked(&m.lock);
+            m.svg->render(&p, drawn);
+        }
         p.restore();
         return;
     }
-    if (m.image.isNull()) return;
-    const QSizeF s = m.image.size();
-    QRectF source(s.width() * crop.x(), s.height() * crop.y(), s.width() * (1 - crop.x() - crop.width()), s.height() * (1 - crop.y() - crop.height()));
-    QRectF dest = target;
-    // A negative crop is a margin: the picture smaller in its box.
-    if (source.left() < 0) {
-        dest.setLeft(dest.left() + (-source.left()) / source.width() * target.width());
-        source.setLeft(0);
+    QRectF source, dest;
+    QSize wanted;
+    if (!placed(m, target, crop, p.worldTransform(), &source, &dest, &wanted)) return;
+    const QImage image = m.image(wanted);
+    if (image.isNull()) {
+        // (Its header read, its pixels not: a light box where it was.)
+        p.fillRect(dest, QColor(240, 240, 240));
+        return;
     }
-    if (source.top() < 0) {
-        dest.setTop(dest.top() + (-source.top()) / source.height() * target.height());
-        source.setTop(0);
-    }
-    if (source.right() > s.width()) {
-        dest.setRight(dest.right() - (source.right() - s.width()) / source.width() * target.width());
-        source.setRight(s.width());
-    }
-    if (source.bottom() > s.height()) {
-        dest.setBottom(dest.bottom() - (source.bottom() - s.height()) / source.height() * target.height());
-        source.setBottom(s.height());
-    }
-    if (source.isEmpty() || dest.isEmpty()) return;
-    p.drawImage(dest, m.image, source);
+    const qreal fx = image.width() / qreal(m.size.width()), fy = image.height() / qreal(m.size.height());
+    p.drawImage(dest, image, QRectF(source.x() * fx, source.y() * fy, source.width() * fx, source.height() * fy));
 }
 
 void fillPath(QPainter& p, const QPainterPath& path, const Fill& f, const QRectF& box)
@@ -3005,8 +3212,8 @@ void fillPath(QPainter& p, const QPainterPath& path, const Fill& f, const QRectF
     if (f.kind == Fill::Picture && f.media != nullptr) {
         p.save();
         p.setClipPath(path, Qt::IntersectClip);
-        f.media->decode();
-        if (f.tile && !f.media->image.isNull()) p.fillRect(box, QBrush(f.media->image));
+        const QImage tile = f.tile && f.media->svg == nullptr ? f.media->image() : QImage();
+        if (!tile.isNull()) p.fillRect(box, QBrush(tile));
         else drawMedia(p, *f.media, box, QRectF());
         p.restore();
         return;
@@ -3869,6 +4076,56 @@ void drawChart(QPainter& p, const Chart& chart, const QRectF& box)
     p.restore();
 }
 
+/// The pictures \a e draws decoded as drawMedia() and fillPath() will ask
+/// for them, \a world its parent's coordinates to the device's (as
+/// paintElement() goes).
+void prepareMedia(const Media& m, const QRectF& target, const QRectF& crop, const QTransform& world)
+{
+    QRectF source, dest;
+    QSize wanted;
+    if (m.svg == nullptr && placed(m, target, crop, world, &source, &dest, &wanted)) (void)m.image(wanted);
+}
+void prepareFill(const Fill& f, const QRectF& box, const QTransform& world)
+{
+    if (f.kind != Fill::Picture || f.media == nullptr) return;
+    if (f.tile && f.media->svg == nullptr) (void)f.media->image();
+    else prepareMedia(*f.media, box, QRectF(), world);
+}
+void prepareElement(const Element& e, const QTransform& parent)
+{
+    if (e.rect.width() < 0 || e.rect.height() < 0) return;
+    const QTransform world = e.transform() * parent;
+    const QRectF box(0, 0, e.rect.width(), e.rect.height());
+    if (e.kind == Element::Picture && e.media != nullptr) prepareMedia(*e.media, box, e.crop, world);
+    else if (e.kind == Element::Shape) prepareFill(e.fill, box, world);
+    else if (e.kind == Element::Group) {
+        QTransform inner = world;
+        if (e.childSpace.width() > 0 && e.childSpace.height() > 0) {
+            QTransform g;
+            g.scale(box.width() / e.childSpace.width(), box.height() / e.childSpace.height());
+            g.translate(-e.childSpace.left(), -e.childSpace.top());
+            inner = g * world;
+        }
+        for (const Element& c : e.children) prepareElement(c, inner);
+    }
+}
+
+/// Whether \a e may draw anything in \a visible (points of its parent's):
+/// a picture, a chart or a shape without text that falls wholly outside it
+/// - its line, arrowheads and shadow counted - does not. (Text may run out
+/// of its shape, a table's rows grow with their text, a group's children
+/// lie anywhere: those are always drawn.)
+bool mayShow(const Element& e, const QRectF& visible)
+{
+    if (e.kind == Element::Group || e.kind == Element::TableFrame || (e.kind == Element::Shape && e.text != nullptr)) return true;
+    qreal margin = 2;
+    if (e.stroke.visible()) margin += e.stroke.width * 6;
+    if (e.shadow.on) margin += std::abs(e.shadow.dist) + 2 * std::abs(e.shadow.blur) + std::max(e.rect.width(), e.rect.height()) * std::max(0.0, std::max(e.shadow.sx, e.shadow.sy) - 1);
+    if (!std::isfinite(margin)) return true;
+    const QRectF bounds = e.transform().mapRect(QRectF(0, 0, e.rect.width(), e.rect.height())).adjusted(-margin, -margin, margin, margin);
+    return !bounds.isValid() || bounds.intersects(visible);
+}
+
 void paintElement(QPainter& p, const Element& e)
 {
     if (e.rect.width() < 0 || e.rect.height() < 0) return;
@@ -4101,7 +4358,11 @@ std::shared_ptr<Presentation> Presentation::read(const QByteArray& bytes, QStrin
     if (presentation == nullptr || presentation->name != QLatin1String("presentation"))
         return fail(QObject::tr("it has no presentation in it (a Word document or a workbook?)"));
     if (const Node* size = presentation->child(u"sldSz")) d.size = QSizeF(pt(size->num(u"cx", 9144000)), pt(size->num(u"cy", 6858000)));
-    if (d.size.width() <= 0 || d.size.height() <= 0) d.size = QSizeF(720, 540);
+    if (!(d.size.width() > 0) || !(d.size.height() > 0)) d.size = QSizeF(720, 540);
+    // PowerPoint's slides are 1 to 56 inches a side; past ten times that a
+    // slide's pixels, and a view's of thousands of them, are past what an
+    // int holds.
+    d.size = QSizeF(std::clamp(d.size.width(), 1.0, kMaxSlideSide), std::clamp(d.size.height(), 1.0, kMaxSlideSide));
     if (const Node* core = d.pkg.xml(QStringLiteral("docProps/core.xml")))
         if (const Node* t = core->child(u"title")) d.title = t->text.trimmed();
     const int firstNumber = presentation->whole(u"firstSlideNum", 1, 0, 100000);
@@ -4174,6 +4435,15 @@ std::shared_ptr<Presentation> Presentation::read(const QByteArray& bytes, QStrin
                         .arg(d.pkg.tooDeep().first())
                         .arg(kMaxXmlDepth));
     if (d.slides.isEmpty() && !ids.isEmpty()) return fail(QObject::tr("none of its %1 slides could be read").arg(ids.size()));
+    // What is drawn is read: the parts' XML and their trees let go (the
+    // pictures keep their own bytes). The trees took some 37 times the
+    // XML (bug hunt 2026-10-23 B3), and were kept as long as the deck.
+    themes.clear();
+    d.pkg = Package();
+    // (And the layouts of text measured while it was read: made again when
+    // a slide is drawn.)
+    for (const Slide& slide : d.slides)
+        for (const Element& e : slide.elements) forgetLayouts(e);
     return pres;
 }
 
@@ -4198,13 +4468,27 @@ QString Presentation::title() const
     return d->title;
 }
 
+QSize Presentation::pixels(qreal scale) const
+{
+    if (!(scale > 0) || !std::isfinite(scale)) return QSize();
+    // (Held within int: a slide's size is, scale aside - read().)
+    const auto side = [scale](qreal points) { return int(std::clamp(std::ceil(points * scale), 1.0, 1e9)); };
+    return QSize(side(d->size.width()), side(d->size.height()));
+}
+
 QImage Presentation::render(int index, qreal scale) const
 {
-    if (index < 0 || index >= d->slides.size() || !(scale > 0)) return QImage();
+    return render(index, scale, QRect(QPoint(0, 0), pixels(scale)));
+}
+
+QImage Presentation::render(int index, qreal scale, const QRect& wanted) const
+{
+    if (index < 0 || index >= d->slides.size() || !(scale > 0) || !std::isfinite(scale)) return QImage();
+    const QRect area = wanted.intersected(QRect(QPoint(0, 0), pixels(scale)));
+    if (area.isEmpty() || qint64(area.width()) * area.height() > 120ll * 1000 * 1000) return QImage();
     const Slide& slide = d->slides.at(index);
-    const QSize px(std::max(1, int(std::ceil(d->size.width() * scale))), std::max(1, int(std::ceil(d->size.height() * scale))));
-    if (qint64(px.width()) * px.height() > 120ll * 1000 * 1000) return QImage();
-    QImage image(px, QImage::Format_ARGB32_Premultiplied);
+    QImage image(area.size(), QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) return QImage();
     // (72 dots an inch while it is drawn: a font's points are units.)
     image.setDotsPerMeterX(qRound(72 / 0.0254));
     image.setDotsPerMeterY(qRound(72 / 0.0254));
@@ -4212,14 +4496,24 @@ QImage Presentation::render(int index, qreal scale) const
     {
         QPainter p(&image);
         p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
+        p.translate(-area.topLeft());
         p.scale(scale, scale);
         const QRectF page(QPointF(0, 0), d->size);
         QPainterPath all;
         all.addRect(page);
         fillPath(p, all, slide.background, page);
         p.setClipRect(page);
-        for (const Element& e : slide.elements) paintElement(p, e);
+        // (Drawn in tiles at a high zoom: what lies off this one left out.)
+        const QRectF visible(area.x() / scale, area.y() / scale, area.width() / scale, area.height() / scale);
+        for (const Element& e : slide.elements)
+            if (mayShow(e, visible)) paintElement(p, e);
     }
+    // A small drawing (a thumbnail) keeps no layouts of its own: drawing
+    // every slide's thumbnail would let go of the layouts of the slide in
+    // sight.
+    if (scale >= 0.5) d->laidOut(index);
+    else if (!d->laid.contains(index))
+        for (const Element& e : slide.elements) forgetLayouts(e);
     image.setDotsPerMeterX(qRound(72 * scale / 0.0254));
     image.setDotsPerMeterY(qRound(72 * scale / 0.0254));
     return image;
@@ -4239,11 +4533,21 @@ void Presentation::render(int index, QPainter* painter, const QRectF& target) co
     painter->restore();
 }
 
+void Presentation::prepare(int index, qreal scale) const
+{
+    if (index < 0 || index >= d->slides.size() || !(scale > 0) || !std::isfinite(scale)) return;
+    const Slide& slide = d->slides.at(index);
+    const QTransform world = QTransform::fromScale(scale, scale);
+    prepareFill(slide.background, QRectF(QPointF(0, 0), d->size), world);
+    for (const Element& e : slide.elements) prepareElement(e, world);
+}
+
 QList<SlidePart> Presentation::parts(int index) const
 {
     QList<SlidePart> out;
     if (index < 0 || index >= d->slides.size()) return out;
     for (const Element& e : d->slides.at(index).elements) partsOf(e, QTransform(), out);
+    d->laidOut(index);
     return out;
 }
 

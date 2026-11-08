@@ -85,6 +85,19 @@ public:
     /// Slide \a index drawn \a scale pixels a point (1: 72 pixels an inch),
     /// on its own background. A null image for a slide that is not there.
     QImage render(int index, qreal scale) const;
+    /// The part \a area of slide \a index drawn \a scale pixels a point (in
+    /// pixels from that drawing's top left; what falls off the slide left
+    /// out): no more than that drawn, so a slide too large for one image is
+    /// drawn where it is seen. A null image where none of it is left, or
+    /// it is more than 120 million pixels.
+    QImage render(int index, qreal scale, const QRect& area) const;
+    /// A slide drawn \a scale pixels a point: its size in pixels.
+    QSize pixels(qreal scale) const;
+    /// The pictures slide \a index shows decoded as drawing it \a scale
+    /// pixels a point will want them, so that drawing finds them ready. The
+    /// one call that may run on another thread than the drawing's (a
+    /// picture is decoded once, the others wait for it).
+    void prepare(int index, qreal scale) const;
     /// Slide \a index drawn by \a painter into \a target (in its
     /// coordinates; the slide's aspect kept, in the middle - placed()):
     /// through an image at the resolution \a painter's device has there.
