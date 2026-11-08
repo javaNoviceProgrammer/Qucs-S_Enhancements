@@ -400,6 +400,11 @@ qucs_add_test(test_claude_code)
 # QUCS_FUZZ_SECONDS (test_claude_fuzz.cpp).
 qucs_add_test(test_claude_fuzz)
 qucs_add_test(test_claude_jobs)
+# Running simulations: a tab closed while its document runs, the run kept going
+# without it, found, stopped and brought back (test_running_jobs.cpp). Real
+# solves of a 3D and an RF 2.5D model: minutes under the sanitizers.
+qucs_add_test(test_running_jobs)
+set_tests_properties(test_running_jobs PROPERTIES TIMEOUT 900)
 qucs_add_test(test_qucs_control)
 # (731 s of its 900, 300 times the scale of 3, on an EPYC 7763, as the
 # semiconductors' above.)

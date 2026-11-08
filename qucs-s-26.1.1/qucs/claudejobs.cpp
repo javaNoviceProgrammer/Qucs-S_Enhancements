@@ -138,6 +138,11 @@ QString percentText(const Job& job)
     return isOver(job.status) ? QStringLiteral("-") : tr("unknown");
 }
 
+QString startedBy(const Job& job)
+{
+    return job.source == QLatin1String("user") ? QStringLiteral("user") : QStringLiteral("claude");
+}
+
 QJsonObject toJson(const Job& job, quint64 caller, bool whole)
 {
     QJsonObject o{{QStringLiteral("id"), job.id},
@@ -149,7 +154,9 @@ QJsonObject toJson(const Job& job, quint64 caller, bool whole)
                   {QStringLiteral("progress"), job.percent >= 0 ? QStringLiteral("%1 %").arg(job.percent)
                                                : isOver(job.status) ? QStringLiteral("not known") : QStringLiteral("unknown")},
                   {QStringLiteral("background"), job.background},
-                  {QStringLiteral("can_stop"), job.canStop && !isOver(job.status)}};
+                  {QStringLiteral("can_stop"), job.canStop && !isOver(job.status)},
+                  {QStringLiteral("started_by"), startedBy(job)}};
+    if (!job.document.isEmpty()) o.insert(QStringLiteral("document"), job.document);
     if (job.percent < 0 && !job.whyNoPercent.isEmpty()) o.insert(QStringLiteral("why_no_percent"), job.whyNoPercent);
     if (!job.canStop && !isOver(job.status) && !job.whyNoStop.isEmpty()) o.insert(QStringLiteral("why_no_stop"), job.whyNoStop);
     if (!job.conversation.isEmpty()) o.insert(QStringLiteral("conversation"), job.conversation);
@@ -281,7 +288,7 @@ void Registry::update(const QString& id, const std::function<void(Job&)>& change
                       && job.background == before.background && job.name == before.name && job.detail == before.detail
                       && job.began == before.began && job.ended == before.ended && job.outputFile == before.outputFile
                       && job.stopAsked == before.stopAsked && job.conversation == before.conversation
-                      && job.whyNoPercent == before.whyNoPercent;
+                      && job.whyNoPercent == before.whyNoPercent && job.document == before.document;
     if (same) return;
     if (job.status == Status::Started) tickSoon();
     const bool statusChanged = job.status != before.status;
@@ -592,6 +599,7 @@ void Registry::readKept()
         job.tool = o.value(QLatin1String("tool")).toString().left(200);
         job.taskId = o.value(QLatin1String("task_id")).toString().left(200);
         job.outputFile = o.value(QLatin1String("output_file")).toString().left(4096);
+        job.document = o.value(QLatin1String("document")).toString().left(4096);
         job.queued = QDateTime::fromString(o.value(QLatin1String("queued")).toString(), Qt::ISODate);
         job.began = QDateTime::fromString(o.value(QLatin1String("started")).toString(), Qt::ISODate);
         job.ended = QDateTime::fromString(o.value(QLatin1String("ended")).toString(), Qt::ISODate);

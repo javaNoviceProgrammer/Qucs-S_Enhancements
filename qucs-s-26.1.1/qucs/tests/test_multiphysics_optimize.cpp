@@ -684,6 +684,19 @@ private slots:
         doc->optimize();
         QVERIFY(doc->isBusy());
         doc->setDocChanged(false);
+        // (Its close asks whether to keep it running without its tab
+        // (test_running_jobs): Stop and Close.)
+        auto* answer = new QTimer(this);
+        answer->setInterval(20);
+        connect(answer, &QTimer::timeout, this, [answer] {
+            QWidget* box = QApplication::activeModalWidget();
+            auto* stop = box != nullptr ? box->findChild<QPushButton*>(QStringLiteral("stopAndClose")) : nullptr;
+            if (stop == nullptr) return;
+            answer->deleteLater();
+            answer->stop();
+            stop->click();
+        });
+        answer->start();
         app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
         QTRY_VERIFY_WITH_TIMEOUT(app->allDocuments().isEmpty() || dynamic_cast<MultiphysicsDoc*>(app->allDocuments().first()) == nullptr, jobWait());
     }

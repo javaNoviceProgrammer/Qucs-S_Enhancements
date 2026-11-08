@@ -52,7 +52,7 @@ Status statusOfKey(const QString& key);
 /// What the window and the tools know of one job.
 struct Job {
     QString id;           ///< "job-12": the same as long as it is listed
-    QString source;       ///< "claude-code" (the program's task) or "qucs-s" (a tool of ours)
+    QString source;       ///< "claude-code" (the program's task), "qucs-s" (a tool of ours), or "user" (a run the user started)
     QString kind;         ///< command, agent, workflow, monitor, task; simulation, solve, build, tune, script, batch, tool
     QString name;         ///< what it is, in one line
     QString detail;       ///< more of it: the whole command, a prompt, a tool's arguments
@@ -76,7 +76,10 @@ struct Job {
     QString taskId;            ///< the program's id of it
     QString outputFile;        ///< where the program writes its output
     QString parentTask;        ///< the agent's task it runs under
+    QString document;          ///< the file it works on (a run's, a solve's); empty: none, or not known
 };
+/// Who started \a job: "user" (a run of the user's own) or "claude".
+QString startedBy(const Job& job);
 
 /// One line of \a text, cut to \a most characters.
 QString oneLine(const QString& text, int most);

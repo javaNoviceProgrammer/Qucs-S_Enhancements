@@ -257,7 +257,13 @@ private slots:
         SimulationConsole* console = app.simulationConsole();
         QVERIFY(QMetaObject::invokeMethod(&app, "slotSimulateWithSpice"));
         QTRY_VERIFY(console->console()->toPlainText().contains("fake ngspice"));
-        QVERIFY(app.closeAllFiles());                     // the document is unmodified: no prompt
+        {
+            // Closed where nobody can be asked (a tool of Claude's): the user
+            // closing it is asked first whether to keep it running
+            // (test_running_jobs).
+            misc::ErrorCapture capture;
+            QVERIFY(app.closeAllFiles());                 // the document is unmodified: no prompt
+        }
         QVERIFY(console->currentRun() == nullptr || console->currentRun()->schematic() == nullptr);
         QTRY_VERIFY_WITH_TIMEOUT(!console->isRunning(), 5000);
         QTRY_VERIFY(console->currentRun() == nullptr);
