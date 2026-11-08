@@ -175,6 +175,10 @@ target_include_directories(test_fem_process SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/t
 # (Sanitized here some 400 s - anneals on fine grids, two phase shifters'
 # semiconductors -: CI's Debug some 2.5 times that.)
 set_tests_properties(test_fem_process PROPERTIES TIMEOUT 1800)
+qucs_add_fem_test(test_fem_crystal)
+# (The crystal implant's Monte Carlo: its insides, Clipper's header with them.)
+target_include_directories(test_fem_crystal SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/gdstk/external)
+target_compile_definitions(test_fem_crystal PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 # (Sanitized here some 800 s - the toy laser walked to 1.6 V, its threshold's
 # cases, a reverse bias -: CI's Debug 2 to 2.5 times that, near 900 times its
 # scale.)

@@ -596,7 +596,10 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         ImplantMoments m;
     };
     std::map<int, Profile> profiles;
-    auto profileOf = [&profiles, this, &error, &ion, &E, &spec, &warnings, &resistIndex](int m) -> const Profile* {
+    // (Moments given along the normal - an MC's, a SIMS's at the tilt -: along
+    // the beam, which the march follows, 1/cos θ longer; not projected again.)
+    const double alongBeam = spec.normal ? 1 / std::max(std::cos(spec.tilt), 0.05) : 1.0;
+    auto profileOf = [&profiles, this, &error, &ion, &E, &spec, &warnings, &resistIndex, alongBeam](int m) -> const Profile* {
         if (auto it = profiles.find(m); it != profiles.end()) return it->second.ok ? &it->second : nullptr;
         Profile& p = profiles[m];
         const MaterialInfo& mi = info(m);
@@ -614,8 +617,8 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         // Moments given for this material: in place of those found.
         for (const ImplantSpec::Given& g : spec.given)
             if (g.material.compare(mi.name, Qt::CaseInsensitive) == 0) {
-                if (std::isfinite(g.Rp)) p.m.Rp = g.Rp;
-                if (std::isfinite(g.dRp)) p.m.dRp = g.dRp;
+                if (std::isfinite(g.Rp)) p.m.Rp = g.Rp * alongBeam;
+                if (std::isfinite(g.dRp)) p.m.dRp = g.dRp * alongBeam;
                 if (std::isfinite(g.gamma)) p.m.gamma = g.gamma;
                 if (std::isfinite(g.beta)) p.m.beta = g.beta;
                 if (std::isfinite(g.lateral)) {
@@ -631,7 +634,9 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         if (!spec.gaussian && !(std::abs(gamma) < 1e-9 && beta > 3) && !Pearson::typeIV(gamma, beta)) {
             const double least = Pearson::leastBeta(gamma);
             // (Said where the dopant stays: not the mask's resist.)
-            if (beta < least * 1.001 && m != resistIndex) {
+            // (Not for a crystal profile: its Monte Carlo's histogram is the
+            // profile, the Pearson only where it does not run.)
+            if (beta < least * 1.001 && m != resistIndex && !spec.crystalProfile) {
                 warnings->append(tr("%1 in %2: its kurtosis %3 is below Pearson IV's least at skewness %4 - %5 taken")
                                      .arg(ion->atom, mi.name, formatNumber(beta, 3), formatNumber(gamma, 3), formatNumber(least * 1.01, 3)));
             }
@@ -647,9 +652,9 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         p.dMean = p.m.damageMean * unit;
         p.dSd = std::max(p.m.damageStraggle * unit, 1e-6 * p.Rp);
         for (const ImplantSpec::Channel& c : spec.channel)
-            if (c.material.compare(mi.name, Qt::CaseInsensitive) == 0 && c.fraction > 0) {
+            if (!spec.crystalProfile && c.material.compare(mi.name, Qt::CaseInsensitive) == 0 && c.fraction > 0) {
                 p.r = std::clamp(c.fraction, 0.0, 1.0);
-                p.channel = Pearson::make(c.Rp * unit, c.dRp * unit, c.gamma, c.beta);
+                p.channel = Pearson::make(c.Rp * alongBeam * unit, c.dRp * alongBeam * unit, c.gamma, c.beta);
             }
         p.ok = true;
         return &p;
@@ -680,6 +685,130 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         for (int j = 0; j < ny; ++j) m = std::min(m, d.ye[std::size_t(j + 1)] - d.ye[std::size_t(j)]);
         return m;
     }();
+    // The crystal profile: the Monte Carlo through each column's cover - the
+    // solids over its first crystal along the beam, as the regions are (not
+    // the grid's rows: a native oxide thinner than a row is still there) -
+    // and through that crystal. Columns of the same cover share a run; the
+    // commonest few run, the rest (a sloped edge's) take the Pearson profile.
+    struct Column {
+        int run = -1;
+        std::vector<std::pair<double, double>> solid;   // the cover's and the crystal's stretches of the path
+        double sEnd = 0;                                // the crystal's bottom along it
+    };
+    struct McRun {
+        CrystalRun run;
+        std::shared_ptr<const CrystalProfile> profile;
+        QString crystal;
+        int columns = 0;
+        bool cached = false;
+    };
+    std::vector<Column> columns(static_cast<std::size_t>(spec.crystalProfile ? nx : 0));
+    std::vector<McRun> runs;
+    int pearsonColumns = 0, amorphousColumns = 0;
+    const double cosT = -sy;
+    if (spec.crystalProfile) {
+        constexpr std::size_t MOST_RUNS = 6;
+        std::map<QString, McRun> byKey;
+        std::vector<QString> keyOf(static_cast<std::size_t>(nx));
+        for (int col = 0; col < nx; ++col) {
+            const double xc = 0.5 * (d.xe[std::size_t(col)] + d.xe[std::size_t(col + 1)]);
+            struct Piece {
+                double a, b;
+                int m;
+                bool crystal;
+            };
+            std::vector<Piece> pieces;
+            for (const Region& r : regions) {
+                const int m = materialIndex(r.material);
+                for (const auto& [a, b] : lineIntervals(r.p, xc * a_k, ceiling * a_k, sx, sy))
+                    if (b > a) pieces.push_back({a / a_k, b / a_k, m, r.crystal});
+            }
+            if (!resist.empty())
+                for (const auto& [a, b] : lineIntervals(resist, xc * a_k, ceiling * a_k, sx, sy))
+                    if (b > a) pieces.push_back({a / a_k, b / a_k, resistIndex, false});
+            std::sort(pieces.begin(), pieces.end(), [](const Piece& p, const Piece& q) { return p.a < q.a; });
+            std::size_t ic = 0;
+            while (ic < pieces.size() && !pieces[ic].crystal) ++ic;
+            if (ic == pieces.size()) continue;
+            double sEnd = pieces[ic].b;
+            for (std::size_t k = ic + 1; k < pieces.size() && pieces[k].crystal && pieces[k].m == pieces[ic].m && pieces[k].a <= sEnd + 1e-6 * a_dy; ++k)
+                sEnd = std::max(sEnd, pieces[k].b);
+            McRun mr;
+            CrystalRun& run = mr.run;
+            run.Z1 = ion->Z;
+            run.M1 = ion->M;
+            run.energy = E;
+            run.tilt = spec.tilt;
+            run.rotation = spec.rotation;
+            run.divergence = spec.divergence;
+            run.orientation = spec.orientation;
+            run.temperature = spec.temperature;
+            run.ions = spec.ions;
+            run.seed = spec.seed;
+            const MaterialInfo& ci = info(pieces[ic].m);
+            if (!ci.target) {
+                *error = ci.why;
+                return {};
+            }
+            run.crystal = *ci.target;
+            mr.crystal = ci.name;
+            Column& c = columns[std::size_t(col)];
+            for (std::size_t k = 0; k < ic; ++k) {
+                const Piece& q = pieces[k];
+                c.solid.emplace_back(q.a, q.b);
+                const double t = (q.b - q.a) * cosT * a_unitScale;
+                const MaterialInfo& mi = info(q.m);
+                if (!mi.target) {
+                    *error = mi.why;
+                    return {};
+                }
+                if (!run.cover.empty() && run.cover.back().material == mi.name) run.cover.back().thickness += t;
+                else run.cover.push_back({mi.name, *mi.target, t});
+            }
+            // (Thicknesses to a hundredth of a nanometre: the same cover the
+            // same run, whatever the intersections' rounding.)
+            for (CrystalLayer& l : run.cover) l.thickness = std::round(l.thickness * 1e11) * 1e-11;
+            run.cover.erase(std::remove_if(run.cover.begin(), run.cover.end(), [](const CrystalLayer& l) { return l.thickness <= 0; }), run.cover.end());
+            c.solid.emplace_back(pieces[ic].a, sEnd);
+            c.sEnd = sEnd;
+            const QString key = run.key();
+            keyOf[std::size_t(col)] = key;
+            auto [it, fresh] = byKey.emplace(key, std::move(mr));
+            ++it->second.columns;
+        }
+        std::vector<McRun*> order;
+        for (auto& [key, r] : byKey) order.push_back(&r);
+        std::stable_sort(order.begin(), order.end(), [](const McRun* a, const McRun* b) { return a->columns > b->columns; });
+        std::map<QString, int> chosen;
+        for (std::size_t k = 0; k < order.size() && k < MOST_RUNS; ++k) {
+            chosen[order[k]->run.key()] = int(runs.size());
+            runs.push_back(*order[k]);
+        }
+        for (int col = 0; col < nx; ++col) {
+            if (keyOf[std::size_t(col)].isEmpty()) continue;
+            const auto it = chosen.find(keyOf[std::size_t(col)]);
+            if (it == chosen.end()) ++pearsonColumns;
+            else columns[std::size_t(col)].run = it->second;
+        }
+        for (std::size_t k = 0; k < runs.size(); ++k) {
+            QStringList told;
+            const QString refused = crystalTrust(runs[k].run, &told);
+            if (!refused.isEmpty()) {
+                *error = tr("%1 in %2: %3").arg(ion->atom, runs[k].crystal, refused);
+                return {};
+            }
+            for (const QString& w : told)
+                if (!warnings->contains(w)) warnings->append(w);
+            const double n = double(runs.size());
+            auto tick = [this, k, n](double f) { return !a_ticker || a_ticker((double(k) + f) / n); };
+            QString why;
+            runs[k].profile = crystalImplant(runs[k].run, tick, &why, &runs[k].cached);
+            if (!runs[k].profile) {
+                *error = why == tr("cancelled") ? why : tr("%1 in %2: %3").arg(ion->atom, runs[k].crystal, why);
+                return {};
+            }
+        }
+    }
     for (int col = 0; col < nx; ++col) {
         const double xc = 0.5 * (d.xe[std::size_t(col)] + d.xe[std::size_t(col + 1)]);
         const double ions = spec.dose * cellWidth(col);   // per metre out of the plane
@@ -721,12 +850,13 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         // layer to layer - entering a material with a fraction G, at the
         // depth of its own profile that leaves G beyond (its profile in a
         // target of it alone, what falls above its surface folded back).
-        auto march = [&samples, &profileOf, &crystal](bool channelled, auto&& visit) {
-            double G = 1, z = 0;
+        auto march = [&samples, &profileOf, &crystal](bool channelled, auto&& visit, std::size_t from = 0, double G0 = 1) {
+            double G = G0, z = 0;
             int current = -3;
             const Profile* prof = nullptr;
             bool crystalStart = true;
-            for (const Sample& sm : samples) {
+            for (std::size_t si = from; si < samples.size(); ++si) {
+                const Sample& sm = samples[si];
                 if (G < 1e-10) break;
                 if (sm.material < 0) {
                     current = -1;
@@ -788,54 +918,101 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
                 return {};
         }
         if (anyAmorphous) ++amorphousSlices;
+        // The crystal profile's column: the Monte Carlo's through its cover and
+        // crystal - not where the crystal is made amorphous (the Pearson's
+        // there, no channelling).
+        const Column* mc = spec.crystalProfile && columns[std::size_t(col)].run >= 0 ? &columns[std::size_t(col)] : nullptr;
+        if (mc && anyAmorphous) {
+            ++amorphousColumns;
+            mc = nullptr;
+        }
         // Then the ions, spread across the beam with the lateral straggle
         // their depth has (σ⊥² + slope (z - Rp)), horizontally (σ/cos θ:
         // the tilt small); a channelled part where the crystal is not
         // made amorphous.
         double G = 1;
-        if (!march(!anyAmorphous, [&ions, &G, &resistIndex, &stoppedIn, &sy, &crystal, &samples, &d, this, &added, &amorphous, &plus, &spec, &nx, &X0, &X1](const Sample& sm, double fraction, double zz, const Profile& p, bool) {
-                const double dN = ions * fraction;
-                G -= fraction;
-                if (sm.material == resistIndex && resistIndex >= 0) {
-                    stoppedIn[resistIndex] += dN;
+        auto deposit = [&ions, &G, &resistIndex, &stoppedIn, &crystal, &samples, &d, this, &added, &amorphous, &plus, &spec, &nx, &X0, &X1](const Sample& sm, double fraction, double sigma) {
+            const double dN = ions * fraction;
+            G -= fraction;
+            if (sm.material == resistIndex && resistIndex >= 0) {
+                stoppedIn[resistIndex] += dN;
+                return;
+            }
+            const int j = sm.j;
+            const bool crystalHere = crystal.count(sm.material) > 0;
+            const std::size_t at = std::size_t(&sm - samples.data());
+            auto put = [&](int i, double share) {
+                if (share <= 0) return;
+                const std::size_t k = d.index(i, j);
+                if (d.material[k] < 0) {
+                    stoppedIn[-1] += dN * share;
                     return;
                 }
-                const double var = std::max(p.lateral * p.lateral + p.slope * (zz - p.Rp), std::pow(0.25 * p.lateral, 2));
-                const double sigma = std::sqrt(var) / std::max(-sy, 0.05);
-                const int j = sm.j;
-                const bool crystalHere = crystal.count(sm.material) > 0;
-                const std::size_t at = std::size_t(&sm - samples.data());
-                auto put = [&](int i, double share) {
-                    if (share <= 0) return;
-                    const std::size_t k = d.index(i, j);
-                    if (d.material[k] < 0) {
-                        stoppedIn[-1] += dN * share;
-                        return;
-                    }
-                    stoppedIn[d.material[k]] += dN * share;
-                    const double c = dN * share / (cellWidth(i) * cellHeight(j));
-                    added[k] += c;
-                    if (crystalHere && crystal.count(d.material[k]) && !amorphous[at]) plus[k] += spec.plus * c;
-                };
-                if (!(sigma > 0)) {
-                    put(sm.i, 1);
-                    return;
+                stoppedIn[d.material[k]] += dN * share;
+                const double c = dN * share / (cellWidth(i) * cellHeight(j));
+                added[k] += c;
+                if (crystalHere && crystal.count(d.material[k]) && !amorphous[at]) plus[k] += spec.plus * c;
+            };
+            if (!(sigma > 0)) {
+                put(sm.i, 1);
+                return;
+            }
+            // Over the columns within 5σ; what falls beyond the window's
+            // edges mirrored back in (its images at 2 X0 - x, 2 X1 - x).
+            const double reach = 5 * sigma;
+            const int i0 = std::max(0, int(std::upper_bound(d.xe.begin(), d.xe.end(), sm.x - reach) - d.xe.begin()) - 1);
+            const int i1 = std::min(nx - 1, int(std::upper_bound(d.xe.begin(), d.xe.end(), sm.x + reach) - d.xe.begin()) - 1);
+            auto phi = [sigma](double u) { return 0.5 * std::erfc(-u / (std::sqrt(2.0) * sigma)); };
+            const double centres[3] = {sm.x, 2 * X0 - sm.x, 2 * X1 - sm.x};
+            for (int i = i0; i <= i1; ++i) {
+                const double a = d.xe[std::size_t(i)], b = d.xe[std::size_t(i + 1)];
+                double share = 0;
+                for (double c : centres) share += phi(b - c) - phi(a - c);
+                put(i, share);
+            }
+        };
+        auto visit = [&deposit, &sy](const Sample& sm, double fraction, double zz, const Profile& p, bool) {
+            const double var = std::max(p.lateral * p.lateral + p.slope * (zz - p.Rp), std::pow(0.25 * p.lateral, 2));
+            deposit(sm, fraction, std::sqrt(var) / std::max(-sy, 0.05));
+        };
+        if (mc) {
+            // The Monte Carlo's column: the share still moving at each sample
+            // read off its histogram by the solid depth along the normal from
+            // the cover's top (the beam's path cos θ - the tilt is in the run,
+            // not projected again); a sample in the air passes its share on;
+            // across, the run's own straggle there (horizontal). Below the
+            // crystal (an SOI's oxide...), the march on, dose-matched.
+            const CrystalProfile& prof = *runs[std::size_t(mc->run)].profile;
+            auto depthAt = [mc, cosT, this](double sPos) {
+                double dd = 0;
+                for (const auto& [a, b] : mc->solid) dd += std::clamp(sPos - a, 0.0, b - a);
+                return dd * cosT * a_unitScale;
+            };
+            const double back = double(prof.back) / double(prof.ions);
+            stoppedIn[-3] += ions * back;
+            G -= back;
+            double Gm = 1 - back, pending = 0;
+            std::size_t i = 0;
+            for (; i < samples.size() && samples[i].s < mc->sEnd - 1e-9 * a_dy; ++i) {
+                const Sample& sm = samples[i];
+                const double d0 = depthAt(sm.s), d1 = depthAt(sm.s + sm.ds);
+                const double Gn = std::min(Gm, prof.remaining(d1));
+                const double f = Gm - Gn + pending;
+                Gm = Gn;
+                pending = 0;
+                if (sm.material < 0) {
+                    pending = f;
+                    continue;
                 }
-                // Over the columns within 5σ; what falls beyond the window's
-                // edges mirrored back in (its images at 2 X0 - x, 2 X1 - x).
-                const double reach = 5 * sigma;
-                const int i0 = std::max(0, int(std::upper_bound(d.xe.begin(), d.xe.end(), sm.x - reach) - d.xe.begin()) - 1);
-                const int i1 = std::min(nx - 1, int(std::upper_bound(d.xe.begin(), d.xe.end(), sm.x + reach) - d.xe.begin()) - 1);
-                auto phi = [sigma](double u) { return 0.5 * std::erfc(-u / (std::sqrt(2.0) * sigma)); };
-                const double centres[3] = {sm.x, 2 * X0 - sm.x, 2 * X1 - sm.x};
-                for (int i = i0; i <= i1; ++i) {
-                    const double a = d.xe[std::size_t(i)], b = d.xe[std::size_t(i + 1)];
-                    double share = 0;
-                    for (double c : centres) share += phi(b - c) - phi(a - c);
-                    put(i, share);
-                }
-            }))
+                if (!(f > 0)) continue;
+                const Profile* p = profileOf(sm.material);
+                if (!p) return {};
+                deposit(sm, f, std::max(prof.lateral(0.5 * (d0 + d1)) / a_unitScale, 0.1 * p->lateral));
+            }
+            if (!march(false, visit, i, Gm + pending)) return {};
+        } else if (!march(!anyAmorphous, visit)) {
             return {};
+        }
         stoppedIn[-2] += ions * std::max(G, 0.0);
     }
     for (std::size_t k = 0; k < added.size(); ++k) {
@@ -859,8 +1036,12 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
     QStringList where;
     for (const auto& [m, n] : stoppedIn) {
         if (n <= 1e-4 * all) continue;
-        const QString what = m == -1 ? tr("out through sidewalls") : m == -2 ? tr("through the bottom") : m == resistIndex ? tr("the mask") : d.materials.at(m);
-        where << tr("%1 % in %2").arg(formatNumber(100 * n / all, 3), what);
+        const QString what = m == -1   ? tr("out through sidewalls")
+                             : m == -2 ? tr("through the bottom")
+                             : m == -3 ? tr("backscattered")
+                             : m == resistIndex ? tr("the mask")
+                                                : d.materials.at(m);
+        where << (m == -3 ? tr("%1 % backscattered").arg(formatNumber(100 * n / all, 3)) : tr("%1 % in %2").arg(formatNumber(100 * n / all, 3), what));
     }
     const Profile* shown = nullptr;
     QString shownIn;
@@ -874,12 +1055,38 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
     const double unitToUm = a_unitScale * 1e6;
     QString said = tr("%1 %2 cm⁻² at %3 keV%4").arg(spec.species, formatNumber(spec.dose * 1e-4, 3), formatNumber(spec.energy / 1e3, 4),
                                                     spec.tilt != 0 ? tr(", tilted %1°").arg(formatNumber(spec.tilt * 180 / M_PI, 3)) : QString());
-    if (shown)
+    if (!runs.empty()) {
+        // The crystal profile: the commonest cover's run - its moments in the
+        // crystal, from its surface, along the normal.
+        const McRun& r = runs.front();
+        const CrystalProfile& p = *r.profile;
+        said += tr(": Monte Carlo (crystal) in %1 (%2)%3, divergence %4°: Rp %5 µm, ΔRp %6 µm, γ %7, β %8, 1e-3 of its peak at %9 µm; %10 ions (%11)")
+                    .arg(r.crystal, spec.orientation,
+                         spec.rotation != 0 ? tr(", rotated %1°").arg(formatNumber(spec.rotation * 180 / M_PI, 3)) : QString(),
+                         formatNumber(spec.divergence * 180 / M_PI, 3), formatNumber(p.Rp * 1e6, 3), formatNumber(p.dRp * 1e6, 3), formatNumber(p.gamma, 3),
+                         formatNumber(p.beta, 3), formatNumber(p.tail * 1e6, 3))
+                    .arg(QString::number(p.ions), r.cached ? tr("from the cache") : tr("%1 s on %2 threads").arg(formatNumber(p.ms / 1e3, 3)).arg(p.threads));
+        if (runs.size() > 1) said += tr(", %1 covers a run each").arg(runs.size());
+    } else if (shown) {
         said += tr(": in %1 Rp %2 µm, ΔRp %3 µm, γ %4, β %5, lateral %6 µm (%7)")
                     .arg(shownIn, formatNumber(shown->Rp * unitToUm, 3), formatNumber(shown->main.sd() * unitToUm, 3), formatNumber(shown->main.gamma(), 3),
                          formatNumber(shown->main.beta(), 3), formatNumber(shown->lateral * unitToUm, 3), shown->m.source);
+        // A dual Pearson's channelled part (where the crystal stayed one).
+        if (shown->r > 0)
+            said += tr("; channelled %1 %: Rp %2 µm, ΔRp %3 µm, γ %4, β %5")
+                        .arg(formatNumber(100 * shown->r, 3), formatNumber(shown->channel.mean() * unitToUm, 3), formatNumber(shown->channel.sd() * unitToUm, 3),
+                             formatNumber(shown->channel.gamma(), 3), formatNumber(shown->channel.beta(), 3));
+        if (spec.normal && spec.tilt != 0) said += tr(" (along the beam: the moments given along the normal)");
+    }
     if (!where.isEmpty()) said += tr("; %1").arg(where.join(QStringLiteral(", ")));
     if (amorphousSlices > 0) said += tr("; amorphous to %1 µm below the crystal's surface").arg(formatNumber(amorphousDeepest * unitToUm, 3));
+    if (spec.crystalProfile) {
+        if (amorphousColumns > 0)
+            warnings->append(tr("the crystal made amorphous in %1 of %2 columns: the Pearson profile there, no channelling").arg(amorphousColumns).arg(nx));
+        if (pearsonColumns > 0)
+            warnings->append(tr("%1 columns under other covers (more than 6 kinds - a sloped edge's) took the Pearson profile").arg(pearsonColumns));
+        if (runs.empty()) warnings->append(tr("no crystal under the beam: the Pearson profile"));
+    }
     if (stoppedIn[-1] > 1e-3 * all) warnings->append(tr("%1 % scattered out through sidewalls into the air").arg(formatNumber(100 * stoppedIn[-1] / all, 3)));
     if (stoppedIn[-2] > 1e-3 * all) warnings->append(tr("%1 % went through the grid's bottom").arg(formatNumber(100 * stoppedIn[-2] / all, 3)));
     return said;

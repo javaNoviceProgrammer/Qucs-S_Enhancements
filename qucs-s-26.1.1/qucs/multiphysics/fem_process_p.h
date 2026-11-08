@@ -136,6 +136,105 @@ struct ImplantMoments {
 /// electronic stopping fitted to their tables, scaled as in silicon.
 std::optional<ImplantMoments> implantMoments(const Ion& ion, double energy, const Target& target, QString* why = nullptr);
 
+/// The ZBL universal potential (Ziegler, Biersack and Littmark, 1985): its
+/// screening function φ(x), x in screening lengths; a pair's universal
+/// screening length (Å).
+double zblScreening(double x);
+double screeningLength(int Z1, int Z2);
+/// A collision in the universal potential, in reduced units - ε the energy
+/// in the centre of mass in Z1 Z2 e²/a, b the impact parameter in a -: the
+/// scattering angle θ in the centre of mass, the time integral τ and the
+/// closest approach r0 (both in a). The transport theory's θ and the
+/// crystal's Monte Carlo's tables both.
+struct Scattering {
+    double theta = 0, tau = 0, r0 = 0;
+};
+Scattering universalScattering(double eps, double b);
+
+// ------------------------------------------------ The crystal's Monte Carlo
+
+/// An amorphous layer over the crystal as the beam meets it: its material,
+/// its target, its thickness along the normal (m).
+struct CrystalLayer {
+    QString material;
+    Target target;
+    double thickness = 0;
+};
+
+/*!
+ * A crystal implant for the binary-collision Monte Carlo (the "crystal"
+ * profile): the ion (Z, mass u) and its energy (eV, the atom's); the beam's
+ * tilt from the normal, its rotation (from the surface's ⟨110⟩ - the
+ * wafer's flat - to the direction it tilts toward, the section's +x) and
+ * its divergence (a uniform cone's half-angle), radians; the wafer's
+ * surface (100, 110, 111) and its crystal; the amorphous layers over it
+ * from the top; the wafer's temperature (K); how many ions, the random
+ * numbers' seed; the deepest it follows them (m; 0: from its amorphous
+ * range). Amorphous: the crystal taken as amorphous (a check of the model).
+ */
+struct CrystalRun {
+    int Z1 = 0;
+    double M1 = 0, energy = 0;
+    double tilt = 0, rotation = 0, divergence = 0;
+    QString orientation = QStringLiteral("100");
+    Target crystal;
+    std::vector<CrystalLayer> cover;
+    double temperature = 300;
+    long ions = 50000;
+    unsigned long long seed = 1;
+    double depth = 0;
+    bool amorphous = false;
+    int threads = 0;   ///< 0: as many as the machine has (the result is the same)
+    /// What the result depends on (its cache's key).
+    QString key() const;
+};
+
+/*!
+ * Its result: where the ions stopped, by depth along the normal in bins
+ * from the top of the cover (its first coverBins bins over the crystal's
+ * surface, the rest below it), and across the section (Σx, Σx², m, about
+ * where each came in); those backscattered, those past the depth followed.
+ * Option B of the proposal: the histogram is the profile - remaining()
+ * reads its cumulative off it, merged in the tail until each piece holds
+ * 20 ions -, so a tail no Pearson fits is kept.
+ */
+struct CrystalProfile {
+    double bin = 0;   ///< m
+    int coverBins = 0;
+    double coverThickness = 0;   ///< m
+    std::vector<double> counts, sumX, sumX2;
+    long ions = 0, back = 0, beyond = 0;
+    double ms = 0;
+    int threads = 0;
+    /// In the crystal, from its surface (m): the moments of where the ions
+    /// stopped, the depth where the profile falls to 1e-3 of its peak; the
+    /// share of the ions that stopped in it.
+    double Rp = 0, dRp = 0, gamma = 0, beta = 3, tail = 0, inCrystal = 0;
+    /// The share of the ions that stopped deeper than \a depth (m, from the
+    /// cover's top) - those past the depth followed among them.
+    double remaining(double depth) const;
+    /// The straggle across the section (m) of those that stopped at \a depth.
+    double lateral(double depth) const;
+    /// The merged pieces: their edges (m from the top), the ions before
+    /// each edge, each piece's lateral straggle.
+    std::vector<double> edges, cumulative, pieceLateral;
+    void finish();
+};
+
+/// Whether the Monte Carlo holds for \a run: an error where it does not
+/// (refused), warnings where it was not checked (item 9 of the proposal).
+QString crystalTrust(const CrystalRun& run, QStringList* warnings);
+/// The Monte Carlo of \a run - cached by its key, so a flow built again
+/// does not run it again (\a cached says so). \a ticker told how far it is,
+/// false from it stops it ("cancelled"). Null and why on an error.
+std::shared_ptr<const CrystalProfile> crystalImplant(const CrystalRun& run, const std::function<bool(double)>& ticker, QString* error,
+                                                     bool* cached = nullptr);
+/// The cache emptied.
+void clearCrystalCache();
+/// The Monte Carlo's table of universalScattering at (ε, b), read as its
+/// collisions read it (bilinear in log ε and b).
+Scattering tabulatedScattering(double eps, double b);
+
 /// A compound's elements by its sublattices (shares on each adding up to
 /// 1): group III's (cations) and group V's (anions) - or a group IV
 /// alloy's, one lattice, on the first.
@@ -227,6 +326,17 @@ struct ImplantSpec {
     std::vector<Channel> channel;   ///< a dual Pearson's channelled part
     double plus = 1;                ///< interstitials an ion leaves ("+1")
     double critical = 6e29;         ///< eV/m³: amorphous above
+    /// The moments given (and the channelled part's) are along the normal
+    /// (an MC's, a SIMS's taken at the tilt): not projected by the tilt again.
+    bool normal = false;
+    /// The crystal profile: the Monte Carlo through the crystal and its
+    /// amorphous cover; its beam's rotation, divergence (rad), the wafer's
+    /// temperature (K), its ions and seed; the wafer's surface.
+    bool crystalProfile = false;
+    double rotation = 0, divergence = 0, temperature = 300;
+    long ions = 50000;
+    unsigned long long seed = 1;
+    QString orientation = QStringLiteral("100");
 };
 
 /// An anneal (a drive-in, a predeposition) as a step gives it.
