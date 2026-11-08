@@ -209,8 +209,8 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
 
 ## Tests
 
-- **`test_plot_digitizer`:** the engine alone, about 1,700 lines, 72 cases. It links only the engine and Qt Core, Gui, Pdf
-  and Test, so it builds in seconds, under the sanitizers too. It covers:
+- **`test_plot_digitizer`:** the engine alone, about 2,300 lines, 83 cases (QTest's count). It links only the engine and
+  Qt Core, Gui, Pdf and Test, so it builds in seconds, under the sanitizers too. It covers:
   - Calibration: two axes, log and reversed, turned and sheared, projective, polar, and each way a calibration can fail.
   - Twenty-seven forms of tick label, both ones that should read as numbers and ones that should not.
   - Every row of the accuracy table above.
@@ -227,7 +227,7 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
     - The kept file: 4,000 damaged ones; 281 still read. Everything read is then used.
   - CSV quoting (including a name that would be a spreadsheet formula), dataset names, thinning, and saving and restoring,
     including a stale or damaged kept file.
-- **`test_plot_digitizer_app`:** in the program, 24 cases:
+- **`test_plot_digitizer_app`:** in the program, 27 cases (one skipped offscreen):
   - Every tool, with its refusals.
   - A scan given its tick values.
   - References and seeds.
@@ -388,6 +388,79 @@ text, drawn from known functions, its truth known):
   "medium" and points at the picture.
 - The blue model line in Fig. 4 is wholly covered in the tail, so only its peaks come back, in a few pieces each.
 - Nothing calibrates itself without a text layer.
+
+## The recheck, and what came of it (8 November, later)
+
+**The recheck:** `qucs-reviews/PdfViewer/2026-11-08-claude-pdf-digitizer-recheck.md` reran the review on the installed
+app (5e024155). It found the markers, insets, legends and glyphs fixed. What was left:
+- **R4:** line series were not functions of x. A line came back in several pieces, or in one whose points jumped between
+  the two sides of a peak, despite a note saying they were in order of x.
+- **R2:** in Fig. 4 the frame's bottom was 3.8 pt below the x axis, so the axis line was traced as a black curve.
+- **R3:** with `colours` blue alone, black rings came back as blue markers, and the blue line stopped at its first ring.
+- **R1:** `names` by colour gave the black rings the blue name, because their average is grey.
+
+`retest_scanned_paper.py` now also runs the recheck's cases: colours and names, one colour with `x_range` and
+`y_range`, two seeds on one curve. It flags any line not in order of x.
+
+**What was done:**
+- **R4, lines as functions of x:** on rectangular axes, each colour's line pieces are cut into runs that go one way in x.
+  A run is also cut where a step is much longer than the line's usual step, since a jump across a peak or under a
+  marker is not part of the line. Pieces whose runs agree where they share an x are put together into one curve,
+  ordered by x. Where nothing could be seen, a gap of more than 8 pt is left as a break. Points of two runs within a
+  line's width are one line followed twice, and the second copy is dropped. If more than 40% of a piece disagrees with
+  the rest at the same x, it is a loop or two curves of one colour, and is kept in the order it was followed, with a
+  note. Seeds get the same treatment, and a seed on a curve an earlier seed already gave returns it once.
+  `aPapersFigure` now checks every line is in order of x, and that the blue line under the rings is one curve.
+- **R2, the frame's far side:** a frame's far side is now the nearest line within 6 pt that runs along at least half
+  of that side. Before, the last such line anywhere on the page won: a line in Fig. 5's inset at y = 136 became both
+  Fig. 4 frames' bottom. `aFrameIsNotTakenFromAPlotBesideIt` fails with the old rule and passes with the new one.
+  - Fig. 4's tick marks are tiny and mostly under markers. With the right frame, too few were found, and the old wrong
+    frame had been passing that test by accident. A picture's frame is now also a plot when all four sides are drawn
+    and it has at least two marks. Page 2's drawing is still not listed.
+  - Rings sitting on the axis hang below the area that is traced. The picture is now rendered 1.5 pt past the frame,
+    and a band out to 1 pt past it is labelled for finding markers only, then cleared before lines are followed.
+    Holes are background regions that don't connect to the open plot: those that touch the edge of the area searched
+    but are small count too. Markers found outside the frame are dropped.
+  - A black or grey line lying within a few points of the frame's edges is taken as an axis and dropped.
+- **R3, colours not asked for:** with `colours`, the colours found in the picture are kept too, as hidden families.
+  Where one has an asked colour's hue, it keeps only the darkness outside the asked one's band. Hidden colours' markers
+  are found and lifted out, so black rings are rings and the blue line is followed under them. Nothing hidden is
+  traced or returned, and a seed snaps only to an asked colour.
+- **R1, names by colour:** each series knows which asked colour it was traced as (`Series::asked`, not saved), and
+  `names` go by that. A set of markers' colour is now the median of each marker's darkest pixel, its stroke, rather
+  than an average watered down by the white inside a ring.
+- **Short bits at a line's ends:** a bit standing alone past a gap at either end of a line, shorter than a scrap, is
+  dropped, such as a legend's sample met at the end of a walk. A bit between two gaps inside a line is a piece of it
+  seen between markers, and stays.
+- **Trust:** a raster line of a set of markers' colour, half of whose points lie within 5 pt of those markers, may be
+  what is left of them. Trust says so and drops to medium, or to low when such lines are half of all lines.
+
+**The same runs, recheck → now** (with the recheck's references or ranges):
+
+| | Recheck | Now |
+|---|---|---|
+| Fig. 5, red, blue and black asked | red in 2 pieces and a tail, blue to 0.783 with the key's jump, 5 black junk lines, 82 markers | red one curve to 0.816, blue one curve 0.61–1.27 to 0.781, 1 black junk line (trust says so), 108 markers |
+| Fig. 4(a), blue and black asked, names | "Model" in 6 pieces back and forth, the rings named "Model 7", the axis line as "COMSOL 2", 63 markers | "Model" one curve over both peaks to 0.346, "COMSOL" the rings, 70 markers |
+| Fig. 4(b), the same | one "Model" zigzagging across the peak, axis lines as two "COMSOL"s, 77 markers | "Model" one curve to 0.840, "COMSOL" the rings, 77 markers |
+| Fig. 5, blue alone, ranges | blue stops at 0.748, 112 "blue" markers, black among them | blue one curve to 0.781 with both sides, no markers |
+| Fig. 4(a), two seeds | each seed out of order | one curve over both peaks, in order of x; the second seed noted as on it |
+| Lines not in order of x | every figure | none |
+
+Without `colours`: Fig. 5 now comes back in 5 series where the recheck's build gave 13. Fig. 4(a) and 4(b) come back as
+one blue curve and one marker set each.
+
+The synthetic figure is unchanged or slightly better: 138 of 141 markers (137 before), the blue line's worst error
+0.0116 (0.012), the red peak 0.302.
+
+**Still short:**
+- **The black line in Fig. 5:** dense rows of rings whose holes are gone still leave a "line" that runs where no marker
+  was found. Only 36% of its points lie within a marker's width of a found marker, so no test based on markers can
+  remove it without risking a real line drawn through its own markers. Trust names it.
+- **The "Metal / Air" key** below Fig. 5's inset is a legend with no box and no text layer, and is still not found.
+  Bits of it at the end of a line are dropped; bits inside a line are not.
+- **No OCR**, as before.
+- **Without `colours`**, Fig. 5's blue line covers 0.87–1.19: its low left part, running beside the red line and under
+  rings, is not put with it.
 
 ## What could not be verified
 

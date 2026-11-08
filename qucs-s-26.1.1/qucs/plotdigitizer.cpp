@@ -935,14 +935,24 @@ QList<QRectF> rectanglesOf(const QList<HLine>& h, const QList<HLine>& v, double 
             // there, if any.
             double left = atStart ? b.at : a.from, right = atEnd ? b.at : a.to;
             double top = atTop ? a.at : b.from, bottom = atBottom ? a.at : b.to;
-            for (const HLine& other : v) {
-                if (atStart && std::abs(other.at - right) <= 6 && other.to - other.from >= minHeight) right = other.at;
-                if (atEnd && std::abs(other.at - left) <= 6 && other.to - other.from >= minHeight) left = other.at;
-            }
-            for (const HLine& other : h) {
-                if (atTop && std::abs(other.at - bottom) <= 6 && other.to - other.from >= minWidth) bottom = other.at;
-                if (atBottom && std::abs(other.at - top) <= 6 && other.to - other.from >= minWidth) top = other.at;
-            }
+            // (The nearest that runs along most of that side: not a line of
+            // another plot beside it at about the same height.)
+            const auto farSide = [](const QList<HLine>& lines, double estimate, double from, double to, double least) {
+                double best = estimate, nearest = 6.0001;
+                for (const HLine& other : lines) {
+                    if (other.to - other.from < least) continue;
+                    if (std::min(to, other.to) - std::max(from, other.from) < 0.5 * (to - from)) continue;
+                    if (std::abs(other.at - estimate) < nearest) {
+                        nearest = std::abs(other.at - estimate);
+                        best = other.at;
+                    }
+                }
+                return best;
+            };
+            if (atStart) right = farSide(v, right, std::min(top, bottom), std::max(top, bottom), minHeight);
+            if (atEnd) left = farSide(v, left, std::min(top, bottom), std::max(top, bottom), minHeight);
+            if (atTop) bottom = farSide(h, bottom, left, right, minWidth);
+            if (atBottom) top = farSide(h, top, left, right, minWidth);
             const QRectF box(QPointF(left, top), QPointF(right, bottom));
             if (box.width() < minWidth || box.height() < minHeight) continue;
             bool seen = false;
@@ -1515,7 +1525,17 @@ QList<Plot> findPlots(Source& source, int page, const QRectF& within)
             const bool bothAxes = plot.xAxis.found && plot.yAxis.found;
             // Marks enough to be an axis, its labels unread (a scan's).
             const bool marked = plot.xAxis.marks.size() >= 3 && plot.yAxis.marks.size() >= 3;
-            if (!bothAxes && !marked && within.isNull()) continue;
+            // Or, in a picture, a box drawn whole with a few marks on it: a
+            // plot whose ticks are small and mostly under its markers.
+            const auto drawn = [](const QList<HLine>& lines, double at, double from, double to) {
+                double sum = 0;
+                for (const HLine& l : lines)
+                    if (std::abs(l.at - at) <= 1.5) sum += std::max(0.0, std::min(to, l.to) - std::max(from, l.from));
+                return sum >= 0.8 * (to - from);
+            };
+            const bool boxed = way.picture != nullptr && plot.xAxis.marks.size() + plot.yAxis.marks.size() >= 2 && drawn(h, box.top(), box.left(), box.right()) &&
+                               drawn(h, box.bottom(), box.left(), box.right()) && drawn(v, box.left(), box.top(), box.bottom()) && drawn(v, box.right(), box.top(), box.bottom());
+            if (!bothAxes && !marked && !boxed && within.isNull()) continue;
             if (bothAxes) {
                 QString why;
                 if (!calibrateFromAxes(plot, &why)) plot.notes << why;
@@ -1683,6 +1703,34 @@ Trust assess(const Plot& plot)
             lower(0, tr("%1 of the %2 curves are scraps beside the longest: much of this may not be data. Look at the picture; 'exclude', 'colours' or 'seeds' narrow it.").arg(scraps).arg(lengths.size()));
         else if (plot.series.size() > 10)
             lower(1, tr("%1 series were found: more than most plots have. Look at the picture.").arg(plot.series.size()));
+    }
+    // A line of the colour of a set of markers that runs along them may be
+    // what is left of the markers, not a curve of its own (a picture's rows of
+    // rings touching): said, and counted.
+    {
+        int lines = 0, along = 0;
+        for (const Series& s : plot.series) {
+            if (s.shape != Series::Shape::Line || s.origin != Series::Origin::Raster) continue;
+            ++lines;
+            for (const Series& m : plot.series) {
+                if (m.shape != Series::Shape::Markers || m.points.isEmpty() || colourDistance(m.colour, s.colour) >= 60) continue;
+                int near = 0;
+                for (const QPointF& q : s.points)
+                    for (const QPointF& c : m.points)
+                        if (std::abs(c.x() - q.x()) <= 5 && QLineF(c, q).length() <= 5) {
+                            ++near;
+                            break;
+                        }
+                if (near >= 0.5 * s.points.size()) {
+                    ++along;
+                    break;
+                }
+            }
+        }
+        if (along > 0 && along * 2 >= lines)
+            lower(0, tr("%1 of the %2 lines run along markers of their own colour: they may be what is left of the markers, not curves. Look at the picture; 'colours' without the markers' colour leaves them out.").arg(along).arg(lines));
+        else if (along > 0)
+            lower(1, tr("%1 of the %2 lines run along markers of their own colour: they may be what is left of the markers, not curves. Look at the picture.").arg(along).arg(lines));
     }
     int bridged = 0;
     double worstAgreement = 1;
