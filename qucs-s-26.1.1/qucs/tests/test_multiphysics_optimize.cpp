@@ -25,6 +25,8 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QTimer>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -578,6 +580,27 @@ private slots:
         doc->setModel(changed, QStringLiteral("er"));
         QVERIFY(doc->optimizationStale());
         QVERIFY2(doc->optimizationPage()->summaryLabel()->text().contains(QStringLiteral("changed since")), qPrintable(doc->optimizationPage()->summaryLabel()->text()));
+        // Applied from the page: asked first. No writes nothing; Yes writes it in.
+        const QString dBefore = expressionOf(doc, QStringLiteral("d"));
+        const int steps = doc->undoStack()->count();
+        for (const QMessageBox::StandardButton answer : {QMessageBox::No, QMessageBox::Yes}) {
+            bool asked = false;
+            QTimer::singleShot(0, this, [&asked, answer] {
+                auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (!box) return;
+                asked = box->text().contains(QStringLiteral("changed since"));
+                box->button(answer)->click();
+            });
+            doc->optimizationPage()->applyButton()->click();
+            QVERIFY(asked);
+            if (answer == QMessageBox::No) {
+                QCOMPARE(expressionOf(doc, QStringLiteral("d")), dBefore);
+                QCOMPARE(doc->undoStack()->count(), steps);
+            } else {
+                QVERIFY(expressionOf(doc, QStringLiteral("d")) != dBefore);
+                QVERIFY(doc->waitForJob(jobWait()));
+            }
+        }
     }
 
     // Apply Optimum: into the parameters, a step of Undo, and solved there.

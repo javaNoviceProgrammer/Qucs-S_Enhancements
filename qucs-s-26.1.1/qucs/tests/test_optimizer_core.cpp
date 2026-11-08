@@ -1203,6 +1203,11 @@ void TestOptimizerCore::anObjectiveThatNeverMoves()
     QCOMPARE(out.status, SearchStatus::Unchanged);
     QVERIFY2(out.notes.join(QLatin1Char(' ')).contains(QStringLiteral("nothing was optimised")), qPrintable(said(out)));
     QVERIFY(!out.settled());
+    // Unchanged to rounding, as a value meshed again is: said too, not converged.
+    Function noisy;
+    noisy.f = [](const Point& u, Evaluated& r) { r.objective = 7 * (1 + 1e-15 * std::sin(1000 * u[0])); };
+    const SearchOutcome near = search(p, o, noisy);
+    QCOMPARE(near.status, SearchStatus::Unchanged);
 }
 
 void TestOptimizerCore::aParameterOnABound()
