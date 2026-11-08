@@ -988,7 +988,7 @@ private:
                 candidates.push_back({pick, r / h, int(t)});
             }
             if (candidates.empty()) break;
-            std::sort(candidates.begin(), candidates.end(), [](const Candidate& x, const Candidate& y) { return x.priority > y.priority; });
+            std::sort(candidates.begin(), candidates.end(), [](const Candidate& x, const Candidate& y) { return x.priority != y.priority ? x.priority > y.priority : x.tri < y.tri; });
             // One per neighbourhood a pass: none beside another's triangle.
             std::vector<char> blocked(nt, 0);
             std::vector<CDT::V2d<double>> batch;
