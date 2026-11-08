@@ -969,6 +969,10 @@ private:
     /// name, or what the tab shows (any case).
     bool tabIs(const QTabWidget* pane, int i, const QString& title) const;
     QList<QAction*> menuActions(QStringList* paths) const;
+    /// Each menu of the menu bar told it is opening: what it enables (the
+    /// Git menu's items, by the repository in front) set as the window's
+    /// user would find it, not as it was when last opened.
+    void menusAsOpened();
     /// The menu action \a wanted names (its path, its object's name, or the
     /// last part of its path when one action alone has it), or null.
     QAction* actionNamed(const QString& wanted) const;

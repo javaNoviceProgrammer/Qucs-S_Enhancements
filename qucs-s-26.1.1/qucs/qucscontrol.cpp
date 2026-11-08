@@ -12296,9 +12296,16 @@ QList<QAction*> QucsControl::menuActions(QStringList* paths) const
     return actions;
 }
 
+void QucsControl::menusAsOpened()
+{
+    for (QAction* top : a_app->menuBar()->actions())
+        if (QMenu* menu = top->menu()) emit menu->aboutToShow();
+}
+
 QJsonObject QucsControl::listActions(const QJsonObject& args)
 {
     const QString search = args.value(QLatin1String("search")).toString().trimmed();
+    menusAsOpened();
     QStringList paths;
     const QList<QAction*> actions = menuActions(&paths);
     QJsonArray list;
@@ -12364,6 +12371,7 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         QMetaObject::invokeMethod(a_app, "slotHideEdit", Qt::DirectConnection);
     }
     const QString wanted = args.value(QLatin1String("action")).toString().trimmed();
+    menusAsOpened();
     QStringList paths;
     const QList<QAction*> actions = menuActions(&paths);
     QAction* action = actionNamed(wanted);

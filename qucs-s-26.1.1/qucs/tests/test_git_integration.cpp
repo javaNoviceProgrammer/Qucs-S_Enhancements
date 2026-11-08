@@ -180,14 +180,13 @@ void answerInput(const QString& text)
     timer->start();
 }
 
-// Fills the next New Worktree window: \a branch, then \a folder when given;
-// Cancel when \a cancel, else accepted.
-void answerWorktree(const QString& branch, const QString& folder = {}, bool cancel = false)
+// Does \a with the next New Worktree window, once it is up.
+void onWorktreeWindow(const std::function<void(QDialog*)>& with)
 {
     auto* timer = new QTimer(qApp);
     auto tries = std::make_shared<int>(0);
     timer->setInterval(20);
-    QObject::connect(timer, &QTimer::timeout, [timer, tries, branch, folder, cancel] {
+    QObject::connect(timer, &QTimer::timeout, [timer, tries, with] {
         if (++*tries > 500) {
             timer->deleteLater();
             return;
@@ -197,14 +196,23 @@ void answerWorktree(const QString& branch, const QString& folder = {}, bool canc
             if (d == nullptr || !d->isVisible() || d->objectName() != QLatin1String("gitWorktreeDialog")) continue;
             timer->stop();
             timer->deleteLater();
-            d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText(branch);
-            if (!folder.isEmpty()) d->findChild<QLineEdit*>("gitWorktreeFolder")->setText(folder);
-            if (cancel) d->reject();
-            else d->accept();
+            with(d);
             return;
         }
     });
     timer->start();
+}
+
+// Fills the next New Worktree window: \a branch, then \a folder when given;
+// Cancel when \a cancel, else accepted.
+void answerWorktree(const QString& branch, const QString& folder = {}, bool cancel = false)
+{
+    onWorktreeWindow([branch, folder, cancel](QDialog* d) {
+        d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText(branch);
+        if (!folder.isEmpty()) d->findChild<QLineEdit*>("gitWorktreeFolder")->setText(folder);
+        if (cancel) d->reject();
+        else d->accept();
+    });
 }
 
 // The message boxes that come up while it lives: their texts, each
@@ -3108,6 +3116,147 @@ private slots:
         QMenu none;
         commands->fillEntryMenu(&none, {empty});
         QVERIFY(none.findChild<QAction*>("gitNewWorktree") != nullptr && !none.findChild<QAction*>("gitNewWorktree")->isEnabled());
+    }
+
+    // The check of New Worktree... (2026-11-08): a remote's branch followed;
+    // a folder inside the repository by another spelling; '~'; the folder
+    // before a branch; Claude's Git menu as it would open.
+    void aWorktreeAsTheCheckFoundIt()
+    {
+        const QString repo = makeRepo("treecheck");
+        QVERIFY(!repo.isEmpty());
+        Commands* commands = Commands::instance();
+        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 30000); };
+        const auto trees = [&] { return gitIn(repo, {"worktree", "list", "--porcelain"}).count("worktree "); };
+        // A branch on a remote alone, with a commit main has not; a name two remotes have.
+        QVERIFY(!gitIn(repo, {"remote", "add", "origin", canonical(dir.path()) + "/nowhere.git"}).isNull());
+        QVERIFY(!gitIn(repo, {"remote", "add", "other", canonical(dir.path()) + "/elsewhere.git"}).isNull());
+        QVERIFY(!gitIn(repo, {"config", "branch.autoSetupMerge", "false"}).isNull());   // (followed because it was asked, not by default)
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "-b", "scratch"}).isNull());
+        QVERIFY(write(repo + "/f.txt", "the remote's work\n"));
+        QVERIFY(!gitIn(repo, {"add", "f.txt"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "remote work"}).isNull());
+        const QString theirs = gitIn(repo, {"rev-parse", "HEAD"});
+        QVERIFY(!gitIn(repo, {"update-ref", "refs/remotes/origin/feature", theirs}).isNull());
+        QVERIFY(!gitIn(repo, {"update-ref", "refs/remotes/origin/dup", theirs}).isNull());
+        QVERIFY(!gitIn(repo, {"update-ref", "refs/remotes/other/dup", "main"}).isNull());
+        QVERIFY(!gitIn(repo, {"checkout", "-q", "main"}).isNull());
+        QVERIFY(!gitIn(repo, {"branch", "-q", "-D", "scratch"}).isNull());
+        Tracker::instance()->readNow(repo);
+
+        // Before a branch is chosen the folder says nothing (not "<repo>-2").
+        QString before = "unread";
+        onWorktreeWindow([&before](QDialog* d) {
+            before = d->findChild<QLineEdit*>("gitWorktreeFolder")->text();
+            d->reject();
+        });
+        commands->newWorktree(repo);
+        QCOMPARE(before, QString());
+
+        // feature: the remote's, followed - not a new branch at main.
+        QString said;
+        onWorktreeWindow([&said](QDialog* d) {
+            d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText("feature");
+            said = d->findChild<QLabel*>("gitWorktreeNote")->text();
+            d->accept();
+        });
+        commands->newWorktree(repo);
+        made();
+        QVERIFY2(said.contains("origin/feature"), qPrintable(said));
+        const QString feature = repo + "-feature";
+        QCOMPARE(gitIn(feature, {"rev-parse", "HEAD"}), theirs);
+        QCOMPARE(read(feature).branch, QStringLiteral("feature"));
+        QCOMPARE(gitIn(repo, {"rev-parse", "--abbrev-ref", "feature@{upstream}"}), QStringLiteral("origin/feature"));
+        QCOMPARE(readAll(feature + "/f.txt"), QByteArray("the remote's work\n"));
+        QCOMPARE(trees(), 2);
+        // A name two remotes have, or a remote's branch with a local one of its name: nothing made.
+        {
+            misc::ErrorCapture errors;   // (the window's button is off for both)
+            answerWorktree("dup");
+            commands->newWorktree(repo);
+            answerWorktree("origin/feature");
+            commands->newWorktree(repo);
+            made();
+            QVERIFY2(errors.errors().isEmpty(), qPrintable(errors.errors().join('\n')));
+        }
+        QCOMPARE(trees(), 2);
+        QVERIFY(gitIn(repo, {"branch", "--list", "dup"}).isEmpty());
+        // other/dup chosen whole: followed.
+        answerWorktree("other/dup");
+        commands->newWorktree(repo);
+        made();
+        QCOMPARE(gitIn(repo, {"rev-parse", "--abbrev-ref", "dup@{upstream}"}), QStringLiteral("other/dup"));
+        QCOMPARE(trees(), 3);
+
+        // Inside the repository by another spelling: another case of its
+        // name (on a disk that ignores case), a link to it.
+        {
+            misc::ErrorCapture errors;
+            const QString upper = QFileInfo(repo).absolutePath() + "/" + QFileInfo(repo).fileName().toUpper();
+            int refusals = 0;
+            if (QFileInfo::exists(upper)) {
+                answerWorktree("in-case", upper + "/wt");
+                commands->newWorktree(repo);
+                QCOMPARE(errors.errors().size(), ++refusals);
+                QVERIFY2(errors.errors().last().contains("inside the repository"), qPrintable(errors.errors().last()));
+            }
+#ifndef Q_OS_WIN
+            const QString link = canonical(dir.path()) + "/link-to-treecheck";
+            QVERIFY(QFile::link(repo, link));
+            answerWorktree("in-link", link + "/deeper/wt");
+            commands->newWorktree(repo);
+            QCOMPARE(errors.errors().size(), ++refusals);
+            QVERIFY2(errors.errors().last().contains("inside the repository"), qPrintable(errors.errors().last()));
+#endif
+            QCOMPARE(trees(), 3);
+            QVERIFY(!QFileInfo::exists(repo + "/wt") && !QFileInfo::exists(repo + "/deeper"));
+        }
+
+#ifdef Q_OS_UNIX
+        // '~': the home folder (one of this test's own).
+        const QByteArray home = qgetenv("HOME");
+        const QString ownHome = canonical(dir.path()) + "/home";
+        QVERIFY(QDir().mkpath(ownHome));
+        qputenv("HOME", QFile::encodeName(ownHome));
+        answerWorktree("at-home", "~/trees/at-home");
+        commands->newWorktree(repo);
+        made();
+        qputenv("HOME", home);
+        QCOMPARE(read(ownHome + "/trees/at-home").branch, QStringLiteral("at-home"));
+        QVERIFY(!QFileInfo::exists(QFileInfo(repo).absolutePath() + "/~"));
+#endif
+
+        // Claude's Git menu as the window's user would find it: from a file
+        // in no repository to one in a repository, New Worktree is on;
+        // then before a first commit, off - with no menu opened between.
+        QMenu* git = app->gitMenuWidget();
+        QVERIFY(git != nullptr);
+        const QString loose = canonical(dir.path()) + "/plain/loose-tree.txt";
+        QVERIFY(write(loose, "loose\n"));
+        QVERIFY(app->gotoPage(loose));
+        emit git->aboutToShow();
+        QVERIFY(!git->findChild<QAction*>("gitNewWorktree")->isEnabled());
+        QVERIFY(app->gotoPage(repo + "/a.txt"));
+        answerWorktree("from-claude");
+        QJsonObject r = call("trigger_action", {{"action", "Git > New Worktree..."}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        made();
+        QCOMPARE(read(repo + "-from-claude").branch, QStringLiteral("from-claude"));
+        const QString empty = canonical(dir.path()) + "/treeless";
+        QVERIFY(QDir().mkpath(empty));
+        QVERIFY(!gitIn(empty, {"init", "-q"}).isNull());
+        QVERIFY(write(empty + "/n.txt", "n\n"));
+        QVERIFY(app->gotoPage(empty + "/n.txt"));
+        r = call("list_actions", {{"search", "New Worktree"}});
+        QVERIFY2(text(r).contains("\"enabled\":false"), qPrintable(text(r)));
+        QVERIFY(app->gotoPage(repo + "/a.txt"));   // (on again, unopened, for trigger_action to find off)
+        r = call("list_actions", {{"search", "New Worktree"}});
+        QVERIFY2(text(r).contains("\"enabled\":true"), qPrintable(text(r)));
+        QVERIFY(app->gotoPage(empty + "/n.txt"));
+        r = call("trigger_action", {{"action", "Git > New Worktree..."}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be used now"), qPrintable(text(r)));
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
     }
 
     void claudesGitTools()

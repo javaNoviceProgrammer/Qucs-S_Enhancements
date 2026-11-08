@@ -3062,6 +3062,9 @@ private slots:
         });
         answers.start();
         const auto press = [this](const QString& title) {
+            // (As its menu would be opened: what it enables set by the document in front now.)
+            for (QAction* top : app->menuBar()->actions())
+                if (QMenu* menu = top->menu()) emit menu->aboutToShow();
             for (QAction* a : app->findChildren<QAction*>())
                 if (a->text() == title && a->isEnabled() && a->parent() != nullptr) {
                     a->trigger();
