@@ -464,7 +464,7 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
 }
 
 Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& b, VectorC& x, double tolerance,
-            int restart, int most, const std::atomic_bool* stop)
+            int restart, int most, const std::atomic_bool* stop, const std::function<void(int, double)>& progress)
 {
     Gmres out;
     const int n = int(b.size());
@@ -550,6 +550,7 @@ Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& 
             g[k] = cs[std::size_t(k)] * g[k];
             ++k;
             out.residual = std::abs(g[k]) / scale;
+            if (progress) progress(out.iterations, out.residual);
             if (out.residual <= tolerance || next == 0 || (stop != nullptr && stop->load())) break;
         }
         // The least squares of the Hessenberg matrix, by its triangle.

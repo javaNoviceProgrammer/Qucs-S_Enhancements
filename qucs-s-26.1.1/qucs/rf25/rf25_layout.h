@@ -41,8 +41,13 @@ namespace qucs_s::rf25 {
 double areaOf(const QPolygonF& polygon);
 /// The length of \a polygon's boundary.
 double perimeterOf(const QPolygonF& polygon);
-/// \a shapes joined where they touch or overlap.
-QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes);
+/// \a shapes joined where they touch or overlap - along part of an edge too,
+/// which gdstk's union alone does not always join. \a joined, given, counts
+/// the pieces it had to join after that union.
+QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes, int* joined = nullptr);
+/// Whether \a a and \a b share a stretch of an edge longer than \a tol (a
+/// side of one on a side of the other, within \a tol of its line).
+bool touchAlongAnEdge(const QPolygonF& a, const QPolygonF& b, double tol);
 /// \a shapes grown by \a distance (negative: shrunk), in their own units.
 QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance);
 /// The part of \a shapes that is inside \a within: a cut, which is how a

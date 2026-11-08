@@ -29,6 +29,7 @@
 
 #include <QElapsedTimer>
 #include <QFrame>
+#include <QPointer>
 #include <QWidget>
 
 #include <atomic>
@@ -251,6 +252,29 @@ public:
     /// Waits for it, a solve waiting for the mesh included, \a ms at most;
     /// whether it ended.
     bool waitForSolved(int ms = 600000);
+    /// Held by what waits on it with the window going on - a tool's call,
+    /// from its first wait to its answer, and each waitFor...() -: its tab
+    /// closed meanwhile (Stop and Close, a close_document, a tab kept running
+    /// in the background and let go as its solve ended), it is not deleted
+    /// under the one waiting but closed when free. Each wait ends at once
+    /// once it is closed. It was deleted under rf25_solve, which read the
+    /// freed model as it went on (B6 of the open items of 8 November).
+    class Held
+    {
+    public:
+        explicit Held(RF25Doc* doc);
+        ~Held();
+        Held(const Held&) = delete;
+        Held& operator=(const Held&) = delete;
+
+    private:
+        QPointer<RF25Doc> a_doc;
+    };
+    bool beingWaitedFor() const override { return a_waiting > 0; }
+    /// Its tab closed while it is held: its read, its mesh and its solve
+    /// stopped, none started, and deleted once the last hold is let go.
+    void closeWhenFree() override;
+    bool closedWhenFree() const { return a_closed; }
     /// Tests: while \a held, a solve waits before it computes anything, and
     /// gives up at once if it is let go meanwhile - so that what happens to
     /// a solve going on, an edit's mesh overtaking it or a Stop, is seen in
@@ -468,6 +492,8 @@ signals:
 private:
     struct Job;
     struct PrepareJob;
+    int a_waiting = 0;      // (Held)
+    bool a_closed = false;  // (closeWhenFree())
     struct SolveJob;
     void buildUi();
     void prepareDone();

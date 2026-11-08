@@ -349,15 +349,18 @@ private slots:
         QVERIFY2(says(bent.lines, "narrowest conductor (20 "), qPrintable(bent.lines.join(" | ")));
         QVERIFY2(says(bent.lines, "cut into the 2 rectangle(s)"), qPrintable(bent.lines.join(" | ")));
         QVERIFY2(says(bent.lines, "times as long"), qPrintable(bent.lines.join(" | ")));
-        // A shape with a slanted side still goes by twice its area over its
-        // perimeter, a trace's width for a trace of any shape: a right
-        // triangle of 200 µm legs is 58.58 across.
+        // A shape with a slanted side is cut between its corners into
+        // rectangles and trapezoids, each going by its own width (B4 of the
+        // open items of 8 November): a right triangle of 200 µm legs, one
+        // trapezoid, by its mean width across its slab, 100 µm. (It went by
+        // twice its area over its perimeter whole, 58.58.)
         rf::Conductor wedge;
         wedge.layer = QStringLiteral("M1");
         wedge.outline = QPolygonF({QPointF(0, 0), QPointF(200, 0), QPointF(0, 200)});
         const rf::Mesh slanted = rf::meshOf({wedge}, how, m.stack(), 10e9);
-        QVERIFY2(says(slanted.lines, "narrowest conductor (58.58 "), qPrintable(slanted.lines.join(" | ")));
-        QVERIFY(!says(slanted.lines, "rectangle(s)"));
+        QVERIFY2(says(slanted.lines, "narrowest conductor (100 ") && says(slanted.lines, "into 0 rectangle(s)")
+                     && says(slanted.lines, "1 part(s) along the slanted sides"),
+                 qPrintable(slanted.lines.join(" | ")));
         // None at all: the wavelength alone, as before.
         rf::MeshSettings none = how;
         none.cellsAcross = 0;
@@ -423,6 +426,233 @@ private slots:
             if (std::abs(b.bottom() - 1850) < 1e-9) atEnd = b.height();
         }
         QVERIFY2(atFoot > 0 && std::abs(atEnd - atFoot / 2) < 1e-6, qPrintable(QStringLiteral("%1 %2").arg(atFoot).arg(atEnd)));
+    }
+
+    // Two shapes of one layer that touch along an edge are joined by the
+    // mesh whatever the merge did: a piece with a slanted side - its
+    // conductor gridded whole - takes the other's lines where they meet
+    // along x or y, so that cells of both share whole edges there, the runs
+    // of current across. Unmerged, such a piece met its neighbour through no
+    // edge at all, and the full-wave solve had a filter's stub cut off with
+    // nothing said (B1 of the open items of 8 November). Along a slant, both
+    // are cut at the same points of it. Where no edge can be shared - two
+    // shapes over each other, unmerged -: said, both named.
+    void touchingPiecesAreJoinedOrSaid()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        const auto shared = [](const rf::Mesh& mesh, const rf::Conductor& a, const rf::Conductor& b) {
+            // Edges with a cell of each on either side.
+            QHash<QString, int> sides;
+            int count = 0;
+            for (const rf::MeshCell& c : mesh.cells) {
+                const QPointF probe = c.centre;
+                const int who = a.outline.containsPoint(probe, Qt::OddEvenFill) ? 1 : b.outline.containsPoint(probe, Qt::OddEvenFill) ? 2 : 0;
+                for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+                    const QPointF mid = (c.outline.at(i) + c.outline.at((i + 1) % n)) / 2;
+                    sides[QStringLiteral("%1,%2").arg(std::llround(mid.x() * 1e3)).arg(std::llround(mid.y() * 1e3))] |= who;
+                }
+            }
+            for (const int v : std::as_const(sides)) count += v == 3;
+            return count;
+        };
+        // A line, and a pad with a chamfered corner touching its lower side.
+        const rf::Conductor line = on(QStringLiteral("M1"), 0, 0, 3600, 300);
+        rf::Conductor pad;
+        pad.layer = QStringLiteral("M1");
+        pad.outline = QPolygonF({QPointF(-950, -1200), QPointF(-550, -1600), QPointF(1550, -1600), QPointF(1550, 0), QPointF(-950, 0)});
+        const rf::Mesh joined = rf::meshOf({line, pad}, how, m.stack(), 3e9);
+        QVERIFY2(joined.ok(), qPrintable(joined.problems.join(" | ")));
+        QVERIFY2(joined.warnings.isEmpty(), qPrintable(joined.warnings.join(" | ")));
+        QVERIFY2(shared(joined, line, pad) >= 3, qPrintable(QString::number(shared(joined, line, pad))));
+        // A line cut along a slant into two pieces: joined along the slant,
+        // each cut at the same points along it.
+        rf::Conductor left, right;
+        left.layer = right.layer = QStringLiteral("M1");
+        // (Steps that do not line up by themselves along the slant.)
+        left.outline = QPolygonF({QPointF(0, 0), QPointF(1000, 0), QPointF(1230, 400), QPointF(0, 400)});
+        right.outline = QPolygonF({QPointF(1000, 0), QPointF(3170, 0), QPointF(3170, 400), QPointF(1230, 400)});
+        const rf::Mesh slant = rf::meshOf({left, right}, how, m.stack(), 3e9);
+        QVERIFY2(slant.ok() && slant.warnings.isEmpty(), qPrintable((slant.problems + slant.warnings).join(" | ")));
+        // Every cell's edge lying on the slant met by one on the other side.
+        {
+            QSet<QString> onLeft, onRight;
+            const QPointF p0(1000, 0), p1(1230, 400);
+            const QPointF unit = (p1 - p0) / std::hypot(230.0, 400.0), normal(-unit.y(), unit.x());
+            for (const rf::MeshCell& c : slant.cells) {
+                // (Which side by its centroid, which a sliver along the slant
+                //  has inside it, where its box's centre may not be.)
+                QPointF centroid(0, 0);
+                double twice = 0;
+                for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+                    const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % n);
+                    const double cross = a.x() * b.y() - b.x() * a.y();
+                    twice += cross;
+                    centroid += (a + b) * cross;
+                }
+                centroid /= 3 * twice;
+                const bool l = left.outline.containsPoint(centroid, Qt::OddEvenFill);
+                for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+                    const QPointF a = c.outline.at(i) - p0, b = c.outline.at((i + 1) % n) - p0;
+                    if (std::abs(a.x() * normal.x() + a.y() * normal.y()) > 1e-2 || std::abs(b.x() * normal.x() + b.y() * normal.y()) > 1e-2) continue;
+                    if (QLineF(c.outline.at(i), c.outline.at((i + 1) % n)).length() < 1e-6) continue;
+                    const QPointF mid = (c.outline.at(i) + c.outline.at((i + 1) % n)) / 2;
+                    (l ? onLeft : onRight) << QStringLiteral("%1,%2").arg(std::llround(mid.x() * 1e2)).arg(std::llround(mid.y() * 1e2));
+                }
+            }
+            QVERIFY2(onLeft.size() >= 3 && onLeft == onRight,
+                     qPrintable(QStringLiteral("%1 edges on the slant on the left, %2 on the right, %3 shared").arg(onLeft.size()).arg(onRight.size())
+                                    .arg(QSet<QString>(onLeft).intersect(onRight).size())));
+        }
+        // Two shapes left unmerged over each other, sharing an edge's line:
+        // their cells cannot meet edge to edge - said, both named.
+        const rf::Conductor under = on(QStringLiteral("M1"), 0, 0, 1000, 300), over = on(QStringLiteral("M1"), 450, 70, 1100, 230);
+        const rf::Mesh apart = rf::meshOf({under, over}, how, m.stack(), 3e9);
+        QVERIFY2(apart.ok(), qPrintable(apart.problems.join(" | ")));
+        QCOMPARE(apart.warnings.size(), 1);
+        QVERIFY2(apart.warnings.first().contains(QStringLiteral("M1's piece about 500, 150")) && apart.warnings.first().contains(QStringLiteral("M1's piece about 1000, 185"))
+                     && apart.warnings.first().contains(QStringLiteral("no current crosses")),
+                 qPrintable(apart.warnings.first()));
+        QVERIFY2(says(apart.lines, "no current crosses"), qPrintable(apart.lines.join(" | ")));
+        // Apart by a gap, or meeting at a corner alone, nothing is said.
+        const rf::Mesh gap = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 300), on(QStringLiteral("M1"), 1050, 0, 1000, 300)}, how, m.stack(), 3e9);
+        QVERIFY2(gap.warnings.isEmpty(), qPrintable(gap.warnings.join(" | ")));
+    }
+
+    // A metal as thick as the gaps it faces: the field between its side
+    // walls is in neither model's answer, so the capacitance across them
+    // reads low - 19 % on a comb of 1 µm metal in 1 µm gaps against Palace -,
+    // and that is said, on a sheet and on two faces alike, from a thickness
+    // of a quarter of the narrowest gap; not for 3 µm in 50 µm gaps, which
+    // rf25_fullwave.h validates, nor for a thin film (B2 of the open items
+    // of 8 November: nothing was said).
+    void aMetalThickBesideNarrowGapsIsSaid()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        const auto warned = [&](double thicknessUm, double gapUm, bool faces) {
+            rf::Stack stack = m.stack();
+            for (rf::Layer& l : stack.layers)
+                if (l.name == QLatin1String("M1")) {
+                    l.thickness = thicknessUm * 1e-6;
+                    l.twoSheets = faces;
+                }
+            const rf::Mesh mesh = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 1), on(QStringLiteral("M1"), 0, 1 + gapUm, 40, 1)},
+                                             how, stack, 100e9);
+            return mesh.warnings.join(QStringLiteral(" | "));
+        };
+        for (const bool faces : {false, true}) {
+            const QString one = warned(1, 1, faces);
+            QVERIFY2(one.contains(QStringLiteral("M1 is 1 µm thick beside gaps as narrow as 1 µm")) && one.contains(QStringLiteral("reads low"))
+                         && one.contains(faces ? QStringLiteral("walls carry no charge") : QStringLiteral("a sheet has no walls")),
+                     qPrintable(one));
+            QVERIFY2(!warned(0.3, 1, faces).isEmpty(), "a quarter of the gap is said");
+            QVERIFY2(warned(0.2, 1, faces).isEmpty(), qPrintable(warned(0.2, 1, faces)));
+            QVERIFY2(warned(3, 50, faces).isEmpty(), qPrintable(warned(3, 50, faces)));
+            QVERIFY2(warned(0.01, 1, faces).isEmpty(), qPrintable(warned(0.01, 1, faces)));
+        }
+    }
+
+    // One cross-section, one mesh, however it is drawn: a coplanar line
+    // drawn inside pads with tapers - its signal and its grounds polygons
+    // with slanted sides - has the same cells along the line as the line
+    // drawn as three rectangles, edge for edge, away from the line's ends.
+    // Sized by each polygon's 2
+    // area / perimeter whole, the line inside the pads was meshed apart from
+    // the line alone, eps_eff 0.6-0.8 % over it (a pad pair's L-2L 1.4 % and
+    // 3.3 % apart from the plain line's at three and six across here); and
+    // a filter drawn as one polygon with one slanted side, its 100 µm stub
+    // had cells of 503 µm, "3 cell(s) across the narrowest conductor (1508
+    // µm across)" (B4 of the open items of 8 November).
+    void aLineIsMeshedAlikeHoweverItIsDrawn()
+    {
+        rf::Model m = stacked();
+        for (const int across : {3, 6}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            how.gaps = true;
+            const double LP = 60, LT = 80, L = 1000, x0 = LP + LT, x1 = x0 + L, e = x1 + LT + LP;
+            const auto shape = [](const QList<QPointF>& points) {
+                rf::Conductor c;
+                c.layer = QStringLiteral("M1");
+                c.outline = QPolygonF(points);
+                return c;
+            };
+            const rf::Conductor sig = shape({{0, -40}, {LP, -40}, {x0, -25}, {x1, -25}, {x1 + LT, -40}, {e, -40}, {e, 40}, {x1 + LT, 40}, {x1, 25},
+                                             {x0, 25}, {LP, 40}, {0, 40}});
+            const rf::Conductor up = shape({{0, 70}, {LP, 70}, {x0, 45}, {x1, 45}, {x1 + LT, 70}, {e, 70}, {e, 205}, {0, 205}});
+            const rf::Conductor down = shape({{0, -205}, {e, -205}, {e, -70}, {x1 + LT, -70}, {x1, -45}, {x0, -45}, {LP, -70}, {0, -70}});
+            const rf::Mesh pads = rf::meshOf({sig, up, down}, how, m.stack(), 30e9);
+            const rf::Mesh plain = rf::meshOf({on(QStringLiteral("M1"), x0, -25, L, 50), on(QStringLiteral("M1"), x0, 45, L, 160),
+                                               on(QStringLiteral("M1"), x0, -205, L, 160)},
+                                              how, m.stack(), 30e9);
+            QVERIFY2(pads.ok() && plain.ok() && pads.warnings.isEmpty(), qPrintable((pads.problems + plain.problems + pads.warnings).join(" | ")));
+            QVERIFY2(says(pads.lines, "narrowest conductor (50 ") && says(pads.lines, "slanted sides cut at their corners"),
+                     qPrintable(pads.lines.join(" | ")));
+            // (Along the line, its ends apart: an open end there, a joint
+            //  to the taper here.)
+            const auto along = [x0, x1](const rf::Mesh& mesh) {
+                QStringList cells;
+                for (const rf::MeshCell& c : mesh.cells) {
+                    const QRectF b = c.outline.boundingRect();
+                    if (b.left() >= x0 + 250 - 1e-9 && b.right() <= x1 - 250 + 1e-9)
+                        cells << QStringLiteral("%1 %2 %3 %4").arg(b.left(), 0, 'f', 6).arg(b.top(), 0, 'f', 6).arg(b.width(), 0, 'f', 6).arg(b.height(), 0, 'f', 6);
+                }
+                cells.sort();
+                return cells;
+            };
+            const QStringList a = along(pads), b = along(plain);
+            QVERIFY2(a.size() == b.size() && a == b, qPrintable(QStringLiteral("%1 across: %2 cells along the line in pads, %3 drawn alone")
+                                                                    .arg(across).arg(a.size()).arg(b.size())));
+            // Where the line meets its taper, every cell's edge met by one on
+            // the other side: the current crosses there.
+            {
+                QHash<QString, int> joint;
+                for (const rf::MeshCell& c : pads.cells)
+                    for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+                        const QPointF p = c.outline.at(i), q = c.outline.at((i + 1) % n);
+                        if (std::abs(p.x() - x0) > 1e-6 || std::abs(q.x() - x0) > 1e-6 || std::abs(p.y() - q.y()) < 1e-6) continue;
+                        if (std::max(p.y(), q.y()) > 25 + 1e-6 || std::min(p.y(), q.y()) < -25 - 1e-6) continue;
+                        joint[QStringLiteral("%1").arg(std::llround((p.y() + q.y()) * 500))] += 1;
+                    }
+                QVERIFY2(joint.size() >= 3, qPrintable(QString::number(joint.size())));
+                for (auto it = joint.constBegin(); it != joint.constEnd(); ++it)
+                    QVERIFY2(it.value() == 2, qPrintable(QStringLiteral("%1 across: an edge at the joint, y %2 µm, met from one side only")
+                                                             .arg(across).arg(it.key().toDouble() / 1000)));
+            }
+            // And at its ends its cells as long as the line alone's: its own
+            // pad past its taper faces it across no gap.
+            const auto endCell = [x1](const rf::Mesh& mesh) {
+                double shortest = 0;
+                for (const rf::MeshCell& c : mesh.cells) {
+                    const QRectF b = c.outline.boundingRect();
+                    if (std::abs(b.right() - x1) < 1e-9 && b.top() >= -25 - 1e-9 && b.bottom() <= 25 + 1e-9)
+                        shortest = shortest > 0 ? std::min(shortest, b.width()) : b.width();
+                }
+                return shortest;
+            };
+            QVERIFY2(std::abs(endCell(pads) - endCell(plain)) < 1e-6, qPrintable(QStringLiteral("%1 against %2").arg(endCell(pads)).arg(endCell(plain))));
+        }
+        // The filter as one polygon with a slanted side: its 100 µm stub has
+        // cells across it.
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        rf::Conductor filter;
+        filter.layer = QStringLiteral("M1");
+        filter.outline = QPolygonF({QPointF(-950, -1200), QPointF(-550, -1600), QPointF(1550, -1600), QPointF(1550, 0), QPointF(1600, 0),
+                                    QPointF(1600, -2100), QPointF(2150, -2100), QPointF(2150, -5200), QPointF(2250, -5200), QPointF(2250, -2100),
+                                    QPointF(4200, -2100), QPointF(4200, 0), QPointF(3600, 0), QPointF(3600, 3900), QPointF(0, 3900), QPointF(0, 0),
+                                    QPointF(-950, 0)});
+        const rf::Mesh one = rf::meshOf({filter}, how, m.stack(), 3e9);
+        QVERIFY2(one.ok() && says(one.lines, "narrowest conductor (100 "), qPrintable(one.lines.join(" | ")));
+        int acrossStub = 0;
+        for (const rf::MeshCell& c : one.cells) {
+            const QRectF b = c.outline.boundingRect();
+            if (b.left() >= 2150 - 1e-9 && b.right() <= 2250 + 1e-9 && b.top() < -4000 && b.bottom() > -4000) ++acrossStub;
+        }
+        QVERIFY2(acrossStub >= 3, qPrintable(QString::number(acrossStub)));
     }
 
     // As many across as asked - or as many as the solver takes, said: a

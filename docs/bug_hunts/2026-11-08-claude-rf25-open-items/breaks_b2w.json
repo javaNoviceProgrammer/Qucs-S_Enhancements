@@ -1,0 +1,11 @@
+[
+ {"name": "B2w-never", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "            if (t < kThickBesideGap * gap) continue;", "new": "            if (true) continue;",
+  "tests": [["test_rf25_mesh", "aMetalThickBesideNarrowGapsIsSaid"]]},
+ {"name": "B2w-always", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "            if (t < kThickBesideGap * gap) continue;", "new": "            if (t < 0.001 * gap) continue;",
+  "tests": [["test_rf25_mesh", "aMetalThickBesideNarrowGapsIsSaid"]]},
+ {"name": "B2w-not-in-warnings", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "            mesh.warnings << w;\n            mesh.lines << w;\n        }\n    }\n\n    // The unknowns", "new": "            mesh.lines << w;\n        }\n    }\n\n    // The unknowns",
+  "tests": [["test_rf25_mesh", "aMetalThickBesideNarrowGapsIsSaid"]]}
+]

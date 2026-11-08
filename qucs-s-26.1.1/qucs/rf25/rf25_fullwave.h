@@ -339,6 +339,15 @@ struct FullWaveControl {
     /// The most memory a frequency's compressed solve may take, bytes; 0:
     /// half the machine's. (Lower, a test meets the bound.)
     double mostBytes = 0;
+    /// A compressed solve's GMRES as it goes, for its bar: the most
+    /// iterations the frequencies under way have taken so far and the
+    /// residual of the one furthest on (B3 of the open items of 8 November:
+    /// "0 of 1 frequencies" for fifteen minutes said nothing of it).
+    std::atomic_int* gmresIterations = nullptr;
+    std::atomic<double>* gmresResidual = nullptr;
+    /// Tests: the most GMRES iterations a port's compressed solve takes; 0:
+    /// the build's own (3000). (Lower, a test meets the limit.)
+    int mostIterations = 0;
     /// Tests: false leaves the ports' own paths up to their cells out
     /// (PortPath), each port an ideal source between its cells as one that
     /// names its returns is - a port from a metal then the same columns as

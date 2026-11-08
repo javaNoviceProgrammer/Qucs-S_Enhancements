@@ -1,0 +1,26 @@
+# Each break's last run (breaks.py; earlier runs of a break whose test was then strengthened are not kept).
+B6-never-waited-for: CAUGHT: FAIL!  : TestQucsControl::anRf25ModelClosedWhileItsSolveIsWaitedForIsLeftAlone() 'failed(solved) && text(solved).contains(QStringLiteral("was closed"))' returned FALSE. (It is still solving after 300 s ...)
+B1-union-no-join: CAUGHT: FAIL!  : TestRf25Layout::shapesTouchingAlongAnEdgeAreOneShape() Compared values are not the same
+B1-touch-test-blind: CAUGHT: FAIL!  : TestRf25Layout::shapesTouchingAlongAnEdgeAreOneShape() Compared values are not the same
+B1-mesh-no-outline-meetings: CAUGHT: FAIL!  : TestRf25Mesh::aLineIsMeshedAlikeHoweverItIsDrawn() 'it.value() == 2' returned FALSE. (3 across: an edge at the joint, y -18.75 µm, met from one side only)
+B1-mesh-no-warning: CAUGHT: FAIL!  : TestRf25Mesh::touchingPiecesAreJoinedOrSaid() Compared values are not the same
+B1-fullwave-drops-mesh-warnings: CAUGHT: FAIL!  : TestRf25Fullwave::shapesDrawnTouchingSolveAsTheOutlineWhole() 'apart.warnings.size() == 1 && apart.warnings.first().contains(QStringLiteral("no current crosses"))' returned FALSE. ()
+B7-beside-skips-own-net: CAUGHT: FAIL!  : TestRf25Returns::aShortedLinesPortReturnsThroughItsOwnConductor() 'w.ok()' returned FALSE. (P1 returns through the conductors beside it, and on the line of its edge at 0, 0 µm there is none either side of it: dr
+B7-beside-takes-contiguous-own: CAUGHT: FAIL!  : TestRf25Returns::aShortedLinesPortReturnsThroughItsOwnConductor() '!w.ok() && why(w).contains(QStringLiteral("there is none either side of it"))' returned FALSE. (P1 drives the 5 cell(s) along the face at 0, 0 µ
+B7-terminal-on-own-refused: CAUGHT: FAIL!  : TestRf25Returns::aShortedLinesPortReturnsThroughItsOwnConductor() 'w.ok()' returned FALSE. (P1's return T1 is next to the cells P1 drives: it would short the source. Put it apart from them - further along its ow
+B7-adjacent-allowed: CAUGHT: FAIL!  : TestRf25Returns::whatAPortThatNamesItsReturnsCannotBeIsSaid() Compared values are not the same
+B7-no-own-note: CAUGHT: FAIL!  : TestRf25Returns::aShortedLinesPortReturnsThroughItsOwnConductor() 'w.portsSaid.at(0).contains(QStringLiteral("own"))' returned FALSE. (P1 drives the 8 cell(s) along the face at 0, 0 µm against the conductors bes
+B2w-never: CAUGHT: FAIL!  : TestRf25Mesh::aMetalThickBesideNarrowGapsIsSaid() 'one.contains(QStringLiteral("M1 is 1 µm thick beside gaps as narrow as 1 µm")) && one.contains(QStringLiteral("reads low")) && one.contains(faces ? QStringLiter
+B2w-always: CAUGHT: FAIL!  : TestRf25Mesh::aMetalThickBesideNarrowGapsIsSaid() 'warned(0.2, 1, faces).isEmpty()' returned FALSE. (M1 is 0.2 µm thick beside gaps as narrow as 1 µm: the field between its side walls is not in this answer - a s
+B2w-not-in-warnings: CAUGHT: FAIL!  : TestRf25Mesh::aMetalThickBesideNarrowGapsIsSaid() 'one.contains(QStringLiteral("M1 is 1 µm thick beside gaps as narrow as 1 µm")) && one.contains(QStringLiteral("reads low")) && one.contains(faces ? QStringLiter
+B4-no-pieces: CAUGHT: FAIL!  : TestRf25Mesh::aLineIsMeshedAlikeHoweverItIsDrawn() 'says(pads.lines, "narrowest conductor (50 ") && says(pads.lines, "slanted sides cut at their corners")' returned FALSE. (A wavelength at 30 GHz in eps_r 4 is 5
+B4-symmetric-sharing: CAUGHT: FAIL!  : TestRf25Mesh::aLineIsMeshedAlikeHoweverItIsDrawn() 'a.size() == b.size() && a == b' returned FALSE. (3 across: 112 cells along the line in pads, 65 drawn alone)
+B4-ends-shared-into-parts: CAUGHT: FAIL!  : TestRf25Mesh::aLineIsMeshedAlikeHoweverItIsDrawn() 'a.size() == b.size() && a == b' returned FALSE. (3 across: 67 cells along the line in pads, 65 drawn alone)
+B4-own-pad-faces-a-gap: CAUGHT: FAIL!  : TestRf25Mesh::aLineIsMeshedAlikeHoweverItIsDrawn() 'std::abs(endCell(pads) - endCell(plain)) < 1e-6' returned FALSE. (16.6667 against 33.3333)
+B4-slant-way-wrong: CAUGHT: FAIL!  : TestRf25Mesh::aLineIsMeshedAlikeHoweverItIsDrawn() 'says(pads.lines, "narrowest conductor (50 ") && says(pads.lines, "slanted sides cut at their corners")' returned FALSE. (A wavelength at 30 GHz in eps_r 4 is 5
+B1-slant-not-joined: CAUGHT: FAIL!  : TestRf25Mesh::touchingPiecesAreJoinedOrSaid() 'onLeft.size() >= 3 && onLeft == onRight' returned FALSE. (7 edges on the slant on the left, 7 on the right, 2 shared)
+B3-near-half-a-side: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'w.iterations > 0 && w.iterations <= 60' returned FALSE. (1054)
+B3-no-progress: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'iterations.load() >= 1 && iterations.load() <= w.iterations && residual.load() > 0' returned FALSE. (0 0)
+B3-no-near-miss: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'near.ok() && near.warnings.size() == 1 && near.warnings.first().contains(QStringLiteral("near its limit"))' returned FALSE. ()
+B3-short-is-failure: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'shortOf.ok() && shortOf.z.size() == 2' returned FALSE. (At 50 GHz the compressed solve did not converge: GMRES left a residual of 1.3e-05 after 12 iterati
+B3-warnings-not-gathered: CAUGHT: FAIL!  : TestRf25Fullwave::gmresKeepsItsHoldAsTheMeshIsRefined() 'near.ok() && near.warnings.size() == 1 && near.warnings.first().contains(QStringLiteral("near its limit"))' returned FALSE. ()

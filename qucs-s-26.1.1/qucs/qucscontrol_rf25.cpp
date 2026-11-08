@@ -350,6 +350,15 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     return out;
 }
 
+/// A model closed while a call waited on it - its tab closed by the user, or
+/// by another call -: said, and nothing of it touched after (RF25Doc::Held).
+QJsonObject closedWhileWaited(const QString& name)
+{
+    return errorResult(QucsControl::tr("%1 was closed while this call waited on it: what it was doing was stopped, and "
+                                       "there is nothing of it to answer.")
+                           .arg(name));
+}
+
 } // namespace
 
 QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
@@ -368,6 +377,10 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_solve is of a planar structure's stack and layout.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
 
     const int timeout = waitsFor(QStringLiteral("rf25_solve"), args);
     // Cancelled by its client while it waits (the user stopped Claude): its
@@ -383,9 +396,13 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     const auto over = qScopeGuard([this, stop] { stopped(stop); });
     // The shapes and the cells first: the tab makes them at every edit,
     // and a solve is of them as they stand.
-    if (!model->waitForLayout(timeout * 1000))
+    const bool laidOut = model->waitForLayout(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut)
         return errorResult(tr("Its layout is still being read after %1 s.").arg(timeout));
-    if (!model->waitForPrepared(timeout * 1000))
+    const bool prepared = model->waitForPrepared(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
 
     // Which solver: the one named, else the study's own - for this solve
@@ -433,7 +450,9 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         *startedHere = true;
         model->solveWith(request);
     }
-    if (!model->waitForSolved(timeout * 1000)) {
+    const bool solved = model->waitForSolved(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!solved) {
         // It goes on: stopped here, the next call started it from nothing
         // and its time went for nought. Where the time goes decides what
         // would make it shorter - the stack's Green's functions are no
@@ -566,6 +585,9 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         nets.append(net);
     }
     out.insert(QStringLiteral("nets"), nets);
+    // (What makes it doubtful, as the full wave's warnings: the mesh's.)
+    if (const std::shared_ptr<const Mesh> mesh = model->mesh(); mesh && !mesh->warnings.isEmpty())
+        out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(mesh->warnings));
     // Several conductors are coupled lines, whose modes are what a
     // designer of a pair actually asks after.
     double slowest = 0;   // m/s: the slowest mode's, for where the S parameters first turn over
@@ -704,6 +726,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         brief.insert(QStringLiteral("model"), out.value(QStringLiteral("model")));
         brief.insert(QStringLiteral("length"), length);
         brief.insert(QStringLiteral("unknowns"), e->unknowns);
+        if (out.contains(QStringLiteral("warnings"))) brief.insert(QStringLiteral("warnings"), out.value(QStringLiteral("warnings")));
         QJsonArray few;
         for (const QJsonValue& v : out.value(QStringLiteral("nets")).toArray()) {
             const QJsonObject net = v.toObject();
@@ -762,6 +785,10 @@ QJsonObject QucsControl::rf25Stop(const QJsonObject& args)
     auto* model = dynamic_cast<RF25Doc*>(doc);
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_stop stops a planar structure's solve.").arg(titleOf(doc)));
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
     const QString name = QFileInfo(model->getDocName()).fileName();
     if (!model->isSolving() && model->solvesAtWork() == 0)
         return jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
@@ -769,7 +796,9 @@ QJsonObject QucsControl::rf25Stop(const QJsonObject& args)
     const QString was = model->solvingSaid();
     model->stopSolving();
     const int timeout = waitsFor(QStringLiteral("rf25_stop"), args);
-    if (!model->waitForSolvesToEnd(timeout * 1000))
+    const bool ended = model->waitForSolvesToEnd(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!ended)
         return errorResult(tr("Asked to stop, still at work after %1 s: it stops at its next check (rf25_stop again waits "
                               "more).").arg(timeout));
     QJsonObject out{{QStringLiteral("stopped"), true}};
@@ -793,10 +822,18 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_circuit fits a circuit to the full-wave solve of one.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
     // Its shapes and its mesh first: a solution kept beside the model is
     // taken once they are made, a moment after the model is opened.
-    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
-    if (!model->waitForPrepared(300000))
+    const bool laidOut = model->waitForLayout(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    const bool prepared = model->waitForPrepared(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
     // Where it goes, if anywhere: the file given, else an Equivalent circuit
     // node's own; with neither, the fit alone.
@@ -888,6 +925,10 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_inductance is of the loop a planar structure's "
                               "ports make.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
 
     const int timeout = waitsFor(QStringLiteral("rf25_inductance"), args);
     // A frequency of its own is only for Q, and L and R do not move with
@@ -904,9 +945,13 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     // The shapes, the cells, and then the solve - which finds the charge
     // and the loop together, on the same copies: the quasi-static one,
     // whatever the study's Solver, since that is where the loop is found.
-    if (!model->waitForLayout(timeout * 1000))
+    const bool laidOut = model->waitForLayout(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut)
         return errorResult(tr("Its layout is still being read after %1 s.").arg(timeout));
-    if (!model->waitForPrepared(timeout * 1000))
+    const bool prepared = model->waitForPrepared(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
     RF25Doc::SolveRequest quasiStatic;
     quasiStatic.solver = QStringLiteral("quasi_static");
@@ -917,7 +962,9 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
                               "- ask again once that one has ended, or after rf25_stop.")
                                .arg(QFileInfo(model->getDocName()).fileName(), model->solvingSaid()));
     if (!model->isSolving()) model->solveWith(quasiStatic);
-    if (!model->waitForSolved(timeout * 1000)) {
+    const bool solved = model->waitForSolved(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!solved) {
         const bool greens = model->quasiStaticStep() == ExtractControl::Greens;
         return errorResult(tr("It is still solving after %1 s: %2 It goes on - rf25_inductance asked again waits for it, "
                               "and rf25_stop stops it.%3")
@@ -981,10 +1028,18 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_export writes the S parameters of one.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
     // Its shapes and its mesh first: a solution kept beside the model is
     // taken once they are made, a moment after the model is opened.
-    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
-    if (!model->waitForPrepared(300000))
+    const bool laidOut = model->waitForLayout(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    const bool prepared = model->waitForPrepared(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
     // (An equivalent circuit is fitted, not written as S: its own tool.)
     const QString node = args.value(QLatin1String("node")).toString().trimmed();
@@ -1152,8 +1207,16 @@ QJsonObject QucsControl::rf25HfssExport(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_hfss_export writes one for HFSS™ 3D Layout.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
-    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
-    if (!model->waitForPrepared(300000))
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
+    const bool laidOut = model->waitForLayout(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    const bool prepared = model->waitForPrepared(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
 
     HfssOptions how;
@@ -1323,8 +1386,16 @@ QJsonObject QucsControl::rf25Compare(const QJsonObject& args)
     if (model == nullptr)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_compare sets the full-wave solve of one beside a Touchstone file.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
-    if (!model->waitForLayout(300000)) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
-    if (!model->waitForPrepared(300000))
+    // (Held from here to its answer: its tab closed meanwhile - by the user, by
+    //  another call -, it is not deleted under this call, which says so.)
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
+    const bool laidOut = model->waitForLayout(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    const bool prepared = model->waitForPrepared(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
     const std::shared_ptr<const FullWave> wave = model->fullWave();
     if (!wave || !wave->ok())

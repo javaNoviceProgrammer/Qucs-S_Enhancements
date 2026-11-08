@@ -111,6 +111,9 @@ struct Mesh {
     MeshCost cost;
     QStringList problems;
     QStringList lines;        ///< what it did, as the processing reports its own
+    /// What makes a solve on it not to be trusted - said among the lines
+    /// too: conductors that touch and that it does not join.
+    QStringList warnings;
     double cellSize = 0;      ///< the size it aimed at, µm
     /// How many conductors' sides it graded where they face another across a
     /// narrow gap (MeshSettings::gaps).

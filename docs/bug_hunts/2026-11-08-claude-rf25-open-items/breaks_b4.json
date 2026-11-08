@@ -1,0 +1,19 @@
+[
+ {"name": "B4-no-pieces", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "            const QList<Slab> slabs = piecesOf(outline);", "new": "            const QList<Slab> slabs;",
+  "tests": [["test_rf25_mesh", "aLineIsMeshedAlikeHoweverItIsDrawn"], ["test_rf25_returns", "aLinesEpsEffIsTheSameDrawnAloneOrInItsPads"]]},
+ {"name": "B4-symmetric-sharing", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "        if (parts) {\n            const auto isStrip", "new": "        if (false) {\n            const auto isStrip",
+  "tests": [["test_rf25_mesh", "aLineIsMeshedAlikeHoweverItIsDrawn"], ["test_rf25_returns", "aLinesEpsEffIsTheSameDrawnAloneOrInItsPads"]]},
+ {"name": "B4-ends-shared-into-parts", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                    gained = (m.alongX ? shareLines(a.xs, b.xs, m.lo, m.hi, tol, rectangles)\n                                       : shareLines(a.ys, b.ys, m.lo, m.hi, tol, rectangles))",
+  "new": "                    gained = (m.alongX ? shareLines(a.xs, b.xs, m.lo, m.hi, tol, true)\n                                       : shareLines(a.ys, b.ys, m.lo, m.hi, tol, true))",
+  "tests": [["test_rf25_mesh", "aLineIsMeshedAlikeHoweverItIsDrawn"]]},
+ {"name": "B4-own-pad-faces-a-gap", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                    if (p.conductor != q.conductor) return false;", "new": "                    return false;",
+  "tests": [["test_rf25_mesh", "aLineIsMeshedAlikeHoweverItIsDrawn"]]},
+ {"name": "B4-slant-way-wrong", "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "    const bool acrossY = runX < runY - tol || (std::abs(runX - runY) <= tol && byY.size() <= byX.size());",
+  "new": "    const bool acrossY = !(runX < runY - tol || (std::abs(runX - runY) <= tol && byY.size() <= byX.size()));",
+  "tests": [["test_rf25_mesh", "aLineIsMeshedAlikeHoweverItIsDrawn"]]}
+]

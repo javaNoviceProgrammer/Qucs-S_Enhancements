@@ -21,9 +21,11 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QMap>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace qucs_s::rf25 {
 
@@ -136,10 +138,9 @@ void freeAll(gdstk::Array<gdstk::Polygon*>& polygons)
     polygons.clear();
 }
 
-/// \a shapes joined where they touch or overlap (gdstk's boolean "or").
-QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes)
+/// gdstk's boolean "or" of \a shapes alone; \a ok false where it failed.
+static QList<QPolygonF> mergedOf(const QList<QPolygonF>& shapes, bool* ok)
 {
-    if (shapes.size() < 2) return shapes;
     std::vector<gdstk::Polygon> owned;
     owned.reserve(shapes.size());
     gdstk::Array<gdstk::Polygon*> in{};
@@ -155,7 +156,8 @@ QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes)
     freeAll(out);
     in.clear();
     for (gdstk::Polygon& p : owned) p.clear();
-    return code == gdstk::ErrorCode::NoError ? joined : shapes;
+    *ok = code == gdstk::ErrorCode::NoError;
+    return *ok ? joined : shapes;
 }
 
 /// \a shapes grown (or, for a negative distance, shrunk) by \a distance µm.
@@ -178,6 +180,88 @@ QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance)
     in.clear();
     for (gdstk::Polygon& p : owned) p.clear();
     return code == gdstk::ErrorCode::NoError ? moved : shapes;
+}
+
+bool touchAlongAnEdge(const QPolygonF& a, const QPolygonF& b, double tol)
+{
+    const QRectF ra = a.boundingRect(), rb = b.boundingRect();
+    if (!ra.adjusted(-tol, -tol, tol, tol).intersects(rb.adjusted(-tol, -tol, tol, tol))) return false;
+    const int na = int(a.size()), nb = int(b.size());
+    for (int i = 0; i < na; ++i) {
+        const QPointF p = a.at(i), q = a.at((i + 1) % na);
+        const QPointF d = q - p;
+        const double len = std::hypot(d.x(), d.y());
+        if (!(len > tol)) continue;
+        const QPointF unit = d / len, normal(-unit.y(), unit.x());
+        for (int j = 0; j < nb; ++j) {
+            const QPointF u = b.at(j) - p, w = b.at((j + 1) % nb) - p;
+            // On the same line, within tol of it at both ends...
+            if (std::abs(u.x() * normal.x() + u.y() * normal.y()) > tol
+                || std::abs(w.x() * normal.x() + w.y() * normal.y()) > tol)
+                continue;
+            // ... and sharing more than tol of it.
+            const double tu = u.x() * unit.x() + u.y() * unit.y(), tw = w.x() * unit.x() + w.y() * unit.y();
+            if (std::min(len, std::max(tu, tw)) - std::max(0.0, std::min(tu, tw)) > tol) return true;
+        }
+    }
+    return false;
+}
+
+/// \a shapes joined where they touch or overlap: gdstk's boolean "or", and
+/// then the pieces it left touching along an edge joined. Clipper's union
+/// leaves two pieces that meet along part of an edge apart in some sets -
+/// one in sixty of random sets of touching rectangles, a
+/// low-pass filter among them, whose centre stub then lost its line in the
+/// full-wave solve with no word said (B1 of the open items of 8 November).
+/// Merging again joined only six in seven; each group of pieces that touch
+/// along an edge is closed instead - grown by the union's own resolution,
+/// united (now they overlap, which Clipper does join) and shrunk back by
+/// as much -, which moves nothing by more than that resolution, a
+/// nanometre. \a joined, given, counts the pieces so joined.
+QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes, int* joined)
+{
+    if (joined != nullptr) *joined = 0;
+    if (shapes.size() < 2) return shapes;
+    bool ok = false;
+    QList<QPolygonF> out = mergedOf(shapes, &ok);
+    if (!ok) return shapes;
+    const double step = 1.0 / kScaling;
+    for (int round = 0; round < 4 && out.size() > 1; ++round) {
+        // Which pieces touch which along an edge, in groups.
+        const int n = int(out.size());
+        QList<int> parent(n);
+        for (int i = 0; i < n; ++i) parent[i] = i;
+        const std::function<int(int)> rootOf = [&parent, &rootOf](int i) {
+            return parent.at(i) == i ? i : (parent[i] = rootOf(parent.at(i)));
+        };
+        bool any = false;
+        for (int i = 0; i < n; ++i)
+            for (int j = i + 1; j < n; ++j)
+                if (rootOf(i) != rootOf(j) && touchAlongAnEdge(out.at(i), out.at(j), step / 2)) {
+                    parent[rootOf(j)] = rootOf(i);
+                    any = true;
+                }
+        if (!any) break;
+        QMap<int, QList<QPolygonF>> groups;
+        for (int i = 0; i < n; ++i) groups[rootOf(i)] << out.at(i);
+        QList<QPolygonF> next;
+        for (const QList<QPolygonF>& group : std::as_const(groups)) {
+            if (group.size() < 2) {
+                next += group;
+                continue;
+            }
+            const QList<QPolygonF> closed = offsetOf(offsetOf(group, step), -step);
+            if (closed.isEmpty() || closed.size() >= group.size()) {
+                next += group;
+                continue;
+            }
+            if (joined != nullptr) *joined += int(group.size() - closed.size());
+            next += closed;
+        }
+        if (next.size() >= out.size()) break;
+        out = next;
+    }
+    return out;
 }
 
 QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within)
@@ -384,12 +468,16 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
             // Every other layer: the metal of a layout is drawn as many
             // rectangles, and the solver wants one conductor.
             const int before = int(shapes.size());
-            shapes = unionOf(shapes);
+            int touching = 0;
+            shapes = unionOf(shapes, &touching);
             if (shapes.size() != before) {
                 out.report.mergedFrom += before;
                 out.report.mergedTo += int(shapes.size());
                 out.report.lines << tr("%1: merged %2 shapes into %3.").arg(layer).arg(before).arg(shapes.size());
             }
+            if (touching > 0)
+                out.report.lines << tr("%1: %2 piece(s) the union had left touching along an edge joined to what they "
+                                       "touch.").arg(layer).arg(touching);
         }
 
         // Slivers: fill, assist shapes and the crumbs a boolean leaves.

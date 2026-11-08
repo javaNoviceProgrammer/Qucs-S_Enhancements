@@ -1,0 +1,87 @@
+[
+ {
+  "name": "B1-union-no-join",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_layout.cpp",
+  "old": "    const double step = 1.0 / kScaling;\n    for (int round = 0; round < 4 && out.size() > 1; ++round) {",
+  "new": "    const double step = 1.0 / kScaling;\n    for (int round = 0; round < 0 && out.size() > 1; ++round) {",
+  "tests": [
+   [
+    "test_rf25_layout",
+    "shapesTouchingAlongAnEdgeAreOneShape"
+   ],
+   [
+    "test_rf25_fullwave",
+    "shapesDrawnTouchingSolveAsTheOutlineWhole"
+   ]
+  ]
+ },
+ {
+  "name": "B1-touch-test-blind",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_layout.cpp",
+  "old": "            if (std::min(len, std::max(tu, tw)) - std::max(0.0, std::min(tu, tw)) > tol) return true;",
+  "new": "            if (std::min(len, std::max(tu, tw)) - std::max(0.0, std::min(tu, tw)) > 2 * len) return true;",
+  "tests": [
+   [
+    "test_rf25_layout",
+    "shapesTouchingAlongAnEdgeAreOneShape"
+   ],
+   [
+    "test_rf25_mesh",
+    "touchingPiecesAreJoinedOrSaid"
+   ]
+  ]
+ },
+ {
+  "name": "B1-mesh-no-outline-meetings",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                        if (hi - lo > tol) meetings << Meeting{a, b, alongX, lo, hi};",
+  "new": "                        if (hi - lo > tol && false) meetings << Meeting{a, b, alongX, lo, hi};",
+  "tests": [
+   [
+    "test_rf25_mesh",
+    "touchingPiecesAreJoinedOrSaid",
+    "aLineIsMeshedAlikeHoweverItIsDrawn"
+   ]
+  ]
+ },
+ {
+  "name": "B1-mesh-no-warning",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                mesh.warnings << w;\n",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_mesh",
+    "touchingPiecesAreJoinedOrSaid"
+   ]
+  ]
+ },
+ {
+  "name": "B1-fullwave-drops-mesh-warnings",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "    out.warnings << given.warnings;\n",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_fullwave",
+    "shapesDrawnTouchingSolveAsTheOutlineWhole"
+   ]
+  ]
+ },
+ {
+  "name": "B1-slant-not-joined",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                            meetings << Meeting{a, b, true, std::min(e0.x(), e1.x()), std::max(e0.x(), e1.x())};\n                            meetings << Meeting{a, b, false, std::min(e0.y(), e1.y()), std::max(e0.y(), e1.y())};\n",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_mesh",
+    "touchingPiecesAreJoinedOrSaid"
+   ],
+   [
+    "test_rf25_fullwave",
+    "shapesDrawnTouchingSolveAsTheOutlineWhole"
+   ]
+  ]
+ }
+]

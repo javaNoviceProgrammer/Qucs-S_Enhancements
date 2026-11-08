@@ -522,6 +522,9 @@ struct RF25Doc::SolveJob {
     std::shared_ptr<FullWave> wave;
     std::atomic_bool stop{false};
     std::atomic_int done{0};
+    // A compressed solve's GMRES under way, for the bar (FullWaveControl).
+    std::atomic_int gmresIterations{0};
+    std::atomic<double> gmresResidual{0};
     // The ports' de-embedding after it: the mesh's settings, so that the
     // strips of their feeds are meshed as the structure was, and whether
     // those strips are being solved; and how far they have got, for the
@@ -1157,12 +1160,36 @@ void RF25Doc::readingDone()
     prepare();
 }
 
+RF25Doc::Held::Held(RF25Doc* doc) : a_doc(doc)
+{
+    if (a_doc) ++a_doc->a_waiting;
+}
+
+RF25Doc::Held::~Held()
+{
+    if (a_doc && --a_doc->a_waiting == 0 && a_doc->a_closed) a_doc->deleteLater();
+}
+
+void RF25Doc::closeWhenFree()
+{
+    // (Its read, its mesh and its solve let go - each ends on its own
+    //  copies, as at its deletion -, none started after; deleted as the last
+    //  hold is let go.)
+    a_closed = true;
+    if (a_job) a_job->cancelled = true;
+    a_prepareSoon->stop();
+    a_prepareAgain = false;
+    letSolveGo();
+    if (a_waiting == 0) deleteLater();
+}
+
 bool RF25Doc::waitForLayout(int ms)
 {
+    const Held held(this);
     QElapsedTimer t;
     t.start();
-    while (a_job && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-    return !a_job;
+    while (a_job && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_job && !a_closed;
 }
 
 QVector<LayerStyle> RF25Doc::stylesFor(const Layout& layout) const
@@ -1254,6 +1281,7 @@ void RF25Doc::schedulePrepare()
 void RF25Doc::prepare()
 {
     a_prepareSoon->stop();
+    if (a_closed) return;
     // One run at a time: a model that changed while this one went on is
     // made again when it ends, so that a burst of edits over a slow
     // layout leaves one run waiting, not one an edit.
@@ -1386,13 +1414,15 @@ void RF25Doc::prepareDone()
 
 bool RF25Doc::waitForPrepared(int ms)
 {
+    const Held held(this);
     QElapsedTimer t;
     t.start();
     // A run waiting its 300 ms is started at once: a test and a tool ask
     // for what the model says now, not for what it said 300 ms ago.
     if (a_prepareSoon->isActive()) prepare();
-    while ((a_prepareJob || a_prepareAgain) && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-    return !a_prepareJob;
+    while ((a_prepareJob || a_prepareAgain) && !a_closed && t.elapsed() < ms)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_prepareJob && !a_closed;
 }
 
 QStringList RF25Doc::preparedLines() const
@@ -1899,6 +1929,7 @@ void RF25Doc::solve()
 void RF25Doc::solveWith(const SolveRequest& request)
 {
     letSolveGo();
+    if (a_closed) return;
     a_solveProblem.clear();
     a_solveRequest = request;
     const auto nothing = [this](const QString& why) {
@@ -2021,6 +2052,8 @@ void RF25Doc::solveWith(const SolveRequest& request)
             FullWaveControl control;
             control.stop = &job->stop;
             control.done = &job->done;
+            control.gmresIterations = &job->gmresIterations;
+            control.gmresResidual = &job->gmresResidual;
             control.allowed = job->allowed.get();
             control.matrix = job->matrix;
             job->wave = std::make_shared<FullWave>(
@@ -2201,6 +2234,9 @@ int RF25Doc::quasiStaticStep() const
 
 bool RF25Doc::waitForSolvesToEnd(int ms)
 {
+    // (Closed meanwhile, the solves still end on their own copies: waited
+    //  for as before, the model held.)
+    const Held held(this);
     QElapsedTimer t;
     t.start();
     while (a_solvesAtWork->load() > 0 && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
@@ -2232,6 +2268,11 @@ RF25Doc::Count RF25Doc::countNow() const
         c.of = frequenciesToSolve();
         c.done = std::min(frequenciesSolved(), c.of);
         c.said = tr("Solving full-wave: %1 of %2 frequencies…").arg(c.done).arg(c.of);
+        // Held compressed, how far its GMRES has got: an hour at "0 of 1"
+        // said nothing of whether to wait (B3 of the open items of 8
+        // November).
+        if (const int iterations = job->gmresIterations.load(); iterations > 0)
+            c.said += tr(" GMRES at iteration %1, residual %2.").arg(iterations).arg(job->gmresResidual.load(), 0, 'g', 2);
         c.key = QStringLiteral("sweep");
     } else if (job != nullptr) {
         // The quasi-static extraction: what it is at, counted where it can
@@ -2409,9 +2450,10 @@ void RF25Doc::keepSolution()
 
 bool RF25Doc::waitForSolved(int ms)
 {
+    const Held held(this);
     QElapsedTimer t;
     t.start();
-    while ((a_solveJob || a_solveWhenPrepared) && t.elapsed() < ms)
+    while ((a_solveJob || a_solveWhenPrepared) && !a_closed && t.elapsed() < ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     return !a_solveJob && !a_solveWhenPrepared;
 }
