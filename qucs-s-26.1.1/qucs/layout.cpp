@@ -271,12 +271,18 @@ struct Layers {
 void addOutline(Cell& cell, Shape& shape, const gdstk::Array<gdstk::Vec2>& points)
 {
     shape.first = quint32(cell.points.size());
-    shape.count = quint32(points.count);
     Box box;
+    // (A point the same as the one before it, or the last as the first, left
+    //  out: gdstk's outline of a path has some twice - the check of 8
+    //  November, "(-32.5, -2.5) twice".)
     for (uint64_t i = 0; i < points.count; ++i) {
-        cell.points.append(QPointF(points[i].x, points[i].y));
+        const QPointF p(points[i].x, points[i].y);
+        if (cell.points.size() > qsizetype(shape.first) && cell.points.last() == p) continue;
+        if (i + 1 == points.count && i > 0 && cell.points.size() > qsizetype(shape.first) + 1 && cell.points.at(shape.first) == p) continue;
+        cell.points.append(p);
         box.add(points[i].x, points[i].y);
     }
+    shape.count = quint32(cell.points.size() - shape.first);
     shape.bounds = box.rect();
 }
 

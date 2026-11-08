@@ -106,6 +106,143 @@ void writeDemo(const QString& path)
     lib.free_all();
 }
 
+/*
+ * The layout of the check of 8 November ("Pen markers follow-up: checked by
+ * hand"), in µm:
+ *  VIA:  a cover 3 square on 1/0, a cut 1 square on 3/0.
+ *  PAD:  a pad 60 square on 1/0, its opening 50 square on 4/0, VIA at its
+ *        middle and at (±10, ±10).
+ *  TOP:  the frame on 10/0, (-150, -70) to (150, 70); PAD at (-100, 0) and
+ *        (100, 0); the trace, a path 5 wide on 2/0, a bump up: (-70, 0),
+ *        (-35, 0), (-35, 40), (35, 40), (35, 0), (70, 0).
+ */
+void writeCheckDemo(const QString& path)
+{
+    gdstk::Library lib = {};
+    lib.init("CHECK", 1e-6, 1e-9);
+    gdstk::Cell* via = newCell(lib, "VIA");
+    addRectangle(via, {-1.5, -1.5}, {1.5, 1.5}, 1);
+    addRectangle(via, {-0.5, -0.5}, {0.5, 0.5}, 3);
+    gdstk::Cell* pad = newCell(lib, "PAD");
+    addRectangle(pad, {-30, -30}, {30, 30}, 1);
+    addRectangle(pad, {-25, -25}, {25, 25}, 4);
+    for (const gdstk::Vec2 at : {gdstk::Vec2{0, 0}, gdstk::Vec2{-10, -10}, gdstk::Vec2{10, -10}, gdstk::Vec2{-10, 10}, gdstk::Vec2{10, 10}}) place(pad, via, at);
+    gdstk::Cell* top = newCell(lib, "TOP");
+    addRectangle(top, {-150, -70}, {150, 70}, 10);
+    place(top, pad, {-100, 0});
+    place(top, pad, {100, 0});
+    auto* wire = static_cast<gdstk::FlexPath*>(gdstk::allocate_clear(sizeof(gdstk::FlexPath)));
+    wire->num_elements = 1;
+    wire->elements = static_cast<gdstk::FlexPathElement*>(gdstk::allocate_clear(sizeof(gdstk::FlexPathElement)));
+    wire->init({-70, 0}, 5, 0, 0.001, gdstk::make_tag(2, 0));
+    wire->simple_path = true;
+    wire->elements[0].end_type = gdstk::EndType::Flush;
+    gdstk::Array<gdstk::Vec2> points = {};
+    for (const gdstk::Vec2 v : {gdstk::Vec2{-35, 0}, gdstk::Vec2{-35, 40}, gdstk::Vec2{35, 40}, gdstk::Vec2{35, 0}, gdstk::Vec2{70, 0}}) points.append(v);
+    wire->segment(points, nullptr, nullptr, false);
+    points.clear();
+    top->flexpath_array.append(wire);
+    QVERIFY(lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr) == gdstk::ErrorCode::NoError);
+    lib.free_all();
+}
+
+/// A GDSII file written record by record, as a writer of its own writes
+/// one - the check of 8 November's demo as its own script wrote it: VIA, a
+/// PAD with an array of them, TOP with two pads, the bump trace (a PATH 5
+/// wide on 2/0, path type 0), a frame and texts, on a grid of 1 nm.
+void writeRawPath(const QString& path)
+{
+    QByteArray out;
+    const auto record = [&out](quint8 type, quint8 data, const QByteArray& body = {}) {
+        const quint16 length = quint16(4 + body.size());
+        out.append(char(length >> 8)).append(char(length & 0xff)).append(char(type)).append(char(data)).append(body);
+    };
+    const auto i2 = [](std::initializer_list<qint16> v) {
+        QByteArray b;
+        for (const qint16 x : v) b.append(char((x >> 8) & 0xff)).append(char(x & 0xff));
+        return b;
+    };
+    const auto i4 = [](const QList<qint32>& v) {
+        QByteArray b;
+        for (const qint32 x : v) b.append(char((x >> 24) & 0xff)).append(char((x >> 16) & 0xff)).append(char((x >> 8) & 0xff)).append(char(x & 0xff));
+        return b;
+    };
+    const auto um = [](std::initializer_list<double> v) {
+        QList<qint32> out;
+        for (const double x : v) out << qint32(std::llround(x * 1000));
+        return out;
+    };
+    const auto name = [](const char* n) {
+        QByteArray b(n);
+        if (b.size() % 2) b.append('\0');
+        return b;
+    };
+    const auto rect = [&](qint16 layer, double x1, double y1, double x2, double y2) {
+        record(0x08, 0);
+        record(0x0D, 2, i2({layer}));
+        record(0x0E, 2, i2({0}));
+        record(0x10, 3, i4(um({x1, y1, x2, y1, x2, y2, x1, y2, x1, y1})));
+        record(0x11, 0);
+    };
+    const QByteArray stamp = i2({2026, 11, 7, 16, 25, 0}) + i2({2026, 11, 7, 16, 25, 0});
+    record(0x00, 2, i2({600}));
+    record(0x01, 2, stamp);
+    record(0x02, 6, name("GDSDEMO"));
+    // (The units as its script rounds them - 1e-9 a little under, ...5a50
+    //  where 1e-9 is ...5a54 -, which leaves gdstk's outline of the
+    //  trace its bends' points twice: the check's "(-32.5, -2.5) twice".)
+    record(0x03, 5, QByteArray::fromHex("3e4189374bc6a7f03944b82fa09b5a50"));
+    // VIA: a cut and its cover.
+    record(0x05, 2, stamp);
+    record(0x06, 6, name("VIA"));
+    rect(3, -1, -1, 1, 1);
+    rect(1, -1.5, -1.5, 1.5, 1.5);
+    record(0x07, 0);
+    // PAD: the pad, its opening, a 4 x 4 array of VIA.
+    record(0x05, 2, stamp);
+    record(0x06, 6, name("PAD"));
+    rect(1, -30, -30, 30, 30);
+    rect(4, -25, -25, 25, 25);
+    record(0x0B, 0);
+    record(0x12, 6, name("VIA"));
+    record(0x13, 2, i2({4, 4}));
+    record(0x10, 3, i4(um({-15, -15, 25, -15, -15, 25})));
+    record(0x11, 0);
+    record(0x07, 0);
+    // TOP: two pads, the trace, a frame, texts.
+    record(0x05, 2, stamp);
+    record(0x06, 6, name("TOP"));
+    for (const double x : {-100.0, 100.0}) {
+        record(0x0A, 0);
+        record(0x12, 6, name("PAD"));
+        record(0x10, 3, i4(um({x, 0})));
+        record(0x11, 0);
+    }
+    record(0x09, 0);
+    record(0x0D, 2, i2({2}));
+    record(0x0E, 2, i2({0}));
+    record(0x21, 2, i2({0}));
+    record(0x0F, 3, i4({5000}));
+    record(0x10, 3, i4(um({-70, 0, -35, 0, -35, 40, 35, 40, 35, 0, 70, 0})));
+    record(0x11, 0);
+    rect(10, -150, -60, 150, 80);
+    const auto text = [&](double x, double y, const char* t) {
+        record(0x0C, 0);
+        record(0x0D, 2, i2({63}));
+        record(0x16, 2, i2({0}));
+        record(0x10, 3, i4(um({x, y})));
+        record(0x19, 6, name(t));
+        record(0x11, 0);
+    };
+    text(-100, -45, "IN");
+    text(100, -45, "OUT");
+    text(0, 60, "GdsDemo");
+    record(0x07, 0);
+    record(0x04, 0);
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly) && f.write(out) == out.size());
+}
+
 markup::Stroke stroke(const QPolygonF& points, double width = 1.0)
 {
     markup::Stroke s;
@@ -325,14 +462,14 @@ private slots:
         QVERIFY2(lines.at(1).contains(QStringLiteral(" µm); its points (36.044, 63.068) (2.912, 43.857) (5, 49.8)")), qPrintable(lines.at(1)));
         QCOMPARE(upToBox(lines.at(2)),
                  QStringLiteral("cell TOP, stroke 3: a red pen mark on 2 shape(s) on 1/0, 1 shape(s) on 2/0, 2 placement(s) of PAD, 1 placement(s) "
-                                "of TRACE, following the 2/0 path in TRACE from (-49.6, 0) to (50, 0), leaving it between (-33.8, 0) and "
-                                "(36.7, 0) to go 40.6 µm above it, all of it over 1 shape(s) on 10/0 that covers it, read as a polyline of 5 "
+                                "of TRACE, following the 2/0 path in TRACE from (-49.6, 0) to (50, 0), leaving it at (-33.5, 0) and "
+                                "coming back at (36.2, 0), 40.6 µm above it (the path itself turning at (-20, 0) and (20, 0)), all of it over 1 shape(s) on 10/0 that covers it, read as a polyline of 5 "
                                 "run(s): horizontal at y ≈ 0.4 (±0.3, snaps to 0: the 2/0 path's centre line) from x = -50.3 to -33.2; "
                                 "vertical at x ≈ -33.2 (±0.3, snaps to -33: a 1 µm grid) up to y = 40.3; horizontal at y ≈ 40.3 (±0.3, "
                                 "snaps to 40: the 2/0 path's vertex at (0, 40)) to x = 36.1, the corner there rounded (radius ≈ 5.7); "
                                 "vertical at x ≈ 36.1 (±0.3, snaps to 36: a 1 µm grid) down to y = 0.3; horizontal at y ≈ 0.3 (±0.3, "
-                                "snaps to 0: the 2/0 path's centre line) to x = 58.8; its corners symmetric about x ≈ 1.4 within 0.1 µm, "
-                                "its ends not; snapped, its points (-50, 0) (-33, 0) (-33, 40) (36, 40) (36, 0) (59, 0) (its start to the "
+                                "snaps to 0: the 2/0 path's centre line) to x = 58.8; centred on the 2/0 path's middle (x = 0) within 1.4 "
+                                "µm; snapped, its points (-50, 0) (-33, 0) (-33, 40) (36, 40) (36, 0) (59, 0) (its start to the "
                                 "2/0 path's end at (-50, 0))"));
         // (Its corners given, its points are not: 400 of them.)
         QVERIFY(!lines.at(2).contains(QStringLiteral(" µm); its points")));
@@ -354,7 +491,8 @@ private slots:
                  (QJsonArray{QJsonArray{-50, 0}, QJsonArray{-33, 0}, QJsonArray{-33, 40}, QJsonArray{36, 40}, QJsonArray{36, 0}, QJsonArray{59, 0}}));
         QCOMPARE(polyline.value("corner angles").toArray(), (QJsonArray{90, 90, 90, 90}));
         QCOMPARE(polyline.value("rounded").toArray().size(), 1);
-        QCOMPARE(polyline.value("symmetric").toObject().value("about").toString(), QStringLiteral("x"));
+        QCOMPARE(polyline.value("centre").toObject().value("which is").toString(), QStringLiteral("the 2/0 path's middle"));
+        QCOMPARE(polyline.value("centre").toObject().value("centred").toBool(), true);
         const QJsonObject follows = step.value("follows").toArray().at(0).toObject();
         QCOMPARE(follows.value("leaves").toArray().at(0).toObject().value("side").toString(), QStringLiteral("above"));
     }
@@ -506,22 +644,39 @@ private slots:
         QCOMPARE(pl->runs.at(0).snappedTo, QStringLiteral("the edge"));
         QCOMPARE(pl->snapped.last(), QPointF(80.4, 10.2));
         QCOMPARE(pl->endsSnappedTo.at(1), QStringLiteral("its end"));
-        // A U, symmetric about x = 25 within its wobble; one side moved 6
-        // µm: not. Its corners sharp.
+        // A U: its middle, x = 25, said only against a line of the layout -
+        // with none, nothing (a level-bottomed U is always symmetric about
+        // its own middle: the check of 8 November, 1); centred on a path's
+        // middle at 25; off-centre, by 25, from one at 0, the path's middle
+        // taken before the cell's centre at 24.5. Its corners sharp.
         const QPolygonF u = drawnThrough({QPointF(0, 40), QPointF(0, 0), QPointF(50, 0), QPointF(50, 40)});
         pl = polylineOf(u, 1, false, none);
         QVERIFY(pl.has_value());
         QCOMPARE(pl->runs.size(), 3);
-        QCOMPARE(pl->axis, QStringLiteral("x"));
+        QVERIFY(!pl->referenced);
+        QVERIFY(!markup::polylineJson(*pl).contains("centre"));
+        markup::Snaps lines = none;
+        lines.uprights << markup::Snap{25, QStringLiteral("the path's middle"), 0};
+        pl = polylineOf(u, 1, false, lines);
+        QVERIFY(pl->referenced && pl->centred);
         QVERIFY(std::abs(pl->axisAt - 25) < 0.5);
-        QVERIFY(pl->endsToo);
+        lines.uprights = {markup::Snap{24.5, QStringLiteral("the cell's centre"), 2}, markup::Snap{0, QStringLiteral("the path's middle"), 0}};
+        pl = polylineOf(u, 1, false, lines);
+        QVERIFY(pl->referenced && !pl->centred);
+        QCOMPARE(pl->referenceIs, QStringLiteral("the path's middle"));
+        QVERIFY2(markup::polylineSaid(markup::polylineJson(*pl)).contains(QStringLiteral("; off-centre: its middle at x ≈ 25, 25 µm from the path's middle (x = 0)")),
+                 qPrintable(markup::polylineSaid(markup::polylineJson(*pl))));
         QCOMPARE(pl->radii, (QList<double>{0, 0}));
         QVERIFY(std::abs(pl->angles.at(0) - 90) < 2 && std::abs(pl->angles.at(1) - 90) < 2);
         const QPolygonF lopsided = drawnThrough({QPointF(0, 40), QPointF(0, 0), QPointF(50, 0), QPointF(56, 40), QPointF(80, 40)});
-        pl = polylineOf(lopsided, 1, false, none);
+        pl = polylineOf(lopsided, 1, false, lines);
         QVERIFY(pl.has_value());
-        QVERIFY2(pl->axis.isEmpty(), qPrintable(pl->axis));
+        QVERIFY2(pl->axis.isEmpty() && !pl->referenced, qPrintable(pl->axis));
         QCOMPARE(pl->runs.at(2).way, markup::Polyline::Way::Slanted);
+        // (Its slanted run's corners not snapped: as drawn, to a tenth.)
+        for (const QJsonValue& v : markup::polylineJson(*pl).value("snapped corners").toArray())
+            for (const QJsonValue& c : v.toArray())
+                QVERIFY2(std::abs(c.toDouble() * 10 - std::round(c.toDouble() * 10)) < 1e-6, qPrintable(QString::number(c.toDouble(), 'g', 12)));
         // An L rounded with a radius of 8 at its corner: about 8.
         QPolygonF el{QPointF(0, 60), QPointF(0, 8)};
         for (int k = 1; k < 8; ++k) el << QPointF(8, 8) - 8 * QPointF(std::cos(M_PI / 2 * k / 8), std::sin(M_PI / 2 * k / 8));
@@ -566,7 +721,7 @@ private slots:
         // In words.
         pl = polylineOf(u, 1, false, none);
         const QString said = markup::polylineSaid(markup::polylineJson(*pl));
-        QVERIFY2(said.startsWith(QStringLiteral("read as a polyline of 3 run(s): vertical at x ≈ ")) && said.contains(QStringLiteral("its ends too")), qPrintable(said));
+        QVERIFY2(said.startsWith(QStringLiteral("read as a polyline of 3 run(s): vertical at x ≈ ")) && !said.contains(QStringLiteral("centred")), qPrintable(said));
         // The round values.
         double step = 0;
         QCOMPARE(markup::onRoundGrid(-33.2, 0.5, 0.001, &step), -33.0);
@@ -776,9 +931,10 @@ private slots:
         QCOMPARE(o.value("cell").toString(), QStringLiteral("TRACE"));
         QVERIFY2(o.value("done").toArray().at(0).toString().startsWith(QStringLiteral("replaced the path on 2/0 (its box ")), qPrintable(text(r)));
         const QJsonObject shapes = o.value("changed").toObject().value("cells").toObject().value("TRACE").toObject().value("shapes").toObject();
-        QCOMPARE(shapes.value("2/0").toObject().value("added").toInt(), 1);
-        QCOMPARE(shapes.value("2/0").toObject().value("taken away").toInt(), 1);
-        QCOMPARE(shapes.value("2/0").toObject().value("added boxes").toArray().at(0).toArray(), (QJsonArray{-50, -2.5, 50, 42.5}));
+        // (One replaced, its box before and after.)
+        QCOMPARE(shapes.value("2/0").toObject().value("replaced").toInt(), 1);
+        QCOMPARE(shapes.value("2/0").toObject().value("boxes before").toArray().at(0).toArray(), (QJsonArray{-50, -2.5, 50, 43.354}));
+        QCOMPARE(shapes.value("2/0").toObject().value("boxes after").toArray().at(0).toArray(), (QJsonArray{-50, -2.5, 50, 42.5}));
         ReadBack back = readBack(file, "TRACE");
         QVERIFY(back.ok);
         QCOMPARE(back.spines.size(), 1);
@@ -995,6 +1151,111 @@ private slots:
                                                                     QJsonObject{{"arrow", QJsonArray{QJsonArray{62, 58}, QJsonArray{38, 43}}}, {"text", "the new trace, 5 µm"}}}}})));
         QTest::qWait(200);
         QVERIFY(doc->grab().save(QDir(folder).filePath("overlay.png")));
+    }
+
+    // The check of 8 November's strokes on its layout: a sketch of the
+    // trace dipping 30 µm below, off-centre (from -10 to 44), and a tick on
+    // the left pad across one of its via covers.
+    // - The dip leaves the trace where the stroke turns down, at -10, not
+    //   where the trace turns up at -35, which is said apart (finding 2).
+    // - Its middle is said against the trace's: off-centre by some 17
+    //   (finding 1), its bottom run level with the pads' bottom edges.
+    // - The tick is on the pad and its opening, the frame under it, the via
+    //   cover not named (finding 3), and no polyline (finding 4).
+    // - Made the trace by edit_layout, a rougher sketch of it read again
+    //   snaps its bottom to the trace's centre line, though nearer the
+    //   trace's edge (finding 5); the replace says "replaced", and the view
+    //   is where it was.
+    // - A path's outline has no point twice.
+    void theChecksStrokesAreToldAsDrawn()
+    {
+        const QString file = path("layout/check.gds");
+        writeCheckDemo(file);
+        LayoutDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->showCell(doc->layout()->cellIndex("TOP"));
+        LayoutView* view = doc->view();
+        view->addStroke(stroke(drawnThrough({QPointF(-70.5, 0.4), QPointF(-10.3, 0.3), QPointF(-10.3, -30.4), QPointF(43.8, -30.4), QPointF(43.8, 0.3),
+                                             QPointF(70.4, 0.3)})));
+        view->addStroke(stroke(drawnThrough({QPointF(-102.5, 1.5), QPointF(-100.5, -1.2), QPointF(-96, 4.5)}, 0.3, 0.05), 0.5));
+        const QString said = told(doc);
+        qInfo().noquote() << said;
+        const QStringList lines = said.split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), 2);
+        QVERIFY2(lines.at(0).contains(QStringLiteral("leaving it at (-10.4, 0) and coming back at (43.6, 0), 30.7 µm below it (the path itself turning at "
+                                                     "(-35, 0) and (35, 0))")),
+                 qPrintable(lines.at(0)));
+        QVERIFY2(lines.at(0).contains(QStringLiteral("; off-centre: its middle at x ≈ 16.7, 16.7 µm from the 2/0 path's middle (x = 0)")), qPrintable(lines.at(0)));
+        QVERIFY2(lines.at(0).contains(QStringLiteral("snaps to -30: the bottom edges of 2 1/0 polygons in PAD")), qPrintable(lines.at(0)));
+        QVERIFY2(lines.at(1).startsWith(QStringLiteral("cell TOP, stroke 2: a red pen tick on the 4/0 polygon in PAD (its box (-125, -25) to (-75, 25)) and "
+                                                       "the 1/0 polygon in PAD (its box (-130, -30) to (-70, 30)), all of it over 1 shape(s) on 10/0 that "
+                                                       "covers it (its box ")),
+                 qPrintable(lines.at(1)));
+        QVERIFY(!lines.at(1).contains(QStringLiteral("polyline")) && !lines.at(1).contains(QStringLiteral("VIA")));
+        // An arrow at a via cover names the cells it is placed through, the
+        // deepest last.
+        view->addStroke(stroke({QPointF(-75, 30), QPointF(-88.2, 12), QPointF(-86.4, 15.5)}, 0.5));
+        const QJsonObject atVia = view->readDrawing(false).at(2).toObject();
+        QCOMPARE(atVia.value("drawn as").toString(), QStringLiteral("arrow"));
+        QCOMPARE(atVia.value("nearest its tip").toObject().value("in").toString(), QStringLiteral("PAD > VIA"));
+        QVERIFY(view->undoDrawing());
+        // A path's outline: no point twice, nor its last as its first - as
+        // drawn here, and as edit_layout writes it (where the check found
+        // "(-32.5, -2.5) twice").
+        const auto noPointTwice = [](const Layout& layout) {
+            const Cell& top = layout.cells.at(layout.cellIndex("TOP"));
+            int paths = 0;
+            // (On the database's grid, as find_shapes says them.)
+            const auto same = [&layout](QPointF a, QPointF b) {
+                return std::llround(a.x() / layout.dbu) == std::llround(b.x() / layout.dbu) && std::llround(a.y() / layout.dbu) == std::llround(b.y() / layout.dbu);
+            };
+            for (const Shape& sh : top.shapes) {
+                if (sh.kind != ShapeKind::Path) continue;
+                ++paths;
+                for (quint32 k = 1; k < sh.count; ++k)
+                    if (same(top.points.at(sh.first + k), top.points.at(sh.first + k - 1))) {
+                        qInfo() << "twice:" << top.points.at(sh.first + k) << top.points.at(sh.first + k - 1);
+                        return false;
+                    }
+                if (same(top.points.at(sh.first), top.points.at(sh.first + sh.count - 1))) return false;
+            }
+            return paths > 0;
+        };
+        QVERIFY(noPointTwice(*doc->layout()));
+        {
+            // (The trace as the check's own GDSII writer wrote it, a PATH
+            //  record of its own: gdstk's outline of it has its bends'
+            //  points twice.)
+            QString error;
+            const QString raw = path("raw.gds");
+            writeRawPath(raw);
+            const std::shared_ptr<Layout> read = qucs_s::layout::read(raw, &error);
+            QVERIFY2(read != nullptr, qPrintable(error));
+            QStringList said;
+            for (const QPointF& p : read->cells.at(read->cellIndex("TOP")).points) said << QStringLiteral("(%1, %2)").arg(p.x()).arg(p.y());
+            QVERIFY2(noPointTwice(*read), qPrintable(said.join(QLatin1Char(' '))));
+        }
+        // The dip made the trace; the view where it was.
+        doc->view()->showRegion(QRectF(QPointF(-160, -80), QPointF(160, 80)));
+        const QRectF before = view->visibleRegion();
+        QJsonObject r = call("edit_layout", {{"path", "check.gds"},
+                                             {"edits", QJsonArray{QJsonObject{{"replace", "path"}, {"layer", "2/0"}, {"at", QJsonArray{-50, 0}},
+                                                                              {"points", QJsonArray{QJsonArray{-70, 0}, QJsonArray{-10, 0}, QJsonArray{-10, -30},
+                                                                                                    QJsonArray{44, -30}, QJsonArray{44, 0}, QJsonArray{70, 0}}}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("changed").toObject().value("cells").toObject().value("TOP").toObject().value("shapes").toObject().value("2/0").toObject().value("replaced").toInt(), 1);
+        QVERIFY(doc->waitForLoaded(120000));
+        QTest::qWait(600);   // (the file's watcher reads it again too)
+        QVERIFY(doc->waitForLoaded(120000));
+        QCOMPARE(view->visibleRegion(), before);
+        QVERIFY(noPointTwice(*doc->layout()));
+        // A rougher sketch of the new trace's bottom, a µm of wobble, drawn
+        // 1.6 under its centre line and 0.9 over its edge.
+        view->clearDrawing(true);
+        view->addStroke(stroke(drawnThrough({QPointF(-70, 0.5), QPointF(-10.5, 0.5), QPointF(-10.5, -31.6), QPointF(44.5, -31.6), QPointF(44.5, 0.5),
+                                             QPointF(70, 0.5)}, 0.5, 1.0)));
+        const QString again = told(doc);
+        QVERIFY2(again.contains(QStringLiteral("snaps to -30: the 2/0 path's centre line) to x = ")), qPrintable(again));
     }
 
     // Strokes of every shape, as a hand might draw or a fuzzer might, never

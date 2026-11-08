@@ -30,7 +30,8 @@ cell TOP, stroke 3: a red pen mark on 2 shape(s) on 1/0, 1 shape(s) on 10/0, 1 s
 Each finding held against the code: a ring counted only what lay at least half inside it, which a long trace never does;
 an arrow's tip took whatever lay under it first, which was the frame; a mark listed every layer within half its breadth.
 
-**After**, as the prompt now has it (one line a stroke; wrapped here):
+**After**, as the prompt has it since the check of 8 November (one line a stroke; wrapped here; see "The check of 8
+November" below for what changed in the third line):
 
 ```
 cell TOP, stroke 1: a red pen ring around the vertex at (0, 40) of the 2/0 path in TRACE, a 53° corner, all of it over
@@ -40,13 +41,14 @@ cell TOP, stroke 2: a red pen arrow pointing at 1 shape(s) on 2/0, 1 placement(s
   (36, 63.1), all of it over 1 shape(s) on 10/0 that covers it (its box 2.412, 43.357 to 36.544, 63.568 µm); its points
   (36.044, 63.068) (2.912, 43.857) (5, 49.8)
 cell TOP, stroke 3: a red pen mark on 2 shape(s) on 1/0, 1 shape(s) on 2/0, 2 placement(s) of PAD, 1 placement(s) of
-  TRACE, following the 2/0 path in TRACE from (-49.6, 0) to (50, 0), leaving it between (-33.8, 0) and (36.7, 0) to go
-  40.6 µm above it, all of it over 1 shape(s) on 10/0 that covers it, read as a polyline of 5 run(s): horizontal at
+  TRACE, following the 2/0 path in TRACE from (-49.6, 0) to (50, 0), leaving it at (-33.5, 0) and coming back at
+  (36.2, 0), 40.6 µm above it (the path itself turning at (-20, 0) and (20, 0)), all of it over 1 shape(s) on 10/0 that
+  covers it, read as a polyline of 5 run(s): horizontal at
   y ≈ 0.4 (±0.3, snaps to 0: the 2/0 path's centre line) from x = -50.3 to -33.2; vertical at x ≈ -33.2 (±0.3, snaps to
   -33: a 1 µm grid) up to y = 40.3; horizontal at y ≈ 40.3 (±0.3, snaps to 40: the 2/0 path's vertex at (0, 40)) to
   x = 36.1, the corner there rounded (radius ≈ 5.7); vertical at x ≈ 36.1 (±0.3, snaps to 36: a 1 µm grid) down to
-  y = 0.3; horizontal at y ≈ 0.3 (±0.3, snaps to 0: the 2/0 path's centre line) to x = 58.8; its corners symmetric
-  about x ≈ 1.4 within 0.1 µm, its ends not; snapped, its points (-50, 0) (-33, 0) (-33, 40) (36, 40) (36, 0) (59, 0)
+  y = 0.3; horizontal at y ≈ 0.3 (±0.3, snaps to 0: the 2/0 path's centre line) to x = 58.8; centred on the 2/0
+  path's middle (x = 0) within 1.4 µm; snapped, its points (-50, 0) (-33, 0) (-33, 40) (36, 40) (36, 0) (59, 0)
   (its start to the 2/0 path's end at (-50, 0)) (its box -50.811, -0.5 to 59.271, 41.1 µm)
 ```
 
@@ -89,8 +91,8 @@ edge, go straight into `edit_layout` as the trace's new spine (`editLayoutChange
 
   A vertex is preferred to an edge that is up to half the path's width plus the stroke's reach nearer, because people
   point at a corner from outside it.
-- **A line or a mark along a shape** says where it follows the shape (a path's spine, or a polygon's edges) and where it
-  leaves:
+- **A line or a mark along a shape** says where it follows the shape (a path's spine, or a polygon's edges), where the
+  stroke itself turns away and comes back, and where the shape's own line turns between, when that is elsewhere:
   - **What counts as following:** the stroke must stay within the path's half width plus its own breadth, and run within
     30° of the segment's direction. A stroke that only crosses the trace, as the step's top run does at the trace's peak,
     does not count.
@@ -105,10 +107,12 @@ edge, go straight into `edit_layout` as the trace's new spine (`editLayoutChange
   the pen landed or lifted are dropped. A short run between two long ones that turn becomes the corner's rounding.
 - **Fit:** each run is fitted away from its corners. A run within 7° of level, upright or 45° is said as such, with its
   place as drawn and how far its points stray (*"vertical at x ≈ -33.2 (±0.3)"*).
-- **Snapping, to what is near first** (shapes set apart are skipped):
+- **Snapping, to what is near first** (shapes set apart are skipped), ranked by kind before distance within a run's
+  reach:
   1. a path's centre line;
   2. a path's vertices and ends;
-  3. a polygon's corners and the texts;
+  3. a polygon's edges on its box's sides (*"the bottom edges of 2 1/0 polygons in PAD"*), its other corners, and the
+     texts;
   4. edges.
 
   Failing those, it snaps to the coarsest round grid (100, 50, 10, 5, 1, 0.5 µm and so on, no finer than the database
@@ -116,8 +120,10 @@ edge, go straight into `edit_layout` as the trace's new spine (`editLayoutChange
 - **Corners:** the corners as drawn are where the fitted lines meet, and the snapped ones where the snapped lines meet. A
   corner is rounded when the stroke passes further from that meeting point than the pen's breadth (or 2.5 times the
   wobble). Its radius is estimated from the angle and that distance: d = r (1/sin(θ/2) − 1).
-- **Symmetry:** near mirror symmetry of the corners about an upright or level line, with the ends held to a stricter
-  standard.
+- **Centring:** a sketch's middle (its corners' mirror line, the ends apart) is said against a line of the layout - the
+  middle of a path it lies along, midway between two placements of a cell, the cell's centre, in that order - as centred
+  on it or off-centre by so much. A level-bottomed step is always symmetric about its own middle, so that alone is
+  never said.
 - **Not a polyline:** a circle or an arc that a circle fits as well, a run that bows (a parabola across it against the
   wobble), and a scribble.
 - **Only when it says something:** the reading is given when it has a corner, or for a hand-drawn level or upright line.
@@ -191,6 +197,46 @@ prompt's lead-in says that few points are given there.
 - **The pen's state:** a prompt that tells the drawing adds *"(The pen is still taken up in its tab: a drag there draws
   rather than pans; show_layout's pen: false puts it down.)"* while the pen is taken up.
 
+## The check of 8 November
+
+The user then drew strokes by hand on the running app, and Claude checked the readings against them
+(`qucs-reviews/LayoutViewer/2026-11-08-pen-markers-followup-check.md`, on the merged build `871750f6`). Every item worked,
+and each step was carried out without a picture. Its findings, item by item:
+
+| # | Finding | Now |
+|---|---|---|
+| 1 | "Symmetric about x ≈ 17 within 0 µm" says nothing: a level-bottomed step always is. Wanted: whether the dip is off-centre | **Done.** Said against the layout's lines only (the followed path's middle, then midway between two placements, then the cell's centre): *"off-centre: its middle at x ≈ 16.7, 16.7 µm from the 2/0 path's middle (x = 0)"*, or *"centred on …"* |
+| 2 | "Leaving it between (−35, 0) …" named where the path turned, not where the stroke went down (−10) | **Done.** Where the stroke turns away from the line it ran along and comes back onto it, and where the path's own line turns between, apart: *"leaving it at (-10.4, 0) and coming back at (43.6, 0), 30.7 µm below it (the path itself turning at (-35, 0) and (35, 0))"* |
+| 3 | A tick on a pad was read as on a via cover it crossed, the pad set apart, the via cover named in PAD | **Done.** A small mark (a fifth of the smallest shape holding it, or less) is on that shape and on any other holding it within four times its area, the larger ones set apart: *"a red pen tick on the 4/0 polygon in PAD (…) and the 1/0 polygon in PAD (…), all of it over 1 shape(s) on 10/0"*. A feature names every cell it is placed through: *"in PAD > VIA"* |
+| 4 | A tick read as a polyline, its corners to four decimals | **Done.** A small two-armed mark reads as a tick, with its point and no polyline. Corners nothing snapped are given to the stroke's precision |
+| 5 | A run snapped to the path's edge 0.5 away, not its centre line 2 away within the run's spread | **Done.** Within a run's reach, the kind ranks first, then the distance |
+| 6 | The y-snap named one pad's corner 120 µm away | **Done.** A polygon's corner on its box's side is that side's edge, and the same edge of several is said together: *"snaps to -30: the bottom edges of 2 1/0 polygons in PAD"* |
+| 6 | A replace read as "added 1, taken away 1" | **Done.** As many added as taken away on a layer read as *"replaced"*, with the boxes before and after |
+| 6 | A path's outline gave points twice | **Done.** Reproduced with the check's own file, read without changing it. Its script writes the database unit, 1e-9, rounded a little under (`…5a50` where 1e-9 is `…5a54`), and gdstk's outline of the trace then has each bend's point twice: 16 points where 12 are meant. Files gdstk writes itself don't show it. The reader now leaves out a point the same as the one before it, and a last point the same as the first. The test writes the check's demo record by record with those units |
+| 6 | The view zoomed out after `edit_layout` | **Not reproduced.** The test records the region before the edit and again after both reloads (`edit_layout`'s own and the file watcher's): it is the same. The reported change, ±164 to ±205 µm, is exactly one zoom-out step (1.25×) |
+| 6 | The pen stays taken up | Already said in the prompt, as the check notes |
+
+New in `test_pen_reading`: `theChecksStrokesAreToldAsDrawn`. It rebuilds the check's layout (the bump trace, pads with
+openings and via covers in a cell VIA) and draws the check's dip sketch and tick. It asserts each finding above in the
+prompt's text, the arrow at a via cover naming `PAD > VIA`, no outline point twice (in the check's own file's form too),
+the replace, the view kept, and a
+rougher sketch snapped to the new trace's centre line rather than its nearer edge. `aFreehandStrokeIsReadAsAPolyline`
+now holds the centring (none without a line, centred, off-centre, the path's middle ranked before the cell's centre) and
+unsnapped corners to a tenth.
+
+**Results after the check's fixes** (on main's tip of 8 November, `e987d7b`, merged into this branch first):
+
+- **Release:** `test_pen_reading` (16 functions), `test_layout_doc` 42, `test_layout_routing` 5, `test_layout_router`
+  35, `test_rf25_layout` 11, `test_rf25_model` 14, `test_rf25_mesh` 14, `test_pptx_doc` 39, `test_claude_code` 92,
+  `test_qucs_control` 218, `test_mcp_server` 22 and `test_claude_fuzz` 4 pass.
+- **ASan and UBSan:** `test_pen_reading`, `test_layout_doc`, `test_layout_router`, `test_layout_routing`,
+  `test_rf25_layout` and `test_pptx_doc` pass, with no sanitizer report.
+- **The four lints** are green.
+- **`breaks.py`:** 38 breaks, 10 of them new for the check's fixes, and all 38 are caught. The outline break first
+  survived: gdstk's own files never doubled a point, until the test wrote the check's units as its script rounds them.
+- **Found by the old test:** a dot no shape holds was read as nothing at all (the smallest holder kept, when there was
+  none). Fixed.
+
 ## Files
 
 | File | What |
@@ -211,7 +257,7 @@ prompt's lead-in says that few points are given there.
 
 ## Tests
 
-`test_pen_reading` (new, 15 test functions):
+`test_pen_reading` (new, 16 test functions with `theChecksStrokesAreToldAsDrawn`):
 
 | Test | What it holds to |
 |---|---|
@@ -220,7 +266,7 @@ prompt's lead-in says that few points are given there.
 | `anArrowsTipIsNearestAnEdgeOrAText` | A tip above a pad's edge: that edge, from above, in PAD, coming from above, in the prompt; a tip on the trace's flank under its peak: the vertex, though the flank is nearer |
 | `aStrokeKeepsItsNumber` | 1, 2, 3; cleared and undone; 4 and 5; 2 erased, the next 6; readings 1, 3, 4, 5, 6; an arrowhead's `of stroke` 4; the router's `from_stroke` 2 refused with the numbers there are |
 | `aFewPointsAndThePenAreSaid` | Two points said; a scribble's not; the pen's line when taken up |
-| `aFreehandStrokeIsReadAsAPolyline` | Synthetic strokes: a level line snapped to a 10 µm grid, then to an edge 0.1 away, its end to a named x; a U symmetric about 25, ends too, sharp corners at 90°; a lopsided one not symmetric, a slanted run; an L rounded r = 8 read within 1.2; a flick where the pen came down, and one where it lifted, dropped; a diagonal run; a rectangle ring closed, four runs, corners snapped to whole µm; a circle, an arc, a scribble, a stroke too small, none; the words; the round grid |
+| `aFreehandStrokeIsReadAsAPolyline` | Synthetic strokes: a level line snapped to a 10 µm grid, then to an edge 0.1 away, its end to a named x; a U's middle said only against a layout's line (none, centred, off-centre by 25), sharp corners at 90°; a lopsided one not symmetric, a slanted run whose corners are to a tenth; an L rounded r = 8 read within 1.2; a flick where the pen came down, and one where it lifted, dropped; a diagonal run; a rectangle ring closed, four runs, corners snapped to whole µm; a circle, an arc, a scribble, a stroke too small, none; the words; the round grid |
 | `claudesOverlayIsKeptApartFromTheStrokes` | Four items drawn and counted; the button shows; strokes, revision, prompt and the router's overlays unchanged; teal in the picture along the new step and not on the old trace's flank; replaced; none on another cell; the button and `clear` take it away; 15 wrong overlays refused, nothing drawn; an item's unknown key named by the tools' schema check |
 | `aStrokeMarkedAddressedIsFadedAndLeftOut` | An unknown number refused with the numbers there are; 1 and 3 marked, the prompt counts them; `read_drawings` keeps the mark; Undo takes it away; all marked, said so; `none`; 5 wrong values refused |
 | `anyOverlayIsRefusedOrDrawn` | 400 fuzzed overlays: refused or drawn, then painted |
@@ -250,10 +296,11 @@ No test asserts on elapsed time.
 
 ## Broken on purpose
 
-`2026-11-07-pen-markers-followup/breaks.py` holds twenty-nine breaks across the reading, the polyline, the prompt, the
+`2026-11-07-pen-markers-followup/breaks.py` holds thirty-eight breaks (twenty-nine at first; nine more, and one of the
+symmetry breaks reworked, for the check of 8 November) across the reading, the polyline, the prompt, the
 overlay and the editor. `python3 breaks.py --check` confirms each break's text is found exactly once.
 
-**All 29 are caught**, each by a failing assertion rather than a crash. The first run had thirty breaks and three
+**All are caught**, each by a failing assertion rather than a crash. The first run had thirty breaks and three
 survived. Each survivor showed something:
 
 - **An edge preferred to a vertex that is about as near:** in the review's arrow, the nearest point of the trace's flank
