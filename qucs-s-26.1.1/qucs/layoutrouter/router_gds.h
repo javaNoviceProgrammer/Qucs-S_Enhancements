@@ -17,7 +17,24 @@
 
 #include "router.h"
 
+namespace gdstk {
+struct Library;
+}
+
 namespace qucs_s::router {
+
+/// A layout file gdstk writes: .gds, .gds2, .gdsii, or (isOasisFile) .oas,
+/// .oasis.
+bool isWritableLayout(const QString& path);
+bool isOasisFile(const QString& path);
+/// \a path read whole with gdstk - GDSII, or OASIS by its suffix - into
+/// \a lib (its units set when the file has none); false, and why, when it
+/// cannot be (\a lib then freed).
+bool readLibrary(const QString& path, gdstk::Library* lib, QString* error);
+/// \a lib written whole to \a target - GDSII, or OASIS by its suffix -: a
+/// temporary file beside it, renamed over it when complete. \a lib is
+/// left as it was (the caller frees it).
+bool writeLibrary(gdstk::Library& lib, const QString& target, QString* error);
 
 struct Commit {
     QString source;             ///< the layout read

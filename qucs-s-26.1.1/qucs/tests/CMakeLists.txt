@@ -235,6 +235,9 @@ qucs_add_test(test_layout_doc)
 qucs_add_test(test_layout_routing)
 target_compile_definitions(test_layout_routing PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>")
 add_dependencies(test_layout_routing ${QUCS_NAME})
+# What Claude is told of the pen's strokes on a layout, and its preview and
+# edits (the review of 7 November).
+qucs_add_test(test_pen_reading)
 qucs_add_test(test_rf25_model)
 qucs_add_test(test_rf25_layout)
 qucs_add_test(test_rf25_mesh)

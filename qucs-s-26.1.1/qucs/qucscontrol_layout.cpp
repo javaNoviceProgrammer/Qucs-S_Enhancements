@@ -16,6 +16,7 @@
 
 #include "graphicsexport.h"
 #include "layoutdoc.h"
+#include "layoutedit.h"
 #include "misc.h"
 #include "qucs.h"
 #include "rf25doc.h"
@@ -291,6 +292,98 @@ QString gridSaid(const Layout& layout, const LayoutView* view)
     return what + QObject::tr("; a scale in the lower left");
 }
 
+/// Points [[x, y], ...] in µm, \a least to \a most of them; none, and why,
+/// when they are not.
+bool pointsOf(const QJsonValue& v, int least, int most, QPolygonF* out, QString* why)
+{
+    const QJsonArray a = v.toArray();
+    if (!v.isArray() || a.size() < least || a.size() > most) {
+        *why = least == most ? QObject::tr("%1 points").arg(least) : QObject::tr("%1 to %2 points").arg(least).arg(most);
+        return false;
+    }
+    for (const QJsonValue& p : a) {
+        const QJsonArray xy = p.toArray();
+        if (xy.size() != 2 || !xy.at(0).isDouble() || !xy.at(1).isDouble() || !std::isfinite(xy.at(0).toDouble())
+            || !std::isfinite(xy.at(1).toDouble()) || std::abs(xy.at(0).toDouble()) > 1e9 || std::abs(xy.at(1).toDouble()) > 1e9) {
+            *why = QObject::tr("points [x, y] in µm");
+            return false;
+        }
+        *out << QPointF(xy.at(0).toDouble(), xy.at(1).toDouble());
+    }
+    return true;
+}
+
+/// One thing Claude draws over a layout (show_layout's 'overlay'):
+/// {"polygon": [[x, y], ...]}, {"path": [[x, y], ...], "width": µm},
+/// {"text": "...", "at": [x, y]} or {"arrow": [[x, y], [x, y]]} with a
+/// "text" at its tail if wanted, each in a "colour" if wanted.
+bool sketchItemOf(const QJsonObject& o, LayoutView::Sketch* out, QString* error)
+{
+    static const QStringList known{QStringLiteral("polygon"), QStringLiteral("path"), QStringLiteral("width"), QStringLiteral("text"),
+                                   QStringLiteral("at"), QStringLiteral("arrow"), QStringLiteral("colour")};
+    for (auto it = o.begin(); it != o.end(); ++it)
+        if (!known.contains(it.key())) {
+            *error = QObject::tr("'overlay': %1 is none of polygon, path, width, text, at, arrow, colour.").arg(it.key());
+            return false;
+        }
+    const int kinds = int(o.contains(QLatin1String("polygon"))) + int(o.contains(QLatin1String("path"))) + int(o.contains(QLatin1String("arrow")))
+                      + int(o.contains(QLatin1String("at")));
+    if (kinds != 1) {
+        *error = QObject::tr("'overlay': each item is one of {\"polygon\": [[x, y], ...]}, {\"path\": [[x, y], ...], \"width\": µm}, "
+                             "{\"text\": \"...\", \"at\": [x, y]} or {\"arrow\": [[x, y], [x, y]], \"text\": \"...\"}.");
+        return false;
+    }
+    QString why;
+    const auto bad = [&](const char* what) {
+        *error = QObject::tr("'overlay': a %1 has %2.").arg(QLatin1String(what), why);
+        return false;
+    };
+    if (o.contains(QLatin1String("polygon"))) {
+        out->kind = LayoutView::Sketch::Kind::Polygon;
+        if (!pointsOf(o.value(QLatin1String("polygon")), 3, 10000, &out->points, &why)) return bad("polygon");
+    } else if (o.contains(QLatin1String("path"))) {
+        out->kind = LayoutView::Sketch::Kind::Path;
+        if (!pointsOf(o.value(QLatin1String("path")), 2, 10000, &out->points, &why)) return bad("path");
+        const double width = o.value(QLatin1String("width")).toDouble(-1);
+        if (!(width > 0) || width > 1e6) {
+            *error = QObject::tr("'overlay': a path has a 'width' in µm, more than 0.");
+            return false;
+        }
+        out->width = width;
+    } else if (o.contains(QLatin1String("arrow"))) {
+        out->kind = LayoutView::Sketch::Kind::Arrow;
+        if (!pointsOf(o.value(QLatin1String("arrow")), 2, 2, &out->points, &why)) return bad("arrow");
+    } else {
+        out->kind = LayoutView::Sketch::Kind::Text;
+        if (!pointsOf(QJsonArray{o.value(QLatin1String("at"))}, 1, 1, &out->points, &why)) return bad("text");
+        if (o.value(QLatin1String("text")).toString().trimmed().isEmpty()) {
+            *error = QObject::tr("'overlay': a text at a point has its 'text'.");
+            return false;
+        }
+    }
+    if (o.contains(QLatin1String("width")) && out->kind != LayoutView::Sketch::Kind::Path) {
+        *error = QObject::tr("'overlay': 'width' is a path's.");
+        return false;
+    }
+    if (o.contains(QLatin1String("text")) && !o.value(QLatin1String("text")).isString()) {
+        *error = QObject::tr("'overlay': 'text' is words.");
+        return false;
+    }
+    if (o.contains(QLatin1String("text")) && (out->kind == LayoutView::Sketch::Kind::Polygon || out->kind == LayoutView::Sketch::Kind::Path)) {
+        *error = QObject::tr("'overlay': 'text' is a text's or an arrow's (a text {\"text\", \"at\"} names a shape beside it).");
+        return false;
+    }
+    out->text = o.value(QLatin1String("text")).toString().left(200);
+    if (o.contains(QLatin1String("colour"))) {
+        out->color = QColor::fromString(o.value(QLatin1String("colour")).toString().trimmed());
+        if (!out->color.isValid()) {
+            *error = QObject::tr("'overlay': %1 is no colour - a name (\"orange\") or #rrggbb.").arg(o.value(QLatin1String("colour")).toString());
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 // ----------------------------------------------------------------------
@@ -307,6 +400,15 @@ void QucsControl::withLayout(const QJsonObject& args, bool open,
             done(errorResult(tr("Which layout? 'path' (the document in front is none).")));
             return;
         }
+    }
+    // (An open layout by its file's name or its tab's title, as every tool
+    //  names an open document - the review of 7 November: "demo.gds" was
+    //  looked for in the project's folder, not as the tab open.)
+    if (const QString given = file; !QFileInfo(absolute(given)).isFile()) {
+        QString unused;
+        if (QucsDoc* named = document(QJsonObject{{QStringLiteral("path"), given}}, &unused);
+            named != nullptr && dynamic_cast<LayoutDoc*>(named) != nullptr && !named->getDocName().isEmpty())
+            file = named->getDocName();
     }
     file = absolute(file);
     if (!QFileInfo(file).isFile()) {
@@ -600,6 +702,36 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         done(errorResult(tr("'drawings' is clear: what the pen drew on the layout taken away (the pen's Undo gives it back).")));
         return;
     }
+    // What Claude draws over the cell shown - its own, apart from the pen's
+    // strokes -, or clear; and the strokes it marks addressed, or none.
+    const QJsonValue overlay = args.value(QLatin1String("overlay"));
+    const bool clearOverlay = overlay.isString() && overlay.toString().trimmed().compare(QLatin1String("clear"), Qt::CaseInsensitive) == 0;
+    QList<LayoutView::Sketch> sketch;
+    if (args.contains(QLatin1String("overlay")) && !clearOverlay) {
+        if (!overlay.isArray() || overlay.toArray().isEmpty() || overlay.toArray().size() > 500)
+            return done(errorResult(tr("'overlay' is a list of what is drawn over the cell shown (1 to 500 items: polygons, paths, texts, "
+                                       "arrows in µm), or clear.")));
+        for (const QJsonValue& v : overlay.toArray()) {
+            LayoutView::Sketch item;
+            QString why;
+            if (!v.isObject() || !sketchItemOf(v.toObject(), &item, &why))
+                return done(errorResult(why.isEmpty() ? tr("'overlay': each item is an object.") : why));
+            sketch << item;
+        }
+    }
+    const QJsonValue addressed = args.value(QLatin1String("addressed"));
+    const bool addressedNone = addressed.isString() && addressed.toString().trimmed().compare(QLatin1String("none"), Qt::CaseInsensitive) == 0;
+    QList<int> addressedIds;
+    if (args.contains(QLatin1String("addressed")) && !addressedNone) {
+        bool good = addressed.isArray() && !addressed.toArray().isEmpty();
+        for (const QJsonValue& v : addressed.toArray()) {
+            good = good && v.isDouble() && v.toDouble() == std::floor(v.toDouble()) && v.toDouble() >= 1 && v.toDouble() <= 1e9;
+            if (good) addressedIds << v.toInt();
+        }
+        if (!good)
+            return done(errorResult(tr("'addressed' is a list of the pen's stroke numbers on the cell shown, as read_drawings numbers them "
+                                       "(marked dealt with: faded, and left out of what a prompt tells), or none.")));
+    }
     // What is selected: what a click at a point selects - the smallest
     // shape or text there, of the layers shown, to the depth drawn; at the
     // same point again, the next one under it -, or none.
@@ -669,8 +801,8 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (model != nullptr) {
             // Which cell, and which layers, are the model's to say - its
             // Layout node and its layer map - and are not set from here.
-            for (const char* key : {"cell", "layers", "depth", "pen", "drawings", "select", "rulers", "colours", "layer_properties",
-                                    "theme", "contrast", "grid_style", "reload"})
+            for (const char* key : {"cell", "layers", "depth", "pen", "drawings", "overlay", "addressed", "select", "rulers", "colours",
+                                    "layer_properties", "theme", "contrast", "grid_style", "reload"})
                 if (args.contains(QLatin1String(key))) {
                     done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
                                         "its layers are its layer map's. 'region', 'texts', 'grid', 'processed' and "
@@ -737,13 +869,22 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
 
     // Read again first, where it is open: its read goes on in the
     // background, and what is asked is done once it has ended.
+    std::shared_ptr<const Layout> beforeReload;   // (to say what changed)
     if (reload) {
         const QString named = args.value(QLatin1String("path")).toString().trimmed();
         LayoutDoc* open = named.isEmpty() ? qobject_cast<LayoutDoc*>(a_app->DocumentTab->count() > 0 ? a_app->DocumentTab->currentWidget() : nullptr)
                                           : nullptr;
         for (QucsDoc* d : a_app->allDocuments())
             if (auto* l = dynamic_cast<LayoutDoc*>(d); !named.isEmpty() && l != nullptr && sameFile(l->getDocName(), absolute(named))) open = l;
-        if (open != nullptr && !open->isLoading()) open->reload();
+        // (By its file's name or its tab's, as withLayout() finds it.)
+        if (open == nullptr && !named.isEmpty()) {
+            QString unused;
+            open = dynamic_cast<LayoutDoc*>(document(QJsonObject{{QStringLiteral("path"), named}}, &unused));
+        }
+        if (open != nullptr && !open->isLoading()) {
+            beforeReload = open->layout();
+            open->reload();
+        }
     }
 
     withLayout(args, true, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
@@ -814,6 +955,27 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         // The pen taken up or put down, and what it drew taken away.
         if (pen.isBool()) doc->penButton()->setChecked(pen.toBool());
         const bool cleared = drawings == QLatin1String("clear") && view->clearDrawing(true);
+        // The strokes marked addressed, those numbered all found first.
+        int marked = 0;
+        if (!addressedIds.isEmpty()) {
+            QStringList missing, there;
+            for (const int id : std::as_const(addressedIds))
+                if (view->drawing().find(view->drawingPart(), id) == nullptr) missing << QString::number(id);
+            if (!missing.isEmpty()) {
+                for (const qucs_s::markup::Stroke& s : view->drawing().on(view->drawingPart())) there << QString::number(s.id);
+                done(errorResult(tr("The cell shown has no stroke %1 (its strokes: %2).")
+                                     .arg(missing.join(QStringLiteral(", ")), there.isEmpty() ? tr("none") : there.join(QStringLiteral(", ")))));
+                return;
+            }
+            marked = view->setAddressed(addressedIds, true);
+        } else if (addressedNone) {
+            QList<int> all;
+            for (const qucs_s::markup::Stroke& s : view->drawing().on(view->drawingPart())) all << s.id;
+            marked = -view->setAddressed(all, false);
+        }
+        // What Claude draws over the cell shown, or none.
+        if (clearOverlay) view->clearSketches();
+        else if (!sketch.isEmpty()) view->setSketch(view->drawingPart(), sketch);
         if (region.size() == 4) {
             const QRectF r = QRectF(QPointF(region.at(0).toDouble(), region.at(1).toDouble()), QPointF(region.at(2).toDouble(), region.at(3).toDouble()))
                                  .normalized();
@@ -868,6 +1030,22 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (!view->drawing().isEmpty()) insertDrawings(result, view->readDrawing(false));
         if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));
         if (cleared) result.insert(QStringLiteral("done"), tr("What the pen drew taken away (the pen's Undo gives it back)."));
+        if (marked > 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) marked addressed: drawn faded, and left out of what a prompt tells").arg(marked));
+        if (marked < 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) no longer marked addressed").arg(-marked));
+        if (const QList<LayoutView::Sketch> drawn = view->sketch(view->drawingPart()); !drawn.isEmpty()) {
+            QJsonObject kinds;
+            for (const LayoutView::Sketch& item : drawn) {
+                const QString kind = item.kind == LayoutView::Sketch::Kind::Polygon ? QStringLiteral("polygons")
+                                     : item.kind == LayoutView::Sketch::Kind::Path  ? QStringLiteral("paths")
+                                     : item.kind == LayoutView::Sketch::Kind::Text  ? QStringLiteral("texts")
+                                                                                    : QStringLiteral("arrows");
+                kinds.insert(kind, kinds.value(kind).toInt() + 1);
+            }
+            kinds.insert(QStringLiteral("note"), tr("Claude's own, over the cell shown, apart from the pen's strokes - overlay: clear takes it away"));
+            result.insert(QStringLiteral("overlay"), kinds);
+        } else if (clearOverlay) {
+            result.insert(QStringLiteral("overlay"), tr("taken away"));
+        }
         // What is selected and measured there now - the user's or Claude's.
         insertSelectionAndRulers(result, *layout, view);
         if (nothingThere)
@@ -883,6 +1061,13 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (!view->colorsAdapted()) result.insert(QStringLiteral("colours in contrast"), false);
         if (view->gridShown()) result.insert(QStringLiteral("grid style"), gridStyleName(view->gridStyle()));
         if (reload) result.insert(QStringLiteral("read again"), true);
+        // What reading it again changed: by cell and layer, the shapes added
+        // and taken away (the review of 7 November: "Claude can then confirm
+        // an edit without a screenshot").
+        if (reload && beforeReload && beforeReload != layout) {
+            const QJsonObject changed = differences(*beforeReload, *layout);
+            result.insert(QStringLiteral("changed"), changed.isEmpty() ? QJsonValue(tr("nothing")) : QJsonValue(changed));
+        }
         done(jsonResult(result));
     }, done);
 }

@@ -204,20 +204,26 @@ LayoutDoc* tabOf(QucsApp* app, const QString& file)
     return nullptr;
 }
 
-// A pen stroke of the cell a tab shows, by its number there (from 1, as
-// read_drawings counts them).
+// A pen stroke of the cell a tab shows, by its number there (as
+// read_drawings numbers them: a stroke keeps its number).
 bool strokeOf(LayoutDoc* doc, int number, qucs_s::markup::Stroke* out, QString* error)
 {
     if (!doc) {
         *error = QObject::tr("'from_stroke' reads the pen's strokes of the layout's open tab, and it has none");
         return false;
     }
-    const QList<qucs_s::markup::Stroke> strokes = doc->view()->drawing().on(doc->view()->drawingPart());
-    if (number < 1 || number > strokes.size()) {
-        *error = QObject::tr("The cell shown has %1 stroke(s): 'from_stroke' %2 is none of them (read_drawings numbers them)").arg(strokes.size()).arg(number);
+    const QString part = doc->view()->drawingPart();
+    const qucs_s::markup::Stroke* found = doc->view()->drawing().find(part, number);
+    if (found == nullptr) {
+        QStringList numbers;
+        for (const qucs_s::markup::Stroke& s : doc->view()->drawing().on(part)) numbers << QString::number(s.id);
+        *error = QObject::tr("The cell shown has %1 stroke(s)%2: 'from_stroke' %3 is none of them (read_drawings numbers them)")
+                     .arg(numbers.size())
+                     .arg(numbers.isEmpty() ? QString() : QStringLiteral(", numbered ") + numbers.join(QStringLiteral(", ")))
+                     .arg(number);
         return false;
     }
-    *out = strokes.at(number - 1);
+    *out = *found;
     return true;
 }
 

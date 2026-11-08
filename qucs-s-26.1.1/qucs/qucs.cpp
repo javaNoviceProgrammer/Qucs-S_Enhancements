@@ -559,13 +559,23 @@ std::pair<quint64, QString> QucsApp::drawingsOf(const QString &file, quint64 kno
 {
   for (QucsDoc *doc : allDocuments()) {
     if (doc->getDocName() != file) continue;
+    // (Read with their points: a stroke of a few has them in its
+    //  sentence. And whether the pen is still taken up: a drag in the tab
+    //  draws then, rather than pans.)
+    const auto penSaid = [](QString told, const qucs_s::markup::PenButton *pen, const char *tool) {
+      if (!told.isEmpty() && pen != nullptr && pen->isChecked())
+        told += QStringLiteral("\n(The pen is still taken up in its tab: a drag there draws rather than pans; %1's pen: false puts it down.)")
+                    .arg(QLatin1String(tool));
+      return told;
+    };
     if (auto *layout = qobject_cast<LayoutDoc *>(documentWidget(doc))) {
       const quint64 revision = layout->view()->drawing().revision();
-      return {revision, revision == known ? QString() : qucs_s::markup::sentencesOf(layout->view()->readDrawing(false), false)};
+      return {revision, revision == known ? QString()
+                                          : penSaid(qucs_s::markup::sentencesOf(layout->view()->readDrawing(true), false), layout->penButton(), "show_layout")};
     }
     if (auto *deck = dynamic_cast<PptxDoc *>(doc)) {
       const quint64 revision = deck->view()->drawing().revision();
-      return {revision, revision == known ? QString() : qucs_s::markup::sentencesOf(deck->readDrawing(false), true)};
+      return {revision, revision == known ? QString() : penSaid(qucs_s::markup::sentencesOf(deck->readDrawing(true), true), deck->penButton(), "show_pptx")};
     }
   }
   return {0, QString()};
