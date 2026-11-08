@@ -1026,10 +1026,22 @@ bool extract(Source& source, Plot& plot, const Options& options, QString* why)
     bool done = false;
     if (!options.seeds.isEmpty()) {
         QList<Series> traced;
-        QStringList misses;
+        QStringList misses, again;
         int n = 0;
         for (const QPointF& seed : options.seeds) {
             ++n;
+            // (A seed on a curve an earlier seed gave already: the same curve.)
+            int same = -1;
+            for (int k = 0; k < traced.size() && same < 0; ++k)
+                for (const QPointF& q : traced.at(k).points)
+                    if (QLineF(q, seed).length() <= 1.5) {
+                        same = k;
+                        break;
+                    }
+            if (same >= 0) {
+                again << tr("seed %1 lies on %2").arg(n).arg(traced.at(same).name);
+                continue;
+            }
             Series s;
             QString reason;
             if (traceFrom(source, plot, seed, &s, &reason, &options)) {
@@ -1037,6 +1049,7 @@ bool extract(Source& source, Plot& plot, const Options& options, QString* why)
                 traced << s;
             } else misses << tr("seed %1: %2").arg(n).arg(reason);
         }
+        if (!again.isEmpty()) notes << tr("Seeds on a curve already followed give it once: %1.").arg(again.join(QStringLiteral(", ")));
         plot.series = traced;
         if (!traced.isEmpty()) {
             bool vector = true;
