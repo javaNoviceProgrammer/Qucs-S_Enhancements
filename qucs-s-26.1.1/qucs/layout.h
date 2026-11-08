@@ -26,9 +26,11 @@
 #include <QTransform>
 #include <QVector>
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QPainter;
 
@@ -192,6 +194,51 @@ int readsGoing();
 // ----------------------------------------------------------------------
 // How layers look
 
+/*!
+ * A fill's bitmap as KLayout has one (a dither pattern): up to 32 by 32
+ * pixels, bit x of a row set where pixel x takes the fill's colour, the
+ * first row the top one. Drawn at the screen's pixels whatever the zoom,
+ * from the view's lower left corner, as KLayout draws it.
+ */
+struct Stipple {
+    int width = 1;
+    int height = 1;
+    std::array<quint32, 32> rows{};
+    QString name;
+
+    /// The pixel at (x, y) - the bitmap repeated.
+    bool at(int x, int y) const;
+    bool isSolid() const;
+    bool isEmpty() const;
+    bool operator==(const Stipple& o) const { return width == o.width && height == o.height && rows == o.rows; }
+};
+
+/// KLayout's own dither patterns (I0 solid, I1 hollow, I2 dotted ... I46),
+/// drawn from what their names say.
+int standardStippleCount();
+/// The \a index'th of them; solid out of their range.
+Stipple standardStipple(int index);
+
+/*!
+ * A frame's dashes as KLayout has them (a line style): bit t set where the
+ * t'th pixel along the line is drawn, \a length pixels repeated, counted
+ * from the screen's left (a line more across than up) or bottom - as
+ * KLayout counts them; no length: solid.
+ */
+struct LineStyle {
+    quint32 bits = 0;
+    int length = 0;
+    QString name;
+
+    bool isSolid() const { return length <= 0; }
+    bool on(int t) const { return isSolid() || ((bits >> (((t % length) + length) % length)) & 1u) != 0; }
+    bool operator==(const LineStyle& o) const { return bits == o.bits && length == o.length; }
+};
+
+/// KLayout's own line styles (I0 solid, I1 dotted, I2 dashed ... I7).
+int standardLineStyleCount();
+LineStyle standardLineStyle(int index);
+
 /// How a layer is drawn: its frame and fill colours, the fill's pattern
 /// (Qt::NoBrush: hollow), shown or hidden, and a name (a .lyp's).
 struct LayerStyle {
@@ -200,6 +247,21 @@ struct LayerStyle {
     Qt::BrushStyle pattern = Qt::SolidPattern;
     bool visible = true;
     QString name;
+
+    /// Drawn as KLayout draws it (a .lyp's own look): the stipple for the
+    /// pattern, the frame's width and dashes, transparent, crossed and
+    /// marked as the file says - and its colours as they are, never made
+    /// to stand out from the background.
+    bool klayout = false;
+    std::shared_ptr<const Stipple> stipple;   ///< (klayout) the fill's bitmap
+    LineStyle line;            ///< (klayout) the frame's dashes
+    int width = 1;             ///< (klayout) the frame's width, pixels
+    bool transparent = false;  ///< (klayout) its colours mixed with what is under it
+    bool xfill = false;        ///< (klayout) a box crossed corner to corner
+    bool marked = false;       ///< (klayout) a small cross at each corner
+    bool valid = true;         ///< as the file says; drawn either way, as KLayout draws it
+    int animation = 0;         ///< (klayout) 0 none, 1 scrolling, 2 blinking, 3 blinking the other way
+    int order = -1;            ///< drawn in this order, the higher over the lower; -1: by its index
 };
 
 /// The style of the \a index'th layer when nothing says otherwise: one of
@@ -222,6 +284,84 @@ constexpr double LayerContrast = 3.5;
 /// LayerContrast; as it is when \a background is none.
 LayerStyle standingOut(LayerStyle style, const QColor& background);
 
+/// One entry of a KLayout layer properties file, as it is written: a layer
+/// - or a group of them, its members - with what it gives (nothing given:
+/// an invalid colour, an empty pattern, no value).
+struct LayerEntry {
+    QString name;
+    QString source;            ///< "1/0@1", "M1 1/0", "*/*@*", ...
+    QColor frame, fill;
+    int frameBrightness = 0, fillBrightness = 0;
+    QString dither;            ///< "I5", "C0" (the file's own first), or empty
+    QString line;              ///< likewise
+    std::optional<bool> visible, transparent, xfill, marked, valid;
+    std::optional<int> width, animation;
+    bool group = false;        ///< it has <group-members>
+    QVector<LayerEntry> members;
+};
+
+/// A KLayout layer properties file (.lyp) as it is written: its entries in
+/// order, and its own patterns and line styles (C0, C1, ... by their
+/// order).
+struct LayerProperties {
+    QString file;
+    QVector<LayerEntry> entries;
+    QVector<Stipple> stipples;
+    QVector<LineStyle> lines;
+    bool isEmpty() const { return entries.isEmpty(); }
+    /// The layers it lists (a group's members, not the group), in order.
+    int leafCount() const;
+};
+
+/// Reads a .lyp - its first tab, when it has tabs. Empty, and why in
+/// \a error, when it cannot be read or has no layers.
+LayerProperties readLayerPropertiesFile(const QString& path, QString* error);
+/// The same from its text (for the tests).
+LayerProperties parseLayerProperties(const QByteArray& text, QString* error);
+
+/// What a .lyp's source names: a layer and datatype (each a number, a
+/// range "1-5" or any "*"), or a layer's name, of a layout (@1: the
+/// first, the only one here; @*: any).
+struct LayerSource {
+    QString name;               ///< a layer's name, or empty
+    bool numbered = false;      ///< a layer/datatype given
+    int layerFrom = -1, layerTo = -1;        ///< -1: any
+    int datatypeFrom = -1, datatypeTo = -1;  ///< -1: any
+    int layout = 0;             ///< 0: any (@* or none), else @n
+    bool isEmpty() const { return name.isEmpty() && !numbered; }
+};
+LayerSource parseLayerSource(const QString& text);
+/// \a member's source within its group's (\a group): what it does not
+/// say taken from the group's.
+LayerSource withinGroup(const LayerSource& member, const LayerSource& group);
+/// Whether \a source names \a info, a layer of the first layout.
+bool sourceMatches(const LayerSource& source, const LayerInfo& info);
+
+/// A colour made brighter (\a brightness > 0) or darker, as KLayout's
+/// brightness makes it: each channel halved towards white or black at
+/// ±128, by 2^(b/128).
+QColor brightened(const QColor& colour, int brightness);
+
+/*!
+ * What a .lyp makes of a layout's layers. KLayout's look: each layer
+ * drawn as the last entry naming it says - its group's settings where it
+ * has none of its own, hidden with its group - in the file's order, the
+ * later over the earlier; the layers it names none of after them, in the
+ * palette's styles. The viewer's look: the file's colours, names and
+ * visibility on the palette's patterns, in the layout's order. \a rows
+ * the layer list as it shows them: the file's groups with their layers.
+ */
+struct LayerPlan {
+    QVector<LayerStyle> styles;   ///< by Layout::layers' index
+    struct Row {
+        QString name;             ///< a group's (or its source)
+        int layer = -1;           ///< a layer's index; -1: a group
+        QVector<Row> children;
+    };
+    QVector<Row> rows;            ///< (KLayout's look) groups and layers in the file's order
+};
+LayerPlan planLayers(const Layout& layout, const LayerProperties& lyp, bool klayoutLook);
+
 /// A KLayout layer properties file (.lyp): each layer's style, by its
 /// layer and datatype (a source "1/0@1", "1/0" or "Metal1 1/0"). Empty, and
 /// why in \a error, when it cannot be read.
@@ -235,6 +375,8 @@ QString layerPropertiesBeside(const QString& layoutFile);
 /// one, the palette's otherwise; a layer named by the file keeps its name
 /// unless the .lyp gives one.
 QVector<LayerStyle> stylesFor(const Layout& layout, const QHash<LayerKey, LayerStyle>& lyp);
+/// The same from a .lyp read whole, in KLayout's look or the viewer's.
+QVector<LayerStyle> stylesFor(const Layout& layout, const LayerProperties& lyp, bool klayoutLook);
 
 // ----------------------------------------------------------------------
 // Drawing
@@ -249,8 +391,22 @@ struct RenderOptions {
     QColor frames;              ///< cells not drawn, and their names
     QColor text;                ///< the texts
     QColor background;          ///< when given, each layer's colours made to stand out from it (standingOut())
+    QColor canvas;              ///< what is under the layers: a transparent one (KLayout's) mixed with it - AND on a light one, OR on a dark
+    int tick = 0;               ///< (KLayout's animations) the step: a blinking layer shown on the even, a scrolling pattern a pixel on at each
     quint64 budget = 4000000;   ///< shapes at most; beyond them the drawing is incomplete
 };
+
+/// Device pixels a KLayout pattern's pixel takes on a device of \a ratio
+/// (a Retina screen's 2: 2 by 2 - the pattern as large as on any other
+/// screen, and as sharp).
+int stipplePixels(qreal ratio);
+/// Whether a transparent layer is ANDed with \a canvas (a light one) -
+/// else ORed.
+bool mixesByAnd(const QColor& canvas);
+/// The layers' indices in their drawing order (LayerStyle::order).
+QVector<int> drawingOrder(const QVector<LayerStyle>& styles, int layers);
+/// Whether a layer in \a style is drawn at animation step \a tick.
+bool shownAtTick(const LayerStyle& style, int tick);
 
 struct RenderStats {
     quint64 polygons = 0;       ///< drawn as outlines

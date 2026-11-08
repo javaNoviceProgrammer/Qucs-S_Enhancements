@@ -38,10 +38,39 @@ struct Uniforms {
     float cell;          // a pattern's pixel in device pixels
     float patterned;
     float yUp;
+    float phase[2];      // (anchored) the pattern moved on, its pixels
+    float dotSize[2];    // a dot's quad, device pixels
+    float anchored;      // KLayout's pattern: from the lower left
+    float lineWidth;     // a thick line's, device pixels
+    float dashLength;    // its dashes' period; 0: solid
+    float always;        // dots whatever their size (marks)
+    float dash[4];       // the dashes' bits, 8 a component
 };
+static_assert(sizeof(Uniforms) == 176, "the shaders' uniform block (std140)");
 
 // A dot's quad: a strip, a device pixel square about it.
 const float kCorners[] = {-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f};
+
+/// An outline along x and y, four corners: a box (KLayout's xfill crosses
+/// it).
+bool isBox(const std::vector<QPointF>& q)
+{
+    if (q.size() != 4) return false;
+    for (std::size_t e = 0; e < 4; ++e) {
+        const QPointF d = q[(e + 1) % 4] - q[e], next = q[(e + 2) % 4] - q[(e + 1) % 4];
+        const bool flat = std::abs(d.y()) < 1e-12, upright = std::abs(d.x()) < 1e-12;
+        if (flat == upright || flat == (std::abs(next.y()) < 1e-12)) return false;
+    }
+    return true;
+}
+
+/// What a layer's style adds to its shapes' buffers: crosses (1), marks (2).
+char extrasOf(const QVector<LayerStyle>& styles, std::size_t layer)
+{
+    if (int(layer) >= styles.size() || !styles.at(int(layer)).klayout) return 0;
+    const LayerStyle& s = styles.at(int(layer));
+    return char((s.xfill ? 1 : 0) | (s.marked ? 2 : 0));
+}
 
 /// Convex - each turn the same way, once round: fanned.
 bool convex(const std::vector<QPointF>& q)
@@ -141,6 +170,25 @@ Flattened flatten(const Layout& layout, int cell, int depth, const QVector<Layer
         for (std::size_t k = 0; k < q.size(); ++k) {
             const QPointF a = q[k], b = q[(k + 1) % q.size()];
             out.outlines.insert(out.outlines.end(), {float(a.x()), float(a.y()), float(b.x()), float(b.y())});
+        }
+        const char extras = extrasOf(styles, sh.layer);
+        if ((extras & 1) && isBox(q))
+            out.xfills.insert(out.xfills.end(), {float(q[0].x()), float(q[0].y()), float(q[2].x()), float(q[2].y()),
+                                                 float(q[1].x()), float(q[1].y()), float(q[3].x()), float(q[3].y())});
+        if (extras & 2) {
+            // (A box's two corners that make it, as KLayout marks a box.)
+            if (isBox(q)) {
+                double x0 = q[0].x(), x1 = x0, y0 = q[0].y(), y1 = y0;
+                for (const QPointF& v : q) {
+                    x0 = std::min(x0, v.x());
+                    x1 = std::max(x1, v.x());
+                    y0 = std::min(y0, v.y());
+                    y1 = std::max(y1, v.y());
+                }
+                out.marks.insert(out.marks.end(), {float(x0), float(y0), 0.0f, float(x1), float(y1), 0.0f});
+            } else {
+                for (const QPointF& v : q) out.marks.insert(out.marks.end(), {float(v.x()), float(v.y()), 0.0f});
+            }
         }
         if (q.size() < 3) return;
         if (convex(q)) fan(q, out.fills);
@@ -247,9 +295,13 @@ void LayoutGpu::releaseNativeResources()
     a_frameDots = Batch();
     a_bindings.clear();
     a_patterns.clear();
-    a_fill.reset();
-    a_line.reset();
-    a_dot.reset();
+    for (int b = 0; b < 3; ++b) {
+        a_fill[b].reset();
+        a_line[b].reset();
+        a_dot[b].reset();
+        a_quad[b].reset();
+    }
+    a_stipples.clear();
     a_layoutBindings.reset();
     a_plain.reset();
     a_nearest.reset();
@@ -290,12 +342,27 @@ void LayoutGpu::createResources(QRhi* rhi)
     QRhiVertexInputLayout dots;
     dots.setBindings({QRhiVertexInputBinding(2 * sizeof(float)), QRhiVertexInputBinding(3 * sizeof(float), QRhiVertexInputBinding::PerInstance)});
     dots.setAttributes({QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0), QRhiVertexInputAttribute(1, 1, QRhiVertexInputAttribute::Float3, 0)});
+    QRhiVertexInputLayout segments;
+    segments.setBindings({QRhiVertexInputBinding(2 * sizeof(float)), QRhiVertexInputBinding(4 * sizeof(float), QRhiVertexInputBinding::PerInstance)});
+    segments.setAttributes({QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0), QRhiVertexInputAttribute(1, 1, QRhiVertexInputAttribute::Float4, 0)});
     const QString vert = QStringLiteral("layout_shape.vert"), frag = QStringLiteral("layout_shape.frag");
-    a_fill = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(), {vert, frag, shapes, QRhiGraphicsPipeline::Triangles, false});
-    a_line = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(), {vert, frag, shapes, QRhiGraphicsPipeline::Lines, false});
-    a_dot = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(),
-                              {QStringLiteral("layout_dot.vert"), QStringLiteral("layout_dot.frag"), dots, QRhiGraphicsPipeline::TriangleStrip, false});
-    if (!a_fill || !a_line || !a_dot) {
+    bool made = true;
+    for (int b = 0; b < 3; ++b) {
+        const QRhiGraphicsPipeline::BlendOp op = b == 0 ? QRhiGraphicsPipeline::Add : b == 1 ? QRhiGraphicsPipeline::Min : QRhiGraphicsPipeline::Max;
+        const auto spec = [op](const QString& v, const QString& f, const QRhiVertexInputLayout& input, QRhiGraphicsPipeline::Topology topology) {
+            gpu::PipelineSpec sp{v, f, input, topology, false};
+            sp.blendOp = op;
+            return sp;
+        };
+        a_fill[b] = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(), spec(vert, frag, shapes, QRhiGraphicsPipeline::Triangles));
+        a_line[b] = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(), spec(vert, frag, shapes, QRhiGraphicsPipeline::Lines));
+        a_dot[b] = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(),
+                                     spec(QStringLiteral("layout_dot.vert"), QStringLiteral("layout_dot.frag"), dots, QRhiGraphicsPipeline::TriangleStrip));
+        a_quad[b] = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(),
+                                      spec(QStringLiteral("layout_line.vert"), QStringLiteral("layout_line.frag"), segments, QRhiGraphicsPipeline::TriangleStrip));
+        made = made && a_fill[b] && a_line[b] && a_dot[b] && a_quad[b];
+    }
+    if (!made) {
         qWarning("Layout view: the GPU's pipelines not made; drawn by the CPU");
         canvasFailed();
     }
@@ -342,8 +409,12 @@ void LayoutGpu::sync()
     bool ok = false;
     const quint64 asked = qEnvironmentVariable("QUCS_LAYOUT_GPU_BUDGET").toULongLong(&ok);
     const quint64 budget = ok ? asked : Budget;
+    // (A layer's crosses or marks, KLayout's, turned on or off: made
+    // again whole.)
+    std::vector<char> extrasNow(layout ? layout->layers.size() : 0);
+    for (std::size_t i = 0; i < extrasNow.size(); ++i) extrasNow[i] = extrasOf(styles, i);
     const bool same = layout == a_madeOf && a_view->a_layoutGeneration == a_generation && a_view->a_cell == a_cell && a_view->a_depth == a_depth
-                      && a_view->a_labels == a_labels;
+                      && a_view->a_labels == a_labels && extrasNow == a_extras;
     std::vector<char> shownNow(layout ? layout->layers.size() : 0);
     for (std::size_t i = 0; i < shownNow.size(); ++i) shownNow[i] = shown(i) ? 1 : 0;
     // Past the budget (the CPU draws it): made again only when the layers
@@ -378,11 +449,15 @@ void LayoutGpu::sync()
                 upload(a_layers[i]->fills, a_flat.layers[i].fills, 2);
                 upload(a_layers[i]->outlines, a_flat.layers[i].outlines, 2);
                 upload(a_layers[i]->dots, a_flat.layers[i].dots, 3);
+                upload(a_layers[i]->xfills, a_flat.layers[i].xfills, 2);
+                upload(a_layers[i]->marks, a_flat.layers[i].marks, 3);
                 // (The CPU's arrays freed, as a whole build's: the GPU has
                 // them.)
                 std::vector<float>().swap(a_flat.layers[i].fills);
                 std::vector<float>().swap(a_flat.layers[i].outlines);
                 std::vector<float>().swap(a_flat.layers[i].dots);
+                std::vector<float>().swap(a_flat.layers[i].xfills);
+                std::vector<float>().swap(a_flat.layers[i].marks);
             }
             for (int k = 0; k < added.texts.size(); ++k) {
                 if (a_flat.texts.size() >= 100000) break;
@@ -394,6 +469,7 @@ void LayoutGpu::sync()
         }
     }
     a_madeOf = layout;
+    a_extras = extrasNow;
     a_generation = a_view->a_layoutGeneration;
     a_shown = shownNow;
     a_cell = a_view->a_cell;
@@ -410,6 +486,8 @@ void LayoutGpu::sync()
         upload(a_layers[i]->fills, has ? a_flat.layers[i].fills : none, 2);
         upload(a_layers[i]->outlines, has ? a_flat.layers[i].outlines : none, 2);
         upload(a_layers[i]->dots, has ? a_flat.layers[i].dots : none, 3);
+        upload(a_layers[i]->xfills, has ? a_flat.layers[i].xfills : none, 2);
+        upload(a_layers[i]->marks, has ? a_flat.layers[i].marks : none, 3);
     }
     upload(a_frameLines, a_flat.frames, 2);
     upload(a_frameDots, a_flat.frameDots, 3);
@@ -418,6 +496,8 @@ void LayoutGpu::sync()
         std::vector<float>().swap(l.fills);
         std::vector<float>().swap(l.outlines);
         std::vector<float>().swap(l.dots);
+        std::vector<float>().swap(l.xfills);
+        std::vector<float>().swap(l.marks);
     }
     std::vector<float>().swap(a_flat.frames);
     std::vector<float>().swap(a_flat.frameDots);
@@ -443,16 +523,32 @@ QRhiTexture* LayoutGpu::patternTexture(Qt::BrushStyle style)
     return t.get();
 }
 
+QRhiTexture* LayoutGpu::stippleTexture(const Stipple& stipple)
+{
+    QByteArray key(reinterpret_cast<const char*>(stipple.rows.data()), int(sizeof(quint32) * stipple.rows.size()));
+    key += QByteArray::number(stipple.width) + 'x' + QByteArray::number(stipple.height);
+    if (auto it = a_stipples.constFind(key); it != a_stipples.constEnd()) return it->get();
+    const int w = std::clamp(stipple.width, 1, 32), h = std::clamp(stipple.height, 1, 32);
+    QImage bits(w, h, QImage::Format_Grayscale8);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) bits.scanLine(y)[x] = stipple.at(x, y) ? 255 : 0;
+    auto t = std::shared_ptr<QRhiTexture>(a_rhi->newTexture(QRhiTexture::R8, QSize(w, h)));
+    t->create();
+    updates()->uploadTexture(t.get(), bits);
+    a_stipples.insert(key, t);
+    return t.get();
+}
+
 std::size_t LayoutGpu::heldFloats() const
 {
     std::size_t n = a_flat.frames.size() + a_flat.frameDots.size();
-    for (const Flattened::Layer& l : a_flat.layers) n += l.fills.size() + l.outlines.size() + l.dots.size();
+    for (const Flattened::Layer& l : a_flat.layers) n += l.fills.size() + l.outlines.size() + l.dots.size() + l.xfills.size() + l.marks.size();
     return n;
 }
 
 bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
 {
-    if (!a_rhi || !a_fill) return false;
+    if (!a_rhi || !a_fill[0]) return false;
     sync();
     if (a_flat.tooLarge) return false;
     const LayoutView::Colors c = a_view->colors();
@@ -501,25 +597,77 @@ bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
         u.cell = 1.0f;
         u.patterned = patterned ? 1.0f : 0.0f;
         u.yUp = up;
+        u.dotSize[0] = u.dotSize[1] = 1.0f;
+        u.lineWidth = 1.0f;
         return u;
     };
-    for (std::size_t i = 0; i < a_layers.size(); ++i) {
+    const int k = stipplePixels(ratio);
+    const int tick = a_view->a_tick;
+    // A KLayout frame's edges (or a box's crosses), \a width device
+    // pixels and dashed as \a line: a device pixel and solid, the lines'
+    // own pipeline (as QPainter draws them); else quads.
+    const auto edges = [&](const Batch& b, const QColor& colour, int width, const LineStyle& line, int blend) {
+        if (b.count <= 0) return;
+        if (width <= 1 && line.isSolid()) {
+            draws.push_back({a_line[blend].get(), b.buffer.get(), b.count, a_plain.get(), uniforms(colour, true, false)});
+            return;
+        }
+        Uniforms u = uniforms(colour, false, false);
+        u.lineWidth = float(width);
+        u.cell = float(k);
+        u.dashLength = float(line.isSolid() ? 0 : line.length);
+        for (int c = 0; c < 4; ++c) u.dash[c] = float((line.bits >> (8 * c)) & 0xffu);
+        draws.push_back({a_quad[blend].get(), b.buffer.get(), b.count / 2, a_plain.get(), u});
+    };
+    for (int index : drawingOrder(a_view->a_styles, int(a_layers.size()))) {
+        const std::size_t i = std::size_t(index);
         LayerBatches& l = *a_layers[i];
         if (l.fills.count == 0 && l.outlines.count == 0 && l.dots.count == 0) continue;
         const LayerStyle raw = int(i) < a_view->a_styles.size() ? a_view->a_styles.at(int(i)) : paletteStyle(int(i));
         if (!raw.visible) continue;
         const LayerStyle style = a_view->shownStyle(raw);
+        if (style.klayout) {
+            // As KLayout draws it: its bitmap at the screen's pixels from the
+            // lower left, its frame as wide and dashed as it is, crossed and
+            // marked; transparent, the lesser or greater of each channel.
+            if (!shownAtTick(style, tick)) continue;
+            const int blend = style.transparent ? (mixesByAnd(c.background) ? 1 : 2) : 0;
+            if (l.fills.count > 0 && style.stipple && !style.stipple->isEmpty()) {
+                const bool solid = style.stipple->isSolid();
+                Uniforms u = uniforms(style.fill, false, !solid);
+                u.anchored = 1.0f;
+                u.cell = float(k);
+                u.phase[0] = style.animation == 1 ? float(tick) : 0.0f;
+                draws.push_back({a_fill[blend].get(), l.fills.buffer.get(), l.fills.count, solid ? a_plain.get() : stippleTexture(*style.stipple), u});
+            }
+            edges(l.outlines, style.frame, style.width * k, style.line, blend);
+            edges(l.xfills, style.frame, style.width * k, LineStyle(), blend);
+            if (l.dots.count > 0) {
+                Uniforms u = uniforms(style.frame, true, false);
+                u.dotSize[0] = u.dotSize[1] = float(k);
+                draws.push_back({a_dot[blend].get(), l.dots.buffer.get(), l.dots.count, a_plain.get(), u});
+            }
+            if (l.marks.count > 0)
+                for (const QSizeF bar : {QSizeF(9 * k, k), QSizeF(k, 9 * k)}) {
+                    Uniforms u = uniforms(style.frame, true, false);
+                    u.always = 1.0f;
+                    u.dotSize[0] = float(bar.width());
+                    u.dotSize[1] = float(bar.height());
+                    draws.push_back({a_dot[blend].get(), l.marks.buffer.get(), l.marks.count, a_plain.get(), u});
+                }
+            continue;
+        }
         if (style.pattern != Qt::NoBrush && l.fills.count > 0) {
             const bool patterned = style.pattern != Qt::SolidPattern;
-            draws.push_back({a_fill.get(), l.fills.buffer.get(), l.fills.count, patterned ? patternTexture(style.pattern) : a_plain.get(),
+            draws.push_back({a_fill[0].get(), l.fills.buffer.get(), l.fills.count, patterned ? patternTexture(style.pattern) : a_plain.get(),
                              uniforms(style.fill, false, patterned)});
         }
-        if (l.outlines.count > 0) draws.push_back({a_line.get(), l.outlines.buffer.get(), l.outlines.count, a_plain.get(), uniforms(style.frame, true, false)});
-        if (l.dots.count > 0) draws.push_back({a_dot.get(), l.dots.buffer.get(), l.dots.count, a_plain.get(), uniforms(style.frame, true, false)});
+        if (l.outlines.count > 0) draws.push_back({a_line[0].get(), l.outlines.buffer.get(), l.outlines.count, a_plain.get(), uniforms(style.frame, true, false)});
+        if (l.dots.count > 0) draws.push_back({a_dot[0].get(), l.dots.buffer.get(), l.dots.count, a_plain.get(), uniforms(style.frame, true, false)});
     }
     const QColor frameColor = c.frames.isValid() ? c.frames : QColor(Qt::gray);
-    if (a_frameLines.count > 0) draws.push_back({a_line.get(), a_frameLines.buffer.get(), a_frameLines.count, a_plain.get(), uniforms(frameColor, true, false)});
-    if (a_frameDots.count > 0) draws.push_back({a_dot.get(), a_frameDots.buffer.get(), a_frameDots.count, a_plain.get(), uniforms(frameColor, true, false)});
+    if (a_frameLines.count > 0) draws.push_back({a_line[0].get(), a_frameLines.buffer.get(), a_frameLines.count, a_plain.get(), uniforms(frameColor, true, false)});
+    if (a_frameDots.count > 0) draws.push_back({a_dot[0].get(), a_frameDots.buffer.get(), a_frameDots.count, a_plain.get(), uniforms(frameColor, true, false)});
     // The uniforms' slots, the buffer grown as it must be (its bindings
     // made again with it).
     const quint32 slot = a_rhi->ubufAligned(sizeof(Uniforms));

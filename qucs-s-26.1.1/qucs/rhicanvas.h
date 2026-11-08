@@ -53,6 +53,9 @@ struct PipelineSpec {
     QRhiGraphicsPipeline::Topology topology = QRhiGraphicsPipeline::Triangles;
     bool premultiplied = true;
     bool scissor = false;   // its draws cut to a scissor (set before them)
+    // Min or Max: each channel the lesser or greater of what is drawn and
+    // what is there (a layout's transparent layer, KLayout's); else blended.
+    QRhiGraphicsPipeline::BlendOp blendOp = QRhiGraphicsPipeline::Add;
 };
 std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDescriptor* pass, int samples, QRhiShaderResourceBindings* layout,
                                                    const PipelineSpec& spec);
