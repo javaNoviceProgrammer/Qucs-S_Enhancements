@@ -163,6 +163,13 @@ struct Plot {
     QList<Series> series;
     QStringList notes;
     double renderScale = 0;    ///< raster: pixels a point it was traced at
+    /// Page points left out of the tracing: what a user marked (kept), and
+    /// what the last extraction found to leave out itself - an inset, a
+    /// legend's box (kept too, to show).
+    QList<QRectF> exclude;
+    QList<QRectF> leftOut;
+    /// Shown, not yet kept: written with the others once it is changed.
+    bool transient = false;
 
     QRectF pageBox() const;    ///< the frame (or the region) on the page
 };
@@ -213,6 +220,8 @@ struct Options {
     QList<QPointF> seeds;      ///< page points on the curves to follow
     int maxSeries = 24;
     double scale = 0;          ///< raster: pixels a point; 0: chosen
+    /// Insets and legends' boxes found and left out (only plot.exclude when not).
+    bool findLeftOut = true;
 };
 
 /// The plots on \a page (within \a within, page points, when given): each
@@ -228,7 +237,8 @@ bool calibrateFromAxes(Plot& plot, QString* why);
 bool extract(Source& source, Plot& plot, const Options& options, QString* why = nullptr);
 /// A series of \a plot traced from \a seed (page points): the path under it,
 /// or the line in the picture followed both ways.
-bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* why = nullptr);
+/// (\a options: its colours are kept to, as extract() keeps to them.)
+bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* why = nullptr, const Options* options = nullptr);
 /// \a tick values for the marks found on an axis of a scan, whose labels
 /// could not be read: a value for each mark, in order along the axis.
 bool assignTickValues(Plot& plot, bool xAxis, const QList<double>& values, QString* why = nullptr);
