@@ -137,7 +137,7 @@ Left as they are:
   exit 9), in `aCommitWithAPathOutsideCommitsNothing`, `claudesGitTools` or
   `pullOfBranchesThatDiverged`. It does so with the new function's body emptied as well, and before
   this change (`119aec3`), and each of those functions passes alone. It is the suite's own, not this
-  fix's, and it is not looked into here. The four lints are green (158 tools).
+  fix's: the ASan runtime's, found and fixed the next day ([2026-11-08-asan-fork.md](2026-11-08-asan-fork.md)). The four lints are green (158 tools).
 
 Not verified: Qt 6.10.3 (CI's), Windows and Linux, a person's hand on the real window (the tests click
 the close button with `QAbstractButton::click`, not a pointer through a native menu), a native file
