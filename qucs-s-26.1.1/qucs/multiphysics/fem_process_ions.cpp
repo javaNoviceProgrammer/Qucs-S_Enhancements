@@ -78,53 +78,108 @@ const ElementRow* row(const QString& symbol)
     return nullptr;
 }
 
+} // namespace
+
 // ------------------------------------------------- The ZBL universal potential
 
-/// Its screening function (Ziegler, Biersack and Littmark, The Stopping and
-/// Range of Ions in Solids, 1985): φ(x), x in screening lengths.
-double phi(double x)
+double zblScreening(double x)
 {
     return 0.18175 * std::exp(-3.1998 * x) + 0.50986 * std::exp(-0.94229 * x) + 0.28022 * std::exp(-0.4029 * x)
            + 0.028171 * std::exp(-0.20162 * x);
 }
 
-/// The universal screening length (Å) of a pair.
-double screening(int Z1, int Z2)
+double screeningLength(int Z1, int Z2)
 {
     return 0.8854 * A0 / (std::pow(double(Z1), 0.23) + std::pow(double(Z2), 0.23));
 }
 
-/*!
- * The scattering angle in the centre of mass, θ(ε, b), of the universal
- * potential - every pair's, in reduced units: ε its energy in Z1 Z2 e²/a,
- * b the impact parameter in a. From the classical integral θ = π - 2 b ∫
- * dr / (r² √(1 - V/Ec - b²/r²)), the closest approach r0 its root, by
- * Gauss-Mehler quadrature (as Biersack and Haggmark's TRIM checked its
- * fit against).
- */
-double scatteringAngle(double eps, double b)
-{
-    auto g = [eps, b](double r) { return r * r - r * phi(r) / eps - b * b; };
-    double lo = std::max(b, 1e-12), hi = 0.5 * (1 / eps + std::sqrt(1 / (eps * eps) + 4 * b * b)) + 1e-12;
-    if (g(lo) >= 0) hi = lo;
-    else {
-        for (int k = 0; k < 200 && hi - lo > 1e-14 * hi; ++k) {
-            const double m = 0.5 * (lo + hi);
-            (g(m) < 0 ? lo : hi) = m;
+namespace {
+
+/// Gauss-Legendre's nodes and weights on [0, 1], n of them.
+struct GaussLegendre {
+    std::vector<double> x, w;
+    explicit GaussLegendre(int n)
+    {
+        x.resize(std::size_t(n));
+        w.resize(std::size_t(n));
+        for (int i = 0; i < n; ++i) {
+            double z = std::cos(M_PI * (i + 0.75) / (n + 0.5)), pp = 0;
+            for (int it = 0; it < 100; ++it) {
+                double p1 = 1, p2 = 0;
+                for (int j = 0; j < n; ++j) {
+                    const double p3 = p2;
+                    p2 = p1;
+                    p1 = ((2 * j + 1) * z * p2 - j * p3) / (j + 1);
+                }
+                pp = n * (z * p1 - p2) / (z * z - 1);
+                const double z1 = z;
+                z = z1 - p1 / pp;
+                if (std::abs(z - z1) < 1e-15) break;
+            }
+            x[std::size_t(i)] = 0.5 * (1 - z);
+            w[std::size_t(i)] = 1.0 / ((1 - z * z) * pp * pp);
         }
     }
-    const double r0 = hi;
-    constexpr int N = 48;
-    double sum = 0;
-    for (int j = 1; j <= N / 2; ++j) {
-        const double u = std::cos((2 * j - 1) * M_PI / (2 * N));
-        const double r = r0 / u;
-        const double F = 1 - phi(r) / (r * eps) - (b / r) * (b / r);
-        const double G = F / (1 - u * u);
-        if (G > 0) sum += 1 / std::sqrt(G);
+};
+
+double phi(double x)
+{
+    return zblScreening(x);
+}
+
+double screening(int Z1, int Z2)
+{
+    return screeningLength(Z1, Z2);
+}
+
+} // namespace
+
+/*!
+ * θ, τ and the closest approach of the universal potential. With x0 the
+ * root of f(x) = 1 - φ(x)/(x ε) - b²/x² and q = b/x0, u = x0/x: θ = π -
+ * 2 asin q - 2 q I1, I1 = ∫0^1 [f(x0/u)^(-1/2) - (1 - q²u²)^(-1/2)] du - the
+ * straight line's part, π - 2 asin q, taken out exactly, so a grazing
+ * collision's small angle is not the difference of two large numbers -; τ
+ * = √(x0² - b²) - x0 ∫0^1 [...] du/u². The integrand's square-root end at
+ * u = 1 taken away by u = 1 - w², Gauss-Legendre in w (96 points).
+ */
+Scattering universalScattering(double eps, double b)
+{
+    static const GaussLegendre gl(96);
+    if (b < 1e-12) b = 1e-12;
+    auto F = [eps, b](double x) { return 1 - phi(x) / (x * eps) - b * b / (x * x); };
+    double lo = 1e-12, hi = std::max(b, 1e-3);
+    while (F(hi) <= 0) hi *= 2;
+    for (int it = 0; it < 200 && (hi - lo) > 1e-14 * hi; ++it) {
+        const double m = 0.5 * (lo + hi);
+        (F(m) > 0 ? hi : lo) = m;
     }
-    const double integral = M_PI / N * sum;   // ∫0^1 du / √F(r0/u)
-    return std::clamp(M_PI - 2 * b / r0 * integral, 0.0, M_PI);
+    const double x0 = hi, q = b / x0;
+    double I1 = 0, I2 = 0;
+    for (std::size_t i = 0; i < gl.x.size(); ++i) {
+        const double w = gl.x[i], u = 1 - w * w, du = 2 * w * gl.w[i];
+        const double f = 1 - u * phi(x0 / u) / (x0 * eps) - q * q * u * u;
+        const double g = 1 - q * q * u * u;
+        const double br = 1 / std::sqrt(std::max(f, 1e-300)) - 1 / std::sqrt(g);
+        I1 += br * du;
+        I2 += br * du / (u * u);
+    }
+    Scattering s;
+    s.r0 = x0;
+    s.theta = std::clamp(M_PI - 2 * std::asin(std::min(q, 1.0)) - 2 * q * I1, 0.0, M_PI);
+    s.tau = std::sqrt(std::max(x0 * x0 - b * b, 0.0)) - x0 * I2;
+    return s;
+}
+
+namespace {
+
+/// The scattering angle in the centre of mass, θ(ε, b), of the universal
+/// potential - every pair's, in reduced units: ε its energy in Z1 Z2 e²/a,
+/// b the impact parameter in a (universalScattering's, which the crystal's
+/// Monte Carlo tabulates too).
+double scatteringAngle(double eps, double b)
+{
+    return universalScattering(eps, b).theta;
 }
 
 /// θ on a grid of ln ε and ln b, made once.
