@@ -1483,12 +1483,50 @@ private slots:
         QCOMPARE_LE(std::abs(redTop - 0.302), 0.012);
         // And not a heap of junk.
         QCOMPARE_LE(plot.series.size(), 10);
+        // Every line in order of x, and the blue one, in pieces under the
+        // rings, one curve.
+        int blueLines = 0;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape != Series::Shape::Line) continue;
+            blueLines += s.colour.blue() > s.colour.red() + 60;
+            const QList<QPointF> v = values(plot, s);
+            for (int i = 1; i < v.size(); ++i) QVERIFY2(v.at(i).x() >= v.at(i - 1).x() - 1e-9, qPrintable(QStringLiteral("%1: %2 then %3").arg(s.name).arg(v.at(i - 1).x()).arg(v.at(i).x())));
+        }
+        QCOMPARE(blueLines, 1);
         // Asked for black alone, no grey or blue comes back.
         Plot black = plot;
         Options o;
         o.colours << QColor(Qt::black);
         QVERIFY(extract(source, black, o, &why));
         for (const Series& s : std::as_const(black.series)) QVERIFY2(s.colour.lightness() < 90 && std::abs(s.colour.red() - s.colour.blue()) < 60, qPrintable(s.colour.name()));
+        // Asked for blue alone: the black rings over it are still rings - no
+        // markers come back as blue, and the line is followed under them to
+        // its peak.
+        Plot blue = plot;
+        o.colours = {QColor(55, 82, 166)};
+        QVERIFY(extract(source, blue, o, &why));
+        double top = 0;
+        for (const Series& s : std::as_const(blue.series)) {
+            QVERIFY2(s.shape != Series::Shape::Markers, qPrintable(s.colour.name()));
+            QCOMPARE(s.asked, 0);
+            for (const QPointF& v : values(blue, s)) top = std::max(top, v.y());
+        }
+        QCOMPARE_GE(top, 0.30);
+        // Asked for both, each series says which it was traced as: the rings'
+        // black, though their average is grey, and the line's blue.
+        Plot both = plot;
+        o.colours = {QColor(55, 82, 166), QColor(Qt::black)};
+        QVERIFY(extract(source, both, o, &why));
+        bool ringsBlack = false;
+        for (const Series& s : std::as_const(both.series)) {
+            if (s.shape == Series::Shape::Markers) {
+                QCOMPARE(s.asked, 1);
+                ringsBlack = s.colour.lightness() < 60;
+            } else if (s.colour.blue() > s.colour.red() + 60) {
+                QCOMPARE(s.asked, 0);
+            }
+        }
+        QVERIFY2(ringsBlack, "the rings' colour is their stroke's");
     }
 
     void blackIsNotGrey()
@@ -1584,9 +1622,11 @@ private slots:
         QVERIFY(assignTickValues(plot, false, {1, 0.75, 0.5, 0.25, 0}, &why));
         QVERIFY(calibrateFromAxes(plot, &why));
         Options o;
-        o.seeds << a.at(4.9, peak(4.9));
+        // (The second on the other side: the same curve, given once.)
+        o.seeds << a.at(4.9, peak(4.9)) << a.at(5.1, peak(5.1));
         QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
         QCOMPARE(plot.series.size(), 1);
+        QVERIFY(plot.notes.join(QLatin1Char(' ')).contains(QStringLiteral("seed 2 lies on")));
         const QList<QPointF> v = values(plot, plot.series.first());
         double low = 1e9, high = -1e9, top = 0;
         for (const QPointF& q : v) {
@@ -1600,6 +1640,38 @@ private slots:
         QCOMPARE_GE(top, 0.9);
         for (int i = 1; i < v.size(); ++i) QVERIFY2(v.at(i).x() >= v.at(i - 1).x() - 1e-9, qPrintable(QStringLiteral("in order of x: %1 then %2 at %3 of %4").arg(v.at(i - 1).x()).arg(v.at(i).x()).arg(i).arg(v.size())));
         QCOMPARE_LE(errorsOf(plot, plot.series.first(), peak, 1).worst, 0.03);
+    }
+
+    void aFrameIsNotTakenFromAPlotBesideIt()
+    {
+        // Two plots side by side, the right one's bottom a few points below the
+        // left one's: each frame ends at its own axis.
+        const QString file = path(QStringLiteral("side_by_side.pdf"));
+        Axes left, right;
+        left.labels = right.labels = false;
+        left.frame = QRectF(70, 120, 220, 200);
+        right.frame = QRectF(340, 100, 220, 223.5);
+        const double k = 300.0 / 72;
+        QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+        image.fill(Qt::white);
+        {
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(k, k);
+            drawPlot(p, left, {Curve{sine, Qt::blue, 1.2}}, 8);
+            drawPlot(p, right, {Curve{cosine, Qt::red, 1.2}}, 8);
+        }
+        QVERIFY(writeScan(file, image));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        const QList<Plot> plots = findPlots(source, 0);
+        QCOMPARE(plots.size(), 2);
+        for (const Plot& plot : plots) {
+            const QRectF want = plot.pageBox().center().x() < 300 ? left.frame : right.frame;
+            QCOMPARE_LE(std::abs(plot.pageBox().bottom() - want.bottom()), 1.0);
+            QCOMPARE_LE(std::abs(plot.pageBox().top() - want.top()), 1.0);
+        }
     }
 
     void numbersAboveThePlotAreNoLabels()
