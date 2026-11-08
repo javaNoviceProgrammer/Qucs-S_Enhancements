@@ -140,6 +140,9 @@ public:
     /// reason not to write it, or empty.
     QString runExport(const QString& tag, QString* error = nullptr, const std::function<QString(const QString&)>& beforeWrite = {});
     bool solving() const;
+    /// A mesh being made because one was asked for (Build Mesh, or a solve's
+    /// first step) - not the geometry made again after an edit.
+    bool meshing() const;
     /// Lets the work going on go.
     void cancel();
     bool isBusy() const { return a_job != nullptr; }

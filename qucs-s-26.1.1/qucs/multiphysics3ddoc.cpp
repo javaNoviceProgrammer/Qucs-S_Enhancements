@@ -624,6 +624,11 @@ bool Multiphysics3DDoc::solving() const
     return a_job && a_job->solve;
 }
 
+bool Multiphysics3DDoc::meshing() const
+{
+    return a_job && a_job->mesh && !a_job->solve;
+}
+
 void Multiphysics3DDoc::compute(const QString& study, const QString& solver, bool force)
 {
     if (a_closed) return;
