@@ -22,7 +22,7 @@
 namespace qucs_s::router {
 
 struct Finding {
-    /// unroutable, open, short, spacing, pad, metal, obstacle, keep_out, via_spacing
+    /// unroutable, open, short, spacing, pad, metal, obstacle, keep_out, via_spacing, notch
     QString kind;
     QString net;
     QString other;              ///< the other net, or what is in the way
@@ -47,6 +47,12 @@ struct Verification {
 /// a finding of its own (kind unroutable), so clean() means every net
 /// asked for is routed and correct.
 Verification verify(const Problem& problem, const Result& result);
+
+/// Fills each slot narrower than the technology's notch rule between a
+/// routed net's lines and its own metal (or its other lines), where the fill
+/// keeps clear of everything else; the fills go in each NetResult's fills
+/// (those there before are dropped). Nothing when the rule is 0.
+void fillNotches(const Problem& problem, Result* result);
 
 /// The new metal of each net, on each metal: its runs and landings less
 /// its own metal (exposed for the tests).

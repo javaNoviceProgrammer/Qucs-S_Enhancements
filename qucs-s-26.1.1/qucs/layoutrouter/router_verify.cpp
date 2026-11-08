@@ -143,19 +143,25 @@ MetalMap readMetal(const Problem& p)
     for (int s = 0; s < ns; ++s) m.root[std::size_t(s)] = find(s);
     m.owner.assign(std::size_t(ns), -1);
     m.padOf.assign(std::size_t(ns), -1);
+    // As the router has it: every piece under a terminal's point is its
+    // net's; the shapes of the piece the terminal is (its metal's, else the
+    // lowest metal's) are its pad.
     for (int n = 0; n < p.nets.size(); ++n)
-        for (const Terminal& t : p.nets.at(n).terminals)
+        for (const Terminal& t : p.nets.at(n).terminals) {
+            std::vector<int> under;
             for (int l = 0; l < planes; ++l) {
                 if (t.metal >= 0 && t.metal != l) continue;
                 m.index[std::size_t(l)].query(Box{t.at.x, t.at.y, t.at.x, t.at.y}, [&](int j) {
                     const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
-                    if (inside(p.metal.at(s).outline, t.at)) {
-                        m.padOf[std::size_t(s)] = n;
-                        if (m.owner[std::size_t(m.root[std::size_t(s)])] < 0) m.owner[std::size_t(m.root[std::size_t(s)])] = n;
-                    }
+                    if (inside(p.metal.at(s).outline, t.at)) under.push_back(s);
                     return true;
                 });
             }
+            for (int s : under) {
+                if (m.owner[std::size_t(m.root[std::size_t(s)])] < 0) m.owner[std::size_t(m.root[std::size_t(s)])] = n;
+                if (m.root[std::size_t(s)] == m.root[std::size_t(under.front())]) m.padOf[std::size_t(s)] = n;
+            }
+        }
     return m;
 }
 
@@ -177,7 +183,8 @@ void drawn(const Problem& p, const NetResult& r, int net, std::vector<std::vecto
         if (v.via < 0 || v.via >= p.tech.vias.size()) continue;
         const Via& via = p.tech.vias.at(v.via);
         const Coord lo = std::max(p.units(via.landingLower), w), up = std::max(p.units(via.landingUpper), w);
-        const Coord c = p.units(via.size);
+        // The cut, or an array's outline: what vias keep 'spacing' between.
+        const Coord cw = p.units(via.outlineWidth()), ch = p.units(via.outlineHeight());
         const Box bl{v.at.x - lo / 2, v.at.y - lo / 2, v.at.x - lo / 2 + lo, v.at.y - lo / 2 + lo};
         const Box bu{v.at.x - up / 2, v.at.y - up / 2, v.at.x - up / 2 + up, v.at.y - up / 2 + up};
         (*byPlane)[std::size_t(via.lower)].push_back(bl);
@@ -186,7 +193,7 @@ void drawn(const Problem& p, const NetResult& r, int net, std::vector<std::vecto
             landings->push_back({via.lower, bl});
             landings->push_back({via.lower + 1, bu});
         }
-        if (cuts) cuts->push_back({v.via, Box{v.at.x - c / 2, v.at.y - c / 2, v.at.x - c / 2 + c, v.at.y - c / 2 + c}});
+        if (cuts) cuts->push_back({v.via, Box{v.at.x - cw / 2, v.at.y - ch / 2, v.at.x - cw / 2 + cw, v.at.y - ch / 2 + ch}});
     }
 }
 
@@ -199,22 +206,145 @@ QVector<QVector<Poly>> newMetalWith(const Problem& p, const MetalMap& m, const N
         if (boxes.empty()) continue;
         Box all;
         for (const Box& b : boxes) all = all.united(b);
+        Paths drawnHere = unionOf(boxes);
+        bool filled = false;
+        for (const auto& [metal, poly] : r.fills)
+            if (metal == l) {
+                drawnHere.push_back(pathOf(poly));
+                all = all.united(boundsOf(poly));
+                filled = true;
+            }
+        if (filled) {
+            ClipperLib::Clipper c;
+            c.AddPaths(drawnHere, ClipperLib::ptSubject, true);
+            drawnHere.clear();
+            c.Execute(ClipperLib::ctUnion, drawnHere, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        }
         std::vector<const Poly*> own;
         m.index[std::size_t(l)].query(all, [&](int j) {
             const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
             if (ownerOf(m, s) == net) own.push_back(&p.metal.at(s).outline);
             return true;
         });
-        for (const Path& q : difference(unionOf(boxes), own)) {
+        for (const Path& q : difference(drawnHere, own)) {
             if (std::abs(ClipperLib::Area(q)) <= 0) continue;
             out[l].append(polyOfPath(q));
         }
     }
-    (void)r;
     return out;
 }
 
+// The slots narrower than \a notch between a net's lines and its own metal
+// (and its other lines) on a plane: what closing their union by half the
+// rule fills, the pieces that touch its new lines. A Manhattan closing (miter
+// joins): an inner corner is not a slot.
+std::vector<Poly> slotsOf(const Problem& p, const MetalMap& m, int net, int l, const std::vector<Box>& boxes, const QVector<QPair<int, Poly>>& fills,
+                          Coord notch)
+{
+    std::vector<Poly> out;
+    if (boxes.empty() || notch <= 0) return out;
+    Box all;
+    for (const Box& b : boxes) all = all.united(b);
+    ClipperLib::Clipper u;
+    for (const Box& b : boxes) u.AddPath(pathOf(polyOf(b)), ClipperLib::ptSubject, true);
+    for (const auto& [metal, poly] : fills)
+        if (metal == l) u.AddPath(pathOf(poly), ClipperLib::ptSubject, true);
+    m.index[std::size_t(l)].query(all.grown(notch), [&](int j) {
+        const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
+        if (ownerOf(m, s) == net) u.AddPath(pathOf(p.metal.at(s).outline), ClipperLib::ptSubject, true);
+        return true;
+    });
+    Paths a;
+    u.Execute(ClipperLib::ctUnion, a, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    const double h = double(notch) / 2;
+    ClipperLib::ClipperOffset grow(2.0), shrink(2.0);
+    grow.AddPaths(a, ClipperLib::jtMiter, ClipperLib::etClosedPolygon);
+    Paths grown, closed;
+    grow.Execute(grown, h);
+    shrink.AddPaths(grown, ClipperLib::jtMiter, ClipperLib::etClosedPolygon);
+    shrink.Execute(closed, -h);
+    ClipperLib::Clipper d;
+    d.AddPaths(closed, ClipperLib::ptSubject, true);
+    d.AddPaths(a, ClipperLib::ptClip, true);
+    Paths gaps;
+    d.Execute(ClipperLib::ctDifference, gaps, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    for (const Path& q : gaps) {
+        if (ClipperLib::Area(q) <= 0) continue;   // (a hole, or nothing)
+        const Poly poly = polyOfPath(q);
+        const Box qb = boundsOf(poly);
+        bool touches = false;
+        for (const Box& b : boxes) touches = touches || (b.meets(qb) && polyDistance(polyOf(b), poly) == 0);
+        if (touches) out.push_back(poly);
+    }
+    return out;
+}
+
+// Whether metal \a q of \a net on plane \a l keeps clear of everything not
+// its own: other metal, other nets' \a lines, obstacles and keep-outs.
+bool clearOfOthers(const Problem& p, const MetalMap& m, int net, int l, const Poly& q,
+                   const std::vector<std::vector<std::pair<int, Poly>>>& lines)
+{
+    const Box qb = boundsOf(q);
+    const Coord toMetal = p.units(p.tech.toMetal), toTerminal = p.units(p.tech.toTerminal);
+    bool ok = true;
+    m.index[std::size_t(l)].query(qb.grown(std::max(toMetal, toTerminal) + 1), [&](int j) {
+        const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
+        if (ownerOf(m, s) == net) return true;
+        const Coord need = m.padOf[std::size_t(s)] >= 0 ? toTerminal : toMetal;
+        if (polyDistance(q, p.metal.at(s).outline) < double(std::max<Coord>(need, 1))) ok = false;
+        return ok;
+    });
+    if (!ok) return false;
+    const NetClass& mine = p.tech.classes.at(p.nets.at(net).netClass);
+    for (const auto& [other, poly] : lines[std::size_t(l)]) {
+        if (other == net) continue;
+        const NetClass& theirs = p.tech.classes.at(p.nets.at(other).netClass);
+        const Coord need = p.units(std::max({mine.spacing, theirs.spacing, p.tech.sameLayer}));
+        if (boxDistance2(qb, boundsOf(poly)) >= double(need) * double(need)) continue;
+        if (polyDistance(q, poly) < double(need)) return false;
+    }
+    for (const Shape& o : p.obstacles) {
+        if (o.layer < 0 || o.layer >= p.tech.obstacles.size() || !p.tech.obstacles.at(o.layer).metals.contains(l)) continue;
+        const Coord c = p.units(p.tech.obstacles.at(o.layer).clearance);
+        if (c > 0 ? polyDistance(q, o.outline) < double(c) : overlapArea(q, o.outline) > 0) return false;
+    }
+    for (const KeepOut& k : p.keepOuts) {
+        if (!k.metals.isEmpty() && !k.metals.contains(l)) continue;
+        if (overlapArea(q, k.outline) > 0) return false;   // a fill never goes into one
+    }
+    return true;
+}
+
 } // namespace
+
+void fillNotches(const Problem& p, Result* result)
+{
+    const Coord notch = p.units(p.tech.notch);
+    for (NetResult& r : result->nets) r.fills.clear();
+    if (notch <= 0) return;
+    const MetalMap m = readMetal(p);
+    const int planes = int(p.tech.metals.size());
+    // Every net's lines, by plane, as the fills are added.
+    std::vector<std::vector<std::pair<int, Poly>>> lines(static_cast<std::size_t>(planes));
+    std::vector<std::vector<std::vector<Box>>> drawnOf(static_cast<std::size_t>(result->nets.size()));
+    for (int n = 0; n < result->nets.size() && n < p.nets.size(); ++n) {
+        const NetResult& r = result->nets.at(n);
+        if (r.status != NetResult::Status::Routed && r.status != NetResult::Status::Kept) continue;
+        drawn(p, r, n, &drawnOf[std::size_t(n)], nullptr, nullptr);
+        for (int l = 0; l < planes; ++l)
+            for (const Box& b : drawnOf[std::size_t(n)][std::size_t(l)]) lines[std::size_t(l)].push_back({n, polyOf(b)});
+    }
+    for (int n = 0; n < result->nets.size() && n < p.nets.size(); ++n) {
+        if (drawnOf[std::size_t(n)].empty()) continue;
+        NetResult& r = result->nets[n];
+        for (int l = 0; l < planes; ++l)
+            for (const Poly& q : slotsOf(p, m, n, l, drawnOf[std::size_t(n)][std::size_t(l)], r.fills, notch)) {
+                if (!clearOfOthers(p, m, n, l, q, lines)) continue;
+                r.fills.append({l, q});
+                lines[std::size_t(l)].push_back({n, q});
+            }
+    }
+}
 
 QVector<QVector<Poly>> newMetal(const Problem& problem, const NetResult& route, int net)
 {
@@ -319,19 +449,16 @@ Verification verify(const Problem& p, const Result& result)
         }
         std::vector<int> terminalNode;
         for (const Terminal& t : net.terminals) {
-            // Every shape under its point is the terminal (a pad on two metals
-            // with no via between them is reached on either, as routed).
+            // The piece of metal under its point on its metal, else on the
+            // lowest metal there - as the router reads it. Metal over it with
+            // no cut is not joined to it, so a line ending there is an open.
             int found = -1;
-            for (int l = 0; l < planes; ++l) {
+            for (int l = 0; l < planes && found < 0; ++l) {
                 if (t.metal >= 0 && t.metal != l) continue;
                 m.index[std::size_t(l)].query(Box{t.at.x, t.at.y, t.at.x, t.at.y}, [&](int j) {
                     const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
-                    if (inside(p.metal.at(s).outline, t.at) && ownerOf(m, s) == n) {
-                        const int piece = node(m.root[std::size_t(s)]);
-                        if (found < 0) found = piece;
-                        else unite(found, piece);
-                    }
-                    return true;
+                    if (inside(p.metal.at(s).outline, t.at) && ownerOf(m, s) == n) found = node(m.root[std::size_t(s)]);
+                    return found < 0;
                 });
             }
             if (found < 0)
@@ -413,6 +540,33 @@ Verification verify(const Problem& p, const Result& result)
                 }
             }
         }
+
+        // Notches: slots under the rule between its lines and its own metal
+        // that are still open (no fill fitted). One with metal of another in
+        // it is no notch: the spacing checks have it.
+        const Coord notch = p.units(p.tech.notch);
+        for (int l = 0; l < planes && notch > 0; ++l)
+            for (const Poly& q : slotsOf(p, m, n, l, byPlane[std::size_t(l)], r.fills, notch)) {
+                bool foreign = false;
+                m.index[std::size_t(l)].query(boundsOf(q), [&](int j) {
+                    const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
+                    foreign = foreign || (ownerOf(m, s) != n && overlapArea(q, p.metal.at(s).outline) > 0);
+                    return !foreign;
+                });
+                if (foreign) continue;
+                const Box b = boundsOf(q);
+                Finding f;
+                f.kind = QStringLiteral("notch");
+                f.net = net.name;
+                f.metal = l;
+                f.box = b;
+                f.at = b.centre();
+                f.measured = um(double(std::min(b.width(), b.height())));
+                f.required = p.tech.notch;
+                f.text = QStringLiteral("%1 on %2 leaves a slot %3 µm wide against its own metal at %4 (the notch rule %5 µm), and no fill fits there")
+                             .arg(net.name, metalName(l), micro(f.measured), at(f.at), micro(f.required));
+                add(f);
+            }
 
         // Keep-outs.
         for (const KeepOut& k : p.keepOuts) {
