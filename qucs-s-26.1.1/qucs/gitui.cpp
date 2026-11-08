@@ -1060,13 +1060,54 @@ void Commands::newBranch(const QString& root, const QString& start)
 
 void Commands::newWorktree(const QString& root, const QString& start)
 {
-    QStringList local;
+    QStringList local, remote;
     QString here;
     for (const Branch& b : branches(root)) {
-        if (b.remote) continue;
-        if (b.current) here = b.name;
+        if (b.remote) remote << b.name;
+        else if (b.current) here = b.name;
         else local << b.name;
     }
+    QStringList remoteNames;
+    for (const Remote& r : remotes(root)) remoteNames << r.name;
+    // A remote's branch's own name: "origin/feature" - feature (a remote's name may hold a '/').
+    const auto ownName = [remoteNames](const QString& ref) {
+        QString longest;
+        for (const QString& r : remoteNames)
+            if (ref.startsWith(r + QLatin1Char('/')) && r.size() > longest.size()) longest = r;
+        return longest.isEmpty() ? ref.section(QLatin1Char('/'), 1) : ref.mid(longest.size() + 1);
+    };
+    // What a name typed stands for: the branch checked out here, a local one,
+    // a remote's (named whole, or by its own name in one remote alone) to
+    // follow, or a new one.
+    struct Choice {
+        enum Kind { None, Here, Local, Track, Several, LocalHas, New } kind = None;
+        QString branch;   // the local branch the worktree is on
+        QString from;     // Track: the remote's branch it follows
+    };
+    const auto choose = [=](const QString& name) {
+        Choice c;
+        c.branch = name;
+        if (name.isEmpty()) return c;
+        if (name == here) c.kind = Choice::Here;
+        else if (local.contains(name)) c.kind = Choice::Local;
+        if (c.kind != Choice::None) return c;
+        QStringList matches;
+        if (remote.contains(name)) matches << name;
+        else
+            for (const QString& r : remote)
+                if (ownName(r) == name) matches << r;
+        if (matches.size() > 1) {
+            c.kind = Choice::Several;
+            c.from = matches.join(QStringLiteral(", "));
+        } else if (matches.size() == 1) {
+            c.branch = ownName(matches.first());
+            c.from = matches.first();
+            c.kind = c.branch == here ? Choice::Here : local.contains(c.branch) ? Choice::LocalHas : Choice::Track;
+        } else {
+            c.kind = Choice::New;
+        }
+        return c;
+    };
     QDialog dialog(window());
     dialog.setObjectName(QStringLiteral("gitWorktreeDialog"));
     dialog.setWindowTitle(tr("New Worktree"));
@@ -1082,16 +1123,18 @@ void Commands::newWorktree(const QString& root, const QString& start)
     branch->setEditable(true);
     branch->setInsertPolicy(QComboBox::NoInsert);
     branch->addItems(local);
+    branch->addItems(remote);
     branch->setCurrentIndex(-1);
-    branch->lineEdit()->setPlaceholderText(local.isEmpty() ? tr("a new branch's name") : tr("a new branch's name, or one of these"));
+    branch->lineEdit()->setPlaceholderText(local.isEmpty() && remote.isEmpty() ? tr("a new branch's name") : tr("a new branch's name, or one of these"));
     form->addRow(tr("Branch:"), branch);
     auto* folderRow = new QHBoxLayout;
     auto* folder = new QLineEdit(&dialog);
     folder->setObjectName(QStringLiteral("gitWorktreeFolder"));
-    auto* choose = new QPushButton(tr("Choose…"), &dialog);
-    choose->setObjectName(QStringLiteral("gitWorktreeChoose"));
+    folder->setPlaceholderText(tr("beside the repository, named for the branch"));
+    auto* choosing = new QPushButton(tr("Choose…"), &dialog);
+    choosing->setObjectName(QStringLiteral("gitWorktreeChoose"));
     folderRow->addWidget(folder, 1);
-    folderRow->addWidget(choose);
+    folderRow->addWidget(choosing);
     form->addRow(tr("Folder:"), folderRow);
     layout->addLayout(form);
     auto* note = new QLabel(&dialog);
@@ -1107,53 +1150,68 @@ void Commands::newWorktree(const QString& root, const QString& start)
     auto typed = std::make_shared<bool>(false);
     connect(folder, &QLineEdit::textEdited, &dialog, [typed] { *typed = true; });
     const auto update = [=] {
-        const QString name = branch->currentText().trimmed();
-        if (name.isEmpty()) note->setText(QString());
-        else if (name == here) note->setText(tr("%1 is checked out here: a worktree needs a branch of its own.").arg(name));
-        else if (local.contains(name)) note->setText(tr("The branch %1, as it is.").arg(name));
-        else if (start.isEmpty()) note->setText(tr("A new branch %1, from the commit checked out here.").arg(name));
-        else note->setText(tr("A new branch %1, at %2.").arg(name, start.left(7)));
-        buttons->button(QDialogButtonBox::Ok)->setEnabled(!name.isEmpty() && name != here && !folder->text().trimmed().isEmpty());
+        const Choice c = choose(branch->currentText().trimmed());
+        switch (c.kind) {
+        case Choice::None: note->setText(QString()); break;
+        case Choice::Here: note->setText(tr("%1 is checked out here: a worktree needs a branch of its own.").arg(c.branch)); break;
+        case Choice::Local: note->setText(tr("The branch %1, as it is.").arg(c.branch)); break;
+        case Choice::Track: note->setText(tr("The remote's branch %1, as a local branch %2 following it.").arg(c.from, c.branch)); break;
+        case Choice::Several: note->setText(tr("More than one remote has a branch of that name (%1): choose one of them.").arg(c.from)); break;
+        case Choice::LocalHas: note->setText(tr("There is a local branch %1 already: choose it, or another name.").arg(c.branch)); break;
+        case Choice::New:
+            note->setText(start.isEmpty() ? tr("A new branch %1, from the commit checked out here.").arg(c.branch)
+                                          : tr("A new branch %1, at %2.").arg(c.branch, start.left(7)));
+            break;
+        }
+        const bool takes = c.kind == Choice::Local || c.kind == Choice::Track || c.kind == Choice::New;
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(takes && !folder->text().trimmed().isEmpty());
     };
     connect(branch, &QComboBox::currentTextChanged, &dialog, [=] {
-        if (!*typed) folder->setText(QDir::toNativeSeparators(worktreeFolder(root, branch->currentText().trimmed())));
+        const QString name = branch->currentText().trimmed();
+        if (!*typed) folder->setText(name.isEmpty() ? QString() : QDir::toNativeSeparators(worktreeFolder(root, choose(name).branch)));
         update();
     });
     connect(folder, &QLineEdit::textChanged, &dialog, update);
-    connect(choose, &QPushButton::clicked, &dialog, [=, &dialog] {
-        const QString name = branch->currentText().trimmed();
+    connect(choosing, &QPushButton::clicked, &dialog, [=, &dialog] {
+        const QString name = choose(branch->currentText().trimmed()).branch;
         const QString in = QFileDialog::getExistingDirectory(&dialog, tr("The Folder the Worktree Goes In"), QFileInfo(root).absolutePath());
         if (in.isEmpty()) return;
         *typed = true;
         folder->setText(QDir::toNativeSeparators(QDir(in).absoluteFilePath(QFileInfo(worktreeFolder(root, name)).fileName())));
     });
-    folder->setText(QDir::toNativeSeparators(worktreeFolder(root, QString())));
     update();
     branch->setFocus();
     if (dialog.exec() != QDialog::Accepted) return;
 
-    const QString name = branch->currentText().trimmed();
-    const bool create = !local.contains(name);
-    if (name.isEmpty() || name == here) return;
-    if (create && !run(root, {QStringLiteral("check-ref-format"), QStringLiteral("--branch"), name}, true, 15000).ok()) {
-        misc::reportError(tr("%1 cannot be a branch's name (no spaces, no ~ ^ : ? * [ \\, not ending in .lock...).").arg(name));
+    const Choice c = choose(branch->currentText().trimmed());
+    if (c.kind != Choice::Local && c.kind != Choice::Track && c.kind != Choice::New) return;
+    if (c.kind == Choice::New && !run(root, {QStringLiteral("check-ref-format"), QStringLiteral("--branch"), c.branch}, true, 15000).ok()) {
+        misc::reportError(tr("%1 cannot be a branch's name (no spaces, no ~ ^ : ? * [ \\, not ending in .lock...).").arg(c.branch));
         return;
     }
     QString target = QDir::fromNativeSeparators(folder->text().trimmed());
     if (target.isEmpty()) return;
+    if (target == QLatin1String("~") || target.startsWith(QLatin1String("~/"))) target = QDir::homePath() + target.mid(1);
     if (QDir::isRelativePath(target)) target = QFileInfo(root).absolutePath() + QLatin1Char('/') + target;
     target = QDir::cleanPath(target);
-    // (Inside the repository it would be one of its untracked folders.)
-    const QString top = QDir::cleanPath(root);
-    if (target == top || target.startsWith(top + QLatin1Char('/'))) {
+    // (Inside the repository it would be one of its untracked folders. Asked
+    // of the deepest folder of it there is, by the files: in another case of
+    // its name, or through a link, it is no less inside.)
+    QString there = target;
+    while (!QFileInfo::exists(there) && QFileInfo(there).absolutePath() != there) there = QFileInfo(there).absolutePath();
+    bool inside = false;
+    relativePath(root, there, &inside);
+    if (inside) {
         misc::reportError(tr("%1 is inside the repository: a worktree goes in a folder of its own, outside it.").arg(QDir::toNativeSeparators(target)));
         return;
     }
-    const QStringList args = worktreeArgs(target, name, create, start);
+    const QStringList args = c.kind == Choice::Track ? worktreeArgs(target, c.branch, true, c.from, true)
+                                                     : worktreeArgs(target, c.branch, c.kind == Choice::New, start);
     if (args.isEmpty()) {
-        misc::reportError(tr("%1 is not a name git takes here (it begins with '-').").arg(name.startsWith(QLatin1Char('-')) ? name : start));
+        misc::reportError(tr("%1 is not a name git takes here (it begins with '-').").arg(c.branch.startsWith(QLatin1Char('-')) ? c.branch : start));
         return;
     }
+    const QString name = c.branch;
     runJob(root, args, tr("Making the worktree"), [this, root, target, name](const Result& r) {
         if (!report(r, tr("New Worktree"))) return;
         Tracker::instance()->refresh(target);

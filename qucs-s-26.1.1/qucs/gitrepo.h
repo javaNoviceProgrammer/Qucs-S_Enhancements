@@ -184,8 +184,9 @@ Result createBranch(const QString& root, const QString& name, const QString& sta
 /// git's words for a worktree of the repository at \a folder - a second
 /// folder of it, with \a branch checked out there: a new branch from \a start
 /// (else from the commit checked out) when \a create, else one that is there
-/// already. None for a name git would take for an option.
-QStringList worktreeArgs(const QString& folder, const QString& branch, bool create, const QString& start = {});
+/// already. \a track: the new branch follows \a start, a remote's branch.
+/// None for a name git would take for an option.
+QStringList worktreeArgs(const QString& folder, const QString& branch, bool create, const QString& start = {}, bool track = false);
 /// Where a worktree of \a root for \a branch goes when nobody says: beside
 /// the repository's folder, "<its name>-<branch>" (a '/' made '-'), one not
 /// there yet.

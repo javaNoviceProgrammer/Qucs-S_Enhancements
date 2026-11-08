@@ -929,10 +929,11 @@ Result createBranch(const QString& root, const QString& name, const QString& sta
     return run(root, args);
 }
 
-QStringList worktreeArgs(const QString& folder, const QString& branch, bool create, const QString& start)
+QStringList worktreeArgs(const QString& folder, const QString& branch, bool create, const QString& start, bool track)
 {
     if (folder.isEmpty() || branch.isEmpty() || optionLike(branch) || optionLike(start)) return {};
     QStringList args{QStringLiteral("worktree"), QStringLiteral("add")};
+    if (create && track) args << QStringLiteral("--track");
     if (create) args << QStringLiteral("-b") << branch;
     args << QStringLiteral("--") << folder;
     if (!create) args << branch;
