@@ -175,9 +175,12 @@ void QucsApp::initRuns()
   runsToolbar->addAction(showJobsAction);
   auto *reopen = new QToolButton(runsToolbar);
   reopen->setObjectName(QStringLiteral("reopenClosedButton"));
+  // (Its popup mode first: the style sheet's room for the arrow goes by it,
+  // as it is when the button is first styled - setDefaultAction() does.)
+  reopen->setPopupMode(QToolButton::MenuButtonPopup);
+  reopen->setAutoRaise(true);   // as the toolbar's own buttons: no frame at rest
   reopen->setDefaultAction(reopenClosedAction);
   reopen->setMenu(recentlyClosedMenu);
-  reopen->setPopupMode(QToolButton::MenuButtonPopup);
   runsToolbar->addWidget(reopen);
   if (auto *jobsButton = qobject_cast<QToolButton *>(runsToolbar->widgetForAction(showJobsAction))) {
     jobsButton->setObjectName(QStringLiteral("showRunningJobsButton"));

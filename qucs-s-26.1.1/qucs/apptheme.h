@@ -132,6 +132,15 @@ QPalette lightPalette();
 QPalette palette(const Colours& colours);
 QString styleSheet(const Colours& colours);
 
+/// Style-sheet rules keeping room for the arrow of the tool buttons
+/// \a selector picks ("QToolBar QToolButton") that have a menu beside them
+/// (MenuButtonPopup): for a sheet giving tool buttons a border or padding of
+/// their own. Qt's style-sheet style then keeps none - it counts no width
+/// for the arrow, lays the icon and text out across the whole button and
+/// draws the arrow over their right edge. Buttons without such a menu are
+/// left as they are.
+QString menuButtonRules(const QString& selector);
+
 /// A little picture of a theme for its menu entry: the window, the
 /// accent and the paper.
 QIcon swatch(int theme);
