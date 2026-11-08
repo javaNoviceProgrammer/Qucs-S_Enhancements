@@ -44,6 +44,7 @@ public:
     static ClaudeJobsWindow* showWindow(QWidget* from);
     /// The window when it exists, shown or not; null when not.
     static ClaudeJobsWindow* existing();
+    ~ClaudeJobsWindow() override;
 
     QTableWidget* table() const { return a_table; }
     QPushButton* clearButton() const { return a_clear; }
@@ -65,6 +66,10 @@ public:
     bool showChosenDocument();
     /// The table's row of the job \a id, or -1.
     int rowOf(const QString& id) const;
+    /// Whether the Job column takes the room the others leave, as it does
+    /// until the user drags its edge (each column's edge can be dragged; the
+    /// widths are kept for the next time the window opens).
+    bool nameFillsTheRoom() const { return a_nameFills; }
 
     enum Column { Name, Kind, Conversation, Status, Progress, Began, Time, Stop, Columns };
     /// (The Conversation column is "Started by": You, or Claude's conversation.)
@@ -74,6 +79,7 @@ protected:
     void changeEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     explicit ClaudeJobsWindow(QWidget* parent);
@@ -85,6 +91,9 @@ private:
     void showSummary();
     void showDetails();
     void setWidths();
+    /// The Job column's width, the room the others leave (while it fills it).
+    void fitName();
+    void saveWidths() const;
     void applyFilter();
     void updateShowButton();
 
@@ -95,6 +104,8 @@ private:
     QPushButton* a_show = nullptr;
     QComboBox* a_filter = nullptr;
     QTimer* a_clock = nullptr;
+    bool a_nameFills = true;   // the Job column follows the window, until the user sizes it
+    bool a_fitting = false;    // (fitName() setting it: no user's doing)
 };
 
 #endif // QUCS_CLAUDEJOBSWINDOW_H

@@ -49,6 +49,7 @@
 #include "claudejobswindow.h"
 #include "extsimkernels/ngspice.h"
 #include "isolated_settings.h"
+#include "settings.h"
 
 using qucs_s::claude::Session;
 using namespace qucs_s::claude::jobs;
@@ -146,6 +147,10 @@ private slots:
 
     void init()
     {
+        // (The columns' widths the last test left: each starts as a user's
+        // first time.)
+        QucsSettingsFile().remove("ClaudeCode/backgroundJobsColumns");
+        QucsSettingsFile().remove("ClaudeCode/backgroundJobsNameFills");
         Registry::instance().reset();
         QFile::remove(dir.filePath("jobs-in"));
     }
@@ -602,6 +607,94 @@ private slots:
         QCOMPARE(ClaudeJobsWindow::existing(), w);
         QVERIFY(w->isVisible());
         delete w;
+    }
+
+    // Every column's edge is dragged with the mouse; the Job column takes the
+    // room the others leave until it is dragged itself; the widths come back.
+    // (The Job column stretched, and its edge did not move: the user's picture
+    // of 8 November.)
+    void everyColumnCanBeResized()
+    {
+        aJob("A job", 40);
+        ClaudeJobsWindow* w = ClaudeJobsWindow::showWindow(nullptr);
+        QVERIFY(QTest::qWaitForWindowExposed(w));
+        QTableWidget* table = w->table();
+        QHeaderView* header = table->horizontalHeader();
+        for (int c = 0; c < ClaudeJobsWindow::Columns; ++c)
+            QVERIFY2(header->sectionResizeMode(c) == QHeaderView::Interactive, qPrintable(QString::number(c)));
+        const auto total = [&w] {
+            int sum = 0;
+            for (int c = 0; c < ClaudeJobsWindow::Columns; ++c) sum += w->table()->columnWidth(c);
+            return sum;
+        };
+        QVERIFY(w->nameFillsTheRoom());
+        QTRY_COMPARE(total(), table->viewport()->width());
+        // The window wider: the Job column with it.
+        w->resize(w->width() + 200, w->height());
+        QTRY_COMPARE(total(), table->viewport()->width());
+
+        // A drag on an edge, as the user drags it: from the right edge of a
+        // column, its width follows the mouse.
+        const auto drag = [header](int column, int by) {
+            const int edge = header->sectionViewportPosition(column) + header->sectionSize(column) - 1;
+            const int y = header->height() / 2;
+            QTest::mousePress(header->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(edge, y));
+            for (int step = 1; step <= 4; ++step) QTest::mouseMove(header->viewport(), QPoint(edge + by * step / 4, y));
+            QTest::mouseRelease(header->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(edge + by, y));
+        };
+        for (const int column : {int(ClaudeJobsWindow::Kind), int(ClaudeJobsWindow::StartedBy), int(ClaudeJobsWindow::Status),
+                                 int(ClaudeJobsWindow::Progress), int(ClaudeJobsWindow::Began), int(ClaudeJobsWindow::Time),
+                                 int(ClaudeJobsWindow::Stop)}) {
+            const int before = table->columnWidth(column);
+            const int name = table->columnWidth(ClaudeJobsWindow::Name);
+            drag(column, 40);
+            QVERIFY2(std::abs(table->columnWidth(column) - (before + 40)) <= 2,
+                     qPrintable(QStringLiteral("column %1: %2 to %3").arg(column).arg(before).arg(table->columnWidth(column))));
+            // The Job column gave it the room, and still fills what is left.
+            QVERIFY(table->columnWidth(ClaudeJobsWindow::Name) < name);
+            QCOMPARE(total(), table->viewport()->width());
+            QVERIFY(w->nameFillsTheRoom());
+        }
+        // Narrower again.
+        const int kind = table->columnWidth(ClaudeJobsWindow::Kind);
+        drag(ClaudeJobsWindow::Kind, -30);
+        QVERIFY(std::abs(table->columnWidth(ClaudeJobsWindow::Kind) - (kind - 30)) <= 2);
+
+        // The Job column's own edge: it keeps the width it was given, and the
+        // window no longer sizes it.
+        const int name = table->columnWidth(ClaudeJobsWindow::Name);
+        drag(ClaudeJobsWindow::Name, -60);
+        QVERIFY2(std::abs(table->columnWidth(ClaudeJobsWindow::Name) - (name - 60)) <= 2,
+                 qPrintable(QStringLiteral("%1 to %2").arg(name).arg(table->columnWidth(ClaudeJobsWindow::Name))));
+        QVERIFY(!w->nameFillsTheRoom());
+        const int sized = table->columnWidth(ClaudeJobsWindow::Name);
+        w->resize(w->width() + 150, w->height());
+        QApplication::processEvents();
+        QCOMPARE(table->columnWidth(ClaudeJobsWindow::Name), sized);
+        // Wider than the room: the table scrolls, the window stays as it is.
+        const int windowWidth = w->width();
+        drag(ClaudeJobsWindow::Name, 900);
+        QApplication::processEvents();
+        QVERIFY(total() > table->viewport()->width());
+        QCOMPARE(w->width(), windowWidth);
+        QVERIFY(w->minimumSizeHint().width() < 800);
+
+        // Opened again: as the user left them.
+        QList<int> widths;
+        for (int c = 0; c < ClaudeJobsWindow::Columns; ++c) widths << table->columnWidth(c);
+        delete w;
+        w = ClaudeJobsWindow::showWindow(nullptr);
+        QVERIFY(QTest::qWaitForWindowExposed(w));
+        for (int c = 0; c < ClaudeJobsWindow::Columns; ++c) QCOMPARE(w->table()->columnWidth(c), widths.at(c));
+        QVERIFY(!w->nameFillsTheRoom());
+        QVERIFY(w->table()->horizontalHeader()->sectionResizeMode(ClaudeJobsWindow::Name) == QHeaderView::Interactive);
+        // A kept state of no use (another set of columns): as the first time.
+        delete w;
+        QucsSettingsFile().setValue("ClaudeCode/backgroundJobsColumns", QByteArray("not a header's state"));
+        w = ClaudeJobsWindow::showWindow(nullptr);
+        QVERIFY(QTest::qWaitForWindowExposed(w));
+        QVERIFY(w->nameFillsTheRoom());
+        QTRY_COMPARE(total(), w->table()->viewport()->width());
     }
 
     void aLongNameDoesNotWidenTheWindow()

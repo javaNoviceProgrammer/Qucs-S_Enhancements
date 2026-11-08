@@ -141,9 +141,14 @@ be one small tool on `Registry::stop` if wanted.
 - **Not a dialog:** a plain `QWidget` with `Qt::Window`. `QucsControl::openDialog()` takes any open `QDialog` for one a tool
   must wait on, and would have blocked every tool while it was open.
 - **One at a time:** asked for again, it comes forward. Its parent is the main window, not a floating dock.
-- **Long names:** the name column stretches and the view cuts its text; the tool tip and the panel below have it whole. A
-  row's text does not reach the window's least size (`aLongNameDoesNotWidenTheWindow`). Names are cut to 300 characters
-  and details to 8,000 on the way in.
+- **Long names:** the Job column takes the room the other columns leave, and the view cuts its text. The tool tip and
+  the panel below have it whole. A row's text does not reach the window's least size (`aLongNameDoesNotWidenTheWindow`).
+  Names are cut to 300 characters and details to 8,000 on the way in.
+- **Every column's edge can be dragged** (the user, 8 November, with a picture: the Job column stretched, and a stretched
+  column's edge does not move). The Job column gives a column dragged wider its room, and takes back what one gives up,
+  until its own edge is dragged; then it keeps its width, and past the window's room the table scrolls rather than the
+  window widening. A double click on an edge fits what the column holds. The widths are kept in the settings for the next
+  time the window opens; a kept state of other columns is ignored (`everyColumnCanBeResized`, by mouse drags on each edge).
 - **Themes:** the palette's colours, with the status words in the dock's own greens, reds and ambers for each paper; checked
   by eye in the pictures. It follows a change of theme live.
 - **A row's widgets:** a table view shows a cell's widget again each time it lays itself out, which brought Stop back on
