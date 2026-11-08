@@ -43,6 +43,7 @@ set(FEM_SRCS
   fem_process.cpp
   fem_process_dopants.cpp
   fem_process_ions.cpp
+  fem_process_crystal.cpp
   fem_process_results.cpp
   fem_import.cpp
   fem_hdf5.cpp
@@ -63,6 +64,10 @@ set(FEM_SRCS
 add_library(fem STATIC ${FEM_SRCS})
 set_target_properties(fem PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
 target_compile_features(fem PUBLIC cxx_std_20)
+# The crystal implant's electron density (fem_process_crystal.cpp): silicon's
+# radial table, the review's LDA atom's (no solver at run time). A static
+# library's resources reach its users as an object library (Qt 6).
+qt_add_resources(fem "fem_crystal_data" PREFIX "/multiphysics/crystal" BASE data FILES data/si_density_cai.txt)
 target_include_directories(fem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # (Clipper 6.4.2, built into gdstk: its header from there.)
 target_include_directories(fem SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/gdstk/external)
