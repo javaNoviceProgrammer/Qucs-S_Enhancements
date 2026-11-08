@@ -887,13 +887,13 @@ void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>*
     };
     // Along an edge: \a along runs over it, \a across away from the frame at
     // \a offset.. \a offset + depth. Dark columns, joined, are ticks.
-    const auto scan = [&](bool xAxis, double edge, double low, double high, double sign) {
+    const auto scan = [&](bool xAxis, double edge, double low, double high, double sign, double startAt = 0.9, double deep = 1.3) {
         QList<double> found;
         const double base = xAxis ? lines.origin.y() : lines.origin.x();
         const double along0 = xAxis ? lines.origin.x() : lines.origin.y();
         const int from = int((low - along0 - 1.5) * scale), to = int((high - along0 + 1.5) * scale);
         const int at0 = int((edge - base) * scale);
-        const int start = int(sign * 0.9 * scale), depth = std::max(2, int(1.3 * scale));
+        const int start = int(sign * startAt * scale), depth = std::max(2, int(deep * scale));
         // How dark each column is, not whether: the middle of a tick is then
         // found to a fraction of a pixel, from its soft edges.
         std::vector<double> strength;
@@ -925,7 +925,7 @@ void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>*
             // Joined to the frame's line: dark too just outside it, where a
             // label's stroke, or a speck, is not.
             double attached = 0;
-            const int inner = std::max(1, int(0.45 * scale)), outer = std::max(inner + 1, int(0.9 * scale));
+            const int inner = std::max(1, int(0.5 * startAt * scale)), outer = std::max(inner + 1, int(startAt * scale));
             for (size_t k = i; k < j; ++k)
                 for (int d = inner; d < outer; ++d) {
                     const int across = at0 + int(sign) * d, a = from + int(k);
@@ -946,6 +946,14 @@ void marksInPicture(const RasterLines& lines, const QRectF& frame, QList<HLine>*
         QList<double> marks = outerKept;
         if (beat(inner, innerKept) > beat(outer, outerKept) && innerKept.size() >= 3) marks = innerKept;
         if (marks.size() < 2 && innerKept.size() >= 3) marks = innerKept;
+        // (Ticks inside shorter than the usual strip's start - three
+        // quarters of a point, MATLAB's on a small figure - looked for
+        // nearer the frame's line, when nothing else is.)
+        if (marks.size() < 2) {
+            const QList<double> shallow = scan(xAxis, edge, low, high, -outward, 0.3, 0.4);
+            const QList<double> shallowKept = regularMarks(shallow, 0.6);
+            if (shallowKept.size() >= 3) marks = shallowKept;
+        }
         for (const double m : std::as_const(marks)) {
             HLine l;
             l.at = m;

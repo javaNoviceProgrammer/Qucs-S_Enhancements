@@ -1823,6 +1823,35 @@ namespace {
 QString number(double v) { return std::isfinite(v) ? QString::number(v, 'g', 12) : QString(); }
 }
 
+namespace {
+// A series' points to write, finite ones only, each with the piece it is in
+// (1 on): a series with gaps is in pieces, and what plots it ends a stroke
+// at each.
+struct Written {
+    QList<QPointF> points;
+    QList<int> piece;
+};
+Written writtenOf(const Plot& plot, const Series& s)
+{
+    const QList<QPointF> v = plot.calibration.valid() ? values(plot, s) : s.points;
+    Written out;
+    int piece = 1;
+    bool started = false;
+    for (int k = 0; k < v.size(); ++k) {
+        if (k > 0 && s.breaks.contains(k) && started) {
+            ++piece;
+            started = false;
+        }
+        const QPointF p = v.at(k);
+        if (!std::isfinite(p.x()) || !std::isfinite(p.y())) continue;
+        out.points << p;
+        out.piece << piece;
+        started = true;
+    }
+    return out;
+}
+} // namespace
+
 QString csv(const Plot& plot)
 {
     const auto quoted = [](QString s) {
@@ -1834,34 +1863,53 @@ QString csv(const Plot& plot)
         if (!s.isEmpty() && QStringLiteral("=+-@").contains(s.at(0))) s.prepend(QLatin1Char('\''));
         return s;
     };
-    QString out = plot.calibration.valid() ? QStringLiteral("series,x,y\n") : QStringLiteral("series,page_x_points,page_y_points\n");
+    // (The piece of the series each point is in: a gap in it, where nothing
+    // of the curve could be seen, is between two pieces.)
+    QString out = plot.calibration.valid() ? QStringLiteral("series,x,y,piece\n") : QStringLiteral("series,page_x_points,page_y_points,piece\n");
     for (const Series& s : plot.series) {
-        const QList<QPointF> v = plot.calibration.valid() ? values(plot, s) : s.points;
-        for (const QPointF& p : v) out += quoted(s.name) + QLatin1Char(',') + number(p.x()) + QLatin1Char(',') + number(p.y()) + QLatin1Char('\n');
+        const Written w = writtenOf(plot, s);
+        for (int k = 0; k < w.points.size(); ++k)
+            out += quoted(s.name) + QLatin1Char(',') + number(w.points.at(k).x()) + QLatin1Char(',') + number(w.points.at(k).y()) + QLatin1Char(',') + QString::number(w.piece.at(k)) + QLatin1Char('\n');
     }
     return out;
 }
 
-QByteArray dataset(const Plot& plot)
+QByteArray dataset(const Plot& plot, QStringList* variables)
 {
     QByteArray out = "<Qucs Dataset 26.1.1>\n";
     QSet<QString> seen;
-    for (const Series& s : plot.series) {
-        const QList<QPointF> v = plot.calibration.valid() ? values(plot, s) : s.points;
-        QList<QPointF> kept;
-        for (const QPointF& p : v)
-            if (std::isfinite(p.x()) && std::isfinite(p.y())) kept << p;
-        if (kept.isEmpty()) continue;
-        QString name = variableName(s.name);
-        int n = 2;
-        while (seen.contains(name)) name = variableName(s.name) + QLatin1Char('_') + QString::number(n++);
+    const auto unique = [&](const QString& wanted) {
+        QString name = wanted;
+        for (int n = 2; seen.contains(name) || seen.contains(name + QLatin1String("_x")); ++n) name = wanted + QLatin1Char('_') + QString::number(n);
         seen.insert(name);
+        seen.insert(name + QLatin1String("_x"));
+        return name;
+    };
+    const auto write = [&](const QString& name, const QList<QPointF>& points) {
         const QByteArray y = name.toUtf8(), x = y + "_x";
-        out += "<indep " + x + ' ' + QByteArray::number(kept.size()) + ">\n";
-        for (const QPointF& p : std::as_const(kept)) out += "  " + number(p.x()).toUtf8() + '\n';
+        out += "<indep " + x + ' ' + QByteArray::number(points.size()) + ">\n";
+        for (const QPointF& p : points) out += "  " + number(p.x()).toUtf8() + '\n';
         out += "</indep>\n<dep " + y + ' ' + x + ">\n";
-        for (const QPointF& p : std::as_const(kept)) out += "  " + number(p.y()).toUtf8() + '\n';
+        for (const QPointF& p : points) out += "  " + number(p.y()).toUtf8() + '\n';
         out += "</dep>\n";
+        if (variables != nullptr) *variables << name;
+    };
+    for (const Series& s : plot.series) {
+        const Written w = writtenOf(plot, s);
+        if (w.points.isEmpty()) continue;
+        const QString name = unique(variableName(s.name));
+        // A series with gaps: a variable for each piece, NAME_1, NAME_2...,
+        // for a diagram draws a straight line across what is not there.
+        const int pieces = w.piece.last();
+        if (pieces == 1) {
+            write(name, w.points);
+            continue;
+        }
+        for (int piece = 1, k = 0; piece <= pieces; ++piece) {
+            QList<QPointF> part;
+            for (; k < w.points.size() && w.piece.at(k) == piece; ++k) part << w.points.at(k);
+            if (!part.isEmpty()) write(unique(name + QLatin1Char('_') + QString::number(piece)), part);
+        }
     }
     return out;
 }

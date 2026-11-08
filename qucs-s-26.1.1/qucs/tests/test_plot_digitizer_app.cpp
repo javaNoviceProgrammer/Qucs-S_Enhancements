@@ -464,10 +464,11 @@ private slots:
         const QString csvFile = path("numbers.csv"), dataFile = path("numbers.dat");
         const QJsonObject o = json(call("digitize_plot", {{"path", vectorFile}, {"page", 1}, {"picture", false}, {"csv", csvFile}, {"dataset", dataFile}}));
         QVERIFY(o.contains("csv") && o.contains("dataset"));
+        QVERIFY(o.value("dataset_variables").toArray().contains(QJsonValue(QStringLiteral("sine"))));
         QFile csvIn(csvFile);
         QVERIFY(csvIn.open(QIODevice::ReadOnly));
         const QStringList lines = QString::fromUtf8(csvIn.readAll()).split('\n', Qt::SkipEmptyParts);
-        QCOMPARE(lines.first(), QStringLiteral("series,x,y"));
+        QCOMPARE(lines.first(), QStringLiteral("series,x,y,piece"));
         QCOMPARE(lines.size(), 1 + 301 + 301);
         // The program's own reader takes the dataset, and each curve is there.
         qucs_s::dataset::Dataset data;
@@ -644,7 +645,7 @@ private slots:
         panel->findButton()->click();
         QCOMPARE(panel->plots().size(), 1);
         // On the clipboard.
-        QVERIFY(panel->currentCsv().startsWith(QStringLiteral("series,x,y\n")));
+        QVERIFY(panel->currentCsv().startsWith(QStringLiteral("series,x,y,piece\n")));
         // Written out.
         QVERIFY(panel->writeCsv(path("panel.csv")));
         QVERIFY(panel->writeDataset(path("panel.dat")));

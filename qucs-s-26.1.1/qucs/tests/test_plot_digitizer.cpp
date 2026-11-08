@@ -1674,6 +1674,131 @@ private slots:
         }
     }
 
+    void ringsPackedOnASteepPeakAndAKey()
+    {
+        // A narrow peak with thick rings packed along its sides, the line
+        // through their middles (their holes all but gone), more along the
+        // tail, and a key of a filled square and an empty one, each with a
+        // word, without a box: as the second recheck's Fig. 5.
+        const QString file = path(QStringLiteral("packed_rings.pdf"));
+        Axes a;
+        a.frame = QRectF(100, 150, 300, 170);
+        a.xMin = 0.6;
+        a.xMax = 2.0;
+        a.yMin = 0;
+        a.yMax = 1;
+        a.xTicks = {0.6, 1.0, 1.4, 1.8};
+        a.yTicks = {0, 0.5, 1};
+        a.labels = false;
+        const auto model = [](double x) { return 0.8 / (1 + std::pow((x - 1.0) / 0.012, 2)) + 0.012; };
+        const double k = 300.0 / 72;
+        QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QList<QPointF> rings;
+        const QRectF key(a.px(1.45), a.py(0.62), a.px(1.85) - a.px(1.45), 12);
+        {
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(k, k);
+            drawAxes(p, a, 8);
+            p.setClipRect(a.frame);
+            QPolygonF line;
+            for (int i = 0; i <= 14000; ++i) line << a.at(0.6 + i * 0.0001, model(0.6 + i * 0.0001));
+            p.setPen(QPen(QColor(55, 82, 166), 1.2));
+            p.drawPolyline(line);
+            // A ring each 2.6 pt along the curve: packed on its sides.
+            double along = 0;
+            for (int i = 1; i < line.size(); ++i) {
+                along += QLineF(line.at(i - 1), line.at(i)).length();
+                if (along < 2.6) continue;
+                along = 0;
+                rings << line.at(i);
+            }
+            p.setPen(QPen(Qt::black, 1.1));
+            p.setBrush(Qt::NoBrush);
+            for (const QPointF& r : std::as_const(rings)) p.drawEllipse(r, 1.3, 1.3);
+            p.setClipping(false);
+            // The key.
+            p.setPen(QPen(Qt::black, 0.5));
+            p.setBrush(QColor(127, 127, 127));
+            p.drawRect(QRectF(key.left(), key.top() + 2, 7, 7));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(QRectF(key.left() + 52, key.top() + 2, 7, 7));
+            QFont font(QStringLiteral("Helvetica"));
+            font.setPixelSize(10);
+            p.setFont(font);
+            p.setPen(Qt::black);
+            p.drawText(QRectF(key.left() + 9, key.top(), 40, 12), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Metal"));
+            p.drawText(QRectF(key.left() + 61, key.top(), 40, 12), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Air"));
+            p.end();
+        }
+        QVERIFY(writeScan(file, image));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY2(!plot.frame.isNull(), "a frame");
+        plot.calibration = Calibration{};
+        for (const auto& r : {std::tuple{a.frame.bottomLeft(), true, 0.6}, {a.frame.bottomRight(), true, 2.0}, {a.frame.bottomLeft(), false, 0.0}, {a.frame.topLeft(), false, 1.0}}) {
+            Reference ref;
+            ref.at = std::get<0>(r);
+            (std::get<1>(r) ? ref.hasX : ref.hasY) = true;
+            (std::get<1>(r) ? ref.x : ref.y) = std::get<2>(r);
+            plot.calibration.references << ref;
+        }
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        QVERIFY2(extract(source, plot, Options{}, &why), qPrintable(why));
+        const Series* markers = nullptr;
+        int blueLines = 0;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape == Series::Shape::Markers) {
+                if (s.colour.lightness() < 80) markers = &s;
+                continue;
+            }
+            // No black line: what is left of the rings, a stretch of them
+            // walked as a line, or the key's words, is no curve.
+            QVERIFY2(!(s.colour.hslSaturation() < 70 && s.colour.lightness() < 120), qPrintable(QStringLiteral("%1 %2, %3 points").arg(s.name, s.colour.name()).arg(s.points.size())));
+            if (s.colour.blue() <= s.colour.red() + 60) continue;
+            ++blueLines;
+            // One curve, in order of x, its steep sides in the order along
+            // them: y turns back only at the peak, not between points a
+            // sliver apart.
+            int turns = 0;
+            for (int i = 1; i + 1 < s.points.size(); ++i) {
+                if (s.breaks.contains(i) || s.breaks.contains(i + 1)) continue;
+                const double before = s.points.at(i).y() - s.points.at(i - 1).y(), after = s.points.at(i + 1).y() - s.points.at(i).y();
+                turns += before * after < 0 && std::abs(before) > 1.5 && std::abs(after) > 1.5;
+            }
+            const QList<QPointF> v = values(plot, s);
+            double top = 0;
+            for (int i = 0; i < v.size(); ++i) {
+                top = std::max(top, v.at(i).y());
+                if (i > 0) QVERIFY(v.at(i).x() >= v.at(i - 1).x() - 1e-9);
+            }
+            qInfo("packed rings: blue line %lld points, %lld breaks, %d turns, top %.3f (0.812)", qlonglong(s.points.size()), qlonglong(s.breaks.size()), turns, top);
+            QCOMPARE_LE(turns, 1);
+            QCOMPARE_GE(top, 0.7);
+        }
+        QCOMPARE(blueLines, 1);
+        QVERIFY2(markers != nullptr, "the rings");
+        int found = 0, right = 0;
+        for (const QPointF& t : std::as_const(rings)) {
+            double nearest = 1e9;
+            for (const QPointF& q : markers->points) nearest = std::min(nearest, QLineF(q, t).length());
+            found += nearest <= 1.0;
+        }
+        for (const QPointF& q : markers->points) {
+            double nearest = 1e9;
+            for (const QPointF& t : std::as_const(rings)) nearest = std::min(nearest, QLineF(q, t).length());
+            right += nearest <= 1.0;
+            QVERIFY2(!key.adjusted(-1, -1, 1, 1).contains(q), "no marker in the key");
+        }
+        qInfo("packed rings: %d of %lld found, %d of %lld on a ring", found, qlonglong(rings.size()), right, qlonglong(markers->points.size()));
+        QCOMPARE_GE(found, int(0.7 * rings.size()));
+        QCOMPARE_GE(right, int(0.95 * markers->points.size()));
+    }
+
     void numbersAboveThePlotAreNoLabels()
     {
         // A running header over the plot, with numbers in it: the x axis is
@@ -2087,10 +2212,10 @@ private slots:
         s.points = {QPointF(0, 100), QPointF(50, 50), QPointF(100, 0)};
         plot.series << s;
         const QString text = csv(plot);
-        QVERIFY(text.startsWith(QStringLiteral("series,x,y\n")));
+        QVERIFY(text.startsWith(QStringLiteral("series,x,y,piece\n")));
         QCOMPARE(text.count(QLatin1Char('\n')), 4);
         QVERIFY2(text.contains(QStringLiteral("'\"=SUM")) || text.contains(QStringLiteral("\"=SUM")), qPrintable(text));
-        QVERIFY(text.contains(QStringLiteral(",5,0.5\n")));
+        QVERIFY(text.contains(QStringLiteral(",5,0.5,1\n")));
         const QByteArray data = dataset(plot);
         QVERIFY(data.startsWith("<Qucs Dataset"));
         QVERIFY2(data.contains("<indep SUM_A1_evil_x 3>"), data.constData());
@@ -2099,6 +2224,33 @@ private slots:
         plot.series << s;
         const QByteArray twice = dataset(plot);
         QVERIFY(twice.contains("<dep SUM_A1_evil_2 SUM_A1_evil_2_x>"));
+        // A series with gaps: its pieces numbered in the csv, and a variable
+        // each in the dataset (a diagram would draw straight across a gap).
+        Plot gapped = plot;
+        gapped.series.clear();
+        Series model;
+        model.name = QStringLiteral("model");
+        model.points = {QPointF(0, 100), QPointF(10, 90), QPointF(40, 60), QPointF(50, 50), QPointF(90, 10), QPointF(100, 0)};
+        model.breaks = {2, 4};
+        gapped.series << model;
+        Series model2 = model;
+        model2.name = QStringLiteral("model 1");   // (whose name is a piece's)
+        model2.breaks.clear();
+        gapped.series << model2;
+        const QStringList rows = csv(gapped).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        QCOMPARE(rows.size(), 1 + 6 + 6);
+        QStringList pieceColumn;
+        for (int k = 1; k < rows.size(); ++k) pieceColumn << rows.at(k).section(QLatin1Char(','), -1);
+        QCOMPARE(pieceColumn.join(QLatin1Char(' ')), QStringLiteral("1 1 2 2 3 3 1 1 1 1 1 1"));
+        QCOMPARE(rows.at(3), QStringLiteral("model,4,0.4,2"));
+        QCOMPARE(rows.at(12), QStringLiteral("model 1,10,1,1"));
+        QStringList variables;
+        const QByteArray pieces = dataset(gapped, &variables);
+        QCOMPARE(variables, (QStringList{QStringLiteral("model_1"), QStringLiteral("model_2"), QStringLiteral("model_3"), QStringLiteral("model_1_2")}));
+        QVERIFY2(pieces.contains("<indep model_1_x 2>") && pieces.contains("<indep model_2_x 2>") && pieces.contains("<indep model_3_x 2>"), pieces.constData());
+        QVERIFY(pieces.contains("<dep model_2 model_2_x>\n  0.4\n  0.5\n"));
+        QVERIFY(pieces.contains("<indep model_1_2_x 6>"));
+        QVERIFY(!pieces.contains("<dep model model_x>"));
         QCOMPARE(variableName(QStringLiteral("1 weird name!")), QStringLiteral("s_1_weird_name"));
         QCOMPARE(variableName(QString()), QStringLiteral("s_"));
     }

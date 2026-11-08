@@ -969,10 +969,9 @@ private:
     int a_walkStart = 1;
 };
 
-// A line followed both ways from \a seed: page points, left to right where it
-// goes that way. \a turnedBack: how many of its steps go back in x, a curve
-// that is a function of x being sorted by x.
-bool followFrom(Traced& t, int family, double thickness, QPointF seed, std::vector<int>& stamps, int& clock, Series* out, int* turnedBack = nullptr)
+// A line followed both ways from \a seed: page points, in the order walked,
+// left to right where it goes that way.
+bool followFrom(Traced& t, int family, double thickness, QPointF seed, std::vector<int>& stamps, int& clock, Series* out)
 {
     Follower f(t, family, thickness, stamps, clock);
     const QPointF d = f.directionAt(seed);
@@ -1006,21 +1005,8 @@ bool followFrom(Traced& t, int family, double thickness, QPointF seed, std::vect
         for (int& b : breaks) b = int(line.size()) - b;
         std::sort(breaks.begin(), breaks.end());
     }
-    // A curve that is a function of x - nearly every step forward - comes
-    // back in order of x; one that loops keeps the order it was walked in.
-    int back = 0;
-    for (int i = 1; i < line.size(); ++i) back += line.at(i).x() < line.at(i - 1).x() - 0.25;
-    if (back > 0 && back <= std::max(1, int(0.05 * line.size())) && line.size() > 4) {
-        QList<int> order(line.size());
-        for (int i = 0; i < order.size(); ++i) order[i] = i;
-        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return line.at(a).x() < line.at(b).x(); });
-        QList<QPointF> sorted;
-        sorted.reserve(line.size());
-        for (const int i : std::as_const(order)) sorted << line.at(i);
-        line = sorted;
-        breaks.clear();
-        if (turnedBack != nullptr) *turnedBack += back;
-    }
+    // (In the order it was walked: asFunctions() puts a curve that is a
+    // function of x in order of x, keeping that order along it.)
     out->points.clear();
     out->points.reserve(line.size());
     for (const QPointF& p : std::as_const(line)) out->points << t.px.toPage(p);
@@ -1411,10 +1397,52 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
         // Markers touching each other so closely that their holes are gone,
         // or filled ones, or on a line: the peaks of how far
         // each pixel is from the family's edge, a marker's radius apart.
+        // (A ring whose hole is small - its stroke thick for its size, the
+        // scan closing it up - or filled by a line of another colour through
+        // its middle, as a disc: else the peak of its distance is in its
+        // stroke, too near the edge to be told from a line's. So ink of any
+        // colour counts, and small pockets of background walled in by it
+        // beside this colour; a peak is kept where this colour goes most of
+        // the way round it.)
         std::vector<float> dt(size_t(w) * h, 0.f);
         const float big = 1e9f;
         for (int y = 0; y < h; ++y)
-            for (int x = 0; x < w; ++x) dt[size_t(t.at(x, y))] = t.label[size_t(t.at(x, y))] == family ? big : 0.f;
+            for (int x = 0; x < w; ++x) dt[size_t(t.at(x, y))] = t.label[size_t(t.at(x, y))] != 0 ? big : 0.f;
+        {
+            const double pocket = rings ? 0.5 * holeTypical : 0.05 * typical * typical;
+            std::vector<uchar> done(size_t(w) * h, 0);
+            std::vector<int> queue;
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    const size_t start = size_t(t.at(x, y));
+                    if (done[start] || t.label[start] != 0) continue;
+                    queue.clear();
+                    queue.push_back(int(start));
+                    done[start] = 1;
+                    bool beside = false, open = false;
+                    for (size_t k = 0; k < queue.size(); ++k) {
+                        const int cur = queue[k], cx = cur % w, cy = cur / w;
+                        const int around[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                        for (const auto& d : around) {
+                            const int nx = cx + d[0], ny = cy + d[1];
+                            if (!t.inBounds(nx, ny)) {
+                                open = true;
+                                continue;
+                            }
+                            const size_t ni = size_t(t.at(nx, ny));
+                            if (t.label[ni] != 0) {
+                                beside = beside || t.label[ni] == family;
+                                continue;
+                            }
+                            if (done[ni]) continue;
+                            done[ni] = 1;
+                            queue.push_back(int(ni));
+                        }
+                    }
+                    if (beside && !open && double(queue.size()) <= pocket)
+                        for (const int i : queue) dt[size_t(i)] = big;
+                }
+        }
         const auto relax = [&](int x, int y, int nx, int ny, float cost) {
             if (!t.inBounds(nx, ny)) return;
             float& v = dt[size_t(t.at(x, y))];
@@ -1443,6 +1471,28 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
         std::vector<Peak> candidates;
         // (Deeper than half the family's line: a line's middle is no peak.)
         const float least = float(std::max(0.32 * typical, 0.6 * ring));
+        // Whether this colour goes round a point, at a marker's stroke: a
+        // ring or a disc of it all the way, but where lines of other colours
+        // cross it; another colour's own blob, or a line of this one across
+        // it, not.
+        const double around = std::max(1.0, typical / 2 - std::max(1.0, ring) / 2);
+        const auto roundIt = [&](int x, int y) {
+            int hits = 0, covered = 0;
+            for (int k = 0; k < 16; ++k) {
+                const double a = k * M_PI / 8;
+                bool hit = false, other = false;
+                for (const double r : {around - 1, around, around + 1}) {
+                    const int sx = int(std::floor(x + 0.5 + r * std::cos(a))), sy = int(std::floor(y + 0.5 + r * std::sin(a)));
+                    if (!t.inBounds(sx, sy)) continue;
+                    const int l = t.label[size_t(t.at(sx, sy))];
+                    hit = hit || l == family;
+                    other = other || (l != 0 && l != family);
+                }
+                hits += hit;
+                covered += !hit && other;
+            }
+            return hits >= 6 && hits >= 0.7 * (16 - covered);
+        };
         for (int y = 1; y + 1 < h; ++y)
             for (int x = 1; x + 1 < w; ++x) {
                 const float v = dt[size_t(t.at(x, y))];
@@ -1450,7 +1500,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                 bool top = true;
                 for (int dy = -1; dy <= 1 && top; ++dy)
                     for (int dx = -1; dx <= 1 && top; ++dx) top = dt[size_t(t.at(x + dx, y + dy))] <= v;
-                if (top) candidates.push_back(Peak{v, x, y});
+                if (top && roundIt(x, y)) candidates.push_back(Peak{v, x, y});
             }
         std::sort(candidates.begin(), candidates.end(), [](const Peak& a, const Peak& b) { return a.v > b.v; });
         QList<QPointF> fromPeaks;
@@ -1568,10 +1618,12 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                 QRect box;
                 int id;
             };
+            // (A letter with a hole, an "e", an "a", or a key's square may
+            // have been taken for a marker: in a word, it is a letter. A row
+            // of markers alone, all alike, is no word.)
             QList<Small> small;
             for (size_t id = 1; id < pieces.size(); ++id) {
                 const Piece& q = pieces[id];
-                if (q.marker) continue;
                 const int a = q.x1 - q.x0 + 1, b = q.y1 - q.y0 + 1;
                 if (b < 2.5 * scale || b > 12 * scale || a > 12 * scale) continue;
                 small << Small{QRect(QPoint(q.x0, q.y0), QPoint(q.x1, q.y1)), int(id)};
@@ -1595,10 +1647,15 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                     word << j;
                     last = r;
                 }
-                if (word.size() < 3) continue;
+                int letters = 0;
+                for (const int k : std::as_const(word)) letters += !pieces[size_t(small.at(k).id)].marker;
+                if (word.size() < 3 || letters < 2) continue;
                 for (const int k : std::as_const(word)) {
                     used[k] = true;
                     glyphBoxes << small.at(k).box;
+                    const QRectF box = QRectF(small.at(k).box).adjusted(-1, -1, 1, 1);
+                    for (int c = int(out.centres.size()) - 1; c >= 0; --c)
+                        if (box.contains(out.centres.at(c))) out.centres.removeAt(c);
                 }
             }
         }
@@ -1764,6 +1821,9 @@ QList<Run> runsOfLine(const QList<QPointF>& points, const QList<int>& breaks, do
     int dir = 0, extreme = 0;
     const auto finish = [&] {
         if (cur.size() >= 2 && (dir < 0 || (dir == 0 && cur.last().x() < cur.first().x()))) std::reverse(cur.begin(), cur.end());
+        // (A step back of less than \a turn, on a side steeper than the line
+        // is wide, is the jitter of its middle: in the order walked, x held.)
+        for (int k = 1; k < cur.size(); ++k) cur[k].setX(std::max(cur.at(k).x(), cur.at(k - 1).x()));
         if (!cur.isEmpty()) out << cur;
         cur.clear();
         dir = 0;
@@ -1772,6 +1832,13 @@ QList<Run> runsOfLine(const QList<QPointF>& points, const QList<int>& breaks, do
     for (int i = 0; i < points.size(); ++i) {
         const QPointF p = points.at(i);
         if (!cur.isEmpty() && (breaks.contains(i) || QLineF(cur.last(), p).length() > gap)) finish();
+        // (Where it goes back the way it came - up a side steeper than the
+        // line is wide and down again - it is that side walked twice.)
+        if (cur.size() >= 3) {
+            const QPointF came = cur.last() - cur.at(cur.size() - 3), goes = p - cur.last();
+            const double a = std::hypot(came.x(), came.y()), b = std::hypot(goes.x(), goes.y());
+            if (a > 0.5 * turn && b > 0 && QPointF::dotProduct(came, goes) < -0.5 * a * b) finish();
+        }
         if (cur.isEmpty()) {
             cur << p;
             continue;
@@ -1814,39 +1881,115 @@ QList<Run> runsOfLine(const QList<QPointF>& points, const QList<int>& breaks, do
 // How \a runs sit against \a group: their points within the x of a run of the
 // group, near it (the same line, followed twice) or far from it (another
 // line at that x). False where too many are far; else \a fresh holds what is
-// not near.
-bool fitsWith(const QList<Run>& group, const QList<Run>& runs, double near, double far, double turn, QList<Run>* fresh)
+// new: neither within \a far of the group where it is (doubled, beside it -
+// on a side steeper than the line is wide, another walk of it), nor far from
+// it there (another line). \a overlap: how many were within its x.
+bool fitsWith(const QList<Run>& group, const QList<Run>& runs, double near, double far, double turn, QList<Run>* fresh, int* overlap = nullptr)
 {
     int over = 0, apart = 0;
     QList<Run> kept;
     for (const Run& r : runs) {
         Run keep;
+        // (What is left of a run between points it doubles is kept where it
+        // is more than a straggler or two: those are the far edge of a walk
+        // along its other side, and stand out of the line.)
+        const auto keepIt = [&] {
+            if (keep.size() >= 3 || keep.size() == r.size()) kept << keep;
+            keep.clear();
+        };
         for (const QPointF& p : r) {
             bool within = false, close = false, distant = false;
             for (const Run& g : group) {
-                if (g.size() < 2 || p.x() <= g.first().x() + turn || p.x() >= g.last().x() - turn) continue;
-                within = true;
+                if (g.isEmpty()) continue;
+                const bool inside = g.size() >= 2 && p.x() > g.first().x() + turn && p.x() < g.last().x() - turn;
+                const bool atEnds = !inside && p.x() >= g.first().x() - turn && p.x() <= g.last().x() + turn;
+                if (!inside && !atEnds) continue;
                 const double d = distanceTo(g, p);
-                if (d <= near) {
+                // (At a run's ends too, for what doubles it, where the run is
+                // longer than a few steps: a line there.)
+                if (d <= (inside || g.size() >= 4 ? far : near)) {
                     close = true;
                     break;
                 }
+                if (!inside) continue;
+                within = true;
                 distant = distant || d > far;
             }
-            over += within;
+            over += within || close;
             apart += within && !close && distant;
-            if (!close) {
-                keep << p;
-            } else if (!keep.isEmpty()) {
-                kept << keep;
-                keep.clear();
-            }
+            if (!close && !(within && distant)) keep << p;
+            else if (!keep.isEmpty()) keepIt();
         }
-        if (!keep.isEmpty()) kept << keep;
+        if (!keep.isEmpty()) keepIt();
     }
+    if (overlap != nullptr) *overlap = over;
     if (apart >= std::max(3, int(0.2 * over))) return false;
     if (fresh != nullptr) *fresh = kept;
     return true;
+}
+
+// Whether \a piece, beside \a group with nothing of x in common, carries on
+// from it: at a side where the group is, its end where the group's end is,
+// or where either's end heads, over a short way, within a few line widths
+// (\a far) - more across a longer gap, only if \a longWay. (Another thing of
+// the colour at another height - a legend's key above a row of markers -
+// does not.)
+bool carriesOn(const QList<Run>& group, const QList<Run>& piece, double far, double breakAt, bool longWay)
+{
+    QPointF first(1e18, 0), last(-1e18, 0);
+    for (const Run& r : piece) {
+        if (r.isEmpty()) continue;
+        if (r.first().x() < first.x()) first = r.first();
+        if (r.last().x() > last.x()) last = r.last();
+    }
+    if (first.x() > last.x()) return false;
+    // The group's points nearest each side, and the runs they are in.
+    int leftRun = -1, leftAt = -1, rightRun = -1, rightAt = -1;
+    for (int g = 0; g < group.size(); ++g)
+        for (int k = 0; k < group.at(g).size(); ++k) {
+            const QPointF q = group.at(g).at(k);
+            if (q.x() <= first.x() && (leftRun < 0 || q.x() > group.at(leftRun).at(leftAt).x())) {
+                leftRun = g;
+                leftAt = k;
+            }
+            if (q.x() >= last.x() && (rightRun < 0 || q.x() < group.at(rightRun).at(rightAt).x())) {
+                rightRun = g;
+                rightAt = k;
+            }
+        }
+    // Where a run heads at its start (\a atStart) or its end, over the last
+    // few points there: its y at \a x.
+    const auto heading = [&](const Run& r, bool atStart, double x, double* y) {
+        if (r.size() < 2) return false;
+        const QPointF e = atStart ? r.first() : r.last();
+        QPointF o = e;
+        for (int k = 0; k < r.size(); ++k) {
+            const QPointF q = atStart ? r.at(k) : r.at(r.size() - 1 - k);
+            if (std::abs(q.x() - e.x()) > 3) break;
+            o = q;
+        }
+        if (std::abs(o.x() - e.x()) < 0.5) return false;
+        *y = e.y() + (e.y() - o.y()) / (e.x() - o.x()) * (x - e.x());
+        return true;
+    };
+    const auto side = [&](int g, int k, QPointF end, bool pieceOnRight) {
+        if (g < 0) return false;
+        const Run& run = group.at(g);
+        const QPointF q = run.at(k);
+        const double gap = std::abs(end.x() - q.x());
+        if (!longWay && gap > 3 * breakAt) return false;
+        const double allowed = std::max(2 * far, 0.3 * gap);
+        double off = std::abs(end.y() - q.y());
+        if (gap <= 3 * breakAt) {
+            double y = 0;
+            // (The group's run heads on from its end; the piece's, back.)
+            if ((pieceOnRight ? k == run.size() - 1 : k == 0) && heading(run, !pieceOnRight, end.x(), &y)) off = std::min(off, std::abs(y - end.y()));
+            for (const Run& r : piece)
+                if (!r.isEmpty() && (pieceOnRight ? r.first() == end : r.last() == end) && heading(r, pieceOnRight, q.x(), &y)) off = std::min(off, std::abs(y - q.y()));
+        }
+        return off <= allowed;
+    };
+    return side(leftRun, leftAt, first, true) || side(rightRun, rightAt, last, false);
 }
 
 // The pieces of one family's lines as functions of x where they are: each
@@ -1917,7 +2060,8 @@ QList<Series> asFunctions(const QList<Series>& pieces, const QTransform& toWork,
             functions << extra;
         }
     }
-    // Put together, longest first: a piece joins the first group it fits.
+    // Put together, longest first: a piece joins the first group it fits -
+    // where it has x in common with it, or carries on from it.
     std::stable_sort(functions.begin(), functions.end(), [](const Piece& a, const Piece& b) { return a.length > b.length; });
     struct Group {
         QList<Run> runs;
@@ -1928,7 +2072,9 @@ QList<Series> asFunctions(const QList<Series>& pieces, const QTransform& toWork,
         bool placed = false;
         for (Group& g : groups) {
             QList<Run> fresh;
-            if (!fitsWith(g.runs, piece.runs, near, far, turn, &fresh)) continue;
+            int over = 0;
+            if (!fitsWith(g.runs, piece.runs, near, far, turn, &fresh, &over)) continue;
+            if (over <= 2 && !carriesOn(g.runs, piece.runs, far, breakAt, false)) continue;
             g.runs << fresh;
             g.from << piece.from;
             placed = true;
@@ -1937,11 +2083,129 @@ QList<Series> asFunctions(const QList<Series>& pieces, const QTransform& toWork,
         }
         if (!placed) groups << Group{piece.runs, {piece.from}};
     }
+    // Then curves seen in pieces far apart - a stretch hidden under markers
+    // between them - put together, the longest first, where they share no x
+    // and the one carries on from the other, or they pass through much the
+    // same heights (two peaks of one curve; not a legend's key above a row
+    // of markers).
+    const auto spanOf = [](const Group& g) {
+        double lo = 1e18, hi = -1e18;
+        for (const Run& r : g.runs)
+            if (!r.isEmpty()) {
+                lo = std::min(lo, r.first().x());
+                hi = std::max(hi, r.last().x());
+            }
+        return std::make_pair(lo, hi);
+    };
+    const auto lengthOf = [](const Group& g) {
+        double l = 0;
+        for (const Run& r : g.runs) l += runLength(r);
+        return l;
+    };
+    const auto heightsMeet = [](const Group& a, const Group& b) {
+        const auto heights = [](const Group& g) {
+            double lo = 1e18, hi = -1e18;
+            for (const Run& r : g.runs)
+                for (const QPointF& q : r) {
+                    lo = std::min(lo, q.y());
+                    hi = std::max(hi, q.y());
+                }
+            return std::make_pair(lo, hi);
+        };
+        const auto ha = heights(a), hb = heights(b);
+        const double shared = std::min(ha.second, hb.second) - std::max(ha.first, hb.first);
+        return shared > 0 && shared >= 0.5 * std::min(ha.second - ha.first, hb.second - hb.first);
+    };
+    for (bool again = true; again;) {
+        again = false;
+        std::stable_sort(groups.begin(), groups.end(), [&](const Group& a, const Group& b) { return lengthOf(a) > lengthOf(b); });
+        for (int a = 0; a < groups.size() && !again; ++a)
+            for (int b = a + 1; b < groups.size() && !again; ++b) {
+                const auto sa = spanOf(groups.at(a)), sb = spanOf(groups.at(b));
+                if (!(sa.second < sb.first || sb.second < sa.first)) continue;
+                if (!carriesOn(groups.at(a).runs, groups.at(b).runs, far, breakAt, true) && !heightsMeet(groups.at(a), groups.at(b))) continue;
+                groups[a].runs << groups.at(b).runs;
+                groups[a].from << groups.at(b).from;
+                groups.removeAt(b);
+                ++*puttogether;
+                again = true;
+            }
+    }
     for (const Group& g : std::as_const(groups)) {
+        // In order of x, each run in the order it was walked: by its first x,
+        // the next carrying on from where the last left off. (Sorting every
+        // point by x would shuffle a side steeper than the line is wide.)
+        // Where runs share more x than the jitter of a line's middle: merged
+        // by x, or on a steep side both go up (or down), by y - the order
+        // along it - with x held from going back.
+        QList<Run> runs;
+        for (const Run& r : g.runs)
+            if (!r.isEmpty()) runs << r;
+        std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.first().x() < b.first().x(); });
         QList<QPointF> all;
-        for (const Run& r : g.runs) all << r;
+        const auto append = [&](const QList<QPointF>& points) {
+            for (const QPointF& q : points) all << QPointF(std::max(q.x(), all.isEmpty() ? q.x() : all.last().x()), q.y());
+        };
+        for (Run r : std::as_const(runs)) {
+            // (A run hardly wider than the line - a bit of a steep side -
+            // has no way in x of its own: the way that carries on.)
+            if (!all.isEmpty() && r.size() >= 2 && r.last().x() - r.first().x() < turn && QLineF(all.last(), r.last()).length() < QLineF(all.last(), r.first()).length()) {
+                std::reverse(r.begin(), r.end());
+                for (int k = 1; k < r.size(); ++k) r[k].setX(std::max(r.at(k).x(), r.at(k - 1).x()));
+            }
+            if (all.isEmpty() || r.first().x() >= all.last().x() - 0.5 * turn) {
+                append(r);
+                continue;
+            }
+            // What both cover: the last of what is there, from where this
+            // starts; this, to where that ends.
+            qsizetype from = all.size();
+            while (from > 0 && all.at(from - 1).x() > r.first().x() - 0.5 * turn) --from;
+            QList<QPointF> both = all.mid(from);
+            all.resize(from);
+            const double until = both.last().x();
+            qsizetype in = 0;
+            while (in < r.size() && r.at(in).x() <= until) ++in;
+            const QList<QPointF> rIn = r.mid(0, in), rAfter = r.mid(in);
+            const double over = std::max(until - r.first().x(), 1e-6);
+            const double rdy = rIn.isEmpty() ? 0 : rIn.last().y() - rIn.first().y(), tdy = both.last().y() - both.first().y();
+            const bool steep = std::abs(rdy) > 3 * over && std::abs(tdy) > 3 * over && rdy * tdy > 0;
+            both << rIn;
+            const double way = rdy > 0 ? 1 : -1;
+            if (steep) std::stable_sort(both.begin(), both.end(), [way](const QPointF& a, const QPointF& b) { return way * a.y() < way * b.y(); });
+            else std::stable_sort(both.begin(), both.end(), [](const QPointF& a, const QPointF& b) { return a.x() < b.x(); });
+            append(both);
+            append(rAfter);
+        }
+        // Points of a steep side at much the same x - held from going back,
+        // or a sliver apart - in the order along it: by y, from the height
+        // before them to the height after. (Not a peak's top, which goes
+        // past both.)
+        for (qsizetype i = 0; i < all.size();) {
+            qsizetype j = i + 1;
+            while (j < all.size() && all.at(j).x() - all.at(j - 1).x() < 0.5 * turn && QLineF(all.at(j - 1), all.at(j)).length() <= breakAt) ++j;
+            if (j - i >= 3) {
+                // (Past a gap too: which way the side goes.)
+                const double before = i > 0 ? all.at(i - 1).y() : all.at(i).y();
+                const double after = j < all.size() ? all.at(j).y() : all.at(j - 1).y();
+                double lo = 1e18, hi = -1e18;
+                for (qsizetype k = i; k < j; ++k) {
+                    lo = std::min(lo, all.at(k).y());
+                    hi = std::max(hi, all.at(k).y());
+                }
+                const bool peak = lo < std::min(before, after) - 2 * far || hi > std::max(before, after) + 2 * far;
+                if (!peak && std::abs(after - before) > far) {
+                    std::vector<double> xs;
+                    for (qsizetype k = i; k < j; ++k) xs.push_back(all.at(k).x());
+                    std::sort(xs.begin(), xs.end());
+                    const bool up = after > before;
+                    std::stable_sort(all.begin() + i, all.begin() + j, [up](const QPointF& a, const QPointF& b) { return up ? a.y() < b.y() : a.y() > b.y(); });
+                    for (qsizetype k = i; k < j; ++k) all[k].setX(xs[size_t(k - i)]);
+                }
+            }
+            i = j;
+        }
         if (all.size() < 2) continue;
-        std::stable_sort(all.begin(), all.end(), [](const QPointF& a, const QPointF& b) { return a.x() < b.x(); });
         // Like the longest of what it was made of.
         int first = g.from.first();
         for (const int k : g.from)
@@ -2007,6 +2271,45 @@ int dropShortBits(Series& s, double least)
     return dropped;
 }
 
+// The stretches of \a s between its gaps that lie mostly on \a centres
+// (markers of its colour, pixels, \a size across) taken out: what is left of
+// a row of markers once they are lifted out, put together with a line.
+int dropStretchesOnMarkers(Series& s, const Traced& t, const QTransform& toWork, const QList<QPointF>& centres, double size)
+{
+    if (s.shape != Series::Shape::Line || s.points.size() < 2) return 0;
+    QList<int> starts{0};
+    for (const int b : std::as_const(s.breaks))
+        if (b > 0 && b < s.points.size()) starts << b;
+    std::sort(starts.begin(), starts.end());
+    starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+    starts << int(s.points.size());
+    QList<QPointF> points;
+    QList<int> breaks;
+    int dropped = 0;
+    for (int k = 0; k + 1 < starts.size(); ++k) {
+        const int from = starts.at(k), to = starts.at(k + 1);
+        int on = 0;
+        for (int i = from; i < to; ++i) {
+            const QPointF pixel = t.px.toPixel(toWork.map(s.points.at(i)));
+            for (const QPointF& c : centres)
+                if (std::abs(c.x() - pixel.x()) <= size && std::abs(c.y() - pixel.y()) <= size && QLineF(c, pixel).length() <= size) {
+                    ++on;
+                    break;
+                }
+        }
+        if (on >= 0.6 * (to - from)) {
+            ++dropped;
+            continue;
+        }
+        if (!points.isEmpty()) breaks << int(points.size());
+        for (int i = from; i < to; ++i) points << s.points.at(i);
+    }
+    if (dropped == 0) return 0;
+    s.points = points;
+    s.breaks = breaks;
+    return dropped;
+}
+
 } // namespace
 
 bool extractRaster(Source& source, Plot& plot, const Options& options, QStringList* notes)
@@ -2068,7 +2371,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
     QElapsedTimer clock;
     clock.start();
     std::vector<int> stamps(size_t(w) * h, 0);
-    int steps = 0, joined = 0, scraps = 0, alongMarkers = 0, puttogether = 0, loops = 0, bits = 0;
+    int steps = 0, joined = 0, scraps = 0, alongMarkers = 0, puttogether = 0, loops = 0, bits = 0, mostlyGaps = 0;
     for (int family = 1; family <= families; ++family) {
         const Family& fam = t.families.at(family - 1);
         // (A colour not asked for: its markers are lifted out, nothing more.)
@@ -2120,7 +2423,43 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
         joined += joinPieces(pieces, 0, 40.0, std::max(1.5, 3 * thickness / scale));
         if (plot.calibration.kind == Kind::Cartesian) {
             pieces = asFunctions(pieces, plot.work, thickness / scale, &puttogether, &loops);
+            // Put together, a line may hold stretches of what is left of the
+            // markers between its gaps: each stretch looked at again. And one
+            // that is more gaps than line is no curve: scraps of the colour
+            // put in a row.
+            if (!m.centres.isEmpty() && m.size > 0)
+                for (Series& s : pieces) alongMarkers += dropStretchesOnMarkers(s, t, plot.work, m.centres, m.size);
+            // (In a colour with markers of its own, where scraps of them
+            // are; a line under another colour's markers is seen in pieces.)
+            for (int k = int(pieces.size()) - 1; k >= 0 && !m.centres.isEmpty(); --k) {
+                const Series& s = pieces.at(k);
+                if (s.shape == Series::Shape::Line && s.breaks.size() >= 6 && s.breaks.size() * 10 > s.points.size()) {
+                    pieces.removeAt(k);
+                    ++mostlyGaps;
+                }
+            }
             for (Series& s : pieces) bits += dropShortBits(s, keepAt / scale);
+            // A short line beside the colour's own markers - most of it within
+            // two markers' width of them - is what is left of some: a ring
+            // not found, on a narrow peak's top. (A line drawn through its
+            // markers is long.)
+            if (!m.centres.isEmpty() && m.size > 0)
+                for (int k = int(pieces.size()) - 1; k >= 0; --k) {
+                    const Series& s = pieces.at(k);
+                    if (s.shape != Series::Shape::Line || lengthOfSeries(s) * scale > 0.25 * std::max(w, h)) continue;
+                    std::vector<double> far;
+                    for (const QPointF& q : s.points) {
+                        const QPointF pixel = t.px.toPixel(plot.work.map(q));
+                        double nearest = 1e18;
+                        for (const QPointF& c : m.centres) nearest = std::min(nearest, QLineF(c, pixel).length());
+                        far.push_back(nearest);
+                    }
+                    std::nth_element(far.begin(), far.begin() + far.size() / 2, far.end());
+                    if (far[far.size() / 2] <= 2 * m.size) {
+                        pieces.removeAt(k);
+                        ++alongMarkers;
+                    }
+                }
         }
         double longest = 0;
         for (const Series& s : std::as_const(pieces)) longest = std::max(longest, lengthOfSeries(s));
@@ -2181,7 +2520,8 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
     }
     if (fromChains > 0) notes->append(tr("%1 markers were found where they touch others (by the holes of rings, or the middles of discs).").arg(fromChains));
     if (glyphs > 0) notes->append(tr("%1 glyphs drawn in the picture (a circled label, a letter) were left out, and lines followed through them.").arg(glyphs));
-    if (alongMarkers > 0) notes->append(tr("%1 lines running along rows of markers of their own colour were taken for what is left of the markers, and left out.").arg(alongMarkers));
+    if (alongMarkers > 0) notes->append(tr("%1 lines, or stretches of lines between gaps, running along rows of markers of their own colour were taken for what is left of the markers, and left out.").arg(alongMarkers));
+    if (mostlyGaps > 0) notes->append(tr("%1 lines more gaps than line (a gap every ten points or less) were taken for scraps of their colour put in a row, and left out.").arg(mostlyGaps));
     if (joined > 0) notes->append(tr("%1 pieces of lines parted by what lay over them were joined.").arg(joined));
     if (puttogether > 0) notes->append(tr("%1 pieces of lines of one colour were put together as one curve, in order of x: each line comes back in order of x, with a gap where nothing of it could be seen.").arg(puttogether));
     if (loops > 0) notes->append(tr("%1 lines are not single-valued in x (a loop, or two curves of one colour met): they are in the order they were followed.").arg(loops));
