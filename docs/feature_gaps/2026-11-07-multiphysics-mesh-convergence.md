@@ -295,8 +295,8 @@ be as accurate, not what `fem_converge` would know. `compare.txt` beside this fi
 - **Where a corner or a small feature holds the mesh, the adaptive check wins clearly:** to be as accurate as it was,
   cutting every element took 5.9 times the unknowns on the L-shaped gap, 31 times on the strip, 35 times on the TSV, and
   had not got there at a million unknowns on the microstrip and the resistor, nor at 115,000 on the corner at 1e-4. In time
-  that is 7 to 250 times. In the test `reentrantCornerRates`, cutting every element took 2.6 million unknowns in all for 1e-4
-  against the check's 75,000.
+  that is 7 to 250 times. In the test `reentrantCornerRates`, the check's own uniform route (`refine: uniform`) took 866,000
+  unknowns in all for 1e-4 against the adaptive route's 75,000 (2.6 million before its rounds cut every element twice, below).
 - **On quadratic elements at a corner** - the review's L - the check now grades into the corner: its error falls as
   unknowns^-3.4 here against ^-1.2 before, 1e-5 on 43,000 unknowns in all (`aCornerIsGradedAsItShouldBe`; for 1e-6, 44,000
   against a million with the old marking, in `probe5.cpp`).
@@ -457,6 +457,74 @@ lints green. The whole Release suite was not run again after the fixes (it was, 
 
 **Not done:** the remeshing from kept sizes still inflates the mesh by 1.2 to 1.6; the review's SOI strip and its `parallel`
 were not rerun here (the shipped SOI example was).
+
+## The Linux CI finding of `f3c591c`, answered (8 November)
+
+The session fixing CI's Linux sanitizer job found it (`docs/bug_hunts/2026-11-08-linux-debug-ci.md`, N3); the user gave it to
+this session ("Mesh session"). In `reentrantCornerRates`' slow-build branch, the uniform route at 1e-3 said "converged ...
+largest estimated error 0.0931 %" where it had made 1.23e-3. Its changes on CI's meshes fell by 0.39, 0.98 and 0.35 a step.
+The last pair read as unknowns^-1.4, faster than the order, so it was bounded at the order from the last change alone: 1.84
+times that change, where 2.4 were left (the true rate about 0.62).
+
+**The cause is the cut, not only the bound.** Longest-edge bisection of every element cuts each triangle one way and then the
+other, so meshes cut once a round alternate in kind and so do their changes. On macOS's meshes the corner's ratios run 1.04,
+0.51, 0.79, 0.48, 0.81, 0.49 against a true 0.63 a step. Any one pair reads half of it. Measured at `a26ec63a`, the uniform
+route said less than it made on two of seven models here, both from three meshes (TSV: 3.50e-4 said, 3.65e-4 made; resistor
+R: 3.37e-4 said, 4.61e-4 made), where no reading of three meshes can see the alternation.
+
+**What changed:**
+
+- **The uniform rounds cut every element twice:** the `refine: uniform` route, and the rounds after a check caught a false
+  agreement (whose meshes start at the check's). Each mesh is then of the kind of the one before, about 4.3 times its
+  unknowns. The check itself is still one cut, and so is the one cut after a check that left a value just above its
+  tolerance (measured fine on all 16 models, and its three meshes are read as before).
+- **The rate read over every other mesh as well** (meshes n-1, n-3, n-5, where there are five), which cancels the alternation:
+  6.10e-15 left where 6.2e-15 was on the corner's macOS meshes, 2.3 changes on CI's ratios where 2.4 were. The error said is
+  at least what that reading leaves, with room 1.25 where it agrees with a steady pairwise rate or with the reading before
+  it, else 2. It counts only where it reads a rate of its own, one way and no faster than the order. Bounded at the order
+  over two steps as well, it held the shipped corner's check back three meshes (15,256 unknowns where 4,897 had been right).
+  Counting its erratic cases too, it held the goal case's reference to 4.7e-7 said where 7.7e-9 was made.
+- **A rate faster than the order among slower ones gets room 3, not 2**, where four meshes show the earlier pair read another
+  rate: one fast pair among slow ones is the alternation, and that is where four meshes cannot read every other one.
+
+**Measured again**, `compare.sh` at `a26ec63a` (`compare-a26ec63a.txt`) and after (`compare.txt`), with seven runs of the
+uniform route added against the same references:
+
+| Model, value, tolerance, uniform route | Before: solves, unknowns in all | made / said | After: solves, unknowns in all | made / said |
+|---|---|---|---|---|
+| adaptive_corner, `es.W`, 1e-3 | 8, 36,860 | 5.5e-04 / 7.9e-04 | 5, 50,791 | 3.3e-04 / 5.0e-04 |
+| adaptive_corner, `es.W`, 1e-4 | 14, 2,620,022 | 3.4e-05 / 5.2e-05 | 7, 865,671 | 5.2e-05 / 6.8e-05 |
+| coax, `es.C11`, 1e-4 | 3, 20,234 | 5.8e-07 / 3.8e-06 | 3, 72,970 | 2.9e-08 / 1.0e-07 |
+| microstrip, `es.C11`, 1e-3 | 4, 173,209 | 1.5e-04 / 2.5e-04 | 3, 268,474 | 8.3e-05 / 1.7e-04 |
+| tsv_axisymmetric, `es.C11`, 1e-3 | 3, 146,411 | 3.7e-04 / **3.5e-04, below** | 3, 547,028 | 1.5e-04 / 2.6e-04 |
+| resistor_heating, `ec.R`, 1e-3 | 3, 58,016 | 4.6e-04 / **3.4e-04, below** | 3, 204,760 | 2.3e-04 / 4.5e-04 |
+| wr90_modes, `emw.neff`, 1e-4 | 3, 22,136 | 2.3e-10 / 6.4e-10 | 3, 79,472 | 1.1e-11 / 3.3e-11 |
+
+- **The 16 adaptive runs are unchanged**, to the unknown and the error said: none passes through what changed in a way that
+  moves its verdict.
+- **The uniform route says at least what it makes on all seven**, where it did not on two. Where it settles on three meshes it
+  now costs 1.5 to 3.7 times what it did, since those meshes are four times apart rather than two, and its errors are 2 to 20
+  times smaller for it. On the corner at 1e-4 it is three times cheaper: no mesh between is solved.
+- **In the test**, the slow-build branch at 1e-3: the uniform route converged at 38,743 unknowns with 3.25e-4 made (5 solves,
+  50,791 in all; was 1.23e-3 made on CI's Linux meshes). Release at 1e-4: 5.18e-5 made, 6.8e-5 said (was 7.4e-5 made, 5.5e-5
+  said, on CI's).
+
+**The goal case's reference.** `goalOrientedRefinesForTheValue`'s reference (refined by the adjoint, 1e-7) moves one way and
+then the other. At `a26ec63a` its error said was below the error made in 3 of 4 runs here: 2.0e-8, 5.8e-8 and 3.5e-8 said,
+7.7e-8 made. Now it says more, and in some runs it reaches 1e-7 only near 957,000 unknowns, where its check's mesh would pass
+the 2e6 limit, so it stops at "unknowns". It failed 5 runs of 5 on its own in Release here and passed in the whole suite's
+run. The CI session's change to that test runs the reference without its own check (macOS's run-to-run rounding, its N1); with
+that change it passed 4 of 4 here, and it is taken here as that session wrote it (the coordinating session: "Take it"), so the
+two branches carry the same lines. The runs under test keep their checks.
+
+**Tests:** `estimateOfAlternatingChanges` checks three cases. On the corner's macOS uniform meshes, the error said is at least
+the error left on every three or more. On CI's ratios it is at least the 2.4 changes left (1.82 with the code before). A
+smooth sequence is said as before. `reentrantCornerRates` carries the CI session's lines unchanged: the first mesh within the
+tolerance compared, and a converged uniform run within its tolerance.
+
+**Checked:** `test_fem_adapt`, `test_multiphysics_converge`, `test_multiphysics_optimize` and `test_qucs_control` through
+ctest in Release (4 of 4) and in the Debug ASan + UBSan tree (4 of 4, no sanitizer report; `test_fem_adapt` 178 s); the four
+lints green. Not run: CI's Linux itself, and GCC's libstdc++ stand-in tree.
 
 ## What could not be verified
 

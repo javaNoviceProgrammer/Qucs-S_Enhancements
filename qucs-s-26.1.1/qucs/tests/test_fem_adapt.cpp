@@ -28,6 +28,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -234,6 +235,7 @@ private slots:
     void anUnmarkedMeshIsTheSame();
     void estimateOfKnownRates();
     void estimateOfErraticAndUnmovedValues();
+    void estimateOfAlternatingChanges();
     void coaxAgainstItsClosedForm();
     void reentrantCornerRates();
     void aCornerIsGradedAsItShouldBe();
@@ -416,6 +418,40 @@ void TestFemAdapt::estimateOfErraticAndUnmovedValues()
         QCOMPARE(ValueEstimate::trustOf(ValueEstimate::trustWord(t)), std::optional<ValueEstimate::Trust>(t));
 }
 
+void TestFemAdapt::estimateOfAlternatingChanges()
+{
+    // Every element cut by longest-edge bisection, one way and then the other: the
+    // changes alternate with the cut, and one pair of them reads a rate the next
+    // does not. The error said is not below the error left.
+    // The L corner's uniform meshes on macOS (8 November), against its limit
+    // 1.1326822727e-11 from adaptive runs at 1e-5 to 1e-6: on every three or more.
+    const std::vector<double> ns{106, 232, 489, 1041, 2171, 4513, 9282, 19026, 38743, 78787, 159645, 323519, 655235, 1327233};
+    const std::vector<double> qs{1.1466588801e-11, 1.14276768465e-11, 1.13871229834e-11, 1.1366494225e-11, 1.13502921358e-11, 1.13424843571e-11,
+                                 1.13361310253e-11, 1.13330378002e-11, 1.13305275587e-11, 1.13292928149e-11, 1.13282973282e-11, 1.13278040854e-11,
+                                 1.13274090295e-11, 1.13272122667e-11};
+    const double limit = 1.1326822727e-11;
+    for (std::size_t k = 3; k <= ns.size(); ++k) {
+        const ValueEstimate e = estimateValue({ns.begin(), ns.begin() + long(k)}, {qs.begin(), qs.begin() + long(k)}, 1);
+        QVERIFY2(e.error >= std::abs(qs[k - 1] - limit), qPrintable(QStringLiteral("%1 meshes: said %2, left %3 (%4)").arg(k).arg(e.error).arg(std::abs(qs[k - 1] - limit)).arg(e.why)));
+    }
+    // CI's Linux meshes (docs/bug_hunts/2026-11-08-linux-debug-ci.md, N3): the changes
+    // fell by 0.39, 0.98 and 0.35 a step, the last pair read as unknowns^-1.4, faster
+    // than the order, where the error fell as ^-0.62 and 2.4 of the last change were
+    // left. Bounded at the order from the last change alone, it said 1.84.
+    const std::vector<double> linux{232, 493, 1041, 2200, 4620};
+    const double d3 = 0.39 * 0.98 * 0.35;
+    const std::vector<double> moving{1 + 0.39 + 0.39 * 0.98 + d3 + 2.4 * d3, 0.39 + 0.39 * 0.98 + d3 + 2.4 * d3, 0.39 * 0.98 + d3 + 2.4 * d3, d3 + 2.4 * d3, 2.4 * d3};
+    const ValueEstimate jittered = estimateValue(linux, moving, 1);
+    QVERIFY2(jittered.error >= 2.4 * d3, qPrintable(QStringLiteral("said %1 changes, left 2.4: %2").arg(jittered.error / d3).arg(jittered.why)));
+    // A smooth sequence is not said worse for it: unknowns^-1, steady, as before.
+    std::vector<double> smooth;
+    for (double n : {100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0}) smooth.push_back(1 + 1 / n);
+    const ValueEstimate s = estimateValue({100, 200, 400, 800, 1600, 3200}, smooth, 1);
+    QCOMPARE(s.trust, ValueEstimate::Extrapolated);
+    QVERIFY(s.steady);
+    QVERIFY2(std::abs(s.error - 1.25 / 3200) < 1e-9, qPrintable(QString::number(s.error * 3200)));
+}
+
 void TestFemAdapt::coaxAgainstItsClosedForm()
 {
     const double exact = 2 * M_PI * Eps0 / std::log(3.0);
@@ -478,10 +514,31 @@ void TestFemAdapt::reentrantCornerRates()
     QVERIFY2(qa > 0.85, qPrintable(QString::number(qa)));
     QVERIFY2(qu > 0.55 && qu < 0.8, qPrintable(QString::number(qu)));
     QVERIFY(ea <= tolerance.toDouble());
-    // The same accuracy, by cutting every element: many more unknowns.
-    QVERIFY2(uniform.unknownsSolved > (slowBuild() ? 1.5 : 10.0) * adaptive.unknownsSolved || !uniform.converged, qPrintable(uniform.summary));
+    // The same accuracy, by cutting every element: many more unknowns - the
+    // first mesh of each within the tolerance of the reference. (Not the
+    // unknowns solved in all: those count the meshes each took to be sure, and
+    // the adaptive one's pre-asymptotic jitter cost it as many as uniform's on
+    // the meshes of 8 November - 36,758 against 37,785 - though uniform's mesh
+    // within 1e-3 was nine times its.)
+    const auto firstWithin = [&](const ConvergenceResult& r) {
+        for (const ConvergenceRow& row : r.rows)
+            if (!row.values.empty() && std::abs(row.values[0] - exact) <= tolerance.toDouble() * std::abs(exact)) return row.unknowns;
+        return std::numeric_limits<double>::infinity();
+    };
+    const double na = firstWithin(adaptive), nu = firstWithin(uniform);
+    qInfo("corner: the first mesh within %s: adaptive %.0f unknowns, uniform %.0f", qPrintable(tolerance), na, nu);
+    QVERIFY(std::isfinite(na));
+    QVERIFY2(nu > (slowBuild() ? 1.5 : 10.0) * na || !uniform.converged, qPrintable(QStringLiteral("%1 against %2: %3").arg(nu).arg(na).arg(uniform.summary)));
     // The adaptive one's estimate held: the said error not below the error made.
     QVERIFY(finalOf(adaptive)->error >= std::abs(finalOf(adaptive)->value - exact));
+    // And the uniform one's verdict, where it says it converged: within the
+    // tolerance. (With the first mesh within the tolerance compared below, a
+    // uniform run that claimed the tolerance without reaching it would otherwise
+    // pass unseen: after f3c591c a slow build's said 9.3e-4 and made 1.23e-3 at
+    // 1e-3, its changes' jitter read as a rate faster than the order and
+    // bounded at the order. docs/bug_hunts/2026-11-08-linux-debug-ci.md, N3.)
+    if (uniform.converged)
+        QVERIFY2(eu <= tolerance.toDouble(), qPrintable(QStringLiteral("said %1, made %2: %3").arg(finalOf(uniform)->error / std::abs(exact)).arg(eu).arg(uniform.summary)));
     // And its smallest elements at the corner.
     QVERIFY(adaptive.mesh);
     double smallest = 1e300;
@@ -636,9 +693,16 @@ void TestFemAdapt::goalOrientedRefinesForTheValue()
     json.replace("400[K]", "101[K]").replace("300[K]", "1[K]");
     Model ref = modelOf(json);
     // (The reference refined by the adjoint: by the fields' error, at 1e-8, the
-    // check catches the sensor's agreement as false and cuts every element.)
+    // check catches the sensor's agreement as false and cuts every element.
+    // And without its own check: at 1e-7 even the adjoint's check moves the value
+    // by about that - 1.0e-7 in one run - and, when it counts that as a false
+    // agreement, cuts every element past any limit a test can wait for. Which
+    // runs do is not fixed on macOS, where Accelerate's threaded factorization
+    // rounds differently from one run to the next. Its value is good to about
+    // 1e-7, ten times what the runs below are asked; they keep their checks.)
     const QString rt = addCheck(ref, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), slowBuild() ? QStringLiteral("1e-6") : QStringLiteral("1e-7")},
-                                                             {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 40}});
+                                                             {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 40},
+                                                             {QStringLiteral("check"), false}});
     const ConvergenceResult reference = check(ref, rt);
     QVERIFY2(reference.converged, qPrintable(reference.summary + reference.notes.join(QStringLiteral(" | "))));
     const double exact = finalOf(reference)->limit;
