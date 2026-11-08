@@ -14,6 +14,7 @@
 #define QUCS_MARKUP_H
 
 #include <QColor>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -60,6 +61,13 @@ struct Stroke {
     QColor color;
     double width = 0;
     bool highlighter = false;
+    /// Its number on its part, given as it is drawn (Drawing::add()) and
+    /// never given again there: "stroke 3" stays stroke 3 whatever is
+    /// drawn or taken away after it.
+    int id = 0;
+    /// Marked as dealt with (Claude's, or the user's): drawn faded, and
+    /// left out of what a prompt tells.
+    bool addressed = false;
     /// Its points' box, grown by half its width.
     QRectF bounds() const;
 };
@@ -76,7 +84,13 @@ public:
     int count(const QString& part) const;
     /// The parts drawn on, as they came first.
     QStringList parts() const;
+    /// \a stroke added, given the next number on its part (Stroke::id).
     void add(const Stroke& stroke);
+    /// The strokes on \a part numbered \a ids marked addressed, or not;
+    /// how many changed. Undone as any change.
+    int setAddressed(const QString& part, const QList<int>& ids, bool addressed = true);
+    /// The stroke on \a part numbered \a id, or null.
+    const Stroke* find(const QString& part, int id) const;
     /// The latest stroke on \a part within \a reach of \a point (its own
     /// half width more) taken away, and whether there was one. The change
     /// is not kept for undo(): changed() is, with what the strokes were.
@@ -100,6 +114,7 @@ private:
     void remember();
     QList<Stroke> a_strokes;
     QList<QList<Stroke>> a_undo;   // what the strokes were before each change
+    QHash<QString, int> a_lastId;  // each part's last number given
     quint64 a_revision = 0;
 };
 
@@ -162,9 +177,13 @@ struct Target {
 /// what a line or an arrow begins at and points at, what a dot is on - and,
 /// \a points, its points simplified.
 QJsonArray readPage(const QList<Stroke>& strokes, const QList<Target>& targets, bool points);
-/// What every reading has: the stroke's number on its part, how it was
-/// drawn, its tool, colour and box, and (\a points) its points simplified.
+/// What every reading has: the stroke's number on its part (its id, else
+/// \a number), how it was drawn, its tool, colour and box, whether it is
+/// marked addressed, and (\a points) its points simplified.
 QJsonObject readingOf(const Stroke& stroke, int number, Gesture gesture, bool points);
+/// The most points a prompt's sentence gives a stroke: fewer, and they are
+/// said; more, and read_drawings has them.
+constexpr int MostPointsSaid = 10;
 /// How near a stroke's own ends something must be to be what it points at
 /// or begins at, in its measures.
 double reachOf(const Stroke& stroke);
@@ -172,7 +191,8 @@ double reachOf(const Stroke& stroke);
 /// "cell TOP"), \a unit its measures ("points", "µm").
 QString sentenceOf(const QJsonObject& reading, const QString& where, const QString& unit);
 /// Readings (a presentation's, \a slides; else a layout's) a sentence each,
-/// a line each - the latest \a most of them, the earlier ones counted.
+/// a line each - the latest \a most of them, the earlier ones counted; the
+/// strokes marked addressed left out, and counted.
 QString sentencesOf(const QJsonArray& readings, bool slides, int most = 30);
 
 /// The colours the pen's menu offers, and their names.

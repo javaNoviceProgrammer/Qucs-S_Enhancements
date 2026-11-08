@@ -649,7 +649,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     quint64 revisionBefore = 0;
     if (layoutView || slideView) {
         const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView->drawing();
-        for (const QString& part : drawing.parts()) drawnBefore.insert(part, drawing.count(part));
+        for (const qucs_s::markup::Stroke& s : drawing.strokes()) drawnBefore[s.on] = std::max(drawnBefore.value(s.on), s.id);   // (the last number each part gave)
         strokesBefore = int(drawing.strokes().size());
         revisionBefore = drawing.revision();
     }

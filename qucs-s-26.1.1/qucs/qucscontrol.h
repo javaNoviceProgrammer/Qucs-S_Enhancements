@@ -724,6 +724,7 @@ private:
     QJsonObject routeReport(const QJsonObject& args);
     QJsonObject routeStop(const QJsonObject& args);
     QJsonObject routeCommit(const QJsonObject& args);
+    QJsonObject editLayout(const QJsonObject& args);   // qucscontrol_layoutedit.cpp
     QJsonObject routeAssignPads(const QJsonObject& args);
     /// export_image of a layout: whether args name one (its tab, a layout's
     /// file, or the tab in front), and its tab's view written as it shows

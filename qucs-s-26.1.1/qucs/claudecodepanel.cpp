@@ -2543,7 +2543,7 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument, const QSt
         const auto [revision, read] = a_drawings(attached, known);
         if (revision != known && !read.isEmpty()) {
             a_drawingsTold.insert(attached, revision);
-            prompt += QStringLiteral("\n\n") + tr("(Drawn on it with the pen, as read - read_drawings gives each stroke's points:\n%1)").arg(read);
+            prompt += QStringLiteral("\n\n") + tr("(Drawn on it with the pen, as read - a stroke of few points has them here, read_drawings gives every stroke's:\n%1)").arg(read);
         } else if (revision != known && a_drawingsTold.remove(attached) > 0) {
             prompt += QStringLiteral("\n\n") + tr("(What was drawn on it with the pen has been taken away.)");
         }

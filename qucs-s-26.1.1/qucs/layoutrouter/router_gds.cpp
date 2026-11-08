@@ -63,6 +63,65 @@ bool fatal(gdstk::ErrorCode e)
     return int(e) >= int(gdstk::ErrorCode::ChecksumError);
 }
 
+} // namespace
+
+bool isWritableLayout(const QString& path)
+{
+    return isGds(path) || isOasis(path);
+}
+
+bool isOasisFile(const QString& path)
+{
+    return isOasis(path);
+}
+
+bool readLibrary(const QString& path, gdstk::Library* lib, QString* error)
+{
+    gdstk::ErrorCode e = gdstk::ErrorCode::NoError;
+    const QByteArray src = QFile::encodeName(path);
+    *lib = isOasis(path) ? gdstk::read_oas(src.constData(), 0, 0, &e) : gdstk::read_gds(src.constData(), 0, 0, nullptr, &e);
+    if (fatal(e)) {
+        lib->free_all();
+        *error = QStringLiteral("%1 could not be read (gdstk's error %2)").arg(QFileInfo(path).fileName()).arg(int(e));
+        return false;
+    }
+    if (lib->unit <= 0) lib->unit = 1e-6;
+    if (lib->precision <= 0) lib->precision = 1e-9;
+    return true;
+}
+
+bool writeLibrary(gdstk::Library& lib, const QString& path, QString* error)
+{
+    // Written beside the target, then renamed over it.
+    const QFileInfo target(path);
+    if (!QDir().mkpath(target.absolutePath())) {
+        *error = QStringLiteral("The folder %1 cannot be made").arg(target.absolutePath());
+        return false;
+    }
+    const QString temporary = target.absolutePath() + QStringLiteral("/.") + target.fileName() + QStringLiteral(".routing");
+    QFile::remove(temporary);
+    const QByteArray tmp = QFile::encodeName(temporary);
+    const gdstk::ErrorCode e = isOasis(path) ? lib.write_oas(tmp.constData(), 0.001, 6, 0) : lib.write_gds(tmp.constData(), 0, nullptr);
+    if (fatal(e) || !QFileInfo::exists(temporary)) {
+        QFile::remove(temporary);
+        *error = QStringLiteral("%1 could not be written (gdstk's error %2)").arg(target.fileName()).arg(int(e));
+        return false;
+    }
+    if (QFileInfo::exists(path) && !QFile::remove(path)) {
+        QFile::remove(temporary);
+        *error = QStringLiteral("%1 could not be replaced").arg(target.fileName());
+        return false;
+    }
+    if (!QFile::rename(temporary, path)) {
+        QFile::remove(temporary);
+        *error = QStringLiteral("%1 could not be written").arg(target.fileName());
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
 // Takes \a cell's contents away (its polygons, paths, texts, placements).
 void empty(gdstk::Cell* cell)
 {
@@ -118,16 +177,9 @@ CommitReport commitRoutes(const Commit& commit, const Problem& problem, const Re
     const QByteArray cellName = commit.cell.toUtf8();
     if (cellName.isEmpty()) return fail(QStringLiteral("The route cell needs a name"));
 
-    gdstk::ErrorCode error = gdstk::ErrorCode::NoError;
-    const QByteArray src = QFile::encodeName(commit.source);
-    gdstk::Library lib = isOasis(commit.source) ? gdstk::read_oas(src.constData(), 0, 0, &error)
-                                                : gdstk::read_gds(src.constData(), 0, 0, nullptr, &error);
-    if (fatal(error)) {
-        lib.free_all();
-        return fail(QStringLiteral("%1 could not be read (gdstk's error %2)").arg(QFileInfo(commit.source).fileName()).arg(int(error)));
-    }
-    if (lib.unit <= 0) lib.unit = 1e-6;
-    if (lib.precision <= 0) lib.precision = 1e-9;
+    gdstk::Library lib = {};
+    QString why;
+    if (!readLibrary(commit.source, &lib, &why)) return fail(why);
     // The top cell: as named, else the largest cell no other places.
     gdstk::Cell* top = nullptr;
     if (!commit.topCell.isEmpty()) {
@@ -220,29 +272,9 @@ CommitReport commitRoutes(const Commit& commit, const Problem& problem, const Re
         }
     }
 
-    // Written beside the target, then renamed over it.
-    const QFileInfo target(commit.target);
-    if (!QDir().mkpath(target.absolutePath())) {
-        lib.free_all();
-        return fail(QStringLiteral("The folder %1 cannot be made").arg(target.absolutePath()));
-    }
-    const QString temporary = target.absolutePath() + QStringLiteral("/.") + target.fileName() + QStringLiteral(".routing");
-    QFile::remove(temporary);
-    const QByteArray tmp = QFile::encodeName(temporary);
-    error = isOasis(commit.target) ? lib.write_oas(tmp.constData(), 0.001, 6, 0) : lib.write_gds(tmp.constData(), 0, nullptr);
+    const bool written = writeLibrary(lib, commit.target, &why);
     lib.free_all();
-    if (fatal(error) || !QFileInfo::exists(temporary)) {
-        QFile::remove(temporary);
-        return fail(QStringLiteral("%1 could not be written (gdstk's error %2)").arg(target.fileName()).arg(int(error)));
-    }
-    if (QFileInfo::exists(commit.target) && !QFile::remove(commit.target)) {
-        QFile::remove(temporary);
-        return fail(QStringLiteral("%1 could not be replaced").arg(target.fileName()));
-    }
-    if (!QFile::rename(temporary, commit.target)) {
-        QFile::remove(temporary);
-        return fail(QStringLiteral("%1 could not be written").arg(target.fileName()));
-    }
+    if (!written) return fail(why);
     report.ok = true;
     return report;
 }
