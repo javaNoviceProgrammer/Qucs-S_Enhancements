@@ -408,6 +408,15 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
             return refuse(tr("%1: %2's \"over\" is \"%3\" - worst or last").arg(plan.name, o.expression, over));
         o.last = over == QLatin1String("last");
         o.study = cellText(r.at(5));
+        const QString mode = cellText(r.at(6)).toLower();
+        if (mode == QLatin1String("all")) {
+            o.mode = -1;
+        } else if (!mode.isEmpty()) {
+            bool ok = false;
+            const int n = mode.toInt(&ok);
+            if (!ok || n < 1) return refuse(tr("%1: %2's mode \"%3\" is a mode's number from 1, or all").arg(plan.name, o.expression, mode));
+            o.mode = n;
+        }
         if (!o.study.isEmpty()) {
             bool known = false;
             for (const Node* s : studies) known = known || s->tag == o.study;
@@ -533,8 +542,9 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
                 const std::optional<double> a = valueIn(ps, o.valueText), b = valueIn(*moved, o.valueText);
                 if (!a || !b || std::abs(*a - *b) <= 1e-12 * std::max(std::abs(*a), std::abs(*b))) continue;
                 return refuse(tr("%1: %2's value \"%3\" moves with %4, which it varies - a value is read once, before the search. "
-                                 "Write what varies into the expression instead: ht.Tmax - Tb LE 50[K], not ht.Tmax LE Tb + 50[K]")
-                                  .arg(plan.name, o.expression, o.valueText, v.name));
+                                 "Write what varies into the expression instead: %5 %6 0")
+                                  .arg(plan.name, o.expression, o.valueText, v.name,
+                                       QStringLiteral("(%1) - (%2)").arg(o.expression, o.valueText), OptimizationObjective::kindName(o.kind)));
             }
         }
     }
@@ -974,6 +984,7 @@ private:
     const OptimizationListener& a_listener;
     const std::vector<int> a_active;
     SweepPlan a_shaping;
+    std::atomic<bool> a_remeshed{false};   ///< a candidate had a mesh of its own
     QStringList a_columns;
 
     std::map<Key, Measured> a_cache;
@@ -1087,7 +1098,9 @@ Measured Runner::solveOnce(const QHash<QString, QString>& overrides, const Progr
         if (!a_params->values.contains(it.key()) || a_params->values.value(it.key()) != it.value()) changed.insert(it.key());
     std::shared_ptr<const Topology> topology;
     std::shared_ptr<const Mesh> mesh;
-    if (!a_shaping.reshapes(changed)) {
+    const bool reshaped = a_shaping.reshapes(changed);
+    if (reshaped) a_remeshed = true;
+    if (!reshaped) {
         std::lock_guard<std::mutex> lock(a_mutex);
         if (!a_baseTried) {
             // (Under the lock: the solves at once wait for the one mesh they share.)
@@ -1152,7 +1165,11 @@ Measured Runner::solveOnce(const QHash<QString, QString>& overrides, const Progr
         const int stage = o.study.isEmpty() ? 0 : int(a_plan.stages.indexOf(o.study));
         const SolutionSet& set = sets[std::size_t(stage)];
         QString asked;
-        const std::vector<Instance> at = instances(set, !o.last, 0, {}, {}, modesAsked(set, QStringLiteral("auto")), &asked);
+        // Of a mode analysis, one mode: the one asked, or the one its step chose,
+        // else the first - not each mode as if a sweep's point, by the worst (a
+        // TARGET on emw.neff fitted the minimax of TE0's and TE1's misses).
+        const int mode = o.mode > 0 ? o.mode : o.mode < 0 ? 0 : modesAsked(set, QStringLiteral("auto")) < 0 ? -1 : 1;
+        const std::vector<Instance> at = instances(set, !o.last, 0, {}, {}, mode, &asked);
         if (at.empty()) {
             m.why = asked.isEmpty() ? tr("%1: no solution to read it on").arg(o.expression) : asked;
             m.fatal = true;
@@ -1596,6 +1613,10 @@ OptimizationResult Runner::run()
     for (const QString& w : std::as_const(a_warnings))
         if (!result.notes.contains(w)) result.notes << w;
     if (!a_firstFailure.isEmpty()) result.notes << tr("the first that did not solve: %1").arg(a_firstFailure);
+    if (a_remeshed)
+        result.notes << tr("each candidate was meshed again (a varied parameter shapes the geometry or the mesh): what a mesh gives moves a "
+                           "little from one mesh to the next, so the optimum is good to what the mesh resolves - check it there with a Mesh "
+                           "Convergence node, or a finer mesh");
 
     const auto measuredAt = [this](const Measured& m, QList<OptimizationResult::Value>* out) {
         for (std::size_t i = 0; i < a_plan.objectives.size(); ++i) {
