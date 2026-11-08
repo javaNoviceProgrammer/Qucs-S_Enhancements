@@ -1146,9 +1146,16 @@ void Commands::newWorktree(const QString& root, const QString& start)
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    // (The folder follows the branch's name until it is typed in.)
+    // (The folder follows the branch's name until it is typed in: beside the
+    // repository, or in the folder Choose... picked, a name not there yet.)
     auto typed = std::make_shared<bool>(false);
+    auto in = std::make_shared<QString>();
     connect(folder, &QLineEdit::textEdited, &dialog, [typed] { *typed = true; });
+    const auto follow = [=] {
+        if (*typed) return;
+        const QString name = branch->currentText().trimmed();
+        folder->setText(name.isEmpty() ? QString() : QDir::toNativeSeparators(worktreeFolder(root, choose(name).branch, *in)));
+    };
     const auto update = [=] {
         const Choice c = choose(branch->currentText().trimmed());
         switch (c.kind) {
@@ -1167,17 +1174,21 @@ void Commands::newWorktree(const QString& root, const QString& start)
         buttons->button(QDialogButtonBox::Ok)->setEnabled(takes && !folder->text().trimmed().isEmpty());
     };
     connect(branch, &QComboBox::currentTextChanged, &dialog, [=] {
-        const QString name = branch->currentText().trimmed();
-        if (!*typed) folder->setText(name.isEmpty() ? QString() : QDir::toNativeSeparators(worktreeFolder(root, choose(name).branch)));
+        follow();
         update();
     });
     connect(folder, &QLineEdit::textChanged, &dialog, update);
+    // (Choose... picks the folder the worktree goes in; its name goes on
+    // following the branch, as beside the repository.)
     connect(choosing, &QPushButton::clicked, &dialog, [=, &dialog] {
-        const QString name = choose(branch->currentText().trimmed()).branch;
-        const QString in = QFileDialog::getExistingDirectory(&dialog, tr("The Folder the Worktree Goes In"), QFileInfo(root).absolutePath());
-        if (in.isEmpty()) return;
-        *typed = true;
-        folder->setText(QDir::toNativeSeparators(QDir(in).absoluteFilePath(QFileInfo(worktreeFolder(root, name)).fileName())));
+        const QString picked = QFileDialog::getExistingDirectory(&dialog, tr("The Folder the Worktree Goes In"),
+                                                                 in->isEmpty() ? QFileInfo(root).absolutePath() : *in);
+        if (picked.isEmpty()) return;
+        *in = QDir::fromNativeSeparators(picked);
+        *typed = false;
+        folder->setPlaceholderText(tr("in %1, named for the branch").arg(QDir::toNativeSeparators(*in)));
+        follow();
+        update();
     });
     update();
     branch->setFocus();
