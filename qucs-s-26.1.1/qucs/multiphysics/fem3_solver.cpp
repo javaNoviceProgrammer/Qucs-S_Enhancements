@@ -20,8 +20,11 @@
 #include <QElapsedTimer>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
+#include <mutex>
+#include <thread>
 
 namespace qucs_s::fem {
 
@@ -247,6 +250,7 @@ Solution3::Snapshot Solution3::snapshotNow() const
 {
     Snapshot s;
     s.time = a_time;
+    s.frequency = a_frequency;
     for (const Field3& f : a_fields) {
         s.values.push_back(f.values);
         s.terminals.push_back(f.terminals);
@@ -285,6 +289,7 @@ void Solution3::select(int i)
         a_globalScope->setConstant(name, g.value, g.dim);
     }
     a_time = s.time;
+    a_frequency = s.frequency;
     a_selected = i;
 }
 
@@ -657,7 +662,7 @@ QStringList unsolvedPhysics3(const Model& model)
 {
     QStringList out;
     for (const Node* p : model.physics())
-        if (p->enabled && !fieldKind(p->type)) out << p->name();
+        if (p->enabled && !fieldKind(p->type) && p->type != QLatin1String("eme")) out << p->name();
     return out;
 }
 
@@ -723,6 +728,192 @@ void setSolvedGlobals(Problems3& problems, const std::vector<int>& subset)
     for (int i = 0; i < int(problems.size()); ++i)
         if (problems[std::size_t(i)]->field().solved || std::find(subset.begin(), subset.end(), i) != subset.end())
             problems[std::size_t(i)]->setGlobals();
+}
+
+constexpr double C0 = 299792458.0;
+
+/// A port's name as a global's part: what is not a letter, a digit or _ made _.
+QString globalPart(const QString& name)
+{
+    QString out;
+    for (const QChar c : name) out += c.isLetterOrNumber() || c == QLatin1Char('_') ? c : QLatin1Char('_');
+    return out;
+}
+
+/// An eigenmode expansion's globals at one wavelength: the wavelength, each
+/// port mode's index, loss and TE fraction, the S-parameters of the fed
+/// port modes' columns (by their numbers as S-parameter ports: eme.S21,
+/// eme.S21dB...; eme.S_12_3 past nine), and the first fed one's R, T and
+/// what is lost.
+void setEmeGlobals(Solution3& s, const QString& tag, const EmeDevice& d, const EmeResult& r)
+{
+    const QString p = tag + QLatin1Char('.');
+    s.setGlobal(p + QStringLiteral("lambda0"), C0 / r.frequency, Dim::length(), tr("free-space wavelength"));
+    s.setGlobal(p + QStringLiteral("freq"), r.frequency, Dim::of(0, 0, -1), tr("frequency"));
+    const int N = int(r.portModes.size());
+    const double k0 = 2 * M_PI * r.frequency / C0;
+    auto portOf = [&](int i) { return r.portModes[std::size_t(i)].port; };
+    for (int i = 0; i < N; ++i) {
+        const EmeResult::PortMode& pm = r.portModes[std::size_t(i)];
+        const QString name = d.ports[std::size_t(pm.port)].name;
+        const QString id = globalPart(name) + QLatin1Char('_') + pm.label;
+        const QString of = tr("port %1's %2 (S-parameter port %3)").arg(name, pm.label).arg(i + 1);
+        s.setGlobal(p + QStringLiteral("neff_") + id, pm.neff.real(), Dim(), tr("%1: its effective index").arg(of));
+        s.setGlobal(p + QStringLiteral("alpha_") + id, -2 * k0 * pm.neff.imag(), Dim::of(-1), tr("%1: its power's loss per metre").arg(of));
+        s.setGlobal(p + QStringLiteral("TEfraction_") + id, pm.te, Dim(), tr("%1: of its transverse |E|², the part across the axis in the plane").arg(of));
+    }
+    int first = -1;
+    for (int j = 0; j < N; ++j) {
+        if (!d.ports[std::size_t(portOf(j))].excite) continue;
+        if (first < 0) first = j;
+        for (int i = 0; i < N; ++i) {
+            const std::complex<double> v = r.S(i, j);
+            const QString base = N <= 9 ? p + QStringLiteral("S%1%2").arg(i + 1).arg(j + 1) : p + QStringLiteral("S_%1_%2").arg(i + 1).arg(j + 1);
+            const QString what = tr("S-parameter %1 %2: into port %3's %4 of port %5's %6")
+                                     .arg(i + 1)
+                                     .arg(j + 1)
+                                     .arg(d.ports[std::size_t(portOf(i))].name, r.portModes[std::size_t(i)].label)
+                                     .arg(d.ports[std::size_t(portOf(j))].name, r.portModes[std::size_t(j)].label);
+            s.setGlobal(base, v.real(), Dim(), what + tr(", its real part"));
+            s.setGlobal(base + QStringLiteral("_im"), v.imag(), Dim(), what + tr(", its imaginary part"));
+            s.setGlobal(base + QStringLiteral("dB"), 20 * std::log10(std::abs(v)), Dim(), what + tr(" in dB (of power, 10 log |S|²)"));
+            s.setGlobal(base + QStringLiteral("_abs"), std::abs(v), Dim(), what + tr(", its magnitude"));
+            s.setGlobal(base + QStringLiteral("_arg"), std::arg(v) * 180 / M_PI, Dim(), what + tr(", its phase in degrees"));
+        }
+    }
+    if (first < 0) return;
+    double R = 0, T = 0;
+    for (int i = 0; i < N; ++i) (portOf(i) == portOf(first) ? R : T) += std::norm(r.S(i, first));
+    const QString fed = tr("of port %1's %2 fed").arg(d.ports[std::size_t(portOf(first))].name, r.portModes[std::size_t(first)].label);
+    s.setGlobal(p + QStringLiteral("R"), R, Dim(), tr("reflectance %1: the power back in its port's modes").arg(fed));
+    s.setGlobal(p + QStringLiteral("T"), T, Dim(), tr("transmittance %1: the power out by the other ports' modes").arg(fed));
+    s.setGlobal(p + QStringLiteral("L"), 1 - R - T, Dim(), tr("what is lost %1: radiated, absorbed, or into modes no port takes").arg(fed));
+}
+
+/*!
+ * A Wavelength Domain step: each eigenmode expansion it solves (its physics
+ * of type "eme", all where none is chosen) at each wavelength - the
+ * wavelengths side by side, each a snapshot of its globals. The devices
+ * read once, at the first wavelength.
+ */
+bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(double, const QString&)>& tell, QStringList* warnings,
+                     QString* error)
+{
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(step.text(QStringLiteral("wavelengths")), s.parameters().scope, &dim, &why);
+    if (!listed) {
+        *error = tr("%1: the wavelengths: %2").arg(step.name(), why);
+        return false;
+    }
+    if (!dim.isNone() && !(dim == Dim::length()) && !(dim == Dim::of(0, 0, -1))) {
+        *error = tr("%1: the wavelengths are in %2: give a length (1550[nm]), or a frequency in Hz").arg(step.name(), dimName(dim));
+        return false;
+    }
+    std::vector<double> frequencies;
+    for (double v : *listed) {
+        const double f = dim == Dim::length() ? (v > 0 ? C0 / v : 0) : v;
+        if (!(f > 0) || !std::isfinite(f)) {
+            *error = tr("%1: a wavelength (or frequency) of %2: it must be more than 0").arg(step.name(), formatNumber(v));
+            return false;
+        }
+        frequencies.push_back(f);
+    }
+    if (frequencies.empty()) {
+        *error = tr("%1: give a wavelength at least").arg(step.name());
+        return false;
+    }
+    const QStringList chosen = step.list(QStringLiteral("physics"));
+    std::vector<const Node*> physics;
+    for (const Node* p : s.model().physics())
+        if (p->enabled && p->type == QLatin1String("eme") && (chosen.isEmpty() || chosen.contains(p->tag))) physics.push_back(p);
+    if (physics.empty()) {
+        *error = tr("%1: there is no eigenmode expansion (Electromagnetic Waves, Eigenmode Expansion) for it to solve").arg(step.name());
+        return false;
+    }
+    const Topology3& topology = s.topology();
+    std::vector<EmeDevice> devices(physics.size());
+    for (std::size_t k = 0; k < physics.size(); ++k)
+        if (!readEmeDevice(s.model(), *physics[k], topology, s.parameters(), frequencies.front(), &devices[k], error)) return false;
+    // Every (physics, wavelength), side by side: as many at once as the
+    // step says, or the machine's cores halved (each one's cuts on the
+    // rest, and Accelerate's threads within each).
+    const int W = int(frequencies.size()), P = int(physics.size()), jobs = W * P;
+    const int cores = std::max(1, int(std::thread::hardware_concurrency()));
+    int atOnce = step.integer(QStringLiteral("parallel")) > 0 ? step.integer(QStringLiteral("parallel")) : std::max(1, cores / 2);
+    atOnce = std::clamp(atOnce, 1, jobs);
+    std::vector<EmeResult> results(static_cast<std::size_t>(jobs));
+    std::atomic<int> next{0}, done{0};
+    std::atomic<bool> stop{false};
+    std::mutex telling;
+    QElapsedTimer since;
+    since.start();
+    // (Asked by the mode solver before each of its products, on every
+    // thread: Cancel's state read a tenth of a second apart at most.)
+    auto cancelled = [&] {
+        if (stop) return true;
+        std::unique_lock<std::mutex> lock(telling, std::try_to_lock);
+        if (!lock.owns_lock() || since.elapsed() < 100) return bool(stop);
+        since.restart();
+        if (tell && !tell(double(done) / jobs, step.name())) stop = true;
+        return bool(stop);
+    };
+    auto work = [&] {
+        for (int j = next++; j < jobs && !stop; j = next++) {
+            EmeDevice d = devices[std::size_t(j % P)];
+            d.settings.cancelled = cancelled;
+            d.settings.threads = std::max(1, cores / atOnce);
+            results[std::size_t(j)] = solveEme(s.model(), s.parametersPtr(), topology, d, frequencies[std::size_t(j / P)]);
+            ++done;
+            if (!results[std::size_t(j)].ok()) stop = true;
+            {
+                std::lock_guard<std::mutex> lock(telling);
+                if (tell && !tell(double(done) / jobs, tr("%1: %2 of %3 wavelengths").arg(step.name()).arg(done / P).arg(W))) stop = true;
+            }
+        }
+    };
+    {
+        std::vector<std::thread> pool;
+        for (int t = 1; t < atOnce; ++t) pool.emplace_back(work);
+        work();
+        for (std::thread& t : pool) t.join();
+    }
+    for (int j = 0; j < jobs; ++j) {
+        const EmeResult& r = results[std::size_t(j)];
+        if (!r.error.isEmpty() && r.error != tr("cancelled") && r.error != QCoreApplication::translate("Eme3", "cancelled")) {
+            *error = tr("%1 at %2: %3").arg(physics[std::size_t(j % P)]->name(), formatQuantity(C0 / frequencies[std::size_t(j / P)], Dim::length()), r.error);
+            return false;
+        }
+    }
+    if (stop || next < jobs) {
+        *error = tr("cancelled");
+        return false;
+    }
+    // Each wavelength a snapshot of its globals; the results kept.
+    for (int k = 0; k < P; ++k) {
+        Solution3::Optics o;
+        o.physics = physics[std::size_t(k)]->tag;
+        o.device = devices[std::size_t(k)];
+        o.device.settings.cancelled = nullptr;
+        s.optics.push_back(o);
+    }
+    const std::size_t opticsFrom = s.optics.size() - std::size_t(P);
+    for (int w = 0; w < W; ++w) {
+        for (int k = 0; k < P; ++k) {
+            const EmeResult& r = results[std::size_t(w * P + k)];
+            setEmeGlobals(s, physics[std::size_t(k)]->tag, devices[std::size_t(k)], r);
+            for (const QString& line : r.log) s.log << QStringLiteral("%1: %2").arg(physics[std::size_t(k)]->name(), line);
+            for (const QString& wn : r.warnings) {
+                const QString said = QStringLiteral("%1: %2").arg(physics[std::size_t(k)]->name(), wn);
+                if (!warnings->contains(said)) *warnings << said;
+            }
+            s.optics[opticsFrom + std::size_t(k)].results.push_back(r);
+        }
+        s.setFrequency(frequencies[std::size_t(w)]);
+        s.addSnapshot();
+    }
+    s.spectral = true;
+    return true;
 }
 
 /*!
@@ -998,9 +1189,16 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     s->studyTag = study->tag;
     // Each physics a field, on a space of its order (one space an order).
     std::shared_ptr<const Space3> spaces[3];
+    bool optics = false;
     for (const Node* p : s->model().physics()) {
         if (!p->enabled) continue;
         const FieldKind* k = fieldKind(p->type);
+        // (An eigenmode expansion has no field on the mesh: its cuts' own,
+        // solved by a Wavelength Domain step.)
+        if (!k) {
+            optics = optics || p->type == QLatin1String("eme");
+            continue;
+        }
         Field3 f;
         f.tag = p->tag;
         f.type = p->type;
@@ -1014,7 +1212,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         f.domains.assign(mesh->topology->domains.size(), 0);
         s->fields().push_back(std::move(f));
     }
-    if (s->fields().empty()) {
+    if (s->fields().empty() && !optics) {
         out.error = tr("the model has no physics to solve");
         return out;
     }
@@ -1070,8 +1268,32 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     for (const Node& step : study->children) {
         if (!step.enabled || step.type == QLatin1String("sweep")) continue;
         const bool inTime = step.type == QLatin1String("transient");
+        if (step.type == QLatin1String("wavelength")) {
+            const double from = double(steps) / stepCount, span = 1.0 / stepCount;
+            if (progress && !progress(from, step.name())) {
+                out.error = tr("cancelled");
+                return out;
+            }
+            auto tell = [progress, from, span](double f, const QString& what) {
+                return !progress || progress(from + span * std::clamp(f, 0.0, 1.0), what);
+            };
+            QString why;
+            if (!wavelengthStep3(*s, step, tell, &out.warnings, &why)) {
+                out.error = why;
+                out.log = s->log;
+                return out;
+            }
+            ++steps;
+            continue;
+        }
         if (step.type != QLatin1String("stationary") && !inTime) {
-            out.error = tr("%1: a %2 step is not solved in 3D yet - a Stationary or a Time Dependent one is")
+            out.error = tr("%1: a %2 step is not solved in 3D yet - a Stationary, a Time Dependent or a Wavelength Domain one is")
+                            .arg(step.name(), step.kind() ? step.kind()->title : step.type);
+            out.log = s->log;
+            return out;
+        }
+        if (s->fields().empty()) {
+            out.error = tr("%1: the model's physics are an eigenmode expansion's, which a Wavelength Domain step solves (not a %2 step)")
                             .arg(step.name(), step.kind() ? step.kind()->title : step.type);
             out.log = s->log;
             return out;
@@ -1123,7 +1345,8 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         ++steps;
     }
     if (steps == 0) {
-        out.error = tr("%1 has no step to solve: add a Stationary step").arg(study->name());
+        out.error = optics && s->fields().empty() ? tr("%1 has no step to solve: add a Wavelength Domain step").arg(study->name())
+                                                  : tr("%1 has no step to solve: add a Stationary step").arg(study->name());
         return out;
     }
     // The globals: those of the last output time, kept, or of the fields at

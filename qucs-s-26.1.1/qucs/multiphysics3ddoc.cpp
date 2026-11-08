@@ -12,6 +12,7 @@
  */
 #include "multiphysics3ddoc.h"
 
+#include "dataimport.h"
 #include "fem3_export.h"
 #include "fem3_results.h"
 #include "ink.h"
@@ -1064,15 +1065,107 @@ void Multiphysics3DDoc::fillPlotChoices()
     a_plotBox->setEditText(a_plot.isEmpty() ? plotExpression() : now);
 }
 
+QString Multiphysics3DDoc::showSpectrum(bool open, QString* error)
+{
+    auto fail = [error](const QString& why) {
+        if (error) *error = why;
+        return QString();
+    };
+    if (!a_solution || !a_solution->spectral || a_solution->optics.empty()) return fail(tr("no eigenmode expansion is solved over wavelengths"));
+    const Solution3::Optics& o = a_solution->optics.front();
+    if (o.results.size() < 2) return fail(tr("%1 is solved at one wavelength: a spectrum wants two or more").arg(o.physics));
+    // By wavelength, rising.
+    std::vector<int> order(o.results.size());
+    for (std::size_t k = 0; k < order.size(); ++k) order[k] = int(k);
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return o.results[std::size_t(a)].frequency > o.results[std::size_t(b)].frequency; });
+    const int N = int(o.results.front().portModes.size());
+    qucs_s::dataset::Variable lambda;
+    lambda.name = QStringLiteral("lambda");
+    lambda.independent = true;
+    for (int k : order) lambda.re << 299792458.0 / o.results[std::size_t(k)].frequency;
+    QList<qucs_s::dataset::Variable> vars{lambda};
+    QJsonObject units{{QStringLiteral("lambda"), QStringLiteral("m")}};
+    QStringList traces;
+    int first = -1;
+    for (int j = 0; j < N; ++j) {
+        if (!o.device.ports[std::size_t(o.results.front().portModes[std::size_t(j)].port)].excite) continue;
+        if (first < 0) first = j;
+        for (int i = 0; i < N; ++i) {
+            const QString base = N <= 9 ? QStringLiteral("S%1%2").arg(i + 1).arg(j + 1) : QStringLiteral("S_%1_%2").arg(i + 1).arg(j + 1);
+            qucs_s::dataset::Variable dB, arg;
+            dB.name = base + QStringLiteral("dB");
+            arg.name = base + QStringLiteral("_arg");
+            dB.dependencies = arg.dependencies = QStringList{QStringLiteral("lambda")};
+            for (int k : order) {
+                const std::complex<double> v = o.results[std::size_t(k)].S(i, j);
+                dB.re << 10 * std::log10(std::max(std::norm(v), 1e-300));
+                arg.re << std::arg(v) * 180 / M_PI;
+            }
+            units.insert(dB.name, QStringLiteral("dB"));
+            units.insert(arg.name, QStringLiteral("deg"));
+            if (j == first) traces << dB.name;
+            vars << dB << arg;
+        }
+    }
+    for (int i = 0; i < N; ++i) {
+        qucs_s::dataset::Variable n;
+        const EmeResult::PortMode& pm = o.results.front().portModes[std::size_t(i)];
+        n.name = QStringLiteral("neff_%1_%2").arg(o.device.ports[std::size_t(pm.port)].name, pm.label);
+        n.dependencies = QStringList{QStringLiteral("lambda")};
+        for (int k : order) n.re << o.results[std::size_t(k)].portModes[std::size_t(i)].neff.real();
+        vars << n;
+    }
+    if (traces.isEmpty()) return fail(tr("%1 feeds no port mode").arg(o.physics));
+    QString base;
+    if (getDocName().isEmpty()) {
+        const QString dir = misc::cacheDir() + QStringLiteral("/multiphysics3d");
+        QDir().mkpath(dir);
+        base = dir + QStringLiteral("/untitled");
+    } else {
+        const QFileInfo fi(getDocName());
+        base = fi.absoluteDir().filePath(fi.completeBaseName());
+    }
+    const QString dat = base + QStringLiteral("_spectrum.dat"), dpl = base + QStringLiteral("_spectrum.dpl");
+    qucs_s::dataimport::Data data;
+    data.variables = vars;
+    qucs_s::dataimport::Origin origin;
+    origin.source = getDocName().isEmpty() ? tr("(a model not saved)") : getDocName();
+    origin.format = tr("Qucs-S multiphysics 3D model");
+    origin.imported = QDateTime::currentDateTime();
+    origin.units = units;
+    QString why;
+    if (!qucs_s::dataimport::writeDataset(dat, data, origin, &why)) return fail(why);
+    say(tr("Spectrum: %1 written (each S-parameter's |S|² in dB and phase, each port mode's index, against the wavelength)").arg(QFileInfo(dat).fileName()));
+    if (open && a_App != nullptr) {
+        const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
+                                                                   {QStringLiteral("dataset"), dat},
+                                                                   {QStringLiteral("traces"), QJsonArray::fromStringList(traces)},
+                                                                   {QStringLiteral("type"), QStringLiteral("rect")},
+                                                                   {QStringLiteral("title"), tr("%1: |S|² of port mode %2 fed").arg(o.physics).arg(first + 1)},
+                                                                   {QStringLiteral("replace"), true},
+                                                                   {QStringLiteral("ylabel"), tr("|S|² (dB)")},
+                                                                   {QStringLiteral("xlabel"), tr("lambda (m)")}});
+        if (!shown.isEmpty()) return fail(shown);
+        for (QucsDoc* d : a_App->allDocuments())
+            if (QFileInfo(d->getDocName()) == QFileInfo(dpl) && d->getDocChanged()) d->save();
+    }
+    return dat;
+}
+
 void Multiphysics3DDoc::fillTimeChoices()
 {
     if (!a_timeBox) return;
     a_timeBox->clear();
-    const bool inTime = a_solution && a_solution->timeDependent && a_solution->snapshotCount() > 0;
+    // (In time, its output times; over wavelengths, its wavelengths.)
+    const bool spectral = a_solution && a_solution->spectral && a_solution->snapshotCount() > 0;
+    const bool inTime = a_solution && (a_solution->timeDependent || spectral) && a_solution->snapshotCount() > 0;
     a_timeLabel->setVisible(inTime);
     a_timeBox->setVisible(inTime);
     if (!inTime) return;
-    for (int i = 0; i < a_solution->snapshotCount(); ++i) a_timeBox->addItem(formatQuantity(a_solution->snapshotTime(i), Dim::of(0, 0, 1)));
+    a_timeLabel->setText(spectral ? tr("Wavelength:") : tr("Time:"));
+    for (int i = 0; i < a_solution->snapshotCount(); ++i)
+        a_timeBox->addItem(spectral ? formatQuantity(299792458.0 / a_solution->snapshotFrequency(i), Dim::length())
+                                    : formatQuantity(a_solution->snapshotTime(i), Dim::of(0, 0, 1)));
     a_timeBox->setCurrentIndex(a_solution->selected());
 }
 
@@ -1262,9 +1355,41 @@ void Multiphysics3DDoc::sayFinished(const StudyRun3& r, qint64 ms)
         say(tr("At t = %1, the last of %2 output times:")
                 .arg(formatQuantity(a_solution->time(), Dim::of(0, 0, 1)))
                 .arg(a_solution->snapshotCount()));
-    for (const Variable& g : a_solution->globals())
-        say(tr("%1 = %2%3").arg(g.name, a_solution->globalText(g.name),
-                                g.description.isEmpty() ? QString() : QStringLiteral(" (") + g.description + QLatin1Char(')')));
+    if (a_solution->spectral && !a_solution->optics.empty()) {
+        // An eigenmode expansion's: its ports' modes and |S|² in dB at the
+        // last wavelength, a row a fed port mode - not every global (five of
+        // each S-parameter).
+        say(tr("At λ = %1, the last of %2 wavelengths:")
+                .arg(formatQuantity(299792458.0 / a_solution->frequency(), Dim::length()))
+                .arg(a_solution->snapshotCount()));
+        for (const Solution3::Optics& o : a_solution->optics) {
+            if (o.results.empty()) continue;
+            const EmeResult& r = o.results.back();
+            QStringList modes;
+            for (int i = 0; i < int(r.portModes.size()); ++i)
+                modes << tr("%1: port %2 %3 (neff %4)")
+                             .arg(i + 1)
+                             .arg(o.device.ports[std::size_t(r.portModes[std::size_t(i)].port)].name, r.portModes[std::size_t(i)].label,
+                                  formatNumber(r.portModes[std::size_t(i)].neff.real(), 6));
+            say(tr("%1, its S-parameter ports - %2").arg(o.physics, modes.join(QLatin1String("; "))));
+            for (int j = 0; j < int(r.portModes.size()); ++j) {
+                if (!o.device.ports[std::size_t(r.portModes[std::size_t(j)].port)].excite) continue;
+                QStringList row;
+                for (int i = 0; i < int(r.portModes.size()); ++i)
+                    row << QStringLiteral("S%1%2 %3 dB").arg(i + 1).arg(j + 1).arg(formatNumber(10 * std::log10(std::norm(r.S(i, j))), 4));
+                say(tr("  fed %1: %2; out %3 %%").arg(j + 1).arg(row.join(QLatin1String(", ")), formatNumber(100 * r.balance[std::size_t(j)], 5)));
+            }
+        }
+        say(tr("Each is a global at each wavelength (%1.S21, %1.S21dB, %1.S21_arg, %1.neff_1_TE0, %1.T): a Derived Values node's Global "
+               "Evaluation lists them over the wavelengths, a Touchstone export writes the whole S-matrix")
+                .arg(a_solution->optics.front().physics));
+        // Two wavelengths or more: the spectra's dataset written (shown by
+        // Plot Spectrum).
+        if (a_solution->snapshotCount() > 1) showSpectrum(false);
+    } else
+        for (const Variable& g : a_solution->globals())
+            say(tr("%1 = %2%3").arg(g.name, a_solution->globalText(g.name),
+                                    g.description.isEmpty() ? QString() : QStringLiteral(" (") + g.description + QLatin1Char(')')));
     say(tr("Shown: %1 (%2 ms in all)").arg(plotExpression()).arg(ms));
     fillPlotChoices();
     fillPointChoices();

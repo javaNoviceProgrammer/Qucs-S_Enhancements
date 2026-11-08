@@ -401,6 +401,14 @@ QMenu* Multiphysics3DPanel::menuFor(const QString& tag)
         });
     if (n->type == QLatin1String("mesh") || (k && k->group == QLatin1String("mesh")))
         menu->addAction(tr("Build Mesh"), a_doc.data(), &Multiphysics3DDoc::buildMesh);
+    // An eigenmode expansion solved over wavelengths: its spectrum.
+    if (n->type == QLatin1String("eme")) {
+        QAction* spectrum = menu->addAction(tr("Plot Spectrum"), a_doc.data(), [this] {
+            QString why;
+            if (a_doc->showSpectrum(true, &why).isEmpty()) QMessageBox::information(this, tr("Plot Spectrum"), why);
+        });
+        spectrum->setEnabled(a_doc->solution() && a_doc->solution()->spectral && a_doc->solution()->snapshotCount() > 1);
+    }
     if (k && !k->fixed && n->type != QLatin1String("model")) {
         menu->addSeparator();
         if (!n->isDefault) menu->addAction(tr("Duplicate"), this, [this, tag] { duplicateNode(tag); });
