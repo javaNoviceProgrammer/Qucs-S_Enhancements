@@ -177,6 +177,13 @@ public:
     bool showPlotGroup(const QString& tag, QString* error = nullptr);
     /// The plot group shown (Show::Plot), or the last.
     QString plotGroup() const { return a_plotGroup; }
+    /// An eigenmode expansion solved over two or more wavelengths: its
+    /// spectra written as a dataset beside the model (model_spectrum.dat:
+    /// against the wavelength, each S-parameter's |S|² in dB and its phase,
+    /// each port mode's index) and, \a open, shown - |S|² in dB of the first
+    /// fed port mode against the wavelength. The dataset's path, or empty and
+    /// why.
+    QString showSpectrum(bool open = true, QString* error = nullptr);
     /// What drawing the plot group last said (an expression that does not
     /// read, a unit not of its value), one line a plot; empty: nothing.
     QStringList plotProblems() const { return a_plotProblems; }

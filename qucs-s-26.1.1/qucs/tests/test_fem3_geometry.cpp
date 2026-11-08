@@ -252,11 +252,11 @@ private slots:
         QVERIFY(!kinds3.contains(QStringLiteral("rectangle")) && !kinds3.contains(QStringLiteral("process")));
         const QStringList sketch = childKinds(*m.find(extTag), m.spaceUnder(*m.find(extTag)));
         QVERIFY(sketch.contains(QStringLiteral("rectangle")) && sketch.contains(QStringLiteral("union")) && !sketch.contains(QStringLiteral("box")));
-        // Its physics heat, electrostatics and currents alone (phase C); a
-        // study; a 2D model's kinds as they were.
+        // Its physics heat, electrostatics and currents (phase C) and light's
+        // eigenmode expansion alone; a study; a 2D model's kinds as they were.
         QStringList physics3 = childKinds(m.component(), m.space());
         physics3.sort();
-        QCOMPARE(physics3, (QStringList{QStringLiteral("currents"), QStringLiteral("electrostatics"), QStringLiteral("heat")}));
+        QCOMPARE(physics3, (QStringList{QStringLiteral("currents"), QStringLiteral("electrostatics"), QStringLiteral("eme"), QStringLiteral("heat")}));
         QCOMPARE(childKinds(m.root, m.space()), QStringList{QStringLiteral("study")});
         QVERIFY(!m.add(m.component().tag, m.make(QStringLiteral("solid")), -1, &why));
         // A physics of order 1 in 3D: made so, and read so where a file gives
@@ -272,7 +272,12 @@ private slots:
         QVERIFY2(why.contains(QStringLiteral("3D model's")), qPrintable(why));
         const QStringList kinds2 = childKinds(flat.geometry(), flat.space());
         QVERIFY(kinds2.contains(QStringLiteral("rectangle")) && !kinds2.contains(QStringLiteral("box")) && !kinds2.contains(QStringLiteral("extrude")));
-        QCOMPARE(childKinds(flat.component(), flat.space()), physicsTypes());
+        // (Every physics but a 3D model's alone: its eigenmode expansion.)
+        QStringList physics2;
+        for (const QString& type : physicsTypes())
+            if (nodeKind(type)->spaces & Spaces::TwoD) physics2 << type;
+        QCOMPARE(physics2.size(), physicsTypes().size() - 1);
+        QCOMPARE(childKinds(flat.component(), flat.space()), physics2);
         QCOMPARE(flat.toObject().value(QStringLiteral("format")).toString(), QStringLiteral("qucs-s multiphysics 1"));
         // The space not shown in 3D; an edge a 3D selection's level alone.
         const NodeKind* comp = nodeKind(QStringLiteral("component"));

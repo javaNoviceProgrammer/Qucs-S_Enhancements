@@ -252,7 +252,11 @@ int Topology::domainAt(QPointF p) const
         for (const auto& tri : dom.triangles) {
             const QPointF a = vertices[std::size_t(tri[0])], b = vertices[std::size_t(tri[1])], c = vertices[std::size_t(tri[2])];
             const double d1 = cross(b - a, p - a), d2 = cross(c - b, p - b), d3 = cross(a - c, p - c);
-            if (d1 >= 0 && d2 >= 0 && d3 >= 0) return d;
+            // (A point on an edge two of its triangles share - the middle of
+            // a rectangle, on its diagonal - is in either: rounding made each
+            // of the two say outside, by 1e-17, and the domain none.)
+            const double tol = -1e-12 * std::abs(cross(b - a, c - a));
+            if (d1 >= tol && d2 >= tol && d3 >= tol) return d;
         }
     }
     return -1;

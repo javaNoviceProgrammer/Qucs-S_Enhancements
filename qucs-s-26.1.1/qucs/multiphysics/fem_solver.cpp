@@ -3090,6 +3090,7 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         o.minNeff = kept.minNeff;
         o.maxAlpha = kept.maxAlpha;
         o.choose = kept.choose;
+        o.keepLayers = node.flag(QStringLiteral("keeplayers"));
         if (!wellTables(st, modes, f, error)) return false;
         const int found = modes.solveModes(o, count, guess, error);
         if (found < 0) return false;

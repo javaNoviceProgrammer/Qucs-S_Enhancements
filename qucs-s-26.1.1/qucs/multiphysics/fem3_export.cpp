@@ -420,10 +420,53 @@ Export3 fieldExport3(const Solutions3& set, const Node& node)
 
 } // namespace
 
+/// An eigenmode expansion's S-matrix at each wavelength of a point of the
+/// sweep (its "point", from 1; 0 the last), a Touchstone file.
+Export3 touchstone3(const Solutions3& set, const Node& node)
+{
+    Export3 out;
+    if (set.empty()) {
+        out.main.error = tr("nothing is solved");
+        return out;
+    }
+    const int n = int(set.size()), point = node.integer(QStringLiteral("point"));
+    const Solution3& s = *set[std::size_t(point <= 0 || point > n ? n - 1 : point - 1)];
+    const QStringList chosen = node.list(QStringLiteral("optics"));
+    const Solution3::Optics* o = nullptr;
+    for (const Solution3::Optics& c : s.optics)
+        if (chosen.isEmpty() || chosen.contains(c.physics)) {
+            o = &c;
+            break;
+        }
+    if (!o) {
+        out.main.error = chosen.isEmpty() ? tr("no eigenmode expansion is solved: its Touchstone file is of an Electromagnetic Waves, "
+                                               "Eigenmode Expansion's S-matrix, solved by a Wavelength Domain step")
+                                          : tr("there is no eigenmode expansion %1 solved").arg(chosen.join(QLatin1String(", ")));
+        return out;
+    }
+    QStringList comments{tr("%1, %2 of %3").arg(o->physics, s.studyTag, s.model().fileName.isEmpty() ? tr("a model") : s.model().fileName)};
+    if (!s.label.isEmpty()) comments << s.label;
+    int ports = 0;
+    QString why;
+    out.main.text = emeTouchstone(o->device, o->results, comments, &ports, &why);
+    if (out.main.text.isEmpty()) {
+        out.main.error = why;
+        return out;
+    }
+    out.main.suffix = QStringLiteral("s%1p").arg(ports);
+    out.main.summary = tr("%1 ports' S-matrix at %2 wavelengths (%3 to %4), Touchstone 1.1")
+                           .arg(ports)
+                           .arg(o->results.size())
+                           .arg(formatQuantity(299792458.0 / o->results.front().frequency, Dim::length()),
+                                formatQuantity(299792458.0 / o->results.back().frequency, Dim::length()));
+    return out;
+}
+
 Export3 export3(const Solutions3& set, const Node& node, const QString& base)
 {
     if (node.type == QLatin1String("vtu")) return vtuExport(set, node, base);
     if (node.type == QLatin1String("fieldexport")) return fieldExport3(set, node);
+    if (node.type == QLatin1String("touchstone")) return touchstone3(set, node);
     Export3 out;
     out.main.error = tr("a %1 is not exported from a 3D model").arg(node.kind() ? node.kind()->title : node.type);
     return out;

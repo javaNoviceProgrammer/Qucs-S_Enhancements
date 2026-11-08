@@ -151,6 +151,59 @@ QJsonObject heatedBlock()
     return QJsonDocument::fromJson(m.toJson()).object();
 }
 
+/// A straight silicon wire (0.5 x 0.22 µm, 6 µm long) in oxide, in µm: an
+/// eigenmode expansion along x, its ports' TE0 at both ends, a Wavelength
+/// Domain step of three wavelengths, a Touchstone export of its S-matrix.
+QJsonObject straightWire()
+{
+    Model m = Model::blank3d();
+    m.component().props.insert(QStringLiteral("unit"), QStringLiteral("um"));
+    auto box = [&m](const QString& label, double y, double z, double w, double h) {
+        FNode b = m.make(QStringLiteral("box"));
+        b.label = label;
+        b.props.insert(QStringLiteral("position"), QJsonArray{QStringLiteral("0"), QString::number(y)});
+        b.props.insert(QStringLiteral("size"), QJsonArray{QStringLiteral("6"), QString::number(w)});
+        b.props.insert(QStringLiteral("z"), QString::number(z));
+        b.props.insert(QStringLiteral("height"), QString::number(h));
+        m.add(m.geometry().tag, b);
+    };
+    box(QStringLiteral("oxide"), -1.5, -1, 3, 2.22);
+    box(QStringLiteral("core"), -0.25, 0, 0.5, 0.22);
+    auto material = [&m](const QString& label, const QString& n, const QString& on) {
+        FNode mat = m.make(QStringLiteral("material"));
+        mat.label = label;
+        mat.props.insert(QStringLiteral("n"), n);
+        mat.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), QJsonArray{on}}});
+        m.add(m.materials().tag, mat);
+    };
+    material(QStringLiteral("oxide"), QStringLiteral("1.444"), QStringLiteral("oxide"));
+    material(QStringLiteral("silicon"), QStringLiteral("3.476"), QStringLiteral("core"));
+    FNode eme = m.make(QStringLiteral("eme"));
+    eme.props.insert(QStringLiteral("modes"), 8);
+    eme.props.insert(QStringLiteral("resolution"), QStringLiteral("10"));
+    const QString tag = eme.tag;
+    m.add(m.component().tag, eme);
+    for (const char* end : {"start", "end"}) {
+        FNode port = m.make(QStringLiteral("eme/port"));
+        port.props.insert(QStringLiteral("name"), QLatin1String(end) == QLatin1String("start") ? QStringLiteral("1") : QStringLiteral("2"));
+        port.props.insert(QStringLiteral("end"), QString::fromLatin1(end));
+        m.add(tag, port);
+    }
+    for (FNode& c : m.root.children)
+        if (c.type == QLatin1String("study")) {
+            c.children.clear();
+            FNode step = m.make(QStringLiteral("wavelength"));
+            step.props.insert(QStringLiteral("wavelengths"), QStringLiteral("linspace(1500[nm], 1600[nm], 3)"));
+            c.children.push_back(step);
+        }
+    FNode ts = m.make(QStringLiteral("touchstone"));
+    FNode* exports = m.results().child(QStringLiteral("exports"));
+    if (exports) m.add(exports->tag, ts);
+    m.mesh().props.insert(QStringLiteral("custom"), true);
+    m.mesh().props.insert(QStringLiteral("hmax"), QStringLiteral("1"));
+    return QJsonDocument::fromJson(m.toJson()).object();
+}
+
 /// How many pixels of \a image are not its corner's colour.
 int drawn(const QImage& image)
 {
@@ -777,8 +830,9 @@ private slots:
         QCOMPARE(show->count(), 4);
     }
 
-    /// Exports in the tab: a 3D model's Export offers VTU and Field on a Grid,
-    /// not the plane's; a VTU node's Export button writes model_tag.vtu beside
+    /// Exports in the tab: a 3D model's Export offers VTU, Field on a Grid and
+    /// a Touchstone File (an eigenmode expansion's S-matrix), not the plane's
+    /// Mode Profile; a VTU node's Export button writes model_tag.vtu beside
     /// the model, said; a NumPy grid its .npy and its _xy.npy; before a solve,
     /// refused.
     void exportsInTheTab()
@@ -792,7 +846,7 @@ private slots:
         QVERIFY(!exports.isEmpty());
         const QStringList offered = addsOf(panel()->menuFor(exports));
         QVERIFY2(offered.contains(QStringLiteral("VTU (ParaView)")) && offered.contains(QStringLiteral("Field on a Grid"))
-                     && !offered.contains(QStringLiteral("Touchstone File")) && !offered.contains(QStringLiteral("Mode Profile")),
+                     && offered.contains(QStringLiteral("Touchstone File")) && !offered.contains(QStringLiteral("Mode Profile")),
                  qPrintable(offered.join(QStringLiteral(", "))));
         const QString vtu = panel()->addNode(exports, QStringLiteral("vtu"));
         QVERIFY(!vtu.isEmpty());
@@ -985,6 +1039,78 @@ private slots:
         QFile saved(path(QStringLiteral("tools3d_copy.qfem3d")));
         QVERIFY(saved.open(QIODevice::ReadOnly));
         QVERIFY(saved.readAll().contains("qucs-s multiphysics 3d 1"));
+    }
+
+    /// Light through a 3D model by the tools: a straight wire's eigenmode
+    /// expansion solved over three wavelengths - fem_solve's optics (its
+    /// S-parameter ports, |S21|² 0 dB at each), fem_evaluate at a wavelength
+    /// (eme.S21dB, the index there), the Wavelength box of the tab, and the
+    /// Touchstone export: an .s2p of three frequencies, rising, its ports
+    /// named.
+    void theToolsSolveAnEigenmodeExpansion()
+    {
+        const QString file = path(QStringLiteral("wire_eme.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", straightWire()}, {"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc);
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(doc->solution() && doc->solution()->spectral && doc->solution()->snapshotCount() == 3);
+        const QJsonArray optics = json(r).value(QStringLiteral("optics")).toArray();
+        QCOMPARE(optics.size(), 1);
+        const QJsonObject o = optics.at(0).toObject();
+        QCOMPARE(o.value(QStringLiteral("S-parameter ports")).toArray().size(), 2);
+        QCOMPARE(o.value(QStringLiteral("wavelengths")).toArray().size(), 3);
+        const QString s21 = o.value(QStringLiteral("wavelengths")).toArray().at(1).toObject().value(QStringLiteral("fed")).toObject().value(QStringLiteral("1")).toArray().at(1).toString();
+        QVERIFY2(s21.startsWith(QStringLiteral("S21 ")) && s21.contains(QStringLiteral(" dB")), qPrintable(s21));
+        // (No S-parameter among the globals listed: they are optics'.)
+        const QString tag = doc->model().physics().front()->tag;
+        QVERIFY(json(r).value(QStringLiteral("globals")).toObject().contains(tag + QStringLiteral(".neff_1_TE0")));
+        QVERIFY(!json(r).value(QStringLiteral("globals")).toObject().contains(tag + QStringLiteral(".S21")));
+        // At a wavelength: |S21| in dB nought, the index of 1.55 µm.
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", tag + QStringLiteral(".S21dB; ") + tag + QStringLiteral(".lambda0")}, {"frequency", "1550[nm]"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QList<double> v = si(r);
+        QVERIFY2(v.size() == 2 && std::abs(v[0]) < 1e-6 && std::abs(v[1] - 1.55e-6) < 1e-12, qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", tag + QStringLiteral(".neff_1_TE0")}, {"all", true}});
+        v = si(r);
+        QVERIFY2(v.size() == 3 && v[0] > v[1] && v[1] > v[2], qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QStringLiteral("λ = ")), qPrintable(text(r)));
+        // Its Touchstone file.
+        QString exportTag;
+        if (const FNode* ex = doc->model().results().child(QStringLiteral("exports")))
+            for (const FNode& c : ex->children)
+                if (c.type == QLatin1String("touchstone")) exportTag = c.tag;
+        QVERIFY(!exportTag.isEmpty());
+        r = call(QStringLiteral("fem_export"), {{"path", file}, {"export", exportTag}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString written = path(QStringLiteral("wire_eme_%1.s2p").arg(exportTag));
+        QFile ts(written);
+        QVERIFY2(ts.open(QIODevice::ReadOnly), qPrintable(written));
+        const QStringList lines = QString::fromUtf8(ts.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        QStringList data;
+        bool option = false;
+        for (const QString& l : lines) {
+            if (l.startsWith(QLatin1Char('#'))) option = l.trimmed() == QLatin1String("# Hz S RI R 50");
+            else if (!l.startsWith(QLatin1Char('!'))) data << l;
+        }
+        QVERIFY(option);
+        QCOMPARE(data.size(), 3);
+        QVERIFY(data[0].split(QLatin1Char(' ')).first().toDouble() < data[2].split(QLatin1Char(' ')).first().toDouble());
+        QVERIFY(lines.join(QLatin1Char('\n')).contains(QStringLiteral("! Port 2: optical port 2's TE0, at the end")));
+        // Its spectrum: written when it was solved, shown by fem_plot - a
+        // dataset of S11dB, S21dB... against lambda, a display of them.
+        const QString dat = path(QStringLiteral("wire_eme_spectrum.dat"));
+        QVERIFY(QFileInfo::exists(dat));
+        r = call(QStringLiteral("fem_plot"), {{"path", file}, {"spectrum", true}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("spectrum")).toString().endsWith(QStringLiteral("wire_eme_spectrum.dat")), qPrintable(text(r)));
+        QFile spectrum(dat);
+        QVERIFY(spectrum.open(QIODevice::ReadOnly));
+        const QByteArray content = spectrum.readAll();
+        QVERIFY(content.contains("<indep lambda 3>") && content.contains("<dep S21dB lambda>") && content.contains("<dep neff_1_TE0 lambda>"));
+        QVERIFY(QFileInfo::exists(path(QStringLiteral("wire_eme_spectrum.dpl"))));
     }
 
     /// Claude's plots and exports of a 3D model: a 3D Plot Group made of an
