@@ -257,12 +257,131 @@ struct TriangleMap {
     }
 };
 
-/// What a mode set needs at a triangle: its edge and node degrees of
-/// freedom's coefficients for every mode (rows: local dofs).
-struct LocalModes {
-    Eigen::MatrixXcd et, es;   // pe by M, pn by M
-    std::vector<double> sign;  // (signs are in the basis already)
+/// µ along u, v and s of mode set \a m at reference point (xi, eta) of
+/// triangle t: in a PML stretched as the mode solver stretched it, in a
+/// bend times f, f, 1/f (f = ρ/R) - the mode solver's own.
+void modeMu(const EmeModes& m, int t, const AffineMap& am, double xi, double eta, cd mu3[3])
+{
+    const double mu = t < int(m.mur.size()) && m.mur[std::size_t(t)] > 0 ? m.mur[std::size_t(t)] : 1.0;
+    cd muu = mu, muv = mu, mus = mu;
+    if (t < int(m.layerOf.size()) && m.layerOf[std::size_t(t)] >= 0) {
+        const EmeModes::Layer& L = m.layers[std::size_t(m.layerOf[std::size_t(t)])];
+        const QPointF p = am.at(xi, eta);
+        auto stretch = [&](double v, int axis) -> cd {
+            const double lo = m.inner[2 * axis], hi = m.inner[2 * axis + 1];
+            const double outLo = L.outer[2 * axis], outHi = L.outer[2 * axis + 1];
+            double depth = 0, x = 0;
+            if (v > hi && outHi > hi) {
+                depth = outHi - hi;
+                x = (v - hi) / depth;
+            } else if (v < lo && outLo < lo) {
+                depth = lo - outLo;
+                x = (lo - v) / depth;
+            } else
+                return 1.0;
+            x = std::clamp(x, 0.0, 1.0);
+            const double sigma0 = 1.5 * m.pmlLog / (L.k * depth);
+            return cd(1.0, -sigma0 * x * x);
+        };
+        const cd su = stretch(p.x(), 0), sv = stretch(p.y(), 1);
+        muu = mu * sv / su;
+        muv = mu * su / sv;
+        mus = mu * su * sv;
+    }
+    if (m.bendRadius > 0) {
+        const double f = std::max(std::abs(am.at(xi, eta).x() - m.bendCenter), 1e-300) / m.bendRadius;
+        muu *= f;
+        muv *= f;
+        mus /= f;
+    }
+    mu3[0] = muu;
+    mu3[1] = muv;
+    mu3[2] = mus;
+}
+
+/// The four transverse fields an overlap reads - e_u, e_v, h_u, h_v - of
+/// every mode at points, a row each (row-major: a point's row is together).
+using RowMatrix = Eigen::Matrix<cd, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+struct Transverse {
+    RowMatrix eu, ev, hu, hv;
+    void reserve(int rows, int M)
+    {
+        if (eu.rows() >= rows && eu.cols() == M) return;
+        const int r = std::max(rows, int(eu.rows()));
+        eu.resize(r, M);
+        ev.resize(r, M);
+        hu.resize(r, M);
+        hv.resize(r, M);
+    }
 };
+
+/// transverseAt()'s scratch, kept across its calls on one thread: nothing
+/// allocated per point.
+struct TransverseScratch {
+    Eigen::MatrixXcd et, es;             // the triangle's edge and node coefficients, dof by mode
+    Eigen::MatrixXd vx, vy, gx, gy;      // the points' edge basis and E_s's gradient basis
+    RowMatrix gu, gz;                    // the points' ∂u E_s and ∂v E_s
+    Eigen::RowVectorXcd jb;              // jβ of each mode
+};
+
+/// Rows [row, row + n) of \a out: the transverse fields of every mode of \a m
+/// at n reference points of triangle t - the triangle's coefficients gathered
+/// once, the points' fields small products of them (fieldsAt()'s rows 0, 1,
+/// 3 and 4, E_s and h_s not wanted).
+void transverseAt(const EmeModes& m, int t, const double* xi, const double* eta, int n, Transverse& out, int row, TransverseScratch& s)
+{
+    const Field& f = m.solution->fields().front();
+    const EdgeSpace& es = *f.edges;
+    const Space& ns = *f.space;
+    const AffineMap am = affineMap(ns, t);
+    const int M = m.count();
+    EdgeSpace::Basis b;
+    Shape sh;
+    for (int p = 0; p < n; ++p) {
+        es.basis(t, am, xi[p], eta[p], b);
+        shapeAt(ns.order(), xi[p], eta[p], sh);
+        if (p == 0) {
+            s.vx.resize(n, b.count);
+            s.vy.resize(n, b.count);
+            s.gx.resize(n, sh.count);
+            s.gy.resize(n, sh.count);
+        }
+        for (int i = 0; i < b.count; ++i) {
+            s.vx(p, i) = b.vx[i];
+            s.vy(p, i) = b.vy[i];
+        }
+        for (int i = 0; i < sh.count; ++i) {
+            s.gx(p, i) = sh.dxi[i] * am.grad[1][0] + sh.deta[i] * am.grad[2][0];
+            s.gy(p, i) = sh.dxi[i] * am.grad[1][1] + sh.deta[i] * am.grad[2][1];
+        }
+    }
+    const int pe = int(s.vx.cols()), pn = int(s.gx.cols());
+    s.et.resize(pe, M);
+    const int* edof = es.dofs(t);
+    for (int i = 0; i < pe; ++i) s.et.row(i) = m.Et.row(edof[i]);
+    s.es.resize(pn, M);
+    const int* ndof = ns.dofs(t);
+    for (int i = 0; i < pn; ++i) s.es.row(i) = m.Es.row(ndof[i]);
+    out.eu.middleRows(row, n).noalias() = s.vx.cast<cd>() * s.et;
+    out.ev.middleRows(row, n).noalias() = s.vy.cast<cd>() * s.et;
+    s.gu.noalias() = s.gx.cast<cd>() * s.es;
+    s.gz.noalias() = s.gy.cast<cd>() * s.es;
+    if (s.jb.size() != M)
+        s.jb.resize(M);
+    for (int k = 0; k < M; ++k) s.jb(k) = J * m.beta[std::size_t(k)];
+    const double omega = m.k0 * C0;
+    // (µ the triangle's, but a PML's and a bend's vary across it.)
+    const bool varies = m.bendRadius > 0 || (t < int(m.layerOf.size()) && m.layerOf[std::size_t(t)] >= 0);
+    cd mu3[3];
+    modeMu(m, t, am, xi[0], eta[0], mu3);
+    for (int p = 0; p < n; ++p) {
+        if (varies && p > 0) modeMu(m, t, am, xi[p], eta[p], mu3);
+        // ∇×E with ∂s = -jβ: h_u ∝ ∂v Es + jβ Ev, h_v ∝ -jβ Eu - ∂u Es.
+        const cd fu = J / (omega * Mu0 * mu3[0]), fv = J / (omega * Mu0 * mu3[1]);
+        out.hu.row(row + p) = fu * (s.gz.row(p) + s.jb.cwiseProduct(out.ev.row(row + p)));
+        out.hv.row(row + p) = fv * (-s.jb.cwiseProduct(out.eu.row(row + p)) - s.gu.row(p));
+    }
+}
 
 } // namespace
 
@@ -330,41 +449,10 @@ void EmeModes::fieldsAt(int t, double xi, double eta, Eigen::MatrixXcd& out) con
         esz += gy * row;
     }
     const double omega = k0 * C0;
-    const double mu = t < int(mur.size()) && mur[std::size_t(t)] > 0 ? mur[std::size_t(t)] : 1.0;
-    // µ along u, v, s: in a PML stretched as the mode solver stretched it.
-    cd muu = mu, muv = mu, mus = mu;
-    if (t < int(layerOf.size()) && layerOf[std::size_t(t)] >= 0) {
-        const Layer& L = layers[std::size_t(layerOf[std::size_t(t)])];
-        const QPointF p = am.at(xi, eta);
-        auto stretch = [&](double v, int axis) -> cd {
-            const double lo = inner[2 * axis], hi = inner[2 * axis + 1];
-            const double outLo = L.outer[2 * axis], outHi = L.outer[2 * axis + 1];
-            double depth = 0, x = 0;
-            if (v > hi && outHi > hi) {
-                depth = outHi - hi;
-                x = (v - hi) / depth;
-            } else if (v < lo && outLo < lo) {
-                depth = lo - outLo;
-                x = (lo - v) / depth;
-            } else
-                return 1.0;
-            x = std::clamp(x, 0.0, 1.0);
-            const double sigma0 = 1.5 * pmlLog / (L.k * depth);
-            return cd(1.0, -sigma0 * x * x);
-        };
-        const cd su = stretch(p.x(), 0), sv = stretch(p.y(), 1);
-        muu = mu * sv / su;
-        muv = mu * su / sv;
-        mus = mu * su * sv;
-    }
-    if (bendRadius > 0) {
-        // A bend's: µ' = µ (f, f, 1/f), f = ρ/R - the mode solver's own.
-        const double f = std::max(std::abs(am.at(xi, eta).x() - bendCenter), 1e-300) / bendRadius;
-        muu *= f;
-        muv *= f;
-        mus /= f;
-    }
-    const cd fu = J / (omega * Mu0 * muu), fv = J / (omega * Mu0 * muv), fs = J / (omega * Mu0 * mus);
+    // µ along u, v, s: in a PML stretched, in a bend times f, f, 1/f.
+    cd mu3[3];
+    modeMu(*this, t, am, xi, eta, mu3);
+    const cd fu = J / (omega * Mu0 * mu3[0]), fv = J / (omega * Mu0 * mu3[1]), fs = J / (omega * Mu0 * mu3[2]);
     out.row(0) = eu;
     out.row(1) = ev;
     out.row(2) = esv;
@@ -499,6 +587,30 @@ private:
     std::vector<std::vector<int>> a_cells;
 };
 
+/// A triangle clipped by another's three half-planes: at most six corners
+/// (nine kept for rounding's sake) - no heap per clip.
+struct ClipPolygon {
+    QPointF p[9];
+    int n = 0;
+};
+
+/// \a in clipped to the half-plane left of the edge a→b, into \a out.
+void clipHalf(const ClipPolygon& in, QPointF a, QPointF b, ClipPolygon& out)
+{
+    out.n = 0;
+    const double ex = b.x() - a.x(), ey = b.y() - a.y();
+    auto side = [&](QPointF r) { return ex * (r.y() - a.y()) - ey * (r.x() - a.x()); };
+    for (int i = 0; i < in.n && out.n < 8; ++i) {
+        const QPointF u = in.p[i], v = in.p[(i + 1) % in.n];
+        const double su = side(u), sv = side(v);
+        if (su >= 0) out.p[out.n++] = u;
+        if ((su >= 0) != (sv >= 0)) {
+            const double w = su / (su - sv);
+            out.p[out.n++] = u + (v - u) * w;
+        }
+    }
+}
+
 /// \a poly clipped to the half-plane left of the edge p→q (counter-clockwise
 /// triangles keep their inside on the left).
 std::vector<QPointF> clipHalf(const std::vector<QPointF>& poly, QPointF p, QPointF q)
@@ -527,7 +639,7 @@ Eigen::MatrixXcd modeOverlap(const EmeModes& a, const EmeModes& b)
     return ab;
 }
 
-void modeOverlaps(const EmeModes& a, const EmeModes& b, Eigen::MatrixXcd* ab, Eigen::MatrixXcd* ba)
+void modeOverlapsByPoint(const EmeModes& a, const EmeModes& b, Eigen::MatrixXcd* ab, Eigen::MatrixXcd* ba)
 {
     const int Ma = a.count(), Mb = b.count();
     Eigen::MatrixXcd& O = *ab;
@@ -599,6 +711,228 @@ void modeOverlaps(const EmeModes& a, const EmeModes& b, Eigen::MatrixXcd* ab, Ei
             }
         }
     }
+}
+
+namespace {
+
+/// Triangles of a in a chunk of an overlap: fixed, so that a pair's sum - its
+/// chunks added in their order - is the same to the last bit however many
+/// threads share its chunks.
+constexpr int OverlapChunk = 512;
+/// Points gathered before their products: the products are GEMMs, not a
+/// rank-one update a point.
+constexpr int OverlapBatch = 512;
+
+/// One thread's buffers for overlapRange().
+struct OverlapScratch {
+    Transverse A, B;
+    TransverseScratch sa, sb;
+    std::vector<double> xa, ea, xb, eb, w;
+    std::vector<int> tb;                 // each point's triangle of b
+    std::vector<std::pair<int, int>> segA;   // (triangle of a, first point), in order
+    std::vector<int> cand, seen;
+    RowMatrix wa;
+};
+
+/// The points gathered, their fields and products: O_ab += Σ w e_u,a h_v,b -
+/// e_v,a h_u,b, O_ba += Σ w e_u,b h_v,a - e_v,b h_u,a (no conjugate).
+void overlapFlush(const EmeModes& a, const EmeModes& b, OverlapScratch& s, Eigen::MatrixXcd& ab, Eigen::MatrixXcd* ba)
+{
+    const int P = int(s.w.size());
+    if (P == 0) return;
+    s.A.reserve(P, a.count());
+    s.B.reserve(P, b.count());
+    for (std::size_t k = 0; k < s.segA.size(); ++k) {
+        const int from = s.segA[k].second, to = k + 1 < s.segA.size() ? s.segA[k + 1].second : P;
+        transverseAt(a, s.segA[k].first, s.xa.data() + from, s.ea.data() + from, to - from, s.A, from, s.sa);
+    }
+    for (int from = 0; from < P;) {
+        int to = from + 1;
+        while (to < P && s.tb[std::size_t(to)] == s.tb[std::size_t(from)]) ++to;
+        transverseAt(b, s.tb[std::size_t(from)], s.xb.data() + from, s.eb.data() + from, to - from, s.B, from, s.sb);
+        from = to;
+    }
+    const Eigen::Map<const Eigen::VectorXd> w(s.w.data(), P);
+    s.wa = w.asDiagonal() * s.A.eu.topRows(P);
+    ab.noalias() += s.wa.transpose() * s.B.hv.topRows(P);
+    s.wa = w.asDiagonal() * s.A.ev.topRows(P);
+    ab.noalias() -= s.wa.transpose() * s.B.hu.topRows(P);
+    if (ba) {
+        s.wa = w.asDiagonal() * s.A.hv.topRows(P);
+        ba->noalias() += s.B.eu.topRows(P).transpose() * s.wa;
+        s.wa = w.asDiagonal() * s.A.hu.topRows(P);
+        ba->noalias() -= s.B.ev.topRows(P).transpose() * s.wa;
+    }
+    s.xa.clear();
+    s.ea.clear();
+    s.xb.clear();
+    s.eb.clear();
+    s.w.clear();
+    s.tb.clear();
+    s.segA.clear();
+}
+
+/// The overlaps over a's triangles [t0, t1): on a's own mesh where the two
+/// are one cut, else on the common refinement - each triangle of a clipped by
+/// those of b it meets (\a grid: b's), a degree-5 rule on each piece.
+void overlapRange(const EmeModes& a, const EmeModes& b, const TriangleGrid* grid, int t0, int t1, OverlapScratch& s, Eigen::MatrixXcd& ab,
+                  Eigen::MatrixXcd* ba)
+{
+    const Mesh& ma = a.solution->mesh();
+    const int order = std::max(a.solution->fields().front().space->order(), b.solution->fields().front().space->order());
+    const TriangleRule& rule = triangleRule(ruleDegree(order));
+    if (a.solution == b.solution) {
+        for (int t = t0; t < t1; ++t) {
+            const TriangleMap tm(ma, t);
+            const double jac = 2 * std::abs(tm.area);
+            s.segA.push_back({t, int(s.w.size())});
+            for (const auto& q : rule.points) {
+                s.xa.push_back(q[0]);
+                s.ea.push_back(q[1]);
+                s.xb.push_back(q[0]);
+                s.eb.push_back(q[1]);
+                s.tb.push_back(t);
+                s.w.push_back(q[2] * jac);
+            }
+            if (int(s.w.size()) >= OverlapBatch) overlapFlush(a, b, s, ab, ba);
+        }
+        overlapFlush(a, b, s, ab, ba);
+        return;
+    }
+    const Mesh& mb = b.solution->mesh();
+    s.seen.assign(mb.triangles.size(), -1);
+    // (Coordinates in the geometry's unit for the clip; areas and points in
+    // metres for the integral.)
+    const double sa = ma.unitScale;
+    for (int ta = t0; ta < t1; ++ta) {
+        const auto& av = ma.triangles[std::size_t(ta)];
+        std::vector<QPointF> A{ma.nodes[std::size_t(av[0])], ma.nodes[std::size_t(av[1])], ma.nodes[std::size_t(av[2])]};
+        // (Counter-clockwise.)
+        const double sgn = (A[1].x() - A[0].x()) * (A[2].y() - A[0].y()) - (A[1].y() - A[0].y()) * (A[2].x() - A[0].x());
+        if (sgn < 0) std::swap(A[1], A[2]);
+        QRectF box(QPointF(std::min({A[0].x(), A[1].x(), A[2].x()}), std::min({A[0].y(), A[1].y(), A[2].y()})),
+                   QPointF(std::max({A[0].x(), A[1].x(), A[2].x()}), std::max({A[0].y(), A[1].y(), A[2].y()})));
+        grid->candidates(box, s.cand, s.seen, ta);
+        const TriangleMap mapA(ma, ta);
+        const double tiny = 1e-14 * std::abs(mapA.area) / (sa * sa);
+        const int first = int(s.w.size());
+        for (int tb : s.cand) {
+            const auto& bv = mb.triangles[std::size_t(tb)];
+            ClipPolygon poly, other;
+            poly.n = 3;
+            for (int k = 0; k < 3; ++k) poly.p[k] = mb.nodes[std::size_t(bv[std::size_t(k)])];
+            for (int k = 0; k < 3 && poly.n >= 3; ++k) {
+                clipHalf(poly, A[std::size_t(k)], A[std::size_t((k + 1) % 3)], other);
+                poly = other;
+            }
+            if (poly.n < 3) continue;
+            const TriangleMap mapB(mb, tb);
+            for (int k = 1; k + 1 < poly.n; ++k) {
+                const QPointF p0 = poly.p[0], p1 = poly.p[k], p2 = poly.p[k + 1];
+                const double area = 0.5 * std::abs((p1.x() - p0.x()) * (p2.y() - p0.y()) - (p1.y() - p0.y()) * (p2.x() - p0.x()));
+                if (area <= tiny) continue;
+                const double jac = 2 * area * sa * sa;
+                for (const auto& q : rule.points) {
+                    const QPointF p = (p0 + (p1 - p0) * q[0] + (p2 - p0) * q[1]) * sa;
+                    double xa, ea, xb, eb;
+                    mapA.reference(p.x(), p.y(), &xa, &ea);
+                    mapB.reference(p.x(), p.y(), &xb, &eb);
+                    s.xa.push_back(xa);
+                    s.ea.push_back(ea);
+                    s.xb.push_back(xb);
+                    s.eb.push_back(eb);
+                    s.tb.push_back(tb);
+                    s.w.push_back(q[2] * jac);
+                }
+            }
+        }
+        if (int(s.w.size()) > first) s.segA.push_back({ta, first});
+        if (int(s.w.size()) >= OverlapBatch) overlapFlush(a, b, s, ab, ba);
+    }
+    overlapFlush(a, b, s, ab, ba);
+}
+
+} // namespace
+
+bool modeOverlapsMany(const std::vector<std::pair<const EmeModes*, const EmeModes*>>& pairs, int threads, const std::function<bool()>& cancelled,
+                      const std::function<void(int, int)>& progress, std::vector<Eigen::MatrixXcd>* ab, std::vector<Eigen::MatrixXcd>* ba)
+{
+    const int n = int(pairs.size());
+    ab->assign(std::size_t(n), Eigen::MatrixXcd());
+    if (ba) ba->assign(std::size_t(n), Eigen::MatrixXcd());
+    // Each pair's chunks of its a's triangles, a job each; a chunk done adds
+    // itself and those after it that are done, in their order.
+    struct Pair {
+        std::unique_ptr<TriangleGrid> grid;
+        int chunks = 0, next = 0;
+        std::vector<std::unique_ptr<std::pair<Eigen::MatrixXcd, Eigen::MatrixXcd>>> parts;
+        std::mutex lock;
+    };
+    std::vector<Pair> state(static_cast<std::size_t>(n));
+    std::vector<std::pair<int, int>> jobs;   // (pair, chunk)
+    for (int i = 0; i < n; ++i) {
+        const EmeModes& a = *pairs[std::size_t(i)].first;
+        const EmeModes& b = *pairs[std::size_t(i)].second;
+        (*ab)[std::size_t(i)] = Eigen::MatrixXcd::Zero(a.count(), b.count());
+        if (ba) (*ba)[std::size_t(i)] = Eigen::MatrixXcd::Zero(b.count(), a.count());
+        if (a.count() == 0 || b.count() == 0) continue;
+        Pair& p = state[std::size_t(i)];
+        if (a.solution != b.solution) p.grid = std::make_unique<TriangleGrid>(b.solution->mesh());
+        const int triangles = int(a.solution->mesh().triangles.size());
+        p.chunks = (triangles + OverlapChunk - 1) / OverlapChunk;
+        p.parts.resize(std::size_t(p.chunks));
+        for (int c = 0; c < p.chunks; ++c) jobs.push_back({i, c});
+    }
+    std::atomic<int> next{0}, done{0};
+    std::atomic<bool> stop{false};
+    std::mutex telling;
+    const int total = int(jobs.size());
+    auto work = [&] {
+        OverlapScratch s;
+        for (int j = next++; j < total && !stop; j = next++) {
+            if (cancelled && cancelled()) {
+                stop = true;
+                return;
+            }
+            const auto [i, c] = jobs[std::size_t(j)];
+            const EmeModes& a = *pairs[std::size_t(i)].first;
+            const EmeModes& b = *pairs[std::size_t(i)].second;
+            Pair& p = state[std::size_t(i)];
+            auto part = std::make_unique<std::pair<Eigen::MatrixXcd, Eigen::MatrixXcd>>(Eigen::MatrixXcd::Zero(a.count(), b.count()),
+                                                                                        ba ? Eigen::MatrixXcd::Zero(b.count(), a.count()) : Eigen::MatrixXcd());
+            const int t0 = c * OverlapChunk, t1 = std::min(int(a.solution->mesh().triangles.size()), t0 + OverlapChunk);
+            overlapRange(a, b, p.grid.get(), t0, t1, s, part->first, ba ? &part->second : nullptr);
+            {
+                std::lock_guard<std::mutex> lock(p.lock);
+                p.parts[std::size_t(c)] = std::move(part);
+                while (p.next < p.chunks && p.parts[std::size_t(p.next)]) {
+                    (*ab)[std::size_t(i)] += p.parts[std::size_t(p.next)]->first;
+                    if (ba) (*ba)[std::size_t(i)] += p.parts[std::size_t(p.next)]->second;
+                    p.parts[std::size_t(p.next)].reset();
+                    ++p.next;
+                }
+            }
+            const int finished = ++done;
+            if (progress) {
+                std::lock_guard<std::mutex> lock(telling);
+                progress(finished, total);
+            }
+        }
+    };
+    const int count = std::clamp(threads > 0 ? threads : int(std::thread::hardware_concurrency()), 1, std::max(1, total));
+    std::vector<std::thread> pool;
+    for (int t = 1; t < count; ++t) pool.emplace_back(work);
+    work();
+    for (std::thread& t : pool) t.join();
+    return !stop;
+}
+
+void modeOverlaps(const EmeModes& a, const EmeModes& b, Eigen::MatrixXcd* ab, Eigen::MatrixXcd* ba)
+{
+    std::vector<Eigen::MatrixXcd> abs, bas;
+    modeOverlapsMany({{&a, &b}}, 1, {}, {}, &abs, ba ? &bas : nullptr);
+    *ab = std::move(abs.front());
+    if (ba) *ba = std::move(bas.front());
 }
 
 namespace {
@@ -1540,9 +1874,21 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
         }
         boxes.push_back({p, cs, {}, {}});
     }
+    // (Its stages timed for the log: the cuts, the junctions' overlaps, the
+    // cascade.)
+    QElapsedTimer stage;
+    stage.start();
+    qint64 cutsMs = 0, overlapsMs = 0;
+    std::mutex telling;
+    // (The cuts reported as the first 60 % of the solve, the overlaps the rest.)
+    auto tell = [&](double f, const QString& what) {
+        if (!device.settings.progress) return;
+        std::lock_guard<std::mutex> lock(telling);
+        device.settings.progress(f, what);
+    };
     {
         const int jobs = int(sections.size() + boxes.size());
-        std::atomic<int> next{0};
+        std::atomic<int> next{0}, done{0};
         auto work = [&] {
             for (int j = next++; j < jobs; j = next++) {
                 if (device.settings.cancelled && device.settings.cancelled()) return;
@@ -1565,6 +1911,8 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
                     st.modes = std::max(6, 3 * asked + 2);
                     b.modes = solveSectionModes(model, parameters, topology, b.cs, frequency, st, &b.error);
                 }
+                const int finished = ++done;
+                tell(0.6 * finished / jobs, tr("cuts %1 of %2").arg(finished).arg(jobs));
             }
         };
         const int threads = std::clamp(device.settings.threads > 0 ? device.settings.threads : int(std::thread::hardware_concurrency()), 1,
@@ -1574,6 +1922,7 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
         work();
         for (std::thread& t : pool) t.join();
     }
+    cutsMs = stage.restart();
     if (device.settings.cancelled && device.settings.cancelled()) {
         r.error = tr("cancelled");
         return r;
@@ -1622,17 +1971,50 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
     // thousand teeth two pairs), a periodic section's cells one period - its
     // S-matrix with the junction back to its start raised to all its periods
     // but the last by squaring, then the last.
+    const double stol = 1e-9 * std::max({1.0, std::abs(device.s0), std::abs(device.s1)});
+    // Every overlap the cascade and the ports want - each distinct junction
+    // (two cells one after another, a periodic section's last cell back to
+    // its first) and each boxed port's projection - side by side on the
+    // solve's threads, before the cascade: the cascade's own work is small
+    // matrices, the overlaps all but all of a solve after its cuts.
+    std::vector<std::pair<int, int>> pairs;
+    {
+        std::map<std::pair<int, int>, int> seen;
+        auto need = [&](int a, int b) {
+            if (a != b && seen.emplace(std::make_pair(a, b), 0).second) pairs.push_back({a, b});
+        };
+        for (std::size_t c = 1; c < r.cells.size(); ++c) need(r.cells[c - 1].section, r.cells[c].section);
+        for (const EmePeriodic& p : device.periodic) {
+            if (p.periods < 2) continue;
+            std::size_t c0 = r.cells.size(), c1 = 0;
+            for (std::size_t c = 0; c < r.cells.size(); ++c)
+                if (r.cells[c].s0 >= p.s0 - stol && r.cells[c].s1 <= p.s1 + stol) {
+                    c0 = std::min(c0, c);
+                    c1 = c;
+                }
+            if (c0 < r.cells.size()) need(r.cells[c1].section, r.cells[c0].section);
+        }
+    }
+    const EmeModes& first = modes[std::size_t(r.cells.front().section)];
+    const EmeModes& last = modes[std::size_t(r.cells.back().section)];
+    std::vector<std::pair<const EmeModes*, const EmeModes*>> overlapPairs;
+    for (const auto& [a, b] : pairs) overlapPairs.push_back({&modes[std::size_t(a)], &modes[std::size_t(b)]});
+    for (const BoxPort& b : boxes) overlapPairs.push_back({&b.modes, device.ports[std::size_t(b.port)].atEnd ? &last : &first});
+    std::vector<Eigen::MatrixXcd> overlapAB, overlapBA;
+    const bool overlapsDone = modeOverlapsMany(
+        overlapPairs, device.settings.threads, device.settings.cancelled,
+        [&](int done, int total) { tell(0.6 + 0.4 * done / std::max(1, total), tr("junctions' overlaps %1 of %2").arg(done).arg(total)); }, &overlapAB,
+        &overlapBA);
+    overlapsMs = stage.restart();
+    if (!overlapsDone || (device.settings.cancelled && device.settings.cancelled())) {
+        r.error = tr("cancelled");
+        return r;
+    }
     std::map<std::pair<int, int>, SMatrix> interfaces;
+    for (std::size_t i = 0; i < pairs.size(); ++i) interfaces.emplace(pairs[i], junctionS(overlapAB[i], overlapBA[i]));
     auto junction = [&](int a, int b) -> const SMatrix& {
         auto it = interfaces.find({a, b});
-        if (it == interfaces.end()) {
-            if (a == b) it = interfaces.emplace(std::make_pair(a, b), identityS(modes[std::size_t(a)].count())).first;
-            else {
-                Eigen::MatrixXcd ab, ba;
-                modeOverlaps(modes[std::size_t(a)], modes[std::size_t(b)], &ab, &ba);
-                it = interfaces.emplace(std::make_pair(a, b), junctionS(ab, ba)).first;
-            }
-        }
+        if (it == interfaces.end()) it = interfaces.emplace(std::make_pair(a, b), identityS(modes[std::size_t(a)].count())).first;   // (a == b)
         return it->second;
     };
     auto carried = [&](std::size_t c) {
@@ -1645,7 +2027,6 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
         for (std::size_t c = first + 1; c <= last; ++c) s = cascade(cascade(s, junction(r.cells[c - 1].section, r.cells[c].section)), carried(c));
         return s;
     };
-    const double stol = 1e-9 * std::max({1.0, std::abs(device.s0), std::abs(device.s1)});
     SMatrix total;
     long long repeated = 0;
     std::map<std::pair<int, int>, long long> uses;   // each junction's, the periods' with them
@@ -1674,9 +2055,9 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
     // The ports' modes: each a projection of the end cut's modes - what an
     // end cell's outgoing field leaves in it, and what of each end mode it
     // feeds - ½(⟨e_p, h_n⟩ + ⟨e_n, h_p⟩), the same both ways: S stays
-    // reciprocal. A whole window's port takes its modes as they are.
-    const EmeModes& first = modes[std::size_t(r.cells.front().section)];
-    const EmeModes& last = modes[std::size_t(r.cells.back().section)];
+    // reciprocal. A whole window's port takes its modes as they are. (Their
+    // overlaps among those computed above, after the junctions'.)
+    const qint64 cascadeMs = stage.restart();
     std::vector<Eigen::RowVectorXcd> projL, projR;   // by port mode: over the end cut's modes
     for (int p = 0; p < int(device.ports.size()); ++p) {
         const EmePort& port = device.ports[std::size_t(p)];
@@ -1684,11 +2065,12 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
         const EmeModes* own = &end;
         Eigen::MatrixXcd projection;   // own modes by end modes
         if (!port.whole) {
-            for (const BoxPort& b : boxes)
-                if (b.port == p) own = &b.modes;
-            Eigen::MatrixXcd O1, O2;
-            modeOverlaps(*own, end, &O1, &O2);
-            projection = 0.5 * (O1 + O2.transpose());
+            for (std::size_t k = 0; k < boxes.size(); ++k)
+                if (boxes[k].port == p) {
+                    own = &boxes[k].modes;
+                    const std::size_t i = pairs.size() + k;
+                    projection = 0.5 * (overlapAB[i] + overlapBA[i].transpose());
+                }
         }
         for (const QString& l : port.modes) {
             const int k = own->find(l);
@@ -1735,13 +2117,20 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
         for (int j = 0; j < N; ++j) r.S(i, j) = S(order[std::size_t(i)], order[std::size_t(j)]);
     r.balance.assign(std::size_t(N), 0.0);
     for (int j = 0; j < N; ++j) r.balance[std::size_t(j)] = r.S.col(j).squaredNorm();
-    r.log << tr("Eigenmode expansion at %1: %2 cells, %3 distinct cuts of %4 modes, %5 port modes; %6 s")
+    const int threads = std::max(1, device.settings.threads > 0 ? device.settings.threads : int(std::thread::hardware_concurrency()));
+    r.log << tr("Eigenmode expansion at %1: %2 cells, %3 distinct cuts of %4 modes, %5 port modes; %6 s - the cuts %7 s, the overlaps %8 s "
+                "(%9 of them), the cascade %10 s, on %11 threads")
                  .arg(formatQuantity(C0 / frequency, Dim::length()))
                  .arg(r.cells.size())
                  .arg(sections.size())
                  .arg(device.settings.modes)
                  .arg(N)
-                 .arg(timer.elapsed() / 1000.0, 0, 'f', 2);
+                 .arg(timer.elapsed() / 1000.0, 0, 'f', 2)
+                 .arg(cutsMs / 1000.0, 0, 'f', 2)
+                 .arg(overlapsMs / 1000.0, 0, 'f', 2)
+                 .arg(overlapPairs.size())
+                 .arg((cascadeMs + stage.elapsed()) / 1000.0, 0, 'f', 2)
+                 .arg(threads);
     if (repeated > 0) r.log << tr("Its periodic sections: %1 periods in all, each drawn once").arg(repeated);
     // A junction that recurs - a grating's, drawn or a periodic section's:
     // its stopband sits where the cuts' indices put it, L (n1 + n2) = λ, and

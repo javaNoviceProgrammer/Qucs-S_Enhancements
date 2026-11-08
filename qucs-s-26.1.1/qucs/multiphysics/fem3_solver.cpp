@@ -863,6 +863,13 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
             EmeDevice d = devices[std::size_t(j % P)];
             d.settings.cancelled = cancelled;
             d.settings.threads = std::max(1, cores / atOnce);
+            // (One wavelength alone: how far its cuts and its overlaps are, not
+            // a number that stays put for the whole solve.)
+            if (jobs == 1 && tell)
+                d.settings.progress = [&](double f, const QString& what) {
+                    std::lock_guard<std::mutex> lock(telling);
+                    if (!tell(f, tr("%1: %2").arg(step.name(), what))) stop = true;
+                };
             results[std::size_t(j)] = solveEme(s.model(), s.parametersPtr(), topology, d, frequencies[std::size_t(j / P)]);
             ++done;
             if (!results[std::size_t(j)].ok()) stop = true;
