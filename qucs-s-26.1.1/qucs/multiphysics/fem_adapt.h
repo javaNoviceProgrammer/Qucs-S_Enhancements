@@ -55,8 +55,10 @@ struct RefinementIndicator {
 RefinementIndicator refinementIndicator(const Solution& solution, const QStringList& physics = {});
 
 /// \a goal's triangles, the least that hold \a share of its square and at least
-/// \a least of them.
-std::vector<char> markBulk(const std::vector<double>& eta, double share = 0.5, double least = 0.35);
+/// \a least of them. (A tenth: more holds the refinement back from a singularity -
+/// at 35 % a corner's energy fell as unknowns^-1.2, at 10 % as the optimal ^-2 of
+/// quadratic elements, in as many solves.)
+std::vector<char> markBulk(const std::vector<double>& eta, double share = 0.5, double least = 0.1);
 
 // --------------------------------------------------------------- The estimate
 
@@ -80,7 +82,7 @@ struct ValueEstimate {
     static std::optional<Trust> trustOf(const QString& word);
 };
 
-/// \a values on meshes of \a unknowns (ascending; of those closer than 1.4 times,
+/// \a values on meshes of \a unknowns (ascending; of those closer than 1.25 times,
 /// the finer): the last three as Q = limit + C unknowns^-q, on elements
 /// of \a order. Believed where the changes shrink with one sign at a rate within
 /// reason for the order, and with room (1.25, Roache's for three meshes); else
@@ -103,7 +105,7 @@ struct ConvergencePlan {
     QString tag, name, study;
     std::vector<ConvergenceWatch> values;
     double tolerance = 0.01;
-    int maxMeshes = 12;         ///< solves at most (of each point of a sweep)
+    int maxMeshes = 25;         ///< solves at most (of each point of a sweep)
     double maxUnknowns = 2e6;   ///< no mesh is solved past it
     QString refine = QStringLiteral("auto");   ///< auto, goal, uniform
     QStringList physics;        ///< the fields it refines by (empty: every one)
@@ -170,9 +172,12 @@ struct ConvergenceResult {
     double seconds = 0;
     /// The refined mesh of the last series run, while its run is in memory.
     std::shared_ptr<const Mesh> mesh;
-    /// The sizes that mesh asks for, "x y h" (the geometry's unit): what Keep
-    /// Refined Mesh writes in. Empty where nothing was refined.
+    /// The sizes of the coarsest mesh whose values are within their tolerances of
+    /// the finest's limit, its error counted (the finest where none is), "x y h" in
+    /// the geometry's unit: what Keep Refined Mesh writes in. Empty where nothing
+    /// was refined.
     QStringList sizes;
+    int keptRow = 0;             ///< that mesh's row index (from 1; 0: none)
     double smallestSize = 0;
 
     /// As a node keeps it.
@@ -194,8 +199,9 @@ ConvergenceResult runConvergence(const Model& model, const QString& tag, std::sh
                                  std::shared_ptr<const Topology> topology, std::shared_ptr<const Mesh> mesh, const Progress& progress = {},
                                  const ConvergenceListener& listener = {});
 
-/// What a result depends on, as a text: everything of the model but the result. A
-/// result whose setup is not this is of the model before a change.
+/// What a result depends on, as a text: everything of the model but the result and
+/// the Adapted Sizes it was kept as. A result whose setup is not this is of the
+/// model before a change.
 QString convergenceSetup(const Model& model, const Node& node);
 
 /// The refined mesh of \a node's result written into the model's mesh node as

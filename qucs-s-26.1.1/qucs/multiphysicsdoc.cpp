@@ -1584,40 +1584,70 @@ void MultiphysicsDoc::takeConvergenceRows(Job& job)
     for (const QString& line : lines) say(line);
 }
 
-void MultiphysicsDoc::converge(const QString& tag)
+void MultiphysicsDoc::converge(const QString& tag, const QJsonObject& settings, bool create)
 {
     if (isBusy()) return;
-    const Node* found = convergenceNode(a_model, tag);
-    if (!found) {
+    // The model the run is of: the node with the settings asked for this run (made,
+    // where it is to be), written into the model with the result alone - a refused
+    // or failed run leaves the node as it was (the review of 063142f, B2: a call's
+    // "study": "nosuch" stayed, and every call after it failed).
+    Model runModel = a_model;
+    Node* node = nullptr;
+    Node made;
+    if (create) {
+        made = runModel.make(QStringLiteral("convergence"));
+        for (auto it = settings.begin(); it != settings.end(); ++it) made.props.insert(it.key(), it.value());
+        QString why;
+        node = runModel.add(runModel.root.tag, made, -1, &why);
+        if (!node) {
+            a_lastError = why;
+            a_convergenceError = why;
+            say(why, true);
+            emit stateChanged();
+            return;
+        }
+        made = *node;
+    } else if (const Node* found = convergenceNode(runModel, tag)) {
+        node = runModel.find(found->tag);
+        for (auto it = settings.begin(); it != settings.end(); ++it) node->props.insert(it.key(), it.value());
+    }
+    if (!node) {
         a_lastError = tag.isEmpty() ? tr("The model has no mesh convergence check: add one (the menu of its Mesh Convergence node).")
                                     : tr("There is no mesh convergence check %1.").arg(tag);
+        a_convergenceError = a_lastError;
         say(a_lastError, true);
         emit stateChanged();
         return;
     }
-    const QString check = found->tag;
+    const QString check = node->tag;
+    const QString name = node->name();
+    const QJsonObject asked = node->props;
     // What cannot be run, said at once: no job.
     QString why;
-    if (!convergencePlan(a_model, *found, *parameters(), &why)) {
+    if (!convergencePlan(runModel, *node, *parameters(), &why)) {
         a_lastError = why;
+        a_convergenceError = why;
         say(why, true);
-        ConvergenceResult failed;
-        failed.error = why;
-        a_shownConvergence = check;
-        updateConvergencePage();
-        a_convergencePage->showResult(found->name(), failed, false, false);
-        a_convergenceShows = QJsonObject();
-        showConvergencePage();
+        if (!create) {
+            ConvergenceResult failed;
+            failed.error = why;
+            a_shownConvergence = check;
+            updateConvergencePage();
+            a_convergencePage->showResult(name, failed, false, false);
+            a_convergenceShows = QJsonObject();
+            showConvergencePage();
+        }
         emit stateChanged();
         return;
     }
     // (A process flow's geometry built first, in the background.)
     if (a_geometryStale && (slowGeometry(a_model) || a_build)) {
         a_lastError.clear();
-        say(tr("Running %1 once the geometry is built…").arg(found->name()));
-        requestGeometry([this, check](bool built) {
-            if (built) return converge(check);
+        say(tr("Running %1 once the geometry is built…").arg(name));
+        requestGeometry([this, tag, settings, create](bool built) {
+            if (built) return converge(tag, settings, create);
             a_lastError = a_geometryStale ? tr("the geometry was not built: cancelled") : geometryError();
+            a_convergenceError = a_lastError;
             emit stateChanged();
         });
         return;
@@ -1626,17 +1656,21 @@ void MultiphysicsDoc::converge(const QString& tag)
         QString ignored;
         buildGeometry(&ignored);
     }
-    say(tr("Running %1…").arg(found->name()));
-    a_shownConvergence = check;
-    updateConvergencePage();
-    a_convergencePage->beginRun(found->name());
+    say(tr("Running %1…").arg(name));
+    a_convergenceError.clear();
+    if (!create) {
+        a_shownConvergence = check;
+        updateConvergencePage();
+    }
+    a_convergencePage->beginRun(name);
     a_convergenceShows = QJsonObject();
+    if (a_bottom->indexOf(a_convergencePage) < 0) a_bottom->addTab(a_convergencePage, tr("Mesh Convergence"));
     showConvergencePage();
     a_jobMeshes = false;
     a_jobStudy.clear();
     a_jobConvergence = check;
     const bool built = a_geometry.ok();
-    startJob(tr("Checking mesh convergence"), [check, built](Job& job) {
+    startJob(tr("Checking mesh convergence"), [check, built, runModel](Job& job) {
         ConvergenceListener listener;
         listener.row = [&job](const ConvergenceRow& row, const QStringList& columns, const QStringList& points) {
             std::lock_guard<std::mutex> lock(job.mutex);
@@ -1649,29 +1683,39 @@ void MultiphysicsDoc::converge(const QString& tag)
             job.convergenceLines << line;
         };
         // (The model's own mesh where it is built: the check starts from it.)
-        job.convergence = runConvergence(job.model, check, job.parameters, built ? job.topology : nullptr, built ? job.mesh : nullptr, job.progress(0, 1), listener);
-    }, [this, check](Job& job) {
+        job.convergence = runConvergence(runModel, check, job.parameters, built ? job.topology : nullptr, built ? job.mesh : nullptr, job.progress(0, 1), listener);
+    }, [this, check, name, asked, create, made](Job& job) {
         takeConvergenceRows(job);
         a_jobConvergence.clear();
         const ConvergenceResult& result = job.convergence;
-        const Node* now = a_model.find(check);
-        const QString name = now ? now->name() : check;
         if (!result.error.isEmpty()) {
             a_lastError = result.error;
+            a_convergenceError = result.error;
             say(tr("%1 could not be run: %2").arg(name, result.error), true);
-            if (now) a_convergencePage->showResult(name, result, false, false);
+            a_convergencePage->showResult(name, result, false, false);
             a_convergenceShows = QJsonObject();
             return;
         }
         a_refined[check] = result.mesh;
-        // Kept in its node, a step of Undo, saved with the model (the run's own
-        // edit, as an optimization's result).
-        if (now) {
-            const quint64 editor = QucsDoc::editor();
-            QucsDoc::setEditor(QucsDoc::kSimulation);
-            editNode(check, [&result](Node& n) { n.props.insert(QStringLiteral("result"), result.toJson()); }, tr("Mesh Convergence Result"));
-            QucsDoc::setEditor(editor);
+        // Kept in its node with the settings it ran with, one step of Undo, saved
+        // with the model (the run's own edit, as an optimization's result).
+        const quint64 editor = QucsDoc::editor();
+        QucsDoc::setEditor(QucsDoc::kSimulation);
+        if (create && !a_model.find(check)) {
+            Model m = a_model;
+            Node n = made;
+            n.props.insert(QStringLiteral("result"), result.toJson());
+            QString why;
+            if (m.add(m.root.tag, n, -1, &why)) setModel(m, tr("Mesh Convergence Result"));
+            else say(why, true);
+        } else if (a_model.find(check)) {
+            editNode(check, [&result, &asked](Node& n) {
+                for (auto it = asked.begin(); it != asked.end(); ++it) n.props.insert(it.key(), it.value());
+                n.props.insert(QStringLiteral("result"), result.toJson());
+            }, tr("Mesh Convergence Result"));
         }
+        QucsDoc::setEditor(editor);
+        a_shownConvergence = check;
         say(tr("%1: %2").arg(name, result.summary), !result.converged);
         a_convergenceShows = QJsonObject();
         updateConvergencePage();

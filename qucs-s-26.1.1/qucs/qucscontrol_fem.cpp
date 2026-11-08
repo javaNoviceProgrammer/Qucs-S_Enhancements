@@ -2836,9 +2836,15 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
     if (doc == nullptr) return done(errorResult(error));
     // Refined where the error is, until the values settle: a job of the model's
     // own, its node and page (qucscontrol_fem_adapt.cpp).
-    const QString method = args.value(QLatin1String("method")).toString(QStringLiteral("uniform")).trimmed();
+    // ("action" result and keep are the adaptive check's: given alone they ran a
+    // whole uniform study, or asked for its values - the review of 063142f, B3.)
+    const QString action = args.value(QLatin1String("action")).toString().trimmed();
+    const bool adaptiveAction = action == QLatin1String("result") || action == QLatin1String("keep");
+    const QString method = args.value(QLatin1String("method")).toString(adaptiveAction ? QStringLiteral("adaptive") : QStringLiteral("uniform")).trimmed();
     if (method == QLatin1String("adaptive")) return femConvergeAdaptive(doc, args, done);
     if (method != QLatin1String("uniform")) return done(errorResult(tr("'method' is uniform or adaptive, not \"%1\".").arg(method)));
+    if (args.contains(QLatin1String("action")))
+        return done(errorResult(tr("'action' is the adaptive check's (\"method\": \"adaptive\"): the uniform method runs its meshes and keeps nothing.")));
     QStringList watched;
     for (const QJsonValue& v : args.value(QLatin1String("values")).toArray())
         if (const QString e = v.toString().trimmed(); !e.isEmpty()) watched << e;

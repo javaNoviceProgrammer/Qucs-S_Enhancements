@@ -171,6 +171,23 @@ QByteArray twoPlates()
       "results": {"derived": [{"type": "average", "tag": "sensor", "expression": "T", "level": "domain", "selection": {"box": [5.59, 0.79, 6.01, 1.21]}}]}})");
 }
 
+/// The review's L: [-1, 1]^2 without its fourth quadrant, heat of k = 1 on
+/// quadratic elements, T = 300 K + r^(2/3) sin(2 theta / 3) on its whole boundary
+/// (theta from the re-entrant corner's first side); the integral of |q|^2 watched,
+/// 1.8362267 exactly (by quadrature in polar form).
+QByteArray reviewsCorner()
+{
+    return QByteArray(R"json({"format": "qucs-s multiphysics 1", "components": [{"unit": "m",
+      "geometry": [{"type": "polygon", "name": "L", "points": [["0", "0"], ["1", "0"], ["1", "1"], ["-1", "1"], ["-1", "-1"], ["0", "-1"]]}],
+      "materials": [{"label": "m", "k": "1[W/(m*K)]", "selection": {"all": true}}],
+      "physics": [{"type": "heat", "tag": "ht", "order": "2", "features": [
+        {"type": "temperature", "T0": "300[K] + 1[K]*(sqrt(x^2+y^2)/1[m])^(2/3)*sin(2/3*(atan2((-y-x)/1[m], (y-x)/1[m]) + 3*pi/4))", "selection": {"all": true}}]}],
+      "mesh": {"size": "coarse"}}],
+      "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "stationary"}]}],
+      "results": {"derived": [{"type": "integral", "tag": "en", "expression": "(ht.normq/1[W/m^2])^2", "level": "domain", "selection": {"all": true}}]}})json");
+}
+constexpr double kReviewsCorner = 1.8362267;
+
 double total(const ConvergenceResult& r, int point = 0)
 {
     double n = 0;
@@ -219,6 +236,8 @@ private slots:
     void estimateOfErraticAndUnmovedValues();
     void coaxAgainstItsClosedForm();
     void reentrantCornerRates();
+    void aCornerIsGradedAsItShouldBe();
+    void aRateFasterThanTheOrderIsNotClaimed();
     void theErrorSaidIsNotBelowTheErrorMade();
     void falseAgreementIsCaught();
     void falseAgreementWithoutTheCheckIsSaid();
@@ -418,7 +437,12 @@ void TestFemAdapt::coaxAgainstItsClosedForm()
             // (with a little room: the arcs' chords are the model's, not the circle's).
             QVERIFY2(actual <= tolerance, qPrintable(QString::number(actual)));
             QVERIFY2(f->relative >= 0.5 * actual, qPrintable(QStringLiteral("said %1, made %2").arg(f->relative).arg(actual)));
-            QCOMPARE(r.rows.back().kind, QStringLiteral("check"));
+            // (The check last, or one more cut of every element after a check that
+            // left an error just above the tolerance.)
+            bool checked = false;
+            for (const ConvergenceRow& row : r.rows) checked = checked || row.kind == QLatin1String("check");
+            QVERIFY(checked);
+            QVERIFY(r.rows.back().kind == QLatin1String("check") || r.rows.back().kind == QLatin1String("uniform"));
             QVERIFY(r.evidence.join(QString()).contains(QStringLiteral("check")));
             QVERIFY(r.method.contains(QStringLiteral("Zienkiewicz")));
         }
@@ -472,6 +496,47 @@ void TestFemAdapt::reentrantCornerRates()
         }
     }
     QVERIFY2(std::hypot(where.x() - 1, where.y() - 1) < 0.05, qPrintable(QStringLiteral("%1 %2").arg(where.x()).arg(where.y())));
+}
+
+void TestFemAdapt::aCornerIsGradedAsItShouldBe()
+{
+    // The review of 063142f, N1: on its L the check's errors fell as unknowns^-1.2
+    // where quadratic elements graded into the corner fall as ^-2 - each round
+    // marked at least 35 % of the triangles, most of them far from the corner.
+    // Now at least 10 %: the rate against the exact value, and the unknowns for
+    // 1e-5.
+    Model m = modelOf(reviewsCorner());
+    const QString tag = addCheck(m, {QStringLiteral("en")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-5")}, {QStringLiteral("maxmeshes"), 40}});
+    const ConvergenceResult r = check(m, tag);
+    QVERIFY2(r.converged, qPrintable(r.summary));
+    const double q = rateAgainst(r, kReviewsCorner, QStringLiteral("adaptive"));
+    const double made = std::abs(finalOf(r)->value - kReviewsCorner) / kReviewsCorner;
+    qInfo("the review's corner: %d solves, %.0f unknowns in all, largest %.0f; rate %.2f; error made %.2e, said %.2e (%s)", r.solves, r.unknownsSolved, r.largest, q, made,
+          finalOf(r)->relative, qPrintable(finalOf(r)->trust));
+    QVERIFY2(q > 1.6, qPrintable(QString::number(q)));
+    QVERIFY(made <= 1e-5);
+    QVERIFY(finalOf(r)->relative >= made);
+    // (At 35 % it took some 33,000 unknowns at its last mesh for 1e-5.)
+    QVERIFY2(r.largest < 15000, qPrintable(QString::number(r.largest)));
+}
+
+void TestFemAdapt::aRateFasterThanTheOrderIsNotClaimed()
+{
+    // Changes falling faster than elements of the order can converge are not a
+    // rate: the corner's read unknowns^-2.2 on quadratic elements where its error
+    // fell as ^-1.2, and said "extrapolated" (the review of 063142f, N1).
+    std::vector<double> ns, qs;
+    for (double n = 100; n < 1e4; n *= 1.6) {
+        ns.push_back(n);
+        qs.push_back(2 + 300 * std::pow(n, -2.5));
+    }
+    const ValueEstimate fast = estimateValue(ns, qs, 2);
+    QCOMPARE(fast.trust, ValueEstimate::Bounded);
+    QVERIFY(std::isnan(fast.rate));
+    QVERIFY2(fast.why.contains(QStringLiteral("2.5")), qPrintable(fast.why));
+    QVERIFY(fast.error >= std::abs(qs.back() - 2));
+    // At the order, extrapolated as before.
+    QCOMPARE(estimateValue(ns, std::vector<double>(qs.size()), 2).trust, ValueEstimate::Unmoved);
 }
 
 void TestFemAdapt::theErrorSaidIsNotBelowTheErrorMade()
@@ -560,36 +625,42 @@ void TestFemAdapt::falseAgreementWithoutTheCheckIsSaid()
 
 void TestFemAdapt::goalOrientedRefinesForTheValue()
 {
-    // The sensor's average, in the bar: refined for it, the L is left alone, and
-    // it settles to 1e-6 on a few thousand unknowns; refined for the fields'
-    // error, the L's corner takes them and ten times as many do not settle it.
-    // (A slow build: 1e-5 against a reference to 1e-6.)
+    // The sensor's average, in the bar of two plates apart: refined by its
+    // adjoint, it settles within the tolerance of a reference, an adjoint solved
+    // on each mesh it refined. (It is not cheaper here: the fields' error settles
+    // it too, on fewer unknowns - the sensor's own region is smooth, and the
+    // goal-oriented value converges one way and then the other, which settles
+    // later. Both are logged; the write-up has the numbers.)
     const QString asked = slowBuild() ? QStringLiteral("1e-5") : QStringLiteral("1e-6");
     QByteArray json = twoPlates();
     json.replace("400[K]", "101[K]").replace("300[K]", "1[K]");
     Model ref = modelOf(json);
-    const QString rt = addCheck(ref, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), slowBuild() ? QStringLiteral("1e-6") : QStringLiteral("1e-7")}, {QStringLiteral("refine"), QStringLiteral("goal")},
-                                                             {QStringLiteral("maxmeshes"), 40}});
+    // (The reference refined by the adjoint: by the fields' error, at 1e-8, the
+    // check catches the sensor's agreement as false and cuts every element.)
+    const QString rt = addCheck(ref, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), slowBuild() ? QStringLiteral("1e-6") : QStringLiteral("1e-7")},
+                                                             {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 40}});
     const ConvergenceResult reference = check(ref, rt);
     QVERIFY2(reference.converged, qPrintable(reference.summary + reference.notes.join(QStringLiteral(" | "))));
     const double exact = finalOf(reference)->limit;
     QVERIFY(exact > 1 && exact < 101);
     Model g = modelOf(json);
-    const QString gt = addCheck(g, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), asked}, {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 30}});
+    const QString gt = addCheck(g, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), asked}, {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 40}});
     const ConvergenceResult goal = check(g, gt);
     Model a = modelOf(json);
-    const QString at = addCheck(a, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), asked}, {QStringLiteral("maxmeshes"), 30},
-                                                           {QStringLiteral("maxunknowns"), QString::number(10 * goal.largest)}});
+    const QString at = addCheck(a, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), asked}, {QStringLiteral("maxmeshes"), 40}});
     const ConvergenceResult fields = check(a, at);
     for (const ConvergenceResult* r : {&goal, &fields})
         qInfo("%s: %s; %d solves (+%d adjoints), %.0f unknowns in all, largest %.0f; error %.2e", r == &goal ? "goal" : "fields", qPrintable(r->status), r->solves,
               r->adjoints, r->unknownsSolved, r->largest, std::abs(finalOf(*r)->value - exact) / exact);
-    QVERIFY2(goal.converged, qPrintable(goal.summary));
-    QVERIFY(std::abs(finalOf(goal)->value - exact) / exact <= asked.toDouble());
-    QVERIFY(goal.adjoints >= goal.solves - 2);
+    for (const ConvergenceResult* r : {&goal, &fields}) {
+        QVERIFY2(r->converged, qPrintable(r->summary));
+        QVERIFY(std::abs(finalOf(*r)->value - exact) / exact <= asked.toDouble());
+    }
+    int refinedForIt = 0;
+    for (const ConvergenceRow& row : goal.rows) refinedForIt += row.kind == QLatin1String("goal");
+    QVERIFY(refinedForIt > 0 && goal.adjoints >= refinedForIt);
     QVERIFY(goal.method.contains(QStringLiteral("adjoint")));
-    QVERIFY2(!fields.converged, qPrintable(fields.summary));
-    QCOMPARE(fields.status, QStringLiteral("unknowns"));
+    QCOMPARE(fields.adjoints, 0);
 }
 
 void TestFemAdapt::goalWithoutAnAdjointFallsBack()
@@ -796,12 +867,37 @@ void TestFemAdapt::theRefinedMeshKept()
     const QString tag = addCheck(m, {QStringLiteral("es.W")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-3")}});
     const ConvergenceResult r = check(m, tag);
     QVERIFY(r.converged && !r.sizes.isEmpty());
+    // The coarsest mesh within the tolerance is kept, not the check's when a coarser
+    // one is enough (the review of 063142f, K1): here every mesh before the check
+    // is off its limit by more than the room the finest's error leaves.
+    QVERIFY(r.keptRow > 0 && r.keptRow <= r.rows.back().index);
+    int keptTriangles = 0;
+    for (const ConvergenceRow& row : r.rows)
+        if (row.index == r.keptRow) keptTriangles = row.triangles;
+    QVERIFY(keptTriangles > 0 && keptTriangles <= r.rows.back().triangles);
+    QVERIFY(r.notes.join(QString()).contains(QStringLiteral("Keep Refined Mesh keeps mesh %1").arg(r.keptRow)));
+    {
+        // A coax of quadratic elements at 1e-3: its own mesh is enough, and Keep
+        // says so rather than keep the check's mesh.
+        Model c = modelOf(coax(2));
+        const QString ct = addCheck(c, {QStringLiteral("es.C11")}, {{QStringLiteral("tolerance"), QStringLiteral("1e-3")}});
+        const ConvergenceResult cr = check(c, ct);
+        QVERIFY(cr.converged);
+        QCOMPARE(cr.keptRow, 1);
+        QVERIFY(cr.sizes.isEmpty());
+        c.find(ct)->props.insert(QStringLiteral("result"), cr.toJson());
+        QString said;
+        QVERIFY(!qucs_s::fem::keepRefinedMesh(c, *c.find(ct), &said));
+        QVERIFY2(said.contains(QStringLiteral("within the tolerance already")), qPrintable(said));
+    }
     Node* node = m.find(tag);
     node->props.insert(QStringLiteral("result"), r.toJson());
     QString why;
     QVERIFY2(qucs_s::fem::keepRefinedMesh(m, *node, &why), qPrintable(why));
     // Once: the second replaces the first.
     QVERIFY(qucs_s::fem::keepRefinedMesh(m, *m.find(tag), &why));
+    // Kept, the result is not "changed since" (its own sizes kept) - the review's nit.
+    QCOMPARE(convergenceSetup(m, *m.find(tag)), r.setup);
     int adapted = 0;
     for (const Node& c : m.mesh().children) adapted += c.type == QLatin1String("mesh/adapted");
     QCOMPARE(adapted, 1);
@@ -817,8 +913,8 @@ void TestFemAdapt::theRefinedMeshKept()
     QVERIFY(run.ok());
     const double w = *run.solutions.front()->global(QStringLiteral("es.W"));
     const ConvergenceResult::Final* f = finalOf(r);
-    qInfo("kept: %zu triangles (refined %d), W %.8g against %.8g", b.mesh->triangles.size(), r.rows.back().triangles, w, f->value);
-    QVERIFY(std::abs(w - f->limit) / std::abs(f->limit) < 2e-3);
+    qInfo("kept: %zu triangles (mesh %d had %d, the finest %d), W %.8g against %.8g", b.mesh->triangles.size(), r.keptRow, keptTriangles, r.rows.back().triangles, w, f->limit);
+    QVERIFY2(std::abs(w - f->limit) / std::abs(f->limit) <= 1e-3, qPrintable(QString::number(std::abs(w - f->limit) / std::abs(f->limit))));
     // Nothing to keep: said.
     Model n = modelOf(corner());
     const QString nt = addCheck(n, {QStringLiteral("es.W")});

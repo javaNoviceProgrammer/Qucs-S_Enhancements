@@ -330,11 +330,15 @@ private slots:
         doc->buildMesh();
         QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY(doc->mesh() && doc->mesh()->triangles.size() > 1000);
-        // Its result is of the model before now: old, and not kept twice.
+        // Its own sizes kept do not make its result old (the review of 063142f);
+        // another change does, and then it is not kept.
+        QVERIFY(!doc->convergenceStale(QStringLiteral("conv1")));
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](qucs_s::fem::Node& n) { n.props.insert(QStringLiteral("hmax"), QStringLiteral("0.2")); }, QStringLiteral("x")));
         QVERIFY(doc->convergenceStale(QStringLiteral("conv1")));
         QString why;
         QVERIFY(!doc->keepRefinedMesh(QStringLiteral("conv1"), &why));
         QVERIFY(why.contains(QStringLiteral("before a change")));
+        doc->undoStack()->undo();
         doc->undoStack()->undo();
         adapted = 0;
         for (const qucs_s::fem::Node& c : doc->model().mesh().children) adapted += c.type == QLatin1String("mesh/adapted");
@@ -445,7 +449,9 @@ private slots:
         QVERIFY(value.value("settled").toBool());
         QVERIFY(value.contains("estimated limit") && value.contains("estimated error %") && value.contains("trust"));
         QVERIFY(o.value("meshes").toArray().size() >= 3);
-        QCOMPARE(o.value("meshes").toArray().last().toObject().value("kind").toString(), QStringLiteral("check"));
+        bool checked = false;
+        for (const QJsonValue& m : o.value("meshes").toArray()) checked = checked || m.toObject().value("kind").toString() == QLatin1String("check");
+        QVERIFY(checked);
         QVERIFY(o.value("mesh").toString().contains(QStringLiteral("as it was")));
         QVERIFY(convergenceNode(doc->model(), QStringLiteral("conv1")));
         // Read again: nothing solved.
@@ -483,6 +489,58 @@ private slots:
         model(QByteArray(), &other);
         r = call("fem_converge", {{"path", other}, {"method", "adaptive"}});
         QVERIFY(failed(r) && text(r).contains(QStringLiteral("values")));
+    }
+
+    // The review of 063142f: B1, a failed run answered with the last good result;
+    // B2, a call's settings kept by a refused run; B3, "action" ignored without
+    // "method"; K2, the two routes' unknowns counted differently.
+    void theReviewsToolFindings()
+    {
+        QString file;
+        MultiphysicsDoc* doc = model(QByteArray(), &file);
+        QVERIFY(doc);
+        QJsonObject r = call("fem_converge", {{"path", file}, {"method", "adaptive"}, {"values", QJsonArray{"es.W"}}, {"tolerance", 1e-3}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("settings").toObject().value("check").toBool());
+        const QJsonValue good = doc->model().find(QStringLiteral("conv1"))->value(QStringLiteral("result"));
+        // B1: a value the results lack is an error, the good result kept as it was.
+        r = call("fem_converge", {{"path", file}, {"method", "adaptive"}, {"values", QJsonArray{"es.nosuch"}}}, jobWait());
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("es.nosuch")), qPrintable(text(r)));
+        QCOMPARE(doc->model().find(QStringLiteral("conv1"))->value(QStringLiteral("result")), good);
+        QCOMPARE(doc->model().find(QStringLiteral("conv1"))->value(QStringLiteral("values")).toArray().at(0).toArray().at(0).toString(), QStringLiteral("es.W"));
+        // B2: a refused call's settings are not kept; the next call runs.
+        r = call("fem_converge", {{"path", file}, {"method", "adaptive"}, {"study", "nosuch"}, {"check", false}, {"max_meshes", 2}});
+        QVERIFY(failed(r) && text(r).contains(QStringLiteral("nosuch")));
+        QVERIFY(doc->model().find(QStringLiteral("conv1"))->text(QStringLiteral("study")) != QLatin1String("nosuch"));
+        QVERIFY(!doc->model().find(QStringLiteral("conv1"))->props.contains(QStringLiteral("maxmeshes")));
+        r = call("fem_converge", {{"path", file}, {"method", "adaptive"}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("settings").toObject().value("max_meshes").toInt(), 25);
+        QVERIFY(json(r).value("settings").toObject().value("check").toBool());
+        // B3: "action" alone is the adaptive check's.
+        r = call("fem_converge", {{"path", file}, {"action", "result"}});
+        QVERIFY2(!failed(r) && json(r).value("convergence").toString() == QLatin1String("conv1"), qPrintable(text(r)));
+        r = call("fem_converge", {{"path", file}, {"action", "keep"}, {"values", QJsonArray{"es.W"}}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("kept")), qPrintable(text(r)));
+        int adapted = 0;
+        for (const qucs_s::fem::Node& c : doc->model().mesh().children) adapted += c.type == QLatin1String("mesh/adapted");
+        QCOMPARE(adapted, 1);
+        // The nit: kept, the result is not old.
+        QVERIFY(!doc->convergenceStale(QStringLiteral("conv1")));
+        r = call("fem_converge", {{"path", file}, {"method", "uniform"}, {"action", "keep"}, {"values", QJsonArray{"es.W"}}});
+        QVERIFY(failed(r) && text(r).contains(QStringLiteral("adaptive")));
+        // K2: on a mode analysis (edge elements) both routes count the first mesh alike.
+        const QString wr90 = path(QStringLiteral("wr90.qfem"));
+        QFile::remove(wr90);
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/wr90_modes.qfem"), wr90));
+        QFile(wr90).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        QVERIFY(open(wr90));
+        r = call("fem_converge", {{"path", wr90}, {"method", "adaptive"}, {"values", QJsonArray{"emw.neff"}}, {"max_meshes", 2}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const double adaptiveFirst = json(r).value("meshes").toArray().at(0).toObject().value("unknowns").toDouble();
+        r = call("fem_converge", {{"path", wr90}, {"values", QJsonArray{"emw.neff"}}, {"refine", QJsonArray{1.5}}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("meshes").toArray().at(0).toObject().value("unknowns").toDouble(), adaptiveFirst);
     }
 
     // Past its timeout it goes on; fem_stop stops it, the meshes so far kept.

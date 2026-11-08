@@ -3353,7 +3353,7 @@ QList<NodeKind> makeKinds()
                                                     "a linear physics' integral or point value. Others fall back on the fields' error, and it says so.")),
                   physicsTags,
                   expr(QStringLiteral("maxunknowns"), tr("Unknowns at most"), QString(), QStringLiteral("2e6"), tr("No mesh past this is solved; it stops and says so")),
-                  integer(QStringLiteral("maxmeshes"), tr("Meshes at most"), 12, tr("Solves of each point checked, from 2 to 40")),
+                  integer(QStringLiteral("maxmeshes"), tr("Meshes at most"), 25, tr("Solves of each point checked, from 2 to 40")),
                   flag(QStringLiteral("check"), tr("End with a refinement the error indicator did not choose"), true,
                        tr("Once the values have settled, every element is cut once and they are read again. Values that agree on meshes refined somewhere else do not survive it. "
                           "It costs about twice the last mesh; off, the agreement of those meshes is all there is, and the result says so.")),
