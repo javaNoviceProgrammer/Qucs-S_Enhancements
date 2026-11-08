@@ -31,7 +31,9 @@
 #include <numeric>
 #include <set>
 
-#include <sys/resource.h>
+#ifndef _WIN32
+#include <sys/resource.h>   // (the process's peak memory, for the benchmark's line)
+#endif
 
 using namespace qucs_s::router;
 
@@ -1126,8 +1128,18 @@ private slots:
         const double routed = timer.elapsed() / 1000.0;
         const Verification v = verify(router.problem(), r);
         const double checked = timer.elapsed() / 1000.0;
+        // The process's peak: none on Windows, which has no getrusage (0
+        // there); ru_maxrss is bytes on macOS and kilobytes on Linux.
+        double processPeakMb = 0;
+#ifndef _WIN32
         struct rusage use {};
         getrusage(RUSAGE_SELF, &use);
+#ifdef __APPLE__
+        processPeakMb = double(use.ru_maxrss) / 1048576.0;
+#else
+        processPeakMb = double(use.ru_maxrss) / 1024.0;
+#endif
+#endif
         int vias = 0;
         for (const NetResult& n : r.nets) vias += n.vias.size();
         double length = 0;
@@ -1138,7 +1150,7 @@ private slots:
                "lower bound); %lld states searched; router peak %.0f MB, process peak %.0f MB; findings %d",
                qPrintable(spec), grid, router.problem().options.threads, prepared, routed - prepared, qPrintable(r.stopped), int(r.passes.size()),
                checked - routed, r.routed(), vias, length / 1000, lower / 1000, (long long)r.statesSearched, r.peakBytes / 1048576.0,
-               double(use.ru_maxrss) / 1048576.0, int(v.findings.size()));
+               processPeakMb, int(v.findings.size()));
         for (auto it = kinds.begin(); it != kinds.end(); ++it) printf(" %s %d", qPrintable(it.key()), it.value());
         printf("\n");
         for (const QString& n : r.notes) printf("  note: %s\n", qPrintable(n));
