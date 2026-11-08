@@ -199,8 +199,14 @@ public:
     /// Starts running check \a tag (the first: empty) - its geometry and mesh
     /// first, when stale - with its progress and Cancel; what stops it keeps
     /// the meshes solved so far. What it found stays in its node (a step of Undo,
-    /// saved with the model); the model's mesh is not touched.
-    void converge(const QString& tag = {});
+    /// saved with the model); the model's mesh is not touched. \a settings: the
+    /// node's properties for this run (\a create: a node made of them), written
+    /// into the model with the result, and not at all where the run is refused
+    /// or fails.
+    void converge(const QString& tag = {}, const QJsonObject& settings = {}, bool create = false);
+    /// Why the last run asked of converge() did not end with a result (empty: it
+    /// did, or is under way).
+    QString convergenceError() const { return a_convergenceError; }
     /// The check the job at work runs (empty: none).
     QString converging() const;
     /// \a tag's last result, as its node keeps it (none: not run).
@@ -466,6 +472,7 @@ private:
     qucs_s::fem::ConvergencePage* a_convergencePage = nullptr;
     QString a_shownConvergence;
     QString a_jobConvergence;
+    QString a_convergenceError;
     QJsonObject a_convergenceShows;   // as a_pageShows, the Mesh Convergence page's
     std::map<QString, std::shared_ptr<const qucs_s::fem::Mesh>> a_refined;   // each check's refined mesh, while in memory
     QComboBox* a_showBox = nullptr;

@@ -53,6 +53,25 @@ QJsonObject QucsControl::femConverged(MultiphysicsDoc* doc, const QString& tag)
                   {QStringLiteral("refined by"), r.method},
                   {QStringLiteral("evidence"), QJsonArray::fromStringList(r.evidence)}};
     if (r.falseConvergence) o.insert(QStringLiteral("false agreement caught"), true);
+    // (What it ran with: the check's own settings, a call's written in with its
+    // result - what was not given is the check's, not the tool's defaults.)
+    {
+        QString why;
+        if (const std::optional<ConvergencePlan> plan = convergencePlan(doc->model(), *node, *doc->parameters(), &why)) {
+            QJsonArray watched;
+            for (const ConvergenceWatch& w : plan->values) watched.append(w.expression);
+            QJsonObject used{{QStringLiteral("study"), plan->study},
+                             {QStringLiteral("values"), watched},
+                             {QStringLiteral("tolerance"), plan->tolerance},
+                             {QStringLiteral("by"), plan->refine},
+                             {QStringLiteral("check"), plan->check},
+                             {QStringLiteral("max_meshes"), plan->maxMeshes},
+                             {QStringLiteral("max_unknowns"), plan->maxUnknowns},
+                             {QStringLiteral("sweep"), plan->sweep},
+                             {QStringLiteral("physics"), plan->physics.isEmpty() ? QJsonValue(tr("every one solved")) : QJsonValue(QJsonArray::fromStringList(plan->physics))}};
+            o.insert(QStringLiteral("settings"), used);
+        }
+    }
     if (!r.points.isEmpty()) o.insert(QStringLiteral("sweep points checked"), QJsonArray::fromStringList(r.points));
     QJsonArray values;
     for (const ConvergenceResult::Final& f : r.values) {
@@ -95,8 +114,10 @@ QJsonObject QucsControl::femConverged(MultiphysicsDoc* doc, const QString& tag)
     if (!r.notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(r.notes));
     if (doc->convergenceStale(node->tag)) o.insert(QStringLiteral("changed since"), tr("The model changed since this was found: run it again."));
     o.insert(QStringLiteral("mesh"), r.sizes.isEmpty() ? tr("The model's mesh is as it was; nothing was refined to keep.")
-                                                       : tr("The model's mesh is as it was. fem_converge with \"action\": \"keep\" (or \"keep_mesh\": true on a run) writes the "
-                                                            "refined mesh's sizes into the mesh node, an Adapted Sizes feature: built, it gives about that mesh."));
+                                                       : tr("The model's mesh is as it was. fem_converge with \"action\": \"keep\" (or \"keep_mesh\": true on a run) writes mesh %1's "
+                                                            "sizes into the mesh node, an Adapted Sizes feature - the coarsest mesh whose values are within their tolerances (the "
+                                                            "finest where the check did not converge): built, it gives about that mesh.")
+                                                             .arg(r.keptRow));
     return jsonResult(o);
 }
 
@@ -188,57 +209,35 @@ void QucsControl::femConvergeAdaptive(MultiphysicsDoc* doc, const QJsonObject& a
     const auto run = [this, d, tag, props, timeout, done, begun, keepAfter, caller] {
         if (!d) return done(errorResult(tr("The model was closed.")));
         if (*begun == -1) return done(errorResult(tr("Cancelled by the client before it began.")));
-        // The node, made or set, as one step of Undo (of the caller's).
-        Model m = d->model();
-        QString check = tag;
-        FNode* n = check.isEmpty() ? nullptr : m.find(check);
-        if (!n && check.isEmpty())
-            if (const FNode* first = convergenceNode(m, QString())) n = m.find(first->tag);
-        bool changed = false;
-        if (!n) {
-            FNode made = m.make(QStringLiteral("convergence"));
-            for (auto it = props.begin(); it != props.end(); ++it) made.props.insert(it.key(), it.value());
-            QString why;
-            n = m.add(m.root.tag, made, -1, &why);
-            if (!n) return done(errorResult(why));
-            changed = true;
-        } else {
-            for (auto it = props.begin(); it != props.end(); ++it)
-                if (n->props.value(it.key()) != it.value()) {
-                    n->props.insert(it.key(), it.value());
-                    changed = true;
-                }
-        }
-        check = n->tag;
-        if (changed) {
-            const quint64 editor = QucsDoc::editor();
-            QucsDoc::setEditor(caller);
-            d->setModel(m, tr("Mesh Convergence Settings"));
-            QucsDoc::setEditor(editor);
-        }
+        // The check run with the call's settings over its own (made of them where
+        // the model has none): written into it with the result, and not at all if
+        // the run is refused or fails (the review of 063142f, B2).
+        const FNode* existing = tag.isEmpty() ? convergenceNode(d->model(), QString()) : d->model().find(tag);
+        const bool create = existing == nullptr;
+        const QString check = existing ? existing->tag : QString();
         *begun = 1;
-        d->converge(check);
-        if (!d->isBusy()) {
-            // (Not begun: what cannot be run, said at once.)
-            const std::optional<ConvergenceResult> r = d->convergenceResult(check);
-            return done(errorResult(r && !r->error.isEmpty() ? r->error : d->lastError()));
-        }
-        d->whenJobEnds(timeout * 1000, [this, d, check, timeout, done, keepAfter, caller](bool ended) {
+        d->converge(check, props, create);
+        if (!d->isBusy()) return done(errorResult(d->convergenceError().isEmpty() ? d->lastError() : d->convergenceError()));
+        d->whenJobEnds(timeout * 1000, [this, d, timeout, done, keepAfter, caller](bool ended) {
             if (!d) return done(errorResult(tr("The model was closed.")));
             if (!ended)
                 return done(errorResult(tr("Still checking after %1 s, %2: it goes on (fem_describe says how far; fem_stop stops it, keeping the meshes solved; fem_converge "
                                            "with \"action\": \"result\" reads it once it has ended).")
                                             .arg(timeout)
                                             .arg(d->jobProgress())));
-            const std::optional<ConvergenceResult> r = d->convergenceResult(check);
-            if (r && !r->error.isEmpty()) return done(errorResult(r->error));
+            // A run that ended without a result of its own is an error, not the
+            // result before it (the review of 063142f, B1: a value the results lack
+            // answered with the last good run's "converged").
+            if (!d->convergenceError().isEmpty()) return done(errorResult(d->convergenceError()));
+            const QString ran = d->shownConvergence();
+            const std::optional<ConvergenceResult> r = d->convergenceResult(ran);
             if (!r) return done(errorResult(d->lastError().isEmpty() ? tr("It did not end with a result.") : d->lastError()));
-            QJsonObject answer = femConverged(d, check);
+            QJsonObject answer = femConverged(d, ran);
             if (keepAfter) {
                 QString why;
                 const quint64 editor = QucsDoc::editor();
                 QucsDoc::setEditor(caller);
-                const bool ok = d->keepRefinedMesh(check, &why);
+                const bool ok = d->keepRefinedMesh(ran, &why);
                 QucsDoc::setEditor(editor);
                 QJsonObject o = QJsonDocument::fromJson(answer.value(QStringLiteral("content")).toArray().first().toObject().value(QStringLiteral("text")).toString().toUtf8()).object();
                 o.insert(QStringLiteral("mesh"), ok ? tr("The refined mesh's sizes were written into the mesh node (Adapted Sizes, one step of Undo).") : tr("Not kept: %1").arg(why));
