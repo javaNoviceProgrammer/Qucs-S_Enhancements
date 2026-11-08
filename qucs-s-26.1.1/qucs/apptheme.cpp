@@ -504,7 +504,25 @@ QComboBox QAbstractItemView { background: {menu}; border: 1px solid {border}; se
         {"{scroll}", scroll},
     };
     for (const auto& [token, colour] : tokens) sheet.replace(token, css(colour));
-    return sheet;
+    return sheet + menuButtonRules(QStringLiteral("QToolBar QToolButton"));
+}
+
+QString menuButtonRules(const QString& selector)
+{
+    // [popupMode="1"]: MenuButtonPopup. The arrow's part, put at the right
+    // of the border, within the padding kept for it (two pixels to spare,
+    // between it and the icon or the text, laid out left of it). No frame of
+    // its own - the button's, hovered or pressed, is round all of it: a
+    // style's frame of the part (Fusion's, macOS's) would show at rest. The
+    // arrow as small as Fusion draws it: the macOS style fills the rect.
+    constexpr int part = 14, arrow = 8;
+    return QStringLiteral("%1[popupMode=\"1\"] { padding-right: %2px; }"
+                          "%1[popupMode=\"1\"]::menu-button { width: %3px; border: none; }"
+                          "%1[popupMode=\"1\"]::menu-arrow { width: %4px; height: %4px; }")
+        .arg(selector)
+        .arg(part + 2)
+        .arg(part)
+        .arg(arrow);
 }
 
 QIcon swatch(int theme)

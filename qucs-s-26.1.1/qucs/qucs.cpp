@@ -480,6 +480,25 @@ QucsApp::~QucsApp()
 // #######################################################################
 namespace {
 
+#ifdef __APPLE__
+// The main window's own style sheet on macOS: its tool buttons without the
+// padding the platform's style gives them. That sheet outweighs the
+// application's, so the room for the arrow of a button with a menu beside
+// it is kept here too. Under a platform theme it also gives such a button a
+// frame of its own (transparent, shaded as the pointer is on it or it is
+// pressed): without one, Qt lets the platform's style draw the button and
+// lays the icon across the arrow's part as well.
+QString windowStyleSheet()
+{
+  QString sheet = QStringLiteral("QToolButton { padding: 0px; }");
+  if (!qucs_s::apptheme::designedInUse())
+    sheet += QStringLiteral("QToolButton[popupMode=\"1\"] { border: 1px solid transparent; border-radius: 5px; }"
+                            "QToolButton[popupMode=\"1\"]:hover { background: palette(midlight); }"
+                            "QToolButton[popupMode=\"1\"]:pressed { background: palette(mid); }");
+  return sheet + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton"));
+}
+#endif
+
 // The component list's icons are drawn for white paper: on a dark list
 // they are inked (ink::inked()), dark blue turned light blue.
 class InkedIconDelegate : public QStyledItemDelegate
@@ -539,6 +558,9 @@ void QucsApp::applyTheme(int theme)
 void QucsApp::applyLook()
 {
   QucsSettings.hasDarkTheme = misc::isDarkTheme();
+#ifdef __APPLE__
+  if (const QString sheet = windowStyleSheet(); sheet != styleSheet()) setStyleSheet(sheet);
+#endif
   if (CompComps != nullptr) {
     styleComponentList(CompComps);
     CompComps->viewport()->update();
@@ -591,7 +613,7 @@ void QucsApp::initView()
   setWindowIcon (QPixmap(QStringLiteral(":/bitmaps/hicolor/scalable/apps/qucs.svg")));
 #else
   // setUnifiedTitleAndToolBarOnMac(true);
-  setStyleSheet("QToolButton { padding: 0px; }");
+  setStyleSheet(windowStyleSheet());
 #endif
 
   // The documents' panes (qucs_panes.cpp): one to begin with, DocumentTab.
