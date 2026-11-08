@@ -66,6 +66,9 @@ void menuEntries(const QMenu* menu, const QString& prefix, QJsonArray* entries, 
         if (a->isSeparator() || !a->isVisible() || plain(a->text()).isEmpty()) continue;
         const QString path = prefix.isEmpty() ? plain(a->text()) : prefix + QStringLiteral(" > ") + plain(a->text());
         if (a->menu() != nullptr) {
+            // (Opened first, as the pointer on it would: one filled only as it
+            // opens - the File Browser's Git - read as empty, and was left out.)
+            emit a->menu()->aboutToShow();
             menuEntries(a->menu(), path, entries, actions, paths);
             continue;
         }
