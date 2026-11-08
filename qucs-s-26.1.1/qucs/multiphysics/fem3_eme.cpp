@@ -112,15 +112,16 @@ void crossSegment(const Topology& plan, const Topology::Segment& seg, QPointF O,
     }
 }
 
-bool sameRect(const CrossSection::Rect& a, const CrossSection::Rect& b, double tol)
+bool sameRect(const CrossSection::Rect& a, const CrossSection::Rect& b, double tol, const std::vector<int>* classes)
 {
-    return a.domain == b.domain && std::abs(a.u0 - b.u0) <= tol && std::abs(a.u1 - b.u1) <= tol && std::abs(a.z0 - b.z0) <= tol
-           && std::abs(a.z1 - b.z1) <= tol;
+    auto classOf = [&](int d) { return classes && d >= 0 && d < int(classes->size()) ? (*classes)[std::size_t(d)] : d; };
+    return classOf(a.domain) == classOf(b.domain) && std::abs(a.u0 - b.u0) <= tol && std::abs(a.u1 - b.u1) <= tol
+           && std::abs(a.z0 - b.z0) <= tol && std::abs(a.z1 - b.z1) <= tol;
 }
 
 } // namespace
 
-bool CrossSection::sameAs(const CrossSection& o, double tolerance) const
+bool CrossSection::sameAs(const CrossSection& o, double tolerance, const std::vector<int>* classes) const
 {
     if (rects.size() != o.rects.size()) return false;
     // (A bend's cut is not a straight one's, nor another radius's.)
@@ -128,7 +129,7 @@ bool CrossSection::sameAs(const CrossSection& o, double tolerance) const
     if (std::abs(u0 - o.u0) > tolerance || std::abs(u1 - o.u1) > tolerance || std::abs(z0 - o.z0) > tolerance || std::abs(z1 - o.z1) > tolerance)
         return false;
     for (std::size_t i = 0; i < rects.size(); ++i)
-        if (!sameRect(rects[i], o.rects[i], tolerance)) return false;
+        if (!sameRect(rects[i], o.rects[i], tolerance, classes)) return false;
     return true;
 }
 
@@ -789,6 +790,20 @@ void keepCut(const QByteArray& key, const EmeModes& modes)
     }
 }
 
+/// Each 3D domain's material node, as the model gives it: the last enabled
+/// material whose selection has it (null: none).
+std::vector<const Node*> domainMaterials(const Model& model, const Topology3& topology)
+{
+    std::vector<const Node*> ofDomain(topology.domains.size(), nullptr);
+    for (const Node& m : model.materials().children) {
+        if (!m.enabled || m.type != QLatin1String("material")) continue;
+        QString why;
+        for (int d : resolveSelection3(topology, model, Level::Domain, m.selection(), &why))
+            if (d >= 0 && d < int(ofDomain.size())) ofDomain[std::size_t(d)] = &m;
+    }
+    return ofDomain;
+}
+
 /// The index of a material's node at \a lambda (m), its real part: n, or
 /// √εr; 1 where it gives neither.
 double indexOf(const Node& material, double lambda, const Scope& scope)
@@ -824,7 +839,8 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
     }
     if (!parameters) parameters = evaluateParameters(model);
     const double lambda = C0 / frequency;
-    // The materials of each 3D domain: the last that has it, as the model's.
+    // The materials of each 3D domain: the last that has it, as the model's
+    // (domainMaterials()); each one's domains for the cut's model below.
     std::vector<const Node*> materials;
     std::vector<QVector<int>> picks;
     for (const Node& m : model.materials().children) {
@@ -833,10 +849,7 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
         picks.push_back(resolveSelection3(topology, model, Level::Domain, m.selection(), &why));
         materials.push_back(&m);
     }
-    std::vector<const Node*> ofDomain(topology.domains.size(), nullptr);
-    for (std::size_t i = 0; i < materials.size(); ++i)
-        for (int d : picks[i])
-            if (d >= 0 && d < int(ofDomain.size())) ofDomain[std::size_t(d)] = materials[i];
+    const std::vector<const Node*> ofDomain = domainMaterials(model, topology);
     // The window's rectangles, and its PMLs': each edge rectangle carried
     // out past the window by the layer's thickness, of its own material -
     // a corner's both ways where both walls are layers.
@@ -1248,6 +1261,19 @@ SMatrix cascade(const SMatrix& a, const SMatrix& b)
     return s;
 }
 
+SMatrix powerS(const SMatrix& s, long long n)
+{
+    // (Powers of one S-matrix: the star product is associative and they
+    // commute, so by its binary digits - s, s², s⁴... - those wanted.)
+    SMatrix result = identityS(s.left()), base = s;
+    for (bool first = true; n > 0; n >>= 1) {
+        if (!first) base = cascade(base, base);
+        first = false;
+        if (n & 1) result = cascade(result, base);
+    }
+    return result;
+}
+
 // ---------------------------------------------------------------- the cells
 
 namespace {
@@ -1307,7 +1333,8 @@ CrossSection cutAt(const Topology3& topology, const EmeDevice& device, double s,
 
 } // namespace
 
-std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device, std::vector<CrossSection>* sections, QString* error)
+std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device, std::vector<CrossSection>* sections, QString* error,
+                              const std::vector<int>* materialOf)
 {
     std::vector<EmeCell> cells;
     sections->clear();
@@ -1385,6 +1412,16 @@ std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device
             from += p.length;
         }
     }
+    // (A periodic section's ends: no cell crosses them.)
+    for (const EmePeriodic& p : device.periodic) {
+        ss.push_back(p.s0);
+        ss.push_back(p.s1);
+    }
+    auto periodEnd = [&](double s) {
+        for (const EmePeriodic& p : device.periodic)
+            if (std::abs(s - p.s0) <= tol || std::abs(s - p.s1) <= tol) return true;
+        return false;
+    };
     std::sort(ss.begin(), ss.end());
     std::vector<double> breaks;
     for (double s : ss) {
@@ -1395,7 +1432,7 @@ std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device
     auto sectionOf = [&](const CrossSection& cs) {
         const double ctol = 1e-9 * std::max({1.0, std::abs(device.u0), std::abs(device.u1), std::abs(device.z0), std::abs(device.z1)});
         for (std::size_t i = 0; i < sections->size(); ++i)
-            if ((*sections)[i].sameAs(cs, ctol)) return int(i);
+            if ((*sections)[i].sameAs(cs, ctol, materialOf)) return int(i);
         sections->push_back(cs);
         return int(sections->size()) - 1;
     };
@@ -1412,7 +1449,7 @@ std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device
             return cells;
         }
         const double ctol = 1e-7 * std::max({1.0, std::abs(device.u1 - device.u0), std::abs(device.z1 - device.z0)});
-        const bool uniform = left.sameAs(mid, ctol) && right.sameAs(mid, ctol);
+        const bool uniform = left.sameAs(mid, ctol, materialOf) && right.sameAs(mid, ctol, materialOf);
         int n = 1;
         if (!uniform) n = device.maxCell > 0 ? std::max(2, int(std::ceil((b - a) / device.maxCell - 1e-9))) : 8;
         for (int k = 0; k < n; ++k) {
@@ -1424,8 +1461,9 @@ std::vector<EmeCell> emeCells(const Topology3& topology, const EmeDevice& device
                 return cells;
             }
             const int sec = sectionOf(cs);
-            // (Cells of the same cut one after another made one.)
-            if (!cells.empty() && cells.back().section == sec) cells.back().s1 = c1;
+            // (Cells of the same cut one after another made one - not across a
+            // periodic section's end.)
+            if (!cells.empty() && cells.back().section == sec && !periodEnd(c0)) cells.back().s1 = c1;
             else cells.push_back({c0, c1, sec});
         }
     }
@@ -1445,7 +1483,17 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
     if (!parameters) parameters = evaluateParameters(model);
     std::vector<CrossSection> sections;
     QString why;
-    r.cells = emeCells(topology, device, &sections, &why);
+    // (Cuts alike in their rectangles and those rectangles' materials are one
+    // cut, its modes and junctions solved once: a drawn grating's teeth, each
+    // a domain of its own, two cuts and two junctions.)
+    std::vector<int> materialOf;
+    {
+        const std::vector<const Node*> of = domainMaterials(model, topology);
+        std::map<const Node*, int> classes;
+        for (std::size_t d = 0; d < of.size(); ++d)
+            materialOf.push_back(of[d] ? classes.emplace(of[d], int(classes.size())).first->second : -1 - int(d));
+    }
+    r.cells = emeCells(topology, device, &sections, &why, &materialOf);
     if (r.cells.empty()) {
         r.error = why;
         return r;
@@ -1570,25 +1618,58 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
         if (!r.warnings.contains(w)) r.warnings << w;
     }
     // The cells cascaded: each carried along, each change of cut an
-    // interface (the overlaps of a pair of cuts kept: a grating's repeat).
+    // interface (the overlaps of a pair of cuts kept: a drawn grating's
+    // thousand teeth two pairs), a periodic section's cells one period - its
+    // S-matrix with the junction back to its start raised to all its periods
+    // but the last by squaring, then the last.
     std::map<std::pair<int, int>, SMatrix> interfaces;
-    SMatrix total;
-    for (std::size_t c = 0; c < r.cells.size(); ++c) {
-        const EmeCell& cell = r.cells[c];
-        const EmeModes& m = modes[std::size_t(cell.section)];
-        const SMatrix prop = propagationS(m.beta, (cell.s1 - cell.s0) * topology.unitScale);
-        if (c == 0) {
-            total = prop;
-            continue;
-        }
-        const int a = r.cells[c - 1].section, b = cell.section;
+    auto junction = [&](int a, int b) -> const SMatrix& {
         auto it = interfaces.find({a, b});
         if (it == interfaces.end()) {
-            Eigen::MatrixXcd ab, ba;
-            modeOverlaps(modes[std::size_t(a)], m, &ab, &ba);
-            it = interfaces.emplace(std::make_pair(a, b), junctionS(ab, ba)).first;
+            if (a == b) it = interfaces.emplace(std::make_pair(a, b), identityS(modes[std::size_t(a)].count())).first;
+            else {
+                Eigen::MatrixXcd ab, ba;
+                modeOverlaps(modes[std::size_t(a)], modes[std::size_t(b)], &ab, &ba);
+                it = interfaces.emplace(std::make_pair(a, b), junctionS(ab, ba)).first;
+            }
         }
-        total = cascade(cascade(total, it->second), prop);
+        return it->second;
+    };
+    auto carried = [&](std::size_t c) {
+        const EmeCell& cell = r.cells[c];
+        return propagationS(modes[std::size_t(cell.section)].beta, (cell.s1 - cell.s0) * topology.unitScale);
+    };
+    // (The cells from first to last, with the interfaces between them.)
+    auto run = [&](std::size_t first, std::size_t last) {
+        SMatrix s = carried(first);
+        for (std::size_t c = first + 1; c <= last; ++c) s = cascade(cascade(s, junction(r.cells[c - 1].section, r.cells[c].section)), carried(c));
+        return s;
+    };
+    const double stol = 1e-9 * std::max({1.0, std::abs(device.s0), std::abs(device.s1)});
+    SMatrix total;
+    long long repeated = 0;
+    std::map<std::pair<int, int>, long long> uses;   // each junction's, the periods' with them
+    for (std::size_t c = 0, previous = 0; c < r.cells.size();) {
+        std::size_t last = c;
+        long long periods = 1;
+        for (const EmePeriodic& p : device.periodic)
+            if (std::abs(r.cells[c].s0 - p.s0) <= stol) {
+                while (last + 1 < r.cells.size() && r.cells[last + 1].s1 <= p.s1 + stol) ++last;
+                periods = p.periods;
+                break;
+            }
+        SMatrix block = run(c, last);
+        for (std::size_t k = c + 1; k <= last; ++k) uses[{r.cells[k - 1].section, r.cells[k].section}] += periods;
+        if (periods > 1) {
+            const SMatrix period = cascade(block, junction(r.cells[last].section, r.cells[c].section));
+            block = cascade(powerS(period, periods - 1), block);
+            repeated += periods;
+            uses[{r.cells[last].section, r.cells[c].section}] += periods - 1;
+        }
+        if (c > 0) ++uses[{r.cells[previous].section, r.cells[c].section}];
+        total = c == 0 ? block : cascade(cascade(total, junction(r.cells[previous].section, r.cells[c].section)), block);
+        previous = last;
+        c = last + 1;
     }
     // The ports' modes: each a projection of the end cut's modes - what an
     // end cell's outgoing field leaves in it, and what of each end mode it
@@ -1661,6 +1742,37 @@ EmeResult solveEme(const Model& model, std::shared_ptr<ParameterScope> parameter
                  .arg(device.settings.modes)
                  .arg(N)
                  .arg(timer.elapsed() / 1000.0, 0, 'f', 2);
+    if (repeated > 0) r.log << tr("Its periodic sections: %1 periods in all, each drawn once").arg(repeated);
+    // A junction that recurs - a grating's, drawn or a periodic section's:
+    // its stopband sits where the cuts' indices put it, L (n1 + n2) = λ, and
+    // its reflection is its steps', a few nanometres no cut alone sees; both
+    // want a fine mesh. (A 2D grating against the full-wave solver: at 15
+    // elements per wavelength its stopband 0.4 nm short, at 40 within 2e-4
+    // of its reflection; a silicon wire's sidewall grating's peak 0.243 at
+    // 20, 0.279 at 40.)
+    {
+        std::pair<int, int> most{-1, -1};
+        long long count = 0;
+        for (const auto& [pair, n] : uses)
+            if (pair.first != pair.second && n > count) {
+                most = pair;
+                count = n;
+            }
+        if (count >= 10 && device.settings.resolution < 30) {
+            auto at = [&](int section) {
+                for (const EmeCell& c : r.cells)
+                    if (c.section == section) return (c.s0 + c.s1) / 2;
+                return NaN;
+            };
+            const QString w = tr("the junction of the cuts at s = %1 and %2 recurs %3 times - a grating's: its stopband sits where the cuts' "
+                                 "indices put it and its reflection is its steps', both wanting some 40 elements per wavelength (this solve's "
+                                 "%4) - at 20, a silicon wire's sidewall grating reflected 13 % less than at 40")
+                                  .arg(formatNumber(at(most.first), 4), formatNumber(at(most.second), 4))
+                                  .arg(count)
+                                  .arg(formatNumber(device.settings.resolution, 3));
+            if (!r.warnings.contains(w)) r.warnings << w;
+        }
+    }
     return r;
 }
 
@@ -1921,6 +2033,33 @@ bool readEmeDevice(const Model& model, const Node& physics, const Topology3& top
         d.ports.push_back(p);
     }
     if (d.ports.empty()) problems << tr("%1 has no Optical Port").arg(physics.name());
+    // Periodic sections: their period's ends along the axis, how many in a row.
+    for (const Node& c : physics.children) {
+        if (!c.enabled || c.type != QLatin1String("eme/periodic")) continue;
+        EmePeriodic p;
+        const double a = len(c.text(QStringLiteral("from")), NaN, tr("%1's start").arg(c.name())),
+                     b = len(c.text(QStringLiteral("to")), NaN, tr("%1's end").arg(c.name()));
+        p.s0 = std::min(a, b);
+        p.s1 = std::max(a, b);
+        const Expression e = Expression::compile(c.text(QStringLiteral("periods")), parameters.scope);
+        const double n = e.isValid() && e.isConstant() ? e.constant() : NaN;
+        if (!(n >= 1 && n <= 1e9) || std::abs(n - std::round(n)) > 1e-9 * n)
+            problems << tr("%1: its periods a whole number from 1, not %2").arg(c.name(), c.text(QStringLiteral("periods")));
+        else p.periods = std::llround(n);
+        const double tol = 1e-9 * std::max({1.0, std::abs(d.s0), std::abs(d.s1)});
+        if (!std::isfinite(a) || !std::isfinite(b)) problems << tr("%1: its period's start and end are lengths along the axis").arg(c.name());
+        else if (!(p.s1 > p.s0)) problems << tr("%1: its period ends where it begins").arg(c.name());
+        else if (p.s0 < d.s0 - tol || p.s1 > d.s1 + tol)
+            problems << tr("%1: its period, %2 to %3, reaches outside the device (%4 to %5)")
+                            .arg(c.name(), formatNumber(p.s0, 6), formatNumber(p.s1, 6), formatNumber(d.s0, 6), formatNumber(d.s1, 6));
+        d.periodic.push_back(p);
+    }
+    std::sort(d.periodic.begin(), d.periodic.end(), [](const EmePeriodic& x, const EmePeriodic& y) { return x.s0 < y.s0; });
+    for (std::size_t i = 1; i < d.periodic.size(); ++i)
+        if (d.periodic[i].s0 < d.periodic[i - 1].s1 - 1e-9 * std::max(1.0, std::abs(d.periodic[i].s0)))
+            problems << tr("%1: two periodic sections overlap (%2 to %3 and %4 to %5)")
+                            .arg(physics.name(), formatNumber(d.periodic[i - 1].s0, 6), formatNumber(d.periodic[i - 1].s1, 6),
+                                 formatNumber(d.periodic[i].s0, 6), formatNumber(d.periodic[i].s1, 6));
     if (!problems.isEmpty()) {
         *error = problems.join(QLatin1Char('\n'));
         return false;

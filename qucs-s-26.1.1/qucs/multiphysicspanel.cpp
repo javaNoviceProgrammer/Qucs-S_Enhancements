@@ -179,6 +179,12 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("emw")) letters(QStringLiteral("emw"), dark ? QColor(240, 150, 210) : QColor(173, 20, 87), true);
     else if (icon == QLatin1String("eme")) letters(QStringLiteral("eme"), dark ? QColor(240, 150, 210) : QColor(173, 20, 87), true);
     else if (icon == QLatin1String("wavelength")) letters(QStringLiteral("λ"), gray, true);
+    else if (icon == QLatin1String("periodic")) {
+        // A grating's teeth.
+        p.setPen(QPen(dark ? QColor(240, 150, 210) : QColor(173, 20, 87), 1.4));
+        p.drawPolyline(QPolygonF{QPointF(1, 11), QPointF(4, 11), QPointF(4, 5), QPointF(7.5, 5), QPointF(7.5, 11), QPointF(11, 11), QPointF(11, 5),
+                                 QPointF(15, 5)});
+    }
     else if (icon == QLatin1String("ewfd")) {
         // A wave.
         p.setPen(QPen(dark ? QColor(240, 150, 210) : QColor(173, 20, 87), 1.6));
