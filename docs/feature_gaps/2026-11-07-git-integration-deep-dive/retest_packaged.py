@@ -6,7 +6,7 @@ import json, os, queue, stat, subprocess, sys, threading, time
 exe, wk = sys.argv[1], os.path.realpath(sys.argv[2])
 MODE = sys.argv[3] if len(sys.argv) > 3 else ""
 CONTROL = MODE == "control"   # (an older build: no link to /dev/zero, the freeze part alone)
-SECOND = MODE == "second"     # (the second review's part alone; "third", the check's)
+SECOND = MODE == "second"     # (the second review's part alone; "third", the check's; "worktree", New Worktree's check)
 HOME = wk + "/home"; os.makedirs(HOME)
 open(HOME + "/.gitconfig", "w").write("[user]\n\tname = Retest\n\temail = retest@example.invalid\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n")
 ENV = dict(os.environ, HOME=HOME, GIT_CONFIG_NOSYSTEM="1")
@@ -195,8 +195,87 @@ def third_review(ws):
     err, t = s.call("git_stage", path=r, paths=["a.txt "]); report("9 and given from the folder", err and not staged(r), (t, staged(r)))
     s.close()
 
+def worktree_check(ws):
+    """The check of New Worktree... at 3f2422ab (2026-11-08-claude-new-worktree-check.md)."""
+    s = Server(ws)
+    def wait(cond, limit=30):
+        end = time.time() + limit
+        while time.time() < end:
+            if cond(): return True
+            time.sleep(0.2)
+        return cond()
+    def worktrees(r): return [l[9:] for l in git(r, "worktree", "list", "--porcelain").splitlines() if l.startswith("worktree ")]
+    def ask(doc, branch, folder=None):
+        """New Worktree... on doc's repository: branch, then folder, typed; Make Worktree pressed if it can be.
+        Gives whether it could, the dialog's texts, and the answer."""
+        err, t = s.call("trigger_action", action="Git > New Worktree...", path=doc)
+        if err: return None, [t], t
+        # Typed as a user would: set_dialog takes the first item of the list that holds the text.
+        x, y, w, h = [c for c in json.loads(s.call("get_dialog")[1])["controls"] if c.get("label") == "Branch"][0]["at"]
+        s.call("send_input", target="dialog", click=[x + w / 2, y + h / 2], keys="Ctrl+A", text=branch)
+        if folder is not None: s.call("set_dialog", set=[{"control": "Folder", "value": folder}])
+        d = json.loads(s.call("get_dialog")[1])
+        if [c for c in d["controls"] if c.get("label") == "Branch"][0]["value"] != branch: return None, ["typed " + branch + ", shown otherwise"] + d.get("texts", []), ""
+        ok = [c for c in d.get("controls", []) if c.get("label") == "Make Worktree"][0].get("enabled", True)
+        answer = s.call("set_dialog", press="Make Worktree")[1] if ok else ""
+        time.sleep(0.5)
+        for _ in range(3):   # (what is still open, or opened after: read, and closed)
+            t = s.call("get_dialog")[1]
+            if not t.lstrip().startswith("{"): break
+            o = json.loads(t); answer += " | " + o.get("title", "") + ": " + " ".join(o.get("texts", []))
+            buttons = [c["label"] for c in o.get("controls", []) if c.get("kind") == "button"]
+            s.call("set_dialog", press="Cancel" if "Cancel" in buttons else buttons[0])
+        return ok, d.get("texts", []), answer
+    # 1. A branch only on a remote.
+    o = ws + "/o.git"; other = ws + "/other.git"
+    for b in (o, other): subprocess.run(["git", "init", "-q", "--bare", b], env=ENV, check=True)
+    p = repo(ws + "/proj", {"a.txt": "a\n"}); git(p, "remote", "add", "origin", o); git(p, "remote", "add", "other", other); git(p, "push", "-q", "origin", "main")
+    c = ws + "/c"; subprocess.run(["git", "clone", "-q", o, c], env=ENV, check=True)
+    git(c, "checkout", "-q", "-b", "feature"); open(c + "/f.txt", "w").write("f\n"); git(c, "add", "-A"); git(c, "commit", "-q", "-m", "f"); git(c, "push", "-q", "origin", "feature")
+    git(c, "checkout", "-q", "-b", "dup"); git(c, "push", "-q", "origin", "dup"); git(c, "push", "-q", other, "dup")
+    git(p, "fetch", "-q", "--all"); doc = p + "/a.txt"; s.call("open_document", path=doc)
+    err, t = s.call("trigger_action", action="Git > New Worktree...", path=doc); d = json.loads(s.call("get_dialog")[1])
+    report("4 the folder starts empty", [x for x in d["controls"] if x["label"] == "Folder"][0]["value"] == "", d); s.call("set_dialog", press="Cancel")
+    ok, texts, a = ask(doc, "feature"); wt = ws + "/proj-feature"
+    report("1 a remote's branch is made a local branch following it", ok and wait(lambda: os.path.exists(wt + "/f.txt")) and git(p, "rev-parse", "feature") == git(p, "rev-parse", "origin/feature") and git(p, "rev-parse", "--abbrev-ref", "feature@{u}").strip() == "origin/feature", (texts, a))
+    git(p, "config", "branch.autoSetupMerge", "false")
+    ok, texts, a = ask(doc, "dup"); report("1 a branch on two remotes: nothing made, it says so", not ok and not os.path.exists(ws + "/proj-dup"), texts)
+    ok, texts, a = ask(doc, "origin/feature"); report("1 a remote's branch with a local one of its name: nothing made", not ok and len(worktrees(p)) == 2, texts)
+    ok, texts, a = ask(doc, "other/dup"); wt = ws + "/proj-dup"
+    report("1 other/dup chosen whole, followed though autoSetupMerge is off", ok and wait(lambda: os.path.isdir(wt)) and wait(lambda: git(p, "rev-parse", "--abbrev-ref", "dup@{u}", check=False).strip() == "other/dup"), (texts, a))
+    # 2. Inside the repository by another spelling.
+    git(p, "branch", "in1"); git(p, "branch", "in2")
+    for name, folder in (("another case", os.path.dirname(p) + "/PROJ/wt"), ("the /tmp link", (p[len("/private"):] if p.startswith("/private/") else p) + "/wt2")):
+        ok, texts, a = ask(doc, "in1" if "case" in name else "in2", folder); time.sleep(1)
+        print("     " + name + ":", a[:200], flush=True)
+        report("2 a folder inside the repository by " + name + " is refused", not os.path.exists(p + "/wt") and not os.path.exists(p + "/wt2") and "??" not in git(p, "status", "--porcelain"), (folder, texts, a))
+    # 3. ~ is home.
+    git(p, "branch", "home")
+    ok, texts, a = ask(doc, "home", "~/wt-home")
+    report("3 ~/ is the home folder", ok and wait(lambda: os.path.isdir(HOME + "/wt-home")) and not os.path.exists(ws + "/~"), (texts, a))
+    # What worked still works.
+    ok, texts, a = ask(doc, "main"); report("main, checked out here, can't be made", not ok, texts)
+    ok, texts, a = ask(doc, "bad name"); report("a bad name is refused, with why", "cannot be a branch's name" in a and not git(p, "branch", "--list", "bad*").strip() and not os.path.exists(ws + "/proj-bad-name"), (texts, a))
+    git(p, "branch", "kept"); ok, texts, a = ask(doc, "kept", "wt-rel")
+    report("an existing branch, in a relative folder beside the repository", ok and wait(lambda: os.path.isdir(ws + "/wt-rel")) and git(ws + "/wt-rel", "rev-parse", "--abbrev-ref", "HEAD").strip() == "kept", (texts, a))
+    ok, texts, a = ask(doc, "feat/x"); report("a new branch, its folder named for it", ok and wait(lambda: os.path.isdir(ws + "/proj-feat-x")) and git(ws + "/proj-feat-x", "rev-parse", "--abbrev-ref", "HEAD").strip() == "feat/x", (texts, a))
+    # Claude's Git menu, as it is now: a repository with no commit in front.
+    e = ws + "/empty"; os.makedirs(e); git(e, "init", "-q"); open(e + "/n.txt", "w").write("n\n"); s.call("open_document", path=e + "/n.txt")
+    err, t = s.call("list_actions", search="New Worktree"); report("list_actions: New Worktree off before a first commit", '"enabled":false' in t, t)
+    err, t = s.call("trigger_action", action="Git > New Worktree...", path=e + "/n.txt"); report("trigger_action: refused before a first commit", err and "cannot be used now" in t, t)
+    if not err: s.call("set_dialog", press="Cancel")
+    s.close()
+    # And the other way: the workspace a repository with no commit, then a repository with commits in front.
+    ws2 = ws + "-b"; os.makedirs(ws2); git(ws2, "init", "-q"); s = Server(ws2); s.call("open_document", path=doc)
+    err, t = s.call("trigger_action", action="Git > New Worktree...", path=doc); report("trigger_action: allowed with a repository with commits in front", not err and "New Worktree" in t, t)
+    if not err: s.call("set_dialog", press="Cancel")
+    s.close()
+
 if SECOND:
     ws = wk + "/ws4"; os.makedirs(ws); second_review(ws)
+    print(f"{sum(results)} of {len(results)} as they should be", flush=True); sys.exit(0)
+if MODE == "worktree":
+    ws = wk + "/ws6"; os.makedirs(ws); worktree_check(ws)
     print(f"{sum(results)} of {len(results)} as they should be", flush=True); sys.exit(0)
 if MODE == "third":
     ws = wk + "/ws5"; os.makedirs(ws); third_review(ws)
@@ -270,4 +349,5 @@ s.call("git_status", path=g); s.call("git_diff", path=g); report("a filter added
 s.close()
 ws = wk + "/ws4"; os.makedirs(ws); second_review(ws)
 ws = wk + "/ws5"; os.makedirs(ws); third_review(ws)
+ws = wk + "/ws6"; os.makedirs(ws); worktree_check(ws)
 print(f"{sum(results)} of {len(results)} as they should be", flush=True)
