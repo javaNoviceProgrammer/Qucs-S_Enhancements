@@ -22,6 +22,7 @@
 #include "links.h"
 #include "misc.h"
 #include "multiphysicsdoc.h"
+#include "popupmenu.h"
 #include "qucs.h"
 #include "settings.h"
 
@@ -1892,27 +1893,27 @@ void LayoutDoc::buildUi()
     connect(a_layers, &QTreeWidget::customContextMenuRequested, this, [this](QPoint at) {
         QTreeWidgetItem* item = a_layers->itemAt(at);
         const int layer = item != nullptr ? item->data(0, Qt::UserRole).toInt() : -1;
-        QMenu menu(this);
-        menu.addAction(tr("Show All"), this, [this] {
+        auto* menu = new QMenu(this);
+        menu->addAction(tr("Show All"), this, [this] {
             for (int i = 0; i < a_view->styles().size(); ++i) setLayerVisible(i, true);
         });
-        menu.addAction(tr("Hide All"), this, [this] {
+        menu->addAction(tr("Hide All"), this, [this] {
             for (int i = 0; i < a_view->styles().size(); ++i) setLayerVisible(i, false);
         });
         if (layer >= 0) {
-            menu.addAction(tr("Show Only This"), this, [this, layer] {
+            menu->addAction(tr("Show Only This"), this, [this, layer] {
                 for (int i = 0; i < a_view->styles().size(); ++i) setLayerVisible(i, i == layer);
             });
-            menu.addAction(tr("Colour…"), this, [this, layer] {
+            menu->addAction(tr("Colour…"), this, [this, layer] {
                 QVector<LayerStyle> styles = a_view->styles();
                 const QColor c = QColorDialog::getColor(styles[layer].frame, this, tr("The Colour of %1").arg(a_layout->layers.at(layer).key.text()));
                 if (c.isValid()) setLayerColour(layer, c);
             });
         }
-        menu.addSeparator();
-        menu.addAction(tr("Load Layer Properties…"), this, &LayoutDoc::chooseLayerProperties);
-        menu.addAction(tr("Colours of the Palette"), this, &LayoutDoc::usePalette);
-        menu.exec(a_layers->viewport()->mapToGlobal(at));
+        menu->addSeparator();
+        menu->addAction(tr("Load Layer Properties…"), this, &LayoutDoc::chooseLayerProperties);
+        menu->addAction(tr("Colours of the Palette"), this, &LayoutDoc::usePalette);
+        qucs_s::popUp(menu, a_layers->viewport()->mapToGlobal(at));
     });
 
     connect(a_view, &LayoutView::pointerMoved, this, [this](QPointF at, bool inside) {
@@ -1929,35 +1930,35 @@ void LayoutDoc::buildUi()
     });
     connect(a_view, &LayoutView::cellRequested, this, [this](int cell) { showCell(cell); });
     connect(a_view, &LayoutView::menuRequested, this, [this](QPoint at) {
-        QMenu menu(this);
-        QAction* copy = menu.addAction(tr("Copy"), this, &LayoutDoc::copySelection);
+        auto* menu = new QMenu(this);
+        QAction* copy = menu->addAction(tr("Copy"), this, &LayoutDoc::copySelection);
         copy->setShortcut(QKeySequence::Copy);
-        menu.addAction(tr("Show the Whole Cell"), this, [this] { a_view->fit(); });
-        if (a_view->selection()) menu.addAction(tr("Zoom to the Selection"), this, &LayoutDoc::zoomToSelection);
-        menu.addSeparator();
-        QAction* ruler = menu.addAction(tr("Ruler"), this, [this](bool on) { a_rulerButton->setChecked(on); });
+        menu->addAction(tr("Show the Whole Cell"), this, [this] { a_view->fit(); });
+        if (a_view->selection()) menu->addAction(tr("Zoom to the Selection"), this, &LayoutDoc::zoomToSelection);
+        menu->addSeparator();
+        QAction* ruler = menu->addAction(tr("Ruler"), this, [this](bool on) { a_rulerButton->setChecked(on); });
         ruler->setCheckable(true);
         ruler->setChecked(a_view->mode() == LayoutView::Mode::Ruler);
-        QAction* pen = menu.addAction(tr("Pen"), this, [this](bool on) { a_penButton->setChecked(on); });
+        QAction* pen = menu->addAction(tr("Pen"), this, [this](bool on) { a_penButton->setChecked(on); });
         pen->setCheckable(true);
         pen->setChecked(a_view->mode() == LayoutView::Mode::Draw);
-        QAction* grid = menu.addAction(tr("Grid"), this, [this](bool on) { setGridShown(on); });
+        QAction* grid = menu->addAction(tr("Grid"), this, [this](bool on) { setGridShown(on); });
         grid->setCheckable(true);
         grid->setChecked(a_view->gridShown());
         if (a_view->drawing().count(a_view->drawingPart()) > 0)
-            menu.addAction(tr("Clear the Drawings on This Cell"), this, [this] { a_view->clearDrawing(); });
+            menu->addAction(tr("Clear the Drawings on This Cell"), this, [this] { a_view->clearDrawing(); });
         if (!a_view->rulers().isEmpty()) {
-            menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
-            menu.addAction(tr("Cross-Section to Multiphysics…"), this, &LayoutDoc::crossSectionFromRuler);
-            menu.addAction(tr("Process Flow to Multiphysics"), this, &LayoutDoc::processFlowFromRuler);
+            menu->addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
+            menu->addAction(tr("Cross-Section to Multiphysics…"), this, &LayoutDoc::crossSectionFromRuler);
+            menu->addAction(tr("Process Flow to Multiphysics"), this, &LayoutDoc::processFlowFromRuler);
         }
-        menu.addSeparator();
-        menu.addAction(tr("Find a Cell…"), this, &LayoutDoc::showSearch);
+        menu->addSeparator();
+        menu->addAction(tr("Find a Cell…"), this, &LayoutDoc::showSearch);
         if (a_layout && shownCell() >= 0 && a_layout->cells.at(shownCell()).parents > 0) {
             const int top = a_layout->mainCell();
-            menu.addAction(tr("Show %1").arg(a_layout->cells.at(top).name), this, [this, top] { showCell(top); });
+            menu->addAction(tr("Show %1").arg(a_layout->cells.at(top).name), this, [this, top] { showCell(top); });
         }
-        menu.exec(at);
+        qucs_s::popUp(menu, at);
     });
     restyle();
 }

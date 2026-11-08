@@ -15,6 +15,7 @@
 #include "elidedlabel.h"
 #include "links.h"
 #include "misc.h"
+#include "popupmenu.h"
 #include "qucs.h"
 #include "settings.h"
 #include "svgguard.h"
@@ -1253,38 +1254,38 @@ void ImageDoc::buildUi()
     connect(a_view, &ImageView::stepRequested, this, &ImageDoc::stepFrame);
     connect(a_view, &ImageView::playRequested, this, &ImageDoc::togglePlaying);
     connect(a_view, &ImageView::menuRequested, this, [this](QPoint at, QPoint pixel) {
-        QMenu menu(this);
+        auto* menu = new QMenu(this);
         const bool selected = !a_view->selection().isEmpty();
-        QAction* copy = menu.addAction(selected ? tr("Copy the Selection") : tr("Copy"), this, &ImageDoc::copyImage);
+        QAction* copy = menu->addAction(selected ? tr("Copy the Selection") : tr("Copy"), this, &ImageDoc::copyImage);
         copy->setShortcut(QKeySequence::Copy);
         copy->setShortcutVisibleInContextMenu(true);
         if (pixel.x() >= 0 && a_svg == nullptr && !a_frames.isEmpty()) {
             const QString colour = a_frames.at(a_frame).pixelColor(pixel).name().toUpper();
-            menu.addAction(tr("Copy the Colour %1").arg(colour), this, [colour] { QApplication::clipboard()->setText(colour); });
+            menu->addAction(tr("Copy the Colour %1").arg(colour), this, [colour] { QApplication::clipboard()->setText(colour); });
         }
-        menu.addAction(tr("Select All"), this, &ImageDoc::selectAll);
+        menu->addAction(tr("Select All"), this, &ImageDoc::selectAll);
         if (selected) {
-            menu.addAction(tr("Zoom to the Selection"), this, [this] { a_view->showRect(QRectF(a_view->selection())); });
-            menu.addAction(tr("Clear the Selection"), a_view, &ImageView::clearSelection);
+            menu->addAction(tr("Zoom to the Selection"), this, [this] { a_view->showRect(QRectF(a_view->selection())); });
+            menu->addAction(tr("Clear the Selection"), a_view, &ImageView::clearSelection);
         }
-        menu.addSeparator();
-        menu.addAction(fitName(ImageView::Fit::Auto), this, [this] { a_view->setFit(ImageView::Fit::Auto); });
-        menu.addAction(fitName(ImageView::Fit::Window), this, [this] { a_view->setFit(ImageView::Fit::Window); });
-        menu.addAction(tr("Actual Size"), this, [this] { a_view->setZoom(1.0); });
-        menu.addSeparator();
-        menu.addAction(tr("Turn Left"), this, &ImageDoc::rotateLeft);
-        menu.addAction(tr("Turn Right"), this, &ImageDoc::rotateRight);
+        menu->addSeparator();
+        menu->addAction(fitName(ImageView::Fit::Auto), this, [this] { a_view->setFit(ImageView::Fit::Auto); });
+        menu->addAction(fitName(ImageView::Fit::Window), this, [this] { a_view->setFit(ImageView::Fit::Window); });
+        menu->addAction(tr("Actual Size"), this, [this] { a_view->setZoom(1.0); });
+        menu->addSeparator();
+        menu->addAction(tr("Turn Left"), this, &ImageDoc::rotateLeft);
+        menu->addAction(tr("Turn Right"), this, &ImageDoc::rotateRight);
         if (frameCount() > 1) {
-            menu.addSeparator();
-            if (isAnimated()) menu.addAction(isPlaying() ? tr("Pause") : tr("Play"), this, &ImageDoc::togglePlaying);
-            menu.addAction(tr("The Next Frame"), this, [this] { stepFrame(1); });
-            menu.addAction(tr("The Frame Before"), this, [this] { stepFrame(-1); });
+            menu->addSeparator();
+            if (isAnimated()) menu->addAction(isPlaying() ? tr("Pause") : tr("Play"), this, &ImageDoc::togglePlaying);
+            menu->addAction(tr("The Next Frame"), this, [this] { stepFrame(1); });
+            menu->addAction(tr("The Frame Before"), this, [this] { stepFrame(-1); });
         }
-        menu.addSeparator();
-        if (a_svg != nullptr && a_format == QLatin1String("svg")) menu.addAction(tr("Edit as Text"), this, &ImageDoc::editAsText);
-        menu.addAction(tr("Open with the System's Viewer"), this, &ImageDoc::openExternally);
-        menu.addAction(tr("Show in File Manager"), this, &ImageDoc::revealInFileManager);
-        menu.exec(at);
+        menu->addSeparator();
+        if (a_svg != nullptr && a_format == QLatin1String("svg")) menu->addAction(tr("Edit as Text"), this, &ImageDoc::editAsText);
+        menu->addAction(tr("Open with the System's Viewer"), this, &ImageDoc::openExternally);
+        menu->addAction(tr("Show in File Manager"), this, &ImageDoc::revealInFileManager);
+        qucs_s::popUp(menu, at);
     });
     restyle();
 }

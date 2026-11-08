@@ -30,6 +30,7 @@
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QTabWidget>
+#include <QPointer>
 #include <QLabel>
 #include <QToolButton>
 #include <QAction>
@@ -63,6 +64,7 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "markdowndoc.h"
+#include "menu_owner_close.h"
 #ifdef QUCS_HAVE_QTPDF
 #include "pdfdoc.h"
 #endif
@@ -972,6 +974,71 @@ private slots:
         QCOMPARE(doc->layout()->cells.at(doc->shownCell()).name, QString("INV"));
         // Nothing to save, simulate or paste: it is read.
         QVERIFY(!doc->getDocChanged());
+    }
+
+    // The tab closed while one of its menus is up - its close button
+    // clicked through the menu, as on 7 November, the Route panel shown
+    // and a stroke drawn as they were then: the tab goes, its menu with
+    // it, and nothing is freed twice. (The menus were QMenus on the stack
+    // of the slot that asked for them, shown with exec(): the tab, closed
+    // in exec()'s loop, freed its child as if allocated - "pointer being
+    // freed was not allocated", the abort of 27.0.7.) And the menus still
+    // work: an entry chosen does what it says, and a menu closed is freed.
+    void aTabClosedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        using namespace menu_owner_close;
+        // The layers' menu and the canvas's, closed by the tab's button;
+        // the layers' closed by close_document, as Claude closes it, and by
+        // Close All, as quitting closes every document.
+        enum class By { Button, Tool, CloseAll };
+        const QList<std::pair<bool, By>> cases{{true, By::Button}, {false, By::Button}, {true, By::Tool}, {true, By::CloseAll}};
+        for (const auto& [layersMenu, by] : cases) {
+            LayoutDoc* doc = open(path("sample.gds"));
+            QVERIFY(doc != nullptr);
+            doc->setRoutingShown(true);
+            drag(doc->view(), QPointF(40, 40), QPointF(120, 90));
+            ContextMenuTabWidget* pane = app->paneOf(doc);
+            QVERIFY(pane != nullptr);
+            const QString wrong = closeWithMenuUp(
+                doc,
+                [doc, layersMenu] {
+                    QTreeWidget* layers = doc->layerList();
+                    if (layersMenu) emit layers->customContextMenuRequested(layers->visualItemRect(layers->topLevelItem(1)).center());
+                    else emit doc->view()->menuRequested(doc->view()->mapToGlobal(QPoint(60, 60)));
+                },
+                [this, pane, doc, by = by] {
+                    if (by == By::Tool) call("close_document", {{"path", path("sample.gds")}, {"unsaved", "discard"}});
+                    else if (by == By::CloseAll) app->closeAllFiles();
+                    else clickClose(pane, doc);
+                });
+            QVERIFY2(wrong.isEmpty(), qPrintable(QStringLiteral("%1, %2: %3")
+                                                     .arg(layersMenu ? "the layers' menu" : "the canvas's menu",
+                                                          by == By::Tool ? "close_document" : by == By::CloseAll ? "Close All" : "the tab's close button",
+                                                          wrong)));
+        }
+
+        // An entry chosen with a click: done, and the menu freed; one put
+        // away with Escape: freed too.
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        QTreeWidget* layers = doc->layerList();
+        const auto layersMenu = [layers] {
+            return menuUp([layers] { emit layers->customContextMenuRequested(layers->visualItemRect(layers->topLevelItem(1)).center()); });
+        };
+        QPointer<QMenu> menu = layersMenu();
+        QVERIFY(menu != nullptr);
+        QAction* hide = nullptr;
+        for (QAction* a : menu->actions())
+            if (a->text() == QLatin1String("Hide All")) hide = a;
+        QVERIFY(hide != nullptr);
+        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(hide).center());
+        QTRY_VERIFY(menu.isNull());
+        for (int i = 0; i < layers->topLevelItemCount(); ++i) QCOMPARE(layers->topLevelItem(i)->checkState(0), Qt::Unchecked);
+        menu = layersMenu();
+        QVERIFY(menu != nullptr);
+        QTest::keyClick(menu, Qt::Key_Escape);
+        QTRY_VERIFY(menu.isNull());
+        QVERIFY(QApplication::activePopupWidget() == nullptr);
     }
 
     // Polygons another tab draws over the layout (the RF 2.5D tab's
