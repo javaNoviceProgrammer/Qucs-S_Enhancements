@@ -12,6 +12,7 @@
 
 #include "claudejobs.h"
 #include "ink.h"
+#include "settings.h"
 
 #include <QComboBox>
 #include <QDir>
@@ -30,6 +31,8 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 using namespace qucs_s::claude::jobs;
 
@@ -274,34 +277,90 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
     reload();
 }
 
+namespace {
+// The columns' widths as the user left them (QHeaderView's state), and whether
+// the Job column still took the room the others left.
+const QString kColumns = QStringLiteral("ClaudeCode/backgroundJobsColumns");
+const QString kNameFills = QStringLiteral("ClaudeCode/backgroundJobsNameFills");
+} // namespace
+
 void ClaudeJobsWindow::setWidths()
 {
     QHeaderView* header = a_table->horizontalHeader();
     const QFontMetrics metrics(a_table->font());
     const auto width = [&metrics](const QString& text) { return metrics.horizontalAdvance(text) + 24; };
-    // The name takes the room there is: its text is cut, never the window
-    // made wider for it (docs/feature_gaps/2026-11-02-long-lines.md). The rest
-    // fit what they say.
+    // Every column's edge can be dragged (a double click on it fits what it
+    // holds). The Job column takes the room the others leave - its text cut,
+    // never the window made wider for it (docs/feature_gaps/2026-11-02-long-
+    // lines.md) - until the user sizes it; past the room, the table scrolls.
+    // (It stretched, and a stretched column's edge does not move: the user's
+    // picture of 8 November.)
     header->setMinimumSectionSize(24);
-    header->setSectionResizeMode(Name, QHeaderView::Stretch);
     header->setStretchLastSection(false);
+    header->setSectionsMovable(false);
     const struct {
         Column column;
         int width;
-        QHeaderView::ResizeMode mode;
-    } fixed[] = {
-        {Kind, width(tr("Qucs-S tool")), QHeaderView::Interactive},
-        {Conversation, 130, QHeaderView::Interactive},
-        {Status, width(tr("stopping")), QHeaderView::Interactive},
-        {Progress, 170, QHeaderView::Interactive},
-        {Began, width(QStringLiteral("00:00:00")), QHeaderView::Interactive},
-        {Time, width(tr("59 min 59 s")), QHeaderView::Interactive},
-        {Stop, width(tr("Stopping")) + 12, QHeaderView::Fixed},
+    } widths[] = {
+        {Kind, width(tr("Qucs-S tool"))},
+        {Conversation, 130},
+        {Status, width(tr("stopping"))},
+        {Progress, 170},
+        {Began, width(QStringLiteral("00:00:00"))},
+        {Time, width(tr("59 min 59 s"))},
+        {Stop, width(tr("Stopping")) + 12},
     };
-    for (const auto& f : fixed) {
-        header->setSectionResizeMode(f.column, f.mode);
-        a_table->setColumnWidth(f.column, f.width);
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    for (const auto& w : widths) a_table->setColumnWidth(w.column, w.width);
+    a_table->setColumnWidth(Name, 200);
+
+    // As the user left them last time.
+    const QucsSettingsFile settings;
+    if (header->restoreState(settings.value(kColumns).toByteArray()) && header->count() == Columns) {
+        header->setSectionResizeMode(QHeaderView::Interactive);
+        a_nameFills = settings.value(kNameFills, true).toBool();
     }
+
+    connect(header, &QHeaderView::sectionResized, this, [this](int column, int, int) {
+        if (a_fitting) return;
+        // The user's doing: the Job column, sized, stays so; another, the Job
+        // column gives it room (or takes what it gave up) while it fills.
+        if (column == Name) a_nameFills = false;
+        else fitName();
+    });
+    a_table->viewport()->installEventFilter(this);
+}
+
+ClaudeJobsWindow::~ClaudeJobsWindow()
+{
+    // (Closed with the application, or deleted while shown: no hide comes.)
+    if (a_table != nullptr) saveWidths();
+}
+
+void ClaudeJobsWindow::fitName()
+{
+    if (!a_nameFills || a_table == nullptr) return;
+    int others = 0;
+    for (int c = 0; c < Columns; ++c)
+        if (c != Name && !a_table->isColumnHidden(c)) others += a_table->columnWidth(c);
+    const int room = std::max(160, a_table->viewport()->width() - others);
+    if (a_table->columnWidth(Name) == room) return;
+    a_fitting = true;
+    a_table->setColumnWidth(Name, room);
+    a_fitting = false;
+}
+
+void ClaudeJobsWindow::saveWidths() const
+{
+    QucsSettingsFile settings;
+    settings.setValue(kColumns, a_table->horizontalHeader()->saveState());
+    settings.setValue(kNameFills, a_nameFills);
+}
+
+bool ClaudeJobsWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    if (a_table != nullptr && watched == a_table->viewport() && event->type() == QEvent::Resize) fitName();
+    return QWidget::eventFilter(watched, event);
 }
 
 void ClaudeJobsWindow::reload()
@@ -552,6 +611,7 @@ void ClaudeJobsWindow::changeEvent(QEvent* event)
 void ClaudeJobsWindow::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
+    fitName();
     a_clock->start();
     tick();
 }
@@ -560,4 +620,5 @@ void ClaudeJobsWindow::hideEvent(QHideEvent* event)
 {
     QWidget::hideEvent(event);
     a_clock->stop();
+    saveWidths();
 }
