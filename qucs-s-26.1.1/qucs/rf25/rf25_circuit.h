@@ -90,7 +90,10 @@ QString spiceOf(const EquivalentCircuit& circuit, const QString& name, const QSt
 /// It as a Qucs-S schematic made to be a part of another: a subcircuit
 /// port for each of its ports, the reference its ground; \a comment, a
 /// text on it.
-QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment);
+/// (\a name: the schematic's own, which its dataset and display take - the
+/// file's base name; every circuit's was "equivalent.dat", one export's
+/// simulation writing over another's: W5 of the review of 2 November.)
+QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment, const QString& name = QStringLiteral("equivalent"));
 
 } // namespace qucs_s::rf25
 

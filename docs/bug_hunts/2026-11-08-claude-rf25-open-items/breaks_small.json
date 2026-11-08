@@ -1,0 +1,86 @@
+[
+ {
+  "name": "S-face-terminal-anywhere",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "                if (face.isEmpty() || along == QPointF(0, 0) || !onEdge) {",
+  "new": "                if (face.isEmpty() || along == QPointF(0, 0)) {",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "whatAPortThatNamesItsReturnsCannotBeIsSaid"
+   ]
+  ]
+ },
+ {
+  "name": "S-overlap-unsaid",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "                if (!over.isEmpty())\n                    out.warnings <<",
+  "new": "                if (false)\n                    out.warnings <<",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "whatAPortThatNamesItsReturnsCannotBeIsSaid"
+   ]
+  ]
+ },
+ {
+  "name": "S-idle-terminal-unsaid",
+  "file": "qucs-s-26.1.1/qucs/rf25doc.cpp",
+  "old": "            if (!idle.isEmpty())\n                job->notes <<",
+  "new": "            if (false)\n                job->notes <<",
+  "tests": [
+   [
+    "test_qucs_control",
+    "anRf25PortsReturnsAreNamedThroughTheTools"
+   ]
+  ]
+ },
+ {
+  "name": "S-dataset-equivalent",
+  "file": "qucs-s-26.1.1/qucs/rf25doc.cpp",
+  "old": "return schematicOf(circuit, comment, QFileInfo(path).completeBaseName());",
+  "new": "return schematicOf(circuit, comment);",
+  "tests": [
+   [
+    "test_qucs_control",
+    "anRf25ModelIsSolvedFullWaveThroughItsTool"
+   ]
+  ]
+ },
+ {
+  "name": "S-at-a-time-unsaid",
+  "file": "qucs-s-26.1.1/qucs/rf25doc.cpp",
+  "old": "        if (const int side = job->atOnce.load(); side > 1 && c.done < c.of)",
+  "new": "        if (const int side = job->atOnce.load(); side > 1000 && c.done < c.of)",
+  "tests": [
+   [
+    "test_rf25_doc",
+    "aSolveShowsHowFarItHasGot"
+   ]
+  ]
+ },
+ {
+  "name": "S-spin-words-unread",
+  "file": "qucs-s-26.1.1/qucs/qucscontrol.cpp",
+  "old": "            if (!s->specialValueText().isEmpty() && text.compare(s->specialValueText(), Qt::CaseInsensitive) == 0) {\n                s->setValue(s->minimum());",
+  "new": "            if (false) {\n                s->setValue(s->minimum());",
+  "tests": [
+   [
+    "test_qucs_control",
+    "aSpinBoxsWordsAndSuffixAreReadAsItsValue"
+   ]
+  ]
+ },
+ {
+  "name": "S-spin-suffix-compared",
+  "file": "qucs-s-26.1.1/qucs/qucscontrol.cpp",
+  "old": "n->specialValueText() : n->cleanText().trimmed();",
+  "new": "n->specialValueText() : n->text().trimmed();",
+  "tests": [
+   [
+    "test_qucs_control",
+    "aSpinBoxsWordsAndSuffixAreReadAsItsValue"
+   ]
+  ]
+ }
+]

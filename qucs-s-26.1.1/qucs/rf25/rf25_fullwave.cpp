@@ -898,6 +898,12 @@ struct Context {
     /// Each run in the plane's own on its metal's other face, where the
     /// metal is solved as its two (thickened()); -1 on a sheet.
     QList<int> twin;
+    /// The side walls' capacitances across narrow gaps (wallGapsOf()), F:
+    /// runs of their own after the vias, from lumpedFrom on, each between two
+    /// facing edge cells - no length, no inductance, its own impedance
+    /// 1/jwC (-1: none).
+    QList<double> lumped;
+    int lumpedFrom = -1;
     double rhoMax = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
@@ -1216,6 +1222,9 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add add)
         const Filament& run = c.runs.at(v.run);
         if (v.side > 0 && run.sigma > 0) add(v.run, v.run, surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side));
     }
+    // A wall's capacitance across its gap: 1/jwC.
+    for (int k = 0; k < c.lumped.size(); ++k)
+        add(c.lumpedFrom + k, c.lumpedFrom + k, 1.0 / (Complex(0, 2 * M_PI * f) * c.lumped.at(k)));
 }
 
 /*!
@@ -1353,6 +1362,12 @@ void sharedOut(int count, int threads, const std::function<void(int)>& job,
 void systemColumn(const Context& c, const Kernels& k, MatrixC& m, int b)
 {
     const int np0 = c.planar;
+    // A wall's capacitance: no field of its own - its own impedance and its
+    // charges are the rest's (ownImpedances(), chargeColumn()).
+    if (c.lumpedFrom >= 0 && b >= c.lumpedFrom) {
+        for (int a = 0; a <= b; ++a) m(a, b) = Complex(0, 0);
+        return;
+    }
     if (b < np0) {
         // jw L: each two runs' cosine times their kernel - nothing between
         // runs at right angles, which is what makes an axis-aligned layout
@@ -2409,6 +2424,33 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         ends << qMakePair(v.tail, v.head);
         if (v.tail < 0) ++grounded;
     }
+    // The side walls' charge, which neither face of a metal solved as its
+    // two holds: across each narrow gap a capacitance between the facing
+    // edge cells, from a 2D solve of solid metal against its two faces
+    // (wallGapsOf()) - a run of its own, no length and no inductance. Left
+    // out, a MOM comb of 1 µm metal in 1 µm gaps read 19 % under Palace's
+    // capacitance (B2 of the open items of 8 November).
+    QString wallsSaid;
+    {
+        const QList<WallGap> gaps = wallGapsOf(thick, micrometre);
+        if (!gaps.isEmpty()) {
+            c.lumpedFrom = int(c.runs.size());
+            double total = 0, narrowest = 0;
+            for (const WallGap& g : gaps) {
+                Filament run;
+                run.from = run.to = 0.5 * (mesh.cells.at(g.a).centre + mesh.cells.at(g.b).centre) * micrometre;
+                c.lumped << g.capacitance;
+                c.runs << run;
+                ends << qMakePair(g.a, g.b);
+                total += g.capacitance;
+                if (narrowest <= 0 || g.gap < narrowest) narrowest = g.gap;
+            }
+            wallsSaid = tr("The side walls across their narrow gaps, as a %1 µm gap at its narrowest: %2 capacitance(s) "
+                           "between facing edge cells, %3 fF in all - the field between the walls that their two faces "
+                           "leave out, by a 2D solve of straight walls (corners and tips are taken as straight).")
+                            .arg(narrowest / 1e-6, 0, 'g', 3).arg(gaps.size()).arg(total * 1e15, 0, 'g', 4);
+        }
+    }
     if (c.runs.isEmpty()) {
         out.problems << tr("No two cells of the mesh share an edge, so there is nowhere for a current to flow. Mesh the "
                            "layout more finely.");
@@ -2795,6 +2837,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         const QString& name = out.portNames.at(p);
         const QSet<int> own = netsUnder(owns.at(p));
         QStringList against, sameConductor;   // (the returns on its own conductor)
+        QList<QPair<Eigen::VectorXcd, QString>> returnCells;   // (each return's cells so far)
         QString sameNet;
         for (const PortTerminal& t : port.returns) {
             const QString x = QString::number(t.at.x(), 'g', 4), y = QString::number(t.at.y(), 'g', 4);
@@ -2808,7 +2851,19 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             } else if (t.face) {
                 QPointF on, along;
                 const QList<int> face = faceCells(mesh, conductors, cellOf, t.at, &on, &along, t.metal, t.facing);
-                if (face.isEmpty() || along == QPointF(0, 0)) {
+                // (On a face: within a hair of the edge found - the nearest
+                //  facing that way, however far, was taken, and a terminal on
+                //  no conductor solved: the returns check of 4 November.)
+                QLineF edge;
+                bool onEdge = false;
+                if (faceEdge(conductors, t.at, t.metal, t.facing, &edge)) {
+                    const QPointF d = edge.p2() - edge.p1();
+                    const double len2 = d.x() * d.x() + d.y() * d.y();
+                    const double u = len2 > 0 ? std::clamp(((t.at - edge.p1()).x() * d.x() + (t.at - edge.p1()).y() * d.y()) / len2, 0.0, 1.0) : 0.0;
+                    const QPointF nearest = edge.p1() + d * u;
+                    onEdge = std::hypot(t.at.x() - nearest.x(), t.at.y() - nearest.y()) <= 1e-3 * std::max(1.0, std::sqrt(len2));
+                }
+                if (face.isEmpty() || along == QPointF(0, 0) || !onEdge) {
                     out.problems << tr("%1's return %2, at %3, %4 µm, is on no face of %5 that a current reaches.")
                                         .arg(name, t.name, x, y, metal);
                     return out;
@@ -2877,12 +2932,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         if (mine(i) != Complex(0, 0)) portCells.insert(bottom(cellOf.at(i)));
                         if (back(i) != Complex(0, 0)) returnCells.insert(bottom(cellOf.at(i)));
                     }
-                    for (const QPair<int, int>& e : std::as_const(ends))
+                    for (int r = 0; r < ends.size(); ++r) {
+                        if (c.lumpedFrom >= 0 && r >= c.lumpedFrom) break;   // (a wall's capacitance is no join)
+                        const QPair<int, int>& e = ends.at(r);
                         if ((portCells.contains(bottom(e.first)) && returnCells.contains(bottom(e.second)))
                             || (portCells.contains(bottom(e.second)) && returnCells.contains(bottom(e.first)))) {
                             besideOwn = true;
                             break;
                         }
+                    }
                 }
                 if (onOwn || besideOwn) {
                     out.problems << tr("%1's return %2 is %3 the cells %1 drives: it would short the source. Put it apart "
@@ -2909,6 +2967,22 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                             return out;
                         }
                 }
+            // Two returns over the same cells: their shares of the current
+            // there are counted twice - said (it solved without a word: the
+            // returns check of 4 November).
+            {
+                QStringList over;
+                for (int i = 0; i < nc; ++i)
+                    if (back(i) != Complex(0, 0))
+                        for (int r = 0; r < returnCells.size(); ++r)
+                            if (returnCells.at(r).first(i) != Complex(0, 0) && !over.contains(returnCells.at(r).second))
+                                over << returnCells.at(r).second;
+                if (!over.isEmpty())
+                    out.warnings << tr("%1's return %2 is over cells that %3 is over too: each takes its share of the "
+                                       "current there, so those cells carry it twice. Put them apart.")
+                                        .arg(name, t.name, over.join(QStringLiteral(" and ")));
+                returnCells << qMakePair(back, t.name);
+            }
             out.returnsOf[p] << PortReturn{t.name, cells, Complex(0, 0)};
             columns << Eigen::VectorXcd(owns.at(p) - back);
             portOf << p;
@@ -3159,6 +3233,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.midY.resize(nr);
     c.mirrored = c.runs;
     for (int a = 0; a < nr; ++a) {
+        if (c.lumpedFrom >= 0 && a >= c.lumpedFrom) {
+            // (A wall's capacitance has no direction: no kernel takes it.)
+            c.dirX[a] = c.dirY[a] = 0;
+            c.midX[a] = c.runs.at(a).from.x();
+            c.midY[a] = c.runs.at(a).from.y();
+            continue;
+        }
         c.runs.at(a).direction(&c.dirX[a], &c.dirY[a], nullptr);
         c.runs.at(a).middle(&c.midX[a], &c.midY[a], nullptr);
         c.mirrored[a].z0 = c.mirrored[a].z1 = -c.runs.at(a).z0;
@@ -3202,6 +3283,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     const int inner = std::max(1, threads / side);
     out.threads = side * inner;
+    if (control != nullptr && control->atOnce != nullptr) control->atOnce->store(side);
     if (control != nullptr && control->begins) control->begins(nf);
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
@@ -3293,6 +3375,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "current between them radiating, its loop's inductance left out.")
                          .arg(naming.size());
     out.lines << thick.said;
+    if (!wallsSaid.isEmpty()) out.lines << wallsSaid;
     if (!walled.isEmpty())
         out.lines << tr("%1 of the runs are the walls of the metals solved as their two faces, each from a cell along an "
                         "edge up to the same cell of the top face.")
@@ -3420,7 +3503,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         QList<int> kept;
         QHash<int, int> keptAt;
         for (int a = 0; a < nr; ++a) {
-            if ((a < c.planar && thick.bottomOf.contains(ends.at(a).second)) || walled.contains(a)) continue;
+            if ((a < c.planar && thick.bottomOf.contains(ends.at(a).second)) || walled.contains(a)
+                || (c.lumpedFrom >= 0 && a >= c.lumpedFrom))
+                continue;
             keptAt.insert(a, int(kept.size()));
             kept << a;
         }

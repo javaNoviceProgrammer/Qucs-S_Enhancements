@@ -1,0 +1,6 @@
+[
+ {"name": "B5-strip-warnings-dropped", "file": "qucs-s-26.1.1/qucs/rf25/rf25_deembed.cpp",
+  "old": "        for (const QString& w : fw.warnings) out.warnings << tr(\"A calibration strip %1 µm long: %2\").arg(l, 0, 'g', 4).arg(w);",
+  "new": "",
+  "tests": [["test_rf25_deembed", "aCalibrationSaysWhatItsStripsSolvesSaid"]]}
+]

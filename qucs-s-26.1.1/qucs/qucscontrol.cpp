@@ -13934,9 +13934,23 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             else if (c->isEditable()) c->setEditText(text);
             else ok = false;
         } else if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) {
-            d->setValue(text.toDouble(&ok));
+            // (Its special value's words - "Automatic" at its least - are a
+            //  value it takes; a number it cannot read sets nothing. It was
+            //  set to nought, which read "Automatic", while the answer said
+            //  "does not take Automatic": the RF 2.5D check of 4 November.)
+            if (!d->specialValueText().isEmpty() && text.compare(d->specialValueText(), Qt::CaseInsensitive) == 0) {
+                d->setValue(d->minimum());
+            } else {
+                const double v = text.toDouble(&ok);
+                if (ok) d->setValue(v);
+            }
         } else if (auto* s = qobject_cast<QSpinBox*>(w)) {
-            s->setValue(text.toInt(&ok));
+            if (!s->specialValueText().isEmpty() && text.compare(s->specialValueText(), Qt::CaseInsensitive) == 0) {
+                s->setValue(s->minimum());
+            } else {
+                const int v = text.toInt(&ok);
+                if (ok) s->setValue(v);
+            }
         } else if (auto* tabs = qobject_cast<QTabWidget*>(w)) {
             ok = false;
             for (int k = 0; k < tabs->count(); ++k)
@@ -14054,7 +14068,15 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             // ignores one it cannot read, and saying it was set alone read
             // as though it had taken it (bug hunt 2026-10-23 N7).
             QString now;
-            if (auto* sp = qobject_cast<QAbstractSpinBox*>(w)) now = sp->text().trimmed();
+            // (A spin box's number without its prefix and suffix, or its
+            //  special value's words: "20000 runs and cells" was taken for
+            //  another value than the 20000 asked.)
+            if (auto* n = qobject_cast<QSpinBox*>(w))
+                now = !n->specialValueText().isEmpty() && n->value() == n->minimum() ? n->specialValueText() : n->cleanText().trimmed();
+            else if (auto* d = qobject_cast<QDoubleSpinBox*>(w))
+                now = !d->specialValueText().isEmpty() && d->value() == d->minimum() ? d->specialValueText() : d->cleanText().trimmed();
+            else if (auto* sp = qobject_cast<QAbstractSpinBox*>(w))
+                now = sp->text().trimmed();
             else if (auto* cb = qobject_cast<QComboBox*>(w); cb != nullptr && cb->isEditable()) now = cb->currentText().trimmed();
             QString note;
             if (!now.isEmpty() && !text.isEmpty()) {

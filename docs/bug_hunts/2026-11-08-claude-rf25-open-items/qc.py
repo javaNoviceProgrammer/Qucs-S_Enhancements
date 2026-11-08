@@ -1,7 +1,7 @@
 """C = -Im(Y12)/w of a 2-port comb at each frequency asked; GMRES counts and time."""
 import sys, json, time, numpy as np; sys.path.insert(0, "."); from run import Server
 folder, names, freqs = sys.argv[1], sys.argv[2].split(","), [float(f) for f in sys.argv[3].split(",")]
-extra = json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
+extra = json.loads(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].startswith("{") else {}
 s = Server(folder)
 for name in names:
     for f in freqs:

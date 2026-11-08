@@ -162,6 +162,38 @@ class TestRf25Deembed : public QObject
     Q_OBJECT
 
 private slots:
+    // A calibration's strips solved compressed whose GMRES stops short of
+    // its residual: the calibration says so, each strip's own warning in
+    // its warnings. A strip short of it was taken as solved with nothing
+    // said - and a coplanar line's eps_eff moved 2.6 % with the mesh on
+    // such strips (B5 of the open items of 8 November).
+    void aCalibrationSaysWhatItsStripsSolvesSaid()
+    {
+        const double h = 100e-6, w = 100;
+        const rf::Stack stack = grounded(9.8, h);
+        const rf::MeshSettings how = meshing(4, 50);
+        rf::FullWaveControl held;
+        held.matrix = rf::FullWaveControl::Matrix::Compressed;
+        const rf::Calibration whole = rf::calibrate(stack, how, 0, QStringLiteral("M1"), w, {10e9}, 1e-6, &held);
+        QVERIFY2(whole.ok() && whole.warnings.isEmpty(), qPrintable((whole.problems + whole.warnings).join(" | ")));
+        // The limit raised from too few to solve at all until the strips
+        // solve, short of the residual: said there.
+        bool said = false;
+        for (int most = 2; most <= 60 && !said; ++most) {
+            held.mostIterations = most;
+            const rf::Calibration shortOf = rf::calibrate(stack, how, 0, QStringLiteral("M1"), w, {10e9}, 1e-6, &held);
+            if (!shortOf.ok()) {
+                QVERIFY2(shortOf.problems.join(" ").contains(QStringLiteral("did not converge")), qPrintable(shortOf.problems.join(" | ")));
+                continue;
+            }
+            QVERIFY2(!shortOf.warnings.isEmpty() && shortOf.warnings.first().contains(QStringLiteral("A calibration strip"))
+                         && shortOf.warnings.first().contains(QStringLiteral("GMRES")),
+                     qPrintable(QStringLiteral("at %1 iterations: %2").arg(most).arg(shortOf.warnings.join(" | "))));
+            said = true;
+        }
+        QVERIFY(said);
+    }
+
     // The proposal's: "a line of a known length de-embedded to within a
     // degree of phase". A line of 3 mm, 100 µm wide on 100 µm of 9.8, its
     // ports' own discontinuity taken out by two strips of its feed (1 and

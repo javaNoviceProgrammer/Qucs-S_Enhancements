@@ -77,6 +77,7 @@
 #include "datasetfile.h"
 #include "qucscontrol.h"
 #include "rf25/rf25_circuit.h"
+#include "rf25settings.h"
 #include "rf25/rf25_model.h"
 #include "multiphysics/fem_model.h"
 #include "schematic.h"
@@ -2766,6 +2767,35 @@ private slots:
         closeUnder(ws + "/rfjoin");
     }
 
+    // A spin box with a special value's words and a suffix, through
+    // set_dialog: RF 2.5D > Settings…'s "Held dense up to" takes
+    // "Automatic" - it was set to nought (which reads Automatic) and the
+    // answer said "does not take Automatic" -, and 20000 is said taken, not
+    // "it took 20000 runs and cells, not 20000"; a word it cannot read sets
+    // nothing (the RF 2.5D check of 4 November).
+    void aSpinBoxsWordsAndSuffixAreReadAsItsValue()
+    {
+        QJsonObject automatic, number, nonsense, cancelled;
+        int afterNonsense = -1;
+        QTimer::singleShot(800, this, [&] {
+            automatic = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Held dense up to"}, {"value", "20000"}}}}});
+            number = automatic;
+            automatic = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Held dense up to"}, {"value", "Automatic"}}}}});
+            call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Held dense up to"}, {"value", "9000"}}}}});
+            nonsense = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Held dense up to"}, {"value", "lots"}}}}});
+            if (auto* d = qobject_cast<qucs_s::rf25::RF25SettingsDialog*>(QApplication::activeModalWidget())) afterNonsense = d->limitBox()->value();
+            cancelled = call("set_dialog", {{"press", "Cancel"}});
+        });
+        const QJsonObject triggered = call("trigger_action", {{"action", "RF 2.5D > Settings…"}}, 30000);
+        QTRY_VERIFY_WITH_TIMEOUT(!cancelled.isEmpty(), 20000);
+        QVERIFY2(!failed(number) && !text(number).contains(QStringLiteral("it took")), qPrintable(text(number)));
+        QVERIFY2(!failed(automatic) && !text(automatic).contains(QStringLiteral("does not take")) && !text(automatic).contains(QStringLiteral("it took")),
+                 qPrintable(text(automatic)));
+        QVERIFY2(text(nonsense).contains(QStringLiteral("does not take lots")), qPrintable(text(nonsense)));
+        QCOMPARE(afterNonsense, 9000);
+        QVERIFY2(!failed(cancelled), qPrintable(text(cancelled) + text(triggered)));
+    }
+
     // A model closed while rf25_solve waits on its solve - another
     // conversation's close_document here; Stop and Close at the window, or a
     // tab kept running in the background and let go once its solve ended,
@@ -2893,6 +2923,20 @@ private slots:
         QVERIFY(put(ws + "/rf/gsg_short.qrf25", shorted.toJson()));
         const QJsonObject across = call("rf25_solve", {{"path", ws + "/rf/gsg_short.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"}}, 300000);
         QVERIFY2(!failed(across) && text(across).contains(QStringLiteral("P1's return T1 is on its own conductor")), qPrintable(text(across)));
+        // A terminal no port names: said, the solve going on (the returns
+        // check of 4 November: it solved without a word).
+        {
+            qucs_s::rf25::Model idle = m;
+            qucs_s::rf25::Node t9 = idle.make(QStringLiteral("rf_terminal"));
+            t9.label = QStringLiteral("T9");
+            t9.props.insert(QStringLiteral("metal"), QStringLiteral("M1"));
+            t9.props.insert(QStringLiteral("x"), QStringLiteral("300[um]"));
+            t9.props.insert(QStringLiteral("y"), QStringLiteral("125[um]"));
+            QVERIFY(idle.add(QStringLiteral("ports"), t9) != nullptr);
+            QVERIFY(put(ws + "/rf/gsg_idle.qrf25", idle.toJson()));
+            const QJsonObject solved = call("rf25_solve", {{"path", ws + "/rf/gsg_idle.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"}}, 300000);
+            QVERIFY2(!failed(solved) && text(solved).contains(QStringLiteral("T9 is named by no port's returns")), qPrintable(text(solved).left(3000)));
+        }
         // fem_describe's format of an RF 2.5D model: by 'space', or of one named.
         for (const QJsonObject& asked : {QJsonObject{{"what", "format"}, {"space", "RF 2.5D"}},
                                          QJsonObject{{"what", "format"}, {"path", ws + "/rf/gsg.qrf25"}}}) {
@@ -3284,7 +3328,11 @@ private slots:
             QCOMPARE(part.value("file").toString(), ws + "/rf/wave_part.sch");
             QFile sch(ws + "/rf/wave_part.sch");
             QVERIFY(sch.open(QIODevice::ReadOnly));
-            QVERIFY(sch.readAll().startsWith("<Qucs Schematic "));
+            const QByteArray schText = sch.readAll();
+            QVERIFY(schText.startsWith("<Qucs Schematic "));
+            // Its dataset its own, not every export's "equivalent.dat" (W5 of
+            // the review of 2 November).
+            QVERIFY2(schText.contains("<DataSet=wave_part.dat>") && schText.contains("<DataDisplay=wave_part.dpl>"), schText.left(400).constData());
             const QJsonObject spice = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave.cir"}}, 120000)).toObject();
             QFile cir(ws + "/rf/wave.cir");
             QVERIFY(cir.open(QIODevice::ReadOnly));

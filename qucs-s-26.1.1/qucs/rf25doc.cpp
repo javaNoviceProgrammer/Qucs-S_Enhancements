@@ -525,6 +525,7 @@ struct RF25Doc::SolveJob {
     // A compressed solve's GMRES under way, for the bar (FullWaveControl).
     std::atomic_int gmresIterations{0};
     std::atomic<double> gmresResidual{0};
+    std::atomic_int atOnce{0};   // (frequencies at a time, once the solve knows)
     // The ports' de-embedding after it: the mesh's settings, so that the
     // strips of their feeds are meshed as the structure was, and whether
     // those strips are being solved; and how far they have got, for the
@@ -1991,6 +1992,20 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (job->ports.isEmpty())
             return nothing(tr("A full-wave solve is driven at its ports, and the model has none: put an edge port or an "
                               "internal port under Ports."));
+        // A terminal no port names among its returns does nothing: said (it
+        // solved without a word - the returns check of 4 November).
+        {
+            QSet<QString> named;
+            for (const FullWavePort& p : std::as_const(job->ports))
+                for (const PortTerminal& t : p.returns) named.insert(t.name);
+            QStringList idle;
+            for (const Node& p : a_model.ports().children)
+                if (p.enabled && p.type == QLatin1String("rf_terminal") && !named.contains(portName(p))) idle << portName(p);
+            if (!idle.isEmpty())
+                job->notes << tr("%1 %2 named by no port's returns, so %3 nothing in this solve.")
+                                  .arg(idle.join(QStringLiteral(", ")), idle.size() == 1 ? tr("is") : tr("are"),
+                                       idle.size() == 1 ? tr("it does") : tr("they do"));
+        }
         QString why;
         job->frequencies = request.frequencies.isEmpty() ? studySweep(a_model, &why) : request.frequencies;
         if (job->frequencies.isEmpty())
@@ -2054,6 +2069,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
             control.done = &job->done;
             control.gmresIterations = &job->gmresIterations;
             control.gmresResidual = &job->gmresResidual;
+            control.atOnce = &job->atOnce;
             control.allowed = job->allowed.get();
             control.matrix = job->matrix;
             job->wave = std::make_shared<FullWave>(
@@ -2131,7 +2147,12 @@ void RF25Doc::solveWith(const SolveRequest& request)
             if (!asked) return;
             *job->wave = deembedded(*job->wave, each);
             for (const std::shared_ptr<Calibration>& c : std::as_const(feeds))
-                if (c->ok()) job->wave->lines << c->lines;
+                if (c->ok()) {
+                    job->wave->lines << c->lines;
+                    // (Its strips' solves short of their residual: doubtful.)
+                    job->wave->warnings << c->warnings;
+                    job->wave->lines << c->warnings;
+                }
             return;
         }
         // Told to stop, it stops: let go and left to run, an extraction whose
@@ -2268,6 +2289,10 @@ RF25Doc::Count RF25Doc::countNow() const
         c.of = frequenciesToSolve();
         c.done = std::min(frequenciesSolved(), c.of);
         c.said = tr("Solving full-wave: %1 of %2 frequencies…").arg(c.done).arg(c.of);
+        // (Several at a time, none is counted until it ends: said, so that a
+        //  count standing still is not taken for a solve standing still.)
+        if (const int side = job->atOnce.load(); side > 1 && c.done < c.of)
+            c.said += tr(" %1 at a time, each counted as it ends.").arg(std::min(side, c.of));
         // Held compressed, how far its GMRES has got: an hour at "0 of 1"
         // said nothing of whether to wait (B3 of the open items of 8
         // November).
@@ -2865,7 +2890,7 @@ QString RF25Doc::circuitText(const EquivalentCircuit& circuit, const QString& pa
     comment << tr("An equivalent circuit of %1, fitted to its full-wave solve by Qucs-S %2.").arg(model, misc::buildName());
     comment << circuit.lines;
     const QString suffix = QFileInfo(path).suffix().toLower();
-    if (suffix == QLatin1String("sch")) return schematicOf(circuit, comment);
+    if (suffix == QLatin1String("sch")) return schematicOf(circuit, comment, QFileInfo(path).completeBaseName());
     // (A SPICE name: letters, digits and underscores.)
     QString sub = name.isEmpty() ? (a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName()) : name;
     sub.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_]")), QStringLiteral("_"));

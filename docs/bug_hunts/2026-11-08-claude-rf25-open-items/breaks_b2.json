@@ -1,0 +1,78 @@
+[
+ {
+  "name": "B2-no-walls-full-wave",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "        const QList<WallGap> gaps = wallGapsOf(thick, micrometre);\n        if (!gaps.isEmpty()) {",
+  "new": "        const QList<WallGap> gaps;\n        if (!gaps.isEmpty()) {",
+  "tests": [
+   [
+    "test_rf25_fullwave",
+    "theSideWallsChargeIsInAThickCombsCapacitance"
+   ]
+  ]
+ },
+ {
+  "name": "B2-no-walls-quasi-static",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_static.cpp",
+  "old": "                                   wallGapsOf(thick, micrometre));",
+  "new": "                                   {});",
+  "tests": [
+   [
+    "test_rf25_fullwave",
+    "theSideWallsChargeIsInAThickCombsCapacitance"
+   ]
+  ]
+ },
+ {
+  "name": "B2-excess-halved",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                                       {1.0, 0.3489},",
+  "new": "                                       {1.0, 0.1745},",
+  "tests": [
+   [
+    "test_rf25_mesh",
+    "theWallsAcrossANarrowGapAreItsCapacitance"
+   ],
+   [
+    "test_rf25_fullwave",
+    "theSideWallsChargeIsInAThickCombsCapacitance"
+   ]
+  ]
+ },
+ {
+  "name": "B2-thin-faces-kept",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "constexpr double kFacesApart = 0.02;",
+  "new": "constexpr double kFacesApart = 0;",
+  "tests": [
+   [
+    "test_rf25_fullwave",
+    "theSideWallsChargeIsInAThickCombsCapacitance"
+   ]
+  ]
+ },
+ {
+  "name": "B2-not-nearest",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_mesh.cpp",
+  "old": "                    if (nearest >= 0 && (*m)->line > nearest + 1e-9 * t) break;",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_mesh",
+    "theWallsAcrossANarrowGapAreItsCapacitance"
+   ]
+  ]
+ },
+ {
+  "name": "B2-walls-are-joins",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "                        if (c.lumpedFrom >= 0 && r >= c.lumpedFrom) break;   // (a wall's capacitance is no join)\n",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "aPortReturningThroughTheFacesBesideItIsTheCoplanarOne"
+   ]
+  ]
+ }
+]
