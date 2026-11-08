@@ -30,6 +30,7 @@ namespace qucs_s::markup {
 struct Snap {
     double value = 0;
     QString what;
+    int rank = 0;   ///< within reach, the lowest rank first, then the nearest: a centre line before an edge
 };
 
 /// What a stroke's runs may snap to: the places of what is near it, across
@@ -38,6 +39,10 @@ struct Snap {
 struct Snaps {
     QList<Snap> xs, ys;
     double finest = 0.001;
+    /// Lines in the layout a sketch may be centred on or not - a path's
+    /// middle, midway between two placements, the cell's centre -: upright
+    /// (values of x) and level (values of y), the lowest rank first.
+    QList<Snap> uprights, levels;
 };
 
 /// A stroke read as a polyline (polylineOf()).
@@ -59,13 +64,18 @@ struct Polyline {
     QStringList endsSnappedTo;     ///< what each end snapped to (empty: a round value)
     QList<double> angles;          ///< each corner's, degrees between its runs (drawn's interior points in turn)
     QList<double> radii;           ///< each corner's radius as drawn, 0 sharp
-    /// Near mirror symmetry of its corners (an open one's ends apart):
-    /// about x = axisAt ("x") or y = axisAt ("y"), within so much; and
-    /// whether its ends are too.
+    /// Its corners' own mirror line (an open one's ends apart): x = axisAt
+    /// ("x") or y = axisAt ("y"), within so much. Said only against a line
+    /// of the layout (Snaps::uprights, levels): a level-bottomed step is
+    /// always symmetric about its own middle, so what tells is whether that
+    /// middle is the layout's - centred on it, or so far off it.
     QString axis;
     double axisAt = 0;
     double within = 0;
-    bool endsToo = false;
+    bool referenced = false;
+    double reference = 0;
+    QString referenceIs;
+    bool centred = false;
 };
 
 /// \a points, drawn \a width broad, read as a polyline - \a closed, a ring's
