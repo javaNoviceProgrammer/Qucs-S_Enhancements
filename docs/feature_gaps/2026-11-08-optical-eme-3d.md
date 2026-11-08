@@ -104,6 +104,18 @@ With every propagating mode of the window kept, either projection carries the po
 **Cascade.** Each cell carries its modes along as e^-jβL; the cells and junctions are cascaded by Redheffer's star product -
 stable with evanescent modes, as a transfer matrix is not.
 
+**Threads.** A solve has three stages, each timed in its log line ("the cuts 67.08 s, the overlaps 5.91 s (44 of them), the
+cascade 0.01 s, on 24 threads"). The cuts' mode solves run side by side. So, since a review of the threading
+(`qucs-reviews/Multiphysics3D/EME/2026-11-08-claude-eme-multithreading.md`), do the overlaps: every distinct junction and every
+boxed port's projection, before the cascade, each pair's triangles of a in chunks of 512, the chunks of all pairs in one pool
+and a pair's chunks added in their order - the same S to the last bit on any number of threads. Where the review profiled a
+single wavelength, the overlaps had run one after another on one thread: 3,940 of 3,940 samples. Each overlap is also cheaper:
+the points' fields are gathered in batches of 512 and multiplied as matrices instead of a rank-one update a point, e_u, e_v,
+h_u and h_v alone are computed (not E_s or h_s), a triangle's coefficients are gathered once, and the clip of two triangles
+allocates nothing. Against the point-by-point overlap (kept, as the test's reference) it agrees to 1e-12 of the largest
+entry and is 4 to 5 times faster on one thread. A Cancel is heard between chunks, and a single wavelength reports its cuts and
+then its overlaps as it goes.
+
 **Ports.** A port over the whole window takes the end cut's own modes. A port in a box has its own cut (the box, metal round it),
 and its modes are projections of the end cut's: what of each end mode an outgoing field leaves in the port's mode, and what of
 each end mode the port's mode feeds - ½(⟨e_p, h_n⟩ + ⟨e_n, h_p⟩), the same both ways, so S between the ports stays reciprocal.
@@ -250,6 +262,8 @@ Each put in, the tests run, taken out:
 | (h) the junction back to the period's start left out | the Bragg mirror (S11 off by 0.03 to 0.63) |
 | (i) cuts told apart by domain, not material (the fifth fault, put back) | the Bragg mirror (23 cuts for 2) |
 | (j) a cell merged across a periodic section's end | the Bragg mirror whose period begins as the guide before it does (3 cells for 4) |
+| (k) the batched overlaps' h_v without its ∂u E_s | the wire's modes (their overlaps off the identity by 0.15), the overlaps against the point-by-point ones (0.099 off) |
+| (l) a pair's chunks added as they finish, not in their order | the overlaps on 1 and 8 threads (not the same to the bit) |
 
 ## Tests run
 
@@ -261,6 +275,10 @@ Each put in, the tests run, taken out:
   `test_multiphysics3d_doc` (215 s of its 300, run beside other suites; its wire now with a Periodic Section) and
   `test_multiphysics_doc` (948 s of its 1800) pass. Before them, with the bends: `test_fem3_solve`, `test_fem_engine` (the shared
   `domainAt`) and `test_fem_waves` (the mode solver's bend), whose code the gratings did not touch.
+- After the overlaps' threads: in Release `test_fem3_eme` 18 of 18 (89 s) and the whole suite 182 of 182 (631 s); with ASan
+  and UBSan `test_fem3_eme` (520 s of its 900 beside other work: the overlaps' pool on 1 and 8 threads and against the
+  point-by-point ones, the whole solve on 1 and 8 left to Release), `test_fem3_solve` and `test_multiphysics3d_doc` (266 s of
+  its 300) pass.
 - The four lints in `scripts/ci/` (third-party, tool arguments, JSON nesting, shaders) are green.
 
 ## What the expansion warns about
@@ -320,7 +338,10 @@ the comparisons above show - and the PML code stays, with this written beside it
 | A Bragg mirror of 1,000 periods (plane-wave cuts): drawn, a section | 0.24 s, 1 to 4 ms |
 | A 2D-like grating, 30 periods, 30 modes at 40 per wavelength | some 12 s a wavelength |
 | A silicon wire's grating, 100 periods, 20 modes at 20 per wavelength (a section) | 26 wavelengths in 226 s, beside other work |
-| `test_fem3_eme`, 17 tests | 177 s beside other work (15 tests: 93 s alone) |
+| A wire into an MMI's junction, 40 modes (metal; absorbing walls) | 5.7 s (22.5 s) point by point, 1.2 s (4.9 s) batched, 0.18 s (0.70 s) on 8 threads |
+| The review's Thomson 1x2 MMI (`thomson_mmi.qfem3d`: 43 cuts, absorbing walls, order 1), one wavelength, 20 modes | 412.7 s before (the review's); 73 s now - the cuts 67 s, the overlaps 5.9 s (44 of them) - on 24 threads beside other work (a load of 26 to 33) |
+| The same, 40 modes | not done in 25 min before (the review's); 323 s now - the cuts 291 s, the overlaps 32 s - at a load of 87 |
+| `test_fem3_eme`, 18 tests | 89 s (17 tests before the overlaps' threads: 177 s beside other work) |
 
 Wavelengths are solved side by side, as many at once as half the machine's cores (a step's **Wavelengths at once**).
 
@@ -343,6 +364,11 @@ Wavelengths are solved side by side, as many at once as half the machine's cores
   gratings (drawn tooth by tooth, each tooth its own cut) and gratings that radiate (second order, grating couplers - light
   out of the plane, not along an axis) were not tried.
 - **Crossings, Y-branches**: the stage to come.
+- **The cuts' threads and memory** (the threading review's other items): with the overlaps fast, a single wavelength's time is
+  its cuts' (291 of 323 s above). Whether Accelerate's own threads oversubscribe the cut pool was tried once
+  (`VECLIB_MAXIMUM_THREADS=1`) with the machine at a load of 97, which slowed everything, so it stays open. The cut pool has no
+  memory cap and the solve's estimate does not count its cuts (the review saw 17 to 21 GB for 43 cuts); not done. No
+  ThreadSanitizer run: there is no TSan tree, only ASan and UBSan's.
 - **Linux, Windows, Qt 6.10.3**: not run.
 
 ## The methods weighed (before building)
