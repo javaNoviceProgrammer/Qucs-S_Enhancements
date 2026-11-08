@@ -32,6 +32,7 @@ class QCheckBox;
 class QFileSystemWatcher;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
@@ -100,6 +101,11 @@ public:
     void setColorsAdapted(bool adapted);
     /// \a style as the canvas draws it.
     LayerStyle shownStyle(const LayerStyle& style) const;
+    /// KLayout's animations (a .lyp's scrolling and blinking layers): the
+    /// step they are at, a quarter second each while one is shown.
+    int animationTick() const { return a_tick; }
+    bool animating() const;
+    static constexpr int AnimationStep = 250;   // ms
 
     /// The grid behind the layout, as KLayout has it: a point (a line, a
     /// cross) every step - 1, 2 or 5 times a power of ten µm, MinGridPixels
@@ -349,6 +355,8 @@ private:
     bool a_labels = true;
     Theme a_theme = Theme::Application;
     bool a_adapted = true;
+    int a_tick = 0;
+    QTimer* a_animation = nullptr;
     bool a_grid = true;
     GridStyle a_gridStyle = GridStyle::Dots;
     QPointF a_center;
@@ -444,8 +452,29 @@ public:
     void setLayerColour(int layer, const QColor& colour);
     /// The .lyp the colours come from, or empty (the palette).
     QString layerPropertiesFile() const { return a_lypFile; }
+    const qucs_s::layout::LayerProperties& layerProperties() const { return a_lyp; }
     bool loadLayerProperties(const QString& path, QString* error = nullptr);
     void usePalette();
+
+    /// A .lyp drawn as KLayout draws it (its patterns, widths, dashes,
+    /// transparency, groups and order) - else the viewer's own way (its
+    /// colours and names on the palette's patterns, adapted to the
+    /// background). On at first; kept, and the same in every layout tab.
+    static bool klayoutLook();
+    void setKLayoutLook(bool on);
+    /// Whether this tab draws its layers in KLayout's look now (it has a
+    /// .lyp and the look is on).
+    bool drawsKLayoutLook() const;
+
+    /// The layouts opened lately, the latest first, as the tab's Recent
+    /// menu lists them (kept across sessions); MostRecent at most.
+    static QStringList recentLayouts();
+    static void noteRecentLayout(const QString& file);
+    static void clearRecentLayouts();
+    static constexpr int MostRecent = 12;
+    /// Opens \a file from the Recent menu: in a tab of its own - or, open
+    /// already, its tab brought to the front, as File > Open does.
+    bool openRecent(const QString& file);
     /// The canvas's theme, here and in every layout tab, kept for the next.
     void setCanvasTheme(qucs_s::layout::LayoutView::Theme theme);
     /// The layers' colours standing out from the canvas or not, the grid
@@ -499,6 +528,9 @@ public:
     QSpinBox* depthBox() const { return a_depthBox; }
     QPushButton* cancelButton() const { return a_cancel; }
     QToolButton* menuButton() const { return a_menuButton; }
+    QMenu* recentMenu() const { return a_recentMenu; }
+    /// The layer list's row of \a layer.
+    QTreeWidgetItem* layerItem(int layer) const { return layer >= 0 && layer < a_layerItems.size() ? a_layerItems.at(layer) : nullptr; }
     QToolButton* gridButton() const { return a_gridButton; }
     QToolButton* labelsButton() const { return a_labelsButton; }
     qucs_s::markup::PenButton* penButton() const { return a_penButton; }
@@ -551,6 +583,13 @@ private:
     static QString rowPath(const QTreeWidgetItem* item);
     void fillLayers();
     void updateLayerItem(int layer);
+    /// The styles of the .lyp (or the palette) in the look chosen, the
+    /// layers shown kept as they are when \a keepShown.
+    void applyStyles(bool keepShown);
+    void fillRecentMenu();
+    /// A group's row checked as its layers are.
+    void updateGroupItems();
+    void setLayersVisible(const QList<int>& layers, bool visible);
     void updateSwatches();
     /// \a apply to this tab and to every other layout tab.
     void everyLayoutTab(const std::function<void(LayoutDoc*)>& apply);
@@ -565,7 +604,9 @@ private:
     QString a_problem;
     QString a_source;           // the file it was read from
     QString a_lypFile;
-    QHash<qucs_s::layout::LayerKey, qucs_s::layout::LayerStyle> a_lyp;
+    qucs_s::layout::LayerProperties a_lyp;
+    qucs_s::layout::LayerPlan a_plan;
+    QVector<QTreeWidgetItem*> a_layerItems;   // by layer
     std::shared_ptr<Job> a_job;
     bool a_keepView = false;
     QTimer* a_progressTimer = nullptr;
@@ -592,6 +633,7 @@ private:
     qucs_s::routing::RouterPanel* a_routerPanel = nullptr;
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;
+    QMenu* a_recentMenu = nullptr;
     QLabel* a_cellLabel = nullptr;
     QWidget* a_searchBar = nullptr;
     QLineEdit* a_findField = nullptr;

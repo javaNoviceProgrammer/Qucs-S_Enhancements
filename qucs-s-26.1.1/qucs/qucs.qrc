@@ -184,6 +184,8 @@
         <file>shaders/fem_surface.frag.qsb</file>
         <file>shaders/fem_surface.vert.qsb</file>
         <file>shaders/layout_dot.frag.qsb</file>
+        <file>shaders/layout_line.vert.qsb</file>
+        <file>shaders/layout_line.frag.qsb</file>
         <file>shaders/layout_dot.vert.qsb</file>
         <file>shaders/layout_shape.frag.qsb</file>
         <file>shaders/layout_shape.vert.qsb</file>

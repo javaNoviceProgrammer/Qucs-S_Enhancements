@@ -490,7 +490,7 @@ void QucsControl::getLayout(const QJsonObject& args, const Done& done)
     const int levels = std::clamp(args.value(QLatin1String("depth")).toInt(3), 0, 50);
     withLayout(args, false, [root, levels, done](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         const QVector<LayerStyle> styles = doc != nullptr ? doc->view()->styles()
-                                                          : stylesFor(*layout, readLayerProperties(layerPropertiesBeside(layout->file), nullptr));
+                                                          : stylesFor(*layout, readLayerPropertiesFile(layerPropertiesBeside(layout->file), nullptr), LayoutDoc::klayoutLook());
         QString error;
         const int start = root.isEmpty() ? -1 : cellOf(*layout, root, -1, &error);
         if (!root.isEmpty() && start < 0) {
@@ -629,7 +629,7 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
     const int limit = std::clamp(args.value(QLatin1String("limit")).toInt(50), 1, 1000);
     withLayout(args, false, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         const QVector<LayerStyle> styles = doc != nullptr ? doc->view()->styles()
-                                                          : stylesFor(*layout, readLayerProperties(layerPropertiesBeside(layout->file), nullptr));
+                                                          : stylesFor(*layout, readLayerPropertiesFile(layerPropertiesBeside(layout->file), nullptr), LayoutDoc::klayoutLook());
         QString error;
         const int cell = cellOf(*layout, cellName, doc != nullptr ? doc->shownCell() : -1, &error);
         if (cell < 0) {
@@ -775,6 +775,10 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         && theme != QLatin1String("dark"))
         return done(errorResult(tr("'theme' is application (the canvas as Qucs-S's theme), light or dark.")));
     const QJsonValue contrast = args.value(QLatin1String("contrast"));
+    const QString look = args.value(QLatin1String("layer_look")).toString().trimmed().toLower();
+    if (args.contains(QLatin1String("layer_look")) && look != QLatin1String("klayout") && look != QLatin1String("viewer"))
+        return done(errorResult(tr("'layer_look' is klayout (a .lyp drawn as KLayout draws it: its patterns, frames, transparency and "
+                                   "order) or viewer (its colours on the viewer's patterns, in contrast to the canvas).")));
     const QString gridStyle = args.value(QLatin1String("grid_style")).toString().trimmed().toLower();
     if (args.contains(QLatin1String("grid_style")) && gridStyle != QLatin1String("dots") && gridStyle != QLatin1String("lines")
         && gridStyle != QLatin1String("crosses"))
@@ -802,7 +806,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             // Which cell, and which layers, are the model's to say - its
             // Layout node and its layer map - and are not set from here.
             for (const char* key : {"cell", "layers", "depth", "pen", "drawings", "overlay", "addressed", "select", "rulers", "colours",
-                                    "layer_properties", "theme", "contrast", "grid_style", "reload"})
+                                    "layer_properties", "layer_look", "theme", "contrast", "grid_style", "reload"})
                 if (args.contains(QLatin1String(key))) {
                     done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
                                         "its layers are its layer map's. 'region', 'texts', 'grid', 'processed' and "
@@ -908,6 +912,9 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                 }
             }
         }
+        // A .lyp drawn as KLayout does or the viewer's way (every layout
+        // tab, as the menu sets it) - before a colour is given a layer.
+        if (!look.isEmpty() && (look == QLatin1String("klayout")) != LayoutDoc::klayoutLook()) doc->setKLayoutLook(look == QLatin1String("klayout"));
         // A colour for each layer named: all of them found before any is set.
         QList<QPair<int, QColor>> recoloured;
         for (auto it = colours.constBegin(); it != colours.constEnd(); ++it) {
@@ -1059,6 +1066,8 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             result.insert(QStringLiteral("layer properties"), tr("the palette"));
         if (view->theme() != LayoutView::Theme::Application) result.insert(QStringLiteral("theme"), themeName(view->theme()));
         if (!view->colorsAdapted()) result.insert(QStringLiteral("colours in contrast"), false);
+        if (!doc->layerPropertiesFile().isEmpty())
+            result.insert(QStringLiteral("layer look"), doc->drawsKLayoutLook() ? QStringLiteral("klayout") : QStringLiteral("viewer"));
         if (view->gridShown()) result.insert(QStringLiteral("grid style"), gridStyleName(view->gridStyle()));
         if (reload) result.insert(QStringLiteral("read again"), true);
         // What reading it again changed: by cell and layer, the shapes added
