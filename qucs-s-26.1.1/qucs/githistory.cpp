@@ -16,6 +16,7 @@
 #include "gitui.h"
 #include "ink.h"
 #include "misc.h"
+#include "popupmenu.h"
 #include "schematicdiff.h"
 #include "settings.h"
 
@@ -626,8 +627,7 @@ HistoryView::HistoryView(const QString& root, const QString& path, QWidget* pare
         const QModelIndex at = a_view->indexAt(pos);
         if (!at.isValid()) return;
         QMenu* menu = menuFor(at.row());
-        menu->exec(a_view->viewport()->mapToGlobal(pos));
-        menu->deleteLater();
+        qucs_s::popUp(menu, a_view->viewport()->mapToGlobal(pos));
     });
     connect(a_view, &QTreeView::doubleClicked, this, [this](const QModelIndex& at) {
         if (at.isValid() && a_model->row(at.row()).uncommitted) Commands::instance()->commit(a_root);
@@ -644,8 +644,7 @@ HistoryView::HistoryView(const QString& root, const QString& path, QWidget* pare
         QTreeWidgetItem* item = a_files->itemAt(pos);
         if (item == nullptr) return;
         QMenu* menu = fileMenuFor(a_files->indexOfTopLevelItem(item));
-        menu->exec(a_files->viewport()->mapToGlobal(pos));
-        menu->deleteLater();
+        qucs_s::popUp(menu, a_files->viewport()->mapToGlobal(pos));
     });
 
     // (a file's: the branch checked out; reload() lists the others)
