@@ -258,10 +258,10 @@ public:
     quint64 stops() const { return a_stops; }
     /// Waited for now (a tool waiting for its geometry or its solve, the
     /// window going on): not to be deleted under the one waiting.
-    bool beingWaitedFor() const { return a_waiting > 0; }
+    bool beingWaitedFor() const override { return a_waiting > 0; }
     /// Its tab closed while it is waited for: its work stopped, none started,
     /// deleted once the waiting is over.
-    void closeWhenFree();
+    void closeWhenFree() override;
     bool closedWhenFree() const { return a_closed; }
     /// The last job's error, or empty.
     QString lastError() const { return a_lastError; }

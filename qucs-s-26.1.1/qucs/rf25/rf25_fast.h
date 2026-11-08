@@ -215,7 +215,8 @@ using Operator = std::function<void(const VectorC& x, VectorC& y)>;
  * the residual at each restart the system's own, not the recurrence's.
  */
 Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& b, VectorC& x, double tolerance,
-            int restart, int most, const std::atomic_bool* stop = nullptr);
+            int restart, int most, const std::atomic_bool* stop = nullptr,
+            const std::function<void(int iterations, double residual)>& progress = {});
 
 /// The machine's memory, bytes; nought where it cannot be told.
 double physicalMemory();

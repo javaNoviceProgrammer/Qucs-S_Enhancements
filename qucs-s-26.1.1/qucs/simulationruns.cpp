@@ -705,7 +705,7 @@ void Tracker::releaseParked()
     for (QWidget* w : all) {
         stopRun(w);
         // (A model a tool still waits on is let go once the wait is over.)
-        if (auto* model = qobject_cast<MultiphysicsDoc*>(w); model != nullptr && model->beingWaitedFor()) model->closeWhenFree();
+        if (auto* doc = dynamic_cast<QucsDoc*>(w); doc != nullptr && doc->beingWaitedFor()) doc->closeWhenFree();
         else delete w;
     }
     pollNow();
@@ -730,7 +730,7 @@ void Tracker::trimParked()
         }
         unpark(w);
         --idle;
-        if (auto* model = qobject_cast<MultiphysicsDoc*>(w); model != nullptr && model->beingWaitedFor()) model->closeWhenFree();
+        if (auto* doc = dynamic_cast<QucsDoc*>(w); doc != nullptr && doc->beingWaitedFor()) doc->closeWhenFree();
         else delete w;
     }
 }
@@ -805,7 +805,7 @@ void Tracker::releaseOne(QWidget* document)
     if (!isParked(document)) return;
     unpark(document);
     stopRun(document);
-    if (auto* model = qobject_cast<MultiphysicsDoc*>(document); model != nullptr && model->beingWaitedFor()) model->closeWhenFree();
+    if (auto* doc = dynamic_cast<QucsDoc*>(document); doc != nullptr && doc->beingWaitedFor()) doc->closeWhenFree();
     else delete document;
     pollNow();
 }
