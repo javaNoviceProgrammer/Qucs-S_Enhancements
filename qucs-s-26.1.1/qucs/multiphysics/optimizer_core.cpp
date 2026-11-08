@@ -831,6 +831,10 @@ private:
     bool m_reached = false;
     int m_evals = 0, m_failed = 0;
     double m_seenLo = 0, m_seenHi = 0;
+    /// Every cost seen the same, to rounding: a finite element value meshed
+    /// again differs in its last digits where nothing it depends on moved. (The
+    /// fork compares them exactly; a circuit's solve repeats to the bit.)
+    bool neverMoved() const { return m_seenHi - m_seenLo <= 1e-12 * std::max({1.0, std::abs(m_seenHi), std::abs(m_seenLo)}); }
     int m_seenN = 0;
     double m_fractionShown = 0;
     unsigned long long m_rng = 1;
@@ -3133,7 +3137,7 @@ SearchOutcome Search::run()
     const bool wasInterrupted = m_interrupted;
     if (wasInterrupted) m_status = SearchStatus::Interrupted;
     else if (!m_hasBest) m_status = SearchStatus::NoSolve;
-    else if (m_seenN > 1 && m_seenHi == m_seenLo && !m_reached) m_status = SearchStatus::Unchanged;
+    else if (m_seenN > 1 && neverMoved() && !m_reached) m_status = SearchStatus::Unchanged;
     else if (m_reached) m_status = SearchStatus::Converged;
     else if (!m_con.empty() && !m_bestFeasible) m_status = SearchStatus::Infeasible;
     else if (m_status == SearchStatus::Infeasible) m_status = SearchStatus::Converged;
@@ -3149,7 +3153,7 @@ SearchOutcome Search::run()
 
     if (m_status == SearchStatus::MaxIter)
         m_notes << tr("the iteration cap ended the search before its own criterion did; raise the iterations, or loosen the tolerance if the reported value is close enough.");
-    if (m_seenN > 1 && m_seenHi == m_seenLo && !m_reached) {
+    if (m_seenN > 1 && neverMoved() && !m_reached) {
         m_notes << tr("the objective was %1 at every one of the %2 evaluations, so nothing was optimised and the reported value is the starting value; check that the objective actually depends on the parameter%3.")
                        .arg(m_seenLo, 0, 'g', 6)
                        .arg(m_evals)

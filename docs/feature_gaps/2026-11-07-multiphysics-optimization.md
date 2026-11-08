@@ -23,6 +23,8 @@ Add an optimization under the **Optimization** node of a 2D model's tree (its me
   - `MON`: only shown.
 
   Several are weighed against each other by their weights, each relative to its value at the start or to its target.
+  On a sweep, output times or frequencies a row counts by its worst point, or its last (**Over**). On a mode analysis it reads
+  one mode: the one its step chose, else the first, or the one its **Mode** column names (`all`: every mode, by its worst).
 - **Any method:** `de` with its ten variants, `pso`, `sa`, `cmaes`, `bayes`, `nm`, `tr`, `lm`, `nsga2` (a Pareto front),
   `tune`.
 - **Run it** with the node's **Run**, the toolbar's **Optimize**, or `fem_optimize`. It runs in the background with its
@@ -363,6 +365,31 @@ right: only what was said about it was wrong. This write-up's tests had their li
 
 The review's own runs were on the installed app; they were not repeated against it here. Its repro files are in the user's
 workspace, and these tests are the same cases scaled to the test capacitor.
+
+## The recheck of 7 November
+
+[2026-11-07-claude-qfem-optimization-recheck.md](qucs-reviews/Multiphysics/2026-11-07-claude-qfem-optimization-recheck.md),
+on the app of `4eaf02f`: all seven findings fixed, each original repro as it should be. It found one fault more, and four small points.
+
+**M1: a row on a mode analysis read every mode, by the worst.** Confirmed: each objective was read on `instances(...)` with every
+mode of the step, and reduced by the sweep's worst-point rule, as if the modes of one solve were points of a sweep. A TARGET on
+`emw.neff` with two modes asked fitted the minimax of TE0's and TE1's misses, and said nothing. Now:
+- A row reads one mode: by default the one its step chose, else the first, as a solve's globals and `fem_evaluate` read it.
+- The objectives table has a seventh column, **Mode**: a mode's number from 1, or `all` for every mode by its worst, the old
+  reading. An empty one is the default.
+- `aModeAnalysisReadsOneMode` on a 500 nm silicon slab's two TM modes (3.15 and 2.07): the default and mode 1 read 3.15, mode 2
+  reads 2.07. It fails on the code before, where every row read the same.
+
+**The small points:**
+
+| Point | Now |
+|---|---|
+| B3's suggested rewrite was the same text for every row | Built from the row: `(es.C11) - (200[pF]*d/1[mm]) TARGET 0` |
+| A flat objective stopped quietly as `converged` | An objective the same at every point to rounding (1e-12 of its size) is `unchanged`, with its note, as an exactly equal one was. A finite element value meshed again differs in its last digits where nothing it depends on moved; the fork compares exactly, as a circuit's solve repeats to the bit. |
+| The tab's Apply on an old result asked nothing | It asks, and No writes nothing (`savedAndOpenedAgain`). |
+| Mesh noise was said only in this write-up | A run whose candidates were meshed again says so in its notes, and to check the optimum with a Mesh Convergence node or a finer mesh. It is said whenever the mesh is made again, not only when the history jumps: it is true of every such run. |
+
+The schematic component's EQ goal and mid-run behaviour were not rechecked by the reviewer, nor here.
 
 ## Fixed on the way
 
