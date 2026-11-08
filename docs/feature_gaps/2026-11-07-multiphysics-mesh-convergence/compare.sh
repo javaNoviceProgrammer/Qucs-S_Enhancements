@@ -21,3 +21,13 @@ export REFMAX=4e5; run wr90_modes.qfem emw.neff 1e-4 auto 0.9447273549638127; un
 run quantum_wire.qfem qw.Ee1 1e-4
 run heatsink_import.qfem ht.Tmax 1e-3
 export REFMAX=6e5; run soi_waveguide_modes.qfem emw.neff 1e-3; unset REFMAX
+# The uniform route (refine: uniform) against the same references: every element
+# cut each time, its changes alternating with the cut (2026-11-08).
+X=1.1326822727e-11
+run adaptive_corner.qfem es.W 1e-3 uniform $X
+run adaptive_corner.qfem es.W 1e-4 uniform $X
+run coax.qfem es.C11 1e-4 uniform 9.703562695222404e-11
+run microstrip.qfem es.C11 1e-3 uniform 1.207455664e-10
+run tsv_axisymmetric.qfem es.C11 1e-3 uniform 1.23999745676e-13
+run resistor_heating.qfem ec.R 1e-3 uniform 0.201306240254
+run wr90_modes.qfem emw.neff 1e-4 uniform 0.9447273549638127

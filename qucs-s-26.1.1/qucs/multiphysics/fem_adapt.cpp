@@ -626,6 +626,55 @@ ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vect
         e.why = tr("a rate of %1 in the unknowns is too slow to extrapolate").arg(formatNumber(q, 3));
         return e;
     }
+    // The rate on the meshes before, where there are four.
+    double earlier = 0;
+    if (n >= 4) {
+        const double d0 = qs[n - 3] - qs[n - 4];
+        earlier = d0 * d1 > 0 ? rateOf(ns[n - 3] / ns[n - 4], a, std::abs(d1) / std::abs(d0)) : 0.0;
+    }
+    const bool steady = earlier > 0 && std::abs(earlier - q) <= 0.5 * std::max(earlier, q);
+    // The same read over every other mesh: n-1, n-3 and n-5, which cutting every
+    // element makes alike. Longest-edge bisection cuts one way and then the other,
+    // so the changes alternate with it, and one pair reads a rate the next does
+    // not: the L corner's uniform changes on CI's Linux meshes fell by 0.39, 0.98
+    // and 0.35 a step, the last read as unknowns^-1.4 where the error fell as
+    // ^-0.62, and its error said was 1.84 times the last change where 2.4 were
+    // left - "converged" at 1e-3 with 1.23e-3 made. Read over two steps the
+    // alternation cancels: there 2.3 times the last change, and on macOS's meshes
+    // 6.10e-15 where 6.2e-15 was left. The error said is at least what it leaves.
+    double alternate = 0;
+    QString alternateWhy;
+    if (n >= 5) {
+        const double D1 = qs[n - 3] - qs[n - 5], D2 = qs[n - 1] - qs[n - 3];
+        const double a2 = ns[n - 3] / ns[n - 5], b2 = ns[n - 1] / ns[n - 3];
+        // Only where it reads a rate of its own, one way, no faster than the order:
+        // a value moving one way and then the other, or hardly slowing, is read so
+        // by the pairs already. (Counted here too, it held the goal case's
+        // reference, which moves one way and then the other, to 4.7e-7 said where
+        // 7.7e-9 was made, past its limit on unknowns.) Faster than the order this
+        // way too, there is no alternation to see. (Bounded at the order over two
+        // steps it held the shipped corner's check back three meshes at 1e-3,
+        // 15,256 unknowns where 4,897 had been right.)
+        const double q2 = D1 * D2 > 0 ? rateOf(a2, b2, std::abs(D2) / std::abs(D1)) : 0.0;
+        if (q2 >= 0.1 && q2 <= 1.05 * order) {
+            // Its own room: 1.25 where it reads the steady rate the pairs do,
+            // or the two before it read the same rate; else 2.
+            double room2 = steady && std::abs(q2 - q) <= 0.5 * std::max(q2, q) ? 1.25 : 2;
+            if (room2 > 1.25 && n >= 7) {
+                const double D0 = qs[n - 5] - qs[n - 7];
+                const double before2 = D0 * D1 > 0 ? rateOf(ns[n - 5] / ns[n - 7], a2, std::abs(D1) / std::abs(D0)) : 0.0;
+                if (before2 > 0 && std::abs(before2 - q2) <= 0.5 * std::max(before2, q2)) room2 = 1.25;
+            }
+            alternate = room2 * std::abs(D2) / (std::pow(b2, q2) - 1);
+            alternateWhy = tr("over every other mesh, a rate of %1").arg(formatNumber(q2, 3));
+        }
+    }
+    const auto withAlternate = [&]() {
+        if (alternate > 1.01 * e.error) {
+            e.error = alternate;
+            e.why += QStringLiteral("; ") + alternateWhy + tr(", which leaves more");
+        }
+    };
     if (q > 1.05 * order) {
         // Faster than the order, short of the asymptote: the changes fall faster
         // than the error does (a corner's read 2.2 where its error fell as 1.2),
@@ -637,8 +686,11 @@ ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vect
         // (Above the order plus one too: there the meshes may have agreed by
         // chance, which is what the check is for. The crack's slowest bound
         // there held the TSV to its tenth mesh, its error 3e-4 by its seventh.)
+        // (Room 3 where the meshes before read another rate: one pair faster than
+        // the order among slower ones is the alternation below, and 2 left the
+        // corner's said error under the 2.4 changes left.)
         e.trust = ValueEstimate::Bounded;
-        e.error = 2 * std::abs(d2) / (std::pow(b, double(order)) - 1);
+        e.error = (n >= 4 && !steady ? 3 : 2) * std::abs(d2) / (std::pow(b, double(order)) - 1);
         e.rate = kNaN;
         e.why = q > highest ? tr("its changes fell as unknowns^-%1, faster than elements of order %2 can converge (at most about %3): two meshes may have agreed by "
                                  "chance - bounded as if its error fell as unknowns^-%2, not extrapolated")
@@ -649,6 +701,7 @@ ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vect
                                  "error bounded from the last change")
                                   .arg(formatNumber(q, 3))
                                   .arg(order);
+        withAlternate();
         return e;
     }
     // (A rate above the order is not extrapolated, above: seen short of the
@@ -659,9 +712,7 @@ ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vect
     e.trust = ValueEstimate::Extrapolated;
     e.why = tr("a rate of %1 in the unknowns").arg(formatNumber(q, 3));
     if (n >= 4) {
-        const double d0 = qs[n - 3] - qs[n - 4];
-        const double earlier = d0 * d1 > 0 ? rateOf(ns[n - 3] / ns[n - 4], a, std::abs(d1) / std::abs(d0)) : 0.0;
-        if (earlier > 0 && std::abs(earlier - q) <= 0.5 * std::max(earlier, q)) {
+        if (steady) {
             e.steady = true;
             e.why = tr("a steady rate of %1 in the unknowns (%2 on the meshes before)").arg(formatNumber(q, 3), formatNumber(earlier, 3));
         } else {
@@ -673,6 +724,7 @@ ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vect
         e.why = tr("a rate of %1 in the unknowns, from three meshes").arg(formatNumber(q, 3));
     }
     e.error = room * std::abs(beyond);
+    withAlternate();
     return e;
 }
 
@@ -1721,6 +1773,9 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
     QString kind = QStringLiteral("start");
     bool checking = false;
     bool caught = false;
+    // The one cut after a check that left a value just above its tolerance: once,
+    // where the rounds of cutting every element cut twice (below).
+    bool cutOnce = false;
     double checkMoved = 0;
     QStringList said;
     std::shared_ptr<Solution> previous;
@@ -1733,7 +1788,7 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
     int order = 1;
     const bool goalOriented = a_plan.refine == QLatin1String("goal");
     std::vector<Goal> goals;
-    if (mode == Uniform && !a_methods.contains(tr("every element cut, as asked"))) a_methods << tr("every element cut, as asked");
+    if (mode == Uniform && !a_methods.contains(tr("every element cut twice each round, as asked (cut once, by longest edges, meshes alternate in kind)"))) a_methods << tr("every element cut twice each round, as asked (cut once, by longest edges, meshes alternate in kind)");
 
     for (;;) {
         if (solvedHere >= a_plan.maxMeshes) {
@@ -1872,7 +1927,7 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
                 mode = Uniform;
                 seriesFrom = int(series.unknowns.size()) - 1;
                 es = estimates(series, seriesFrom, order);
-                a_methods << tr("every element cut, after the check caught the rounds' false agreement");
+                a_methods << tr("every element cut twice each round, after the check caught the rounds' false agreement");
             } else if (within) {
                 said << tr("the check, every element cut, moved each value by less than its tolerance");
                 if (checkMoved > 10) said << tr("(it moved a value %1 times what the estimate before it said: that estimate was too hopeful, and only the one after it stands)").arg(formatNumber(checkMoved, 3));
@@ -1889,6 +1944,7 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
                             .arg(pending);
                 mode = Uniform;
                 seriesFrom = int(series.unknowns.size()) - 2;
+                cutOnce = true;
                 es = estimates(series, seriesFrom, order);
             }
         } else if (within && solvedHere >= 2) {
@@ -1962,7 +2018,17 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
         }
         // Past the cap: not solved. (A mesh grows at most four times over; cut
         // by its marks, about 1 + 3 of each marked's share, closure included.)
-        const double grown = row.unknowns * (remeshes ? (all ? 2.0 : 1.0 + double(count) / marked.size()) : 1.0 + 1.5 * double(count) / marked.size());
+        // Cutting every element each round, by longest edges, cuts each twice: once
+        // cuts a triangle one way and the next time the other, so meshes cut once
+        // each round alternate in kind and so do their changes - one pair read a
+        // rate the next did not, and the error said fell below the error made (the
+        // L corner's on CI's Linux meshes, "converged" at 1e-3 with 1.23e-3; on
+        // macOS's the TSV's and the resistor's, from three meshes). Cut twice, each
+        // mesh is of the kind of the one before. Not the check, a perturbation the
+        // rounds did not choose, nor the one cut after it.
+        const bool twice = !remeshes && mode == Uniform && !checking && !cutOnce;
+        cutOnce = false;
+        const double grown = row.unknowns * (remeshes ? (all ? 2.0 : 1.0 + double(count) / marked.size()) : twice ? 5.0 : 1.0 + 1.5 * double(count) / marked.size());
         if (grown > a_plan.maxUnknowns) {
             stop(QStringLiteral("unknowns"), tr("the next mesh would have about %1 unknowns, past the limit of %2").arg(formatNumber(grown, 3), formatNumber(a_plan.maxUnknowns, 6)));
             break;
@@ -1997,6 +2063,12 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
             }
         } else {
             next = bisectMesh(*mesh, marked, sizes.periodic);
+            if (next && twice) {
+                std::vector<char> again(next->triangles.size(), 1);
+                for (int t = 0; t < int(again.size()); ++t)
+                    if (sizeOf(*next, t) < smallestAllowed) again[std::size_t(t)] = 0;
+                next = bisectMesh(*next, again, sizes.periodic);
+            }
             if (!next) {
                 stop(QStringLiteral("failed"), tr("the mesh could not be cut"));
                 break;
