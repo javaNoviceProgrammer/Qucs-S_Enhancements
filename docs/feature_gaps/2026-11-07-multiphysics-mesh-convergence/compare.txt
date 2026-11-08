@@ -1,142 +1,147 @@
 === adaptive_corner.qfem es.W 1e-3
-reference: converged, limit 1.1326879086e-11 (tolerance 3.33333e-05, 18 solves, 76802 unknowns largest, 0.8 s)
-ADAPTIVE (auto) tol 0.001: converged, 11 solves, 17166 unknowns in all, largest 7023, 0.04 s; value 1.13289722e-11, actual error 1.85e-04, said 3.57e-04 (extrapolated)
+reference: converged, limit 1.13268528586e-11 (tolerance 3.33333e-05, 23 solves, 50030 unknowns largest, 0.6 s)
+ADAPTIVE (auto) tol 0.001: converged, 12 solves, 4897 unknowns in all, largest 1685, 0.01 s; value 1.133138778e-11, actual error 4.00e-04, said 8.20e-04 (extrapolated)
  uniform f=1        106 unknowns, 0.00 s: value 1.14665888e-11, actual error 1.23e-02; fem_converge [..1]: moved nan (hardly finer) -> not converged
  uniform f=2        373 unknowns, 0.00 s: value 1.137938203e-11, actual error 4.64e-03; fem_converge [..2]: moved 7.66e-03 -> not converged
  uniform f=4       1404 unknowns, 0.01 s: value 1.134893951e-11, actual error 1.95e-03; fem_converge [..4]: moved 2.68e-03 -> not converged
- uniform f=8       5475 unknowns, 0.05 s: value 1.133579668e-11, actual error 7.87e-04; fem_converge [..8]: moved 1.16e-03 -> not converged
- uniform f=16     21579 unknowns, 0.21 s: value 1.133027184e-11, actual error 3.00e-04; fem_converge [..16]: moved 4.88e-04 -> converged
-   fem_converge first says converged here, 5 solves, 28937 unknowns in all, its value's actual error 3.00e-04
- uniform f=32     85948 unknowns, 0.98 s: value 1.132821905e-11, actual error 1.18e-04; fem_converge [..32]: moved 1.81e-04 -> converged
-   uniform reaches the adaptive check's accuracy here: 6 solves, 114885 unknowns in all (6.7x), 1.24 s (32.7x)
+ uniform f=8       5475 unknowns, 0.05 s: value 1.133579668e-11, actual error 7.90e-04; fem_converge [..8]: moved 1.16e-03 -> not converged
+ uniform f=16     21579 unknowns, 0.23 s: value 1.133027184e-11, actual error 3.02e-04; fem_converge [..16]: moved 4.88e-04 -> converged
+   fem_converge first says converged here, 5 solves, 28937 unknowns in all, its value's actual error 3.02e-04
+   uniform reaches the adaptive check's accuracy here: 5 solves, 28937 unknowns in all (5.9x), 0.29 s (22.5x)
 === adaptive_corner.qfem es.W 1e-4
-reference: converged, limit 1.13268278117e-11 (tolerance 3.33333e-06, 24 solves, 527941 unknowns largest, 4.2 s)
-ADAPTIVE (auto) tol 0.0001: converged, 15 solves, 72973 unknowns in all, largest 28419, 0.16 s; value 1.132725206e-11, actual error 3.75e-05, said 7.26e-05 (extrapolated)
+reference: converged, limit 1.13268227453e-11 (tolerance 3.33333e-06, 32 solves, 712483 unknowns largest, 6.7 s)
+ADAPTIVE (auto) tol 0.0001: converged, 21 solves, 75213 unknowns in all, largest 27301, 0.17 s; value 1.132707484e-11, actual error 2.23e-05, said 4.34e-05 (extrapolated)
  uniform f=1        106 unknowns, 0.00 s: value 1.14665888e-11, actual error 1.23e-02; fem_converge [..1]: moved nan (hardly finer) -> not converged
  uniform f=2        373 unknowns, 0.00 s: value 1.137938203e-11, actual error 4.64e-03; fem_converge [..2]: moved 7.66e-03 -> not converged
  uniform f=4       1404 unknowns, 0.01 s: value 1.134893951e-11, actual error 1.95e-03; fem_converge [..4]: moved 2.68e-03 -> not converged
  uniform f=8       5475 unknowns, 0.05 s: value 1.133579668e-11, actual error 7.92e-04; fem_converge [..8]: moved 1.16e-03 -> not converged
- uniform f=16     21579 unknowns, 0.21 s: value 1.133027184e-11, actual error 3.04e-04; fem_converge [..16]: moved 4.88e-04 -> not converged
- uniform f=32     85948 unknowns, 0.98 s: value 1.132821905e-11, actual error 1.23e-04; fem_converge [..32]: moved 1.81e-04 -> not converged
-   uniform did not reach the adaptive check's accuracy (3.75e-05) within 6 solves, 114885 unknowns in all
+ uniform f=16     21579 unknowns, 0.22 s: value 1.133027184e-11, actual error 3.05e-04; fem_converge [..16]: moved 4.88e-04 -> not converged
+ uniform f=32     85948 unknowns, 1.13 s: value 1.132821905e-11, actual error 1.23e-04; fem_converge [..32]: moved 1.81e-04 -> not converged
+   uniform did not reach the adaptive check's accuracy (2.23e-05) within 6 solves, 114885 unknowns in all
 === coax.qfem es.C11 1e-4 auto 9.703562695222404e-11
 reference: closed form 9.70356269522e-11
-ADAPTIVE (auto) tol 0.0001: converged, 3 solves, 14111 unknowns in all, largest 8303, 0.33 s; value 9.703569751e-11, actual error 7.27e-07, said 1.28e-05 (bounded)
+ADAPTIVE (auto) tol 0.0001: converged, 4 solves, 15283 unknowns in all, largest 7303, 0.34 s; value 9.703571248e-11, actual error 8.81e-07, said 1.71e-05 (bounded)
  uniform f=1       2288 unknowns, 0.01 s: value 9.703648636e-11, actual error 8.86e-06; fem_converge [..1]: moved nan (hardly finer) -> not converged
  uniform f=2       9193 unknowns, 0.03 s: value 9.703568666e-11, actual error 6.15e-07; fem_converge [..2]: moved 8.24e-06 -> converged
    fem_converge first says converged here, 2 solves, 11481 unknowns in all, its value's actual error 6.15e-07
    uniform reaches the adaptive check's accuracy here: 2 solves, 11481 unknowns in all (0.8x), 0.04 s (0.1x)
 === microstrip.qfem es.C11 1e-3
-reference: converged, limit 1.20745686529e-10 (tolerance 3.33333e-05, 11 solves, 856665 unknowns largest, 3.7 s)
-ADAPTIVE (auto) tol 0.001: converged, 5 solves, 122803 unknowns in all, largest 60195, 0.21 s; value 1.207561234e-10, actual error 8.64e-05, said 1.46e-04 (extrapolated)
- uniform f=1       7777 unknowns, 0.03 s: value 1.208507298e-10, actual error 8.70e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2       9571 unknowns, 0.03 s: value 1.208484834e-10, actual error 8.51e-04; fem_converge [..2]: moved 1.86e-05 (hardly finer) -> not converged
- uniform f=4      17925 unknowns, 0.07 s: value 1.208540506e-10, actual error 8.97e-04; fem_converge [..4]: moved 4.61e-05 -> converged
-   fem_converge first says converged here, 3 solves, 35273 unknowns in all, its value's actual error 8.97e-04
- uniform f=8      51909 unknowns, 0.20 s: value 1.208355746e-10, actual error 7.44e-04; fem_converge [..8]: moved 1.53e-04 -> converged
- uniform f=16    191020 unknowns, 0.84 s: value 1.208583304e-10, actual error 9.33e-04; fem_converge [..16]: moved 1.88e-04 -> converged
- uniform f=32    737648 unknowns, 3.96 s: value 1.208461101e-10, actual error 8.32e-04; fem_converge [..32]: moved 1.01e-04 -> converged
-   uniform did not reach the adaptive check's accuracy (8.64e-05) within 6 solves, 1015850 unknowns in all
+reference: converged, limit 1.207455664e-10 (tolerance 3.33333e-05, 12 solves, 82236 unknowns largest, 0.9 s)
+ADAPTIVE (auto) tol 0.001: converged, 6 solves, 89298 unknowns in all, largest 35394, 0.19 s; value 1.207530511e-10, actual error 6.20e-05, said 1.53e-04 (bounded)
+ uniform f=1       7777 unknowns, 0.04 s: value 1.208507298e-10, actual error 8.71e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2       9571 unknowns, 0.04 s: value 1.208484834e-10, actual error 8.52e-04; fem_converge [..2]: moved 1.86e-05 (hardly finer) -> not converged
+ uniform f=4      17925 unknowns, 0.07 s: value 1.208540506e-10, actual error 8.98e-04; fem_converge [..4]: moved 4.61e-05 -> converged
+   fem_converge first says converged here, 3 solves, 35273 unknowns in all, its value's actual error 8.98e-04
+ uniform f=8      51909 unknowns, 0.25 s: value 1.208355746e-10, actual error 7.45e-04; fem_converge [..8]: moved 1.53e-04 -> converged
+ uniform f=16    191020 unknowns, 1.07 s: value 1.208583304e-10, actual error 9.34e-04; fem_converge [..16]: moved 1.88e-04 -> converged
+ uniform f=32    737648 unknowns, 6.84 s: value 1.208461101e-10, actual error 8.33e-04; fem_converge [..32]: moved 1.01e-04 -> converged
+   uniform did not reach the adaptive check's accuracy (6.20e-05) within 6 solves, 1015850 unknowns in all
 === tsv_axisymmetric.qfem es.C11 1e-3
-reference: converged, limit 1.24000209939e-13 (tolerance 3.33333e-05, 11 solves, 1050729 unknowns largest, 5.5 s)
-ADAPTIVE (auto) tol 0.001: converged, 4 solves, 164351 unknowns in all, largest 88847, 0.19 s; value 1.240291555e-13, actual error 2.33e-04, said 2.89e-04 (extrapolated)
- uniform f=1      15671 unknowns, 0.04 s: value 1.241277692e-13, actual error 1.03e-03; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2      38267 unknowns, 0.12 s: value 1.241365478e-13, actual error 1.10e-03; fem_converge [..2]: moved 7.07e-05 -> converged
+reference: converged, limit 1.23999745676e-13 (tolerance 3.33333e-05, 13 solves, 154172 unknowns largest, 2.2 s)
+ADAPTIVE (auto) tol 0.001: converged, 6 solves, 169816 unknowns in all, largest 64324, 0.46 s; value 1.24012356e-13, actual error 1.02e-04, said 3.00e-04 (bounded)
+ uniform f=1      15671 unknowns, 0.08 s: value 1.241277692e-13, actual error 1.03e-03; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2      38267 unknowns, 0.22 s: value 1.241365478e-13, actual error 1.10e-03; fem_converge [..2]: moved 7.07e-05 -> converged
    fem_converge first says converged here, 2 solves, 53938 unknowns in all, its value's actual error 1.10e-03  <-- WRONG: above the tolerance
- uniform f=4     108816 unknowns, 0.38 s: value 1.241271007e-13, actual error 1.02e-03; fem_converge [..4]: moved 7.61e-05 -> converged
- uniform f=8     339470 unknowns, 1.30 s: value 1.240596769e-13, actual error 4.80e-04; fem_converge [..8]: moved 5.43e-04 -> converged
- uniform f=16   1168732 unknowns, 5.77 s: value 1.240211288e-13, actual error 1.69e-04; fem_converge [..16]: moved 3.11e-04 -> converged
-   uniform reaches the adaptive check's accuracy here: 5 solves, 1670956 unknowns in all (10.2x), 7.61 s (40.1x)
+ uniform f=4     108816 unknowns, 0.80 s: value 1.241271007e-13, actual error 1.03e-03; fem_converge [..4]: moved 7.61e-05 -> converged
+ uniform f=8     339470 unknowns, 3.69 s: value 1.240596769e-13, actual error 4.83e-04; fem_converge [..8]: moved 5.43e-04 -> converged
+ uniform f=16   1168732 unknowns, 19.16 s: value 1.240211288e-13, actual error 1.72e-04; fem_converge [..16]: moved 3.11e-04 -> converged
+ uniform f=32   4292190 unknowns, 93.23 s: value 1.240105435e-13, actual error 8.71e-05; fem_converge [..32]: moved 8.54e-05 -> converged
+   uniform reaches the adaptive check's accuracy here: 6 solves, 5963146 unknowns in all (35.1x), 117.19 s (253.6x)
 === resistor_heating.qfem ec.R 1e-3
-reference: converged, limit 0.201304300317 (tolerance 3.33333e-05, 12 solves, 638604 unknowns largest, 2.0 s)
-ADAPTIVE (auto) tol 0.001: converged, 4 solves, 63966 unknowns in all, largest 33402, 0.08 s; value 0.2012456304, actual error 2.91e-04, said 3.78e-04 (extrapolated)
- uniform f=1       6492 unknowns, 0.01 s: value 0.201099676, actual error 1.02e-03; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2       7202 unknowns, 0.01 s: value 0.2010996538, actual error 1.02e-03; fem_converge [..2]: moved 1.10e-07 (hardly finer) -> not converged
- uniform f=4      12948 unknowns, 0.02 s: value 0.2010996411, actual error 1.02e-03; fem_converge [..4]: moved 6.33e-08 -> converged
-   fem_converge first says converged here, 3 solves, 26642 unknowns in all, its value's actual error 1.02e-03  <-- WRONG: above the tolerance
- uniform f=8      41560 unknowns, 0.07 s: value 0.2011080711, actual error 9.75e-04; fem_converge [..8]: moved 4.19e-05 -> converged
- uniform f=16    157646 unknowns, 0.29 s: value 0.2011686276, actual error 6.74e-04; fem_converge [..16]: moved 3.01e-04 -> converged
- uniform f=32    632838 unknowns, 1.38 s: value 0.2012322283, actual error 3.58e-04; fem_converge [..32]: moved 3.16e-04 -> converged
-   uniform did not reach the adaptive check's accuracy (2.91e-04) within 6 solves, 858686 unknowns in all
+reference: converged, limit 0.201306240254 (tolerance 3.33333e-05, 15 solves, 87586 unknowns largest, 0.8 s)
+ADAPTIVE (auto) tol 0.001: converged, 6 solves, 69150 unknowns in all, largest 26162, 0.10 s; value 0.2012766739, actual error 1.47e-04, said 4.31e-04 (bounded)
+ uniform f=1       6492 unknowns, 0.01 s: value 0.201099676, actual error 1.03e-03; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2       7202 unknowns, 0.01 s: value 0.2010996538, actual error 1.03e-03; fem_converge [..2]: moved 1.10e-07 (hardly finer) -> not converged
+ uniform f=4      12948 unknowns, 0.03 s: value 0.2010996411, actual error 1.03e-03; fem_converge [..4]: moved 6.33e-08 -> converged
+   fem_converge first says converged here, 3 solves, 26642 unknowns in all, its value's actual error 1.03e-03  <-- WRONG: above the tolerance
+ uniform f=8      41560 unknowns, 0.08 s: value 0.2011080711, actual error 9.84e-04; fem_converge [..8]: moved 4.19e-05 -> converged
+ uniform f=16    157646 unknowns, 0.38 s: value 0.2011686276, actual error 6.84e-04; fem_converge [..16]: moved 3.01e-04 -> converged
+ uniform f=32    632838 unknowns, 3.28 s: value 0.2012322283, actual error 3.68e-04; fem_converge [..32]: moved 3.16e-04 -> converged
+   uniform did not reach the adaptive check's accuracy (1.47e-04) within 6 solves, 858686 unknowns in all
 === resistor_heating.qfem ht.Tmax 1e-4
-reference: converged, limit 320.853549923 (tolerance 3.33333e-06, 12 solves, 638604 unknowns largest, 2.0 s)
-ADAPTIVE (auto) tol 0.0001: converged, 4 solves, 63966 unknowns in all, largest 33402, 0.08 s; value 320.8653494, actual error 3.68e-05, said 4.77e-05 (extrapolated)
- uniform f=1       6492 unknowns, 0.01 s: value 320.8944234, actual error 1.27e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2       7202 unknowns, 0.01 s: value 320.8940507, actual error 1.26e-04; fem_converge [..2]: moved 1.16e-06 (hardly finer) -> not converged
- uniform f=4      12948 unknowns, 0.02 s: value 320.8940025, actual error 1.26e-04; fem_converge [..4]: moved 1.50e-07 -> converged
-   fem_converge first says converged here, 3 solves, 26642 unknowns in all, its value's actual error 1.26e-04  <-- WRONG: above the tolerance
- uniform f=8      41560 unknowns, 0.07 s: value 320.8924622, actual error 1.21e-04; fem_converge [..8]: moved 4.80e-06 -> converged
- uniform f=16    157646 unknowns, 0.29 s: value 320.8811629, actual error 8.61e-05; fem_converge [..16]: moved 3.52e-05 -> converged
- uniform f=32    632838 unknowns, 1.43 s: value 320.8683074, actual error 4.60e-05; fem_converge [..32]: moved 4.01e-05 -> converged
-   uniform did not reach the adaptive check's accuracy (3.68e-05) within 6 solves, 858686 unknowns in all
+reference: converged, limit 320.853149543 (tolerance 3.33333e-06, 15 solves, 87586 unknowns largest, 2.8 s)
+ADAPTIVE (auto) tol 0.0001: converged, 6 solves, 69150 unknowns in all, largest 26162, 0.41 s; value 320.8592002, actual error 1.89e-05, said 5.48e-05 (bounded)
+ uniform f=1       6492 unknowns, 0.10 s: value 320.8944234, actual error 1.29e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2       7202 unknowns, 0.13 s: value 320.8940507, actual error 1.27e-04; fem_converge [..2]: moved 1.16e-06 (hardly finer) -> not converged
+ uniform f=4      12948 unknowns, 0.04 s: value 320.8940025, actual error 1.27e-04; fem_converge [..4]: moved 1.50e-07 -> converged
+   fem_converge first says converged here, 3 solves, 26642 unknowns in all, its value's actual error 1.27e-04  <-- WRONG: above the tolerance
+ uniform f=8      41560 unknowns, 0.25 s: value 320.8924622, actual error 1.23e-04; fem_converge [..8]: moved 4.80e-06 -> converged
+ uniform f=16    157646 unknowns, 1.03 s: value 320.8811629, actual error 8.73e-05; fem_converge [..16]: moved 3.52e-05 -> converged
+ uniform f=32    632838 unknowns, 4.47 s: value 320.8683074, actual error 4.72e-05; fem_converge [..32]: moved 4.01e-05 -> converged
+   uniform did not reach the adaptive check's accuracy (1.89e-05) within 6 solves, 858686 unknowns in all
 === bimetal_strip.qfem solid.dmax 1e-4
-reference: converged, limit 0.000585131866576 (tolerance 3.33333e-06, 8 solves, 130708 unknowns largest, 3.0 s)
-ADAPTIVE (auto) tol 0.0001: converged, 4 solves, 68568 unknowns in all, largest 35254, 0.63 s; value 0.0005851377085, actual error 9.98e-06, said 1.97e-05 (extrapolated)
- uniform f=1       7232 unknowns, 0.07 s: value 0.0005851698518, actual error 6.49e-05; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2      26954 unknowns, 0.27 s: value 0.0005851811694, actual error 8.43e-05; fem_converge [..2]: moved 1.93e-05 -> converged
-   fem_converge first says converged here, 2 solves, 34186 unknowns in all, its value's actual error 8.43e-05
- uniform f=4     109340 unknowns, 1.19 s: value 0.0005851398652, actual error 1.37e-05; fem_converge [..4]: moved 7.06e-05 -> converged
- uniform f=8     438142 unknowns, 5.34 s: value 0.000585135948, actual error 6.98e-06; fem_converge [..8]: moved 6.69e-06 -> converged
-   uniform reaches the adaptive check's accuracy here: 4 solves, 581668 unknowns in all (8.5x), 6.88 s (11.0x)
+reference: converged, limit 0.000585131462547 (tolerance 3.33333e-06, 11 solves, 50596 unknowns largest, 4.4 s)
+ADAPTIVE (auto) tol 0.0001: converged, 6 solves, 74472 unknowns in all, largest 27376, 1.63 s; value 0.0005851335242, actual error 3.52e-06, said 1.54e-05 (bounded)
+ uniform f=1       7232 unknowns, 0.16 s: value 0.0005851698518, actual error 6.56e-05; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2      26954 unknowns, 0.72 s: value 0.0005851811694, actual error 8.49e-05; fem_converge [..2]: moved 1.93e-05 -> converged
+   fem_converge first says converged here, 2 solves, 34186 unknowns in all, its value's actual error 8.49e-05
+ uniform f=4     109340 unknowns, 2.87 s: value 0.000585139865, actual error 1.44e-05; fem_converge [..4]: moved 7.06e-05 -> converged
+ uniform f=8     438142 unknowns, 12.69 s: value 0.0005851359483, actual error 7.67e-06; fem_converge [..8]: moved 6.69e-06 -> converged
+ uniform f=16   1755106 unknowns, 61.65 s: value 0.0005851329139, actual error 2.48e-06; fem_converge [..16]: moved 5.19e-06 -> converged
+   uniform reaches the adaptive check's accuracy here: 5 solves, 2336774 unknowns in all (31.4x), 78.09 s (47.8x)
 === heater_transient.qfem ht.Tmax 1e-4
-reference: converged, limit 339.321907201 (tolerance 3.33333e-06, 16 solves, 1535195 unknowns largest, 121.7 s)
-ADAPTIVE (auto) tol 0.0001: converged, 4 solves, 32302 unknowns in all, largest 16745, 1.28 s; value 339.2976251, actual error 7.16e-05, said 8.10e-05 (extrapolated)
- uniform f=1       3302 unknowns, 0.13 s: value 339.2367065, actual error 2.51e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2       7728 unknowns, 0.36 s: value 339.2849282, actual error 1.09e-04; fem_converge [..2]: moved 1.42e-04 -> not converged
- uniform f=4      21873 unknowns, 0.78 s: value 339.3007603, actual error 6.23e-05; fem_converge [..4]: moved 4.67e-05 -> converged
-   fem_converge first says converged here, 3 solves, 32903 unknowns in all, its value's actual error 6.23e-05
-   uniform reaches the adaptive check's accuracy here: 3 solves, 32903 unknowns in all (1.0x), 1.27 s (1.0x)
+reference: converged, limit 339.322059503 (tolerance 3.33333e-06, 17 solves, 65588 unknowns largest, 25.7 s)
+ADAPTIVE (auto) tol 0.0001: converged, 8 solves, 55005 unknowns in all, largest 18197, 5.43 s; value 339.3161596, actual error 1.74e-05, said 4.72e-05 (bounded)
+ uniform f=1       3302 unknowns, 0.28 s: value 339.2367065, actual error 2.52e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2       7728 unknowns, 0.82 s: value 339.2849282, actual error 1.09e-04; fem_converge [..2]: moved 1.42e-04 -> not converged
+ uniform f=4      21873 unknowns, 2.71 s: value 339.3007603, actual error 6.28e-05; fem_converge [..4]: moved 4.67e-05 -> converged
+   fem_converge first says converged here, 3 solves, 32903 unknowns in all, its value's actual error 6.28e-05
+ uniform f=8      68687 unknowns, 7.97 s: value 339.3121566, actual error 2.92e-05; fem_converge [..8]: moved 3.36e-05 -> converged
+ uniform f=16    244355 unknowns, 26.86 s: value 339.3173259, actual error 1.40e-05; fem_converge [..16]: moved 1.52e-05 -> converged
+   uniform reaches the adaptive check's accuracy here: 5 solves, 345945 unknowns in all (6.3x), 38.64 s (7.1x)
 === drum_modes.qfem c.lambda 1e-5
-reference: converged, limit 5.783185914 (tolerance 3.33333e-07, 4 solves, 36295 unknowns largest, 0.9 s)
-ADAPTIVE (auto) tol 1e-05: converged, 3 solves, 39113 unknowns in all, largest 23099, 0.55 s; value 5.783186122, actual error 3.60e-08, said 3.31e-07 (bounded)
- uniform f=1       6270 unknowns, 0.09 s: value 5.783186824, actual error 1.57e-07; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2      24561 unknowns, 0.38 s: value 5.783186019, actual error 1.82e-08; fem_converge [..2]: moved 1.39e-07 -> converged
-   fem_converge first says converged here, 2 solves, 30831 unknowns in all, its value's actual error 1.82e-08
-   uniform reaches the adaptive check's accuracy here: 2 solves, 30831 unknowns in all (0.8x), 0.47 s (0.8x)
+reference: converged, limit 5.78318587965 (tolerance 3.33333e-07, 5 solves, 34230 unknowns largest, 1.1 s)
+ADAPTIVE (auto) tol 1e-05: converged, 4 solves, 49948 unknowns in all, largest 25324, 0.73 s; value 5.783186109, actual error 3.96e-08, said 2.91e-07 (bounded)
+ uniform f=1       6270 unknowns, 0.09 s: value 5.783186824, actual error 1.63e-07; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2      24561 unknowns, 0.50 s: value 5.783186019, actual error 2.41e-08; fem_converge [..2]: moved 1.39e-07 -> converged
+   fem_converge first says converged here, 2 solves, 30831 unknowns in all, its value's actual error 2.41e-08
+   uniform reaches the adaptive check's accuracy here: 2 solves, 30831 unknowns in all (0.6x), 0.59 s (0.8x)
 === gapped_core_inductor.qfem mf.L_go 1e-3
-reference: converged, limit 0.00452893103352 (tolerance 3.33333e-05, 9 solves, 1415706 unknowns largest, 7.1 s)
-ADAPTIVE (auto) tol 0.001: converged, 4 solves, 412284 unknowns in all, largest 218142, 0.79 s; value 0.004528409768, actual error 1.15e-04, said 3.40e-04 (extrapolated)
- uniform f=1      40438 unknowns, 0.11 s: value 0.004525692868, actual error 7.15e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2     121608 unknowns, 0.37 s: value 0.004527740261, actual error 2.63e-04; fem_converge [..2]: moved 4.52e-04 -> converged
-   fem_converge first says converged here, 2 solves, 162046 unknowns in all, its value's actual error 2.63e-04
- uniform f=4     412934 unknowns, 1.39 s: value 0.004528447275, actual error 1.07e-04; fem_converge [..4]: moved 1.56e-04 -> converged
-   uniform reaches the adaptive check's accuracy here: 3 solves, 574980 unknowns in all (1.4x), 1.87 s (2.4x)
+reference: converged, limit 0.00452895180631 (tolerance 3.33333e-05, 11 solves, 337278 unknowns largest, 3.6 s)
+ADAPTIVE (auto) tol 0.001: converged, 6 solves, 441008 unknowns in all, largest 169874, 1.10 s; value 0.004528747981, actual error 4.50e-05, said 1.68e-04 (bounded)
+ uniform f=1      40438 unknowns, 0.14 s: value 0.004525692868, actual error 7.20e-04; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2     121608 unknowns, 0.47 s: value 0.004527740261, actual error 2.68e-04; fem_converge [..2]: moved 4.52e-04 -> converged
+   fem_converge first says converged here, 2 solves, 162046 unknowns in all, its value's actual error 2.68e-04
+ uniform f=4     412934 unknowns, 1.82 s: value 0.004528447275, actual error 1.11e-04; fem_converge [..4]: moved 1.56e-04 -> converged
+ uniform f=8    1500672 unknowns, 9.33 s: value 0.004528758488, actual error 4.27e-05; fem_converge [..8]: moved 6.87e-05 -> converged
+   uniform reaches the adaptive check's accuracy here: 4 solves, 2075652 unknowns in all (4.7x), 11.76 s (10.7x)
 === induction_heating.qfem mf.P 1e-3
-reference: converged, limit 32.132403056 (tolerance 3.33333e-05, 4 solves, 205272 unknowns largest, 1.9 s)
-ADAPTIVE (auto) tol 0.001: converged, 3 solves, 239733 unknowns in all, largest 141078, 1.13 s; value 32.13239641, actual error 2.07e-07, said 6.32e-06 (bounded)
- uniform f=1      39057 unknowns, 0.25 s: value 32.13219205, actual error 6.57e-06; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2     136236 unknowns, 0.57 s: value 32.13233776, actual error 2.03e-06; fem_converge [..2]: moved 4.53e-06 -> converged
-   fem_converge first says converged here, 2 solves, 175293 unknowns in all, its value's actual error 2.03e-06
- uniform f=4     513615 unknowns, 1.96 s: value 32.13239814, actual error 1.53e-07; fem_converge [..4]: moved 1.88e-06 -> converged
-   uniform reaches the adaptive check's accuracy here: 3 solves, 688908 unknowns in all (2.9x), 2.78 s (2.5x)
+reference: converged, limit 32.1324000138 (tolerance 3.33333e-05, 6 solves, 181731 unknowns largest, 2.6 s)
+ADAPTIVE (auto) tol 0.001: converged, 4 solves, 267816 unknowns in all, largest 129591, 1.57 s; value 32.13238983, actual error 3.17e-07, said 1.26e-05 (bounded)
+ uniform f=1      39057 unknowns, 0.32 s: value 32.13219205, actual error 6.47e-06; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2     136236 unknowns, 0.86 s: value 32.13233776, actual error 1.94e-06; fem_converge [..2]: moved 4.53e-06 -> converged
+   fem_converge first says converged here, 2 solves, 175293 unknowns in all, its value's actual error 1.94e-06
+ uniform f=4     513615 unknowns, 2.52 s: value 32.13239814, actual error 5.84e-08; fem_converge [..4]: moved 1.88e-06 -> converged
+   uniform reaches the adaptive check's accuracy here: 3 solves, 688908 unknowns in all (2.6x), 3.70 s (2.4x)
 === wr90_modes.qfem emw.neff 1e-4 auto 0.9447273549638127
 reference: closed form 0.944727354964
-ADAPTIVE (auto) tol 0.0001: converged, 3 solves, 26353 unknowns in all, largest 15406, 0.82 s; value 0.9447273534, actual error 1.65e-09, said 1.76e-08 (bounded)
- uniform f=1       4407 unknowns, 0.05 s: value 0.9447273511, actual error 4.04e-09; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2      17332 unknowns, 0.39 s: value 0.9447273547, actual error 2.65e-10; fem_converge [..2]: moved 3.78e-09 -> converged
-   fem_converge first says converged here, 2 solves, 21739 unknowns in all, its value's actual error 2.65e-10
-   uniform reaches the adaptive check's accuracy here: 2 solves, 21739 unknowns in all (0.8x), 0.44 s (0.5x)
+ADAPTIVE (auto) tol 0.0001: converged, 4 solves, 18704 unknowns in all, largest 9106, 0.93 s; value 0.9447273533, actual error 1.73e-09, said 1.88e-08 (bounded)
+ uniform f=1       2578 unknowns, 0.05 s: value 0.9447273511, actual error 4.04e-09; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2      10016 unknowns, 0.43 s: value 0.9447273547, actual error 2.65e-10; fem_converge [..2]: moved 3.78e-09 -> converged
+   fem_converge first says converged here, 2 solves, 12594 unknowns in all, its value's actual error 2.65e-10
+   uniform reaches the adaptive check's accuracy here: 2 solves, 12594 unknowns in all (0.7x), 0.48 s (0.5x)
 === quantum_wire.qfem qw.Ee1 1e-4
-reference: converged, limit 1.0651731602e-19 (tolerance 3.33333e-06, 6 solves, 238950 unknowns largest, 3.7 s)
-ADAPTIVE (auto) tol 0.0001: converged, 3 solves, 122880 unknowns in all, largest 72950, 0.72 s; value 1.065173559e-19, actual error 3.74e-07, said 6.68e-06 (bounded)
- uniform f=1      19475 unknowns, 0.12 s: value 1.065180239e-19, actual error 6.65e-06; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2      69580 unknowns, 0.51 s: value 1.065173957e-19, actual error 7.48e-07; fem_converge [..2]: moved 5.90e-06 -> converged
-   fem_converge first says converged here, 2 solves, 89055 unknowns in all, its value's actual error 7.48e-07
- uniform f=4     261465 unknowns, 2.22 s: value 1.065173282e-19, actual error 1.15e-07; fem_converge [..4]: moved 6.33e-07 -> converged
-   uniform reaches the adaptive check's accuracy here: 3 solves, 350520 unknowns in all (2.9x), 2.85 s (3.9x)
+reference: converged, limit 1.06517326417e-19 (tolerance 3.33333e-06, 6 solves, 93190 unknowns largest, 1.8 s)
+ADAPTIVE (auto) tol 0.0001: converged, 4 solves, 134335 unknowns in all, largest 65290, 0.87 s; value 1.065173495e-19, actual error 2.16e-07, said 5.06e-06 (bounded)
+ uniform f=1      19475 unknowns, 0.14 s: value 1.065180239e-19, actual error 6.55e-06; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2      69580 unknowns, 0.57 s: value 1.065173957e-19, actual error 6.50e-07; fem_converge [..2]: moved 5.90e-06 -> converged
+   fem_converge first says converged here, 2 solves, 89055 unknowns in all, its value's actual error 6.50e-07
+ uniform f=4     261465 unknowns, 2.49 s: value 1.065173282e-19, actual error 1.69e-08; fem_converge [..4]: moved 6.33e-07 -> converged
+   uniform reaches the adaptive check's accuracy here: 3 solves, 350520 unknowns in all (2.6x), 3.19 s (3.7x)
 === heatsink_import.qfem ht.Tmax 1e-3
-reference: converged, limit 381.125871192 (tolerance 3.33333e-05, 4 solves, 11562 unknowns largest, 0.5 s)
-ADAPTIVE (auto) tol 0.001: converged, 3 solves, 14435 unknowns in all, largest 8300, 0.14 s; value 381.1243656, actual error 3.95e-06, said 2.94e-05 (bounded)
- uniform f=1       2463 unknowns, 0.02 s: value 381.1188133, actual error 1.85e-05; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2       2893 unknowns, 0.03 s: value 381.1214806, actual error 1.15e-05; fem_converge [..2]: moved 7.00e-06 (hardly finer) -> not converged
- uniform f=4       7316 unknowns, 0.07 s: value 381.124531, actual error 3.52e-06; fem_converge [..4]: moved 8.00e-06 -> converged
-   fem_converge first says converged here, 3 solves, 12672 unknowns in all, its value's actual error 3.52e-06
-   uniform reaches the adaptive check's accuracy here: 3 solves, 12672 unknowns in all (0.9x), 0.12 s (0.9x)
+reference: converged, limit 381.126187544 (tolerance 3.33333e-05, 6 solves, 10357 unknowns largest, 0.6 s)
+ADAPTIVE (auto) tol 0.001: converged, 4 solves, 16432 unknowns in all, largest 7745, 0.17 s; value 381.1253891, actual error 2.09e-06, said 1.54e-05 (bounded)
+ uniform f=1       2463 unknowns, 0.03 s: value 381.1188133, actual error 1.93e-05; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2       2893 unknowns, 0.03 s: value 381.1214806, actual error 1.24e-05; fem_converge [..2]: moved 7.00e-06 (hardly finer) -> not converged
+ uniform f=4       7316 unknowns, 0.07 s: value 381.124531, actual error 4.35e-06; fem_converge [..4]: moved 8.00e-06 -> converged
+   fem_converge first says converged here, 3 solves, 12672 unknowns in all, its value's actual error 4.35e-06
+ uniform f=8      26510 unknowns, 0.33 s: value 381.1259208, actual error 7.00e-07; fem_converge [..8]: moved 3.65e-06 -> converged
+   uniform reaches the adaptive check's accuracy here: 4 solves, 39182 unknowns in all (2.4x), 0.46 s (2.8x)
 === soi_waveguide_modes.qfem emw.neff 1e-3
-reference: converged, limit 2.38839917542 (tolerance 3.33333e-05, 5 solves, 230067 unknowns largest, 50.5 s)
-ADAPTIVE (auto) tol 0.001: converged, 3 solves, 194295 unknowns in all, largest 113965, 18.02 s; value 2.388414006, actual error 6.21e-06, said 4.35e-05 (bounded)
- uniform f=1      32052 unknowns, 1.79 s: value 2.388462782, actual error 2.66e-05; fem_converge [..1]: moved nan (hardly finer) -> not converged
- uniform f=2     115093 unknowns, 12.05 s: value 2.388417596, actual error 7.71e-06; fem_converge [..2]: moved 1.89e-05 -> converged
-   fem_converge first says converged here, 2 solves, 147145 unknowns in all, its value's actual error 7.71e-06
- uniform f=4     428030 unknowns, 43.59 s: value 2.388402372, actual error 1.34e-06; fem_converge [..4]: moved 6.37e-06 -> converged
-   uniform reaches the adaptive check's accuracy here: 3 solves, 575175 unknowns in all (3.0x), 57.44 s (3.2x)
+reference: converged, limit 2.38839706241 (tolerance 3.33333e-05, 6 solves, 76582 unknowns largest, 40.1 s)
+ADAPTIVE (auto) tol 0.001: converged, 4 solves, 122890 unknowns in all, largest 58942, 26.26 s; value 2.388404456, actual error 3.10e-06, said 1.51e-05 (bounded)
+ uniform f=1      18388 unknowns, 2.61 s: value 2.388462782, actual error 2.75e-05; fem_converge [..1]: moved nan (hardly finer) -> not converged
+ uniform f=2      65918 unknowns, 17.29 s: value 2.388417596, actual error 8.60e-06; fem_converge [..2]: moved 1.89e-05 -> converged
+   fem_converge first says converged here, 2 solves, 84306 unknowns in all, its value's actual error 8.60e-06
+ uniform f=4     244896 unknowns, 51.74 s: value 2.388402372, actual error 2.22e-06; fem_converge [..4]: moved 6.37e-06 -> converged
+   uniform reaches the adaptive check's accuracy here: 3 solves, 329202 unknowns in all (2.7x), 71.64 s (2.7x)

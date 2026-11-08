@@ -22,8 +22,8 @@ or `fem_converge` with `"method": "adaptive"`). Give it the values to watch, as 
   because the refinement was elsewhere are caught there; it then refines everywhere until they settle, and says so.
 - It runs as a job with progress and Cancel. The model tab's **Mesh Convergence** page fills as it goes: each mesh, each
   value, a graph of each value's distance from its limit against the unknowns, the verdict and what stands behind it.
-- **Show Refined Mesh** shows the finest mesh in the view. **Keep Refined Mesh** writes its sizes into the mesh node (an
-  Adapted Sizes feature, one step of Undo). The model's own mesh is never touched otherwise.
+- **Show Refined Mesh** shows the finest mesh in the view. **Keep Refined Mesh** writes into the mesh node the sizes of the
+  coarsest mesh whose values were within their tolerances (an Adapted Sizes feature, one step of Undo). The model's own mesh is never touched otherwise.
 - The setup and the last result are saved in the `.qfem` and shown again on opening, with no solve. A result whose model
   has changed since is marked old.
 - **Goal-oriented** refinement (`Refine by: The values watched`) solves an adjoint on each mesh and refines where the
@@ -31,13 +31,13 @@ or `fem_converge` with `"method": "adaptive"`). Give it the values to watch, as 
   physics.
 
 **What falls short:**
-- **Not faster everywhere.** On the 16 measured models it needed 1.4 to more than 13 times fewer unknowns than cutting
-  every element, for the same accuracy, wherever a corner or small feature holds the mesh. Where the shipped mesh is
-  already fine enough (5 of the 16), two uniform meshes cost 0.8 to 1.0 times its three solves.
+- **Not faster everywhere.** On the 16 measured models cutting every element needed 2.4 to more than 35 times the
+  unknowns for the same accuracy, wherever a corner or small feature holds the mesh. Where the shipped mesh is already
+  fine enough (3 of the 16), two uniform meshes cost 0.6 to 0.8 times its four solves.
 - **No warm start for semiconductors.** Their meshes are made anew (they must stay Delaunay) and the solver starts them
   only from the same mesh, so each mesh solves from equilibrium.
-- **Goal-oriented refinement covers three physics:** linear heat, electrostatics and currents, stationary. Others fall
-  back on the fields' error, and say so.
+- **Goal-oriented refinement covers three physics** (linear heat, electrostatics and currents, stationary), and on the
+  one model measured it cost more than the fields' error, not less (below).
 - **Not run to the end** on the frequency-domain waves example: its solves take 3 to 42 s each.
 - **Not run on Qt 6.10.3, Linux or Windows, nor on a real display** (offscreen, through the tests).
 
@@ -100,8 +100,9 @@ names the physics:
 
 Nothing in an absorbing layer (PML) is refined: what is refined there does not reach the answer.
 
-**Marking.** The triangles holding half the squared indicator, and at least 35 % of them, so each mesh is about 1.5 times
-the last. Fewer rounds of larger steps cost little more and give rates that can be read.
+**Marking.** The triangles holding half the squared indicator, and at least 10 % of them. (It was 35 % at `063142f`, for
+fewer, larger steps; the review found that it held the refinement back from a corner - see "The review of `063142f`,
+answered".)
 
 **The values.** Read on each mesh as an optimization reads them (`solutionValue`, now public in `fem_optimize.h`): at the
 study's last time or frequency, of the mode its step chose.
@@ -109,13 +110,14 @@ study's last time or frequency, of the mode its step chose.
 **The estimate** (`estimateValue`). Each value as `Q = limit + C N^-q` on the last three meshes at least 1.4 times apart:
 
 - **Extrapolated** where the changes shrink with one sign at a rate within reason: above 0.1 and no faster than the
-  elements' order plus one. The limit is extrapolated at no more than the order (a rate seen faster, short of the
-  asymptote, made the corner's error said 1.6 times too small). The error said is the finest value's distance from the
-  limit, with room: 1.25 where the rate on the meshes before was the same (Roache's factor for three meshes), 2 on three
-  meshes alone, 3 where it was not steady.
-- **Bounded** where there is no rate to believe: two meshes, a rate out of reason ("two meshes may have agreed by
-  chance"), or changes that alternate but shrink. The error is three times the last change, as if it fell as slowly as a
-  crack's field would let it.
+  elements' order (with 5 % to spare). The error said is the finest value's distance from the limit, with room: 1.25 where
+  the rate on the meshes before was the same (Roache's factor for three meshes), 2 on three meshes alone, 3 where it was
+  not steady.
+- **Bounded** where there is no rate to believe: two meshes; changes that alternate but shrink; changes falling faster than
+  the elements' order (a corner's fall faster than its error does, so no rate is claimed and the result says the changes'
+  rate in words, with the error bounded as if it fell at the order); faster than the order plus one ("two meshes may have
+  agreed by chance"). Elsewhere the error is three times the last change, as if it fell as slowly as a crack's field would
+  let it.
 - **Erratic** where it jumps about and no less. Not settled, unless three times its jumps are within a third of the
   tolerance.
 - **Unmoved** where it did not move at all (exact on any mesh, or not of the mesh) - said in those words.
@@ -125,11 +127,13 @@ floor for a value near nought. When all have settled, the **check** cuts every e
 not chosen by any indicator, so a value moved past its tolerance there was moved by what the rounds did not look at: a
 **false agreement**, caught, said, and from there every element is cut until the values settle on meshes nothing chose. The
 check's change is read at no faster than unknowns^-1/2 - a crack's field's rate, the slowest one of finite energy
-converges at - and against the limit the rounds gave. Read at the rounds' own rate, the error said was up to 4.4 times the
-error made (see "Measured"). The check is on by default; off, the result says that the agreement of meshes refined by one
-indicator is all there is.
+converges at - with Roache's 1.25, and against the limit the rounds gave (2.4 times that where the rounds gave no limit).
+Read at the rounds' own rate, the error said was up to 4.4 times the error made (see "Measured"). Where that leaves a value
+just above its tolerance, every element is cut once more: the mesh before the check, the check's and this one are nested
+meshes nothing chose, and their rate is read. The check is on by default; off, the result says that the agreement of
+meshes refined by one indicator is all there is.
 
-**It stops** and says why: converged; `meshes` (its limit, 12 by default); `unknowns` (no mesh past the limit, 2 million by
+**It stops** and says why: converged; `meshes` (its limit, 25 by default); `unknowns` (no mesh past the limit, 2 million by
 default, is solved - the next mesh's size is predicted before it is cut); `projected` (on a steady rate the tolerance
 would need more than twice the limit); `stalled` (nothing left to cut, or a remeshed mesh that hardly grew); `failed` (a
 solve, with what the coarser meshes gave kept and called unconfirmed); `cancelled`.
@@ -156,14 +160,15 @@ and the adjoint's (the dual-weighted residual's estimate, each factor recovered 
 with none - nonlinear coefficients, a step in time, a feature the adjoint is not set up for, any other expression - falls
 back on the fields' error, said for that value.
 
-It works where it should: two plates apart, one with a singular corner, the other with the watched sensor. To 1e-6 the
-goal-oriented check settled on 19,763 unknowns at most (99,540 in all, adjoints counted); refined by the fields' error,
-the corner took the unknowns, and ten times as many (173,000) had not settled it.
-
-It does not help where the value is the field's energy, nor where the adjoint is singular where the field is: in an
-L-shaped plate held hot along its re-entrant corner's sides, with the sensor far up one arm, the adjoint is nought on those
-sides and singular at the corner too, and the goal-oriented check took more unknowns than the fields' error (28,992
-against 6,250 in all, at 2e-5, in a run on an earlier build of the estimate). It is the user's choice, not the default.
+**It did not pay off where it was measured.** Two plates apart, one with a singular corner, the other with the watched
+sensor: to 1e-6 the goal-oriented check settled on 166,000 unknowns in all (72,000 at most, adjoints counted), the
+fields' error on 11,860 (6,140 at most), both within the tolerance of a reference. The sensor's own region is smooth, so
+the fields' error leaves it right early; and the goal-oriented value converges one way and then the other, which the
+estimate settles later. Before the review's fixes the opposite seemed true (19,763 against more than 173,000 unsettled),
+but only because the estimate then bounded the fields' route too loosely to stop. Nor does it help where the value is
+the field's energy, or where the adjoint is singular where the field is (an L held hot along its corner's sides: 28,992
+against 6,250 at 2e-5, on an earlier build). It is the user's choice, not the default, and on this evidence it should
+stay so.
 
 ### The node, the file
 
@@ -172,9 +177,12 @@ byte for byte. In the tree, a **Mesh Convergence** node between the studies and 
 2D model, as the Optimization node is), each check under it. A check holds its settings (study, tolerance, refine by,
 physics, unknowns and meshes at most, the check, the sweep's points), its `values` table (expression, its own tolerance,
 an absolute floor) and, once run, `result`: its rows one string a line, so a file diffs by the line. **Keep Refined Mesh**
-adds a `mesh/adapted` feature to the mesh node: the refined mesh's sizes as points, gathered to at most 4,000 where it was
-finer than the mesh it started from, and its minimum size. `meshSizes` reads it, so a built mesh is about the refined one
-(meshed anew, so about: the corner's 13,771 refined triangles came back as 17,850, its W within 0.007 %).
+adds a `mesh/adapted` feature to the mesh node: the sizes of the coarsest mesh whose values are each within their tolerance
+of the finest's limit, its error counted (the finest where none is or the check did not converge; the result's `keptrow`
+says which; where the model's own mesh is enough, Keep says so and keeps nothing), gathered to at most 4,000 where it was
+finer than the mesh it started from, and its minimum size. `meshSizes` reads it, so a built mesh is about the kept one:
+meshed anew, so about, and 1.2 to 1.6 times its triangles (the corner's 3,232 came back as 4,624, its W within 0.1 % of
+the limit).
 
 ### The window
 
@@ -197,10 +205,13 @@ Refined Mesh, is [beside it](2026-11-07-multiphysics-mesh-convergence/refined.pn
 ### For Claude
 
 `fem_converge` gains `"method": "adaptive"`, and `uniform` stays the default, so a call as before answers as before. The
-adaptive method makes a check from the call when the model has none (or sets the named one's settings from what is
-given, one step of Undo), runs it as the window does, waits up to `timeout` for the whole of it (past it, it goes on;
+adaptive method runs the model's check (or the named one) with what the call gives over its settings, and makes one of them
+where there is none. What the call gives is written into the check with its result, as one step of Undo, and not at all if
+the run is refused or fails; what it leaves out is the check's own, and the answer's `settings` say what it ran with. It runs
+it as the window does, waits up to `timeout` for the whole of it (past it, it goes on;
 `fem_stop` stops it; `fem_describe` says how far), and answers with the verdict, the evidence, each value's estimate and
-each mesh. `"action": "result"` reads the last result; `"action": "keep"` (or `"keep_mesh": true`) keeps the refined mesh.
+each mesh. `"action": "result"` reads the last result; `"action": "keep"` (or `"keep_mesh": true`) keeps the refined mesh. `action` result or keep needs no `method`: they are the
+adaptive check's (the uniform method refuses them).
 `fem_describe` lists each check's verdict; `fem_describe what=format` has its paragraph and its kind; `fem_edit` and
 `fem_model` take the node and the section as any others. The tool search finds it by "mesh", "convergence", "adaptive",
 "refine", "error estimate".
@@ -250,7 +261,8 @@ the verdict the worse; `first`, `last`, `all`, or `own` (the model's own values,
 
 ## Measured: against `fem_converge`'s uniform route
 
-`compare.sh` and `probe3.cpp` (beside this file) run each shipped model's value three ways. The reference is the adaptive check run
+`compare.sh` and `probe3.cpp` (beside this file) run each shipped model's value three ways; unknowns are counted as
+`fem_solve` counts them, by both routes. The reference is the adaptive check run
 to a tolerance thirty times tighter (its extrapolated limit), or the closed form where there is one. The adaptive check is
 run at the tolerance asked. The uniform route is `fem_converge`'s own `refineMesh`, factors 1, 2, 4, 8, 16, 32 of every size,
 each mesh solved once. Each line says where `fem_converge` would first call it converged and what its value's error really
@@ -258,46 +270,49 @@ was there, and where the uniform meshes first reach the adaptive check's own acc
 
 | Model, value, tolerance | Adaptive: solves, unknowns in all (largest) | its error made / said | `fem_converge` first says converged | its error there | Uniform to the adaptive accuracy |
 |---|---|---|---|---|---|
-| adaptive_corner, `es.W`, 1e-3 | converged: 11, 17,166 (7,023) | 1.8e-04 / 3.6e-04 | 5 meshes, 28,937 | 3.0e-04 | 6 meshes, 114,885: **6.7x** the unknowns, 32.7x the time |
-| adaptive_corner, `es.W`, 1e-4 | converged: 15, 72,973 (28,419) | 3.7e-05 / 7.3e-05 | never | - | not reached in 6 meshes and 114,885 unknowns |
-| coax, `es.C11`, 1e-4 | converged: 3, 14,111 (8,303) | 7.3e-07 / 1.3e-05 | 2 meshes, 11,481 | 6.2e-07 | 2 meshes, 11,481: **0.8x** the unknowns, 0.1x the time |
-| microstrip, `es.C11`, 1e-3 | converged: 5, 122,803 (60,195) | 8.6e-05 / 1.5e-04 | 3 meshes, 35,273 | 9.0e-04 | not reached in 6 meshes and 1,015,850 unknowns |
-| tsv_axisymmetric, `es.C11`, 1e-3 | converged: 4, 164,351 (88,847) | 2.3e-04 / 2.9e-04 | 2 meshes, 53,938 | 1.1e-03 **above tolerance** | 5 meshes, 1,670,956: **10.2x** the unknowns, 40.1x the time |
-| resistor_heating, `ec.R`, 1e-3 | converged: 4, 63,966 (33,402) | 2.9e-04 / 3.8e-04 | 3 meshes, 26,642 | 1.0e-03 **above tolerance** | not reached in 6 meshes and 858,686 unknowns |
-| resistor_heating, `ht.Tmax`, 1e-4 | converged: 4, 63,966 (33,402) | 3.7e-05 / 4.8e-05 | 3 meshes, 26,642 | 1.3e-04 **above tolerance** | not reached in 6 meshes and 858,686 unknowns |
-| bimetal_strip, `solid.dmax`, 1e-4 | converged: 4, 68,568 (35,254) | 1.0e-05 / 2.0e-05 | 2 meshes, 34,186 | 8.4e-05 | 4 meshes, 581,668: **8.5x** the unknowns, 11.0x the time |
-| heater_transient, `ht.Tmax`, 1e-4 | converged: 4, 32,302 (16,745) | 7.2e-05 / 8.1e-05 | 3 meshes, 32,903 | 6.2e-05 | 3 meshes, 32,903: **1.0x** the unknowns, 1.0x the time |
-| drum_modes, `c.lambda`, 1e-5 | converged: 3, 39,113 (23,099) | 3.6e-08 / 3.3e-07 | 2 meshes, 30,831 | 1.8e-08 | 2 meshes, 30,831: **0.8x** the unknowns, 0.8x the time |
-| gapped_core_inductor, `mf.L_go`, 1e-3 | converged: 4, 412,284 (218,142) | 1.2e-04 / 3.4e-04 | 2 meshes, 162,046 | 2.6e-04 | 3 meshes, 574,980: **1.4x** the unknowns, 2.4x the time |
-| induction_heating, `mf.P`, 1e-3 | converged: 3, 239,733 (141,078) | 2.1e-07 / 6.3e-06 | 2 meshes, 175,293 | 2.0e-06 | 3 meshes, 688,908: **2.9x** the unknowns, 2.5x the time |
-| wr90_modes, `emw.neff`, 1e-4 | converged: 3, 26,353 (15,406) | 1.7e-09 / 1.8e-08 | 2 meshes, 21,739 | 2.7e-10 | 2 meshes, 21,739: **0.8x** the unknowns, 0.5x the time |
-| quantum_wire, `qw.Ee1`, 1e-4 | converged: 3, 122,880 (72,950) | 3.7e-07 / 6.7e-06 | 2 meshes, 89,055 | 7.5e-07 | 3 meshes, 350,520: **2.9x** the unknowns, 3.9x the time |
-| heatsink_import, `ht.Tmax`, 1e-3 | converged: 3, 14,435 (8,300) | 4.0e-06 / 2.9e-05 | 3 meshes, 12,672 | 3.5e-06 | 3 meshes, 12,672: **0.9x** the unknowns, 0.9x the time |
-| soi_waveguide_modes, `emw.neff`, 1e-3 | converged: 3, 194,295 (113,965) | 6.2e-06 / 4.4e-05 | 2 meshes, 147,145 | 7.7e-06 | 3 meshes, 575,175: **3.0x** the unknowns, 3.2x the time |
+| adaptive_corner, `es.W`, 1e-3 | converged: 12, 4,897 (1,685) | 4.0e-04 / 8.2e-04 | 5 meshes, 28,937 | 3.0e-04 | 5 meshes, 28,937: **5.9x** the unknowns, 22.5x the time |
+| adaptive_corner, `es.W`, 1e-4 | converged: 21, 75,213 (27,301) | 2.2e-05 / 4.3e-05 | never | - | not reached in 6 meshes, 114,885 unknowns |
+| coax, `es.C11`, 1e-4 | converged: 4, 15,283 (7,303) | 8.8e-07 / 1.7e-05 | 2 meshes, 11,481 | 6.2e-07 | 2 meshes, 11,481: **0.8x** the unknowns, 0.1x the time |
+| microstrip, `es.C11`, 1e-3 | converged: 6, 89,298 (35,394) | 6.2e-05 / 1.5e-04 | 3 meshes, 35,273 | 9.0e-04 | not reached in 6 meshes, 1,015,850 unknowns |
+| tsv_axisymmetric, `es.C11`, 1e-3 | converged: 6, 169,816 (64,324) | 1.0e-04 / 3.0e-04 | 2 meshes, 53,938 | 1.1e-03 **above tolerance** | 6 meshes, 5,963,146: **35.1x** the unknowns, 253.6x the time |
+| resistor_heating, `ec.R`, 1e-3 | converged: 6, 69,150 (26,162) | 1.5e-04 / 4.3e-04 | 3 meshes, 26,642 | 1.0e-03 **above tolerance** | not reached in 6 meshes, 858,686 unknowns |
+| resistor_heating, `ht.Tmax`, 1e-4 | converged: 6, 69,150 (26,162) | 1.9e-05 / 5.5e-05 | 3 meshes, 26,642 | 1.3e-04 **above tolerance** | not reached in 6 meshes, 858,686 unknowns |
+| bimetal_strip, `solid.dmax`, 1e-4 | converged: 6, 74,472 (27,376) | 3.5e-06 / 1.5e-05 | 2 meshes, 34,186 | 8.5e-05 | 5 meshes, 2,336,774: **31.4x** the unknowns, 47.8x the time |
+| heater_transient, `ht.Tmax`, 1e-4 | converged: 8, 55,005 (18,197) | 1.7e-05 / 4.7e-05 | 3 meshes, 32,903 | 6.3e-05 | 5 meshes, 345,945: **6.3x** the unknowns, 7.1x the time |
+| drum_modes, `c.lambda`, 1e-5 | converged: 4, 49,948 (25,324) | 4.0e-08 / 2.9e-07 | 2 meshes, 30,831 | 2.4e-08 | 2 meshes, 30,831: **0.6x** the unknowns, 0.8x the time |
+| gapped_core_inductor, `mf.L_go`, 1e-3 | converged: 6, 441,008 (169,874) | 4.5e-05 / 1.7e-04 | 2 meshes, 162,046 | 2.7e-04 | 4 meshes, 2,075,652: **4.7x** the unknowns, 10.7x the time |
+| induction_heating, `mf.P`, 1e-3 | converged: 4, 267,816 (129,591) | 3.2e-07 / 1.3e-05 | 2 meshes, 175,293 | 1.9e-06 | 3 meshes, 688,908: **2.6x** the unknowns, 2.4x the time |
+| wr90_modes, `emw.neff`, 1e-4 | converged: 4, 18,704 (9,106) | 1.7e-09 / 1.9e-08 | 2 meshes, 12,594 | 2.7e-10 | 2 meshes, 12,594: **0.7x** the unknowns, 0.5x the time |
+| quantum_wire, `qw.Ee1`, 1e-4 | converged: 4, 134,335 (65,290) | 2.2e-07 / 5.1e-06 | 2 meshes, 89,055 | 6.5e-07 | 3 meshes, 350,520: **2.6x** the unknowns, 3.7x the time |
+| heatsink_import, `ht.Tmax`, 1e-3 | converged: 4, 16,432 (7,745) | 2.1e-06 / 1.5e-05 | 3 meshes, 12,672 | 4.3e-06 | 4 meshes, 39,182: **2.4x** the unknowns, 2.8x the time |
+| soi_waveguide_modes, `emw.neff`, 1e-3 | converged: 4, 122,890 (58,942) | 3.1e-06 / 1.5e-05 | 2 meshes, 84,306 | 8.6e-06 | 3 meshes, 329,202: **2.7x** the unknowns, 2.7x the time |
 
 "Uniform to the adaptive accuracy" uses the reference, which neither route has: it is what cutting every element costs to
 be as accurate, not what `fem_converge` would know. `compare.txt` beside this file has every mesh of every route.
 
-**What it says:**
+**What it says** (after the review's fixes, below; `compare-063142f.txt` has the run before them):
 
-- **Where the model has a corner or a small feature the preset's sizes hold, the adaptive check wins clearly:** 6.7 times
-  fewer unknowns for the L-shaped gap, 8.5 the strip, 10.2 the TSV, and for the microstrip and the resistor more than 8
-  and 13 times (the uniform meshes had not got there at a million unknowns). In time it is 11 to 40 times faster, as the
-  uniform meshes' solves are larger and they are meshed anew. At 1e-4 on the corner the uniform route did not get there in
-  115,000 unknowns; the check settled on 73,000 in all (28,400 at most). In the test `reentrantCornerRates`, cutting every
-  element took 2.62 million unknowns in all for 1e-4 against the check's 73,000: 36 times.
-- **Where the shipped mesh is already fine enough, it costs a little more:** the coax, the drum, WR-90, the heater, the
-  heatsink. Two uniform meshes cost 0.8 to 1.0 times the check's three solves (as it is, one round, the check), and
-  `fem_converge` was right there. That is the price of the third mesh and of the evidence it gives.
-- **In between, 1.4 to 3 times:** the inductor, induction heating, the quantum wire, the SOI waveguide.
+- **Where a corner or a small feature holds the mesh, the adaptive check wins clearly:** to be as accurate as it was,
+  cutting every element took 5.9 times the unknowns on the L-shaped gap, 31 times on the strip, 35 times on the TSV, and
+  had not got there at a million unknowns on the microstrip and the resistor, nor at 115,000 on the corner at 1e-4. In time
+  that is 7 to 250 times. In the test `reentrantCornerRates`, cutting every element took 2.6 million unknowns in all for 1e-4
+  against the check's 75,000.
+- **On quadratic elements at a corner** - the review's L - the check now grades into the corner: its error falls as
+  unknowns^-3.4 here against ^-1.2 before, 1e-5 on 43,000 unknowns in all (`aCornerIsGradedAsItShouldBe`; for 1e-6, 44,000
+  against a million with the old marking, in `probe5.cpp`).
+- **Where the shipped mesh is already fine enough, it costs a little more:** the coax, the drum, WR-90. Two uniform meshes
+  cost 0.6 to 0.8 times the check's four solves, and `fem_converge` was right there.
+- **In between, 2.4 to 6 times:** the heater, the inductor, induction heating, the quantum wire, the heatsink, the SOI
+  waveguide.
 - **`fem_converge`'s verdict was wrong on 3 of the 16**, each value's error above the tolerance it said it was within (TSV,
   resistor R, resistor Tmax), and right but for the wrong reason on the microstrip (its "finer" meshes hardly were).
-- **The adaptive check's verdict was right on all 16**, and **the error it said was at or above the error made on all
-  16**: from 1.13 times (the heater) and 1.3 times (the TSV, the resistor) to 30 times where a value converges fast and
-  the estimate falls back on a bound (induction heating: 6.3e-6 said, 2.1e-7 made). Before the last two changes to the
-  estimate it was not: read at the rounds' own rate, the TSV's was said 4.4 times too small; without Roache's 1.25 on the
-  crack's rate, the heater's was said 10 % too small. Both are fixed, and `theErrorSaidIsNotBelowTheErrorMade` holds
-  three of them.
+- **The adaptive check's verdict was right on all 16, and the error it said was at or above the error made on all 16**:
+  from 2.0 times (the corner) to about 40 times where a value converges fast and the estimate falls back on a bound
+  (induction heating). The same was true of `063142f` only after its last changes (the TSV's error was once said 4.4 times
+  too small), and the review found that true of its own five models.
+- **Against `063142f` at the same tolerances,** most models cost within 15 % of what they did; the corner at 1e-3 is 3.5
+  times cheaper, the microstrip 1.4 times, the heater 1.7 times dearer. The unknowns of WR-90 and the SOI waveguide are now
+  counted as `fem_solve` counts them (K2 below), so their numbers are not comparable with that run's.
 - **The mesh step's cost** (`probe4.cpp`, one round on a mesh of 60,000 to 130,000 triangles; measured while the
   sanitizer tests ran on other cores): the indicator and marking took 1 % to 4 % of the solve, the bisection 4 % to 10 %.
   Meshing anew from the same marks, as the old adaptive step does, took 1.7 to 4.2 times the solve, and gave meshes 1.4
@@ -318,8 +333,8 @@ be as accurate, not what `fem_converge` would know. `compare.txt` beside this fi
 
 | Suite | What | Release | ASan, UBSan |
 |---|---|---|---|
-| `test_fem_adapt` (27 cases) | Below | 33 s | 182 s |
-| `test_multiphysics_converge` (13 cases) | The tree and its form, a run and its page as it goes, the model's mesh untouched, Show and Keep Refined Mesh (and Undo), saved and opened, old after a change, Cancel, a bad check, the menu's action, the tool (made from the call, result, keep, settings, goal, bad input), `fem_stop` past the tool's timeout, the uniform method as before | 3.4 s | 59 s |
+| `test_fem_adapt` (29 cases) | Below | 40 s | see "What else ran" |
+| `test_multiphysics_converge` (14 cases) | The tree and its form, a run and its page as it goes, the model's mesh untouched, Show and Keep Refined Mesh (and Undo), saved and opened, old after a change, Cancel, a bad check, the menu's action, the tool (made from the call, result, keep, settings, goal, bad input), `fem_stop` past the tool's timeout, the uniform method as before | 3.4 s | 59 s |
 
 In `test_fem_adapt`:
 
@@ -339,9 +354,14 @@ In `test_fem_adapt`:
 - **False agreement:** two parts, refined by the electrostatics alone, the heated bar's Tmax agreeing from mesh to mesh. The
   check moves it 0.69 %: caught, said, and on from there every element cut, converged to within 1 % of the rise of a fine
   reference. The same without the check: converged, and saying so.
-- **Goal-oriented:** two plates apart, the sensor in one. To 1e-6 the goal-oriented check settles on 19,763 unknowns; the
-  fields' error, allowed ten times that, does not settle. An energy needs no adjoint, an expression of none falls back,
-  both said.
+- **Goal-oriented:** two plates apart, the sensor in one: to 1e-6 of a reference, an adjoint on each mesh it refined; the
+  fields' route logged beside it (it is cheaper here). An energy needs no adjoint, an expression of none falls back, both
+  said.
+- **The review of `063142f`:** the review's L graded into its corner (rate above 1.6, 1e-5 under 15,000 unknowns at most),
+  a rate faster than the order not claimed, the coarsest mesh within the tolerance kept (and Keep saying so where the
+  model's own is enough), and in `test_multiphysics_converge` its three tool bugs and the count of unknowns. Each was
+  checked to fail with the old code put back: the marking floor, the rate rule, the kept mesh's choice, the failed run's
+  answer, the dispatch of `action`.
 - **Edge elements:** WR-90's modes refined by the recovered field, to 1e-4.
 - **The caps:** 3 meshes, 300 unknowns: stopped, said, no mesh past the cap solved.
 - **Cancel:** at the third mesh, two kept; before anything, nothing, no crash.
@@ -401,6 +421,42 @@ stopping points, not the check's.
   from the sizes in the result.
 - **A new tree node on every 2D model** (Mesh Convergence, empty unless used), as Optimization is. It writes nothing to the
   file while empty.
+
+## The review of `063142f`, answered
+
+The user's review (`qucs-reviews/Multiphysics/2026-11-07-claude-qfem-mesh-convergence-check.md`) ran the merged app against
+exact answers: the numerics sound, every verdict right, every error said at or above the error made; three tool bugs, a
+misleading rate, a kept mesh too fine, two counts of unknowns. Each finding was checked here first; each was real.
+
+| Finding | What it was | Now |
+|---|---|---|
+| **B1** (high) | A run that failed - a value the results lack - answered with the last good result, `converged: true` | The document keeps why its last run gave no result (`convergenceError`); the tool answers that error. The good result stays as it was. |
+| **B2** (medium) | A call's settings were written into the node before the run: a refused `study: "nosuch"` broke every call after it, a `check: false` stayed | The settings go into the run's own copy of the model and into the node with the result, as one step of Undo - not at all if the run is refused or fails; a new check is made the same way. What a call leaves out is the check's own setting, and the answer's `settings` say what it ran with. |
+| **B3** (medium) | `action` was read only with `"method": "adaptive"`: `action: result` asked for values, `action: keep` ran a whole uniform study | `action` result or keep means the adaptive check; with `"method": "uniform"` it is refused. |
+| Nit | Right after Keep, the result read "changed since" | The Adapted Sizes a result was kept as are not part of what it depends on. |
+| **N1** | On the L corner the rate read 2.2 (`extrapolated`) where the error fell as 1.2 | Two causes. **The marking:** at least 35 % of the triangles a round held the refinement back from the corner; at 10 % the error falls as unknowns^-3.4 there (the optimal ^-2 of quadratic elements, and faster pre-asymptotically), 1e-6 on 44,000 unknowns in all against a million, in as many solves (`probe5.cpp`). **The label:** a rate faster than the elements' order is no longer claimed: `bounded`, the changes' rate in words. |
+| Side note (grading) | The smallest element was 0.0039 at 35k unknowns | The same cause as N1's marking: now 1.2e-4 at 8,300 unknowns and 4.3e-5 at 12,700 (`probe5.cpp`). |
+| **K1** (medium) | Keep wrote the check mesh's sizes: 45,430 triangles where 4,140 were enough | Keep writes the coarsest mesh whose values are each within their tolerance of the finest's limit, the finest's error counted. Where the model's own mesh is enough, it says so. The remeshing from sizes still makes 1.2 to 1.6 times the triangles of the mesh kept; a size floor to undo that was not tried. |
+| **K2** (low) | The two routes counted unknowns differently on one mesh (6,793 against 3,950) | The check counts as `fem_solve` does. For edge elements that is the nodal space times the components, not the true count of edge and node unknowns - but the same on both routes. |
+
+**What the fixes cost and changed.** With a tenth of the triangles marked, a round grows a mesh by 1.1 to 1.3 rather than
+1.5, so a check takes more solves (the corner at 1e-3: 12, was 11; at 1e-4: 21, was 15); the meshes at most went from 12 to
+25. Meshes are compared when 1.25 times apart (was 1.4). Bounding a rate faster than the order with the crack's slowest rate,
+as first tried, refined the TSV ten meshes deep and the review's corner to 1.5e-7 where 1e-5 was asked; it is bounded as if
+it fell at the order instead, and the check's own bound decides the end. After a check that leaves a value just above its
+tolerance, every element is cut once more, so that three meshes nothing chose give a rate - the goal case had gone on to a
+second check, 186,000 unknowns, for a value within its tolerance at 20,000.
+
+**Measured again** on the 16 models (the table above): every verdict right, every error said at or above the error made.
+At the same tolerances most cost within 15 % of `063142f`, the corner at 1e-3 3.5 times less, the heater 1.7 times more.
+
+**Checked after the fixes:** `test_fem_adapt` (29 cases) and `test_multiphysics_converge` (14) in Release and under ASan and
+UBSan (190 s and 80 s there), with `test_multiphysics_optimize` and `test_qucs_control`, no sanitizer report; in Release
+also `test_fem_optimize`, `test_multiphysics_doc`, `test_fem_engine`, `test_fem_waves`, `test_mcp_server`, 9 of 9; the four
+lints green. The whole Release suite was not run again after the fixes (it was, 172 of 172, at `063142f`).
+
+**Not done:** the remeshing from kept sizes still inflates the mesh by 1.2 to 1.6; the review's SOI strip and its `parallel`
+were not rerun here (the shipped SOI example was).
 
 ## What could not be verified
 

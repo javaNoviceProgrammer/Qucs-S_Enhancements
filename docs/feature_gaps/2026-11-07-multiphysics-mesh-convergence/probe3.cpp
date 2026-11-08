@@ -27,7 +27,8 @@ static void refineMesh(Model& m, const Node& meshWas, double h0, double hmin0, d
   under(c);}};
  under(*mesh);
 }
-static double unknowns(const Solution& s){double d=0;for(const Field& f:s.fields())if(f.solved){ if(f.edges) d+=f.edges->size()+(f.space?f.space->size():0); else d+=f.unknowns>=0?f.unknowns:(f.space?f.space->size()*f.count():0);} return d;}
+// (As fem_solve and the check count them.)
+static double unknowns(const Solution& s){double d=0;for(const Field& f:s.fields())if(f.solved) d+=f.unknowns>=0?f.unknowns:(f.space?f.space->size()*f.count():0); return d;}
 static ConvergenceResult adapt(Model m,const QString& value,double tol,const QString& refine,double maxu){
  Node n=m.make("convergence"); n.props.insert("tolerance",QString::number(tol)); n.props.insert("refine",refine); n.props.insert("maxmeshes",40); n.props.insert("maxunknowns",QString::number(maxu)); n.props.insert("sweep","own");
  QJsonArray rows; rows.append(QJsonArray{value,"",""}); n.props.insert("values",rows);

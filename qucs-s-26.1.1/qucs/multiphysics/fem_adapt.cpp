@@ -551,13 +551,14 @@ double rateOf(double a, double b, double rho)
 ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vector<double>& values, int order)
 {
     ValueEstimate e;
-    // The meshes it is read from, from the finest back, each at least 1.4 times
-    // as large as the next: on meshes hardly apart a rate is mostly noise (of the
-    // adaptive corner's, 2.5 then 0.31 on seven that grew by a quarter each).
+    // The meshes it is read from, from the finest back, each at least 1.25 times
+    // as large as the next: on meshes hardly apart a rate is mostly noise. (1.4
+    // at first; with a tenth of the triangles marked a round grows by 1.1 to 1.3,
+    // and 1.4 kept the TSV's first three meshes to compare until its seventh.)
     std::vector<double> ns, qs;
     for (std::size_t i = std::min(unknowns.size(), values.size()); i-- > 0;) {
         if (!std::isfinite(values[i]) || !(unknowns[i] > 0)) continue;
-        if (!ns.empty() && unknowns[i] * 1.4 > ns.back()) continue;
+        if (!ns.empty() && unknowns[i] * 1.25 > ns.back()) continue;
         ns.push_back(unknowns[i]);
         qs.push_back(values[i]);
     }
@@ -625,19 +626,34 @@ ValueEstimate estimateValue(const std::vector<double>& unknowns, const std::vect
         e.why = tr("a rate of %1 in the unknowns is too slow to extrapolate").arg(formatNumber(q, 3));
         return e;
     }
-    if (q > highest) {
+    if (q > 1.05 * order) {
+        // Faster than the order, short of the asymptote: the changes fall faster
+        // than the error does (a corner's read 2.2 where its error fell as 1.2),
+        // so no rate is claimed - bounded as if the error fell at the order, with
+        // room. This decides when the check runs; the check's own change, read at
+        // a crack's rate, is what is said at the end. (A slower bound here refined
+        // the review's corner to 1.5e-7 and the goal case to 8e-8 where 1e-5 and
+        // 1e-6 were asked.)
+        // (Above the order plus one too: there the meshes may have agreed by
+        // chance, which is what the check is for. The crack's slowest bound
+        // there held the TSV to its tenth mesh, its error 3e-4 by its seventh.)
         e.trust = ValueEstimate::Bounded;
-        e.error = slow;
-        e.why = tr("a rate of %1 in the unknowns is faster than elements of order %2 can converge (at most about %3): two meshes may have agreed by chance")
-                    .arg(formatNumber(q, 3))
-                    .arg(order)
-                    .arg(highest);
+        e.error = 2 * std::abs(d2) / (std::pow(b, double(order)) - 1);
+        e.rate = kNaN;
+        e.why = q > highest ? tr("its changes fell as unknowns^-%1, faster than elements of order %2 can converge (at most about %3): two meshes may have agreed by "
+                                 "chance - bounded as if its error fell as unknowns^-%2, not extrapolated")
+                                  .arg(formatNumber(q, 3))
+                                  .arg(order)
+                                  .arg(highest)
+                            : tr("its changes fell as unknowns^-%1, faster than the error of elements of order %2 falls (unknowns^-%2): not taken as its rate, the "
+                                 "error bounded from the last change")
+                                  .arg(formatNumber(q, 3))
+                                  .arg(order);
         return e;
     }
-    // Extrapolated at no more than the order of the elements: a rate seen faster
-    // than that, short of the asymptote, made the corner's error said 1.6 times
-    // too small (1.2e-4 said, 1.9e-4 made).
-    const double beyond = d2 / (std::pow(b, std::min(q, double(order))) - 1);
+    // (A rate above the order is not extrapolated, above: seen short of the
+    // asymptote, it made the corner's error said 1.6 times too small.)
+    const double beyond = d2 / (std::pow(b, q) - 1);
     e.limit = qs[n - 1] + beyond;
     double room = 1.25;
     e.trust = ValueEstimate::Extrapolated;
@@ -904,6 +920,7 @@ QJsonObject ConvergenceResult::toJson() const
         o.insert(QStringLiteral("sizes"), textsOf(sizes));
         o.insert(QStringLiteral("smallestsize"), smallestSize);
     }
+    if (keptRow > 0) o.insert(QStringLiteral("keptrow"), keptRow);
     return o;
 }
 
@@ -953,6 +970,7 @@ ConvergenceResult ConvergenceResult::fromJson(const QJsonObject& o)
     r.seconds = numberIn(o, QStringLiteral("seconds"), 0);
     r.sizes = textsIn(o.value(QStringLiteral("sizes")));
     r.smallestSize = numberIn(o, QStringLiteral("smallestsize"), 0);
+    r.keptRow = std::max(0, o.value(QStringLiteral("keptrow")).toInt());
     return r;
 }
 
@@ -964,6 +982,21 @@ QString convergenceSetup(const Model& model, const Node& node)
     setup.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
     setup.insert(QStringLiteral("components"), whole.value(QStringLiteral("components")));
     setup.insert(QStringLiteral("studies"), whole.value(QStringLiteral("studies")));
+    // (Its own sizes kept do not make it old: the result read "changed since" the
+    // moment Keep Refined Mesh had written them - the review of 063142f.)
+    QJsonArray components = whole.value(QStringLiteral("components")).toArray();
+    for (int i = 0; i < components.size(); ++i) {
+        QJsonObject c = components.at(i).toObject();
+        QJsonObject mesh = c.value(QStringLiteral("mesh")).toObject();
+        QJsonArray features, kept = mesh.value(QStringLiteral("features")).toArray();
+        for (const QJsonValue& f : kept)
+            if (f.toObject().value(QStringLiteral("type")).toString() != QLatin1String("adapted")) features.append(f);
+        if (features.isEmpty()) mesh.remove(QStringLiteral("features"));
+        else mesh.insert(QStringLiteral("features"), features);
+        c.insert(QStringLiteral("mesh"), mesh);
+        components.replace(i, c);
+    }
+    setup.insert(QStringLiteral("components"), components);
     QJsonObject mine = node.props;
     mine.remove(QStringLiteral("result"));
     setup.insert(QStringLiteral("convergence"), mine);
@@ -1347,8 +1380,10 @@ double unknownsOf(const Solution& s)
     double d = 0;
     for (const Field& f : s.fields())
         if (f.solved) {
-            if (f.edges) d += f.edges->size() + (f.space ? f.space->size() : 0);
-            else d += f.unknowns >= 0 ? f.unknowns : (f.space ? f.space->size() * f.count() : 0);
+            // (As fem_solve counts them, so the two routes' unknowns compare: an edge
+            // element's field by its nodal space and components - the review of
+            // 063142f found 6,793 here against fem_solve's 3,950 on one mesh.)
+            d += f.unknowns >= 0 ? f.unknowns : (f.space ? f.space->size() * f.count() : 0);
         }
     return d;
 }
@@ -1588,6 +1623,11 @@ std::vector<ValueEstimate> Runner::afterCheck(const Series& series, const std::v
             e.value = q;
             e.limit = q;
             e.rate = kNaN;
+            // (The crack's rate is the slowest there is, and 1.25 its room: more
+            // room on it made the goal case check twice, 186,000 unknowns for a
+            // value already within its tolerance at 20,000.)
+            // (Room on the crack's rate too: without it the resistor's error was said
+            // below the error made.)
             e.error = 2.4 * slowest;
             e.why = tr("the check's change read at no faster than unknowns^-1/2 (a crack's), with room: the meshes before it showed no rate to go by");
         }
@@ -1673,6 +1713,7 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
     bool remeshes = false;
     for (char d : sizes.delaunay) remeshes = remeshes || d;
     const std::shared_ptr<const Mesh> first = mesh;
+    std::vector<std::shared_ptr<const Mesh>> meshes;   // by row of this point
 
     Series series;
     int seriesFrom = 0;
@@ -1765,6 +1806,7 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
         a_result.unknownsSolved += row.unknowns;
         a_result.largest = std::max(a_result.largest, row.unknowns);
         series.unknowns.push_back(row.unknowns);
+        meshes.push_back(mesh);
         series.values.push_back(values);
         // The indicator where it will be asked for.
         RefinementIndicator indicator;
@@ -1837,7 +1879,17 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
                 a_pointStatus << QStringLiteral("converged");
                 break;
             } else {
-                said << tr("the check moved no value past its tolerance, but %1's error after it is still above it: refining on").arg(pending);
+                // One more cut of every element: the mesh before the check, the check's
+                // and this one are nested meshes nothing chose, whose rate can be read -
+                // cheaper than more rounds and a check of their own (the goal case
+                // checked twice, 186,000 unknowns, for a value within its tolerance
+                // at 20,000).
+                said << tr("the check moved no value past its tolerance, but %1's error after it is still above it: every element cut once more, for a rate of "
+                           "meshes nothing chose")
+                            .arg(pending);
+                mode = Uniform;
+                seriesFrom = int(series.unknowns.size()) - 2;
+                es = estimates(series, seriesFrom, order);
             }
         } else if (within && solvedHere >= 2) {
             if (mode == Uniform && int(series.unknowns.size()) - seriesFrom >= 3) {
@@ -1970,9 +2022,34 @@ void Runner::runPoint(int point, const QHash<QString, QString>& overrides)
     a_result.evidence << evidence;
     // The refined mesh: the check's largest is not asked of the model, the last the
     // rounds refined is. (Sizes for Keep Refined Mesh.)
+    // The mesh kept: the coarsest whose values are each within their tolerance of
+    // the finest's limit, the finest's error counted - not the check's, which was
+    // five to ten times what was enough (the review of 063142f, its SOI strip:
+    // 4,140 triangles enough, 37,190 kept). The finest where none is.
     if (point == int(a_result.points.size()) - 1 || a_result.points.isEmpty()) {
         a_result.mesh = mesh;
-        a_result.sizes = mesh != first ? sizesOf(*mesh, *first, &a_result.smallestSize) : QStringList();
+        std::size_t chosen = meshes.empty() ? 0 : meshes.size() - 1;
+        if (a_pointStatus.value(point) == QLatin1String("converged") && es.size() == a_plan.values.size())
+            for (std::size_t k = 0; k < meshes.size(); ++k) {
+                bool enough = true;
+                for (std::size_t c = 0; c < es.size() && enough; ++c) {
+                    const double v = series.values[k][c];
+                    const double reference = std::isfinite(es[c].limit) ? es[c].limit : es[c].value;
+                    const double off = std::abs(v - reference) + (std::isfinite(es[c].error) ? es[c].error : kInfinity);
+                    const double absolute = a_plan.values[c].absolute;
+                    enough = std::isfinite(v) && (off <= toleranceOf(c) * std::abs(reference) || (absolute > 0 && off <= absolute));
+                }
+                if (enough && series.unknowns[k] < series.unknowns[chosen]) chosen = k;
+            }
+        if (!meshes.empty()) {
+            const std::shared_ptr<const Mesh>& kept = meshes[chosen];
+            a_result.sizes = kept != first ? sizesOf(*kept, *first, &a_result.smallestSize) : QStringList();
+            a_result.keptRow = a_result.rows.empty() ? 0 : a_result.rows[a_result.rows.size() - meshes.size() + chosen].index;
+            if (!a_result.sizes.isEmpty())
+                a_result.notes << prefix + tr("Keep Refined Mesh keeps mesh %1's sizes (%2 triangles), the coarsest whose values are within their tolerances of the limit.")
+                                               .arg(a_result.keptRow)
+                                               .arg(kept->triangles.size());
+        }
     }
 }
 
@@ -2097,7 +2174,9 @@ bool keepRefinedMesh(Model& model, const Node& node, QString* error)
 {
     const ConvergenceResult r = ConvergenceResult::fromJson(node.value(QStringLiteral("result")).toObject());
     if (r.sizes.isEmpty()) {
-        if (error) *error = tr("%1: no refined mesh to keep: it has not been run, or refined nothing.").arg(node.name());
+        if (error)
+            *error = r.converged && r.keptRow == 1 ? tr("%1: the model's own mesh is within the tolerance already: nothing to keep.").arg(node.name())
+                                                   : tr("%1: no refined mesh to keep: it has not been run, or refined nothing.").arg(node.name());
         return false;
     }
     Node* mesh = model.find(model.mesh().tag);
