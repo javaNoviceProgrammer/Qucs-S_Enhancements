@@ -226,6 +226,26 @@ private slots:
         QCOMPARE(o.value("findings count").toInt(), 0);
         QVERIFY(o.value("vias").toInt() >= 2);
 
+        // A route_setup that only reads (the note of 8 November): the job
+        // file's bytes and time unchanged, the routes not old, a commit after
+        // it not refused.
+        {
+            QFile job(chip + ".route.json");
+            QVERIFY(job.open(QIODevice::ReadOnly));
+            const QByteArray bytes = job.readAll();
+            job.close();
+            const QDateTime written = QFileInfo(job.fileName()).lastModified();
+            QTest::qWait(1100);   // (a rewrite would show in the time)
+            r = call("route_setup", {{"path", chip}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QCOMPARE(json(r).value("job changed").toBool(true), false);
+            QVERIFY(job.open(QIODevice::ReadOnly));
+            QCOMPARE(job.readAll(), bytes);
+            QCOMPARE(QFileInfo(job.fileName()).lastModified(), written);
+            QCOMPARE(json(call("route_report", {{"path", chip}})).value("state").toString(), QStringLiteral("done"));
+            r = call("route_commit", {{"path", chip}, {"save_as", "chip_read_only.gds"}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+        }
         o = json(call("route_report", {{"path", chip}, {"what", "passes"}}));
         QVERIFY(!o.value("passes").toArray().isEmpty());
         o = json(call("route_report", {{"path", chip}, {"what", "net"}, {"net", "h"}}));
@@ -256,6 +276,9 @@ private slots:
         vAgain.append(QJsonObject{{"name", "v"}, {"start", xy(50, 0)}, {"pads", moved}, {"class", "power"}});
         r = call("route_setup", {{"path", chip}, {"nets", vAgain}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
+        // A real change: said, the routes old, a commit refused until routed again.
+        QCOMPARE(json(r).value("job changed").toBool(), true);
+        QVERIFY(failed(call("route_commit", {{"path", chip}, {"save_as", "chip_stale.gds"}})));
         r = call("route_run", {{"path", chip}, {"mode", "changed"}});
         o = json(r);
         QCOMPARE(o.value("routed").toInt(), 2);

@@ -14,6 +14,7 @@
 #include "markup.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -326,9 +327,31 @@ bool Session::loadJob(QString* error)
     return true;
 }
 
+QByteArray Session::techSignature() const
+{
+    if (job.technologyFile.isEmpty()) return {};
+    QFile f(QDir(QFileInfo(a_file).absolutePath()).absoluteFilePath(job.technologyFile));
+    if (!f.open(QIODevice::ReadOnly) || f.size() > 16 * 1024 * 1024) return QByteArrayLiteral("unreadable");
+    return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha1);
+}
+
+bool Session::jobEdited(const Job& before, QString* error)
+{
+    // (As the file writes it: the same JSON is the same job.)
+    Job a = before, b = job;
+    a.layout = b.layout = QString();
+    const bool same = QJsonDocument(jobJson(a)).toJson(QJsonDocument::Compact) == QJsonDocument(jobJson(b)).toJson(QJsonDocument::Compact)
+                      && techSignature() == a_techSignature;
+    if (same) return false;
+    jobChanged();
+    saveJob(error);
+    return true;
+}
+
 void Session::jobChanged()
 {
     ++a_jobRevision;
+    a_techSignature = techSignature();
     a_prepared.reset();
     emit changedJob();
 }

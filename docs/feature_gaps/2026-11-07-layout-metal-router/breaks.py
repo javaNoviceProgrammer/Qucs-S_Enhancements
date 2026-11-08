@@ -145,6 +145,10 @@ BREAKS = [
     ("a stopped run is not cleaned up", "layoutrouter/router_engine.cpp", ENGINE,
      "    // (Stopped too: what is kept must be clear of the others.)\n    if (!contested.empty()) {",
      "    // (Stopped too: what is kept must be clear of the others.)\n    if (!contested.empty() && !cancelled()) {"),
+    # The note of 8 November: a route_setup that only reads
+    ("a route_setup that only reads marks the routes old", "qucscontrol_router.cpp", APP,
+     "        const bool changed = s->jobEdited(before, &saveError);",
+     "        const bool changed = (s->jobChanged(), s->saveJob(&saveError), true);"),
 ]
 
 
