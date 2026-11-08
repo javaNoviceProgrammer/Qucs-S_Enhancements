@@ -35,6 +35,18 @@ BREAKS = [
  ("settled on the last mesh allowed, said as not settled",
   [("multiphysics/fem_adapt.cpp", "            if (checking)\n                stop(", "            if (false)\n                stop(")],
   [("test_fem_adapt", "settledOnTheLastMeshIsSaid")]),
+ ("the OpenGL check's surface freed before its QRhi (Application Settings ended the program on Linux)",
+  [("rhicanvas.cpp",
+    "    std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());\n"
+    "    QRhiGles2InitParams params;\n"
+    "    params.fallbackSurface = surface.get();\n"
+    "    std::unique_ptr<QRhi> rhi(QRhi::create(QRhi::OpenGLES2, &params));\n",
+    "    std::unique_ptr<QRhi> rhi;\n"
+    "    QRhiGles2InitParams params;\n"
+    "    std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());\n"
+    "    params.fallbackSurface = surface.get();\n"
+    "    rhi.reset(QRhi::create(QRhi::OpenGLES2, &params));\n")],
+  [("test_gpu_probe", "theOpenGLCheckEndsCleanly")]),
 ]
 
 def apply(edits, undo=False):

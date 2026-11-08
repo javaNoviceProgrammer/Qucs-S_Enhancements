@@ -41,6 +41,11 @@ QShader shader(const QString& name);
 /// OpenGL), not on the offscreen or minimal platforms (the tests', a
 /// remote's: the CPU draws there, as it did with OpenGL).
 bool rhiAvailable();
+#if QT_CONFIG(opengl)
+/// Whether OpenGL can draw the viewers here (the check of rhiAvailable()
+/// on Linux and the BSDs; on any platform, for its test).
+bool openGLFit();
+#endif
 /// Whether \a rhi can run the viewers' shaders: Metal; Direct3D 11 at
 /// feature level 11; OpenGL 3.0 or OpenGL ES 3.0; instancing.
 bool fitForTheShaders(QRhi* rhi);
