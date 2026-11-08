@@ -688,10 +688,36 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("dose"), tr("Dose"), QStringLiteral("1/m^2"), QStringLiteral("1e15[1/cm^2]"), tr("A plain number: cm⁻²")),
               expr(QStringLiteral("tilt"), tr("Tilt"), QStringLiteral("angle"), QStringLiteral("0"),
                    tr("From the normal, degrees, the beam toward +x as it goes down: shadowed by sidewalls")),
-              choice(QStringLiteral("profile"), tr("Profile"), {QStringLiteral("pearson"), QStringLiteral("gaussian"), QStringLiteral("dual")},
-                     {tr("Pearson IV"), tr("Gaussian"), tr("Dual Pearson (channelling)")}, QStringLiteral("pearson"),
-                     tr("Along the beam, its four moments; Gaussian: Rp and ΔRp alone; dual: a channelled part too")),
-              moments, shownIf(channel, QStringLiteral("profile=dual")),
+              expr(QStringLiteral("rotation"), tr("Rotation"), QStringLiteral("angle"), QStringLiteral("0"),
+                   tr("The wafer's, degrees: from its ⟨110⟩ flat to the way the beam tilts (+x) - which crystal planes and axes the beam "
+                      "meets. The crystal profile's: a Pearson profile has no crystal (7° tilt, 22° rotation: off every axis and plane)")),
+              choice(QStringLiteral("profile"), tr("Profile"),
+                     {QStringLiteral("pearson"), QStringLiteral("gaussian"), QStringLiteral("dual"), QStringLiteral("crystal")},
+                     {tr("Pearson IV"), tr("Gaussian"), tr("Dual Pearson (channelling)"), tr("Monte Carlo (crystal)")}, QStringLiteral("pearson"),
+                     tr("Along the beam, its four moments; Gaussian: Rp and ΔRp alone; dual: a channelled part too, given; Monte Carlo: "
+                        "binary collisions through the crystal itself - its channelling worked out, not given (silicon; checked "
+                        "against SIMS for phosphorus into (100), 15 to 200 keV)")),
+              shownIf(flag(QStringLiteral("normal"), tr("Moments along the normal"), false,
+                           tr("The moments given (and the channelled part's) are along the wafer's normal - a Monte Carlo's or a SIMS's "
+                              "taken at the tilt -: not projected by the tilt again. Off: along the beam, the tilt projecting them")),
+                      QStringLiteral("profile=pearson|profile=gaussian|profile=dual")),
+              shownIf(moments, QStringLiteral("profile=pearson|profile=gaussian|profile=dual")), shownIf(channel, QStringLiteral("profile=dual")),
+              shownIf(expr(QStringLiteral("divergence"), tr("Divergence"), QStringLiteral("angle"), QStringLiteral("1"),
+                           tr("The beam's spread, degrees: a uniform cone of this half-angle about its direction (1° as an implanter's; "
+                              "0: parallel, the channelled tail deeper)")),
+                      QStringLiteral("profile=crystal")),
+              shownIf(expr(QStringLiteral("temperature"), tr("Wafer's temperature"), QStringLiteral("K"), QStringLiteral("300[K]"),
+                           tr("Its atoms' thermal vibration (Debye's, 0.075 Å at 300 K): hotter, less channelling")),
+                      QStringLiteral("profile=crystal")),
+              shownIf(expr(QStringLiteral("ions"), tr("Ions"), QString(), QStringLiteral("50000"),
+                           tr("How many the Monte Carlo follows: 50000 a few seconds on a desktop's cores; the deep tail's noise as "
+                              "1/√ions there - 300000 for a tail at 1e-4 of the peak. Run once for each beam and cover: kept while the "
+                              "program runs")),
+                      QStringLiteral("profile=crystal")),
+              shownIf(expr(QStringLiteral("seed"), tr("Random seed"), QString(), QStringLiteral("1"),
+                           tr("The Monte Carlo's random numbers: the same seed the same profile, on any number of threads; another "
+                              "seed shows its noise")),
+                      QStringLiteral("profile=crystal")),
               expr(QStringLiteral("plus"), tr("Interstitials an ion leaves"), QString(), QStringLiteral("1"),
                    tr("Giles's +1: beyond the amorphous layer, clustered, released in an anneal with interstitials (TED)")),
               expr(QStringLiteral("amorphize"), tr("Amorphous above"), QStringLiteral("eV/cm^3"), QStringLiteral("6e23[eV/cm^3]"),
@@ -706,7 +732,16 @@ QList<NodeKind> makeKinds()
                 "transport theory); every other ion and target by transport theory (the ZBL potential's scattering, Lindhard and "
                 "Scharff's electronic stopping - fitted to the tables for those ions; Bragg's rule for compounds). Its damage: the "
                 "energy into nuclear collisions where it goes, amorphous above the critical density (no channelling then), +1 "
-                "interstitials beyond.")});
+                "interstitials beyond. Moments taken at the tilt (a Monte Carlo's, a SIMS's) are along the normal already: tick "
+                "Moments along the normal, or the tilt projects them twice. The Monte Carlo (crystal) profile: a binary-collision "
+                "Monte Carlo (MARLOWE's way) through the wafer's crystal - its surface the substrate's orientation, (100), (110) or "
+                "(111) - and the amorphous films over it (a native oxide, a screen, a mask's resist), at the beam's tilt, rotation "
+                "and divergence: the ZBL potential's scattering, Cai et al.'s electronic stopping along the crystal's own electron "
+                "density, Firsov's loss in each collision, the atoms' thermal vibration; nothing fitted. Its histogram is the "
+                "profile, the tilt in it already (not projected again); across the beam its own straggle. Silicon alone; checked "
+                "against SIMS for phosphorus into (100) from 15 to 200 keV (0.07 to 0.13 decades rms, the deep tail at 100 and 200 "
+                "keV on axis 16 to 20 % short) - other ions and surfaces warned of, hydrogen, helium and other crystals refused. "
+                "Its run is a background job, kept for the same beam and cover.")});
         add({QStringLiteral("process/diffuse"), tr("Diffuse (Anneal)"), QStringLiteral("process"), QStringLiteral("p:≈"), Level::None,
              {recipe, temperature, time, model, source, surface, parameters, clusterLife, clusterT, clusterE},
              {}, {}, false, false, QStringLiteral("anl"),

@@ -22,6 +22,7 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
@@ -308,12 +309,28 @@ private:
         if (text.trimmed().isEmpty()) return fallback;
         return evaluate(text, Dim(), a_unitScale, false);
     }
-    /// An angle, in radians: a plain number in degrees.
+    /// An angle, in radians: a plain number in degrees. (Its unit in it, or
+    /// in a parameter it names - a tilt of "tilt", tilt = 10[deg], is 10°:
+    /// it was taken as 10° in radians, read as degrees, 0.175° - the review
+    /// of 8 November's tilted cases.)
     double angle(const QString& text)
     {
         const double v = evaluate(text, Dim(), a_unitScale, false);
-        if (text.contains(QLatin1String("[rad]")) || text.contains(QLatin1String("[deg]"))) return v;
+        if (angleHasUnit(text, 0)) return v;
         return v * M_PI / 180;
+    }
+    bool angleHasUnit(const QString& text, int depth) const
+    {
+        if (text.contains(QLatin1String("[rad]")) || text.contains(QLatin1String("[deg]"))) return true;
+        if (depth > 8) return false;
+        static const QRegularExpression word(QStringLiteral("[A-Za-z_][A-Za-z0-9_]*"));
+        const QList<Model::Parameter> params = a_model.parameters();
+        for (auto it = word.globalMatch(text); it.hasNext();) {
+            const QString w = it.next().captured(0);
+            for (const Model::Parameter& p : params)
+                if (p.name == w && angleHasUnit(p.expression, depth + 1)) return true;
+        }
+        return false;
     }
     /// A length in µm (a plain number), in the geometry's unit.
     double micrometres(const QString& text) { return evaluate(text, Dim::length(), 1e-6, true) * 1e-6 / a_unitScale; }
@@ -1047,7 +1064,27 @@ private:
         if (Expression::compile(step.text(QStringLiteral("energy")), a_ps.scope).dim().isNone()) s.energy *= 1e3;
         s.dose = quantity(step.text(QStringLiteral("dose")), Dim::of(-2), 1e4);
         s.tilt = step.text(QStringLiteral("tilt")).trimmed().isEmpty() ? 0 : angle(step.text(QStringLiteral("tilt")));
-        s.gaussian = step.text(QStringLiteral("profile")) == QLatin1String("gaussian");
+        const QString profile = step.text(QStringLiteral("profile"));
+        s.gaussian = profile == QLatin1String("gaussian");
+        s.normal = flag(step, QStringLiteral("normal"));
+        // The beam's rotation (from the wafer's ⟨110⟩ flat to the section's +x)
+        // and divergence: the crystal profile's - a Pearson's has no crystal.
+        s.rotation = step.text(QStringLiteral("rotation")).trimmed().isEmpty() ? 0 : angle(step.text(QStringLiteral("rotation")));
+        if (profile == QLatin1String("crystal")) {
+            s.crystalProfile = true;
+            s.divergence = step.text(QStringLiteral("divergence")).trimmed().isEmpty() ? 0 : angle(step.text(QStringLiteral("divergence")));
+            s.temperature = step.text(QStringLiteral("temperature")).trimmed().isEmpty() ? 300 : kelvin(step.text(QStringLiteral("temperature")));
+            const double n = number(step.text(QStringLiteral("ions")), 50000);
+            const double seed = number(step.text(QStringLiteral("seed")), 1);
+            s.orientation = a_orientation.isEmpty() ? QStringLiteral("100") : a_orientation;
+            // (Each ion's end kept until the run is summed: 12 bytes an ion.)
+            if (a_error.isEmpty() && !(n >= 1 && n <= 1e7)) return fail(tr("its ions must be from 1 to 1e7"));
+            if (a_error.isEmpty() && !(s.divergence >= 0 && s.divergence < M_PI / 6)) return fail(tr("its divergence must be from 0 to 30°"));
+            if (a_error.isEmpty() && !(s.temperature > 0)) return fail(tr("its temperature must be more than 0 K"));
+            if (a_error.isEmpty() && !(seed >= 0 && seed < 9e15 && seed == std::floor(seed))) return fail(tr("its seed must be a whole number from 0"));
+            s.ions = long(std::llround(n));
+            s.seed = (unsigned long long)std::llround(seed);
+        }
         s.plus = number(step.text(QStringLiteral("plus")), 1);
         s.critical = quantity(step.text(QStringLiteral("amorphize")), Dim::of(-1, 1, -2), 1.602176634e-19 * 1e6) / 1.602176634e-19;
         auto cell = [](const QJsonArray& r, int i) { return r.at(i).isDouble() ? formatNumber(r.at(i).toDouble(), 15) : r.at(i).toString().trimmed(); };

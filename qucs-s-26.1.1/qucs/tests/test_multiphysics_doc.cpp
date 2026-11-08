@@ -2226,6 +2226,54 @@ private slots:
         app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
     }
 
+    // The crystal profile from the implant's settings: "Monte Carlo
+    // (crystal)" in its Profile box shows its beam's and its run's fields
+    // (and hides the moments it does not take); built through the tools, its
+    // report the Monte Carlo's, and again from the cache.
+    void aCrystalImplantFromThePanel()
+    {
+        const QString file = path(QStringLiteral("flow_crystal.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "process", "tag": "pf1", "width": "0.2", "dx": "0.1", "dy": "1[nm]", "depth": "0.6", "features": [
+                  {"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "2"},
+                  {"type": "deposit", "tag": "nox", "label": "native", "material": "Silicon dioxide", "thickness": "1.6[nm]", "mode": "planar"},
+                  {"type": "implant", "tag": "imp", "label": "Phosphorus", "species": "P", "energy": "15", "dose": "1e13"}]},
+                {"type": "form union", "tag": "fin"}]}]})");
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        panel()->selectNode(QStringLiteral("imp"));
+        QTRY_VERIFY(panel()->editorFor(QStringLiteral("profile")) != nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("rotation")) != nullptr);   // (F4: every profile's)
+        QVERIFY(panel()->editorFor(QStringLiteral("ions")) == nullptr && panel()->editorFor(QStringLiteral("moments")) != nullptr);
+        auto* profile = qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("profile")));
+        QVERIFY(profile != nullptr);
+        const int at = profile->findData(QStringLiteral("crystal"));
+        QVERIFY(at >= 0);
+        QCOMPARE(profile->itemText(at), QStringLiteral("Monte Carlo (crystal)"));
+        profile->setCurrentIndex(at);
+        emit profile->activated(at);
+        QTRY_VERIFY(panel()->editorFor(QStringLiteral("ions")) != nullptr);
+        for (const char* key : {"divergence", "temperature", "seed"}) QVERIFY2(panel()->editorFor(QLatin1String(key)) != nullptr, key);
+        for (const char* key : {"moments", "channel", "normal"}) QVERIFY2(panel()->editorFor(QLatin1String(key)) == nullptr, key);
+        QTRY_COMPARE(doc->model().find(QStringLiteral("imp"))->text(QStringLiteral("profile")), QStringLiteral("crystal"));
+        auto* ions = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("ions")));
+        QVERIFY(ions != nullptr);
+        ions->setText(QStringLiteral("3000"));
+        emit ions->editingFinished();
+        QTRY_COMPARE(doc->model().find(QStringLiteral("imp"))->text(QStringLiteral("ions")), QStringLiteral("3000"));
+        QJsonObject r = call("fem_build", {{"until", "imp"}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Monte Carlo (crystal) in Silicon (100)")) && text(r).contains(QLatin1String("3000 ions")),
+                 qPrintable(text(r)));
+        r = call("fem_build", {{"until", "imp"}});
+        QVERIFY2(!failed(r) && text(r).contains(QLatin1String("from the cache")), qPrintable(text(r)));
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
     void aFlowsDopantsThroughTheTools()
     {
         const QString file = path(QStringLiteral("flow_dopants.qfem"));
