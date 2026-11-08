@@ -5,6 +5,7 @@
  * placeholders, slides with shapes, text, pictures, tables, charts, notes
  * - each drawn and looked at pixel by pixel where it should be.
  */
+#include <QSplitter>
 #include <QtTest>
 #include <QAction>
 #include <QApplication>
@@ -3639,6 +3640,64 @@ private slots:
             }
             qInfo("%s: %d slides, read %lld ms, drawn %lld ms", qPrintable(QFileInfo(file).fileName()), deck->slideCount(), readMs, drawMs);
         }
+    }
+
+    // Opened, the slides start where the thumbnails end, and at "fit
+    // width" a slide is as wide as the view, a gap each side. The
+    // thumbnails' pane used to be as wide as a list's size hint (256) and
+    // the list no wider than its maximum (210): a strip of nothing between
+    // them and the slides, until the splitter was moved (seen on the
+    // screen, 2026-11-08).
+    void opensAsWideAsTheView()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1300, 850);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        for (int i = 0; i < 2; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            d.slides << s;
+        }
+        const QString file = dir.filePath("workspace/wide.pptx");
+        QVERIFY(write(file, d.build()));
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        auto* view = doc->view();
+        auto* list = doc->thumbnails();
+        auto* splitter = qobject_cast<QSplitter*>(list->parentWidget());
+        QVERIFY(splitter != nullptr);
+        const auto check = [&](const QString& when) {
+            for (int i = 0; i < 5; ++i) QApplication::processEvents();
+            QWidget* body = splitter->widget(1);
+            if (list->isVisible()) {
+                const int gap = body->x() - list->geometry().right() - 1;
+                if (gap > splitter->handleWidth())
+                    return QStringLiteral("%1: %2 pixels between the thumbnails (%3 wide) and the slides").arg(when).arg(gap).arg(list->width());
+            } else if (body->x() > splitter->handleWidth()) {
+                return QStringLiteral("%1: the slides start %2 pixels in, the thumbnails hidden").arg(when).arg(body->x());
+            }
+            const QRect r = view->slideRect(0);
+            const int w = view->viewport()->width();
+            if (std::abs(r.left() - 16) > 1 || std::abs(r.right() + 1 - (w - 16)) > 1)
+                return QStringLiteral("%1: slide %2..%3 in a view %4 wide, zoom %5").arg(when).arg(r.left()).arg(r.right()).arg(w).arg(view->zoom());
+            return QString();
+        };
+        QString wrong = check(QStringLiteral("opened"));
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+        doc->setSidebarShown(false);
+        wrong = check(QStringLiteral("thumbnails hidden"));
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+        doc->setSidebarShown(true);
+        wrong = check(QStringLiteral("thumbnails shown again"));
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+        app.resize(1000, 700);
+        wrong = check(QStringLiteral("the window made smaller"));
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+        app.closeAllFiles();
     }
 };
 
