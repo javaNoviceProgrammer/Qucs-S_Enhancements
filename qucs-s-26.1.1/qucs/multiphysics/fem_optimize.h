@@ -51,6 +51,10 @@ struct OptimizationObjective {
     double weight = 1;      ///< how much it counts among the others
     bool last = false;      ///< its last value, not its worst over the study's sweep, times or frequencies
     QString study;          ///< the study it is read from; empty: the optimization's
+    /// Of a mode analysis, the mode read: from 1; 0 the one its step chose, else
+    /// the first (as fem_evaluate and a solve's globals read it); -1 every mode,
+    /// by its worst.
+    int mode = 0;
 
     bool isLimit() const { return kind == LessEqual || kind == GreaterEqual || kind == Equal; }
     bool isGoal() const { return kind == Minimize || kind == Maximize || kind == Target; }

@@ -140,6 +140,7 @@ private slots:
     void outputTimesToo();
     void derivedValuesAreRead();
     void anotherStudysValues();
+    void aModeAnalysisReadsOneMode();
     void wholeNumbersAndSeries();
     // What may go wrong.
     void aStopKeepsTheBest();
@@ -466,6 +467,8 @@ void TestFemOptimize::heldParametersAreWrittenIn()
         "objectives": [["es.C11", "TARGET", "200[pF]"]]})"));
     const OptimizationResult r = runOptimization(m, QStringLiteral("opt1"), nullptr, nullptr, nullptr);
     QVERIFY2(std::abs(value(r, QStringLiteral("d")) - Eps0 * 8 * 4e-3 / 200e-12) < 1e-4 * 1.4e-3, qPrintable(said(r)));
+    // (d shapes the geometry: each candidate meshed again, and said, with what to check.)
+    QVERIFY2(r.notes.join(QLatin1Char(' ')).contains(QStringLiteral("meshed again")) && r.notes.join(QLatin1Char(' ')).contains(QStringLiteral("Mesh Convergence")), qPrintable(said(r)));
     m.find(QStringLiteral("opt1"))->props.insert(QStringLiteral("result"), r.toJson());
     QStringList written;
     QString why;
@@ -670,6 +673,41 @@ void TestFemOptimize::morStartsAndAPolish()
 }
 
 // A study's sweep: each row by its worst point, or by its last.
+// A mode analysis asked for two modes: a row reads one of them, the one asked,
+// else the first (as a solve's globals and fem_evaluate) - not both as a sweep's
+// points by the worst, which fitted the minimax of TE0's and TE1's misses.
+void TestFemOptimize::aModeAnalysisReadsOneMode()
+{
+    const QByteArray slab = R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "t", "expression": "0.5[um]"}],
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "name": "below", "position": ["0", "-2"], "size": ["0.1", "2"]},
+                     {"type": "rectangle", "name": "core", "size": ["0.1", "t"]},
+                     {"type": "rectangle", "name": "above", "position": ["0", "t"], "size": ["0.1", "2"]}],
+        "materials": [{"label": "oxide", "n": "1.444", "selection": {"only": ["below", "above"]}},
+                      {"label": "silicon", "n": "3.476", "selection": {"only": ["core"]}}],
+        "physics": [{"type": "modes", "tag": "emw", "features": [
+            {"type": "wave", "selection": {"all": true}},
+            {"type": "pmc", "selection": {"of": ["below", "core", "above"], "side": "left"}},
+            {"type": "pmc", "selection": {"of": ["below", "core", "above"], "side": "right"}}]}],
+        "mesh": {"size": "fine", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "0.03"},
+                                              {"type": "size", "level": "domain", "selection": {"only": ["below", "above"]}, "hmax": "0.1"}]}}],
+      "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 2, "neff": "3.4", "polarization": "tm"}]}],
+      "optimizations": [{"type": "optimization", "tag": "opt1", "method": "nm", "maxiter": 2,
+        "variables": [["t", "", "0.45[um]", "0.55[um]"]],
+        "objectives": [["t", "MIN"], ["emw.neff", "MON"], ["emw.neff", "MON", "", "", "", "", "1"], ["emw.neff", "MON", "", "", "", "", "2"],
+                       ["emw.neff", "MON", "", "", "", "", "all"]]}]})json";
+    const OptimizationResult r = run(slab);
+    QVERIFY2(r.error.isEmpty() && !r.history.empty(), qPrintable(said(r)));
+    const OptimizationRow& first = r.history.front();
+    QVERIFY2(std::isfinite(first.measured.at(1)) && std::isfinite(first.measured.at(3)), qPrintable(said(r)));
+    // Two TM modes of a 500 nm silicon slab, the first the higher (3.15 and 2.07).
+    QVERIFY2(first.measured.at(2) > first.measured.at(3) && first.measured.at(3) > 1.444,
+             qPrintable(QStringLiteral("mode 1 %1, mode 2 %2").arg(first.measured.at(2)).arg(first.measured.at(3))));
+    QCOMPARE(first.measured.at(1), first.measured.at(2));   // (empty: the first)
+    // All of them: the two read, as before, by the rule of a sweep's points.
+    QVERIFY(first.measured.at(4) == first.measured.at(2) || first.measured.at(4) == first.measured.at(3));
+}
+
 void TestFemOptimize::aSweepCountsByItsWorst()
 {
     // W = C V^2 / 2 at V0 = 1, 3, 2 V; es.Q_1 = C V likewise.
@@ -909,6 +947,8 @@ void TestFemOptimize::theObjectiveNeverMoves()
     QVERIFY2(r.error.isEmpty(), qPrintable(said(r)));
     QCOMPARE(r.status, QStringLiteral("unchanged"));
     QVERIFY2(r.notes.join(QLatin1Char(' ')).contains(QStringLiteral("nothing was optimised")), qPrintable(said(r)));
+    // (V0 shapes nothing: one mesh for all, and no word of meshing again.)
+    QVERIFY2(!r.notes.join(QLatin1Char(' ')).contains(QStringLiteral("meshed again")), qPrintable(said(r)));
 }
 
 void TestFemOptimize::aParameterOnItsBound()
@@ -973,7 +1013,9 @@ void TestFemOptimize::badSetups_data()
     row("junk tolerance", range + R"(, "tol": "((", )" + goal, "not a number");
     row("no spreads", range + R"(, "mode": "center", "objectives": [["es.C11", "LE", "1[pF]"]])", "spread");
     row("a spread with no unit", range + R"(, "mode": "center", "variation": [["d", "gauss", "0.02"]], "objectives": [["es.C11", "LE", "1[pF]"]])", "or a share of its value: 5 %");
-    row("a value that moves with a varied parameter", range + R"(, "objectives": [["es.C11", "TARGET", "200[pF]*d/1[mm]"]])", "moves with d");
+    row("a value that moves with a varied parameter", range + R"(, "objectives": [["es.C11", "TARGET", "200[pF]*d/1[mm]"]])", "(es.C11) - (200[pF]*d/1[mm]) TARGET 0");
+    row("mode 0", range + R"(, "objectives": [["es.C11", "MIN", "", "", "", "", "0"]])", "a mode's number from 1, or all");
+    row("mode junk", range + R"(, "objectives": [["es.C11", "MIN", "", "", "", "", "first"]])", "a mode's number from 1, or all");
     row("a junk spread", range + R"(, "mode": "center", "variation": [["d", "gauss", "(("]], "objectives": [["es.C11", "LE", "1[pF]"]])", "spread");
     row("a spread of nothing", range + R"(, "mode": "center", "variation": [["nosuch", "gauss", "1 %"]], "objectives": [["es.C11", "LE", "1[pF]"]])", "no parameter");
     row("centering with a goal", range + R"(, "mode": "center", "variation": [["d", "gauss", "1 %"]], "objectives": [["es.C11", "MIN"]])", "cannot be combined");

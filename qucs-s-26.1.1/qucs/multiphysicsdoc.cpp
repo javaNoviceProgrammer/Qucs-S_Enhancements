@@ -507,6 +507,14 @@ void MultiphysicsDoc::buildUi()
         QString why;
         const QString tag = a_shownOptimization;
         QStringList written;
+        // (Of the model as it was: asked first, as the page says it is old.)
+        if (optimizationStale(tag)
+            && QMessageBox::question(this, tr("Apply Optimum"),
+                                     tr("The model has changed since this result: its values were the optimum of the model as it was, and may "
+                                        "not be of this one. Write them in anyway? (Undo takes them back.)"),
+                                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                   != QMessageBox::Yes)
+            return;
         if (!applyOptimum(tag, point, &written, &why)) {
             say(why, true);
             return;

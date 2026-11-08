@@ -3280,15 +3280,16 @@ QList<NodeKind> makeKinds()
         objectives.label = tr("Objectives");
         objectives.kind = P::Rows;
         objectives.defaultValue = QJsonArray();
-        objectives.choiceLabels = {tr("Expression"), tr("Kind"), tr("Value"), tr("Weight"), tr("Over"), tr("Study")};
+        objectives.choiceLabels = {tr("Expression"), tr("Kind"), tr("Value"), tr("Weight"), tr("Over"), tr("Study"), tr("Mode")};
         objectives.columnChoices = {{}, QStringList{QStringLiteral("MIN"), QStringLiteral("MAX"), QStringLiteral("TARGET"), QStringLiteral("LE"), QStringLiteral("GE"),
                                                     QStringLiteral("EQ"), QStringLiteral("MON")},
-                                    {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last")}, QStringList{QStringLiteral("@studies")}};
+                                    {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last")}, QStringList{QStringLiteral("@studies")}, {}};
         objectives.tooltip = tr("Each an expression of the results - a global value (es.C11, ht.Tmax), a Derived Values node's (lp1.Z0), the parameters - and what is "
                                 "asked of it: MIN as small and MAX as large as it can be; TARGET at Value, the square of its miss relative to Value counted (least "
                                 "squares); LE, GE and EQ limits at Value; MON only shown. Weight: how much it counts among the others (1). Over: of a sweep, of "
                                 "output times or frequencies, its worst value (as an optimization component's goals) or its last (as ngspice's optimize). Study: "
-                                "read from another study, solved for each candidate too; empty: this one.");
+                                "read from another study, solved for each candidate too; empty: this one. Mode: of a mode analysis, the mode read - 1, "
+                                "2...; empty: the one its step chose, else the first, as a solve's globals; all: every mode, by its worst.");
         P variation;
         variation.key = QStringLiteral("variation");
         variation.label = tr("Spreads");
