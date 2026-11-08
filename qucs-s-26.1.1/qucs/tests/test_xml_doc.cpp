@@ -36,6 +36,7 @@
 #include "qucscontrol.h"
 #include "syntax.h"
 #include "xmldoc.h"
+#include "menu_owner_close.h"
 #include "xmlmodel.h"
 
 using namespace qucs_s::xml;
@@ -217,6 +218,23 @@ private slots:
     }
 
     // Not well formed: the first error, where; what came before it read.
+    // The tab closed by its close button while the tree's menu is up: the
+    // menu goes with it and nothing is freed twice (docs/bug_hunts/
+    // 2026-11-07-layout-close-crash.md: a QMenu on the stack of the slot,
+    // shown with exec(), freed as if allocated when the tab closed in
+    // exec()'s loop - the abort of 27.0.7 in the layout viewer).
+    void aTabClosedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        XmlDoc* doc = open("menu.xml", "<catalog><book id=\"1\"><title>One</title></book></catalog>\n");
+        QVERIFY(doc != nullptr);
+        ContextMenuTabWidget* pane = app->paneOf(doc);
+        QVERIFY(pane != nullptr);
+        const QString wrong = menu_owner_close::closeWithMenuUp(
+            doc, [doc] { emit doc->tree()->customContextMenuRequested(QPoint(5, 5)); },
+            [pane, doc] { menu_owner_close::clickClose(pane, doc); });
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+    }
+
     void anErrorIsFound()
     {
         const Parsed p = parse(QStringLiteral("<a>\n  <b>one</b>\n  <c>two</d>\n</a>\n"));

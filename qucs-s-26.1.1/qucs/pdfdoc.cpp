@@ -19,6 +19,7 @@
 #endif
 #include "links.h"
 #include "misc.h"
+#include "popupmenu.h"
 #include "qucs.h"
 #include "settings.h"
 
@@ -1683,19 +1684,19 @@ void PdfDoc::buildUi()
         });
     });
     connect(a_view, &PageView::menuRequested, this, [this](QPoint at) {
-        QMenu menu(this);
-        QAction* copy = menu.addAction(tr("Copy"), this, &PdfDoc::copySelection);
+        auto* menu = new QMenu(this);
+        QAction* copy = menu->addAction(tr("Copy"), this, &PdfDoc::copySelection);
         copy->setEnabled(a_view->hasSelection());
         copy->setShortcut(QKeySequence::Copy);
-        menu.addAction(tr("Select the Page's Text"), this, &PdfDoc::selectAll);
-        menu.addSeparator();
-        menu.addAction(tr("Fit Width"), this, [this] { a_view->setFit(PageView::Fit::Width); });
-        menu.addAction(tr("Fit Page"), this, [this] { a_view->setFit(PageView::Fit::Page); });
-        menu.addAction(tr("Actual Size"), this, [this] { a_view->setZoom(1.0); });
-        menu.addSeparator();
-        menu.addAction(tr("Find..."), this, &PdfDoc::showSearch);
-        menu.addAction(tr("Open with the System's Viewer"), this, &PdfDoc::openExternally);
-        menu.exec(at);
+        menu->addAction(tr("Select the Page's Text"), this, &PdfDoc::selectAll);
+        menu->addSeparator();
+        menu->addAction(tr("Fit Width"), this, [this] { a_view->setFit(PageView::Fit::Width); });
+        menu->addAction(tr("Fit Page"), this, [this] { a_view->setFit(PageView::Fit::Page); });
+        menu->addAction(tr("Actual Size"), this, [this] { a_view->setZoom(1.0); });
+        menu->addSeparator();
+        menu->addAction(tr("Find..."), this, &PdfDoc::showSearch);
+        menu->addAction(tr("Open with the System's Viewer"), this, &PdfDoc::openExternally);
+        qucs_s::popUp(menu, at);
     });
     connect(a_thumbnails, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0) a_view->goToPage(row);

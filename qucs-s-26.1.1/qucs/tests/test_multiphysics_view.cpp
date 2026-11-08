@@ -17,6 +17,7 @@
  * QUCS_VIEW_SAVE=<folder>: the GPU's and the CPU's pictures there.
  */
 #include "multiphysicsview.h"
+#include "menu_owner_close.h"
 #include "multiphysicssettings.h"
 #include "gpurendering.h"
 
@@ -259,6 +260,25 @@ private slots:
         view.removeEventFilter(&watch);
         QVERIFY(seen);
         QVERIFY(!view.gpu());
+    }
+
+    // The view freed while its menu is up - its tab closed through the
+    // menu: the menu goes with it, nothing freed twice (docs/bug_hunts/
+    // 2026-11-07-layout-close-crash.md: a QMenu on the stack, shown with
+    // exec(), freed as if allocated).
+    void theViewFreedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        auto* view = new GraphicsView;
+        view->setGpu(false);
+        view->resize(300, 200);
+        const QString wrong = menu_owner_close::closeWithMenuUp(
+            view,
+            [view] {
+                QContextMenuEvent e(QContextMenuEvent::Mouse, QPoint(20, 20), view->mapToGlobal(QPoint(20, 20)));
+                QCoreApplication::sendEvent(view, &e);
+            },
+            [view] { delete view; });
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
     }
 
     // A wheel zooms or pans as Application Settings' Mouse wheel says, Ctrl

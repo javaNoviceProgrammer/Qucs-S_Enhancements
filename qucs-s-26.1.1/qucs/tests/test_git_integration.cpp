@@ -47,6 +47,7 @@
 #include "filebrowser.h"
 #include "gitgraph.h"
 #include "githistory.h"
+#include "menu_owner_close.h"
 #include "gitrepo.h"
 #include "gitstatus.h"
 #include "gitui.h"
@@ -1294,6 +1295,27 @@ private slots:
         QPointer<HistoryView> gone = history;
         history->close();
         QTRY_VERIFY(gone.isNull());
+    }
+
+    // The History closed while a commit's menu is up: the menu goes with
+    // it, freed once (docs/bug_hunts/2026-11-07-layout-close-crash.md: the
+    // menu, the History's child, shown with exec() and freed after it,
+    // was freed with the History in exec()'s loop, then again).
+    void theHistoryClosedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        QVERIFY(!Commands::historyDocked());
+        const QString repo = makeRepo("menuup");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/notes.txt", "menu\n"));
+        QVERIFY(commit(repo, "one", false, {repo + "/notes.txt"}).ok());
+        HistoryView* history = Commands::instance()->showHistory(repo);
+        QVERIFY(history != nullptr);
+        QTRY_VERIFY(history->commits()->model()->rowCount() > 0);
+        QTreeView* commits = history->commits();
+        const QString wrong = menu_owner_close::closeWithMenuUp(
+            history, [commits] { emit commits->customContextMenuRequested(commits->visualRect(commits->model()->index(0, 0)).center()); },
+            [history] { history->close(); });
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
     }
 
     // The History a panel (as Git > Settings... can have it): docked in the

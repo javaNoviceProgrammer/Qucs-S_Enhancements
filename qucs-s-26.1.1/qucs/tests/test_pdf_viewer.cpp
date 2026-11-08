@@ -53,6 +53,7 @@
 #include "misc.h"
 #include "module.h"
 #include "pdfdoc.h"
+#include "menu_owner_close.h"
 #include "qucs.h"
 #include "qucscontrol.h"
 #include "schematic.h"
@@ -333,6 +334,24 @@ private slots:
 
     // From the Content panel and the File Browser (and a drop): the same
     // tab, not the system's viewer.
+    // The tab closed by its close button while the page's menu is up: the
+    // menu goes with it and nothing is freed twice (docs/bug_hunts/
+    // 2026-11-07-layout-close-crash.md: a QMenu on the stack of the slot,
+    // shown with exec(), freed as if allocated when the tab closed in
+    // exec()'s loop - the abort of 27.0.7 in the layout viewer).
+    void aTabClosedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        QVERIFY(app->gotoPage(file));
+        PdfDoc* doc = pdf();
+        QVERIFY(doc != nullptr);
+        ContextMenuTabWidget* pane = app->paneOf(doc);
+        QVERIFY(pane != nullptr);
+        const QString wrong = menu_owner_close::closeWithMenuUp(
+            doc, [doc] { emit doc->view()->menuRequested(doc->view()->mapToGlobal(QPoint(20, 20))); },
+            [pane, doc] { menu_owner_close::clickClose(pane, doc); });
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+    }
+
     void itOpensFromThePanels()
     {
         const int tabs = app->DocumentTab->count();

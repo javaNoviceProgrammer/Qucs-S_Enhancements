@@ -35,6 +35,7 @@
 #include "module.h"
 #include "pptx.h"
 #include "pptxdoc.h"
+#include "menu_owner_close.h"
 #include "qucs.h"
 #include "settings.h"
 #include "qucscontrol.h"
@@ -1530,6 +1531,39 @@ private slots:
         QTRY_COMPARE(app.DocumentTab->count(), 1);   // (an untitled schematic in its place)
         QApplication::processEvents();
         QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+
+    // The tab closed by its close button while the slide's menu is up: the
+    // menu goes with it and nothing is freed twice (docs/bug_hunts/
+    // 2026-11-07-layout-close-crash.md: a QMenu on the stack of the slot,
+    // shown with exec(), freed as if allocated when the tab closed in
+    // exec()'s loop - the abort of 27.0.7 in the layout viewer).
+    void aTabClosedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        Deck::SlideSpec s;
+        s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("One")))), "<p:ph type=\"title\"/>");
+        d.slides << s;
+        const QString file = dir.filePath("workspace/menu.pptx");
+        QDir().mkpath(QFileInfo(file).absolutePath());
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly) && f.write(d.build()) > 0);
+        f.close();
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        ContextMenuTabWidget* pane = app.paneOf(doc);
+        QVERIFY(pane != nullptr);
+        const QString wrong = menu_owner_close::closeWithMenuUp(
+            doc, [doc] { emit doc->view()->menuRequested(doc->view()->mapToGlobal(QPoint(20, 20)), 0); },
+            [pane, doc] { menu_owner_close::clickClose(pane, doc); });
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+        app.closeAllFiles();
     }
 
     void opensInATab()

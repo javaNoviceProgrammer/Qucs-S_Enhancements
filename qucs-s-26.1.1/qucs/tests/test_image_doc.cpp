@@ -38,6 +38,7 @@
 #include "extsimkernels/spicecompat.h"
 #include "filebrowser.h"
 #include "imagedoc.h"
+#include "menu_owner_close.h"
 #include "isolated_settings.h"
 #include "main.h"
 #include "misc.h"
@@ -391,6 +392,23 @@ private slots:
     // From the Content panel and the File Browser, and a drop - an SVG,
     // which is text, too: the same tab, not the system's viewer nor the
     // text editor.
+    // The tab closed by its close button while the picture's menu is up: the
+    // menu goes with it and nothing is freed twice (docs/bug_hunts/
+    // 2026-11-07-layout-close-crash.md: a QMenu on the stack of the slot,
+    // shown with exec(), freed as if allocated when the tab closed in
+    // exec()'s loop - the abort of 27.0.7 in the layout viewer).
+    void aTabClosedWithItsMenuUpTakesTheMenuWithIt()
+    {
+        ImageDoc* d = open(png);
+        QVERIFY(d != nullptr);
+        ContextMenuTabWidget* pane = app->paneOf(d);
+        QVERIFY(pane != nullptr);
+        const QString wrong = menu_owner_close::closeWithMenuUp(
+            d, [d] { emit d->view()->menuRequested(d->view()->mapToGlobal(QPoint(10, 10)), QPoint(1, 1)); },
+            [pane, d] { menu_owner_close::clickClose(pane, d); });
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
+    }
+
     void itOpensFromThePanels()
     {
         const int tabs = app->DocumentTab->count();
