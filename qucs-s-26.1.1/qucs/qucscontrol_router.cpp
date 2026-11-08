@@ -383,9 +383,11 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
             done(errorResult(error));
             return;
         }
-        s->jobChanged();
+        // Marked changed (the last routes old) and saved only when it is: a
+        // call that only reads leaves both alone (the note of 8 November).
         QString saveError;
-        const bool saved = s->saveJob(&saveError);
+        const bool changed = s->jobEdited(before, &saveError);
+        const bool saved = saveError.isEmpty();
         QJsonObject o{{"layout", QDir::toNativeSeparators(layout->file)}, {"technology", t.name}, {"grid µm", t.grid},
                       {"nets", job.nets.size()}, {"keep-outs", job.keepOuts.size()}, {"route cell", job.routeCell}};
         QJsonArray metals, classes;
@@ -400,6 +402,7 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
                                                 .arg(t.toMetal)
                                                 .arg(t.toTerminal));
         o.insert(QStringLiteral("job file"), saved ? QDir::toNativeSeparators(s->jobFile()) : tr("not written: %1").arg(saveError));
+        o.insert(QStringLiteral("job changed"), changed);
         if (job.nets.isEmpty()) {
             o.insert(QStringLiteral("note"), tr("No nets yet: 'nets' (or 'nets_csv') adds them."));
             done(jsonResult(o));
@@ -713,6 +716,7 @@ QJsonObject QucsControl::routeAssignPads(const QJsonObject& args)
     }
     const bool apply = args.value(QLatin1String("apply")).toBool();
     if (apply) {
+        const Job before = s->job;
         for (int k = 0; k < nets.size(); ++k) {
             if (pairing[k] < 0) continue;
             const int j = s->job.netIndex(p.nets.at(nets[k]).name);
@@ -723,9 +727,8 @@ QJsonObject QucsControl::routeAssignPads(const QJsonObject& args)
             t.hasPoint = true;
             t.text.clear();
         }
-        s->jobChanged();
         QString e;
-        s->saveJob(&e);
+        s->jobEdited(before, &e);
     }
     return jsonResult(QJsonObject{{"pairs", rows},
                                   {"distance before µm", um3(before)},

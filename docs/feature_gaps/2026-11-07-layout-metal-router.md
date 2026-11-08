@@ -354,6 +354,19 @@ outside check. It found one real bug and several things that read worse than the
 | 7 | **Via arrays** (2 × 2 cuts asked for) | `cuts` and `cut_spacing` as proposed; the landing from the array's outline; every cut committed. On the 10/4 chip with the test's array (3 µm cuts 2 µm apart, 1 µm enclosed), 200 of 200 clean. **Not done:** a class's own array, and fewer cuts where a full array does not fit. An array whose landing is wider than a class's line is allowed, not refused as the test proposed: lines and landings of any width are legal |
 | 8 | Smaller items | The "anywhere" hint is not given to a terminal in mode anywhere; a terminal inside a keep-out that lets no net in is warned of in `route_setup`; "not routed: not routed" is said once; `route_run` says when its findings are cut short; `route_assign_pads` writes 100, not 99.99999999999999; `route_stop`'s boolean is `ended`, so `stopped` is always why a run ended; a CSV takes `start_mode` and `pad_mode` (`mode` for both, as before) |
 
+## A `route_setup` that only reads (8 November)
+
+`qucs-reviews/LayoutViewer/2026-11-08-router-noop-setup-stale.md`: `route_setup` with only its `path` (called to read the
+terminals, warnings and memory estimate) marked the last routes old, so the next `route_commit` was refused ("The job has
+changed since the routes were made"), and the job file was rewritten byte for byte, a new time on it. `route_assign_pads`
+with `apply` did the same when no pad moved.
+
+Now `Session::jobEdited` compares the edited job with the one before, as its file writes it, and the technology file's
+contents (a file changed on disk under the same name is a change). Only a job that differs is marked changed and saved.
+`route_setup` answers `job changed`. `claudeRoutesALayoutWithTheTools` routes, calls `route_setup` with only the path,
+and finds the job file's bytes and time unchanged, the state `done` and a commit through; then changes a net and finds
+`job changed` true and a commit refused. The break that puts the old behaviour back is caught (`breaks.py`).
+
 ## What could not be verified
 
 - **Qt 6.10.3.** Everything ran on Homebrew's 6.12.0. The router uses `QCryptographicHash::addData(QByteArrayView)` (Qt

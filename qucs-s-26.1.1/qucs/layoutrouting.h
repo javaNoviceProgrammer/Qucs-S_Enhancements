@@ -73,6 +73,12 @@ public:
     bool saveJob(QString* error) const;
     bool loadJob(QString* error);
     void jobChanged();
+    /// After the job was edited from \a before: marked changed and saved
+    /// only when it differs - as its file has it, or by its technology
+    /// file's contents. A call that only reads leaves the last result
+    /// current and the file untouched. Whether it changed; a save's
+    /// failure in \a error.
+    bool jobEdited(const router::Job& before, QString* error);
     /// The layout's file was read again: what was prepared is of the old one
     /// (the job, and the last result, stand).
     void layoutChanged() { a_prepared.reset(); }
@@ -127,6 +133,8 @@ private:
     std::shared_ptr<router::Router> a_prepared;
     QStringList a_warnings;
     quint64 a_jobRevision = 1;
+    QByteArray a_techSignature;   // the technology file's contents, hashed, at the last change
+    QByteArray techSignature() const;
 
     QThread* a_thread = nullptr;
     std::shared_ptr<std::atomic_bool> a_cancel;
