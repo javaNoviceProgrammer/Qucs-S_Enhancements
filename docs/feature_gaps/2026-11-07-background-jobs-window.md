@@ -323,3 +323,13 @@ opt-in real ngspice, which passes when asked), `test_claude_code` 90 pass and 1 
 Release and under ASan and UBSan; `test_qucs_control` 218 pass and 1 skip, Release only. The four lints are green (148 tools).
 **Breaks:** nine new ones in `breaks.py`, 47 in all. Those nine and two of the older were run on this code, and all were caught; the
 other 36 were last run before these fixes.
+
+## A task's end while Claude writes (8 November)
+
+The user, with a picture: when a task sent to the background ended while Claude was writing, the reply began again under the note,
+and again under the next, each copy cut where the note came. The note ended the reply being written (`ClaudeCodePanel::append` ends
+it at any other entry), and the reply's next piece, which carries all of it so far, began a new one. A note while a reply is written
+now goes above the reply, and the reply goes on; the reply's end takes its place as before. Notes are the only entries that come
+in the middle of a reply: a prompt cannot be sent while Claude is busy, and a problem means Claude Code itself has failed.
+`aNoteWhileAReplyIsWrittenLeavesItWhole` (`test_claude_code`) ends a background task and adds a note between pieces: the reply
+is there once, the notes above it in the order they came, the part drawn again as drawn whole. It fails without the fix.

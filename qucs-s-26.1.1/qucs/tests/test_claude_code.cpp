@@ -5719,6 +5719,50 @@ private slots:
         QCOMPARE(view->textCursor().selectedText(), QStringLiteral("bold"));
     }
 
+    // A task in the background ending while a reply is written: its note
+    // above the reply, which goes on, written once. (Each note ended it, and
+    // its next piece began a copy of it all: the user's picture of 8
+    // November.)
+    void aNoteWhileAReplyIsWrittenLeavesItWhole()
+    {
+        ClaudeCodePanel panel;
+        showForReply(panel, "replynote");
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        auto feed = [&panel](const QJsonObject& m) { panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact)); };
+        feed({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "t1"}, {"tool_use_id", "u1"},
+              {"description", "Run production cases"}, {"task_type", "local_bash"}, {"is_backgrounded", true}});
+        feedReply(panel, QStringLiteral("An earlier reply."));
+        feedPiece(panel, QStringLiteral("Yes. The implant step"), true);
+        feed({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "t1"}, {"status", "completed"}, {"summary", "done"}});
+        panel.renderNow();
+        const QString note = QString::fromUtf8("“Run production cases”, sent to the background, has finished.");
+        QVERIFY(panel.transcriptText().contains(note));
+        QVERIFY(panel.transcriptText().endsWith(QStringLiteral("Yes. The implant step ▍")));
+        feedPiece(panel, QStringLiteral(" cannot predict"));
+        panel.addNote(QStringLiteral("A second note."));
+        feedPiece(panel, QStringLiteral(" channelling."));
+        // (Drawn from the note on: as drawn whole.)
+        const QString part = drawn(panel.transcript()->document());
+        panel.renderNow(true);
+        QCOMPARE(part, drawn(panel.transcript()->document()));
+        const QString text = panel.transcriptText();
+        QCOMPARE(text.count(QStringLiteral("Yes. The implant step")), 1);
+        QVERIFY(text.endsWith(QStringLiteral("Yes. The implant step cannot predict channelling. ▍")));
+        QVERIFY(text.indexOf(QStringLiteral("An earlier reply.")) < text.indexOf(note));
+        QVERIFY(text.indexOf(note) < text.indexOf(QStringLiteral("A second note.")));
+        QVERIFY(text.indexOf(QStringLiteral("A second note.")) < text.indexOf(QStringLiteral("Yes. The implant step")));
+        // Finished: in the reply's place, still once.
+        feedReply(panel, QStringLiteral("Yes. The implant step cannot predict channelling, so I wrote one."));
+        const QString after = panel.transcriptText();
+        QCOMPARE(after.count(QStringLiteral("Yes. The implant step")), 1);
+        QVERIFY(!after.contains(QStringLiteral("▍")));
+        QVERIFY(after.trimmed().endsWith(QStringLiteral("so I wrote one.")));
+        // A note after it: below it, as before.
+        panel.addNote(QStringLiteral("A note after."));
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().indexOf(QStringLiteral("so I wrote one.")) < panel.transcriptText().indexOf(QStringLiteral("A note after.")));
+    }
+
     // A selection elsewhere: what is drawn after it, or drawn again, leaves it.
     void aSelectionStaysAsTheConversationIsDrawn()
     {
