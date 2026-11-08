@@ -311,7 +311,7 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
           QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
-          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde")},
+          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -1571,7 +1571,15 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("modes"), tr("Electromagnetic Waves, Mode Analysis"), QStringLiteral("physics"), QStringLiteral("emw"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
-                 {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"))},
+                 {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2")),
+          expr(QStringLiteral("bendradius"), tr("Bend radius"), QStringLiteral("length"), QString(),
+               tr("A bend's cross-section: its modes e^-jβs along an arc of this radius (s = Rφ) - their effective index β/k0 that "
+                  "arc's, their loss the bend's radiation (a PML beyond its outer side). The plane's x is across the bend; its axis "
+                  "at Bend's axis x. Empty: straight")),
+          shownIf(expr(QStringLiteral("bendcenter"), tr("Bend's axis x"), QStringLiteral("length"), QString(),
+                       tr("Where the axis of the bend crosses the plane's x (the geometry's unit): its centre of curvature. Empty: -R, the "
+                          "arc of radius R through x = 0")),
+                  QStringLiteral("bendradius!="))},
          {QStringLiteral("modes/wave"), QStringLiteral("modes/pml"), QStringLiteral("modes/pec"), QStringLiteral("modes/pmc"),
           QStringLiteral("modes/sheet")},
          {QStringLiteral("modes/wave"), QStringLiteral("modes/pec")}, false, false, QStringLiteral("emw"),
@@ -1709,6 +1717,106 @@ QList<NodeKind> makeKinds()
          tr("A port across a waveguide: its first mode (found on the port's line) fed at 1 W, and taken out matched; the "
             "S-parameters ewfd.S<i><j> (real and imaginary parts), ewfd.S<i><j>dB; the first port fed's reflectance "
             "|Sii|², transmittance and absorptance, ewfd.R, ewfd.T, ewfd.A.")});
+    // Light through a 3D model's waveguides: an eigenmode expansion along an
+    // axis of its plan (fem3_eme.h) - its cuts' modes by the 2D mode solver,
+    // joined by mode matching -, its ports' modes the S-parameters'.
+    {
+        // (Metal, magnetic or absorbing walls: PMLs' modes, kept as a basis,
+        // gave an MMI more power out than in - fem3_eme.h, EmeSettings.)
+        const QStringList walls = {QStringLiteral("pec"), QStringLiteral("pmc"), QStringLiteral("absorbing")};
+        const QStringList wallLabels = {tr("Perfect electric conductor"), tr("Perfect magnetic conductor"),
+                                        tr("Absorbing: a lossy layer outside (what radiates dies out)")};
+        add({QStringLiteral("eme"), tr("Electromagnetic Waves, Eigenmode Expansion"), QStringLiteral("physics"), QStringLiteral("eme"), Level::Domain,
+             {selectionProp(),
+              choice(QStringLiteral("axis"), tr("Light along"), {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("path")},
+                     {tr("+x"), tr("+y"), tr("A path: straight pieces, their corners bends")}, QStringLiteral("x"),
+                     tr("The device's axis: it is cut across it, each cut's modes carried along it, its ports at its start and end. A "
+                        "path - a bend, an S-bend, a ring's arc - its corners rounded by arcs of the bend radius, cut across each arc "
+                        "along its radius, its modes there the bend's")),
+              shownIf(expr(QStringLiteral("from"), tr("Device from"), QStringLiteral("length"), QString(),
+                           tr("Where it begins along its axis (x, or y); empty: where the geometry does")),
+                      QStringLiteral("axis!=path")),
+              shownIf(expr(QStringLiteral("to"), tr("Device to"), QStringLiteral("length"), QString(), tr("Where it ends; empty: where the geometry does")),
+                      QStringLiteral("axis!=path")),
+              [&] {
+                  P points;
+                  points.key = QStringLiteral("points");
+                  points.label = tr("Path's points (x, y)");
+                  points.kind = P::Points;
+                  points.unit = QStringLiteral("length");
+                  points.defaultValue = QJsonArray{QJsonArray{QStringLiteral("0"), QStringLiteral("0")}, QJsonArray{QStringLiteral("10"), QStringLiteral("0")},
+                                                   QJsonArray{QStringLiteral("10"), QStringLiteral("10")}};
+                  points.tooltip = tr("From its start to its end, through each corner; the light along it from the first");
+                  points.showIf = QStringLiteral("axis=path");
+                  return points;
+              }(),
+              shownIf(expr(QStringLiteral("radius"), tr("Bend radius"), QStringLiteral("length"), QStringLiteral("5"),
+                           tr("Each corner of the path rounded by an arc of this radius, tangent to its two pieces: the bend's centre line")),
+                      QStringLiteral("axis=path")),
+              choice(QStringLiteral("window"), tr("Cross-section"), {QStringLiteral("auto"), QStringLiteral("box")},
+                     {tr("The geometry's, whole"), tr("A box of it")}, QStringLiteral("auto"),
+                     tr("What each cut takes across the axis and in z: the field is nought beyond it (its walls below). A path's: a box, "
+                        "across it from its left")),
+              shownIf(pair(QStringLiteral("across"), tr("Across, from and to"), QStringLiteral("length"), QStringLiteral("-2"), QStringLiteral("2"),
+                           tr("y from and to for light along x; x for light along y; across a path, from its centre line, positive to its "
+                              "left")),
+                      QStringLiteral("window=box")),
+              shownIf(pair(QStringLiteral("height"), tr("z, from and to"), QStringLiteral("length"), QStringLiteral("-2"), QStringLiteral("2")),
+                      QStringLiteral("window=box")),
+              choice(QStringLiteral("sides"), tr("Its sides"), walls, wallLabels, QStringLiteral("pec"),
+                     tr("The cross-section's walls across the axis: far enough that the guided modes have died away there; a "
+                        "magnetic wall a plane of symmetry of a TE mode's E. Metal or magnetic walls keep what a junction radiates, "
+                        "which comes back off them (an MMI's light out, a bend's, by a percent or more); absorbing ones let it die out "
+                        "in a layer beyond them")),
+              choice(QStringLiteral("floors"), tr("Its bottom and top"), walls, wallLabels, QStringLiteral("pec")),
+              shownIf(expr(QStringLiteral("absorberthickness"), tr("Absorbing layer's thickness"), QStringLiteral("length"), QStringLiteral("1[um]"),
+                           tr("Outside the cross-section, of the material at its edge, metal behind it")),
+                      QStringLiteral("sides=absorbing|floors=absorbing")),
+              shownIf(expr(QStringLiteral("absorberkappa"), tr("Its extinction κ at the back"), QString(), QStringLiteral("1"),
+                           tr("Growing as the square of the depth to this, in its steps: the light that reaches its back and comes "
+                              "again some e^-5 of it (1 µm at 1550 nm)")),
+                      QStringLiteral("sides=absorbing|floors=absorbing")),
+              shownIf(integer(QStringLiteral("absorbersteps"), tr("Its steps"), 4, tr("Of its extinction, from the window out (1: κ throughout)")),
+                      QStringLiteral("sides=absorbing|floors=absorbing")),
+              integer(QStringLiteral("modes"), tr("Modes of each cut"), 40,
+                      tr("What the expansion carries: the guided modes and enough of the rest (the window's) that what a junction "
+                         "scatters is caught - more for a wide section (an MMI's), and a check of the S-parameters with more")),
+              choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
+                     QStringLiteral("2")),
+              expr(QStringLiteral("resolution"), tr("Elements per wavelength"), QString(), QStringLiteral("15"),
+                   tr("Of each cut's mesh, in each material: λ0/n over this - and four across each layer at least")),
+              expr(QStringLiteral("cell"), tr("Longest cell where the cut changes"), QStringLiteral("length"), QStringLiteral("0.5[um]"),
+                   tr("A taper or a curve is cut in steps no longer than this, each its middle's cut (a staircase): shorter, nearer "
+                      "the smooth device"))},
+             {QStringLiteral("eme/port")}, {}, false, false, QStringLiteral("eme"),
+             tr("Light through a 3D device's waveguides - a straight guide, a taper, an MMI, a directional coupler, a bend - along an "
+                "axis of its plan or a path whose corners are bends, by eigenmode expansion: the device cut across its axis wherever "
+                "its cross-section changes (in steps where it changes all along), each cut's modes found by the full-vector mode "
+                "solver (a bend's in the bend's own frame), the cuts joined by mode matching - forward and backward, so reflections "
+                "too - and each section's modes carried along it as e^-jβs. "
+                "Its Optical Ports' modes give the S-parameters (eme.S21, eme.S21dB, eme.S21_arg), at each wavelength of a "
+                "Wavelength Domain step - the materials' dispersion in it.")});
+        add({QStringLiteral("eme/port"), tr("Optical Port"), QStringLiteral("eme"), QStringLiteral("terminal"), Level::None,
+             {text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
+              choice(QStringLiteral("end"), tr("At"), {QStringLiteral("start"), QStringLiteral("end")}, {tr("The start of the axis"), tr("Its end")},
+                     QStringLiteral("start")),
+              choice(QStringLiteral("window"), tr("Over"), {QStringLiteral("whole"), QStringLiteral("box")},
+                     {tr("The whole cross-section"), tr("A box of it: its waveguide's")}, QStringLiteral("whole"),
+                     tr("Two or more ports at an end each take a box round its own waveguide (an MMI's outputs, a coupler's arms)")),
+              shownIf(pair(QStringLiteral("across"), tr("Across, from and to"), QStringLiteral("length"), QStringLiteral("-1"), QStringLiteral("1"),
+                           tr("y from and to for light along x; x for light along y; across a path, from its centre line at that end, "
+                              "positive to its left")),
+                      QStringLiteral("window=box")),
+              shownIf(pair(QStringLiteral("height"), tr("z, from and to"), QStringLiteral("length"), QStringLiteral("-1"), QStringLiteral("1")),
+                      QStringLiteral("window=box")),
+              text(QStringLiteral("modes"), tr("Its modes"), QStringLiteral("TE0"),
+                   tr("The modes it takes, each an S-parameter's port: by polarization and order (TE0, TM0, TE1 - TE where most of its "
+                      "transverse E lies across the axis in the plane), or by index (1, 2), split by commas")),
+              flag(QStringLiteral("excite"), tr("Fed"), true, tr("Each of its modes fed in turn: their columns of the S-matrix"))},
+             {}, {}, false, false, QStringLiteral("op"),
+             tr("Where light comes in and goes out: the modes of the device's cross-section at the start or end of its axis (or of "
+                "a box of it), each normalized to 1 W; the S-parameters between them.")});
+    }
 
     // Semiconductors.
     add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,
@@ -2876,9 +2984,9 @@ QList<NodeKind> makeKinds()
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
-         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("states"),
-          QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("eigenfrequency"), QStringLiteral("laser"),
-          QStringLiteral("sweep")},
+         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("wavelength"), QStringLiteral("mode"),
+          QStringLiteral("states"), QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("eigenfrequency"),
+          QStringLiteral("laser"), QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -2973,6 +3081,16 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("freq"),
              tr("The fields at each frequency: magnetic fields with their eddy currents, waves in the plane (complex: their "
                 "real and imaginary parts), the other physics at rest at each; kept at each frequency.")});
+        add({QStringLiteral("wavelength"), tr("Wavelength Domain"), QStringLiteral("step"), QStringLiteral("wavelength"), Level::None,
+             {physics,
+              text(QStringLiteral("wavelengths"), tr("Wavelengths"), QStringLiteral("1550[nm]"),
+                   tr("Free-space wavelengths: 1550[nm], or linspace(1500[nm], 1600[nm], 101), range(...), values split by commas "
+                      "- or frequencies in Hz")),
+              integer(QStringLiteral("parallel"), tr("Wavelengths at once"), 0,
+                      tr("Solved side by side, each on threads of its own (0: as the machine's cores allow)"))},
+             {}, {}, false, false, QStringLiteral("wl"),
+             tr("A 3D model's eigenmode expansion at each wavelength: its ports' modes and the S-parameters between them, the "
+                "materials' indices at each wavelength (their dispersion); each wavelength a solution, as an output time is.")});
         add({QStringLiteral("mode"), tr("Mode Analysis"), QStringLiteral("step"), QStringLiteral("mode"), Level::None,
              {physics,
               text(QStringLiteral("frequency"), tr("Frequency or wavelength"), QStringLiteral("1550[nm]"),
@@ -3005,6 +3123,9 @@ QList<NodeKind> makeKinds()
                    tr("Guided: those above it alone - a substrate's or cladding's index, their modes left out (empty: any)")),
               expr(QStringLiteral("maxloss"), tr("Loss below (dB/cm)"), QString(), QString(),
                    tr("Guided: those losing less alone - an absorbing layer's or a leaky mode left out (empty: any)")),
+              flag(QStringLiteral("keeplayers"), tr("Keep the PMLs' own modes"), false,
+                   tr("The perfectly matched layers' own modes (most of their field in a layer) kept with the others rather than left "
+                      "out - a radiation field's basis, as an eigenmode expansion wants")),
               choice(QStringLiteral("choose"), tr("Mode chosen"), {QStringLiteral("first"), QStringLiteral("share"), QStringLiteral("te"), QStringLiteral("tm")},
                      {tr("The first (highest effective index)"), tr("The most in the domains tracked"), tr("The most TE"), tr("The most TM")},
                      QStringLiteral("first"),
@@ -3839,7 +3960,19 @@ QList<NodeKind> makeKinds()
               shownIf(flag(QStringLiteral("mixed"), tr("Mixed-mode"), false,
                            tr("A pair's: its differential and common modes at each end, ports d1, d2, c1, c2 (Sdd, Sdc, Scd, Scc)")),
                       QStringLiteral("of=line")),
-              portsPhysics, file},
+              portsPhysics,
+              [&] {
+                  // (A 3D model's: an eigenmode expansion's S-matrix.)
+                  P optics;
+                  optics.key = QStringLiteral("optics");
+                  optics.label = tr("Eigenmode expansion");
+                  optics.kind = P::Physics;
+                  optics.defaultValue = QJsonArray();
+                  optics.tooltip = tr("Its S-matrix between its Optical Ports' modes at each wavelength (none chosen: the first)");
+                  optics.spaces = Spaces::ThreeD;
+                  return optics;
+              }(),
+              file},
              {}, {}, false, false, QStringLiteral("ts"),
              tr("A line of its length as a two-port: its S-parameters at each frequency of the study, a Touchstone file (.s2p) "
                 "for a schematic's S-parameter file part. Coupled lines: a 2N-port (ports 1 to N their near ends, N+1 to 2N "
@@ -4013,7 +4146,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("form union"), QStringLiteral("materials"), QStringLiteral("material"), QStringLiteral("mesh"),
         QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
     const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
-                                  QStringLiteral("mesh/zdistribution")};
+                                  QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("wavelength")};
     // Solved in 3D too: heat, electrostatics and currents with their
     // features, and a study's Stationary and Time Dependent steps and its
     // Parametric Sweep - the first's adaptive refinement and light loop the
@@ -4031,8 +4164,17 @@ QList<NodeKind> makeKinds()
         if (kind.type == QLatin1String("sweep"))
             for (P& p : kind.properties)
                 if (p.key == QLatin1String("parallel")) p.spaces = Spaces::TwoD;
-        // A 3D model's exports: VTU, its alone; Field on a Grid, its z too.
+        // A 3D model's exports: VTU, its alone; Field on a Grid, its z too;
+        // a Touchstone file of an eigenmode expansion's S-matrix.
         if (kind.type == QLatin1String("vtu")) kind.spaces = Spaces::ThreeD;
+        if (kind.type == QLatin1String("touchstone")) {
+            kind.spaces = Spaces::All;
+            for (P& p : kind.properties)
+                if (QStringList{QStringLiteral("of"), QStringLiteral("line"), QStringLiteral("length"), QStringLiteral("zref"), QStringLiteral("mixed"),
+                                QStringLiteral("physics")}
+                        .contains(p.key))
+                    p.spaces = Spaces::TwoD;
+        }
         if (kind.type == QLatin1String("fieldexport")) {
             kind.spaces = Spaces::All;
             for (P& p : kind.properties)
@@ -4111,7 +4253,7 @@ QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
             QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
-            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde")};
+            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme")};
 }
 
 // ------------------------------------------------------------------ Node

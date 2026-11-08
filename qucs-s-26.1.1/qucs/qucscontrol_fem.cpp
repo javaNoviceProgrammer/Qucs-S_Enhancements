@@ -3775,12 +3775,75 @@ QJsonObject QucsControl::fem3Solved(Multiphysics3DDoc* doc, const QJsonObject& a
     const QStringList& lines = s->log;
     for (qsizetype i = std::max<qsizetype>(0, lines.size() - 40); i < lines.size(); ++i) log.append(lines.at(i));
     o.insert(QStringLiteral("log"), log);
-    auto globalsOf = [](const Solution3& one) {
+    // (An eigenmode expansion's S-parameters - five globals each - are its
+    // "optics" below, not listed among the globals.)
+    static const QRegularExpression sParameter(QStringLiteral("\\.S(\\d\\d|_\\d+_\\d+)(_im|dB|_abs|_arg)?$"));
+    auto globalsOf = [s](const Solution3& one) {
         QJsonObject g;
-        for (const Variable& v : one.globals()) g.insert(v.name, one.globalText(v.name));
+        for (const Variable& v : one.globals())
+            if (!s->spectral || !sParameter.match(v.name).hasMatch()) g.insert(v.name, one.globalText(v.name));
         return g;
     };
     o.insert(QStringLiteral("globals"), globalsOf(*s));
+    if (s->spectral && !s->optics.empty()) {
+        // Each expansion: its S-parameter ports, and at each wavelength (21
+        // at most, evenly) |S|² in dB and the phase, a row a fed port mode's
+        // column - what each port mode fed leaves by each.
+        QJsonArray optics;
+        for (const Solution3::Optics& oc : s->optics) {
+            if (oc.results.empty()) continue;
+            const EmeResult& first = oc.results.front();
+            QJsonArray ports;
+            for (int i = 0; i < int(first.portModes.size()); ++i) {
+                const EmeResult::PortMode& pm = first.portModes[std::size_t(i)];
+                const EmePort& port = oc.device.ports[std::size_t(pm.port)];
+                ports.append(QJsonObject{{QStringLiteral("S-parameter port"), i + 1},
+                                         {QStringLiteral("optical port"), port.name},
+                                         {QStringLiteral("mode"), pm.label},
+                                         {QStringLiteral("at"), port.atEnd ? QStringLiteral("end") : QStringLiteral("start")},
+                                         {QStringLiteral("fed"), port.excite}});
+            }
+            QJsonArray rows;
+            const int n = int(oc.results.size()), step = std::max(1, (n + 19) / 20);
+            for (int k = 0; k < n; k += (k + step < n || k == n - 1) ? step : n - 1 - k) {
+                const EmeResult& r = oc.results[std::size_t(k)];
+                QJsonObject row{{QStringLiteral("wavelength"), formatQuantity(299792458.0 / r.frequency, Dim::length())}};
+                QJsonArray neff;
+                for (const EmeResult::PortMode& pm : r.portModes) neff.append(formatNumber(pm.neff.real(), 6));
+                row.insert(QStringLiteral("neff"), neff);
+                QJsonObject fed;
+                for (int j = 0; j < int(r.portModes.size()); ++j) {
+                    if (!oc.device.ports[std::size_t(r.portModes[std::size_t(j)].port)].excite) continue;
+                    QJsonArray col;
+                    for (int i = 0; i < int(r.portModes.size()); ++i)
+                        col.append(QStringLiteral("S%1%2 %3 dB %4°")
+                                       .arg(i + 1)
+                                       .arg(j + 1)
+                                       .arg(formatNumber(10 * std::log10(std::norm(r.S(i, j))), 5), formatNumber(std::arg(r.S(i, j)) * 180 / M_PI, 4)));
+                    col.append(tr("out %1 %").arg(formatNumber(100 * r.balance[std::size_t(j)], 6)));
+                    fed.insert(QString::number(j + 1), col);
+                }
+                row.insert(QStringLiteral("fed"), fed);
+                rows.append(row);
+                if (k == n - 1) break;
+            }
+            QJsonObject one{{QStringLiteral("physics"), oc.physics},
+                            {QStringLiteral("S-parameter ports"), ports},
+                            {QStringLiteral("cells"), int(first.cells.size())},
+                            {QStringLiteral("distinct cuts"), first.sections},
+                            {QStringLiteral("wavelengths"), rows}};
+            QJsonArray warnings;
+            for (const QString& w : first.warnings) warnings.append(w);
+            if (!warnings.isEmpty()) one.insert(QStringLiteral("warnings"), warnings);
+            if (n > 21)
+                one.insert(QStringLiteral("all"), tr("%1 wavelengths solved: fem_evaluate all=true expression=%2.S21dB gives any at each, a Touchstone "
+                                                     "export node (fem_export) all of the S-matrix")
+                                                      .arg(n)
+                                                      .arg(oc.physics));
+            optics.append(one);
+        }
+        o.insert(QStringLiteral("optics"), optics);
+    }
     estimatesInto(o, doc->estimates());
     if (s->timeDependent && s->snapshotCount() > 0)
         o.insert(QStringLiteral("output times"), QJsonObject{{QStringLiteral("count"), s->snapshotCount()},
@@ -3815,16 +3878,20 @@ QJsonObject QucsControl::fem3Evaluate(Multiphysics3DDoc* doc, const QJsonObject&
 {
     const QString expression = args.value(QLatin1String("expression")).toString().trimmed();
     if (expression.isEmpty()) return errorResult(tr("'expression': what is evaluated (ht.T, es.normE, ht.Tmax...)"));
+    // (A wavelength or frequency: an eigenmode expansion's, solved over them.)
+    const bool spectral = doc->solution() && doc->solution()->spectral;
     for (const char* key : {"step", "x", "frequency", "mode", "state"})
-        if (args.contains(QLatin1String(key)))
-            return errorResult(tr("'%1' is a 2D model's: a 3D model's studies are at rest, in time and swept.").arg(QLatin1String(key)));
+        if (args.contains(QLatin1String(key)) && !(spectral && QLatin1String(key) == QLatin1String("frequency")))
+            return errorResult(tr("'%1' is a 2D model's: a 3D model's studies are at rest, in time, over wavelengths (an eigenmode expansion's: "
+                                  "'frequency' its wavelength or frequency) and swept.")
+                                   .arg(QLatin1String(key)));
     const Solutions3& set = doc->solutions();
     if (set.empty() || !doc->solution()) return errorResult(tr("The study is not solved yet: fem_solve solves it."));
     if (const QString study = args.value(QLatin1String("study")).toString(); !study.isEmpty() && study != doc->solution()->studyTag)
         return errorResult(tr("The study solved is %1: fem_solve study=%2 first.").arg(doc->solution()->studyTag, study));
     const bool all = args.value(QLatin1String("all")).toBool();
     QString why;
-    const QJsonValue timeArg = args.value(QLatin1String("time"));
+    const QJsonValue timeArg = spectral && args.contains(QLatin1String("frequency")) ? args.value(QLatin1String("frequency")) : args.value(QLatin1String("time"));
     const QString time = timeArg.isDouble() ? formatNumber(timeArg.toDouble(), 15) : timeArg.toString();
     const std::vector<Instance3> at = all ? instances3(set, true) : instances3(set, false, args.value(QLatin1String("point")).toInt(0), time, &why);
     if (at.empty()) return errorResult(why.isEmpty() ? tr("There is no such solution.") : why);
@@ -3977,6 +4044,17 @@ QJsonObject QucsControl::fem3Plot(Multiphysics3DDoc* doc, const QJsonObject& arg
                                    .arg(QLatin1String(key)));
     if (const QString study = args.value(QLatin1String("study")).toString(); !study.isEmpty() && (!doc->solution() || study != doc->solution()->studyTag))
         return errorResult(tr("%1 is not the study solved: fem_solve study=%1 first.").arg(study));
+    // An eigenmode expansion's spectrum: its dataset written and shown.
+    if (args.value(QLatin1String("spectrum")).toBool()) {
+        QString why;
+        const QString dat = doc->showSpectrum(true, &why);
+        if (dat.isEmpty()) return errorResult(why);
+        return jsonResult(QJsonObject{{QStringLiteral("spectrum"), QDir::toNativeSeparators(dat)},
+                                      {QStringLiteral("shown"), tr("|S|² in dB of the first fed port mode against the wavelength, in its display "
+                                                                   "(%1_spectrum.dpl); the dataset has every S-parameter's dB and phase and each port "
+                                                                   "mode's index")
+                                                                    .arg(QFileInfo(dat).completeBaseName().chopped(QStringLiteral("_spectrum").size()))}});
+    }
     // The time and point shown: those asked.
     if (args.contains(QLatin1String("point")) && doc->solutions().size() > 1) {
         const int point = args.value(QLatin1String("point")).toInt();
