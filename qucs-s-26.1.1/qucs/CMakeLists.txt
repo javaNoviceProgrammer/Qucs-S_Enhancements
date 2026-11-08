@@ -444,7 +444,7 @@ set(app_icon_resource_windows "${CMAKE_CURRENT_SOURCE_DIR}/qucs_icon.rc")
 # that the application and the unit tests (tests/) link identically.
 #
 if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
-  list(APPEND QUCS_SRCS pdfdoc.cpp pdfvector.cpp plotdigitizer.cpp plotdigitizer_trace.cpp plotdigitizerpanel.cpp)
+  list(APPEND QUCS_SRCS pdfdoc.cpp pdfvector.cpp plotdigitizer.cpp plotdigitizer_trace.cpp plotdigitizer_raster.cpp plotdigitizerpanel.cpp)
 endif()
 if(QUCS_GPU_VIEW_ON)
   list(APPEND QUCS_SRCS rhicanvas.cpp multiphysicsviewgpu.cpp layoutviewgpu.cpp)
