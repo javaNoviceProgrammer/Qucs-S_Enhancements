@@ -557,9 +557,13 @@ QString followSaid(const QJsonObject& o)
     for (const QJsonValue& v : o.value(QStringLiteral("leaves")).toArray()) {
         const QJsonObject l = v.toObject();
         const QString side = l.value(QStringLiteral("side")).toString();
-        leaves << QStringLiteral("leaving it between %1 and %2 to go %3 µm %4 it")
-                      .arg(at(l.value(QStringLiteral("at"))), at(l.value(QStringLiteral("back"))), numberSaid(l.value(QStringLiteral("by")).toDouble()),
-                           side == QLatin1String("left") || side == QLatin1String("right") ? QStringLiteral("to the %1 of").arg(side) : side);
+        QString leave = QStringLiteral("leaving it at %1 and coming back at %2, %3 µm %4 it")
+                            .arg(at(l.value(QStringLiteral("at"))), at(l.value(QStringLiteral("back"))), numberSaid(l.value(QStringLiteral("by")).toDouble()),
+                                 side == QLatin1String("left") || side == QLatin1String("right") ? QStringLiteral("to the %1 of").arg(side) : side);
+        QStringList turns;
+        for (const QJsonValue& t : l.value(QStringLiteral("its own line turning at")).toArray()) turns << at(t);
+        if (!turns.isEmpty()) leave += QStringLiteral(" (the %1 itself turning at %2)").arg(o.value(QStringLiteral("kind")).toString(), turns.join(QStringLiteral(" and ")));
+        leaves << leave;
     }
     if (!leaves.isEmpty()) s += QStringLiteral(", ") + leaves.join(QStringLiteral(", then "));
     return s;
@@ -826,6 +830,20 @@ QString sentenceOf(const QJsonObject& reading, const QString& where, const QStri
                                                           {"highlights", "over"},     {"on", "on"},            {"from", "from"},
                                                           {"points at", "pointing at"}, {"at", "at"}};
     for (const auto& [key, words] : fields) {
+        // (What a small mark is on: the one shape that holds it.)
+        if (QLatin1String(key) == QLatin1String("on") && has("on shapes")) {
+            QStringList parts;
+            for (const QJsonValue& v : value("on shapes").toArray()) {
+                const QJsonObject on = v.toObject();
+                const QJsonArray b = on.value(QStringLiteral("box")).toArray();
+                parts << QStringLiteral("the %1 %2%3 (its box %4 to %5)")
+                             .arg(on.value(QStringLiteral("layer")).toString(), on.value(QStringLiteral("kind")).toString(),
+                                  on.contains(QStringLiteral("in")) ? QStringLiteral(" in ") + on.value(QStringLiteral("in")).toString() : QString(),
+                                  pointSaid(QPointF(b.at(0).toDouble(), b.at(1).toDouble())), pointSaid(QPointF(b.at(2).toDouble(), b.at(3).toDouble())));
+            }
+            s += QStringLiteral(" on ") + parts.join(QStringLiteral(" and "));
+            continue;
+        }
         if (has(key)) s += QStringLiteral(" %1 %2").arg(QLatin1String(words), said(value(key)));
         // (A ring round part of something large: which part.)
         if (QLatin1String(key) == QLatin1String("around") && has("holds part of"))

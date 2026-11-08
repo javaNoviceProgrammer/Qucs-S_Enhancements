@@ -246,9 +246,14 @@ double polylineMiss(const QPolygonF& p, const QPolygonF& corners, bool closed, d
 /// round grid within \a tolerance; what it snapped to in \a what.
 double snapped(double value, const QList<Snap>& near, double reach, double tolerance, double finest, QString* what)
 {
+    // (By kind first, then by distance: a run drawn a spread off a path's
+    //  centre line and nearer its edge is the centre line's - the check of
+    //  8 November, 5.)
     const Snap* best = nullptr;
-    for (const Snap& s : near)
-        if (std::abs(s.value - value) <= reach && (best == nullptr || std::abs(s.value - value) < std::abs(best->value - value))) best = &s;
+    for (const Snap& s : near) {
+        if (!(std::abs(s.value - value) <= reach)) continue;
+        if (best == nullptr || s.rank < best->rank || (s.rank == best->rank && std::abs(s.value - value) < std::abs(best->value - value))) best = &s;
+    }
     if (best != nullptr) {
         *what = best->what;
         return best->value;
@@ -468,13 +473,16 @@ std::optional<Polyline> polylineOf(const QPolygonF& points, double width, bool c
         out.endsSnappedTo = {whatStart, whatEnd};
     }
 
-    // Near symmetric? Its corners (an open one's ends apart) mirrored about
-    // an upright or a level line.
+    // Its own mirror line, and whether that is a line of the layout's: its
+    // corners (an open one's ends apart) mirrored about an upright or a
+    // level line.
     if (!closed && out.drawn.size() >= 4) {
         const QPolygonF inner = out.drawn.mid(1, out.drawn.size() - 2);
         const int m = int(inner.size());
         const double allowed = std::max(2 * width, 0.05 * size);
         for (const bool upright : {true, false}) {
+            const QList<Snap>& lines = upright ? snaps.uprights : snaps.levels;
+            if (lines.isEmpty()) continue;
             const auto along = [upright](QPointF q) { return upright ? q.x() : q.y(); };
             const auto other = [upright](QPointF q) { return upright ? q.y() : q.x(); };
             double axis = 0;
@@ -483,15 +491,19 @@ std::optional<Polyline> polylineOf(const QPolygonF& points, double width, bool c
             double within = 0;
             for (int j = 0; j < m; ++j)
                 within = std::max(within, std::hypot(2 * axis - along(inner.at(j)) - along(inner.at(m - 1 - j)), other(inner.at(j)) - other(inner.at(m - 1 - j))));
-            if (within <= allowed && (out.axis.isEmpty() || within < out.within)) {
-                out.axis = upright ? QStringLiteral("x") : QStringLiteral("y");
-                out.axisAt = axis;
-                out.within = within;
-                // (Its ends, where the pen happened to come down and lift,
-                //  more strictly.)
-                const QPointF a = out.drawn.first(), b = out.drawn.last();
-                out.endsToo = std::hypot(2 * axis - along(a) - along(b), other(a) - other(b)) <= std::max({2 * width, 0.02 * size, 2 * within});
-            }
+            if (within > allowed || (!out.axis.isEmpty() && within >= out.within)) continue;
+            // The layout's line it is to be judged by: the first ranked, the
+            // nearest among those.
+            const Snap* line = nullptr;
+            for (const Snap& l : lines)
+                if (line == nullptr || l.rank < line->rank || (l.rank == line->rank && std::abs(l.value - axis) < std::abs(line->value - axis))) line = &l;
+            out.axis = upright ? QStringLiteral("x") : QStringLiteral("y");
+            out.axisAt = axis;
+            out.within = within;
+            out.referenced = true;
+            out.reference = line->value;
+            out.referenceIs = line->what;
+            out.centred = std::abs(axis - line->value) <= std::max({2 * width, 0.02 * size, 2 * within});
         }
     }
     return out;
@@ -525,7 +537,22 @@ QJsonObject polylineJson(const Polyline& pl)
     o.insert(QStringLiteral("runs"), runs);
     QJsonArray drawn, snapped;
     for (const QPointF& q : pl.drawn) drawn.append(pointJson(q, step));
-    for (const QPointF& q : pl.snapped) snapped.append(pointJson(q, 1e-4));
+    // (Snapped values exactly - a database unit's fineness -, the others,
+    //  a slanted run's, as drawn: the check of 8 November read four
+    //  decimals where nothing had snapped.)
+    const auto onASnap = [&pl](double v, bool across) {
+        for (const Polyline::Run& r : pl.runs)
+            if (r.snapped && ((r.way == Polyline::Way::Vertical) == across) && std::abs(r.snappedAt - v) < 1e-9) return true;
+        return false;
+    };
+    for (int k = 0; k < pl.snapped.size(); ++k) {
+        const QPointF q = pl.snapped.at(k);
+        const bool end = !pl.closed && (k == 0 || k == pl.snapped.size() - 1);
+        const auto exact = [&](double v, bool across) {
+            return onASnap(v, across) || (end && !pl.endsSnappedTo.value(k == 0 ? 0 : 1).isEmpty()) || std::abs(std::round(v) - v) < 1e-9;
+        };
+        snapped.append(QJsonArray{roundedTo(q.x(), exact(q.x(), true) ? 1e-4 : step), roundedTo(q.y(), exact(q.y(), false) ? 1e-4 : step)});
+    }
     o.insert(QStringLiteral("corners"), drawn);
     o.insert(QStringLiteral("snapped corners"), snapped);
     QJsonArray angles, rounded;
@@ -539,11 +566,14 @@ QJsonObject polylineJson(const Polyline& pl)
     if (!rounded.isEmpty()) o.insert(QStringLiteral("rounded"), rounded);
     if (!pl.closed && pl.endsSnappedTo.size() == 2 && (!pl.endsSnappedTo.at(0).isEmpty() || !pl.endsSnappedTo.at(1).isEmpty()))
         o.insert(QStringLiteral("ends snapped to"), QJsonArray::fromStringList(pl.endsSnappedTo));
-    if (!pl.axis.isEmpty())
-        o.insert(QStringLiteral("symmetric"), QJsonObject{{QStringLiteral("about"), pl.axis},
-                                                          {QStringLiteral("at"), roundedTo(pl.axisAt, step)},
-                                                          {QStringLiteral("within"), roundedTo(pl.within, step)},
-                                                          {QStringLiteral("ends too"), pl.endsToo}});
+    if (pl.referenced)
+        o.insert(QStringLiteral("centre"), QJsonObject{{QStringLiteral("about"), pl.axis},
+                                                       {QStringLiteral("at"), roundedTo(pl.axisAt, step)},
+                                                       {QStringLiteral("mirrored within"), roundedTo(pl.within, step)},
+                                                       {QStringLiteral("layout's line"), roundedTo(pl.reference, 1e-4)},
+                                                       {QStringLiteral("which is"), pl.referenceIs},
+                                                       {QStringLiteral("centred"), pl.centred},
+                                                       {QStringLiteral("off by"), roundedTo(std::abs(pl.axisAt - pl.reference), step)}});
     return o;
 }
 
@@ -596,12 +626,15 @@ QString polylineSaid(const QJsonObject& o)
                     .arg(closed ? QStringLiteral("a closed") : QStringLiteral("a"))
                     .arg(runs.size())
                     .arg(said.join(QStringLiteral("; ")));
-    if (o.contains(QStringLiteral("symmetric"))) {
-        const QJsonObject m = o.value(QStringLiteral("symmetric")).toObject();
-        s += QStringLiteral("; its corners symmetric about %1 ≈ %2 within %3 µm%4")
-                 .arg(m.value(QStringLiteral("about")).toString(), numberSaid(m.value(QStringLiteral("at")).toDouble()),
-                      numberSaid(m.value(QStringLiteral("within")).toDouble()),
-                      closed ? QString() : m.value(QStringLiteral("ends too")).toBool() ? QStringLiteral(", its ends too") : QStringLiteral(", its ends not"));
+    if (o.contains(QStringLiteral("centre"))) {
+        const QJsonObject m = o.value(QStringLiteral("centre")).toObject();
+        const QString about = m.value(QStringLiteral("about")).toString();
+        const QString line = QStringLiteral("%1 (%2 = %3)").arg(m.value(QStringLiteral("which is")).toString(), about,
+                                                               numberSaid(m.value(QStringLiteral("layout's line")).toDouble()));
+        s += m.value(QStringLiteral("centred")).toBool()
+                 ? QStringLiteral("; centred on %1 within %2 µm").arg(line, numberSaid(m.value(QStringLiteral("off by")).toDouble()))
+                 : QStringLiteral("; off-centre: its middle at %1 ≈ %2, %3 µm from %4")
+                       .arg(about, numberSaid(m.value(QStringLiteral("at")).toDouble()), numberSaid(m.value(QStringLiteral("off by")).toDouble()), line);
     }
     QStringList snapped;
     for (const QJsonValue& v : o.value(QStringLiteral("snapped corners")).toArray()) snapped << pointSaid(pointOf(v));

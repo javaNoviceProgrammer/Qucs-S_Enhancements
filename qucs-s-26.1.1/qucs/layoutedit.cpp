@@ -827,6 +827,17 @@ QJsonObject differences(const Layout& before, const Layout& after, int most)
         };
         count(now, then, QStringLiteral("added"));
         count(then, now, QStringLiteral("taken away"));
+        // As many added as taken away on a layer: so many replaced, their
+        // boxes before and after (the check of 8 November: "a replace reads
+        // as add plus delete").
+        for (QJsonObject& o : layers) {
+            const int added = o.value(QStringLiteral("added")).toInt(), gone = o.value(QStringLiteral("taken away")).toInt();
+            if (added == 0 || added != gone) continue;
+            QJsonObject replaced{{QStringLiteral("replaced"), added},
+                                 {QStringLiteral("boxes before"), o.value(QStringLiteral("taken away boxes"))},
+                                 {QStringLiteral("boxes after"), o.value(QStringLiteral("added boxes"))}};
+            o = replaced;
+        }
         if (!layers.isEmpty()) {
             QJsonObject shapes;
             for (auto it = layers.begin(); it != layers.end(); ++it) shapes.insert(it.key(), it.value());

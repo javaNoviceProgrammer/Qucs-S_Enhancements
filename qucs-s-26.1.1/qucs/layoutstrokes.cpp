@@ -278,11 +278,23 @@ QString kindOf(const Layout& layout, const Found& f)
 
 /// What a feature belongs to: its layer, its kind, and the cell it is in
 /// when that is not the cell read.
+/// The cells \a f is placed through, down to the one it is defined in:
+/// "PAD > VIA" (empty: the cell read's own) - the check of 8 November named
+/// PAD for a via cover of VIA's.
+QString cellsOf(const Layout& layout, const Query& base, const Found& f)
+{
+    QStringList names;
+    for (const int c : f.via)
+        if (c != base.cell && c >= 0 && c < layout.cells.size()) names << layout.cells.at(c).name;
+    if (f.cell != base.cell && (names.isEmpty() || names.last() != layout.cells.at(f.cell).name)) names << layout.cells.at(f.cell).name;
+    return names.join(QStringLiteral(" > "));
+}
+
 QJsonObject shapeRef(const Layout& layout, const Query& base, const Found& f)
 {
     QJsonObject o{{QStringLiteral("layer"), layout.layers.at(layout.cells.at(f.cell).shapes.at(f.shape).layer).key.text()},
                   {QStringLiteral("kind"), kindOf(layout, f)}};
-    if (f.cell != base.cell) o.insert(QStringLiteral("in"), layout.cells.at(f.cell).name);
+    if (const QString in = cellsOf(layout, base, f); !in.isEmpty()) o.insert(QStringLiteral("in"), in);
     return o;
 }
 
@@ -442,6 +454,8 @@ std::optional<QJsonObject> followOf(const Lines& l, const QPolygonF& along, doub
     QList<double> at(n, 0);   // how far along
     QList<QPointF> foot(n);   // the nearest point of the shape's lines
     QList<bool> on(n, false);
+    QList<QPointF> ways(n);   // the way of the shape's line at each foot
+    QList<int> segs(n, 0);    // and which of its segments it is on
     for (int i = 0; i < n; ++i) {
         if (i > 0) at[i] = at.at(i - 1) + QLineF(along.at(i - 1), along.at(i)).length();
         double best = std::numeric_limits<double>::infinity();
@@ -453,6 +467,7 @@ std::optional<QJsonObject> followOf(const Lines& l, const QPolygonF& along, doub
                 best = d;
                 foot[i] = q;
                 way = b - a;
+                segs[i] = k;
             }
         }
         // Along it, not across: the stroke here within 30° of its way
@@ -460,6 +475,7 @@ std::optional<QJsonObject> followOf(const Lines& l, const QPolygonF& along, doub
         const QPointF here = along.at(std::min(i + 1, n - 1)) - along.at(std::max(i - 1, 0));
         const double lengths = std::hypot(here.x(), here.y()) * std::hypot(way.x(), way.y());
         on[i] = best <= near && lengths > 0 && std::abs(dot(here, way)) >= std::cos(30 / Degrees) * lengths;
+        ways[i] = way;
     }
     const double total = at.last();
     if (!(total > 0)) return std::nullopt;
@@ -502,44 +518,87 @@ std::optional<QJsonObject> followOf(const Lines& l, const QPolygonF& along, doub
             last = i;
         }
     QJsonObject o{{QStringLiteral("from"), pointJson(foot.at(spans.at(first).a), step)}, {QStringLiteral("to"), pointJson(foot.at(spans.at(last).b), step)}};
+    // Each time it leaves the shape and comes back: where the stroke itself
+    // turns away from the line it ran along, and where it comes back onto
+    // the line it then runs along - not where the shape's own line turns,
+    // which may be elsewhere (the check of 8 November: "leaving it between
+    // (-35, 0) ..." where the path turned, the stroke going on to -10).
     QJsonArray leaves;
+    const auto unit = [](QPointF v) {
+        const double l = std::hypot(v.x(), v.y());
+        return l > 0 ? v / l : QPointF(1, 0);
+    };
     for (int i = first + 1; i < last; ++i) {
         if (spans.at(i).on) continue;
-        const QPointF a = foot.at(spans.at(i - 1).b), b = foot.at(spans.at(i + 1).a);
-        const QPointF chord = b - a;
-        const double length = std::hypot(chord.x(), chord.y());
+        const int lastOn = spans.at(i - 1).b, firstOn = spans.at(i + 1).a;
+        const QPointF a = foot.at(lastOn), b = foot.at(firstOn);
+        const QPointF da = unit(ways.at(lastOn)), db = unit(ways.at(firstOn));
+        int away = spans.at(i).a, back = spans.at(i).b;
+        while (away < back && std::abs(cross(da, along.at(away) - a)) <= near) ++away;
+        while (back > away && std::abs(cross(db, along.at(back) - b)) <= near) --back;
+        const QPointF leaving = a + da * dot(along.at(std::max(away - 1, lastOn)) - a, da);
+        const QPointF coming = b + db * dot(along.at(std::min(back + 1, firstOn)) - b, db);
         double most = -1;
         QPointF far;
-        for (int k = spans.at(i).a; k <= spans.at(i).b; ++k) {
-            const QPointF q = along.at(k);
-            const double d = length > 0 ? std::abs(cross(chord, q - a)) / length : QLineF(q, a).length();
-            if (d > most) {
+        for (int k = away; k <= back; ++k)
+            if (const double d = std::abs(cross(da, along.at(k) - a)); d > most) {
                 most = d;
-                far = q;
+                far = along.at(k);
             }
+        QJsonObject leave{{QStringLiteral("at"), pointJson(leaving, step)},
+                          {QStringLiteral("back"), pointJson(coming, step)},
+                          {QStringLiteral("by"), to(std::max(most, 0.0), step)},
+                          {QStringLiteral("side"), sideOf(far, a, a + da)}};
+        // Where the shape's own line turns between, when not where the
+        // stroke does: its first and last vertices between the two.
+        QJsonArray turns;
+        const int from = segs.at(lastOn), till = segs.at(firstOn);
+        if (!l.closed && from < till) {
+            const QPointF first = l.points.at(from + 1), last = l.points.at(till);
+            if (QLineF(first, leaving).length() > near) turns.append(pointJson(first, step));
+            if (till > from + 1 && QLineF(last, coming).length() > near) turns.append(pointJson(last, step));
         }
-        leaves.append(QJsonObject{{QStringLiteral("at"), pointJson(a, step)},
-                                  {QStringLiteral("back"), pointJson(b, step)},
-                                  {QStringLiteral("by"), to(most, step)},
-                                  {QStringLiteral("side"), length > 0 ? sideOf(far, a, b) : QStringLiteral("off")}});
+        if (!turns.isEmpty()) leave.insert(QStringLiteral("its own line turning at"), turns);
+        leaves.append(leave);
     }
     if (!leaves.isEmpty()) o.insert(QStringLiteral("leaves"), leaves);
     return o;
 }
 
 /// What a polyline drawn near \a near (none set \a apart) may snap to: its
-/// paths' spines and edges, its polygons' corners and edges, its texts.
-markup::Snaps snapsNear(const Layout& layout, const QList<Near>& near, const QSet<QString>& apart)
+/// paths' centre lines, vertices and edges, its polygons' edges and corners,
+/// its texts - ranked so - and the lines of the layout it may be centred
+/// on: the middle of a path it lies along, midway between two placements of
+/// a cell, the cell's centre.
+markup::Snaps snapsNear(const Layout& layout, const Query& base, const QList<Near>& near, const QSet<QString>& apart, const QRectF& stroke)
 {
     markup::Snaps snaps;
     snaps.finest = layout.dbu > 0 ? layout.dbu : 0.001;
-    QSet<qint64> xs, ys;   // (each value once, the first named kept)
-    const auto add = [&snaps, &xs, &ys](bool across, double v, const QString& what) {
-        QSet<qint64>& seen = across ? xs : ys;
+    // Each value once, the first named (the best ranked) kept - but the same
+    // edge of several polygons said as theirs together ("the bottom edges of
+    // 2 1/0 polygons in PAD").
+    struct Named {
+        bool across;
+        int index;
+        QString stem, one, many;
+        QSet<QString> shapes;
+    };
+    QHash<qint64, Named> xs, ys;
+    const auto add = [&](bool across, double v, const QString& what, int rank, const QString& stem = QString(), const QString& many = QString(),
+                         const QString& shape = QString()) {
+        QHash<qint64, Named>& seen = across ? xs : ys;
         const qint64 key = std::llround(v * 1e6);
-        if (seen.contains(key)) return;
-        seen.insert(key);
-        (across ? snaps.xs : snaps.ys) << markup::Snap{v, what};
+        if (seen.contains(key)) {
+            Named& n = seen[key];
+            if (!stem.isEmpty() && n.stem == stem && !n.shapes.contains(shape)) {
+                n.shapes.insert(shape);
+                (across ? snaps.xs : snaps.ys)[n.index].what = many.arg(n.shapes.size());
+            }
+            return;
+        }
+        QList<markup::Snap>& list = across ? snaps.xs : snaps.ys;
+        seen.insert(key, Named{across, int(list.size()), stem, what, many, {shape}});
+        list << markup::Snap{v, what, rank};
     };
     for (int pass = 0; pass < 4; ++pass)
         for (const Near& n : near) {
@@ -547,39 +606,94 @@ markup::Snaps snapsNear(const Layout& layout, const QList<Near>& near, const QSe
             if (n.found.isText()) {
                 if (pass == 2) {
                     const QString what = QStringLiteral("the text %1").arg(layout.cells.at(n.found.cell).labels.at(n.found.label).text);
-                    add(true, n.outline.value(0).x(), what);
-                    add(false, n.outline.value(0).y(), what);
+                    add(true, n.outline.value(0).x(), what, pass);
+                    add(false, n.outline.value(0).y(), what, pass);
                 }
                 continue;
             }
             const Lines l = linesOf(layout, n.found);
             if (l.points.size() > 2000) continue;
-            const QString name = QStringLiteral("the %1 %2's").arg(layout.layers.at(layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer).key.text(), kindOf(layout, n.found));
+            const QString layer = layout.layers.at(layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer).key.text();
+            const QString kind = kindOf(layout, n.found);
+            const QString in = cellsOf(layout, base, n.found);
+            const QString name = QStringLiteral("the %1 %2's").arg(layer, kind);
             const int count = int(l.points.size());
             // First a path's centre lines, then its vertices, then a
-            // polygon's corners and the texts, then the edges.
+            // polygon's edges and corners and the texts, then the edges.
             if (pass == 0 && l.path)
                 for (int k = 1; k < count; ++k) {
                     const QPointF a = l.points.at(k - 1), b = l.points.at(k);
-                    if (std::abs(a.y() - b.y()) < 1e-9) add(false, a.y(), name + QStringLiteral(" centre line"));
-                    if (std::abs(a.x() - b.x()) < 1e-9) add(true, a.x(), name + QStringLiteral(" centre line"));
+                    if (std::abs(a.y() - b.y()) < 1e-9) add(false, a.y(), name + QStringLiteral(" centre line"), pass);
+                    if (std::abs(a.x() - b.x()) < 1e-9) add(true, a.x(), name + QStringLiteral(" centre line"), pass);
                 }
-            if ((pass == 1 && l.path) || (pass == 2 && !l.path))
+            if (pass == 1 && l.path)
                 for (int k = 0; k < count; ++k) {
-                    const QString what = l.path ? (k == 0 || k == count - 1 ? name + QStringLiteral(" end") : name + QStringLiteral(" vertex"))
-                                                : name + QStringLiteral(" corner");
-                    add(true, l.points.at(k).x(), what + QStringLiteral(" at ") + markup::pointSaid(l.points.at(k)));
-                    add(false, l.points.at(k).y(), what + QStringLiteral(" at ") + markup::pointSaid(l.points.at(k)));
+                    const QString what = (k == 0 || k == count - 1 ? name + QStringLiteral(" end") : name + QStringLiteral(" vertex"))
+                                         + QStringLiteral(" at ") + markup::pointSaid(l.points.at(k));
+                    add(true, l.points.at(k).x(), what, pass);
+                    add(false, l.points.at(k).y(), what, pass);
                 }
+            if (pass == 2 && !l.path) {
+                // A polygon's corner on its box's side is that side's edge:
+                // "level with the pads' bottom edges", not one pad's corner.
+                const QRectF box = n.box;
+                const QString shape = keyOf(n.found);
+                const QString where = in.isEmpty() ? QString() : QStringLiteral(" in ") + in;
+                for (int k = 0; k < count; ++k) {
+                    const QPointF p = l.points.at(k);
+                    const QString corner = name + QStringLiteral(" corner at ") + markup::pointSaid(p);
+                    for (const bool across : {true, false}) {
+                        const double v = across ? p.x() : p.y();
+                        const double lo = across ? box.left() : box.top(), hi = across ? box.right() : box.bottom();
+                        QString side;
+                        if (std::abs(v - lo) < 1e-9) side = across ? QStringLiteral("left") : QStringLiteral("bottom");
+                        else if (std::abs(v - hi) < 1e-9) side = across ? QStringLiteral("right") : QStringLiteral("top");
+                        if (side.isEmpty()) {
+                            add(across, v, corner, pass);
+                            continue;
+                        }
+                        add(across, v, QStringLiteral("the %1 edge of the %2 %3%4").arg(side, layer, kind, where), pass,
+                            QStringLiteral("%1|%2|%3|%4").arg(side, layer, kind, in),
+                            QStringLiteral("the %1 edges of %2 %3 %4s%5").arg(side, QStringLiteral("%1"), layer, kind, where), shape);
+                    }
+                }
+            }
             if (pass == 3) {
                 const QPolygonF o = n.outline;
                 for (int k = 0; k < o.size() && o.size() <= 2000; ++k) {
                     const QPointF a = o.at(k), b = o.at((k + 1) % o.size());
-                    if (std::abs(a.y() - b.y()) < 1e-9) add(false, a.y(), name + QStringLiteral(" edge"));
-                    if (std::abs(a.x() - b.x()) < 1e-9) add(true, a.x(), name + QStringLiteral(" edge"));
+                    if (std::abs(a.y() - b.y()) < 1e-9) add(false, a.y(), name + QStringLiteral(" edge"), pass);
+                    if (std::abs(a.x() - b.x()) < 1e-9) add(true, a.x(), name + QStringLiteral(" edge"), pass);
                 }
             }
         }
+    // The layout's lines a sketch may be centred on, or off: the middle of
+    // each path its box meets, midway between two placements of a cell
+    // level with each other (or one above the other), the cell's centre.
+    for (const Near& n : near) {
+        if (apart.contains(keyOf(n.found)) || n.found.isText()) continue;
+        const Lines l = linesOf(layout, n.found);
+        if (!l.path) continue;
+        const QRectF spine = l.points.boundingRect();
+        const QString what = QStringLiteral("the %1 path's middle").arg(layout.layers.at(layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer).key.text());
+        if (spine.left() < stroke.right() && spine.right() > stroke.left() && spine.width() > 0) snaps.uprights << markup::Snap{spine.center().x(), what, 0};
+        if (spine.top() < stroke.bottom() && spine.bottom() > stroke.top() && spine.height() > 0) snaps.levels << markup::Snap{spine.center().y(), what, 0};
+    }
+    const Cell& cell = layout.cells.at(base.cell);
+    const double dbu = snaps.finest;
+    for (int i = 0; i < cell.instances.size(); ++i)
+        for (int j = i + 1; j < cell.instances.size(); ++j) {
+            const Instance& a = cell.instances.at(i);
+            const Instance& b = cell.instances.at(j);
+            if (a.cell < 0 || a.cell != b.cell || a.repetition >= 0 || b.repetition >= 0) continue;
+            const QString what = QStringLiteral("midway between the %1 placements").arg(layout.cells.at(a.cell).name);
+            if (std::abs(a.origin.y() - b.origin.y()) <= dbu) snaps.uprights << markup::Snap{(a.origin.x() + b.origin.x()) / 2, what, 1};
+            if (std::abs(a.origin.x() - b.origin.x()) <= dbu) snaps.levels << markup::Snap{(a.origin.y() + b.origin.y()) / 2, what, 1};
+        }
+    if (cell.bounds.isValid()) {
+        snaps.uprights << markup::Snap{cell.bounds.center().x(), QStringLiteral("the cell's centre"), 2};
+        snaps.levels << markup::Snap{cell.bounds.center().y(), QStringLiteral("the cell's centre"), 2};
+    }
     return snaps;
 }
 
@@ -706,7 +820,49 @@ QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<mark
         const QList<Near> large = largeUnder(layout, base, s);
         QSet<QString> apart;
         QJsonObject reading;
-        for (int kept = 0; kept <= large.size(); ++kept) {
+        // A small mark - a tick, a scribble - inside a shape, or a dot, means
+        // "this one": the smallest shape that holds all of it, never set
+        // apart (the check of 8 November: a tick on a pad was read as on a
+        // via cover it crossed, the pad set apart).
+        const QRectF sb = s.points.boundingRect();
+        const double size = std::hypot(sb.width(), sb.height());
+        const bool small = (g == markup::Gesture::Mark || g == markup::Gesture::Corner) && !large.isEmpty()
+                           && size <= 0.2 * std::hypot(large.last().box.width(), large.last().box.height());
+        if (small) {
+            // On the smallest that holds it, and on those not four times
+            // larger (a pad and its opening); the larger ones under it.
+            const double least = large.last().box.width() * large.last().box.height();
+            Gathered on, over;
+            QJsonArray shapes;
+            for (int k = int(large.size()) - 1; k >= 0; --k) {
+                const Near& holder = large.at(k);
+                if (holder.box.width() * holder.box.height() > 4 * least) {
+                    over.add(layout, holder.found);
+                    continue;
+                }
+                on.add(layout, holder.found);
+                QJsonObject shape = shapeRef(layout, base, holder.found);
+                shape.insert(QStringLiteral("box"), QJsonArray{to(holder.box.left(), 1e-3), to(holder.box.top(), 1e-3), to(holder.box.right(), 1e-3),
+                                                               to(holder.box.bottom(), 1e-3)});
+                shapes.append(shape);
+            }
+            eachPlaced(layout, base.cell, sb, [&layout, &sb, &on](int placed, const QRectF& box) {
+                if (box.contains(sb)) ++on.cells[layout.cells.at(placed).name];
+            });
+            reading = o;
+            const QPolygonF arms = markup::simplified(s.points, std::max(s.width, 0.08 * size));
+            if (arms.size() == 3) {
+                reading.insert(QStringLiteral("drawn as"), QStringLiteral("tick"));
+                reading.insert(QStringLiteral("point"), pointJson(arms.at(1), std::pow(10.0, std::floor(std::log10(std::max(s.width / 2, 1e-3))))));
+            }
+            reading.insert(QStringLiteral("on"), on.json());
+            reading.insert(QStringLiteral("on shapes"), shapes);
+            if (!over.isEmpty()) reading.insert(QStringLiteral("over"), over.json());
+            out.append(reading);
+            continue;
+        }
+        // (A dot keeps the smallest shape holding it, when one does.)
+        for (int kept = g == markup::Gesture::Dot && !large.isEmpty() ? 1 : 0; kept <= large.size(); ++kept) {
             apart.clear();
             Gathered over;
             for (int k = 0; k < large.size() - kept; ++k) {
@@ -727,7 +883,7 @@ QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<mark
             const QList<Near> near = nearOf(layout, base, b.adjusted(-grow, -grow, grow, grow));
             // (Worth saying with a corner at least, or a level or upright
             //  line drawn by hand: a slanted one's points say as much.)
-            std::optional<markup::Polyline> pl = markup::polylineOf(s.points, s.width, g == markup::Gesture::Ring, snapsNear(layout, near, apart));
+            std::optional<markup::Polyline> pl = markup::polylineOf(s.points, s.width, g == markup::Gesture::Ring, snapsNear(layout, base, near, apart, b));
             if (pl && (pl->runs.size() >= 2
                        || (s.points.size() > 2 && (pl->runs.first().way == markup::Polyline::Way::Horizontal || pl->runs.first().way == markup::Polyline::Way::Vertical))))
                 reading.insert(QStringLiteral("polyline"), markup::polylineJson(*pl));

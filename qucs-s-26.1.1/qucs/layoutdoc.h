@@ -21,6 +21,7 @@
 #include <QImage>
 #include <QLineF>
 #include <QPointer>
+#include <QSet>
 #include <QWidget>
 
 #include <functional>
@@ -545,6 +546,9 @@ private:
     void layoutReady(bool keepView);
     void fillCells();
     void fillCellChildren(QTreeWidgetItem* item);
+    /// The shown cell's rows in the tree bold, one of them in sight current.
+    void markShownCell(int cell);
+    static QString rowPath(const QTreeWidgetItem* item);
     void fillLayers();
     void updateLayerItem(int layer);
     void updateSwatches();
@@ -569,6 +573,9 @@ private:
     QTimer* a_reloadTimer = nullptr;
     QList<int> a_found;
     int a_foundAt = -1;
+    /// The tree's open rows, each by its cells' names from the top: kept
+    /// when the tree is filled again (a reload, a search closed).
+    QSet<QString> a_openRows;
 
     QWidget* a_toolbar = nullptr;
     QToolButton* a_sidebarButton = nullptr;
