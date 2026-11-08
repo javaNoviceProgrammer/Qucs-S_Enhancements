@@ -274,7 +274,7 @@ private slots:
         for (const Instance& in : back->cells.at(back->cellIndex("TOP")).instances) placements += in.cell == back->cellIndex("ROUTES");
         QCOMPARE(placements, 1);
         // Nothing running: route_stop says so.
-        QCOMPARE(json(call("route_stop", {{"path", chip}})).value("stopped").toBool(), false);
+        QCOMPARE(json(call("route_stop", {{"path", chip}})).value("ended").toBool(), false);
 
         // A net that cannot be routed: a finding, and commit refused.
         QJsonArray boxed, lostPad;

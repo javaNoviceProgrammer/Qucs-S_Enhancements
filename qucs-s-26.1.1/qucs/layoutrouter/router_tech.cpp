@@ -148,7 +148,8 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         const QString where = QStringLiteral("Via %1").arg(vias.toArray().size());
         if (!vv.isObject()) return fail(where + QStringLiteral(": an object"));
         const QJsonObject v = vv.toObject();
-        if (!onlyKeys(v, {"name", "layer", "between", "size", "enclosure", "landing", "landing_lower", "landing_upper", "spacing"}, where, &e))
+        if (!onlyKeys(v, {"name", "layer", "between", "size", "cuts", "cut_spacing", "enclosure", "landing", "landing_lower", "landing_upper", "spacing"},
+                      where, &e))
             return fail(e);
         Via via;
         if (!name(v, &via.name, &e, where)) return fail(e);
@@ -163,17 +164,28 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         if (viaGiven.at(a)) return fail(QStringLiteral("Two vias join %1 and %2").arg(t.metals.at(a).name, t.metals.at(b).name));
         via.lower = a;
         if (!length(v, "size", &via.size, &e, via.name, true, true)) return fail(e);
+        if (v.contains(QLatin1String("cuts"))) {
+            const QJsonArray cuts = v.value(QLatin1String("cuts")).toArray();
+            const auto whole = [](const QJsonValue& x) { return x.isDouble() && x.toDouble() == std::floor(x.toDouble()) && x.toDouble() >= 1 && x.toDouble() <= 16; };
+            if (cuts.size() != 2 || !whole(cuts.at(0)) || !whole(cuts.at(1)))
+                return fail(via.name + QStringLiteral(": 'cuts' is [columns, rows] of the array, each 1 to 16"));
+            via.cols = cuts.at(0).toInt();
+            via.rows = cuts.at(1).toInt();
+        }
+        if (!length(v, "cut_spacing", &via.cutSpacing, &e, via.name, false, false)) return fail(e);
+        if ((via.cols > 1 || via.rows > 1) && via.cutSpacing <= 0)
+            return fail(via.name + QStringLiteral(": an array of cuts needs its 'cut_spacing'"));
         double enclosure = -1, landing = -1, lower = -1, upper = -1;
         if (!length(v, "enclosure", &enclosure, &e, via.name, false, false)) return fail(e);
         if (!length(v, "landing", &landing, &e, via.name, false, true)) return fail(e);
         if (!length(v, "landing_lower", &lower, &e, via.name, false, true)) return fail(e);
         if (!length(v, "landing_upper", &upper, &e, via.name, false, true)) return fail(e);
         if (enclosure >= 0 && landing >= 0) return fail(via.name + QStringLiteral(": give 'enclosure' or 'landing', not both"));
-        const double common = landing >= 0 ? landing : (enclosure >= 0 ? via.size + 2 * enclosure : via.size);
+        const double common = landing >= 0 ? landing : (enclosure >= 0 ? via.outline() + 2 * enclosure : via.outline());
         via.landingLower = lower >= 0 ? lower : common;
         via.landingUpper = upper >= 0 ? upper : common;
-        if (via.landingLower < via.size || via.landingUpper < via.size)
-            return fail(via.name + QStringLiteral(": a landing is as large as the cut at least"));
+        if (via.landingLower < via.outline() || via.landingUpper < via.outline())
+            return fail(via.name + QStringLiteral(": a landing is as large as its cuts at least (%1 µm)").arg(via.outline()));
         if (!length(v, "spacing", &via.spacing, &e, via.name, false, false)) return fail(e);
         t.vias[a] = via;
         viaGiven[a] = true;
@@ -185,7 +197,8 @@ Technology readTechnology(const QJsonObject& o, QString* error)
     if (!spacing.isObject()) return fail(QStringLiteral("The technology: 'spacing' is needed: {\"same_layer\", \"to_metal\", \"to_terminal\"}"));
     {
         const QJsonObject s = spacing.toObject();
-        if (!onlyKeys(s, {"same_layer", "to_metal", "to_terminal"}, QStringLiteral("'spacing'"), &e)) return fail(e);
+        if (!onlyKeys(s, {"same_layer", "to_metal", "to_terminal", "notch"}, QStringLiteral("'spacing'"), &e)) return fail(e);
+        if (!length(s, "notch", &t.notch, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         if (!length(s, "same_layer", &t.sameLayer, &e, QStringLiteral("'spacing'"), true, false)) return fail(e);
         t.toMetal = t.sameLayer;
         if (!length(s, "to_metal", &t.toMetal, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
@@ -316,7 +329,8 @@ QJsonObject technologyJson(const Technology& t)
     for (const Via& v : t.vias)
         vias.append(QJsonObject{{"name", v.name}, {"layer", layer(v.layer)},
                                 {"between", QJsonArray{t.metals.at(v.lower).name, t.metals.at(v.lower + 1).name}},
-                                {"size", v.size}, {"landing_lower", v.landingLower}, {"landing_upper", v.landingUpper}, {"spacing", v.spacing}});
+                                {"size", v.size}, {"cuts", QJsonArray{v.cols, v.rows}}, {"cut_spacing", v.cutSpacing},
+                                {"landing_lower", v.landingLower}, {"landing_upper", v.landingUpper}, {"spacing", v.spacing}});
     for (const NetClass& c : t.classes) classes.append(QJsonObject{{"name", c.name}, {"width", c.width}, {"spacing", c.spacing}});
     for (const ObstacleRule& r : t.obstacles) {
         QJsonArray ms;
@@ -331,7 +345,7 @@ QJsonObject technologyJson(const Technology& t)
                        {"vias", vias},
                        {"classes", classes},
                        {"default_class", t.classes.isEmpty() ? QString() : t.classes.at(t.defaultClass).name},
-                       {"spacing", QJsonObject{{"same_layer", t.sameLayer}, {"to_metal", t.toMetal}, {"to_terminal", t.toTerminal}}},
+                       {"spacing", QJsonObject{{"same_layer", t.sameLayer}, {"to_metal", t.toMetal}, {"to_terminal", t.toTerminal}, {"notch", t.notch}}},
                        {"obstacles", obstacles},
                        {"costs", QJsonObject{{"bend", t.bendCost}, {"via", t.viaCost}, {"wrong_way", t.wrongWayCost}}},
                        {"area", area}};

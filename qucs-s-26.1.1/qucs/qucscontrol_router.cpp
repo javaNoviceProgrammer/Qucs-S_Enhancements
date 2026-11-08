@@ -67,6 +67,7 @@ QJsonObject passJson(const PassRow& r)
     QJsonObject o{{"pass", r.pass}, {"routed", r.routed}, {"failed", r.failed}, {"contested", r.contested},
                   {"length µm", um3(r.length)}, {"seconds", um3(r.seconds)}};
     if (r.cleanup) o.insert(QStringLiteral("clean-up"), true);
+    if (r.partial) o.insert(QStringLiteral("partial"), true);   // stopped part way: not every net routed again
     return o;
 }
 
@@ -162,6 +163,8 @@ QJsonObject summaryOf(const Session* s, int mostFindings)
         findings.append(findingJson(p, f));
     }
     o.insert(QStringLiteral("findings"), findings);
+    if (findings.size() < v.findings.size())
+        o.insert(QStringLiteral("findings shown"), QObject::tr("the first %1 of %2: route_report what=findings lists them all").arg(findings.size()).arg(v.findings.size()));
     QJsonArray passes;
     for (int i = std::max(0, int(r.passes.size()) - 3); i < r.passes.size(); ++i) passes.append(passJson(r.passes.at(i)));
     o.insert(QStringLiteral("last passes"), passes);
@@ -414,7 +417,7 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
         o.insert(QStringLiteral("terminals"), terminalsJson(p, router.terminals(), call.value(QLatin1String("max")).toInt(60)));
         int warned = 0;
         for (const TerminalReading& r : router.terminals()) warned += !r.note.isEmpty();
-        if (warned) o.insert(QStringLiteral("terminals that cannot be left"), warned);
+        if (warned) o.insert(QStringLiteral("terminals with a warning"), warned);
         if (!router.crowding().isEmpty()) o.insert(QStringLiteral("crowded"), crowdingJson(p, router.crowding()));
         o.insert(QStringLiteral("memory a run needs MB"), qRound64(double(router.estimatedBytes()) / 1048576.0));
         o.insert(QStringLiteral("threads"), p.options.threads);
@@ -570,11 +573,11 @@ QJsonObject QucsControl::routeStop(const QJsonObject& args)
     const QString file = layoutFileOf(a_app, args, &error);
     if (file.isEmpty()) return errorResult(error);
     Session* s = Session::of(file, false);
-    if (!s || !s->isRunning()) return jsonResult(QJsonObject{{"stopped", false}, {"note", tr("Nothing is being routed in %1.").arg(QFileInfo(file).fileName())}});
+    if (!s || !s->isRunning()) return jsonResult(QJsonObject{{"ended", false}, {"note", tr("Nothing is being routed in %1.").arg(QFileInfo(file).fileName())}});
     s->cancel();
     const bool ended = s->wait(std::clamp(args.value(QLatin1String("timeout")).toInt(30), 1, 600) * 1000);
     QJsonObject o = summaryOf(s, 10);
-    o.insert(QStringLiteral("stopped"), ended);
+    o.insert(QStringLiteral("ended"), ended);   // ('stopped' stays why the run ended)
     return jsonResult(o);
 }
 
@@ -715,7 +718,8 @@ QJsonObject QucsControl::routeAssignPads(const QJsonObject& args)
             const int j = s->job.netIndex(p.nets.at(nets[k]).name);
             if (j < 0 || s->job.nets[j].terminals.size() != 2) continue;
             JobTerminal& t = s->job.nets[j].terminals[1];
-            t.at = {p.um(pads[pairing[k]].x), p.um(pads[pairing[k]].y)};
+            // (µm to the millionth: 100, not 99.99999999999999)
+            t.at = {std::round(p.um(pads[pairing[k]].x) * 1e6) / 1e6, std::round(p.um(pads[pairing[k]].y) * 1e6) / 1e6};
             t.hasPoint = true;
             t.text.clear();
         }

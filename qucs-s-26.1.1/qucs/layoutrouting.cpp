@@ -115,6 +115,7 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
 
     // Labels, for terminals named by one.
     QHash<QString, QVector<QPointF>> labels;
+    QHash<QString, int> labelMetal;   // the metal the first label of a text is on, or -1
     bool wantsLabels = false;
     for (const JobNet& n : job.nets)
         for (const JobTerminal& t : n.terminals) wantsLabels = wantsLabels || !t.text.isEmpty();
@@ -123,7 +124,16 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
         lq.cell = cell;
         lq.labels = true;
         layout::search(layout, lq, [&](const layout::Found& f) {
-            if (f.isText()) labels[layout.cells.at(f.cell).labels.at(f.label).text].append(f.transform.map(layout.cells.at(f.cell).labels.at(f.label).origin));
+            if (f.isText()) {
+                const layout::Label& l = layout.cells.at(f.cell).labels.at(f.label);
+                if (!labels.contains(l.text)) {
+                    int metal = -1;
+                    for (const Role& r : roles.value(int(l.layer)))
+                        if (r.kind == 0) metal = r.index;
+                    labelMetal.insert(l.text, metal);
+                }
+                labels[l.text].append(f.transform.map(l.origin));
+            }
             return true;
         });
     }
@@ -156,6 +166,9 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
                                          .arg(found.size())
                                          .arg(jt.text, micro(found.first().x()), micro(found.first().y())));
                 at = found.first();
+                // On the label's metal: a label on M1 names the M1 contact, not
+                // the M2 drawn over it.
+                if (jt.metal.isEmpty()) t.metal = labelMetal.value(jt.text, -1);
             }
             t.at = toUnits(at);
             if (!jt.metal.isEmpty()) {
@@ -399,6 +412,8 @@ bool Session::start(const QStringList& which, bool changedOnly, QString* error)
         };
         done->first = router->run(which, kept, progress);
         done->second = verify(router->problem(), done->first);
+        // The result is kept to be read and committed: its maps are not needed.
+        router->releaseMaps();
     });
     a_thread->setStackSize(8u << 20);
     connect(a_thread, &QThread::finished, this, [this, router, done, revision] {

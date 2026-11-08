@@ -76,8 +76,8 @@ bool readOptions(const QJsonValue& v, Options* options, QString* error);
 QJsonObject optionsJson(const Options& options);
 
 /// Nets from a CSV. With a header row naming its columns (net, class,
-/// start_x, start_y, start_text, start_layer, pad_x, pad_y, pad_text,
-/// pad_layer, mode), a net's further rows add pads. Without one, each
+/// start_x, start_y, start_text, start_layer, start_mode, pad_x, pad_y,
+/// pad_text, pad_layer, pad_mode; mode for both), a net's further rows add pads. Without one, each
 /// row is net, start x, start y, pad x, pad y[, class] - or net, start
 /// label, pad label[, class].
 QVector<JobNet> readNetsCsv(const QString& text, QString* error);
