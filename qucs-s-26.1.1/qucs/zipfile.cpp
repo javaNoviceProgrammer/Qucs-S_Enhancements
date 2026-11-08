@@ -13,6 +13,7 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QHash>
 #include <QtEndian>
 
 #include <algorithm>
@@ -244,17 +245,32 @@ constexpr quint32 kLocal = 0x04034b50, kCentral = 0x02014b50, kEnd = 0x06054b50;
 
 quint32 crc32(const QByteArray& data)
 {
-    static const auto table = [] {
-        std::array<quint32, 256> t{};
+    // Eight bytes a step ("slicing by 8"): table k gives what a byte does k
+    // bytes before the end of the step. A byte at a time, the checksums of
+    // a deck of photographs (230 MB) took half of its opening (2026-11-08).
+    static const auto tables = [] {
+        std::array<std::array<quint32, 256>, 8> t{};
         for (quint32 n = 0; n < 256; ++n) {
             quint32 c = n;
             for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            t[n] = c;
+            t[0][n] = c;
         }
+        for (quint32 n = 0; n < 256; ++n)
+            for (int k = 1; k < 8; ++k) t[k][n] = t[0][t[k - 1][n] & 0xFF] ^ (t[k - 1][n] >> 8);
         return t;
     }();
+    const auto* p = reinterpret_cast<const uchar*>(data.constData());
+    qsizetype left = data.size();
     quint32 c = 0xFFFFFFFFu;
-    for (const char ch : data) c = table[(c ^ uchar(ch)) & 0xFF] ^ (c >> 8);
+    while (left >= 8) {
+        const quint32 lo = c ^ (quint32(p[0]) | quint32(p[1]) << 8 | quint32(p[2]) << 16 | quint32(p[3]) << 24);
+        const quint32 hi = quint32(p[4]) | quint32(p[5]) << 8 | quint32(p[6]) << 16 | quint32(p[7]) << 24;
+        c = tables[7][lo & 0xFF] ^ tables[6][(lo >> 8) & 0xFF] ^ tables[5][(lo >> 16) & 0xFF] ^ tables[4][lo >> 24] ^ tables[3][hi & 0xFF]
+            ^ tables[2][(hi >> 8) & 0xFF] ^ tables[1][(hi >> 16) & 0xFF] ^ tables[0][hi >> 24];
+        p += 8;
+        left -= 8;
+    }
+    while (left-- > 0) c = tables[0][(c ^ *p++) & 0xFF] ^ (c >> 8);
     return c ^ 0xFFFFFFFFu;
 }
 
@@ -339,6 +355,10 @@ QList<Item> list(const QByteArray& archive, QString* error)
     if (qsizetype(dirStart) + dirSize > end) return fail(tr("The archive's directory is damaged."));
 
     QList<Item> items;
+    // Each date and time made into local time once: the entries of an
+    // archive mostly share one (Office's 1 January 1980), and making each
+    // took a fifth of reading a deck of 3,000 slides (2026-11-08).
+    QHash<quint32, QDateTime> times;
     qsizetype at = dirStart;
     for (int k = 0; k < entries; ++k) {
         if (at + 46 > end || le32(archive, at) != kCentral) return fail(tr("The archive's directory is damaged."));
@@ -346,7 +366,10 @@ QList<Item> list(const QByteArray& archive, QString* error)
         item.madeBy = le16(archive, at + 4);
         item.flags = le16(archive, at + 8);
         item.method = le16(archive, at + 10);
-        item.modified = fromDos(le16(archive, at + 14), le16(archive, at + 12));
+        const quint32 stamp = quint32(le16(archive, at + 14)) << 16 | le16(archive, at + 12);
+        auto time = times.constFind(stamp);
+        if (time == times.constEnd()) time = times.insert(stamp, fromDos(quint16(stamp >> 16), quint16(stamp & 0xFFFF)));
+        item.modified = *time;
         item.crc = le32(archive, at + 16);
         item.packed = le32(archive, at + 20);
         item.size = le32(archive, at + 24);

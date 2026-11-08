@@ -49,6 +49,8 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTextBrowser>
+#include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
@@ -68,6 +70,18 @@ namespace {
 
 constexpr int ThumbnailWidth = 150;
 constexpr int Gap = 16;   // around and between slides (pixels)
+// A slide drawn larger than this many pixels is drawn in tiles, those in
+// sight: a 16:9 slide at 800 % on a screen of two pixels a point is 133
+// million pixels, more than one image is drawn (a white slide, until
+// 2026-11-08), and 530 MB if it were.
+constexpr qint64 WholeSlidePixels = 16ll * 1000 * 1000;
+constexpr int Tile = 1024;   // a tile's side (pixels)
+
+/// \a v as a scroll bar takes it: held within an int.
+int held(qreal v)
+{
+    return std::isfinite(v) ? int(std::clamp(v, -2.0e9, 2.0e9)) : 0;
+}
 const char* const kNotesKey = "Viewers/pptxNotes";
 const char* const kSidebarKey = "Viewers/pptxSidebar";
 
@@ -207,8 +221,8 @@ void SlideView::restore(const ViewState& s)
     const int count = a_presentation != nullptr ? a_presentation->slideCount() : 0;
     const int slide = std::clamp(s.slide, 0, std::max(0, count - 1));
     const QRectF r = contentRect(slide);
-    verticalScrollBar()->setValue(int(std::lround(r.top() + s.down * r.height())));
-    horizontalScrollBar()->setValue(int(std::lround(s.across * horizontalScrollBar()->maximum())));
+    verticalScrollBar()->setValue(held(std::round(r.top() + s.down * r.height())));
+    horizontalScrollBar()->setValue(held(std::round(s.across * horizontalScrollBar()->maximum())));
     if (a_current != slide) {
         a_current = slide;
         emit currentSlideChanged(slide);
@@ -220,6 +234,23 @@ void SlideView::restore(const ViewState& s)
 void SlideView::clearCache()
 {
     a_cache.clear();
+    a_prepared.clear();
+}
+
+void SlideView::prefetch(qreal scale)
+{
+    if (a_presentation == nullptr) return;
+    // The next slides' pictures (and the one before's) decoded meanwhile,
+    // on another thread: a deck of photographs went from slide to slide in
+    // 33 ms, 25 of them the next photograph's decoding (2026-11-08).
+    for (const int i : {a_current + 1, a_current - 1, a_current + 2}) {
+        if (i < 0 || i >= a_presentation->slideCount()) continue;
+        const QString key = QStringLiteral("%1:%2").arg(i).arg(scale, 0, 'f', 4);
+        if (a_prepared.contains(key)) continue;
+        if (a_prepared.size() > 512) a_prepared.clear();
+        a_prepared.insert(key);
+        QThreadPool::globalInstance()->start([deck = a_presentation, i, scale] { deck->prepare(i, scale); }, 1);
+    }
 }
 
 void SlideView::setPenActive(bool active)
@@ -284,8 +315,8 @@ void SlideView::centerOn(int index, QPointF point)
     index = std::clamp(index, 0, a_presentation->slideCount() - 1);
     const QSize view = viewport()->size();
     const QPointF at = contentRect(index).topLeft() + point * a_zoom;
-    horizontalScrollBar()->setValue(int(std::lround(at.x() - view.width() / 2.0)));
-    verticalScrollBar()->setValue(int(std::lround(at.y() - view.height() / 2.0)));
+    horizontalScrollBar()->setValue(held(std::round(at.x() - view.width() / 2.0)));
+    verticalScrollBar()->setValue(held(std::round(at.y() - view.height() / 2.0)));
     // (The slide shown is the one asked, wherever a third of the view is.)
     if (a_current != index) {
         a_current = index;
@@ -304,7 +335,9 @@ QRectF SlideView::contentRect(int index) const
 
 QRect SlideView::slideRect(int index) const
 {
-    return contentRect(index).translated(-horizontalScrollBar()->value(), -verticalScrollBar()->value()).toAlignedRect();
+    const QRectF r = contentRect(index).translated(-horizontalScrollBar()->value(), -verticalScrollBar()->value());
+    // (Held within an int, for a slide far out of sight.)
+    return QRectF(std::clamp(r.x(), -2.0e9, 2.0e9), std::clamp(r.y(), -2.0e9, 2.0e9), std::min(r.width(), 1.0e9), std::min(r.height(), 1.0e9)).toAlignedRect();
 }
 
 int SlideView::slideAt(QPoint pos) const
@@ -334,7 +367,7 @@ void SlideView::relayout()
     }
     const int n = a_presentation != nullptr ? a_presentation->slideCount() : 0;
     const QSizeF s = a_presentation != nullptr ? a_presentation->slideSize() * a_zoom : QSizeF();
-    a_content = QSize(std::max(view.width(), int(std::ceil(s.width())) + 2 * Gap), Gap + int(std::ceil(n * (s.height() + Gap))));
+    a_content = QSize(std::max(view.width(), held(std::ceil(s.width())) + 2 * Gap), held(Gap + std::ceil(n * (s.height() + Gap))));
     horizontalScrollBar()->setRange(0, std::max(0, a_content.width() - view.width()));
     horizontalScrollBar()->setPageStep(view.width());
     verticalScrollBar()->setRange(0, std::max(0, a_content.height() - view.height()));
@@ -358,7 +391,15 @@ void SlideView::setZoom(qreal zoom)
     // place within it is a hair negative, and the view would open on the
     // end of the slide before - which is then the slide shown
     // (updateCurrent) (bug hunt 2026-10-23 B2).
-    verticalScrollBar()->setValue(int(std::max(after.top() - Gap, after.top() + offset * after.height())));
+    verticalScrollBar()->setValue(held(std::max(after.top() - Gap, after.top() + offset * after.height())));
+    // And it stays the slide shown, as goToSlide() keeps it: at the end of
+    // the deck the view stops short of its top, and a third of the way down
+    // it lies the slide before (seen on the screen, 2026-11-07: "slide 7
+    // at zoom 0.5 became 6").
+    if (a_current != keep && keep < (a_presentation != nullptr ? a_presentation->slideCount() : 0)) {
+        a_current = keep;
+        emit currentSlideChanged(keep);
+    }
     if (changed) emit zoomChanged(a_zoom);
     viewport()->update();
 }
@@ -396,7 +437,7 @@ void SlideView::goToSlide(int index)
 {
     if (a_presentation == nullptr || a_presentation->slideCount() == 0) return;
     index = std::clamp(index, 0, a_presentation->slideCount() - 1);
-    verticalScrollBar()->setValue(int(contentRect(index).top() - Gap));
+    verticalScrollBar()->setValue(held(contentRect(index).top() - Gap));
     // (At the end of the scroll the slide may be lower down: it is the one.)
     if (a_current != index) {
         a_current = index;
@@ -418,8 +459,8 @@ void SlideView::showRegion(int index, const QRectF& region)
     // Its middle at the view's.
     const QRectF slide = contentRect(index);
     const QPointF middle = slide.topLeft() + region.center() * a_zoom;
-    horizontalScrollBar()->setValue(int(std::lround(middle.x() - view.width() / 2.0)));
-    verticalScrollBar()->setValue(int(std::lround(middle.y() - view.height() / 2.0)));
+    horizontalScrollBar()->setValue(held(std::round(middle.x() - view.width() / 2.0)));
+    verticalScrollBar()->setValue(held(std::round(middle.y() - view.height() / 2.0)));
     // (The slide shown is the one asked, wherever a third of the view is.)
     if (a_current != index) {
         a_current = index;
@@ -434,23 +475,45 @@ void SlideView::updateCurrent()
     if (a_presentation == nullptr || a_presentation->slideCount() == 0) return;
     const int y = verticalScrollBar()->value() + viewport()->height() / 3;
     const qreal each = a_presentation->slideSize().height() * a_zoom + Gap;
-    const int index = std::clamp(int((y - Gap / 2) / std::max(1.0, each)), 0, a_presentation->slideCount() - 1);
+    const int index = std::clamp(held((y - Gap / 2) / std::max(1.0, each)), 0, a_presentation->slideCount() - 1);
     if (index != a_current) {
         a_current = index;
         emit currentSlideChanged(index);
     }
 }
 
-QImage SlideView::drawn(int index, qreal scale, bool* fresh)
+QString SlideView::keyOf(int index, qreal scale, const QRect& piece)
 {
-    const QString key = QStringLiteral("%1:%2").arg(index).arg(scale, 0, 'f', 4);
+    return QStringLiteral("%1:%2:%3:%4").arg(index).arg(scale, 0, 'f', 4).arg(piece.x()).arg(piece.y());
+}
+
+QImage SlideView::drawn(int index, qreal scale, const QRect& piece, bool* fresh)
+{
+    const QString key = keyOf(index, scale, piece);
     *fresh = false;
     if (QImage* kept = a_cache.object(key)) return *kept;
-    QImage image = a_presentation->render(index, scale);
+    QImage image = a_presentation->render(index, scale, piece);
     *fresh = true;
     ++a_drawn;
     if (!image.isNull()) a_cache.insert(key, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
     return image;
+}
+
+QList<QRect> SlideView::piecesOf(const QRect& r, const QSize& full) const
+{
+    // Small enough: the slide whole, kept for scrolling.
+    if (qint64(full.width()) * full.height() <= WholeSlidePixels) return {QRect(QPoint(0, 0), full)};
+    // Else the tiles of the part in sight (its pixels, from the slide's top
+    // left).
+    const QRectF seen = QRectF(r).intersected(QRectF(viewport()->rect()));
+    if (seen.isEmpty() || r.width() <= 0 || r.height() <= 0) return {};
+    const qreal kx = full.width() / qreal(r.width()), ky = full.height() / qreal(r.height());
+    const QRect part = QRectF((seen.left() - r.left()) * kx, (seen.top() - r.top()) * ky, seen.width() * kx, seen.height() * ky).toAlignedRect()
+                       & QRect(QPoint(0, 0), full);
+    QList<QRect> out;
+    for (int y = part.top() / Tile; y <= part.bottom() / Tile; ++y)
+        for (int x = part.left() / Tile; x <= part.right() / Tile; ++x) out << (QRect(x * Tile, y * Tile, Tile, Tile) & QRect(QPoint(0, 0), full));
+    return out;
 }
 
 void SlideView::paintEvent(QPaintEvent*)
@@ -461,26 +524,34 @@ void SlideView::paintEvent(QPaintEvent*)
     if (a_presentation == nullptr) return;
     const qreal dpr = devicePixelRatioF();
     const qreal scale = a_zoom * dpr;
+    const QSize full = a_presentation->pixels(scale);
     QElapsedTimer clock;
     clock.start();
     bool later = false;
-    for (int i = 0; i < a_presentation->slideCount(); ++i) {
+    // (From the first slide in sight: each slide is as tall as the next.)
+    const qreal each = a_presentation->slideSize().height() * a_zoom + Gap;
+    const int first = std::clamp(held((verticalScrollBar()->value() - Gap) / std::max(1.0, each)) - 1, 0, std::max(0, a_presentation->slideCount() - 1));
+    for (int i = first; i < a_presentation->slideCount(); ++i) {
         const QRect r = slideRect(i);
         if (r.bottom() < 0) continue;
         if (r.top() > viewport()->height()) break;
         // A shadow, the slide on it.
         p.fillRect(r.translated(2, 3), QColor(0, 0, 0, 50));
-        QImage image;
-        bool fresh = false;
-        const QString key = QStringLiteral("%1:%2").arg(i).arg(scale, 0, 'f', 4);
-        // (Slides drawn a quarter second at most a frame: the rest the next.)
-        if (a_cache.contains(key) || clock.elapsed() < 250) image = drawn(i, scale, &fresh);
-        if (image.isNull()) {
-            p.fillRect(r, Qt::white);
-            later = true;
-            continue;
+        p.fillRect(r, Qt::white);
+        const qreal kx = full.width() / qreal(std::max(1, r.width())), ky = full.height() / qreal(std::max(1, r.height()));
+        for (const QRect& piece : piecesOf(r, full)) {
+            // (Slides drawn a quarter second at most a frame: the rest the
+            // next. One that cannot be drawn at all is left white - not
+            // tried again frame after frame.)
+            if (!a_cache.contains(keyOf(i, scale, piece)) && clock.elapsed() >= 250) {
+                later = true;
+                continue;
+            }
+            bool fresh = false;
+            const QImage image = drawn(i, scale, piece, &fresh);
+            if (image.isNull()) continue;
+            p.drawImage(QRectF(r.left() + piece.left() / kx, r.top() + piece.top() / ky, piece.width() / kx, piece.height() / ky), image);
         }
-        p.drawImage(QRectF(r), image);
         // What the pen drew on it, and the stroke being drawn there - no
         // further than its edges.
         QList<markup::Stroke> strokes = a_drawing.on(partOf(i));
@@ -495,6 +566,7 @@ void SlideView::paintEvent(QPaintEvent*)
         }
     }
     if (later) QTimer::singleShot(0, viewport(), qOverload<>(&QWidget::update));
+    else prefetch(scale);
 }
 
 void SlideView::resizeEvent(QResizeEvent* event)
@@ -875,6 +947,7 @@ PptxDoc::PptxDoc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
 
 PptxDoc::~PptxDoc()
 {
+    if (a_thumbsCancelled) a_thumbsCancelled->store(true);
     if (a_show) a_show->close();
 }
 
@@ -1262,12 +1335,17 @@ void PptxDoc::watch()
 void PptxDoc::fillThumbnails()
 {
     a_thumbTimer->stop();
+    if (a_thumbsCancelled) a_thumbsCancelled->store(true);
     const QSignalBlocker block(a_thumbnails);
     a_thumbnails->clear();
     a_thumbsDone = 0;
     if (a_presentation == nullptr) return;
     const QSizeF s = a_presentation->slideSize();
-    const QSize icon(ThumbnailWidth, std::max(20, int(ThumbnailWidth * s.height() / s.width())));
+    // As tall as the slide's aspect says, within reason: a slide 1 point by
+    // 40,320 (PowerPoint makes none such; a deck can say so) made one blank
+    // icon of 150 x 6 million pixels, 3.6 GB (2026-11-08). The slide is
+    // drawn inside its icon (thumbnailScale()).
+    const QSize icon(ThumbnailWidth, int(std::clamp(ThumbnailWidth * s.height() / s.width(), 20.0, 4.0 * ThumbnailWidth)));
     a_thumbnails->setIconSize(icon);
     QPixmap blank(icon);
     blank.fill(Qt::white);
@@ -1280,6 +1358,29 @@ void PptxDoc::fillThumbnails()
     }
     a_thumbnails->setCurrentRow(a_view->currentSlide());
     a_thumbTimer->start();
+    // Their pictures decoded meanwhile, on another thread, as small as the
+    // thumbnails draw them (renderSomeThumbnails' scale): a deck of 200
+    // photographs' thumbnails took 1.8 s, most of it decoding (2026-11-08).
+    if (a_thumbsCancelled) a_thumbsCancelled->store(true);
+    a_thumbsCancelled = std::make_shared<std::atomic<bool>>(false);
+    // On a few threads at once, every few slides each, below the view's
+    // own (prefetch()): one thread took 1.8 s for 200 photographs.
+    const qreal scale = thumbnailScale();
+    const int threads = std::clamp(QThread::idealThreadCount() - 1, 1, 4);
+    for (int t = 0; t < threads; ++t)
+        QThreadPool::globalInstance()->start(
+            [deck = std::shared_ptr<const Presentation>(a_presentation), cancelled = a_thumbsCancelled, scale, t, threads] {
+                for (int i = t; i < deck->slideCount() && !*cancelled; i += threads) deck->prepare(i, scale);
+            },
+            -1);
+}
+
+qreal PptxDoc::thumbnailScale() const
+{
+    // The slide inside its icon, its aspect kept.
+    const QSize icon = a_thumbnails->iconSize();
+    const QSizeF s = a_presentation != nullptr ? a_presentation->slideSize() : QSizeF(1, 1);
+    return std::min(icon.width() / s.width(), icon.height() / s.height()) * devicePixelRatioF();
 }
 
 void PptxDoc::renderSomeThumbnails()
@@ -1290,8 +1391,7 @@ void PptxDoc::renderSomeThumbnails()
     const qreal dpr = devicePixelRatioF();
     while (a_presentation != nullptr && a_thumbsDone < a_thumbnails->count() && clock.elapsed() < 25) {
         const int i = a_thumbsDone++;
-        const QSize size = a_thumbnails->iconSize();
-        QImage image = a_presentation->render(i, size.width() * dpr / a_presentation->slideSize().width());
+        QImage image = a_presentation->render(i, thumbnailScale());
         if (a_presentation->slide(i).hidden) {
             // Hidden: dimmed.
             QPainter p(&image);
