@@ -17,6 +17,7 @@
 #include <QComboBox>
 #include <QClipboard>
 #include <QDockWidget>
+#include <QFileDialog>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -197,6 +198,30 @@ void onWorktreeWindow(const std::function<void(QDialog*)>& with)
             timer->stop();
             timer->deleteLater();
             with(d);
+            return;
+        }
+    });
+    timer->start();
+}
+
+// Answers the next file dialog (Qt's own, offscreen) with the folder \a in.
+void answerFolder(const QString& in)
+{
+    auto* timer = new QTimer(qApp);
+    auto tries = std::make_shared<int>(0);
+    timer->setInterval(20);
+    QObject::connect(timer, &QTimer::timeout, [timer, tries, in] {
+        if (++*tries > 500) {
+            timer->deleteLater();
+            return;
+        }
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            auto* d = qobject_cast<QFileDialog*>(w);
+            if (d == nullptr || !d->isVisible()) continue;
+            timer->stop();
+            timer->deleteLater();
+            d->setDirectory(in);
+            static_cast<QDialog*>(d)->accept();   // (QFileDialog's own, through QDialog's)
             return;
         }
     });
@@ -3102,10 +3127,16 @@ private slots:
         QVERIFY(menu != nullptr);
         QAction* here = menu->findChild<QAction*>("gitWorktreeHere");
         QVERIFY(here != nullptr);
-        answerWorktree("at-first");
+        QString atFirst;
+        onWorktreeWindow([&atFirst](QDialog* d) {
+            d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText("at-first");
+            atFirst = d->findChild<QLabel*>("gitWorktreeNote")->text();
+            d->accept();
+        });
         here->trigger();
         made();
         delete menu;
+        QCOMPARE(atFirst, QStringLiteral("A new branch at-first, at %1.").arg(log(repo).value(1).hash.left(7)));
         QCOMPARE(gitIn(repo + "-at-first", {"rev-parse", "HEAD"}), log(repo).value(1).hash);
         QCOMPARE(read(repo + "-at-first").branch, QStringLiteral("at-first"));
 
@@ -3255,6 +3286,132 @@ private slots:
         QVERIFY(app->gotoPage(empty + "/n.txt"));
         r = call("trigger_action", {{"action", "Git > New Worktree..."}});
         QVERIFY2(failed(r) && text(r).contains("cannot be used now"), qPrintable(text(r)));
+        for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // The recheck of New Worktree... (2026-11-08): Choose... - a name taken
+    // in the folder picked, and picked before a branch; set_dialog typing
+    // into the branch's list; Claude's Git menu at once for a repository
+    // made elsewhere; the File Browser's Git submenu read by context_menu.
+    void aWorktreeAsTheRecheckFoundIt()
+    {
+        const QString repo = makeRepo("recheck");
+        QVERIFY(!repo.isEmpty());
+        const QString name = QFileInfo(repo).fileName();
+        Commands* commands = Commands::instance();
+        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 30000); };
+        const QString picked = canonical(dir.path()) + "/picked";
+        QVERIFY(QDir().mkpath(picked));
+
+        // Choose... before a branch: the folder still says nothing (not
+        // "<repo>-2"), and follows the branch typed after, in the folder picked.
+        QString first, after, hint;
+        onWorktreeWindow([&](QDialog* d) {
+            auto* folder = d->findChild<QLineEdit*>("gitWorktreeFolder");
+            answerFolder(picked);
+            d->findChild<QPushButton*>("gitWorktreeChoose")->click();
+            first = folder->text();
+            hint = folder->placeholderText();
+            d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText("late");
+            after = QDir::fromNativeSeparators(folder->text());
+            d->accept();
+        });
+        commands->newWorktree(repo);
+        made();
+        QCOMPARE(first, QString());
+        QVERIFY2(hint.contains(QDir::toNativeSeparators(picked)), qPrintable(hint));
+        QCOMPARE(after, picked + "/" + name + "-late");
+        QCOMPARE(read(picked + "/" + name + "-late").branch, QStringLiteral("late"));
+
+        // A name taken in the folder picked (not beside the repository): one not there.
+        QVERIFY(write(picked + "/" + name + "-taken/file.txt", "here first\n"));
+        QString chosen;
+        onWorktreeWindow([&](QDialog* d) {
+            d->findChild<QComboBox*>("gitWorktreeBranch")->setCurrentText("taken");
+            answerFolder(picked);
+            d->findChild<QPushButton*>("gitWorktreeChoose")->click();
+            chosen = QDir::fromNativeSeparators(d->findChild<QLineEdit*>("gitWorktreeFolder")->text());
+            d->accept();
+        });
+        {
+            misc::ErrorCapture errors;
+            commands->newWorktree(repo);
+            made();
+            QVERIFY2(errors.errors().isEmpty(), qPrintable(errors.errors().join('\n')));
+        }
+        QCOMPARE(chosen, picked + "/" + name + "-taken-2");
+        QCOMPARE(read(chosen).branch, QStringLiteral("taken"));
+        QCOMPARE(readAll(picked + "/" + name + "-taken/file.txt"), QByteArray("here first\n"));
+
+        // set_dialog types into the branch's list: "dup" is not origin/dup,
+        // MAIN not origin/main, upper not Upper, and nothing not the first item.
+        QVERIFY(!gitIn(repo, {"remote", "add", "origin", canonical(dir.path()) + "/nowhere-recheck.git"}).isNull());
+        QVERIFY(!gitIn(repo, {"update-ref", "refs/remotes/origin/dup", "main"}).isNull());
+        QVERIFY(!gitIn(repo, {"update-ref", "refs/remotes/origin/main", "main"}).isNull());
+        QVERIFY(!gitIn(repo, {"branch", "Upper"}).isNull());
+        Tracker::instance()->readNow(repo);
+        QVERIFY(app->gotoPage(repo + "/a.txt"));
+        QStringList values;
+        QJsonObject cancelled;
+        QTimer::singleShot(800, this, [&] {
+            for (const char* typed : {"dup", "MAIN", "upper", ""}) {
+                call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Branch"}, {"value", typed}}}}});
+                for (const QJsonValue& c : json(call("get_dialog")).value("controls").toArray())
+                    if (c.toObject().value("label").toString() == "Branch") values << c.toObject().value("value").toString();
+            }
+            cancelled = call("set_dialog", {{"press", "Cancel"}});
+        });
+        QJsonObject r = call("trigger_action", {{"action", "Git > New Worktree..."}}, 20000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(!cancelled.isEmpty(), 10000);
+        QCOMPARE(values, (QStringList{"dup", "MAIN", "upper", ""}));
+
+        // A repository made elsewhere a moment ago: New Worktree on at once.
+        const QString elsewhere = canonical(dir.path()) + "/made-elsewhere";
+        QVERIFY(write(elsewhere + "/x.txt", "x\n"));
+        QVERIFY(app->gotoPage(elsewhere + "/x.txt"));
+        r = call("list_actions", {{"search", "New Worktree"}});
+        QVERIFY2(text(r).contains("\"enabled\":false"), qPrintable(text(r)));   // (none yet - and so remembered)
+        QVERIFY(Tracker::instance()->repositoryOf(elsewhere) == nullptr);
+        QVERIFY(!gitIn(elsewhere, {"init", "-q"}).isNull());
+        QVERIFY(!gitIn(elsewhere, {"add", "x.txt"}).isNull());
+        QVERIFY(!gitIn(elsewhere, {"commit", "-q", "-m", "x"}).isNull());
+        r = call("list_actions", {{"search", "New Worktree"}});
+        QVERIFY2(text(r).contains("\"enabled\":true"), qPrintable(text(r)));
+
+        // A file chosen in a folder that is then left is not among those
+        // Copy and the File Browser's menu are for: out of sight, it was
+        // taken with the one right-clicked.
+        const QString onFile = repo + "/a.txt";
+        const QString decoy = canonical(dir.path()) + "/decoy";
+        QVERIFY(write(decoy + "/a.txt", "not this one\n"));
+        FileBrowser* fb = app->fileBrowserPanel();
+        fb->setView(FileBrowser::View::List);
+        fb->setLocation(decoy);
+        QTRY_VERIFY_WITH_TIMEOUT(fb->indexOf(decoy + "/a.txt").isValid(), 10000);
+        fb->currentView()->selectionModel()->select(fb->indexOf(decoy + "/a.txt"), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QVERIFY2(fb->selectedPaths().contains(decoy + "/a.txt"), qPrintable(fb->selectedPaths().join(", ")));
+        fb->setLocation(repo);
+        QTRY_VERIFY_WITH_TIMEOUT(fb->indexOf(onFile).isValid(), 10000);
+        QVERIFY2(fb->selectedPaths().isEmpty(), qPrintable(fb->selectedPaths().join(", ")));
+
+        // The File Browser's Git submenu, filled as it opens: context_menu
+        // lists it - on that file, not the one of its name current in the
+        // folder shown before (in the Columns view too).
+        fb->setView(FileBrowser::View::Columns);
+        fb->setLocation(decoy);
+        QTRY_VERIFY_WITH_TIMEOUT((fb->selectPath(decoy + "/a.txt"), canonical(fb->pathOf(fb->currentView()->currentIndex())) == decoy + "/a.txt"), 10000);
+        r = call("context_menu", {{"on", QJsonObject{{"file", onFile}}}});
+        QVERIFY2(!failed(r) && text(r).contains("\"Git > New Worktree\""), qPrintable(text(r)));
+        // ... and chooses New Worktree... from it.
+        fb->setView(FileBrowser::View::List);
+        answerWorktree("from-browser");
+        r = call("context_menu", {{"on", QJsonObject{{"file", onFile}}}, {"choose", "Git > New Worktree"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(repo + "-from-browser/.git"), 30000);   // (chosen as the menu would: after the call)
+        made();
+        QCOMPARE(read(repo + "-from-browser").branch, QStringLiteral("from-browser"));
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
         app->closeAllFiles();
     }

@@ -416,6 +416,57 @@ The fuzzers, 12 seeds, no finding. `retest_packaged.py`, with the check's cases 
 status of the pipe in 30 s. **As a control,** the installed app of `bc0a4b9`: 1 of the 24, the one that was never a fault (a name with a
 space given from the folder, refused then too). Not tried: the Skip question on a real display (a test answers it, offscreen).
 
+## New Worktree, its check and recheck
+
+**New Worktree…** (`3f2422ab`, at the user's asking) makes a second folder of a repository with a branch of its own checked
+out: a new branch, one there already, or a remote's branch followed. It is in the Git menu, the File Browser's and the status
+bar's Git menus, and the History's **New Worktree Here…**, which starts the new branch at the commit chosen.
+
+**The check** (`2026-11-08-claude-new-worktree-check.md`, archived) found four faults and one older one, fixed in `1d154f23`:
+
+- a remote's branch was made a new, unrelated local branch;
+- a folder inside the repository got past the check in another case of its name or through a link;
+- `~` was not the home folder;
+- the folder read `<repo>-2` before a branch was chosen;
+- older: Claude's `trigger_action` and `list_actions` saw the Git menu as it stood when it last opened.
+
+`retest_packaged.py`'s `worktree` mode: 15 of 15 on the app installed at 12:05.
+
+**The recheck** (`2026-11-08-claude-new-worktree-recheck.md`) found those fixed, and these, each reproduced by a test that failed first
+(`aWorktreeAsTheRecheckFoundIt`):
+
+| Severity | Fault | Now |
+|---|---|---|
+| Low | **Choose… did not check its folder for the name:** the name was made unique beside the repository, then joined to the folder picked, so a worktree there already of that name stopped it with git's "already exists". | `worktreeFolder` takes the folder: a name not there yet, in it. |
+| Low | **Choose… before a branch brought back `<repo>-2`,** and counted as typing the folder, so a branch typed after left it. | Choose… picks the folder the worktree goes in; the field stays empty (its hint names the folder) and follows the branch, as beside the repository. |
+| Low | **`set_dialog` could not type a name into an editable list that is part of an item:** `dup` chose `origin/dup`, `MAIN` `origin/main`, `upper` `Upper`. | An editable list takes an item only when the text is just that, case and all; otherwise the text typed. A list that cannot be typed in matches as before. |
+| Low | **Claude's Git menu lagged up to 5 s for a repository made elsewhere:** `Tracker::fresh` trusted a remembered "no repository". | Looked for again when it says none: `fresh` is asked as a menu opens. |
+| Low | **`context_menu` read a submenu without opening it,** so the File Browser's Git, filled as it opens, read as empty and was left out. | Each submenu is opened (`aboutToShow`) before it is read, as the pointer on it would. |
+
+**Found on the way:** the File Browser's menu and Copy took files chosen in a folder since left, out of sight, with the one
+right-clicked. Claude's `context_menu` on a file of one repository opened New Worktree on another repository from an earlier
+test. `selectedPaths()` now keeps only those of the folder shown.
+
+**Not kept:** two guards in `context_menu`, neither of which a test could make fail. One checked that the file right-clicked is
+the one asked for. The other found a refilled submenu's entry again when the menu took no keys.
+
+**The History's start commit,** untested before: its note now reads "A new branch X, at <hash>" in `aWorktreeFromTheMenus`, which
+also checks the new worktree's HEAD.
+
+**Left:** the History as a window of its own and the status bar's Git button are still out of reach of `get_ui` and `context_menu`.
+The File Browser's Git submenu is now reachable, and is tested.
+
+**Checked** on a clean overlay of `75b5cf05` with only these files on it:
+
+- **Breaks:** each of the 7 new breaks was caught.
+- **Release, 4 at a time:** 14 suites passed. They were `test_git_integration`, `test_qucs_control`, `test_mcp_server`, `test_multiphysics_doc`,
+  `test_pdf_viewer`, `test_pptx_doc`, `test_git_robust`, `test_git_fuzz`, `test_git_perf`, `test_claude_git`, `test_project_folders`
+  and the three File Browser tests.
+- **ASan and UBSan:** `test_git_integration`, `test_qucs_control`, `test_file_browser` and `test_git_robust` passed, with no reports.
+- **`retest_packaged.py`:** with the recheck's cases added, 20 of 20 on this build (not packaged).
+- **Control:** the installed app of `1d154f23` scored 15 of 20, failing exactly the five recheck cases.
+- **Not run:** the whole ctest. `qucsator_rf` needs `dos2unix`, which is not installed.
+
 ## What could not be verified
 
 - **Linux and Windows:** not built or run. The tests are written for them (the `#ifdef`s), but CI will be their first

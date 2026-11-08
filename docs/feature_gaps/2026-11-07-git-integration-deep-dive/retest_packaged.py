@@ -259,6 +259,21 @@ def worktree_check(ws):
     git(p, "branch", "kept"); ok, texts, a = ask(doc, "kept", "wt-rel")
     report("an existing branch, in a relative folder beside the repository", ok and wait(lambda: os.path.isdir(ws + "/wt-rel")) and git(ws + "/wt-rel", "rev-parse", "--abbrev-ref", "HEAD").strip() == "kept", (texts, a))
     ok, texts, a = ask(doc, "feat/x"); report("a new branch, its folder named for it", ok and wait(lambda: os.path.isdir(ws + "/proj-feat-x")) and git(ws + "/proj-feat-x", "rev-parse", "--abbrev-ref", "HEAD").strip() == "feat/x", (texts, a))
+    # The recheck (2026-11-08-claude-new-worktree-recheck.md): set_dialog types into the list; Choose...; the File Browser's Git.
+    def control(label):
+        return [c for c in json.loads(s.call("get_dialog")[1]).get("controls", []) if c.get("label") == label][0]
+    s.call("trigger_action", action="Git > New Worktree...", path=doc)
+    s.call("set_dialog", set=[{"control": "Branch", "value": "featur"}]); report("recheck: set_dialog types featur, not feature", control("Branch")["value"] == "featur", control("Branch"))
+    s.call("set_dialog", set=[{"control": "Branch", "value": ""}])
+    picked = ws + "/picked"; os.makedirs(picked + "/proj-taken"); open(picked + "/proj-taken/x", "w").write("here first\n")
+    s.call("set_dialog", press="Choose…"); s.call("set_dialog", set=[{"control": "Directory", "value": picked}], press="Choose")
+    report("recheck: Choose... before a branch leaves the folder empty", control("Folder")["value"] == "", control("Folder"))
+    s.call("set_dialog", set=[{"control": "Branch", "value": "late"}])
+    report("recheck: the folder follows the branch in the folder picked", control("Folder")["value"] == picked + "/proj-late", control("Folder"))
+    s.call("set_dialog", set=[{"control": "Branch", "value": "taken"}])
+    report("recheck: a name taken in the folder picked: one not there", control("Folder")["value"] == picked + "/proj-taken-2", control("Folder"))
+    s.call("set_dialog", press="Cancel")
+    err, t = s.call("context_menu", on={"file": doc}); report("recheck: context_menu lists the File Browser's Git > New Worktree", not err and '"Git > New Worktree"' in t, t)
     # Claude's Git menu, as it is now: a repository with no commit in front.
     e = ws + "/empty"; os.makedirs(e); git(e, "init", "-q"); open(e + "/n.txt", "w").write("n\n"); s.call("open_document", path=e + "/n.txt")
     err, t = s.call("list_actions", search="New Worktree"); report("list_actions: New Worktree off before a first commit", '"enabled":false' in t, t)
