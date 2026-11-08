@@ -42,7 +42,7 @@ class Panel : public QWidget, public pdf::PageTool
 
 public:
     /// What the left button does on the pages.
-    enum class Mode { None, Region, Reference, AddPoint, MovePoint, DeletePoint, Trace, PickColour };
+    enum class Mode { None, Region, Reference, AddPoint, MovePoint, DeletePoint, Trace, PickColour, LeaveOut };
 
     Panel(PdfDoc* document, QWidget* parent = nullptr);
     ~Panel() override;
@@ -62,6 +62,13 @@ public:
     /// What is kept with the file, read again.
     void reloadKept();
     void selectPlot(int index);
+    /// \a plot shown, not kept until it is changed.
+    void addTransient(const Plot& plot);
+    /// Insets and legends' boxes found and left out at each extraction.
+    bool findsLeftOut() const;
+    void setFindsLeftOut(bool on);
+    /// The current plot's regions left out, by hand and found, all taken back.
+    void clearLeftOut();
 
     Mode mode() const { return a_mode; }
     void setMode(Mode mode);
@@ -125,6 +132,10 @@ private:
     /// The point of the current plot nearest \a point on \a page, within reach.
     bool nearestPoint(int page, QPointF point, int* series, int* index) const;
     void addReference(QPointF point);
+    /// A plot with no calibration gets four references at its frame's corners,
+    /// their values to be typed: the ends of its axes.
+    void prefillReferences(Plot& plot);
+    Options extractOptions() const;
     void refit();
     void updateView();
     void copyToClipboard();
@@ -165,6 +176,7 @@ private:
     QToolButton* a_deletePlot = nullptr;
     QButtonGroup* a_modes = nullptr;
     QCheckBox* a_magnifier = nullptr;
+    QCheckBox* a_findLeftOut = nullptr;
     QComboBox* a_kind = nullptr;
     QComboBox* a_xScale = nullptr;
     QComboBox* a_yScale = nullptr;

@@ -29,6 +29,7 @@
 
 #include "pdfvector.h"
 #include "plotdigitizer.h"
+#include "plotdigitizer_p.h"
 
 using namespace qucs_s::digitizer;
 namespace vec = qucs_s::pdf::vec;
@@ -565,6 +566,10 @@ private slots:
         QTest::newRow("two numbers") << "1 2 3 x" << false << 0.0;
         QTest::newRow("too long") << QString(100, QLatin1Char('1')) << false << 0.0;
         QTest::newRow("huge") << "1e999" << false << 0.0;
+        // (A sentence's "VOL. 25, NO. 8," is no tick label.)
+        QTest::newRow("trailing comma") << "8," << false << 0.0;
+        QTest::newRow("trailing comma two digits") << "25," << false << 0.0;
+        QTest::newRow("trailing comma unit") << "5V," << false << 0.0;
     }
 
     void tickLabels()
@@ -1314,6 +1319,352 @@ private slots:
         QCOMPARE(inked, asked);
     }
 
+    // ----- A paper's figure: what the first test on a scanned paper met --------
+
+    // A scan in the style of the paper's figures: a blue model line under black
+    // ring markers that touch along its flanks and pile up in its tail, a red
+    // curve with a circled label drawn over its peak, a legend in a box, and a
+    // grey inset with red annotations drawn over the plot. No text at all.
+    void aPapersFigure()
+    {
+        const QString file = path(QStringLiteral("paper_like.pdf"));
+        Axes a;
+        a.xMin = 0.6;
+        a.xMax = 2.0;
+        a.yMin = 0;
+        a.yMax = 0.4;
+        a.xTicks = {0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0};
+        a.yTicks = {0, 0.1, 0.2, 0.3, 0.4};
+        a.labels = false;
+        const auto model = [](double x) { return 0.36 / (1 + std::pow((x - 0.8) / 0.02, 2)) + 0.02 / (1 + std::pow((x - 0.62) / 0.05, 2)) + 0.003; };
+        const auto red = [](double x) { return 0.3 / (1 + std::pow((x - 1.25) / 0.025, 2)) + 0.002; };
+        const double k = 300.0 / 72;
+        QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QList<QPointF> truthMarkers;
+        const QRectF legend(a.frame.left() + 150, a.frame.top() + 10, 110, 36);
+        const QRectF inset(a.frame.right() - 120, a.frame.top() + 20, 110, 70);
+        {
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(k, k);
+            drawAxes(p, a, 8);
+            p.setClipRect(a.frame);
+            QPolygonF line, redLine;
+            for (int i = 0; i <= 1400; ++i) {
+                const double x = 0.6 + i * 0.001;
+                line << a.at(x, model(x));
+                redLine << a.at(x, red(x));
+            }
+            p.setPen(QPen(QColor(55, 82, 166), 1.6));
+            p.drawPolyline(line);
+            p.setPen(QPen(QColor(230, 32, 28), 1.4));
+            p.drawPolyline(redLine);
+            // Rings: 3.4 pt across, thick, one each 0.01.
+            p.setPen(QPen(Qt::black, 1.0));
+            p.setBrush(Qt::NoBrush);
+            for (int i = 0; i <= 140; ++i) {
+                const double x = 0.6 + i * 0.01;
+                const QPointF at = a.at(x, model(x));
+                p.drawEllipse(at, 1.2, 1.2);
+                if (a.frame.contains(at)) truthMarkers << at;
+            }
+            p.setClipping(false);
+            // A circled 2 over the red peak, 5 pt above it.
+            const QPointF top = a.at(1.25, red(1.25));
+            p.setPen(QPen(QColor(230, 32, 28), 0.8));
+            p.drawEllipse(top + QPointF(0, -11), 5, 5);
+            QFont font(QStringLiteral("Helvetica"));
+            font.setPixelSize(7);
+            p.setFont(font);
+            p.drawText(QRectF(top + QPointF(-5, -16), QSizeF(10, 10)), Qt::AlignCenter, QStringLiteral("2"));
+            // The legend, boxed.
+            p.setPen(QPen(Qt::black, 0.6));
+            p.setBrush(Qt::white);
+            p.drawRect(legend);
+            p.setPen(QPen(QColor(55, 82, 166), 1.6));
+            p.drawLine(legend.topLeft() + QPointF(6, 11), legend.topLeft() + QPointF(26, 11));
+            p.setPen(QPen(Qt::black, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(legend.topLeft() + QPointF(16, 25), 1.2, 1.2);
+            p.setPen(Qt::black);
+            font.setPixelSize(9);
+            p.setFont(font);
+            p.drawText(QRectF(legend.topLeft() + QPointF(30, 4), QSizeF(70, 14)), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Model"));
+            p.drawText(QRectF(legend.topLeft() + QPointF(30, 18), QSizeF(70, 14)), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("COMSOL"));
+            // The inset: grey, with white slots, a red dashed line and a red
+            // circled 1.
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(127, 127, 127));
+            p.drawRect(inset);
+            p.setBrush(Qt::white);
+            p.drawRect(QRectF(inset.left() + 20, inset.top(), 12, 40));
+            p.drawRect(QRectF(inset.left() + 70, inset.top(), 12, 30));
+            p.drawRect(QRectF(inset.left(), inset.bottom() - 14, 100, 8));
+            p.setPen(QPen(QColor(230, 32, 28), 0.8, Qt::DashLine));
+            p.drawLine(inset.topLeft() + QPointF(20, 4), inset.topLeft() + QPointF(82, 4));
+            p.drawEllipse(inset.topLeft() + QPointF(26, 20), 5, 5);
+            p.end();
+        }
+        QVERIFY(writeScan(file, image));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY2(!plot.frame.isNull(), "a frame");
+        QCOMPARE_LE(QLineF(plot.pageBox().topLeft(), a.frame.topLeft()).length(), 1.5);
+        // Calibrated by the values at its frame's edges, as Claude reads them off.
+        plot.calibration = Calibration{};
+        for (const auto& r : {std::tuple{a.frame.bottomLeft(), true, 0.6}, {a.frame.bottomRight(), true, 2.0}, {a.frame.bottomLeft(), false, 0.0}, {a.frame.topLeft(), false, 0.4}}) {
+            Reference ref;
+            ref.at = std::get<0>(r);
+            (std::get<1>(r) ? ref.hasX : ref.hasY) = true;
+            (std::get<1>(r) ? ref.x : ref.y) = std::get<2>(r);
+            plot.calibration.references << ref;
+        }
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        QVERIFY2(extract(source, plot, Options{}, &why), qPrintable(why));
+        // The inset and the legend were found and left out, and nothing came
+        // from inside them.
+        bool legendOut = false, insetOut = false;
+        for (const QRectF& r : std::as_const(plot.leftOut)) {
+            legendOut = legendOut || r.contains(legend.center());
+            insetOut = insetOut || r.contains(inset.center());
+        }
+        QVERIFY2(legendOut, "the legend's box left out");
+        QVERIFY2(insetOut, "the inset left out");
+        for (const Series& s : std::as_const(plot.series))
+            for (const QPointF& q : s.points) QVERIFY2(!legend.contains(q) && !inset.contains(q), qPrintable(s.name));
+        // The markers: found, and where they are.
+        const Series* markers = nullptr;
+        for (const Series& s : std::as_const(plot.series))
+            if (s.shape == Series::Shape::Markers && s.colour.lightness() < 80) markers = &s;
+        QVERIFY2(markers != nullptr, "the black markers");
+        int right = 0;
+        for (const QPointF& q : markers->points) {
+            double nearest = 1e9;
+            for (const QPointF& t : std::as_const(truthMarkers)) nearest = std::min(nearest, QLineF(q, t).length());
+            right += nearest <= 1.0;
+        }
+        int found = 0;
+        for (const QPointF& t : std::as_const(truthMarkers)) {
+            double nearest = 1e9;
+            for (const QPointF& q : markers->points) nearest = std::min(nearest, QLineF(q, t).length());
+            found += nearest <= 1.0;
+        }
+        qInfo("paper-like scan: %d of %lld markers found, %d of %lld found ones on a marker", found, qlonglong(truthMarkers.size()), right, qlonglong(markers->points.size()));
+        QCOMPARE_GE(right, int(0.95 * markers->points.size()));
+        QCOMPARE_GE(found, int(0.5 * truthMarkers.size()));
+        // The blue line, under the markers: what is followed is on it, and it
+        // reaches the peak.
+        double blueTop = 0, blueWorst = 0;
+        int bluePoints = 0;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape != Series::Shape::Line || !(s.colour.blue() > s.colour.red() + 60)) continue;
+            for (const QPointF& v : values(plot, s)) {
+                blueTop = std::max(blueTop, v.y());
+                blueWorst = std::max(blueWorst, std::abs(v.y() - model(v.x())));
+                ++bluePoints;
+            }
+        }
+        qInfo("paper-like scan: blue line %d points, top %.3f (0.363), worst %.4f", bluePoints, blueTop, blueWorst);
+        QCOMPARE_GE(bluePoints, 30);
+        QCOMPARE_GE(blueTop, 0.30);
+        QCOMPARE_LE(blueWorst, 0.02);
+        // The red curve stops at its peak: it does not climb into the circled
+        // label above it.
+        double redTop = 0;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape != Series::Shape::Line || !(s.colour.red() > s.colour.blue() + 60)) continue;
+            for (const QPointF& v : values(plot, s)) redTop = std::max(redTop, v.y());
+        }
+        qInfo("paper-like scan: red top %.3f (0.302)", redTop);
+        QCOMPARE_LE(std::abs(redTop - 0.302), 0.012);
+        // And not a heap of junk.
+        QCOMPARE_LE(plot.series.size(), 10);
+        // Asked for black alone, no grey or blue comes back.
+        Plot black = plot;
+        Options o;
+        o.colours << QColor(Qt::black);
+        QVERIFY(extract(source, black, o, &why));
+        for (const Series& s : std::as_const(black.series)) QVERIFY2(s.colour.lightness() < 90 && std::abs(s.colour.red() - s.colour.blue()) < 60, qPrintable(s.colour.name()));
+    }
+
+    void blackIsNotGrey()
+    {
+        // The same line in black and in grey: two families by darkness, and
+        // only one when one colour is asked for.
+        const QString file = path(QStringLiteral("black_grey.pdf"));
+        Axes a;
+        a.labels = false;
+        const auto low = [](double x) { return -0.5 + 0.3 * std::sin(x); };
+        const auto high = [](double x) { return 0.4 + 0.3 * std::sin(x); };
+        QVERIFY(writeScan(file, plotImage(a, {Curve{low, Qt::black, 1.2}, Curve{high, QColor(127, 127, 127), 1.2}}, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QString why;
+        QVERIFY(assignTickValues(plot, true, {0, 2, 4, 6, 8, 10}, &why));
+        QVERIFY(assignTickValues(plot, false, {1, 0.5, 0, -0.5, -1}, &why));
+        QVERIFY(calibrateFromAxes(plot, &why));
+        QVERIFY(extract(source, plot, Options{}, &why));
+        const Series* dark = nearest(plot, low, 2);
+        const Series* grey = nearest(plot, high, 2);
+        QVERIFY(dark != nullptr && grey != nullptr && dark != grey);
+        QCOMPARE_LE(errorsOf(plot, *dark, low, 2).worst, 0.01);
+        QCOMPARE_LE(errorsOf(plot, *grey, high, 2).worst, 0.01);
+        Options o;
+        o.colours << QColor(Qt::black);
+        QVERIFY(extract(source, plot, o, &why));
+        QCOMPARE(plot.series.size(), 1);
+        QCOMPARE_LE(errorsOf(plot, plot.series.first(), low, 2).worst, 0.01);
+        o.colours = {QColor(127, 127, 127)};
+        QVERIFY(extract(source, plot, o, &why));
+        QCOMPARE(plot.series.size(), 1);
+        QCOMPARE_LE(errorsOf(plot, plot.series.first(), high, 2).worst, 0.01);
+    }
+
+    void aRegionLeftOutByHand()
+    {
+        const QString file = path(QStringLiteral("left_out.pdf"));
+        Axes a;
+        a.labels = false;
+        QVERIFY(writeScan(file, plotImage(a, {Curve{sine, Qt::blue, 1.2}}, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QString why;
+        QVERIFY(assignTickValues(plot, true, {0, 2, 4, 6, 8, 10}, &why));
+        QVERIFY(assignTickValues(plot, false, {1, 0.5, 0, -0.5, -1}, &why));
+        QVERIFY(calibrateFromAxes(plot, &why));
+        const QRectF out(a.px(4), a.frame.top(), a.px(6) - a.px(4), a.frame.height());
+        plot.exclude << out;
+        QVERIFY(extract(source, plot, Options{}, &why));
+        for (const Series& s : std::as_const(plot.series))
+            for (const QPointF& q : s.points) QVERIFY(!out.contains(q));
+        // Kept with the rest.
+        Plot back;
+        QVERIFY(fromJson(toJson(plot), &back, &why));
+        QCOMPARE(back.exclude.size(), 1);
+        QCOMPARE(back.exclude.first(), out);
+        // Points that fall in a region are taken out wherever they came from.
+        Plot hand = plot;
+        Series s;
+        s.points = {QPointF(a.px(3), 200), QPointF(a.px(5), 200), QPointF(a.px(7), 200)};
+        hand.series = {s};
+        QStringList notes;
+        dropExcluded(hand, &notes);
+        QCOMPARE(hand.series.first().points.size(), 2);
+        QCOMPARE(hand.series.first().breaks, QList<int>{1});
+    }
+
+    void aSeedRoundANarrowPeak()
+    {
+        // Seeded on one side of a peak narrower than the line is long: both
+        // sides come back, in order of x.
+        const QString file = path(QStringLiteral("narrow_peak.pdf"));
+        Axes a;
+        a.labels = false;
+        a.yMin = 0;
+        a.yMax = 1;
+        a.yTicks = {0, 0.25, 0.5, 0.75, 1};
+        const auto peak = [](double x) { return 0.9 / (1 + std::pow((x - 5) / 0.12, 2)) + 0.05; };
+        Curve c{peak, Qt::blue, 1.4};
+        c.samples = 2000;
+        QVERIFY(writeScan(file, plotImage(a, {c}, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QString why;
+        QVERIFY(assignTickValues(plot, true, {0, 2, 4, 6, 8, 10}, &why));
+        QVERIFY(assignTickValues(plot, false, {1, 0.75, 0.5, 0.25, 0}, &why));
+        QVERIFY(calibrateFromAxes(plot, &why));
+        Options o;
+        o.seeds << a.at(4.9, peak(4.9));
+        QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+        QCOMPARE(plot.series.size(), 1);
+        const QList<QPointF> v = values(plot, plot.series.first());
+        double low = 1e9, high = -1e9, top = 0;
+        for (const QPointF& q : v) {
+            low = std::min(low, q.x());
+            high = std::max(high, q.x());
+            top = std::max(top, q.y());
+        }
+        qInfo("narrow peak, seeded: x %.2f to %.2f, top %.3f (0.95)", low, high, top);
+        QCOMPARE_LE(low, 1.0);
+        QCOMPARE_GE(high, 9.0);
+        QCOMPARE_GE(top, 0.9);
+        for (int i = 1; i < v.size(); ++i) QVERIFY2(v.at(i).x() >= v.at(i - 1).x() - 1e-9, qPrintable(QStringLiteral("in order of x: %1 then %2 at %3 of %4").arg(v.at(i - 1).x()).arg(v.at(i).x()).arg(i).arg(v.size())));
+        QCOMPARE_LE(errorsOf(plot, plot.series.first(), peak, 1).worst, 0.03);
+    }
+
+    void numbersAboveThePlotAreNoLabels()
+    {
+        // A running header over the plot, with numbers in it: the x axis is
+        // read from the bottom, where its marks are.
+        const QString file = path(QStringLiteral("header.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawPlot(p, a, {Curve{sine, Qt::blue}}, u);
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setPen(Qt::black);
+            p.setFont(plotFont(8, u));
+            p.drawText(QRectF(QPointF(a.frame.left(), a.frame.top() - 20) * u, QSizeF(400, 12) * u), Qt::AlignLeft | Qt::AlignVCenter,
+                       QStringLiteral("JOURNAL OF THINGS, VOL. 25, NO. 8, APRIL 15"));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QCOMPARE(plot.xAxis.side, 0);
+        QVERIFY2(!plot.xAxis.title.contains(QStringLiteral("JOURNAL")), qPrintable(plot.xAxis.title));
+    }
+
+    void evenlySpacedMarksAreKept()
+    {
+        QCOMPARE(regularMarks({100, 120, 140, 160, 180}, 0.6).size(), 5);
+        // A marker hanging over the axis between two ticks falls off the beat.
+        const QList<double> kept = regularMarks({100, 113, 120, 140, 151.5, 160, 180}, 0.6);
+        QCOMPARE(kept, (QList<double>{100, 120, 140, 160, 180}));
+        // A log axis's minor marks are kept: they are most of the marks.
+        const QList<double> log{0, 30.1, 47.7, 60.2, 69.9, 77.8, 84.5, 90.3, 95.4, 100};
+        QCOMPARE(regularMarks(log, 0.6).size(), log.size());
+    }
+
+    void junkLowersTrust()
+    {
+        Plot plot;
+        Reference a, b;
+        a.at = QPointF(0, 100);
+        a.hasX = a.hasY = true;
+        b.at = QPointF(100, 0);
+        b.hasX = b.hasY = true;
+        b.x = b.y = 1;
+        plot.calibration.references = {a, b};
+        QVERIFY(plot.calibration.fit());
+        Series line;
+        line.origin = Series::Origin::Vector;
+        for (int i = 0; i <= 100; ++i) line.points << QPointF(i, 100 - i);
+        plot.series << line;
+        QCOMPARE(assess(plot).level, QStringLiteral("high"));
+        for (int k = 0; k < 6; ++k) {
+            Series scrap;
+            scrap.origin = Series::Origin::Vector;
+            scrap.points = {QPointF(10 * k, 50), QPointF(10 * k + 2, 51)};
+            plot.series << scrap;
+        }
+        const Trust t = assess(plot);
+        QCOMPARE(t.level, QStringLiteral("low"));
+        QVERIFY(t.reasons.join(QLatin1Char(' ')).contains(QStringLiteral("scraps")));
+    }
+
     // ----- Bad input --------------------------------------------------------
 
     void emptyAndTextOnlyRegions()
@@ -1399,9 +1750,9 @@ private slots:
         Plot plot = firstPlot(source);
         QVERIFY(plot.calibration.valid());
         QCOMPARE_LE(plot.calibration.rms(), 0.2);
-        int left = 0;
-        for (const Tick& t : std::as_const(plot.xAxis.ticks)) left += t.used ? 0 : 1;
-        QCOMPARE(left, 1);
+        // (Not by a tick mark, it is not taken for a label at all.)
+        for (const Tick& t : std::as_const(plot.xAxis.ticks)) QVERIFY(!(t.used && t.label == QStringLiteral("37")));
+        QCOMPARE(plot.xAxis.ticks.size(), 6);
     }
 
     void damagedPdf()

@@ -160,6 +160,7 @@ void Panel::buildUi()
         {Mode::AddPoint, QT_TR_NOOP("Add Point"), QT_TR_NOOP("Each click adds a point to the series selected")},
         {Mode::MovePoint, QT_TR_NOOP("Move Point"), QT_TR_NOOP("Drag a point")},
         {Mode::DeletePoint, QT_TR_NOOP("Delete Point"), QT_TR_NOOP("Click a point to delete it")},
+        {Mode::LeaveOut, QT_TR_NOOP("Leave Out Region"), QT_TR_NOOP("Drag over what is not data - an inset, a legend, a label drawn on the plot: it is left out, and the plot extracted again")},
     };
     int cell = 0;
     for (const auto& b : buttons) {
@@ -177,6 +178,17 @@ void Panel::buildUi()
     a_magnifier = new QCheckBox(tr("Magnifier by the pointer"), inner);
     a_magnifier->setChecked(true);
     layout->addWidget(a_magnifier);
+    auto* leftOutRow = new QHBoxLayout;
+    a_findLeftOut = new QCheckBox(tr("Leave out insets and legends"), inner);
+    a_findLeftOut->setChecked(true);
+    a_findLeftOut->setToolTip(tr("A drawing set into the plot, and what is inside a box in the frame (a legend), are found and not traced"));
+    auto* clearLeftOut_ = new QToolButton(inner);
+    clearLeftOut_->setText(tr("Clear"));
+    clearLeftOut_->setToolTip(tr("Takes back this plot's regions left out, by hand and found, and extracts it again"));
+    leftOutRow->addWidget(a_findLeftOut, 1);
+    leftOutRow->addWidget(clearLeftOut_);
+    layout->addLayout(leftOutRow);
+    connect(clearLeftOut_, &QToolButton::clicked, this, &Panel::clearLeftOut);
     connect(a_magnifier, &QCheckBox::toggled, this, [this] {
         ++a_revision;
         updateView();
@@ -489,6 +501,9 @@ void Panel::saveNow()
 
 void Panel::changed(bool save)
 {
+    // (Changed by the user: kept from now on, as everything is.)
+    if (save && !a_undo.isEmpty())
+        if (Plot* p = plot()) p->transient = false;
     ++a_revision;
     if (save) saveNow();
     refreshAll();
@@ -637,8 +652,9 @@ void Panel::refit()
 
 bool Panel::calibrateCurrent()
 {
+    if (plot() == nullptr) return false;
+    remember();
     Plot* p = plot();
-    if (p == nullptr) return false;
     if (!p->xAxis.found || !p->yAxis.found) {
         // Its axes were not read this session (kept plots keep the references,
         // not the axes): read now.
@@ -646,11 +662,13 @@ bool Panel::calibrateCurrent()
         if (s == nullptr) return false;
         Plot read = plotInRegion(*s, p->page, p->region.isNull() ? p->pageBox() : p->region);
         if (read.frame.isNull()) {
+            a_undo.removeLast();
             a_message->setText(tr("No frame was found here: add references by hand."));
             return false;
         }
         if (!read.xAxis.found || !read.yAxis.found) {
-            a_message->setText(tr("The axes' labels could not be read: add references by hand."));
+            a_undo.removeLast();
+            a_message->setText(tr("The axes' labels could not be read: type the values at the frame's corners, or add references by hand."));
             return false;
         }
         p->frame = read.frame;
@@ -659,7 +677,6 @@ bool Panel::calibrateCurrent()
         p->xAxis = read.xAxis;
         p->yAxis = read.yAxis;
     }
-    remember();
     QString why;
     const bool fine = calibrateFromAxes(*p, &why);
     if (!fine) a_message->setText(why);
@@ -686,7 +703,8 @@ int Panel::findOnPage()
             have = have || (o.page == p.page && QLineF(o.pageBox().center(), p.pageBox().center()).length() < 5);
         if (have) continue;
         QString why;
-        extract(*s, p, Options{}, &why);
+        extract(*s, p, extractOptions(), &why);
+        prefillReferences(p);
         a_plots << p;
         ++added;
     }
@@ -699,17 +717,81 @@ int Panel::findOnPage()
     return added;
 }
 
+Options Panel::extractOptions() const
+{
+    Options o;
+    o.route = a_route->currentIndex() == 1 ? Options::Route::Vector : (a_route->currentIndex() == 2 ? Options::Route::Raster : Options::Route::Auto);
+    o.findLeftOut = a_findLeftOut->isChecked();
+    return o;
+}
+
+bool Panel::findsLeftOut() const { return a_findLeftOut->isChecked(); }
+
+void Panel::setFindsLeftOut(bool on) { a_findLeftOut->setChecked(on); }
+
+void Panel::clearLeftOut()
+{
+    if (plot() == nullptr) return;
+    remember();
+    Plot* p = plot();
+    p->exclude.clear();
+    p->leftOut.clear();
+    a_findLeftOut->setChecked(false);
+    Source* s = source();
+    if (s != nullptr) {
+        const QList<Series> hand = [&] {
+            QList<Series> kept;
+            for (const Series& series : std::as_const(p->series))
+                if (series.origin == Series::Origin::Hand) kept << series;
+            return kept;
+        }();
+        QString why;
+        p->notes.clear();
+        extract(*s, *p, extractOptions(), &why);
+        p->series << hand;
+        a_series = p->series.isEmpty() ? -1 : 0;
+    }
+    changed();
+}
+
+void Panel::addTransient(const Plot& plot)
+{
+    Plot shown = plot;
+    shown.transient = true;
+    if (shown.name.isEmpty()) shown.name = tr("Plot on page %1 (not kept)").arg(shown.page + 1);
+    a_plots << shown;
+    a_current = int(a_plots.size()) - 1;
+    a_series = shown.series.isEmpty() ? -1 : 0;
+    a_selectedPoint = -1;
+    ++a_revision;
+    refreshAll();
+    a_doc->view()->showRegion(shown.page, shown.region.isNull() ? shown.pageBox() : shown.region);
+    a_message->setText(tr("Shown, not kept: it is written beside the PDF once you change it."));
+    updateView();
+}
+
+void Panel::prefillReferences(Plot& p)
+{
+    if (p.calibration.valid() || !p.calibration.references.isEmpty() || p.frame.isNull()) return;
+    const QTransform back = p.work.inverted();
+    for (const auto& corner : {std::pair{p.frame.bottomLeft(), true}, {p.frame.bottomRight(), true}, {p.frame.bottomLeft(), false}, {p.frame.topLeft(), false}}) {
+        Reference r;
+        r.at = back.map(corner.first);
+        Q_UNUSED(corner.second)
+        p.calibration.references << r;
+    }
+}
+
 bool Panel::extractCurrent()
 {
-    Plot* p = plot();
     Source* s = source();
-    if (p == nullptr || s == nullptr) {
+    if (plot() == nullptr || s == nullptr) {
         a_message->setText(tr("Find or mark a plot first."));
         return false;
     }
     remember();
-    Options o;
-    o.route = a_route->currentIndex() == 1 ? Options::Route::Vector : (a_route->currentIndex() == 2 ? Options::Route::Raster : Options::Route::Auto);
+    Plot* p = plot();
+    Options o = extractOptions();
     QString why;
     const QList<Series> hand = [&] {
         QList<Series> kept;
@@ -729,9 +811,9 @@ bool Panel::extractCurrent()
 
 void Panel::setReferenceValue(int row, bool x, double value)
 {
-    Plot* p = plot();
-    if (p == nullptr || row < 0 || row >= p->calibration.references.size()) return;
+    if (plot() == nullptr || row < 0 || row >= plot()->calibration.references.size()) return;
     remember();
+    Plot* p = plot();
     Reference& r = p->calibration.references[row];
     (x ? r.hasX : r.hasY) = true;
     (x ? r.x : r.y) = value;
@@ -741,9 +823,9 @@ void Panel::setReferenceValue(int row, bool x, double value)
 
 void Panel::setScales(Scale x, Scale y)
 {
-    Plot* p = plot();
-    if (p == nullptr) return;
+    if (plot() == nullptr) return;
     remember();
+    Plot* p = plot();
     p->calibration.xScale = x;
     p->calibration.yScale = y;
     refit();
@@ -752,9 +834,9 @@ void Panel::setScales(Scale x, Scale y)
 
 void Panel::setKind(Kind kind, double rAtCentre)
 {
-    Plot* p = plot();
-    if (p == nullptr) return;
+    if (plot() == nullptr) return;
     remember();
+    Plot* p = plot();
     p->calibration.kind = kind;
     p->calibration.rAtCentre = rAtCentre;
     refit();
@@ -763,9 +845,11 @@ void Panel::setKind(Kind kind, double rAtCentre)
 
 void Panel::addReference(QPointF point)
 {
-    Plot* p = plot();
-    if (p == nullptr) return;
+    if (plot() == nullptr) return;
+    // (Remembered first: a copy taken after a pointer into the list would
+    // leave the pointer on the copy.)
     remember();
+    Plot* p = plot();
     Reference r;
     r.at = point;
     p->calibration.references << r;
@@ -834,7 +918,7 @@ void Panel::moved(int page, QPointF point, bool down)
     if (down && a_mode == Mode::MovePoint && a_dragSeries >= 0 && plot() != nullptr && page == plot()->page && a_dragSeries < plot()->series.size() && a_dragPoint < plot()->series.at(a_dragSeries).points.size()) {
         plot()->series[a_dragSeries].points[a_dragPoint] = point;
         ++a_revision;
-    } else if (down && a_mode == Mode::Region) {
+    } else if (down && (a_mode == Mode::Region || a_mode == Mode::LeaveOut)) {
         ++a_revision;
     }
     updateView();
@@ -853,14 +937,44 @@ void Panel::released(int page, QPointF point)
         Plot made = plotInRegion(*s, page, region);
         remember();
         QString why;
-        extract(*s, made, Options{}, &why);
+        extract(*s, made, extractOptions(), &why);
+        prefillReferences(made);
         if (made.name.isEmpty()) made.name = tr("Plot on page %1").arg(page + 1);
         a_plots << made;
         a_current = int(a_plots.size()) - 1;
         a_series = made.series.isEmpty() ? -1 : 0;
-        a_message->setText(made.calibration.valid() ? tr("Framed and calibrated from its axes.") : tr("No axes could be read here: add references by hand."));
+        a_message->setText(made.calibration.valid() ? tr("Framed and calibrated from its axes.")
+                           : made.frame.isNull() ? tr("No axes could be read here: add references by hand.")
+                                                 : tr("Its labels could not be read: type the values at the frame's corners in the table (x in the first two rows, y in the last two)."));
         changed();
         setMode(Mode::None);
+        return;
+    }
+    case Mode::LeaveOut: {
+        Source* s = source();
+        Plot* p = plot();
+        if (s == nullptr || p == nullptr || page != a_pressedPage || page != p->page) {
+            a_message->setText(tr("Find or mark a plot on this page first."));
+            break;
+        }
+        const QRectF region = QRectF(from, point).normalized();
+        if (region.width() < 3 || region.height() < 3) break;
+        remember();
+        p = plot();
+        p->exclude << region;
+        const QList<Series> hand = [&] {
+            QList<Series> kept;
+            for (const Series& series : std::as_const(p->series))
+                if (series.origin == Series::Origin::Hand) kept << series;
+            return kept;
+        }();
+        QString why;
+        p->notes.clear();
+        extract(*s, *p, extractOptions(), &why);
+        p->series << hand;
+        a_series = p->series.isEmpty() ? -1 : 0;
+        a_message->setText(tr("Left out, and extracted again."));
+        changed();
         return;
     }
     case Mode::Reference:
@@ -1032,7 +1146,7 @@ QImage Panel::painted(int page, const QRectF& visible, qreal scale, QPointF* at)
     QRectF area;
     for (const Plot& p : std::as_const(a_plots))
         if (p.page == page) area = area.isNull() ? p.pageBox().adjusted(-12, -12, 12, 12) : area.united(p.pageBox().adjusted(-12, -12, 12, 12));
-    const bool drawingRegion = a_mode == Mode::Region && a_down && a_pressedPage == page;
+    const bool drawingRegion = (a_mode == Mode::Region || a_mode == Mode::LeaveOut) && a_down && a_pressedPage == page;
     const bool lens = a_magnifier->isChecked() && a_mode != Mode::None && a_pointerPage == page;
     if (drawingRegion || lens) {
         // (The drag, and the lens, go where the pointer goes.)

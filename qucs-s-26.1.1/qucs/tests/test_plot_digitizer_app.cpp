@@ -366,13 +366,70 @@ private slots:
         // Which is which, by colour.
         const QJsonArray series = o.value("series").toArray();
         QCOMPARE(series.size(), 2);
-        const QJsonObject blue = series.at(0).toObject().value("colour").toString().contains("0000") ? series.at(0).toObject() : series.at(1).toObject();
+        const auto blueOf = [](const QJsonObject& o) { const QColor c(o.value("colour").toString()); return c.blue() - c.red(); };
+        const QJsonObject blue = blueOf(series.at(0).toObject()) > blueOf(series.at(1).toObject()) ? series.at(0).toObject() : series.at(1).toObject();
         QCOMPARE_LE(worst(blue, sine), 0.015);
         QVERIFY(!picture(r).isNull());
         // The wrong number of values: said, with where the marks are.
         const QJsonObject wrong = call("digitize_plot", {{"path", scanFile}, {"page", 1}, {"x_values", QJsonArray{0, 2}}});
         QVERIFY(failed(wrong));
         QVERIFY2(QucsControl::textOf(wrong).contains("marks"), qPrintable(QucsControl::textOf(wrong)));
+    }
+
+    void rangesNamesAndRegionsLeftOut()
+    {
+        // The values at the frame's edges: four numbers calibrate a scan.
+        const QJsonObject r = call("digitize_plot", {{"path", scanFile}, {"page", 1}, {"x_range", QJsonArray{0, 10}}, {"y_range", QJsonArray{-1, 1}}, {"picture", false},
+                                                     {"colours", QJsonArray{"#ff0000", "#0000ff"}}, {"names", QJsonArray{"wave", "sine"}}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        const QJsonObject o = json(r);
+        QVERIFY(o.value("calibration").toObject().value("valid").toBool());
+        // Named by colour, not by the order the series came in.
+        const QJsonArray series = o.value("series").toArray();
+        const QJsonObject* sineSeries = nullptr;
+        QJsonObject found;
+        for (const QJsonValue& v : series)
+            if (v.toObject().value("name").toString() == QStringLiteral("sine")) found = v.toObject();
+        QVERIFY2(!found.isEmpty(), qPrintable(QJsonDocument(series).toJson()));
+        Q_UNUSED(sineSeries)
+        QCOMPARE_LE(worst(found, sine), 0.015);
+        QVERIFY(QJsonDocument(o.value("notes").toArray()).toJson().contains("Named by the colours"));
+        // Half of both both ranges, or ranges with references: refused.
+        QVERIFY(failed(call("digitize_plot", {{"path", scanFile}, {"page", 1}, {"x_range", QJsonArray{0, 10}}})));
+        QVERIFY(failed(call("digitize_plot", {{"path", scanFile}, {"page", 1}, {"x_range", QJsonArray{0, 10}}, {"y_range", QJsonArray{-1, 1}},
+                                              {"references", QJsonArray{QJsonObject{{"at", QJsonArray{1, 2}}, {"x", 0}, {"y", 0}}}}})));
+        // A region left out: nothing from it comes back; the picture shows it.
+        const QRectF out(px(3), kFrame.top(), px(5) - px(3), kFrame.height());
+        QJsonArray regions;
+        regions.append(QJsonArray{out.left(), out.top(), out.right(), out.bottom()});
+        const QJsonObject left = json(call("digitize_plot", {{"path", scanFile}, {"page", 1}, {"x_range", QJsonArray{0, 10}}, {"y_range", QJsonArray{-1, 1}}, {"picture", false},
+                                                             {"exclude", regions}}));
+        for (const QJsonValue& v : left.value("series").toArray()) {
+            const QJsonArray xs = v.toObject().value("x").toArray();
+            for (const QJsonValue& x : xs) QVERIFY2(!(x.toDouble() > 3.01 && x.toDouble() < 4.99), qPrintable(QString::number(x.toDouble())));
+        }
+        QJsonArray bad;
+        bad.append(QJsonArray{1, 2});
+        QVERIFY(failed(call("digitize_plot", {{"path", scanFile}, {"page", 1}, {"exclude", bad}})));
+    }
+
+    void shownIsNotKeptUntilChanged()
+    {
+        QVERIFY(!QFile::exists(sidecarPath(vectorFile)));
+        const QJsonObject r = call("digitize_plot", {{"path", vectorFile}, {"page", 1}, {"show", true}, {"picture", false}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        QVERIFY(json(r).value("shown").toBool());
+        QVERIFY(!QFile::exists(sidecarPath(vectorFile)));
+        auto* doc = dynamic_cast<PdfDoc*>(app->getDoc());
+        QVERIFY(doc != nullptr && doc->digitizerShown());
+        Panel* panel = doc->digitizer();
+        QCOMPARE(panel->plots().size(), 1);
+        QVERIFY(panel->plots().first().transient);
+        // Changed by the user: kept.
+        panel->seriesTable()->item(0, 1)->setText(QStringLiteral("mine"));
+        QVERIFY(!panel->plots().first().transient);
+        QVERIFY(QFile::exists(sidecarPath(vectorFile)));
+        QCOMPARE(json(call("get_digitized", {{"path", vectorFile}})).value("plots").toArray().size(), 1);
     }
 
     void referencesInstead()
@@ -697,6 +754,37 @@ private slots:
         QVERIFY(!view->tool()->takesMouse());
     }
 
+    void aRegionLeftOutInThePanel()
+    {
+        PdfDoc* doc = open(scanFile);
+        QVERIFY(doc != nullptr);
+        doc->setDigitizerShown(true);
+        Panel* panel = doc->digitizer();
+        PageView* view = doc->view();
+        panel->findButton()->click();
+        QCOMPARE(panel->plots().size(), 1);
+        panel->modeButton(Panel::Mode::LeaveOut)->click();
+        QCOMPARE(panel->mode(), Panel::Mode::LeaveOut);
+        const QRectF out(px(3), kFrame.top() + 2, px(5) - px(3), kFrame.height() - 4);
+        drag(view, out.topLeft(), out.bottomRight());
+        QCOMPARE(panel->plots().first().exclude.size(), 1);
+        for (const Series& s : panel->plots().first().series)
+            for (const QPointF& q : s.points) QVERIFY(!panel->plots().first().exclude.first().contains(q));
+        // Kept with the rest, and undone.
+        QList<Plot> kept;
+        QVERIFY(loadSidecar(scanFile, &kept));
+        QCOMPARE(kept.first().exclude.size(), 1);
+        view->setFocus();
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(panel->plots().first().exclude.size(), 0);
+        // Cleared, and the panel's own finding of insets turned off with it.
+        drag(view, out.topLeft(), out.bottomRight());
+        QCOMPARE(panel->plots().first().exclude.size(), 1);
+        panel->clearLeftOut();
+        QCOMPARE(panel->plots().first().exclude.size(), 0);
+        QVERIFY(!panel->findsLeftOut());
+    }
+
     void referencesByHand()
     {
         // A scan with no labels: three clicks and three values.
@@ -708,14 +796,37 @@ private slots:
         panel->findButton()->click();
         QCOMPARE(panel->plots().size(), 1);
         QVERIFY(!panel->plots().first().calibration.valid());
+        // Its frame's corners are there already, waiting for their values: the
+        // ends of its axes, typed into the table's cells.
+        QCOMPARE(panel->plots().first().calibration.references.size(), 4);
+        QVERIFY(!panel->plots().first().calibration.valid());
+        QTableWidget* t = panel->referenceTable();
+        t->item(0, 1)->setText("0");
+        t->item(1, 1)->setText("10");
+        t->item(2, 2)->setText("-1");
+        t->item(3, 2)->setText("1");
+        QVERIFY2(panel->plots().first().calibration.valid(), qPrintable(panel->status()));
+        panel->undo();
+        panel->undo();
+        panel->undo();
+        panel->undo();
+        // Or by clicks: three points whose values are known.
+        for (int k = 3; k >= 0; --k) {
+            t->selectRow(k);
+            const QList<QPushButton*> buttons = panel->findChildren<QPushButton*>();
+            for (QPushButton* b : buttons)
+                if (b->text() == Panel::tr("Remove") && b->parentWidget() == t->parentWidget()) b->click();
+        }
+        QCOMPARE(panel->plots().first().calibration.references.size(), 0);
         panel->modeButton(Panel::Mode::Reference)->click();
+        QCOMPARE(panel->mode(), Panel::Mode::Reference);
+        QCOMPARE(panel->plots().size(), 1);
         clickAt(view, QPointF(px(0), py(-1)));
+        QVERIFY2(panel->plots().first().calibration.references.size() == 1, qPrintable(panel->status() + QStringLiteral(" mode %1 plots %2 page %3").arg(int(panel->mode())).arg(panel->plots().size()).arg(panel->plots().first().page)));
         clickAt(view, QPointF(px(10), py(-1)));
         clickAt(view, QPointF(px(0), py(1)));
         QCOMPARE(panel->plots().first().calibration.references.size(), 3);
         QVERIFY(!panel->plots().first().calibration.valid());
-        // By the table's cells, as the user types them.
-        QTableWidget* t = panel->referenceTable();
         t->item(0, 1)->setText("0");
         t->item(0, 2)->setText("-1");
         t->item(1, 1)->setText("10");
