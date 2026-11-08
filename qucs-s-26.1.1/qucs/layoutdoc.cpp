@@ -16,6 +16,7 @@
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
 #include "layoutrouterpanel.h"
+#include "layoutstrokes.h"
 #include "layoutviewgpu.h"
 #endif
 #include "links.h"
@@ -52,6 +53,8 @@
 #include <QMessageBox>
 #include <QNativeGestureEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPainterPathStroker>
 #include <QPrinter>
 #include <QProcess>
 #include <QProgressBar>
@@ -609,6 +612,116 @@ void LayoutView::setOverlays(const QList<Overlay>& overlays)
     update();
 }
 
+const QColor LayoutView::SketchColor = QColor(0x00, 0xa5, 0xb5);
+
+void LayoutView::setSketch(const QString& cell, const QList<Sketch>& items)
+{
+    if (items.isEmpty()) a_sketch.remove(cell);
+    else a_sketch.insert(cell, items);
+    update();
+    emit sketchChanged();
+}
+
+bool LayoutView::clearSketches()
+{
+    if (a_sketch.isEmpty()) return false;
+    a_sketch.clear();
+    update();
+    emit sketchChanged();
+    return true;
+}
+
+int LayoutView::setAddressed(const QList<int>& ids, bool addressed)
+{
+    const int changed = a_drawing.setAddressed(drawingPart(), ids, addressed);
+    if (changed > 0) {
+        update();
+        emit drawingChanged();
+    }
+    return changed;
+}
+
+void LayoutView::paintSketch(QPainter& p, const Colors& c) const
+{
+    const QList<Sketch> items = a_sketch.value(drawingPart());
+    if (items.isEmpty()) return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing);
+    QFont font = p.font();
+    font.setPixelSize(12);
+    p.setFont(font);
+    const QFontMetricsF fm(font);
+    QColor paper = c.background;
+    paper.setAlpha(225);
+    for (const Sketch& item : items) {
+        const QColor ink = item.color.isValid() ? item.color : SketchColor;
+        QColor fill = ink;
+        fill.setAlphaF(0.28);
+        QPolygonF shown;
+        for (const QPointF& pt : item.points) shown << toPixel(pt);
+        if (shown.isEmpty()) continue;
+        const auto card = [&](QPointF at, const QString& text) {
+            if (text.isEmpty()) return;
+            QRectF box(at + QPointF(6, -fm.height() - 4), QSizeF(fm.horizontalAdvance(text) + 8, fm.height() + 2));
+            // (Kept in sight: to the left of its point near the right edge,
+            //  below it near the top.)
+            if (box.right() > width() - 4) box.moveRight(at.x() - 6);
+            if (box.top() < 4) box.moveTop(at.y() + 6);
+            p.setPen(QPen(ink, 1));
+            p.setBrush(paper);
+            p.drawRoundedRect(box, 3, 3);
+            p.setPen(ink);
+            p.drawText(box, Qt::AlignCenter, text);
+        };
+        switch (item.kind) {
+        case Sketch::Kind::Polygon:
+            p.setPen(QPen(ink, 2, Qt::DashLine));
+            p.setBrush(fill);
+            p.drawPolygon(shown);
+            break;
+        case Sketch::Kind::Path: {
+            // As broad as it would be (flush ends, mitred), its outline
+            // dashed and its spine fine.
+            QPainterPath spine;
+            spine.addPolygon(shown);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(fill, std::max(1.0, item.width * a_scale), Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+            p.drawPath(spine);
+            QPainterPathStroker stroker;
+            stroker.setWidth(std::max(1.0, item.width * a_scale));
+            stroker.setCapStyle(Qt::FlatCap);
+            stroker.setJoinStyle(Qt::MiterJoin);
+            p.setPen(QPen(ink, 1.5, Qt::DashLine));
+            p.drawPath(stroker.createStroke(spine).simplified());
+            p.setPen(QPen(ink, 1, Qt::DotLine));
+            p.drawPath(spine);
+            break;
+        }
+        case Sketch::Kind::Text:
+            p.setPen(QPen(ink, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(shown.first(), 3, 3);
+            card(shown.first() + QPointF(0, fm.height() / 2), item.text);
+            break;
+        case Sketch::Kind::Arrow: {
+            if (shown.size() < 2) break;
+            const QPointF tail = shown.first(), tip = shown.last();
+            const QLineF line(tail, tip);
+            p.setPen(QPen(ink, 2));
+            p.drawLine(line);
+            if (line.length() > 0) {
+                const QPointF way = (tip - tail) / line.length(), side(-way.y(), way.x());
+                p.setBrush(ink);
+                p.drawPolygon(QPolygonF{tip, tip - 10 * way + 5 * side, tip - 10 * way - 5 * side});
+            }
+            card(tail, item.text);
+            break;
+        }
+        }
+    }
+    p.restore();
+}
+
 void LayoutView::setLegend(const Legend& legend)
 {
     a_legend = legend;
@@ -652,182 +765,6 @@ bool LayoutView::clearDrawing(bool all)
     return true;
 }
 
-namespace {
-
-/// The most shapes and texts a reading of one stroke looks at.
-constexpr int MostRead = 200000;
-
-/// A shape or a text near a stroke: its outline (a text's: its origin)
-/// and that outline's box.
-struct Near {
-    Found found;
-    QPolygonF outline;
-    QRectF box;
-};
-
-/// What \a base finds whose bounds meet \a region, MostRead at most.
-QList<Near> nearOf(const Layout& layout, Query base, const QRectF& region)
-{
-    QList<Near> out;
-    base.region = region;
-    search(layout, base, [&layout, &out](const Found& f) {
-        const QPolygonF outline = outlineOf(layout, f);
-        out << Near{f, outline, outline.boundingRect()};
-        return out.size() < MostRead;
-    });
-    return out;
-}
-
-/// How far \a point lies from \a n: nought inside it.
-double distanceTo(const Near& n, QPointF point)
-{
-    const QPolygonF& o = n.outline;
-    if (o.isEmpty()) return std::numeric_limits<double>::infinity();
-    if (n.found.isText() || o.size() == 1) return QLineF(point, o.first()).length();
-    if (o.containsPoint(point, Qt::OddEvenFill)) return 0;
-    double d = std::numeric_limits<double>::infinity();
-    for (int i = 0; i < o.size(); ++i) {
-        const QPointF a = o.at(i), ab = o.at((i + 1) % o.size()) - a;
-        const double l2 = QPointF::dotProduct(ab, ab);
-        const double t = l2 > 0 ? std::clamp(QPointF::dotProduct(point - a, ab) / l2, 0.0, 1.0) : 0.0;
-        d = std::min(d, QLineF(point, a + t * ab).length());
-    }
-    return d;
-}
-
-/// What a reading of a layout gathers: the shapes by layer, the texts, the
-/// cells placed - each once.
-struct Gathered {
-    QMap<QString, int> shapes, cells;
-    QStringList texts;
-    QSet<QString> seen;
-
-    bool isEmpty() const { return seen.isEmpty() && cells.isEmpty(); }
-    QJsonObject json() const
-    {
-        QJsonObject o;
-        if (!shapes.isEmpty()) {
-            QJsonObject s;
-            for (auto it = shapes.begin(); it != shapes.end(); ++it) s.insert(it.key(), it.value());
-            o.insert(QStringLiteral("shapes"), s);
-        }
-        if (!texts.isEmpty()) o.insert(QStringLiteral("texts"), QJsonArray::fromStringList(texts));
-        if (!cells.isEmpty()) {
-            QJsonObject c;
-            for (auto it = cells.begin(); it != cells.end(); ++it) c.insert(it.key(), it.value());
-            o.insert(QStringLiteral("cells"), c);
-        }
-        return o;
-    }
-    /// A shape or a text found, counted once.
-    void add(const Layout& layout, const Found& f)
-    {
-        const QString key = QStringLiteral("%1 %2 %3 %4 %5 %6").arg(f.cell).arg(f.shape).arg(f.label).arg(f.copy).arg(f.transform.dx()).arg(f.transform.dy());
-        if (seen.contains(key)) return;
-        seen.insert(key);
-        if (f.isText()) {
-            const QString text = layout.cells.at(f.cell).labels.at(f.label).text;
-            if (!texts.contains(text)) texts << text;
-            return;
-        }
-        ++shapes[layout.layers.at(layout.cells.at(f.cell).shapes.at(f.shape).layer).key.text()];
-    }
-};
-
-/// Calls \a each with every copy's box of each cell \a cell places
-/// (its own coordinates) that meets \a region, and the placed cell.
-void eachPlaced(const Layout& layout, int cell, const QRectF& region, const std::function<void(int, const QRectF&)>& each)
-{
-    const Cell& c = layout.cells.at(cell);
-    for (const Instance& inst : c.instances) {
-        if (inst.cell < 0) continue;
-        const QRectF one = inst.transform().mapRect(layout.cells.at(inst.cell).bounds);
-        if (inst.repetition < 0) {
-            if (one.intersects(region)) each(inst.cell, one);
-            continue;
-        }
-        c.repetitions.at(inst.repetition).forEach(one, region, [&each, &inst, &one](QPointF off) {
-            each(inst.cell, one.translated(off));
-            return true;
-        });
-    }
-}
-
-/// The placements \a point lies in, into \a g.
-void placedAt(const Layout& layout, int cell, QPointF point, Gathered& g)
-{
-    eachPlaced(layout, cell, QRectF(point - QPointF(1e-6, 1e-6), QSizeF(2e-6, 2e-6)), [&layout, &g, point](int placed, const QRectF& box) {
-        if (box.contains(point)) ++g.cells[layout.cells.at(placed).name];
-    });
-}
-
-/// What \a ring holds half inside it or more, of what \a base finds: a
-/// text, its origin.
-QJsonObject gatheredWithin(const Layout& layout, const Query& base, const QPolygonF& ring)
-{
-    Gathered g;
-    for (const Near& n : nearOf(layout, base, ring.boundingRect()))
-        if (n.found.isText() ? ring.containsPoint(n.outline.value(0), Qt::OddEvenFill) : markup::insideShare(ring, n.box) >= 0.5)
-            g.add(layout, n.found);
-    eachPlaced(layout, base.cell, ring.boundingRect(), [&layout, &ring, &g](int placed, const QRectF& box) {
-        if (markup::insideShare(ring, box) >= 0.5) ++g.cells[layout.cells.at(placed).name];
-    });
-    return g.json();
-}
-
-/// What lies under \a along - within \a reach of any of its points - of
-/// what \a base finds, and the placements it passes through.
-QJsonObject gatheredUnder(const Layout& layout, const Query& base, const QPolygonF& along, double reach)
-{
-    Gathered g;
-    const QRectF region = along.boundingRect().adjusted(-reach, -reach, reach, reach);
-    for (const Near& n : nearOf(layout, base, region)) {
-        const QRectF grown = n.box.adjusted(-reach, -reach, reach, reach);
-        for (const QPointF& pt : along)
-            if (grown.contains(pt) && distanceTo(n, pt) <= reach) {
-                g.add(layout, n.found);
-                break;
-            }
-    }
-    eachPlaced(layout, base.cell, region, [&layout, &along, &g](int placed, const QRectF& box) {
-        for (const QPointF& pt : along)
-            if (box.contains(pt)) {
-                ++g.cells[layout.cells.at(placed).name];
-                break;
-            }
-    });
-    return g.json();
-}
-
-/// What a stroke reaching \a end points at, of what \a base finds: what is
-/// under it there (within \a close) and the placements it is in, else the
-/// first such on ahead of it - \a along, within \a ahead - else the nearest
-/// shape or text within \a reach of its end.
-QJsonObject gatheredAt(const Layout& layout, const Query& base, QPointF end, QPointF along, double ahead, double close, double reach)
-{
-    const double grow = std::max(close, reach);
-    const QRectF region = QRectF(end, end + along * ahead).normalized().adjusted(-grow, -grow, grow, grow);
-    const QList<Near> near = nearOf(layout, base, region);
-    for (int k = 0; k <= (ahead > 0 ? 16 : 0); ++k) {
-        const QPointF pt = end + along * (ahead * k / 16);
-        Gathered g;
-        for (const Near& n : near)
-            if (n.box.adjusted(-close, -close, close, close).contains(pt) && distanceTo(n, pt) <= close) g.add(layout, n.found);
-        placedAt(layout, base.cell, pt, g);
-        if (!g.isEmpty()) return g.json();
-    }
-    // The nearest, and whatever is as near.
-    double best = reach;
-    for (const Near& n : near) best = std::min(best, distanceTo(n, end));
-    Gathered g;
-    if (best < reach)
-        for (const Near& n : near)
-            if (distanceTo(n, end) <= best + close) g.add(layout, n.found);
-    return g.json();
-}
-
-} // namespace
-
 QJsonArray LayoutView::readDrawing(bool points) const
 {
     QJsonArray out;
@@ -844,57 +781,7 @@ QJsonArray LayoutView::readDrawing(bool points) const
         base.depth = a_depth;
         base.layers = layers;
         base.labels = a_labels;
-        const QList<markup::Stroke> strokes = a_drawing.on(part);
-        QList<QPointF> tips;
-        QList<int> heads;
-        const QList<markup::Gesture> gestures = markup::gesturesOf(strokes, &tips, &heads);
-        for (int i = 0; i < strokes.size(); ++i) {
-            const markup::Stroke& s = strokes.at(i);
-            const markup::Gesture g = gestures.at(i);
-            if (s.points.isEmpty()) continue;
-            QJsonObject o = markup::readingOf(s, i + 1, g, points);
-            o.insert(QStringLiteral("cell"), part);
-            const double reach = markup::reachOf(s), close = std::max(s.width / 2, 1e-9);
-            switch (g) {
-            case markup::Gesture::Arrowhead: o.insert(QStringLiteral("of stroke"), heads.at(i) + 1); break;
-            case markup::Gesture::Dot:
-                if (const QJsonObject on = gatheredAt(layout, base, s.points.first(), QPointF(), 0, close, reach); !on.isEmpty())
-                    o.insert(QStringLiteral("on"), on);
-                break;
-            case markup::Gesture::Corner:
-                // What its point is at.
-                if (const QJsonObject at = gatheredAt(layout, base, tips.at(i), QPointF(), 0, close, reach); !at.isEmpty())
-                    o.insert(QStringLiteral("at"), at);
-                o.insert(QStringLiteral("point"), QJsonArray{std::round(tips.at(i).x() * 1000) / 1000, std::round(tips.at(i).y() * 1000) / 1000});
-                break;
-            case markup::Gesture::Ring: {
-                QPolygonF ring = s.points;
-                ring << ring.first();
-                if (const QJsonObject in = gatheredWithin(layout, base, ring); !in.isEmpty()) o.insert(QStringLiteral("around"), in);
-                break;
-            }
-            case markup::Gesture::Line:
-            case markup::Gesture::Arrow:
-            case markup::Gesture::Mark: {
-                // A highlighter's stroke, or a mark: what it lies on.
-                if (s.highlighter || g == markup::Gesture::Mark) {
-                    if (const QJsonObject on = gatheredUnder(layout, base, markup::alongOf(s), close); !on.isEmpty())
-                        o.insert(s.highlighter ? QStringLiteral("highlights") : QStringLiteral("on"), on);
-                    if (g != markup::Gesture::Arrow) break;
-                }
-                // Else from something, to what it points at.
-                const QPointF start = s.points.first(), end = tips.at(i);
-                const double length = QLineF(start, end).length();
-                const QPointF along = length > 0 ? (end - start) / length : QPointF();
-                if (const QJsonObject from = gatheredAt(layout, base, start, -along, 0, close, reach); !from.isEmpty())
-                    o.insert(QStringLiteral("from"), from);
-                if (const QJsonObject to = gatheredAt(layout, base, end, along, 0.3 * length, close, reach); !to.isEmpty())
-                    o.insert(QStringLiteral("points at"), to);
-                break;
-            }
-            }
-            out.append(o);
-        }
+        for (const QJsonValue& v : readStrokes(layout, base, a_drawing.on(part), points)) out.append(v);
     }
     return out;
 }
@@ -1084,6 +971,8 @@ void LayoutView::paintOver(QPainter& p, const Colors& c)
             paintLabels(p, c, overlay);
         }
     }
+    // What Claude drew over the cell to show what it means to do.
+    paintSketch(p, c);
     // The scale of what the overlays colour, in the top right corner (the
     // bottom left is the scale bar's).
     if (!a_legend.isEmpty()) {
@@ -1721,6 +1610,11 @@ void LayoutDoc::buildUi()
     a_gridButton->setCheckable(true);
     a_routeButton = toolButton(a_toolbar, glyph(GlyphIcon::Route), tr("Route: lines on the metals from contacts to pads, before they are written (the metal router)"));
     a_routeButton->setCheckable(true);
+    a_sketchButton = new QToolButton(a_toolbar);
+    a_sketchButton->setText(tr("Clear Claude's Sketch"));
+    a_sketchButton->setToolTip(tr("Take away what Claude drew over the layout to show what it means to do"));
+    a_sketchButton->setAutoRaise(true);
+    a_sketchButton->setVisible(false);
     a_findButton = toolButton(a_toolbar, glyph(GlyphIcon::Search), tr("Find a cell"));
     a_menuButton = toolButton(a_toolbar, glyph(GlyphIcon::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
@@ -1793,6 +1687,7 @@ void LayoutDoc::buildUi()
     bar->addWidget(a_labelsButton);
     bar->addWidget(a_gridButton);
     bar->addWidget(a_routeButton);
+    bar->addWidget(a_sketchButton);
     bar->addStretch(1);
     bar->addWidget(a_findButton);
     bar->addWidget(a_menuButton);
@@ -1934,6 +1829,8 @@ void LayoutDoc::buildUi()
     });
     connect(a_gridButton, &QToolButton::toggled, this, &LayoutDoc::setGridShown);
     connect(a_routeButton, &QToolButton::toggled, this, &LayoutDoc::setRoutingShown);
+    connect(a_sketchButton, &QToolButton::clicked, a_view, &LayoutView::clearSketches);
+    connect(a_view, &LayoutView::sketchChanged, this, [this] { a_sketchButton->setVisible(a_view->hasSketch()); });
     connect(a_view, &LayoutView::gridToggleRequested, this, [this] { setGridShown(!a_view->gridShown()); });
     connect(a_view, &LayoutView::colorsChanged, this, &LayoutDoc::updateSwatches);
     connect(a_fitButton, &QToolButton::clicked, this, [this] { a_view->fit(); });

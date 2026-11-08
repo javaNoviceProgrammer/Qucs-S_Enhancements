@@ -487,7 +487,7 @@ QPair<int, int> RouterPanel::takeStrokes()
         const markup::Gesture g = markup::gestureOf(s);
         if (g == markup::Gesture::Ring) {
             JobKeepOut k;
-            k.name = tr("stroke %1").arg(i + 1);
+            k.name = tr("stroke %1").arg(s.id > 0 ? s.id : i + 1);
             k.outline = strokeOutline(s, false);
             if (k.outline.size() < 3) continue;
             a_session->job.keepOuts.removeIf([&](const JobKeepOut& x) { return x.name == k.name; });

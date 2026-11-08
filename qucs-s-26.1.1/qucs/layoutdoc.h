@@ -172,6 +172,32 @@ public:
     /// mark or a highlighter lies on, what a dot is on - of the layers shown,
     /// to the depth drawn; with \a points, its points simplified, in µm.
     QJsonArray readDrawing(bool points = false) const;
+    /// The strokes on the cell shown numbered \a ids marked addressed (drawn
+    /// faded, left out of what a prompt tells), or not; how many changed.
+    int setAddressed(const QList<int>& ids, bool addressed = true);
+
+    /*!
+     * What Claude draws over a cell to show what it means to do - "here is
+     * the step I am about to make, 5 µm wide" - in µm, in a colour of its
+     * own: polygons, paths as broad as they would be, texts, arrows. Kept
+     * apart from the pen's strokes and from another tab's overlays, shown
+     * with its cell, and not part of the layout or of what is read.
+     */
+    struct Sketch {
+        enum class Kind { Polygon, Path, Text, Arrow };
+        Kind kind = Kind::Polygon;
+        QPolygonF points;    ///< an outline, a spine, an arrow's tail and tip, a text's place
+        double width = 0;    ///< a path's, µm
+        QString text;        ///< a text's, or an arrow's words at its tail
+        QColor color;        ///< invalid: Claude's own (SketchColor)
+    };
+    static const QColor SketchColor;
+    /// \a items drawn over \a cell (empty: its sketch taken away).
+    void setSketch(const QString& cell, const QList<Sketch>& items);
+    QList<Sketch> sketch(const QString& cell) const { return a_sketch.value(cell); }
+    /// Every cell's sketch taken away; whether there was one.
+    bool clearSketches();
+    bool hasSketch() const { return !a_sketch.isEmpty(); }
 
     /*!
      * Polygons another tab draws over the layout, in the µm of the cell
@@ -282,6 +308,8 @@ signals:
     void gridToggleRequested();
     /// A stroke drawn, erased, undone or cleared.
     void drawingChanged();
+    /// Claude's sketch was drawn or taken away.
+    void sketchChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -303,6 +331,7 @@ private:
     void paintOver(QPainter& p, const Colors& c);
     void paintGrid(QPainter& p, const Colors& c) const;
     void paintLabels(QPainter& p, const Colors& c, const Overlay& overlay) const;
+    void paintSketch(QPainter& p, const Colors& c) const;
     void paintScale(QPainter& p, const Colors& c) const;
     Query queryHere() const;
     double tolerance() const;   // µm: a few pixels
@@ -339,6 +368,7 @@ private:
     RenderOptions renderOptions() const;
 
     QList<Overlay> a_overlays;
+    QHash<QString, QList<Sketch>> a_sketch;   // Claude's, by cell
     Legend a_legend;
     int a_overlayDrawn = 0;
     int a_overlayLeftOut = 0;
@@ -471,6 +501,9 @@ public:
     QToolButton* gridButton() const { return a_gridButton; }
     QToolButton* labelsButton() const { return a_labelsButton; }
     qucs_s::markup::PenButton* penButton() const { return a_penButton; }
+    /// Takes Claude's sketch away (LayoutView::Sketch): shown while there
+    /// is one.
+    QToolButton* sketchButton() const { return a_sketchButton; }
     QToolButton* routeButton() const { return a_routeButton; }
     /// The Route panel (layoutrouterpanel.h), made when first shown; null before.
     qucs_s::routing::RouterPanel* routerPanel() const { return a_routerPanel; }
@@ -548,6 +581,7 @@ private:
     QToolButton* a_labelsButton = nullptr;
     QToolButton* a_gridButton = nullptr;
     QToolButton* a_routeButton = nullptr;
+    QToolButton* a_sketchButton = nullptr;   // Claude's sketch taken away; shown while there is one
     qucs_s::routing::RouterPanel* a_routerPanel = nullptr;
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;
