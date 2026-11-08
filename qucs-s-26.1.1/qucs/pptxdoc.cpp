@@ -1092,7 +1092,13 @@ void PptxDoc::buildUi()
     a_body->setSizes({600, 140});
     a_splitter->addWidget(a_thumbnails);
     a_splitter->addWidget(a_body);
+    a_splitter->setStretchFactor(0, 0);
     a_splitter->setStretchFactor(1, 1);
+    // The thumbnails' pane as wide as they are: left to itself the splitter
+    // gave it a list's size hint (256), wider than the list goes (210), and
+    // a strip of nothing lay between the thumbnails and the slides until
+    // the splitter was moved (seen on the screen, 2026-11-08).
+    a_splitter->setSizes({ThumbnailWidth + 50, 100000});
     a_problemLabel = new QLabel(a_stack);
     a_problemLabel->setAlignment(Qt::AlignCenter);
     a_problemLabel->setWordWrap(true);
