@@ -189,6 +189,13 @@ QJsonObject straightWire()
         port.props.insert(QStringLiteral("end"), QString::fromLatin1(end));
         m.add(tag, port);
     }
+    // (A Periodic Section over a piece of the uniform wire: five of it in a
+    // row, the light through as before.)
+    FNode periodic = m.make(QStringLiteral("eme/periodic"));
+    periodic.props.insert(QStringLiteral("from"), QStringLiteral("2"));
+    periodic.props.insert(QStringLiteral("to"), QStringLiteral("3"));
+    periodic.props.insert(QStringLiteral("periods"), QStringLiteral("5"));
+    m.add(tag, periodic);
     for (FNode& c : m.root.children)
         if (c.type == QLatin1String("study")) {
             c.children.clear();
@@ -1058,6 +1065,8 @@ private slots:
         r = call(QStringLiteral("fem_solve"), {{"path", file}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(doc->solution() && doc->solution()->spectral && doc->solution()->snapshotCount() == 3);
+        // (Its Periodic Section's periods said.)
+        QVERIFY2(text(r).contains(QStringLiteral("periods in all")), qPrintable(text(r)));
         const QJsonArray optics = json(r).value(QStringLiteral("optics")).toArray();
         QCOMPARE(optics.size(), 1);
         const QJsonObject o = optics.at(0).toObject();
