@@ -333,3 +333,20 @@ now goes above the reply, and the reply goes on; the reply's end takes its place
 in the middle of a reply: a prompt cannot be sent while Claude is busy, and a problem means Claude Code itself has failed.
 `aNoteWhileAReplyIsWrittenLeavesItWhole` (`test_claude_code`) ends a background task and adds a note between pieces: the reply
 is there once, the notes above it in the order they came, the part drawn again as drawn whole. It fails without the fix.
+
+## Kill, below the table (8 November)
+
+The user, with a picture, asked for a Kill button. In the picture, a solve had run 21 minutes at 30 % and Claude's two `fem_stop`
+calls had not ended it. The window was wider than its columns' room, so the table scrolled, and each row's Stop, the last column,
+was out of sight. Kill sits in the row of buttons with Show, always in view. It stops the chosen row's job as that row's Stop does,
+because nothing stronger can be done safely:
+
+- **A simulator's process** (ngspice, Xyce, qucsator) and **a compiler's** are already killed (`QProcess::kill`) by Stop.
+- **A command or an agent of Claude Code's** is ended by the program, through `stop_task`; it alone holds the process.
+- **A solve, build or mesh in Qucs-S** runs in a thread of the application. It is cancelled at its next check of the cancel flag.
+  Ending a thread from outside (`QThread::terminate`) would leave its locks and memory in any state, in the window the user is
+  working in. A solve that checks the flag rarely is the solve's own matter: a Kill on it waits for that check, as Stop does.
+
+Kill is off with nothing chosen, for a row hidden by the filter, for a job over or already asked to stop, and for one that cannot
+be stopped; its tool tip says which. A stop that could not be asked is said below the table. `killStopsTheChosenJob`
+(`test_claude_jobs`) chooses rows and clicks it, in a window at its least size. Five breaks in `breaks.py` (52 in all).

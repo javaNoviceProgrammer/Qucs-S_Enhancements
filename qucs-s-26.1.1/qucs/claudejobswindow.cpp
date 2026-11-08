@@ -33,6 +33,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 
 using namespace qucs_s::claude::jobs;
 
@@ -120,6 +121,14 @@ QString stopTip(const Job& job)
     return job.whyNoStop.isEmpty() ? ClaudeJobsWindow::tr("This job cannot be stopped from here.") : job.whyNoStop;
 }
 
+// The chosen row's job, when a row is chosen and shown.
+std::optional<Job> chosenJob(const QTableWidget* table)
+{
+    const int row = table->currentRow();
+    const QTableWidgetItem* item = row >= 0 && !table->isRowHidden(row) ? table->item(row, ClaudeJobsWindow::Name) : nullptr;
+    return item != nullptr ? Registry::instance().job(item->data(Qt::UserRole).toString()) : std::nullopt;
+}
+
 } // namespace
 
 ClaudeJobsWindow* ClaudeJobsWindow::existing()
@@ -130,7 +139,7 @@ ClaudeJobsWindow* ClaudeJobsWindow::existing()
 void ClaudeJobsWindow::setDocumentShower(DocumentShower shower)
 {
     g_shower = std::move(shower);
-    if (g_window) g_window->updateShowButton();
+    if (g_window) g_window->updateButtons();
 }
 
 bool ClaudeJobsWindow::passes(const Job& job, Filter filter)
@@ -174,7 +183,8 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
     auto* note = new QLabel(tr("Every simulation, solve, sweep and optimization - yours, also those whose tab you closed, and "
                                "Claude's - and what Claude has run in every conversation: Claude Code's commands and agents, "
                                "and Qucs-S's long tools. A percentage is shown where the job itself reports one; where it "
-                               "cannot, the bar runs on and says unknown. Show brings a job's document to the front."),
+                               "cannot, the bar runs on and says unknown. Show brings a job's document to the front; Kill stops the "
+                               "chosen job."),
                             this);
     note->setObjectName(QStringLiteral("claudeJobsNote"));
     note->setWordWrap(true);
@@ -233,6 +243,12 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
                           "its run and its results. A double click on a row does the same."));
     a_show->setAutoDefault(false);
     bottom->addWidget(a_show);
+    // (The row's Stop is the last column, out of sight where the table
+    // scrolls: the user's picture of 8 November. This one is always there.)
+    a_kill = new QPushButton(tr("Kill"), this);
+    a_kill->setObjectName(QStringLiteral("claudeJobsKill"));
+    a_kill->setAutoDefault(false);
+    bottom->addWidget(a_kill);
     a_clear = new QPushButton(tr("Clear Finished"), this);
     a_clear->setObjectName(QStringLiteral("claudeJobsClear"));
     a_clear->setToolTip(tr("Takes the jobs that have finished, failed or stopped off the list. Those still going stay."));
@@ -254,9 +270,13 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
     connect(close, &QPushButton::clicked, this, &QWidget::close);
     connect(a_clear, &QPushButton::clicked, this, [] { Registry::instance().clearFinished(); });
     connect(a_table, &QTableWidget::itemSelectionChanged, this, &ClaudeJobsWindow::showDetails);
-    connect(a_table, &QTableWidget::itemSelectionChanged, this, &ClaudeJobsWindow::updateShowButton);
+    connect(a_table, &QTableWidget::itemSelectionChanged, this, &ClaudeJobsWindow::updateButtons);
+    // (The buttons go by the current row, which can change with no change of
+    // what is selected.)
+    connect(a_table, &QTableWidget::currentCellChanged, this, &ClaudeJobsWindow::updateButtons);
     connect(a_table, &QTableWidget::cellDoubleClicked, this, [this] { showChosenDocument(); });
     connect(a_show, &QPushButton::clicked, this, [this] { showChosenDocument(); });
+    connect(a_kill, &QPushButton::clicked, this, [this] { killChosen(); });
     connect(a_filter, &QComboBox::currentIndexChanged, this, &ClaudeJobsWindow::applyFilter);
 
     Registry& registry = Registry::instance();
@@ -370,6 +390,7 @@ void ClaudeJobsWindow::reload()
     const QList<Job> jobs = Registry::instance().jobs();
     for (qsizetype i = jobs.size() - 1; i >= 0; --i) addRow(jobs.at(i));
     showSummary();
+    updateButtons();   // (off with nothing chosen: buttons begin on)
 }
 
 int ClaudeJobsWindow::rowOf(const QString& id) const
@@ -490,7 +511,7 @@ void ClaudeJobsWindow::showJob(const Job& job)
 
     const bool hidden = !passes(job, Filter(a_filter->currentData().toInt()));
     if (a_table->isRowHidden(row) != hidden) a_table->setRowHidden(row, hidden);
-    if (row == a_table->currentRow()) updateShowButton();
+    if (row == a_table->currentRow()) updateButtons();
 }
 
 void ClaudeJobsWindow::setFilter(Filter filter)
@@ -508,17 +529,36 @@ void ClaudeJobsWindow::applyFilter()
         a_table->setRowHidden(row, job && !passes(*job, filter));
     }
     showSummary();
-    updateShowButton();
+    updateButtons();
 }
 
-void ClaudeJobsWindow::updateShowButton()
+void ClaudeJobsWindow::updateButtons()
 {
-    if (a_show == nullptr) return;
-    const int row = a_table->currentRow();
-    const QTableWidgetItem* item = row >= 0 && !a_table->isRowHidden(row) ? a_table->item(row, Name) : nullptr;
-    const auto job = item != nullptr ? Registry::instance().job(item->data(Qt::UserRole).toString()) : std::nullopt;
+    if (a_show == nullptr || a_kill == nullptr) return;
+    const auto job = chosenJob(a_table);
     const bool can = job && g_shower && g_shower(*job, false);
     if (a_show->isEnabled() != can) a_show->setEnabled(can);
+    // Kill: what the row's Stop does, for the chosen row.
+    const bool kill = job && job->canStop && job->status != Status::Stopping && !isOver(job->status);
+    if (a_kill->isEnabled() != kill) a_kill->setEnabled(kill);
+    const QString why = !job                ? tr("Choose a job that is going to kill it.")
+                        : isOver(job->status) ? tr("It has ended already.")
+                        : kill ? tr("Kills the chosen job, %1, as its Stop does: a simulator's or a command's process is killed at "
+                                    "once, a solve, build or tool in Qucs-S is cancelled at its next step. What it had done so far "
+                                    "is lost.").arg(job->name)
+                               : stopTip(*job);
+    if (a_kill->toolTip() != why) a_kill->setToolTip(why);
+}
+
+bool ClaudeJobsWindow::killChosen()
+{
+    const auto job = chosenJob(a_table);
+    if (!job) return false;
+    QString why;
+    const bool asked = Registry::instance().stop(job->id, &why);
+    if (!asked && !why.isEmpty()) a_summary->setText(why);
+    updateButtons();
+    return asked;
 }
 
 bool ClaudeJobsWindow::showChosenDocument()
@@ -533,7 +573,7 @@ bool ClaudeJobsWindow::showChosenDocument()
                                                         "there.").arg(QDir::toNativeSeparators(job->document)));
         return false;
     }
-    updateShowButton();
+    updateButtons();
     return true;
 }
 

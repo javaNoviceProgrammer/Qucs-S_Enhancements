@@ -510,6 +510,72 @@ private slots:
         QCOMPARE(second, 1);
     }
 
+    // Kill, below the table: the chosen row's job stopped as its Stop stops
+    // it, there however narrow the window (the row's Stop, the last column,
+    // was out of sight where the table scrolled: the user's picture of 8
+    // November).
+    void killStopsTheChosenJob()
+    {
+        int first = 0, second = 0;
+        const QString a = aJob("First", -1, [&first] {
+            ++first;
+            return true;
+        });
+        const QString b = aJob("Second", -1, [&second] {
+            ++second;
+            return true;
+        });
+        const QString stuck = aJob("Stuck");
+        const QString refusing = aJob("Refusing", -1, [] { return false; });
+        ClaudeJobsWindow* w = ClaudeJobsWindow::showWindow(nullptr);
+        QVERIFY(QTest::qWaitForWindowExposed(w));
+        w->resize(w->minimumSize());
+        QPushButton* kill = w->killButton();
+        QVERIFY(kill != nullptr);
+        QVERIFY(kill->isVisible());
+        QVERIFY(w->rect().contains(QRect(kill->mapTo(w, QPoint(0, 0)), kill->size())));
+        // (In the row of buttons, beside Show.)
+        QCOMPARE(kill->mapTo(w, kill->rect().center()).y(), w->showButton()->mapTo(w, w->showButton()->rect().center()).y());
+        QVERIFY(kill->mapTo(w, QPoint(0, 0)).x() > w->showButton()->mapTo(w, QPoint(0, 0)).x());
+        QCOMPARE(kill->text(), QStringLiteral("Kill"));
+        // Nothing chosen: off.
+        w->table()->setCurrentCell(-1, -1);
+        QVERIFY(!kill->isEnabled());
+        // The second chosen: on, named; clicked, that job alone asked.
+        w->table()->selectRow(w->rowOf(b));
+        QVERIFY(kill->isEnabled());
+        QVERIFY2(kill->toolTip().contains("Second"), qPrintable(kill->toolTip()));
+        QTest::mouseClick(kill, Qt::LeftButton);
+        QCOMPARE(first, 0);
+        QCOMPARE(second, 1);
+        QCOMPARE(Registry::instance().job(a)->status, Status::Running);
+        QCOMPARE(Registry::instance().job(b)->status, Status::Stopping);
+        // Asked: off until its end is seen (or the patience runs out), as
+        // the row's Stop.
+        QVERIFY(!kill->isEnabled());
+        QCOMPARE(stopOf(w, w->rowOf(b))->text(), QStringLiteral("Stopping"));
+        Registry::instance().update(b, [](Job& job) { job.status = Status::Stopped; });
+        QVERIFY(!kill->isEnabled());
+        QCOMPARE(kill->toolTip(), QStringLiteral("It has ended already."));
+        // One with no way to stop: off, and why.
+        w->table()->selectRow(w->rowOf(stuck));
+        QVERIFY(!kill->isEnabled());
+        QCOMPARE(kill->toolTip(), QStringLiteral("It has no way to stop."));
+        // One that cannot be asked: said below, still going.
+        w->table()->selectRow(w->rowOf(refusing));
+        QVERIFY(kill->isEnabled());
+        QVERIFY(!w->killChosen());
+        QCOMPARE(w->summary()->text(), QStringLiteral("It could not be asked to stop."));
+        QCOMPARE(Registry::instance().job(refusing)->status, Status::Running);
+        // The first, chosen and then hidden by the filter: off.
+        w->table()->selectRow(w->rowOf(a));
+        QVERIFY(kill->isEnabled());
+        w->setFilter(ClaudeJobsWindow::Yours);   // (Claude's, these)
+        QVERIFY(!kill->isEnabled());
+        w->setFilter(ClaudeJobsWindow::AllJobs);
+        QCOMPARE(first, 0);
+    }
+
     // The program ending says nothing of how its tasks ended.
     void theProgramEndingLosesItsTasks()
     {
