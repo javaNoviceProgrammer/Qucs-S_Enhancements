@@ -37,6 +37,7 @@
 #endif
 #include "schematic.h"
 #include "simulationconsole.h"
+#include "simulationruns.h"
 #include "simulatorlog.h"
 #include "dataimport.h"
 #include "dataset.h"
@@ -375,14 +376,14 @@ const char* const kTools = R"JSON([
    "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
    "path": {"type": "string", "description": "The schematic, for part, diagram and canvas, or the presentation, for slide: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
 {"name": "list_background_jobs",
- "description": "The jobs Claude has run, the newest first, as the Background Jobs window lists them (the dock's ⋯ menu, show_background_jobs opens it): Claude Code's own commands and agents, in every conversation of the dock, and the long Qucs-S tools - simulate, fem_solve, fem_build, fem_converge, rf25_solve, tune as they begin, any other past two seconds or sent to the background. Each with its id, kind, name, conversation ('yours' when it is of this one), status (queued, started, running, stopping, finished, failed, stopped, lost), percent (null when the job has not said or cannot say: why_no_percent says why, and nothing is worked out from the time taken), can_stop, its times and what it said last. get_background_job gives the whole of one. The user stops a job in the window; these tools do not stop any.",
- "inputSchema": {"type": "object", "properties": {"status": {"type": "string", "description": "Only these: all (the default), going, over, or a job's status (running, failed...)"}, "mine": {"type": "boolean", "description": "Only this conversation's"}, "max": {"type": "integer", "minimum": 1, "description": "How many at most, the newest (50)"}}}},
+ "description": "The jobs, the newest first, as the Background Jobs window lists them (the dock's ⋯ menu, the Jobs button of the toolbar, Simulation > Running Jobs; show_background_jobs opens it): the user's own runs - every schematic simulation (ngspice, Xyce, SPICE OPUS, Qucsator), 2D and 3D multiphysics solve, mesh, optimization and convergence check, RF 2.5D solve, also of a document whose tab the user closed while it ran (kept in the background: open_document brings it back) - and what Claude has run: Claude Code's own commands and agents, in every conversation of the dock, and the long Qucs-S tools - simulate, fem_solve, fem_build, fem_converge, rf25_solve, tune as they begin, any other past two seconds or sent to the background. A run Claude's tool began is that tool's job, listed once. Each with its id, kind, name, started_by (user or claude), document (its file, when it works on one), conversation ('yours' when it is of this one), status (queued, started, running, stopping, finished, failed, stopped, lost), percent (null when the job has not said or cannot say: why_no_percent says why, and nothing is worked out from the time taken), can_stop, its times and what it said last. get_background_job gives the whole of one. The user stops a job in the window; these tools do not stop any.",
+ "inputSchema": {"type": "object", "properties": {"status": {"type": "string", "description": "Only these: all (the default), going, over, or a job's status (running, failed...)"}, "mine": {"type": "boolean", "description": "Only this conversation's"}, "max": {"type": "integer", "minimum": 1, "description": "How many at most, the newest (50)"}, "started_by": {"type": "string", "enum": ["any", "user", "claude"], "description": "Only the user's own runs, or only what Claude began (any, the default)"}}}},
 {"name": "get_background_job",
  "description": "All that is known of one job of list_background_jobs: as it lists it, and the whole command, prompt or arguments ('detail'), the file Claude Code writes its output to ('output_file': read it there), the agent it runs under, and how it ended.",
  "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "description": "The job's id, as list_background_jobs gives it (\"job-3\")"}}, "required": ["id"]}},
 {"name": "show_background_jobs",
- "description": "Opens the Background Jobs window for the user - or brings it forward - where each job's status and progress bar show live, with a button to stop each and one to clear those over; and answers with the list, as list_background_jobs does. Under qucs-s --mcp-server no window can show: 'shown' is false, and the list is still given.",
- "inputSchema": {"type": "object", "properties": {}}},
+ "description": "Opens the Background Jobs window for the user - or brings it forward - where each job's status and progress bar show live, with a button to stop each, Show to bring a job's document to the front (a tab closed while it ran comes back with its run), and one to clear those over; and answers with the list, as list_background_jobs does. Under qucs-s --mcp-server no window can show: 'shown' is false, and the list is still given.",
+ "inputSchema": {"type": "object", "properties": {"filter": {"type": "string", "enum": ["all", "simulations", "user", "claude"], "description": "What the window shows: every job (all), simulations and solves alone, the user's own runs, or Claude's jobs. Left as the user set it unless given"}}}},
 {"name": "simulate",
  "description": "Simulates a schematic (the one in front unless 'path' names another - a file not open is opened first, as open_document opens it, and the answer says so; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. 'background' answers at once with the run's id - for a long run (Monte Carlo, a long transient): simulation_status gives how it goes and its outcome once it has ended, wait_for waits for its end, stop_simulation stops it; meanwhile other calls go on. A run still going at its timeout goes on the same way, the answer giving its id. A run going - the user's too - is stopped by stop_simulation (as Simulation > Stop Simulation).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); a run still going then goes on, followed by the id the answer gives. With background: the most it may run, stopped then (none unless given)"},
@@ -1167,7 +1168,7 @@ const struct {
     {"set_settings", QT_TRANSLATE_NOOP("QucsControl", "change the settings of Qucs-S")},
     {"context_menu", QT_TRANSLATE_NOOP("QucsControl", "use a right-click menu of Qucs-S")},
     {"simulate", QT_TRANSLATE_NOOP("QucsControl", "run a simulation in Qucs-S")},
-    {"list_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "list the jobs Claude has run in Qucs-S")},
+    {"list_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "list the running simulations and the jobs Claude has run in Qucs-S")},
     {"get_background_job", QT_TRANSLATE_NOOP("QucsControl", "read a job's details in Qucs-S")},
     {"show_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "show the Background Jobs window in Qucs-S")},
     {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "stop a simulation in Qucs-S")},
@@ -1299,7 +1300,7 @@ const struct {
     {"console", QT_TRANSLATE_NOOP("QucsControl", "Types a line into the Octave, Python Shell or Terminal dock and returns what it printed.")},
     {"wait_for", QT_TRANSLATE_NOOP("QucsControl", "Waits until a simulation ends, a dialog comes up, a document changes or a file is written, and returns then.")},
     {"simulation_status", QT_TRANSLATE_NOOP("QucsControl", "Tells how a simulation run in the background goes, and its outcome once it has ended.")},
-    {"list_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "Lists what Claude has run - commands, agents, simulations, solves - with each one's status and percent, as the Background Jobs window does.")},
+    {"list_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "Lists the user's runs and what Claude has run - simulations, solves, commands, agents - with each one's status and percent, as the Background Jobs window does.")},
     {"get_background_job", QT_TRANSLATE_NOOP("QucsControl", "All that is known of one job: its whole command, output file, times and how it ended.")},
     {"show_background_jobs", QT_TRANSLATE_NOOP("QucsControl", "Opens the Background Jobs window for the user, and gives the list.")},
     {"stop_simulation", QT_TRANSLATE_NOOP("QucsControl", "Stops a simulation (one followed by its id, or the one running) and returns its outcome.")},
@@ -1464,9 +1465,9 @@ const struct {
     {"console", "octave python shell terminal console command type run repl interpreter"},
     {"wait_for", "wait event notify until simulation finished dialog document changed file written watch poll"},
     {"simulation_status", "simulation status background progress running outcome result id long monte carlo"},
-    {"list_background_jobs", "background jobs tasks list running status progress percent queued finished failed stopped commands agents simulations solves what is running"},
+    {"list_background_jobs", "background jobs tasks list running status progress percent queued finished failed stopped commands agents simulations solves what is running user runs closed tabs kept in background"},
     {"get_background_job", "background job task details status progress percent output file command how did it end"},
-    {"show_background_jobs", "background jobs window show open tasks progress bar stop kill clear finished"},
+    {"show_background_jobs", "background jobs window show open tasks progress bar stop kill clear finished running simulations closed tab reopen"},
     {"stop_simulation", "stop abort cancel kill simulation run background"},
     {"send_input", "click mouse keyboard keys type drag double click raw input shortcut press reproduce draw stroke pen layout slide"},
     {"read_help", "help documentation manual docs whats this tutorial examples paper"},
@@ -5802,6 +5803,12 @@ QucsDoc* QucsControl::document(const QJsonObject& args, QString* error) const
             *error = tr("%1 is not open; open without a file: %2.").arg(path, listed(others));
             return nullptr;
         }
+    }
+    // Kept running in the background, its tab closed (simulationruns.h).
+    if (const qucs_s::runs::Tracker* runs = a_app->runTracker(); runs != nullptr && runs->parkedFile(wanted) != nullptr) {
+        *error = tr("%1 has no tab: it was closed while it ran and is kept in the background, running or with its results. "
+                    "open_document brings the same document back, with its run.").arg(path);
+        return nullptr;
     }
     *error = tr("%1 is not open (open_document opens it).").arg(path);
     return nullptr;

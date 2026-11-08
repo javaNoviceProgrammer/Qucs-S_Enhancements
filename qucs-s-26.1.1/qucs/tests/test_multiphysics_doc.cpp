@@ -2063,6 +2063,19 @@ private slots:
             if (!held) return;
             QVERIFY(held->beingWaitedFor());
             held->setDocChanged(false);
+            // (Running for the tool, its close asks whether to keep it running
+            // without its tab (test_running_jobs): Stop and Close, as before.)
+            auto* answer = new QTimer(this);
+            answer->setInterval(20);
+            connect(answer, &QTimer::timeout, this, [answer] {
+                QWidget* box = QApplication::activeModalWidget();
+                auto* stop = box != nullptr ? box->findChild<QPushButton*>(QStringLiteral("stopAndClose")) : nullptr;
+                if (stop == nullptr) return;
+                answer->deleteLater();
+                answer->stop();
+                stop->click();
+            });
+            answer->start();
             app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(held)));
         });
         r = call("fem_build", {{"path", file}}, jobWait());

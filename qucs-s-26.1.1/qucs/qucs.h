@@ -66,6 +66,8 @@ class QucsControl;
 class QJsonObject;
 class QImage;
 namespace qucs_s::python { class Exchange; }
+namespace qucs_s::runs { class Tracker; }
+namespace qucs_s::claude::jobs { struct Job; }
 class ClaudeCodeTabs;
 class FileBrowser;
 class ZipDoc;
@@ -234,6 +236,31 @@ public:
   void activatePaneOf(QWidget *widget);
   /// Puts an open document in front: its pane active, its tab current.
   void showDocument(QWidget *document);
+
+  // --- Runs (qucs_runs.cpp, simulationruns.h): every simulation, solve,
+  // sweep and optimization in the Jobs window, a document kept running with
+  // its tab closed, the tabs closed lately.
+  qucs_s::runs::Tracker *runTracker() const { return a_runs; }
+  /// The Jobs window, opened or brought forward.
+  void showRunningJobs();
+  /// A document kept running without its tab, back in a tab of the active
+  /// pane and in front; false when it is not one kept so.
+  bool bringBackDocument(QWidget *document);
+  /// The job's document in front: kept without a tab, brought back; open,
+  /// shown; else its file opened. With \a show false, whether it could be.
+  bool showJobDocument(const qucs_s::claude::jobs::Job &job, bool show = true);
+  /// The \a index-th tab closed lately (0: the last) opened again.
+  bool reopenClosedTab(int index = 0);
+  QAction *showJobsAction = nullptr;       // Simulation > Running Jobs..., the toolbar's Jobs
+  QAction *reopenClosedAction = nullptr;   // File > Reopen Closed Tab (Ctrl+Shift+T)
+  QMenu *recentlyClosedMenu = nullptr;     // File > Recently Closed Tabs
+  QToolBar *runsToolbar = nullptr;
+  /// Quitting with runs going: asked; false to stay. Those kept without a tab
+  /// with changes come back to be asked about.
+  bool confirmQuitWithRuns();
+  /// After closeAllFiles() for a quit: \a quitting, those kept let go; else
+  /// back to normal.
+  void quitEnded(bool quitting);
   /// The document view maximized: the active pane fills the window, the
   /// other panes and the docked panels hidden; the menus, toolbars and
   /// status bar stay, as do floating panels (a tab double-clicked, View >
@@ -1054,6 +1081,20 @@ private:
   // A hover's value asked of the debugger: the script that asked, by id.
   QHash<int, QPointer<PythonDoc>> a_pythonValues;
   QucsControl *a_control = nullptr;   // Claude's tools, which add_diagram is (showPythonDisplay())
+  // Runs (qucs_runs.cpp).
+  qucs_s::runs::Tracker *a_runs = nullptr;
+  enum class RunningChoice { Keep, Stop, Cancel };
+  /// Of \a docs those running: asked whether to keep them running without
+  /// their tabs, stop them (stopped here) or not close. Stop when none runs.
+  RunningChoice askAboutRunning(const QList<QucsDoc *> &docs);
+  /// \a doc, its tab just removed, held with its run going on.
+  void keepRunningWithoutTab(QucsDoc *doc, const QString &title);
+  void initRuns();
+  /// The window going: nothing about the jobs reaches it any more.
+  void endRuns();
+  void updateRunsActions();
+  void releaseClearedDocuments();
+  void fillRecentlyClosedMenu(QMenu *menu);
   QDockWidget *pythonRunDock = nullptr;
   PythonRunConsole *pythonRun = nullptr;
   bool a_pythonCheckRaises = false;   // Check: the next answer brings the Problems tab up

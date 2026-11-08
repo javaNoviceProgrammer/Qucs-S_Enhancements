@@ -13,6 +13,8 @@
 #include "claudejobs.h"
 #include "ink.h"
 
+#include <QComboBox>
+#include <QDir>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -34,6 +36,7 @@ using namespace qucs_s::claude::jobs;
 namespace {
 
 QPointer<ClaudeJobsWindow> g_window;
+ClaudeJobsWindow::DocumentShower g_shower;
 
 const char* const kBarName = "claudeJobProgress";
 const char* const kPercentName = "claudeJobPercent";
@@ -62,6 +65,9 @@ QString kindText(const QString& kind)
     if (kind == QLatin1String("script")) return ClaudeJobsWindow::tr("Script");
     if (kind == QLatin1String("batch")) return ClaudeJobsWindow::tr("Batch");
     if (kind == QLatin1String("tool")) return ClaudeJobsWindow::tr("Qucs-S tool");
+    if (kind == QLatin1String("optimization")) return ClaudeJobsWindow::tr("Optimization");
+    if (kind == QLatin1String("convergence")) return ClaudeJobsWindow::tr("Mesh convergence");
+    if (kind == QLatin1String("mesh")) return ClaudeJobsWindow::tr("Mesh");
     return kind;
 }
 
@@ -79,6 +85,20 @@ QColor statusColour(Status status, const QPalette& palette)
     case Status::Running: return palette.color(QPalette::Text);
     }
     return palette.color(QPalette::Text);
+}
+
+// Who started it, as the Started by column says it.
+QString startedByText(const Job& job)
+{
+    if (startedBy(job) == QLatin1String("user")) return ClaudeJobsWindow::tr("You");
+    return job.conversation.isEmpty() ? ClaudeJobsWindow::tr("Claude") : job.conversation;
+}
+
+QString startedByTip(const Job& job)
+{
+    if (startedBy(job) == QLatin1String("user")) return ClaudeJobsWindow::tr("You started it.");
+    return job.conversation.isEmpty() ? ClaudeJobsWindow::tr("Claude started it.")
+                                      : ClaudeJobsWindow::tr("Claude started it, in the conversation %1.").arg(job.conversation);
 }
 
 // What a finished job's time reads: from when it began to when it ended.
@@ -102,6 +122,26 @@ QString stopTip(const Job& job)
 ClaudeJobsWindow* ClaudeJobsWindow::existing()
 {
     return g_window;
+}
+
+void ClaudeJobsWindow::setDocumentShower(DocumentShower shower)
+{
+    g_shower = std::move(shower);
+    if (g_window) g_window->updateShowButton();
+}
+
+bool ClaudeJobsWindow::passes(const Job& job, Filter filter)
+{
+    static const QStringList simulations{QStringLiteral("simulation"), QStringLiteral("solve"), QStringLiteral("build"),
+                                         QStringLiteral("mesh"), QStringLiteral("optimization"), QStringLiteral("convergence"),
+                                         QStringLiteral("tune")};
+    switch (filter) {
+    case AllJobs: return true;
+    case Simulations: return simulations.contains(job.kind);
+    case Yours: return startedBy(job) == QLatin1String("user");
+    case Claudes: return startedBy(job) != QLatin1String("user");
+    }
+    return true;
 }
 
 ClaudeJobsWindow* ClaudeJobsWindow::showWindow(QWidget* from)
@@ -128,20 +168,35 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
     setWindowTitle(tr("Background Jobs"));
     auto* layout = new QVBoxLayout(this);
 
-    auto* note = new QLabel(tr("What Claude has run, in every conversation: Claude Code's commands and agents, and Qucs-S's "
-                               "long tools. A percentage is shown where the job itself reports one; where it cannot, the bar "
-                               "runs on and says unknown."),
+    auto* note = new QLabel(tr("Every simulation, solve, sweep and optimization - yours, also those whose tab you closed, and "
+                               "Claude's - and what Claude has run in every conversation: Claude Code's commands and agents, "
+                               "and Qucs-S's long tools. A percentage is shown where the job itself reports one; where it "
+                               "cannot, the bar runs on and says unknown. Show brings a job's document to the front."),
                             this);
     note->setObjectName(QStringLiteral("claudeJobsNote"));
     note->setWordWrap(true);
     layout->addWidget(note);
+
+    auto* top = new QHBoxLayout;
+    auto* filterLabel = new QLabel(tr("Show:"), this);
+    top->addWidget(filterLabel);
+    a_filter = new QComboBox(this);
+    a_filter->setObjectName(QStringLiteral("claudeJobsFilter"));
+    a_filter->addItem(tr("All jobs"), int(AllJobs));
+    a_filter->addItem(tr("Simulations and solves"), int(Simulations));
+    a_filter->addItem(tr("Started by you"), int(Yours));
+    a_filter->addItem(tr("Started by Claude"), int(Claudes));
+    filterLabel->setBuddy(a_filter);
+    top->addWidget(a_filter);
+    top->addStretch(1);
+    layout->addLayout(top);
 
     auto* split = new QSplitter(Qt::Vertical, this);
     layout->addWidget(split, 1);
 
     a_table = new QTableWidget(0, Columns, split);
     a_table->setObjectName(QStringLiteral("claudeJobsTable"));
-    a_table->setHorizontalHeaderLabels({tr("Job"), tr("Kind"), tr("Conversation"), tr("Status"), tr("Progress"), tr("Began"), tr("Time"), QString()});
+    a_table->setHorizontalHeaderLabels({tr("Job"), tr("Kind"), tr("Started by"), tr("Status"), tr("Progress"), tr("Began"), tr("Time"), QString()});
     a_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     a_table->setSelectionMode(QAbstractItemView::SingleSelection);
     a_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -169,6 +224,12 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
     // (Word wrap: a label of one line asks for its whole width.)
     a_summary->setWordWrap(true);
     bottom->addWidget(a_summary, 1);
+    a_show = new QPushButton(tr("Show"), this);
+    a_show->setObjectName(QStringLiteral("claudeJobsShow"));
+    a_show->setToolTip(tr("Brings the chosen job's document to the front: a tab closed while it ran comes back as it is, with "
+                          "its run and its results. A double click on a row does the same."));
+    a_show->setAutoDefault(false);
+    bottom->addWidget(a_show);
     a_clear = new QPushButton(tr("Clear Finished"), this);
     a_clear->setObjectName(QStringLiteral("claudeJobsClear"));
     a_clear->setToolTip(tr("Takes the jobs that have finished, failed or stopped off the list. Those still going stay."));
@@ -190,6 +251,10 @@ ClaudeJobsWindow::ClaudeJobsWindow(QWidget* parent)
     connect(close, &QPushButton::clicked, this, &QWidget::close);
     connect(a_clear, &QPushButton::clicked, this, [] { Registry::instance().clearFinished(); });
     connect(a_table, &QTableWidget::itemSelectionChanged, this, &ClaudeJobsWindow::showDetails);
+    connect(a_table, &QTableWidget::itemSelectionChanged, this, &ClaudeJobsWindow::updateShowButton);
+    connect(a_table, &QTableWidget::cellDoubleClicked, this, [this] { showChosenDocument(); });
+    connect(a_show, &QPushButton::clicked, this, [this] { showChosenDocument(); });
+    connect(a_filter, &QComboBox::currentIndexChanged, this, &ClaudeJobsWindow::applyFilter);
 
     Registry& registry = Registry::instance();
     connect(&registry, &Registry::added, this, [this](const QString& id) {
@@ -226,7 +291,7 @@ void ClaudeJobsWindow::setWidths()
         QHeaderView::ResizeMode mode;
     } fixed[] = {
         {Kind, width(tr("Qucs-S tool")), QHeaderView::Interactive},
-        {Conversation, 120, QHeaderView::Interactive},
+        {Conversation, 130, QHeaderView::Interactive},
         {Status, width(tr("stopping")), QHeaderView::Interactive},
         {Progress, 170, QHeaderView::Interactive},
         {Began, width(QStringLiteral("00:00:00")), QHeaderView::Interactive},
@@ -324,7 +389,7 @@ void ClaudeJobsWindow::showJob(const Job& job)
     if (!job.outcome.isEmpty()) tip += QLatin1Char('\n') + job.outcome;
     set(Name, job.name, tip);
     set(Kind, kindText(job.kind));
-    set(Conversation, job.conversation);
+    set(Conversation, startedByText(job), startedByTip(job));
     set(Status, statusText(job.status), job.said);
     a_table->item(row, Status)->setForeground(statusColour(job.status, palette()));
     set(Began, timeText(job.began), job.queued.isValid() ? tr("Queued at %1, began at %2").arg(timeText(job.queued), timeText(job.began)) : QString());
@@ -363,6 +428,54 @@ void ClaudeJobsWindow::showJob(const Job& job)
     stop->setText(job.status == Status::Stopping ? tr("Stopping") : tr("Stop"));
     const QString stopWhy = stopTip(job);
     if (stop->toolTip() != stopWhy) stop->setToolTip(stopWhy);
+
+    const bool hidden = !passes(job, Filter(a_filter->currentData().toInt()));
+    if (a_table->isRowHidden(row) != hidden) a_table->setRowHidden(row, hidden);
+    if (row == a_table->currentRow()) updateShowButton();
+}
+
+void ClaudeJobsWindow::setFilter(Filter filter)
+{
+    const int index = a_filter->findData(int(filter));
+    if (index >= 0) a_filter->setCurrentIndex(index);
+}
+
+void ClaudeJobsWindow::applyFilter()
+{
+    const Filter filter = Filter(a_filter->currentData().toInt());
+    for (int row = 0; row < a_table->rowCount(); ++row) {
+        const QTableWidgetItem* item = a_table->item(row, Name);
+        const auto job = item != nullptr ? Registry::instance().job(item->data(Qt::UserRole).toString()) : std::nullopt;
+        a_table->setRowHidden(row, job && !passes(*job, filter));
+    }
+    showSummary();
+    updateShowButton();
+}
+
+void ClaudeJobsWindow::updateShowButton()
+{
+    if (a_show == nullptr) return;
+    const int row = a_table->currentRow();
+    const QTableWidgetItem* item = row >= 0 && !a_table->isRowHidden(row) ? a_table->item(row, Name) : nullptr;
+    const auto job = item != nullptr ? Registry::instance().job(item->data(Qt::UserRole).toString()) : std::nullopt;
+    const bool can = job && g_shower && g_shower(*job, false);
+    if (a_show->isEnabled() != can) a_show->setEnabled(can);
+}
+
+bool ClaudeJobsWindow::showChosenDocument()
+{
+    const int row = a_table->currentRow();
+    const QTableWidgetItem* item = row >= 0 ? a_table->item(row, Name) : nullptr;
+    const auto job = item != nullptr ? Registry::instance().job(item->data(Qt::UserRole).toString()) : std::nullopt;
+    if (!job || !g_shower) return false;
+    if (!g_shower(*job, true)) {
+        a_summary->setText(job->document.isEmpty() ? tr("This job has no document to show.")
+                                                   : tr("%1 cannot be shown: it is neither open nor kept, and its file is not "
+                                                        "there.").arg(QDir::toNativeSeparators(job->document)));
+        return false;
+    }
+    updateShowButton();
+    return true;
 }
 
 void ClaudeJobsWindow::tick()
@@ -410,7 +523,10 @@ void ClaudeJobsWindow::showDetails()
         if (job->began.isValid()) lines << tr("Began: %1").arg(QLocale().toString(job->began, QLocale::LongFormat));
         if (job->ended.isValid()) lines << tr("Ended: %1").arg(QLocale().toString(job->ended, QLocale::LongFormat));
         if (job->began.isValid()) lines << tr("Time: %1").arg(timeTaken(*job));
-        lines << (job->background ? tr("In the background: Claude does not wait on it.") : tr("In the foreground: Claude waits on it."));
+        if (startedBy(*job) != QLatin1String("user"))
+            lines << (job->background ? tr("In the background: Claude does not wait on it.") : tr("In the foreground: Claude waits on it."));
+        lines << tr("Started by: %1").arg(startedByText(*job));
+        if (!job->document.isEmpty()) lines << tr("Document: %1").arg(QDir::toNativeSeparators(job->document));
         if (!job->conversation.isEmpty()) lines << tr("Conversation: %1").arg(job->conversation);
         if (!job->said.isEmpty()) lines << tr("Last said: %1").arg(job->said);
         if (!job->outcome.isEmpty()) lines << tr("Outcome: %1").arg(job->outcome);

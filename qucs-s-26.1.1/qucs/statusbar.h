@@ -129,6 +129,8 @@ public:
     void runEnded(Outcome outcome, int warnings);
     /// Forgets the last run (a project opened or closed).
     void clearRun();
+    /// The jobs or the documents kept running changed: the count of what runs.
+    void jobsChanged();
 
     /// The hint on the left, whole (the label elides it).
     QString hint() const;
@@ -152,6 +154,7 @@ private:
     QToolButton* a_zoom;
     QToolButton* a_problems;
     QToolButton* a_run;
+    QToolButton* a_jobs;      // what runs now, yours and Claude's: opens the Jobs window
     QToolButton* a_simulator;
     QToolButton* a_git;
     QToolButton* a_saved;
@@ -189,6 +192,7 @@ private:
     void updateZoom(Schematic* doc);
     void updateLanguage(TextDoc* doc);
     void updateRun();
+    void updateJobs();
     void updateSimulator();
     void updateSaved();
     void updateGit();
