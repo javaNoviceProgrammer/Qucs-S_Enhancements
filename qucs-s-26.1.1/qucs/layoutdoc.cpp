@@ -72,6 +72,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QUrl>
 #include <QWheelEvent>
 
@@ -1879,7 +1880,11 @@ void LayoutDoc::buildUi()
         startReading();
     });
 
-    connect(a_cells, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) { fillCellChildren(item); });
+    connect(a_cells, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
+        fillCellChildren(item);
+        if (a_found.isEmpty()) a_openRows.insert(rowPath(item));
+    });
+    connect(a_cells, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem* item) { a_openRows.remove(rowPath(item)); });
     connect(a_cells, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item) {
         const int cell = item->data(0, Qt::UserRole).toInt();
         if (cell != shownCell()) showCell(cell);
@@ -2144,6 +2149,12 @@ void LayoutDoc::layoutReady(bool keepView)
     a_view->setStyles(styles);
     a_stack->setCurrentIndex(0);
     a_toolbar->setEnabled(true);
+    if (!keepView) a_openRows.clear();
+    // (The old layout's search found by its cells' numbers: found again
+    // below.)
+    a_found.clear();
+    a_foundAt = -1;
+    fillCells();
     const int again = oldCell.isEmpty() ? -1 : a_layout->cellIndex(oldCell);
     if (keepView && again >= 0) {
         showCell(again, false);
@@ -2172,15 +2183,9 @@ void LayoutDoc::showCell(int cell, bool fit)
     const Cell& c = a_layout->cells.at(cell);
     a_cellLabel->setText(tr("Cell %1").arg(c.name));
     a_cellLabel->setToolTip(tr("%1: %2 × %3 µm").arg(c.name, micrometres(*a_layout, c.bounds.width()), micrometres(*a_layout, c.bounds.height())));
-    if (a_found.isEmpty()) fillCells();
-    // Its row, when it is in sight in the tree.
-    for (int i = 0; i < a_cells->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* item = a_cells->topLevelItem(i);
-        QFont f = item->font(0);
-        f.setBold(item->data(0, Qt::UserRole).toInt() == cell);
-        item->setFont(0, f);
-        if (f.bold()) a_cells->setCurrentItem(item);
-    }
+    // (The tree is not filled again here: that closed every row opened
+    // to reach a cell placed below the top.)
+    markShownCell(cell);
     updateInfo();
     updatePen();
 }
@@ -2200,6 +2205,36 @@ void LayoutDoc::setDepth(int depth)
 {
     a_depthBox->setValue(depth < 0 || depth >= AllLevels ? AllLevels : depth);
     a_view->setDepth(depth < 0 || depth >= AllLevels ? (1 << 20) : depth);
+}
+
+void LayoutDoc::markShownCell(int cell)
+{
+    const QSignalBlocker block(a_cells);
+    QTreeWidgetItem* current = a_cells->currentItem();
+    QTreeWidgetItem* inSight = nullptr;
+    for (QTreeWidgetItemIterator it(a_cells); *it; ++it) {
+        QTreeWidgetItem* item = *it;
+        if (!item->data(0, Qt::UserRole).isValid()) continue;   // a closed row's "…"
+        QFont f = item->font(0);
+        f.setBold(item->data(0, Qt::UserRole).toInt() == cell);
+        item->setFont(0, f);
+        if (!f.bold() || inSight) continue;
+        bool shown = true;   // every row above it open
+        for (QTreeWidgetItem* up = item->parent(); up && shown; up = up->parent()) shown = up->isExpanded();
+        if (shown) inSight = item;
+    }
+    // The row clicked stays current; else one in sight (making a row
+    // current opens the rows above it, so a hidden one is not chosen).
+    if (current && current->data(0, Qt::UserRole).isValid() && current->data(0, Qt::UserRole).toInt() == cell) return;
+    if (inSight) a_cells->setCurrentItem(inSight);
+    else a_cells->setCurrentItem(nullptr);
+}
+
+QString LayoutDoc::rowPath(const QTreeWidgetItem* item)
+{
+    QString path;
+    for (; item; item = item->parent()) path.prepend(QChar(0x1f) + item->text(0));
+    return path;
 }
 
 void LayoutDoc::fillCells()
@@ -2224,6 +2259,15 @@ void LayoutDoc::fillCells()
         return;
     }
     for (int cell : a_layout->topCells) a_cells->addTopLevelItem(row(cell, QString()));
+    // The rows that were open, open again (those whose cells are still
+    // there).
+    const std::function<void(QTreeWidgetItem*)> reopen = [&](QTreeWidgetItem* item) {
+        if (!a_openRows.contains(rowPath(item))) return;
+        fillCellChildren(item);
+        item->setExpanded(true);
+        for (int i = 0; i < item->childCount(); ++i) reopen(item->child(i));
+    };
+    for (int i = 0; i < a_cells->topLevelItemCount(); ++i) reopen(a_cells->topLevelItem(i));
 }
 
 void LayoutDoc::fillCellChildren(QTreeWidgetItem* item)

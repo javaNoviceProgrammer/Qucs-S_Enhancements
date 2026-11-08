@@ -968,10 +968,47 @@ private slots:
         QCOMPARE(doc->depthBox()->text(), QString("all"));
         view->repaint();
         QCOMPARE(view->lastStats().frames, quint64(0));
-        // A click in the tree shows that cell.
+        // A click in the tree shows that cell - and the tree stays as it
+        // was: its rows the same, TOP still open, INV's row current and
+        // bold (it was filled again from the top, closed, at each cell
+        // shown).
         QTreeWidgetItem* inv = top->child(0);
         emit cells->itemClicked(inv, 0);
         QCOMPARE(doc->layout()->cells.at(doc->shownCell()).name, QString("INV"));
+        QCOMPARE(cells->topLevelItem(0), top);
+        QVERIFY(top->isExpanded());
+        QCOMPARE(top->child(0), inv);
+        QCOMPARE(cells->currentItem(), inv);
+        QVERIFY(inv->font(0).bold());
+        QVERIFY(!top->font(0).bold());
+        // Back up to TOP: still open, TOP bold and INV not.
+        emit cells->itemClicked(top, 0);
+        QCOMPARE(doc->layout()->cells.at(doc->shownCell()).name, QString("TOP"));
+        QVERIFY(top->isExpanded());
+        QCOMPARE(top->child(0), inv);
+        QVERIFY(top->font(0).bold());
+        QVERIFY(!inv->font(0).bold());
+        // A cell shown another way (the view's double-click) marks its row
+        // in sight, opening nothing.
+        doc->showCell(doc->layout()->cellIndex("VIA"));
+        QCOMPARE(cells->currentItem(), top->child(1));
+        QVERIFY(top->child(1)->font(0).bold());
+        // Open still after a search and after the file read again.
+        doc->showSearch();
+        doc->findField()->setText("v");
+        QCOMPARE(cells->topLevelItemCount(), 2);
+        doc->hideSearch();
+        QCOMPARE(cells->topLevelItemCount(), 1);
+        QVERIFY(cells->topLevelItem(0)->isExpanded());
+        QVERIFY(doc->reload());
+        QVERIFY(doc->waitForLoaded());
+        QVERIFY(cells->topLevelItem(0)->isExpanded());
+        QCOMPARE(cells->topLevelItem(0)->childCount(), 2);
+        // Closed, it stays closed.
+        cells->collapseItem(cells->topLevelItem(0));
+        doc->hideSearch();
+        QVERIFY(!cells->topLevelItem(0)->isExpanded());
+        emit cells->itemClicked(cells->topLevelItem(0), 0);
         // Nothing to save, simulate or paste: it is read.
         QVERIFY(!doc->getDocChanged());
     }
