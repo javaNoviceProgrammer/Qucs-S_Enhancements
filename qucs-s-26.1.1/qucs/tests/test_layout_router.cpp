@@ -365,6 +365,153 @@ private slots:
         QVERIFY2(r.nets[0].reason.contains("cannot be left"), qPrintable(r.nets[0].reason));
     }
 
+    void stackedMetalWithNoCutIsNotTheTerminal()
+    {
+        // The black-box test's finding 1: a contact on M1 with M2 drawn over
+        // it and no cut between them. The terminal is the M1 square; the M2
+        // over it is said, and a line that ends only on the M2 is an open.
+        Problem p = problemOf(tech());
+        p.metal.append({rect(p, -4, -4, 4, 4), 0});   // the contact, M1
+        p.metal.append({rect(p, -4, -4, 4, 4), 1});   // M2 over it, no cut
+        pad(p, 1, 100, 0);                            // the pad, on M2
+        p.nets = {net("n", at(p, 0, 0), at(p, 100, 0))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        QVERIFY2(router.terminals()[0].note.contains("not joined"), qPrintable(router.terminals()[0].note));
+        QCOMPARE(router.terminals()[0].metals, (QVector<int>{0}));
+        const Result r = router.run();
+        QCOMPARE(r.routed(), 1);
+        const Verification v = verify(router.problem(), r);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        QVERIFY(viaCount(r) >= 1);   // down to the contact
+        // Ending on the M2 square alone: the check says open.
+        Result bad = r;
+        bad.nets[0].runs = {Run{1, {0, 0}, {p.units(100), 0}, p.units(2)}};
+        bad.nets[0].vias.clear();
+        bool open = false;
+        for (const Finding& f : verify(router.problem(), bad).findings) open = open || f.kind == QLatin1String("open");
+        QVERIFY(open);
+    }
+
+    void aNotchIsFilledWhereItFits()
+    {
+        // A line back along its own bar 4 µm above it: a slot under the 5 µm
+        // notch rule. Found by the check; filled with the net's metal; then
+        // clean. A fill never takes metal of another net's into the slot.
+        QJsonObject o = techJson();
+        o.insert("spacing", QJsonObject{{"same_layer", 2}, {"to_metal", 2}, {"to_terminal", 2}, {"notch", 5}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.notch, 5.0);
+        p.metal.append({rect(p, 0, 0, 100, 4), 0});   // its own bar
+        p.nets = {net("n", at(p, 95, 2, -1, Terminal::Mode::Exact), at(p, 10, 9, 0, Terminal::Mode::Exact))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        Result r;
+        NetResult x;
+        x.status = NetResult::Status::Routed;
+        x.runs = {Run{0, {p.units(95), p.units(2)}, {p.units(95), p.units(9)}, p.units(2)}, Run{0, {p.units(95), p.units(9)}, {p.units(10), p.units(9)}, p.units(2)}};
+        r.nets = {x};
+        const auto kinds = [&](const Result& res) {
+            QStringList k;
+            for (const Finding& f : verify(router.problem(), res).findings) k << f.kind;
+            return k;
+        };
+        QVERIFY2(kinds(r).contains("notch"), qPrintable(kinds(r).join(',')));
+        fillNotches(router.problem(), &r);
+        QCOMPARE(r.nets[0].fills.size(), 1);
+        QVERIFY2(kinds(r).isEmpty(), qPrintable(kinds(r).join(',')));
+        // The fill is written with the route.
+        bool written = false;
+        for (const DrawnShape& d : drawnShapes(router.problem(), r.nets[0], 0)) written = written || d.points.size() > 4 || d.points.size() == 4;
+        QVERIFY(written);
+        QCOMPARE(int(drawnShapes(router.problem(), r.nets[0], 0).size()), 3);
+        // Metal of no net in the slot: no fill, and no notch either (the
+        // spacing check has it).
+        Problem q = p;
+        q.metal.append({rect(q, 40, 5.5, 50, 6.5), 0});
+        Router second(q);
+        QVERIFY(second.prepare());
+        Result r2;
+        r2.nets = {x};
+        fillNotches(second.problem(), &r2);
+        QVERIFY(r2.nets[0].fills.isEmpty());
+        QStringList k2;
+        for (const Finding& f : verify(second.problem(), r2).findings) k2 << f.kind;
+        QVERIFY2(!k2.contains("notch") && k2.contains("metal"), qPrintable(k2.join(',')));
+    }
+
+    void viasAreArraysOfCuts()
+    {
+        // The black-box test's finding 7: a 2 x 2 array of 1 µm cuts 1 µm
+        // apart, 0.5 µm enclosed: a 3 µm outline in a 4 µm landing.
+        QJsonObject o = techJson(4, 2);
+        o.insert("vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 1}, {"cuts", QJsonArray{2, 2}},
+                                                {"cut_spacing", 1}, {"enclosure", 0.5}, {"spacing", 3}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.vias[0].outline(), 3.0);
+        QCOMPARE(p.tech.vias[0].landingLower, 4.0);
+        pad(p, 0, 0, 50, 8);
+        pad(p, 0, 100, 50, 8);
+        pad(p, 0, 50, 0, 8);
+        pad(p, 0, 50, 100, 8);
+        p.nets = {net("h", at(p, 0, 50), at(p, 100, 50)), net("v", at(p, 50, 0), at(p, 50, 100))};
+        Verification v;
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        v = verify(router.problem(), r);
+        QCOMPARE(r.routed(), 2);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        int vias = 0, cuts = 0;
+        for (int n = 0; n < 2; ++n) {
+            vias += r.nets[n].vias.size();
+            for (const DrawnShape& d : drawnShapes(router.problem(), r.nets[n], n))
+                if (d.layer.layer == 3) {
+                    ++cuts;
+                    QCOMPARE(d.points[1].x() - d.points[0].x(), 1.0);
+                }
+        }
+        QVERIFY(vias >= 2);
+        QCOMPARE(cuts, 4 * vias);
+        // Two arrays 2 µm apart (3 needed): found, on their outlines.
+        Result bad = r;
+        bad.nets[0].vias = {ViaPlaced{0, {p.units(30), p.units(50)}}, ViaPlaced{0, {p.units(35), p.units(50)}}};
+        bool near = false;
+        for (const Finding& f : verify(router.problem(), bad).findings) near = near || f.kind == QLatin1String("via_spacing");
+        QVERIFY(near);
+        // An array with no spacing inside it is refused.
+        QJsonObject noGap = o;
+        QJsonArray vs = noGap.value("vias").toArray();
+        QJsonObject v0 = vs[0].toObject();
+        v0.remove("cut_spacing");
+        vs[0] = v0;
+        noGap.insert("vias", vs);
+        QString e;
+        readTechnology(noGap, &e);
+        QVERIFY2(e.contains("cut_spacing"), qPrintable(e));
+    }
+
+    void aRunNearItsMemoryCapGoesOnOneSearchAtATime()
+    {
+        // The black-box test's finding 2: a cap a run nears does not stop it.
+        Problem p = problemOf(tech());
+        for (int i = 0; i < 6; ++i) {
+            pad(p, 0, 0, i * 20);
+            pad(p, 0, 200, (5 - i) * 20);
+            p.nets.append(net(QStringLiteral("n%1").arg(i), at(p, 0, i * 20), at(p, 200, (5 - i) * 20)));
+        }
+        p.options.maxMemory = 16;
+        p.options.threads = 4;
+        Router router(p);
+        QVERIFY2(router.prepare(), qPrintable(router.error()));
+        const Result r = router.run();
+        QCOMPARE(r.routed(), 6);
+        QVERIFY2(r.stopped == "converged", qPrintable(r.stopped));
+        // Released afterwards, and prepared again for the next run.
+        router.releaseMaps();
+        QCOMPARE(router.run().routed(), 6);
+    }
+
     void aLineLeavesItsOwnBusPastForeignFingers()
     {
         // The first-use note's case: a 10 µm line from the middle of a 12 µm
@@ -505,6 +652,42 @@ private slots:
         }
         QCOMPARE(unroutable, 4);
         QVERIFY(!r.crowding.isEmpty());
+    }
+
+    void aStoppedRunIsCleanedUp()
+    {
+        // The black-box test's finding 4: stopped after its first pass, a
+        // crowded run still routes its contested nets again around the
+        // others, or reports them - nothing it calls routed is too near.
+        Problem p = problemOf(tech());
+        p.tech.metals.resize(1);
+        p.tech.vias.clear();
+        const auto u = [&](double v) { return p.units(v); };
+        const Box area{u(-60), u(-40), u(160), u(40)};
+        const QVector<Box> free = {{u(-60), u(-40), u(0), u(40)}, {u(100), u(-40), u(160), u(40)}, {u(0), u(-5), u(100), u(5)}};
+        for (const Box& b : wallsAround(area, free)) {
+            KeepOut k;
+            k.name = "wall";
+            k.outline = polyOf(b);
+            k.letThrough = KeepOut::LetThrough::None;
+            p.keepOuts.append(k);
+        }
+        p.tech.box = {-60, -40, 160, 40};
+        for (int i = 0; i < 6; ++i) p.nets.append(net(QStringLiteral("n%1").arg(i), at(p, -50, -30 + 12 * i), at(p, 150, -30 + 12 * i)));
+        Router router(p);
+        QVERIFY(router.prepare());
+        std::atomic_bool cancel{false};
+        Progress progress;
+        progress.cancel = &cancel;
+        progress.pass = [&](const PassRow& row) {
+            if (row.pass == 1 && !row.cleanup) cancel = true;
+        };
+        const Result r = router.run({}, {}, progress);
+        QCOMPARE(r.stopped, QStringLiteral("cancelled"));
+        QVERIFY(r.passes.last().cleanup);
+        const Verification v = verify(router.problem(), r);
+        for (const Finding& f : v.findings) QVERIFY2(f.kind == QLatin1String("unroutable"), qPrintable(f.text));
+        QCOMPARE(r.routed() + r.failed(), 6);
     }
 
     void aGuideIsFollowed()
@@ -1058,6 +1241,15 @@ private slots:
         if (qEnvironmentVariableIsSet("QUCS_ROUTER_GROWTH")) p.options.presentGrowth = qEnvironmentVariable("QUCS_ROUTER_GROWTH").toDouble();
         if (qEnvironmentVariableIsSet("QUCS_ROUTER_HISTORY")) p.options.historyGain = qEnvironmentVariable("QUCS_ROUTER_HISTORY").toDouble();
         if (qEnvironmentVariableIsSet("QUCS_ROUTER_PASSES")) p.options.passes = qEnvironmentVariableIntValue("QUCS_ROUTER_PASSES");
+        if (qEnvironmentVariableIsSet("QUCS_ROUTER_NOTCH")) p.tech.notch = qEnvironmentVariable("QUCS_ROUTER_NOTCH").toDouble();
+        if (qEnvironmentVariable("QUCS_ROUTER_ARRAY") == QLatin1String("2x2")) {
+            // The black-box test's array: four 3 µm cuts 2 µm apart, 1 µm enclosed.
+            Via& v = p.tech.vias[0];
+            v.size = 3;
+            v.cols = v.rows = 2;
+            v.cutSpacing = 2;
+            v.landingLower = v.landingUpper = v.outline() + 2;
+        }
         // Capacitors: 200 x 150 µm, buses 12 µm at either side on both
         // metals with a row of cuts, fingers 4 µm wide 4 µm apart, their tips
         // 2 µm from the other bus.
@@ -1128,8 +1320,11 @@ private slots:
         const double checked = timer.elapsed() / 1000.0;
         struct rusage use {};
         getrusage(RUSAGE_SELF, &use);
-        int vias = 0;
-        for (const NetResult& n : r.nets) vias += n.vias.size();
+        int vias = 0, fills = 0;
+        for (const NetResult& n : r.nets) {
+            vias += n.vias.size();
+            fills += n.fills.size();
+        }
         double length = 0;
         for (const NetResult& n : r.nets) length += p.um(n.length);
         QMap<QString, int> kinds;
@@ -1140,8 +1335,9 @@ private slots:
                checked - routed, r.routed(), vias, length / 1000, lower / 1000, (long long)r.statesSearched, r.peakBytes / 1048576.0,
                double(use.ru_maxrss) / 1048576.0, int(v.findings.size()));
         for (auto it = kinds.begin(); it != kinds.end(); ++it) printf(" %s %d", qPrintable(it.key()), it.value());
-        printf("\n");
+        printf("; notch fills %d\n", fills);
         for (const QString& n : r.notes) printf("  note: %s\n", qPrintable(n));
+        for (const Crowding& c : r.crowding) printf("  crowding %.0f %%\n", c.use * 100);
         for (int i = 0, shown = 0; i < v.findings.size() && shown < 6; ++i)
             if (v.findings[i].kind != QLatin1String("unroutable") || i < 2) {
                 printf("  finding: %s\n", qPrintable(v.findings[i].text));

@@ -484,7 +484,10 @@ QVector<JobNet> readNetsCsv(const QString& text, QString* error)
                 const QString ys = field(col((QByteArray(prefix) + "_y").constData()));
                 t->text = field(col((QByteArray(prefix) + "_text").constData()));
                 t->metal = field(col((QByteArray(prefix) + "_layer").constData()));
-                if (!field(col("mode")).isEmpty() && !readMode(field(col("mode")), &t->mode)) return -1;
+                // A mode: the terminal's own column (start_mode, pad_mode), else 'mode' for both.
+                const QString mode = !field(col((QByteArray(prefix) + "_mode").constData())).isEmpty() ? field(col((QByteArray(prefix) + "_mode").constData()))
+                                                                                                        : field(col("mode"));
+                if (!mode.isEmpty() && !readMode(mode, &t->mode)) return -1;
                 if (xs.isEmpty() && ys.isEmpty()) return t->text.isEmpty() ? 0 : 1;
                 double x, y;
                 if (!number(xs, &x) || !number(ys, &y)) return -1;

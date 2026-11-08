@@ -46,6 +46,9 @@ application). It lays a lattice over the area, one plane a metal, a cell every `
 over the cells, drawn as squares of its width at each one. A straight run is therefore a rectangle carried half a width
 past its ends, and corners are full. The shapes drawn and the cells tested are the same thing.
 
+- **A terminal** is the piece of metal under its point: on its `metal`, or a label's own layer, else the lowest metal
+  there, with what is joined to it through cuts. Metal merely drawn over it, with no cut, is not it, and `route_setup`
+  says so (the black-box test's finding 1, below).
 - **What is there.** Every shape on the technology's metals, cut layers and obstacle layers is read from the cell routed,
   through its hierarchy, and cut into boxes (exact for Manhattan shapes; beside a slanted edge, slabs of half a pitch
   that cover it). Each box, grown by half a line and its clearance with rounded corners, is rasterised once into **one bit
@@ -99,10 +102,10 @@ each refused with what is wrong.
 ```json
 {"name": "demo", "grid": 2,
  "metals": [{"name": "M1", "layer": "1/0", "direction": "h"}, {"name": "M2", "layer": "2/0", "direction": "v"}],
- "vias": [{"name": "V1", "layer": "3/0", "between": ["M1", "M2"], "size": 4, "enclosure": 2, "spacing": 4}],
+ "vias": [{"name": "V1", "layer": "3/0", "between": ["M1", "M2"], "size": 3, "cuts": [2, 2], "cut_spacing": 2, "enclosure": 1, "spacing": 4}],
  "classes": [{"name": "signal", "width": 10}, {"name": "power", "width": 20, "spacing": 6}],
  "default_class": "signal",
- "spacing": {"same_layer": 4, "to_metal": 4, "to_terminal": 6},
+ "spacing": {"same_layer": 4, "to_metal": 4, "to_terminal": 6, "notch": 4},
  "obstacles": [{"name": "optical", "layer": "30/0", "clearance": 0, "metals": ["M1"], "landings": true}],
  "costs": {"bend": 2, "via": 10, "wrong_way": 2},
  "area": {"margin": 100}}
@@ -112,6 +115,11 @@ each refused with what is wrong.
   other metal, including a net's metal that is joined to its pad but is not the pad. The first-use note's item 5 found
   that the reviewed router applied the pad rule to a whole capacitor plate; here the rule names what it means.
 - **More than two metals** come for free: an ordered list, a via between each pair (`threeMetalsStackTheirVias`).
+- **A via may be an array of cuts:** `cuts` [columns, rows] of `size`, `cut_spacing` apart. The router places, lands and
+  spaces the array's outline (here 3 + 2 + 3 = 8 µm, a 10 µm landing with the 1 µm enclosure); the commit writes every cut;
+  `spacing` is between arrays (`viasAreArraysOfCuts`).
+- **`notch`** (optional): a slot narrower than it between a net's line and its own metal is filled with the net's metal
+  where the fill keeps clear of everything else, and is a finding where it cannot be (`aNotchIsFilledWhereItFits`).
 - **An obstacle** keeps `clearance` from the metals it names. With `landings`, a via may sit on a net's own contact inside
   it: the proposal's "via landing" case, where a contact sits on the lower metal in an area where that metal may not run.
 
@@ -161,10 +169,11 @@ the kept ones. If that fails, everything is negotiated afresh, as the proposal a
 Each finding has its kind, the nets, where, the distance measured and required, and a box to look at. The panel's list
 goes there; `route_report what=findings` lists them for Claude.
 
-**What it is not:** a foundry's DRC. It does not check widths (lines are drawn at their class's width), notches or slots
-within a net's own metal, densities, antennas or enclosures beyond the landings. The improvements note's 14 slivers at
-20/10 µm were slots in a net's own metal; this check would not see them. Whether this router makes them was not
-measured by an outside DRC either.
+- **Notches,** when the technology sets `notch`: slots under it between a net's lines and its own metal that no fill could
+  take. A slot with another's metal in it is left to the spacing checks.
+
+**What it is not:** a foundry's DRC. It does not check widths (lines are drawn at their class's width), densities,
+antennas or enclosures beyond the landings, and it checks notches only against the one `notch` rule given.
 
 ## Claude's tools
 
@@ -179,7 +188,7 @@ disagreements).
 | `route_run` | `all`, `changed` (the default after a run) or `selected`. Waits up to `timeout`, then answers how far it is and goes on |
 | `route_report` | `summary`, `passes` (the passes alone, during a run too: the improvements note's `passes_only`), `nets`, `net` (one net's runs as metal, x0, y0, x1, y1, its vias and findings: the note's 200 bytes, not 2 kB), `findings`, `terminals`, `crowding` |
 | `route_commit` | `save_as` (a copy; the job goes beside it) or `in_place`. Refused while there are findings, or the job changed since the run, unless `allow_findings`. `remove` takes the cell away. Reads the file back, and reloads its open tab |
-| `route_stop` | Stops a run; the best pass is kept |
+| `route_stop` | Stops a run; the best pass is kept and cleaned up (nets still too near another routed again or reported); `ended` says whether it ended in time |
 | `route_assign_pads` | Least total distance pairing (Hungarian), pairs kept by hand, as a proposal; `apply` sets it. The improvements note measured 18 times faster and a tenth of the vias for such a pairing |
 
 `route_run` opens the Route panel in the layout's tab, when it has one, so the user sees what Claude routed.
@@ -260,6 +269,10 @@ maps and searches. Every routed net was checked as above. "Wrong" findings exclu
 | `theTechnologyIsReadKeyByKey`, `netsAreReadFromCsvAndJson` | round trips; unknown keys by name; each refusal |
 | `damagedInputIsRefusedNotACrash` | 3,000 rounds of a technology, a job and a CSV damaged the same way each run (`QUCS_ROUTER_FUZZ=<seconds>` for more, at random); a technology that still reads is routed |
 | `padsArePairedByLeastDistance`, `tooMuchMemoryIsRefusedBeforeARun`, `cancelledRunKeepsWhatItHas` | as named |
+| `stackedMetalWithNoCutIsNotTheTerminal` | M2 over an M1 contact with no cut: said, the line goes down to the contact, clean; a line ending on the M2 alone is an open |
+| `aNotchIsFilledWhereItFits` | a 4 µm slot under a 5 µm rule found, filled, then clean and written; with metal of no net in the slot, no fill and no notch (a spacing finding instead) |
+| `viasAreArraysOfCuts` | a 2 × 2 array: its outline and landing, routed clean, four cuts a via of 1 µm each; arrays too near found; an array with no `cut_spacing` refused |
+| `aRunNearItsMemoryCapGoesOnOneSearchAtATime`, `aStoppedRunIsCleanedUp` | a 16 MB cap: all routed, `converged`; maps released and prepared again; stopped after a pass, then cleaned up with nothing too near |
 | `aLargeChip` | opt-in, the chip above |
 
 `test_layout_routing` (new; the application):
@@ -288,6 +301,10 @@ each. The first run caught 30. Four survived because the tests were loose, and w
 Run again, those four are caught. **One survives:** keeping the best pass rather than the last. A stalled run reroutes
 its contested nets one by one in either case, and no test can yet tell the two apart from outside.
 
+After the black-box test, five breaks were added (metal over a terminal taken as it, a notch fill never kept, no slot
+found, an array drawn as one column, a stopped run not cleaned up). The whole run again: **39 of 40 caught**, the same
+one surviving.
+
 **The results:**
 
 | | Release | ASan + UBSan (Debug, CI's flags) |
@@ -297,6 +314,11 @@ its contested nets one by one in either case, and no test can yet tell the two a
 | `test_layout_doc` | pass | pass |
 | `test_qucs_control`, `test_mcp_server`, `test_claude_fuzz`, `test_claude_code` | pass | not run |
 | the four lints in `scripts/ci/` | green (154 tools checked) | |
+
+After the black-box test's changes, on main as of `119aec3` (the plot digitizer and the rest merged), again:
+`test_layout_router` (35), `test_layout_routing`, `test_layout_doc` pass in Release and under ASan and UBSan, with 60 s of
+the fuzz; `test_qucs_control`, `test_mcp_server`, `test_claude_fuzz` and `test_claude_code` pass in Release; the lints
+are green (157 tools).
 
 One failure was seen on the way and is not this work's: `aLongReplyIsReadInLinearTime` (`test_claude_code`, a timing
 ratio in the chat reader, 20 ms then 177 ms) failed once while the sanitizer build loaded the machine. It passed alone,
@@ -314,6 +336,23 @@ and in the full run after.
   with 4 µm needed. It now measures the distance.
 - **The heuristic's weight.** A weight of 1.2 (VPR's default) made the random 10/4 chip three times faster, with 3,505
   vias against 524. The default is 1; `search_weight` (up to 3) trades vias for time.
+
+## After the black-box test (7 November, evening)
+
+`qucs-reviews/LayoutViewer/2026-11-07-metal-router-test.md` drove the merged router (`f3267f78`) through the tools and
+checked every commit in KLayout: a 1,000-net chip clean in 74 s, `changed` in 0.17 s, every routed net correct by an
+outside check. It found one real bug and several things that read worse than they were. Each, and what was done:
+
+| # | Finding | Done |
+|---|---|---|
+| 1 | **A silent open:** a contact on M1 with M2 drawn over it and no cut was taken as one terminal; lines ended on the M2, and the router's own check agreed | A terminal is now the piece under its point on its metal (a label's own layer, else the lowest metal there), with what cuts join to it. Metal over it with no cut is said in `route_setup` ("M2 over this terminal is not joined to its M1 (no cut between them)") and the line goes down to the contact. The check reads terminals the same way, so a line ending on the M2 alone is an open (`stackedMetalWithNoCutIsNotTheTerminal`) |
+| 2 | **Memory:** estimates 15–25 % low; the cap a stop, checked after the fact; a finished run reported `stopped: memory`; memory held after the run | The estimate counts a search's touched and queued cells (12 bytes a cell, not 6) and keeps a quarter in hand, threads chosen so. Near the cap (85 %) a run goes on one search at a time, the other threads' arrays given back, and stops only past the cap even so. A run whose clean-up routed every net says `converged`, with a note. A session's result gives its maps back once checked (`Router::releaseMaps`) (`aRunNearItsMemoryCapGoesOnOneSearchAtATime`) |
+| 3 | **Notches** (the old slivers): 12 to 123 slots of 2–3 µm against a net's own finger | `notch` in the technology: filled where they can be, a finding where not. On the 10/4 least-distance chip with `notch` 4, 19 filled, 0 left |
+| 4 | **`route_stop` kept a pass without its clean-up:** "200 routed" with 253 findings, shorts among them | A stopped run is cleaned up as a stalled one is; the pass stopped part way is marked `partial` (`aStoppedRunIsCleanedUp`) |
+| 5 | **Crowding warned on every job** (180–670 %, at the capacitors' edges) | Tiles at a terminal are left out, and 70 % is warned of. On the chip outside its terminals: least-distance 48 %, random 10/4 39 %, the 20/10 job that stalls 85 % - three jobs, so the threshold is calibrated on little |
+| 6 | **Negotiation bought nothing on the most crowded job** | **Not done.** It needs a global (coarse) routing stage, or rip-up of the nets at the centre of the congestion. The stall stop and the clean-up still do the useful work there |
+| 7 | **Via arrays** (2 × 2 cuts asked for) | `cuts` and `cut_spacing` as proposed; the landing from the array's outline; every cut committed. On the 10/4 chip with the test's array (3 µm cuts 2 µm apart, 1 µm enclosed), 200 of 200 clean. **Not done:** a class's own array, and fewer cuts where a full array does not fit. An array whose landing is wider than a class's line is allowed, not refused as the test proposed: lines and landings of any width are legal |
+| 8 | Smaller items | The "anywhere" hint is not given to a terminal in mode anywhere; a terminal inside a keep-out that lets no net in is warned of in `route_setup`; "not routed: not routed" is said once; `route_run` says when its findings are cut short; `route_assign_pads` writes 100, not 99.99999999999999; `route_stop`'s boolean is `ended`, so `stopped` is always why a run ended; a CSV takes `start_mode` and `pad_mode` (`mode` for both, as before) |
 
 ## What could not be verified
 

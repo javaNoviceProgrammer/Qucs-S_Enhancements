@@ -58,10 +58,16 @@ struct Via {
     QString name;
     LayerId layer;
     int lower = 0;              ///< Technology::metals' index; upper is lower + 1
-    double size = 0;            ///< the cut's side, µm
+    double size = 0;            ///< a cut's side, µm
+    int cols = 1, rows = 1;     ///< an array of cuts: columns by rows (1 x 1: one cut)
+    double cutSpacing = 0;      ///< between the cuts of one array, µm
+    /// The array's outline, µm: what the router places and keeps apart.
+    double outlineWidth() const { return cols * size + (cols - 1) * cutSpacing; }
+    double outlineHeight() const { return rows * size + (rows - 1) * cutSpacing; }
+    double outline() const { return std::max(outlineWidth(), outlineHeight()); }
     double landingLower = 0;    ///< the lower metal's square round it, µm
     double landingUpper = 0;
-    double spacing = 0;         ///< cut to cut, µm (0: not checked)
+    double spacing = 0;         ///< via to via (array to array), µm (0: not checked)
 };
 
 /// A kind of line: its width, and how far it keeps from other lines.
@@ -95,6 +101,10 @@ struct Technology {
     double sameLayer = 0;       ///< line to line of another net, µm (a class may ask more)
     double toMetal = 0;         ///< to metal of no net, µm
     double toTerminal = 0;      ///< to another net's contact or pad (the shapes its terminals are on), µm
+    /// A slot narrower than this between a net's line and its own metal is
+    /// filled with the net's metal where that keeps clear, and is a finding
+    /// where it cannot be; 0: neither.
+    double notch = 0;
     QVector<ObstacleRule> obstacles;
     double bendCost = 2;        ///< in lattice steps
     double viaCost = 10;
@@ -227,6 +237,9 @@ struct NetResult {
     bool hasWhere = false;
     QVector<Run> runs;
     QVector<ViaPlaced> vias;
+    /// Metal that fills slots under the notch rule between its lines and its
+    /// own metal: metal and polygon.
+    QVector<QPair<int, Poly>> fills;
     Coord length = 0;           ///< of its runs' centre lines
     /// The lattice cells it uses: (plane << 32) | cell, for a later run.
     QVector<quint64> cells;
@@ -241,6 +254,7 @@ struct PassRow {
     double length = 0;          ///< µm, all nets'
     double seconds = 0;         ///< this pass alone
     bool cleanup = false;       ///< the final pass, after the negotiation
+    bool partial = false;       ///< stopped part way through: not every net was routed again
 };
 
 /// A place where more nets want through than fit, before a run.
@@ -317,6 +331,9 @@ public:
     quint64 keyOf(int net) const;
 
     const Problem& problem() const;
+    /// The lattice's maps given back (a result kept for later reads holds
+    /// none); keys and terminal readings stay. A later run prepares again.
+    void releaseMaps();
 
 private:
     struct Impl;

@@ -37,6 +37,7 @@
  * (at your option) any later version.
  */
 #include "router.h"
+#include "router_verify.h"
 
 #include <QCryptographicHash>
 #include <QElapsedTimer>
@@ -75,6 +76,7 @@ constexpr int Page = 64;            // cells along a page's side
 constexpr float Infinite = std::numeric_limits<float>::max();
 constexpr float WayInCost = 8;      // a step in a keep-out a net may only go into
 constexpr int MostPlanes = 8;
+constexpr double Crowded = 0.7;   // the share of tracks wanted that is warned of
 // The heuristic a little more than the distance left: of two cells as good,
 // the one nearer the target first. Without it A* opens most of the box
 // between a net's ends; with it a route may be 0.1 % longer than the best.
@@ -439,6 +441,7 @@ struct Router::Impl {
         int joined = 0;
         std::vector<int> metals;
         std::vector<int> pieces;   // the pieces of metal it is on
+        QString warning;           // what route_setup should say of it
     };
     struct NetState {
         int cls = 0;
@@ -459,6 +462,7 @@ struct Router::Impl {
     QVector<TerminalReading> readings;
     QVector<Crowding> crowding;
     std::atomic<quint64> searched{0};
+    bool released = false;   // releaseMaps(): prepared again before a run
 
     // Prepare
     bool prepare();
@@ -708,16 +712,19 @@ bool Router::Impl::prepare()
 
     // What it will hold: the bits for what is fixed, the counts and history
     // where lines go (a third of the area at most, from the chips measured),
-    // one search's arrays a thread over the whole area.
+    // one search's arrays a thread over the whole area (its costs and moves,
+    // and the cells touched and queued: 12 bytes a cell), a quarter more for
+    // what grows from pass to pass - the black-box test of 7 November found
+    // the use 15 to 25 % over the bare sum.
     const qint64 bits = qint64(cells / 8 + 8) * qint64(std::accumulate(typesOnPlane.begin(), typesOnPlane.end(), std::size_t(0),
                                                                      [](std::size_t a, const std::vector<int>& v) { return a + v.size(); }));
     const qint64 counts = qint64(cells) * planes * qint64(2 * types.size() + 4) / 3;
-    const qint64 search = qint64(cells) * planes * 6;
+    const qint64 search = qint64(cells) * planes * 12;
     int threads = p.options.threads > 0 ? p.options.threads : int(std::max(1u, std::thread::hardware_concurrency()));
     const qint64 cap = p.options.maxMemory * 1024 * 1024;
-    while (threads > 1 && bits + counts + search * threads > cap) --threads;
+    while (threads > 1 && (bits + counts + search * threads) * 5 / 4 > cap) --threads;
     p.options.threads = threads;
-    estimate = bits + counts + search * threads;
+    estimate = (bits + counts + search * threads) * 5 / 4;
     if (estimate > cap)
         return error = QStringLiteral("Routing this would need about %1 MB, more than the %2 MB allowed (max_memory_mb): %3 x %4 cells on %5 metals. "
                                       "A coarser grid (%6 µm is a quarter of it) or a smaller area would do.")
@@ -739,7 +746,7 @@ bool Router::Impl::prepare()
     viaGap = 0;
     for (int v = 0; v < t.vias.size(); ++v) {
         const Via& via = t.vias.at(v);
-        const Coord size = p.units(via.size), spacing = p.units(via.spacing);
+        const Coord size = p.units(via.outline()), spacing = p.units(via.spacing);   // (an array: its outline)
         viaGap = std::max(viaGap, int((size + spacing + pitch - 1) / pitch));
         if (spacing <= 0) continue;
         bool any = false;
@@ -780,14 +787,24 @@ bool Router::Impl::prepare()
             r.metals = QVector<int>(leg.metals.begin(), leg.metals.end());
             r.shape = leg.shape;
             r.joined = leg.joined;
+            QStringList notes;
+            if (!leg.warning.isEmpty()) notes << leg.warning;
+            const Terminal& term = p.nets.at(n).terminals.at(r.index);
+            for (const KeepOut& k : std::as_const(p.keepOuts))
+                if (k.letThrough == KeepOut::LetThrough::None && inside(k.outline, term.at))
+                    notes << QStringLiteral("it is inside the keep-out %1, which lets no net in: it cannot be left").arg(k.name);
             if (leg.cells.empty() && !p.nets.at(n).fixed) {
                 const NetClass& k = t.classes.at(nets[std::size_t(n)].cls);
-                r.note = leg.shape.empty()
-                             ? QStringLiteral("no %1 µm line fits at this point clear of what is around it").arg(micro(k.width))
-                             : QStringLiteral("no %1 µm line can leave this shape (%2 x %3 µm), or reach its middle, clear of what is around it: "
-                                              "a narrower class, the terminal's mode anywhere (the line ends where it meets the shape), or more room round it")
-                                   .arg(micro(k.width), micro(p.um(leg.shape.width())), micro(p.um(leg.shape.height())));
+                const QString cure = term.mode == Terminal::Mode::Anywhere
+                                         ? QStringLiteral("a narrower class, or more room round it")
+                                         : QStringLiteral("a narrower class, the terminal's mode anywhere (the line ends where it meets the shape), or more room round it");
+                notes << (leg.shape.empty()
+                              ? QStringLiteral("no %1 µm line fits at this point clear of what is around it").arg(micro(k.width))
+                              : QStringLiteral("no %1 µm line can leave this shape (%2 x %3 µm)%4 clear of what is around it: %5")
+                                    .arg(micro(k.width), micro(p.um(leg.shape.width())), micro(p.um(leg.shape.height())),
+                                         term.mode == Terminal::Mode::Anywhere ? QString() : QStringLiteral(", or reach its middle,"), cure));
             }
+            r.note = notes.join(QStringLiteral("; "));
             readings.append(r);
         }
     }
@@ -872,26 +889,44 @@ bool Router::Impl::buildStatics()
             Leg& leg = st.terminals[std::size_t(ti)];
             leg.point = term.at;
             const Box at{term.at.x, term.at.y, term.at.x, term.at.y};
+            // The shapes under its point: on its metal when it names one, else
+            // the lowest metal there. A terminal is that piece of metal, with
+            // what is joined to it through cuts; metal over it with no cut is
+            // not it (it is said, and left to the net).
+            struct Under {
+                int plane, shape, root;
+            };
+            std::vector<Under> under;
             for (int l = 0; l < planes; ++l) {
                 if (term.metal >= 0 && term.metal != l) continue;
                 metalIndex[std::size_t(l)].query(at, [&](int j) {
                     const int s = planeShape[std::size_t(l)][std::size_t(j)];
-                    if (!inside(p.metal.at(s).outline, term.at)) return true;
-                    if (isPad[std::size_t(s)] == 0) isPad[std::size_t(s)] = 1;
-                    const int root = find(s);
-                    if (std::find(leg.pieces.begin(), leg.pieces.end(), root) == leg.pieces.end()) leg.pieces.push_back(root);
-                    if (owner[std::size_t(root)] >= 0 && owner[std::size_t(root)] != n) {
-                        error = QStringLiteral("Nets %1 and %2 have terminals on the same metal (at %3, %4 µm): they are one net already.")
-                                    .arg(p.nets.at(owner[std::size_t(root)]).name, net.name, micro(p.um(term.at.x)), micro(p.um(term.at.y)));
-                        return false;
-                    }
-                    owner[std::size_t(root)] = n;
-                    if (std::find(leg.metals.begin(), leg.metals.end(), l) == leg.metals.end()) leg.metals.push_back(l);
-                    leg.shape = leg.shape.united(boundsOf(p.metal.at(s).outline));
+                    if (inside(p.metal.at(s).outline, term.at)) under.push_back({l, s, find(s)});
                     return true;
                 });
-                if (!error.isEmpty()) return false;
             }
+            const int chosen = under.empty() ? -1 : under.front().root;   // (planes in order: the lowest first)
+            QStringList apart;
+            for (const Under& u : under) {
+                const int root = u.root;
+                if (owner[std::size_t(root)] >= 0 && owner[std::size_t(root)] != n) {
+                    error = QStringLiteral("Nets %1 and %2 have terminals on the same metal (at %3, %4 µm): they are one net already.")
+                                .arg(p.nets.at(owner[std::size_t(root)]).name, net.name, micro(p.um(term.at.x)), micro(p.um(term.at.y)));
+                    return false;
+                }
+                owner[std::size_t(root)] = n;
+                if (root != chosen) {
+                    if (!apart.contains(t.metals.at(u.plane).name)) apart << t.metals.at(u.plane).name;
+                    continue;
+                }
+                if (isPad[std::size_t(u.shape)] == 0) isPad[std::size_t(u.shape)] = 1;
+                if (std::find(leg.pieces.begin(), leg.pieces.end(), root) == leg.pieces.end()) leg.pieces.push_back(root);
+                if (std::find(leg.metals.begin(), leg.metals.end(), u.plane) == leg.metals.end()) leg.metals.push_back(u.plane);
+                leg.shape = leg.shape.united(boundsOf(p.metal.at(u.shape).outline));
+            }
+            if (!apart.isEmpty())
+                leg.warning = QStringLiteral("%1 over this terminal is not joined to its %2 (no cut between them): the line ends on %2")
+                                  .arg(apart.join(QStringLiteral(", ")), t.metals.at(under.front().plane).name);
             if (leg.metals.empty()) {
                 if (term.metal >= 0) leg.metals.push_back(term.metal);
                 else
@@ -1323,6 +1358,19 @@ void Router::Impl::estimateCrowding()
         }
     }
     (void)track;
+    // Tiles at a terminal are not reported: lines meet at a terminal by
+    // design, and the room right round one is what it is (the black-box
+    // test of 7 November had every job warned of, 180 to 670 %, all at the
+    // capacitors' edges).
+    std::vector<char> atTerminal(std::size_t(tx) * std::size_t(ty), 0);
+    for (const NetState& st : nets)
+        for (const Leg& leg : st.terminals) {
+            const Box b = (leg.shape.empty() ? Box{leg.point.x, leg.point.y, leg.point.x, leg.point.y} : leg.shape).grown(pitch * tile);
+            const int i0 = int(std::clamp<Coord>((b.x0 - ox) / pitch / tile, 0, tx - 1)), i1 = int(std::clamp<Coord>((b.x1 - ox) / pitch / tile, 0, tx - 1));
+            const int j0 = int(std::clamp<Coord>((b.y0 - oy) / pitch / tile, 0, ty - 1)), j1 = int(std::clamp<Coord>((b.y1 - oy) / pitch / tile, 0, ty - 1));
+            for (int j = j0; j <= j1; ++j)
+                for (int i = i0; i <= i1; ++i) atTerminal[std::size_t(j) * std::size_t(tx) + std::size_t(i)] = 1;
+        }
     // Over 3 x 3 tiles, so that a tile of solid metal says nothing: lines
     // go round it, through its neighbours.
     std::vector<std::pair<double, int>> tiles;
@@ -1338,9 +1386,11 @@ void Router::Impl::estimateCrowding()
                     c += free[std::size_t(b) * std::size_t(tx) + std::size_t(a)];
                     cells += room;
                 }
-            if (d <= 0 || c < 0.15 * cells) continue;
+            if (d <= 0 || c < 0.15 * cells || atTerminal[std::size_t(j) * std::size_t(tx) + std::size_t(i)]) continue;
             const double u = d / c;
-            if (u >= 0.6) tiles.push_back({u, j * tx + i});
+            // 70 %: on the 200-net chip, outside its terminals, the easy jobs
+            // came to 39 and 48 %, the one that stalled to 85 %.
+            if (u >= Crowded) tiles.push_back({u, j * tx + i});
         }
     std::sort(tiles.begin(), tiles.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     for (std::size_t k = 0; k < tiles.size() && k < 5; ++k) {
@@ -1570,7 +1620,7 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
             bool nearVia = false;
             {
                 const Via& here = t.vias.at(v);
-                const Coord size = p.units(here.size), gap = p.units(here.spacing);
+                const Coord size = p.units(here.outline()), gap = p.units(here.spacing);
                 std::uint32_t back = s;
                 int bi = i - wi0, bj = j - wj0;
                 for (int k = 0; k < 2 * viaGap + 2 && !nearVia; ++k) {
@@ -1898,7 +1948,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
     result.terminals = readings;
     result.crowding = crowding;
     for (const Crowding& c : std::as_const(crowding))
-        if (c.use >= 1.0)
+        if (c.use >= Crowded)
             result.notes << QStringLiteral("Crowded: about %1 % of the tracks between (%2, %3) and (%4, %5) µm are wanted")
                                 .arg(qRound(c.use * 100))
                                 .arg(micro(p.um(c.where.x0)), micro(p.um(c.where.y0)), micro(p.um(c.where.x1)), micro(p.um(c.where.y1)));
@@ -1996,6 +2046,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
         std::vector<char> routed, failed, contested;
     } best;
     double present = p.options.presentStart;
+    bool lean = false;   // one search at a time, memory being near its cap
     const int passes = p.options.negotiate ? p.options.passes : 1;
     int sinceBest = 0;
     bool stoppedEarly = false;
@@ -2014,7 +2065,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
             if (cancelled()) break;
             std::vector<int> batch;
             std::vector<Box> boxes;
-            for (std::size_t q = at; q < order.size() && q < at + Ahead && int(batch.size()) < Batch; ++q) {
+            for (std::size_t q = at; q < order.size() && q < at + Ahead && int(batch.size()) < (lean ? 1 : Batch); ++q) {
                 if (taken[q]) continue;
                 const int n = order[q];
                 if (nets[std::size_t(n)].failed) {
@@ -2069,7 +2120,17 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
                     st.result.hasWhere = true;
                 }
             }
-            if (memory.now() > p.options.maxMemory * 1024 * 1024) {
+            // Near the cap: one search at a time, the other threads' arrays
+            // given back. Past it even so: stop, with the best pass.
+            const qint64 cap = p.options.maxMemory * 1024 * 1024;
+            if (!lean && memory.now() > cap / 20 * 17) {
+                lean = true;
+                for (std::size_t w = 1; w < buffers.size(); ++w) buffers[w] = std::make_unique<Buffers>();
+                result.notes << QStringLiteral("Memory came near max_memory_mb (%1 MB) in pass %2: one search at a time from then on")
+                                    .arg(p.options.maxMemory)
+                                    .arg(pass);
+            }
+            if (lean && memory.now() > cap) {
                 stopped = QStringLiteral("memory");
                 break;
             }
@@ -2077,6 +2138,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
         // How it stands.
         PassRow row;
         row.pass = pass;
+        row.partial = cancelled() || !stopped.isEmpty();   // stopped part way through
         double length = 0;
         for (int n : order) {
             NetState& st = nets[std::size_t(n)];
@@ -2175,7 +2237,8 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
     std::vector<int> contested;
     for (int n : order)
         if (nets[std::size_t(n)].routed && nets[std::size_t(n)].contested) contested.push_back(n);
-    if (!contested.empty() && stopped != QStringLiteral("cancelled")) {
+    // (Stopped too: what is kept must be clear of the others.)
+    if (!contested.empty()) {
         QElapsedTimer timer;
         timer.start();
         for (int n : contested) {
@@ -2229,13 +2292,22 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
         else if (st.routed) st.result.status = NetResult::Status::Routed;
         else if (std::find(order.begin(), order.end(), n) != order.end() && st.result.status != NetResult::Status::Failed) {
             st.result.status = NetResult::Status::Failed;
-            if (st.result.reason.isEmpty()) st.result.reason = QStringLiteral("not routed: the run was stopped (%1) first").arg(stopped);
+            if (st.result.reason.isEmpty()) st.result.reason = QStringLiteral("the run was stopped (%1) before it was routed").arg(stopped);
         }
         st.result.key = st.key;
         result.nets.append(st.result);
     }
     result.bestPass = best.pass;
     result.stopped = stopped.isEmpty() ? QStringLiteral("nothing") : stopped;
+    if (stopped == QLatin1String("memory")) {
+        bool all = true;
+        for (int n : order) all = all && nets[std::size_t(n)].routed;
+        if (all) {
+            // Every net routed and clear of the others after all.
+            result.stopped = QStringLiteral("converged");
+            result.notes << QStringLiteral("The run stopped at max_memory_mb, and its clean-up routed every net");
+        }
+    }
     if (order.empty()) result.stopped = QStringLiteral("nothing");
     result.statesSearched = searched.load();
     result.peakBytes = memory.peak();
@@ -2278,6 +2350,23 @@ const QVector<Crowding>& Router::crowding() const
     return d->crowding;
 }
 
+void Router::releaseMaps()
+{
+    d->use.clear();
+    d->history.clear();
+    d->base.clear();
+    d->cutBlocked.clear();
+    for (auto& st : d->nets) {
+        st.zones.clear();
+        st.guideBand = Bits();
+        st.path.clear();
+        st.path.shrink_to_fit();
+        st.metal.clear();
+        st.metal.shrink_to_fit();
+    }
+    d->released = true;
+}
+
 const Problem& Router::problem() const
 {
     return d->p;
@@ -2290,13 +2379,15 @@ quint64 Router::keyOf(int net) const
 
 Result Router::run(const QStringList& which, const QVector<Kept>& kept, const Progress& progress)
 {
-    if (d->nets.empty() && !d->prepare()) {
+    if ((d->nets.empty() || d->released) && !(d->released = false, d->prepare())) {
         Result r;
         r.stopped = QStringLiteral("nothing");
         r.notes << d->error;
         return r;
     }
     Result r = d->runAll(which, kept, progress);
+    // Slots under the notch rule filled, where a fill keeps clear.
+    fillNotches(d->p, &r);
     if (!kept.isEmpty() && (r.failed() > 0 || r.stopped == QLatin1String("stalled") || r.stopped == QLatin1String("passes"))) {
         bool anyKept = false;
         for (const NetResult& n : std::as_const(r.nets)) anyKept = anyKept || n.status == NetResult::Status::Kept;
@@ -2305,6 +2396,7 @@ Result Router::run(const QStringList& which, const QVector<Kept>& kept, const Pr
             QStringList all;
             Result full = d->runAll(all, {}, progress);
             full.notes.prepend(QStringLiteral("Routing only what changed failed (%1 net(s)); everything was routed again").arg(r.failed()));
+            fillNotches(d->p, &full);
             if (full.failed() <= r.failed()) return full;
         }
     }
