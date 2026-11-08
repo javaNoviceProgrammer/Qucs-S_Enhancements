@@ -24,8 +24,10 @@
 #include <QJsonDocument>
 #include <QtTest>
 
+#include <atomic>
 #include <cmath>
 #include <complex>
+#include <mutex>
 
 using namespace qucs_s::fem;
 
@@ -984,6 +986,125 @@ private slots:
             QVERIFY2(std::abs(back / c.back - 1) < 0.03, qPrintable(QString::number(back / c.back - 1)));
             // (Symmetric: nothing in the odd one.)
             QVERIFY(std::norm(r.S(2, 0)) < 1e-4);
+        }
+    }
+
+    // The overlaps on the machine's threads: the batched ones (each pair's
+    // triangles in fixed chunks, their points' transverse fields gathered and
+    // multiplied as matrices) as the point-by-point ones to rounding - two
+    // meshes, one mesh, absorbing walls, a bend -, the same to the last bit on
+    // 1 and 8 threads; a whole solve (a 1x2 MMI, its outputs in boxes) alike
+    // on 1 and 8; progress said for the cuts and then the overlaps; a Cancel
+    // in the overlaps heard within a second. (Measured, not asserted: a wire
+    // into an MMI's junction of 40 modes 5.7 s point by point, 1.2 s batched,
+    // 0.18 s on 8 threads; with absorbing walls 22.5, 4.9 and 0.70 s.)
+    void theOverlapsRunOnAnyThreadsAlike()
+    {
+        const bool slow = slowBuild();
+        Model m = wire(2, 4.5, {{{0, 1, -0.25, 0.25}}, {{1, 2, -1.5, 1.5}}}, 1.0);
+        const Built b = build(m);
+        QString why;
+        // (A sanitized build: a smaller window, fewer modes, no absorbing walls -
+        // the point-by-point reference slow there.)
+        const double half = slow ? 1.75 : 2.25, below = slow ? -0.5 : -1, above = slow ? 0.72 : 1.22;
+        const CrossSection ca = cutAcross(*b.topology, QPointF(0.5, 0), QPointF(0, 1), -half, half, below, above, &why);
+        const CrossSection cb = cutAcross(*b.topology, QPointF(1.5, 0), QPointF(0, 1), -half, half, below, above, &why);
+        auto solve = [&](CrossSection c, const QString& walls, double bend) {
+            EmeSettings st;
+            st.modes = slow ? 4 : 12;
+            st.resolution = slow ? 5 : 10;
+            st.sides = st.floors = walls;
+            st.absorberThickness = 0.5;
+            c.bendRadius = c.bendCenter = bend;
+            EmeModes md = solveSectionModes(m, b.parameters, *b.topology, c, C0 / 1.55e-6, st, &why);
+            return md;
+        };
+        const EmeModes a = solve(ca, QStringLiteral("pec"), 0), mmi = solve(cb, QStringLiteral("pec"), 0);
+        EmeModes bend, aAbs, mmiAbs;
+        std::vector<std::pair<const EmeModes*, const EmeModes*>> pairs{{&a, &mmi}, {&a, &a}};
+        if (!slow) {
+            bend = solve(ca, QStringLiteral("pec"), 3);
+            pairs.push_back({&bend, &a});
+            aAbs = solve(ca, QStringLiteral("absorbing"), 0);
+            mmiAbs = solve(cb, QStringLiteral("absorbing"), 0);
+            pairs.push_back({&aAbs, &mmiAbs});
+        }
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        std::vector<Eigen::MatrixXcd> ab1, ba1, ab8, ba8;
+        QVERIFY(modeOverlapsMany(pairs, 1, {}, {}, &ab1, &ba1));
+        QVERIFY(modeOverlapsMany(pairs, 8, {}, {}, &ab8, &ba8));
+        for (std::size_t i = 0; i < pairs.size(); ++i) {
+            QVERIFY(ab1[i] == ab8[i] && ba1[i] == ba8[i]);
+            Eigen::MatrixXcd ab, ba;
+            modeOverlapsByPoint(*pairs[i].first, *pairs[i].second, &ab, &ba);
+            const double scale = std::max(ab.cwiseAbs().maxCoeff(), ba.cwiseAbs().maxCoeff());
+            const double d = std::max((ab1[i] - ab).cwiseAbs().maxCoeff(), (ba1[i] - ba).cwiseAbs().maxCoeff()) / scale;
+            qInfo("pair %d: batched against point by point %.2g of the largest entry", int(i), d);
+            QVERIFY2(d < 1e-11, qPrintable(QString::number(d)));
+        }
+        // A whole solve, on 1 and on 8 threads: an MMI, its outputs in boxes.
+        // (Not in a sanitized build: its cuts alone take minutes there; the
+        // pool's threads were checked above.)
+        if (slow) return;
+        Model mm =wire(6, 4.5, {{{0, 1.5, -0.25, 0.25}}, {{1.5, 4.5, -1.5, 1.5}}, {{4.5, 6, 0.5, 1.0}}, {{4.5, 6, -1.0, -0.5}}}, 1.0);
+        const Built bm = build(mm);
+        EmeDevice d = deviceOf(*bm.topology, slow ? 4 : 16, slow ? 4 : 8);
+        if (slow) {
+            d.z0 = -0.5;
+            d.z1 = 0.72;
+        }
+        d.ports.clear();
+        EmePort in, up, down;
+        in.name = QStringLiteral("1");
+        up.name = QStringLiteral("2");
+        up.atEnd = true;
+        up.whole = false;
+        up.u0 = 0;
+        up.u1 = 2.25;
+        up.z0 = d.z0;
+        up.z1 = d.z1;
+        down = up;
+        down.name = QStringLiteral("3");
+        down.u0 = -2.25;
+        down.u1 = 0;
+        d.ports = {in, up, down};
+        clearEmeCache();
+        d.settings.threads = 1;
+        const EmeResult r1 = solveEme(mm, bm.parameters, *bm.topology, d, C0 / 1.55e-6);
+        // (A sanitized build: the cuts kept - the overlaps, in a pool of 8,
+        // computed again.)
+        if (!slow) clearEmeCache();
+        d.settings.threads = 8;
+        QStringList said;
+        std::mutex saying;
+        d.settings.progress = [&](double, const QString& what) {
+            std::lock_guard<std::mutex> lock(saying);
+            said << what;
+        };
+        const EmeResult r8 = solveEme(mm, bm.parameters, *bm.topology, d, C0 / 1.55e-6);
+        QVERIFY2(r1.ok() && r8.ok(), qPrintable(r1.error + r8.error));
+        qInfo("MMI on 1 and 8 threads: |S21|² %.6f and %.6f; %s", std::norm(r1.S(1, 0)), std::norm(r8.S(1, 0)), qPrintable(r8.log.join(QLatin1String("; "))));
+        QVERIFY(r1.S == r8.S);
+        QVERIFY(!said.isEmpty() && said.first().startsWith(QLatin1String("cuts")) && said.last().startsWith(QLatin1String("junctions' overlaps")));
+        QVERIFY(r8.log.first().contains(QLatin1String("the overlaps")));
+        // Cancelled once the overlaps are under way: heard between their jobs.
+        if (!slow) {
+            clearEmeCache();
+            std::atomic<bool> overlapping{false};
+            QElapsedTimer since;
+            d.settings.progress = [&](double, const QString& what) {
+                if (what.startsWith(QLatin1String("junctions")) && !overlapping) {
+                    overlapping = true;
+                    since.start();
+                }
+            };
+            d.settings.cancelled = [&] { return bool(overlapping); };
+            d.settings.modes = 30;
+            d.settings.resolution = 15;
+            const EmeResult rc = solveEme(mm, bm.parameters, *bm.topology, d, C0 / 1.55e-6);
+            QVERIFY2(rc.error == QLatin1String("cancelled"), qPrintable(rc.error));
+            qInfo("cancelled in the overlaps: back %lld ms after", since.elapsed());
+            QVERIFY(since.elapsed() < 1000);
         }
     }
 

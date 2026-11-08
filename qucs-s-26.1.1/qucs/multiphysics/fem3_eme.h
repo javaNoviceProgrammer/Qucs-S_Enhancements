@@ -98,7 +98,11 @@ struct EmeSettings {
     double absorberThickness = 1, absorberKappa = 0.3;
     int absorberLayers = 4;
     std::function<bool()> cancelled;
-    /// The cuts solved side by side (0: as many as the machine's cores).
+    /// How far a solve is, of 1, and in what (its cuts, then its junctions'
+    /// overlaps) - called from its threads, one at a time.
+    std::function<void(double, const QString&)> progress;
+    /// The cuts, and then the junctions' overlaps, solved side by side (0: as
+    /// many as the machine's cores).
     int threads = 0;
 };
 
@@ -181,6 +185,20 @@ Eigen::MatrixXcd modeOverlap(const EmeModes& a, const EmeModes& b);
 /// The same both ways at once: \a ab ⟨e of a, h of b⟩, \a ba (null: not
 /// wanted) ⟨e of b, h of a⟩.
 void modeOverlaps(const EmeModes& a, const EmeModes& b, Eigen::MatrixXcd* ab, Eigen::MatrixXcd* ba);
+/*!
+ * Many pairs' overlaps at once, side by side on \a threads (0: the machine's
+ * cores) - each pair's a-triangles in fixed chunks, a job each, a pair's
+ * chunks added in their order: the same to the last bit on any number of
+ * threads, and as modeOverlaps(). The points' fields are gathered in batches
+ * and their products are matrix products, e_u, e_v, h_u and h_v alone.
+ * \a progress (jobs done, jobs) after each; false, and nothing to use, if \a
+ * cancelled said so between jobs.
+ */
+bool modeOverlapsMany(const std::vector<std::pair<const EmeModes*, const EmeModes*>>& pairs, int threads, const std::function<bool()>& cancelled,
+                      const std::function<void(int, int)>& progress, std::vector<Eigen::MatrixXcd>* ab, std::vector<Eigen::MatrixXcd>* ba);
+/// modeOverlaps() point by point, through fieldsAt(): what the batched one
+/// was checked against (test_fem3_eme) - slower, the same to rounding.
+void modeOverlapsByPoint(const EmeModes& a, const EmeModes& b, Eigen::MatrixXcd* ab, Eigen::MatrixXcd* ba);
 
 /// A scattering matrix between a basis on the left (n1 modes) and one on the
 /// right (n2): s21 what goes right of what comes from the left.
