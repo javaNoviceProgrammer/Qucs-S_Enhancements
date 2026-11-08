@@ -2596,6 +2596,16 @@ void ClaudeCodePanel::addNote(const QString& text)
 // ----------------------------------------------------------------------
 void ClaudeCodePanel::append(const Entry& e)
 {
+    // A note while a reply is being written (a task in the background has
+    // ended, the mode has changed): put above the reply, which goes on. (It
+    // ended the reply, and the reply's next piece - all of it so far - began
+    // another: a copy cut short at each note.)
+    if (e.kind == Entry::Note && !a_entries.isEmpty() && a_entries.last().kind == Entry::Claude && a_entries.last().streaming) {
+        a_entries.insert(a_entries.size() - 1, e);
+        scheduleRender();
+        emit conversationChanged();
+        return;
+    }
     // A reply being written ends where anything else begins.
     if (!a_entries.isEmpty() && a_entries.last().streaming && e.kind != Entry::Claude)
         a_entries.last().streaming = false;
