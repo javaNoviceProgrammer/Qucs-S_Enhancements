@@ -24,6 +24,7 @@
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
+#include "rf25/rf25_layout.h"
 
 #include <Eigen/Dense>
 
@@ -2455,6 +2456,121 @@ private slots:
         QVERIFY2(currentApart <= 1e-9 * currentLargest,
                  qPrintable(QStringLiteral("the currents %1 apart, of %2").arg(currentApart).arg(currentLargest)));
     }
+
+    // A filter's shapes drawn touching - one of them with a slanted side,
+    // the set gdstk's union alone leaves in two - solve as the outline drawn
+    // whole: Z the same to a part in 1e7. The stub lost its line before,
+    // S21 -17.2 dB against -0.04 at 2 GHz, passive and reciprocal and with
+    // nothing said (B1 of the open items of 8 November).
+    void shapesDrawnTouchingSolveAsTheOutlineWhole()
+    {
+        const rf::Stack stack = grounded(2.2, 1.6e-3);
+        rf::Processing how;
+        how.dropSlivers = false;
+        const QPolygonF pad({QPointF(-950, -1200), QPointF(-550, -1600), QPointF(1550, -1600), QPointF(1550, 0), QPointF(-950, 0)});
+        QMap<QString, QList<QPolygonF>> drawn;
+        drawn[QStringLiteral("M1")] = {QPolygonF(QRectF(0, 0, 3600, 3900)), QPolygonF(QRectF(1600, -2100, 2600, 2100)),
+                                       QPolygonF(QRectF(2150, -5200, 100, 3100)), pad};
+        QMap<QString, QList<QPolygonF>> whole;
+        whole[QStringLiteral("M1")] = {QPolygonF({QPointF(-950, -1200), QPointF(-550, -1600), QPointF(1550, -1600), QPointF(1550, 0),
+                                                  QPointF(1600, 0), QPointF(1600, -2100), QPointF(2150, -2100), QPointF(2150, -5200),
+                                                  QPointF(2250, -5200), QPointF(2250, -2100), QPointF(4200, -2100), QPointF(4200, 0),
+                                                  QPointF(3600, 0), QPointF(3600, 3900), QPointF(0, 3900), QPointF(0, 0), QPointF(-950, 0)})};
+        rf::MeshSettings settings;
+        settings.cellsAcross = 3;
+        const QList<rf::FullWavePort> ports = {edgePort(QPointF(-950, -800), QString(), QPointF(-1, 0)),
+                                               edgePort(QPointF(4200, -1050), QString(), QPointF(1, 0))};
+        QList<rf::FullWave> solved;
+        for (const auto* shapes : {&drawn, &whole}) {
+            const rf::Processed done = rf::processShapes(*shapes, {}, how, stack);
+            QCOMPARE(done.conductors.size(), 1);
+            const rf::Mesh mesh = rf::meshOf(done.conductors, settings, stack, 3e9);
+            QVERIFY2(mesh.ok() && mesh.warnings.isEmpty(), qPrintable((mesh.problems + mesh.warnings).join(" | ")));
+            solved << rf::fullWaveOf(mesh, done.conductors, stack, ports, {2e9});
+            QVERIFY2(solved.last().ok(), qPrintable(solved.last().problems.join(" | ")));
+        }
+        // (To 1e-7: the join moves the outline by the union's nanometre, which
+        //  is 3e-9 of Z here; the stub cut off is all of it.)
+        const Matrix2 a = zOf(solved.at(0), 0), b = zOf(solved.at(1), 0);
+        QVERIFY2((a - b).norm() <= 1e-7 * b.norm(), qPrintable(QStringLiteral("|dZ| %1 of %2").arg((a - b).norm()).arg(b.norm())));
+        // And its S21 is a through's, not a stub's cut off.
+        const std::complex<double> s21 = 2.0 * a(1, 0) * 50.0 / ((a(0, 0) + 50.0) * (a(1, 1) + 50.0) - a(0, 1) * a(1, 0));
+        QVERIFY2(std::abs(s21) > 0.9, qPrintable(QString::number(std::abs(s21))));
+        // Unmerged, a line cut along a slant is still one line: its two
+        // pieces meet along the slant, cell for cell, a through's S21 and
+        // no warning.
+        rf::Conductor left, right;
+        left.layer = right.layer = QStringLiteral("M1");
+        left.outline = QPolygonF({QPointF(0, 0), QPointF(10000, 0), QPointF(12000, 4000), QPointF(0, 4000)});
+        right.outline = QPolygonF({QPointF(10000, 0), QPointF(30000, 0), QPointF(30000, 4000), QPointF(12000, 4000)});
+        const QList<rf::FullWavePort> ends = {edgePort(QPointF(0, 2000), QString(), QPointF(-1, 0)),
+                                              edgePort(QPointF(30000, 2000), QString(), QPointF(1, 0))};
+        const rf::FullWave slant = rf::fullWaveOf(rf::meshOf({left, right}, settings, stack, 3e9), {left, right}, stack, ends, {2e9});
+        QVERIFY2(slant.ok() && slant.warnings.isEmpty(), qPrintable((slant.problems + slant.warnings).join(" | ")));
+        const Matrix2 zs = zOf(slant, 0);
+        const std::complex<double> through = 2.0 * zs(1, 0) * 50.0 / ((zs(0, 0) + 50.0) * (zs(1, 1) + 50.0) - zs(0, 1) * zs(1, 0));
+        QVERIFY2(std::abs(through) > 0.9, qPrintable(QString::number(std::abs(through))));
+        // Two shapes over each other, unmerged, share no cell's edge: the
+        // solve's warnings say so, naming them.
+        const QList<rf::Conductor> overlapping = {strip(0, 0, 20000, 4000), strip(9000, 700, 21000, 3300)};
+        const rf::FullWave apart = rf::fullWaveOf(rf::meshOf(overlapping, settings, stack, 3e9), overlapping, stack, ends, {2e9});
+        QVERIFY2(apart.ok(), qPrintable(apart.problems.join(" | ")));
+        QVERIFY2(apart.warnings.size() == 1 && apart.warnings.first().contains(QStringLiteral("no current crosses")),
+                 qPrintable(apart.warnings.join(" | ")));
+    }
+
+
+    // GMRES keeps its hold as the mesh is refined: a comb of 1 µm fingers in
+    // 1 µm gaps, sixteen cells across them, held compressed, converges at
+    // 100 GHz in a few dozen iterations - 1253 with the near field's
+    // preconditioner reaching the touching cells alone, and on the
+    // reviewers' twelve-finger comb none at all past ten across (B3 of the
+    // open items of 8 November). Its bar is told how far GMRES has got. A
+    // GMRES held near its limit says so; held short of its residual, every
+    // frequency is still solved, and each says it is near, not exact.
+    void gmresKeepsItsHoldAsTheMeshIsRefined()
+    {
+        if (slowBuild()) QSKIP("a compressed solve of 21 000 unknowns: Release only");
+        const rf::Stack stack = grounded(4.1, 4e-6);
+        QList<rf::Conductor> comb = {strip(0, -3, 7, 3), strip(0, 12, 7, 3)};
+        for (int i = 0; i < 4; ++i) comb << (i % 2 == 0 ? strip(2 * i, 0, 1, 11) : strip(2 * i, 1, 1, 11));
+        rf::MeshSettings how;
+        how.cellsAcross = 16;
+        const rf::Mesh mesh = rf::meshOf(comb, how, stack, 100e9);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        const QList<rf::FullWavePort> ports = {edgePort(QPointF(3.5, -3), QString(), QPointF(0, -1)),
+                                               edgePort(QPointF(3.5, 15), QString(), QPointF(0, 1))};
+        std::atomic_int iterations{0};
+        std::atomic<double> residual{0};
+        rf::FullWaveControl control;
+        control.matrix = rf::FullWaveControl::Matrix::Compressed;
+        control.gmresIterations = &iterations;
+        control.gmresResidual = &residual;
+        const rf::FullWave w = rf::fullWaveOf(mesh, comb, stack, ports, {100e9}, 1e-6, &control);
+        QVERIFY2(w.ok() && w.compressed, qPrintable(w.problems.join(" | ")));
+        qWarning("%lld cells: %d GMRES iterations at most, residual %.2g", mesh.cells.size(), w.iterations, w.residual);
+        QVERIFY2(w.iterations > 0 && w.iterations <= 60, qPrintable(QString::number(w.iterations)));
+        QVERIFY2(w.warnings.isEmpty(), qPrintable(w.warnings.join(" | ")));
+        QVERIFY2(iterations.load() >= 1 && iterations.load() <= w.iterations && residual.load() > 0,
+                 qPrintable(QStringLiteral("%1 %2").arg(iterations.load()).arg(residual.load())));
+        // Its limit just past what it needs: said to be near it.
+        rf::FullWaveControl tight;
+        tight.matrix = rf::FullWaveControl::Matrix::Compressed;
+        tight.mostIterations = w.iterations + 1;
+        const rf::FullWave near = rf::fullWaveOf(mesh, comb, stack, ports, {100e9}, 1e-6, &tight);
+        QVERIFY2(near.ok() && near.warnings.size() == 1 && near.warnings.first().contains(QStringLiteral("near its limit")),
+                 qPrintable((near.problems + near.warnings).join(" | ")));
+        // Short of it, at two frequencies: both solved, both said near.
+        tight.mostIterations = std::max(1, w.iterations / 2);
+        const rf::FullWave shortOf = rf::fullWaveOf(mesh, comb, stack, ports, {50e9, 100e9}, 1e-6, &tight);
+        QVERIFY2(shortOf.ok() && shortOf.z.size() == 2, qPrintable(shortOf.problems.join(" | ")));
+        QVERIFY2(shortOf.warnings.size() == 2 && shortOf.warnings.at(1).contains(QStringLiteral("stopped short of its residual")),
+                 qPrintable(shortOf.warnings.join(" | ")));
+        // And its S near the converged one's.
+        const Matrix2 a = zOf(w, 0), b = zOf(shortOf, 1);
+        QVERIFY2((a - b).norm() < 1e-3 * a.norm(), qPrintable(QStringLiteral("%1 of %2").arg((a - b).norm()).arg(a.norm())));
+    }
+
 };
 
 QTEST_MAIN(TestRf25Fullwave)

@@ -15,6 +15,8 @@
  */
 #include <QtTest>
 
+#include <Eigen/Dense>
+
 #include "rf25/rf25_fullwave.h"
 
 #include <cmath>
@@ -515,8 +517,128 @@ private slots:
         QVERIFY2(b.asymmetry < 1e-9 && b.gain <= 1e-6, qPrintable(QStringLiteral("%1 %2").arg(b.asymmetry).arg(b.gain)));
     }
 
+    // A port across one conductor - a shorted coplanar line, a stub to its
+    // ground, a loop - is modelled, its return on its own conductor apart
+    // from its cells: by the faces beside its edge port, and by terminals it
+    // names. Both were refused ("there is none either side of it", "it would
+    // short the source"), and none of these could be solved (B7 of the open
+    // items of 8 November). The shorted line against the open one, both ways:
+    // Z_short Z_open is Z0 squared and Z_short / Z_open is -tan^2(beta l). The
+    // reviewers' coplanar line (S 50 / G 20 / grounds 160 µm on 500 µm of
+    // quartz, nothing below), whose thin-metal Z0 and eps_eff Palace gives as
+    // 73.72 Ohm and 2.4005: here within 4 % and 3 % (the bar's and the open
+    // end's own fields in both, at three cells across), and the two ports
+    // within 1 % of each other.
+    void aShortedLinesPortReturnsThroughItsOwnConductor()
+    {
+        const double l = 1000;
+        const QString m1 = QStringLiteral("M1");
+        const QList<rf::Conductor> open = {on(m1, 0, -25, l, 50), on(m1, 0, 45, l, 160), on(m1, 0, -205, l, 160)};
+        QList<rf::Conductor> shorted = open;
+        shorted << on(m1, l, -205, 20, 410);
+        const rf::Stack quartz = stackOf(3.8, 500e-6, false);
+        rf::FullWavePort edge = edgePort(QStringLiteral("P1"), QPointF(0, 0), QPointF(-1, 0));
+        edge.coplanar = true;
+        const rf::FullWavePort tips = returning(patchPort(QStringLiteral("P1"), QPointF(20, 0), 20),
+                                                {patch(QStringLiteral("T1"), QPointF(20, 125), 20),
+                                                 patch(QStringLiteral("T2"), QPointF(20, -125), 20)});
+        const double f = 20e9;
+        // (Meshed as the tab meshes it: three across, its gaps graded, cells
+        //  of a twentieth of a wavelength at 30 GHz at most.)
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        how.gaps = true;
+        QList<std::pair<double, double>> found;   // (Z0, eps_eff) of each way
+        for (const rf::FullWavePort& port : {edge, tips}) {
+            Complex z[2];
+            for (int k = 0; k < 2; ++k) {
+                const QList<rf::Conductor>& c = k == 0 ? shorted : open;
+                const rf::FullWave w = rf::fullWaveOf(rf::meshOf(c, how, quartz, 30e9), c, quartz, {port}, {f});
+                QVERIFY2(w.ok(), qPrintable(why(w)));
+                z[k] = w.z[0][0][0];
+                if (k == 0)
+                    QVERIFY2(w.portsSaid.at(0).contains(QStringLiteral("own")), qPrintable(w.portsSaid.join(" | ")));
+            }
+            const Complex z0 = std::sqrt(z[0] * z[1]);
+            const double betaL = std::atan(std::sqrt(-z[0] / z[1])).real();
+            const double eps = std::pow(betaL / (l * 1e-6) * 299792458.0 / (2 * M_PI * f), 2);
+            qWarning("%s: Z_short %.2f%+.2fj, Z_open %.2f%+.2fj Ohm: Z0 %.2f Ohm, eps_eff %.4f", port.terminals ? "tips" : "edge",
+                     z[0].real(), z[0].imag(), z[1].real(), z[1].imag(), z0.real(), eps);
+            QVERIFY2(z[0].imag() > 0 && z[1].imag() < 0, "a short stub this short is inductive, an open one capacitive");
+            QVERIFY2(std::abs(z0.real() - 73.72) < 0.04 * 73.72, qPrintable(QString::number(z0.real())));
+            QVERIFY2(std::abs(eps - 2.4005) < 0.03 * 2.4005, qPrintable(QString::number(eps)));
+            found << std::make_pair(z0.real(), eps);
+        }
+        // Its own conductor running on along the edge's line, no gap between,
+        // is no return: two strips drawn touching, unmerged, are one
+        // conductor, and a port on one has nothing beside it.
+        {
+            const QList<rf::Conductor> wide = {on(m1, 0, -25, l, 50), on(m1, 0, 25, l, 50)};
+            const rf::FullWave w = rf::fullWaveOf(rf::meshOf(wide, how, quartz, 30e9), wide, quartz, {edge}, {f});
+            QVERIFY2(!w.ok() && why(w).contains(QStringLiteral("there is none either side of it")), qPrintable(why(w) + w.portsSaid.join(" | ")));
+        }
+        QVERIFY2(std::abs(found.at(0).first - found.at(1).first) < 0.01 * found.at(0).first
+                     && std::abs(found.at(0).second - found.at(1).second) < 0.01 * found.at(0).second,
+                 qPrintable(QStringLiteral("%1 %2 %3 %4").arg(found.at(0).first).arg(found.at(1).first).arg(found.at(0).second).arg(found.at(1).second)));
+    }
+
+    // A line's eps_eff read off tips on it by L-2L is the same whether the
+    // line is drawn alone or inside its pads with tapers - within 0.1 % at
+    // 10 GHz, three cells across - now that the line in the polygon is meshed
+    // as the line alone (B4 of the open items of 8 November: 1.4 % apart
+    // here, the polygon sized whole by its 2 area / perimeter).
+    void aLinesEpsEffIsTheSameDrawnAloneOrInItsPads()
+    {
+        const QString m1 = QStringLiteral("M1");
+        const rf::Stack quartz = stackOf(3.8, 500e-6, false);
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        how.gaps = true;
+        const double f = 10e9;
+        const auto shape = [&m1](const QList<QPointF>& points) {
+            rf::Conductor c;
+            c.layer = m1;
+            c.outline = QPolygonF(points);
+            return c;
+        };
+        const auto layout = [&](double L, bool pads) {
+            const double LP = 60, LT = 80, x0 = LP + LT, x1 = x0 + L, e = x1 + LT + LP;
+            if (!pads) return QList<rf::Conductor>{on(m1, x0, -25, L, 50), on(m1, x0, 45, L, 160), on(m1, x0, -205, L, 160)};
+            return QList<rf::Conductor>{
+                shape({{0, -40}, {LP, -40}, {x0, -25}, {x1, -25}, {x1 + LT, -40}, {e, -40}, {e, 40}, {x1 + LT, 40}, {x1, 25}, {x0, 25}, {LP, 40}, {0, 40}}),
+                shape({{0, 70}, {LP, 70}, {x0, 45}, {x1, 45}, {x1 + LT, 70}, {e, 70}, {e, 205}, {0, 205}}),
+                shape({{0, -205}, {e, -205}, {e, -70}, {x1 + LT, -70}, {x1, -45}, {x0, -45}, {LP, -70}, {0, -70}})};
+        };
+        const auto chain = [&](double L, bool pads) {
+            const double x0 = 140, xa = x0 + 200, xb = x0 + L - 200;
+            const QList<rf::FullWavePort> tips = {
+                returning(patchPort(QStringLiteral("P1"), QPointF(xa, 0), 10), {patch(QStringLiteral("T1"), QPointF(xa, 125), 10), patch(QStringLiteral("T2"), QPointF(xa, -125), 10)}),
+                returning(patchPort(QStringLiteral("P2"), QPointF(xb, 0), 10), {patch(QStringLiteral("T3"), QPointF(xb, 125), 10), patch(QStringLiteral("T4"), QPointF(xb, -125), 10)})};
+            const QList<rf::Conductor> c = layout(L, pads);
+            const rf::FullWave w = rf::fullWaveOf(rf::meshOf(c, how, quartz, 30e9), c, quartz, tips, {f});
+            Eigen::Matrix2cd z;
+            z << w.z[0][0][0], w.z[0][0][1], w.z[0][1][0], w.z[0][1][1];
+            // ABCD from Z.
+            Eigen::Matrix2cd t;
+            t << z(0, 0) / z(1, 0), z.determinant() / z(1, 0), 1.0 / z(1, 0), z(1, 1) / z(1, 0);
+            return std::make_pair(w.ok() ? QString() : why(w), t);
+        };
+        double eps[2] = {0, 0};
+        for (const bool pads : {false, true}) {
+            const auto [e1, t1] = chain(1000, pads);
+            const auto [e2, t2] = chain(1600, pads);
+            QVERIFY2(e1.isEmpty() && e2.isEmpty(), qPrintable(e1 + e2));
+            const Eigen::Matrix2cd extra = t2 * t1.inverse();
+            // cosh(gamma dL) is half the trace of the extra line's chain matrix.
+            const Complex g = std::acosh(0.5 * extra.trace()) / 600e-6;
+            eps[pads] = std::pow(std::abs(g.imag()) * 299792458.0 / (2 * M_PI * f), 2);
+        }
+        qWarning("eps_eff by L-2L: drawn alone %.5f, in its pads %.5f", eps[0], eps[1]);
+        QVERIFY2(std::abs(eps[1] - eps[0]) < 1e-3 * eps[0], qPrintable(QStringLiteral("%1 against %2").arg(eps[1]).arg(eps[0])));
+    }
+
     // The request's sixth: what such a port cannot be is refused, by name -
-    // a return on its own conductor, none named, a terminal over no cell or
+    // a return on its own cells or beside them, none named, a terminal over no cell or
     // on no face, a port that is not there or itself, a name twice, and a
     // calibration by strips of a feed it has not.
     void whatAPortThatNamesItsReturnsCannotBeIsSaid()
@@ -535,7 +657,13 @@ private slots:
         };
         const rf::PortTerminal ground = patch(QStringLiteral("T1"), QPointF(40, 125), 20);
         QCOMPARE(refused({ground}, QString()), QStringLiteral("solved"));
-        QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(300, 0), 20)}, QStringLiteral("P1's return T2 is on the same conductor as P1")), QString());
+        // On its own cells, or the cells next to them, it would short the
+        // source; on its own conductor apart from them it solves (B7 of the
+        // open items of 8 November: aShortedLinesPortReturnsThroughItsOwnConductor).
+        QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(40, 0), 20)}, QStringLiteral("P1's return T2 is on the cells P1 drives")), QString());
+        QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(40, 0), 0)}, QStringLiteral("P1's return T2 is on the cells P1 drives")), QString());
+        QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(40, 23), 0)}, QStringLiteral("P1's return T2 is next to the cells P1 drives")), QString());
+        QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(500, 0), 20)}, QString()), QStringLiteral("solved"));
         QCOMPARE(refused({}, QStringLiteral("P1 returns through the terminals and ports it names, and names none")), QString());
         QCOMPARE(refused({patch(QStringLiteral("T3"), QPointF(40, 900), 20)},
                          QStringLiteral("P1's return T3, a 20 by 20 µm rectangle at 40, 900 µm, is over no cell of M1")),

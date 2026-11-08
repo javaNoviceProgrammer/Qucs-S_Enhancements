@@ -68,7 +68,14 @@ constexpr int kMostUnknowns = 6000;
 /// and 3e-7; eta 2 a tenth less memory and five times the error). Its
 /// preconditioner the near field's sparse LU, of the pairs whose boxes are
 /// within kNear of the larger's longest side in the plane (the cells that
-/// touch, and the faces of a metal solved as its two). GMRES to a residual
+/// touch and the next beyond them, and the faces of a metal solved as its
+/// two). At half a side, the cells touching alone, GMRES lost its hold as
+/// the mesh was refined - a MOM comb of 1 µm fingers 38 iterations at six
+/// across, 108 at eight and none converging at ten or twelve (a residual of
+/// 3.4e-7 after 3000), its thick-metal twin no frequency in 900 s -: at a
+/// side and a half, 23, 24, 26 and 28, the thick one 96-121, S the same to
+/// every digit the answer gives (B3 of the open items of 8 November; one
+/// side 52-69 at twelve across, two the six-across comb four times slower). GMRES to a residual
 /// of kResidual, kRestart vectors at a time, kMostIterations in all; the
 /// ports' Z then from the currents variationally, its error the residual's
 /// square over what the system is near singular by - which at a low
@@ -79,11 +86,17 @@ constexpr int kMostUnknowns = 6000;
 constexpr double kTolerance = 1e-5;
 constexpr int kLeaf = 32;
 constexpr double kEta = 1.5;
-constexpr double kNear = 0.5;
+constexpr double kNear = 1.5;
 constexpr double kResidual = 1e-10;
 constexpr int kRestart = 100;
 constexpr int kMostIterations = 3000;
 constexpr int kMostCompressed = 2000000;
+/// GMRES short of kResidual: the residual below which its answer still
+/// stands, said doubtful (solveCompressed()); and the share of
+/// kMostIterations past which it is said to be near its limit.
+constexpr double kTrustedResidual = 1e-4;
+constexpr double kNearMiss = 0.8;
+
 /// The rank a low-rank block is guessed at before it is filled, for the
 /// memory a solve will take: a guess, and said as one.
 constexpr double kGuessRank = 16;
@@ -217,6 +230,9 @@ struct Beside {
     /// Each side's nearest cell of a conductor that is no return, where one
     /// lies between the face and that side's return - passed over - or -1.
     std::array<int, 2> passed = {-1, -1};
+    /// Whether each side's cells are of the face's own net: a shorted
+    /// coplanar line's grounds, joined to its signal further on.
+    std::array<bool, 2> own = {false, false};
 };
 
 /// The faces beside an edge port's own on its edge's line - what a
@@ -224,7 +240,11 @@ struct Beside {
 /// nearest run of cells of \a reached on its layer with a side along that
 /// line (through \a on, along \a along) and inside on the same side of it
 /// as the port's own face. A side with none is empty. Given \a netOf (a
-/// cell's net), never the face's own net; and given \a isReturn (a net's)
+/// cell's net), the face's own net only across a gap from the face on that
+/// line - a shorted coplanar line's grounds, a loop's other end: a source
+/// between two places of one conductor, apart, is no short (B7 of the open
+/// items of 8 November; refused before, "there is none either side of
+/// it") -, never its own cells' neighbours there; and given \a isReturn (a net's)
 /// with a return among them, only the returns' cells, a conductor that is
 /// no return passed over - a GSSG's other signal - and said (Beside::passed).
 Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>& face, QPointF on, QPointF along,
@@ -271,19 +291,44 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
     out.inside = inside;
     QList<std::tuple<double, double, int>> below, above;   // (from the face out, the far end, the cell)
     const int own = netOf != nullptr ? netOf->value(face.first(), -1) : -1;
+    // How far the face's own conductor runs on along the line from it with
+    // no gap - cells of the same net, side by side with the face: none of
+    // those is a return, only its own net's cells past a gap.
+    double ownLo = lo, ownHi = hi;
+    if (own >= 0) {
+        QList<std::pair<double, double>> spans;
+        for (const int c : reached) {
+            if (mesh.cells.at(c).layer != layer || face.contains(c) || netOf->value(c, -1) != own) continue;
+            double t0 = 0, t1 = 0;
+            if (!sideOn(c, &t0, &t1)) continue;
+            const QPointF d = mesh.cells.at(c).centre - on;
+            if ((d.x() * normal.x() + d.y() * normal.y()) * inside <= 0) continue;
+            spans << std::make_pair(t0, t1);
+        }
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (const auto& [t0, t1] : std::as_const(spans))
+                if (t1 >= ownLo - tol && t0 <= ownHi + tol && (t0 < ownLo - tol || t1 > ownHi + tol)) {
+                    ownLo = std::min(ownLo, t0);
+                    ownHi = std::max(ownHi, t1);
+                    grew = true;
+                }
+        }
+    }
     const bool returns = isReturn != nullptr && isReturn->contains(true);
     std::array<std::pair<double, int>, 2> other = {std::make_pair(0.0, -1), std::make_pair(0.0, -1)};
     for (const int c : reached) {
         if (mesh.cells.at(c).layer != layer || face.contains(c)) continue;
         const int net = netOf != nullptr ? netOf->value(c, -1) : -1;
-        if (own >= 0 && net == own) continue;
         double t0 = 0, t1 = 0;
         if (!sideOn(c, &t0, &t1)) continue;
         const QPointF d = mesh.cells.at(c).centre - on;
         if ((d.x() * normal.x() + d.y() * normal.y()) * inside <= 0) continue;
         const bool lower = t1 <= lo + tol;
         if (!lower && !(t0 >= hi - tol)) continue;
-        if (returns && !isReturn->value(net, false)) {
+        const bool ownNet = own >= 0 && net == own;
+        if (ownNet && t1 >= ownLo - tol && t0 <= ownHi + tol) continue;   // (the face's own conductor, running on)
+        if (returns && !ownNet && !isReturn->value(net, false)) {
             std::pair<double, int>& o = other[lower ? 0 : 1];
             const double near = lower ? lo - t1 : t0 - hi;
             if (o.second < 0 || near < o.first) o = std::make_pair(near, c);
@@ -303,6 +348,7 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
             if (i > 0 && near > reach + tol) break;
             if (i == 0) out.near[std::size_t(k)] = near;
             out.cells[std::size_t(k)] << cell;
+            if (own >= 0 && netOf->value(cell, -1) == own) out.own[std::size_t(k)] = true;
             reach = std::max(reach, far);
         }
         out.far[std::size_t(k)] = reach;
@@ -873,6 +919,9 @@ struct AtFrequency {
     int largestRank = 0;
     int iterations = 0;
     double residual = 0;
+    /// What makes its answer doubtful: GMRES short of its residual, or near
+    /// its limit.
+    QStringList warnings;
     QStringList problems;
 };
 
@@ -1783,8 +1832,19 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
  * dense solve's C - G^T M^-1 G where I is M^-1 G, and its error the
  * square of I's - symmetric, where M is.
  */
-AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const std::atomic_bool* stop)
+AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const FullWaveControl* control)
 {
+    const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
+    const int most = control != nullptr && control->mostIterations > 0 ? control->mostIterations : kMostIterations;
+    // (Its progress for the bar: the most iterations of the frequencies
+    //  under way, and the residual of that one.)
+    const auto progress = [control](int iterations, double residual) {
+        if (control == nullptr || control->gmresIterations == nullptr) return;
+        int was = control->gmresIterations->load();
+        while (iterations > was && !control->gmresIterations->compare_exchange_weak(was, iterations)) {
+        }
+        if (iterations >= was && control->gmresResidual != nullptr) control->gmresResidual->store(residual);
+    };
     AtFrequency out;
     const Kernels k(c, f, threads);
     if (!k.problems.isEmpty()) {
@@ -1844,7 +1904,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     MatrixC current(nr, columns), applied(nr, columns);
     for (int q = 0; q < columns; ++q) {
         VectorC x = VectorC::Zero(nr), mx;
-        const Gmres solved = gmres(system, precondition, rhs.col(q), x, kResidual, kRestart, kMostIterations, stop);
+        const Gmres solved = gmres(system, precondition, rhs.col(q), x, kResidual, kRestart, most, stop, progress);
         if (solved.stopped) return AtFrequency();
         out.iterations = std::max(out.iterations, solved.iterations);
         out.residual = std::max(out.residual, solved.residual);
@@ -1852,7 +1912,13 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         system(x, mx);
         applied.col(q) = mx;
     }
-    if (out.residual > 1e3 * kResidual || !current.allFinite()) {
+    // Short of its residual: where what it left is small - the ports' Z is
+    // variational, its error the residual's square over how near singular
+    // the system is - the answer stands, said doubtful, and the sweep goes
+    // on; past kTrustedResidual, or not finite, it is no answer. A sweep
+    // stopped at the first frequency that fell short, with nothing of the
+    // rest (B3 of the open items of 8 November).
+    if (out.residual > kTrustedResidual || !current.allFinite()) {
         out.problems << tr("At %1 GHz the compressed solve did not converge: GMRES left a residual of %2 after %3 "
                            "iterations. Solve it dense (the study's Matrix), or mesh it differently.")
                             .arg(f / 1e9, 0, 'g', 4)
@@ -1860,6 +1926,20 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
                             .arg(out.iterations);
         return out;
     }
+    if (out.residual > 1e3 * kResidual)
+        out.warnings << tr("At %1 GHz GMRES stopped short of its residual: %2 after %3 iterations, where %4 is asked. S "
+                           "there is near, not to the last digits - more so at low frequencies; a coarser mesh, or the "
+                           "matrix dense, solves it whole.")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(out.residual, 0, 'g', 2)
+                            .arg(out.iterations)
+                            .arg(kResidual, 0, 'g', 2);
+    else if (out.iterations >= kNearMiss * most)
+        out.warnings << tr("At %1 GHz GMRES took %2 of its %3 iterations: near its limit, where a finer mesh or a higher "
+                           "frequency may not converge.")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(out.iterations)
+                            .arg(most);
     out.current = current;
     out.z = c.drive.transpose() * pd / jw + pathZ
             - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
@@ -2104,6 +2184,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                     const FullWaveControl* control, const QList<ReturnMark>& returns)
 {
     FullWave out;
+    // (What makes the mesh's answer doubtful - touching conductors it has
+    //  apart - is the solve's too.)
+    out.warnings << given.warnings;
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()); what is handed
     // back is of the mesh as given.
@@ -2669,6 +2752,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             return out;
         }
         const QString past = passed.isEmpty() ? QString() : tr(", past %1, which is no return").arg(passed.join(QStringLiteral(" and ")));
+        const QString ownSaid =
+            !beside.own[0] && !beside.own[1]
+                ? QString()
+                : tr("%1 returns through conductors beside it that are joined to its own further on - a shorted "
+                            "line, a stub to its ground, a loop -: the source is between two places of one conductor, "
+                            "apart on its edge, which is no short at a frequency.")
+                      .arg(name);
         out.portsSaid[p] = (counts.size() == 2
                               ? tr("%1 drives the %2 cell(s) along the face at %3, %4 µm%5 against the conductors beside it, "
                                    "%6 and %7 cell(s) of the faces of %8 either side%9%10: the two tied, as a probe's grounds "
@@ -2681,6 +2771,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                     .arg(name).arg(face.size()).arg(x, y, halved).arg(counts.at(0))
                                     .arg(through.value(0), past)
                                     .arg(groundsTopped > 0 ? tr(", half on its top face") : QString()));
+        if (!ownSaid.isEmpty()) out.portsSaid[p] += QLatin1Char(' ') + ownSaid;
     }
     // The ports that name their returns, now that every port's own cells
     // are known: a column against each return - the port's cells less the
@@ -2703,7 +2794,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
         const QSet<int> own = netsUnder(owns.at(p));
-        QStringList against;
+        QStringList against, sameConductor;   // (the returns on its own conductor)
+        QString sameNet;
         for (const PortTerminal& t : port.returns) {
             const QString x = QString::number(t.at.x(), 'g', 4), y = QString::number(t.at.y(), 'g', 4);
             const QString metal = t.metal.isEmpty() ? tr("any metal") : t.metal;
@@ -2766,13 +2858,45 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 for (const auto& [cell, share] : under) put(back, cell, share);
                 cells = int(under.size());
             }
-            for (const int net : netsUnder(back))
-                if (own.contains(net)) {
-                    out.problems << tr("%1's return %2 is on the same conductor as %1 (%3): it would short the source. Put "
-                                       "it on a conductor the port returns through - a ground beside it, a pad of its own.")
-                                        .arg(name, t.name, nets.value(net).name);
+            // On the port's own conductor: a source across it - a shorted
+            // line, a stub to its ground, a loop - which is no short at a
+            // frequency, so long as the two are apart: refused on the port's
+            // own cells or a cell next to them, said otherwise. Every return
+            // on the port's own conductor was refused before, "it would short
+            // the source", and none of those could be modelled (B7 of the open
+            // items of 8 November).
+            {
+                const Eigen::VectorXcd& mine = owns.at(p);
+                bool onOwn = false, besideOwn = false;
+                for (int i = 0; i < nc && !onOwn; ++i)
+                    onOwn = back(i) != Complex(0, 0) && mine(i) != Complex(0, 0);
+                if (!onOwn) {
+                    const auto bottom = [&thick](int cell) { return thick.bottomOf.value(cell, cell); };
+                    QSet<int> portCells, returnCells;
+                    for (int i = 0; i < nc; ++i) {
+                        if (mine(i) != Complex(0, 0)) portCells.insert(bottom(cellOf.at(i)));
+                        if (back(i) != Complex(0, 0)) returnCells.insert(bottom(cellOf.at(i)));
+                    }
+                    for (const QPair<int, int>& e : std::as_const(ends))
+                        if ((portCells.contains(bottom(e.first)) && returnCells.contains(bottom(e.second)))
+                            || (portCells.contains(bottom(e.second)) && returnCells.contains(bottom(e.first)))) {
+                            besideOwn = true;
+                            break;
+                        }
+                }
+                if (onOwn || besideOwn) {
+                    out.problems << tr("%1's return %2 is %3 the cells %1 drives: it would short the source. Put it apart "
+                                       "from them - further along its own conductor, or on a ground beside it.")
+                                        .arg(name, t.name, onOwn ? tr("on") : tr("next to"));
                     return out;
                 }
+                for (const int net : netsUnder(back))
+                    if (own.contains(net)) {
+                        sameConductor << t.name;
+                        sameNet = nets.value(net).name;
+                        break;
+                    }
+            }
             if (!t.port)
                 for (int q = 0; q < np; ++q) {
                     if (q == p || owns.at(q).size() != nc) continue;
@@ -2797,6 +2921,16 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.portsSaid[p] = n == 1   ? tr("%1 against %2: a ground-signal probe's.").arg(drivesSaid.at(p), list)
                            : n == 2 ? tr("%1 against %2, tied: a ground-signal-ground probe's.").arg(drivesSaid.at(p), list)
                                     : tr("%1 against %2, all tied.").arg(drivesSaid.at(p), list);
+        if (!sameConductor.isEmpty()) {
+            const int m = int(sameConductor.size());
+            const QString which = m == 1 ? tr("return %1 is").arg(sameConductor.first())
+                                         : tr("returns %1 and %2 are").arg(sameConductor.mid(0, m - 1).join(QStringLiteral(", ")),
+                                                                           sameConductor.last());
+            out.portsSaid[p] += QLatin1Char(' ')
+                                + tr("%1's %2 on its own conductor (%3), apart from its cells: the source is across that "
+                                     "conductor, as at a shorted line's end or a loop's two ends.")
+                                      .arg(name, which, sameNet);
+        }
     }
     // A coplanar port that returns through what another port drives - a
     // GSSG's other signal, where no conductor is marked a return - ties the
@@ -3079,7 +3213,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         for (int k = next++; k < nf; k = next++) {
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
-            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, stop)
+            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control)
                                                 : solveAt(c, frequencies.at(k), inner);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
@@ -3138,6 +3272,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                          .arg(nr + nc).arg(most).arg(1.0 / z.tolerance, 0, 'g', 3).arg(out.largestRank)
                          .arg(size(out.memory), size(out.denseMemory)).arg(inner).arg(out.iterations)
                          .arg(out.residual, 0, 'g', 2);
+        // (Each frequency's GMRES short of its residual, or near its limit.)
+        for (const AtFrequency& a : std::as_const(solved))
+            for (const QString& w : a.warnings) {
+                out.warnings << w;
+                out.lines << w;
+            }
     } else {
         for (const AtFrequency& a : std::as_const(solved)) {
             out.fillSeconds += a.fillSeconds;

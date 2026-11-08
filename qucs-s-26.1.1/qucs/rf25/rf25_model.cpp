@@ -146,7 +146,9 @@ QString returnsTip()
                                        "their names, all tied: one voltage, the current shared out between them by the "
                                        "solve, as a probe's ground tips are - one for a ground-signal probe, two for a "
                                        "GSG, four for the ground ring round a pad. A port named is in series with this "
-                                       "one: its cells are this one's return, and it a port of its own (full wave)");
+                                       "one: its cells are this one's return, and it a port of its own. One on this port's own conductor, apart from "
+                                       "its cells, is a source across that conductor: a shorted line, a stub, a loop "
+                                       "(full wave)");
 }
 
 QList<NodeKind> makeKinds()
@@ -201,8 +203,10 @@ QList<NodeKind> makeKinds()
                  {tr("A sheet (its thickness in its loss)"), tr("Its two faces, joined at its walls")},
                  QStringLiteral("sheet"),
                  tr("A sheet is quickest, and right where the metal is thin beside its gaps. Its two faces put its "
-                    "thickness in the field too - the walls' field across a narrow gap, in what is beside them, and "
-                    "how its current shares its top and bottom - at twice its cells."))},
+                    "thickness in the field too - its top face higher, what is beside its walls, and how its current "
+                    "shares its top and bottom - at twice its cells. Neither holds the charge on its side walls: in "
+                    "gaps as narrow as the metal is thick, the capacitance across them reads low (some 20 % where "
+                    "they are equal), and the solve says so."))},
          {}, {}, false, false, QStringLiteral("m"),
          tr("A metal layer. The layout's polygons on the layers mapped to it are its conductors; its name (the label) "
             "is what the layer map and the ports call it.")});

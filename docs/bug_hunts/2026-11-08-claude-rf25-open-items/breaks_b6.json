@@ -1,0 +1,5 @@
+[
+ {"name": "B6-never-waited-for", "file": "qucs-s-26.1.1/qucs/rf25doc.h",
+  "old": "    bool beingWaitedFor() const override { return a_waiting > 0; }", "new": "    bool beingWaitedFor() const override { return false; }",
+  "tests": [["test_qucs_control", "anRf25ModelClosedWhileItsSolveIsWaitedForIsLeftAlone"]]}
+]

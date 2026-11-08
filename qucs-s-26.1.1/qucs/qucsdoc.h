@@ -46,6 +46,13 @@ public:
   virtual void  showAll() {};
   virtual void  zoomToSelection() {};
   virtual void  showNoZoom() {};
+  /// Waited for now by a tool of Claude's (its geometry, its mesh or its
+  /// solve), the window going on meanwhile: not to be deleted under the one
+  /// waiting - its tab closed, closeWhenFree() in place of delete.
+  virtual bool  beingWaitedFor() const { return false; }
+  /// Its tab closed while it is waited for: its work stopped, none started,
+  /// deleted once the last wait is over.
+  virtual void  closeWhenFree() {}
 
   /// Whether the document's own code is inside a dialog of its own, and
   /// so inside an event loop below the call that is running now. Such a

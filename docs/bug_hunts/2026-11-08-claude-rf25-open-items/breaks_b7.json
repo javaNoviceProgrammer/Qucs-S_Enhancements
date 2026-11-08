@@ -1,0 +1,65 @@
+[
+ {
+  "name": "B7-beside-skips-own-net",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "        if (ownNet && t1 >= ownLo - tol && t0 <= ownHi + tol) continue;   // (the face's own conductor, running on)",
+  "new": "        if (ownNet) continue;",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "aShortedLinesPortReturnsThroughItsOwnConductor"
+   ]
+  ]
+ },
+ {
+  "name": "B7-beside-takes-contiguous-own",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "        if (ownNet && t1 >= ownLo - tol && t0 <= ownHi + tol) continue;   // (the face's own conductor, running on)",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "aShortedLinesPortReturnsThroughItsOwnConductor",
+    "whatAPortThatNamesItsReturnsCannotBeIsSaid",
+    "aPortReturningThroughTheFacesBesideItIsTheCoplanarOne"
+   ]
+  ]
+ },
+ {
+  "name": "B7-terminal-on-own-refused",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "                if (onOwn || besideOwn) {",
+  "new": "                if (onOwn || besideOwn || !own.isEmpty()) {",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "aShortedLinesPortReturnsThroughItsOwnConductor",
+    "whatAPortThatNamesItsReturnsCannotBeIsSaid"
+   ]
+  ]
+ },
+ {
+  "name": "B7-adjacent-allowed",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "                            besideOwn = true;\n",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "whatAPortThatNamesItsReturnsCannotBeIsSaid"
+   ]
+  ]
+ },
+ {
+  "name": "B7-no-own-note",
+  "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "        if (!ownSaid.isEmpty()) out.portsSaid[p] += QLatin1Char(' ') + ownSaid;",
+  "new": "",
+  "tests": [
+   [
+    "test_rf25_returns",
+    "aShortedLinesPortReturnsThroughItsOwnConductor"
+   ]
+  ]
+ }
+]

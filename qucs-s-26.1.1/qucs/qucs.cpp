@@ -3698,8 +3698,8 @@ void QucsApp::closeFile(int index)
     // work stopped, let go once the wait is over, not deleted under it.)
     if (keepRunning)
       keepRunningWithoutTab(Doc, closingTitle);   // (its autosave copy kept: its changes are not saved)
-    else if (auto *model = dynamic_cast<MultiphysicsDoc *>(Doc); model && model->beingWaitedFor())
-      model->closeWhenFree();
+    else if (Doc->beingWaitedFor())
+      Doc->closeWhenFree();
     else
       delete Doc;
     if (!keepRunning) {
@@ -3783,8 +3783,16 @@ bool QucsApp::closeAllFiles(int exceptTab)
         continue;
       }
       if (a_runs != nullptr && !a_runs->quitting()) a_runs->noteClosed(doc->getDocName(), title);   // (Reopen Closed Tab)
-      if (doc->inADialog()) w->deleteLater();
-      else delete doc;
+      // (A model a tool still waits on: its tab taken away, and it deleted
+      //  once the wait is over, not under it.)
+      if (doc->beingWaitedFor()) {
+        if (pane != nullptr) pane->removeTab(pane->indexOf(w));
+        doc->closeWhenFree();
+      } else if (doc->inADialog()) {
+        w->deleteLater();
+      } else {
+        delete doc;
+      }
     }
 
   ContextMenuTabWidget *stay = docToKeep != nullptr ? paneOf(documentWidget(docToKeep)) : DocumentTab;
@@ -3867,7 +3875,12 @@ bool QucsApp::closeTabsRange(int startTab, int stopTab, int exceptTab)
       keepRunningWithoutTab(doc, title);
     } else {
       if (a_runs != nullptr) a_runs->noteClosed(doc->getDocName(), title);   // (Reopen Closed Tab)
-      delete doc;
+      if (doc->beingWaitedFor()) {   // (as in closeAllFiles())
+        DocumentTab->removeTab(startTab + i);
+        doc->closeWhenFree();
+      } else {
+        delete doc;
+      }
     }
   } while (doc != stopDoc);
 

@@ -7,6 +7,9 @@
  */
 #include <QtTest>
 
+#include <functional>
+#include <random>
+
 #include "layout.h"
 #include "rf25/rf25_layout.h"
 
@@ -161,6 +164,85 @@ private slots:
         const rf::Processed off = rf::processShapes(shapes, {}, how, stack);
         QCOMPARE(off.byLayer().value(QStringLiteral("M1")), 2);
         QVERIFY(off.report.lines.isEmpty());
+    }
+
+    // Shapes that touch along part of an edge are one shape, however the
+    // union's own sweep meets them. gdstk's union left two pieces apart in
+    // about one set in sixty of touching rectangles - a
+    // low-pass filter among them, its centre stub then cut from its line in
+    // the full-wave solve with nothing said (B1 of the open items of 8
+    // November) -: here one such set, whose fourth rectangle gdstk alone
+    // left apart, and three thousand random ones, each as many shapes out
+    // as it has pieces joined along edges, their area the rectangles'. Two
+    // that meet at a corner alone stay two.
+    void shapesTouchingAlongAnEdgeAreOneShape()
+    {
+        const QList<QPolygonF> four = {box(0, 0, 3600, 3900), box(1600, -2100, 2600, 2100), box(-950, -1600, 2500, 1600),
+                                       box(2150, -5200, 100, 3100)};
+        int joined = 0;
+        const QList<QPolygonF> one = rf::unionOf(four, &joined);
+        QCOMPARE(one.size(), 1);
+        QVERIFY2(joined >= 1, "the set gdstk leaves in two needed no joining: the test no longer tests the join");
+        double area = 0;
+        for (const QPolygonF& s : four) area += rf::areaOf(s);
+        QVERIFY2(std::abs(rf::areaOf(one.first()) - area) < 1e-6 * area,
+                 qPrintable(QStringLiteral("%1 against %2").arg(rf::areaOf(one.first())).arg(area)));
+        // Through the processing, which says what it joined.
+        const rf::Stack stack = stacked().stack();
+        rf::Processing how;
+        how.dropSlivers = false;
+        QMap<QString, QList<QPolygonF>> shapes;
+        shapes[QStringLiteral("M1")] = four;
+        const rf::Processed done = rf::processShapes(shapes, {}, how, stack);
+        QCOMPARE(done.byLayer().value(QStringLiteral("M1")), 1);
+        QVERIFY2(says(done.report.lines, "merged 4 shapes into 1") && says(done.report.lines, "touching along an edge joined"),
+                 qPrintable(done.report.summary()));
+        // Corners alone: two.
+        QCOMPARE(rf::unionOf({box(0, 0, 10, 10), box(10, 10, 10, 10)}).size(), 2);
+        QVERIFY(!rf::touchAlongAnEdge(box(0, 0, 10, 10), box(10, 10, 10, 10), 1e-6));
+        QVERIFY(rf::touchAlongAnEdge(box(0, 0, 10, 10), box(10, 4, 10, 10), 1e-6));
+
+        // Random sets: rectangles of 100 µm steps, each on a side of one
+        // already there.
+        std::mt19937 random(20261108);
+        const auto step = [&random](int most) { return double(1 + random() % most) * 100; };
+        int sets = 0;
+        for (int t = 0; t < 3000; ++t) {
+            QList<QRectF> rs = {QRectF(0, 0, step(40), step(40))};
+            const int n = 2 + int(random() % 7);
+            while (rs.size() < n) {
+                const QRectF b = rs.at(int(random() % rs.size()));
+                const int side = int(random() % 4);
+                const double w = step(40), h = step(40);
+                if (side < 2) {
+                    const double x = b.left() + double(random() % 41) * 100 - w / 2;
+                    rs << QRectF(x, side == 0 ? b.bottom() : b.top() - h, w, h);
+                } else {
+                    const double y = b.top() + double(random() % 41) * 100 - h / 2;
+                    rs << QRectF(side == 2 ? b.right() : b.left() - w, y, w, h);
+                }
+            }
+            // The pieces joined along edges or by overlap, counted.
+            QList<int> parent(rs.size());
+            for (int i = 0; i < rs.size(); ++i) parent[i] = i;
+            std::function<int(int)> rootOf = [&parent, &rootOf](int i) { return parent.at(i) == i ? i : (parent[i] = rootOf(parent.at(i))); };
+            for (int i = 0; i < rs.size(); ++i)
+                for (int j = i + 1; j < rs.size(); ++j) {
+                    const QRectF& a = rs.at(i);
+                    const QRectF& b = rs.at(j);
+                    const double ox = std::min(a.right(), b.right()) - std::max(a.left(), b.left());
+                    const double oy = std::min(a.bottom(), b.bottom()) - std::max(a.top(), b.top());
+                    if ((ox > 0 && oy >= 0) || (oy > 0 && ox >= 0)) parent[rootOf(j)] = rootOf(i);
+                }
+            int pieces = 0;
+            for (int i = 0; i < rs.size(); ++i) pieces += rootOf(i) == i;
+            QList<QPolygonF> polys;
+            for (const QRectF& r : std::as_const(rs)) polys << QPolygonF(r);
+            const QList<QPolygonF> u = rf::unionOf(polys);
+            QVERIFY2(u.size() == pieces, qPrintable(QStringLiteral("set %1: %2 pieces, %3 shapes out").arg(t).arg(pieces).arg(u.size())));
+            ++sets;
+        }
+        QCOMPARE(sets, 3000);
     }
 
     // A via farm: the shapes are joined by how close they are, and the

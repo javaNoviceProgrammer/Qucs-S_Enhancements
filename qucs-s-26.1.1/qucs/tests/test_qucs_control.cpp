@@ -43,6 +43,7 @@
 #include <QRandomGenerator>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <QPointer>
 #include <QTimer>
 #include <QPdfWriter>
 #include <QProcess>
@@ -255,6 +256,59 @@ class TestQucsControl : public QObject
         for (const QJsonValue& v : summary.value("components").toArray())
             if (v.toObject().value("name").toString() == name) return v.toObject();
         return {};
+    }
+
+    /// A model whose solve takes its time, written to \a folder: a stack
+    /// that takes its time, so that the solve is still going on a second
+    /// in - a mirror of forty films of 0.1 and 0.2 µm, εr 28 and 3.9, on
+    /// silicon. Its path; empty where the example layout is not in this
+    /// build.
+    static QString slowRf25Model(const QString& folder)
+    {
+        const QString gds = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(gds)) return QString();
+        if (!QDir().mkpath(folder)) return QString();
+        QFile::remove(folder + "/heater.gds");
+        if (!QFile::copy(gds, folder + "/heater.gds")) return QString();
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (qucs_s::rf25::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("500[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("11.7"));
+            }
+        for (int i = 0; i < 40; ++i) {
+            qucs_s::rf25::Node film;
+            film.type = QStringLiteral("rf_dielectric");
+            film.tag = QStringLiteral("film%1").arg(i + 1);
+            film.label = QStringLiteral("F%1").arg(i + 1);
+            film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
+            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
+            // (Lossless: each lossy layer is its own Green's function more,
+            //  a second and a half each of a mirror's.)
+            film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
+            stack.insert(stack.end() - 1, film);
+        }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
+        m.mesh().props.insert(QStringLiteral("cells_across"), 0);
+        m.normalise();
+        {
+            QFile f(folder + "/mirror.qrf25");
+            if (!f.open(QIODevice::WriteOnly)) return QString();
+            f.write(m.toJson());
+        }
+        return folder + "/mirror.qrf25";
     }
 
 private slots:
@@ -2647,57 +2701,12 @@ private slots:
     // started another: two cores and gigabytes on a stack whose Green's
     // function did not end, and on timeout each call stopped its own solve,
     // so that a solve longer than one call could never finish (the review
-    // of 3 November). A stack that takes its time, so that the solve is
-    // still going on a second in: a mirror of forty films of 0.1 and 0.2 µm,
-    // εr 28 and 3.9, on silicon.
+    // of 3 November). The slow model (slowRf25Model()).
     void anRf25SolveGoingOnIsJoinedAndStopped()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
-        const QString gds = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
-        if (!QFileInfo::exists(gds)) QSKIP("the example layout is not in this build");
-        QVERIFY(QDir().mkpath(ws + "/rfjoin"));
-        QFile::remove(ws + "/rfjoin/heater.gds");
-        QVERIFY(QFile::copy(gds, ws + "/rfjoin/heater.gds"));
-        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
-        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
-        stack.erase(std::remove_if(stack.begin(), stack.end(),
-                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
-                    stack.end());
-        for (qucs_s::rf25::Node& n : stack)
-            if (n.type == QLatin1String("rf_substrate")) {
-                n.props.insert(QStringLiteral("thickness"), QStringLiteral("500[um]"));
-                n.props.insert(QStringLiteral("epsr"), QStringLiteral("11.7"));
-            }
-        for (int i = 0; i < 40; ++i) {
-            qucs_s::rf25::Node film;
-            film.type = QStringLiteral("rf_dielectric");
-            film.tag = QStringLiteral("film%1").arg(i + 1);
-            film.label = QStringLiteral("F%1").arg(i + 1);
-            film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
-            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
-            // (Lossless: each lossy layer is its own Green's function more,
-            //  a second and a half each of a mirror's.)
-            film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
-            stack.insert(stack.end() - 1, film);
-        }
-        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
-        QJsonArray row;
-        row.append(QStringLiteral("1"));
-        row.append(QStringLiteral("0"));
-        row.append(QStringLiteral("M1"));
-        QJsonArray rows;
-        rows.append(row);
-        QCOMPARE(rows.size(), 1);
-        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
-        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
-        m.mesh().props.insert(QStringLiteral("cells_across"), 0);
-        m.normalise();
-        {
-            QFile f(ws + "/rfjoin/mirror.qrf25");
-            QVERIFY(f.open(QIODevice::WriteOnly));
-            f.write(m.toJson());
-        }
-        const QString file = ws + "/rfjoin/mirror.qrf25";
+        const QString file = slowRf25Model(ws + "/rfjoin");
+        if (file.isEmpty()) QSKIP("the example layout is not in this build");
         QVERIFY(!failed(call("open_document", {{"path", file}})));
         auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
         QVERIFY(doc != nullptr);
@@ -2757,12 +2766,45 @@ private slots:
         closeUnder(ws + "/rfjoin");
     }
 
+    // A model closed while rf25_solve waits on its solve - another
+    // conversation's close_document here; Stop and Close at the window, or a
+    // tab kept running in the background and let go once its solve ended,
+    // alike -: the call answers that it was closed and touches nothing of it
+    // after, and the model goes once the wait is over. It read the freed
+    // model on 7 November, an EXC_BAD_ACCESS in QucsControl::rf25Solve some
+    // fifteen minutes into a full-wave solve sent to the background (B6 of
+    // the RF 2.5D open items of 8 November). The slow model, so that the
+    // close comes in the middle of its solve.
+    void anRf25ModelClosedWhileItsSolveIsWaitedForIsLeftAlone()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString file = slowRf25Model(ws + "/rfclose");
+        if (file.isEmpty()) QSKIP("the example layout is not in this build");
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(120000));
+        QVERIFY(doc->waitForPrepared(120000));
+        const QPointer<RF25Doc> held(doc);
+        QJsonObject closed;
+        QTimer::singleShot(800, control, [this, &closed, file] {
+            control->callToolFor(2, QStringLiteral("close_document"), {{"path", file}, {"unsaved", "discard"}},
+                                 [&closed](const QJsonObject& r) { closed = r; });
+        });
+        const QJsonObject solved = call("rf25_solve", {{"path", file}, {"timeout", 300}}, 400000);
+        QTRY_VERIFY_WITH_TIMEOUT(!closed.isEmpty(), 30000);
+        QVERIFY2(!failed(closed), qPrintable(text(closed)));
+        QVERIFY2(failed(solved) && text(solved).contains(QStringLiteral("was closed")), qPrintable(text(solved)));
+        QTRY_VERIFY_WITH_TIMEOUT(held.isNull(), 30000);
+        QVERIFY(app->findDoc(file) == nullptr);
+    }
+
     // A port's returns given as a list (the feature request of 4 November)
     // through the tools: a model written as Claude writes one - terminals
     // under Ports, an internal port's Return "terminals" and its Returns -
     // solved by rf25_solve, each port with what it drives, what it returns
     // through and each return's share of its current; a return that is on
-    // the port's own conductor refused by name; and fem_describe's format
+    // the port's own conductor solved and said; and fem_describe's format
     // of an RF 2.5D model, its kinds the terminal's among them.
     void anRf25PortsReturnsAreNamedThroughTheTools()
     {
@@ -2840,7 +2882,8 @@ private slots:
         const QJsonObject brief = json(call("rf25_solve", {{"path", ws + "/rf/gsg.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"},
                                                            {"brief", true}}, 300000)).toObject();
         QCOMPARE(brief.value("ports").toArray().at(1).toObject().value("returns").toArray().size(), 2);
-        // A return on the port's own conductor: refused by name.
+        // A return on the port's own conductor, apart from its cells: solved,
+        // and said (B7 of the open items of 8 November; refused before).
         qucs_s::rf25::Model shorted = m;
         for (qucs_s::rf25::Node& n : shorted.ports().children)
             if (n.label == QLatin1String("T1")) n.props.insert(QStringLiteral("y"), QStringLiteral("0"));
@@ -2848,9 +2891,8 @@ private slots:
         for (qucs_s::rf25::Node& n : shorted.ports().children)
             if (n.label == QLatin1String("T1")) n.props.insert(QStringLiteral("x"), QStringLiteral("300[um]"));
         QVERIFY(put(ws + "/rf/gsg_short.qrf25", shorted.toJson()));
-        const QJsonObject refused = call("rf25_solve", {{"path", ws + "/rf/gsg_short.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"}}, 300000);
-        QVERIFY(failed(refused));
-        QVERIFY2(text(refused).contains(QStringLiteral("P1's return T1 is on the same conductor as P1")), qPrintable(text(refused)));
+        const QJsonObject across = call("rf25_solve", {{"path", ws + "/rf/gsg_short.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"}}, 300000);
+        QVERIFY2(!failed(across) && text(across).contains(QStringLiteral("P1's return T1 is on its own conductor")), qPrintable(text(across)));
         // fem_describe's format of an RF 2.5D model: by 'space', or of one named.
         for (const QJsonObject& asked : {QJsonObject{{"what", "format"}, {"space", "RF 2.5D"}},
                                          QJsonObject{{"what", "format"}, {"path", ws + "/rf/gsg.qrf25"}}}) {

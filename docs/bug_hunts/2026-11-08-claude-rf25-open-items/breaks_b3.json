@@ -1,0 +1,17 @@
+[
+ {"name": "B3-near-half-a-side", "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "constexpr double kNear = 1.5;", "new": "constexpr double kNear = 0.5;",
+  "tests": [["test_rf25_fullwave", "gmresKeepsItsHoldAsTheMeshIsRefined"]]},
+ {"name": "B3-no-progress", "file": "qucs-s-26.1.1/qucs/rf25/rf25_fast.cpp",
+  "old": "            if (progress) progress(out.iterations, out.residual);", "new": "",
+  "tests": [["test_rf25_fullwave", "gmresKeepsItsHoldAsTheMeshIsRefined"]]},
+ {"name": "B3-no-near-miss", "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "    else if (out.iterations >= kNearMiss * most)", "new": "    else if (false)",
+  "tests": [["test_rf25_fullwave", "gmresKeepsItsHoldAsTheMeshIsRefined"]]},
+ {"name": "B3-short-is-failure", "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "    if (out.residual > kTrustedResidual || !current.allFinite()) {", "new": "    if (out.residual > 1e3 * kResidual || !current.allFinite()) {",
+  "tests": [["test_rf25_fullwave", "gmresKeepsItsHoldAsTheMeshIsRefined"]]},
+ {"name": "B3-warnings-not-gathered", "file": "qucs-s-26.1.1/qucs/rf25/rf25_fullwave.cpp",
+  "old": "            for (const QString& w : a.warnings) {\n                out.warnings << w;", "new": "            for (const QString& w : a.warnings) {\n                (void)w;",
+  "tests": [["test_rf25_fullwave", "gmresKeepsItsHoldAsTheMeshIsRefined"]]}
+]
