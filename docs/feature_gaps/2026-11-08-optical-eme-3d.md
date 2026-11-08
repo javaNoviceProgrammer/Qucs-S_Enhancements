@@ -13,9 +13,10 @@ family of device in turn - straight guides, tapers, MMIs and couplers first, ben
 by a period's S-matrix repeated, crossings and Y-branches approximately in EME and properly later in a 3D solver. The methods
 were weighed first (the table at the end).
 
-**Where it stands:** the first three stages are here - optical ports and their modes, the S-parameters over wavelengths with
-spectra and Touchstone files (straight guides, tapers, MMIs, couplers), and bends along a path with absorbing walls. Gratings,
-crossings and Y-branches are the stages still to come.
+**Where it stands:** the first four stages are here - optical ports and their modes, the S-parameters over wavelengths with
+spectra and Touchstone files (straight guides, tapers, MMIs, couplers), bends along a path with absorbing walls, and gratings
+and Bragg mirrors (drawn tooth by tooth, or one period repeated by a Periodic Section). Crossings and Y-branches are the stage
+still to come.
 
 ## What you can do now
 
@@ -30,6 +31,10 @@ from the library (silicon, silica, silicon nitride: their indices follow the wav
   its centre line, positive to its left). Its **walls** are metal (default), magnetic, or **absorbing**: a layer outside the
   window, of the material at its edge, its extinction rising in steps as the square of the depth to κ at its back (1 µm, κ 1,
   four steps by default), metal behind it - what a junction radiates dies out there instead of coming back off a wall.
+- A **grating** or a **Bragg mirror**: draw it tooth by tooth (its cuts and junctions are solved once however many teeth - two
+  cuts for a thousand), or draw one period and add a **Periodic Section** under the physics: **Period from**, **Period to**
+  along the axis, **Periods** - a whole number, or a parameter a Parametric Sweep may run over. The geometry shows the one
+  period; the S-parameters are the whole grating's.
 - Add **Optical Port** features: at the **start** or the **end** of the axis, over the whole cross-section or, two or more at an
   end, a **box** round each one's waveguide (an MMI's outputs, a coupler's arms). Each takes the modes listed: **TE0, TM0, TE1**
   (TE where most of the transverse field lies across the axis in the plane) or by index (1, 2). Each port mode is one
@@ -116,6 +121,14 @@ its µ′. Where the geometry is concentric with the arc its cut is the same all
 as e^-jβRθ. The window and its walls' layer must stay within the radius on the bend's inner side (f > 0): refused and said
 otherwise.
 
+**Gratings.** Two cuts are one when their rectangles coincide and each rectangle's domain has the same material - not the same
+domain: a drawn grating's teeth are each a domain of their own, and its thousand teeth were two thousand cuts and junctions
+(the fifth fault below). The junctions are kept by their pair of cuts, so a drawn grating costs its two cuts' modes, two
+junctions' overlaps and a star product per tooth. A **Periodic Section** takes the cells between its two ends - no cell crosses
+them, nor merges across them with the cell before - as one period P (its cells and the junctions between them); the junction J
+back from its last cell to its first closes it, and N periods are (P J)^(N-1) P, the power by squaring: log2 N star products,
+1,000 periods in a millisecond. The junctions into and out of the section are the ordinary ones.
+
 **Absorbing walls.** The window's sides or floors, chosen absorbing, get layers outside: the edge rectangle's material extended
 by the layer's thickness in steps, the i-th of N with κ_max((i + ½)/N)², corners with the larger of the two, metal behind. They
 are passive, isotropic media like any other, so the modes and their bi-orthogonality are unchanged in kind: what a junction
@@ -141,6 +154,10 @@ Each against something known independently of the expansion, by `test_fem3_eme` 
 | A bend's mode: the wire at 2 µm radius | The ring's whispering-gallery mode of order 19 by the axisymmetric eigenfrequency solver: f 188.153116 THz, Q 3.998e5, so Re β R = 19 and Im n_eff = n_g/2Q = 5.102e-6 | the 2D solver's bend at f: Re n_eff k0 R = 18.99996, Im n_eff 5.016e-6 (1.7 % low) |
 | A 90° bend uniform in z (2D, E along z), absorbing walls | The 2D full-wave solver in the plan, the same strips round the path, ports at both ends | silicon core 0.2 µm wide: \|S21\|² 0.994434 against 0.994564 at 2 µm, 0.991140 against 0.991336 at 1.5 µm, 0.999350 against 0.999378 at 5 µm; core index 2, 0.5 µm wide (radiating): 0.910109 against 0.911348 at 5 µm, 0.986313 against 0.986529 at 10 µm - see below |
 | A 90° bend of the silicon wire along a path, absorbing walls | Reciprocity; nothing back; the loss rising as the radius falls | S21 - S12 under 1e-9 (2e-16 in a run); back under 1e-7; -0.0113, -0.0774, -0.1642 dB at 5, 2, 1.5 µm with 60 modes (40: -0.0112, -0.0763, -0.1639; 80 at 1.5 µm: -0.1644) |
+| A quarter-wave Bragg mirror filling the window (magnetic sides, metal floors: a plane wave), (H L)^N H of 2 and 1.444 | The transfer matrix, exact for it | S11 and S21, phases with them, to 1e-14 at 10 periods drawn and as a Periodic Section; to 7e-12 at 1,000 as a section, 1.1e-11 at 200 drawn and 2e-10 at 1,000 drawn (a scratch run: the rounding of 2,000 products); 0.24 s drawn, 1 to 4 ms the section, at 1,000 |
+| A Bragg grating uniform in z, E along its steps (core index 2, widths 0.42/0.50 µm, 30 periods) | The 2D full-wave solver (converged: 0.348139 to 0.348145 from h 0.06 to 0.04 µm) | \|S11\|² 0.348197 against 0.348139 at the stopband's centre, within 2.3e-4 across it (40 elements per wavelength); drawn and the section alike to 2e-14 |
+| The same, E across its steps (in the plane: a silicon wire's TE sidewall grating), core 2.848, 0.49/0.51 µm, 100 periods | The 2D full-wave solver: 0.1497 (0.1492, 0.1499, 0.1497 at h 0.06, 0.04, 0.025 µm) | 0.128 (30 modes, 30 per wavelength), 0.136 (60, 40), 0.139 (60, 80), 0.1375 (120, 40): κ 4 to 8 % low - see below |
+| A silicon wire's sidewall Bragg grating, 0.49/0.51 µm, period 316 nm, 100 periods | No full-wave reference; the effective indices' coupled-mode estimate 0.74, first-order perturbation theory (Johnson's shifted boundaries) κ 0.0222 /µm, R 0.37 | peak 0.243 at 1546 nm at 20 per wavelength, 0.279 at 40 (κ 0.0186 /µm), alike with 20, 40 or 60 modes - see below |
 | Port modes over wavelengths | The oxide's Sellmeier (Malitson) in the model | TE0 2.490331 at 1500 nm, 2.385413 at 1600 nm; S31 e^-jβL at each |
 | The model and the tools | - | `test_multiphysics3d_doc`: a wire solved through `fem_model`, `fem_solve` (its `optics`), `fem_evaluate` at a wavelength and at all, `fem_export`'s `.s2p` of three frequencies rising, its ports named |
 
@@ -193,6 +210,30 @@ against the expansion's 0.8655 at 7.185 µm and 0.7213 against 0.7400 at 6 µm, 
 read 0.8655 where the supermodes read 0.8809: a box's metal wall 0.5 µm from a weakly guided output (index 2) cuts its mode -
 a box's walls belong where its guide's mode has died away.
 
+**Gratings against what is known.** A Bragg mirror that fills the window has a plane wave for its one propagating mode, and the
+transfer matrix is its exact answer: the expansion agrees to rounding, drawn and as a section, through 1,000 periods - the
+cascade, the squaring and the cut-by-material all checked at once. A waveguide grating has no closed answer; made uniform in z
+it is a 2D problem for the full-wave solver (single-mode guides, a first-order grating: nothing radiates but its steps).
+
+- **E along the steps** (the 2D solver's E out of the plane): the expansion agrees to 2.3e-4 across the stopband at 40 elements
+  per wavelength. At the default 15 its stopband sat 0.4 nm short (3.2e-3 off at its edges, the full-wave solve unmoved by a
+  finer mesh): the stopband sits where L (n1 + n2) = λ, so the cuts' indices must be right to 1e-4. Coupled-mode theory on the
+  slab's indices - tanh²(2Δn N L/λ), 0.3480 - lands on its peak too (0.3481 by the full-wave solve).
+- **E across the steps** (in the plane - as a silicon wire's TE mode meets its sidewalls): the effective indices' coupled-mode
+  estimate, 0.607, is four times the full-wave solve's 0.1497. The steps couple far more weakly than the indices they make: the
+  backward mode's longitudinal E turns round, and where E is normal to a step its D does the coupling - first-order perturbation
+  theory for shifted boundaries (κ from the mean guide's mode at its sidewalls) gives κ 0.0148 /µm, the full-wave solve's 0.0131.
+  The expansion converges toward it slowly, in the modes and in the mesh both (the field at a step's corner is singular): 0.128
+  with 30 modes at 30 per wavelength, 0.139 with 60 at 80 - κ 8 % and 4 % low. It also loses some 1e-3 of the power, the
+  full-wave solve 6e-5.
+- **A silicon wire's sidewall grating in 3D** (0.49/0.51 µm, the TE0 mode): a single step reflects 0.0030 by the expansion,
+  converged in the mesh and the modes (0.00296 to 0.00302), against 0.0065 by Fresnel on the two effective indices - and of the
+  other sign. The grating of 100 periods reflects at most 0.243 at 20 elements per wavelength and 0.279 at 40 - the same with 20,
+  40 or 60 modes; its lost power 9.8e-4 and 1.2e-4 - κ 0.0186 /µm, as 2|r|/L from the single step (0.019). The effective
+  indices say 0.74 (κ 0.041); perturbation theory 0.0222, which ran 12 % high in 2D. With the 2D case's errors carried over,
+  some 0.28 to 0.31 is the likely peak; its stopband's centre, 1546 nm, is 1.6 nm short of L (n1 + n2). Both want a fine mesh:
+  the solve warns where a junction recurs ten times or more below 30 elements per wavelength.
+
 ## Breaks the tests catch
 
 Each put in, the tests run, taken out:
@@ -205,16 +246,21 @@ Each put in, the tests run, taken out:
 | (d) the bend's transformation left out of the mode solver | the ring (m 18.930 for 19, no radiation), the bend along a path (back 9.9e-6), the bend against the 2D solve (0.997318 for 0.994564) |
 | (e) a bend's µ′ left out of the overlaps' h | the bend along a path (back 9.2e-5), the bend against the 2D solve (0.989341 for 0.994564) |
 | (f) the absorbing walls' extinction nought | the slab's step (its absorbing walls 0.4 % off its absorbing layers), the MMI against mode matching (0.88539 for 0.88043), the bend against the 2D solve (0.07 % off) |
+| (g) a periodic section's power one period short | the Bragg mirror against the transfer matrix (S21 off by 0.13 to 1.0) |
+| (h) the junction back to the period's start left out | the Bragg mirror (S11 off by 0.03 to 0.63) |
+| (i) cuts told apart by domain, not material (the fifth fault, put back) | the Bragg mirror (23 cuts for 2) |
+| (j) a cell merged across a periodic section's end | the Bragg mirror whose period begins as the guide before it does (3 cells for 4) |
 
 ## Tests run
 
-- Release: `test_fem3_eme`, 15 tests, 93 s alone; the whole suite 182 of 182 (556 s, six at once).
-- Debug with ASan and UBSan: `test_fem3_eme` (the comparisons that take minutes there skipped; the cuts, the modes, the
-  junction, the wavelength step and a 6-mode bend along a path run; 430 s of its 900 with the machine shared at a load of 13 to
-  17, the junction the longest at 163 s of a function's 300 - trimmed since to a smaller window, 105 s at a load of 189),
-  `test_fem3_geometry`, `test_fem3_solve`, `test_fem_engine` (the shared `domainAt`), `test_fem_waves` (the mode solver's bend),
-  `test_multiphysics3d_doc` (218 s of its 300, run beside other suites) and `test_multiphysics_doc` (the 2D Mode Analysis's new
-  bend radius; 886 s of its 1800) pass.
+- Release: `test_fem3_eme`, 17 tests, 177 s beside other work (15 of them 93 s alone before the gratings'); the whole suite
+  182 of 182 (682 s, six at once).
+- Debug with ASan and UBSan, after the gratings: `test_fem3_eme` (the comparisons that take minutes there skipped; the cuts,
+  the modes, the junction, the wavelength step, a 6-mode bend along a path and the whole Bragg mirror - 1,000 periods with it -
+  run; 407 s of its 900, the junction the longest at 94 s of a function's 300), `test_fem3_geometry`,
+  `test_multiphysics3d_doc` (215 s of its 300, run beside other suites; its wire now with a Periodic Section) and
+  `test_multiphysics_doc` (948 s of its 1800) pass. Before them, with the bends: `test_fem3_solve`, `test_fem_engine` (the shared
+  `domainAt`) and `test_fem_waves` (the mode solver's bend), whose code the gratings did not touch.
 - The four lints in `scripts/ci/` (third-party, tool arguments, JSON nesting, shaders) are green.
 
 ## What the expansion warns about
@@ -225,7 +271,7 @@ some 70 propagating modes: TE0 |T|² 0.918 with 20 modes, 0.902 with 40). The so
 (k0² Σ A n²/2π over its rectangles): "the cut at s = 5.243 keeps 40 modes, all of them propagating ... ask for more modes (its
 window has some 80 propagating), or a smaller window". It is in the log, the tab's messages and the tools' warnings.
 
-## Four faults found on the way
+## Five faults found on the way
 
 1. **Half the propagating modes went backward.** A lossless mode's β comes from the eigensolver with an imaginary part of 1e-16,
    of either sign; "forward" was Im β < 0, so half the propagating modes were turned round, and a junction gave 4 % more power out
@@ -240,6 +286,10 @@ window has some 80 propagating), or a smaller window". It is in the log, the tab
 4. **A bend's absorber across its axis gave NaN.** An absorbing wall on a bend's inner side reached past its axis (f ≤ 0, µ′
    infinite) and the S-parameters came out NaN without a word. The window and its layer must stay within the radius now (said,
    with what to change), and a mode not finite is dropped.
+5. **A drawn grating's every tooth was a cut of its own.** Cuts were the same when their rectangles were of the same 3D
+   domains; a grating's teeth are each a domain, so a 10-period mirror counted 23 cuts for its two materials, and a thousand
+   teeth would have meant two thousand junctions' overlaps. Rectangles of the same material make the same cut now (each domain's
+   material as the cut's own model takes it: the last that has it).
 
 ## Perfectly matched layers: tried, not offered
 
@@ -267,7 +317,10 @@ the comparisons above show - and the PML code stays, with this written beside it
 | The same at another length | the overlaps alone: the cuts are kept |
 | A 90° bend of the wire, three cells, 60 (80) modes | 60 to 81 s (115 s) |
 | A 2D-like bend or MMI (uniform in z), 30 to 40 modes | 0.5 to 1.8 s |
-| `test_fem3_eme`, 15 tests | 93 s |
+| A Bragg mirror of 1,000 periods (plane-wave cuts): drawn, a section | 0.24 s, 1 to 4 ms |
+| A 2D-like grating, 30 periods, 30 modes at 40 per wavelength | some 12 s a wavelength |
+| A silicon wire's grating, 100 periods, 20 modes at 20 per wavelength (a section) | 26 wavelengths in 226 s, beside other work |
+| `test_fem3_eme`, 17 tests | 177 s beside other work (15 tests: 93 s alone) |
 
 Wavelengths are solved side by side, as many at once as half the machine's cores (a step's **Wavelengths at once**).
 
@@ -284,7 +337,12 @@ Wavelengths are solved side by side, as many at once as half the machine's cores
 - **PMLs**: see above.
 - **The 3D field** of the expansion is not drawn: the solve keeps the S-parameters and the ports' modes, not every cell's modes
   at every wavelength.
-- **Gratings, crossings, Y-branches**: the stages to come.
+- **Gratings in 3D** against a full-wave solve or a measurement: none. A silicon wire's TE sidewall grating is the hard case -
+  E across its steps -, where in 2D the expansion's κ ran 4 to 8 % low with many modes and a fine mesh, 14 % at 30 modes and 30
+  per wavelength; treat a 3D one's peak reflection as known to some 10 %, its stopband's place better. Apodized and chirped
+  gratings (drawn tooth by tooth, each tooth its own cut) and gratings that radiate (second order, grating couplers - light
+  out of the plane, not along an axis) were not tried.
+- **Crossings, Y-branches**: the stage to come.
 - **Linux, Windows, Qt 6.10.3**: not run.
 
 ## The methods weighed (before building)

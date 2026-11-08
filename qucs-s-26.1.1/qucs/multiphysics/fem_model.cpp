@@ -1823,8 +1823,9 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("cell"), tr("Longest cell where the cut changes"), QStringLiteral("length"), QStringLiteral("0.5[um]"),
                    tr("A taper or a curve is cut in steps no longer than this, each its middle's cut (a staircase): shorter, nearer "
                       "the smooth device"))},
-             {QStringLiteral("eme/port")}, {}, false, false, QStringLiteral("eme"),
-             tr("Light through a 3D device's waveguides - a straight guide, a taper, an MMI, a directional coupler, a bend - along an "
+             {QStringLiteral("eme/port"), QStringLiteral("eme/periodic")}, {}, false, false, QStringLiteral("eme"),
+             tr("Light through a 3D device's waveguides - a straight guide, a taper, an MMI, a directional coupler, a bend, a grating "
+                "(its period drawn once in a Periodic Section, or every tooth) - along an "
                 "axis of its plan or a path whose corners are bends, by eigenmode expansion: the device cut across its axis wherever "
                 "its cross-section changes (in steps where it changes all along), each cut's modes found by the full-vector mode "
                 "solver (a bend's in the bend's own frame), the cuts joined by mode matching - forward and backward, so reflections "
@@ -1851,6 +1852,21 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("op"),
              tr("Where light comes in and goes out: the modes of the device's cross-section at the start or end of its axis (or of "
                 "a box of it), each normalized to 1 W; the S-parameters between them.")});
+        add({QStringLiteral("eme/periodic"), tr("Periodic Section"), QStringLiteral("eme"), QStringLiteral("periodic"), Level::None,
+             {expr(QStringLiteral("from"), tr("Period from"), QStringLiteral("length"), QStringLiteral("0"),
+                   tr("Where the period drawn begins along the axis: x, or y (along a path, from its start)")),
+              expr(QStringLiteral("to"), tr("Period to"), QStringLiteral("length"), QStringLiteral("1"), tr("Where it ends: its length the period's")),
+              expr(QStringLiteral("periods"), tr("Periods"), QString(), QStringLiteral("10"),
+                   tr("How many times the period is taken in a row, in its place: a whole number, or a parameter of one - which a "
+                      "Parametric Sweep may run over, the cuts solved once"))},
+             {}, {}, false, false, QStringLiteral("per"),
+             tr("A grating or a Bragg mirror drawn once: the device's cells from Period from to Period to - one period, as drawn - taken "
+                "Periods times in a row in their place, the period's S-matrix and the junction back to its start raised to that power. "
+                "The geometry shows the one period; the S-parameters are the whole grating's, all its periods long. (A grating drawn "
+                "tooth by tooth is solved as it is: its two cuts and their two junctions once, however many teeth.) Its stopband sits "
+                "where its cuts' indices put it: some 30 to 40 elements per wavelength. Where E crosses its steps - a silicon wire's TE "
+                "sidewall grating - its reflection converges slowly with the modes and the mesh: a 2D one checked against the full-wave "
+                "solver came 7 to 15 % short; check it with more of both.")});
     }
 
     // Semiconductors.
@@ -4181,7 +4197,8 @@ QList<NodeKind> makeKinds()
         QStringLiteral("form union"), QStringLiteral("materials"), QStringLiteral("material"), QStringLiteral("mesh"),
         QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
     const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
-                                  QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("wavelength")};
+                                  QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("eme/periodic"),
+                                  QStringLiteral("wavelength")};
     // Solved in 3D too: heat, electrostatics and currents with their
     // features, and a study's Stationary and Time Dependent steps and its
     // Parametric Sweep - the first's adaptive refinement and light loop the
