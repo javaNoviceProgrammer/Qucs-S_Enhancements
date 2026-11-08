@@ -5,7 +5,9 @@ digitizer-recheck.md), rerun: Fig. 4(a), 4(b) and 5 of the scanned paper they
 used, through Claude's tools over stdio with no window - with the references
 the review gave, then the recheck's runs: colours and names, one colour with
 x_range and y_range, two seeds on one curve. Each line is checked to come back
-in order of x.
+in order of x, and (the second recheck, 2026-11-08-claude-pdf-digitizer-
+recheck2.md) for turning back in y between points a sliver apart: a steep side
+shuffled.
 
     python3 retest_scanned_paper.py <qucs-s program> <the paper's PDF> [<folder for the pictures>]
 
@@ -87,12 +89,22 @@ def main():
                 print(name, "refused:", d)
                 continue
             print(f"\n{name}: {ms:.0f} ms, trust {d['trust']['level']}, {len(d['series'])} series")
+            # (Points of the page a unit of each axis is, from the references.)
+            (a0, x0, y0), (a1, x1, _), (a2, _, y2) = refs
+            sx, sy = abs((a1[0] - a0[0]) / (x1 - x0)), abs((a2[1] - a0[1]) / (y2 - y0))
             for s in d["series"]:
                 ys = [y for y in s.get("y", []) if y is not None]
                 xs = [x for x in s.get("x", []) if x is not None]
-                back = sum(1 for a, b in zip(xs, xs[1:]) if b < a) if s["shape"] == "line" else 0
+                line = s["shape"] == "line" and len(xs) == len(ys)
+                back = sum(1 for a, b in zip(xs, xs[1:]) if b < a) if line else 0
+                # y turning back by more than 1.5 pt each way, within a piece.
+                starts = set(s.get("pieces_start_at", []))
+                turns = sum(1 for i in range(1, len(ys) - 1) if i not in starts and i + 1 not in starts
+                            and (ys[i] - ys[i - 1]) * (ys[i + 1] - ys[i]) < 0
+                            and abs(ys[i] - ys[i - 1]) * sy > 1.5 and abs(ys[i + 1] - ys[i]) * sy > 1.5) if line else 0
                 print(f"   {s['name']:<12} {s['shape']:<8} {s['colour']} {s['points_in_all']:>4} points, "
-                      f"x {min(xs):.3f}..{max(xs):.3f}, y up to {max(ys):.3f}" + (f", NOT IN ORDER OF X ({back} steps back)" if back else "")
+                      f"x {min(xs):.3f}..{max(xs):.3f}, y up to {max(ys):.3f}" + (f", {len(starts)} gaps" if starts else "")
+                      + (f", NOT IN ORDER OF X ({back} steps back)" if back else "") + (f", TURNS BACK {turns} times" if turns else "")
                       if xs else f"   {s['name']}: no points")
             for note in d.get("notes", []):
                 print("   note:", note)

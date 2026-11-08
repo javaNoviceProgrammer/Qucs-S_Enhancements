@@ -598,15 +598,24 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
     const qint64 extractedAt = clock.elapsed();
     // New names: by the colours asked for, the first name for the first
     // colour's series; else in the order the series come. Said, either way.
+    // (Of a colour's series, its markers take the name itself and its lines
+    // the numbered ones: a line found beside markers of its colour may be
+    // what is left of them.)
     {
         const QJsonArray names = args.value(QLatin1String("names")).toArray();
         QStringList given;
         if (!names.isEmpty() && !options.colours.isEmpty()) {
+            QList<int> order;
+            for (int i = 0; i < plot.series.size(); ++i)
+                if (plot.series.at(i).shape == dg::Series::Shape::Markers) order << i;
+            for (int i = 0; i < plot.series.size(); ++i)
+                if (plot.series.at(i).shape != dg::Series::Shape::Markers) order << i;
             for (int k = 0; k < names.size() && k < options.colours.size(); ++k) {
                 if (!names.at(k).isString()) continue;
                 const QString name = names.at(k).toString().left(200);
                 int count = 0;
-                for (dg::Series& series : plot.series) {
+                for (const int i : std::as_const(order)) {
+                    dg::Series& series = plot.series[i];
                     // (By the colour it was traced as, where it says; else the
                     // nearest - a file's own colours are the colours named.)
                     int nearest = series.asked;
@@ -654,8 +663,11 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
     const QString datasetGiven = args.value(QLatin1String("dataset")).toString().trimmed();
     if (!datasetGiven.isEmpty()) {
         const QString datasetFile = absolute(datasetGiven);
-        if (!writeOut(datasetFile, dg::dataset(plot), &error)) return errorResult(error);
+        QStringList variables;
+        if (!writeOut(datasetFile, dg::dataset(plot, &variables), &error)) return errorResult(error);
         result.insert(QStringLiteral("dataset"), QDir::toNativeSeparators(datasetFile));
+        // (A series with gaps is a variable for each piece: all to plot.)
+        result.insert(QStringLiteral("dataset_variables"), QJsonArray::fromStringList(variables));
     }
     const bool keep = args.value(QLatin1String("keep")).toBool();
     const bool show = args.value(QLatin1String("show")).toBool();

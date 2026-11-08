@@ -209,7 +209,7 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
 
 ## Tests
 
-- **`test_plot_digitizer`:** the engine alone, about 2,300 lines, 83 cases (QTest's count). It links only the engine and
+- **`test_plot_digitizer`:** the engine alone, about 2,450 lines, 84 cases (QTest's count). It links only the engine and
   Qt Core, Gui, Pdf and Test, so it builds in seconds, under the sanitizers too. It covers:
   - Calibration: two axes, log and reversed, turned and sheared, projective, polar, and each way a calibration can fail.
   - Twenty-seven forms of tick label, both ones that should read as numbers and ones that should not.
@@ -225,8 +225,8 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
     - The reader: 1,500 damaged files; 273 of them still open.
     - Content streams: 400 random ones.
     - The kept file: 4,000 damaged ones; 281 still read. Everything read is then used.
-  - CSV quoting (including a name that would be a spreadsheet formula), dataset names, thinning, and saving and restoring,
-    including a stale or damaged kept file.
+  - CSV quoting (including a name that would be a spreadsheet formula), dataset names, a series' pieces in both, thinning,
+    and saving and restoring, including a stale or damaged kept file.
 - **`test_plot_digitizer_app`:** in the program, 27 cases (one skipped offscreen):
   - Every tool, with its refusals.
   - A scan given its tick values.
@@ -461,6 +461,127 @@ The synthetic figure is unchanged or slightly better: 138 of 141 markers (137 be
 - **No OCR**, as before.
 - **Without `colours`**, Fig. 5's blue line covers 0.87–1.19: its low left part, running beside the red line and under
   rings, is not put with it.
+
+## The second recheck, and what came of it (8 November, evening)
+
+**The second recheck:** `qucs-reviews/PdfViewer/2026-11-08-claude-pdf-digitizer-recheck2.md` reran the recheck on
+the app holding edf69a28. It found R2–R4 fixed and R1 fixed in Fig. 4. Four things were left:
+- **S1:** Fig. 5's one black line, 272 points with 64 breaks, holding three things:
+  - the rings' row along the tail;
+  - points up the blue peak's sides;
+  - the "Metal / Air" key.
+
+  It took the name "COMSOL", pushing the rings to "COMSOL 2".
+- **S2:** on steep sides, y jumped between points a sliver apart in x: 9 jumps in Fig. 4(a)'s line, 13 in 4(b)'s.
+- **S3:** fewer of Fig. 4's tick marks found.
+- **S4:** the dataset and the CSV dropped a series' breaks, so a diagram drew straight lines across the stretches hidden
+  under markers.
+
+`retest_scanned_paper.py` now also counts each line's gaps and flags a line that turns back in y. The model lines were
+compared with the project's hand-digitized curves from 7 November as well, as the second recheck did.
+
+**What was done:**
+- **S1, the black line:**
+  - **The rings on the blue peak's sides were never found.** The blue line runs through each ring's middle, so a ring
+    is two half-rings of black with no hole, and the peak of their distance map lies in the stroke, too low to count.
+    For the distance map, ink of any colour now counts, as do small pockets of background walled in by ink. A peak is
+    kept only where this colour goes most of the way round it; directions where another colour covers it are not
+    counted. Fig. 5's markers went from 108 to 160, along both sides of both peaks and the whole tail to 2.0. The
+    stretches of black between them went with them.
+  - **The key:** a word's letters with holes ("e", "a") and the key's empty square were taken for markers, which broke
+    the word apart. Markers may now be letters of a word, as long as the word has at least two pieces that are not
+    markers, and markers found inside a word are dropped. A row of markers alone is still no word. The "Metal / Air"
+    key is now left out as words.
+  - **Joining pieces that share no x:** a piece is put with a curve only if it carries on from it. Its end must be
+    where the curve's end is, or where either end heads, within a few line widths over a short way, and more over a
+    longer gap. Curves seen far apart, two peaks of one curve with the stretch between them under markers, are put
+    together in a second pass over whole curves. That pass also joins two curves that pass through much the same
+    heights.
+  - **After the merge**, each stretch of a line between its gaps is tested again against the markers of its colour.
+    In a colour with markers of its own:
+    - a line with a gap every ten points or fewer is dropped as scraps put in a row;
+    - a short line, most of it within two markers' widths of them, is dropped as what is left of them.
+
+    A line drawn through its own markers is long, so it stays.
+  - **Names:** with `colours` and `names`, a colour's markers take the name itself, and its lines take the numbered
+    ones.
+- **S2, steep sides:**
+  - Lines are kept in the order they were walked, not sorted by x first.
+  - Inside a run, a step back of less than a line's turn is jitter, and x is held there instead of shuffled.
+  - Runs are cut where the walk reverses, such as up a near-vertical side and back down.
+  - Points within four line widths of a curve where it already is count as doubled and are dropped; so are stragglers
+    of one or two points left between them.
+  - A curve's runs are put in order by their first x, each keeping its own order.
+  - Where two runs share more x than a line's jitter: on a steep side both going the same way, they are merged by y;
+    elsewhere, by x.
+  - A run narrower than the line is laid the way that carries on from the last point.
+  - Points of a steep side at much the same x are ordered by y, from the height before them to the height after.
+- **S4, gaps in what is written:**
+  - **The dataset:** a series with breaks is written as one variable per piece (`NAME_1`, `NAME_2`, ...) instead of one
+    across its gaps. `digitize_plot` lists them all in `dataset_variables`.
+  - **The CSV:** a fourth column, `piece`, numbers each series' stretches between its gaps.
+  - `resultsCsvAndDataset` checks both, including a name that would clash with a piece's.
+- **S3, Fig. 4's tick marks:**
+  - Fig. 4's ticks point inward and are about 0.75 pt long. The inner strip searched starts 0.9 pt inside the frame, so
+    it missed them; most of the x ticks are also under rings.
+  - The marks the first recheck reported most likely came from the old frame 3.8 pt below the axis. The strip outside
+    that frame ran through the tick labels' strokes. The frame did not move to a near-duplicate box.
+  - When neither strip finds marks, a shallow strip from 0.3 pt inside is tried. Fig. 4(a) now gives its five y marks
+    (0 to 0.4 in steps of 0.1) and Fig. 4(b) four, where before they gave none and two. Fig. 4's x marks are still
+    only the frame's ends.
+
+**The same runs, second recheck → now:**
+
+| | Second recheck | Now |
+|---|---|---|
+| Fig. 5, three colours | red, blue, 1 black line (272 pts, 64 breaks, the key in it, named "COMSOL"), 108 markers, 4 of them on the key | red, blue, 160 markers, no black line, nothing on the key |
+| Fig. 5, no colours (not rerun by the second recheck; edf69a28 as this note gave it) | 5 series, the blue line 0.87–1.19 | red, blue 0.61–1.27, 159 markers |
+| Fig. 4(a), names | "Model" one curve, 9 jumps | "Model" one curve over both peaks, no turn back; "COMSOL" the rings |
+| Fig. 4(b), names | "Model" one curve, 13 jumps | "Model" one curve, no turn back |
+| Fig. 4(a), two seeds | one curve | one curve, no turn back |
+| Lines turning back in y between points a sliver apart | every Fig. 4 line | none |
+
+Jumps of more than 4 pt within 0.3 pt of x, the second recheck's measure, are now 6 in Fig. 4(a) and 5 in Fig. 4(b).
+Each goes one way: the line is steep there and the next point lies past a ring it was followed under.
+
+**Against the hand-digitized curves** (gaps over 0.02 µm not bridged):
+
+| Curve | Second recheck | Now |
+|---|---|---|
+| Fig. 4(a) | rms 0.012, worst +0.038 | rms 0.014, worst −0.055 at 0.802 µm |
+| Fig. 4(b) | rms 0.040, worst +0.102 at 0.786 µm | rms 0.044, worst +0.099 at 0.781 µm |
+| Fig. 5 ch1 | rms 0.006, worst −0.021 | rms 0.006, worst +0.026 at 1.004 µm |
+| Fig. 5 ch2 | rms 0.010, worst +0.039 | rms 0.013, worst +0.069 at 0.809 µm |
+
+The worst differences sit on the steepest sides, as before. There the stroke spans 5–7 pt of height at one x. The
+hand-digitized top of Fig. 4(b) is also flat at 0.837 across 0.788–0.798 µm. So on those sides the hand-digitized
+curves cannot rank the two builds; the lines no longer zigzag there.
+
+**The synthetic figures:**
+- `aPapersFigure`: 138 of 141 markers, as before. The blue line's worst error is now 0.0092 (it was 0.0116).
+- New, `ringsPackedOnASteepPeakAndAKey`: a narrow peak with thick rings packed along its sides, the line through
+  their middles, and a key of a filled and an empty square with words, unboxed. It checks:
+  - no black line comes back;
+  - the blue line is one curve, in order of x, turning back in y at most once;
+  - 192 of 200 rings are found, 192 of 199 found ones are on a ring, and none is in the key.
+
+**Tests:**
+- **Release, through ctest:** all pass: `test_plot_digitizer` (84), `test_plot_digitizer_app`, `test_pdf_viewer`,
+  `test_mcp_server`, `test_mcp_wishlist`, `test_claude_fuzz` and `test_qucs_control`.
+- `test_qucs_control` first failed on the tool description's 2,048-character cap: `digitize_plot`'s grew to 2,135 with
+  the sentence about pieces. That sentence is shorter now (2,030).
+- **ASan/UBSan** (Debug): `test_plot_digitizer` and `test_plot_digitizer_app` pass with no report.
+- The four lints are clean.
+
+**Still short:**
+- **Fig. 4's x tick marks** are under the rings, so `x_values` cannot be used there; `x_range` or references calibrate
+  it.
+- **A same-colour line drawn through its markers** ("-o-") is protected by its length. A short one, or one with a gap
+  every few markers, would be dropped as what is left of the markers. Nothing on this paper is drawn that way, and no
+  test has one.
+- **No OCR**, as before.
+- The hand-digitized comparison was not added to the workspace's `digitizer_comparison.dpl`. Its datasets are the
+  review's, written before S4.
 
 ## What could not be verified
 

@@ -261,10 +261,13 @@ void paintMarks(class QPainter& painter, const Plot& plot, double pixelsPerPoint
 
 // --- Results ---------------------------------------------------------------
 
-/// "series,x,y" lines, every point of every series.
+/// "series,x,y,piece" lines, every point of every series; piece numbers the
+/// stretches between its breaks, from 1.
 QString csv(const Plot& plot);
-/// A Qucs dataset: each series a dependent over an independent of its own.
-QByteArray dataset(const Plot& plot);
+/// A Qucs dataset: each series a dependent over an independent of its own;
+/// one with breaks, a pair for each piece (NAME_1, NAME_2...). \a variables,
+/// if given, gets the dependents' names in order.
+QByteArray dataset(const Plot& plot, QStringList* variables = nullptr);
 /// Names made fit for a dataset's variables.
 QString variableName(const QString& name);
 
