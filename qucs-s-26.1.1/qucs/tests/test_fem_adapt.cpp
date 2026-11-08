@@ -693,9 +693,16 @@ void TestFemAdapt::goalOrientedRefinesForTheValue()
     json.replace("400[K]", "101[K]").replace("300[K]", "1[K]");
     Model ref = modelOf(json);
     // (The reference refined by the adjoint: by the fields' error, at 1e-8, the
-    // check catches the sensor's agreement as false and cuts every element.)
+    // check catches the sensor's agreement as false and cuts every element.
+    // And without its own check: at 1e-7 even the adjoint's check moves the value
+    // by about that - 1.0e-7 in one run - and, when it counts that as a false
+    // agreement, cuts every element past any limit a test can wait for. Which
+    // runs do is not fixed on macOS, where Accelerate's threaded factorization
+    // rounds differently from one run to the next. Its value is good to about
+    // 1e-7, ten times what the runs below are asked; they keep their checks.)
     const QString rt = addCheck(ref, {QStringLiteral("sensor")}, {{QStringLiteral("tolerance"), slowBuild() ? QStringLiteral("1e-6") : QStringLiteral("1e-7")},
-                                                             {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 40}});
+                                                             {QStringLiteral("refine"), QStringLiteral("goal")}, {QStringLiteral("maxmeshes"), 40},
+                                                             {QStringLiteral("check"), false}});
     const ConvergenceResult reference = check(ref, rt);
     QVERIFY2(reference.converged, qPrintable(reference.summary + reference.notes.join(QStringLiteral(" | "))));
     const double exact = finalOf(reference)->limit;

@@ -514,7 +514,8 @@ then the other. At `a26ec63a` its error said was below the error made in 3 of 4 
 7.7e-8 made. Now it says more, and in some runs it reaches 1e-7 only near 957,000 unknowns, where its check's mesh would pass
 the 2e6 limit, so it stops at "unknowns". It failed 5 runs of 5 on its own in Release here and passed in the whole suite's
 run. The CI session's change to that test runs the reference without its own check (macOS's run-to-run rounding, its N1); with
-that change it passed 4 of 4 here. That change is in its branch, not this one.
+that change it passed 4 of 4 here, and it is taken here as that session wrote it (the coordinating session: "Take it"), so the
+two branches carry the same lines. The runs under test keep their checks.
 
 **Tests:** `estimateOfAlternatingChanges` checks three cases. On the corner's macOS uniform meshes, the error said is at least
 the error left on every three or more. On CI's ratios it is at least the 2.4 changes left (1.82 with the code before). A
