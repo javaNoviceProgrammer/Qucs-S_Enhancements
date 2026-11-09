@@ -281,6 +281,7 @@ set_tests_properties(test_rf25_fullwave_2 PROPERTIES
   TIMEOUT 900)
 qucs_add_test(test_rf25_returns)
 qucs_add_test(test_rf25_hfss)
+qucs_add_test(test_rf25_stack)
 qucs_add_test(test_rf25_deembed)
 # (Each calibration solves three strips now, and shorter ones beside them
 # where they disagree - a phase E check - and every strip's

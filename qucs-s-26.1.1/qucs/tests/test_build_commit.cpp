@@ -86,7 +86,8 @@ private slots:
         // (Marked at their first use: Ansys a registered mark, the others'
         // registration not confirmed - ™, which any mark may carry.)
         for (const QString& said : {QStringLiteral("Ansys®, HFSS™, Lumerical™, Zemax™ and OpticStudio™"), QStringLiteral("trademarks of ANSYS, Inc. or its subsidiaries"),
-                                    QStringLiteral("not affiliated with, sponsored or endorsed by ANSYS, Inc. or Synopsys, Inc."),
+                                    QStringLiteral("EMX™ is a trademark of Cadence Design Systems, Inc."),
+                                    QStringLiteral("not affiliated with, sponsored or endorsed by ANSYS, Inc., Synopsys, Inc. or Cadence Design Systems, Inc."),
                                     QStringLiteral("the property of their respective owners")})
             QVERIFY2(text.contains(said), qPrintable(said));
         QFile readme(QStringLiteral(QUCS_EXAMPLES_DIR "/../../README.md"));
