@@ -21,6 +21,7 @@
 #include "fem3_solver.h"
 #include "fem3_wave.h"
 #include "fem_solver.h"
+#include "fem_sparse.h"
 
 #include <QJsonArray>
 #include <QtTest>
@@ -47,6 +48,21 @@ bool slowBuild()
 #endif
 #endif
     return false;
+}
+
+/// Why a full-size solve is left out here (\a what: what it is), or
+/// nothing: a sanitized build, or Eigen's LU factorizing it - where this
+/// macOS has no Accelerate LU (macOS 15: CI's runner), on Linux, or chosen
+/// (QUCS_FEM_SOLVER=eigen). By Eigen's the wire through PMLs went past
+/// QtTest's 300 s on an M2 Ultra, its process 18.6 GB - CI's runner has 7 -,
+/// where Accelerate's LDLT takes 43 s; the five such solves were never
+/// meant for it.
+QString leftOut(const char* what)
+{
+    if (slowBuild()) return QStringLiteral("a sanitized build: %1").arg(QLatin1String(what));
+    if (acceleratedLu()) return {};
+    const QString why = acceleratedLuHindrance();
+    return QStringLiteral("Eigen's LU (%1): %2, and gigabytes").arg(why.isEmpty() ? QStringLiteral("chosen") : why, QLatin1String(what));
 }
 
 QJsonArray pairOf(double a, double b)
@@ -258,7 +274,7 @@ private slots:
     // PMLs, their own modes crowding the search - the same S within 2e-3.
     void aWireThroughPmlsKeepsItsPhase()
     {
-        if (slowBuild()) QSKIP("a sanitized build: a cut with PMLs takes minutes");
+        if (const QString why = leftOut("a cut with PMLs takes minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
         const double L = 1, Y = 0.85, Z0 = -0.6, Z1 = 0.82, d = 0.4;
         Model m = model3d(0.15);
         addBox(m, QStringLiteral("ox"), 0, L, -Y, Y, Z0, Z1);
@@ -306,7 +322,7 @@ private slots:
     // 0.06 in a slice 0.2 across).
     void aSlabStepAgreesWithTheFullWave2D()
     {
-        if (slowBuild()) QSKIP("a sanitized build: 335,000 unknowns take minutes");
+        if (const QString why = leftOut("335,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
         const double L = 9, W = 0.08;
         Model m = model3d(0.25);
         addBox(m, QStringLiteral("lossb"), 0, 2 * L, -W / 2, W / 2, -1.5, -0.5);
@@ -340,7 +356,7 @@ private slots:
     // reciprocal; every propagating mode's power 1.
     void aJunctionAgreesWithTheExpansion()
     {
-        if (slowBuild()) QSKIP("a sanitized build: 185,000 unknowns take minutes");
+        if (const QString why = leftOut("185,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
         const double L = 1.5;
         const Model m = halfJunction(0.5, 1.0, L, 0.15, 0.08);
         const Built b = build(m);
@@ -353,7 +369,8 @@ private slots:
               std::norm(r.S(1, 1)), r.balance[0], r.balance[1], std::abs(r.S(1, 0) - r.S(0, 1)));
         QVERIFY2(std::abs(t / 0.9006 - 1) < 2.5e-3, qPrintable(QString::number(t)));
         QVERIFY(std::abs(r.S(1, 0) - r.S(0, 1)) < 1e-9);
-        QVERIFY(std::abs(r.balance[0] - 1) < 1e-5 && std::abs(r.balance[1] - 1) < 1e-5);
+        QVERIFY2(std::abs(r.balance[0] - 1) < 1e-5 && std::abs(r.balance[1] - 1) < 1e-5,
+                 qPrintable(QStringLiteral("balance %1 %2").arg(r.balance[0], 0, 'g', 12).arg(r.balance[1], 0, 'g', 12)));
     }
 
     // A sidewall's step, 0.49 into 0.51 µm (a grating's tooth): its TE0
@@ -364,7 +381,7 @@ private slots:
     // reflects some 1e-4 at this mesh.
     void aSidewallStepReflectsAsTheExpansionSays()
     {
-        if (slowBuild()) QSKIP("a sanitized build: 154,000 unknowns take minutes");
+        if (const QString why = leftOut("154,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
         const double L = 1.5;
         auto back = [&](double w2) {
             const Model m = halfJunction(0.49, w2, L, 0.15, 0.08);
@@ -390,7 +407,7 @@ private slots:
     // which cannot carry light up the arm across its axis, 0.805).
     void aCrossingSendsLightUpItsArm()
     {
-        if (slowBuild()) QSKIP("a sanitized build: three ports' modes and 100,000 unknowns take minutes");
+        if (const QString why = leftOut("three ports' modes and 100,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
         Model m = model3d(0.25);
         addBox(m, QStringLiteral("ox"), 0, 5, 0, 2.5, -0.6, 0.82);
         addBox(m, QStringLiteral("h"), 0, 5, 0, 0.25, 0, 0.22);
