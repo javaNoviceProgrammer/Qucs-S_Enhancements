@@ -170,12 +170,13 @@ machine above.
   - **Choosing what is taken:** `colours`, `seeds` (one series per point on a curve), `route`, `trace_scale`, and `names`
     to rename the series.
   - **Output size:** `max_points` per series, 200 by default, thinned with Douglas–Peucker so the shape is kept; 0 returns
-    every point. `picture` (on by default) and the usual picture arguments control the overlay.
+    every point. At most 24 series come back, the longest; `series_left_out` counts the rest, and trust says so.
+    `picture` (on by default) and the usual picture arguments control the overlay.
   - **Writing out:** `csv` (`series,x,y`) and `dataset`. The dataset is a Qucs `.dat` in which each series depends on its
     own `<name>_x`, which `add_diagram`/`add_trace` can plot beside a simulation. A test reads it back with the program's
     own dataset reader.
-  - **Keeping:** `keep` (with `replace`) stores the plot with the PDF, and an open tab shows it at once. `show` also opens
-    the panel on it.
+  - **Keeping:** `keep` (with `replace`) stores the plot with the PDF, with what the call asked for (`asked`: the scales,
+    colours, references and the like), and an open tab shows it at once. `show` also opens the panel on it.
   - **Errors:** bad input is refused with the reason. Wrong value counts say where the marks are. A kept file that cannot be
     read is left untouched.
 - **`get_digitized {path, plot, max_points, picture}`:** what is kept, in the axes' units. If the PDF has changed since,
@@ -209,7 +210,7 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
 
 ## Tests
 
-- **`test_plot_digitizer`:** the engine alone, about 2,550 lines, 86 cases (QTest's count). It links only the engine and
+- **`test_plot_digitizer`:** the engine alone, about 2,740 lines, 88 cases (QTest's count). It links only the engine and
   Qt Core, Gui, Pdf and Test, so it builds in seconds, under the sanitizers too. It covers:
   - Calibration: two axes, log and reversed, turned and sheared, projective, polar, and each way a calibration can fail.
   - Twenty-seven forms of tick label, both ones that should read as numbers and ones that should not.
@@ -666,6 +667,91 @@ piece, the review's measure, which gives the review's numbers for 09124417):
 - **A same-colour line through closely spaced markers** ("-o-"), with each bit shorter than a marker and a half, would be
   taken for markers not found, as before.
 - Fig. 4's x tick marks, OCR: as before.
+
+## The open items: Chen et al.'s vector plots (9 November)
+
+**The review:** `qucs-reviews/PdfViewer/2026-11-09-claude-pdf-viewer-open-items.md` gathers what is left. Its part A is
+the scanned paper (above); part B is the eight depth-profile plots of Chen et al. (1996), digitized for the heavy-ion
+implant benchmark on the build of 8 November, all vector art; part C two viewer items from October. Rerun on 22aa8c86,
+part B came out as the review says: 24, 24, 24, 24, 20, 24, 17 and 9 series for 5+5, 2+2, 4+4, 5+5, 3+3, 2+2, 2+2 and
+2+2 curves, and page 14's x axis log. Fixed here: B1, B2 with B7, B3, B6 and B8. Left: B4 (names from the arrows), B5
+(arrows and ellipses as curves), A1–A4, and part C (C1's PDF is not where the review says).
+
+**What was found and done:**
+- **B2 and B7, a line in many series:** the file draws each SIMS line as one long path and then a short path for each run
+  of counts, one after another along x. Each stops where a count is zero, which a log axis cannot show. The vector route
+  joined only paths that touch (0.6 pt), so page 14 had 84 series and page 17 103.
+  - Now a line's path is joined to the next path of its style in the file when both run the same way along x and the
+    next starts after the first ends, by no more than a tenth of the frame's width, with a gap between them. B7's
+    curve split where it reaches the frame's bottom is the same case.
+  - A path under 3 pt long is still dropped as a scrap, but only after the joining: two counts alike side by side make a
+    path that short, and it belongs to the line.
+  - Found on the way: a group of six or more short paths was taken for a dashed line written stroke by stroke, and joined
+    up to three dash lengths apart with no gap, which bridged the noisy pieces and called them dashed. It now needs its
+    gaps as even as a pattern's: the middle half within 0.6 of the median (the paper's blue dashes 0.27, its noisy red
+    pieces 1.11), and it bridges no more than twice the usual gap.
+- **B1, a linear axis read as log:** the labels at the frame's corners ("0.0", "0.3", 10¹⁶) were dropped, because a label
+  is kept only beside a tick mark and the frame's own edges are not marks. With 0.1 and 0.2 left, linear and log fit
+  alike, and the minor ticks, one missing, looked uneven. A label centred on an end of the frame (3 pt), outside it on
+  its axis's side, is now kept and put on that end; the other axis's label at the corner is on the wrong side and is not.
+  Two labels alone go to log by their marks only when the gaps between them shrink (or grow) step by step, as a decade's
+  do, not for one gap twice the others.
+- **B6, points held along the frame:** on a log axis, a line drawn along the frame's edge (two points or more), or a
+  line's point where it leaves the frame, stands for a value beyond the axis. They are left out, with a gap and a note. A
+  point that touches the edge between two inside it may be a value at the axis's end and is kept.
+- **B3, the cap:** it was 24 and kept the longest, and said so in `notes`. The answer now has `series_left_out`, and trust
+  says it (medium at best).
+- **B8:** a line starting a hair before the axis is put on it (x −0.002 µm before); `asked` keeps the call's scales,
+  colours, references and the like with the plot; and `ink_under_points` / the record's `agreement` are left out for the
+  file's own paths unless under 98% (a path is always under its own ink; under that, part of it is hidden).
+
+**Chen et al., 22aa8c86 → now:**
+
+| Page, plot | Curves | Series | Not curves now | x axis |
+|---|---|---|---|---|
+| 14, 2 | 5 + 5 | 24 (84 found) → 20 | 5 arrows, as 10 | log 0.05–0.4, guessed → linear 0–0.3, ticks 0, 0.1, 0.2, 0.3 |
+| 15, 1 | 2 + 2 | 24 (44) → 9 | 1 scrap of 4 points, 2 arrows | linear |
+| 16, 1 | 4 + 4 | 24 (56) → 17 | 1 scrap, 4 arrows | linear, 0.1 left out → all of 0–0.3 |
+| 17, 1 | 5 + 5 | 24 (103) → 23 | 3 scraps of 4–26 points, 5 arrows | 0.1–0.3 → 0–0.4 |
+| 18, 1 | 3 + 3 | 20 → 14 | 3 arrows, 2 ellipses | 0.1–0.5 → 0–0.6 |
+| 19, 1 | 2 + 2 | 24 (33) → 10 | 2 scraps, 2 arrows | 0.1–0.5 → 0–0.6 |
+| 19, 2 | 2 + 2 | 17 → 10 | 2 scraps, 2 arrows | 0.1–1 → 0–1 |
+| 20, 1 | 2 + 2 | 9 → 9 | 2 arrows | 0.1–0.4 → 0–0.5 |
+
+- Each curve is one series. Against the curves the benchmark picked out by hand (`HeavyIonImplant/chen_fig*.dat`, rms
+  in decades, each point against the nearest within 0.0025 µm in x):
+  - pages 15, 17, 18, 19 and 20: 0.000–0.001, the same points;
+  - page 14, picked from a run forced to linear on two labels: 0.007–0.013 for all ten curves, now on four;
+  - page 16: 0.025–0.148. Its x calibration changed: the frame's left edge read −0.0026 µm and the 0.1 label was left
+    out as not fitting; now 0 is on the corner and all four labels fit within 0.1 pt. The difference is on the steep
+    sides.
+- No series is left out on any plot. The dashed model lines are still dashed; no SIMS line is.
+- The scanned paper's eight runs are the same, point for point.
+
+**The synthetic figures:**
+- New, `aProfileDrawnInPiecesIsOneCurve`: a log plot drawn as Chen's are. Two noisy profiles, each a path per run of
+  counts and broken at every zero (39 paths, 9 of them under 3 pt); a histogram held along the frame's bottom between
+  two bumps; x labels at the corners with no tick of their own and a minor tick missing between 0.1 and 0.2. It asserts
+  linear x on four labels, not a guess; two red series with 37 gaps holding every point drawn, not dashed; the
+  histogram one series with no point on the bottom and a gap between its bumps.
+- New, `seriesLeftOutAndWhatWasAskedAreKept`: three curves with two asked for, `seriesLeftOut` 1 and trust saying so; a
+  line starting 0.9 pt before the axis starts on it; `asked` kept and read back; the paths' own ink not said, a trace's
+  and a partly hidden path's said.
+
+**Tests:**
+- **Release, through ctest:** all pass: `test_plot_digitizer` (88), `test_plot_digitizer_app`, `test_pdf_viewer`,
+  `test_mcp_server`, `test_mcp_wishlist`, `test_claude_fuzz` and `test_qucs_control`.
+- **ASan/UBSan** (Debug): `test_plot_digitizer` and `test_plot_digitizer_app` pass with no report.
+- The four lints are clean.
+
+**Still short:**
+- **B5 and B4:** the arrows (a 2-point shaft and a 3-point head) and the closed ellipses still come back as curves, and
+  curves are numbered in the order found, not named from the arrows' text.
+- **Scraps:** a few short series of 4–26 points by a curve's end, drawn apart from it out of order (page 17's model
+  pieces at 0.37 µm), are not joined.
+- **A1:** a line's dataset names still depend on whether it has gaps. Writing one variable with a gap marker between
+  pieces needs the dataset writer and the diagrams (`rectdiagram.cpp` draws a missing value at 0) to change.
+- **On a linear axis,** a line held along the frame is kept as data: a curve at the axis's 0 is often real.
 
 ## What could not be verified
 

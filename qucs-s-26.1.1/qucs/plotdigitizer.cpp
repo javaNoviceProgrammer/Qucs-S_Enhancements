@@ -823,6 +823,7 @@ namespace {
 
 constexpr double kLabelReachX = 42;    // points below the frame for x's labels
 constexpr double kLabelReachY = 95;    // points beside it for y's
+constexpr double kEndReach = 3;       // a label this near an end of the frame is centred on it
 
 struct Lines {
     QList<HLine> horizontal, vertical;
@@ -1065,9 +1066,10 @@ AxisLine fitLine(const QList<double>& p, const QList<double>& u, double toleranc
 }
 
 // The numbers of one side's labels, as ticks; the marks they sit on found.
-bool fitAxisFrom(const QList<Token>& labels, const QList<double>& marks, bool xAxis, Axis* axis, double reach)
+// (\a ends: the frame's ends along the axis, where a label is often written
+// with no tick mark of its own - its first and last.)
+bool fitAxisFrom(const QList<Token>& labels, const QList<double>& marks, bool xAxis, Axis* axis, const QList<double>& ends = {})
 {
-    Q_UNUSED(reach)
     axis->marks = marks;
     axis->ticks.clear();
     axis->found = false;
@@ -1092,6 +1094,12 @@ bool fitAxisFrom(const QList<Token>& labels, const QList<double>& marks, bool xA
             if (std::abs(m - centre) < distance) {
                 distance = std::abs(m - centre);
                 best = m;
+                on = true;
+            }
+        for (const double e : ends)
+            if (std::abs(e - centre) <= std::min(distance, kEndReach)) {
+                distance = std::abs(e - centre);
+                best = e;
                 on = true;
             }
         Tick tick;
@@ -1138,15 +1146,24 @@ bool fitAxisFrom(const QList<Token>& labels, const QList<double>& marks, bool xA
             for (const double m : marks)
                 if (m > low + 0.5 && m < high - 0.5) between << m;
             if (between.size() >= 3) {
-                double smallest = 1e300, largest = 0;
+                // A decade's marks crowd one way, each gap smaller than the
+                // last; a linear axis's are even, but for a mark not found
+                // (a gap twice the others).
+                QList<double> gaps;
                 double previous = low;
                 between << high;
                 for (const double m : std::as_const(between)) {
-                    smallest = std::min(smallest, m - previous);
-                    largest = std::max(largest, m - previous);
+                    gaps << m - previous;
                     previous = m;
                 }
-                looksLog = largest > 1.8 * smallest;
+                int falling = 0, rising = 0;
+                for (int i = 0; i + 1 < gaps.size(); ++i) {
+                    falling += gaps.at(i + 1) < 0.97 * gaps.at(i);
+                    rising += gaps.at(i + 1) > gaps.at(i) / 0.97;
+                }
+                const int steps = int(gaps.size()) - 1;
+                const auto [least, most] = std::minmax_element(gaps.begin(), gaps.end());
+                looksLog = *most > 1.8 * *least && std::max(falling, rising) >= std::max(2, int(std::ceil(0.8 * steps)));
             }
             const double va = valuesOf.at(a), vb = valuesOf.at(b);
             if (va > 0 && vb > 0) {
@@ -1243,7 +1260,24 @@ bool operator==(const Token& a, const Token& b) { return a.text == b.text && a.b
 // The labels that stand by a tick mark - within half the marks' spacing of
 // one - or, where no marks were found, evenly spaced in one row of one size.
 // The rest is text that happens to be near: a page number, a caption.
-static QList<Token> alignedLabels(const QList<Token>& labels, const QList<double>& marks, bool xAxis)
+// The frame's two ends along an axis.
+QList<double> endsOf(const QRectF& frame, bool xAxis) { return xAxis ? QList<double>{frame.left(), frame.right()} : QList<double>{frame.top(), frame.bottom()}; }
+
+// A label centred on an end of the frame, outside it on the axis' side: the
+// axis' first or last, written at the corner with no tick of its own ("0.0"
+// under the corner; not the other axis's label beside it).
+bool atAnEnd(const Token& t, const QRectF& frame, bool xAxis, int side)
+{
+    const QPointF c = t.box.center();
+    if (xAxis) {
+        const bool outside = side == 0 ? t.box.top() >= frame.bottom() - 0.5 : t.box.bottom() <= frame.top() + 0.5;
+        return outside && (std::abs(c.x() - frame.left()) <= kEndReach || std::abs(c.x() - frame.right()) <= kEndReach);
+    }
+    const bool outside = side == 0 ? t.box.right() <= frame.left() + 0.5 : t.box.left() >= frame.right() - 0.5;
+    return outside && (std::abs(c.y() - frame.top()) <= kEndReach || std::abs(c.y() - frame.bottom()) <= kEndReach);
+}
+
+static QList<Token> alignedLabels(const QList<Token>& labels, const QList<double>& marks, bool xAxis, const QRectF& frame, int side)
 {
     if (labels.isEmpty()) return labels;
     const auto along = [xAxis](const Token& t) { return xAxis ? t.box.center().x() : t.box.center().y(); };
@@ -1256,7 +1290,7 @@ static QList<Token> alignedLabels(const QList<Token>& labels, const QList<double
         for (const Token& t : labels) {
             double nearest = 1e9;
             for (const double m : marks) nearest = std::min(nearest, std::abs(m - along(t)));
-            if (nearest <= reach) kept << t;
+            if (nearest <= reach || atAnEnd(t, frame, xAxis, side)) kept << t;
         }
         return kept;
     }
@@ -1290,13 +1324,13 @@ void readAxes(Plot& plot, const QList<Token>& tokens, const QList<HLine>& shortV
                                           marksOn(frame, xAxis, 1, xAxis ? shortV : shortH, xAxis ? longV : longH, gridSpan)};
         for (const int side : {0, 1}) {
             const QList<double> marks = marksAt[side];
-            QList<Token> labels = alignedLabels(labelsOn(tokens, frame, xAxis, side), marks, xAxis);
+            QList<Token> labels = alignedLabels(labelsOn(tokens, frame, xAxis, side), marks, xAxis, frame, side);
             // Labels at the top (or the right) with no marks there, and marks
             // at the bottom (or the left): a running header, a caption.
             if (side == 1 && marks.size() < 2 && marksAt[0].size() >= 2) labels.clear();
             Axis axis;
             axis.side = side;
-            fitAxisFrom(labels, marks, xAxis, &axis, 0);
+            fitAxisFrom(labels, marks, xAxis, &axis, endsOf(frame, xAxis));
             int count = 0;
             for (const Tick& t : std::as_const(axis.ticks)) count += t.used;
             // (The side with the most marks when no labels decide: a scan's.)
@@ -1321,7 +1355,7 @@ void readAxes(Plot& plot, const QList<Token>& tokens, const QList<HLine>& shortV
                 Axis second;
                 second.side = best.side == 0 ? 1 : 0;
                 const QList<double> marks = marksOn(frame, xAxis, second.side, xAxis ? shortV : shortH, xAxis ? longV : longH, gridSpan);
-                bool differs = fitAxisFrom(other, marks, xAxis, &second, 0) && second.ticks.size() != best.ticks.size();
+                bool differs = fitAxisFrom(other, marks, xAxis, &second, endsOf(frame, xAxis)) && second.ticks.size() != best.ticks.size();
                 for (int i = 0; second.found && !differs && i < second.ticks.size(); ++i)
                     differs = std::abs(second.ticks.at(i).value - best.ticks.at(i).value) > 1e-12 * std::abs(best.ticks.at(i).value);
                 if (differs)
@@ -1685,6 +1719,8 @@ Trust assess(const Plot& plot)
     axisCheck(plot.yAxis, QStringLiteral("y"));
     if (plot.angle != 0) t.reasons << tr("The scan is turned by %1°, set straight first.").arg(plot.angle, 0, 'f', 2);
     if (plot.series.isEmpty()) lower(0, tr("Nothing was extracted."));
+    if (plot.seriesLeftOut > 0)
+        lower(1, tr("%1 more series were found and left out: only the %2 with the most points are here. 'colours', 'exclude' or a smaller region narrows it.").arg(plot.seriesLeftOut).arg(plot.series.size()));
     // Precision is not all: many series, most of them scraps, are mostly
     // junk - an inset's outlines, a legend, labels drawn as pictures.
     {
@@ -2079,6 +2115,8 @@ Series::Origin originOf(const QString& s)
 QString shapeText(Series::Shape s) { return shapeName(s); }
 QString originText(Series::Origin o) { return originName(o); }
 
+bool inkSaysSomething(const Series& s) { return s.agreement >= 0 && (s.origin != Series::Origin::Vector || s.agreement < 0.98); }
+
 QJsonObject toJson(const Plot& plot)
 {
     QJsonObject o{{QStringLiteral("name"), plot.name},
@@ -2132,10 +2170,11 @@ QJsonObject toJson(const Plot& plot)
         if (s.dashed) item.insert(QStringLiteral("dashed"), true);
         if (s.width > 0) item.insert(QStringLiteral("width"), s.width);
         if (s.bridged > 0) item.insert(QStringLiteral("bridged"), s.bridged);
-        if (s.agreement >= 0) item.insert(QStringLiteral("agreement"), s.agreement);
+        if (inkSaysSomething(s)) item.insert(QStringLiteral("agreement"), s.agreement);
         series.append(item);
     }
     o.insert(QStringLiteral("series"), series);
+    if (!plot.asked.isEmpty()) o.insert(QStringLiteral("asked"), plot.asked);
     return o;
 }
 
@@ -2251,6 +2290,9 @@ bool fromJson(const QJsonObject& o, Plot* out, QString* why)
         if (std::isfinite(agreement) && agreement >= 0 && agreement <= 1) s.agreement = agreement;
         plot.series << s;
     }
+    // (What the call asked for: kept as it came, for reading - small.)
+    const QJsonObject asked = o.value(QLatin1String("asked")).toObject();
+    if (QJsonDocument(asked).toJson(QJsonDocument::Compact).size() <= 64 * 1024) plot.asked = asked;
     *out = std::move(plot);
     return true;
 }
