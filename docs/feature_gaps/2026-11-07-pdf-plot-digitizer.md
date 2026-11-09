@@ -210,7 +210,7 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
 
 ## Tests
 
-- **`test_plot_digitizer`:** the engine alone, about 2,740 lines, 88 cases (QTest's count). It links only the engine and
+- **`test_plot_digitizer`:** the engine alone, about 2,840 lines, 89 cases (QTest's count). It links only the engine and
   Qt Core, Gui, Pdf and Test, so it builds in seconds, under the sanitizers too. It covers:
   - Calibration: two axes, log and reversed, turned and sheared, projective, polar, and each way a calibration can fail.
   - Twenty-seven forms of tick label, both ones that should read as numbers and ones that should not.
@@ -748,10 +748,51 @@ part B came out as the review says: 24, 24, 24, 24, 20, 24, 17 and 9 series for 
 - **B5 and B4:** the arrows (a 2-point shaft and a 3-point head) and the closed ellipses still come back as curves, and
   curves are numbered in the order found, not named from the arrows' text.
 - **Scraps:** a few short series of 4–26 points by a curve's end, drawn apart from it out of order (page 17's model
-  pieces at 0.37 µm), are not joined.
+  pieces at 0.37 µm), are not joined. (Page 17's bar is, since; see the next section.)
 - **A1:** a line's dataset names still depend on whether it has gaps. Writing one variable with a gap marker between
   pieces needs the dataset writer and the diagrams (`rectdiagram.cpp` draws a missing value at 0) to change.
 - **On a linear axis,** a line held along the frame is kept as data: a curve at the axis's 0 is often real.
+
+## The Chen recheck, and what came of it (9 November, later)
+
+**The review:** `qucs-reviews/PdfViewer/2026-11-09-claude-pdf-digitizer-chen1996-recheck.md` reran the eight plots on
+main with 3f499018 merged. It confirmed B1, B2/B7, B3, B6 and B8, and found three things: D1, page 14's legend sample
+joined into a model curve as its last piece, 3.3 decades above the curve's end; D2, a legend's sample returned as a
+series on six of the eight plots, two of them new; D3, short real pieces left unjoined.
+
+**What was found and done:**
+- **D2, legend samples as data:** the legend test looks at each drawn part: short, flat, ending just before the words.
+  Chen's dashed samples are drawn dash by dash, so each dash passed on its own, but the chain the dashes make, which is
+  what becomes a series, is wider than any one of them and was not taken for a sample. (The solid samples were caught,
+  which is why no "SIMS" sample came back.) The same test now runs on whole chains as well: at most 16 points, 4–70 pt
+  wide, 1.5 pt high, ending within 22 pt before a legend phrase and at its height. Such a chain names its style and is
+  no series. In the eight plots each sample ends 4–6 pt before its words.
+- **D1, the sample joined into a curve:** it came from D2, since the sample was a series of the curve's style starting
+  within a tenth of the frame past its end. The join now also refuses a next path that starts more than 0.3 of the
+  frame's height above or below where the first stopped. Over the eight plots, the real joins step at most 47 pt (0.21
+  of the frame), the SIMS lines' hops at the noise floor; the sample's step was 112 pt (0.67).
+- **D3, page 17's bar:** a model histogram's bar, up and down at one x, drawn before the curve it ends. The join only
+  looks forward in the file, so it never reached it. A narrow path (no wider than 2% of the frame) is now joined to the
+  curve of its style whose end it starts from (within 0.6 pt in x, the step in y as above, the nearest in y), with a
+  gap. The in-order join also takes a narrow path that runs no way along x.
+- **D3, left:** page 19/1's "Model Prediction 3" ends at 1.7e18 and the curve after it starts at 5.0e17; page 19/2's
+  starts 0.1 µm past the curve's end and repeats that curve's first and last values; page 17's "SIMS 5" is 6 points at
+  the noise floor. Joining any of them would be a guess.
+
+**Chen et al., 3f499018 → now:** 20, 9, 17, 23, 14, 10, 10, 9 series → 20, 8, 16, 21, 14, 9, 9, 8. Page 14's 5e14 model
+curve is 4 pieces ending at 0.219 µm, not 5 ending at 0.255 µm on the legend. Against the benchmark's hand-picked curves
+(`chencmp`), every match is the same as before but for the names that moved with the series taken out. The scanned
+paper's eight runs are the same, point for point.
+
+**The synthetic figure:** new, `aLegendsSampleAndABarAreTakenRight`. A log plot with a model curve dashed dash by dash in
+two pieces, between them its legend sample (dashed the same way, before "Model", far above the curve's end), then an
+unlabelled stroke of the style as far above, and a green bar drawn before the curve it ends. It asserts two blue series:
+the curve, named "Model", dashed, with one gap and no point where the sample is; the stroke on its own; and one green
+series with a gap, ending at the bar's foot. Each fix undone in turn makes it fail.
+
+**Tests:** through ctest, Release: `test_plot_digitizer` (89), `test_plot_digitizer_app`, `test_pdf_viewer`,
+`test_mcp_server`, `test_mcp_wishlist`, `test_claude_fuzz` and `test_qucs_control` pass. ASan/UBSan (Debug):
+`test_plot_digitizer` and `test_plot_digitizer_app` pass with no report. The four lints are clean.
 
 ## What could not be verified
 
