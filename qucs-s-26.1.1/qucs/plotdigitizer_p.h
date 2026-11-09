@@ -97,6 +97,9 @@ QList<QRectF> rectanglesOf(const QList<HLine>& h, const QList<HLine>& v, double 
 /// The raster route (plotdigitizer_raster.cpp).
 bool extractRaster(Source& source, Plot& plot, const Options& options, QStringList* notes);
 bool traceRaster(Source& source, Plot& plot, QPointF seed, const Options& options, Series* out, QString* why);
+/// Pieces of a line of a single point between gaps joined to the piece beside
+/// them whose end is nearer, within \a reach (points), or taken out. How many.
+int foldLonePoints(Series& s, double reach);
 /// Every series' points that fall in a region left out, taken out (a piece
 /// where they were).
 void dropExcluded(Plot& plot, QStringList* notes);
