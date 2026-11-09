@@ -1329,69 +1329,25 @@ private slots:
         }
     }
 
+    // The review's: a lithium niobate core (the library's) in oxide, between
+    // plates 4 µm apart - z-cut, the plates above and below, its TM mode; and
+    // the same turned 90° in the plane, x-cut, the plates left and right, its
+    // TE mode. Turned, it is the same device: the same Δneff per volt, the
+    // same VπL. Each device its index at 0 and 10 V, a function of its own
+    // (a sanitized build's four solves in one took 280 s of QtTest's 300 here,
+    // CI's runners slower), zCutAgainstXCut comparing them.
+    // (A sanitized build too, on its coarser mesh: the shift per volt, each
+    // device's own mesh at 0 and 10 V - not the index at 10 V alone, which
+    // asked the device's mesh and the turned one's, two meshes, to agree to
+    // 5e-6 where the coarse mesh is 5e-5 from the fine: CI's Linux, 5.9e-6
+    // apart, macOS 2e-7. docs/bug_hunts/2026-11-08-linux-debug-ci.md.)
+    void zCutDevice() { cutDevice(true); }
+    void xCutDeviceTurned() { cutDevice(false); }
     void zCutAgainstXCut()
     {
-        // The review's: a lithium niobate core (the library's) in oxide,
-        // between plates 4 µm apart - z-cut, the plates above and below, its
-        // TM mode; and the same turned 90° in the plane, x-cut, the plates
-        // left and right, its TE mode. Turned, it is the same device: the
-        // same Δneff per volt, the same VπL.
-        auto device = [](bool zcut, double volts) {
-            const QString w = zcut ? QStringLiteral("6") : QStringLiteral("4"), h = zcut ? QStringLiteral("4") : QStringLiteral("6");
-            const QString cw = zcut ? QStringLiteral("1.2") : QStringLiteral("0.6"), ch = zcut ? QStringLiteral("0.6") : QStringLiteral("1.2");
-            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
-              "parameters": [{"name": "V", "expression": "%9[V]"}],
-              "components": [{"unit": "um",
-                "geometry": [{"type": "rectangle", "name": "box", "position": ["-%1/2", "-%2/2"], "size": ["%1", "%2"]},
-                             {"type": "rectangle", "name": "core", "position": ["-%3/2", "-%4/2"], "size": ["%3", "%4"]},
-                             {"type": "difference", "name": "oxide", "input": ["box"], "tools": ["core"], "keep": true}],
-                "materials": [{"material": "Silicon dioxide", "selection": {"only": ["oxide"]}},
-                              {"material": "Lithium niobate", "orientation": "cut", "cut": "%5", "along": "y", "selection": {"only": ["core"]}}],
-                "physics": [{"type": "electrostatics", "tag": "es", "features": [
-                    {"type": "potential", "V0": "V", "selection": {"box": [%6]}},
-                    {"type": "ground", "selection": {"box": [%7]}}]},
-                  {"type": "modes", "tag": "emw", "features": [
-                    {"type": "wave", "electrooptic": true, "selection": {"only": ["core"]}}]}],
-                "mesh": {"size": "%12", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "%10"},
-                                                      {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "%11"}]}}],
-              "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 1, "neff": "2.1", "polarization": "%8"}]}]})json")
-                // (The plates: the box's bottom and top, its left and right.)
-                .arg(w, h, cw, ch, zcut ? QStringLiteral("z") : QStringLiteral("x"),
-                     zcut ? QStringLiteral("-3.01, -2.01, 3.01, -1.99") : QStringLiteral("-2.01, -3.01, -1.99, 3.01"),
-                     zcut ? QStringLiteral("-3.01, 1.99, 3.01, 2.01") : QStringLiteral("1.99, -3.01, 2.01, 3.01"), zcut ? QStringLiteral("tm") : QStringLiteral("te"))
-                .arg(volts)
-                .arg(slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05"))
-                .arg(slowBuild() ? QStringLiteral("0.6") : QStringLiteral("0.4"), slowBuild() ? QStringLiteral("coarse") : QStringLiteral("fine"))
-                .toUtf8();
-        };
-        // (On a sanitized build the biased devices alone: the same device
-        // turned, the same index - to 5e-6, a tenth of what 10 V moves it.)
-        if (slowBuild()) {
-            double biased[2];
-            for (const bool zcut : {true, false}) {
-                const Run r = run(modelOf(device(zcut, 10)));
-                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-                r.solution->select(0);
-                biased[zcut ? 0 : 1] = global(*r.solution, QStringLiteral("emw.neff"));
-            }
-            qInfo("at 10 V: z-cut TM %.7f, x-cut turned TE %.7f", biased[0], biased[1]);
-            QVERIFY2(std::abs(biased[0] - biased[1]) < 5e-6, qPrintable(QStringLiteral("%1 against %2").arg(biased[0]).arg(biased[1])));
-            return;
-        }
-        double perVolt[2], neff0[2];
-        for (const bool zcut : {true, false}) {
-            double n[2];
-            for (int k = 0; k < 2; ++k) {
-                const Run r = run(modelOf(device(zcut, k == 0 ? 0 : 10)));
-                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-                r.solution->select(0);
-                n[k] = global(*r.solution, QStringLiteral("emw.neff"));
-                // (Pockels' r in pm/V, as m/V expected: no warning.)
-                for (const QString& l : r.solution->log) QVERIFY2(!l.contains(QLatin1String("Warning")), qPrintable(l));
-            }
-            perVolt[zcut ? 0 : 1] = (n[1] - n[0]) / 10;
-            neff0[zcut ? 0 : 1] = n[0];
-        }
+        const double* perVolt = a_perVolt;
+        const double* neff0 = a_neff0;
+        if (std::isnan(perVolt[0]) || std::isnan(perVolt[1])) QFAIL("zCutDevice and xCutDeviceTurned first (they failed, or ran alone)");
         const double vpil[2] = {1.55e-6 / (2 * std::abs(perVolt[0])) * 100, 1.55e-6 / (2 * std::abs(perVolt[1])) * 100};
         qInfo("z-cut, TM: neff %.6f, %.4e per volt (VπL %.3f V·cm); x-cut turned, TE: neff %.6f, %.4e per volt (VπL %.3f V·cm)", neff0[0], perVolt[0],
               vpil[0], neff0[1], perVolt[1], vpil[1]);
@@ -1426,6 +1382,56 @@ private slots:
         const double Dt = e * e / (M_PI * hbar * hbar) * (0.2 * e + 2 * 1.380649e-23 * 300 * std::log1p(std::exp(-0.2 * e / (1.380649e-23 * 300))));
         QVERIFY(std::abs(thz / (Dt / cd(1e13, w)) - 1.0) < 1e-2);
     }
+
+private:
+    // The device of zCutAgainstXCut, z-cut or x-cut turned, at \a volts.
+    static QByteArray cutModel(bool zcut, double volts)
+    {
+        const QString w = zcut ? QStringLiteral("6") : QStringLiteral("4"), h = zcut ? QStringLiteral("4") : QStringLiteral("6");
+        const QString cw = zcut ? QStringLiteral("1.2") : QStringLiteral("0.6"), ch = zcut ? QStringLiteral("0.6") : QStringLiteral("1.2");
+        return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "V", "expression": "%9[V]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "box", "position": ["-%1/2", "-%2/2"], "size": ["%1", "%2"]},
+                         {"type": "rectangle", "name": "core", "position": ["-%3/2", "-%4/2"], "size": ["%3", "%4"]},
+                         {"type": "difference", "name": "oxide", "input": ["box"], "tools": ["core"], "keep": true}],
+            "materials": [{"material": "Silicon dioxide", "selection": {"only": ["oxide"]}},
+                          {"material": "Lithium niobate", "orientation": "cut", "cut": "%5", "along": "y", "selection": {"only": ["core"]}}],
+            "physics": [{"type": "electrostatics", "tag": "es", "features": [
+                {"type": "potential", "V0": "V", "selection": {"box": [%6]}},
+                {"type": "ground", "selection": {"box": [%7]}}]},
+              {"type": "modes", "tag": "emw", "features": [
+                {"type": "wave", "electrooptic": true, "selection": {"only": ["core"]}}]}],
+            "mesh": {"size": "%12", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "%10"},
+                                                  {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "%11"}]}}],
+          "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 1, "neff": "2.1", "polarization": "%8"}]}]})json")
+            // (The plates: the box's bottom and top, its left and right.)
+            .arg(w, h, cw, ch, zcut ? QStringLiteral("z") : QStringLiteral("x"),
+                 zcut ? QStringLiteral("-3.01, -2.01, 3.01, -1.99") : QStringLiteral("-2.01, -3.01, -1.99, 3.01"),
+                 zcut ? QStringLiteral("-3.01, 1.99, 3.01, 2.01") : QStringLiteral("1.99, -3.01, 2.01, 3.01"), zcut ? QStringLiteral("tm") : QStringLiteral("te"))
+            .arg(volts)
+            .arg(slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05"))
+            .arg(slowBuild() ? QStringLiteral("0.6") : QStringLiteral("0.4"), slowBuild() ? QStringLiteral("coarse") : QStringLiteral("fine"))
+            .toUtf8();
+    }
+    // Its index at 0 and 10 V, and its shift per volt, kept for zCutAgainstXCut.
+    void cutDevice(bool zcut)
+    {
+        double n[2];
+        for (int k = 0; k < 2; ++k) {
+            const Run r = run(modelOf(cutModel(zcut, k == 0 ? 0 : 10)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            r.solution->select(0);
+            n[k] = global(*r.solution, QStringLiteral("emw.neff"));
+            // (Pockels' r in pm/V, as m/V expected: no warning.)
+            for (const QString& l : r.solution->log) QVERIFY2(!l.contains(QLatin1String("Warning")), qPrintable(l));
+        }
+        a_perVolt[zcut ? 0 : 1] = (n[1] - n[0]) / 10;
+        a_neff0[zcut ? 0 : 1] = n[0];
+        qInfo("%s: neff %.7f at 0 V, %.7f at 10 V", zcut ? "z-cut, TM" : "x-cut turned, TE", n[0], n[1]);
+    }
+    double a_perVolt[2] = {std::nan(""), std::nan("")};
+    double a_neff0[2] = {std::nan(""), std::nan("")};
 };
 
 QTEST_GUILESS_MAIN(TestFemAnisotropy)
