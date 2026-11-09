@@ -172,7 +172,7 @@ QJsonObject seriesJson(const dg::Plot& plot, const dg::Series& s, int most)
                   {QStringLiteral("points_in_all"), int(s.points.size())}};
     if (s.dashed) o.insert(QStringLiteral("dashed"), true);
     if (s.bridged > 0) o.insert(QStringLiteral("gaps_crossed"), s.bridged);
-    if (s.agreement >= 0) o.insert(QStringLiteral("ink_under_points"), rounded(s.agreement, 3));
+    if (dg::inkSaysSomething(s)) o.insert(QStringLiteral("ink_under_points"), rounded(s.agreement, 3));
     const QList<int> kept = dg::thinned(s.points, most);
     const bool calibrated = plot.calibration.valid();
     QJsonArray xs, ys;
@@ -233,6 +233,7 @@ QJsonObject plotJson(const dg::Plot& plot, int most)
         o.insert(QStringLiteral("series"), series);
         o.insert(QStringLiteral("trust"), trustJson(plot));
     }
+    if (plot.seriesLeftOut > 0) o.insert(QStringLiteral("series_left_out"), plot.seriesLeftOut);
     if (!plot.notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(plot.notes));
     return o;
 }
@@ -646,6 +647,11 @@ QJsonObject QucsControl::digitizePlot(const QJsonObject& args)
     }
     if (!source.hasVectors() && !source.vectorProblem().isEmpty()) notes << source.vectorProblem();
     plot.notes << notes;
+    // What was asked for, kept with the plot to do it again.
+    plot.asked = QJsonObject{};
+    for (const char* key : {"page", "plot", "region", "route", "colours", "names", "seeds", "exclude", "references", "x_range", "y_range", "x_values", "y_values",
+                            "x_scale", "y_scale", "polar", "r_at_centre", "model", "trace_scale"})
+        if (args.contains(QLatin1String(key))) plot.asked.insert(QLatin1String(key), args.value(QLatin1String(key)));
 
     // --- What it answers.
     const int most = args.contains(QLatin1String("max_points")) ? std::max(0, args.value(QLatin1String("max_points")).toInt()) : 200;

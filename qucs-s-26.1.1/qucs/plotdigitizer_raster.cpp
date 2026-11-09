@@ -2798,6 +2798,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
     if (found.size() > options.maxSeries) {
         std::stable_sort(found.begin(), found.end(), [](const Series& a, const Series& b) { return a.points.size() > b.points.size(); });
         notes->append(tr("%1 series were found; the %2 with the most points are kept.").arg(found.size()).arg(options.maxSeries));
+        plot.seriesLeftOut = int(found.size()) - options.maxSeries;
         found = found.mid(0, options.maxSeries);
     }
     int lineNumber = 0, markerNumber = 0;
