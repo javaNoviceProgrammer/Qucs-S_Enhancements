@@ -174,6 +174,11 @@ struct Plot {
     QList<QRectF> leftOut;
     /// Shown, not yet kept: written with the others once it is changed.
     bool transient = false;
+    /// Series found beyond Options::maxSeries and left out (the shortest).
+    int seriesLeftOut = 0;
+    /// What the call that made it asked for (Claude's digitize_plot: the
+    /// scales, colours, references...), kept with it to do it again.
+    QJsonObject asked;
 
     QRectF pageBox() const;    ///< the frame (or the region) on the page
 };
@@ -274,6 +279,10 @@ QString variableName(const QString& name);
 // --- Kept with the PDF -----------------------------------------------------
 
 QJsonObject toJson(const Plot& plot);
+/// Whether the ink under a series' points says anything: of a trace it
+/// does; of a file's own path only where some of it is hidden (drawn over,
+/// under a fill) - a path all under ink is just what a path is.
+bool inkSaysSomething(const Series& s);
 /// \a o as a plot; false, with why, for what is not one. Its numbers are
 /// checked: nothing here trusts the file.
 bool fromJson(const QJsonObject& o, Plot* plot, QString* why = nullptr);

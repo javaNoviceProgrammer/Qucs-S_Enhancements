@@ -338,9 +338,19 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         for (const LinePiece& p : group) lengths << lengthOf(p.points);
         std::sort(lengths.begin(), lengths.end());
         const double medianLength = lengths.at(lengths.size() / 2);
-        // Many short strokes in the content's order: a dashed line written out.
-        const bool dashes = group.size() >= 6 && medianLength < 18;
-        const double reach = dashes ? std::clamp(medianLength * 3, 1.5, 20.0) : 0.6;
+        // Many short strokes in the content's order, as evenly apart as a
+        // pattern is: a dashed line written out. (Not a noisy curve in pieces
+        // between the values a log axis cannot show: those gaps are uneven,
+        // and are gaps.)
+        QList<double> apart;
+        for (int i = 0; i + 1 < group.size(); ++i) {
+            const double gap = QLineF(group.at(i).points.last(), group.at(i + 1).points.first()).length();
+            if (gap > 0.6 && gap <= 40) apart << gap;
+        }
+        std::sort(apart.begin(), apart.end());
+        const bool even = apart.size() >= 4 && apart.at(apart.size() * 3 / 4) - apart.at(apart.size() / 4) <= 0.6 * apart.at(apart.size() / 2);
+        const bool dashes = group.size() >= 6 && medianLength < 18 && even;
+        const double reach = dashes ? std::clamp(std::min(medianLength * 3, 2 * apart.at(apart.size() * 3 / 4)), 1.5, 20.0) : 0.6;
         Chain cur;
         const auto push = [&] {
             if (!cur.points.isEmpty()) chains << cur;
@@ -461,6 +471,8 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
 
     // --- Series from the chains.
     QList<Series> found;
+    QList<QString> foundKeys;    // each line's style, whether it closes on itself, whether it is a scrap
+    QList<bool> foundClosed, foundTiny;
     int counter = 0;
     QImage ink;
     const double inkScale = 3;
@@ -489,10 +501,14 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         }
         clipInto(c.points, clip, c.closed, &s.points, &s.breaks);
         if (s.points.size() < 2) continue;
+        // (Kept to a line's width outside the frame, where a line starts on
+        // an axis: on it, not a hair before the axis begins.)
+        for (QPointF& q : s.points) q = QPointF(std::clamp(q.x(), frame.left(), frame.right()), std::clamp(q.y(), frame.top(), frame.bottom()));
         double total = 0;
         for (int i = 0; i + 1 < s.points.size(); ++i)
             if (!s.breaks.contains(i + 1)) total += QLineF(s.points.at(i), s.points.at(i + 1)).length();
-        if (total < 3) continue;
+        // (A scrap is left out, but for one that carries a curve on: below.)
+        const bool tiny = total < 3;
         // A straight line through the whole frame in grey or black, as long as
         // the frame, at a mark: more of the grid, written in pieces.
         const QRectF box = QPolygonF(s.points).boundingRect();
@@ -505,6 +521,114 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         s.name = nameOfStyle.value(key);
         ++counter;
         found << s;
+        foundKeys << key;
+        foundClosed << c.closed;
+        foundTiny << tiny;
+    }
+
+    // --- A curve the file writes in pieces, one after another along x: it
+    // left the axes between them (a log axis' zeros, a value under the
+    // frame). One series, a gap at each.
+    {
+        const auto direction = [](const Series& s) {
+            double ahead = 0, back = 0;
+            for (int i = 1; i < s.points.size(); ++i) {
+                const double dx = s.points.at(i).x() - s.points.at(i - 1).x();
+                (dx > 0 ? ahead : back) += std::abs(dx);
+            }
+            if (ahead > 0 && back <= 0.1 * ahead + 0.3) return 1;
+            if (back > 0 && ahead <= 0.1 * back + 0.3) return -1;
+            return 0;
+        };
+        const double reach = 0.1 * frame.width();
+        int joinedPieces = 0;
+        for (int i = 0; i < found.size(); ++i) {
+            const int way = foundClosed.at(i) ? 0 : direction(found.at(i));
+            if (way == 0) continue;
+            while (true) {
+                // The next of its style, in the order the file draws them (a
+                // scrap of a step up or down going no way along x).
+                int j = i + 1;
+                while (j < found.size() && foundKeys.at(j) != foundKeys.at(i)) ++j;
+                if (j >= found.size() || foundClosed.at(j)) break;
+                const int next = direction(found.at(j));
+                if (next != way && !(next == 0 && foundTiny.at(j))) break;
+                const double gap = way * (found.at(j).points.first().x() - found.at(i).points.last().x());
+                if (gap < -0.6 || gap > reach) break;
+                Series& a = found[i];
+                const Series& b = found.at(j);
+                const int at = int(a.points.size());
+                a.breaks << at;
+                for (const int k : b.breaks) a.breaks << at + k;
+                a.points << b.points;
+                ++joinedPieces;
+                foundTiny[i] = false;
+                found.removeAt(j);
+                foundKeys.removeAt(j);
+                foundClosed.removeAt(j);
+                foundTiny.removeAt(j);
+            }
+        }
+        for (int i = found.size() - 1; i >= 0; --i)
+            if (foundTiny.at(i)) {
+                found.removeAt(i);
+                foundKeys.removeAt(i);
+                foundClosed.removeAt(i);
+                foundTiny.removeAt(i);
+            }
+        if (joinedPieces > 0) notes->append(tr("%1 pieces of curves the file draws one after another along x were joined to the curve before them, with a gap between: where the curve left the axes.").arg(joinedPieces));
+    }
+
+    // --- On a log axis, what is drawn along the frame's edge is a value
+    // beyond it (a zero, a value under the range) held at the edge: not data.
+    // So is where a line leaves the frame. (A point touching the edge between
+    // two inside it may be a value at the axis' end: kept.)
+    {
+        const bool calibrated = plot.calibration.valid();
+        const bool xLog = calibrated ? plot.calibration.xScale == Scale::Log : plot.xAxis.scale == Scale::Log;
+        const bool yLog = calibrated ? plot.calibration.yScale == Scale::Log : plot.yAxis.scale == Scale::Log;
+        int clipped = 0;
+        if (!polar && (xLog || yLog)) {
+            for (int i = found.size() - 1; i >= 0; --i) {
+                Series& s = found[i];
+                const double edge = std::max(0.75, s.width);
+                const auto onEdge = [&](QPointF q) {
+                    return (yLog && (q.y() >= frame.bottom() - edge || q.y() <= frame.top() + edge)) || (xLog && (q.x() <= frame.left() + edge || q.x() >= frame.right() - edge));
+                };
+                const int n = int(s.points.size());
+                const auto starts = [&](int k) { return k == 0 || s.breaks.contains(k); };
+                QList<bool> drop(n, false);
+                for (int k = 0; k < n; ++k) {
+                    if (!onEdge(s.points.at(k))) continue;
+                    const bool before = !starts(k) && onEdge(s.points.at(k - 1));
+                    const bool after = k + 1 < n && !starts(k + 1) && onEdge(s.points.at(k + 1));
+                    const bool end = starts(k) || k + 1 >= n || starts(k + 1);
+                    drop[k] = before || after || end;
+                }
+                QList<QPointF> kept;
+                QList<int> breaks;
+                bool gap = false;
+                for (int k = 0; k < n; ++k) {
+                    if (drop.at(k)) {
+                        ++clipped;
+                        gap = true;
+                        continue;
+                    }
+                    if (!kept.isEmpty() && (gap || s.breaks.contains(k))) breaks << int(kept.size());
+                    gap = false;
+                    kept << s.points.at(k);
+                }
+                s.points = kept;
+                s.breaks = breaks;
+                if (s.points.size() < 2) {
+                    found.removeAt(i);
+                    foundKeys.removeAt(i);
+                    foundClosed.removeAt(i);
+                    foundTiny.removeAt(i);
+                }
+            }
+        }
+        if (clipped > 0) notes->append(tr("%1 points drawn along the frame's edge on a log axis were left out, with a gap: they stand for values beyond the axis, not for the value at its end.").arg(clipped));
     }
 
     // --- Markers: what repeats.
@@ -582,6 +706,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
     if (found.size() > options.maxSeries) {
         std::stable_sort(found.begin(), found.end(), [](const Series& a, const Series& b) { return a.points.size() > b.points.size(); });
         notes->append(tr("%1 series were found; the %2 with the most points are kept.").arg(found.size()).arg(options.maxSeries));
+        plot.seriesLeftOut = int(found.size()) - options.maxSeries;
         found = found.mid(0, options.maxSeries);
     }
     int lineNumber = 0, markerNumber = 0;
@@ -1026,6 +1151,7 @@ bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* w
 bool extract(Source& source, Plot& plot, const Options& options, QString* why)
 {
     plot.series.clear();
+    plot.seriesLeftOut = 0;
     if (plot.pageBox().isEmpty()) {
         if (why != nullptr) *why = tr("The plot has no region on the page.");
         return false;
