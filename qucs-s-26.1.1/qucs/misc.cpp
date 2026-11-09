@@ -26,6 +26,8 @@
 
 #include <cmath>
 #include "misc.h"
+
+#include <atomic>
 #include "ink.h"
 #include "apptheme.h"
 #include "main.h"
@@ -286,8 +288,16 @@ void misc::str2num(const QString& s_, double& Number, QString& Unit, double& Fac
 }
 
 // #########################################################################
+static std::atomic_int freedMemoryReleases{0};
+
+int misc::memoryReleases()
+{
+    return freedMemoryReleases.load();
+}
+
 void misc::releaseFreedMemory()
 {
+    ++freedMemoryReleases;
 #if defined(Q_OS_MACOS)
     malloc_zone_pressure_relief(nullptr, 0);
 #elif defined(__GLIBC__)
