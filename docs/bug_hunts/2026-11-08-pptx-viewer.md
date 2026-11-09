@@ -314,6 +314,59 @@ would each show there.
   that use the changed code ran: `test_pptx_doc`, `test_zip_doc`, `test_data_import`,
   `test_data_export`, `test_spreadsheet`, `test_sheet_doc` and `test_mcp_server`.
 
+## Symbol fonts (9 November)
+
+The user asked whether the viewer handles symbol characters and glyphs. `mksym.py <out.pptx>` makes a
+deck of three slides to check:
+- runs in Symbol, Wingdings, Wingdings 2 and 3, Webdings and Marlett, as bytes and as the private-use
+  characters U+F0xx;
+- Unicode: Greek, maths, arrows, dingbats, emoji, Chinese, Japanese and Korean, Arabic, Hebrew,
+  Devanagari, Thai, accents and ligatures;
+- bullets in symbol fonts.
+
+It was drawn with `renderDecksGiven`.
+
+**What already worked.** All the Unicode text drew correctly, including emoji sequences and
+right-to-left scripts. Only ₿ was missing from the fallback fonts. Wingdings, Wingdings 2 and 3, and
+Webdings also worked, both as text and as bullets, private-use characters too: macOS ships those
+fonts, and Core Text maps U+F0xx into them.
+
+**What did not.** Symbol. The Symbol macOS ships is a Unicode font: its "a" is an "a". PowerPoint reads
+Symbol as Adobe's Symbol encoding, where "a" is alpha. Four things went wrong:
+- `abg` in Symbol was drawn "abg", not αβγ;
+- U+F061 (how PowerPoint often saves it) was drawn as an empty box;
+- a run's `<a:sym>` was not read at all;
+- Symbol's "·" bullet was drawn as a middle dot. The old bullet table applied only where the font is
+  missing, and it never is on a Mac.
+
+**Now** (`pptx.cpp`, `symbolPieces` and `bulletChar`):
+- **Symbol.** Its bytes, and U+F020–F0FF in the font named by the run's `<a:sym>` (else by its own
+  font), are read through Adobe's Symbol table and drawn in the text's font. This applies whatever is
+  installed.
+- **`<a:sym>`** applies only to private-use characters, as in PowerPoint. Latin-1 in a run that names
+  only `<a:sym>` is drawn as it is.
+- **Wingdings** is drawn by its own font where installed (macOS, Windows). Where it is missing (most
+  Linux systems), it is read through a table of 162 of its characters, Unicode's nearest:
+  smileys, ticks and crosses, boxes, arrows, circled digits, the zodiac, clock faces. Characters not
+  in the table are drawn as they are, and the missing font is noted as before.
+- **What the text says.** read_pptx, search and the slide's paragraphs see what a symbol stands for,
+  even where its font draws it: ☺ for Wingdings' J, ➢ for its Ø bullet.
+- **Line height, bullets and empty paragraphs** of a run in a symbol font use the text's font, so a
+  missing Symbol or Wingdings on Linux is not reported where nothing is drawn in it.
+- **Not covered:** Wingdings 2 and 3 and Webdings have no table. Where they are missing they are drawn
+  as letters, with the missing-font note, and their bullets as "•". Neither is Marlett, nor any other
+  symbol font.
+
+**Test:** `symbolFontsReadAsWhatTheyStandFor`.
+- It checks each paragraph's text: αβγΩ, xα≥√, ÒÓ, "• dot", "• pua", ☺✓, "➢ arrow".
+- It checks that no note names Symbol or Wingdings.
+- It checks that Symbol's letters and its private-use characters draw exactly as the same Greek in
+  Unicode, pixel for pixel.
+- It checks that β is found on all four slides.
+- It fails on the code before the fix ("abgW" for αβγΩ).
+- It also passed with Wingdings treated as missing (a throwaway edit, reverted). The deck drawn that
+  way showed the table's symbols.
+
 ## Reproducing
 
 Run the scripts with `python3 -B -I`, from a scratch folder.
@@ -332,3 +385,5 @@ Run the scripts with `python3 -B -I`, from a scratch folder.
    `de6fa0b` in and out of a tree: run it only on a clean tree). `abtable.py <folder>` makes the
    tables from its passes.
 5. `breaks.py <worktree> <build tree>`.
+6. `mksym.py <out.pptx>` (next to `mkdecks.py`, which it uses) makes the symbol-font deck. Draw it with
+   `QUCS_PPTX_RENDER=<deck> QUCS_PPTX_OUT=<folder>`, through ctest.

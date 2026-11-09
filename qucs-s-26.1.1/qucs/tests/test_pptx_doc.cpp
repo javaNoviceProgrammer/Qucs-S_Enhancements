@@ -3699,6 +3699,58 @@ private slots:
         QVERIFY2(wrong.isEmpty(), qPrintable(wrong));
         app.closeAllFiles();
     }
+
+    // Symbol fonts' characters as what they stand for: Symbol's "a" an alpha
+    // and its private-use U+F061 too (in the font a run's <a:sym> names),
+    // drawn as the Greek is, and said so to read_pptx; Symbol's bullet a
+    // bullet. Wingdings drawn by its font where it is here, else as what it
+    // stands for - and said so either way. The Symbol macOS ships is a
+    // Unicode font: "abg" in it was drawn "abg", U+F061 as a box (2026-11-09).
+    void symbolFontsReadAsWhatTheyStandFor()
+    {
+        const auto box = [](const QByteArray& paras) {
+            return shape(2, xfrm(40, 40, 880, 460) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>", text(paras, "<a:bodyPr wrap=\"square\"/>"));
+        };
+        const QByteArray none = "<a:pPr><a:buNone/></a:pPr>";
+        const auto bullet = [](const QByteArray& font, const QString& ch) {
+            return "<a:pPr marL=\"342900\" indent=\"-342900\"><a:buFont typeface=\"" + font + "\"/><a:buChar char=\"" + ch.toHtmlEscaped().toUtf8()
+                   + "\"/></a:pPr>";
+        };
+        const QByteArray symbol = "<a:rPr lang=\"en-US\"><a:latin typeface=\"Symbol\"/><a:sym typeface=\"Symbol\"/></a:rPr>";
+        const QByteArray calibriSym = "<a:rPr lang=\"en-US\"><a:latin typeface=\"Helvetica\"/><a:sym typeface=\"Symbol\"/></a:rPr>";
+        const QByteArray symOnly = "<a:rPr lang=\"en-US\"><a:sym typeface=\"Symbol\"/></a:rPr>";
+        const QByteArray wingdings = "<a:rPr lang=\"en-US\"><a:latin typeface=\"Wingdings\"/><a:sym typeface=\"Wingdings\"/></a:rPr>";
+        Deck d;
+        Deck::SlideSpec one;
+        one.tree = box(para(run(QStringLiteral("abgW"), symbol), none)                                                     // αβγΩ
+                       + para(run(QStringLiteral("x"), "<a:rPr lang=\"en-US\"/>") + run(QStringLiteral(""), calibriSym), none)   // xα≥√
+                       + para(run(QStringLiteral("ÒÓ"), symOnly), none)                                          // <a:sym> is for U+F0xx: ÒÓ
+                       + para(run(QStringLiteral("dot")), bullet("Symbol", QStringLiteral("·")))                      // • dot
+                       + para(run(QStringLiteral("pua")), bullet("Symbol", QStringLiteral("")))                      // • pua
+                       + para(run(QStringLiteral("J"), wingdings), none)                                             // ☺✓
+                       + para(run(QStringLiteral("arrow")), bullet("Wingdings", QStringLiteral("Ø"))));               // ➢ arrow
+        Deck::SlideSpec greek;   // the same, in Unicode
+        greek.tree = box(para(run(QStringLiteral("αβγΩ"), "<a:rPr lang=\"en-US\"/>"), none));
+        Deck::SlideSpec inSymbol;
+        inSymbol.tree = box(para(run(QStringLiteral("abgW"), symbol), none));
+        Deck::SlideSpec inPua;
+        inPua.tree = box(para(run(QStringLiteral(""), symOnly), none));
+        d.slides << one << greek << inSymbol << inPua;
+        QString why;
+        const auto deck = readDeck(d, &why);
+        QVERIFY2(deck != nullptr, qPrintable(why));
+        QCOMPARE(deck->slide(0).paragraphs, (QStringList{QStringLiteral("αβγΩ"), QStringLiteral("xα≥√"), QStringLiteral("ÒÓ"), QStringLiteral("• dot"),
+                                                         QStringLiteral("• pua"), QStringLiteral("☺✓"), QStringLiteral("➢ arrow")}));
+        const QString notes = deck->slide(0).notShown.join(QStringLiteral(" | "));
+        QVERIFY2(!notes.contains(QStringLiteral("Symbol")) && !notes.contains(QStringLiteral("Wingdings")), qPrintable(notes));
+        // Drawn as the Greek is: Symbol's letters and its private-use
+        // characters alike.
+        const QImage want = deck->render(1, 1.0);
+        QVERIFY(!want.isNull());
+        QCOMPARE(deck->render(2, 1.0), want);
+        QCOMPARE(deck->render(3, 1.0), want);
+        QCOMPARE(deck->find(QStringLiteral("β")).size(), 4);
+    }
 };
 
 QTEST_MAIN(TestPptxDoc)

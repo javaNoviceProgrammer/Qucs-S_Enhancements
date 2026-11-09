@@ -1809,6 +1809,7 @@ struct RunSpec {
     std::optional<qreal> size;
     std::optional<bool> bold, italic, strike;
     std::optional<QString> underline, caps, face;
+    std::optional<QString> sym;   // the font of its symbols (U+F0xx), <a:sym>
     std::optional<QColor> color, highlight;
     std::optional<int> baseline;
     std::optional<qreal> spacing;
@@ -1822,6 +1823,7 @@ struct RunSpec {
         if (o.underline) underline = o.underline;
         if (o.caps) caps = o.caps;
         if (o.face) face = o.face;
+        if (o.sym) sym = o.sym;
         if (o.color) color = o.color;
         if (o.highlight) highlight = o.highlight;
         if (o.baseline) baseline = o.baseline;
@@ -1905,6 +1907,7 @@ RunSpec readRun(const Node* rPr, const Ctx& c)
     else if (f.kind == Fill::Gradient && !f.stops.isEmpty()) r.color = f.stops.first().second;
     if (const Node* h = rPr->child(u"highlight")) r.highlight = colorOf(h, c);
     if (const Node* latin = rPr->child(u"latin"); latin != nullptr && !latin->attr(u"typeface").isEmpty()) r.face = latin->attr(u"typeface");
+    if (const Node* sym = rPr->child(u"sym"); sym != nullptr && !sym->attr(u"typeface").isEmpty()) r.sym = sym->attr(u"typeface");
     return r;
 }
 
@@ -2127,31 +2130,174 @@ QString familyOf(const QString& face, const Ctx& c)
     return fontOf(face, c).family;
 }
 
-/// A bullet character in a symbol font that is not here: what it stands for.
-QString bulletChar(const QString& ch, const QString& font)
+// Symbol fonts. Their characters are bytes, not Unicode: a deck in Symbol
+// holds "a" for alpha, and PowerPoint often writes the byte b as U+F000 + b
+// (the private-use area), naming the font in the run's <a:sym>. The Symbol
+// macOS ships is a Unicode font (its "a" is an "a"), so Symbol's text is
+// always read as what it stands for; Wingdings is, where the font is not
+// installed (macOS and Windows have it, most Linux systems do not).
+
+/// Adobe's Symbol encoding: the character byte \a b stands for (0: none).
+char32_t symbolChar(int b)
 {
-    if (ch.isEmpty()) return QStringLiteral("•");
+    static const char32_t low[0x5F] = {   // 0x20 to 0x7E
+        U' ', U'!', U'∀', U'#', U'∃', U'%', U'&', U'∋', U'(', U')', U'∗', U'+', U',', U'−', U'.', U'/',
+        U'0', U'1', U'2', U'3', U'4', U'5', U'6', U'7', U'8', U'9', U':', U';', U'<', U'=', U'>', U'?',
+        U'≅', U'Α', U'Β', U'Χ', U'Δ', U'Ε', U'Φ', U'Γ', U'Η', U'Ι', U'ϑ', U'Κ', U'Λ', U'Μ', U'Ν', U'Ο',
+        U'Π', U'Θ', U'Ρ', U'Σ', U'Τ', U'Υ', U'ς', U'Ω', U'Ξ', U'Ψ', U'Ζ', U'[', U'∴', U']', U'⊥', U'_',
+        U'‾', U'α', U'β', U'χ', U'δ', U'ε', U'φ', U'γ', U'η', U'ι', U'ϕ', U'κ', U'λ', U'μ', U'ν', U'ο',
+        U'π', U'θ', U'ρ', U'σ', U'τ', U'υ', U'ϖ', U'ω', U'ξ', U'ψ', U'ζ', U'{', U'|', U'}', U'∼'};
+    static const char32_t high[0x5F] = {   // 0xA0 to 0xFE
+        U'€', U'ϒ', U'′', U'≤', U'⁄', U'∞', U'ƒ', U'♣', U'♦', U'♥', U'♠', U'↔', U'←', U'↑', U'→', U'↓',
+        U'°', U'±', U'″', U'≥', U'×', U'∝', U'∂', U'•', U'÷', U'≠', U'≡', U'≈', U'…', U'⏐', U'⎯', U'↵',
+        U'ℵ', U'ℑ', U'ℜ', U'℘', U'⊗', U'⊕', U'∅', U'∩', U'∪', U'⊃', U'⊇', U'⊄', U'⊂', U'⊆', U'∈', U'∉',
+        U'∠', U'∇', U'®', U'©', U'™', U'∏', U'√', U'⋅', U'¬', U'∧', U'∨', U'⇔', U'⇐', U'⇑', U'⇒', U'⇓',
+        U'◊', U'〈', U'®', U'©', U'™', U'∑', U'⎛', U'⎜', U'⎝', U'⎡', U'⎢', U'⎣', U'⎧', U'⎨', U'⎩', U'⎪',
+        0, U'〉', U'∫', U'⌠', U'⎮', U'⌡', U'⎞', U'⎟', U'⎠', U'⎤', U'⎥', U'⎦', U'⎫', U'⎬', U'⎭'};
+    if (b >= 0x20 && b <= 0x7E) return low[b - 0x20];
+    if (b >= 0xA0 && b <= 0xFE) return high[b - 0xA0];
+    return 0;
+}
+
+/// Wingdings: what byte \a b stands for, as near as Unicode has it (0: not
+/// known here).
+char32_t wingdingsChar(int b)
+{
+    static const QHash<int, char32_t> map = [] {
+        QHash<int, char32_t> m{
+            {0x21, U'✏'},     {0x22, U'✂'},     {0x23, U'✁'},     {0x24, U'\U0001F453'}, {0x25, U'\U0001F514'}, {0x26, U'\U0001F4D6'},
+            {0x27, U'\U0001F56F'}, {0x28, U'☎'},     {0x29, U'✆'},     {0x2A, U'✉'},     {0x2C, U'\U0001F4EA'}, {0x2D, U'\U0001F4EB'},
+            {0x2E, U'\U0001F4EC'}, {0x2F, U'\U0001F4ED'}, {0x30, U'\U0001F4C1'}, {0x31, U'\U0001F4C2'}, {0x32, U'\U0001F4C4'}, {0x35, U'\U0001F5C4'},
+            {0x36, U'⌛'},     {0x37, U'⌨'},     {0x38, U'\U0001F5B1'}, {0x39, U'\U0001F5B2'}, {0x3A, U'\U0001F5A5'}, {0x3C, U'\U0001F4BE'},
+            {0x3E, U'✇'},     {0x3F, U'✍'},     {0x41, U'✌'},     {0x42, U'\U0001F44C'}, {0x43, U'\U0001F44D'}, {0x44, U'\U0001F44E'},
+            {0x45, U'☜'},     {0x46, U'☞'},     {0x47, U'☝'},     {0x48, U'☟'},     {0x49, U'✋'},     {0x4A, U'☺'},
+            {0x4B, U'\U0001F610'}, {0x4C, U'☹'},     {0x4D, U'\U0001F4A3'}, {0x4E, U'☠'},     {0x4F, U'\U0001F3F3'}, {0x51, U'✈'},
+            {0x52, U'☼'},     {0x53, U'\U0001F4A7'}, {0x54, U'❄'},     {0x55, U'✝'},     {0x56, U'✞'},     {0x58, U'✠'},
+            {0x59, U'✡'},     {0x5A, U'☪'},     {0x5B, U'☯'},     {0x5C, U'ॐ'},     {0x5D, U'☸'},     {0x6C, U'●'},
+            {0x6D, U'❍'},     {0x6E, U'■'},     {0x6F, U'□'},     {0x70, U'□'},     {0x71, U'❑'},     {0x72, U'❒'},
+            {0x73, U'⬧'},     {0x74, U'⧫'},     {0x75, U'◆'},     {0x76, U'❖'},     {0x77, U'⬥'},     {0x78, U'⌧'},
+            {0x7A, U'⌘'},     {0x7B, U'\U0001F3F5'}, {0x7C, U'\U0001F3F6'}, {0x80, U'⓪'},     {0x8B, U'⓿'},     {0x9E, U'·'},
+            {0x9F, U'•'},     {0xA0, U'▪'},     {0xA1, U'○'},     {0xA2, U'⭕'},     {0xA4, U'◉'},     {0xA5, U'◎'},
+            {0xA7, U'▪'},     {0xA8, U'◻'},     {0xAA, U'✦'},     {0xAB, U'★'},     {0xAC, U'✶'},     {0xAD, U'✴'},
+            {0xAE, U'✹'},     {0xAF, U'✵'},     {0xB1, U'⌖'},     {0xB2, U'⟡'},     {0xB3, U'⌑'},     {0xB5, U'✪'},
+            {0xB6, U'✰'},     {0xD5, U'⌫'},     {0xD6, U'⌦'},     {0xD8, U'➢'},     {0xDF, U'←'},     {0xE0, U'➡'},
+            {0xE1, U'↑'},     {0xE2, U'↓'},     {0xE3, U'↖'},     {0xE4, U'↗'},     {0xE5, U'↙'},     {0xE6, U'↘'},
+            {0xE7, U'⬅'},     {0xE8, U'➞'},     {0xE9, U'⬆'},     {0xEA, U'⬇'},     {0xEF, U'⇦'},     {0xF0, U'⇨'},
+            {0xF1, U'⇧'},     {0xF2, U'⇩'},     {0xF3, U'⬄'},     {0xF4, U'⇳'},     {0xF9, U'▭'},     {0xFA, U'▫'},
+            {0xFB, U'✗'},     {0xFC, U'✓'},     {0xFD, U'☒'},     {0xFE, U'☑'}};
+        for (int i = 0; i < 12; ++i) m.insert(0x5E + i, U'♈' + i);         // the zodiac
+        for (int i = 0; i < 10; ++i) m.insert(0x81 + i, U'①' + i);         // circled 1 to 10
+        for (int i = 0; i < 10; ++i) m.insert(0x8C + i, U'❶' + i);         // the same, black
+        for (int i = 0; i < 12; ++i) m.insert(0xB7 + i, U'\U0001F550' + i);     // clock faces, 1 to 12 o'clock
+        return m;
+    }();
+    return map.value(b, 0);
+}
+
+bool installed(const QString& font)
+{
     static const QStringList families = QFontDatabase::families();
-    if (font.isEmpty() || families.contains(font, Qt::CaseInsensitive)) return ch;
-    const ushort u = ch.at(0).unicode();
-    if (font.startsWith(QLatin1String("Wingdings"), Qt::CaseInsensitive)) {
-        switch (u) {
-        case 0xA7: return QStringLiteral("▪");
-        case 0xD8: return QStringLiteral("➢");
-        case 0xFC: return QStringLiteral("✓");
-        case 0x71: return QStringLiteral("❑");
-        case 0x76: return QStringLiteral("❖");
-        case 0x6E: return QStringLiteral("■");
-        case 0x6C: return QStringLiteral("●");
-        case 0x6F: return QStringLiteral("□");
-        case 0xE0: return QStringLiteral("➡");
-        case 0xE8: return QStringLiteral("➞");
-        case 0x9F: return QStringLiteral("•");
-        default: return QStringLiteral("•");
+    return families.contains(font, Qt::CaseInsensitive);
+}
+
+/// Which table a symbol font's bytes are read by (None: not known here).
+enum class SymbolFont { None, Symbol, Wingdings };
+
+SymbolFont symbolFontOf(const QString& font)
+{
+    if (font.compare(QLatin1String("Symbol"), Qt::CaseInsensitive) == 0) return SymbolFont::Symbol;
+    if (font.compare(QLatin1String("Wingdings"), Qt::CaseInsensitive) == 0) return SymbolFont::Wingdings;
+    return SymbolFont::None;
+}
+
+bool isSymbolFamily(const QString& font)
+{
+    return font.compare(QLatin1String("Symbol"), Qt::CaseInsensitive) == 0 || font.startsWith(QLatin1String("Wingdings"), Qt::CaseInsensitive)
+           || font.compare(QLatin1String("Webdings"), Qt::CaseInsensitive) == 0;
+}
+
+/// Byte \a b of symbol font \a kind as Unicode; empty where it is not known.
+QString symbolText(SymbolFont kind, int b)
+{
+    const char32_t u = kind == SymbolFont::Symbol ? symbolChar(b) : kind == SymbolFont::Wingdings ? wingdingsChar(b) : 0;
+    return u != 0 ? QString::fromUcs4(&u, 1) : QString();
+}
+
+/// A piece of a run: what is drawn, in what font (none: the run's own; an
+/// empty one: the text's, the symbol font left), and what it says - for
+/// read_pptx and finding, a symbol as what it stands for even where its
+/// font draws it.
+struct SymbolPiece {
+    QString drawn;
+    std::optional<QString> font;
+    QString meaning;
+};
+
+/// A run's text in pieces: a symbol font's characters - its bytes, or the
+/// private-use U+F0xx in the font its <a:sym> (else its own font) names -
+/// as what they stand for, drawn in the text's font; or as themselves in
+/// the symbol font, where it is here to draw them (all but Symbol, whose
+/// macOS font is Unicode's).
+QList<SymbolPiece> symbolPieces(const QString& text, const std::optional<QString>& face, const std::optional<QString>& sym)
+{
+    QList<SymbolPiece> out;
+    const QString own = face.value_or(QString());
+    const bool ownIsSymbol = isSymbolFamily(own);
+    const QString puaFont = sym && isSymbolFamily(*sym) ? *sym : ownIsSymbol ? own : QString();
+    const auto add = [&out](const QString& drawn, const std::optional<QString>& font, const QString& meaning) {
+        if (!out.isEmpty() && out.last().font == font) {
+            out.last().drawn += drawn;
+            out.last().meaning += meaning;
+        } else {
+            out.append({drawn, font, meaning});
         }
+    };
+    const std::optional<QString> plain = ownIsSymbol ? std::optional<QString>(QString()) : std::nullopt;
+    for (const QChar ch : text) {
+        const int u = ch.unicode();
+        int b = -1;
+        QString font;
+        if (u >= 0xF020 && u <= 0xF0FF && !puaFont.isEmpty()) {
+            b = u - 0xF000;
+            font = puaFont;
+        } else if (ownIsSymbol && u >= 0x20 && u <= 0xFF) {
+            b = u;
+            font = own;
+        }
+        if (b < 0) {
+            add(QString(ch), std::nullopt, QString(ch));
+            continue;
+        }
+        const SymbolFont kind = symbolFontOf(font);
+        const QString t = symbolText(kind, b);
+        if (kind != SymbolFont::Symbol && installed(font)) add(QString(ch), font == own ? std::nullopt : std::optional<QString>(font), t.isEmpty() ? QString(ch) : t);
+        else if (!t.isEmpty()) add(t, plain, t);
+        else add(QString(ch), std::nullopt, QString(ch));
     }
-    if (font.compare(QLatin1String("Symbol"), Qt::CaseInsensitive) == 0 && (u == 0xB7 || u == 0xF0B7)) return QStringLiteral("•");
-    return ch;
+    return out;
+}
+
+/// A bullet character \a ch in font \a font: what is drawn, whether in that
+/// font (else in the text's), and what it says.
+struct BulletChar {
+    QString drawn;
+    bool inItsFont = false;
+    QString meaning;
+};
+
+BulletChar bulletChar(const QString& ch, const QString& font)
+{
+    const QString dot = QStringLiteral("•");
+    if (ch.isEmpty()) return {dot, false, dot};
+    if (font.isEmpty() || !isSymbolFamily(font)) return {ch, !font.isEmpty() && installed(font), ch};
+    int u = ch.at(0).unicode();
+    if (u >= 0xF020 && u <= 0xF0FF) u -= 0xF000;
+    const SymbolFont kind = symbolFontOf(font);
+    const QString t = symbolText(kind, u);
+    if (kind != SymbolFont::Symbol && installed(font)) return {ch, true, t.isEmpty() ? dot : t};
+    // (Symbol's "middle dot" is PowerPoint's bullet; a symbol not known here,
+    // or in a symbol font not here, a bullet.)
+    return {t.isEmpty() || t == QStringLiteral("·") ? dot : t, false, t.isEmpty() || t == QStringLiteral("·") ? dot : t};
 }
 
 QString roman(int n, bool upper)
@@ -2284,10 +2430,20 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
                 RunSpec r = spec.run;
                 r.over(readRun(k->child(u"rPr"), c));
                 if (para.runs.isEmpty()) firstRun = r;
+                // (A symbol font's line, as its symbols, the text's.)
+                if (para.runs.isEmpty() && firstRun.face && isSymbolFamily(*firstRun.face)) firstRun.face.reset();
                 QString text = k->child(u"t") != nullptr ? k->child(u"t")->text : QString();
                 if (k->name == QLatin1String("fld") && k->attr(u"type") == QLatin1String("slidenum")) text = QString::number(c.number);
-                para.runs << TextRun{text, charFormat(r, fontScale, c), false};
-                said += text;
+                // (A symbol font's characters as what they stand for.)
+                for (const SymbolPiece& piece : symbolPieces(text, r.face, r.sym)) {
+                    RunSpec pr = r;
+                    if (piece.font) {
+                        if (piece.font->isEmpty()) pr.face.reset();
+                        else pr.face = *piece.font;
+                    }
+                    para.runs << TextRun{piece.drawn, charFormat(pr, fontScale, c), false};
+                    said += piece.meaning;
+                }
             } else if (k->name == QLatin1String("br")) {
                 RunSpec r = spec.run;
                 r.over(readRun(k->child(u"rPr"), c));
@@ -2297,6 +2453,7 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         }
         RunSpec end = spec.run;
         end.over(readRun(p->child(u"endParaRPr"), c));
+        if (end.face && isSymbolFamily(*end.face)) end.face.reset();
         para.endFormat = charFormat(end, fontScale, c);
         const qreal size = (para.runs.isEmpty() ? end.size : spec.run.size).value_or(18) * fontScale;
         const qreal runSize = para.runs.isEmpty() ? para.endFormat.font().pointSizeF() : para.runs.first().format.font().pointSizeF();
@@ -2326,6 +2483,8 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         // The bullet.
         const QString kind = spec.bulletKind.value_or(QStringLiteral("none"));
         const bool hasText = !said.trimmed().isEmpty();
+        bool bulletInItsFont = false;
+        QString bulletSaid;   // what the bullet stands for, for its text
         for (auto it = numbering.begin(); it != numbering.end();)
             it = it.key() > level ? numbering.erase(it) : std::next(it);
         if (kind == QLatin1String("autoNum") && hasText) {
@@ -2340,17 +2499,19 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
             para.bullet = autoNumber(scheme, count);
         } else {
             numbering.remove(level);
-            if (kind == QLatin1String("char") && hasText) para.bullet = bulletChar(spec.bulletChar.value_or(QString()), spec.bulletFont.value_or(QString()));
+            if (kind == QLatin1String("char") && hasText) {
+                const BulletChar bc = bulletChar(spec.bulletChar.value_or(QString()), spec.bulletFont.value_or(QString()));
+                para.bullet = bc.drawn;
+                bulletInItsFont = bc.inItsFont;
+                bulletSaid = bc.meaning;
+            }
         }
         if (!para.bullet.isEmpty()) {
             RunSpec br = para.runs.isEmpty() ? end : spec.run;
             if (!para.runs.isEmpty()) br.over(readRun(p->child(u"r") != nullptr ? p->child(u"r")->child(u"rPr") : nullptr, c));
             if (spec.bulletColor && !spec.bulletColorText) br.color = spec.bulletColor;
-            if (spec.bulletFont && !spec.bulletFontText && kind == QLatin1String("char")) {
-                const QString bf = *spec.bulletFont;
-                static const QStringList families = QFontDatabase::families();
-                if (families.contains(bf, Qt::CaseInsensitive)) br.face = bf;
-            }
+            if (br.face && isSymbolFamily(*br.face)) br.face.reset();
+            if (spec.bulletFont && !spec.bulletFontText && kind == QLatin1String("char") && bulletInItsFont) br.face = *spec.bulletFont;
             qreal bsize = runSize / std::max(0.01, fontScale);
             if (spec.bulletPct) bsize *= *spec.bulletPct;
             else if (spec.bulletPts) bsize = *spec.bulletPts;
@@ -2364,7 +2525,7 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         }
         frame->paras << para;
         if (chain.paragraphs != nullptr && hasText)
-            *chain.paragraphs << (para.bullet.isEmpty() ? said.trimmed() : para.bullet + QLatin1Char(' ') + said.trimmed());
+            *chain.paragraphs << (para.bullet.isEmpty() ? said.trimmed() : (bulletSaid.isEmpty() ? para.bullet : bulletSaid) + QLatin1Char(' ') + said.trimmed());
         first = false;
     }
     return frame;
