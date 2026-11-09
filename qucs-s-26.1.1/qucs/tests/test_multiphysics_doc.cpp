@@ -791,6 +791,20 @@ private slots:
         QVERIFY(json(r).value("range").toString().contains("V"));
         auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
         QVERIFY(doc != nullptr);
+        // Asked again: that group shown, not another made (the check of 9
+        // November, 5).
+        {
+            const QString made = json(r).value("plot group").toString();
+            const std::size_t had = doc->model().results().children.size();
+            const int steps = doc->undoStack()->index();
+            r = call("fem_plot", {{"expression", "V"}, {"contours", true}});
+            QVERIFY2(!failed(r) && json(r).value("plot group").toString() == made && json(r).contains("reused"), qPrintable(text(r)));
+            QCOMPARE(doc->model().results().children.size(), had);
+            QCOMPARE(doc->undoStack()->index(), steps);
+            r = call("fem_plot", {{"expression", "V"}});
+            QVERIFY2(!failed(r) && json(r).value("plot group").toString() != made, qPrintable(text(r)));
+            QCOMPARE(doc->model().results().children.size(), had + 1);
+        }
         QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
         // Described: its tree and studies.
         r = call("fem_describe");
@@ -1827,6 +1841,14 @@ private slots:
         QVERIFY2(!failed(r) && json(r).contains(QLatin1String("display")), qPrintable(text(r)));
         const qucs_s::fem::Node* g = doc->model().find(json(r).value("plot group").toString());
         QVERIFY(g != nullptr && g->type == QLatin1String("plotgroup1d") && !g->children.empty() && g->children.front().type == QLatin1String("globalgraph"));
+        // (Asked again: the same group.)
+        {
+            const QString made = g->tag;
+            const std::size_t had = doc->model().results().children.size();
+            r = call("fem_plot", {{"path", file}, {"study", "s"}, {"expression", "qw.alphaTE"}});
+            QVERIFY2(!failed(r) && json(r).value("plot group").toString() == made && json(r).contains("reused"), qPrintable(text(r)));
+            QCOMPARE(doc->model().results().children.size(), had);
+        }
         doc->setDocChanged(false);
         app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
     }

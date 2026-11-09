@@ -43,6 +43,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QUndoStack>
 #ifdef QUCS_HAVE_QTPDF
 #include "pdfdoc.h"
 
@@ -2618,6 +2619,29 @@ QStringList describeChanges(const QString& before, const QString& after, int mos
 QJsonObject QucsControl::undoHistory(const QJsonObject& args)
 {
     QString error;
+    QucsDoc* doc = document(args, &error);
+    if (doc == nullptr) return errorResult(error);
+    // A document that keeps its steps in an undo stack of its own (a
+    // multiphysics model, 2D or 3D, a sheet...): its steps by the names Edit >
+    // Undo gives them - "Hide pmlB" - for undo's 'to' (the check of 9
+    // November, 4: a 3D model's were refused as "not a schematic").
+    if (QUndoStack* stack = undoStackOf(doc)) {
+        const int at = stack->index(), total = stack->count();
+        const int count = std::clamp(args.value(QLatin1String("steps")).toInt(10), 1, 200);
+        QJsonArray steps;
+        for (int k = std::max(1, at - count + 1); k <= total && k <= at + 5; ++k)
+            steps.append(QJsonObject{{QStringLiteral("step"), k},
+                                     {QStringLiteral("done"), k <= at},
+                                     {QStringLiteral("change"), stack->text(k - 1)}});
+        QJsonObject result{{QStringLiteral("document"), titleOf(doc)},
+                           {QStringLiteral("at"), at},
+                           {QStringLiteral("steps"), steps},
+                           {QStringLiteral("how"), tr("undo with 'to': n makes it as it was after step n (0: before the first step kept); a step not done yet is redone so")}};
+        if (at > count) result.insert(QStringLiteral("earlier"), tr("%1 steps before these (steps gives more)").arg(at - count));
+        if (stack->undoLimit() > 0 && total >= stack->undoLimit())
+            result.insert(QStringLiteral("note"), tr("Only the last %1 steps are kept.").arg(stack->undoLimit()));
+        return jsonResult(result);
+    }
     Schematic* sch = schematic(args, &error, false);
     if (sch == nullptr) return errorResult(error);
     // (The states of the steps told, each unpacked once - not all kept.)

@@ -51,6 +51,7 @@ namespace qucs_s::layout {
 struct Layout;
 }
 class QWidget;
+class QUndoStack;
 class QTabWidget;
 class QAbstractItemView;
 class QCompleter;
@@ -561,6 +562,10 @@ private:
     QJsonObject select(const QJsonObject& args);
     QJsonObject zoom(const QJsonObject& args);
     QJsonObject undoRedo(const QJsonObject& args, bool redo);
+    /// The undo stack of a document that keeps its steps in one of its own
+    /// (a multiphysics model, a sheet, an archive...); null for a schematic,
+    /// a text, or one that keeps none.
+    static QUndoStack* undoStackOf(QucsDoc* doc);
     QJsonObject screenshot(const QJsonObject& args);
     QJsonObject listComponentTypes(const QJsonObject& args);
     // Menus and dialogs.

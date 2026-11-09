@@ -1172,6 +1172,26 @@ private slots:
         QCOMPARE(doc->view()->clipAxis(), 0);
         // One step of Undo.
         QVERIFY(doc->undoStack()->undoText().contains(QStringLiteral("Plot T")));
+        // Asked again: that group shown, not another made (the check of 9
+        // November, 5); another title, another group.
+        {
+            auto groups = [doc] {
+                int n = 0;
+                for (const FNode& c : doc->model().results().children) n += c.type == QLatin1String("plotgroup3d");
+                return n;
+            };
+            const int had = groups(), steps = doc->undoStack()->index();
+            r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}, {"title", "The block's T"}, {"slices", slices},
+                                                  {"isosurfaces", levels}, {"clip", QJsonObject{{"x", 1.5}}}});
+            QVERIFY2(!failed(r) && json(r).value(QStringLiteral("plot group")).toString() == group && json(r).contains(QStringLiteral("reused")),
+                     qPrintable(text(r)));
+            QCOMPARE(groups(), had);
+            QCOMPARE(doc->undoStack()->index(), steps);
+            r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}, {"title", "Another T"}});
+            QVERIFY2(!failed(r) && json(r).value(QStringLiteral("plot group")).toString() != group && !json(r).contains(QStringLiteral("reused")),
+                     qPrintable(text(r)));
+            QCOMPARE(groups(), had + 1);
+        }
         // Without its surface: a slice alone, two planes across x - the
         // rise above 300 K, its legend 0 to 2.5 K.
         QJsonArray across;
@@ -1710,6 +1730,173 @@ private slots:
         QCOMPARE(block->show(), Multiphysics3DDoc::Show::Solution);
         QVERIFY(block->view()->scene().triangles.empty());
         QVERIFY(!block->view()->scene().lines.empty());
+    }
+
+    /// The default plots after a solve: a pair a physics, of its first field -
+    /// not one a field (a full-wave solve's normE, Ex, Ey and Ez were four
+    /// pairs of one name: the check of 9 November, 5); none where the model
+    /// has a 3D Plot Group.
+    void defaultPlotsOneAPhysics()
+    {
+        Model m = Model::blank3d();
+        std::vector<qucs_s::fem::Field3> fields;
+        for (const char* v : {"normE", "Ex", "Ey", "Ez"}) {
+            qucs_s::fem::Field3 f;
+            f.tag = QStringLiteral("ewfd");
+            f.type = QStringLiteral("ewfd");
+            f.variable = QString::fromLatin1(v);
+            fields.push_back(f);
+        }
+        qucs_s::fem::Field3 heat;
+        heat.tag = QStringLiteral("ht");
+        heat.type = QStringLiteral("heat");
+        heat.variable = QStringLiteral("T");
+        fields.push_back(heat);
+        QVERIFY(Multiphysics3DDoc::addDefaultPlots(m, fields));
+        QStringList labels, expressions;
+        for (const FNode& g : m.results().children) {
+            if (g.type != QLatin1String("plotgroup3d")) continue;
+            labels << g.label;
+            QCOMPARE(g.children.size(), std::size_t(1));
+            expressions << g.children.front().text(QStringLiteral("expression"));
+        }
+        QCOMPARE(labels.size(), 4);
+        QCOMPARE(QSet<QString>(labels.begin(), labels.end()).size(), 4);
+        QCOMPARE(expressions, (QStringList{"ewfd.normE", "ewfd.normE", "ht.T", "ht.T"}));
+        QVERIFY(!Multiphysics3DDoc::addDefaultPlots(m, fields));
+    }
+
+    /// A part's visibility by the tools - fem_edit set 'visibility', fem_describe
+    /// giving it, undo_history naming the step, undo 'to' it - and a part
+    /// chosen lighting what it owns, never what is hidden or framed (the
+    /// check of 9 November, 1, 2 and 4).
+    void visibilityByTheToolsAndTheHighlight()
+    {
+        const QString file = path(QStringLiteral("visible_wire.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", straightWire()}, {"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc && doc->waitForIdle());
+        QVERIFY2(doc->geometry().ok(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        const Topology3& t = *doc->geometry().topology;
+        QString oxide, core, fin;
+        for (const FNode& g : doc->model().geometry().children) {
+            if (g.label == QLatin1String("oxide")) oxide = g.tag;
+            if (g.label == QLatin1String("core")) core = g.tag;
+            if (g.type == QLatin1String("form union")) fin = g.tag;
+        }
+        QVERIFY(!oxide.isEmpty() && !core.isEmpty() && !fin.isEmpty());
+        int wireCore = -1;
+        QList<int> cladding;
+        for (int d = 0; d < int(t.domains.size()); ++d) {
+            const int owner = t.domains[std::size_t(d)].owner;
+            if (owner >= 0 && t.objectNames.at(owner) == QLatin1String("core")) wireCore = d;
+            else if (owner >= 0 && t.objectNames.at(owner) == QLatin1String("oxide")) cladding << d;
+        }
+        QVERIFY(wireCore >= 0 && !cladding.isEmpty());
+        // (The core's ends on the oxide's: faces of the core alone, the
+        // outside beyond them.)
+        auto coreAlone = [&](int f) {
+            const Topology3::Face& face = t.faces[std::size_t(f)];
+            return (face.back == wireCore && face.front < 0) || (face.front == wireCore && face.back < 0);
+        };
+        bool anyEnd = false;
+        for (int f = 0; f < int(t.faces.size()); ++f) anyEnd = anyEnd || coreAlone(f);
+        QVERIFY(anyEnd);
+        const QColor highlight(31, 111, 235);
+
+        // The oxide chosen: its cladding lit, not the core in it - its ends
+        // not drawn, every face drawn lit and one of the cladding's.
+        doc->showGeometry();
+        panel()->selectNode(oxide);
+        const QVector<int> lit = doc->highlighted();
+        QCOMPARE(QSet<int>(lit.begin(), lit.end()), QSet<int>(cladding.begin(), cladding.end()));
+        QVERIFY(!doc->view()->scene().triangles.empty());
+        for (const View3D::Triangle& x : doc->view()->scene().triangles) {
+            QVERIFY2(!coreAlone(x.id), qPrintable(QString::number(x.id)));
+            QCOMPARE(x.color, highlight);
+        }
+        // The core chosen: its own domain.
+        panel()->selectNode(core);
+        QCOMPARE(doc->highlighted(), QVector<int>{wireCore});
+
+        // fem_edit: the oxide hidden, one step named as the tree's Hide; the
+        // geometry not built again.
+        const auto topology = doc->geometry().topology;
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", oxide}, {"visibility", "hidden"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Hidden);
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Hide oxide"));
+        QCOMPARE(json(r).value(QStringLiteral("set")).toObject().value(QStringLiteral("visibility")).toString(), QStringLiteral("hidden"));
+        QVERIFY(!doc->geometryStale() && !doc->isBusy());
+        QCOMPARE(doc->geometry().topology, topology);
+        QVERIFY2(!text(r).contains(QStringLiteral("being built again")), qPrintable(text(r)));
+        // Chosen and hidden: nothing of it lit - not the core's faces on it.
+        panel()->selectNode(oxide);
+        QVERIFY(doc->view()->scene().triangles.empty());
+        for (const View3D::Line& l : doc->view()->scene().lines) QVERIFY(l.color != highlight);
+        // Its frame, given among its props (where it was looked for first):
+        // its edges drawn lit, no face.
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", oxide}, {"props", QJsonObject{{"visibility", "frame"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Frame);
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Frame Only oxide"));
+        QVERIFY(doc->view()->scene().triangles.empty());
+        int litLines = 0;
+        for (const View3D::Line& l : doc->view()->scene().lines) litLines += l.color == highlight;
+        QVERIFY(litLines > 0);
+        // The mesh's view alike: the cladding's mesh lines, none filled.
+        doc->buildMesh();
+        QVERIFY(doc->waitForIdle());
+        doc->showMesh();
+        QVERIFY(doc->view()->scene().triangles.empty());
+        QVERIFY(!doc->view()->scene().lines.empty());
+        doc->showGeometry();
+        // Refused: a value it has not, Form Union, a 2D model's node.
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", oxide}, {"visibility", "ghost"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("shown, hidden or frame")), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", fin}, {"visibility", "hidden"}});
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("Form Union not")), qPrintable(text(r)));
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Frame Only oxide"));
+        // fem_describe: the oxide's, the core's not.
+        r = call(QStringLiteral("fem_describe"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).count(QStringLiteral("\"visibility\"")) == 1, qPrintable(text(r)));
+        {
+            QHash<QString, QString> shownAs;
+            const std::function<void(const QJsonObject&)> walk = [&](const QJsonObject& n) {
+                if (n.contains(QStringLiteral("visibility"))) shownAs.insert(n.value(QStringLiteral("tag")).toString(), n.value(QStringLiteral("visibility")).toString());
+                for (const QJsonValue& c : n.value(QStringLiteral("children")).toArray()) walk(c.toObject());
+            };
+            walk(json(r).value(QStringLiteral("tree")).toObject());
+            QCOMPARE(shownAs, (QHash<QString, QString>{{oxide, QStringLiteral("frame")}}));
+        }
+
+        // undo_history: the steps by their names; undo 'to' one of them.
+        r = call(QStringLiteral("undo_history"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray steps = json(r).value(QStringLiteral("steps")).toArray();
+        QVERIFY(steps.size() >= 2);
+        QCOMPARE(steps.at(steps.size() - 1).toObject().value(QStringLiteral("change")).toString(), QStringLiteral("Frame Only oxide"));
+        QCOMPARE(steps.at(steps.size() - 2).toObject().value(QStringLiteral("change")).toString(), QStringLiteral("Hide oxide"));
+        const int hideStep = steps.at(steps.size() - 2).toObject().value(QStringLiteral("step")).toInt();
+        QCOMPARE(json(r).value(QStringLiteral("at")).toInt(), hideStep + 1);
+        r = call(QStringLiteral("undo"), {{"path", file}, {"to", hideStep - 1}});
+        QVERIFY2(!failed(r) && text(r).contains(QStringLiteral("Frame Only oxide")) && text(r).contains(QStringLiteral("Hide oxide")), qPrintable(text(r)));
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Shown);
+        r = call(QStringLiteral("redo"), {{"path", file}, {"to", hideStep}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Hidden);
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", oxide}, {"visibility", "shown"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Show oxide"));
+        QVERIFY(!doc->anyHidden());
+        // A part added hidden.
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "add"}, {"parent", "geometry"}, {"type", "box"}, {"label", "spare"}, {"index", 0}, {"visibility", "hidden"}});
+        QVERIFY2(!failed(r) && json(r).value(QStringLiteral("added")).toObject().value(QStringLiteral("visibility")).toString() == QLatin1String("hidden"),
+                 qPrintable(text(r)));
+        QVERIFY(doc->waitForIdle());
     }
 
     /// Opt in (QUCS_MP3_PICTURES=<folder>; QUCS_MP3_PICTURES_MODEL=<a

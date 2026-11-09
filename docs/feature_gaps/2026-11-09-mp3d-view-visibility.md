@@ -107,11 +107,54 @@ It changes nothing else:
 - `pictures`: opt in with `QUCS_MP3_PICTURES=<folder>` and optionally `QUCS_MP3_PICTURES_MODEL=<a .qfem3d>`, which is
   copied first. It writes the window in the light and the dark theme: the pictures above.
 
-## Left as it is
+## The check of 9 November, and what came of it
 
-With a feature chosen in the tree, the view lights every domain the feature's solid covers, the old rule, not only the
-domains it owns. Choose the oxide and the core in it is lit too, and with the oxide hidden the core is still drawn
-lit. Choose the Y-branch's oxide and the PML boxes inside it are lit. Lighting the owned domains alone would match
-what Hide hides, but it would change what choosing a feature has shown until now, so it was not changed here.
+`qucs-reviews/Multiphysics3D/2026-11-09-claude-view-visibility-check.md` drove it on the whole Y-junction of Zhang et al.
+(`zhang_ybranch_full.qfem3d`: the oxide in two halves framed, the four PMLs hidden) through the tools, and found it
+working in every view. Its findings:
+
+1. **No tool set it.** Now:
+   - `fem_edit` takes `visibility` (shown, hidden, frame) on `add` and `set`, beside `enabled`. It is also taken
+     among `props`, where the check looked for it first. A set of it alone is one step of Undo named as the tree's
+     Hide names it ("Hide pmlT"), and nothing is built again.
+   - Refused: a value it has not got, a node that is not a part (Form Union, a study), and a 2D model.
+   - `fem_describe` gives `"visibility"` on each node that is not shown (as it gives `"enabled": false`).
+   - Its 3D file paragraph (`what=format`) says what the field is.
+   - `fem_plot` taking `hide` and `frame` lists for one picture was not done: a picture's parts can be set by
+     `fem_edit` and undone after.
+2. **A part chosen lit what was inside it, hidden too.** A feature chosen now lights the domains it owns, those it is
+   the smallest solid of: what Hide hides and what its material follows. One that owns none, all of it under later
+   solids, lights what it covers, so choosing it still shows where it is.
+
+   A face is lit only by a chosen domain beside it that is shown. So `pmlT` chosen and hidden no longer lights the
+   oxide's top under it, and with the oxide chosen and hidden nothing is lit at all. A chosen domain that is framed has
+   its edges drawn lit, two pixels wide, and in the mesh view its mesh lines alone.
+3. **The trunk in two colours**, from the oxide split at y = 0: as written, a domain coloured as its own. Left so.
+4. **`undo_history` refused a 3D model.** It now lists the steps of any document that keeps them in an undo stack of
+   its own (a 2D or 3D model, a sheet...) by their Edit > Undo names, numbered as `undo`'s `to` takes them (0: before
+   the first step kept). `undo` and `redo` take `to` for such a document too, and their answer names the steps taken
+   ("Undone: Frame Only oxide; Hide oxide. (Step 3 of 5.)").
+5. **`fem_plot` seemed to add a pair of plot groups at each call.** The four pairs in the model (`pg3d1` to `pg3d8`) were
+   the default plots of its first solve, made all at once: one pair for each of the full-wave solve's fields (`normE`,
+   `Ex`, `Ey`, `Ez`), each pair under the same name. Two changes:
+   - The defaults are now one pair a physics, of its first field (`ewfd.normE`).
+   - `fem_plot` with an `expression` made a new group at every call, in 2D and 3D. It now shows a group already there
+     with the same plots (same kind, name, properties and plots, whatever their tags) and says `"reused"`. The call
+     adds no step of Undo then. In 2D a time, point, frequency or mode the call gives does not count against the match,
+     and is set on the group as before.
+
+Tests: `test_multiphysics3d_doc`'s `visibilityByTheToolsAndTheHighlight`:
+
+- the oxide chosen lights its cladding and not the core's ends, and the core chosen lights its own domain;
+- `fem_edit` hides the oxide by `visibility` and frames it by `props`, each step named, the geometry not built again;
+- chosen and hidden nothing is lit, and chosen and framed its edges are lit and no face is drawn, in the mesh view too;
+- the refusals;
+- `fem_describe` gives the oxide's visibility alone;
+- `undo_history` names "Hide oxide" and "Frame Only oxide", `undo` and `redo` go to those steps by `to`, and a part can
+  be added hidden.
+
+`defaultPlotsOneAPhysics` (a full-wave solve's four fields give one pair; none added where a group exists) and
+`theToolsPlotAndExportA3DModel` (the same plot asked twice: one group, no Undo step; another title, another group) in
+`test_multiphysics3d_doc`. In `test_multiphysics_doc`, the same checks for a 2D colour map and a 1D graph of a global.
 
 ![The Y-branch's oxide framed, nothing chosen](2026-11-09-mp3d-view-visibility/ybranch-light-oxide-frame.png)

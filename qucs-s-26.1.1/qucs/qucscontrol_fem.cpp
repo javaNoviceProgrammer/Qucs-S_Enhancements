@@ -46,10 +46,40 @@ using FNode = qucs_s::fem::Node;
 
 namespace {
 
+/// Whether plot group \a a is \a b again, whatever their tags: of one kind,
+/// name and properties - those of \a ignored aside, which the call sets -,
+/// their plots alike in order.
+bool samePlots(const FNode& a, const FNode& b, const QStringList& ignored = {})
+{
+    if (a.type != b.type || a.label != b.label || a.enabled != b.enabled || a.children.size() != b.children.size()) return false;
+    QJsonObject pa = a.props, pb = b.props;
+    for (const QString& key : ignored) {
+        pa.remove(key);
+        pb.remove(key);
+    }
+    if (pa != pb) return false;
+    for (std::size_t i = 0; i < a.children.size(); ++i)
+        if (!samePlots(a.children[i], b.children[i])) return false;
+    return true;
+}
+
+/// A plot group of \a model's results that is \a made again (the last such),
+/// or empty: fem_plot shows it rather than adding another (the check of 9
+/// November, 5 - a group made at each call).
+QString samePlotGroup(const Model& model, const FNode& made, const QStringList& ignored = {})
+{
+    QString found;
+    for (const FNode& g : model.results().children)
+        if (g.tag != made.tag && samePlots(g, made, ignored)) found = g.tag;
+    return found;
+}
+
 QJsonObject nodeJson(const FNode& n, int depth)
 {
     QJsonObject o{{QStringLiteral("tag"), n.tag}, {QStringLiteral("type"), n.type}, {QStringLiteral("name"), n.name()}};
     if (!n.enabled) o.insert(QStringLiteral("enabled"), false);
+    // (A 3D model's part hidden or framed in its view: its Visibility.)
+    if (!n.visibility.isEmpty()) o.insert(QStringLiteral("visibility"), n.visibility);
     if (n.isDefault) o.insert(QStringLiteral("default"), true);
     if (!n.props.isEmpty()) {
         QJsonObject props = n.props;
@@ -555,7 +585,9 @@ QString formatText3D()
         "model's. Results: \"plotgroup3d\" (\"clip\" x, y or z at \"clipat\") of \"surface\" (the boundaries coloured), "
         "\"slice\", \"isosurface\", \"arrowvolume\" and \"meshplot\"; derived values \"global\", \"integral\", \"average\", "
         "\"maximum\" and \"minimum\" (\"level\" domain, boundary or edge) and \"pointeval\" (\"coordinates3\" rows of x, y, z); "
-        "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z).");
+        "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z). A geometry feature (Form Union not) or "
+        "a material may carry \"visibility\": \"hidden\" (not drawn) or \"frame\" (its edges alone), as \"enabled\" is "
+        "carried - the view's alone: nothing built, meshed or solved reads it; fem_edit set 'visibility' changes it.");
 }
 
 /// A property of a kind as fem_describe's format lists it, a line each -
@@ -1496,7 +1528,40 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     const std::shared_ptr<ParameterScope> scope = three ? three->parameters() : doc->parameters();
     const QString action = args.value(QLatin1String("action")).toString();
     Model m = three ? three->model() : doc->model();
-    const QJsonObject props = args.value(QLatin1String("props")).toObject();
+    QJsonObject props = args.value(QLatin1String("props")).toObject();
+    // What the 3D view draws of it (shown, hidden, frame): a node's own, as
+    // 'enabled' is - taken among its props too, where it was first looked
+    // for (the check of 9 November, 1).
+    QJsonValue visibilityArg = args.value(QLatin1String("visibility"));
+    if (props.contains(QStringLiteral("visibility"))) {
+        if (visibilityArg.isUndefined()) visibilityArg = props.value(QStringLiteral("visibility"));
+        props.remove(QStringLiteral("visibility"));
+    }
+    QString visibility;
+    if (!visibilityArg.isUndefined()) {
+        const QString v = visibilityArg.toString().trimmed().toLower();
+        if (visibilityArg.isNull() || v == QLatin1String("shown") || v == QLatin1String("show")) visibility = QString();
+        else if (v == QLatin1String("hidden") || v == QLatin1String("hide")) visibility = QStringLiteral("hidden");
+        else if (v == QLatin1String("frame") || v == QLatin1String("frame only") || v == QLatin1String("frameonly")
+                 || v == QLatin1String("frame_only"))
+            visibility = QStringLiteral("frame");
+        else
+            return errorResult(tr("'visibility' is shown, hidden or frame (its edges alone), not %1.")
+                                   .arg(visibilityArg.toVariant().toString()));
+        if (!three)
+            return errorResult(tr("'visibility' is what a 3D model's view draws of a part (Multiphysics 3D's Visibility): a 2D model has "
+                                  "none. The model is unchanged."));
+    }
+    // Node \a n's visibility, where one was given: a solid's feature (Form
+    // Union not) or a material, as the tree's Hide takes.
+    auto applyVisibility = [&](FNode& n) -> QString {
+        if (visibilityArg.isUndefined()) return {};
+        if (!Multiphysics3DDoc::canHide(m, n.tag))
+            return tr("%1 is not drawn as a part of its own: 'visibility' is a geometry feature's (Form Union not) or a material's "
+                      "under materials. The model is unchanged.").arg(n.name());
+        n.visibility = visibility;
+        return {};
+    };
     // Properties set: only those its kind has (a material: and what a
     // library entry gives one - its semiconductor models' parameters too).
     // What was written that does not read as its unit would have it.
@@ -1624,6 +1689,7 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
         QString refused;
         FNode* added = m.add(parent->tag, node, at, &refused);
         if (!added) return errorResult(refused);
+        if (const QString hidden = applyVisibility(*added); !hidden.isEmpty()) return errorResult(hidden);
         answer.insert(QStringLiteral("added"), nodeJson(*added, 2));
         what = tr("Add %1").arg(added->name());
     } else if (action == QLatin1String("set")) {
@@ -1631,8 +1697,14 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
         if (!n) return errorResult(tr("There is no node %1.").arg(args.value(QLatin1String("tag")).toString()));
         const QString why = apply(*n);
         if (!why.isEmpty()) return errorResult(why);
+        if (const QString hidden = applyVisibility(*n); !hidden.isEmpty()) return errorResult(hidden);
         answer.insert(QStringLiteral("set"), nodeJson(*n, 1));
         what = tr("Change %1").arg(n->name());
+        // (Its visibility alone: named as the tree's Hide names it.)
+        if (!visibilityArg.isUndefined() && props.isEmpty() && !args.contains(QLatin1String("label"))
+            && !args.contains(QLatin1String("enabled")))
+            what = (visibility == QLatin1String("hidden") ? tr("Hide %1") : visibility == QLatin1String("frame") ? tr("Frame Only %1") : tr("Show %1"))
+                       .arg(n->name());
     } else if (action == QLatin1String("delete")) {
         const QString tag = args.value(QLatin1String("tag")).toString();
         const FNode* n = m.find(tag);
@@ -3162,6 +3234,12 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
         }
         group = made;
     }
+    // A plot group of the same plots there already: shown, not made again -
+    // its time, point, frequency or mode those the call gives.
+    bool reused = false;
+    QStringList setByTheCall;
+    for (const char* key : {"time", "point", "frequency", "mode"})
+        if (args.contains(QLatin1String(key))) setByTheCall << QString::fromLatin1(key);
     if (group.isEmpty()) {
         // A plot group of the expression: added (one step of Undo).
         const QString expression = args.value(QLatin1String("expression")).toString();
@@ -3188,10 +3266,15 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
                 gg.props.insert(QStringLiteral("expression"), expression);
                 if (args.contains(QLatin1String("unit"))) gg.props.insert(QStringLiteral("unit"), args.value(QLatin1String("unit")).toString());
                 g.children.push_back(gg);
-                FNode* added = m.add(m.results().tag, g);
-                if (!added) return errorResult(tr("The plot group could not be added."));
-                group = added->tag;
-                doc->setModel(m, tr("Add %1").arg(g.label));
+                if (const QString again = samePlotGroup(doc->model(), g, setByTheCall); !again.isEmpty()) {
+                    group = again;
+                    reused = true;
+                } else {
+                    FNode* added = m.add(m.results().tag, g);
+                    if (!added) return errorResult(tr("The plot group could not be added."));
+                    group = added->tag;
+                    doc->setModel(m, tr("Add %1").arg(g.label));
+                }
             }
         }
     }
@@ -3214,10 +3297,15 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
             if (args.contains(QLatin1String("unit"))) c.props.insert(QStringLiteral("unit"), args.value(QLatin1String("unit")).toString());
             g.children.push_back(c);
         }
-        FNode* added = m.add(m.results().tag, g);
-        if (!added) return errorResult(tr("The plot group could not be added."));
-        group = added->tag;
-        doc->setModel(m, tr("Add %1").arg(g.label));
+        if (const QString again = samePlotGroup(doc->model(), g, setByTheCall); !again.isEmpty()) {
+            group = again;
+            reused = true;
+        } else {
+            FNode* added = m.add(m.results().tag, g);
+            if (!added) return errorResult(tr("The plot group could not be added."));
+            group = added->tag;
+            doc->setModel(m, tr("Add %1").arg(g.label));
+        }
     }
     // At a time, a sweep's point: the plot group's settings (one step of Undo).
     if (args.contains(QLatin1String("time")) || args.contains(QLatin1String("point")) || args.contains(QLatin1String("frequency"))
@@ -3253,6 +3341,7 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
                       {QStringLiteral("display"), QDir::toNativeSeparators(display)},
                       {QStringLiteral("dataset"), QDir::toNativeSeparators(display.left(display.size() - 4) + QStringLiteral(".dat"))},
                       {QStringLiteral("see it"), tr("the data display is in front: screenshot takes a picture; get_dataset reads it")}};
+        if (reused) o.insert(QStringLiteral("reused"), tr("%1 has these plots already: shown, not made again").arg(group));
         // (Its display's diagrams of an older group of this tag: gone, said.)
         if (!removed.isEmpty()) o.insert(QStringLiteral("removed from its display"), QJsonArray::fromStringList(removed));
         // The diagram was there: what of it is the user's and was left
@@ -3265,6 +3354,7 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
     if (!doc->showPlotGroup(group, &why)) return errorResult(why);
     const std::shared_ptr<const PlotScene> scene = doc->plotScene();
     QJsonObject o{{QStringLiteral("shown"), scene->title}, {QStringLiteral("plot group"), group}};
+    if (reused) o.insert(QStringLiteral("reused"), tr("%1 has these plots already: shown, not made again").arg(group));
     if (!doc->shownInstance().isEmpty()) o.insert(QStringLiteral("solution"), doc->shownInstance());
     if (scene->surface) {
         const QString unit = scene->values.unit.name.isEmpty() ? dimName(scene->values.dim) : scene->values.unit.name;
@@ -4107,6 +4197,7 @@ QJsonObject QucsControl::fem3Plot(Multiphysics3DDoc* doc, const QJsonObject& arg
         }
     }
     QString shownWhat;
+    bool reused3 = false;
     const QString show = args.value(QLatin1String("show")).toString();
     QString group = args.value(QLatin1String("plot")).toString().trimmed();
     if (!show.isEmpty()) {
@@ -4167,8 +4258,14 @@ QJsonObject QucsControl::fem3Plot(Multiphysics3DDoc* doc, const QJsonObject& arg
             for (const QJsonValue& one : iso.toArray()) list << (one.isDouble() ? formatNumber(one.toDouble(), 15) : one.toString());
             plot(QStringLiteral("isosurface"), {{QStringLiteral("entry"), QStringLiteral("values")}, {QStringLiteral("values"), list.join(QStringLiteral(", "))}});
         }
-        doc->setModel(m, tr("Plot %1").arg(expression));
-        group = tag;
+        // (The same plots there already: shown, not made again.)
+        if (const QString again = samePlotGroup(doc->model(), *m.find(tag)); !again.isEmpty()) {
+            group = again;
+            reused3 = true;
+        } else {
+            doc->setModel(m, tr("Plot %1").arg(expression));
+            group = tag;
+        }
     }
     if (!group.isEmpty()) {
         QString why;
@@ -4211,6 +4308,7 @@ QJsonObject QucsControl::fem3Plot(Multiphysics3DDoc* doc, const QJsonObject& arg
                   {QStringLiteral("camera"), QJsonObject{{QStringLiteral("azimuth"), doc->view()->azimuth()}, {QStringLiteral("elevation"), doc->view()->elevation()}}},
                   {QStringLiteral("picture"), tr("screenshot takes a picture of it")}};
     if (doc->show() == Multiphysics3DDoc::Show::Plot) o.insert(QStringLiteral("plot group"), doc->plotGroup());
+    if (reused3) o.insert(QStringLiteral("reused"), tr("%1 has these plots already: shown, not made again").arg(group));
     if (doc->view()->legend().shown)
         o.insert(QStringLiteral("legend"), QJsonObject{{QStringLiteral("title"), doc->view()->legend().title},
                                                        {QStringLiteral("from"), doc->view()->legend().low},

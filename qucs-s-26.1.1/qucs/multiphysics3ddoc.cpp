@@ -1040,14 +1040,26 @@ bool Multiphysics3DDoc::showPlotGroup(const QString& tag, QString* error)
 void Multiphysics3DDoc::addDefaultPlots()
 {
     if (!a_solution) return;
-    for (const Node& c : a_model.results().children)
-        if (c.type == QLatin1String("plotgroup3d")) return;
+    Model m = a_model;
+    if (addDefaultPlots(m, a_solution->fields())) setModel(m, tr("Default Plots"));
+}
+
+bool Multiphysics3DDoc::addDefaultPlots(Model& m, const std::vector<Field3>& fields)
+{
+    for (const Node& c : m.results().children)
+        if (c.type == QLatin1String("plotgroup3d")) return false;
     // Each physics: its variable on the boundaries, and on a slice through the
     // middle across x alone (a surface, opaque, would hide it).
-    Model m = a_model;
     const QString results = m.results().tag;
     bool any = false;
-    for (const Field3& f : a_solution->fields()) {
+    // One pair a physics, of its first field: a full-wave solve's fields are
+    // normE, Ex, Ey and Ez, and four pairs of one name each ("Electromagnetic
+    // Waves, Frequency Domain (ewfd)") read as made again at each plot (the
+    // check of 9 November, 5).
+    QSet<QString> done;
+    for (const Field3& f : fields) {
+        if (done.contains(f.tag)) continue;
+        done.insert(f.tag);
         const Node* physics = m.find(f.tag);
         const QString name = physics && physics->kind() ? physics->kind()->title : f.type;
         const QString variable = f.tag + QLatin1Char('.') + f.variable;
@@ -1063,7 +1075,7 @@ void Multiphysics3DDoc::addDefaultPlots()
             any = true;
         }
     }
-    if (any) setModel(m, tr("Default Plots"));
+    return any;
 }
 
 void Multiphysics3DDoc::showSolution()
@@ -1509,12 +1521,12 @@ void eachNode(const Node& n, const std::function<void(const Node&)>& f)
 
 } // namespace
 
-bool Multiphysics3DDoc::canHide(const QString& tag) const
+bool Multiphysics3DDoc::canHide(const Model& model, const QString& tag)
 {
-    const Node* n = a_model.find(tag);
+    const Node* n = model.find(tag);
     if (!n || !hideable(*n)) return false;
     // (Under the geometry or the materials: not a material of a physics'.)
-    for (const Node* under : {&a_model.geometry(), &a_model.materials()}) {
+    for (const Node* under : {&model.geometry(), &model.materials()}) {
         bool found = false;
         eachNode(*under, [&](const Node& c) { found = found || &c == n; });
         if (found) return true;
@@ -1624,8 +1636,16 @@ void Multiphysics3DDoc::updateHighlight()
         for (int i = 0; i < t->objectNames.size(); ++i)
             if (t->objectNames.at(i) == name || t->objectGroups.value(i) == name) solids.insert(i);
         if (solids.isEmpty()) return;
+        // The domains it owns - it the smallest solid that holds them -, as
+        // Hide hides them and a material on it follows: the oxide's chosen
+        // lights its cladding, not the core in it (the check of 9 November,
+        // 2). One that owns none - all of it under others - lights what it
+        // covers, so choosing it still shows where it is.
         for (int d = 0; d < int(t->domains.size()); ++d)
-            if (t->domains[std::size_t(d)].objects.intersects(solids)) a_highlighted << d;
+            if (solids.contains(t->domains[std::size_t(d)].owner)) a_highlighted << d;
+        if (a_highlighted.isEmpty())
+            for (int d = 0; d < int(t->domains.size()); ++d)
+                if (t->domains[std::size_t(d)].objects.intersects(solids)) a_highlighted << d;
         a_highlightLevel = Level::Domain;
     }
 }
@@ -1940,12 +1960,6 @@ void Multiphysics3DDoc::updateScene(bool fit)
     const QColor wireColor = dark ? QColor(110, 116, 126) : QColor(176, 180, 188);
     const bool ghost = a_highlightLevel != Level::None;
     const QSet<int> lit(a_highlighted.begin(), a_highlighted.end());
-    auto faceLit = [&](int f) {
-        if (!t || f < 0) return false;
-        const Topology3::Face& face = t->faces[std::size_t(f)];
-        if (a_highlightLevel == Level::Domain) return lit.contains(face.back) || lit.contains(face.front);
-        return a_highlightLevel == Level::Boundary && lit.contains(f);
-    };
     // What each face, edge and point of a topology is drawn as, by what its
     // parts are (Visibility): a face filled where a shown domain is on a side
     // of it (2), its edges alone where a framed one is (1), else not at all
@@ -1988,6 +2002,34 @@ void Multiphysics3DDoc::updateScene(bool fit)
             });
         }
         return drawn;
+    };
+    // A face lit: one chosen (a boundary's), or one of a domain chosen that is
+    // shown - not where that domain is hidden or framed, so the face of the
+    // part shown beside it is not lit in its place (the check of 9 November,
+    // 2: pmlT chosen and hidden lit the oxide's top under it).
+    auto domainAs = [&](int domain) {
+        const Drawn& d = drawnOf(t);
+        return d.any && domain >= 0 && domain < int(d.domain.size()) ? d.domain[std::size_t(domain)] : Visibility::Shown;
+    };
+    auto faceLit = [&](int f) {
+        if (!t || f < 0) return false;
+        const Topology3::Face& face = t->faces[std::size_t(f)];
+        if (a_highlightLevel == Level::Domain)
+            return (lit.contains(face.back) && domainAs(face.back) == Visibility::Shown)
+                || (lit.contains(face.front) && domainAs(face.front) == Visibility::Shown);
+        return a_highlightLevel == Level::Boundary && lit.contains(f);
+    };
+    // A face of a domain chosen that is framed: its frame drawn lit instead.
+    auto faceFramedLit = [&](int f) {
+        if (!t || f < 0 || a_highlightLevel != Level::Domain) return false;
+        const Topology3::Face& face = t->faces[std::size_t(f)];
+        return (lit.contains(face.back) && domainAs(face.back) == Visibility::Frame)
+            || (lit.contains(face.front) && domainAs(face.front) == Visibility::Frame);
+    };
+    auto edgeFramedLit = [&](int e) {
+        if (!t || e < 0 || e >= int(t->edges.size()) || a_highlightLevel != Level::Domain) return false;
+        const std::vector<int>& on = t->edges[std::size_t(e)].faces;
+        return std::any_of(on.begin(), on.end(), faceFramedLit);
     };
     auto faceColor = [&](int f) {
         if (faceLit(f)) return Highlight;
@@ -2089,9 +2131,12 @@ void Multiphysics3DDoc::updateScene(bool fit)
         t = m.topology.get();
         const Drawn& d = drawnOf(t);
         for (const Mesh3::Face& f : m.faces) {
-            if (ghost && !faceLit(f.face)) continue;
-            // (A part framed: its faces' mesh lines, not their fill.)
-            const int as = d.any && f.face >= 0 && f.face < int(d.face.size()) ? d.face[std::size_t(f.face)] : 2;
+            const bool on = !ghost || faceLit(f.face);
+            if (!on && !faceFramedLit(f.face)) continue;
+            // (A part framed: its faces' mesh lines, not their fill - and a
+            // framed part chosen, its lines alone.)
+            int as = d.any && f.face >= 0 && f.face < int(d.face.size()) ? d.face[std::size_t(f.face)] : 2;
+            if (!on) as = std::min(as, 1);
             if (as == 0) continue;
             const QColor color = faceColor(f.face);
             const Vec3 a = m.nodes[std::size_t(f.nodes[0])], b = m.nodes[std::size_t(f.nodes[1])], c = m.nodes[std::size_t(f.nodes[2])];
@@ -2105,8 +2150,10 @@ void Multiphysics3DDoc::updateScene(bool fit)
         }
         if (ghost)
             for (int e = 0; e < int(t->edges.size()); ++e) {
+                const bool framed = edgeFramedLit(e);
                 const std::vector<Vec3> line = t->edgePolyline(e);
-                for (std::size_t i = 0; i + 1 < line.size(); ++i) scene.lines.push_back({line[i], line[i + 1], wireColor, 1, e});
+                for (std::size_t i = 0; i + 1 < line.size(); ++i)
+                    scene.lines.push_back({line[i], line[i + 1], framed ? Highlight : wireColor, framed ? 2.0f : 1.0f, e});
             }
         scene.bounds = t->bounds;
     } else if (t && !t->domains.empty()) {
@@ -2117,9 +2164,11 @@ void Multiphysics3DDoc::updateScene(bool fit)
         }
         for (int e = 0; e < int(t->edges.size()); ++e) {
             const bool on = a_highlightLevel == Level::Edge && lit.contains(e);
-            const QColor color = on ? Highlight : ghost ? wireColor : edgeColor;
+            const bool framed = !on && edgeFramedLit(e);
+            const QColor color = on || framed ? Highlight : ghost ? wireColor : edgeColor;
             const std::vector<Vec3> line = t->edgePolyline(e);
-            for (std::size_t i = 0; i + 1 < line.size(); ++i) scene.lines.push_back({line[i], line[i + 1], color, on ? 3.0f : 1.0f, e});
+            for (std::size_t i = 0; i + 1 < line.size(); ++i)
+                scene.lines.push_back({line[i], line[i + 1], color, on ? 3.0f : framed ? 2.0f : 1.0f, e});
         }
         for (int p = 0; p < int(t->points.size()); ++p) {
             const bool on = a_highlightLevel == Level::Point && lit.contains(p);
