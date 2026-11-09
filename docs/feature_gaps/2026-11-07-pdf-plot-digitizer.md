@@ -209,7 +209,7 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
 
 ## Tests
 
-- **`test_plot_digitizer`:** the engine alone, about 2,450 lines, 84 cases (QTest's count). It links only the engine and
+- **`test_plot_digitizer`:** the engine alone, about 2,550 lines, 86 cases (QTest's count). It links only the engine and
   Qt Core, Gui, Pdf and Test, so it builds in seconds, under the sanitizers too. It covers:
   - Calibration: two axes, log and reversed, turned and sheared, projective, polar, and each way a calibration can fail.
   - Twenty-seven forms of tick label, both ones that should read as numbers and ones that should not.
@@ -582,6 +582,90 @@ curves cannot rank the two builds; the lines no longer zigzag there.
 - **No OCR**, as before.
 - The hand-digitized comparison was not added to the workspace's `digitizer_comparison.dpl`. Its datasets are the
   review's, written before S4.
+
+## The third recheck, and what came of it (9 November)
+
+**The third recheck:** `qucs-reviews/PdfViewer/2026-11-09-claude-pdf-digitizer-recheck3.md` reran the paper on the
+installed app holding 09124417. It found S1–S4 fixed, and three new things:
+- **T1 (medium):** narrow peaks lost real line points. Fig. 4(b)'s model line kept about half the x it had traced densely
+  at the second recheck, Fig. 4(a) two-thirds, Fig. 5 ch2 81%. The review put it down to `fitsWith`: a point inside a
+  run counted as a double within four line widths in any direction, which reaches across a narrow peak.
+- **T2 (low):** solid lines covered by rings in places came back `dashed`: any three gaps crossed made a line dashed.
+- **T3 (low):** a piece of one point in the dataset (`model_ch1_2`).
+
+**What was done:**
+- **T1, the doubles test** (`fitsWith`):
+  - Beyond a line width, a point counts as a double only where its run and the group run within 30° of each other there.
+    The other side of a peak goes the other way in y.
+  - A point whose nearest place on the group's run lies past that run's end carries the line on; it is no double. Up a
+    steep side, every ring parts the walk, and each run's x span is tiny, so nearly every point was "at the ends" of
+    the run before it.
+- **T1, the follower:** this was most of the loss on the paper, not `fitsWith`. On Fig. 4(b) the walk hopped between the
+  two sides of the peak, 2–3 pt apart: it took a new centre up to 3.6 steps away in any direction, and a step there is
+  about a line width. The second recheck had hidden that by sorting each walk by x. 09124417 kept the walked order, so
+  the hops became runs that went up both sides at once, and `fitsWith` dropped half of them. A straight step may now
+  move no more than 1.5 line widths to the side of its heading. Bends, turns at a peak's top and gaps are as before. The
+  same check on bends lost the line in `ringsPackedOnASteepPeakAndAKey`, where the line shows only through rings' holes.
+- **T1, gaps and order:**
+  - A step that moves less than a line width in x is no gap in what is written: up a steep side, or a peak too narrow
+    for its sides to part, a line drawn straight is the curve to within its width.
+  - Points at much the same x are ordered by y past such gaps too. A stretch holding a peak's top is put up to the top
+    and down from it, not left as it was. A point after the top goes down from it only if it is no lower than the line
+    just after the stretch.
+- **T1, junk that came back:** the stronger walks kept the strokes of two rings on Fig. 5 ch1's left side that are not
+  found as markers (at 0.64 and 0.71, against the blue line). They had been dropped as scraps by luck before. A stretch
+  of a line in a colour with markers is now dropped as well when it is all bits no longer than a marker, two or more,
+  parted by steps longer than one, and either those steps go up and down by more than a marker or the bits lie within two
+  markers' widths of the found markers. A curve does not zigzag between bits. A line left with no stretch is dropped
+  (a crash on the way: the short-line rule read an empty list).
+- **T2:** a line is dashed when three or more of the gaps it crossed had nothing in them: no ink of any colour, and no
+  marker or glyph lifted out, along the middle of the jump.
+- **T3:** a piece of one point is joined to the piece beside it whose end is nearer, within 16 pt. Otherwise it is left
+  out, with a note.
+- `retest_scanned_paper.py` counts a turn in y only between points under 0.5 pt apart in x, as its docstring says. A
+  peak's top moves on in x. With no gap at Fig. 4(a)'s two tops any more, the old count flagged them.
+
+**The paper, third recheck → now** (with colours and names; "dense": the x covered by steps under 0.4 pt in x within a
+piece, the review's measure, which gives the review's numbers for 09124417):
+
+| Curve | Points | Pieces | Dense x | rms against the hand data | Worst |
+|---|---|---|---|---|---|
+| Fig. 4(a) | 78 → 97 | 6 → 2 | 0.078 → 0.098 µm (second recheck 0.119) | 0.014 → 0.013 | −0.055 → +0.045 |
+| Fig. 4(b) | 31 → 43 | 5 → 1 | 0.027 → 0.044 µm (0.056) | 0.044 → 0.036 | +0.099 → +0.063 |
+| Fig. 5 ch2 (red) | 99 → 104 | 4 → 3 | 0.049 → 0.052 µm (0.061) | 0.013 → 0.010 | +0.069 → −0.032 |
+| Fig. 5 ch1 (blue) | 265 → 265 | 3 → 2 | 0.185 → 0.185 µm (0.191) | 0.006 → 0.006 | +0.026 → +0.026 |
+
+- No line is `dashed`, and no piece has a single point.
+- No junk line in any of the eight runs. Each model line is one curve, with and without colours.
+- No line turns back in y between points a sliver apart.
+- The markers are unchanged: 160, 72 and 79 with colours.
+
+**The synthetic figures:**
+- New, `aNarrowPeakKeepsBothSides`: a scanned Lorentzian whose half-height half-width is 1.2, 2 and 3.5 line widths.
+  At least 90% of the x between its half-height points must be traced in steps under a line width in x, and the top
+  reached. 09124417 traced 46% of the narrowest; now all three are 100%. In the narrowest, the two sides are one stroke
+  of ink for the top 33 pt, and the walk goes up it and comes back down the far side lower down.
+- New, `lonePointsBetweenGapsAreFolded`: `foldLonePoints` joins a lone point to the nearer piece within reach and drops
+  one with none near.
+- `ringsPackedOnASteepPeakAndAKey` also checks the blue line is not dashed. It fails with T2's old rule. Its line has
+  164 points (157 before).
+- `aPapersFigure`: 138 of 141 markers; the blue line's worst error is 0.0092, as before.
+
+**Tests:**
+- **Release, through ctest:** all pass: `test_plot_digitizer` (86), `test_plot_digitizer_app`, `test_pdf_viewer`,
+  `test_mcp_server`, `test_mcp_wishlist`, `test_claude_fuzz` and `test_qucs_control`.
+- **ASan/UBSan** (Debug): `test_plot_digitizer` and `test_plot_digitizer_app` pass with no report.
+- The four lints are clean.
+- `aNarrowPeakKeepsBothSides` fails with 09124417's code (46%), and `ringsPackedOnASteepPeakAndAKey` with T2's old rule.
+
+**Still short:**
+- **The two rings on Fig. 5 ch1's left side** (and others the hand data has on its steep sides) are not found as markers.
+  Their strokes are now dropped as such, but the markers are missing.
+- **Fig. 4(b)'s densely traced x** is 0.044 µm against the second recheck's 0.056. Part of that is the second recheck's
+  doubles, which counted as dense; the line now matches the hand data better than either.
+- **A same-colour line through closely spaced markers** ("-o-"), with each bit shorter than a marker and a half, would be
+  taken for markers not found, as before.
+- Fig. 4's x tick marks, OCR: as before.
 
 ## What could not be verified
 

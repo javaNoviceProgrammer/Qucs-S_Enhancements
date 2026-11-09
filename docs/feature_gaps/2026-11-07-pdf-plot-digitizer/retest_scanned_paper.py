@@ -97,11 +97,14 @@ def main():
                 xs = [x for x in s.get("x", []) if x is not None]
                 line = s["shape"] == "line" and len(xs) == len(ys)
                 back = sum(1 for a, b in zip(xs, xs[1:]) if b < a) if line else 0
-                # y turning back by more than 1.5 pt each way, within a piece.
+                # y turning back by more than 1.5 pt each way, within a piece,
+                # between points a sliver (under 0.5 pt) apart in x: a steep
+                # side shuffled, not a peak's top, which moves on in x.
                 starts = set(s.get("pieces_start_at", []))
                 turns = sum(1 for i in range(1, len(ys) - 1) if i not in starts and i + 1 not in starts
                             and (ys[i] - ys[i - 1]) * (ys[i + 1] - ys[i]) < 0
-                            and abs(ys[i] - ys[i - 1]) * sy > 1.5 and abs(ys[i + 1] - ys[i]) * sy > 1.5) if line else 0
+                            and abs(ys[i] - ys[i - 1]) * sy > 1.5 and abs(ys[i + 1] - ys[i]) * sy > 1.5
+                            and abs(xs[i] - xs[i - 1]) * sx < 0.5 and abs(xs[i + 1] - xs[i]) * sx < 0.5) if line else 0
                 print(f"   {s['name']:<12} {s['shape']:<8} {s['colour']} {s['points_in_all']:>4} points, "
                       f"x {min(xs):.3f}..{max(xs):.3f}, y up to {max(ys):.3f}" + (f", {len(starts)} gaps" if starts else "")
                       + (f", NOT IN ORDER OF X ({back} steps back)" if back else "") + (f", TURNS BACK {turns} times" if turns else "")

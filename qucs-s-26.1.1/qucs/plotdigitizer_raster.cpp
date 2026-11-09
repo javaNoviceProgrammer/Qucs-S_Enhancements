@@ -777,6 +777,27 @@ public:
         return false;
     }
 
+    // Gaps crossed with nothing in them: a dashed line's (not a marker's, a
+    // glyph's, another line's over it).
+    int dashes() const { return a_dashes; }
+
+    // Whether nothing at all is drawn along the middle of \a from to \a to,
+    // their ends aside: the paper showing between a line's dashes.
+    bool blankBetween(QPointF from, QPointF to) const
+    {
+        const double length = QLineF(from, to).length();
+        int blank = 0, all = 0;
+        for (double u = a_thickness; u < length - a_thickness; u += 0.5) {
+            const QPointF q = from + (to - from) * (u / length);
+            const int x = int(q.x()), y = int(q.y());
+            if (!a_t.inBounds(x, y)) continue;
+            const size_t i = size_t(a_t.at(x, y));
+            ++all;
+            blank += a_t.label[i] == 0 && a_t.unknown[i] == 0;
+        }
+        return all > 0 && blank >= 0.8 * all;
+    }
+
     // One way from \a start; each point in \a out, pieces parted in \a breaks.
     void walk(QPointF start, QPointF direction, QList<QPointF>* out, QList<int>* breaks, int* bridged)
     {
@@ -825,7 +846,15 @@ public:
                 p = q;
                 continue;
             }
-            if (go && QLineF(c, p).length() > 3.6 * a_step) go = false;
+            // (Nor half as far again as the line is wide to one side of the
+            // way on: the other side of a narrow peak, a step or two away, is
+            // another stroke - a walk hopping between them went up both at
+            // once, the third recheck's T1.)
+            const auto sideways = [&] {
+                const QPointF off = c - q;
+                return std::abs(off.x() * d.y() - off.y() * d.x()) > std::max(1.5 * a_thickness, 3.0);
+            };
+            if (go && (QLineF(c, p).length() > 3.6 * a_step || sideways())) go = false;
             bool jumped = false;
             if (!go) {
                 bool found = false;
@@ -850,6 +879,7 @@ public:
                                 found = true;
                                 jumped = true;
                                 ++*bridged;
+                                a_dashes += blankBetween(p, c);
                                 if (g >= a_breakAt) breaks->append(int(out->size()));
                                 break;
                             }
@@ -967,6 +997,7 @@ private:
     double a_step = 2, a_gap = 40, a_breakAt = 20, a_coastMost = 400;
     int a_recent = 8;
     int a_walkStart = 1;
+    int a_dashes = 0;
 };
 
 // A line followed both ways from \a seed: page points, in the order walked,
@@ -1017,7 +1048,9 @@ bool followFrom(Traced& t, int family, double thickness, QPointF seed, std::vect
     out->origin = Series::Origin::Raster;
     out->shape = Series::Shape::Line;
     out->width = thickness / t.px.scale;
-    out->dashed = bridged >= 3;
+    // (Dashed by its gaps with nothing in them: a solid line's, under
+    // markers, are no dashes - the third recheck's T2.)
+    out->dashed = f.dashes() >= 3;
     QList<int> reds, greens, blues;
     for (int i = 0; i < line.size(); i += std::max<int>(1, int(line.size()) / 60)) {
         const int x = int(line.at(i).x()), y = int(line.at(i).y());
@@ -1797,18 +1830,41 @@ double runLength(const Run& r)
     return l;
 }
 
-// \a p's distance from \a run.
-double distanceTo(const Run& run, QPointF p)
+// \a p's distance from \a run; in \a nearest, the point of it that begins
+// the stretch nearest \a p; in \a beyond, whether that is past an end of it
+// (on from it, not beside it).
+double distanceTo(const Run& run, QPointF p, int* nearest = nullptr, bool* beyond = nullptr)
 {
+    if (nearest != nullptr) *nearest = 0;
+    if (beyond != nullptr) *beyond = true;
     if (run.size() == 1) return QLineF(run.first(), p).length();
     double best = 1e18;
+    const int last = int(run.size()) - 2;
     for (int k = 0; k + 1 < run.size(); ++k) {
         const QPointF a = run.at(k), ab = run.at(k + 1) - a;
         const double l2 = QPointF::dotProduct(ab, ab);
-        const double u = l2 > 0 ? std::clamp(QPointF::dotProduct(p - a, ab) / l2, 0.0, 1.0) : 0;
-        best = std::min(best, QLineF(a + ab * u, p).length());
+        const double raw = l2 > 0 ? QPointF::dotProduct(p - a, ab) / l2 : 0;
+        const double u = std::clamp(raw, 0.0, 1.0);
+        const double d = QLineF(a + ab * u, p).length();
+        if (d < best) {
+            if (nearest != nullptr) *nearest = k;
+            if (beyond != nullptr) *beyond = (k == 0 && raw < 0) || (k == last && raw > 1);
+            best = d;
+        }
     }
     return best;
+}
+
+// The way \a run goes at its point \a k, over \a reach of it each side (a
+// unit vector; null where it has no length there).
+QPointF headingAt(const Run& run, int k, double reach)
+{
+    int a = k, b = k;
+    for (double l = 0; a > 0 && l < reach; --a) l += QLineF(run.at(a - 1), run.at(a)).length();
+    for (double l = 0; b + 1 < run.size() && l < reach; ++b) l += QLineF(run.at(b), run.at(b + 1)).length();
+    const QPointF d = run.at(b) - run.at(a);
+    const double l = std::hypot(d.x(), d.y());
+    return l > 0 ? d / l : QPointF();
 }
 
 // A line's runs: cut where it turns back in x by more than \a turn, and where
@@ -1897,17 +1953,30 @@ bool fitsWith(const QList<Run>& group, const QList<Run>& runs, double near, doub
             if (keep.size() >= 3 || keep.size() == r.size()) kept << keep;
             keep.clear();
         };
-        for (const QPointF& p : r) {
+        for (int i = 0; i < r.size(); ++i) {
+            const QPointF p = r.at(i);
             bool within = false, close = false, distant = false;
             for (const Run& g : group) {
                 if (g.isEmpty()) continue;
                 const bool inside = g.size() >= 2 && p.x() > g.first().x() + turn && p.x() < g.last().x() - turn;
                 const bool atEnds = !inside && p.x() >= g.first().x() - turn && p.x() <= g.last().x() + turn;
                 if (!inside && !atEnds) continue;
-                const double d = distanceTo(g, p);
+                int k = 0;
+                bool beyond = false;
+                const double d = distanceTo(g, p, &k, &beyond);
                 // (At a run's ends too, for what doubles it, where the run is
-                // longer than a few steps: a line there.)
-                if (d <= (inside || g.size() >= 4 ? far : near)) {
+                // longer than a few steps: a line there.) Further than the
+                // line is wide, a double goes the way the group goes there:
+                // the other side of a narrow peak, as near near its top, goes
+                // the other way in y, and is no double (the third recheck's
+                // T1). Nor is what lies on past the run's end, up a steep
+                // side where a marker parted the walk: a double is beside it.
+                bool doubles = d <= near;
+                if (!doubles && !beyond && d <= (inside || g.size() >= 4 ? far : near)) {
+                    const QPointF mine = headingAt(r, i, turn), theirs = headingAt(g, k, turn);
+                    doubles = mine.isNull() || theirs.isNull() || QPointF::dotProduct(mine, theirs) >= 0.87;
+                }
+                if (doubles) {
                     close = true;
                     break;
                 }
@@ -2178,26 +2247,46 @@ QList<Series> asFunctions(const QList<Series>& pieces, const QTransform& toWork,
             append(rAfter);
         }
         // Points of a steep side at much the same x - held from going back,
-        // or a sliver apart - in the order along it: by y, from the height
-        // before them to the height after. (Not a peak's top, which goes
-        // past both.)
+        // or a sliver apart, past a gap under markers too - in the order
+        // along it: by y, from the height before them to the height after.
+        // A peak's top, past both, too narrow for its sides to part in x:
+        // up to it from the height before, down from it to the height after.
         for (qsizetype i = 0; i < all.size();) {
             qsizetype j = i + 1;
-            while (j < all.size() && all.at(j).x() - all.at(j - 1).x() < 0.5 * turn && QLineF(all.at(j - 1), all.at(j)).length() <= breakAt) ++j;
+            while (j < all.size() && all.at(j).x() - all.at(j - 1).x() < 0.5 * turn) ++j;
             if (j - i >= 3) {
                 // (Past a gap too: which way the side goes.)
                 const double before = i > 0 ? all.at(i - 1).y() : all.at(i).y();
                 const double after = j < all.size() ? all.at(j).y() : all.at(j - 1).y();
-                double lo = 1e18, hi = -1e18;
+                qsizetype low = i, high = i;
                 for (qsizetype k = i; k < j; ++k) {
-                    lo = std::min(lo, all.at(k).y());
-                    hi = std::max(hi, all.at(k).y());
+                    if (all.at(k).y() < all.at(low).y()) low = k;
+                    if (all.at(k).y() > all.at(high).y()) high = k;
                 }
-                const bool peak = lo < std::min(before, after) - 2 * far || hi > std::max(before, after) + 2 * far;
-                if (!peak && std::abs(after - before) > far) {
-                    std::vector<double> xs;
-                    for (qsizetype k = i; k < j; ++k) xs.push_back(all.at(k).x());
-                    std::sort(xs.begin(), xs.end());
+                const bool dip = all.at(low).y() < std::min(before, after) - 2 * far, rise = all.at(high).y() > std::max(before, after) + 2 * far;
+                std::vector<double> xs;
+                for (qsizetype k = i; k < j; ++k) xs.push_back(all.at(k).x());
+                std::sort(xs.begin(), xs.end());
+                if (dip != rise) {
+                    // (Heights measured towards the top: \c v.)
+                    const double sign = rise ? 1 : -1;
+                    const auto v = [sign](double y) { return sign * y; };
+                    // (Past the top as followed, on the way down - unless
+                    // lower than the line just after: it goes on down from
+                    // the top, not back up.)
+                    double next = v(after);
+                    for (qsizetype k = j; k < all.size() && all.at(k).x() <= all.at(j - 1).x() + far; ++k) next = std::max(next, v(all.at(k).y()));
+                    QList<QPointF> up, down;
+                    const qsizetype at = rise ? high : low;
+                    for (qsizetype k = i; k < j; ++k) {
+                        const QPointF p = all.at(k);
+                        (k > at && v(p.y()) >= next ? down : up) << p;
+                    }
+                    std::stable_sort(up.begin(), up.end(), [&](const QPointF& a, const QPointF& b) { return v(a.y()) < v(b.y()); });
+                    std::stable_sort(down.begin(), down.end(), [&](const QPointF& a, const QPointF& b) { return v(a.y()) > v(b.y()); });
+                    up << down;
+                    for (qsizetype k = i; k < j; ++k) all[k] = QPointF(xs[size_t(k - i)], up.at(k - i).y());
+                } else if (!dip && std::abs(after - before) > far) {
                     const bool up = after > before;
                     std::stable_sort(all.begin() + i, all.begin() + j, [up](const QPointF& a, const QPointF& b) { return up ? a.y() < b.y() : a.y() > b.y(); });
                     for (qsizetype k = i; k < j; ++k) all[k].setX(xs[size_t(k - i)]);
@@ -2221,8 +2310,12 @@ QList<Series> asFunctions(const QList<Series>& pieces, const QTransform& toWork,
                 s.bridged += pieces.at(k).bridged;
             }
         s.bridged += int(g.runs.size()) - 1;
+        // (A step much longer than the line's steps is a gap in it - unless it
+        // moves less than the line is wide in x: up or down a side, or a peak
+        // too narrow for its sides to part, where a line drawn straight is
+        // the curve to within its width.)
         for (int k = 0; k < all.size(); ++k) {
-            if (k > 0 && QLineF(all.at(k - 1), all.at(k)).length() > breakAt) s.breaks << int(s.points.size());
+            if (k > 0 && QLineF(all.at(k - 1), all.at(k)).length() > breakAt && std::abs(all.at(k).x() - all.at(k - 1).x()) > near) s.breaks << int(s.points.size());
             s.points << toPage.map(all.at(k));
         }
         out << s;
@@ -2271,9 +2364,46 @@ int dropShortBits(Series& s, double least)
     return dropped;
 }
 
+// Whether \a pixels are bits no longer than a marker is across (\a size),
+// two or more, parted by steps longer than one - and those steps go up and
+// down by more than a marker, or the bits lie by \a centres (markers of the
+// colour): the strokes of markers not found put in a row, not a curve.
+bool markerBits(const QList<QPointF>& pixels, const QList<QPointF>& centres, double size)
+{
+    if (pixels.size() < 2) return false;
+    int bits = 1, reversals = 0;
+    double lastRise = 0;
+    QRectF bit(pixels.first(), QSizeF(0, 0));
+    for (int i = 1; i < pixels.size(); ++i) {
+        const QPointF step = pixels.at(i) - pixels.at(i - 1);
+        if (std::hypot(step.x(), step.y()) > size) {
+            ++bits;
+            bit = QRectF(pixels.at(i), QSizeF(0, 0));
+            if (std::abs(step.y()) > size) {
+                reversals += lastRise * step.y() < 0;
+                lastRise = step.y();
+            }
+            continue;
+        }
+        bit = bit.united(QRectF(pixels.at(i), QSizeF(0, 0)));
+        if (std::max(bit.width(), bit.height()) > 1.5 * size) return false;
+    }
+    if (bits < 2) return false;
+    if (reversals >= 1) return true;
+    std::vector<double> far;
+    for (const QPointF& p : pixels) {
+        double nearest = 1e18;
+        for (const QPointF& c : centres) nearest = std::min(nearest, QLineF(c, p).length());
+        far.push_back(nearest);
+    }
+    std::nth_element(far.begin(), far.begin() + far.size() / 2, far.end());
+    return far[far.size() / 2] <= 2 * size;
+}
+
 // The stretches of \a s between its gaps that lie mostly on \a centres
 // (markers of its colour, pixels, \a size across) taken out: what is left of
-// a row of markers once they are lifted out, put together with a line.
+// a row of markers once they are lifted out, put together with a line. So
+// are stretches of marker-sized bits (markerBits()): markers not found.
 int dropStretchesOnMarkers(Series& s, const Traced& t, const QTransform& toWork, const QList<QPointF>& centres, double size)
 {
     if (s.shape != Series::Shape::Line || s.points.size() < 2) return 0;
@@ -2289,15 +2419,17 @@ int dropStretchesOnMarkers(Series& s, const Traced& t, const QTransform& toWork,
     for (int k = 0; k + 1 < starts.size(); ++k) {
         const int from = starts.at(k), to = starts.at(k + 1);
         int on = 0;
+        QList<QPointF> pixels;
         for (int i = from; i < to; ++i) {
             const QPointF pixel = t.px.toPixel(toWork.map(s.points.at(i)));
+            pixels << pixel;
             for (const QPointF& c : centres)
                 if (std::abs(c.x() - pixel.x()) <= size && std::abs(c.y() - pixel.y()) <= size && QLineF(c, pixel).length() <= size) {
                     ++on;
                     break;
                 }
         }
-        if (on >= 0.6 * (to - from)) {
+        if (on >= 0.6 * (to - from) || markerBits(pixels, centres, size)) {
             ++dropped;
             continue;
         }
@@ -2311,6 +2443,48 @@ int dropStretchesOnMarkers(Series& s, const Traced& t, const QTransform& toWork,
 }
 
 } // namespace
+
+// Pieces of \a s of a single point between gaps - no line to draw, a value
+// a reader would have to skip - joined to the piece beside them whose end is
+// nearer, where it is within \a reach (points); else taken out. How many.
+int foldLonePoints(Series& s, double reach)
+{
+    if (s.shape != Series::Shape::Line || s.breaks.isEmpty()) return 0;
+    int folded = 0;
+    for (bool again = true; again;) {
+        again = false;
+        QList<int> starts{0};
+        for (const int b : std::as_const(s.breaks))
+            if (b > 0 && b < s.points.size()) starts << b;
+        std::sort(starts.begin(), starts.end());
+        starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+        starts << int(s.points.size());
+        for (int k = 0; k + 1 < starts.size(); ++k) {
+            const int at = starts.at(k);
+            if (starts.at(k + 1) - at != 1) continue;
+            const double before = at > 0 ? QLineF(s.points.at(at - 1), s.points.at(at)).length() : 1e18;
+            const double after = at + 1 < s.points.size() ? QLineF(s.points.at(at), s.points.at(at + 1)).length() : 1e18;
+            QList<int> breaks;
+            if (std::min(before, after) <= reach) {
+                // (The gap on its nearer side closed.)
+                const int closed = before <= after ? at : at + 1;
+                for (const int b : std::as_const(s.breaks))
+                    if (b != closed && b > 0 && b < s.points.size() && !breaks.contains(b)) breaks << b;
+            } else {
+                s.points.removeAt(at);
+                for (const int b : std::as_const(s.breaks)) {
+                    const int moved = b > at ? b - 1 : b;
+                    if (moved > 0 && moved < s.points.size() && !breaks.contains(moved)) breaks << moved;
+                }
+            }
+            s.breaks = breaks;
+            ++folded;
+            again = true;
+            break;
+        }
+    }
+    return folded;
+}
 
 bool extractRaster(Source& source, Plot& plot, const Options& options, QStringList* notes)
 {
@@ -2371,7 +2545,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
     QElapsedTimer clock;
     clock.start();
     std::vector<int> stamps(size_t(w) * h, 0);
-    int steps = 0, joined = 0, scraps = 0, alongMarkers = 0, puttogether = 0, loops = 0, bits = 0, mostlyGaps = 0;
+    int steps = 0, joined = 0, scraps = 0, alongMarkers = 0, puttogether = 0, loops = 0, bits = 0, mostlyGaps = 0, lone = 0;
     for (int family = 1; family <= families; ++family) {
         const Family& fam = t.families.at(family - 1);
         // (A colour not asked for: its markers are lifted out, nothing more.)
@@ -2429,6 +2603,8 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
             // put in a row.
             if (!m.centres.isEmpty() && m.size > 0)
                 for (Series& s : pieces) alongMarkers += dropStretchesOnMarkers(s, t, plot.work, m.centres, m.size);
+            // (A line all of whose stretches went is gone.)
+            pieces.removeIf([](const Series& s) { return s.shape == Series::Shape::Line && s.points.size() < 2; });
             // (In a colour with markers of its own, where scraps of them
             // are; a line under another colour's markers is seen in pieces.)
             for (int k = int(pieces.size()) - 1; k >= 0 && !m.centres.isEmpty(); --k) {
@@ -2439,6 +2615,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
                 }
             }
             for (Series& s : pieces) bits += dropShortBits(s, keepAt / scale);
+            for (Series& s : pieces) lone += foldLonePoints(s, 16.0);
             // A short line beside the colour's own markers - most of it within
             // two markers' width of them - is what is left of some: a ring
             // not found, on a narrow peak's top. (A line drawn through its
@@ -2526,6 +2703,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
     if (puttogether > 0) notes->append(tr("%1 pieces of lines of one colour were put together as one curve, in order of x: each line comes back in order of x, with a gap where nothing of it could be seen.").arg(puttogether));
     if (loops > 0) notes->append(tr("%1 lines are not single-valued in x (a loop, or two curves of one colour met): they are in the order they were followed.").arg(loops));
     if (bits > 0) notes->append(tr("%1 short bits standing alone at the ends of lines (a legend's sample, a speck) were left out.").arg(bits));
+    if (lone > 0) notes->append(tr("%1 single points between gaps in lines were joined to the line beside them, or left out where none was near.").arg(lone));
     if (scraps > 0) notes->append(tr("%1 scraps much shorter than the lines of their colour were left out.").arg(scraps));
 
     // Names, from the legend by colour.
