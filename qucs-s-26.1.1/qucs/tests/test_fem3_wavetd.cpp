@@ -19,6 +19,7 @@
 #include "fem3_solver.h"
 #include "fem3_wave.h"
 #include "fem_solver.h"
+#include "fem_sparse.h"
 
 #include <QJsonArray>
 #include <QtTest>
@@ -44,6 +45,18 @@ bool slowBuild()
 #endif
 #endif
     return false;
+}
+
+/// Why a full-size frequency-domain solve is left out here (\a what: what
+/// it is), or nothing: a sanitized build, or Eigen's LU factorizing it -
+/// where this macOS has no Accelerate LU (macOS 15: CI's runner), on Linux,
+/// or chosen (QUCS_FEM_SOLVER=eigen) - as test_fem3_wave's.
+QString leftOut(const char* what)
+{
+    if (slowBuild()) return QStringLiteral("a sanitized build: %1").arg(QLatin1String(what));
+    if (acceleratedLu()) return {};
+    const QString why = acceleratedLuHindrance();
+    return QStringLiteral("Eigen's LU (%1): %2").arg(why.isEmpty() ? QStringLiteral("chosen") : why, QLatin1String(what));
 }
 
 QJsonArray pairOf(double a, double b)
@@ -297,10 +310,16 @@ private slots:
     // A silicon wire in PMLs, its ends' too: the time domain against the
     // frequency domain (the same ports) at 1500, 1550 and 1600 nm, and S21
     // against e^-jβL of its port's index - the frequency domain's port that
-    // absorbs its modes gave 3.3e-4 rad at this mesh.
+    // absorbs its modes gave 3.3e-4 rad at this mesh. Its steps by
+    // Accelerate's Cholesky (23 s here); by Eigen's (Linux, or chosen) 163 s,
+    // left out. Its frequency-domain solve by Accelerate's LDLT; by Eigen's
+    // LU (macOS 15: CI's runner) unfinished in 8 minutes at 13 GB - left out
+    // there, the time domain's own checks kept.
     void aWireInPmlsInTheTimeDomain()
     {
         if (slowBuild()) QSKIP("a sanitized build: 110,000 unknowns' steps take most of an hour");
+        if (!acceleratedCholesky()) QSKIP("Eigen's Cholesky: 110,000 unknowns' steps take minutes");
+        const QString noLu = leftOut("110,000 unknowns' frequency-domain solve takes many minutes and 13 GB");
         const double L = 0.6, d = 0.3;
         Model m = pmlWire(L, d, 0.25, 0.1);
         const Built b = build(m);
@@ -315,13 +334,17 @@ private slots:
         for (const QString& l : td.log) qInfo("  %s", qPrintable(l));
         for (const QString& w : td.warnings) qInfo("  warning: %s", qPrintable(w));
         st.sourceFrequency = 0.5 * (f.front() + f.back());
-        const Wave3Result fd = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[1]);
-        QVERIFY2(fd.ok(), qPrintable(fd.error));
+        Wave3Result fd;
+        if (noLu.isEmpty()) {
+            fd = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[1]);
+            QVERIFY2(fd.ok(), qPrintable(fd.error));
+        } else
+            qInfo("the frequency domain left out - %s", qPrintable(noLu));
         for (std::size_t k = 0; k < f.size(); ++k) {
             const cd n = td.at[k].portModes[0].neff;
             const cd want = std::exp(cd(0, -2 * M_PI / (lambdas[k] * 1e6) * L) * n);
             const double err = std::abs(std::arg(td.at[k].S(1, 0) / want));
-            const double diff = k == 1 ? maxDiff(td.at[k].S, fd.S, 2) : 0.0;   // (5e-8)
+            const double diff = k == 1 && noLu.isEmpty() ? maxDiff(td.at[k].S, fd.S, 2) : 0.0;   // (5e-8)
             qInfo("%.0f nm: neff %.6f, |S21| %.6f, phase error %.2e rad, |S11| %.2e, balance %.6f; against the frequency domain |ΔS| %.2e", lambdas[k] * 1e9,
                   n.real(), std::abs(td.at[k].S(1, 0)), err, std::abs(td.at[k].S(0, 0)), td.at[k].balance[0], diff);
             QVERIFY2(diff < 1e-6, qPrintable(QString::number(diff)));
@@ -480,6 +503,9 @@ private slots:
     void aJunctionInTheTimeDomain()
     {
         if (slowBuild()) QSKIP("a sanitized build: 97,000 unknowns' 1,400 steps take hours");
+        // (Its steps by Accelerate's Cholesky some 56 s; by Eigen's - Linux,
+        // or chosen - 258 s, too near QtTest's 300.)
+        if (!acceleratedCholesky()) QSKIP("Eigen's Cholesky: 97,000 unknowns' 1,500 steps take minutes");
         const double L = 1, d = 0.4;
         Model m = halfJunctionWithPmls(L, d, 0.2, 0.1);
         const Built b = build(m);
