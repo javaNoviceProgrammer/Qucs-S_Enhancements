@@ -98,12 +98,15 @@ Pixels pixels(const QSize& size, Keep keep)
     return p;
 }
 
-// The style option \a b paints itself with (QToolButton's own is protected).
+// The style option \a b paints itself with (QToolButton's own is protected:
+// reached through a pointer to the member, called on the button as it is -
+// cast to this class, which it is not, GCC's UBSan ended the test on Linux).
 struct OptionOf : QToolButton {
     static QStyleOptionToolButton of(const QToolButton* b)
     {
         QStyleOptionToolButton opt;
-        static_cast<const OptionOf*>(b)->initStyleOption(&opt);
+        void (QToolButton::*init)(QStyleOptionToolButton*) const = &OptionOf::initStyleOption;
+        (b->*init)(&opt);
         return opt;
     }
 };
