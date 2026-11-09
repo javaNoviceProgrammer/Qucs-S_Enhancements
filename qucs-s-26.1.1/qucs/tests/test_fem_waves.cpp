@@ -1075,7 +1075,16 @@ private slots:
             QVERIFY2(std::abs(F - 1) < (slow ? 0.025 : 0.005), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.what)).arg(F)));
             QVERIFY2(!s.log.join(QLatin1Char('\n')).contains(QStringLiteral("Warning")), qPrintable(s.log.join(QLatin1Char('\n'))));
             purcell.push_back(F);
-            // Its triangle's edges a quarter of hmax, give or take the growth.
+            // Its triangle's edges a quarter of hmax, give or take the growth:
+            // a triangle is cut while its circumradius passes 0.62 of the size
+            // at its centroid, and the smoothing after moves it (0.63 to 0.67
+            // seen about these sources); the source may be by a corner, the
+            // centroid up to 2/3 of the longest edge L away, the size grown
+            // there by 0.25 of it ("fine"). So L up to 2 · 0.67 (hmax/4 +
+            // 0.25 · 2L/3), 0.43 hmax - without the source's refinement, more
+            // than hmax. (0.4 was the margin of one machine's arithmetic: CI's
+            // Linux, the glass case, 0.4006; docs/bug_hunts/
+            // 2026-11-08-linux-debug-ci.md.)
             const Mesh& mesh = s.mesh();
             const QStringList at = QString::fromUtf8(c.feature.toUtf8()).section(QStringLiteral("\"position\": ["), 1).section(QLatin1Char(']'), 0, 0).remove(QLatin1Char('"')).split(QLatin1Char(','));
             const Locator locator(mesh);
@@ -1087,7 +1096,7 @@ private slots:
                 longest = std::max(longest, QLineF(mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])],
                                                    mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])])
                                                 .length());
-            QVERIFY2(longest < 0.4 * hmax, qPrintable(QStringLiteral("%1: %2 µm").arg(QLatin1String(c.what)).arg(longest)));
+            QVERIFY2(longest < 0.45 * hmax, qPrintable(QStringLiteral("%1: %2 µm").arg(QLatin1String(c.what)).arg(longest)));
         }
         // A dipole pz is a line current jω pz: the same field, the same ratio.
         QVERIFY(std::abs(purcell[1] - purcell[0]) < 1e-9);

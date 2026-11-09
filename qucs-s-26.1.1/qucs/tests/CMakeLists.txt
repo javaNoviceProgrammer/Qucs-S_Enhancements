@@ -163,6 +163,9 @@ qucs_add_fem_test(test_fem_materials)
 target_compile_definitions(test_fem_materials PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 qucs_add_fem_test(test_fem_pde)
 qucs_add_fem_test(test_fem_anisotropy)
+# (CI's sanitized runner: 578 s with two solves of the lithium niobate devices, four now - each
+# device's index at 0 and 10 V, docs/bug_hunts/2026-11-08-linux-debug-ci.md, G4.)
+set_tests_properties(test_fem_anisotropy PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_modulator)
 # (2481 s of its 2700, 900 times the scale of 3, on an EPYC 7763, as the
 # semiconductors' above.)

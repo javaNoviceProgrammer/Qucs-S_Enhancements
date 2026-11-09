@@ -5,7 +5,8 @@ tests" (Qt 6.10.3, GCC 11.4, Debug, ASan and UBSan with `halt_on_error=1`) passe
 failed 6 of 177 suites at v27.0.8 (run 42432357248). Each failure read from that run's log, reproduced here
 where it could be, and fixed in the commit that adds this report, each fix with a test and broken in turn
 ([breaks.py](2026-11-08-linux-debug-ci/breaks.py): 5 of 5 caught). F8, the AppImage's crash in Application
-Settings that the user found on Linux the same day, added after.*
+Settings that the user found on Linux the same day, added after; G1 to G4, CI's failures on main the next
+day (run 42544793682), after them.*
 
 ## Summary
 
@@ -21,7 +22,11 @@ Settings that the user found on Linux the same day, added after.*
 | **F8** | The Linux AppImage ended as Application Settings opened: the check of whether OpenGL can draw the viewers freed its surface before its `QRhi`, and `~QRhi` used it | real bug (a crash, Linux and the BSDs) | `d01d425d` (the viewers on Qt's RHI, 17 Oct) | the surface freed last; `test_gpu_probe` runs the check on a display |
 | **N1** | Accelerate's threaded sparse factorization rounds differently from one run to the next: an adaptive run on macOS is not reproducible (two runs of one model, two meshes after 16 rounds) | finding, not fixed | - | a follow-up (below) |
 | **N3** | After the merge of `f3c591c`: the uniform corner "converged" at 1e-3 with an error of 1.23e-3 in slow builds; the error said below the error made in Release | finding in main's newest change | `f3c591c` (8 Nov) | fixed by the mesh convergence session (`e1eaa8a7`, merged in `b18627cd`); `reentrantCornerRates` asserts the verdict |
-| **N2** | macOS CI at v27.0.8 (run 42472828553): `test_running_jobs::anRf25ModelSolvesWithItsTabClosed`, `doc->isSolving()` false straight after `solve()` | not reproduced here | `276570d` (running simulations, 7 Nov) | the assertion now says why the solve declined |
+| **G1** | `test_menu_buttons` (Linux ASan): UBSan's downcast, a `QToolButton` cast to a class of the test's to reach `initStyleOption` | test's undefined behaviour | `d745d2cd` (8 Nov) | through a pointer to the member |
+| **G2** | N2's cause, from its new message; `check-json-nesting.py` did not see `QJsonArray rows{QJsonArray{...}}` | lint's blind spot | `276570d` | the lint catches a variable's initializer |
+| **G3** | `test_fem_waves::pointSources` (Linux slow build): the triangle at a source 0.4006 hmax, the bound 0.4 | test bound tighter than the mesher's rule; the mesh moved by F3, and differs by FMA | `d0d688b3` (16 Oct) | the bound from the mesher's rule, 0.45 |
+| **G4** | `test_fem_anisotropy::zCutAgainstXCut` (Linux slow build): two meshes' indexes at 10 V 5.9e-6 apart, the limit 5e-6 | test asked two meshes to agree past their accuracy | `1779afc3` (14 Oct) | the shift per volt compared, as the full-size path does, in three functions |
+| **N2** | macOS CI at v27.0.8 (run 42472828553): `test_running_jobs::anRf25ModelSolvesWithItsTabClosed`, `doc->isSolving()` false straight after `solve()` | test written for one compiler: its layer map a list of one list in braces, a copy to Apple's newer clang | `276570d` (running simulations, 7 Nov) | the assertion said why on the next run; the map built by append, the lint widened (G2) |
 
 Line 7031 of `test_claude_code`, which the task listed, is `fuzz()`'s SKIP, not a failure.
 
@@ -252,7 +257,56 @@ Run 42472828553's macOS job (the tag push of `de6fa0b`) failed one suite:
 passes here, in Release and on ASan. `isSolving()` is false there only if `solve()` declined - no mesh, no
 processed layout, or a problem with the returns - and the test did not say which. The assertion now prints
 `solveProblem()` and the mesh's lines, so the next run says why. Not investigated further: it is the
-running-simulations work's, not one of the failures of 7 November.
+running-simulations work's, not one of the failures of 7 November. The next run (42544793682) said: "There
+is no mesh to solve on ... 4 shape(s) are on layers the map does not name" - G2.
+
+## The run of 9 November (42544793682, main `eb1cece9`)
+
+Linux ASan failed `test_fem_waves`, `test_fem_anisotropy`, `test_fem_crystal` and `test_menu_buttons`; macOS
+`test_fem_crystal`, `test_rf25_fullwave_2` and `test_running_jobs`. `test_fem_crystal` (the crystal Monte Carlo,
+`fab87731`) and `test_rf25_fullwave_2::theSideWallsChargeIsInAThickCombsCapacitance` (`d802222e`) passed QtTest's
+300 s for one function - their sessions' tests, not taken here.
+
+**G1.** `test_menu_buttons` reached `QToolButton::initStyleOption`, protected, by casting the button to a
+class of its own deriving from it - undefined, a `QToolButton` not being one; GCC's UBSan stopped there
+(`halt_on_error`). It now takes the member's address through that class and calls it on the button.
+
+**G2.** N2: the test wrote the layer map's rows as `QJsonArray rows{QJsonArray{"1", "0", "M1"}}`. A braced
+list of one element of the class itself is a copy to Apple's newer clang (CI's runner) and a list of it to
+the others, so on CI the map had a row's three strings and no row, and named no layer. Built by append now.
+`scripts/ci/check-json-nesting.py`, written for this after a test of connect's `via`, matched only
+`QJsonArray{QJsonArray{...}}`; it now also matches a variable's initializer, `rows{...}` and `rows = {...}`
+(the old line caught; lists of two or more let through; the tree clean).
+
+**G3.** The case in glass with the source on the centre: the triangle about it has a longest edge of
+0.0400624 µm against 0.4 hmax - in GCC 16's Debug tree and in clang's with `-ffp-contract=off`, to the digit,
+and on CI; 0.4 hmax passes with clang's FMA (Purcell 1.01663 against 1.01360 without). So the mesh here is
+not the same with and without FMA, and F3's tie-break moved CI's over the bound (it passed at v27.0.8's
+first run). The bound was a margin: a triangle is cut while its circumradius passes 0.62 of the size at
+its centroid, and the smoothing after moves nodes - the triangles about the five sources end at 0.63 to
+0.67 of it; the source may sit by a corner, the centroid up to 2/3 of the longest edge away, where the size
+has grown by 0.25 of that distance ("fine"). The longest edge so up to 2 · 0.67 · (hmax/4 + 0.25 · 2L/3) =
+0.43 hmax, against more than hmax without the source's refinement: the bound is 0.45 hmax now. (Putting the
+source on a vertex would make the size there exact, but a dipole's source is a gradient of the basis at
+its point, not defined at a vertex.)
+
+**G4.** The slow path compared the z-cut device's index at 10 V with the turned x-cut's, to 5e-6, "a
+tenth of what 10 V moves it". Turned, the device is meshed anew: two meshes, whose coarse indexes are 5e-5
+from the fine ones; CI's were 5.9e-6 apart (1.8324519 and 1.8324460), macOS's 2e-7, GCC's here 5e-7 - CI's
+x-cut mesh not reproduced here (x86-64's `libm`, likely: the mesher's lengths are `std::hypot`'s, which is
+not correctly rounded and differs between libraries). The full-size path already compared what the
+physics says is the same: the index at 0 V to 2e-4 and the shift per volt to 1e-3 of itself, each
+device's own mesh at 0 and 10 V. The slow build now does the same on its coarser mesh (the shifts agree to
+6e-5 of themselves on macOS, GCC and clang without FMA). Four solves took 280 s of QtTest's 300 in the
+sanitized build here, CI's runner 1.2 to 2.2 times slower: each device is a function of its own
+(`zCutDevice`, `xCutDeviceTurned`) and `zCutAgainstXCut` compares them.
+The suite's ctest limit, 900 s by default (CI took 578 s with two solves), is 1800 s now.
+
+Checked for G1 to G4, on main `81e8e078` and these changes, through ctest: `test_fem_waves` and
+`test_fem_anisotropy` whole in Release and on ASan (37 and 24 functions); `pointSources` and the three
+lithium niobate functions also on the slow path in the GCC 16 Debug tree and clang's without FMA, CI's
+mesh at the source reproduced; `test_menu_buttons` in Release and on ASan, `test_running_jobs` in Release
+(neither of their failures happens with this Mac's compiler: CI is their check); the four lints green.
 
 ## N3 - after the merge of `f3c591c`: a uniform run converged short of its tolerance
 
@@ -310,4 +364,4 @@ F8, after: `test_gpu_probe` in Release and on ASan, passing; breaks.py's fifth b
 ## Follow-ups
 
 - N1, if reproducible adaptive runs are wanted on macOS.
-- N2, from the next macOS CI run's message.
+- The timeouts of `test_fem_crystal` and `test_rf25_fullwave_2`: their sessions'.
