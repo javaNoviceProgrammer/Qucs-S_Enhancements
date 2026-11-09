@@ -50,7 +50,11 @@
 #include <QJsonArray>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QFontMetricsF>
+#include <QHelpEvent>
 #include <QLocale>
+#include <QPaintEvent>
+#include <QToolTip>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPageLayout>
@@ -109,6 +113,7 @@ const QString kShowPromptTokens = QStringLiteral("ClaudeCode/showPromptTokens");
 const QString kShowConversationTokens = QStringLiteral("ClaudeCode/showConversationTokens");
 const QString kShowPromptCost = QStringLiteral("ClaudeCode/showPromptCost");
 const QString kShowConversationCost = QStringLiteral("ClaudeCode/showConversationCost");
+const QString kShowPromptDates = QStringLiteral("ClaudeCode/showPromptDates");   // each prompt's date in its corner
 
 struct Colours {
     QColor base, text, muted, faint, border, accent, onAccent, bubble, code, ok, warn, error;
@@ -465,6 +470,78 @@ QString plainTextOf(const QString& markdown)
 constexpr int kWorksTheView = QTextFormat::UserProperty + 0x4351;
 // On a formula's format: what it was written as, between its dollars.
 constexpr int kWrittenAs = kWorksTheView + 1;
+// On a prompt's bubble, with its date shown: when it was sent (Entry::when).
+constexpr int kPromptWhen = kWorksTheView + 2;
+
+// A prompt's date, as the user asked for it: MM/DD/YYYY, in this computer's time.
+QString promptDateText(qint64 when)
+{
+    return QDateTime::fromMSecsSinceEpoch(when).toLocalTime().date().toString(QStringLiteral("MM/dd/yyyy"));
+}
+
+// The font a prompt's date is drawn in: its caption's, \a base made smaller.
+QFont promptDateFont(const QFont& base)
+{
+    QFont small = base;
+    small.setPointSizeF(std::max(7.0, base.pointSizeF() * 0.88));
+    return small;
+}
+
+// Where each prompt's date goes in \a document: on its caption's line, the one
+// of "You" and "Edit" above its bubble, at the far end, level with the bubble's
+// right edge (its left, right to left), in \a font. Not where it would run into
+// the caption. Drawn over the document, not in it: nothing copied, quoted or
+// searched holds it.
+struct PromptDate {
+    QRectF rect;   // in the document
+    qreal baseline;
+    QString text;
+    qint64 when;
+};
+QList<PromptDate> promptDatePlaces(QTextDocument* document, const QFont& font, bool rightToLeft)
+{
+    QList<PromptDate> places;
+    QAbstractTextDocumentLayout* layout = document->documentLayout();
+    const QFontMetricsF metrics(font);
+    for (QTextFrame* frame : document->rootFrame()->childFrames()) {
+        const QTextFrameFormat format = frame->frameFormat();
+        if (!format.hasProperty(kPromptWhen)) continue;
+        const qint64 when = format.property(kPromptWhen).toLongLong();
+        const QTextBlock caption = document->findBlock(frame->firstPosition()).previous();
+        const QTextLayout* lines = caption.isValid() ? caption.layout() : nullptr;
+        if (lines == nullptr || lines->lineCount() == 0) continue;
+        const QRectF box = layout->frameBoundingRect(frame);
+        const QTextLine line = lines->lineAt(0);
+        // (A block's layout may be placed in a frame: the layout's rectangle in
+        // the document says where it is.)
+        const QRectF captionBox = layout->blockBoundingRect(caption);
+        const qreal top = captionBox.top() - lines->boundingRect().top();
+        const qreal baseline = top + line.y() + line.ascent();
+        const QString text = promptDateText(when);
+        const qreal width = metrics.horizontalAdvance(text);
+        const qreal left = rightToLeft ? box.left() : box.right() - width;
+        // (The caption's words, where they end: kept clear of, by a gap.)
+        const qreal wordsFrom = captionBox.left() - lines->boundingRect().left() + line.x();
+        const qreal wordsTo = wordsFrom + line.naturalTextWidth();
+        const bool clear = rightToLeft ? left + width + 12 <= captionBox.right() - line.naturalTextWidth() : left >= wordsTo + 12;
+        if (!clear) continue;
+        places.append({QRectF(left, baseline - metrics.ascent(), width, metrics.height()), baseline, text, when});
+    }
+    return places;
+}
+
+void paintPromptDates(QPainter* painter, const QList<PromptDate>& places, const QFont& font, const QColor& colour)
+{
+    painter->save();
+    // (In the screen's pixels, as the document was laid out: a size in points is
+    // the device's, and a PDF of 300 dpi drew it four times too big.)
+    QFont drawn = font;
+    drawn.setPixelSize(std::max(1, QFontInfo(font).pixelSize()));
+    painter->setFont(drawn);
+    painter->setPen(colour);
+    for (const PromptDate& d : places) painter->drawText(QPointF(d.rect.left(), d.baseline), d.text);
+    painter->restore();
+}
 // The margins, in pixels, between two blocks that stand apart for the reader:
 // paragraphs (Qt's Markdown gives each two thirds of the font's size, a reply's
 // first none at its end), a caption and what it heads. Not tools in a row (3),
@@ -515,12 +592,62 @@ protected:
 };
 
 // The conversation's view: what is copied or dragged from it has no such breaks.
+// Each prompt's date drawn over it, when shown.
 class TranscriptView : public QTextBrowser
 {
 public:
     using QTextBrowser::QTextBrowser;
 
+    void showPromptDates(bool on, const QFont& font, const QColor& colour)
+    {
+        if (on == a_dates && font == a_dateFont && colour == a_dateColour) return;
+        a_dates = on;
+        a_dateFont = font;
+        a_dateColour = colour;
+        viewport()->update();
+    }
+
+    // Where each is in the viewport.
+    QList<PromptDate> promptDates() const
+    {
+        if (!a_dates) return {};
+        QList<PromptDate> places = promptDatePlaces(document(), a_dateFont, isRightToLeft());
+        const QScrollBar* along = horizontalScrollBar();
+        const QPointF scrolled(isRightToLeft() ? along->maximum() - along->value() : along->value(), verticalScrollBar()->value());
+        for (PromptDate& d : places) {
+            d.rect.translate(-scrolled);
+            d.baseline -= scrolled.y();
+        }
+        return places;
+    }
+
 protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+        QTextBrowser::paintEvent(event);
+        if (!a_dates) return;
+        QPainter painter(viewport());
+        QList<PromptDate> shown = promptDates();
+        shown.removeIf([event](const PromptDate& d) { return !event->rect().intersects(d.rect.toAlignedRect()); });
+        paintPromptDates(&painter, shown, a_dateFont, a_dateColour);
+    }
+
+    bool viewportEvent(QEvent* event) override
+    {
+        // The date and the time, in full.
+        if (event->type() == QEvent::ToolTip && a_dates) {
+            const auto* help = static_cast<QHelpEvent*>(event);
+            for (const PromptDate& d : promptDates())
+                if (d.rect.contains(help->pos())) {
+                    QToolTip::showText(help->globalPos(),
+                                       QLocale().toString(QDateTime::fromMSecsSinceEpoch(d.when).toLocalTime(), QLocale::LongFormat),
+                                       viewport(), d.rect.toAlignedRect());
+                    return true;
+                }
+        }
+        return QTextBrowser::viewportEvent(event);
+    }
+
     QMimeData* createMimeDataFromSelection() const override
     {
         QMimeData* data = QTextBrowser::createMimeDataFromSelection();
@@ -537,6 +664,11 @@ protected:
         }
         return data;
     }
+
+private:
+    bool a_dates = false;
+    QFont a_dateFont;
+    QColor a_dateColour;
 };
 
 // \a text as it reads: its line breaks as such, without spaces of no width or
@@ -1412,10 +1544,19 @@ void ClaudeCodePanel::buildMenu()
         QucsSettingsFile().setValue(kAskOutside, on);
         applyGuards();
     });
-    connect(extras, &QMenu::aboutToShow, this, [this, askCommands, askOutside] {
+    // Each prompt's date, in its top-right corner (the user, 9 November).
+    extras->addSeparator();
+    QAction* dates = extras->addAction(tr("Show Prompt Dates"));
+    dates->setObjectName(QStringLiteral("claudeShowPromptDates"));
+    dates->setCheckable(true);
+    dates->setToolTip(tr("The date each prompt was sent, as month/day/year, in its top-right corner, in every "
+                         "conversation; the time too when the pointer is over it"));
+    connect(dates, &QAction::triggered, this, [](bool on) { setPromptDatesShown(on); });
+    connect(extras, &QMenu::aboutToShow, this, [this, askCommands, askOutside, dates] {
         applyGuards();   // (another tab may have changed them)
         askCommands->setChecked(a_session->guards().commands);
         askOutside->setChecked(a_session->guards().outside);
+        dates->setChecked(promptDatesShown());
     });
     // Auto-compact: on unless set off here, whatever Claude Code's own
     // settings say; for every conversation, at once.
@@ -2347,6 +2488,7 @@ bool ClaudeCodePanel::sendPrompt(const QString& text)
 ClaudeCodePanel::Entry ClaudeCodePanel::promptEntry(const QString& text, const QString& extra)
 {
     Entry e{Entry::You, text, extra, {}};
+    e.when = QDateTime::currentMSecsSinceEpoch();
     if (a_editing >= 0) {
         // Sent in the place of one edited: the conversation goes back to
         // where that one stood. The entries set aside stay until the program
@@ -2912,6 +3054,7 @@ QByteArray ClaudeCodePanel::lookKey() const
                             col.ok, col.warn, col.error})
         s << c.rgba();
     s << a_view->font().toString() << QFontDatabase::systemFont(QFontDatabase::FixedFont).toString() << a_view->devicePixelRatioF();
+    s << promptDatesShown();
     return key;
 }
 
@@ -2923,7 +3066,7 @@ QByteArray ClaudeCodePanel::partKey(qsizetype from, qsizetype to, bool captioned
     if (a_entries.at(from).kind == Entry::Tool && to - from > 1) s << isOpen(QStringLiteral("group:") + a_entries.at(from).id);
     for (qsizetype i = from; i < to; ++i) {
         const Entry& e = a_entries.at(i);
-        s << int(e.kind) << e.text << e.extra << e.id << e.output << int(e.tool) << e.streaming << e.detail << e.result << canEdit(i);
+        s << int(e.kind) << e.text << e.extra << e.id << e.output << int(e.tool) << e.streaming << e.detail << e.result << canEdit(i) << e.when;
         if (e.kind == Entry::Tool) s << isOpen(QStringLiteral("tool:") + e.id);
         if (e.kind == Entry::Summary)
             for (const auto& [part, tip] : summaryParts(e)) s << part << tip;
@@ -2935,6 +3078,7 @@ QByteArray ClaudeCodePanel::partKey(qsizetype from, qsizetype to, bool captioned
 void ClaudeCodePanel::render(bool whole)
 {
     a_renderTimer->stop();
+    static_cast<TranscriptView*>(a_view)->showPromptDates(promptDatesShown(), promptDateFont(a_view->font()), colours(drawingPalette()).muted);
     QScrollBar* bar = a_view->verticalScrollBar();
     const int keep = bar->value();
     // (The document made again: the bar's moves its, not the reader's.)
@@ -3255,6 +3399,8 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         frame.setPadding(8);
         frame.setBorder(0);
         frame.setMargin(0);
+        // Its date, shown: drawn at the far end of the caption's line.
+        if (e.when > 0 && promptDatesShown()) frame.setProperty(kPromptWhen, e.when);
         c.insertFrame(frame);
         // Its math typeset, as a reply's is - $\Delta x$, $$...$$, \(...\),
         // \[...\]; not in code, not money -; the rest as it was typed.
@@ -3824,6 +3970,7 @@ QJsonObject ClaudeCodePanel::conversationJson() const
         }
         if (!e.extra.isEmpty()) o.insert(QStringLiteral("extra"), e.extra);
         if (!e.images.isEmpty()) o.insert(QStringLiteral("images"), QJsonArray::fromStringList(e.images));
+        if (e.when > 0) o.insert(QStringLiteral("when"), e.when);
         if (!e.id.isEmpty()) o.insert(QStringLiteral("id"), e.id);
         if (!e.output.isEmpty()) o.insert(QStringLiteral("output"), e.output);
         if (e.kind == Entry::Tool) o.insert(QStringLiteral("tool"), int(e.tool));
@@ -3869,6 +4016,7 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
         for (const QJsonValue& image : o.value(QLatin1String("images")).toArray()) e.images << image.toString();
         e.detail = o.value(QLatin1String("detail")).toString();
         e.result = o.value(QLatin1String("result")).toString();
+        if (e.kind == Entry::You) e.when = std::max<qint64>(0, o.value(QLatin1String("when")).toInteger(0));
         if (e.kind == Entry::You && o.contains(QLatin1String("at"))) {
             e.session = o.value(QLatin1String("session")).toString();
             e.at = o.value(QLatin1String("at")).toString();
@@ -3988,7 +4136,13 @@ bool ClaudeCodePanel::importClaudeSession(const QString& file)
             } else if (text.startsWith(QLatin1Char('<')) || text.startsWith(QLatin1String("Caveat:"))) {
                 continue;   // (what Claude Code adds itself)
             }
-            if (!text.isEmpty()) entries.append({Entry::You, text, {}, {}});
+            if (!text.isEmpty()) {
+                // When it was sent, as Claude Code keeps it.
+                Entry e{Entry::You, text, {}, {}};
+                const QDateTime sent = QDateTime::fromString(o.value(QLatin1String("timestamp")).toString(), Qt::ISODateWithMs);
+                if (sent.isValid()) e.when = sent.toMSecsSinceEpoch();
+                entries.append(e);
+            }
         } else if (type == QLatin1String("assistant")) {
             for (const QJsonValue& v : content.toArray()) {
                 const QJsonObject part = v.toObject();
@@ -4308,6 +4462,24 @@ int ClaudeCodePanel::usageShown()
     return usage;
 }
 
+bool ClaudeCodePanel::promptDatesShown()
+{
+    return QucsSettingsFile().value(kShowPromptDates, false).toBool();
+}
+
+void ClaudeCodePanel::setPromptDatesShown(bool on)
+{
+    QucsSettingsFile().setValue(kShowPromptDates, on);
+    for (ClaudeCodePanel* panel : std::as_const(openPanels())) panel->scheduleRender();
+}
+
+QList<QPair<QRectF, QString>> ClaudeCodePanel::promptDates() const
+{
+    QList<QPair<QRectF, QString>> dates;
+    for (const PromptDate& d : static_cast<const TranscriptView*>(a_view)->promptDates()) dates.append({d.rect, d.text});
+    return dates;
+}
+
 void ClaudeCodePanel::setUsageShown(int usage)
 {
     {
@@ -4584,6 +4756,8 @@ bool ClaudeCodePanel::exportConversation(const QString& path, ExportFormat forma
         context.clip = QRectF(QPointF(0, i * page.height()), page);
         p.setClipRect(context.clip);
         doc.documentLayout()->draw(&p, context);
+        // Each prompt's date, shown, as on the screen.
+        paintPromptDates(&p, promptDatePlaces(&doc, promptDateFont(a_view->font()), false), promptDateFont(a_view->font()), col.muted);
         p.restore();
         const QRectF foot(0, area.height() - footer, area.width(), footer);
         p.setFont(small);

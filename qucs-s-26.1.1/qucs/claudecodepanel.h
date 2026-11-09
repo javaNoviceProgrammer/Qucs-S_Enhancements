@@ -197,6 +197,12 @@ public:
     static int usageShown();
     /// Each conversation shows it at once.
     static void setUsageShown(int usage);
+    /// Whether each prompt's date shows in its top-right corner (Extras > Show
+    /// Prompt Dates), in every conversation.
+    static bool promptDatesShown();
+    static void setPromptDatesShown(bool on);
+    /// The dates drawn, each where it is in the transcript's viewport: for the tests.
+    QList<QPair<QRectF, QString>> promptDates() const;
     /// The whole conversation - a header (what it is about, when, the
     /// folder, the model, the session), then every prompt, reply, tool
     /// (its input and what it gave, as when it is opened, unless
@@ -366,6 +372,7 @@ private:
         QString session = QString(), at = QString();
         bool rewindable = false;
         QStringList images = QStringList();   // a prompt's: the image files it showed Claude
+        qint64 when = 0;   // a prompt's: when it was sent, in ms since the epoch (UTC); 0 not known
     };
     /// A turn's line, as usageShown() has it: each part, with its tooltip.
     static QList<QPair<QString, QString>> summaryParts(const Entry& e);
