@@ -993,11 +993,12 @@ private slots:
     // triangles in fixed chunks, their points' transverse fields gathered and
     // multiplied as matrices) as the point-by-point ones to rounding - two
     // meshes, one mesh, absorbing walls, a bend -, the same to the last bit on
-    // 1 and 8 threads; a whole solve (a 1x2 MMI, its outputs in boxes) alike
-    // on 1 and 8; progress said for the cuts and then the overlaps; a Cancel
-    // in the overlaps heard within a second. (Measured, not asserted: a wire
-    // into an MMI's junction of 40 modes 5.7 s point by point, 1.2 s batched,
-    // 0.18 s on 8 threads; with absorbing walls 22.5, 4.9 and 0.70 s.)
+    // 1 and 8 threads. (Measured, not asserted: a wire into an MMI's junction
+    // of 40 modes 5.7 s point by point, 1.2 s batched, 0.18 s on 8 threads;
+    // with absorbing walls 22.5, 4.9 and 0.70 s.) A whole solve's threads
+    // are aWholeSolveRunsOnAnyThreadsAlike's: the two were one function, past
+    // QtTest's 300 s on CI's macOS 15 runner (v27.0.9's tag run) - Eigen's LU
+    // there for the cuts' modes, 98 and 34 s by it on an M2 Ultra.
     void theOverlapsRunOnAnyThreadsAlike()
     {
         const bool slow = slowBuild();
@@ -1042,17 +1043,19 @@ private slots:
             qInfo("pair %d: batched against point by point %.2g of the largest entry", int(i), d);
             QVERIFY2(d < 1e-11, qPrintable(QString::number(d)));
         }
-        // A whole solve, on 1 and on 8 threads: an MMI, its outputs in boxes.
-        // (Not in a sanitized build: its cuts alone take minutes there; the
-        // pool's threads were checked above.)
-        if (slow) return;
-        Model mm =wire(6, 4.5, {{{0, 1.5, -0.25, 0.25}}, {{1.5, 4.5, -1.5, 1.5}}, {{4.5, 6, 0.5, 1.0}}, {{4.5, 6, -1.0, -0.5}}}, 1.0);
+    }
+
+    // A whole solve (a 1x2 MMI, its outputs in boxes) the same to the last
+    // bit on 1 and 8 threads; progress said for the cuts and then the
+    // overlaps; a Cancel in the overlaps heard within a second.
+    void aWholeSolveRunsOnAnyThreadsAlike()
+    {
+        // (Its cuts alone take minutes there; the pool's threads are
+        // theOverlapsRunOnAnyThreadsAlike's.)
+        if (slowBuild()) QSKIP("a sanitized build: the cuts take minutes");
+        Model mm = wire(6, 4.5, {{{0, 1.5, -0.25, 0.25}}, {{1.5, 4.5, -1.5, 1.5}}, {{4.5, 6, 0.5, 1.0}}, {{4.5, 6, -1.0, -0.5}}}, 1.0);
         const Built bm = build(mm);
-        EmeDevice d = deviceOf(*bm.topology, slow ? 4 : 16, slow ? 4 : 8);
-        if (slow) {
-            d.z0 = -0.5;
-            d.z1 = 0.72;
-        }
+        EmeDevice d = deviceOf(*bm.topology, 16, 8);
         d.ports.clear();
         EmePort in, up, down;
         in.name = QStringLiteral("1");
@@ -1071,9 +1074,7 @@ private slots:
         clearEmeCache();
         d.settings.threads = 1;
         const EmeResult r1 = solveEme(mm, bm.parameters, *bm.topology, d, C0 / 1.55e-6);
-        // (A sanitized build: the cuts kept - the overlaps, in a pool of 8,
-        // computed again.)
-        if (!slow) clearEmeCache();
+        clearEmeCache();
         d.settings.threads = 8;
         QStringList said;
         std::mutex saying;
@@ -1088,7 +1089,7 @@ private slots:
         QVERIFY(!said.isEmpty() && said.first().startsWith(QLatin1String("cuts")) && said.last().startsWith(QLatin1String("junctions' overlaps")));
         QVERIFY(r8.log.first().contains(QLatin1String("the overlaps")));
         // Cancelled once the overlaps are under way: heard between their jobs.
-        if (!slow) {
+        {
             clearEmeCache();
             std::atomic<bool> overlapping{false};
             QElapsedTimer since;
