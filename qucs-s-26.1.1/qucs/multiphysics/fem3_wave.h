@@ -127,6 +127,16 @@ struct Wave3Settings {
     /// The fed port modes whose field is kept: the first so many (-1: every
     /// one) - a solve each.
     int fieldsKept = -1;
+    /// Ports with a PML behind them: their sources' profiles the modes' at
+    /// this frequency (Hz; 0: at the solve's own) - as the time domain's
+    /// are, its band's middle.
+    double sourceFrequency = 0;
+    /// The time domain's: its steps a period at its band's middle; when it
+    /// stops - the ports' fields fallen to this of their peak -, or at most
+    /// so many steps.
+    double stepsPerPeriod = 6;
+    double decay = 1e-5;
+    int maxSteps = 200000;
     std::function<bool()> cancelled;
     std::function<void(double, const QString&)> progress;
 };
@@ -174,9 +184,37 @@ std::vector<std::array<std::complex<double>, 3>> nodalField(const EdgeSpace3& sp
 /// seconds (a box's: 68 s and 249 s there; a long guide's a fifth).
 Estimate3 estimateWave3(std::shared_ptr<const Mesh3> mesh, int order);
 
+/// What a time-domain solve of \a order on \a mesh will hold and take: a
+/// real Cholesky's factors (half a frequency domain's), its PMLs' states;
+/// its steps some 700, each a solve with the factors.
+Estimate3 estimateWave3Time(std::shared_ptr<const Mesh3> mesh, int order);
+
 /// \a mesh's device of 3D \a model at \a frequency (Hz).
 Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology, std::shared_ptr<const Mesh3> mesh,
                        const Wave3Settings& settings, double frequency);
+
+/// A time-domain full-wave solve: each frequency asked as a frequency-domain
+/// solve's result (its S-matrix's fed columns, what each leaves by, the
+/// first fed port mode's field), and how it ran - its step, its steps, the
+/// run's frequencies whose transforms are those asked (Hz: (2/Δt)
+/// atan(πfΔt)/(2π) of each f asked), whether its fields settled.
+struct Wave3TimeResult {
+    std::vector<Wave3Result> at;
+    double dt = 0;
+    int steps = 0;
+    bool settled = false;
+    std::vector<double> sampled;
+    QStringList log, warnings;
+    QString error;
+    bool ok() const { return error.isEmpty(); }
+};
+
+/// \a mesh's device of 3D \a model in the time domain: one pulse from each
+/// fed port mode (all together), the S-parameters at each of \a frequencies
+/// (Hz) - the frequency domain's at each, to its Fourier transforms'
+/// truncation (fem3_wavetd.cpp). Every port must have a PML behind it.
+Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology,
+                               std::shared_ptr<const Mesh3> mesh, const Wave3Settings& settings, const std::vector<double>& frequencies);
 
 /// A material's relative permittivity at \a lambda (m): (n - jκ)², or εr.
 std::complex<double> relativePermittivity(const Node& material, double lambda, const Scope& scope);

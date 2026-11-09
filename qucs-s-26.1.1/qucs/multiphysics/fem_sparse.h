@@ -165,6 +165,14 @@ public:
     bool singularToRounding() const;
     std::string lastErrorMessage() const;
     Eigen::VectorXd solve(const Eigen::VectorXd& b) const;
+    /// Several right-hand sides at once, a column each: the factors read once
+    /// for them all.
+    Eigen::MatrixXd solveMany(const Eigen::MatrixXd& b) const;
+    /// Accelerate's: its factors and workspace as its analysis says (bytes;
+    /// 0 Eigen's). After analyzePattern().
+    double factorBytes() const;
+    /// "Accelerate's Cholesky" or "Eigen's LDLT".
+    QString name() const;
 
 private:
     struct Impl;

@@ -662,7 +662,9 @@ QStringList unsolvedPhysics3(const Model& model)
 {
     QStringList out;
     for (const Node* p : model.physics())
-        if (p->enabled && !fieldKind(p->type) && p->type != QLatin1String("eme") && p->type != QLatin1String("waves3")) out << p->name();
+        if (p->enabled && !fieldKind(p->type) && p->type != QLatin1String("eme") && p->type != QLatin1String("waves3")
+            && p->type != QLatin1String("waves3t"))
+            out << p->name();
     return out;
 }
 
@@ -859,11 +861,11 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
     for (const Node* p : s.model().physics()) {
         if (!p->enabled || !(chosen.isEmpty() || chosen.contains(p->tag))) continue;
         if (p->type == QLatin1String("eme")) physics.push_back(p);
-        if (p->type == QLatin1String("waves3")) waves.push_back(p);
+        if (p->type == QLatin1String("waves3") || p->type == QLatin1String("waves3t")) waves.push_back(p);
     }
     if (physics.empty() && waves.empty()) {
-        *error = tr("%1: there is no eigenmode expansion or full-wave solve (Electromagnetic Waves, Eigenmode Expansion or Frequency "
-                    "Domain) for it to solve")
+        *error = tr("%1: there is no eigenmode expansion or full-wave solve (Electromagnetic Waves, Eigenmode Expansion, Frequency "
+                    "Domain or Time Domain) for it to solve")
                      .arg(step.name());
         return false;
     }
@@ -890,7 +892,33 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
     {
         const double share = physics.empty() ? 1.0 : 0.5;
         bool stopped = false;
-        for (int k = 0; k < WP && !stopped; ++k)
+        for (int k = 0; k < WP && !stopped; ++k) {
+            // A time domain's: one run for every wavelength.
+            if (waves[std::size_t(k)]->type == QLatin1String("waves3t")) {
+                Wave3Settings st = waveSettings[std::size_t(k)];
+                const double from = share * double(k) / double(WP), span = share / double(WP);
+                const QString name = waves[std::size_t(k)]->name();
+                st.progress = [&](double f, const QString& what) {
+                    if (tell && !tell(from + span * std::clamp(f, 0.0, 1.0), tr("%1: %2").arg(name, what))) stopped = true;
+                };
+                st.cancelled = [&] { return stopped; };
+                const Wave3TimeResult t = solveWave3Time(s.model(), s.parametersPtr(), topology, s.meshPtr(), st, frequencies);
+                if (!t.ok()) {
+                    *error = stopped ? tr("cancelled") : tr("%1: %2").arg(name, t.error);
+                    return false;
+                }
+                for (int w = 0; w < Wn; ++w) {
+                    Wave3Result r = t.at[std::size_t(w)];
+                    if (w == 0) {
+                        r.log = t.log + r.log;
+                        r.warnings = t.warnings + r.warnings;
+                    }
+                    waveFields[std::size_t(k)].push_back(r.fields.empty() ? std::vector<std::array<std::complex<double>, 3>>()
+                                                                          : nodalField(*r.space, r.fields.front(), *nodes));
+                    waveResults[std::size_t(k)].push_back(asEmeResult(r));
+                }
+                continue;
+            }
             for (int w = 0; w < Wn && !stopped; ++w) {
                 Wave3Settings st = waveSettings[std::size_t(k)];
                 const double from = share * double(k * Wn + w) / double(WP * Wn), span = share / double(WP * Wn);
@@ -910,6 +938,7 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
                                                                       : nodalField(*r.space, r.fields.front(), *nodes));
                 waveResults[std::size_t(k)].push_back(asEmeResult(r));
             }
+        }
         if (stopped) {
             *error = tr("cancelled");
             return false;
@@ -923,7 +952,7 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
             for (const char* v : {"normE", "Ex", "Ey", "Ez"}) {
                 Field3 f;
                 f.tag = waves[std::size_t(k)]->tag;
-                f.type = QStringLiteral("waves3");
+                f.type = waves[std::size_t(k)]->type;
                 f.variable = QString::fromLatin1(v);
                 f.dim = Dim::voltage() / Dim::length();
                 f.space = nodes;
@@ -1346,7 +1375,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         // (An eigenmode expansion has no field on the mesh: its cuts' own,
         // solved by a Wavelength Domain step.)
         if (!k) {
-            optics = optics || p->type == QLatin1String("eme") || p->type == QLatin1String("waves3");
+            optics = optics || p->type == QLatin1String("eme") || p->type == QLatin1String("waves3") || p->type == QLatin1String("waves3t");
             continue;
         }
         Field3 f;
@@ -1390,8 +1419,9 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         // A full-wave solve's: its edge elements' unknowns, its factorization's
         // memory.
         for (const Node* p : s->model().physics()) {
-            if (!p->enabled || p->type != QLatin1String("waves3")) continue;
-            Estimate3 e = estimateWave3(mesh, p->text(QStringLiteral("order")) == QLatin1String("1") ? 1 : 2);
+            if (!p->enabled || (p->type != QLatin1String("waves3") && p->type != QLatin1String("waves3t"))) continue;
+            const int order = p->text(QStringLiteral("order")) == QLatin1String("1") ? 1 : 2;
+            Estimate3 e = p->type == QLatin1String("waves3t") ? estimateWave3Time(mesh, order) : estimateWave3(mesh, order);
             e.physics = p->tag;
             e.name = p->name();
             s->log << tr("Estimated: %1").arg(estimateText(e));
