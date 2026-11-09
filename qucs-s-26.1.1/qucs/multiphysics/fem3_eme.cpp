@@ -964,6 +964,24 @@ void keepModes(EmeModes& m, const std::vector<int>& kept)
 /// mode whose ⟨e, h⟩ is next to nothing beside ∫|e||h| - all but
 /// orthogonal to itself, as a lossy cut's can be - or not finite is left
 /// out: normalized, it was huge, and an S-matrix NaN.
+/// The signs of \a m's modes from the integrals of their main transverse
+/// field over the window: ∫ e_main, then ∫ (u - uc) e_main, then ∫ (v - vc)
+/// e_main, the first not nought positive.
+void signModes(EmeModes& m, const Eigen::MatrixXcd& I, const Eigen::VectorXd& absInt)
+{
+    const double width = (m.section.u1 - m.section.u0) * m.unitScale;
+    for (int k = 0; k < m.count(); ++k) {
+        double s = 0;
+        if (std::abs(I(0, k)) > 1e-3 * absInt(k)) s = I(0, k).real();
+        else if (std::abs(I(1, k)) > 1e-3 * absInt(k) * width) s = I(1, k).real();
+        else s = I(2, k).real();
+        if (s < 0) {
+            m.Et.col(k) *= -1.0;
+            m.Es.col(k) *= -1.0;
+        }
+    }
+}
+
 void normalize(EmeModes& m)
 {
     if (m.count() == 0) return;
@@ -1058,19 +1076,45 @@ void normalize(EmeModes& m)
     }
     m.inLayers.assign(std::size_t(M), 0.0);
     for (int k = 0; k < M; ++k) m.inLayers[std::size_t(k)] = all(k) > 0 ? layered(k) / all(k) : 0.0;
-    const double width = (m.section.u1 - m.section.u0) * mesh.unitScale, height = (m.section.z1 - m.section.z0) * mesh.unitScale;
-    for (int k = 0; k < M; ++k) {
-        double s = 0;
-        if (std::abs(I(0, k)) > 1e-3 * absInt(k)) s = I(0, k).real();
-        else if (std::abs(I(1, k)) > 1e-3 * absInt(k) * width) s = I(1, k).real();
-        else s = I(2, k).real();
-        (void)height;
-        if (s < 0) {
-            m.Et.col(k) *= -1.0;
-            m.Es.col(k) *= -1.0;
+    signModes(m, I, absInt);
+}
+
+} // namespace
+
+void orientModes(EmeModes& m, bool mirrored)
+{
+    const int M = m.count();
+    if (M == 0 || !m.solution) return;
+    // The sign rule's integrals in the mirrored frame: u and E_u turned over.
+    const double flip = mirrored ? -1.0 : 1.0;
+    const Mesh& mesh = m.solution->mesh();
+    const TriangleRule& rule = triangleRule(2);
+    const double uc = (m.section.u0 + m.section.u1) / 2 * mesh.unitScale, vc = (m.section.z0 + m.section.z1) / 2 * mesh.unitScale;
+    Eigen::MatrixXcd I = Eigen::MatrixXcd::Zero(3, M);
+    Eigen::VectorXd absInt = Eigen::VectorXd::Zero(M);
+    Eigen::MatrixXcd f;
+    for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+        const bool inLayer = (t < int(m.layerOf.size()) && m.layerOf[std::size_t(t)] >= 0) || (t < int(m.inAbsorber.size()) && m.inAbsorber[std::size_t(t)]);
+        if (inLayer) continue;
+        const TriangleMap tm(mesh, t);
+        const double jac = 2 * std::abs(tm.area);
+        for (const auto& q : rule.points) {
+            m.fieldsAt(t, q[0], q[1], f);
+            const double x = tm.x0 + tm.a * q[0] + tm.b * q[1], y = tm.y0 + tm.c * q[0] + tm.d * q[1];
+            const double w = q[2] * jac;
+            for (int k = 0; k < M; ++k) {
+                const cd e = m.te[std::size_t(k)] >= 0.5 ? flip * f(0, k) : f(1, k);
+                I(0, k) += w * e;
+                I(1, k) += w * flip * (x - uc) * e;
+                I(2, k) += w * (y - vc) * e;
+                absInt(k) += w * std::abs(e);
+            }
         }
     }
+    signModes(m, I, absInt);
 }
+
+namespace {
 
 /*!
  * Cuts solved, kept: a cut's modes depend on nothing but its 2D model (its
@@ -1241,6 +1285,9 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
                     }
         }
     }
+    // The rectangles of the 3D model's PML domains: PMLs.
+    for (std::size_t i = 0; i < section.rects.size(); ++i)
+        if (std::find(settings.pmlDomains.begin(), settings.pmlDomains.end(), section.rects[i].domain) != settings.pmlDomains.end()) isLayer[i] = 1;
     // The rectangles, each its element size: λ0/(resolution n), and so many
     // across it at least.
     QJsonArray geometry, sizes;
@@ -1324,6 +1371,20 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
                      {QStringLiteral("modes"), layerNames.isEmpty() ? settings.modes : 2 * settings.modes},
                      {QStringLiteral("follow"), false},
                      {QStringLiteral("keeplayers"), true}};
+    // A full-wave solve's PMLs in the cut: searched about the index whose
+    // square is midway between the window's least and largest - the layers'
+    // own modes (n² some 11 - 4.8j in a wire's oxide, Im n -0.7 to -1) then
+    // further from it than the guided and the slowly dying ones (19 of 20
+    // modes found about silicon's index were theirs).
+    if (!settings.pmlDomains.empty() && !layerNames.isEmpty()) {
+        double lo = 1e300, hi = 0;
+        for (std::size_t i = 0; i < rects.size(); ++i)
+            if (!isLayer[i]) {
+                lo = std::min(lo, rectIndex[i]);
+                hi = std::max(hi, rectIndex[i]);
+            }
+        if (hi > 0) step.insert(QStringLiteral("neff"), number(std::sqrt((lo * lo + hi * hi) / 2)));
+    }
     QJsonObject json{{QStringLiteral("format"), QStringLiteral("qucs-s multiphysics 1")},
                      {QStringLiteral("components"), QJsonArray{component}},
                      {QStringLiteral("studies"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("study")}, {QStringLiteral("steps"), QJsonArray{step}}}}}};
@@ -1404,114 +1465,142 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
     }
     Progress progress;
     if (settings.cancelled) progress = [c = settings.cancelled](double, const QString&) { return !c(); };
-    const StudyRun run = runStudy(*m2, parameters, g.topology, mb.mesh, QString(), progress);
-    if (!run.ok()) {
-        *error = run.error;
-        return out;
-    }
-    std::shared_ptr<Solution> s = run.solutions.back();
-    if (s->fields().empty() || !s->fields().front().edges) {
-        *error = tr("the cut's mode analysis gave no field");
-        return out;
-    }
-    const Field& f0 = s->fields().front();
-    const int ne = f0.edges->size(), nn = f0.space->size();
-    const int M = s->snapshotCount();
-    out.Et = Eigen::MatrixXcd::Zero(ne, M);
-    out.Es = Eigen::MatrixXcd::Zero(nn, M);
-    for (int k = 0; k < M; ++k) {
-        s->select(k);
-        const Field& f = s->fields().front();
-        if (int(f.values.size()) < 2 * ne + 2 * nn || f.extra.size() < 3) continue;
-        cd beta(f.extra[0], f.extra[1]);
-        double sign = 1;
-        // Forward: decaying along +s, or propagating along it - a lossless
-        // mode's imaginary part, the eigensolver's rounding (1e-16 of either
-        // sign), taken for none: half the propagating modes were turned
-        // backward, and a junction gave 4 % more power than it was fed.
-        const double tol = 1e-10 * std::abs(beta);
-        if (std::abs(beta.imag()) <= tol) beta = cd(beta.real(), 0);
-        if (beta.imag() > 0 || (beta.imag() == 0 && beta.real() < 0)) {
-            beta = -beta;
-            sign = -1;   // (the backward mode of the one found: E_s turned over)
+    // (With PMLs, as many again while too few are left of those asked - the
+    // layers' own modes crowding the index searched about: 19 of a port's 20
+    // in a wire's cut whose PMLs were a third of it -, to the step's 200.)
+    int asked = layerNames.isEmpty() ? settings.modes : 2 * settings.modes;
+    for (;;) {
+        for (Node& study : m2->root.children)
+            if (study.type == QLatin1String("study"))
+                for (Node& st : study.children)
+                    if (st.type == QLatin1String("mode")) st.props.insert(QStringLiteral("modes"), asked);
+        out.beta.clear();
+        out.te.clear();
+        out.layers.clear();
+        const StudyRun run = runStudy(*m2, parameters, g.topology, mb.mesh, QString(), progress);
+        if (!run.ok()) {
+            *error = run.error;
+            return out;
         }
-        for (int i = 0; i < ne; ++i) out.Et(i, k) = cd(f.values[std::size_t(i)], f.values[std::size_t(ne + i)]);
-        for (int i = 0; i < nn; ++i) out.Es(i, k) = sign * cd(f.values[std::size_t(2 * ne + i)], f.values[std::size_t(2 * ne + nn + i)]);
-        out.beta.push_back(beta);
-        const std::optional<double> te = s->global(QStringLiteral("emw.TEfraction"));
-        out.te.push_back(te ? *te : NaN);
-    }
-    if (int(out.beta.size()) != M) {
-        out.Et.conservativeResize(ne, int(out.beta.size()));
-        out.Es.conservativeResize(nn, int(out.beta.size()));
-    }
-    // µr by triangle (H of curl E).
-    out.mur.assign(s->mesh().triangles.size(), 1.0);
-    {
-        PointEvaluator ev(*s);
-        for (int t = 0; t < int(s->mesh().triangles.size()); ++t) {
-            ev.moveTo(t, 1.0 / 3, 1.0 / 3);
-            const double mu = ev.coefficient(0, QStringLiteral("mur"));
-            if (std::isfinite(mu) && mu > 0) out.mur[std::size_t(t)] = mu;
+        std::shared_ptr<Solution> s = run.solutions.back();
+        if (s->fields().empty() || !s->fields().front().edges) {
+            *error = tr("the cut's mode analysis gave no field");
+            return out;
         }
-    }
-    out.bendRadius = section.bendRadius * topology.unitScale;
-    out.bendCenter = section.bendCenter * topology.unitScale;
-    // The PMLs: by triangle the layer it is in - its rectangle's box and its
-    // material's k, as the mode solver's Media took them.
-    out.layerOf.assign(s->mesh().triangles.size(), -1);
-    {
-        const double k = topology.unitScale;
-        out.inner[0] = section.u0 * k;
-        out.inner[1] = section.u1 * k;
-        out.inner[2] = section.z0 * k;
-        out.inner[3] = section.z1 * k;
-        out.pmlLog = -std::log(settings.pmlReflection);
-        std::vector<int> layerOfRect(rects.size(), -1);
-        for (std::size_t i = 0; i < rects.size(); ++i) {
-            if (!isLayer[i]) continue;
-            EmeModes::Layer L;
-            L.outer[0] = rects[i].u0 * k;
-            L.outer[1] = rects[i].u1 * k;
-            L.outer[2] = rects[i].z0 * k;
-            L.outer[3] = rects[i].z1 * k;
-            L.k = out.k0 * std::sqrt(std::max(1.0, rectIndex[i] * rectIndex[i]));
-            layerOfRect[i] = int(out.layers.size());
-            out.layers.push_back(L);
+        const Field& f0 = s->fields().front();
+        const int ne = f0.edges->size(), nn = f0.space->size();
+        const int M = s->snapshotCount();
+        out.Et = Eigen::MatrixXcd::Zero(ne, M);
+        out.Es = Eigen::MatrixXcd::Zero(nn, M);
+        for (int k = 0; k < M; ++k) {
+            s->select(k);
+            const Field& f = s->fields().front();
+            if (int(f.values.size()) < 2 * ne + 2 * nn || f.extra.size() < 3) continue;
+            cd beta(f.extra[0], f.extra[1]);
+            double sign = 1;
+            // Forward: decaying along +s, or propagating along it - a lossless
+            // mode's imaginary part, the eigensolver's rounding (1e-16 of either
+            // sign), taken for none: half the propagating modes were turned
+            // backward, and a junction gave 4 % more power than it was fed.
+            const double tol = 1e-10 * std::abs(beta);
+            if (std::abs(beta.imag()) <= tol) beta = cd(beta.real(), 0);
+            if (beta.imag() > 0 || (beta.imag() == 0 && beta.real() < 0)) {
+                beta = -beta;
+                sign = -1;   // (the backward mode of the one found: E_s turned over)
+            }
+            for (int i = 0; i < ne; ++i) out.Et(i, k) = cd(f.values[std::size_t(i)], f.values[std::size_t(ne + i)]);
+            for (int i = 0; i < nn; ++i) out.Es(i, k) = sign * cd(f.values[std::size_t(2 * ne + i)], f.values[std::size_t(2 * ne + nn + i)]);
+            out.beta.push_back(beta);
+            const std::optional<double> te = s->global(QStringLiteral("emw.TEfraction"));
+            out.te.push_back(te ? *te : NaN);
         }
-        // (By triangle the PML or absorbing wall it is in.)
-        out.inAbsorber.assign(s->mesh().triangles.size(), 0);
-        const bool anyAbsorber = std::any_of(absorbKappa.begin(), absorbKappa.end(), [](double k) { return k > 0; });
-        if (!out.layers.empty() || anyAbsorber) {
-            const Mesh& mesh = s->mesh();
-            for (int t = 0; t < int(mesh.triangles.size()); ++t) {
-                const auto& tv = mesh.triangles[std::size_t(t)];
-                const QPointF c = (mesh.nodes[std::size_t(tv[0])] + mesh.nodes[std::size_t(tv[1])] + mesh.nodes[std::size_t(tv[2])]) / 3.0;
-                for (std::size_t i = 0; i < rects.size(); ++i) {
-                    if (!(c.x() >= rects[i].u0 && c.x() <= rects[i].u1 && c.y() >= rects[i].z0 && c.y() <= rects[i].z1)) continue;
-                    if (isLayer[i]) out.layerOf[std::size_t(t)] = layerOfRect[i];
-                    if (absorbKappa[i] > 0) out.inAbsorber[std::size_t(t)] = 1;
-                    if (isLayer[i] || absorbKappa[i] > 0) break;
+        if (int(out.beta.size()) != M) {
+            out.Et.conservativeResize(ne, int(out.beta.size()));
+            out.Es.conservativeResize(nn, int(out.beta.size()));
+        }
+        // µr by triangle (H of curl E).
+        out.mur.assign(s->mesh().triangles.size(), 1.0);
+        {
+            PointEvaluator ev(*s);
+            for (int t = 0; t < int(s->mesh().triangles.size()); ++t) {
+                ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+                const double mu = ev.coefficient(0, QStringLiteral("mur"));
+                if (std::isfinite(mu) && mu > 0) out.mur[std::size_t(t)] = mu;
+            }
+        }
+        out.bendRadius = section.bendRadius * topology.unitScale;
+        out.bendCenter = section.bendCenter * topology.unitScale;
+        // The PMLs: by triangle the layer it is in - its rectangle's box and its
+        // material's k, as the mode solver's Media took them.
+        out.layerOf.assign(s->mesh().triangles.size(), -1);
+        {
+            // (The box the PMLs surround: the other rectangles' - the window
+            // where they are outside it -, as the mode solver's.)
+            const double k = topology.unitScale;
+            double box[4] = {1e300, -1e300, 1e300, -1e300};
+            for (std::size_t i = 0; i < rects.size(); ++i) {
+                if (isLayer[i]) continue;
+                box[0] = std::min(box[0], rects[i].u0);
+                box[1] = std::max(box[1], rects[i].u1);
+                box[2] = std::min(box[2], rects[i].z0);
+                box[3] = std::max(box[3], rects[i].z1);
+            }
+            if (!(box[0] < box[1])) {
+                box[0] = section.u0;
+                box[1] = section.u1;
+                box[2] = section.z0;
+                box[3] = section.z1;
+            }
+            for (int a = 0; a < 4; ++a) out.inner[a] = box[a] * k;
+            out.pmlLog = -std::log(settings.pmlReflection);
+            std::vector<int> layerOfRect(rects.size(), -1);
+            for (std::size_t i = 0; i < rects.size(); ++i) {
+                if (!isLayer[i]) continue;
+                EmeModes::Layer L;
+                L.outer[0] = rects[i].u0 * k;
+                L.outer[1] = rects[i].u1 * k;
+                L.outer[2] = rects[i].z0 * k;
+                L.outer[3] = rects[i].z1 * k;
+                L.k = out.k0 * std::sqrt(std::max(1.0, rectIndex[i] * rectIndex[i]));
+                layerOfRect[i] = int(out.layers.size());
+                out.layers.push_back(L);
+            }
+            // (By triangle the PML or absorbing wall it is in.)
+            out.inAbsorber.assign(s->mesh().triangles.size(), 0);
+            const bool anyAbsorber = std::any_of(absorbKappa.begin(), absorbKappa.end(), [](double k) { return k > 0; });
+            if (!out.layers.empty() || anyAbsorber) {
+                const Mesh& mesh = s->mesh();
+                for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+                    const auto& tv = mesh.triangles[std::size_t(t)];
+                    const QPointF c = (mesh.nodes[std::size_t(tv[0])] + mesh.nodes[std::size_t(tv[1])] + mesh.nodes[std::size_t(tv[2])]) / 3.0;
+                    for (std::size_t i = 0; i < rects.size(); ++i) {
+                        if (!(c.x() >= rects[i].u0 && c.x() <= rects[i].u1 && c.y() >= rects[i].z0 && c.y() <= rects[i].z1)) continue;
+                        if (isLayer[i]) out.layerOf[std::size_t(t)] = layerOfRect[i];
+                        if (absorbKappa[i] > 0) out.inAbsorber[std::size_t(t)] = 1;
+                        if (isLayer[i] || absorbKappa[i] > 0) break;
+                    }
                 }
             }
         }
-    }
-    out.solution = s;
-    normalize(out);
-    // With PMLs: the layers' own fast-dying modes left out (nearly all their
-    // field in a layer, |Im n| over a tenth of Re n) - they carry nothing in
-    // the window, and took 7 of 30 modes of a wire's cut - and the modes kept
-    // no more than asked, those that carry radiation (in a layer but
-    // dying slowly) kept with the window's.
-    if (!out.layers.empty()) {
-        std::vector<int> kept;
-        for (int m = 0; m < out.count(); ++m) {
-            const cd n = out.neff(m);
-            const bool spurious = out.inLayers[std::size_t(m)] > 0.95 && std::abs(n.imag()) > 0.1 * std::abs(n.real());
-            if (!spurious) kept.push_back(m);
+        out.solution = s;
+        normalize(out);
+        // With PMLs: the layers' own fast-dying modes left out (nearly all their
+        // field in a layer, |Im n| over a tenth of Re n) - they carry nothing in
+        // the window, and took 7 of 30 modes of a wire's cut - and the modes kept
+        // no more than asked, those that carry radiation (in a layer but
+        // dying slowly) kept with the window's.
+        if (!out.layers.empty()) {
+            std::vector<int> kept;
+            for (int m = 0; m < out.count(); ++m) {
+                const cd n = out.neff(m);
+                const bool spurious = out.inLayers[std::size_t(m)] > 0.95 && std::abs(n.imag()) > 0.1 * std::abs(n.real());
+                if (!spurious) kept.push_back(m);
+            }
+            if (int(kept.size()) > settings.modes) kept.resize(std::size_t(settings.modes));
+            keepModes(out, kept);
         }
-        if (int(kept.size()) > settings.modes) kept.resize(std::size_t(settings.modes));
-        keepModes(out, kept);
+        if (out.layers.empty() || out.count() >= settings.modes || asked >= 200) break;
+        asked = std::min(200, 2 * asked);
     }
     if (out.count() == 0) {
         *error = tr("the cut's modes are none that can be normalized");
@@ -2193,10 +2282,15 @@ QString emeTouchstone(const EmeDevice& device, const std::vector<EmeResult>& res
                           "impedance below a placeholder, the same at every port\n");
     for (int i = 0; i < N; ++i) {
         const EmeResult::PortMode& pm = first.portModes[std::size_t(i)];
-        out += QStringLiteral("! Port %1: optical port %2's %3, at the %4 of the device (neff %5 at %6)\n")
-                   .arg(i + 1)
-                   .arg(device.ports[std::size_t(pm.port)].name, pm.label, device.ports[std::size_t(pm.port)].atEnd ? QStringLiteral("end") : QStringLiteral("start"),
-                        formatNumber(pm.neff.real(), 6), formatQuantity(C0 / first.frequency, Dim::length()));
+        if (device.fullWave)
+            out += QStringLiteral("! Port %1: optical port %2's %3 (neff %4 at %5)\n")
+                       .arg(i + 1)
+                       .arg(device.ports[std::size_t(pm.port)].name, pm.label, formatNumber(pm.neff.real(), 6), formatQuantity(C0 / first.frequency, Dim::length()));
+        else
+            out += QStringLiteral("! Port %1: optical port %2's %3, at the %4 of the device (neff %5 at %6)\n")
+                       .arg(i + 1)
+                       .arg(device.ports[std::size_t(pm.port)].name, pm.label, device.ports[std::size_t(pm.port)].atEnd ? QStringLiteral("end") : QStringLiteral("start"),
+                            formatNumber(pm.neff.real(), 6), formatQuantity(C0 / first.frequency, Dim::length()));
     }
     out += QStringLiteral("# Hz S RI R 50\n");
     std::vector<int> order(results.size());

@@ -401,8 +401,9 @@ QMenu* Multiphysics3DPanel::menuFor(const QString& tag)
         });
     if (n->type == QLatin1String("mesh") || (k && k->group == QLatin1String("mesh")))
         menu->addAction(tr("Build Mesh"), a_doc.data(), &Multiphysics3DDoc::buildMesh);
-    // An eigenmode expansion solved over wavelengths: its spectrum.
-    if (n->type == QLatin1String("eme")) {
+    // An eigenmode expansion or a full-wave solve over wavelengths: its
+    // spectrum.
+    if (n->type == QLatin1String("eme") || n->type == QLatin1String("waves3")) {
         QAction* spectrum = menu->addAction(tr("Plot Spectrum"), a_doc.data(), [this] {
             QString why;
             if (a_doc->showSpectrum(true, &why).isEmpty()) QMessageBox::information(this, tr("Plot Spectrum"), why);
