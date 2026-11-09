@@ -813,10 +813,24 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                                         "'mesh' frame what it shows.").arg(QLatin1String(key))));
                     return;
                 }
-            if (!model->waitForLayout(60000)) {
-                done(errorResult(tr("%1's layout is still being read.").arg(titleOf(model))));
+            // (Held while it waits: closed meanwhile, it is not deleted under
+            //  this call - B6 of the RF 2.5D open items of 8 November.)
+            const RF25Doc::Held held(model);
+            if (!model->waitForLayout(60000) || model->closedWhenFree()) {
+                done(errorResult(model->closedWhenFree() ? tr("%1 was closed while this call waited on it.").arg(titleOf(model))
+                                                         : tr("%1's layout is still being read.").arg(titleOf(model))));
                 return;
             }
+            // And its shapes and cells, which its overlays draw - the
+            // processed shapes, the cells, the ports and their returns: the
+            // first call on a model just opened came back before they were
+            // made, with no overlays (the RF 2.5D check of 4 November).
+            const bool prepared = model->waitForPrepared(60000);
+            if (model->closedWhenFree()) {
+                done(errorResult(tr("%1 was closed while this call waited on it.").arg(titleOf(model))));
+                return;
+            }
+            if (!prepared) noteForCall(tr("%1's shapes and mesh are still being made: what is drawn over the layout comes when they are.").arg(titleOf(model)));
             const std::shared_ptr<const Layout> layout = model->layout();
             if (!layout) {
                 done(errorResult(model->layoutProblem().isEmpty() ? tr("%1 names no layout: its Layout node's file says which.").arg(titleOf(model))

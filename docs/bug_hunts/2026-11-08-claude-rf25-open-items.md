@@ -28,7 +28,7 @@ touching shapes (`b1.py`), the shorted coplanar line (`b7.py`), the line drawn i
 | **B3** | GMRES stalls as the mesh is refined | Worse than reported: 10 and 12 across converge at no frequency | The near field's preconditioner a cell further; progress, a near miss and a sweep that goes on |
 | **B2** (physics) | The side walls' charge missing | The comb 25.7 fF against Palace's 31.8 | A capacitance between facing wall cells from a 2D solve: 31.40 fF, the rise 1.137; films solved as a sheet |
 | **B5** | The two-face CPW's εeff moving with the mesh | 2.3395 (6 across) and 2.4012 (12) | Was the compressed solve of the ports' calibration strips: 2.3521 and 2.3602 since B3; a strip's own warnings now said |
-| Small items | Seven of eleven | - | A face terminal off the metal refused, an idle terminal and overlapping returns said, the count at a time, datasets named, two `set_dialog` faults |
+| Small items | All eleven | - | A face terminal off the metal refused, an idle terminal and overlapping returns said, the count at a time, datasets named, two `set_dialog` faults; then the bar in `get_ui`, the settings in `get_settings`, the first `show_layout`'s overlays, and memory offered back after a Stop (held by macOS's allocator) |
 
 The accuracy items A1-A4 are modelling limits or not reproducible here, with numbers; F1-F6 are planned, not built.
 The checks of each batch are at the end.
@@ -328,15 +328,20 @@ needs. Edge ports at the lines' ends (B5's models) do not have this, and B4's pa
 | Every exported circuit's dataset `equivalent.dat` | **Fixed**: the schematic's own name (`wave_part.sch` → `wave_part.dat`, `.dpl`) |
 | `set_dialog`: "Held dense up to does not take Automatic", the dialog then reading Automatic | **Fixed** (`qucscontrol.cpp`, any spin box): a spin box takes its special value's words, and a word it cannot read sets nothing (it was set to nought, which read "Automatic") |
 | "it took 20000 runs and cells, not 20000" | **Fixed**: a spin box's value compared without its prefix and suffix |
-| `get_ui statusbar` does not see the bar | open: the bar is the RF 2.5D tab's own widget, not the main window's status bar |
-| Memory not given back after Stop (18.9 GB) | open: not reproduced here; `misc::releaseFreedMemory()` is called when a tab closes, not when a solve stops |
-| The RF 2.5D settings not among `get_settings`' keys | open: `get_settings` reads the general settings; the RF 2.5D ones are `RF25/lu`, `RF25/denseLimit`, `RF25/sweepMemory` |
-| `show_layout`'s overlays missing on the first call on a model just opened | open: not looked at in this batch |
+| `get_ui statusbar` does not see the bar | **Fixed (third batch)**: `get_ui statusbar` gives "document's progress", the tab in front's bar (its count or busy, and what it is doing); `get_ui` reads any progress bar as a control of kind "progress" |
+| Memory not given back after Stop (18.9 GB) | **Asked for, and a macOS limit (third batch)**: freed memory is offered back as a solve's thread goes, stopped or not (`misc::releaseFreedMemory()`). Measured on the comb at 12 across, two faces, 25 s into its solve: 11.8 GB resident, 7.5 GB after the Stop on this build and 7.4 GB on 27.1.0. `heap` and `vmmap` find only 349 MB still allocated: the rest is freed, held by macOS's allocator as 3.4 GB of freed pages in its default zone (91 % fragmentation, footprint 3.8 GB), which its pressure relief does not hand back. glibc's `malloc_trim` does. On macOS it would take the compressed matrices' blocks in a zone of their own, destroyed with the solve |
+| The RF 2.5D settings not among `get_settings`' keys | **Fixed (third batch)**: `get_settings` and `set_settings` take scope `rf25` (RF 2.5D > Settings…), searched without a scope; a spin box at a special value ("Automatic") reads as its words in both, and is taken as them |
+| `show_layout`'s overlays missing on the first call on a model just opened | **Fixed (third batch)**: it waits for the model's shapes and cells as well as its layout (they are made a moment after the read; a small layout is done before a call can look, a large one was not), holding the model as B6's tools do |
 
 Tests: `test_rf25_returns::whatAPortThatNamesItsReturnsCannotBeIsSaid` (the face terminal, the overlap),
 `test_qucs_control::anRf25PortsReturnsAreNamedThroughTheTools` (the idle terminal),
 `anRf25ModelIsSolvedFullWaveThroughItsTool` (the dataset), `aSpinBoxsWordsAndSuffixAreReadAsItsValue` (new),
 `test_rf25_doc::aSolveShowsHowFarItHasGot` (at a time). Seven breaks, all caught.
+The third batch's four: `test_qucs_control::anRf25SolvesBarAndItsSettingsAreReadByTheTools` (new: a solve left going seen in
+`get_ui statusbar` and as a progress control; scope `rf25` read, set, searched, "Automatic" read and put back),
+`anRf25PortsReturnsAreNamedThroughTheTools` (the first call's overlays, its shapes held back 0.6 s by
+`RF25Doc::holdPreparing()`, new for tests), `test_rf25_doc::aSolveShowsHowFarItHasGot` (the release after a Stop);
+six breaks, all caught (`breaks_small2.json`; `memstop.py` and `memstop2.py` the memory measurements).
 
 ### The accuracy items: modelling limits, with numbers
 
@@ -404,3 +409,13 @@ Tests: `test_rf25_returns::whatAPortThatNamesItsReturnsCannotBeIsSaid` (the face
 - The four lints in `scripts/ci/`: green.
 - 16 more deliberate breaks, all caught; with the first batch's 26, 42 in `breaks_results.txt` (`breaks_b2.json`,
   `breaks_b5.json`, `breaks_small.json`).
+
+## Checks of the third batch (the four small items left, on `cd3b3bdf`)
+
+- Every rf25 suite and `test_qucs_control`, 18 of 18, in Release and under ASan/UBSan (no sanitizer report).
+- The full Release suite: 185 of 186. `test_claude_code::promptDatesShowInEachPromptsCorner` fails, alone too, three
+  times of three, at its check that a view too narrow for a prompt's caption and date draws no date: a test of
+  Show Prompt Dates (`0fa0b3b2`, 8 November) that measures today's date, 11/09/2026, against a width made from it.
+  Nothing of this batch touches the Claude Code dock; left to whoever owns that feature.
+- The four lints: green.
+- Six more breaks, all caught; 48 in all in `breaks_results.txt`.

@@ -2796,6 +2796,44 @@ private slots:
         QVERIFY2(!failed(cancelled), qPrintable(text(cancelled) + text(triggered)));
     }
 
+    // The RF 2.5D items of the reviews of 2 and 4 November that the tools
+    // did not reach: a solve's bar, on its tab's status line, in get_ui's
+    // statusbar (and as a control of the document's own bar); and RF 2.5D >
+    // Settings… among get_settings' scopes, its "Automatic" read and taken.
+    void anRf25SolvesBarAndItsSettingsAreReadByTheTools()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString file = slowRf25Model(ws + "/rfbar");
+        if (file.isEmpty()) QSKIP("the example layout is not in this build");
+        const QJsonObject going = call("rf25_solve", {{"path", file}, {"timeout", 1}}, 60000);
+        QVERIFY2(failed(going) && text(going).contains(QStringLiteral("still solving")), qPrintable(text(going)));
+        QJsonObject bar;
+        QTRY_VERIFY_WITH_TIMEOUT(!(bar = json(call("get_ui", {{"area", "statusbar"}})).toObject().value("document's progress").toObject()).isEmpty(), 10000);
+        QVERIFY2(bar.value("document").toString().contains(QStringLiteral("mirror")) && bar.value("doing").toString().contains(QStringLiteral("Solving")),
+                 qPrintable(QString::fromUtf8(QJsonDocument(bar).toJson(QJsonDocument::Compact))));
+        bool control = false;
+        for (const QJsonValue& c : json(call("get_ui", {{"area", "document"}})).toObject().value("controls").toArray())
+            control = control || c.toObject().value("kind").toString() == QLatin1String("progress");
+        QVERIFY(control);
+        QVERIFY(!failed(call("rf25_stop", {{"path", file}}, 120000)));
+        closeUnder(ws + "/rfbar");
+
+        const QJsonObject read = json(call("get_settings", {{"scope", "rf25"}})).toObject();
+        QJsonObject limit;
+        for (const QJsonValue& v : read.value("settings").toArray())
+            if (v.toObject().value("key").toString() == QLatin1String("Held dense up to")) limit = v.toObject();
+        QVERIFY2(limit.value("special").toString() == QLatin1String("Automatic") && limit.value("value").toString() == QLatin1String("Automatic"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(read).toJson(QJsonDocument::Compact))));
+        const QJsonObject set = json(call("set_settings", {{"scope", "rf25"}, {"values", QJsonObject{{"Held dense up to", 9000}}}})).toObject();
+        QVERIFY2(set.value("changed").toArray().size() == 1 && set.value("changed").toArray().at(0).toObject().value("now").toInt() == 9000
+                     && set.value("changed").toArray().at(0).toObject().value("was").toString() == QLatin1String("Automatic"),
+                 qPrintable(QString::fromUtf8(QJsonDocument(set).toJson(QJsonDocument::Compact))));
+        const QJsonObject found = json(call("get_settings", {{"search", "dense"}})).toObject();
+        QVERIFY2(QJsonDocument(found).toJson(QJsonDocument::Compact).contains("\"scope\":\"rf25\""), qPrintable(QString::fromUtf8(QJsonDocument(found).toJson(QJsonDocument::Compact))));
+        const QJsonObject back = call("set_settings", {{"scope", "rf25"}, {"values", QJsonObject{{"Held dense up to", "Automatic"}}}});
+        QVERIFY2(!failed(back) && json(back).toObject().value("changed").toArray().size() == 1, qPrintable(text(back)));
+    }
+
     // A model closed while rf25_solve waits on its solve - another
     // conversation's close_document here; Stop and Close at the window, or a
     // tab kept running in the background and let go once its solve ended,
@@ -2908,6 +2946,23 @@ private slots:
         QVERIFY2(terminals.value("labels").toArray() == QJsonArray::fromStringList({"T1", "T2", "T3", "T4"}) && terminals.value("shapes").toInt() == 4
                      && lines.value("shapes").toInt() == 4,
                  qPrintable(QString::fromUtf8(QJsonDocument(shown).toJson(QJsonDocument::Compact))));
+        // And on the first call on a model just opened: the overlays too,
+        // once its shapes and cells are made (they came back missing on the
+        // first call, present on the second: the RF 2.5D check of 4 November).
+        {
+            QVERIFY(QFile::copy(ws + "/rf/gsg.qrf25", ws + "/rf/gsg_fresh.qrf25"));
+            // (Its shapes held back a moment, as a large layout's take theirs.)
+            RF25Doc::holdPreparing(true);
+            QTimer::singleShot(600, [] { RF25Doc::holdPreparing(false); });
+            const QJsonObject first = json(call("show_layout", {{"path", ws + "/rf/gsg_fresh.qrf25"}, {"processed", true}}, 60000)).toObject();
+            RF25Doc::holdPreparing(false);
+            bool terminals = false, processed = false;
+            for (const QJsonValue& o : first.value("overlays").toArray()) {
+                terminals = terminals || o.toObject().value("name").toString() == QLatin1String("the terminals");
+                processed = processed || o.toObject().value("name").toString() == QLatin1String("M1, processed");
+            }
+            QVERIFY2(terminals && processed, qPrintable(QString::fromUtf8(QJsonDocument(first).toJson(QJsonDocument::Compact))));
+        }
         // The brief answer keeps them.
         const QJsonObject brief = json(call("rf25_solve", {{"path", ws + "/rf/gsg.qrf25"}, {"solver", "full_wave"}, {"frequency", "10[GHz]"},
                                                            {"brief", true}}, 300000)).toObject();
