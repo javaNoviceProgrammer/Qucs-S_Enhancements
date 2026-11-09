@@ -1779,6 +1779,8 @@ private slots:
             qInfo("packed rings: blue line %lld points, %lld breaks, %d turns, top %.3f (0.812)", qlonglong(s.points.size()), qlonglong(s.breaks.size()), turns, top);
             QCOMPARE_LE(turns, 1);
             QCOMPARE_GE(top, 0.7);
+            // Solid, only covered by rings in places: no dashes (T2).
+            QVERIFY2(!s.dashed, "a solid line under rings is not dashed");
         }
         QCOMPARE(blueLines, 1);
         QVERIFY2(markers != nullptr, "the rings");
@@ -1797,6 +1799,82 @@ private slots:
         qInfo("packed rings: %d of %lld found, %d of %lld on a ring", found, qlonglong(rings.size()), right, qlonglong(markers->points.size()));
         QCOMPARE_GE(found, int(0.7 * rings.size()));
         QCOMPARE_GE(right, int(0.95 * markers->points.size()));
+    }
+
+    void aNarrowPeakKeepsBothSides()
+    {
+        // A peak a couple of line widths wide at half height, scanned: its two
+        // sides, near each other at the top, are both the line, not one a
+        // double of the other (the third recheck's T1). Most of the x
+        // between its half-height points is traced closely.
+        for (const double halfWidthPt : {1.2, 2.0, 3.5}) {
+            const QString file = path(QStringLiteral("narrow_peak_%1.pdf").arg(halfWidthPt));
+            Axes a;
+            a.frame = QRectF(100, 150, 300, 170);
+            a.xMin = 0.6;
+            a.xMax = 2.0;
+            a.yMin = 0;
+            a.yMax = 1;
+            a.xTicks = {0.6, 1.0, 1.4, 1.8};
+            a.yTicks = {0, 0.5, 1};
+            a.labels = false;
+            const double gamma = halfWidthPt * (a.xMax - a.xMin) / a.frame.width();
+            const auto model = [gamma](double x) { return 0.8 / (1 + std::pow((x - 1.0) / gamma, 2)) + 0.05; };
+            const double k = 300.0 / 72, width = 1.0;
+            QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+            image.fill(Qt::white);
+            {
+                QPainter p(&image);
+                p.setRenderHint(QPainter::Antialiasing);
+                p.scale(k, k);
+                drawAxes(p, a, 8);
+                p.setClipRect(a.frame);
+                QPolygonF line;
+                for (int i = 0; i <= 140000; ++i) line << a.at(0.6 + i * 0.00001, model(0.6 + i * 0.00001));
+                p.setPen(QPen(QColor(40, 70, 200), width));
+                p.drawPolyline(line);
+                p.end();
+            }
+            QVERIFY(writeScan(file, image));
+            QPdfDocument pdf;
+            QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+            Source source(&pdf, file);
+            Plot plot = firstPlot(source);
+            QVERIFY2(!plot.frame.isNull(), "a frame");
+            plot.calibration = Calibration{};
+            for (const auto& r : {std::tuple{a.frame.bottomLeft(), true, 0.6}, {a.frame.bottomRight(), true, 2.0}, {a.frame.bottomLeft(), false, 0.0}, {a.frame.topLeft(), false, 1.0}}) {
+                Reference ref;
+                ref.at = std::get<0>(r);
+                (std::get<1>(r) ? ref.hasX : ref.hasY) = true;
+                (std::get<1>(r) ? ref.x : ref.y) = std::get<2>(r);
+                plot.calibration.references << ref;
+            }
+            QString why;
+            QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+            QVERIFY2(extract(source, plot, Options{}, &why), qPrintable(why));
+            const Series* line = nullptr;
+            for (const Series& s : std::as_const(plot.series))
+                if (s.shape == Series::Shape::Line && s.colour.blue() > s.colour.red() + 60 && (line == nullptr || s.points.size() > line->points.size())) line = &s;
+            QVERIFY2(line != nullptr, "the line");
+            // The x between the half-height points (page points) covered by
+            // steps under a line width in x, within a piece.
+            const double left = a.px(1.0 - gamma), right = a.px(1.0 + gamma);
+            double covered = 0;
+            for (int i = 1; i < line->points.size(); ++i) {
+                if (line->breaks.contains(i)) continue;
+                const QPointF p0 = line->points.at(i - 1), p1 = line->points.at(i);
+                if (std::abs(p1.x() - p0.x()) > width) continue;
+                const double lo = std::max(std::min(p0.x(), p1.x()), left), hi = std::min(std::max(p0.x(), p1.x()), right);
+                covered += std::max(0.0, hi - lo);
+            }
+            const QList<QPointF> v = values(plot, *line);
+            double top = 0;
+            for (const QPointF& q : v) top = std::max(top, q.y());
+            qInfo("narrow peak %.1f pt: %lld points, %lld breaks, %.0f%% of the half-height width traced, top %.3f (0.850)", halfWidthPt, qlonglong(line->points.size()),
+                  qlonglong(line->breaks.size()), 100 * covered / (right - left), top);
+            QCOMPARE_GE(covered, 0.9 * (right - left));
+            QCOMPARE_GE(top, 0.75);
+        }
     }
 
     void numbersAboveThePlotAreNoLabels()
@@ -1822,6 +1900,31 @@ private slots:
         QVERIFY(plot.calibration.valid());
         QCOMPARE(plot.xAxis.side, 0);
         QVERIFY2(!plot.xAxis.title.contains(QStringLiteral("JOURNAL")), qPrintable(plot.xAxis.title));
+    }
+
+    void lonePointsBetweenGapsAreFolded()
+    {
+        // A piece of one point has no line to draw (the third recheck's T3):
+        // joined to the nearer piece beside it, or, with none near, left out.
+        Series s;
+        s.shape = Series::Shape::Line;
+        s.points = {{0, 0}, {1, 0}, {2, 0}, {12, 0}, {30, 0}, {31, 0}, {70, 0}, {100, 0}, {101, 0}};
+        s.breaks = {3, 4, 6, 7};
+        QCOMPARE(foldLonePoints(s, 16), 2);
+        // (12 joins the first piece, 10 from it; 70, 30 from each, goes.)
+        QCOMPARE(s.points.size(), 8);
+        QCOMPARE(s.points.at(3), QPointF(12, 0));
+        QCOMPARE(s.points.at(6), QPointF(100, 0));
+        QList<int> breaks = s.breaks;
+        std::sort(breaks.begin(), breaks.end());
+        QCOMPARE(breaks, (QList<int>{4, 6}));
+        // A line without gaps, or only pieces of two or more, is left alone.
+        Series t;
+        t.shape = Series::Shape::Line;
+        t.points = {{0, 0}, {1, 0}, {20, 0}, {21, 0}};
+        t.breaks = {2};
+        QCOMPARE(foldLonePoints(t, 16), 0);
+        QCOMPARE(t.points.size(), 4);
     }
 
     void evenlySpacedMarksAreKept()
