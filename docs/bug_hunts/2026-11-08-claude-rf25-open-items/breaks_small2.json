@@ -1,0 +1,20 @@
+[
+ {"name": "S2-statusbar-no-progress", "file": "qucs-s-26.1.1/qucs/qucscontrol_ui.cpp",
+  "old": "    if (name == QLatin1String(\"statusbar\") && a_app->DocumentTab->count() > 0)", "new": "    if (false && a_app->DocumentTab->count() > 0)",
+  "tests": [["test_qucs_control", "anRf25SolvesBarAndItsSettingsAreReadByTheTools"]]},
+ {"name": "S2-progress-no-control", "file": "qucs-s-26.1.1/qucs/qucscontrol.cpp",
+  "old": "                      || qobject_cast<QTextEdit*>(w) != nullptr || qobject_cast<QProgressBar*>(w) != nullptr;", "new": "                      || qobject_cast<QTextEdit*>(w) != nullptr;",
+  "tests": [["test_qucs_control", "anRf25SolvesBarAndItsSettingsAreReadByTheTools"]]},
+ {"name": "S2-no-rf25-scope", "file": "qucs-s-26.1.1/qucs/qucscontrol_settings.cpp",
+  "old": "    if (scope == QLatin1String(\"rf25\")) return new qucs_s::rf25::RF25SettingsDialog(a_app);\n", "new": "",
+  "tests": [["test_qucs_control", "anRf25SolvesBarAndItsSettingsAreReadByTheTools"]]},
+ {"name": "S2-special-not-taken", "file": "qucs-s-26.1.1/qucs/qucscontrol.cpp",
+  "old": "    if (auto* n = qobject_cast<QSpinBox*>(w)) {\n        if (!n->specialValueText().isEmpty() && value.isString()", "new": "    if (auto* n = qobject_cast<QSpinBox*>(w)) {\n        if (false && value.isString()",
+  "tests": [["test_qucs_control", "anRf25SolvesBarAndItsSettingsAreReadByTheTools"]]},
+ {"name": "S2-no-release-after-solve", "file": "qucs-s-26.1.1/qucs/rf25doc.cpp",
+  "old": "    connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });\n", "new": "",
+  "tests": [["test_rf25_doc", "aSolveShowsHowFarItHasGot"]]},
+ {"name": "S2-overlays-before-prepared", "file": "qucs-s-26.1.1/qucs/qucscontrol_layout.cpp",
+  "old": "            const bool prepared = model->waitForPrepared(60000);", "new": "            const bool prepared = true;",
+  "tests": [["test_qucs_control", "anRf25PortsReturnsAreNamedThroughTheTools"]]}
+]

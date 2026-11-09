@@ -1161,6 +1161,12 @@ void RF25Doc::readingDone()
     prepare();
 }
 
+std::atomic_bool& RF25Doc::preparingHeld()
+{
+    static std::atomic_bool held{false};
+    return held;
+}
+
 RF25Doc::Held::Held(RF25Doc* doc) : a_doc(doc)
 {
     if (a_doc) ++a_doc->a_waiting;
@@ -1310,6 +1316,9 @@ void RF25Doc::prepare()
     job->called = QFileInfo(a_layoutRead).fileName();
     a_prepareJob = job;
     QThread* thread = QThread::create([job] {
+        // (Held by a test, until it lets go: what waits for the shapes is
+        //  seen to wait, on a layout of any size.)
+        while (preparingHeld().load()) QThread::msleep(2);
         job->processed = std::make_shared<Processed>(processRead(job->model, *job->layout, job->called));
         QStringList said;
         const MeshSettings how = tabMeshSettings(job->model, &said);
@@ -2176,6 +2185,12 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (job == a_solveJob) solveDone();
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    // Its matrices, gigabytes of them, freed as the thread goes - a solve
+    // stopped, or overtaken, too -, and offered back to the system: after a
+    // Stop the app held 18.9 GB of what it had freed (the review of 2
+    // November, W3). (A turn of the loop on, once the thread's last
+    // reference to the job has gone with it.)
+    connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });
     thread->start();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Stop"));
     showProblems();

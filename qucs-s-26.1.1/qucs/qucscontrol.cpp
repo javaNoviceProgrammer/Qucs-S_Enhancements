@@ -92,6 +92,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QRegularExpression>
@@ -322,13 +323,13 @@ const char* const kTools = R"JSON([
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate"]}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, [row, column, true or false] for a tree's check box, or [item or row, true or false] for a list's}]; with \"action\" select or activate, \"value\" is a row of a table, list or tree - its text or number - clicked or double-clicked"},
    "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id; \"Button > entry\" chooses an entry of its menu"}}}},
 {"name": "get_settings",
- "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Maximum undo operations\", \"Simulators/Ngspice executable location\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. 'keys' and 'search' give only some (app alone has about 70): 'keys' by key, * for any part (\"Locations/*\"), or by label alone (\"Maximum undo operations\"); 'search' those with each word in the key, value or choices (\"ngspice\"). Without 'scope', 'keys' or 'search' look through app, simulators and cdl, each setting saying its scope. Nothing is shown or changed.",
- "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings; not given, 'keys' or 'search' looks through app, simulators and cdl"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"},
+ "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given), cdl (CDL Settings) or rf25 (RF 2.5D > Settings…: the dense LU, how large a full wave is held dense, a sweep's memory). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Maximum undo operations\", \"Simulators/Ngspice executable location\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. 'keys' and 'search' give only some (app alone has about 70): 'keys' by key, * for any part (\"Locations/*\"), or by label alone (\"Maximum undo operations\"); 'search' those with each word in the key, value or choices (\"ngspice\"). Without 'scope', 'keys' or 'search' look through app, simulators, cdl and rf25, each setting saying its scope. Nothing is shown or changed.",
+ "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl", "rf25"], "description": "Application Settings, Simulators Settings, a document's own, CDL Settings, or RF 2.5D > Settings…; not given, 'keys' or 'search' looks through app, simulators, cdl and rf25"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"},
    "keys": {"type": "array", "items": {"type": "string"}, "description": "Only these: keys (\"Simulators/Ngspice executable location\"), with * for any part (\"Locations/*\", \"*/Ngspice*\"), or labels alone (\"Maximum undo operations\"), case aside"},
    "search": {"type": "string", "description": "Only the settings with each of these words in the key, value or choices (\"ngspice\", \"undo\")"}}}},
 {"name": "set_settings",
  "description": "Changes settings of Qucs-S by their keys (get_settings lists them): 'values' {\"Tab/Label\": new value} - or a label alone when it is one setting's. Done through the settings' own dialog, opened as its menu action opens it and applied with its own OK, so what Qucs-S does after it is done too, and its checks hold. Returns each change with what it 'was' (set_settings with it puts it back) and what it is 'now', read again; what was not done and why; what the dialog said. Claude Code's own settings are refused.",
- "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings"}, "values": {"type": "object", "description": "{\"Tab/Label\": value}: text, true or false, a number, one of its choices, or for folders the whole list of full paths ([] for none)"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope", "values"]}},
+ "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl", "rf25"], "description": "Application Settings, Simulators Settings, a document's own, CDL Settings, or RF 2.5D > Settings… (the dense LU, how large a full wave is held dense, a sweep's memory)"}, "values": {"type": "object", "description": "{\"Tab/Label\": value}: text, true or false, a number, one of its choices, or for folders the whole list of full paths ([] for none)"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"}}, "required": ["scope", "values"]}},
 {"name": "console",
  "description": "Types a line into a console dock of Qucs-S - octave (the Octave dock), python (the Python Shell) or terminal (the Terminal dock, a shell) - as the user would there, and returns what it printed once its prompt is back, or what came by 'wait' seconds (10 unless given; the run goes on, and 'interrupt': true stops it with Ctrl-C). What is typed runs with the user's rights, outside Claude Code's own rules for commands: each use is asked about, every time, with the line shown. Without 'input': the last 'lines' of what the console shows, nothing typed. The user sees it all in the dock.",
  "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["octave", "python", "terminal"], "description": "The console"}, "input": {"type": "string", "description": "One line, typed and entered"}, "wait": {"type": "integer", "description": "Seconds to wait for its prompt back (1 to 600; 10 unless given)"}, "interrupt": {"type": "boolean", "description": "Ctrl-C to what runs (python, terminal)"}, "lines": {"type": "integer", "description": "How many of the last lines to give (40 unless given)"}}, "required": ["kind"]}},
@@ -12819,7 +12820,7 @@ QList<QWidget*> QucsControl::dialogControls(QWidget* dialog, bool ui) const
             control = (qobject_cast<QAbstractItemView*>(w) != nullptr && qobject_cast<QHeaderView*>(w) == nullptr
                        && qobject_cast<QComboBox*>(w->parentWidget() != nullptr ? w->parentWidget()->parentWidget() : nullptr) == nullptr)
                       || (qobject_cast<QAbstractSlider*>(w) != nullptr && qobject_cast<QScrollBar*>(w) == nullptr)
-                      || qobject_cast<QTextEdit*>(w) != nullptr;
+                      || qobject_cast<QTextEdit*>(w) != nullptr || qobject_cast<QProgressBar*>(w) != nullptr;
         if (!control) continue;
         if (auto* b = qobject_cast<QAbstractButton*>(w); b != nullptr && cleanText(b->text()).isEmpty() && b->toolTip().isEmpty())
             continue;   // (a tab bar's arrows, a combo box's button)
@@ -13020,6 +13021,7 @@ QString kindName(QWidget* w)
     if (qobject_cast<QTableView*>(w) != nullptr) return QStringLiteral("table view");
     if (qobject_cast<QAbstractItemView*>(w) != nullptr) return QStringLiteral("list view");
     if (qobject_cast<QAbstractSlider*>(w) != nullptr) return QStringLiteral("slider");
+    if (qobject_cast<QProgressBar*>(w) != nullptr) return QStringLiteral("progress");
     return {};
 }
 
@@ -13250,8 +13252,11 @@ QJsonValue QucsControl::typedValue(QWidget* w) const
     if (auto* e = qobject_cast<QLineEdit*>(w)) return e->echoMode() == QLineEdit::Normal ? QJsonValue(e->text()) : QJsonValue(QStringLiteral("(hidden)"));
     if (auto* b = qobject_cast<QAbstractButton*>(w)) return b->isChecked();
     if (auto* c = qobject_cast<QComboBox*>(w)) return c->currentText();
-    if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) return d->value();
-    if (auto* n = qobject_cast<QSpinBox*>(w)) return n->value();
+    // (A spin box at its least that reads as words, "Automatic": the words.)
+    if (auto* d = qobject_cast<QDoubleSpinBox*>(w))
+        return !d->specialValueText().isEmpty() && d->value() == d->minimum() ? QJsonValue(d->specialValueText()) : QJsonValue(d->value());
+    if (auto* n = qobject_cast<QSpinBox*>(w))
+        return !n->specialValueText().isEmpty() && n->value() == n->minimum() ? QJsonValue(n->specialValueText()) : QJsonValue(n->value());
     if (auto* p = qobject_cast<QPlainTextEdit*>(w)) return p->toPlainText();
     if (auto* t = qobject_cast<QTextEdit*>(w)) return t->toPlainText();
     if (auto* table = qobject_cast<QTableWidget*>(w); table != nullptr && table->property("paths").toBool()) {
@@ -13300,10 +13305,20 @@ QJsonArray QucsControl::typedSettings(QWidget* dialog, QHash<QString, QWidget*>*
             o.insert(QStringLiteral("type"), QStringLiteral("number"));
             o.insert(QStringLiteral("minimum"), d->minimum());
             o.insert(QStringLiteral("maximum"), d->maximum());
+            // (Its least, where it reads as words - "Automatic" -: said, and
+            //  taken as a value, as its field shows and takes it.)
+            if (!d->specialValueText().isEmpty()) {
+                o.insert(QStringLiteral("special"), d->specialValueText());
+                if (d->value() == d->minimum()) o.insert(QStringLiteral("value"), d->specialValueText());
+            }
         } else if (auto* n = qobject_cast<QSpinBox*>(w)) {
             o.insert(QStringLiteral("type"), QStringLiteral("integer"));
             o.insert(QStringLiteral("minimum"), n->minimum());
             o.insert(QStringLiteral("maximum"), n->maximum());
+            if (!n->specialValueText().isEmpty()) {
+                o.insert(QStringLiteral("special"), n->specialValueText());
+                if (n->value() == n->minimum()) o.insert(QStringLiteral("value"), n->specialValueText());
+            }
         } else if (qobject_cast<QTableWidget*>(w) != nullptr && w->property("paths").toBool()) {
             o.insert(QStringLiteral("type"), QStringLiteral("folders"));
         } else if (qobject_cast<QTableWidget*>(w) != nullptr) {
@@ -13361,20 +13376,32 @@ bool QucsControl::setTyped(QWidget* dialog, QWidget* w, const QJsonValue& value,
         return true;
     }
     if (auto* d = qobject_cast<QDoubleSpinBox*>(w)) {
+        if (!d->specialValueText().isEmpty() && value.isString()
+            && value.toString().trimmed().compare(d->specialValueText(), Qt::CaseInsensitive) == 0) {
+            d->setValue(d->minimum());
+            return true;
+        }
         bool ok = value.isDouble();
         const double v = ok ? value.toDouble() : propertyValue(value).toDouble(&ok);
         if (!ok || v < d->minimum() || v > d->maximum()) {
-            *why = tr("it is a number from %1 to %2").arg(d->minimum()).arg(d->maximum());
+            *why = d->specialValueText().isEmpty() ? tr("it is a number from %1 to %2").arg(d->minimum()).arg(d->maximum())
+                                                   : tr("it is %1 or a number from %2 to %3").arg(d->specialValueText()).arg(d->minimum()).arg(d->maximum());
             return false;
         }
         d->setValue(v);
         return true;
     }
     if (auto* n = qobject_cast<QSpinBox*>(w)) {
+        if (!n->specialValueText().isEmpty() && value.isString()
+            && value.toString().trimmed().compare(n->specialValueText(), Qt::CaseInsensitive) == 0) {
+            n->setValue(n->minimum());
+            return true;
+        }
         bool ok = value.isDouble();
         const int v = ok ? value.toInt() : propertyValue(value).toInt(&ok);
         if (!ok || v < n->minimum() || v > n->maximum()) {
-            *why = tr("it is a whole number from %1 to %2").arg(n->minimum()).arg(n->maximum());
+            *why = n->specialValueText().isEmpty() ? tr("it is a whole number from %1 to %2").arg(n->minimum()).arg(n->maximum())
+                                                   : tr("it is %1 or a whole number from %2 to %3").arg(n->specialValueText()).arg(n->minimum()).arg(n->maximum());
             return false;
         }
         n->setValue(v);
@@ -13587,6 +13614,14 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             if (checkable) o.insert(QStringLiteral("checked"), checked);
             if (!states.isEmpty()) o.insert(QStringLiteral("state"), states);
             if (lw->count() > 200) o.insert(QStringLiteral("items not shown"), lw->count() - 200);
+        } else if (auto* bar = qobject_cast<QProgressBar*>(w)) {
+            // A bar of how far a job has got: its count, or busy (nought of
+            // nought), and what its tool tip says it is doing.
+            o.insert(QStringLiteral("kind"), QStringLiteral("progress"));
+            o.insert(QStringLiteral("value"), bar->value());
+            o.insert(QStringLiteral("maximum"), bar->maximum());
+            if (bar->maximum() <= bar->minimum()) o.insert(QStringLiteral("busy"), true);
+            if (!bar->toolTip().isEmpty()) o.insert(QStringLiteral("doing"), bar->toolTip());
         } else if (auto* slider = qobject_cast<QAbstractSlider*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("slider"));
             o.insert(QStringLiteral("value"), slider->value());

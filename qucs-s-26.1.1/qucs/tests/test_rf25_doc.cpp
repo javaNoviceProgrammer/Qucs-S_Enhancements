@@ -3264,8 +3264,15 @@ private slots:
         doc->holdSolves(true);
         doc->solveButton()->click();
         QTRY_VERIFY(bar->isVisible());
+        const int releases = misc::memoryReleases();
         doc->solveButton()->click();
         QVERIFY(!doc->isSolving());
+        // And the memory its thread freed offered back to the system once
+        // the thread has gone (the review of 2 November, W3: 18.9 GB held).
+        doc->holdSolves(false);
+        QVERIFY(doc->waitForSolvesToEnd(60000));
+        QTRY_VERIFY2(misc::memoryReleases() > releases, "no release of the freed memory after the stopped solve's thread went");
+        doc->holdSolves(true);
         QVERIFY(bar->isHidden() && doc->progressStop()->isHidden());
         QCOMPARE(doc->solveButton()->text(), QStringLiteral("Solve"));
         QTest::qWait(500);

@@ -23,6 +23,7 @@
 #include "rf25panel.h"
 #include "schematic.h"
 
+#include <QProgressBar>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCompleter>
@@ -392,6 +393,22 @@ QJsonObject QucsControl::getUi(const QJsonObject& args)
                 o.insert(QStringLiteral("selection"), selected);
     // (A list open below a field - a window of its own, not among them.)
     if (QAbstractItemView* list = openList()) o.insert(QStringLiteral("list"), listRead(list));
+    // The status bar's answer with the document in front's own bar of how
+    // far its job has got - an RF 2.5D or a multiphysics model's solve shows
+    // it on its tab's status line, where "statusbar" did not see it (the RF
+    // 2.5D review of 2 November, W2).
+    if (name == QLatin1String("statusbar") && a_app->DocumentTab->count() > 0)
+        if (QWidget* front = a_app->DocumentTab->currentWidget())
+            for (QProgressBar* bar : front->findChildren<QProgressBar*>())
+                if (bar->isVisible()) {
+                    QJsonObject p{{QStringLiteral("document"), a_app->DocumentTab->tabText(a_app->DocumentTab->currentIndex()).remove(QLatin1Char('&'))},
+                                  {QStringLiteral("value"), bar->value()},
+                                  {QStringLiteral("maximum"), bar->maximum()}};
+                    if (bar->maximum() <= bar->minimum()) p.insert(QStringLiteral("busy"), true);
+                    if (!bar->toolTip().isEmpty()) p.insert(QStringLiteral("doing"), bar->toolTip());
+                    o.insert(QStringLiteral("document's progress"), p);
+                    break;
+                }
     bool hidden = false;
     for (QWidget* w = root; w != nullptr; w = w->parentWidget())
         if (auto* dock = qobject_cast<QDockWidget*>(w); dock != nullptr && dock->isHidden()) hidden = true;

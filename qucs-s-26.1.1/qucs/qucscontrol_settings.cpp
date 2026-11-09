@@ -25,6 +25,7 @@
 #include "dialogs/vasettingsdialog.h"
 #include "extsimkernels/CdlSettingsDialog.h"
 #include "extsimkernels/simsettingsdialog.h"
+#include "rf25settings.h"
 
 #include <QAction>
 #include <QApplication>
@@ -69,8 +70,11 @@ QWidget* QucsControl::settingsDialogFor(const QJsonObject& args, QString* error)
     if (scope == QLatin1String("app")) return new QucsSettingsDialog(a_app);
     if (scope == QLatin1String("simulators")) return new SimSettingsDialog(a_app);
     if (scope == QLatin1String("cdl")) return new CdlSettingsDialog(a_app);
+    // RF 2.5D > Settings…: not among get_settings' keys before (the RF 2.5D
+    // check of 4 November).
+    if (scope == QLatin1String("rf25")) return new qucs_s::rf25::RF25SettingsDialog(a_app);
     if (scope != QLatin1String("document")) {
-        *error = tr("'scope' is app (Application Settings), simulators, document (the document's own settings) or cdl.");
+        *error = tr("'scope' is app (Application Settings), simulators, document (the document's own settings), cdl or rf25 (RF 2.5D > Settings…).");
         return nullptr;
     }
     QucsDoc* doc = document(args, error);
@@ -92,6 +96,7 @@ void QucsControl::withSettingsDialog(const QJsonObject& args, std::function<void
     if (scope == QLatin1String("app")) action = a_app->applSettings;
     else if (scope == QLatin1String("simulators")) action = a_app->simSettings;
     else if (scope == QLatin1String("cdl")) action = a_app->cdlSettings;
+    else if (scope == QLatin1String("rf25")) action = a_app->findChild<QAction*>(QStringLiteral("rf25SettingsAction"));
     else if (scope == QLatin1String("document")) {
         // The document's own: the one 'path' names, brought to the front.
         QString error;
@@ -103,7 +108,7 @@ void QucsControl::withSettingsDialog(const QJsonObject& args, std::function<void
         a_app->showDocument(QucsApp::documentWidget(doc));
         action = a_app->fileSettings;
     } else {
-        done(errorResult(tr("'scope' is app (Application Settings), simulators, document (the document's own settings) or cdl.")));
+        done(errorResult(tr("'scope' is app (Application Settings), simulators, document (the document's own settings), cdl or rf25 (RF 2.5D > Settings…).")));
         return;
     }
     if (action == nullptr || !action->isEnabled()) {
@@ -200,11 +205,11 @@ void QucsControl::getSettings(const QJsonObject& args, const Done& done)
     QStringList scopes{scope};
     if (scope.isEmpty()) {
         if (!filtered) {
-            done(errorResult(tr("'scope' is app (Application Settings), simulators, document (the document's own settings) or cdl - "
-                                "or, without it, 'search' or 'keys' looks through app, simulators and cdl.")));
+            done(errorResult(tr("'scope' is app (Application Settings), simulators, document (the document's own settings), cdl or rf25 - "
+                                "or, without it, 'search' or 'keys' looks through app, simulators, cdl and rf25.")));
             return;
         }
-        scopes = {QStringLiteral("app"), QStringLiteral("simulators"), QStringLiteral("cdl")};
+        scopes = {QStringLiteral("app"), QStringLiteral("simulators"), QStringLiteral("cdl"), QStringLiteral("rf25")};
     }
     QJsonArray settings, dialogs;
     int total = 0;
@@ -237,7 +242,7 @@ void QucsControl::getSettings(const QJsonObject& args, const Done& done)
         result.insert(QStringLiteral("matched"), tr("%1 of %2 settings").arg(settings.size()).arg(total));
         if (settings.isEmpty())
             result.insert(QStringLiteral("note"), scopes.size() == 1 ? tr("Nothing matches: without 'keys' and 'search' it lists all %1, or "
-                                                                          "leave out 'scope' to look in app, simulators and cdl.").arg(total)
+                                                                          "leave out 'scope' to look in app, simulators, cdl and rf25.").arg(total)
                                                                      : tr("Nothing matches: get_settings with a 'scope' alone lists its settings."));
     }
     done(jsonResult(result));

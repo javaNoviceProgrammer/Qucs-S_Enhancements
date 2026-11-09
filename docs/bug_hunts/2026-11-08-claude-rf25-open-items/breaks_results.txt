@@ -41,3 +41,9 @@ S-spin-suffix-compared: CAUGHT: FAIL!  : TestQucsControl::aSpinBoxsWordsAndSuffi
        |                                                                                                                ^
 1 warning and 5 errors generated.
 ninja: build stopped: subcommand failed.
+S2-statusbar-no-progress: CAUGHT: FAIL!  : TestQucsControl::anRf25SolvesBarAndItsSettingsAreReadByTheTools() '!(bar = json(call("get_ui", {{"area", "statusbar"}})).toObject().value("document's progress").toObject()).isEmpty()' returned FALSE. ()
+S2-progress-no-control: CAUGHT: FAIL!  : TestQucsControl::anRf25SolvesBarAndItsSettingsAreReadByTheTools() 'control' returned FALSE. ()
+S2-no-rf25-scope: CAUGHT: FAIL!  : TestQucsControl::anRf25SolvesBarAndItsSettingsAreReadByTheTools() 'limit.value("special").toString() == QLatin1String("Automatic") && limit.value("value").toString() == QLatin1String("Automatic")' returned FALSE
+S2-special-not-taken: CAUGHT: FAIL!  : TestQucsControl::anRf25SolvesBarAndItsSettingsAreReadByTheTools() '!failed(back) && json(back).toObject().value("changed").toArray().size() == 1' returned FALSE. ({"changed":[],"not done":[{"key":"Held dense up 
+S2-no-release-after-solve: CAUGHT: FAIL!  : TestRf25Doc::aSolveShowsHowFarItHasGot() 'misc::memoryReleases() > releases' returned FALSE. (no release of the freed memory after the stopped solve's thread went)
+S2-overlays-before-prepared: CAUGHT: FAIL!  : TestQucsControl::anRf25PortsReturnsAreNamedThroughTheTools() 'terminals && processed' returned FALSE. ({"cell":"TOP","drawn":{"shapes":3,"texts":0,"too small to see, as dots":0},"file":"/var/folders/dq/p285ybrj2
