@@ -15,18 +15,22 @@
 #include "multiphysics3ddoc.h"
 #include "multiphysics3dpanel.h"
 #include "multiphysicspanel.h"
+#include "multiphysicssettings.h"
+#include "settings.h"
 
 #include "main.h"
 
 #include "fem3_estimate.h"
 
 #include <QAction>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenuBar>
@@ -40,17 +44,21 @@ extern QString lastDirOpenSave;   // (qucs.cpp: the last folder a file was opene
 namespace {
 
 /// Multiphysics 3D > Settings: the memory a solve may take, past which it is
-/// not solved (half of this machine's by default; 0, no limit). Opened, not
-/// run: the window goes on behind it.
+/// not solved (half of this machine's by default; 0, no limit), and the
+/// sparse direct solver - the Multiphysics menu's own setting, the same for
+/// both (Multiphysics/solver). Opened, not run: the window goes on behind it.
 void showMultiphysics3DSettings(QWidget *parent)
 {
   using qucs_s::fem::bytesText;
   using qucs_s::fem::physicalMemory;
+  using qucs_s::fem::MultiphysicsSettingsDialog;
   auto *dialog = new QDialog(parent);
   dialog->setObjectName(QStringLiteral("multiphysics3DSettings"));
   dialog->setWindowTitle(QObject::tr("Multiphysics 3D Settings"));
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   auto *layout = new QVBoxLayout(dialog);
+  auto *memory = new QGroupBox(QObject::tr("Memory"), dialog);
+  auto *memoryRows = new QVBoxLayout(memory);
   auto *line = new QHBoxLayout();
   line->addWidget(new QLabel(QObject::tr("Memory a solve may take:"), dialog));
   auto *limit = new QDoubleSpinBox(dialog);
@@ -67,18 +75,53 @@ void showMultiphysics3DSettings(QWidget *parent)
   byDefault->setToolTip(QObject::tr("%1 of its %2").arg(bytesText(half), bytesText(2 * half)));
   QObject::connect(byDefault, &QPushButton::clicked, limit, [limit, half] { limit->setValue(half / (1024.0 * 1048576.0)); });
   line->addWidget(byDefault);
-  layout->addLayout(line);
+  memoryRows->addLayout(line);
   auto *about = new QLabel(QObject::tr("Each solve is estimated before it starts - each physics' unknowns, its matrix's nonzeros, "
                                        "the memory and time of an iterative and of a direct solve - and one past this is not "
                                        "solved: the messages say what would bring it under (the iterative solver, a coarser mesh, "
                                        "fewer divisions in z). Build Mesh says the estimate too. Claude's fem_solve may go past it "
                                        "(force)."),
-                           dialog);
+                           memory);
   about->setWordWrap(true);
-  layout->addWidget(about);
+  memoryRows->addWidget(about);
+  layout->addWidget(memory);
+  // The sparse direct solver: the Multiphysics menu's setting, shown and set
+  // here too.
+  auto *solver = new QGroupBox(QObject::tr("Solver"), dialog);
+  auto *solverRows = new QVBoxLayout(solver);
+  auto *solverLine = new QHBoxLayout();
+  solverLine->addWidget(new QLabel(QObject::tr("Sparse direct solver:"), solver));
+  auto *choice = new QComboBox(solver);
+  choice->setObjectName(QStringLiteral("mp3SolverBox"));
+  choice->addItem(QObject::tr("Automatic (Accelerate from 20,000 unknowns, Eigen below)"), QStringLiteral("auto"));
+  choice->addItem(QObject::tr("Eigen at every size"), QStringLiteral("eigen"));
+  choice->addItem(QObject::tr("Accelerate at every size"), QStringLiteral("accelerate"));
+  choice->setCurrentIndex(MultiphysicsSettingsDialog::solverWanted());
+  solverLine->addWidget(choice, 1);
+  solverRows->addLayout(solverLine);
+  auto *how = new QLabel(QObject::tr("The same setting as the Multiphysics menu's: Apple's Accelerate factorizes on many threads, "
+                                     "Eigen's on one (the quicker below some 20,000 unknowns); Accelerate's LU needs macOS 26 or "
+                                     "later, its Cholesky any macOS. In 3D it is what factorizes where a solve factorizes: heat, "
+                                     "electrostatics and currents by Cholesky where a matrix has many right-hand sides (a "
+                                     "capacitance matrix's) or the step asks for the direct solver - else they iterate "
+                                     "(multigrid) -, and an eigenmode expansion's cuts, each mode solve an LU. QUCS_FEM_SOLVER=eigen, "
+                                     "accelerate or auto in the environment chooses, whatever this says."),
+                         solver);
+  how->setWordWrap(true);
+  solverRows->addWidget(how);
+  auto *status = new QLabel(solver);
+  status->setObjectName(QStringLiteral("mp3SolverStatus"));
+  status->setWordWrap(true);
+  status->setText(MultiphysicsSettingsDialog::solverStatus(choice->currentIndex()));
+  QObject::connect(choice, &QComboBox::currentIndexChanged, status,
+                   [status](int index) { status->setText(MultiphysicsSettingsDialog::solverStatus(index)); });
+  solverRows->addWidget(status);
+  layout->addWidget(solver);
   auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
-  QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, [dialog, limit] {
+  QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, [dialog, limit, choice] {
     Multiphysics3DDoc::setMemoryLimitGB(limit->value());
+    QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"), choice->currentData().toString());
+    MultiphysicsSettingsDialog::applySolverSetting();
     dialog->accept();
   });
   QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
@@ -146,9 +189,13 @@ void QucsApp::initMultiphysics3D()
   compute->setObjectName(QStringLiteral("mp3ComputeAction"));
   compute->setStatusTip(tr("Solve the 3D model's study: heat, electrostatics, electric currents"));
   a_multiphysics3DMenu->addSeparator();
+  // (No role, as the Multiphysics menu's: on macOS a "Settings…" of the
+  // text-heuristic role is taken into the application's menu as its
+  // Preferences - and this one was, out of the Multiphysics 3D menu.)
   QAction *settings = a_multiphysics3DMenu->addAction(tr("Settings…"), this, [this] { showMultiphysics3DSettings(this); });
   settings->setObjectName(QStringLiteral("mp3SettingsAction"));
-  settings->setStatusTip(tr("The memory a 3D solve may take"));
+  settings->setMenuRole(QAction::NoRole);
+  settings->setStatusTip(tr("The memory a 3D solve may take, and the sparse direct solver"));
   a_multiphysics3DMenu->addAction(tr("Show the Multiphysics 3D Panel"), this, [this] { showMultiphysics3DPanel(); });
   connect(a_multiphysics3DMenu, &QMenu::aboutToShow, this, &QucsApp::updateMultiphysics3DMenu);
   const QList<QAction *> bar = menuBar()->actions();

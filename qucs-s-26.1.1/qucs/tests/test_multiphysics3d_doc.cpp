@@ -51,6 +51,9 @@
 #include "multiphysics3dpanel.h"
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
+#include "multiphysicssettings.h"
+#include "fem_sparse.h"
+#include "settings.h"
 #include "qucs.h"
 #include "qucscontrol.h"
 
@@ -1263,6 +1266,11 @@ private slots:
         // half of this machine's again.
         QAction* settings = app->findChild<QAction*>(QStringLiteral("mp3SettingsAction"));
         QVERIFY(settings);
+        // (No role, as the Multiphysics menu's: on macOS "Settings…" would be
+        // taken out of the Multiphysics 3D menu into the application's.)
+        QCOMPARE(settings->menuRole(), QAction::NoRole);
+        auto* menu3d = app->findChild<QMenu*>(QStringLiteral("multiphysics3DMenu"));
+        QVERIFY(menu3d && menu3d->actions().contains(settings));
         settings->trigger();
         QDialog* dialog = nullptr;
         QTRY_VERIFY((dialog = app->findChild<QDialog*>(QStringLiteral("multiphysics3DSettings"))) != nullptr);
@@ -1278,6 +1286,23 @@ private slots:
         QVERIFY(std::abs(dialog->findChild<QDoubleSpinBox*>(QStringLiteral("mp3MemoryLimit"))->value() - physicalMemory() / 2 / 1073741824.0) < 0.06);
         dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
         QVERIFY(std::abs(Multiphysics3DDoc::memoryLimit() - 3.5 * 1073741824.0) < 1);
+        // Its solver: the Multiphysics menu's setting, shown and kept on OK.
+        settings->trigger();
+        QTRY_VERIFY((dialog = app->findChild<QDialog*>(QStringLiteral("multiphysics3DSettings"))) != nullptr && dialog->isVisible());
+        auto* solverBox = dialog->findChild<QComboBox*>(QStringLiteral("mp3SolverBox"));
+        QVERIFY(solverBox && solverBox->currentIndex() == qucs_s::fem::MultiphysicsSettingsDialog::solverWanted());
+        QVERIFY(!dialog->findChild<QLabel*>(QStringLiteral("mp3SolverStatus"))->text().isEmpty());
+        const int solverBefore = qucs_s::fem::MultiphysicsSettingsDialog::solverWanted();
+        solverBox->setCurrentIndex(1);
+        dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        QCOMPARE(qucs_s::fem::MultiphysicsSettingsDialog::solverWanted(), 1);
+        QCOMPARE(qucs_s::fem::directSolver(), qucs_s::fem::DirectSolver::Eigen);
+        {
+            // (Put back.)
+            QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"),
+                                        solverBefore == 1 ? QStringLiteral("eigen") : solverBefore == 2 ? QStringLiteral("accelerate") : QStringLiteral("auto"));
+            qucs_s::fem::MultiphysicsSettingsDialog::applySolverSetting();
+        }
         // Solved within it, then refused past a limit under its estimate -
         // its earlier solution not taken for it -, then forced.
         r = call(QStringLiteral("fem_solve"), {{"path", file}});
