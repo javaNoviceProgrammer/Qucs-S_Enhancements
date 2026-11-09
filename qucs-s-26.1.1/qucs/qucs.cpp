@@ -4362,6 +4362,13 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     const bool current = schematic == currentSchematic();
     if (current) slotHideEdit();   // (the component edited goes)
     loaded = schematic->load();
+    // Its diagrams are new either way - read, or what it held put back -
+    // and their traces have no data: read it, as opening the file does.
+    // load()'s becomeCurrent(false) does not, nor the one below (only for
+    // the symbol, and not for a tab behind another), and the page came
+    // back blank until Reload Simulation Data (the review of 9 November).
+    // (load() left the schematic's lists in use: the symbol comes after.)
+    schematic->reloadGraphs();
     if (symbol) {   // (also when the file did not read: what it held is back)
       schematic->switchPaintMode();
       if (current) changeSchematicSymbolMode(schematic);
