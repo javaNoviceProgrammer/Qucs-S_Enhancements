@@ -216,6 +216,10 @@ public:
     /// Whether node \a tag may be hidden: a geometry feature (Form Union
     /// not), or a material (its domains).
     bool canHide(const QString& tag) const { return canHide(a_model, tag); }
+    /// \a model's default 3D Plot Groups for a solution's \a fields, where it
+    /// has none: two a physics - its first field on the boundaries, and on
+    /// a slice through the middle across x. Whether any was added.
+    static bool addDefaultPlots(qucs_s::fem::Model& model, const std::vector<qucs_s::fem::Field3>& fields);
     /// ... in model \a model (fem_edit's, before it is set).
     static bool canHide(const qucs_s::fem::Model& model, const QString& tag);
     /// How node \a tag is drawn (shown where it may not be hidden).

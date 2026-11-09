@@ -1172,6 +1172,26 @@ private slots:
         QCOMPARE(doc->view()->clipAxis(), 0);
         // One step of Undo.
         QVERIFY(doc->undoStack()->undoText().contains(QStringLiteral("Plot T")));
+        // Asked again: that group shown, not another made (the check of 9
+        // November, 5); another title, another group.
+        {
+            auto groups = [doc] {
+                int n = 0;
+                for (const FNode& c : doc->model().results().children) n += c.type == QLatin1String("plotgroup3d");
+                return n;
+            };
+            const int had = groups(), steps = doc->undoStack()->index();
+            r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}, {"title", "The block's T"}, {"slices", slices},
+                                                  {"isosurfaces", levels}, {"clip", QJsonObject{{"x", 1.5}}}});
+            QVERIFY2(!failed(r) && json(r).value(QStringLiteral("plot group")).toString() == group && json(r).contains(QStringLiteral("reused")),
+                     qPrintable(text(r)));
+            QCOMPARE(groups(), had);
+            QCOMPARE(doc->undoStack()->index(), steps);
+            r = call(QStringLiteral("fem_plot"), {{"path", file}, {"expression", "T"}, {"title", "Another T"}});
+            QVERIFY2(!failed(r) && json(r).value(QStringLiteral("plot group")).toString() != group && !json(r).contains(QStringLiteral("reused")),
+                     qPrintable(text(r)));
+            QCOMPARE(groups(), had + 1);
+        }
         // Without its surface: a slice alone, two planes across x - the
         // rise above 300 K, its legend 0 to 2.5 K.
         QJsonArray across;
@@ -1710,6 +1730,40 @@ private slots:
         QCOMPARE(block->show(), Multiphysics3DDoc::Show::Solution);
         QVERIFY(block->view()->scene().triangles.empty());
         QVERIFY(!block->view()->scene().lines.empty());
+    }
+
+    /// The default plots after a solve: a pair a physics, of its first field -
+    /// not one a field (a full-wave solve's normE, Ex, Ey and Ez were four
+    /// pairs of one name: the check of 9 November, 5); none where the model
+    /// has a 3D Plot Group.
+    void defaultPlotsOneAPhysics()
+    {
+        Model m = Model::blank3d();
+        std::vector<qucs_s::fem::Field3> fields;
+        for (const char* v : {"normE", "Ex", "Ey", "Ez"}) {
+            qucs_s::fem::Field3 f;
+            f.tag = QStringLiteral("ewfd");
+            f.type = QStringLiteral("ewfd");
+            f.variable = QString::fromLatin1(v);
+            fields.push_back(f);
+        }
+        qucs_s::fem::Field3 heat;
+        heat.tag = QStringLiteral("ht");
+        heat.type = QStringLiteral("heat");
+        heat.variable = QStringLiteral("T");
+        fields.push_back(heat);
+        QVERIFY(Multiphysics3DDoc::addDefaultPlots(m, fields));
+        QStringList labels, expressions;
+        for (const FNode& g : m.results().children) {
+            if (g.type != QLatin1String("plotgroup3d")) continue;
+            labels << g.label;
+            QCOMPARE(g.children.size(), std::size_t(1));
+            expressions << g.children.front().text(QStringLiteral("expression"));
+        }
+        QCOMPARE(labels.size(), 4);
+        QCOMPARE(QSet<QString>(labels.begin(), labels.end()).size(), 4);
+        QCOMPARE(expressions, (QStringList{"ewfd.normE", "ewfd.normE", "ht.T", "ht.T"}));
+        QVERIFY(!Multiphysics3DDoc::addDefaultPlots(m, fields));
     }
 
     /// A part's visibility by the tools - fem_edit set 'visibility', fem_describe

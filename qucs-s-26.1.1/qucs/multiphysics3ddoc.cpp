@@ -1040,14 +1040,26 @@ bool Multiphysics3DDoc::showPlotGroup(const QString& tag, QString* error)
 void Multiphysics3DDoc::addDefaultPlots()
 {
     if (!a_solution) return;
-    for (const Node& c : a_model.results().children)
-        if (c.type == QLatin1String("plotgroup3d")) return;
+    Model m = a_model;
+    if (addDefaultPlots(m, a_solution->fields())) setModel(m, tr("Default Plots"));
+}
+
+bool Multiphysics3DDoc::addDefaultPlots(Model& m, const std::vector<Field3>& fields)
+{
+    for (const Node& c : m.results().children)
+        if (c.type == QLatin1String("plotgroup3d")) return false;
     // Each physics: its variable on the boundaries, and on a slice through the
     // middle across x alone (a surface, opaque, would hide it).
-    Model m = a_model;
     const QString results = m.results().tag;
     bool any = false;
-    for (const Field3& f : a_solution->fields()) {
+    // One pair a physics, of its first field: a full-wave solve's fields are
+    // normE, Ex, Ey and Ez, and four pairs of one name each ("Electromagnetic
+    // Waves, Frequency Domain (ewfd)") read as made again at each plot (the
+    // check of 9 November, 5).
+    QSet<QString> done;
+    for (const Field3& f : fields) {
+        if (done.contains(f.tag)) continue;
+        done.insert(f.tag);
         const Node* physics = m.find(f.tag);
         const QString name = physics && physics->kind() ? physics->kind()->title : f.type;
         const QString variable = f.tag + QLatin1Char('.') + f.variable;
@@ -1063,7 +1075,7 @@ void Multiphysics3DDoc::addDefaultPlots()
             any = true;
         }
     }
-    if (any) setModel(m, tr("Default Plots"));
+    return any;
 }
 
 void Multiphysics3DDoc::showSolution()

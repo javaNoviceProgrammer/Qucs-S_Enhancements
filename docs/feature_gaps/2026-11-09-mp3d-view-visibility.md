@@ -134,7 +134,14 @@ working in every view. Its findings:
    its own (a 2D or 3D model, a sheet...) by their Edit > Undo names, numbered as `undo`'s `to` takes them (0: before
    the first step kept). `undo` and `redo` take `to` for such a document too, and their answer names the steps taken
    ("Undone: Frame Only oxide; Hide oxide. (Step 3 of 5.)").
-5. **`fem_plot` adds a pair of plot groups at each call.** Not this feature: left for its own change.
+5. **`fem_plot` seemed to add a pair of plot groups at each call.** The four pairs in the model (`pg3d1` to `pg3d8`) were
+   the default plots of its first solve, made all at once: one pair for each of the full-wave solve's fields (`normE`,
+   `Ex`, `Ey`, `Ez`), each pair under the same name. Two changes:
+   - The defaults are now one pair a physics, of its first field (`ewfd.normE`).
+   - `fem_plot` with an `expression` made a new group at every call, in 2D and 3D. It now shows a group already there
+     with the same plots (same kind, name, properties and plots, whatever their tags) and says `"reused"`. The call
+     adds no step of Undo then. In 2D a time, point, frequency or mode the call gives does not count against the match,
+     and is set on the group as before.
 
 Tests: `test_multiphysics3d_doc`'s `visibilityByTheToolsAndTheHighlight`:
 
@@ -145,5 +152,9 @@ Tests: `test_multiphysics3d_doc`'s `visibilityByTheToolsAndTheHighlight`:
 - `fem_describe` gives the oxide's visibility alone;
 - `undo_history` names "Hide oxide" and "Frame Only oxide", `undo` and `redo` go to those steps by `to`, and a part can
   be added hidden.
+
+`defaultPlotsOneAPhysics` (a full-wave solve's four fields give one pair; none added where a group exists) and
+`theToolsPlotAndExportA3DModel` (the same plot asked twice: one group, no Undo step; another title, another group) in
+`test_multiphysics3d_doc`. In `test_multiphysics_doc`, the same checks for a 2D colour map and a 1D graph of a global.
 
 ![The Y-branch's oxide framed, nothing chosen](2026-11-09-mp3d-view-visibility/ybranch-light-oxide-frame.png)
