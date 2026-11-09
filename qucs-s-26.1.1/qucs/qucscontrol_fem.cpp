@@ -1016,6 +1016,15 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         // (A sweep stopped before its last point: its points before kept.)
         if (const std::shared_ptr<SolutionSet> set = doc->solutions(s->tag); set && !set->stopped.isEmpty())
             so.insert(QStringLiteral("stopped"), set->stopped);
+        // (Its solve's log, its last lines: what a solve in the background
+        // said, read back after.)
+        if (const auto solved = doc->solution(s->tag); solved && !solved->log.isEmpty()) {
+            QJsonArray log;
+            const qsizetype from = std::max<qsizetype>(0, solved->log.size() - 60);
+            if (from > 0) log.append(tr("(%1 lines before these)").arg(from));
+            for (qsizetype i = from; i < solved->log.size(); ++i) log.append(solved->log.at(i));
+            so.insert(QStringLiteral("log"), log);
+        }
         studies.append(so);
     }
     o.insert(QStringLiteral("studies"), studies);
@@ -3524,6 +3533,14 @@ QJsonObject QucsControl::fem3Describe(Multiphysics3DDoc* doc, const QJsonObject&
     if (const auto s = doc->solution()) {
         QJsonObject so{{QStringLiteral("study"), s->studyTag}, {QStringLiteral("seconds"), s->seconds}};
         if (doc->solutionStale()) so.insert(QStringLiteral("stale"), tr("of the model before its last change: fem_solve again"));
+        // (Its log, as fem_solve answered it - kept with the solution: what
+        // a solve in the background said, read back after.)
+        QJsonArray log;
+        const QStringList& lines = s->log;
+        const qsizetype from = std::max<qsizetype>(0, lines.size() - 60);
+        if (from > 0) log.append(tr("(%1 lines before these)").arg(from));
+        for (qsizetype i = from; i < lines.size(); ++i) log.append(lines.at(i));
+        if (!log.isEmpty()) so.insert(QStringLiteral("log"), log);
         if (s->timeDependent) so.insert(QStringLiteral("output times"), s->snapshotCount());
         if (doc->solutions().size() > 1) so.insert(QStringLiteral("sweep points"), int(doc->solutions().size()));
         o.insert(QStringLiteral("solved"), so);
@@ -3804,11 +3821,21 @@ QJsonObject QucsControl::fem3Solved(Multiphysics3DDoc* doc, const QJsonObject& a
             for (int i = 0; i < int(first.portModes.size()); ++i) {
                 const EmeResult::PortMode& pm = first.portModes[std::size_t(i)];
                 const EmePort& port = oc.device.ports[std::size_t(pm.port)];
-                ports.append(QJsonObject{{QStringLiteral("S-parameter port"), i + 1},
-                                         {QStringLiteral("optical port"), port.name},
-                                         {QStringLiteral("mode"), pm.label},
-                                         {QStringLiteral("at"), port.atEnd ? QStringLiteral("end") : QStringLiteral("start")},
-                                         {QStringLiteral("fed"), port.excite}});
+                QJsonObject po{{QStringLiteral("S-parameter port"), i + 1},
+                               {QStringLiteral("optical port"), port.name},
+                               {QStringLiteral("mode"), pm.label},
+                               {QStringLiteral("fed"), port.excite}};
+                // (An expansion's port at its axis' start or end; a full
+                // wave's has no axis - its faces, as its selection picks them.)
+                if (!oc.fullWave)
+                    po.insert(QStringLiteral("at"), port.atEnd ? QStringLiteral("end") : QStringLiteral("start"));
+                else if (const Node* physics = doc->model().find(oc.physics))
+                    for (const Node& c : physics->children)
+                        if (c.type == physics->type + QStringLiteral("/port") && c.text(QStringLiteral("name")) == port.name) {
+                            po.insert(QStringLiteral("selection"), c.props.value(QStringLiteral("selection")));
+                            break;
+                        }
+                ports.append(po);
             }
             QJsonArray rows;
             const int n = int(oc.results.size()), step = std::max(1, (n + 19) / 20);

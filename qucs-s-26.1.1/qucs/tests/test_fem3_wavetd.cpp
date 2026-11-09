@@ -296,7 +296,11 @@ private slots:
         qInfo("time domain: %lld ms, %d steps, settled %d", t.elapsed(), td.steps, int(td.settled));
         for (const QString& l : td.log) qInfo("  %s", qPrintable(l));
         for (const QString& w : td.warnings) qInfo("  warning: %s", qPrintable(w));
-        st.sourceFrequency = 0.5 * (f.front() + f.back());
+        // (The frequency domain's sources the modes' at each frequency: the
+        // time domain's are, at the band's ends and middle. Its ports' cuts
+        // meshed as the time domain's, at the band's shortest wavelength.)
+        st.sourceFrequency = 0;
+        st.portMeshWavelength = 1.5e-6;
         for (std::size_t k = 0; k < f.size(); ++k) {
             const Wave3Result fd = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
             QVERIFY2(fd.ok(), qPrintable(fd.error));
@@ -333,7 +337,11 @@ private slots:
         QVERIFY2(td.ok(), qPrintable(td.error));
         for (const QString& l : td.log) qInfo("  %s", qPrintable(l));
         for (const QString& w : td.warnings) qInfo("  warning: %s", qPrintable(w));
-        st.sourceFrequency = 0.5 * (f.front() + f.back());
+        // (The frequency domain's sources the modes' at each frequency: the
+        // time domain's are, at the band's ends and middle. Its ports' cuts
+        // meshed as the time domain's, at the band's shortest wavelength.)
+        st.sourceFrequency = 0;
+        st.portMeshWavelength = 1.5e-6;
         Wave3Result fd;
         if (noLu.isEmpty()) {
             fd = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[1]);
@@ -423,6 +431,11 @@ private slots:
             QVERIFY(std::abs(std::abs(s21) - 1) < 2e-3);
             QVERIFY(std::abs(std::arg(s21 / want)) < (slowBuild() ? 5e-3 : 1e-3));
             QVERIFY(*s->global(QStringLiteral("ewtd.T")) > 0.995);
+            // Rall and Tall: over every mode carrying power at the ports, taken
+            // or not - a hollow guide's one mode here, R and T again.
+            QVERIFY(s->global(QStringLiteral("ewtd.Rall")) && s->global(QStringLiteral("ewtd.Tall")));
+            QVERIFY(std::abs(*s->global(QStringLiteral("ewtd.Tall")) - *s->global(QStringLiteral("ewtd.T"))) < 1e-6);
+            QVERIFY(std::abs(*s->global(QStringLiteral("ewtd.Rall")) - *s->global(QStringLiteral("ewtd.R"))) < 1e-6);
             // Its field: |E| in the guide, of 1 W fed - as the frequency
             // domain's, E of a 1 W mode (TE10 of 0.9 x 0.4 µm: some 4e7 V/m
             // at its peak).
@@ -481,7 +494,8 @@ private slots:
             for (const QString& l : td.log)
                 if (l.contains(QLatin1String("fitted"))) qInfo("%s: %s", what, qPrintable(l));
             QVERIFY2(log.contains(QLatin1String("fitted")), qPrintable(log));
-            st.sourceFrequency = 0.5 * (f.front() + f.back());
+            st.sourceFrequency = 0;
+            st.portMeshWavelength = 1.5e-6;
             for (std::size_t k = 0; k < f.size(); ++k) {
                 const Wave3Result fd = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
                 QVERIFY2(fd.ok(), qPrintable(fd.error));
@@ -499,7 +513,11 @@ private slots:
     // The junction of test_fem3_wave (0.5 into 1 µm) in the time domain, its
     // ports with PMLs behind them: |S21|² as the frequency domain's ports
     // that absorb their modes gave there (0.8999 at this mesh; the expansion
-    // 0.9006), reciprocal, its power all out.
+    // 0.9006), reciprocal, its power all out. Over 1500-1600 nm: at the
+    // band's end its S as the frequency domain's, its sources each
+    // wavelength's own modes - the sources' profiles the band's ends' and
+    // middle's (the middle's alone sent the ends a little of the port's other
+    // modes).
     void aJunctionInTheTimeDomain()
     {
         if (slowBuild()) QSKIP("a sanitized build: 97,000 unknowns' 1,400 steps take hours");
@@ -512,10 +530,11 @@ private slots:
         Wave3Settings st;
         st.ports = ports(m, b, 0, 2 * L, QStringLiteral("TE0"), 10, true);
         st.pmlDomains = domainsOf(m, b, {QStringLiteral("ea"), QStringLiteral("eb")});
-        const Wave3TimeResult td = solveWave3Time(m, b.parameters, *b.topology, b.mesh, st, {C0 / 1.55e-6});
+        const Wave3TimeResult td = solveWave3Time(m, b.parameters, *b.topology, b.mesh, st, {C0 / 1.5e-6, C0 / 1.55e-6, C0 / 1.6e-6});
         QVERIFY2(td.ok(), qPrintable(td.error));
         for (const QString& l : td.log) qInfo("  %s", qPrintable(l));
-        const Wave3Result& r = td.at.front();
+        QVERIFY2(td.log.join(QLatin1Char('\n')).contains(QLatin1String("Its sources: each fed mode's profile at")), qPrintable(td.log.join(QLatin1Char('\n'))));
+        const Wave3Result& r = td.at[1];
         const double t = std::norm(r.S(1, 0));
         qInfo("junction in the time domain: |S21|² %.6f (the frequency domain 0.8999, the expansion 0.9006), |S11|² %.2e, |S22|² %.2e, |S21 - S12| %.1e, "
               "balance %.6f %.6f",
@@ -523,7 +542,21 @@ private slots:
         QVERIFY2(std::abs(t / 0.9006 - 1) < 4e-3, qPrintable(QString::number(t)));
         QVERIFY(std::abs(r.S(1, 0) - r.S(0, 1)) < 1e-3);
         QVERIFY(std::abs(r.balance[0] - 1) < 2e-3 && std::abs(r.balance[1] - 1) < 2e-3);
+        const QString noLu = leftOut("97,000 unknowns' frequency-domain solve takes minutes");
+        if (!noLu.isEmpty()) {
+            qInfo("the frequency domain left out - %s", qPrintable(noLu));
+            return;
+        }
+        st.sourceFrequency = 0;
+        st.portMeshWavelength = 1.5e-6;
+        const Wave3Result fd = solveWave3(m, b.parameters, *b.topology, b.mesh, st, C0 / 1.5e-6);
+        QVERIFY2(fd.ok(), qPrintable(fd.error));
+        const double diff = maxDiff(td.at[0].S, fd.S, 2);
+        qInfo("at 1500 nm: |S21|² %.7f, the frequency domain's %.7f; |ΔS| %.2e", std::norm(td.at[0].S(1, 0)), std::norm(fd.S(1, 0)), diff);
+        // (4.8e-6; the middle's profile alone 4.1e-3.)
+        QVERIFY2(diff < 5e-5, qPrintable(QString::number(diff)));
     }
+
 };
 
 QTEST_GUILESS_MAIN(TestFem3WaveTd)
