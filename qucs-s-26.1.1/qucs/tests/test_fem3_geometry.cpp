@@ -258,7 +258,7 @@ private slots:
         QStringList physics3 = childKinds(m.component(), m.space());
         physics3.sort();
         QCOMPARE(physics3, (QStringList{QStringLiteral("currents"), QStringLiteral("electrostatics"), QStringLiteral("eme"), QStringLiteral("heat"),
-                                        QStringLiteral("waves3")}));
+                                        QStringLiteral("waves3"), QStringLiteral("waves3t")}));
         QCOMPARE(childKinds(m.root, m.space()), QStringList{QStringLiteral("study")});
         QVERIFY(!m.add(m.component().tag, m.make(QStringLiteral("solid")), -1, &why));
         // A physics of order 1 in 3D: made so, and read so where a file gives
@@ -279,7 +279,7 @@ private slots:
         QStringList physics2;
         for (const QString& type : physicsTypes())
             if (nodeKind(type)->spaces & Spaces::TwoD) physics2 << type;
-        QCOMPARE(physics2.size(), physicsTypes().size() - 2);
+        QCOMPARE(physics2.size(), physicsTypes().size() - 3);
         QCOMPARE(childKinds(flat.component(), flat.space()), physics2);
         QCOMPARE(flat.toObject().value(QStringLiteral("format")).toString(), QStringLiteral("qucs-s multiphysics 1"));
         // The space not shown in 3D; an edge a 3D selection's level alone.

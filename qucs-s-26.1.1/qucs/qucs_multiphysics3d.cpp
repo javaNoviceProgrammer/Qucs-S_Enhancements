@@ -106,7 +106,8 @@ void showMultiphysics3DSettings(QWidget *parent)
                                      "capacitance matrix's) or the step asks for the direct solver - else they iterate "
                                      "(multigrid) -, an eigenmode expansion's cuts, each mode solve an LU, and a full-wave solve's system "
                                      "(Electromagnetic Waves, Frequency Domain): Accelerate's LDLT of a complex symmetric matrix, "
-                                     "macOS 26 or later, else an LU. QUCS_FEM_SOLVER=eigen, "
+                                     "macOS 26 or later, else an LU; a time-domain one's (Time Domain) a Cholesky, factorized once "
+                                     "for all its steps. QUCS_FEM_SOLVER=eigen, "
                                      "accelerate or auto in the environment chooses, whatever this says."),
                          solver);
   how->setWordWrap(true);
