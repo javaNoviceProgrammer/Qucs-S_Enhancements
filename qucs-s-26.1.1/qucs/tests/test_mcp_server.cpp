@@ -34,6 +34,8 @@
 #include "claudejobs.h"
 #include "claudejobswindow.h"
 #include "config.h"
+#include "diagrams/diagram.h"
+#include "diagrams/graph.h"
 #include "simulationconsole.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -345,6 +347,72 @@ private slots:
         r = callTool("get_state");
         QVERIFY(!structured(r).value("since_last_call").toString().contains("notloaded.sch"));
         callTool("close_document", {{"unsaved", "discard"}});
+    }
+
+    // A data display changed on disk and loaded again draws its data, as
+    // it does when it is opened: its diagrams are new, and their traces
+    // were left with none until Reload Simulation Data (the review of 9
+    // November, "Data display blank after its file is reloaded from disk").
+    // In front, behind another tab, and when the file no longer reads (what
+    // it held is put back, its data with it).
+    void aDataDisplayLoadedAgainDrawsItsData()
+    {
+        write("reloaded.dat", "<Qucs Dataset " PACKAGE_VERSION ">\n<indep x 3>\n  0\n  1\n  2\n</indep>\n"
+                              "<dep y x>\n  0\n  0.5\n  2\n</dep>\n");
+        const auto page = [](const char* label) {
+            return QByteArray("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=reloaded.dat>\n</Properties>\n"
+                              "<Symbol>\n</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                              "  <Rect 100 400 500 300 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 0 -1 \"")
+                   + label + "\" \"\" \"\">\n    <\"y\" #ff0000 2 3 0 0 0>\n  </Rect>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        };
+        const QString file = write("reloaded.dpl", page("first"));
+        QVERIFY(app->gotoPage(file, false, false));
+        Schematic* doc = front();
+        QVERIFY(doc != nullptr);
+        QCOMPARE(QFileInfo(doc->getDocName()).fileName(), QStringLiteral("reloaded.dpl"));
+        // Every trace of every diagram with its points, and the label shown.
+        const auto drawn = [doc](const QString& label) -> QString {
+            if (doc->a_DocDiags.size() != 1) return QStringLiteral("%1 diagrams").arg(doc->a_DocDiags.size());
+            const Diagram* d = doc->a_DocDiags.front();
+            if (d->xAxis.Label != label) return QStringLiteral("the label is \"%1\"").arg(d->xAxis.Label);
+            if (d->Graphs.size() != 1) return QStringLiteral("%1 traces").arg(d->Graphs.size());
+            const Graph* g = d->Graphs.front();
+            if (g->numAxes() == 0 || g->cPointsY == nullptr) return QStringLiteral("its trace has no data");
+            return QString();
+        };
+        QString why = drawn("first");
+        QVERIFY2(why.isEmpty(), qPrintable("opened: " + why));
+
+        // In front.
+        write("reloaded.dpl", page("second"));
+        QCOMPARE(app->reloadFromDisk(doc), QucsApp::Reloaded::Yes);
+        QCOMPARE(front(), doc);
+        why = drawn("second");
+        QVERIFY2(why.isEmpty(), qPrintable("loaded again in front: " + why));
+
+        // Behind another tab.
+        callTool("new_document", {{"kind", "schematic"}});
+        Schematic* other = front();
+        QVERIFY(other != nullptr && other != doc);
+        write("reloaded.dpl", page("third"));
+        QCOMPARE(app->reloadFromDisk(doc), QucsApp::Reloaded::Yes);
+        QCOMPARE(front(), other);
+        why = drawn("third");
+        QVERIFY2(why.isEmpty(), qPrintable("loaded again behind another tab: " + why));
+        other->setChanged(false);
+        callTool("close_document", {{"unsaved", "discard"}});
+        QCOMPARE(front(), doc);
+
+        // A file that does not read: the tab keeps what it had, drawn.
+        write("reloaded.dpl", "not a schematic\n");
+        {
+            misc::ErrorCapture quiet;
+            QCOMPARE(app->reloadFromDisk(doc), QucsApp::Reloaded::Failed);
+        }
+        why = drawn("third");
+        QVERIFY2(why.isEmpty(), qPrintable("not read, what it had put back: " + why));
+        doc->setChanged(false);
+        callTool("close_document", {{"path", file}, {"unsaved", "discard"}});
     }
 
     // With no simulator chosen (none found at the start), a netlist and a
