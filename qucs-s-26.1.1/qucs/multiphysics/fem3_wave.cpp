@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "fem3_wave.h"
+#include "fem3_wave_setup.h"
 
 #include "fem3_fe.h"
 #include "fem3_geometry.h"
@@ -234,65 +235,72 @@ cd relativePermittivity(const Node& material, double lambda, const Scope& scope)
     return 1.0;
 }
 
-// --------------------------------------------------------------- the solve
+// ------------------------------------------------------- what is shared
 
-namespace {
+namespace wave3 {
 
-/// A port as set up: its plane, its cut's modes, its faces' quadrilaterals
-/// and the prism inside each.
-struct PortSetup {
-    QPointF origin, across, s;   // a point of its plane (geometry unit), its across and into-the-device directions
-    EmeModes modes;
-    std::vector<int> taken;      // its modes taken (S-parameter ports), by index in modes
-    struct Quad {
-        int a = -1, b = -1, layer = -1, prism = -1;
-    };
-    std::vector<Quad> quads;
-};
-
-} // namespace
-
-Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology, std::shared_ptr<const Mesh3> mesh,
-                       const Wave3Settings& settings, double frequency)
+void Setup::sigma(int domain, const Vec3& x, double out[3]) const
 {
-    Wave3Result r;
-    r.frequency = frequency;
-    QElapsedTimer timer;
-    timer.start();
-    if (!mesh || mesh->prisms.empty()) {
-        r.error = tr("there is no mesh");
-        return r;
+    out[0] = out[1] = out[2] = 0;
+    auto it = pmlBox.find(domain);
+    if (it == pmlBox.end()) return;
+    const double c[3] = {x.x, x.y, x.z};
+    const double n = pmlIndex;
+    for (int a = 0; a < 3; ++a) {
+        const double lo = inner[2 * a], hi = inner[2 * a + 1];
+        double depth = 0, xi = 0;
+        if (c[a] > hi && it->second[std::size_t(2 * a + 1)] > hi) {
+            depth = it->second[std::size_t(2 * a + 1)] - hi;
+            xi = (c[a] - hi) / depth;
+        } else if (c[a] < lo && it->second[std::size_t(2 * a)] < lo) {
+            depth = lo - it->second[std::size_t(2 * a)];
+            xi = (lo - c[a]) / depth;
+        } else
+            continue;
+        xi = std::clamp(xi, 0.0, 1.0);
+        out[a] = 1.5 * logR * xi * xi / (n * depth);
     }
-    if (!parameters) parameters = evaluateParameters(model);
-    auto tell = [&](double f, const QString& what) {
-        if (settings.progress) settings.progress(f, what);
-    };
-    auto cancelled = [&] { return settings.cancelled && settings.cancelled(); };
-    const double lambda = C0 / frequency, k0 = 2 * M_PI / lambda, omega = 2 * M_PI * frequency;
+}
+
+int Setup::prism(int t, int j) const
+{
+    if (t < 0 || j < 0 || j >= layers) return -1;
+    auto it = prismAt.find((long long)t * layers + j);
+    return it == prismAt.end() ? -1 : it->second;
+}
+
+bool setUp(const Model& model, const ParameterScope& parameters, const Topology3& topology, std::shared_ptr<const Mesh3> mesh,
+           const Wave3Settings& settings, double lambda, Setup* out, QString* error)
+{
+    Setup& su = *out;
+    su = Setup();
+    if (!mesh || mesh->prisms.empty()) {
+        *error = tr("there is no mesh");
+        return false;
+    }
+    su.mesh = mesh;
     const Mesh3& m3 = *mesh;
     const Mesh& plan = *m3.plan;
     const double us = m3.unitScale;
-    const int layers = int(m3.heights.size()) - 1;
-    auto space = std::make_shared<EdgeSpace3>(mesh, settings.order);
-    r.space = space;
-    const int N = space->size();
-    r.unknowns = N;
+    su.layers = int(m3.heights.size()) - 1;
+    su.space = std::make_shared<EdgeSpace3>(mesh, settings.order);
+    su.N = su.space->size();
     // Each domain's material: the last enabled one that has it.
-    std::vector<const Node*> ofDomain(topology.domains.size(), nullptr);
+    su.material.assign(topology.domains.size(), nullptr);
     for (const Node& mat : model.materials().children) {
         if (!mat.enabled || mat.type != QLatin1String("material")) continue;
         QString why;
         for (int d : resolveSelection3(topology, model, Level::Domain, mat.selection(), &why))
-            if (d >= 0 && d < int(ofDomain.size())) ofDomain[std::size_t(d)] = &mat;
+            if (d >= 0 && d < int(su.material.size())) su.material[std::size_t(d)] = &mat;
     }
-    std::vector<cd> eps(topology.domains.size(), 1.0);
-    for (std::size_t d = 0; d < ofDomain.size(); ++d)
-        if (ofDomain[d]) eps[d] = relativePermittivity(*ofDomain[d], lambda, parameters->scope);
+    su.eps.assign(topology.domains.size(), 1.0);
+    for (std::size_t d = 0; d < su.material.size(); ++d)
+        if (su.material[d]) su.eps[d] = relativePermittivity(*su.material[d], lambda, parameters.scope);
     for (std::size_t e = 0; e < m3.prisms.size(); ++e) {
         const int d = m3.domain[e];
-        if (d < 0 || d >= int(ofDomain.size()) || !ofDomain[std::size_t(d)]) {
-            r.error = tr("a domain has no material (domain %1)").arg(d + 1);
-            return r;
+        if (d < 0 || d >= int(su.material.size()) || !su.material[std::size_t(d)]) {
+            *error = tr("a domain has no material (domain %1)").arg(d + 1);
+            return false;
         }
     }
     // The mesh against the wavelength in each material: its longest edge a
@@ -317,7 +325,7 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
         double worst = 0;
         int at = -1;
         for (std::size_t d = 0; d < longest.size(); ++d) {
-            const double n = std::sqrt(std::max(1.0, eps[d].real()));
+            const double n = std::sqrt(std::max(1.0, su.eps[d].real()));
             const double ratio = longest[d] * n * per / lambda;
             if (ratio > worst) {
                 worst = ratio;
@@ -325,27 +333,25 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
             }
         }
         if (worst > 1 && at >= 0)
-            r.warnings << tr("the mesh is coarse for the wavelength: domain %1's elements reach %2 against λ0/n/%3 = %4 - the S-parameters "
-                             "want a finer one there (a size per domain)")
-                              .arg(at + 1)
-                              .arg(formatQuantity(longest[std::size_t(at)], Dim::length()))
-                              .arg(per)
-                              .arg(formatQuantity(lambda / std::sqrt(std::max(1.0, eps[std::size_t(at)].real())) / per, Dim::length()));
+            su.warnings << tr("the mesh is coarse for the wavelength: domain %1's elements reach %2 against λ0/n/%3 = %4 - the S-parameters "
+                              "want a finer one there (a size per domain)")
+                               .arg(at + 1)
+                               .arg(formatQuantity(longest[std::size_t(at)], Dim::length()))
+                               .arg(per)
+                               .arg(formatQuantity(lambda / std::sqrt(std::max(1.0, su.eps[std::size_t(at)].real())) / per, Dim::length()));
     }
     // The PMLs: stretched outward from the box of the rest, by axis, as far as
     // each PML domain reaches past it.
-    std::set<int> pml(settings.pmlDomains.begin(), settings.pmlDomains.end());
-    double inner[6] = {1e300, -1e300, 1e300, -1e300, 1e300, -1e300};
-    std::map<int, std::array<double, 6>> pmlBox;
+    su.pml = std::set<int>(settings.pmlDomains.begin(), settings.pmlDomains.end());
     for (std::size_t e = 0; e < m3.prisms.size(); ++e) {
         const int d = m3.domain[e];
         double* box = nullptr;
-        if (pml.count(d)) {
-            auto it = pmlBox.find(d);
-            if (it == pmlBox.end()) it = pmlBox.emplace(d, std::array<double, 6>{1e300, -1e300, 1e300, -1e300, 1e300, -1e300}).first;
+        if (su.pml.count(d)) {
+            auto it = su.pmlBox.find(d);
+            if (it == su.pmlBox.end()) it = su.pmlBox.emplace(d, std::array<double, 6>{1e300, -1e300, 1e300, -1e300, 1e300, -1e300}).first;
             box = it->second.data();
         } else
-            box = inner;
+            box = su.inner;
         for (int n : m3.prisms[e]) {
             const Vec3& p = m3.nodes[std::size_t(n)];
             const double c[3] = {p.x * us, p.y * us, p.z * us};
@@ -355,83 +361,89 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
             }
         }
     }
-    const double logR = std::log(1 / std::max(settings.pmlReflection, 1e-300));
-    // (s along each axis at a point of PML domain d.)
-    auto stretch = [&](int d, const Vec3& x, cd s[3]) {
-        s[0] = s[1] = s[2] = 1.0;
-        auto it = pmlBox.find(d);
-        if (it == pmlBox.end()) return;
-        const double c[3] = {x.x, x.y, x.z};
-        const double k = k0 * std::sqrt(std::max(1.0, eps[std::size_t(d)].real()));
-        for (int a = 0; a < 3; ++a) {
-            const double lo = inner[2 * a], hi = inner[2 * a + 1];
-            double depth = 0, xi = 0;
-            if (c[a] > hi && it->second[2 * a + 1] > hi) {
-                depth = it->second[2 * a + 1] - hi;
-                xi = (c[a] - hi) / depth;
-            } else if (c[a] < lo && it->second[2 * a] < lo) {
-                depth = lo - it->second[2 * a];
-                xi = (lo - c[a]) / depth;
-            } else
-                continue;
-            xi = std::clamp(xi, 0.0, 1.0);
-            const double sigma0 = 1.5 * logR / (k * depth);
-            s[a] = cd(1.0, -sigma0 * xi * xi);
+    su.logR = std::log(1 / std::max(settings.pmlReflection, 1e-300));
+    // (One index for every PML's stretching - the lowest of their materials',
+    // a cladding's: σ the same across a layer, as a stretching of a
+    // coordinate is. Each domain's own index made σ jump across a layer
+    // where a core goes on into it: a little reflection in the frequency
+    // domain, a mode growing without end in the time domain.)
+    su.pmlIndex = 0;
+    for (int d : su.pml)
+        if (d >= 0 && d < int(su.eps.size())) {
+            const double n = std::sqrt(std::max(1.0, su.eps[std::size_t(d)].real()));
+            su.pmlIndex = su.pmlIndex > 0 ? std::min(su.pmlIndex, n) : n;
         }
-    };
+    if (!(su.pmlIndex > 0)) su.pmlIndex = 1;
     // Prisms by plan triangle and layer; triangles by plan edge.
-    std::unordered_map<long long, int> prismAt;
-    for (std::size_t e = 0; e < m3.prisms.size(); ++e) prismAt[(long long)m3.prismTriangle[e] * layers + m3.prismLayer[e]] = int(e);
-    auto prism = [&](int t, int j) {
-        if (t < 0 || j < 0 || j >= layers) return -1;
-        auto it = prismAt.find((long long)t * layers + j);
-        return it == prismAt.end() ? -1 : it->second;
-    };
+    for (std::size_t e = 0; e < m3.prisms.size(); ++e) su.prismAt[(long long)m3.prismTriangle[e] * su.layers + m3.prismLayer[e]] = int(e);
     std::unordered_map<long long, std::vector<int>> trianglesOf;
     for (int t = 0; t < int(plan.triangles.size()); ++t)
         for (int l = 0; l < 3; ++l)
             trianglesOf[edgeKey(plan.triangles[std::size_t(t)][std::size_t(l)], plan.triangles[std::size_t(t)][std::size_t((l + 1) % 3)])].push_back(t);
-    // The ports: their faces, their planes, their cuts' modes.
-    // (A port's faces on a PML left out - metal behind the PML there, its
-    // modes those of the window inside -, unless the ports go through them:
-    // the same S of a wire, its modes a thirtieth of the time, the PML's own
-    // crowding a cut's about the index searched.)
-    std::vector<std::set<int>> facesOf(settings.ports.size());
-    std::set<int> portFaces;
-    for (std::size_t pi = 0; pi < settings.ports.size(); ++pi) {
-        int dropped = 0;
-        for (int f : settings.ports[pi].faces) {
-            if (f < 0 || f >= int(topology.faces.size())) continue;
-            const Topology3::Face& tf = topology.faces[std::size_t(f)];
-            if (!settings.portsThroughPmls && (pml.count(tf.back) || pml.count(tf.front))) {
-                ++dropped;
-                continue;
-            }
-            facesOf[pi].insert(f);
-        }
-        if (dropped)
-            r.log << tr("Port %1: %2 of its faces on a PML left out (metal behind the PML there)").arg(settings.ports[pi].name).arg(dropped);
-        portFaces.insert(facesOf[pi].begin(), facesOf[pi].end());
-    }
-    std::vector<PortSetup> ports(settings.ports.size());
+    // The ports: their faces, their planes, their cuts.
+    // (A port on the outside: its faces on a PML left out - metal behind the
+    // PML there, its modes those of the window inside -, unless the ports go
+    // through them: the same S of a wire, its modes a thirtieth of the time,
+    // the PML's own crowding a cut's about the index searched. A port inside,
+    // a PML behind it: its faces between the device and that PML, those
+    // between PMLs left out.)
+    su.ports.resize(settings.ports.size());
     for (std::size_t pi = 0; pi < settings.ports.size(); ++pi) {
         const Wave3Port& wp = settings.ports[pi];
-        PortSetup& ps = ports[pi];
-        const std::set<int>& mine = facesOf[pi];
+        Port& ps = su.ports[pi];
+        std::set<int> mine;
+        int dropped = 0, inside = 0, outside = 0;
+        for (int f : wp.faces) {
+            if (f < 0 || f >= int(topology.faces.size())) continue;
+            const Topology3::Face& tf = topology.faces[std::size_t(f)];
+            const bool backPml = su.pml.count(tf.back) != 0, frontPml = su.pml.count(tf.front) != 0;
+            if (!tf.exterior()) {
+                if (backPml && frontPml) {
+                    ++dropped;
+                    continue;
+                }
+                if (!backPml && !frontPml) {
+                    *error = tr("port %1: a face inside the device - a port is on the geometry's outside, or inside it with a PML behind it")
+                                 .arg(wp.name);
+                    return false;
+                }
+                ++inside;
+            } else {
+                if (!settings.portsThroughPmls && (backPml || frontPml)) {
+                    ++dropped;
+                    continue;
+                }
+                ++outside;
+            }
+            mine.insert(f);
+        }
+        if (inside && outside) {
+            *error = tr("port %1: some of its faces on the outside, some inside with a PML behind them - one or the other").arg(wp.name);
+            return false;
+        }
+        ps.backed = inside > 0;
+        if (dropped)
+            su.log << (ps.backed ? tr("Port %1: %2 of its faces between PMLs left out").arg(wp.name).arg(dropped)
+                                 : tr("Port %1: %2 of its faces on a PML left out (metal behind the PML there)").arg(wp.name).arg(dropped));
+        su.portFaces.insert(mine.begin(), mine.end());
         double nx = 0, ny = 0;
         for (const Mesh3::Face& f : m3.faces) {
             if (!mine.count(f.face)) continue;
             if (!f.quad) {
-                r.error = tr("port %1: a port is a wall - a vertical face -, not a floor").arg(wp.name);
-                return r;
+                *error = tr("port %1: a port is a wall - a vertical face -, not a floor").arg(wp.name);
+                return false;
             }
             const Mesh::Edge& pe = plan.edges[std::size_t(f.plan)];
-            PortSetup::Quad q;
+            Port::Quad q;
             q.a = pe.a;
             q.b = pe.b;
             q.layer = f.height;
-            for (int t : trianglesOf[edgeKey(pe.a, pe.b)])
-                if (prism(t, f.height) >= 0) q.prism = prism(t, f.height);
+            // (The prism on the device's side: the one not in a PML.)
+            for (int t : trianglesOf[edgeKey(pe.a, pe.b)]) {
+                const int p = su.prism(t, f.height);
+                if (p >= 0 && !su.pml.count(m3.domain[std::size_t(p)])) q.prism = p;
+                else if (p >= 0 && q.prism < 0 && !ps.backed) q.prism = p;
+            }
             if (q.prism < 0) continue;
             // (Outward: from the prism inside toward the face.)
             const QPointF A = plan.nodes[std::size_t(pe.a)], B = plan.nodes[std::size_t(pe.b)];
@@ -446,14 +458,14 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
             ps.quads.push_back(q);
         }
         if (ps.quads.empty()) {
-            r.error = tr("port %1 is on no face of the mesh").arg(wp.name);
-            return r;
+            *error = tr("port %1 is on no face of the mesh").arg(wp.name);
+            return false;
         }
         const double nl = std::hypot(nx, ny);
         ps.s = QPointF(-nx / nl, -ny / nl);
         ps.across = QPointF(-ps.s.y(), ps.s.x());
         double u0 = 1e300, u1 = -1e300, z0 = 1e300, z1 = -1e300, off = 0;
-        for (const PortSetup::Quad& q : ps.quads)
+        for (const Port::Quad& q : ps.quads)
             for (int node : {q.a, q.b}) {
                 const QPointF d = plan.nodes[std::size_t(node)] - ps.origin;
                 const double u = d.x() * ps.across.x() + d.y() * ps.across.y();
@@ -464,72 +476,357 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
                 z1 = std::max(z1, m3.heights[std::size_t(q.layer) + 1]);
             }
         if (off > 1e-6 * std::max(1.0, u1 - u0)) {
-            r.error = tr("port %1: its faces are not in one plane").arg(wp.name);
-            return r;
+            *error = tr("port %1: its faces are not in one plane").arg(wp.name);
+            return false;
         }
         QString why;
         const double inward = 1e-6 * std::max(u1 - u0, z1 - z0);
-        CrossSection cs = cutAcross(topology, ps.origin + ps.s * inward, ps.across, u0, u1, z0, z1, &why);
+        ps.cut = cutAcross(topology, ps.origin + ps.s * inward, ps.across, u0, u1, z0, z1, &why);
         if (!why.isEmpty()) {
-            r.error = tr("port %1: %2").arg(wp.name, why);
+            *error = tr("port %1: %2").arg(wp.name, why);
+            return false;
+        }
+    }
+    if (su.ports.empty()) {
+        *error = tr("there is no port");
+        return false;
+    }
+    // Metal on every outer face but the ports': tangential E nought there.
+    su.fixed.assign(std::size_t(su.N), 0);
+    for (const Mesh3::Face& f : m3.faces) {
+        if (su.portFaces.count(f.face)) continue;
+        if (!f.quad) {
+            const int below = su.prism(f.plan, f.height - 1), above = su.prism(f.plan, f.height);
+            if ((below >= 0) == (above >= 0)) continue;
+            for (int d : su.space->floorDofs(f.plan, f.height)) su.fixed[std::size_t(d)] = 1;
+        } else {
+            const Mesh::Edge& pe = plan.edges[std::size_t(f.plan)];
+            int sides = 0;
+            for (int t : trianglesOf[edgeKey(pe.a, pe.b)]) sides += su.prism(t, f.height) >= 0 ? 1 : 0;
+            if (sides != 1) continue;
+            for (int d : su.space->wallDofs(pe.a, pe.b, f.height)) su.fixed[std::size_t(d)] = 1;
+        }
+    }
+    // Each port's plane: its degrees of freedom there, the prisms on the
+    // device's side holding any.
+    std::vector<char> on(std::size_t(su.N), 0);
+    for (Port& ps : su.ports) {
+        std::set<int> wall;
+        for (const Port::Quad& q : ps.quads)
+            for (int d : su.space->wallDofs(q.a, q.b, q.layer))
+                if (!su.fixed[std::size_t(d)]) wall.insert(d);
+        ps.wall.assign(wall.begin(), wall.end());
+        for (int d : ps.wall) on[std::size_t(d)] = 1;
+        const int per = su.space->perElement();
+        for (int e = 0; e < su.space->elements(); ++e) {
+            const int* dofs = su.space->dofs(e);
+            bool holds = false;
+            for (int k = 0; k < per && !holds; ++k) holds = on[std::size_t(dofs[k])] != 0;
+            if (!holds) continue;
+            const auto& tv = plan.triangles[std::size_t(m3.prismTriangle[std::size_t(e)])];
+            const QPointF c = (plan.nodes[std::size_t(tv[0])] + plan.nodes[std::size_t(tv[1])] + plan.nodes[std::size_t(tv[2])]) / 3.0 - ps.origin;
+            if (c.x() * ps.s.x() + c.y() * ps.s.y() > 0) ps.side.push_back(e);
+        }
+        for (int d : ps.wall) on[std::size_t(d)] = 0;
+    }
+    return true;
+}
+
+EmeModes portModes(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology, const Setup& setup,
+                   const Wave3Settings& settings, int index, double frequency, int count, QString* why)
+{
+    const Port& ps = setup.ports[std::size_t(index)];
+    EmeSettings st;
+    st.modes = std::max(1, count);
+    st.resolution = settings.portResolution;
+    st.order = settings.order;
+    st.sides = st.floors = QStringLiteral("pec");
+    if (settings.portsThroughPmls && !ps.backed) st.pmlDomains = settings.pmlDomains;
+    st.pmlReflection = settings.pmlReflection;
+    st.cancelled = settings.cancelled;
+    EmeModes modes = solveSectionModes(model, parameters, topology, ps.cut, frequency, st, why);
+    // (Signed as one frame sees every port - its lateral axis toward +y,
+    // or +x where it lies along x -, so that a straight guide's modes
+    // reach its far end as they left: S21 e^-jβL.)
+    if (why->isEmpty() && modes.count() > 0) orientModes(modes, ps.across.y() < -1e-9 || (std::abs(ps.across.y()) <= 1e-9 && ps.across.x() < 0));
+    return modes;
+}
+
+void elementMatrix(const Setup& setup, int e, double k0, const std::vector<cd>& eps, const PrismRule& rule, Eigen::MatrixXcd& Ke)
+{
+    const EdgeSpace3& space = *setup.space;
+    const int per = space.perElement();
+    const int d = setup.mesh->domain[std::size_t(e)];
+    const cd er = eps[std::size_t(d)];
+    const bool inPml = setup.pml.count(d) != 0;
+    EdgeSpace3::Basis b;
+    Ke.setZero(per, per);
+    for (const auto& q : rule.points) {
+        space.basis(e, q[0], q[1], q[2], b);
+        cd epsT[3] = {er, er, er}, muInv[3] = {1.0, 1.0, 1.0};
+        if (inPml) {
+            double sg[3];
+            setup.sigma(d, b.x, sg);
+            const cd s[3] = {cd(1, -sg[0] / k0), cd(1, -sg[1] / k0), cd(1, -sg[2] / k0)};
+            const cd L[3] = {s[1] * s[2] / s[0], s[0] * s[2] / s[1], s[0] * s[1] / s[2]};
+            for (int a = 0; a < 3; ++a) {
+                epsT[a] = er * L[a];
+                muInv[a] = 1.0 / L[a];
+            }
+        }
+        const double w = q[3] * b.det;
+        for (int i = 0; i < per; ++i)
+            for (int k = 0; k <= i; ++k) {
+                cd v = 0;
+                for (int a = 0; a < 3; ++a) v += b.c[i][a] * muInv[a] * b.c[k][a] - k0 * k0 * b.v[i][a] * epsT[a] * b.v[k][a];
+                Ke(i, k) += w * v;
+            }
+    }
+}
+
+void portColumns(const Setup& setup, const Port& ps, const EmeModes& modes, int order, double k0, const std::vector<cd>& eps, std::vector<Column>* u,
+                 std::vector<Column>* v)
+{
+    const Mesh3& m3 = *setup.mesh;
+    const Mesh& plan = *m3.plan;
+    const double us = m3.unitScale;
+    const EdgeSpace3& space = *setup.space;
+    const int per = space.perElement();
+    const int M = modes.count();
+    std::vector<std::unordered_map<int, cd>> cu(static_cast<std::size_t>(M));
+    // (The monitor's: the plane's degrees of freedom numbered; its mass and
+    // each mode's e projected on it.)
+    std::unordered_map<int, int> local;
+    for (std::size_t i = 0; i < ps.wall.size(); ++i) local[ps.wall[i]] = int(i);
+    const int W = int(ps.wall.size());
+    std::vector<Eigen::Triplet<double>> mass;
+    Eigen::MatrixXcd g = Eigen::MatrixXcd::Zero(v ? W : 0, M);
+    Locator loc(modes.solution->mesh());
+    std::vector<double> gx, gw;
+    gauss01(order + 2, gx, gw);
+    EdgeSpace3::Basis b;
+    Eigen::MatrixXcd F;
+    const Vec3 s3{ps.s.x(), ps.s.y(), 0}, a3{ps.across.x(), ps.across.y(), 0};
+    auto cross = [&](const cd x[3], cd out[3]) {   // ŝ × x
+        out[0] = s3.y * x[2];
+        out[1] = -s3.x * x[2];
+        out[2] = s3.x * x[1] - s3.y * x[0];
+    };
+    for (const Port::Quad& q : ps.quads) {
+        const int t = m3.prismTriangle[std::size_t(q.prism)];
+        const AffineMap am = affineMap(space.planNodes(), t);
+        const QPointF A = plan.nodes[std::size_t(q.a)], B = plan.nodes[std::size_t(q.b)];
+        const double h = space.z(q.layer + 1) - space.z(q.layer), len = std::hypot(B.x() - A.x(), B.y() - A.y()) * us;
+        const double det = (am.p1.x() - am.p0.x()) * (am.p2.y() - am.p0.y()) - (am.p2.x() - am.p0.x()) * (am.p1.y() - am.p0.y());
+        const int* dofs = space.dofs(q.prism);
+        int at[36];
+        for (int i = 0; i < per; ++i) {
+            auto it = local.find(dofs[i]);
+            at[i] = it == local.end() ? -1 : it->second;
+        }
+        for (std::size_t it = 0; it < gx.size(); ++it)
+            for (std::size_t iz = 0; iz < gx.size(); ++iz) {
+                const QPointF P = (A + (B - A) * gx[it]) * us;   // m
+                const double dx = P.x() - am.p0.x(), dy = P.y() - am.p0.y();
+                const double xi = ((am.p2.y() - am.p0.y()) * dx - (am.p2.x() - am.p0.x()) * dy) / det;
+                const double eta = (-(am.p1.y() - am.p0.y()) * dx + (am.p1.x() - am.p0.x()) * dy) / det;
+                space.basis(q.prism, xi, eta, gx[iz], b);
+                const double w = gw[it] * gw[iz] * len * h;
+                // (ŝ × W: W's tangential part, turned.)
+                double tw[36][3];
+                for (int i = 0; i < per; ++i) {
+                    tw[i][0] = s3.y * b.v[i][2];
+                    tw[i][1] = -s3.x * b.v[i][2];
+                    tw[i][2] = s3.x * b.v[i][1] - s3.y * b.v[i][0];
+                }
+                if (v)
+                    for (int i = 0; i < per; ++i) {
+                        if (at[i] < 0) continue;
+                        for (int k = 0; k < per; ++k) {
+                            if (at[k] < 0) continue;
+                            const double val = w * (tw[i][0] * tw[k][0] + tw[i][1] * tw[k][1] + tw[i][2] * tw[k][2]);
+                            if (val != 0) mass.emplace_back(at[i], at[k], val);
+                        }
+                    }
+                const QPointF rel = A + (B - A) * gx[it] - ps.origin;
+                const double uu = rel.x() * ps.across.x() + rel.y() * ps.across.y();
+                const double vv = (b.x.z) / us;
+                int tt = -1;
+                double txi = 0, teta = 0;
+                if (!loc.locate(QPointF(uu, vv), &tt, &txi, &teta)) continue;
+                modes.fieldsAt(tt, txi, teta, F);
+                for (int m = 0; m < M; ++m) {
+                    // h in 3D, then ŝ × h.
+                    const cd hm[3] = {F(3, m) * a3.x + F(5, m) * s3.x, F(3, m) * a3.y + F(5, m) * s3.y, F(4, m)};
+                    cd sxh[3];
+                    cross(hm, sxh);
+                    for (int i = 0; i < per; ++i) {
+                        if (setup.fixed[std::size_t(dofs[i])]) continue;
+                        const cd val = w * (sxh[0] * b.v[i][0] + sxh[1] * b.v[i][1] + sxh[2] * b.v[i][2]);
+                        if (val != cd(0)) cu[std::size_t(m)][dofs[i]] += val;
+                    }
+                    if (!v) continue;
+                    const cd em[3] = {F(0, m) * a3.x + F(2, m) * s3.x, F(0, m) * a3.y + F(2, m) * s3.y, F(1, m)};
+                    cd sxe[3];
+                    cross(em, sxe);
+                    for (int i = 0; i < per; ++i)
+                        if (at[i] >= 0) g(at[i], m) += w * (sxe[0] * tw[i][0] + sxe[1] * tw[i][1] + sxe[2] * tw[i][2]);
+                }
+            }
+    }
+    u->assign(std::size_t(M), Column());
+    for (int m = 0; m < M; ++m) {
+        (*u)[std::size_t(m)].assign(cu[std::size_t(m)].begin(), cu[std::size_t(m)].end());
+        std::sort((*u)[std::size_t(m)].begin(), (*u)[std::size_t(m)].end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+    }
+    if (!v) return;
+    // W_m: e_m projected on the plane's functions; its residual on the
+    // device's side, a column.
+    Eigen::SparseMatrix<double> Mg(W, W);
+    Mg.setFromTriplets(mass.begin(), mass.end());
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt(Mg);
+    Eigen::MatrixXcd c(W, M);
+    {
+        const Eigen::MatrixXd re = ldlt.solve(Eigen::MatrixXd(g.real())), im = ldlt.solve(Eigen::MatrixXd(g.imag()));
+        c.real() = re;
+        c.imag() = im;
+    }
+    std::vector<std::unordered_map<int, cd>> cv(static_cast<std::size_t>(M));
+    const PrismRule& rule = order == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    Eigen::MatrixXcd Ke;
+    for (int e : ps.side) {
+        elementMatrix(setup, e, k0, eps, rule, Ke);
+        const int* dofs = space.dofs(e);
+        for (int i = 0; i < per; ++i) {
+            auto it = local.find(dofs[i]);
+            if (it == local.end()) continue;
+            for (int k = 0; k < per; ++k) {
+                if (setup.fixed[std::size_t(dofs[k])]) continue;
+                const cd a = k <= i ? Ke(i, k) : Ke(k, i);
+                if (a == cd(0)) continue;
+                for (int m = 0; m < M; ++m) cv[std::size_t(m)][dofs[k]] -= c(it->second, m) * a;
+            }
+        }
+    }
+    v->assign(std::size_t(M), Column());
+    for (int m = 0; m < M; ++m) {
+        (*v)[std::size_t(m)].assign(cv[std::size_t(m)].begin(), cv[std::size_t(m)].end());
+        std::sort((*v)[std::size_t(m)].begin(), (*v)[std::size_t(m)].end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+    }
+}
+
+void waveAmplitudes(const std::vector<Column>& u, const std::vector<Column>& v, const Eigen::VectorXcd& E, cd jomega, Eigen::VectorXcd* a,
+                    Eigen::VectorXcd* b)
+{
+    const int M = int(u.size());
+    a->resize(M);
+    b->resize(M);
+    for (int m = 0; m < M; ++m) {
+        cd ue = 0, ve = 0;
+        for (const auto& [dof, val] : u[std::size_t(m)]) ue += val * E(dof);
+        for (const auto& [dof, val] : v[std::size_t(m)]) ve += val * E(dof);
+        const cd P = -ue, Q = -ve / (jomega * Mu0);
+        (*a)(m) = 0.5 * (P + Q);
+        (*b)(m) = 0.5 * (P - Q);
+    }
+}
+
+void scatteringOfAmplitudes(const Eigen::MatrixXcd& a, const Eigen::MatrixXcd& b, const std::vector<int>& index, const std::vector<int>& fed,
+                            const std::vector<char>& carries, Wave3Result* r, Eigen::MatrixXcd* perFed)
+{
+    const int P = int(index.size()), F = int(fed.size());
+    Eigen::MatrixXcd Aff(F, F);
+    for (int i = 0; i < F; ++i)
+        for (int j = 0; j < F; ++j) Aff(i, j) = a(index[std::size_t(fed[std::size_t(i)])], j);
+    // (Each fed column's outgoing waves of a unit incident wave in its own
+    // port mode and none in the other fed ones: B A⁻¹.)
+    *perFed = Eigen::PartialPivLU<Eigen::MatrixXcd>(Aff).inverse();
+    const Eigen::MatrixXcd Bunit = b * *perFed;
+    r->S = Eigen::MatrixXcd::Zero(P, P);
+    for (int j = 0; j < F; ++j)
+        for (int i = 0; i < P; ++i) r->S(i, fed[std::size_t(j)]) = Bunit(index[std::size_t(i)], j);
+    r->balance.assign(std::size_t(P), 0.0);
+    for (int j = 0; j < F; ++j) {
+        double sum = 0;
+        for (int i = 0; i < int(carries.size()); ++i)
+            if (carries[std::size_t(i)]) sum += std::norm(Bunit(i, j));
+        r->balance[std::size_t(fed[std::size_t(j)])] = sum;
+    }
+}
+
+} // namespace wave3
+
+// --------------------------------------------------------------- the solve
+
+Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology, std::shared_ptr<const Mesh3> mesh,
+                       const Wave3Settings& settings, double frequency)
+{
+    Wave3Result r;
+    r.frequency = frequency;
+    QElapsedTimer timer;
+    timer.start();
+    if (!parameters) parameters = evaluateParameters(model);
+    auto tell = [&](double f, const QString& what) {
+        if (settings.progress) settings.progress(f, what);
+    };
+    auto cancelled = [&] { return settings.cancelled && settings.cancelled(); };
+    const double lambda = C0 / frequency, k0 = 2 * M_PI / lambda, omega = 2 * M_PI * frequency;
+    wave3::Setup su;
+    {
+        QString why;
+        const bool ok = wave3::setUp(model, *parameters, topology, mesh, settings, lambda, &su, &why);
+        r.log << su.log;
+        r.warnings << su.warnings;
+        if (!ok) {
+            r.error = why;
             return r;
         }
-        EmeSettings st;
-        st.modes = std::max(1, wp.absorbed);
-        st.resolution = settings.portResolution;
-        st.order = settings.order;
-        st.sides = st.floors = QStringLiteral("pec");
-        if (settings.portsThroughPmls) st.pmlDomains = settings.pmlDomains;
-        st.pmlReflection = settings.pmlReflection;
-        st.cancelled = settings.cancelled;
-        ps.modes = solveSectionModes(model, parameters, topology, cs, frequency, st, &why);
-        if (!why.isEmpty() || ps.modes.count() == 0) {
+    }
+    const Mesh3& m3 = *mesh;
+    auto space = su.space;
+    r.space = space;
+    const int N = su.N;
+    r.unknowns = N;
+    const bool backed = su.ports.front().backed;
+    for (const wave3::Port& p : su.ports)
+        if (p.backed != backed) {
+            r.error = tr("some ports on the outside, some inside with a PML behind them - all one or the other");
+            return r;
+        }
+    // The ports' modes.
+    std::vector<EmeModes> modes(su.ports.size());
+    std::vector<std::vector<int>> taken(su.ports.size());
+    for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
+        const Wave3Port& wp = settings.ports[pi];
+        QString why;
+        modes[pi] = wave3::portModes(model, parameters, topology, su, settings, int(pi), frequency, std::max(1, wp.absorbed), &why);
+        if (!why.isEmpty() || modes[pi].count() == 0) {
             r.error = tr("port %1: %2").arg(wp.name, why.isEmpty() ? tr("no mode found") : why);
             return r;
         }
-        // (Signed as one frame sees every port - its lateral axis toward +y,
-        // or +x where it lies along x -, so that a straight guide's modes
-        // reach its far end as they left: S21 e^-jβL.)
-        orientModes(ps.modes, ps.across.y() < -1e-9 || (std::abs(ps.across.y()) <= 1e-9 && ps.across.x() < 0));
-        if (ps.modes.count() < st.modes)
-            r.warnings << tr("port %1 absorbs %2 modes, not the %3 asked: its cut's mode analysis found no more").arg(wp.name).arg(ps.modes.count()).arg(st.modes);
+        if (modes[pi].count() < std::max(1, wp.absorbed))
+            r.warnings << (backed ? tr("port %1 counts %2 modes, not the %3 asked: its cut's mode analysis found no more")
+                                  : tr("port %1 absorbs %2 modes, not the %3 asked: its cut's mode analysis found no more"))
+                              .arg(wp.name)
+                              .arg(modes[pi].count())
+                              .arg(std::max(1, wp.absorbed));
         for (const QString& l : wp.modes) {
-            const int k = ps.modes.find(l);
+            const int k = modes[pi].find(l);
             if (k < 0) {
                 r.error = tr("port %1 has no mode %2").arg(wp.name, l);
                 return r;
             }
-            ps.taken.push_back(k);
+            taken[pi].push_back(k);
             Wave3Result::PortMode pm;
             pm.port = int(pi);
-            pm.label = ps.modes.label(k);
-            pm.neff = ps.modes.neff(k);
-            pm.te = ps.modes.te[std::size_t(k)];
+            pm.label = modes[pi].label(k);
+            pm.neff = modes[pi].neff(k);
+            pm.te = modes[pi].te[std::size_t(k)];
             r.portModes.push_back(pm);
         }
     }
-    if (ports.empty()) {
-        r.error = tr("there is no port");
-        return r;
-    }
     const qint64 portsSolved = timer.elapsed();
     tell(0.1, tr("ports' modes"));
-    // Metal on every outer face but the ports': tangential E nought there.
-    std::vector<char> fixed(std::size_t(N), 0);
-    for (const Mesh3::Face& f : m3.faces) {
-        if (portFaces.count(f.face)) continue;
-        if (!f.quad) {
-            const int below = prism(f.plan, f.height - 1), above = prism(f.plan, f.height);
-            if ((below >= 0) == (above >= 0)) continue;
-            for (int d : space->floorDofs(f.plan, f.height)) fixed[std::size_t(d)] = 1;
-        } else {
-            const Mesh::Edge& pe = plan.edges[std::size_t(f.plan)];
-            int sides = 0;
-            for (int t : trianglesOf[edgeKey(pe.a, pe.b)]) sides += prism(t, f.height) >= 0 ? 1 : 0;
-            if (sides != 1) continue;
-            for (int d : space->wallDofs(pe.a, pe.b, f.height)) fixed[std::size_t(d)] = 1;
-        }
-    }
     // The matrix: ∫ µ⁻¹ ∇×W·∇×V - k0² ε W·V, element by element on the
     // machine's threads, each part's triplets.
     const int per = space->perElement();
@@ -539,36 +836,13 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
     std::vector<std::vector<Eigen::Triplet<cd>>> parts(static_cast<std::size_t>(threads));
     std::atomic<int> nextChunk{0};
     const int chunk = 256;
+    const std::vector<char>& fixed = su.fixed;
     auto assemble = [&](int part) {
-        EdgeSpace3::Basis b;
         Eigen::MatrixXcd Ke(per, per);
         auto& out = parts[std::size_t(part)];
         for (int c0 = nextChunk++ * chunk; c0 < E; c0 = nextChunk++ * chunk) {
             for (int e = c0; e < std::min(E, c0 + chunk); ++e) {
-                const int d = m3.domain[std::size_t(e)];
-                const cd er = eps[std::size_t(d)];
-                const bool inPml = pml.count(d) != 0;
-                Ke.setZero();
-                for (const auto& q : rule.points) {
-                    space->basis(e, q[0], q[1], q[2], b);
-                    cd epsT[3] = {er, er, er}, muInv[3] = {1.0, 1.0, 1.0};
-                    if (inPml) {
-                        cd s[3];
-                        stretch(d, b.x, s);
-                        const cd L[3] = {s[1] * s[2] / s[0], s[0] * s[2] / s[1], s[0] * s[1] / s[2]};
-                        for (int a = 0; a < 3; ++a) {
-                            epsT[a] = er * L[a];
-                            muInv[a] = 1.0 / L[a];
-                        }
-                    }
-                    const double w = q[3] * b.det;
-                    for (int i = 0; i < per; ++i)
-                        for (int k = 0; k <= i; ++k) {
-                            cd v = 0;
-                            for (int a = 0; a < 3; ++a) v += b.c[i][a] * muInv[a] * b.c[k][a] - k0 * k0 * b.v[i][a] * epsT[a] * b.v[k][a];
-                            Ke(i, k) += w * v;
-                        }
-                }
+                wave3::elementMatrix(su, e, k0, su.eps, rule, Ke);
                 const int* dofs = space->dofs(e);
                 for (int i = 0; i < per; ++i) {
                     if (fixed[std::size_t(dofs[i])]) continue;
@@ -610,62 +884,20 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
     const qint64 assembled = timer.elapsed();
     tell(0.3, tr("factorizing %1 unknowns").arg(N));
     // The ports' modes on their faces: u_m(W) = ∮ (ŝ × h_m)·W dS for each
-    // function W, each port's modes a column.
+    // function W, each port's modes a column (and, a port with a PML behind
+    // it, v_m(W) = ∮ (ŝ × e_m)·∇×W dS: its monitor's).
     int Mtot = 0;
     std::vector<int> firstColumn;
-    for (const PortSetup& ps : ports) {
+    for (const EmeModes& pm : modes) {
         firstColumn.push_back(Mtot);
-        Mtot += ps.modes.count();
+        Mtot += pm.count();
     }
-    std::vector<std::vector<std::pair<int, cd>>> U(static_cast<std::size_t>(Mtot));   // sparse columns
-    for (std::size_t pi = 0; pi < ports.size(); ++pi) {
-        const PortSetup& ps = ports[pi];
-        const int M = ps.modes.count();
-        std::vector<std::unordered_map<int, cd>> cols(static_cast<std::size_t>(M));
-        Locator loc(ps.modes.solution->mesh());
-        std::vector<double> gx, gw;
-        gauss01(settings.order + 2, gx, gw);
-        EdgeSpace3::Basis b;
-        Eigen::MatrixXcd F;
-        const Vec3 s3{ps.s.x(), ps.s.y(), 0}, a3{ps.across.x(), ps.across.y(), 0};
-        for (const PortSetup::Quad& q : ps.quads) {
-            const int t = m3.prismTriangle[std::size_t(q.prism)];
-            const AffineMap am = affineMap(space->planNodes(), t);
-            const QPointF A = plan.nodes[std::size_t(q.a)], B = plan.nodes[std::size_t(q.b)];
-            const double h = space->z(q.layer + 1) - space->z(q.layer), len = std::hypot(B.x() - A.x(), B.y() - A.y()) * us;
-            const double det = (am.p1.x() - am.p0.x()) * (am.p2.y() - am.p0.y()) - (am.p2.x() - am.p0.x()) * (am.p1.y() - am.p0.y());
-            const int* dofs = space->dofs(q.prism);
-            for (std::size_t it = 0; it < gx.size(); ++it)
-                for (std::size_t iz = 0; iz < gx.size(); ++iz) {
-                    const QPointF P = (A + (B - A) * gx[it]) * us;   // m
-                    const double dx = P.x() - am.p0.x(), dy = P.y() - am.p0.y();
-                    const double xi = ((am.p2.y() - am.p0.y()) * dx - (am.p2.x() - am.p0.x()) * dy) / det;
-                    const double eta = (-(am.p1.y() - am.p0.y()) * dx + (am.p1.x() - am.p0.x()) * dy) / det;
-                    space->basis(q.prism, xi, eta, gx[iz], b);
-                    const QPointF rel = A + (B - A) * gx[it] - ps.origin;
-                    const double u = rel.x() * ps.across.x() + rel.y() * ps.across.y();
-                    const double v = (b.x.z) / us;
-                    int tt = -1;
-                    double txi = 0, teta = 0;
-                    if (!loc.locate(QPointF(u, v), &tt, &txi, &teta)) continue;
-                    ps.modes.fieldsAt(tt, txi, teta, F);
-                    const double w = gw[it] * gw[iz] * len * h;
-                    for (int m = 0; m < M; ++m) {
-                        // h in 3D, then ŝ × h.
-                        const cd hx = F(3, m) * a3.x + F(5, m) * s3.x, hy = F(3, m) * a3.y + F(5, m) * s3.y, hz = F(4, m);
-                        const cd sxh[3] = {s3.y * hz - 0.0 * hy, 0.0 * hx - s3.x * hz, s3.x * hy - s3.y * hx};
-                        for (int i = 0; i < per; ++i) {
-                            if (fixed[std::size_t(dofs[i])]) continue;
-                            const cd val = w * (sxh[0] * b.v[i][0] + sxh[1] * b.v[i][1] + sxh[2] * b.v[i][2]);
-                            if (val != cd(0)) cols[std::size_t(m)][dofs[i]] += val;
-                        }
-                    }
-                }
-        }
-        for (int m = 0; m < M; ++m)
-            for (const auto& [dof, val] : cols[std::size_t(m)]) U[std::size_t(firstColumn[pi] + m)].push_back({dof, val});
-    }
-    // K factorized once; G = Uᵀ K⁻¹ U, a solve a column.
+    std::vector<std::vector<wave3::Column>> Up(su.ports.size()), Vp(su.ports.size());
+    for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+        wave3::portColumns(su, su.ports[pi], modes[pi], settings.order, k0, su.eps, &Up[pi], backed ? &Vp[pi] : nullptr);
+    std::vector<wave3::Column> U;
+    for (const auto& cols : Up) U.insert(U.end(), cols.begin(), cols.end());
+    // K factorized once.
     SparseComplexLdlt lu;
     lu.setMemoryLimit(settings.memoryLimit);
     lu.compute(K);
@@ -674,74 +906,137 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
         return r;
     }
     const qint64 factorized = timer.elapsed();
-    auto dense = [&](int col) {
-        Eigen::VectorXcd v = Eigen::VectorXcd::Zero(N);
-        for (const auto& [dof, val] : U[std::size_t(col)]) v(dof) = val;
-        return v;
-    };
-    auto project = [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& out) {
-        out.resize(Mtot);
-        for (int c = 0; c < Mtot; ++c) {
-            cd s = 0;
-            for (const auto& [dof, val] : U[std::size_t(c)]) s += val * x(dof);
-            out(c) = s;
-        }
-    };
-    // (The columns solved together, a block of 16 at a time: the factors read
-    // once a block, a Cancel heard between blocks.)
-    Eigen::MatrixXcd G(Mtot, Mtot);
-    {
-        Eigen::VectorXcd col;
-        const int block = 16;
-        for (int c0 = 0; c0 < Mtot; c0 += block) {
-            if (cancelled()) {
-                r.error = tr("cancelled");
-                return r;
-            }
-            const int nb = std::min(block, Mtot - c0);
-            Eigen::MatrixXcd B = Eigen::MatrixXcd::Zero(N, nb);
-            for (int k = 0; k < nb; ++k)
-                for (const auto& [dof, val] : U[std::size_t(c0 + k)]) B(dof, k) = val;
-            const Eigen::MatrixXcd Y = lu.solveMany(B);
-            for (int k = 0; k < nb; ++k) {
-                project(Y.col(k), col);
-                G.col(c0 + k) = col;
-            }
-            tell(0.3 + 0.6 * (c0 + nb) / Mtot, tr("ports' modes %1 of %2").arg(c0 + nb).arg(Mtot));
-        }
-    }
-    // S over every port mode: (D⁻¹ + G)⁻¹ (G - D⁻¹), D = jωµ0.
-    const cd Dinv = 1.0 / (J * omega * Mu0);
-    const Eigen::MatrixXcd A = G + Dinv * Eigen::MatrixXcd::Identity(Mtot, Mtot);
-    const Eigen::PartialPivLU<Eigen::MatrixXcd> Alu(A);
-    const Eigen::MatrixXcd Sall = Alu.solve(G - Dinv * Eigen::MatrixXcd::Identity(Mtot, Mtot));
-    // The port modes taken: rows and columns.
-    std::vector<int> index;   // by port mode: its column in Sall
-    for (std::size_t pi = 0; pi < ports.size(); ++pi)
-        for (int k : ports[pi].taken) index.push_back(firstColumn[pi] + k);
+    // The port modes taken: their columns among every port mode's.
+    std::vector<int> index;
+    for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+        for (int k : taken[pi]) index.push_back(firstColumn[pi] + k);
     const int P = int(index.size());
-    r.S = Eigen::MatrixXcd::Zero(P, P);
-    for (int i = 0; i < P; ++i)
-        for (int j = 0; j < P; ++j) r.S(i, j) = Sall(index[std::size_t(i)], index[std::size_t(j)]);
     // What leaves by every port in every mode carrying power - propagating,
     // its loss a thousandth of its phase or less: its |S|² its power (W of
     // 1 W fed; near it where the guide is lossy) -, those taken or not.
     std::vector<char> carries(static_cast<std::size_t>(Mtot), 0);
-    for (std::size_t pi = 0; pi < ports.size(); ++pi)
-        for (int k = 0; k < ports[pi].modes.count(); ++k) {
-            const cd b = ports[pi].modes.beta[std::size_t(k)];
+    for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+        for (int k = 0; k < modes[pi].count(); ++k) {
+            const cd b = modes[pi].beta[std::size_t(k)];
             carries[std::size_t(firstColumn[pi] + k)] = b.real() > 0 && std::abs(b.imag()) <= 1e-3 * b.real() ? 1 : 0;
         }
-    r.balance.assign(std::size_t(P), 0.0);
-    for (int j = 0; j < P; ++j)
-        for (int i = 0; i < Mtot; ++i)
-            if (carries[std::size_t(i)]) r.balance[std::size_t(j)] += std::norm(Sall(i, index[std::size_t(j)]));
-    // Each fed port mode's field: K E = f - U c, f = -2jωµ0 u_p, c = D... (the
-    // ports' modes' coupling): E = K⁻¹ (f - U c) with c = (D⁻¹ + G)⁻¹ Uᵀ K⁻¹ f.
-    {
+    int solves = Mtot;
+    if (backed) {
+        // Ports with a PML behind them: each fed port mode a source on its
+        // faces - a sheet of current J = ŝ × h_m, sending the mode both
+        // ways, the PML taking what goes back -, each port's field split
+        // into what comes in and what goes out in each of its modes (the
+        // device's side of its plane): S = B A⁻¹ over the fed.
+        std::vector<int> fed;   // by fed port mode: its index among those taken
+        {
+            int at = 0;
+            for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+                for (std::size_t k = 0; k < taken[pi].size(); ++k, ++at)
+                    if (settings.ports[pi].excite) fed.push_back(at);
+        }
+        if (fed.empty()) {
+            r.error = tr("no port is fed");
+            return r;
+        }
+        // (The sources' profiles: the modes' here, or at another frequency's -
+        // as a time-domain solve's are, its band's middle.)
+        std::vector<wave3::Column> source(static_cast<std::size_t>(P));
+        {
+            int at = 0;
+            for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
+                if (settings.sourceFrequency > 0 && settings.sourceFrequency != frequency) {
+                    QString why;
+                    const EmeModes there = wave3::portModes(model, parameters, topology, su, settings, int(pi), settings.sourceFrequency,
+                                                            std::max(1, settings.ports[pi].absorbed), &why);
+                    std::vector<wave3::Column> cu;
+                    wave3::portColumns(su, su.ports[pi], there, settings.order, k0, su.eps, &cu, nullptr);
+                    for (int k : taken[pi]) {
+                        const int m = there.find(modes[pi].label(k));
+                        if (m < 0) {
+                            r.error = tr("port %1 has no mode %2 at the sources' frequency").arg(settings.ports[pi].name, modes[pi].label(k));
+                            return r;
+                        }
+                        source[std::size_t(at++)] = cu[std::size_t(m)];
+                    }
+                } else
+                    for (int k : taken[pi]) source[std::size_t(at++)] = Up[pi][std::size_t(k)];
+            }
+        }
+        const int F = int(fed.size());
+        solves = F;
+        Eigen::MatrixXcd B = Eigen::MatrixXcd::Zero(N, F);
+        for (int j = 0; j < F; ++j)
+            for (const auto& [dof, val] : source[std::size_t(fed[std::size_t(j)])]) B(dof, j) = val;
+        const Eigen::MatrixXcd X = lu.solveMany(B);
+        Eigen::MatrixXcd a(Mtot, F), b(Mtot, F);
+        for (int j = 0; j < F; ++j)
+            for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
+                Eigen::VectorXcd ap, bp;
+                wave3::waveAmplitudes(Up[pi], Vp[pi], X.col(j), J * omega, &ap, &bp);
+                a.block(firstColumn[pi], j, ap.size(), 1) = ap;
+                b.block(firstColumn[pi], j, bp.size(), 1) = bp;
+            }
+        Eigen::MatrixXcd perFed;
+        wave3::scatteringOfAmplitudes(a, b, index, fed, carries, &r, &perFed);
+        for (int j = 0; j < F; ++j) {
+            if (settings.fieldsKept >= 0 && int(r.fields.size()) >= settings.fieldsKept) break;
+            r.fields.push_back(X * perFed.col(j));
+            r.fed.push_back(fed[std::size_t(j)]);
+        }
+    } else {
+        auto dense = [&](int col) {
+            Eigen::VectorXcd v = Eigen::VectorXcd::Zero(N);
+            for (const auto& [dof, val] : U[std::size_t(col)]) v(dof) = val;
+            return v;
+        };
+        auto project = [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& out) {
+            out.resize(Mtot);
+            for (int c = 0; c < Mtot; ++c) {
+                cd s = 0;
+                for (const auto& [dof, val] : U[std::size_t(c)]) s += val * x(dof);
+                out(c) = s;
+            }
+        };
+        // G = Uᵀ K⁻¹ U, the columns solved together, a block of 16 at a time:
+        // the factors read once a block, a Cancel heard between blocks.
+        Eigen::MatrixXcd G(Mtot, Mtot);
+        {
+            Eigen::VectorXcd col;
+            const int block = 16;
+            for (int c0 = 0; c0 < Mtot; c0 += block) {
+                if (cancelled()) {
+                    r.error = tr("cancelled");
+                    return r;
+                }
+                const int nb = std::min(block, Mtot - c0);
+                Eigen::MatrixXcd B = Eigen::MatrixXcd::Zero(N, nb);
+                for (int k = 0; k < nb; ++k)
+                    for (const auto& [dof, val] : U[std::size_t(c0 + k)]) B(dof, k) = val;
+                const Eigen::MatrixXcd Y = lu.solveMany(B);
+                for (int k = 0; k < nb; ++k) {
+                    project(Y.col(k), col);
+                    G.col(c0 + k) = col;
+                }
+                tell(0.3 + 0.6 * (c0 + nb) / Mtot, tr("ports' modes %1 of %2").arg(c0 + nb).arg(Mtot));
+            }
+        }
+        // S over every port mode: (D⁻¹ + G)⁻¹ (G - D⁻¹), D = jωµ0.
+        const cd Dinv = 1.0 / (J * omega * Mu0);
+        const Eigen::MatrixXcd A = G + Dinv * Eigen::MatrixXcd::Identity(Mtot, Mtot);
+        const Eigen::PartialPivLU<Eigen::MatrixXcd> Alu(A);
+        const Eigen::MatrixXcd Sall = Alu.solve(G - Dinv * Eigen::MatrixXcd::Identity(Mtot, Mtot));
+        r.S = Eigen::MatrixXcd::Zero(P, P);
+        for (int i = 0; i < P; ++i)
+            for (int j = 0; j < P; ++j) r.S(i, j) = Sall(index[std::size_t(i)], index[std::size_t(j)]);
+        r.balance.assign(std::size_t(P), 0.0);
+        for (int j = 0; j < P; ++j)
+            for (int i = 0; i < Mtot; ++i)
+                if (carries[std::size_t(i)]) r.balance[std::size_t(j)] += std::norm(Sall(i, index[std::size_t(j)]));
+        // Each fed port mode's field: K E = f - U c, f = -2jωµ0 u_p, c = D... (the
+        // ports' modes' coupling): E = K⁻¹ (f - U c) with c = (D⁻¹ + G)⁻¹ Uᵀ K⁻¹ f.
         int at = 0;
-        for (std::size_t pi = 0; pi < ports.size(); ++pi)
-            for (std::size_t k = 0; k < ports[pi].taken.size(); ++k, ++at) {
+        for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+            for (std::size_t k = 0; k < taken[pi].size(); ++k, ++at) {
                 if (!settings.ports[pi].excite) continue;
                 if (settings.fieldsKept >= 0 && int(r.fields.size()) >= settings.fieldsKept) continue;
                 const int col = index[std::size_t(at)];
@@ -755,7 +1050,7 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
                 r.fed.push_back(at);
             }
     }
-    r.log << tr("Full-wave solve at %1: %2 unknowns (order %3), %4 prisms, %5 port modes absorbed; %6 s - the ports' modes %12 s, assembly %7 s, "
+    r.log << tr("Full-wave solve at %1: %2 unknowns (order %3), %4 prisms, %5 port modes %13; %6 s - the ports' modes %12 s, assembly %7 s, "
                 "%8 %9 s, the ports' %10 solves %11 s")
                  .arg(formatQuantity(lambda, Dim::length()))
                  .arg(N)
@@ -766,9 +1061,10 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
                  .arg((assembled - portsSolved) / 1000.0, 0, 'f', 2)
                  .arg(lu.name())
                  .arg((factorized - assembled) / 1000.0, 0, 'f', 2)
-                 .arg(Mtot)
+                 .arg(solves)
                  .arg((timer.elapsed() - factorized) / 1000.0, 0, 'f', 2)
-                 .arg(portsSolved / 1000.0, 0, 'f', 2);
+                 .arg(portsSolved / 1000.0, 0, 'f', 2)
+                 .arg(backed ? tr("split at the ports (PMLs behind them)") : tr("absorbed"));
     if (lu.factorBytes() > 0) r.log << tr("Its factors and their workspace %1, as the analysis said").arg(bytesText(lu.factorBytes()));
     tell(1.0, tr("done"));
     return r;
@@ -792,11 +1088,20 @@ bool readWave3Settings(const Model& model, const Node& physics, const Topology3&
     st.portResolution = number(physics, QStringLiteral("portresolution"), 30, tr("its ports' elements per wavelength"));
     if (!(st.portResolution >= 4)) problems << tr("%1: its ports' elements per wavelength four at least").arg(physics.name());
     st.portsThroughPmls = physics.flag(QStringLiteral("throughpml"));
+    // (The time domain's: its steps, when it has settled.)
+    if (physics.type == QLatin1String("waves3t")) {
+        st.stepsPerPeriod = number(physics, QStringLiteral("stepsperperiod"), 6, tr("its steps a period"));
+        if (!(st.stepsPerPeriod >= 4)) problems << tr("%1: four steps a period at least").arg(physics.name());
+        st.decay = number(physics, QStringLiteral("decay"), 1e-5, tr("where it has settled"));
+        if (!(st.decay > 0 && st.decay < 1)) problems << tr("%1: settled at a number between 0 and 1 (1e-5)").arg(physics.name());
+        st.maxSteps = std::max(100, physics.integer(QStringLiteral("maxsteps")));
+    }
+    const QString pmlType = physics.type + QStringLiteral("/pml"), portType = physics.type + QStringLiteral("/port");
     // Its PMLs: their domains, the strongest reflection asked of them.
     std::set<int> pmls;
     double reflection = 0;
     for (const Node& c : physics.children) {
-        if (!c.enabled || c.type != QLatin1String("waves3/pml")) continue;
+        if (!c.enabled || c.type != pmlType) continue;
         QString why;
         const QVector<int> picked = resolveSelection3(topology, model, Level::Domain, c.selection(), &why);
         if (!why.isEmpty()) problems << tr("%1: %2").arg(c.name(), why);
@@ -811,7 +1116,7 @@ bool readWave3Settings(const Model& model, const Node& physics, const Topology3&
     // Its ports: their faces, modes, how many they absorb.
     QSet<QString> names;
     for (const Node& c : physics.children) {
-        if (!c.enabled || c.type != QLatin1String("waves3/port")) continue;
+        if (!c.enabled || c.type != portType) continue;
         Wave3Port p;
         p.name = c.text(QStringLiteral("name")).trimmed();
         if (p.name.isEmpty()) problems << tr("%1: a port without a name").arg(c.name());
@@ -821,11 +1126,16 @@ bool readWave3Settings(const Model& model, const Node& physics, const Topology3&
         for (int f : resolveSelection3(topology, model, Level::Boundary, c.selection(), &why)) p.faces.push_back(f);
         if (!why.isEmpty()) problems << tr("port %1: %2").arg(p.name, why);
         if (p.faces.empty()) problems << tr("port %1 is on no face: select the end of its waveguide").arg(p.name);
-        for (int f : p.faces)
-            if (f >= 0 && f < int(topology.faces.size()) && !topology.faces[std::size_t(f)].exterior()) {
-                problems << tr("port %1: a face inside the geometry - a port is on its outside, a waveguide's end").arg(p.name);
+        // (Inside the geometry: a PML behind it - on one side of each face.)
+        for (int f : p.faces) {
+            if (f < 0 || f >= int(topology.faces.size()) || topology.faces[std::size_t(f)].exterior()) continue;
+            const Topology3::Face& tf = topology.faces[std::size_t(f)];
+            if (!pmls.count(tf.back) && !pmls.count(tf.front)) {
+                problems << tr("port %1: a face inside the device - a port is on the geometry's outside, a waveguide's end, or inside it "
+                               "with a PML behind it").arg(p.name);
                 break;
             }
+        }
         p.modes.clear();
         for (const QString& m : c.text(QStringLiteral("modes")).split(QLatin1Char(','), Qt::SkipEmptyParts)) {
             const QString t = m.trimmed().toUpper();
