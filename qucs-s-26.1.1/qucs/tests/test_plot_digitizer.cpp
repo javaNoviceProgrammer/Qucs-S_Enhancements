@@ -1927,6 +1927,190 @@ private slots:
         QCOMPARE(t.points.size(), 4);
     }
 
+    void aProfileDrawnInPiecesIsOneCurve()
+    {
+        // As Chen et al. (1996) draw SIMS profiles (the open items' B1, B2,
+        // B6): a log axis, each noisy line written as a piece per run of
+        // counts, broken at each zero, which a log axis cannot show; a
+        // histogram held along the frame's bottom where it falls under the
+        // axis; the x axis's first and last labels at the frame's corners
+        // with no tick of their own, and a minor tick missing between the two
+        // labels that have one.
+        const QString file = path(QStringLiteral("pieces.pdf"));
+        Axes a;
+        a.xMin = 0;
+        a.xMax = 0.3;
+        a.yLog = true;
+        a.yMin = 1e15;
+        a.yMax = 1e21;
+        unsigned seed = 12345;
+        const auto random = [&] {
+            seed = seed * 1103515245u + 12345u;
+            return double((seed >> 8) & 0xffff) / 65536.0;
+        };
+        // Two profiles, each a peak falling to a floor of 1 or 2 counts
+        // (1e16, 2e16) or none.
+        QList<QList<QPolygonF>> profiles;
+        int drawnPieces = 0;
+        for (const double peak : {3e20, 2e18}) {
+            QList<QPolygonF> pieces;
+            QPolygonF piece;
+            for (double x = 0.0015; x < 0.3; x += 0.0015) {
+                double v = peak * std::exp(-std::pow((x - 0.03) / 0.018, 2) / 2);
+                if (v < 3e16) {
+                    const double r = random();
+                    v = r < 0.35 ? 0 : (r < 0.7 ? 1e16 : 2e16);
+                }
+                if (v <= 0) {
+                    if (piece.size() >= 2) pieces << piece;
+                    piece.clear();
+                    continue;
+                }
+                piece << a.at(x, v);
+            }
+            if (piece.size() >= 2) pieces << piece;
+            profiles << pieces;
+            drawnPieces += int(pieces.size());
+        }
+        // The histogram: two bumps, between them under the axis.
+        QPolygonF histogram;
+        for (double x = 0; x < 0.3 - 1e-9; x += 0.006) {
+            const double mid = x + 0.003;
+            const double v = 1e20 * std::exp(-std::pow((mid - 0.035) / 0.02, 2) / 2) + 1e18 * std::exp(-std::pow((mid - 0.2) / 0.012, 2) / 2);
+            const double y = a.py(std::max(v, a.yMin));
+            histogram << QPointF(a.px(x), y) << QPointF(a.px(x + 0.006), y);
+        }
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(Qt::black, 0.8));
+            p.drawRect(a.frame);
+            // Ticks inward: major at 0.1 and 0.2, minor every 0.02 but 0.16;
+            // none at the frame's ends.
+            for (int k = 1; k < 15; ++k) {
+                if (k == 8) continue;
+                const double x = a.px(k * 0.02);
+                if (k * 2 == 10 || k * 2 == 20) continue;
+                p.drawLine(QPointF(x, a.frame.bottom()), QPointF(x, a.frame.bottom() - 3));
+            }
+            for (const double t : {0.1, 0.2}) p.drawLine(QPointF(a.px(t), a.frame.bottom()), QPointF(a.px(t), a.frame.bottom() - 6));
+            for (const double t : {1e16, 1e17, 1e18, 1e19, 1e20}) p.drawLine(QPointF(a.frame.left(), a.py(t)), QPointF(a.frame.left() + 6, a.py(t)));
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setFont(plotFont(9, u));
+            const auto text = [&](QRectF box, int align, const QString& s) { p.drawText(QRectF(box.topLeft() * u, box.size() * u), align, s); };
+            for (const double t : {0.0, 0.1, 0.2, 0.3})
+                text(QRectF(a.px(t) - 30, a.frame.bottom() + 6, 60, 12), Qt::AlignHCenter | Qt::AlignTop, QString::number(t, 'f', 1));
+            for (int e = 15; e <= 21; ++e) text(QRectF(a.frame.left() - 66, a.py(std::pow(10.0, e)) - 7, 60, 14), Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("1e%1").arg(e));
+            p.restore();
+            QPen red(Qt::red, 0.6);
+            p.setPen(red);
+            for (const QList<QPolygonF>& pieces : std::as_const(profiles))
+                for (const QPolygonF& piece : pieces) p.drawPolyline(piece);
+            p.setPen(QPen(Qt::blue, 0.6));
+            p.drawPolyline(histogram);
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        // B1: four labels, linear, from 0.
+        QCOMPARE(plot.xAxis.scale, Scale::Linear);
+        QVERIFY2(!plot.xAxis.scaleGuessed, "with 0.0 and 0.3 read, linear is no guess");
+        int used = 0;
+        for (const Tick& t : std::as_const(plot.xAxis.ticks)) used += t.used;
+        QCOMPARE(used, 4);
+        QCOMPARE(plot.yAxis.scale, Scale::Log);
+        int usedY = 0;
+        for (const Tick& t : std::as_const(plot.yAxis.ticks)) usedY += t.used;
+        QCOMPARE(usedY, 7);
+        QVERIFY(extract(source, plot, Options{}));
+        QList<const Series*> reds, blues;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape != Series::Shape::Line) continue;
+            if (s.colour == QColor(Qt::red)) reds << &s;
+            else if (s.colour == QColor(Qt::blue)) blues << &s;
+        }
+        // B2: a profile is one curve, a gap at each zero.
+        QCOMPARE(reds.size(), 2);
+        int breaks = 0, points = 0;
+        for (const Series* s : std::as_const(reds)) {
+            breaks += int(s->breaks.size());
+            points += int(s->points.size());
+        }
+        QCOMPARE(breaks, drawnPieces - 2);
+        int drawnPoints = 0;
+        for (const QList<QPolygonF>& pieces : std::as_const(profiles))
+            for (const QPolygonF& piece : pieces) drawnPoints += int(piece.size());
+        QCOMPARE(points, drawnPoints);
+        QVERIFY(!reds.first()->dashed);
+        // B6: the histogram's run along the bottom is not data: left out,
+        // a gap between the two bumps.
+        QCOMPARE(blues.size(), 1);
+        for (const QPointF& v : values(plot, *blues.first())) QVERIFY2(v.y() > 1.05e15, qPrintable(QString::number(v.y())));
+        QCOMPARE_GE(blues.first()->breaks.size(), 1);
+        QCOMPARE_LE(plot.calibration.toValue(blues.first()->points.first()).x(), 0.001);
+    }
+
+    void seriesLeftOutAndWhatWasAskedAreKept()
+    {
+        // B3: series beyond those asked for are counted and said; B8: what
+        // the call asked is kept with the plot, a path's own ink is not
+        // said, and a line starting a hair before the axis starts on it.
+        const QString file = path(QStringLiteral("leftout.pdf"));
+        Axes a;
+        const QList<QColor> colours{Qt::blue, Qt::red, Qt::darkGreen};
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawAxes(p, a, u);
+            for (int k = 0; k < colours.size(); ++k) {
+                QPolygonF line;
+                // (From 0.9 points left of the frame: no clip.)
+                line << QPointF(a.frame.left() - 0.9, a.py(0.3 * k - 0.3));
+                for (int i = 1; i <= 100; ++i) {
+                    const double x = 10.0 * i / 100;
+                    line << a.at(x, 0.3 * k - 0.3 + 0.2 * std::sin(x + k));
+                }
+                p.setPen(QPen(colours.at(k), 1.0));
+                p.drawPolyline(line);
+            }
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        Options options;
+        options.maxSeries = 2;
+        QVERIFY(extract(source, plot, options));
+        QCOMPARE(plot.series.size(), 2);
+        QCOMPARE(plot.seriesLeftOut, 1);
+        const Trust t = assess(plot);
+        QVERIFY(t.level != QStringLiteral("high"));
+        QVERIFY2(t.reasons.join(QLatin1Char(' ')).contains(QStringLiteral("left out")), qPrintable(t.reasons.join(QLatin1Char('|'))));
+        for (const Series& s : std::as_const(plot.series)) {
+            // (0.9 points is 0.0225 in x; on the axis is 0, to its fit.)
+            QCOMPARE_GE(values(plot, s).first().x(), -0.001);
+            QCOMPARE_GE(s.agreement, 0.98);
+            QVERIFY(!inkSaysSomething(s));
+        }
+        plot.asked = QJsonObject{{QStringLiteral("x_scale"), QStringLiteral("linear")}, {QStringLiteral("colours"), QJsonArray{QStringLiteral("#0000ff")}}};
+        const QJsonObject o = toJson(plot);
+        QVERIFY(!o.value(QLatin1String("series")).toArray().first().toObject().contains(QLatin1String("agreement")));
+        Plot back;
+        QString why;
+        QVERIFY2(fromJson(o, &back, &why), qPrintable(why));
+        QCOMPARE(back.asked, plot.asked);
+        // A trace's ink is said, all of it or not.
+        Series traced;
+        traced.origin = Series::Origin::Raster;
+        traced.agreement = 1;
+        QVERIFY(inkSaysSomething(traced));
+        Series covered;
+        covered.origin = Series::Origin::Vector;
+        covered.agreement = 0.9;
+        QVERIFY(inkSaysSomething(covered));
+    }
+
     void evenlySpacedMarksAreKept()
     {
         QCOMPARE(regularMarks({100, 120, 140, 160, 180}, 0.6).size(), 5);
