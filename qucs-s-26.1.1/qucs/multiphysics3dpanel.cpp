@@ -279,6 +279,9 @@ void Multiphysics3DPanel::addItems(QTreeWidgetItem* parent, const Node& node)
             f.setItalic(true);
             item->setFont(0, f);
             item->setForeground(0, QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+        } else if (c.visibility == QLatin1String("hidden")) {
+            // (Hidden in the view, not disabled: dimmed, not slanted.)
+            item->setForeground(0, QApplication::palette().color(QPalette::Disabled, QPalette::Text));
         }
         addItems(item, c);
     }
@@ -355,6 +358,12 @@ void Multiphysics3DPanel::updateStatusColumn()
         } else if (!a_doc->geometryStale() && g.warnings.contains(tag)) {
             item->setToolTip(0, g.warnings.value(tag));
         }
+        // (What the view draws of it, where it says nothing else.)
+        if (status.isEmpty()) {
+            const Multiphysics3DDoc::Visibility v = a_doc->visibility(tag);
+            if (v == Multiphysics3DDoc::Visibility::Hidden) status = tr("hidden");
+            else if (v == Multiphysics3DDoc::Visibility::Frame) status = tr("frame only");
+        }
         item->setText(1, status);
         item->setForeground(1, color);
     }
@@ -414,6 +423,25 @@ QMenu* Multiphysics3DPanel::menuFor(const QString& tag)
         menu->addSeparator();
         if (!n->isDefault) menu->addAction(tr("Duplicate"), this, [this, tag] { duplicateNode(tag); });
         menu->addAction(n->enabled ? tr("Disable") : tr("Enable"), this, [this, tag, on = !n->enabled] { setNodeEnabled(tag, on); });
+        // What the 3D view draws of it - the view's alone, the model as it
+        // is: the two ways it is not drawn now.
+        if (a_doc->canHide(tag)) {
+            using V = Multiphysics3DDoc::Visibility;
+            const V now = a_doc->visibility(tag);
+            const struct {
+                V v;
+                QString text, tip;
+                const char* name;
+            } ways[] = {{V::Shown, tr("Show"), tr("Draw it in the 3D view again"), "mp3Show"},
+                        {V::Hidden, tr("Hide"), tr("Leave it out of the 3D view: it is built, meshed and solved as before"), "mp3Hide"},
+                        {V::Frame, tr("Frame Only"), tr("Draw its edges alone in the 3D view, not its faces"), "mp3FrameOnly"}};
+            for (const auto& w : ways) {
+                if (w.v == now) continue;
+                QAction* a = menu->addAction(w.text, this, [this, tag, v = w.v] { setNodeVisibility(tag, v); });
+                a->setObjectName(QString::fromLatin1(w.name));
+                a->setToolTip(w.tip);
+            }
+        }
         menu->addAction(tr("Rename"), this, [this, tag] {
             if (QTreeWidgetItem* item = itemOf(tag)) a_tree->editItem(item, 0);
         });
@@ -485,6 +513,7 @@ bool Multiphysics3DPanel::duplicateNode(const QString& tag)
     if (!k || k->fixed || copy.isDefault) return false;
     std::function<void(Node&)> clearTags = [&](Node& n) {
         n.tag.clear();
+        n.visibility.clear();   // (the copy drawn, where the first is hidden)
         // (A sketch's objects names of their own too.)
         if (n.kind() && n.kind()->group == QLatin1String("geometry")) n.label.clear();
         for (Node& c : n.children) clearTags(c);
@@ -525,6 +554,11 @@ bool Multiphysics3DPanel::setNodeEnabled(const QString& tag, bool enabled)
 {
     if (!a_doc) return false;
     return a_doc->editNode(tag, [enabled](Node& n) { n.enabled = enabled; }, enabled ? tr("Enable") : tr("Disable"));
+}
+
+bool Multiphysics3DPanel::setNodeVisibility(const QString& tag, Multiphysics3DDoc::Visibility visibility)
+{
+    return a_doc && a_doc->setVisibility(tag, visibility);
 }
 
 bool Multiphysics3DPanel::renameNode(const QString& tag, const QString& label)

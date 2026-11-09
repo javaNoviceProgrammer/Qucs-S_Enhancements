@@ -53,6 +53,9 @@ public:
     bool moveNode(const QString& tag, int by);
     bool setNodeEnabled(const QString& tag, bool enabled);
     bool renameNode(const QString& tag, const QString& label);
+    /// What the 3D view draws of node \a tag (its menu's Show, Hide, Frame
+    /// Only): a step of Undo.
+    bool setNodeVisibility(const QString& tag, Multiphysics3DDoc::Visibility visibility);
 
     // For the tests.
     QTreeWidget* tree() const { return a_tree; }

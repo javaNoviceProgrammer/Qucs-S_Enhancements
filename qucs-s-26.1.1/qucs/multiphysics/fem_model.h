@@ -144,6 +144,11 @@ struct Node {
     QString label;
     bool enabled = true;
     bool isDefault = false;   ///< made with its parent, not deleted (Zero Charge...)
+    /// How a 3D view draws what it makes (a solid's feature, a material's
+    /// domains): empty shown, "hidden" not drawn, "frame" its edges alone.
+    /// The view's alone: no geometry, mesh or solve reads it. Written as
+    /// "visibility" where not shown.
+    QString visibility;
     QJsonObject props;
     std::vector<Node> children;
 
