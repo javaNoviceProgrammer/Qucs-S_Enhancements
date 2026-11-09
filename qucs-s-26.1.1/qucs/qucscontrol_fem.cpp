@@ -50,6 +50,8 @@ QJsonObject nodeJson(const FNode& n, int depth)
 {
     QJsonObject o{{QStringLiteral("tag"), n.tag}, {QStringLiteral("type"), n.type}, {QStringLiteral("name"), n.name()}};
     if (!n.enabled) o.insert(QStringLiteral("enabled"), false);
+    // (A 3D model's part hidden or framed in its view: its Visibility.)
+    if (!n.visibility.isEmpty()) o.insert(QStringLiteral("visibility"), n.visibility);
     if (n.isDefault) o.insert(QStringLiteral("default"), true);
     if (!n.props.isEmpty()) {
         QJsonObject props = n.props;
@@ -555,7 +557,9 @@ QString formatText3D()
         "model's. Results: \"plotgroup3d\" (\"clip\" x, y or z at \"clipat\") of \"surface\" (the boundaries coloured), "
         "\"slice\", \"isosurface\", \"arrowvolume\" and \"meshplot\"; derived values \"global\", \"integral\", \"average\", "
         "\"maximum\" and \"minimum\" (\"level\" domain, boundary or edge) and \"pointeval\" (\"coordinates3\" rows of x, y, z); "
-        "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z).");
+        "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z). A geometry feature (Form Union not) or "
+        "a material may carry \"visibility\": \"hidden\" (not drawn) or \"frame\" (its edges alone), as \"enabled\" is "
+        "carried - the view's alone: nothing built, meshed or solved reads it; fem_edit set 'visibility' changes it.");
 }
 
 /// A property of a kind as fem_describe's format lists it, a line each -
@@ -1487,7 +1491,40 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     const std::shared_ptr<ParameterScope> scope = three ? three->parameters() : doc->parameters();
     const QString action = args.value(QLatin1String("action")).toString();
     Model m = three ? three->model() : doc->model();
-    const QJsonObject props = args.value(QLatin1String("props")).toObject();
+    QJsonObject props = args.value(QLatin1String("props")).toObject();
+    // What the 3D view draws of it (shown, hidden, frame): a node's own, as
+    // 'enabled' is - taken among its props too, where it was first looked
+    // for (the check of 9 November, 1).
+    QJsonValue visibilityArg = args.value(QLatin1String("visibility"));
+    if (props.contains(QStringLiteral("visibility"))) {
+        if (visibilityArg.isUndefined()) visibilityArg = props.value(QStringLiteral("visibility"));
+        props.remove(QStringLiteral("visibility"));
+    }
+    QString visibility;
+    if (!visibilityArg.isUndefined()) {
+        const QString v = visibilityArg.toString().trimmed().toLower();
+        if (visibilityArg.isNull() || v == QLatin1String("shown") || v == QLatin1String("show")) visibility = QString();
+        else if (v == QLatin1String("hidden") || v == QLatin1String("hide")) visibility = QStringLiteral("hidden");
+        else if (v == QLatin1String("frame") || v == QLatin1String("frame only") || v == QLatin1String("frameonly")
+                 || v == QLatin1String("frame_only"))
+            visibility = QStringLiteral("frame");
+        else
+            return errorResult(tr("'visibility' is shown, hidden or frame (its edges alone), not %1.")
+                                   .arg(visibilityArg.toVariant().toString()));
+        if (!three)
+            return errorResult(tr("'visibility' is what a 3D model's view draws of a part (Multiphysics 3D's Visibility): a 2D model has "
+                                  "none. The model is unchanged."));
+    }
+    // Node \a n's visibility, where one was given: a solid's feature (Form
+    // Union not) or a material, as the tree's Hide takes.
+    auto applyVisibility = [&](FNode& n) -> QString {
+        if (visibilityArg.isUndefined()) return {};
+        if (!Multiphysics3DDoc::canHide(m, n.tag))
+            return tr("%1 is not drawn as a part of its own: 'visibility' is a geometry feature's (Form Union not) or a material's "
+                      "under materials. The model is unchanged.").arg(n.name());
+        n.visibility = visibility;
+        return {};
+    };
     // Properties set: only those its kind has (a material: and what a
     // library entry gives one - its semiconductor models' parameters too).
     // What was written that does not read as its unit would have it.
@@ -1615,6 +1652,7 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
         QString refused;
         FNode* added = m.add(parent->tag, node, at, &refused);
         if (!added) return errorResult(refused);
+        if (const QString hidden = applyVisibility(*added); !hidden.isEmpty()) return errorResult(hidden);
         answer.insert(QStringLiteral("added"), nodeJson(*added, 2));
         what = tr("Add %1").arg(added->name());
     } else if (action == QLatin1String("set")) {
@@ -1622,8 +1660,14 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
         if (!n) return errorResult(tr("There is no node %1.").arg(args.value(QLatin1String("tag")).toString()));
         const QString why = apply(*n);
         if (!why.isEmpty()) return errorResult(why);
+        if (const QString hidden = applyVisibility(*n); !hidden.isEmpty()) return errorResult(hidden);
         answer.insert(QStringLiteral("set"), nodeJson(*n, 1));
         what = tr("Change %1").arg(n->name());
+        // (Its visibility alone: named as the tree's Hide names it.)
+        if (!visibilityArg.isUndefined() && props.isEmpty() && !args.contains(QLatin1String("label"))
+            && !args.contains(QLatin1String("enabled")))
+            what = (visibility == QLatin1String("hidden") ? tr("Hide %1") : visibility == QLatin1String("frame") ? tr("Frame Only %1") : tr("Show %1"))
+                       .arg(n->name());
     } else if (action == QLatin1String("delete")) {
         const QString tag = args.value(QLatin1String("tag")).toString();
         const FNode* n = m.find(tag);
