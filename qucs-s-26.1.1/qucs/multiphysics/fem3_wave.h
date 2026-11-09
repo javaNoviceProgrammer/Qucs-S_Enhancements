@@ -121,6 +121,9 @@ struct Wave3Settings {
     /// left out, metal behind the PML there (a wire's S the same).
     bool portsThroughPmls = false;
     double portResolution = 30;
+    /// The wavelength (m) the ports' cuts are meshed for (0: each solve's
+    /// own): a sweep's or a time domain's every wavelength of one mesh.
+    double portMeshWavelength = 0;
     /// The most its factorization may take (bytes; 0: no limit): past it,
     /// as its analysis says, not solved - and what it would take said.
     double memoryLimit = 0;
@@ -137,6 +140,10 @@ struct Wave3Settings {
     double stepsPerPeriod = 6;
     double decay = 1e-5;
     int maxSteps = 200000;
+    /// The time domain's: the wavelengths whose field it keeps - 0 none, 1 the
+    /// one nearest the band's middle, n so many evenly over the band, -1
+    /// every one (as far as 2 GB hold them); the S-parameters at every one.
+    int fieldWavelengths = 5;
     std::function<bool()> cancelled;
     std::function<void(double, const QString&)> progress;
 };
@@ -156,6 +163,7 @@ struct Wave3Result {
     std::vector<PortMode> portModes;
     Eigen::MatrixXcd S;   ///< [out][in]
     std::vector<double> balance;   ///< by port mode fed: the power leaving by every port in every propagating mode, of 1 W
+    std::vector<double> back;      ///< by port mode fed: of it, the power back by its own port, in every propagating mode
     std::shared_ptr<const EdgeSpace3> space;
     std::vector<Eigen::VectorXcd> fields;   ///< by fed port mode, in portModes' order of the fed
     std::vector<int> fed;                   ///< the port modes fed (their index in portModes)

@@ -539,6 +539,7 @@ EmeModes portModes(const Model& model, std::shared_ptr<ParameterScope> parameter
     EmeSettings st;
     st.modes = std::max(1, count);
     st.resolution = settings.portResolution;
+    st.meshWavelength = settings.portMeshWavelength;
     st.order = settings.order;
     st.sides = st.floors = QStringLiteral("pec");
     if (settings.portsThroughPmls && !ps.backed) st.pmlDomains = settings.pmlDomains;
@@ -732,7 +733,7 @@ void waveAmplitudes(const std::vector<Column>& u, const std::vector<Column>& v, 
 }
 
 void scatteringOfAmplitudes(const Eigen::MatrixXcd& a, const Eigen::MatrixXcd& b, const std::vector<int>& index, const std::vector<int>& fed,
-                            const std::vector<char>& carries, Wave3Result* r, Eigen::MatrixXcd* perFed)
+                            const std::vector<char>& carries, const std::vector<int>& rowPort, Wave3Result* r, Eigen::MatrixXcd* perFed)
 {
     const int P = int(index.size()), F = int(fed.size());
     Eigen::MatrixXcd Aff(F, F);
@@ -746,11 +747,17 @@ void scatteringOfAmplitudes(const Eigen::MatrixXcd& a, const Eigen::MatrixXcd& b
     for (int j = 0; j < F; ++j)
         for (int i = 0; i < P; ++i) r->S(i, fed[std::size_t(j)]) = Bunit(index[std::size_t(i)], j);
     r->balance.assign(std::size_t(P), 0.0);
+    r->back.assign(std::size_t(P), 0.0);
     for (int j = 0; j < F; ++j) {
-        double sum = 0;
+        const int own = rowPort[std::size_t(index[std::size_t(fed[std::size_t(j)])])];
+        double sum = 0, back = 0;
         for (int i = 0; i < int(carries.size()); ++i)
-            if (carries[std::size_t(i)]) sum += std::norm(Bunit(i, j));
+            if (carries[std::size_t(i)]) {
+                sum += std::norm(Bunit(i, j));
+                if (rowPort[std::size_t(i)] == own) back += std::norm(Bunit(i, j));
+            }
         r->balance[std::size_t(fed[std::size_t(j)])] = sum;
+        r->back[std::size_t(fed[std::size_t(j)])] = back;
     }
 }
 
@@ -915,10 +922,12 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
     // its loss a thousandth of its phase or less: its |S|² its power (W of
     // 1 W fed; near it where the guide is lossy) -, those taken or not.
     std::vector<char> carries(static_cast<std::size_t>(Mtot), 0);
+    std::vector<int> rowPort(static_cast<std::size_t>(Mtot), 0);
     for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
         for (int k = 0; k < modes[pi].count(); ++k) {
             const cd b = modes[pi].beta[std::size_t(k)];
             carries[std::size_t(firstColumn[pi] + k)] = b.real() > 0 && std::abs(b.imag()) <= 1e-3 * b.real() ? 1 : 0;
+            rowPort[std::size_t(firstColumn[pi] + k)] = int(pi);
         }
     int solves = Mtot;
     if (backed) {
@@ -977,7 +986,7 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
                 b.block(firstColumn[pi], j, bp.size(), 1) = bp;
             }
         Eigen::MatrixXcd perFed;
-        wave3::scatteringOfAmplitudes(a, b, index, fed, carries, &r, &perFed);
+        wave3::scatteringOfAmplitudes(a, b, index, fed, carries, rowPort, &r, &perFed);
         for (int j = 0; j < F; ++j) {
             if (settings.fieldsKept >= 0 && int(r.fields.size()) >= settings.fieldsKept) break;
             r.fields.push_back(X * perFed.col(j));
@@ -1029,9 +1038,14 @@ Wave3Result solveWave3(const Model& model, std::shared_ptr<ParameterScope> param
         for (int i = 0; i < P; ++i)
             for (int j = 0; j < P; ++j) r.S(i, j) = Sall(index[std::size_t(i)], index[std::size_t(j)]);
         r.balance.assign(std::size_t(P), 0.0);
+        r.back.assign(std::size_t(P), 0.0);
         for (int j = 0; j < P; ++j)
             for (int i = 0; i < Mtot; ++i)
-                if (carries[std::size_t(i)]) r.balance[std::size_t(j)] += std::norm(Sall(i, index[std::size_t(j)]));
+                if (carries[std::size_t(i)]) {
+                    const double w = std::norm(Sall(i, index[std::size_t(j)]));
+                    r.balance[std::size_t(j)] += w;
+                    if (rowPort[std::size_t(i)] == rowPort[std::size_t(index[std::size_t(j)])]) r.back[std::size_t(j)] += w;
+                }
         // Each fed port mode's field: K E = f - U c, f = -2jωµ0 u_p, c = D... (the
         // ports' modes' coupling): E = K⁻¹ (f - U c) with c = (D⁻¹ + G)⁻¹ Uᵀ K⁻¹ f.
         int at = 0;
@@ -1095,6 +1109,8 @@ bool readWave3Settings(const Model& model, const Node& physics, const Topology3&
         st.decay = number(physics, QStringLiteral("decay"), 1e-5, tr("where it has settled"));
         if (!(st.decay > 0 && st.decay < 1)) problems << tr("%1: settled at a number between 0 and 1 (1e-5)").arg(physics.name());
         st.maxSteps = std::max(100, physics.integer(QStringLiteral("maxsteps")));
+        const QString at = physics.text(QStringLiteral("fieldsat"));
+        st.fieldWavelengths = at == QLatin1String("none") ? 0 : at == QLatin1String("middle") ? 1 : at == QLatin1String("all") ? -1 : 5;
     }
     const QString pmlType = physics.type + QStringLiteral("/pml"), portType = physics.type + QStringLiteral("/port");
     // Its PMLs: their domains, the strongest reflection asked of them.

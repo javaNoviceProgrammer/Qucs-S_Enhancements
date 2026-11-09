@@ -50,8 +50,10 @@
 #include <functional>
 #include <mutex>
 #include <map>
+#include <optional>
 #include <set>
 #include <thread>
+#include <unordered_map>
 
 namespace qucs_s::fem {
 
@@ -364,9 +366,15 @@ private:
 } // namespace
 
 Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology,
-                               std::shared_ptr<const Mesh3> mesh, const Wave3Settings& settings, const std::vector<double>& frequencies)
+                               std::shared_ptr<const Mesh3> mesh, const Wave3Settings& asked, const std::vector<double>& frequencies)
 {
     Wave3TimeResult out;
+    // (Every wavelength's ports' cuts of one mesh, its band's shortest
+    // wavelength's: each its own made their modes' discretization jump from
+    // one wavelength to the next - a Y-branch's |S21|² by 2e-4.)
+    Wave3Settings settings = asked;
+    if (settings.portMeshWavelength <= 0 && !frequencies.empty())
+        settings.portMeshWavelength = C0 / *std::max_element(frequencies.begin(), frequencies.end());
     QElapsedTimer timer;
     timer.start();
     auto tell = [&](double f, const QString& what) {
@@ -470,6 +478,7 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
     struct Fed {
         int port = -1, mode = -1;   // its port, its mode's index at the middle
         int taken = -1;             // its index among the port modes taken
+        QString label;              // as its port names it
     };
     std::vector<Fed> fedList;
     std::vector<wave3::Column> probes;   // every taken port mode's u at the middle
@@ -492,7 +501,7 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
                     return out;
                 }
                 probes.push_back(u[std::size_t(k)]);
-                if (wp.excite) fedList.push_back({int(pi), k, at});
+                if (wp.excite) fedList.push_back({int(pi), k, at, l});
                 ++at;
             }
         }
@@ -639,7 +648,7 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
         out->setFromTriplets(all.begin(), all.end());
         out->makeCompressed();
     };
-    SparseCholesky chol;
+    std::optional<SparseCholesky> chol(std::in_place);
     {
         Eigen::SparseMatrix<double> A0;
         assemble(0, &A0);
@@ -648,19 +657,19 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
             return out;
         }
         tell(0.1, tr("factorizing %1 unknowns").arg(N));
-        chol.setOrdering(SparseCholesky::Ordering::Metis);
-        chol.analyzePattern(A0);
-        if (chol.info() != Eigen::Success) {
-            out.error = tr("the system could not be analysed (%1)").arg(QString::fromStdString(chol.lastErrorMessage()));
+        chol->setOrdering(SparseCholesky::Ordering::Metis);
+        chol->analyzePattern(A0);
+        if (chol->info() != Eigen::Success) {
+            out.error = tr("the system could not be analysed (%1)").arg(QString::fromStdString(chol->lastErrorMessage()));
             return out;
         }
-        if (settings.memoryLimit > 0 && chol.factorBytes() > settings.memoryLimit) {
-            out.error = tr("its factors would take %1, past the limit of %2").arg(bytesText(chol.factorBytes()), bytesText(settings.memoryLimit));
+        if (settings.memoryLimit > 0 && chol->factorBytes() > settings.memoryLimit) {
+            out.error = tr("its factors would take %1, past the limit of %2").arg(bytesText(chol->factorBytes()), bytesText(settings.memoryLimit));
             return out;
         }
-        chol.factorize(A0);
-        if (chol.info() != Eigen::Success) {
-            out.error = tr("the system could not be factorized (%1)").arg(QString::fromStdString(chol.lastErrorMessage()));
+        chol->factorize(A0);
+        if (chol->info() != Eigen::Success) {
+            out.error = tr("the system could not be factorized (%1)").arg(QString::fromStdString(chol->lastErrorMessage()));
             return out;
         }
     }
@@ -857,22 +866,39 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
     }
     const int Nf = int(omega.size()), Nm = int(monitor.size());
     std::vector<Eigen::MatrixXcd> monitorHat(std::size_t(Nf), Eigen::MatrixXcd::Zero(Nm, P));
-    // The first fed port mode's field, transformed: at each frequency asked
-    // as far as 2 GB hold them (else at so many of them, evenly).
-    const bool keepField = settings.fieldsKept != 0;
+    // The first fed port mode's field, transformed: at the wavelengths
+    // asked for it - the one nearest the band's middle, so many evenly over
+    // the band (its ends among them), or every one - as far as 2 GB hold
+    // them. (Each a complex vector of the unknowns, added to at every step:
+    // fifty of them as much as the rest of a step.)
+    const bool keepField = settings.fieldsKept != 0 && settings.fieldWavelengths != 0;
     std::vector<int> slotOf(std::size_t(Nf), -1);
     std::vector<int> slotFreq;
     if (keepField) {
         const int room = int(std::clamp(2e9 / (16.0 * N), 1.0, double(Nf)));
-        for (int j = 0; j < room; ++j) {
-            const int k = room == 1 ? Nf / 2 : int(std::lround(double(j) * (Nf - 1) / (room - 1)));
+        const int want = settings.fieldWavelengths < 0 ? Nf : std::min(settings.fieldWavelengths, Nf);
+        const int kept = std::min(room, want);
+        int nearest = 0;
+        for (int k = 1; k < Nf; ++k)
+            if (std::abs(frequencies[std::size_t(k)] - fMid) < std::abs(frequencies[std::size_t(nearest)] - fMid)) nearest = k;
+        for (int j = 0; j < kept; ++j) {
+            const int k = kept == 1 ? nearest : int(std::lround(double(j) * (Nf - 1) / (kept - 1)));
             if (slotOf[std::size_t(k)] < 0) {
                 slotOf[std::size_t(k)] = int(slotFreq.size());
                 slotFreq.push_back(k);
             }
         }
-        if (int(slotFreq.size()) < Nf) out.log << tr("Its field kept at %1 of the %2 wavelengths (2 GB of them)").arg(slotFreq.size()).arg(Nf);
-    }
+        if (int(slotFreq.size()) < Nf) {
+            QStringList at;
+            for (int k : slotFreq) at << formatQuantity(C0 / frequencies[std::size_t(k)], Dim::length());
+            out.log << tr("Its field kept at %1 of the %2 wavelengths (%3)%4 - the rest's S-parameters only")
+                           .arg(slotFreq.size())
+                           .arg(Nf)
+                           .arg(at.join(QStringLiteral(", ")))
+                           .arg(kept < want ? tr(", what 2 GB of them hold") : QString());
+        }
+    } else
+        out.log << tr("Its field kept at none of the wavelengths: the S-parameters only");
     const int NS = int(slotFreq.size());
     std::vector<Eigen::VectorXcd> fieldHat(std::size_t(NS), Eigen::VectorXcd::Zero(N));
     // The pulse: a sine at the run's band's middle under a Gaussian, its
@@ -883,17 +909,28 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
     const double wLo = *std::min_element(omega.begin(), omega.end()), wHi = *std::max_element(omega.begin(), omega.end());
     const double wc = 0.5 * (wLo + wHi), half = std::max(0.5 * (wHi - wLo), 0.1 * wc);
     const double tau = std::sqrt(2 * std::log(10.0)) / half, t0 = std::sqrt(30.0) * tau;
-    const int sourceSteps = int(std::ceil(2 * t0 / dt));
+    int sourceSteps = int(std::ceil(2 * t0 / dt));
     // (Its samples' sum and first moment made nought - the envelope's own
     // shape and its moment's taken off: what the curl's null space, static
     // fields, integrates twice left nought after it, not a field at rest
     // the ports' fields never fall below.)
+    // (Its envelope's ends, at e^-15 of its peak, brought to nought over
+    // four periods (sin²) - not cut: a cut's step there, broadband, the
+    // sources' filters below magnify thousands of times far from the band,
+    // and the mesh's fastest waves rang on at 1e-7 of the peak.)
+    const int taper = std::max(4, int(std::lround(4 * std::max(4.0, settings.stepsPerPeriod))));
+    auto envelope = [&](int n) {
+        const double t = double(n) * dt - t0;
+        const int m = std::min(n, sourceSteps - n);
+        const double w = m >= taper ? 1.0 : std::pow(std::sin(0.5 * M_PI * double(std::max(0, m)) / taper), 2);
+        return std::exp(-0.5 * t * t / (tau * tau)) * w;
+    };
     std::vector<double> pulseAt(std::size_t(sourceSteps) + 1);
     {
         std::vector<double> env(pulseAt.size());
         for (std::size_t n = 0; n < pulseAt.size(); ++n) {
             const double t = double(n) * dt - t0;
-            env[n] = std::exp(-0.5 * t * t / (tau * tau));
+            env[n] = envelope(int(n));
             pulseAt[n] = env[n] * std::sin(wc * t);
         }
         // Σ (g - a e - b n e) = 0, Σ n (g - a e - b n e) = 0.
@@ -910,17 +947,197 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
         const double a = (G0 * S2 - G1 * S1) / det, b = (S0 * G1 - S1 * G0) / det;
         for (std::size_t n = 0; n < pulseAt.size(); ++n) pulseAt[n] -= (a + b * double(n)) * env[n];
     }
-    auto pulse = [&](int n) { return n >= 0 && n < int(pulseAt.size()) ? pulseAt[std::size_t(n)] : 0.0; };
-    // (The sources real: u turned so that its largest value is, its real
-    // part then - a lossless guide's modes real but for a common phase.)
-    std::vector<std::vector<std::pair<int, double>>> source(static_cast<std::size_t>(P));
-    for (int j = 0; j < P; ++j) {
-        const wave3::Column& col = probes[std::size_t(fedList[std::size_t(j)].taken)];
-        cd big = 0;
-        for (const auto& [dof, val] : col)
-            if (std::abs(val) > std::abs(big)) big = val;
-        const cd turn = big == cd(0) ? cd(1) : std::conj(big) / std::abs(big);
-        for (const auto& [dof, val] : col) source[std::size_t(j)].push_back({dof, (val * turn).real()});
+    // The sources: each fed port mode's profile at the band's ends and its
+    // middle (the middle's alone where one wavelength is asked; the ends'
+    // where two), each sent with the pulse through a filter of its own -
+    // its spectrum the profile's Lagrange polynomial in σ = sin²(ωΔt/2), a
+    // polynomial in the second difference (σ ↔ -δ²/4, a symmetric filter of
+    // a few steps: the pulse's sum and moment kept nought) -, so that at
+    // each frequency the source is the mode's profile there, to the third
+    // order in the band. (The middle's profile at every frequency sent the
+    // band's ends a little of the port's other modes: a Y-branch's T 4e-4
+    // from the frequency domain's 40 nm from its band's middle, 2e-5 there.)
+    std::vector<double> nodeF;
+    {
+        std::vector<double> fs(frequencies.begin(), frequencies.end());
+        std::sort(fs.begin(), fs.end());
+        fs.erase(std::unique(fs.begin(), fs.end()), fs.end());
+        nodeF = fs.size() == 1 ? std::vector<double>{fMid} : fs.size() == 2 ? std::vector<double>{fLo, fHi} : std::vector<double>{fLo, fMid, fHi};
+    }
+    const int NN = int(nodeF.size());
+    // (Each node's filter: its Lagrange polynomial's coefficients in σ.)
+    std::vector<std::vector<double>> signal(static_cast<std::size_t>(NN));
+    {
+        std::vector<double> sig;
+        for (double f : nodeF) sig.push_back(std::pow(std::sin(std::atan(M_PI * f * dt)), 2));
+        const int pad = NN - 1, len = int(pulseAt.size()) + 2 * pad;
+        std::vector<std::vector<double>> coef(static_cast<std::size_t>(NN));
+        for (int i = 0; i < NN; ++i) {
+            std::vector<double> poly{1.0};
+            for (int j = 0; j < NN; ++j) {
+                if (j == i) continue;
+                const double den = sig[std::size_t(i)] - sig[std::size_t(j)];
+                std::vector<double> next(poly.size() + 1, 0.0);
+                for (std::size_t k = 0; k < poly.size(); ++k) {
+                    next[k + 1] += poly[k] / den;
+                    next[k] -= poly[k] * sig[std::size_t(j)] / den;
+                }
+                poly = std::move(next);
+            }
+            coef[std::size_t(i)] = poly;
+            signal[std::size_t(i)].assign(std::size_t(len), 0.0);
+        }
+        std::vector<double> t(std::size_t(len), 0.0);
+        for (std::size_t n = 0; n < pulseAt.size(); ++n) t[n + std::size_t(pad)] = pulseAt[n];
+        for (int p = 0; p < NN; ++p) {
+            for (int i = 0; i < NN; ++i)
+                for (int n = 0; n < len; ++n) signal[std::size_t(i)][std::size_t(n)] += coef[std::size_t(i)][std::size_t(p)] * t[std::size_t(n)];
+            // t ← -δ²t/4
+            std::vector<double> next(std::size_t(len), 0.0);
+            for (int n = 0; n < len; ++n) {
+                const double before = n > 0 ? t[std::size_t(n - 1)] : 0.0, after = n + 1 < len ? t[std::size_t(n + 1)] : 0.0;
+                next[std::size_t(n)] = -(after - 2 * t[std::size_t(n)] + before) / 4;
+            }
+            t = std::move(next);
+        }
+        // (Each filtered signal's sum and moment taken off again, as the
+        // pulse's were: a filter's polynomial is large far from the band - at
+        // σ = 0 hundreds of times its value there -, and what rounding left
+        // of the pulse's, so magnified and integrated twice by the curl's
+        // null space, kept the field from falling to 1e-8 of its peak.)
+        std::vector<double> env(std::size_t(len), 0.0);
+        for (std::size_t n = 0; n < pulseAt.size(); ++n) env[n + std::size_t(pad)] = envelope(int(n));
+        for (int i = 0; i < NN; ++i) {
+            std::vector<double>& g = signal[std::size_t(i)];
+            for (int pass = 0; pass < 2; ++pass) {
+                double S0 = 0, S1 = 0, S2 = 0, G0 = 0, G1 = 0;
+                for (int n = 0; n < len; ++n) {
+                    const double x = double(n), e = env[std::size_t(n)];
+                    S0 += e;
+                    S1 += x * e;
+                    S2 += x * x * e;
+                    G0 += g[std::size_t(n)];
+                    G1 += x * g[std::size_t(n)];
+                }
+                const double det = S0 * S2 - S1 * S1;
+                const double a = (G0 * S2 - G1 * S1) / det, b = (S0 * G1 - S1 * G0) / det;
+                for (int n = 0; n < len; ++n) g[std::size_t(n)] -= (a + b * double(n)) * env[std::size_t(n)];
+            }
+        }
+        sourceSteps = len - 1;
+    }
+    // (Each profile real: the middle's u turned so that its largest value
+    // is, its real part then - a lossless guide's modes real but for a
+    // common phase -; an end's mode the one most like the middle's, turned
+    // to it.)
+    std::vector<std::vector<std::vector<std::pair<int, double>>>> source(static_cast<std::size_t>(P),
+                                                                         std::vector<std::vector<std::pair<int, double>>>(static_cast<std::size_t>(NN)));
+    {
+        std::vector<std::unordered_map<int, double>> middle(static_cast<std::size_t>(P));
+        for (int j = 0; j < P; ++j) {
+            const wave3::Column& col = probes[std::size_t(fedList[std::size_t(j)].taken)];
+            cd big = 0;
+            for (const auto& [dof, val] : col)
+                if (std::abs(val) > std::abs(big)) big = val;
+            const cd turn = big == cd(0) ? cd(1) : std::conj(big) / std::abs(big);
+            for (const auto& [dof, val] : col) middle[std::size_t(j)][dof] = (val * turn).real();
+        }
+        // The ends' modes, every fed port's, side by side.
+        std::vector<std::pair<int, int>> jobs;   // (node, port)
+        for (int i = 0; i < NN; ++i) {
+            if (nodeF[std::size_t(i)] == fMid) continue;
+            for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+                if (settings.ports[pi].excite) jobs.push_back({i, int(pi)});
+        }
+        std::vector<std::vector<wave3::Column>> endU(jobs.size());
+        std::vector<QString> endWhy(jobs.size());
+        {
+            std::atomic<int> next{0};
+            auto work = [&] {
+                for (int q = next++; q < int(jobs.size()); q = next++) {
+                    const auto [i, pi] = jobs[std::size_t(q)];
+                    const double f = nodeF[std::size_t(i)];
+                    const Wave3Port& wp = settings.ports[std::size_t(pi)];
+                    const EmeModes em = wave3::portModes(model, parameters, topology, su, settings, pi, f, int(wp.modes.size()) + 2, &endWhy[std::size_t(q)]);
+                    if (!endWhy[std::size_t(q)].isEmpty() || em.count() == 0) {
+                        if (endWhy[std::size_t(q)].isEmpty()) endWhy[std::size_t(q)] = tr("no mode found");
+                        continue;
+                    }
+                    const double kk = 2 * M_PI * f / C0;
+                    std::vector<cd> epsAt(medium.size());
+                    for (std::size_t d = 0; d < medium.size(); ++d) epsAt[d] = mediumAt(medium[d], J * kk);
+                    wave3::portColumns(su, su.ports[std::size_t(pi)], em, settings.order, kk, epsAt, &endU[std::size_t(q)], nullptr);
+                }
+            };
+            const int lanes = std::clamp(int(std::thread::hardware_concurrency()), 1, std::max(1, int(jobs.size())));
+            std::vector<std::thread> pool;
+            for (int t = 1; t < lanes; ++t) pool.emplace_back(work);
+            work();
+            for (std::thread& t : pool) t.join();
+        }
+        for (std::size_t q = 0; q < jobs.size(); ++q)
+            if (!endWhy[q].isEmpty()) {
+                out.error = tr("port %1 at %2: %3")
+                                .arg(settings.ports[std::size_t(jobs[q].second)].name, formatQuantity(C0 / nodeF[std::size_t(jobs[q].first)], Dim::length()), endWhy[q]);
+                return out;
+            }
+        for (int j = 0; j < P; ++j) {
+            const Fed& fd = fedList[std::size_t(j)];
+            const auto& mid = middle[std::size_t(j)];
+            double midNorm = 0;
+            for (const auto& [dof, val] : mid) midNorm += val * val;
+            midNorm = std::sqrt(midNorm);
+            for (int i = 0; i < NN; ++i) {
+                auto& prof = source[std::size_t(j)][std::size_t(i)];
+                if (nodeF[std::size_t(i)] == fMid) {
+                    for (const auto& [dof, val] : mid) prof.push_back({dof, val});
+                    std::sort(prof.begin(), prof.end());
+                    continue;
+                }
+                std::size_t q = 0;
+                while (!(jobs[q].first == i && jobs[q].second == fd.port)) ++q;
+                // The end's mode most like the middle's: |<u, u_mid>| / |u|.
+                int best = -1;
+                double likeness = -1;
+                cd overlap = 0;
+                for (int m = 0; m < int(endU[q].size()); ++m) {
+                    cd c = 0;
+                    double norm = 0;
+                    for (const auto& [dof, val] : endU[q][std::size_t(m)]) {
+                        norm += std::norm(val);
+                        auto it = mid.find(dof);
+                        if (it != mid.end()) c += val * it->second;
+                    }
+                    const double l = norm > 0 && midNorm > 0 ? std::abs(c) / (std::sqrt(norm) * midNorm) : 0;
+                    if (l > likeness) {
+                        likeness = l;
+                        best = m;
+                        overlap = c;
+                    }
+                }
+                if (best < 0 || likeness < 0.5) {
+                    out.error = tr("port %1: its fed mode %2 has no like at %3 (the best %4 alike) - a narrower band")
+                                    .arg(settings.ports[std::size_t(fd.port)].name, fd.label)
+                                    .arg(formatQuantity(C0 / nodeF[std::size_t(i)], Dim::length()))
+                                    .arg(std::max(0.0, likeness), 0, 'f', 2);
+                    return out;
+                }
+                if (likeness < 0.9)
+                    out.warnings << tr("port %1: its fed mode at %2 only %3 like the band's middle's - the source's profile between them "
+                                       "approximate (a narrower band)")
+                                        .arg(settings.ports[std::size_t(fd.port)].name)
+                                        .arg(formatQuantity(C0 / nodeF[std::size_t(i)], Dim::length()))
+                                        .arg(likeness, 0, 'f', 2);
+                const cd turn = overlap == cd(0) ? cd(1) : std::conj(overlap) / std::abs(overlap);
+                for (const auto& [dof, val] : endU[q][std::size_t(best)]) prof.push_back({dof, (val * turn).real()});
+                std::sort(prof.begin(), prof.end());
+            }
+        }
+        if (NN > 1) {
+            QStringList at;
+            for (double f : nodeF) at << formatQuantity(C0 / f, Dim::length());
+            out.log << tr("Its sources: each fed mode's profile at %1, between them by a filter of %2 steps").arg(at.join(QStringLiteral(", "))).arg(2 * NN - 1);
+        }
     }
     // The steps.
     // (E1: the step before; hist: the next step's history.)
@@ -942,13 +1159,14 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
             return out;
         }
         Eigen::MatrixXd rhs = -hist;
-        if (n <= sourceSteps) {
-            const double g = pulse(n);
-            for (int j = 0; j < P; ++j)
-                for (const auto& [dof, val] : source[std::size_t(j)]) rhs(dof, j) += g * val;
-        }
+        if (n <= sourceSteps)
+            for (int i = 0; i < NN; ++i) {
+                const double g = signal[std::size_t(i)][std::size_t(n)];
+                for (int j = 0; j < P; ++j)
+                    for (const auto& [dof, val] : source[std::size_t(j)][std::size_t(i)]) rhs(dof, j) += g * val;
+            }
         qint64 mark = part.nsecsElapsed();
-        Eigen::MatrixXd En = chol.solveMany(rhs);
+        Eigen::MatrixXd En = chol->solveMany(rhs);
         spent[0] += part.nsecsElapsed() - mark;
         mark = part.nsecsElapsed();
         // The next step's history: the bulk's, the PMLs' states.
@@ -988,12 +1206,15 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
         }
         spent[2] += part.nsecsElapsed() - mark;
         mark = part.nsecsElapsed();
-        // Transformed at each frequency: e^-jωnΔt.
-        for (int k = 0; k < Nf; ++k) {
-            const cd z = std::polar(1.0, -omega[std::size_t(k)] * n * dt);
-            Eigen::MatrixXcd& Mh = monitorHat[std::size_t(k)];
-            for (int i = 0; i < Nm; ++i)
-                for (int j = 0; j < P; ++j) Mh(i, j) += z * En(monitor[std::size_t(i)], j);
+        // Transformed at each frequency: e^-jωnΔt (a frequency a task).
+        {
+            const std::function<void(int)> work = [&](int k) {
+                const cd z = std::polar(1.0, -omega[std::size_t(k)] * n * dt);
+                Eigen::MatrixXcd& Mh = monitorHat[std::size_t(k)];
+                for (int j = 0; j < P; ++j)
+                    for (int i = 0; i < Nm; ++i) Mh(i, j) += z * En(monitor[std::size_t(i)], j);
+            };
+            pool.run(Nf, work);
         }
         if (NS > 0) {
             // (By frequency and a part of the unknowns.)
@@ -1058,45 +1279,68 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
     }
     out.steps = n;
     out.settled = settled;
-    const qint64 stepped = timer.elapsed(), steppedFor = stepping.elapsed();
+    const qint64 steppedFor = stepping.elapsed();
     if (!settled)
         out.warnings << tr("the time domain stopped at its %1 steps with the ports' fields at %2 of their peak, not %3: its spectra "
                            "cut short (a resonance ringing longer) - more steps, or a looser decay")
                             .arg(n)
                             .arg(recent / std::max(peak, 1e-300), 0, 'g', 2)
                             .arg(settings.decay);
+    // The steps' own memory let go - the factors, the history, the PMLs'
+    // states: what the ports' modes take below.
+    const QString cholName = chol->name();
+    const double cholBytes = chol->factorBytes();
+    const std::size_t pmlStates = pmlState.size();
+    chol.reset();
+    H1 = {};
+    H2 = {};
+    E1 = {};
+    hist = {};
+    std::vector<double>().swap(pmlState);
+    std::vector<double>().swap(pmlOut);
+    domainState.clear();
+    massOfDomain.clear();
     // Each frequency asked: its ports' modes, every port's field split into
-    // its modes' waves, the S-matrix.
-    tell(0.9, tr("the ports' modes at each frequency"));
+    // its modes' waves, the S-matrix - the frequencies side by side, each
+    // its ports' modes solved afresh (a cut some gigabyte at the ports'
+    // resolution 30: as many at once as half the memory, or the limit,
+    // holds).
     std::vector<int> fedTaken;
     for (const Fed& f : fedList) fedTaken.push_back(f.taken);
-    Eigen::VectorXcd full = Eigen::VectorXcd::Zero(N);
-    for (int k = 0; k < Nf; ++k) {
-        if (cancelled()) {
-            out.error = tr("cancelled");
-            return out;
-        }
+    out.at.assign(std::size_t(Nf), Wave3Result());
+    std::vector<QString> failed(static_cast<std::size_t>(Nf));
+    const double perCut = 1.5e9 * std::pow(std::max(1.0, settings.portResolution) / 30.0, 2) * (settings.order == 1 ? 0.5 : 1.0);
+    const double held = double(NS) * 16.0 * N + double(Nf) * Nm * P * 16.0;
+    const double budget = (settings.memoryLimit > 0 ? settings.memoryLimit : physicalMemory() / 2) - held;
+    const int hardware = std::max(1, int(std::thread::hardware_concurrency()));
+    const int lanes = std::clamp(int(budget / perCut), 1, std::min(hardware, Nf));
+    std::atomic<int> nextFrequency{0}, doneFrequencies{0};
+    std::mutex telling;
+    QElapsedTimer modesTimer;
+    modesTimer.start();
+    tell(0.9, tr("the ports' modes at each frequency (%1 at once)").arg(lanes));
+    auto oneFrequency = [&](int k) {
         Wave3Result r;
         r.frequency = frequencies[std::size_t(k)];
         r.space = su.space;
         r.unknowns = N;
         std::vector<EmeModes> modes(su.ports.size());
-        std::vector<int> firstColumn, index;
+        std::vector<int> firstColumn, index, rowPort;
         int Mtot = 0;
         for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
             const Wave3Port& wp = settings.ports[pi];
             QString why;
             modes[pi] = wave3::portModes(model, parameters, topology, su, settings, int(pi), r.frequency, std::max(1, wp.absorbed), &why);
             if (!why.isEmpty() || modes[pi].count() == 0) {
-                out.error = tr("port %1 at %2: %3").arg(wp.name, formatQuantity(C0 / r.frequency, Dim::length()), why.isEmpty() ? tr("no mode found") : why);
-                return out;
+                failed[std::size_t(k)] = tr("port %1 at %2: %3").arg(wp.name, formatQuantity(C0 / r.frequency, Dim::length()), why.isEmpty() ? tr("no mode found") : why);
+                return;
             }
             firstColumn.push_back(Mtot);
             for (const QString& l : wp.modes) {
                 const int m = modes[pi].find(l);
                 if (m < 0) {
-                    out.error = tr("port %1 has no mode %2 at %3").arg(wp.name, l, formatQuantity(C0 / r.frequency, Dim::length()));
-                    return out;
+                    failed[std::size_t(k)] = tr("port %1 has no mode %2 at %3").arg(wp.name, l, formatQuantity(C0 / r.frequency, Dim::length()));
+                    return;
                 }
                 index.push_back(Mtot + m);
                 Wave3Result::PortMode pm;
@@ -1107,6 +1351,7 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
                 r.portModes.push_back(pm);
             }
             Mtot += modes[pi].count();
+            rowPort.resize(std::size_t(Mtot), int(pi));
         }
         std::vector<char> carries(static_cast<std::size_t>(Mtot), 0);
         for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
@@ -1121,6 +1366,7 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
         std::vector<cd> epsAt(medium.size());
         for (std::size_t d = 0; d < medium.size(); ++d) epsAt[d] = mediumAt(medium[d], J * kk);
         Eigen::MatrixXcd a(Mtot, P), b(Mtot, P);
+        Eigen::VectorXcd full = Eigen::VectorXcd::Zero(N);
         for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
             std::vector<wave3::Column> u, v;
             wave3::portColumns(su, su.ports[pi], modes[pi], settings.order, kk, epsAt, &u, &v);
@@ -1133,13 +1379,44 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
             }
         }
         Eigen::MatrixXcd perFed;
-        wave3::scatteringOfAmplitudes(a, b, index, fedTaken, carries, &r, &perFed);
+        wave3::scatteringOfAmplitudes(a, b, index, fedTaken, carries, rowPort, &r, &perFed);
         r.fed = {fedTaken.front()};
         if (slotOf[std::size_t(k)] >= 0) r.fields.push_back(fieldHat[std::size_t(slotOf[std::size_t(k)])] * perFed(0, 0));
-        out.at.push_back(std::move(r));
+        out.at[std::size_t(k)] = std::move(r);
+    };
+    {
+        std::atomic<bool> stop{false};
+        auto work = [&] {
+            for (int k = nextFrequency++; k < Nf; k = nextFrequency++) {
+                if (stop || cancelled()) {
+                    stop = true;
+                    return;
+                }
+                oneFrequency(k);
+                if (!failed[std::size_t(k)].isEmpty()) stop = true;
+                const int finished = ++doneFrequencies;
+                std::lock_guard<std::mutex> lock(telling);
+                tell(0.9 + 0.1 * finished / Nf, tr("the ports' modes at %1 of %2 frequencies (%3 at once)").arg(finished).arg(Nf).arg(lanes));
+            }
+        };
+        std::vector<std::thread> lanePool;
+        for (int t = 1; t < lanes; ++t) lanePool.emplace_back(work);
+        work();
+        for (std::thread& t : lanePool) t.join();
     }
+    for (const QString& f : failed)
+        if (!f.isEmpty()) {
+            out.error = f;
+            return out;
+        }
+    if (cancelled()) {
+        out.error = tr("cancelled");
+        return out;
+    }
+    const double modesSeconds = modesTimer.elapsed() / 1000.0;
     out.log << tr("Time-domain solve: %1 unknowns (order %2), %3 prisms (%4 in PMLs), %5 port modes fed together; Δt %6 fs (%7 a period at "
-                  "%8), %9 steps to %10 fs%11; %12 s - %13 %14 s, the steps %15 s (%16 ms each), the ports' modes and the spectra %17 s")
+                  "%8), %9 steps to %10 fs%11; %12 s - %13 %14 s, the steps %15 s (%16 ms each), the ports' modes and the spectra %17 s "
+                  "(%18 frequencies, %19 at once)")
                      .arg(N)
                      .arg(settings.order)
                      .arg(Ne)
@@ -1152,19 +1429,21 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
                      .arg(out.steps * dt * 1e15, 0, 'f', 0)
                      .arg(settled ? QString() : tr(", not settled"))
                      .arg(timer.elapsed() / 1000.0, 0, 'f', 2)
-                     .arg(chol.name())
+                     .arg(cholName)
                      .arg(factorized / 1000.0, 0, 'f', 2)
                      .arg(steppedFor / 1000.0, 0, 'f', 2)
                      .arg(out.steps > 0 ? double(steppedFor) / out.steps : 0.0, 0, 'f', 1)
-                     .arg((timer.elapsed() - stepped) / 1000.0, 0, 'f', 2);
+                     .arg(modesSeconds, 0, 'f', 2)
+                     .arg(Nf)
+                     .arg(lanes);
     out.log << tr("Its steps: the solves %1 s, the bulk's history %2 s, the PMLs' points %3 s (%4 of them, %5 MB of states), the transforms %6 s")
                    .arg(spent[0] * 1e-9, 0, 'f', 2)
                    .arg(spent[1] * 1e-9, 0, 'f', 2)
                    .arg(spent[2] * 1e-9, 0, 'f', 2)
                    .arg(qint64(Np) * Q)
-                   .arg(double(pmlState.size()) * 8 / 1e6, 0, 'f', 0)
+                   .arg(double(pmlStates) * 8 / 1e6, 0, 'f', 0)
                    .arg(spent[3] * 1e-9, 0, 'f', 2);
-    if (chol.factorBytes() > 0) out.log << tr("Its factors and their workspace %1, as the analysis said").arg(bytesText(chol.factorBytes()));
+    if (cholBytes > 0) out.log << tr("Its factors and their workspace %1, as the analysis said").arg(bytesText(cholBytes));
     tell(1.0, tr("done"));
     return out;
 }

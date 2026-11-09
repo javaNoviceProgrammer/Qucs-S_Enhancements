@@ -73,6 +73,10 @@ struct EmeSettings {
     /// Elements per wavelength in each material (λ0/n), and at least this
     /// many across each layer and rectangle.
     double resolution = 15;
+    /// The wavelength (m) the elements are sized for, its materials' indices
+    /// there (0: the solve's own) - a sweep's cuts all of one mesh, their
+    /// modes' discretization the same at every wavelength.
+    double meshWavelength = 0;
     int across = 4;
     /// The window's walls: "pec", "pmc" or "pml" - its sides (along u), and
     /// its bottom and top. A PML is a layer \a pmlThickness thick (the
@@ -329,6 +333,10 @@ struct EmeResult {
     /// Of each fed port mode: the power that leaves by the ports' modes, of 1
     /// fed (1 - it is lost: radiated, absorbed, into modes no port takes).
     std::vector<double> balance;
+    /// A full wave's, of each fed port mode: of its balance, the power back
+    /// by its own port in every mode carrying power, taken or not (empty: R
+    /// over the modes taken).
+    std::vector<double> back;
     QStringList log;
     /// What may make it less than it should be: a cut whose modes kept are
     /// all propagating (the window's radiation not all carried).

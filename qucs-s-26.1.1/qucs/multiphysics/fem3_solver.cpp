@@ -756,6 +756,7 @@ EmeResult asEmeResult(const Wave3Result& w)
     for (const Wave3Result::PortMode& pm : w.portModes) r.portModes.push_back({pm.port, pm.label, pm.neff, pm.te});
     r.S = w.S;
     r.balance = w.balance;
+    r.back = w.back;
     r.log = w.log;
     r.warnings = w.warnings;
     r.error = w.error;
@@ -820,6 +821,17 @@ void setEmeGlobals(Solution3& s, const QString& tag, const EmeDevice& d, const E
     const QString fed = tr("of port %1's %2 fed").arg(d.ports[std::size_t(portOf(first))].name, r.portModes[std::size_t(first)].label);
     s.setGlobal(p + QStringLiteral("R"), R, Dim(), tr("reflectance %1: the power back in its port's modes").arg(fed));
     s.setGlobal(p + QStringLiteral("T"), T, Dim(), tr("transmittance %1: the power out by the other ports' modes").arg(fed));
+    // (A full wave's: over every mode carrying power at the ports, those
+    // taken as S-parameter ports or not - its ports absorb, or their PMLs
+    // take, them all: a window's own modes too, radiation reaching the
+    // port's plane.)
+    if (int(r.back.size()) == N && int(r.balance.size()) == N) {
+        const double back = r.back[std::size_t(first)];
+        s.setGlobal(p + QStringLiteral("Rall"), back, Dim(),
+                    tr("reflectance %1 in every mode carrying power at its port, taken or not (its window's own, radiation, too)").arg(fed));
+        s.setGlobal(p + QStringLiteral("Tall"), r.balance[std::size_t(first)] - back, Dim(),
+                    tr("transmittance %1 in every mode carrying power at the other ports, taken or not (their windows' own, radiation, too)").arg(fed));
+    }
     s.setGlobal(p + QStringLiteral("L"), 1 - R - T, Dim(), tr("what is lost %1: radiated, absorbed, or into modes no port takes").arg(fed));
 }
 
@@ -883,6 +895,9 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
         }
         waveSettings[std::size_t(k)].memoryLimit = memoryLimit;
         waveSettings[std::size_t(k)].fieldsKept = 1;
+        // (The ports' cuts of one mesh at every wavelength, the shortest's:
+        // a sweep's S smooth, not its cuts' discretization jumping.)
+        waveSettings[std::size_t(k)].portMeshWavelength = C0 / *std::max_element(frequencies.begin(), frequencies.end());
     }
     const int Wn = int(frequencies.size());
     std::vector<std::vector<EmeResult>> waveResults(static_cast<std::size_t>(WP));

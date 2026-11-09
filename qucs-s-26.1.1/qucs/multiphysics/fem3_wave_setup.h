@@ -116,10 +116,11 @@ void waveAmplitudes(const std::vector<Column>& u, const std::vector<Column>& v, 
 /// solve (columns): B A⁻¹, A the fed port modes' own incoming waves - each
 /// column then of a unit wave in its own port mode, none in the other fed.
 /// \a index: by port mode taken, its row; \a fed: by fed one, its index
-/// among those taken; \a carries: by row, a mode that carries power. \a
-/// perFed: A⁻¹ (each fed solve's share of a unit wave in each).
+/// among those taken; \a carries: by row, a mode that carries power; \a
+/// rowPort: by row, its port (\a r's back). \a perFed: A⁻¹ (each fed
+/// solve's share of a unit wave in each).
 void scatteringOfAmplitudes(const Eigen::MatrixXcd& a, const Eigen::MatrixXcd& b, const std::vector<int>& index, const std::vector<int>& fed,
-                            const std::vector<char>& carries, Wave3Result* r, Eigen::MatrixXcd* perFed);
+                            const std::vector<char>& carries, const std::vector<int>& rowPort, Wave3Result* r, Eigen::MatrixXcd* perFed);
 
 } // namespace qucs_s::fem::wave3
 
