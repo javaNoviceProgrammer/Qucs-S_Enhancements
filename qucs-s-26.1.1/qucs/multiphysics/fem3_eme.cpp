@@ -1310,7 +1310,9 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
         if (indexCache.contains(mat->tag)) n = indexCache.value(mat->tag);
         else indexCache.insert(mat->tag, n = indexOf(*mat, lambda, parameters->scope));
         rectIndex[i] = n;
-        double h = lambda / topology.unitScale / (settings.resolution * std::max(n, 1.0));
+        double nSized = n;
+        if (settings.meshWavelength > 0 && settings.meshWavelength != lambda) nSized = indexOf(*mat, settings.meshWavelength, parameters->scope);
+        double h = (settings.meshWavelength > 0 ? settings.meshWavelength : lambda) / topology.unitScale / (settings.resolution * std::max(nSized, 1.0));
         h = std::min(h, std::min(r.u1 - r.u0, r.z1 - r.z0) / std::max(1, settings.across));
         hAll = std::max(hAll, h);
         if (!isLayer[i])

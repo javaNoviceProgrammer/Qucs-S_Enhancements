@@ -1890,7 +1890,8 @@ QList<NodeKind> makeKinds()
             "∇ × µr⁻¹ ∇ × E - k0² εr E = 0 over the whole geometry (εr = (n - jκ)², each material's at the wavelength), metal on its "
             "outside but where an Optical Port is - which absorbs every mode of its cross-section it takes (found by the full-vector "
             "mode solver, as many as asked) - and Perfectly Matched Layers let light out. Its ports' modes give the S-parameters "
-            "(ewfd.S21, ewfd.S21dB, ewfd.S21_arg; ewfd.R, ewfd.T), and the first port mode fed its field (ewfd.normE, ewfd.Ex, "
+            "(ewfd.S21, ewfd.S21dB, ewfd.S21_arg; ewfd.R, ewfd.T over the modes taken, ewfd.Rall, ewfd.Tall over every mode "
+            "carrying power at the ports - taken or not, a window's own too), and the first port mode fed its field (ewfd.normE, ewfd.Ex, "
             "ewfd.Ey, ewfd.Ez: |E| and E's real parts, rms, of 1 W fed). The mesh must resolve the wavelength in each material - its "
             "longest edges a quarter of λ0/n at quadratic order (a size per domain), checked; its memory is said before it starts (some 20 kB an "
             "unknown) and the solve refused past the limit (Multiphysics 3D > Settings).")});
@@ -1906,7 +1907,10 @@ QList<NodeKind> makeKinds()
          {}, {}, false, false, QStringLiteral("op"),
          tr("Where light comes in and goes out: the end of a waveguide - its faces in one vertical plane on the geometry's outside. "
             "Its modes, each normalized to 1 W, are the S-parameters' ports; it absorbs as many of its cross-section's modes as "
-            "asked.")});
+            "asked. Or inside, its waveguide going on into a Perfectly Matched Layer behind it: the PML takes everything that "
+            "reaches the port, radiation and modes past those absorbed alike, where a port on the outside reflects what is not "
+            "among its modes - the more accurate where scattered light reaches the port's plane (a Y-branch's T 0.3 % apart). "
+            "All of a solve's ports one kind or the other.")});
     add({QStringLiteral("waves3/pml"), tr("Perfectly Matched Layer"), QStringLiteral("ewfd"), QStringLiteral("pml"), Level::Domain,
          {selectionProp(none),
           expr(QStringLiteral("reflection"), tr("Its reflection"), QString(), QStringLiteral("1e-6"),
@@ -1931,7 +1935,14 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("decay"), tr("Settled at"), QString(), QStringLiteral("1e-5"),
                tr("The run stops once the ports' fields, after the pulse, have fallen to this of their peak: the transforms' "
                   "truncation")),
-          integer(QStringLiteral("maxsteps"), tr("Most steps"), 200000, tr("Unsettled by then: said, as a warning"))},
+          integer(QStringLiteral("maxsteps"), tr("Most steps"), 200000, tr("Unsettled by then: said, as a warning")),
+          choice(QStringLiteral("fieldsat"), tr("Field kept at"), {QStringLiteral("few"), QStringLiteral("middle"), QStringLiteral("all"), QStringLiteral("none")},
+                 {tr("Five wavelengths, evenly over the band"), tr("The wavelength nearest the band's middle"), tr("Every wavelength"),
+                  tr("None: the S-parameters only")},
+                 QStringLiteral("few"),
+                 tr("The wavelengths whose field (ewtd.normE...) is kept - each transformed at every step, a complex vector of the "
+                    "unknowns: fifty of them as long as the rest of a step, and their memory. The S-parameters at every wavelength "
+                    "whatever this is; the field elsewhere nought"))},
          {QStringLiteral("waves3t/port"), QStringLiteral("waves3t/pml")}, {}, false, false, QStringLiteral("ewtd"),
          tr("Light through a 3D device in the time domain by the finite element method: one pulse for every wavelength of a "
             "Wavelength Domain step. The frequency domain's curl-curl equation (Electromagnetic Waves, Frequency Domain) stepped by "
@@ -1940,9 +1951,13 @@ QList<NodeKind> makeKinds()
             "solutions exactly, at frequencies shifted as the steps say and undone. Each port needs a PML behind it: its waveguide "
             "going on into a Perfectly Matched Layer, the port on the face between - a source there (a sheet of current, its mode "
             "with a Gaussian pulse in time) and a monitor (the field on the device's side split into its modes' waves). The "
-            "S-parameters (ewtd.S21, ewtd.S21dB, ewtd.T) and the first fed port mode's field (ewtd.normE, ewtd.Ex...) at each "
-            "wavelength; the materials' ε at the band's middle, their loss a conductivity. Its memory a real factorization's - "
-            "half the frequency domain's at one wavelength.")});
+            "S-parameters (ewtd.S21, ewtd.S21dB; ewtd.R and ewtd.T over the modes taken, ewtd.Rall and ewtd.Tall over every "
+            "mode carrying power at the ports, taken or not) at each wavelength, the first fed port mode's field (ewtd.normE, ewtd.Ex...) at those asked. Each material's ε fitted "
+            "over the band - ε∞, a conductivity and a Lorentz pole -, its error in the log. Its memory: a real factorization (half "
+            "the frequency domain's complex one) and, for each fed port mode, the steps' history and the PMLs' states - so less "
+            "than the frequency domain's only with few fed: feed the mode whose column you want, and let Rall and Tall count the rest. "
+            "Its time: the steps (much the same for one wavelength or fifty), then each wavelength's ports' modes, side by side "
+            "- so it gains on the frequency domain with many wavelengths.")});
     add({QStringLiteral("waves3t/port"), tr("Optical Port"), QStringLiteral("ewtd"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
           text(QStringLiteral("modes"), tr("Its modes"), QStringLiteral("TE0"),
@@ -1950,8 +1965,11 @@ QList<NodeKind> makeKinds()
                   "split by commas")),
           integer(QStringLiteral("absorbed"), tr("Modes it counts"), 10,
                   tr("Its cross-section's modes found at each wavelength - those carrying power counted in what leaves (the "
-                     "balance)")),
-          flag(QStringLiteral("excite"), tr("Fed"), true, tr("Its modes fed - all at once, a pulse each: their columns of the S-matrix"))},
+                     "balance, Rall and Tall), taken or not")),
+          flag(QStringLiteral("excite"), tr("Fed"), true,
+               tr("Its modes fed - all at once, a pulse each: their columns of the S-matrix. Each fed mode is a column of every "
+                  "step's solve, history and PML states - twenty fed some five times the steps' time and more memory than the "
+                  "frequency domain's: take only the modes whose S-parameters you want (Rall and Tall count every mode carrying power)"))},
          {}, {}, false, false, QStringLiteral("op"),
          tr("Where light comes in and goes out: the faces in one vertical plane between the device and a PML its waveguide goes on "
             "into. Its modes, each normalized to 1 W, are the S-parameters' ports.")});
