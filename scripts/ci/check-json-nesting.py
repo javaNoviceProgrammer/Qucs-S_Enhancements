@@ -18,8 +18,11 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "..", "..", "qucs-s-26.1.1")
-# One inner list, nothing after it but the outer brace's end.
-ONE = re.compile(r"\b(QJsonArray|QVariantList|QStringList)\s*\{\s*\1\s*\{[^{}]*\}\s*\}")
+# One inner list, nothing after it but the outer brace's end; in an
+# expression, or as a variable's initializer - QJsonArray rows{QJsonArray{...}}
+# or rows = {QJsonArray{...}}, which the first pattern let through (an RF 2.5D
+# test's layer map, a row and no list of rows on CI's macOS: red from v27.0.8).
+ONE = re.compile(r"\b(QJsonArray|QVariantList|QStringList)(?:\s+[A-Za-z_]\w*)?\s*(?:=\s*)?\{\s*\1\s*\{[^{}]*\}\s*\}")
 
 
 def code(line):
