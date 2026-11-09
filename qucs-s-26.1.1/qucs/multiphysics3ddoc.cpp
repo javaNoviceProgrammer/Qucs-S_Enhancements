@@ -21,6 +21,7 @@
 #include "qucs.h"
 #include "settings.h"
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
@@ -36,6 +37,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMenu>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPrinter>
@@ -95,8 +97,18 @@ struct Parts {
     QByteArray solved;   // all a solve reads: the model but its results, title and description
 };
 
-Parts partsOf(const Model& m)
+void clearVisibility(Node& n)
 {
+    n.visibility.clear();
+    for (Node& c : n.children) clearVisibility(c);
+}
+
+Parts partsOf(const Model& model)
+{
+    // (What the view draws of each part is the view's alone: hidden, a part
+    // is built, meshed and solved as before.)
+    Model m = model;
+    clearVisibility(m.root);
     const QJsonObject o = m.toObject();
     const QJsonObject c = o.value(QStringLiteral("components")).toArray().at(0).toObject();
     Parts p;
@@ -229,11 +241,14 @@ void Multiphysics3DDoc::buildUi()
     all->setSpacing(0);
     auto* bar = new QWidget(this);
     bar->setObjectName(QStringLiteral("multiphysics3dToolbar"));
-    auto* row = new QHBoxLayout(bar);
-    row->setContentsMargins(6, 3, 6, 3);
+    // Two rows: what is built, solved and shown; under it where the view
+    // looks from, its cut and what it draws of each part, and the work going
+    // on.
+    QHBoxLayout* row = new QHBoxLayout(bar);
+    row->setContentsMargins(6, 3, 6, 1);
     row->setSpacing(4);
     auto button = [&](const QString& text, const QString& tip, const char* name) {
-        auto* b = new QToolButton(bar);
+        auto* b = new QToolButton(row->parentWidget());
         b->setText(text);
         b->setToolTip(tip);
         b->setObjectName(QString::fromLatin1(name));
@@ -295,7 +310,13 @@ void Multiphysics3DDoc::buildUi()
     connect(a_pointBox, &QComboBox::activated, this, [this](int index) { setShownPoint(index); });
     a_pointLabel->hide();
     a_pointBox->hide();
-    row->addSpacing(8);
+    row->addStretch(1);
+    all->addWidget(bar);
+    auto* viewBar = new QWidget(this);
+    viewBar->setObjectName(QStringLiteral("multiphysics3dViewBar"));
+    row = new QHBoxLayout(viewBar);
+    row->setContentsMargins(6, 1, 6, 3);
+    row->setSpacing(4);
     struct Preset {
         const char* name;
         QString text, tip;
@@ -313,8 +334,8 @@ void Multiphysics3DDoc::buildUi()
     QToolButton* fit = button(tr("Fit"), tr("Frame the whole model (View All)"), "mp3Fit");
     connect(fit, &QToolButton::clicked, this, [this] { a_view->fit(); });
     row->addSpacing(8);
-    row->addWidget(new QLabel(tr("Cut:"), bar));
-    a_clipBox = new QComboBox(bar);
+    row->addWidget(new QLabel(tr("Cut:"), viewBar));
+    a_clipBox = new QComboBox(viewBar);
     a_clipBox->setObjectName(QStringLiteral("mp3Clip"));
     a_clipBox->addItem(tr("None"), -1);
     a_clipBox->addItem(QStringLiteral("x"), 0);
@@ -322,10 +343,11 @@ void Multiphysics3DDoc::buildUi()
     a_clipBox->addItem(QStringLiteral("z"), 2);
     a_clipBox->setToolTip(tr("Cut away what lies beyond a plane across x, y or z, to see inside"));
     row->addWidget(a_clipBox);
-    a_clipSlider = new QSlider(Qt::Horizontal, bar);
+    a_clipSlider = new QSlider(Qt::Horizontal, viewBar);
     a_clipSlider->setObjectName(QStringLiteral("mp3ClipAt"));
     a_clipSlider->setRange(0, 100);
     a_clipSlider->setValue(50);
+    a_clipSlider->setMinimumWidth(60);
     a_clipSlider->setMaximumWidth(120);
     a_clipSlider->setEnabled(false);
     a_clipSlider->setToolTip(tr("Where the cut is, across the model's extent"));
@@ -339,14 +361,49 @@ void Multiphysics3DDoc::buildUi()
     };
     connect(a_clipBox, &QComboBox::activated, this, clip);
     connect(a_clipSlider, &QSlider::valueChanged, this, clip);
+    // What it draws of the part chosen in the tree: as the tree's menu has it.
+    row->addSpacing(8);
+    a_visibilityButton = button(tr("Visibility"), tr("How the view draws the part chosen in the tree: shown, hidden or its frame alone"),
+                                "mp3Visibility");
+    a_visibilityButton->setPopupMode(QToolButton::InstantPopup);
+    // (Its arrow in its text, in the theme's colour and with room of its own:
+    // a style draws its indicator over a text button's last letters.)
+    a_visibilityButton->setText(tr("Visibility") + QStringLiteral(" \u25BE"));
+    a_visibilityButton->setAccessibleName(tr("Visibility"));
+    a_visibilityButton->setStyleSheet(QStringLiteral("QToolButton#mp3Visibility::menu-indicator { image: none; width: 0px; }"));
+    {
+        auto* menu = new QMenu(a_visibilityButton);
+        menu->setObjectName(QStringLiteral("mp3VisibilityMenu"));
+        // (None checked where the node chosen is not a part.)
+        auto* group = new QActionGroup(menu);
+        group->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
+        auto add = [&](const QString& text, const char* name, Visibility v) {
+            QAction* a = menu->addAction(text, this, [this, v] {
+                setVisibility(a_focus, v);
+                updateVisibilityButton();   // (drawn so already: its check kept)
+            });
+            a->setObjectName(QString::fromLatin1(name));
+            a->setCheckable(true);
+            group->addAction(a);
+            return a;
+        };
+        a_showAction = add(tr("Show"), "mp3VisibilityShow", Visibility::Shown);
+        a_hideAction = add(tr("Hide"), "mp3VisibilityHide", Visibility::Hidden);
+        a_frameAction = add(tr("Frame Only"), "mp3VisibilityFrame", Visibility::Frame);
+        menu->addSeparator();
+        a_showAllAction = menu->addAction(tr("Show All"), this, [this] { showAllParts(); });
+        a_showAllAction->setObjectName(QStringLiteral("mp3VisibilityShowAll"));
+        a_visibilityButton->setMenu(menu);
+    }
     row->addStretch(1);
-    a_stage = new QLabel(bar);
+    a_stage = new QLabel(viewBar);
     a_stage->setObjectName(QStringLiteral("mp3Stage"));
     row->addWidget(a_stage);
-    a_progress = new QProgressBar(bar);
+    a_progress = new QProgressBar(viewBar);
     a_progress->setObjectName(QStringLiteral("mp3Progress"));
     a_progress->setRange(0, 1000);
     a_progress->setTextVisible(false);
+    a_progress->setMinimumWidth(60);
     a_progress->setMaximumWidth(140);
     a_progress->setMaximumHeight(14);
     row->addWidget(a_progress);
@@ -355,7 +412,8 @@ void Multiphysics3DDoc::buildUi()
     a_stage->hide();
     a_progress->hide();
     a_cancel->hide();
-    all->addWidget(bar);
+    all->addWidget(viewBar);
+    updateVisibilityButton();
 
     auto* split = new QSplitter(Qt::Vertical, this);
     split->setObjectName(QStringLiteral("mp3Splitter"));
@@ -595,6 +653,7 @@ void Multiphysics3DDoc::applyModel(const Model& model, bool read)
     }
     updateHighlight();
     updateScene();
+    updateVisibilityButton();
     emit modelChanged();
     updateState();
 }
@@ -1404,6 +1463,142 @@ void Multiphysics3DDoc::focusNode(const QString& tag)
     a_focus = tag;
     updateHighlight();
     updateScene();
+    updateVisibilityButton();
+}
+
+// ------------------------------------------------------------------ What is drawn of each part
+
+QString Multiphysics3DDoc::visibilityName(Visibility v)
+{
+    return v == Visibility::Hidden ? QStringLiteral("hidden") : v == Visibility::Frame ? QStringLiteral("frame") : QString();
+}
+
+Multiphysics3DDoc::Visibility Multiphysics3DDoc::visibilityOf(const QString& name)
+{
+    if (name == QLatin1String("hidden")) return Visibility::Hidden;
+    if (name == QLatin1String("frame")) return Visibility::Frame;
+    return Visibility::Shown;
+}
+
+namespace {
+
+/// Hidden below its frame below shown: of two, the lesser drawn.
+int drawnRank(Multiphysics3DDoc::Visibility v)
+{
+    return v == Multiphysics3DDoc::Visibility::Hidden ? 0 : v == Multiphysics3DDoc::Visibility::Frame ? 1 : 2;
+}
+
+Multiphysics3DDoc::Visibility leastDrawn(Multiphysics3DDoc::Visibility a, Multiphysics3DDoc::Visibility b)
+{
+    return drawnRank(a) <= drawnRank(b) ? a : b;
+}
+
+bool hideable(const Node& n)
+{
+    const NodeKind* k = n.kind();
+    if (!k) return false;
+    if (k->group == QLatin1String("geometry")) return n.type != QLatin1String("form union");
+    return k->group == QLatin1String("material");
+}
+
+void eachNode(const Node& n, const std::function<void(const Node&)>& f)
+{
+    f(n);
+    for (const Node& c : n.children) eachNode(c, f);
+}
+
+} // namespace
+
+bool Multiphysics3DDoc::canHide(const QString& tag) const
+{
+    const Node* n = a_model.find(tag);
+    if (!n || !hideable(*n)) return false;
+    // (Under the geometry or the materials: not a material of a physics'.)
+    for (const Node* under : {&a_model.geometry(), &a_model.materials()}) {
+        bool found = false;
+        eachNode(*under, [&](const Node& c) { found = found || &c == n; });
+        if (found) return true;
+    }
+    return false;
+}
+
+Multiphysics3DDoc::Visibility Multiphysics3DDoc::visibility(const QString& tag) const
+{
+    const Node* n = a_model.find(tag);
+    return n && canHide(tag) ? visibilityOf(n->visibility) : Visibility::Shown;
+}
+
+bool Multiphysics3DDoc::setVisibility(const QString& tag, Visibility v)
+{
+    if (!canHide(tag) || visibility(tag) == v) return false;
+    const Node* n = a_model.find(tag);
+    const QString what = v == Visibility::Hidden ? tr("Hide %1") : v == Visibility::Frame ? tr("Frame Only %1") : tr("Show %1");
+    return editNode(tag, [name = visibilityName(v)](Node& node) { node.visibility = name; }, what.arg(n->name()));
+}
+
+bool Multiphysics3DDoc::anyHidden() const
+{
+    bool any = false;
+    eachNode(a_model.root, [&any](const Node& n) { any = any || !n.visibility.isEmpty(); });
+    return any;
+}
+
+bool Multiphysics3DDoc::showAllParts()
+{
+    if (!anyHidden()) return false;
+    Model m = a_model;
+    clearVisibility(m.root);
+    return setModel(m, tr("Show All"));
+}
+
+std::vector<Multiphysics3DDoc::Visibility> Multiphysics3DDoc::domainVisibilities(const Topology3& t) const
+{
+    std::vector<Visibility> out(t.domains.size(), Visibility::Shown);
+    // The features hidden or framed, by name - a solid's own, or its
+    // group's (an extrude's, a stack's) -, as a feature's solids are
+    // chosen.
+    QHash<QString, Visibility> byName;
+    eachNode(a_model.geometry(), [&byName](const Node& n) {
+        if (n.visibility.isEmpty() || !hideable(n)) return;
+        const QString name = n.label.isEmpty() ? n.tag : n.label;
+        byName[name] = leastDrawn(byName.value(name, Visibility::Shown), visibilityOf(n.visibility));
+    });
+    if (!byName.isEmpty()) {
+        std::vector<Visibility> solid(std::size_t(t.objectNames.size()), Visibility::Shown);
+        for (int i = 0; i < t.objectNames.size(); ++i)
+            solid[std::size_t(i)] = leastDrawn(byName.value(t.objectNames.at(i), Visibility::Shown),
+                                               byName.value(t.objectGroups.value(i), Visibility::Shown));
+        // A domain as the solid it is of: the smallest that holds it (the
+        // core in its cladding the core's).
+        for (std::size_t d = 0; d < t.domains.size(); ++d) {
+            const int owner = t.domains[d].owner;
+            if (owner >= 0 && owner < int(solid.size())) out[d] = solid[std::size_t(owner)];
+        }
+    }
+    for (const Node& m : a_model.materials().children) {
+        if (m.visibility.isEmpty() || !hideable(m)) continue;
+        const Visibility v = visibilityOf(m.visibility);
+        for (int d : resolveSelection3(t, a_model, Level::Domain, m.selection()))
+            if (d >= 0 && d < int(out.size())) out[std::size_t(d)] = leastDrawn(out[std::size_t(d)], v);
+    }
+    return out;
+}
+
+void Multiphysics3DDoc::updateVisibilityButton()
+{
+    if (!a_visibilityButton) return;
+    const bool can = canHide(a_focus);
+    const Visibility v = visibility(a_focus);
+    for (QAction* a : {a_showAction, a_hideAction, a_frameAction}) a->setEnabled(can);
+    a_showAction->setChecked(can && v == Visibility::Shown);
+    a_hideAction->setChecked(can && v == Visibility::Hidden);
+    a_frameAction->setChecked(can && v == Visibility::Frame);
+    a_showAllAction->setEnabled(anyHidden());
+    a_visibilityButton->setEnabled(can || anyHidden());
+    const Node* n = a_model.find(a_focus);
+    a_visibilityButton->setToolTip(can && n ? tr("How the view draws %1: shown, hidden or its frame alone").arg(n->name())
+                                            : tr("How the view draws the part chosen in the tree (a solid's feature, a material): shown, hidden "
+                                                 "or its frame alone"));
 }
 
 void Multiphysics3DDoc::updateHighlight()
@@ -1751,9 +1946,58 @@ void Multiphysics3DDoc::updateScene(bool fit)
         if (a_highlightLevel == Level::Domain) return lit.contains(face.back) || lit.contains(face.front);
         return a_highlightLevel == Level::Boundary && lit.contains(f);
     };
+    // What each face, edge and point of a topology is drawn as, by what its
+    // parts are (Visibility): a face filled where a shown domain is on a side
+    // of it (2), its edges alone where a framed one is (1), else not at all
+    // (0); an edge where a face on it is drawn, a point where an edge is.
+    struct Drawn {
+        const Topology3* of = nullptr;
+        std::vector<Visibility> domain;
+        std::vector<char> face, edge, point;
+        bool any = false;   ///< something hidden or framed
+        bool none = false;  ///< every domain hidden
+    } drawn;
+    const bool hiding = anyHidden();
+    auto drawnOf = [&](const Topology3* top) -> const Drawn& {
+        if (drawn.of == top) return drawn;
+        drawn = {};
+        drawn.of = top;
+        if (!top || !hiding) return drawn;
+        drawn.domain = domainVisibilities(*top);
+        drawn.any = std::any_of(drawn.domain.begin(), drawn.domain.end(), [](Visibility v) { return v != Visibility::Shown; });
+        if (!drawn.any) return drawn;
+        drawn.none = std::all_of(drawn.domain.begin(), drawn.domain.end(), [](Visibility v) { return v == Visibility::Hidden; });
+        auto at = [&](int d) { return d >= 0 && d < int(drawn.domain.size()) ? drawn.domain[std::size_t(d)] : Visibility::Hidden; };
+        drawn.face.resize(top->faces.size());
+        for (std::size_t f = 0; f < top->faces.size(); ++f) {
+            const Visibility a = at(top->faces[f].back), b = at(top->faces[f].front);
+            drawn.face[f] = a == Visibility::Shown || b == Visibility::Shown ? 2 : a == Visibility::Frame || b == Visibility::Frame ? 1 : 0;
+        }
+        drawn.edge.resize(top->edges.size());
+        for (std::size_t e = 0; e < top->edges.size(); ++e) {
+            const std::vector<int>& on = top->edges[e].faces;
+            drawn.edge[e] = on.empty() || std::any_of(on.begin(), on.end(), [&](int f) {
+                return f >= 0 && f < int(drawn.face.size()) && drawn.face[std::size_t(f)] > 0;
+            });
+        }
+        drawn.point.resize(top->points.size());
+        for (std::size_t p = 0; p < top->points.size(); ++p) {
+            const std::vector<int>& on = top->points[p].edges;
+            drawn.point[p] = on.empty() || std::any_of(on.begin(), on.end(), [&](int e) {
+                return e >= 0 && e < int(drawn.edge.size()) && drawn.edge[std::size_t(e)];
+            });
+        }
+        return drawn;
+    };
     auto faceColor = [&](int f) {
         if (faceLit(f)) return Highlight;
         const Topology3::Face& face = t->faces[std::size_t(f)];
+        // (Between a part shown and one hidden or framed: the shown one's.)
+        const Drawn& d = drawnOf(t);
+        if (d.any) {
+            auto shown = [&d](int domain) { return domain >= 0 && domain < int(d.domain.size()) && d.domain[std::size_t(domain)] == Visibility::Shown; };
+            if (shown(face.back) != shown(face.front)) return domainColor(shown(face.back) ? face.back : face.front);
+        }
         return domainColor(std::max(face.back, face.front));
     };
     if (a_show == Show::Solution && a_solution) {
@@ -1843,12 +2087,18 @@ void Multiphysics3DDoc::updateScene(bool fit)
     } else if (a_show == Show::Mesh && a_mesh && !a_meshStale && a_mesh->topology) {
         const Mesh3& m = *a_mesh;
         t = m.topology.get();
+        const Drawn& d = drawnOf(t);
         for (const Mesh3::Face& f : m.faces) {
             if (ghost && !faceLit(f.face)) continue;
+            // (A part framed: its faces' mesh lines, not their fill.)
+            const int as = d.any && f.face >= 0 && f.face < int(d.face.size()) ? d.face[std::size_t(f.face)] : 2;
+            if (as == 0) continue;
             const QColor color = faceColor(f.face);
             const Vec3 a = m.nodes[std::size_t(f.nodes[0])], b = m.nodes[std::size_t(f.nodes[1])], c = m.nodes[std::size_t(f.nodes[2])];
-            scene.triangles.push_back({{a, b, c}, color, f.face});
-            if (f.quad) scene.triangles.push_back({{a, c, m.nodes[std::size_t(f.nodes[3])]}, color, f.face});
+            if (as == 2) {
+                scene.triangles.push_back({{a, b, c}, color, f.face});
+                if (f.quad) scene.triangles.push_back({{a, c, m.nodes[std::size_t(f.nodes[3])]}, color, f.face});
+            }
             const int n = f.quad ? 4 : 3;
             for (int i = 0; i < n; ++i)
                 scene.lines.push_back({m.nodes[std::size_t(f.nodes[std::size_t(i)])], m.nodes[std::size_t(f.nodes[std::size_t((i + 1) % n)])], edgeColor, 1, -1});
@@ -1878,8 +2128,27 @@ void Multiphysics3DDoc::updateScene(bool fit)
         }
         scene.bounds = t->bounds;
     }
+    // The parts hidden or framed: their faces (each triangle's id a face's),
+    // edges and points left out where nothing drawn is on them - in each
+    // view, the solution's and a plot group's too; a cut's slice kept.
+    const Drawn& d = drawnOf(t);
+    if (d.any) {
+        auto& tris = scene.triangles;
+        tris.erase(std::remove_if(tris.begin(), tris.end(),
+                                  [&d](const View3D::Triangle& x) { return x.id >= 0 && x.id < int(d.face.size()) && d.face[std::size_t(x.id)] < 2; }),
+                   tris.end());
+        auto& lines = scene.lines;
+        lines.erase(std::remove_if(lines.begin(), lines.end(),
+                                   [&d](const View3D::Line& x) { return x.id >= 0 && x.id < int(d.edge.size()) && !d.edge[std::size_t(x.id)]; }),
+                    lines.end());
+        auto& dots = scene.dots;
+        dots.erase(std::remove_if(dots.begin(), dots.end(),
+                                  [&d](const View3D::Dot& x) { return x.id >= 0 && x.id < int(d.point.size()) && !d.point[std::size_t(x.id)]; }),
+                   dots.end());
+    }
     Q_UNUSED(text);
-    a_view->setEmptyText(t && !t->domains.empty() ? QString()
+    a_view->setEmptyText(d.none ? tr("Every part is hidden: Visibility > Show All draws them again.")
+                         : t && !t->domains.empty() ? QString()
                          : a_geometryStale && a_job ? tr("Building the geometry…")
                                                     : tr("No solids yet: add a Box, a Cylinder, an Extrude of a sketch or a Layer Stack to "
                                                          "the Geometry (the Multiphysics 3D panel's tree)."));

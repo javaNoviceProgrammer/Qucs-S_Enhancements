@@ -6,7 +6,9 @@
  *                               opened, their geometry built in the
  *                               background and meshed; the 3D view's camera,
  *                               cut and picture; a selection drawn;
- *                               Claude's fem tools on a 3D model
+ *                               Claude's fem tools on a 3D model; the
+ *                               toolbar's two rows; parts hidden or drawn
+ *                               as their frame alone
  *
  * This file is part of Qucs-S.
  *
@@ -17,9 +19,11 @@
  */
 #include <QtTest>
 #include <QAction>
+#include <QApplication>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -30,6 +34,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSlider>
 #include <QStackedWidget>
@@ -41,6 +46,7 @@
 #include <QUndoStack>
 
 #include "config.h"
+#include "apptheme.h"
 #include "fem3_estimate.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -1454,6 +1460,344 @@ private slots:
             QVERIFY(!app->gotoPage(path(QStringLiteral("solid.qfem"))));
             QVERIFY2(capture.errors().join(QStringLiteral("\n")).contains(QStringLiteral("3D model")), qPrintable(capture.errors().join(QStringLiteral("\n"))));
         }
+    }
+
+    /// The toolbar on two rows: what is built, solved and shown above; where
+    /// the view looks from, its cut, what it draws of each part and the work
+    /// going on below - narrow enough for a narrow window.
+    void theToolbarsTwoRows()
+    {
+        Multiphysics3DDoc* doc = app->newMultiphysics3DModel();
+        QVERIFY(doc);
+        auto* first = doc->findChild<QWidget*>(QStringLiteral("multiphysics3dToolbar"));
+        auto* second = doc->findChild<QWidget*>(QStringLiteral("multiphysics3dViewBar"));
+        QVERIFY(first && second);
+        for (const char* name : {"mp3BuildGeometry", "mp3BuildMesh", "mp3Compute", "mp3Show", "mp3Plot", "mp3Time", "mp3Point"}) {
+            auto* w = doc->findChild<QWidget*>(QString::fromLatin1(name));
+            QVERIFY2(w && first->isAncestorOf(w), name);
+        }
+        for (const char* name : {"mp3Top", "mp3Front", "mp3Side", "mp3Iso", "mp3Fit", "mp3Clip", "mp3ClipAt", "mp3Visibility", "mp3Stage",
+                                 "mp3Progress", "mp3Cancel"}) {
+            auto* w = doc->findChild<QWidget*>(QString::fromLatin1(name));
+            QVERIFY2(w && second->isAncestorOf(w), name);
+        }
+        // Under the first, over the view.
+        QTRY_VERIFY(second->isVisible());
+        QVERIFY(second->geometry().top() >= first->geometry().bottom());
+        QVERIFY(doc->view()->mapTo(doc, QPoint(0, 0)).y() >= second->geometry().bottom());
+        // Each row narrower than the one row was, the second narrow.
+        QVERIFY2(second->minimumSizeHint().width() < 640, qPrintable(QString::number(second->minimumSizeHint().width())));
+        QVERIFY2(first->minimumSizeHint().width() < 900, qPrintable(QString::number(first->minimumSizeHint().width())));
+        // The Visibility drop-down: Show, Hide, Frame Only, Show All.
+        QToolButton* vis = doc->visibilityButton();
+        QVERIFY(vis && vis->menu());
+        QCOMPARE(vis->popupMode(), QToolButton::InstantPopup);
+        QStringList items;
+        for (QAction* a : vis->menu()->actions())
+            if (!a->isSeparator()) items << a->text();
+        QCOMPARE(items, (QStringList{QStringLiteral("Show"), QStringLiteral("Hide"), QStringLiteral("Frame Only"), QStringLiteral("Show All")}));
+    }
+
+    /// What the view draws of each part: a feature or a material shown,
+    /// hidden or its frame alone - from the tree's menu or the view's
+    /// drop-down, the two as one; each a step of Undo, kept in the file; the
+    /// geometry, the mesh and a solution as they were.
+    void hiddenAndFramedParts()
+    {
+        Multiphysics3DDoc* doc = app->newMultiphysics3DModel();
+        const std::optional<Model> wire = Model::fromJson(QJsonDocument(straightWire()).toJson());
+        QVERIFY(wire);
+        doc->setModel(*wire, QStringLiteral("wire"));
+        QVERIFY(doc->waitForIdle());
+        QVERIFY2(doc->geometry().ok(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        const Topology3& t = *doc->geometry().topology;
+        QString oxide, core, fin, oxideMaterial;
+        for (const FNode& g : doc->model().geometry().children) {
+            if (g.label == QLatin1String("oxide")) oxide = g.tag;
+            if (g.label == QLatin1String("core")) core = g.tag;
+            if (g.type == QLatin1String("form union")) fin = g.tag;
+        }
+        for (const FNode& m : doc->model().materials().children)
+            if (m.label == QLatin1String("oxide")) oxideMaterial = m.tag;
+        QVERIFY(!oxide.isEmpty() && !core.isEmpty() && !fin.isEmpty() && !oxideMaterial.isEmpty());
+        // What may be hidden: a solid's feature, a material - not Form Union,
+        // the geometry, the mesh.
+        QVERIFY(doc->canHide(oxide) && doc->canHide(core) && doc->canHide(oxideMaterial));
+        QVERIFY(!doc->canHide(fin) && !doc->canHide(doc->model().geometry().tag) && !doc->canHide(doc->model().mesh().tag));
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Shown);
+        // The core in its cladding: a domain of the core's own.
+        auto domainsOf = [&t](const QString& name) {
+            QList<int> out;
+            for (int d = 0; d < int(t.domains.size()); ++d)
+                if (t.domains[std::size_t(d)].owner >= 0 && t.objectNames.at(t.domains[std::size_t(d)].owner) == name) out << d;
+            return out;
+        };
+        const QList<int> cladding = domainsOf(QStringLiteral("oxide")), wireCore = domainsOf(QStringLiteral("core"));
+        QVERIFY(!cladding.isEmpty() && wireCore.size() == 1);
+        doc->buildMesh();
+        QVERIFY(doc->waitForIdle());
+        QVERIFY(doc->mesh() && !doc->meshStale());
+        doc->showGeometry();
+        const auto mesh = doc->mesh();
+        const auto topology = doc->geometry().topology;
+        const std::size_t allTriangles = doc->view()->scene().triangles.size();
+        const std::size_t allLines = doc->view()->scene().lines.size();
+        const int steps = doc->undoStack()->count();
+
+        // The tree's menu: Hide and Frame Only after Disable, Show not (it is
+        // shown); none on Form Union.
+        auto texts = [](QMenu* menu) {
+            QStringList out;
+            for (QAction* a : menu->actions())
+                if (!a->isSeparator() && !a->menu()) out << a->text();
+            return out;
+        };
+        {
+            QMenu* menu = panel()->menuFor(oxide);
+            const QStringList items = texts(menu);
+            QVERIFY2(items.contains(QStringLiteral("Hide")) && items.contains(QStringLiteral("Frame Only")) && !items.contains(QStringLiteral("Show")),
+                     qPrintable(items.join(QStringLiteral(", "))));
+            QCOMPARE(items.indexOf(QStringLiteral("Hide")), items.indexOf(QStringLiteral("Disable")) + 1);
+            QAction* hide = menu->findChild<QAction*>(QStringLiteral("mp3Hide"));
+            QVERIFY(hide);
+            hide->trigger();
+            delete menu;
+            QMenu* union_ = panel()->menuFor(fin);
+            QVERIFY(!texts(union_).contains(QStringLiteral("Hide")));
+            delete union_;
+        }
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Hidden);
+        QCOMPARE(doc->undoStack()->count(), steps + 1);
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Hide oxide"));
+        QVERIFY(doc->model().find(oxide)->enabled);
+        // The geometry and the mesh as they were: not built again.
+        QVERIFY(!doc->isBusy() && !doc->geometryStale() && !doc->meshStale());
+        QCOMPARE(doc->geometry().topology, topology);
+        QCOMPARE(doc->mesh(), mesh);
+        // The cladding's domains hidden, the core's drawn; no face drawn but
+        // the core's.
+        std::vector<Multiphysics3DDoc::Visibility> dv = doc->domainVisibilities(t);
+        for (int d : cladding) QCOMPARE(dv[std::size_t(d)], Multiphysics3DDoc::Visibility::Hidden);
+        QCOMPARE(dv[std::size_t(wireCore.first())], Multiphysics3DDoc::Visibility::Shown);
+        const View3D::Scene hidden = doc->view()->scene();   // (a copy: the view's own changes)
+        QVERIFY(!hidden.triangles.empty() && hidden.triangles.size() < allTriangles);
+        for (const View3D::Triangle& x : hidden.triangles) {
+            const Topology3::Face& f = t.faces[std::size_t(x.id)];
+            QVERIFY2(f.back == wireCore.first() || f.front == wireCore.first(), qPrintable(QString::number(x.id)));
+        }
+        QVERIFY(hidden.lines.size() < allLines);
+        // Marked in the tree: dimmed, "hidden".
+        QTreeWidgetItem* item = itemOf(panel()->tree(), oxide);
+        QVERIFY(item);
+        QCOMPARE(item->text(1), QStringLiteral("hidden"));
+        QCOMPARE(item->foreground(0).color(), QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+        QVERIFY(!item->font(0).italic());
+
+        // The view's drop-down, for the node chosen in the tree: as the menu
+        // has it.
+        panel()->selectNode(oxide);
+        QCOMPARE(doc->focus(), oxide);
+        QToolButton* vis = doc->visibilityButton();
+        auto action = [doc](const char* name) { return doc->findChild<QAction*>(QString::fromLatin1(name)); };
+        QVERIFY(vis->isEnabled() && action("mp3VisibilityHide")->isEnabled());
+        QVERIFY(action("mp3VisibilityHide")->isChecked() && !action("mp3VisibilityShow")->isChecked());
+        action("mp3VisibilityFrame")->trigger();
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Frame);
+        QVERIFY(action("mp3VisibilityFrame")->isChecked() && !action("mp3VisibilityHide")->isChecked());
+        QTRY_COMPARE(itemOf(panel()->tree(), oxide)->text(1), QStringLiteral("frame only"));
+        // Its frame: the cladding's edges drawn, none of its faces.
+        const View3D::Scene& framed = doc->view()->scene();
+        for (const View3D::Triangle& x : framed.triangles) {
+            const Topology3::Face& f = t.faces[std::size_t(x.id)];
+            QVERIFY(f.back == wireCore.first() || f.front == wireCore.first());
+        }
+        QVERIFY(framed.lines.size() > hidden.lines.size());
+        QCOMPARE(framed.lines.size(), allLines);
+        {
+            // (Its menu: Show and Hide, not Frame Only.)
+            QMenu* menu = panel()->menuFor(oxide);
+            const QStringList items = texts(menu);
+            QVERIFY(items.contains(QStringLiteral("Show")) && items.contains(QStringLiteral("Hide")) && !items.contains(QStringLiteral("Frame Only")));
+            delete menu;
+        }
+        // The mesh shown: the core's prisms' faces filled, the cladding's
+        // mesh lines alone.
+        doc->showMesh();
+        for (const View3D::Triangle& x : doc->view()->scene().triangles) {
+            const Topology3::Face& f = t.faces[std::size_t(x.id)];
+            QVERIFY(f.back == wireCore.first() || f.front == wireCore.first());
+        }
+        doc->showGeometry();
+
+        // Kept in the file; a file without it read as it was.
+        const QString file = path(QStringLiteral("hidden_wire.qfem3d"));
+        QVERIFY(doc->writeTo(file));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            const QByteArray bytes = f.readAll();
+            QVERIFY(bytes.contains("\"visibility\": \"frame\""));
+            const std::optional<Model> back = Model::fromJson(bytes);
+            QVERIFY(back && back->find(oxide));
+            QCOMPARE(back->find(oxide)->visibility, QStringLiteral("frame"));
+            QCOMPARE(back->find(core)->visibility, QString());
+            QCOMPARE(back->toJson(), doc->model().toJson());
+        }
+        QVERIFY(!wire->toJson().contains("visibility"));
+
+        // A material: its domains hidden, the least drawn of it and its
+        // feature's.
+        QVERIFY(doc->setVisibility(oxideMaterial, Multiphysics3DDoc::Visibility::Hidden));
+        dv = doc->domainVisibilities(t);
+        for (int d : cladding) QCOMPARE(dv[std::size_t(d)], Multiphysics3DDoc::Visibility::Hidden);
+        QCOMPARE(itemOf(panel()->tree(), oxideMaterial)->text(1), QStringLiteral("hidden"));
+        QVERIFY(!doc->setVisibility(oxideMaterial, Multiphysics3DDoc::Visibility::Hidden));   // (so already)
+        QVERIFY(!doc->setVisibility(fin, Multiphysics3DDoc::Visibility::Hidden));
+
+        // A node that is not a part chosen: the three not offered, Show All
+        // still.
+        panel()->selectNode(doc->model().mesh().tag);
+        QVERIFY(!action("mp3VisibilityShow")->isEnabled() && !action("mp3VisibilityHide")->isEnabled());
+        QVERIFY(!action("mp3VisibilityShow")->isChecked() && !action("mp3VisibilityHide")->isChecked());
+        QVERIFY(vis->isEnabled() && action("mp3VisibilityShowAll")->isEnabled());
+
+        // Everything hidden: said in the view.
+        QVERIFY(doc->setVisibility(core, Multiphysics3DDoc::Visibility::Hidden));
+        QVERIFY(doc->view()->scene().triangles.empty());
+        QVERIFY(doc->view()->scene().lines.empty());
+
+        // Undo: hidden again, then shown; Show All, one step.
+        doc->undo();   // the core shown
+        doc->undo();   // the material shown
+        QCOMPARE(doc->visibility(core), Multiphysics3DDoc::Visibility::Shown);
+        QCOMPARE(doc->visibility(oxideMaterial), Multiphysics3DDoc::Visibility::Shown);
+        doc->undo();
+        QCOMPARE(doc->visibility(oxide), Multiphysics3DDoc::Visibility::Hidden);
+        const int before = doc->undoStack()->index();
+        QVERIFY(doc->showAllParts());
+        QCOMPARE(doc->undoStack()->index(), before + 1);
+        QVERIFY(!doc->anyHidden() && !doc->showAllParts());
+        QCOMPARE(doc->view()->scene().triangles.size(), allTriangles);
+        QVERIFY(itemOf(panel()->tree(), oxide)->text(1).isEmpty());
+        QVERIFY(!doc->isBusy() && !doc->meshStale());
+        QCOMPARE(doc->mesh(), mesh);
+        // A duplicate drawn, where the first is hidden.
+        QVERIFY(doc->setVisibility(core, Multiphysics3DDoc::Visibility::Hidden));
+        QVERIFY(panel()->duplicateNode(core));
+        const QString copy = panel()->currentTag();
+        QVERIFY(copy != core && doc->model().find(copy));
+        QCOMPARE(doc->visibility(copy), Multiphysics3DDoc::Visibility::Shown);
+        QVERIFY(doc->waitForIdle());
+
+        // A solution: as it was, hidden - not stale -, its faces left out of
+        // the view.
+        Multiphysics3DDoc* block = app->newMultiphysics3DModel();
+        const std::optional<Model> heated = Model::fromJson(QJsonDocument(heatedBlock()).toJson());
+        QVERIFY(heated);
+        block->setModel(*heated, QStringLiteral("block"));
+        block->compute();
+        QVERIFY(block->waitForIdle(300000));
+        QVERIFY2(block->solution() && !block->solutionStale(), qPrintable(block->messages().join(QStringLiteral("\n"))));
+        QCOMPARE(block->show(), Multiphysics3DDoc::Show::Solution);
+        QVERIFY(!block->view()->scene().triangles.empty());
+        QString blk;
+        for (const FNode& g : block->model().geometry().children)
+            if (g.label == QLatin1String("blk")) blk = g.tag;
+        const auto solved = block->solution();
+        QVERIFY(block->setVisibility(blk, Multiphysics3DDoc::Visibility::Frame));
+        QVERIFY(!block->solutionStale() && !block->isBusy());
+        QCOMPARE(block->solution(), solved);
+        QCOMPARE(block->show(), Multiphysics3DDoc::Show::Solution);
+        QVERIFY(block->view()->scene().triangles.empty());
+        QVERIFY(!block->view()->scene().lines.empty());
+    }
+
+    /// Opt in (QUCS_MP3_PICTURES=<folder>; QUCS_MP3_PICTURES_MODEL=<a
+    /// .qfem3d>, copied first - the wire in its oxide when not given): the
+    /// window in the light and the dark theme, the model shown, its oxide
+    /// hidden and framed, the tree's menu and the view's Visibility
+    /// drop-down, and the toolbar's two rows in a narrow window - pictures to
+    /// look at.
+    void pictures()
+    {
+        const QString folder = qEnvironmentVariable("QUCS_MP3_PICTURES");
+        if (folder.isEmpty()) QSKIP("QUCS_MP3_PICTURES names a folder for the pictures");
+        QDir().mkpath(folder);
+        const QString given = qEnvironmentVariable("QUCS_MP3_PICTURES_MODEL");
+        const QString file = path(QStringLiteral("pictured.qfem3d"));
+        QFile::remove(file);
+        if (!given.isEmpty()) QVERIFY(QFile::copy(given, file));
+        else {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QJsonDocument(straightWire()).toJson());
+        }
+        QFile(file).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        Multiphysics3DDoc* doc = open(file);
+        QVERIFY(doc && doc->waitForIdle());
+        QVERIFY2(doc->geometry().ok(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        QString oxide;
+        for (const FNode& g : doc->model().geometry().children)
+            if (g.label == QLatin1String("oxide")) oxide = g.tag;
+        QVERIFY(!oxide.isEmpty());
+        const auto settle = [] {
+            for (int i = 0; i < 4; ++i) {
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+                QCoreApplication::processEvents();
+            }
+        };
+        const auto save = [&folder](QWidget* w, const QString& name) { QVERIFY(w->grab().save(QDir(folder).filePath(name + QStringLiteral(".png")))); };
+        const int before = qucs_s::apptheme::current();
+        for (const auto& [theme, name] : {std::pair{int(qucs_s::apptheme::Light), "light"}, std::pair{int(qucs_s::apptheme::Dark), "dark"}}) {
+            qucs_s::apptheme::apply(theme);
+            app->resize(1300, 900);
+            doc->showAllParts();
+            panel()->selectNode(oxide);
+            doc->view()->viewFrom(View3D::Preset::Iso);
+            settle();
+            save(app, QStringLiteral("%1-shown").arg(QLatin1String(name)));
+            // The tree's menu on the oxide.
+            QMenu* menu = panel()->menuFor(oxide);
+            menu->popup(panel()->tree()->viewport()->mapToGlobal(panel()->tree()->visualItemRect(itemOf(panel()->tree(), oxide)).center()));
+            settle();
+            save(menu, QStringLiteral("%1-tree-menu").arg(QLatin1String(name)));
+            menu->close();
+            delete menu;
+            QVERIFY(doc->setVisibility(oxide, Multiphysics3DDoc::Visibility::Hidden));
+            settle();
+            save(app, QStringLiteral("%1-oxide-hidden").arg(QLatin1String(name)));
+            QVERIFY(doc->setVisibility(oxide, Multiphysics3DDoc::Visibility::Frame));
+            settle();
+            save(app, QStringLiteral("%1-oxide-frame").arg(QLatin1String(name)));
+            // (The geometry chosen, not the oxide: no part lit.)
+            panel()->selectNode(doc->model().geometry().tag);
+            settle();
+            save(doc, QStringLiteral("%1-oxide-frame-unchosen").arg(QLatin1String(name)));
+            panel()->selectNode(oxide);
+            // The drop-down, open.
+            QMenu* drop = doc->visibilityButton()->menu();
+            drop->popup(doc->visibilityButton()->mapToGlobal(QPoint(0, doc->visibilityButton()->height())));
+            settle();
+            save(drop, QStringLiteral("%1-visibility-menu").arg(QLatin1String(name)));
+            save(doc->findChild<QWidget*>(QStringLiteral("multiphysics3dViewBar")), QStringLiteral("%1-view-bar").arg(QLatin1String(name)));
+            drop->close();
+            // A mesh being made: its stage, its bar and Cancel on the second
+            // row.
+            doc->buildMesh();
+            for (int i = 0; i < 50 && !doc->findChild<QProgressBar*>(QStringLiteral("mp3Progress"))->isVisible(); ++i) QTest::qWait(10);
+            save(app, QStringLiteral("%1-meshing").arg(QLatin1String(name)));
+            QVERIFY(doc->waitForIdle());
+            doc->showGeometry();
+            // Narrow: the two rows.
+            app->resize(900, 700);
+            settle();
+            save(app, QStringLiteral("%1-narrow").arg(QLatin1String(name)));
+            qInfo("%s: the first row %d wide at least, the second %d; the document %d", name,
+                  doc->findChild<QWidget*>(QStringLiteral("multiphysics3dToolbar"))->minimumSizeHint().width(),
+                  doc->findChild<QWidget*>(QStringLiteral("multiphysics3dViewBar"))->minimumSizeHint().width(), doc->width());
+        }
+        qucs_s::apptheme::apply(before);
+        app->resize(1300, 900);
     }
 
     /// The view: presets, fit, the cut, a picture, what is under a point; a

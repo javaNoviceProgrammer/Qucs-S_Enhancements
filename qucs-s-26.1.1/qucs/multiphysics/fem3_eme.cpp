@@ -1403,6 +1403,7 @@ EmeModes solveSectionModes(const Model& model, std::shared_ptr<ParameterScope> p
             if (picks[i].contains(rects[r].domain) && absorbKappa[r] == 0) names.append(QStringLiteral("r%1").arg(r + 1));
         if (names.isEmpty()) continue;
         Node copy = *materials[i];
+        copy.visibility.clear();   // (the view's alone: not a part of the cache's key)
         copy.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), names}});
         QString addWhy;
         if (!m2->add(m2->materials().tag, copy, -1, &addWhy)) {

@@ -27,6 +27,7 @@
 #include <functional>
 #include <memory>
 
+class QAction;
 class QComboBox;
 class QFileSystemWatcher;
 class QLabel;
@@ -208,6 +209,33 @@ public:
     /// The domains' colours, by number: what the view draws them in.
     static QColor domainColor(int domain);
 
+    // What the view draws of each part: the view's alone - the geometry,
+    // the mesh and a solve read none of it -, kept in the file
+    // (Node::visibility) and a step of Undo.
+    enum class Visibility { Shown, Hidden, Frame };
+    /// Whether node \a tag may be hidden: a geometry feature (Form Union
+    /// not), or a material (its domains).
+    bool canHide(const QString& tag) const;
+    /// How node \a tag is drawn (shown where it may not be hidden).
+    Visibility visibility(const QString& tag) const;
+    /// Node \a tag drawn so: a step of Undo. False where it may not be
+    /// hidden, or is drawn so already.
+    bool setVisibility(const QString& tag, Visibility visibility);
+    /// Each part hidden or framed shown again: one step of Undo. False where
+    /// none was.
+    bool showAllParts();
+    /// Whether some part is hidden or framed.
+    bool anyHidden() const;
+    /// How domain \a domain of \a topology is drawn: as its solid's
+    /// feature (the smallest that holds it, as its material is), the least
+    /// of that and its materials'.
+    std::vector<Visibility> domainVisibilities(const qucs_s::fem::Topology3& topology) const;
+    static QString visibilityName(Visibility visibility);   // "", "hidden", "frame"
+    static Visibility visibilityOf(const QString& name);
+    /// The view bar's Visibility drop-down: Show, Hide, Frame Only for the
+    /// node chosen in the tree, Show All.
+    QToolButton* visibilityButton() const { return a_visibilityButton; }
+
 signals:
     void modelChanged();
     /// Built, being built, stale: what the panel's status column shows.
@@ -242,6 +270,8 @@ private:
     void updateScene(bool fit = false);
     void updateHighlight();
     void updateState();
+    /// The Visibility drop-down as the node chosen is drawn.
+    void updateVisibilityButton();
     void watchFiles();
 
     qucs_s::fem::Model a_model;
@@ -311,6 +341,11 @@ private:
     QSlider* a_clipSlider = nullptr;
     QProgressBar* a_progress = nullptr;
     QToolButton* a_cancel = nullptr;
+    QToolButton* a_visibilityButton = nullptr;
+    QAction* a_showAction = nullptr;
+    QAction* a_hideAction = nullptr;
+    QAction* a_frameAction = nullptr;
+    QAction* a_showAllAction = nullptr;
     QLabel* a_stage = nullptr;
     QPlainTextEdit* a_notes = nullptr;
     QTableWidget* a_table = nullptr;
