@@ -1071,7 +1071,7 @@ QString Multiphysics3DDoc::showSpectrum(bool open, QString* error)
         if (error) *error = why;
         return QString();
     };
-    if (!a_solution || !a_solution->spectral || a_solution->optics.empty()) return fail(tr("no eigenmode expansion is solved over wavelengths"));
+    if (!a_solution || !a_solution->spectral || a_solution->optics.empty()) return fail(tr("no light is solved over wavelengths (an eigenmode expansion or a full-wave solve)"));
     const Solution3::Optics& o = a_solution->optics.front();
     if (o.results.size() < 2) return fail(tr("%1 is solved at one wavelength: a spectrum wants two or more").arg(o.physics));
     // By wavelength, rising.
@@ -1356,8 +1356,8 @@ void Multiphysics3DDoc::sayFinished(const StudyRun3& r, qint64 ms)
                 .arg(formatQuantity(a_solution->time(), Dim::of(0, 0, 1)))
                 .arg(a_solution->snapshotCount()));
     if (a_solution->spectral && !a_solution->optics.empty()) {
-        // An eigenmode expansion's: its ports' modes and |S|² in dB at the
-        // last wavelength, a row a fed port mode - not every global (five of
+        // An eigenmode expansion's or a full-wave solve's: its ports' modes
+        // and |S|² in dB at the last wavelength, a row a fed port mode - not every global (five of
         // each S-parameter).
         say(tr("At λ = %1, the last of %2 wavelengths:")
                 .arg(formatQuantity(299792458.0 / a_solution->frequency(), Dim::length()))

@@ -105,6 +105,10 @@ public:
     Eigen::ComputationInfo info() const;
     std::string lastErrorMessage() const;
     Vector solve(const Vector& b) const;
+    /// Many right-hand sides at once, a column each (Accelerate's solve of
+    /// them together: the factors read once).
+    using DenseMatrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+    DenseMatrix solveMany(const DenseMatrix& b) const;
     /// Accelerate's (else Eigen's), as analysed last.
     bool accelerated() const;
     /// Each factorization's condition checked too (either backend's): over
@@ -116,6 +120,11 @@ public:
     /// One of many solved at once, each on a thread of its own: Accelerate's
     /// from acceleratedFromAtOnce() unknowns, not acceleratedFrom().
     void setManyAtOnce(bool on);
+    /// Accelerate's analysis ordered by METIS, not its default - a 3D
+    /// model's curl-curl system of second-order edge elements: at 75 000
+    /// unknowns its LU 1.7 times quicker in four fifths of the memory. Before
+    /// analyzePattern(); Eigen's takes its own (COLAMD).
+    void setMetisOrdering(bool on);
     /// Its patterns analysed so far (a pattern within the one analysed is
     /// not analysed again; for the tests).
     int analyses() const;
@@ -156,6 +165,45 @@ public:
     bool singularToRounding() const;
     std::string lastErrorMessage() const;
     Eigen::VectorXd solve(const Eigen::VectorXd& b) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> a_impl;
+};
+
+/*!
+ * A sparse LDLᵀ of a complex symmetric matrix (Aᵀ = A, not Hermitian - a
+ * time-harmonic curl-curl system's, its PMLs' too): Accelerate's (macOS 26
+ * and later; threshold partial pivoting, METIS's ordering) where
+ * acceleratedLu() - a 3D wave solve of 97 000 unknowns (PMLs round a
+ * wire) factorized in 1.4 s, its process 1.9 GB, against Accelerate's LU's
+ * 66 s and 9.1 GB, the S-parameters the same to every digit printed; else
+ * a SparseLu (METIS's ordering where Accelerate's). The matrix given whole
+ * (its lower triangle read).
+ */
+class SparseComplexLdlt
+{
+public:
+    using Matrix = Eigen::SparseMatrix<std::complex<double>>;
+    using Vector = Eigen::VectorXcd;
+    using DenseMatrix = Eigen::MatrixXcd;
+    SparseComplexLdlt();
+    ~SparseComplexLdlt();
+    SparseComplexLdlt(const SparseComplexLdlt&) = delete;
+    SparseComplexLdlt& operator=(const SparseComplexLdlt&) = delete;
+
+    void compute(const Matrix& a);
+    Eigen::ComputationInfo info() const;
+    std::string lastErrorMessage() const;
+    Vector solve(const Vector& b) const;
+    DenseMatrix solveMany(const DenseMatrix& b) const;
+    /// "Accelerate's LDLT", or the LU's ("Eigen's LU", "Accelerate's LU").
+    QString name() const;
+    /// Accelerate's: its factors and workspace as its analysis says (bytes;
+    /// 0 another's) - and past \a limit (0: none), not factorized: info() a
+    /// failure, lastErrorMessage() what it would take. Before compute().
+    void setMemoryLimit(double bytes);
+    double factorBytes() const;
 
 private:
     struct Impl;
