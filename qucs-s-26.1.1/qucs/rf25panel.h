@@ -68,6 +68,11 @@ public:
     bool moveNode(const QString& tag, int by);
     bool setNodeEnabled(const QString& tag, bool enabled);
     bool renameNode(const QString& tag, const QString& label);
+    /// The Stack's Import Stack… and Export Stack…: a file asked for, an XML
+    /// stackup of HFSS™ 3D Layout or an EMX process file, and what came of it
+    /// said in a box.
+    void importStackFile();
+    void exportStackFile();
 
     // For the tests.
     QTreeWidget* tree() const { return a_tree; }

@@ -20,6 +20,7 @@
 #include "rf25/rf25_circuit.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_hfss.h"
+#include "rf25/rf25_stackfile.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_kept.h"
 #include "rf25/rf25_layout.h"
@@ -378,6 +379,18 @@ public:
     /// The model and its shapes as they stand, written for HFSS™ 3D Layout
     /// (rf25_hfss.h): the problems say why not where its shapes are not made.
     qucs_s::rf25::HfssExport hfssExport(const qucs_s::rf25::HfssOptions& options = {}) const;
+    /// The stack written to \a path as the stack file its suffix says: .xml an
+    /// HFSS™ 3D Layout XML stackup, .proc an EMX process file
+    /// (rf25_stackfile.h). False and why in \a error; what was written, and
+    /// where it is not what RF 2.5D solves, in \a written.
+    bool exportStack(const QString& path, qucs_s::rf25::StackWritten* written = nullptr, QString* error = nullptr) const;
+    /// \a path, an XML stackup or a process file, read as the stack: the
+    /// Stack's children in place of these, and the layer map's rows for its
+    /// layers, one step of Undo. False and why in \a error; what was read in
+    /// \a read, and what is not as it was, or is now named but gone, in
+    /// \a notes.
+    bool importStack(const QString& path, qucs_s::rf25::StackRead* read = nullptr, QStringList* notes = nullptr,
+                     QString* error = nullptr);
     /// Which of the processed shapes a coplanar port returns through, as the
     /// full-wave solve finds them, one for each; empty where it finds none or
     /// there is no mesh to tell by.
