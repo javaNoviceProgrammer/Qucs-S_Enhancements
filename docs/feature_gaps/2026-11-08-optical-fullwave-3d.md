@@ -2,7 +2,7 @@
 
 Optical S-parameters of a 3D device - a junction, a bend, a crossing, a Y-branch, an MMI, a grating's step - by solving
 Maxwell's equations over the whole geometry at each wavelength: the "3D FEM" of the plan agreed after the eigenmode expansion
-(2026-11-08-optical-eme-3d.md), stages F1 to F4. The time domain (FDTD, T1 to T3) is not begun.
+(2026-11-08-optical-eme-3d.md), stages F1 to F4. The time domain followed by the finite element method, not FDTD: 2026-11-09-optical-timedomain-3d.md.
 
 ## What it is
 
@@ -130,3 +130,16 @@ coarse-mesh warning).
 
 Through ctest: the whole Release suite (183 of 183), `test_fem3_wave` and `test_fem3_eme` in the Debug ASan + UBSan tree (85 s
 and 520 s), and the four lints.
+
+## Since (2026-11-09, with the time domain)
+
+- **Ports with a PML behind them** in the frequency domain too: a port's faces may lie inside the geometry, between the device
+  and a PML its waveguide goes on into. Such a port is a source (a sheet of current, its mode both ways) and a monitor (the
+  device side's field split into each mode's incoming and outgoing waves, H's flux from the device side's own residual), S = B
+  A⁻¹ over the fed port modes - the hollow guide's phase error 9.0e-5 rad, |S11| 1.8e-6. All of a solve's ports one kind or
+  the other.
+- **One index for every PML's stretching**: the lowest of the PMLs' materials', not each domain's own (σ jumped across a layer
+  a core goes on into - a mode grew without end in the time domain). The sidewall step's |S11| 3.231e-3 for 3.259e-3; the other
+  tests' numbers as before.
+- The setup shared with the time domain (`fem3_wave_setup.h`); `SparseCholesky` gained a block solve and its factors' size.
+

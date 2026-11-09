@@ -311,7 +311,8 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
           QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
-          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme"), QStringLiteral("waves3")},
+          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme"), QStringLiteral("waves3"),
+          QStringLiteral("waves3t")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -1878,6 +1879,54 @@ QList<NodeKind> makeKinds()
          {}, {}, false, false, QStringLiteral("pml"),
          tr("Domains that absorb what reaches them: stretched outward from the box of the rest (s = 1 - jσ0 ξ², σ0 = 1.5 ln(1/R)/(k d)) - "
             "boxes round the device, in the material at its edge, half a micrometre or more thick.")});
+
+    // Light through a 3D model's devices in the time domain (fem3_wavetd.cpp):
+    // the frequency domain's equation stepped by the trapezoidal rule, one
+    // pulse - the S-parameters at every wavelength of the step.
+    add({QStringLiteral("waves3t"), tr("Electromagnetic Waves, Time Domain"), QStringLiteral("physics"), QStringLiteral("ewtd"), Level::None,
+         {choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
+                 {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"),
+                 tr("As the frequency domain's: its steps' transforms are its solutions")),
+          expr(QStringLiteral("portresolution"), tr("Ports' elements per wavelength"), QString(), QStringLiteral("30"),
+               tr("Of each port's cut, whose modes its source sends and its monitor splits the field into: λ0/n over this in each "
+                  "material")),
+          expr(QStringLiteral("stepsperperiod"), tr("Steps a period"), QString(), QStringLiteral("6"),
+               tr("At the band's middle. The steps' error is not an inaccuracy but a shift of frequency, known and undone (ω' = "
+                  "(2/Δt) tan(ωΔt/2)): fewer steps a run, as long as four or more")),
+          expr(QStringLiteral("decay"), tr("Settled at"), QString(), QStringLiteral("1e-5"),
+               tr("The run stops once the ports' fields, after the pulse, have fallen to this of their peak: the transforms' "
+                  "truncation")),
+          integer(QStringLiteral("maxsteps"), tr("Most steps"), 200000, tr("Unsettled by then: said, as a warning"))},
+         {QStringLiteral("waves3t/port"), QStringLiteral("waves3t/pml")}, {}, false, false, QStringLiteral("ewtd"),
+         tr("Light through a 3D device in the time domain by the finite element method: one pulse for every wavelength of a "
+            "Wavelength Domain step. The frequency domain's curl-curl equation (Electromagnetic Waves, Frequency Domain) stepped by "
+            "the trapezoidal rule - each step a solve of one real, positive definite matrix, factorized once (Cholesky), the PMLs' "
+            "and the materials' terms recursions of their own -, so that the steps' Fourier transforms are the frequency domain's "
+            "solutions exactly, at frequencies shifted as the steps say and undone. Each port needs a PML behind it: its waveguide "
+            "going on into a Perfectly Matched Layer, the port on the face between - a source there (a sheet of current, its mode "
+            "with a Gaussian pulse in time) and a monitor (the field on the device's side split into its modes' waves). The "
+            "S-parameters (ewtd.S21, ewtd.S21dB, ewtd.T) and the first fed port mode's field (ewtd.normE, ewtd.Ex...) at each "
+            "wavelength; the materials' ε at the band's middle, their loss a conductivity. Its memory a real factorization's - "
+            "half the frequency domain's at one wavelength.")});
+    add({QStringLiteral("waves3t/port"), tr("Optical Port"), QStringLiteral("ewtd"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
+          text(QStringLiteral("modes"), tr("Its modes"), QStringLiteral("TE0"),
+               tr("The modes it takes, each an S-parameter's port: by polarization and order (TE0, TM0, TE1), or by index (1, 2), "
+                  "split by commas")),
+          integer(QStringLiteral("absorbed"), tr("Modes it counts"), 10,
+                  tr("Its cross-section's modes found at each wavelength - those carrying power counted in what leaves (the "
+                     "balance)")),
+          flag(QStringLiteral("excite"), tr("Fed"), true, tr("Its modes fed - all at once, a pulse each: their columns of the S-matrix"))},
+         {}, {}, false, false, QStringLiteral("op"),
+         tr("Where light comes in and goes out: the faces in one vertical plane between the device and a PML its waveguide goes on "
+            "into. Its modes, each normalized to 1 W, are the S-parameters' ports.")});
+    add({QStringLiteral("waves3t/pml"), tr("Perfectly Matched Layer"), QStringLiteral("ewtd"), QStringLiteral("pml"), Level::Domain,
+         {selectionProp(none),
+          expr(QStringLiteral("reflection"), tr("Its reflection"), QString(), QStringLiteral("1e-6"),
+               tr("Of a wave at normal incidence, from its outside and back: its stretching's strength"))},
+         {}, {}, false, false, QStringLiteral("pml"),
+         tr("Domains that absorb what reaches them, as the frequency domain's (s = 1 + σ/(jk0), σ the same at every frequency): boxes "
+            "round the device and behind each port.")});
 
     // Semiconductors.
     add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,
@@ -4209,7 +4258,8 @@ QList<NodeKind> makeKinds()
         QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
     const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
                                   QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("eme/periodic"),
-                                  QStringLiteral("waves3"), QStringLiteral("waves3/port"), QStringLiteral("waves3/pml"), QStringLiteral("wavelength")};
+                                  QStringLiteral("waves3"), QStringLiteral("waves3/port"), QStringLiteral("waves3/pml"), QStringLiteral("waves3t"),
+                                  QStringLiteral("waves3t/port"), QStringLiteral("waves3t/pml"), QStringLiteral("wavelength")};
     // Solved in 3D too: heat, electrostatics and currents with their
     // features, and a study's Stationary and Time Dependent steps and its
     // Parametric Sweep - the first's adaptive refinement and light loop the
@@ -4316,7 +4366,8 @@ QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
             QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
-            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme"), QStringLiteral("waves3")};
+            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme"), QStringLiteral("waves3"),
+            QStringLiteral("waves3t")};
 }
 
 // ------------------------------------------------------------------ Node

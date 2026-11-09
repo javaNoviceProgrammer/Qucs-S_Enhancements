@@ -439,8 +439,8 @@ Export3 touchstone3(const Solutions3& set, const Node& node)
             break;
         }
     if (!o) {
-        out.main.error = chosen.isEmpty() ? tr("no light is solved: its Touchstone file is of an Electromagnetic Waves, Eigenmode Expansion's "
-                                               "or Frequency Domain's S-matrix, solved by a Wavelength Domain step")
+        out.main.error = chosen.isEmpty() ? tr("no light is solved: its Touchstone file is of an Electromagnetic Waves, Eigenmode Expansion's, "
+                                               "Frequency Domain's or Time Domain's S-matrix, solved by a Wavelength Domain step")
                                           : tr("there is no eigenmode expansion or full-wave solve %1 solved").arg(chosen.join(QLatin1String(", ")));
         return out;
     }

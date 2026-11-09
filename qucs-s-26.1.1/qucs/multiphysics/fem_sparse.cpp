@@ -945,6 +945,9 @@ struct SparseCholesky::Impl {
     bool analysed = false, factored = false;
     SparseOpaqueSymbolicFactorization symbolic{};
     SparseOpaqueFactorization_Double numeric{};
+    // (A block solve's scratch, kept: allocated a call, a time-domain
+    // solve's thousands of steps took four times the factors' reading.)
+    mutable std::vector<double> workspace;
     SparseMatrixStructure structure()
     {
         SparseAttributes_t a{};
@@ -1105,6 +1108,42 @@ Eigen::VectorXd SparseCholesky::solve(const Eigen::VectorXd& b) const
 #endif
     if (!d.eigen || d.info != Eigen::Success) return Eigen::VectorXd::Constant(b.size(), std::numeric_limits<double>::quiet_NaN());
     return Eigen::VectorXd(d.eigen->solve(b));
+}
+
+Eigen::MatrixXd SparseCholesky::solveMany(const Eigen::MatrixXd& b) const
+{
+    Impl& d = *a_impl;
+#if defined(QUCS_ACCELERATE)
+    if (d.accelerate) {
+        Eigen::MatrixXd x = b;
+        if (d.n == 0 || !d.factored || b.rows() != d.n) {
+            x.setConstant(std::numeric_limits<double>::quiet_NaN());
+            return x;
+        }
+        if (x.cols() > 0) {
+            const std::size_t bytes = d.numeric.solveWorkspaceRequiredStatic + std::size_t(x.cols()) * d.numeric.solveWorkspaceRequiredPerRHS;
+            if (d.workspace.size() * sizeof(double) < bytes) d.workspace.assign(bytes / sizeof(double) + 1, 0.0);
+            SparseSolve(d.numeric, DenseMatrix_Double{d.n, int(x.cols()), d.n, SparseAttributes_t{}, x.data()}, d.workspace.data());
+        }
+        return x;
+    }
+#endif
+    if (!d.eigen || d.info != Eigen::Success) return Eigen::MatrixXd::Constant(b.rows(), b.cols(), std::numeric_limits<double>::quiet_NaN());
+    return Eigen::MatrixXd(d.eigen->solve(b));
+}
+
+double SparseCholesky::factorBytes() const
+{
+#if defined(QUCS_ACCELERATE)
+    const Impl& d = *a_impl;
+    if (d.accelerate && d.analysed) return double(d.symbolic.factorSize_Double) + double(d.symbolic.workspaceSize_Double);
+#endif
+    return 0;
+}
+
+QString SparseCholesky::name() const
+{
+    return a_impl->accelerate ? QStringLiteral("Accelerate's Cholesky") : QStringLiteral("Eigen's LDLT");
 }
 
 } // namespace qucs_s::fem
