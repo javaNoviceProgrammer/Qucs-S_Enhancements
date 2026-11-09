@@ -280,6 +280,10 @@ public:
     /// a solve going on, an edit's mesh overtaking it or a Stop, is seen in
     /// any build, not only of a solve slow enough to be caught at it.
     void holdSolves(bool held) { a_solvesHeld->store(held); }
+    /// Tests: while held, every model's shapes and cells wait before they
+    /// are made (a layout small enough is made before anything can look).
+    static void holdPreparing(bool held) { preparingHeld().store(held); }
+    static std::atomic_bool& preparingHeld();
     /// Tests: a full-wave solve begins only \a count more of its
     /// frequencies - its sweep's, then its calibration strips' - and waits
     /// until it is allowed more; below nought, as many as it has, as it

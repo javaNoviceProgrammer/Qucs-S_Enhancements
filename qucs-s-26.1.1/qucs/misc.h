@@ -50,6 +50,8 @@ namespace misc {
   /// relief returned nothing, and the freed blocks stay with the process
   /// for its next allocations (its footprint, not its memory in use).
   void releaseFreedMemory();
+  /// How many times releaseFreedMemory() has been called (tests).
+  int memoryReleases();
   QColor ColorFromString(const QString& color);
   /// \a timer started again - a file changed, written in pieces maybe -
   /// but not past \a most ms after the first change it waits for
