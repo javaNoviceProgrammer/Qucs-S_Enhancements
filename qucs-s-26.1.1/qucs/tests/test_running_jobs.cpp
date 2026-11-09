@@ -500,7 +500,12 @@ private slots:
         // As test_qucs_control's line: a ground, a substrate, one metal.
         qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
         m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
-        QJsonArray rows{QJsonArray{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}};
+        // (Built by append: QJsonArray rows{QJsonArray{...}} is the row
+        // itself, not a list of it, to Apple's newer clang - CI's -, and
+        // the map named no layer there: "4 shape(s) are on layers the map
+        // does not name", red on macOS CI from v27.0.8.)
+        QJsonArray rows;
+        rows.append(QJsonArray{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")});
         m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
         m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
         m.mesh().props.insert(QStringLiteral("cells_across"), 0);
