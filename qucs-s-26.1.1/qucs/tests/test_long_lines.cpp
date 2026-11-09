@@ -597,6 +597,22 @@ private slots:
             qInfo("%s (%s): the dock %d wide, sideways %d of %d", qPrintable(file), qPrintable(QApplication::platformName()), app->claudeDockWidget()->width(),
                   panel->transcript()->horizontalScrollBar()->value(), panel->transcript()->horizontalScrollBar()->maximum());
         }
+        // Each prompt's date (Extras > Show Prompt Dates): the user's own exchange.
+        const qint64 sent = QDateTime(QDate(2026, 11, 8), QTime(14, 5)).toMSecsSinceEpoch();
+        const QJsonArray entries{
+            QJsonObject{{"kind", 0}, {"text", "yes, add them"}, {"extra", "soi_neff.qfem"}, {"when", sent}},
+            QJsonObject{{"kind", 1}, {"text", "I added both points to the review, in a new section."}},
+            QJsonObject{{"kind", 0}, {"text", QStringLiteral("a prompt long enough to wrap onto a second line, its date above it at the far end of the line of You and Edit")}, {"when", sent + 86400000}},
+            QJsonObject{{"kind", 0}, {"text", "/compact"}}};
+        ClaudeCodePanel::setPromptDatesShown(true);
+        panel->restoreConversation(QJsonObject{{"entries", entries}});
+        panel->renderNow();
+        settle();
+        const QString theme = pictureTheme() == qucs_s::apptheme::Dark ? QStringLiteral("dark") : QStringLiteral("light");
+        QVERIFY(panel->transcript()->grab().save(QDir(folder).filePath(QStringLiteral("dates-%1-dock.png").arg(theme))));
+        QVERIFY(panel->exportConversation(QDir(folder).filePath(QStringLiteral("dates-%1.pdf").arg(theme)), ClaudeCodePanel::ExportFormat::Pdf));
+        qInfo("dates: %d shown", int(panel->promptDates().size()));
+        ClaudeCodePanel::setPromptDatesShown(false);
     }
 };
 

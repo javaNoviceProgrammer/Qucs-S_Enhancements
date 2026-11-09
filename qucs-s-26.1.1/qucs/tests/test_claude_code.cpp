@@ -41,9 +41,12 @@
 #include <QTableView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QHelpEvent>
+#include <QLocale>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
+#include <QToolTip>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -6884,6 +6887,191 @@ private slots:
         QVERIFY(shown().contains(blob));
         // The fragment after it where it was: the words still follow.
         QVERIFY(shown().endsWith(QStringLiteral("Then words.")));
+    }
+
+    // ⋯ > Extras > Show Prompt Dates: each prompt's date, MM/DD/YYYY, at the far
+    // end of its "You  Edit" line, above its bubble (the user, 9 November). Drawn
+    // over the transcript, not in it; each prompt's time kept with the conversation.
+    void promptDatesShowInEachPromptsCorner()
+    {
+        ClaudeCodePanel::setPromptDatesShown(false);
+        ClaudeCodePanel panel;
+        showForReply(panel, "promptdates");
+        panel.resize(420, 700);
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextBrowser* view = panel.transcript();
+        QTextDocument* doc = view->document();
+        auto* action = panel.findChild<QAction*>("claudeShowPromptDates");
+        QVERIFY(action != nullptr);
+        QVERIFY(action->isCheckable());
+        auto* extras = qobject_cast<QMenu*>(action->parent());
+        QVERIFY(extras != nullptr);
+        QCOMPARE(extras->title().remove('&'), QStringLiteral("Extras"));
+        emit extras->aboutToShow();
+        QVERIFY(!action->isChecked());   // (off at first)
+
+        // Sent: its time kept, to the millisecond.
+        const QString longFirst = QStringLiteral("a first line of many words that goes on ").repeated(4).trimmed();
+        const QString prompt = longFirst + QStringLiteral("\nand a second line that goes on as long as the first does, and longer than it too");
+        const qint64 before = QDateTime::currentMSecsSinceEpoch();
+        panel.composer()->setPlainText(prompt);
+        panel.sendButton()->click();
+        const qint64 after = QDateTime::currentMSecsSinceEpoch();
+        panel.renderNow();
+        const QJsonObject kept = panel.conversationJson().value("entries").toArray().first().toObject();
+        const qint64 when = kept.value("when").toInteger();
+        QVERIFY(when >= before && when <= after);
+        const QString date = QDateTime::fromMSecsSinceEpoch(when).toLocalTime().date().toString("MM/dd/yyyy");
+        QVERIFY(QRegularExpression("^\\d\\d/\\d\\d/\\d{4}$").match(date).hasMatch());
+
+        // The prompt's bubble and its first two blocks.
+        const auto bubble = [doc]() -> QTextFrame* {
+            for (QTextFrame* f : doc->rootFrame()->childFrames())
+                if (f->frameFormat().background().style() != Qt::NoBrush) return f;
+            return nullptr;
+        };
+        const auto firstBlock = [doc, &bubble] { return doc->findBlock(bubble()->firstPosition()); };
+        QVERIFY(bubble() != nullptr);
+        // Not shown: none drawn.
+        QVERIFY(panel.promptDates().isEmpty());
+        const qreal firstWidth = firstBlock().layout()->lineAt(0).naturalTextWidth();
+        const int firstRows = firstBlock().layout()->lineCount();
+        const QImage without = view->viewport()->grab().toImage();
+
+        // Shown, from the menu: the date, on the caption's line above the bubble,
+        // level with the caption's words, its right end at the bubble's; the
+        // prompt laid out as it was.
+        action->trigger();
+        QVERIFY(ClaudeCodePanel::promptDatesShown());
+        panel.renderNow();
+        QCoreApplication::processEvents();
+        emit extras->aboutToShow();
+        QVERIFY(action->isChecked());
+        QList<QPair<QRectF, QString>> dates = panel.promptDates();
+        QCOMPARE(dates.size(), 1);
+        QCOMPARE(dates.first().second, date);
+        const QRectF at = dates.first().first;
+        const qreal scrolled = view->verticalScrollBar()->value();
+        const QRectF box = doc->documentLayout()->frameBoundingRect(bubble()).translated(0, -scrolled);
+        QVERIFY2(std::abs(at.right() - box.right()) < 1.0, qPrintable(QStringLiteral("%1 %2").arg(at.right()).arg(box.right())));
+        QVERIFY2(at.bottom() <= box.top() + 1, qPrintable(QStringLiteral("date %1..%2, the bubble from %3").arg(at.top()).arg(at.bottom()).arg(box.top())));
+        const QTextBlock caption = firstBlock().previous();
+        QVERIFY(caption.text().startsWith(QStringLiteral("You")));
+        const QRectF captionBox = doc->documentLayout()->blockBoundingRect(caption).translated(0, -scrolled);
+        const QTextLine captionLine = caption.layout()->lineAt(0);
+        const qreal captionBaseline = captionBox.top() + captionLine.y() + captionLine.ascent();
+        const qreal dateBaseline = at.top() + QFontMetricsF(caption.begin().fragment().charFormat().font()).ascent();
+        QVERIFY2(std::abs(dateBaseline - captionBaseline) < 1.0, qPrintable(QStringLiteral("%1 %2").arg(dateBaseline).arg(captionBaseline)));
+        QVERIFY(at.left() > captionBox.left() + captionLine.naturalTextWidth() + 12);   // (clear of "You  Edit")
+        QCOMPARE(firstBlock().blockFormat().rightMargin(), 0.0);
+        QCOMPARE(firstBlock().layout()->lineCount(), firstRows);
+        QCOMPARE(firstBlock().layout()->lineAt(0).naturalTextWidth(), firstWidth);
+        // Drawn: ink where it is, none there without it.
+        const QImage with = view->viewport()->grab().toImage();
+        const qreal ratio = with.devicePixelRatio();
+        const QColor page = view->palette().color(QPalette::Base);
+        const auto inkedOn = [ratio](const QImage& image, const QRectF& r, const QColor& under) {
+            int n = 0;
+            for (int y = int(r.top() * ratio); y < int(r.bottom() * ratio); ++y)
+                for (int x = int(r.left() * ratio); x < int(r.right() * ratio); ++x)
+                    if (image.pixelColor(x, y) != under) ++n;
+            return n;
+        };
+        QVERIFY(inkedOn(with, at, page) > 10);
+        QCOMPARE(inkedOn(without, at, page), 0);
+        const QRect pixels(int(at.left() * ratio), int(at.top() * ratio), int(at.width() * ratio), int(at.height() * ratio));
+        QVERIFY(with.copy(pixels) != without.copy(pixels));
+        ClaudeCodePanel::setPromptDatesShown(false);
+        panel.renderNow();
+        QCoreApplication::processEvents();
+        QVERIFY(view->viewport()->grab().toImage().copy(pixels) != with.copy(pixels));
+        ClaudeCodePanel::setPromptDatesShown(true);
+        panel.renderNow();
+        QCoreApplication::processEvents();
+        QVERIFY(view->viewport()->grab().toImage().copy(pixels) == with.copy(pixels));
+        // The date and time in full, under the pointer.
+        QHelpEvent tip(QEvent::ToolTip, at.center().toPoint(), view->viewport()->mapToGlobal(at.center().toPoint()));
+        QCoreApplication::sendEvent(view->viewport(), &tip);
+        QTRY_VERIFY(QToolTip::isVisible());
+        QCOMPARE(QToolTip::text(), QLocale().toString(QDateTime::fromMSecsSinceEpoch(when).toLocalTime(), QLocale::LongFormat));
+        QToolTip::hideText();
+
+        // In nothing read from the transcript: copied, quoted.
+        view->selectAll();
+        view->copy();
+        QVERIFY(!QApplication::clipboard()->text().contains(date));
+        QVERIFY(QApplication::clipboard()->text().contains(longFirst));
+        panel.composer()->clear();
+        QVERIFY(choose(view, "a first line", "longer than it too"));
+        rightClick(view->viewport(), onSelection(view), QStringLiteral("Reply"));
+        QVERIFY(!panel.composer()->toPlainText().contains(date));
+        panel.composer()->clear();
+        // Sized: still in the corner.
+        panel.resize(700, 700);
+        panel.renderNow();
+        QCoreApplication::processEvents();
+        dates = panel.promptDates();
+        QCOMPARE(dates.size(), 1);
+        QVERIFY(std::abs(dates.first().first.right() - doc->documentLayout()->frameBoundingRect(bubble()).right()) < 1.0);
+        // Too narrow for both (the dock is never this narrow; its text is laid
+        // out so here): the caption's words alone, the date not over them.
+        // (Room for the caption's words and the date, not the gap between them.)
+        const int narrow = int(2 * doc->documentMargin() + captionLine.naturalTextWidth() + at.width() + 4);
+        view->setLineWrapMode(QTextEdit::FixedPixelWidth);
+        view->setLineWrapColumnOrWidth(narrow);
+        QCoreApplication::processEvents();
+        QVERIFY(panel.promptDates().isEmpty());
+        view->setLineWrapMode(QTextEdit::WidgetWidth);
+        QCoreApplication::processEvents();
+        QCOMPARE(panel.promptDates().size(), 1);
+        panel.resize(420, 700);
+        panel.renderNow();
+
+        // Brought back: the same date. A conversation of before, its prompts' times
+        // not kept: none, nothing kept clear.
+        ClaudeCodePanel again;
+        again.resize(420, 700);
+        again.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&again));
+        again.restoreConversation(panel.conversationJson());
+        again.renderNow();
+        QCOMPARE(again.promptDates().size(), 1);
+        QCOMPARE(again.promptDates().first().second, date);
+        again.restoreConversation(QJsonObject{{"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "An old prompt"}}}}});
+        again.renderNow();
+        QVERIFY(again.promptDates().isEmpty());
+        // A prompt of Claude Code's own session: the time it kept.
+        const QString jsonl = fresh("promptdates-history") + "/s.jsonl";
+        {
+            QFile f(jsonl);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(R"({"type":"user","timestamp":"2025-03-04T05:06:07.890Z","cwd":"/tmp","sessionId":"s1","message":{"role":"user","content":"From the history"}})" "\n");
+        }
+        QVERIFY(again.importClaudeSession(jsonl));
+        again.renderNow();
+        QCOMPARE(again.promptDates().size(), 1);
+        QCOMPARE(again.promptDates().first().second,
+                 QDateTime::fromString("2025-03-04T05:06:07.890Z", Qt::ISODateWithMs).toLocalTime().date().toString("MM/dd/yyyy"));
+        QCOMPARE(again.conversationJson().value("entries").toArray().first().toObject().value("when").toInteger(),
+                 QDateTime::fromString("2025-03-04T05:06:07.890Z", Qt::ISODateWithMs).toMSecsSinceEpoch());
+
+        // Off: gone from every conversation, each drawing itself again.
+        action->trigger();
+        QVERIFY(!ClaudeCodePanel::promptDatesShown());
+        QTRY_VERIFY(panel.promptDates().isEmpty());
+        QTRY_VERIFY(again.promptDates().isEmpty());
+        // And on again from the other: both, and the first's menu ticked as it opens.
+        auto* other = again.findChild<QAction*>("claudeShowPromptDates");
+        other->trigger();
+        QTRY_COMPARE(panel.promptDates().size(), 1);
+        QTRY_COMPARE(again.promptDates().size(), 1);
+        QVERIFY(!action->isChecked());   // (as it was left)
+        emit extras->aboutToShow();
+        QVERIFY(action->isChecked());
+        // On paper too, drawn the same way.
+        QString error;
+        QVERIFY2(panel.exportConversation(fresh("promptdates-pdf") + "/c.pdf", ClaudeCodePanel::ExportFormat::Pdf, &error), qPrintable(error));
+        ClaudeCodePanel::setPromptDatesShown(false);
     }
 
     void longTextsLeaveTheDockNarrow()
