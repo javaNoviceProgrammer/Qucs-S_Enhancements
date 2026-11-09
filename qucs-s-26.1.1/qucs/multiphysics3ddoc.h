@@ -215,7 +215,9 @@ public:
     enum class Visibility { Shown, Hidden, Frame };
     /// Whether node \a tag may be hidden: a geometry feature (Form Union
     /// not), or a material (its domains).
-    bool canHide(const QString& tag) const;
+    bool canHide(const QString& tag) const { return canHide(a_model, tag); }
+    /// ... in model \a model (fem_edit's, before it is set).
+    static bool canHide(const qucs_s::fem::Model& model, const QString& tag);
     /// How node \a tag is drawn (shown where it may not be hidden).
     Visibility visibility(const QString& tag) const;
     /// Node \a tag drawn so: a step of Undo. False where it may not be
