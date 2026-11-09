@@ -580,6 +580,8 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
             write(model);
             write(QFileInfo(model).absoluteDir().filePath(QFileInfo(model).completeBaseName() + QStringLiteral(".gds")));
         }
+    } else if (tool == QLatin1String("rf25_stack_export")) {
+        if (!text("file").isEmpty()) write(QFileInfo(text("file")).isAbsolute() ? QDir::cleanPath(text("file")) : QDir::cleanPath(QDir(beside.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : beside).filePath(text("file"))));
     } else if (tool == QLatin1String("rf25_compare")) {
         if (!text("table").isEmpty()) write(QFileInfo(text("table")).isAbsolute() ? QDir::cleanPath(text("table")) : QDir::cleanPath(QDir(beside.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : beside).filePath(text("table"))));
     } else if (tool == QLatin1String("rename_file")) {

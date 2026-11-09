@@ -3097,6 +3097,42 @@ HfssExport RF25Doc::hfssExport(const HfssOptions& options) const
                         QStringLiteral("Qucs-S %1").arg(misc::buildName()), returnShapes());
 }
 
+bool RF25Doc::exportStack(const QString& path, StackWritten* written, QString* error) const
+{
+    const std::optional<StackFormat> format = stackFormatOf(path);
+    if (!format) {
+        if (error != nullptr) *error = tr("%1 is neither an XML stackup (.xml) nor an EMX process file (.proc).").arg(QFileInfo(path).fileName());
+        return false;
+    }
+    const QString name = getDocName().isEmpty() ? QString() : QFileInfo(getDocName()).completeBaseName();
+    const QString madeBy = QStringLiteral("Qucs-S %1").arg(misc::buildName());
+    const StackWritten w = *format == StackFormat::Hfss ? hfssStackupOf(a_model, name, madeBy) : emxProcessOf(a_model, name, madeBy);
+    if (written != nullptr) *written = w;
+    if (!w.ok()) {
+        if (error != nullptr) *error = tr("The stack cannot be written as it stands: %1").arg(w.problems.join(QLatin1Char(' ')));
+        return false;
+    }
+    const QByteArray bytes = w.text.toUtf8();
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+        if (error != nullptr) *error = tr("%1 could not be written: %2.").arg(QDir::toNativeSeparators(path), file.errorString());
+        return false;
+    }
+    return true;
+}
+
+bool RF25Doc::importStack(const QString& path, StackRead* read, QStringList* notes, QString* error)
+{
+    const std::optional<StackRead> r = stackFileRead(path, error);
+    if (!r) return false;
+    QStringList named;
+    const Model changed = withStackOf(a_model, *r, &named);
+    setModel(changed, tr("Import Stack"));
+    if (read != nullptr) *read = *r;
+    if (notes != nullptr) *notes = r->notes + named;
+    return true;
+}
+
 QStringList RF25Doc::inductanceSummary() const
 {
     QStringList out;

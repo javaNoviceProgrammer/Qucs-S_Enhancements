@@ -12,6 +12,7 @@
  * (at your option) any later version.
  */
 #include "rf25_hfss.h"
+#include "rf25_stackfile.h"
 
 #include "layout.h"
 #include "multiphysics/fem_import.h"
@@ -31,6 +32,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QXmlStreamReader>
+#include <QBuffer>
 
 #include <algorithm>
 #include <cmath>
@@ -103,7 +105,7 @@ struct StackBuilt {
 /// The project's layers as a stack. \a plane names the signal layer to make
 /// the ground, none where it is empty.
 StackBuilt stackFrom(const QList<EdbLayer>& given, const QHash<QString, EdbMaterial>& materials, const QString& plane,
-                     const Model& blank, QStringList* notes)
+                     const Model& blank, QStringList* notes, bool viaRuns = true)
 {
     StackBuilt out;
     QList<EdbLayer> signalLayers, dielectrics;
@@ -129,7 +131,7 @@ StackBuilt stackFrom(const QList<EdbLayer>& given, const QHash<QString, EdbMater
     // Metals and vias apart.
     QList<EdbLayer> metals;
     QList<EdbLayer> viaLike;
-    const QSet<QString> viaNames = viaLayersIn(signalLayers);
+    const QSet<QString> viaNames = viaRuns ? viaLayersIn(signalLayers) : QSet<QString>();
     for (const EdbLayer& l : std::as_const(signalLayers)) {
         if (l.name == plane || l.elevation + l.thickness <= floor - 1e-12) continue;
         (viaNames.contains(l.name) ? viaLike : metals) << l;
@@ -561,14 +563,10 @@ double controlLength(const QString& text, const QString& unit)
     return metres;
 }
 
-bool readControl(const QString& path, ControlFile* out, QString* error)
+/// A control file read from \a device; \a path names it in what is said.
+bool readControlFrom(QIODevice* device, const QString& path, ControlFile* out, QString* error)
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error != nullptr) *error = tr("%1 could not be read: %2.").arg(QDir::toNativeSeparators(path), file.errorString());
-        return false;
-    }
-    QXmlStreamReader xml(&file);
+    QXmlStreamReader xml(device);
     QString material, property;
     QString layersUnit = QStringLiteral("mm"), boundaryUnit = QStringLiteral("mm");
     QStringList section;
@@ -587,7 +585,10 @@ bool readControl(const QString& path, ControlFile* out, QString* error)
             if (name == QLatin1String("Material")) {
                 material = a.value(QLatin1String("Name")).toString();
                 out->materials.insert(material.toLower(), EdbMaterial());
-            } else if (name == QLatin1String("Permittivity") || name == QLatin1String("DielectricLossTangent") || name == QLatin1String("Conductivity")) {
+            } else if (!material.isEmpty() && name != QLatin1String("Double")) {
+                // (Every property of a material, so that a Double of one not
+                //  read - Permeability, written after Permittivity - is not
+                //  taken for the last one that is.)
                 property = name;
             } else if (name == QLatin1String("Double") && !material.isEmpty()) {
                 const double v = xml.readElementText().toDouble();
@@ -616,7 +617,11 @@ bool readControl(const QString& path, ControlFile* out, QString* error)
                     l.fill = a.value(QLatin1String("FillMaterial")).toString();
                     l.thickness = controlLength(a.value(QLatin1String("Thickness")).toString(), layersUnit);
                     l.elevation = controlLength(a.value(QLatin1String("Elevation")).toString(), layersUnit);
-                    out->layers << l;
+                    // (Several GDSII layers to one target are one layer of it,
+                    //  as a documented example maps streams 30 and 31 to "new".)
+                    const bool known = std::any_of(out->layers.cbegin(), out->layers.cend(),
+                                                   [&l](const EdbLayer& o) { return o.signal && o.name == l.name; });
+                    if (!known) out->layers << l;
                     out->rows << ControlFile::Row{attrName, a.hasAttribute(QLatin1String("GDSDataType")) ? a.value(QLatin1String("GDSDataType")).toString() : QStringLiteral("0"), l.name, false, {}, {}, {}};
                 } else if (within == QLatin1String("Vias")) {
                     ControlFile::Row r;
@@ -688,6 +693,16 @@ bool readControl(const QString& path, ControlFile* out, QString* error)
         out->sweep.data = QStringLiteral("LINC %1Hz %2Hz %3").arg(numberText(start), numberText(stop)).arg(n);
     }
     return true;
+}
+
+bool readControl(const QString& path, ControlFile* out, QString* error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error != nullptr) *error = tr("%1 could not be read: %2.").arg(QDir::toNativeSeparators(path), file.errorString());
+        return false;
+    }
+    return readControlFrom(&file, path, out, error);
 }
 
 bool readControlFile(const QString& path, const QString& layoutGiven, HfssImport* out, QString* error)
@@ -1239,6 +1254,145 @@ bool readProject(const QString& path, HfssImport* out, QString* error)
 }
 
 } // namespace
+
+QList<Node> stackOfLayers(const QList<EdbLayer>& layers, const QHash<QString, EdbMaterial>& materials, const QString& plane,
+                          const QString& lid, bool viaRuns, QStringList* said, QStringList* notes, QHash<QString, QString>* nameOf)
+{
+    QStringList ignored;
+    QStringList* toNotes = notes != nullptr ? notes : &ignored;
+    // The lid apart, and the room of vacuum under it, which is its height.
+    QList<EdbLayer> given = layers;
+    double lidAt = -1, height = 0;
+    QString gapName;
+    if (!lid.isEmpty()) {
+        for (int k = 0; k < given.size(); ++k)
+            if (given.at(k).signal && given.at(k).name == lid) {
+                lidAt = given.at(k).elevation;
+                given.removeAt(k);
+                break;
+            }
+        for (int k = 0; k < given.size(); ++k) {
+            const EdbLayer& d = given.at(k);
+            if (d.signal || std::abs(d.elevation + d.thickness - lidAt) > 1e-12) continue;
+            const EdbMaterial m = materials.value(d.material.toLower());
+            if (m.epsr != 1 || m.tand != 0 || m.sigma != 0) continue;
+            height = d.thickness;
+            gapName = d.name;
+            given.removeAt(k);
+            break;
+        }
+    }
+    const StackBuilt built = stackFrom(given, materials, plane, Model::blank(), toNotes, viaRuns);
+    QList<Node> nodes = built.nodes;
+    QStringList layersSaid = built.layers;
+    if (lidAt >= 0) {
+        Node cover = Model::blank().make(QStringLiteral("rf_cover"));
+        cover.label = lid;
+        cover.props.insert(QStringLiteral("kind"), QStringLiteral("perfect"));
+        cover.props.insert(QStringLiteral("height"), lengthText(height));
+        nodes.push_back(cover);
+        layersSaid << tr("%1 (a metal lid %2 µm above the top%3)")
+                          .arg(lid, numberText(height * 1e6), gapName.isEmpty() ? QString() : tr(", over %1").arg(gapName));
+    }
+    if (said != nullptr) *said = layersSaid;
+    if (nameOf != nullptr) *nameOf = built.nameOf;
+    return nodes;
+}
+
+std::optional<StackRead> hfssStackupRead(const QByteArray& text, const QString& name, QString* error)
+{
+    QByteArray bytes = text;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::ReadOnly);
+    ControlFile control;
+    if (!readControlFrom(&buffer, name, &control, error)) return std::nullopt;
+    StackRead out;
+    out.format = StackFormat::Hfss;
+
+    QList<EdbLayer> signalLayers, dielectrics;
+    for (const EdbLayer& l : std::as_const(control.layers)) (l.signal ? signalLayers : dielectrics) << l;
+    if (dielectrics.isEmpty() && signalLayers.isEmpty()) {
+        if (error != nullptr) *error = tr("%1 has no layers: no <Stackup> with <Dielectrics> or <Layers> in it.").arg(name);
+        return std::nullopt;
+    }
+    std::stable_sort(signalLayers.begin(), signalLayers.end(), below);
+    double bottom = 1e300, top = -1e300;
+    for (const EdbLayer& d : std::as_const(dielectrics)) {
+        bottom = std::min(bottom, d.elevation);
+        top = std::max(top, d.elevation + d.thickness);
+    }
+    // A metal at the bottom of every dielectric can only be the ground here,
+    // where every metal stands on the substrate; a perfect one over them all, with nothing
+    // or vacuum between, a lid (as rf25_stack_export writes them).
+    QString plane, lid;
+    if (!signalLayers.isEmpty() && !dielectrics.isEmpty()) {
+        const EdbLayer& lowest = signalLayers.first();
+        if (lowest.elevation <= bottom + 1e-12) {
+            plane = lowest.name;
+            out.notes << tr("%1 lies at the bottom of every dielectric: the ground plane here, where every metal stands on the substrate.").arg(plane);
+        }
+        const EdbLayer& highest = signalLayers.last();
+        const double sigma = control.materials.value(highest.material.toLower()).sigma;
+        if (highest.name != plane && highest.elevation >= top - 1e-12 && sigma >= 1e20 && signalLayers.size() > 1) {
+            const bool overVacuum = std::any_of(dielectrics.cbegin(), dielectrics.cend(), [&](const EdbLayer& d) {
+                const EdbMaterial m = control.materials.value(d.material.toLower());
+                return std::abs(d.elevation + d.thickness - highest.elevation) <= 1e-12 && m.epsr == 1 && m.tand == 0 && m.sigma == 0;
+            });
+            // (A perfect metal on the top dielectric is as likely a line of pec.)
+            if (overVacuum) lid = highest.name;
+        }
+    }
+    QHash<QString, QString> nameOf;
+    out.nodes = stackOfLayers(control.layers, control.materials, plane, lid, true, &out.layers, &out.notes, &nameOf);
+
+    // The vias, between their metals, and the layer map of the layers named by
+    // their GDSII number.
+    static const QRegularExpression number(QStringLiteral("^\\d+$"));
+    QSet<QString> viaNames, mapped;
+    QStringList metalsOrder;
+    for (const Node& n : std::as_const(out.nodes))
+        if (n.type == QLatin1String("rf_metal")) metalsOrder << n.label;
+    for (const ControlFile::Row& r : std::as_const(control.rows)) {
+        if (r.via) {
+            if (!viaNames.contains(r.target)) {
+                viaNames.insert(r.target);
+                const bool aGround = r.start == plane, bGround = r.stop == plane;
+                QString a = aGround ? QStringLiteral("ground") : nameOf.value(r.start), b = bGround ? QStringLiteral("ground") : nameOf.value(r.stop);
+                if (a.isEmpty() || b.isEmpty()) {
+                    out.notes << tr("The via %1 joins %2 and %3, which are not both metals of the stack: left out.").arg(r.target, r.start, r.stop);
+                    continue;
+                }
+                // From the lower to the upper (Ansys writes StartLayer the upper).
+                if (bGround || (!aGround && metalsOrder.indexOf(a) > metalsOrder.indexOf(b))) std::swap(a, b);
+                Node v = Model::blank().make(QStringLiteral("rf_via"));
+                v.label = r.target;
+                v.props.insert(QStringLiteral("from"), a);
+                v.props.insert(QStringLiteral("to"), b);
+                const double sigma = control.materials.value(r.material.toLower()).sigma;
+                if (sigma > 0) v.props.insert(QStringLiteral("sigma"), numberText(sigma));
+                else out.notes << tr("The via %1 has no conductivity in the file: the via's own default is taken.").arg(r.target);
+                int place = int(out.nodes.size());
+                for (int k = 0; k < out.nodes.size(); ++k)
+                    if (out.nodes.at(k).type == QLatin1String("rf_metal") && out.nodes.at(k).label == b) {
+                        place = k;
+                        break;
+                    }
+                out.nodes.insert(place, v);
+                ++out.vias;
+            }
+        }
+        if (r.target == plane || !number.match(r.layer).hasMatch()) continue;
+        const QString to = r.via ? r.target : nameOf.value(r.target);
+        if (to.isEmpty()) continue;
+        const QString key = r.layer + QLatin1Char('/') + (r.datatype.isEmpty() ? QStringLiteral("0") : r.datatype);
+        if (mapped.contains(key)) continue;
+        mapped.insert(key);
+        out.rows.append(QJsonArray{r.layer, r.datatype.isEmpty() ? QStringLiteral("0") : r.datatype, to});
+    }
+    if (!control.ports.isEmpty() || control.hasSweep)
+        out.notes << tr("%1 is a whole control file: its stack alone is read here (rf25_hfss_import reads the rest, with its GDSII file).").arg(name);
+    return out;
+}
 
 HfssImport hfssImportOf(const QString& path, const QString& layoutFile, QString* error)
 {

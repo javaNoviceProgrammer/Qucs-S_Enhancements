@@ -1311,6 +1311,80 @@ QJsonObject QucsControl::rf25HfssExport(const QJsonObject& args)
                                                               .arg(QFileInfo(where).fileName())}});
 }
 
+namespace {
+
+QString stackFormatName(StackFormat format)
+{
+    return format == StackFormat::Hfss ? QStringLiteral("hfss") : QStringLiteral("emx");
+}
+
+} // namespace
+
+QJsonObject QucsControl::rf25StackExport(const QJsonObject& args)
+{
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (!path.isEmpty()) {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+    }
+    QucsDoc* doc = a_app->getDoc();
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_stack_export writes the stack of one.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    QString where = args.value(QLatin1String("file")).toString().trimmed();
+    if (where.isEmpty()) return errorResult(tr("'file' says where: a .xml for an HFSS™ 3D Layout XML stackup, a .proc for an EMX process file."));
+    if (const QString bad = badFileName(QFileInfo(where).fileName()); !bad.isEmpty()) return errorResult(tr("'file': %1.").arg(bad));
+    const QString name = model->getDocName();
+    const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
+    where = QDir::cleanPath(dir.absoluteFilePath(where));
+    const std::optional<StackFormat> format = stackFormatOf(where);
+    if (!format)
+        return errorResult(tr("'file' is a .xml (an HFSS™ 3D Layout XML stackup) or a .proc (an EMX process file), not %1.").arg(QFileInfo(where).fileName()));
+    if (!QFileInfo(QFileInfo(where).absolutePath()).isDir()) return errorResult(tr("There is no folder %1.").arg(QFileInfo(where).absolutePath()));
+    if (const QString no = aboutToWrite(where); !no.isEmpty()) return errorResult(no);
+    StackWritten written;
+    QString why;
+    if (!model->exportStack(where, &written, &why)) return errorResult(why);
+    return jsonResult(QJsonObject{{QStringLiteral("file"), where},
+                                  {QStringLiteral("format"), stackFormatName(*format)},
+                                  {QStringLiteral("layers"), written.layers},
+                                  {QStringLiteral("vias"), written.vias},
+                                  {QStringLiteral("gds_layers"), written.mapped},
+                                  {QStringLiteral("notes"), QJsonArray::fromStringList(written.notes)}});
+}
+
+QJsonObject QucsControl::rf25StackImport(const QJsonObject& args)
+{
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (!path.isEmpty()) {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+    }
+    QucsDoc* doc = a_app->getDoc();
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_stack_import reads a stack into one.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    QString file = args.value(QLatin1String("file")).toString().trimmed();
+    if (file.isEmpty()) return errorResult(tr("'file' names the stack file: an HFSS™ 3D Layout XML stackup (.xml) or an EMX process file (.proc)."));
+    const QString name = model->getDocName();
+    const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
+    file = QDir::cleanPath(dir.absoluteFilePath(file));
+    if (!QFileInfo(file).isFile()) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(file)));
+    StackRead read;
+    QStringList notes;
+    QString why;
+    if (!model->importStack(file, &read, &notes, &why)) return errorResult(why);
+    return jsonResult(QJsonObject{{QStringLiteral("file"), file},
+                                  {QStringLiteral("format"), stackFormatName(read.format)},
+                                  {QStringLiteral("stack"), QJsonArray::fromStringList(read.layers)},
+                                  {QStringLiteral("vias"), read.vias},
+                                  {QStringLiteral("layer_map_rows"), read.rows},
+                                  {QStringLiteral("notes"), QJsonArray::fromStringList(notes)},
+                                  {QStringLiteral("problems"), QJsonArray::fromStringList(model->problems())}});
+}
+
 QJsonObject QucsControl::rf25HfssImport(const QJsonObject& args)
 {
     const QString given = args.value(QLatin1String("path")).toString().trimmed();
