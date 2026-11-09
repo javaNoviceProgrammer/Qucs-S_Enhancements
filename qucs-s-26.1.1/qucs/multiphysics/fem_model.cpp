@@ -311,7 +311,7 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
           QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
-          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme")},
+          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme"), QStringLiteral("waves3")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -1868,6 +1868,51 @@ QList<NodeKind> makeKinds()
                 "sidewall grating - its reflection converges slowly with the modes and the mesh: a 2D one checked against the full-wave "
                 "solver came 7 to 15 % short; check it with more of both.")});
     }
+
+    // Light through a 3D model's devices by the finite element method
+    // (fem3_wave.h): E on edge elements of its prism mesh, ports that absorb
+    // their cut's modes, PMLs - the S-parameters at each wavelength.
+    add({QStringLiteral("waves3"), tr("Electromagnetic Waves, Frequency Domain"), QStringLiteral("physics"), QStringLiteral("ewfd"), Level::None,
+         {choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
+                 {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"),
+                 tr("Quadratic: a waveguide's phase right to some 1e-4 rad a micrometre at fifteen elements per wavelength, and a "
+                    "junction's S to 0.1 % at five in each material; linear wants some three times finer")),
+          expr(QStringLiteral("portresolution"), tr("Ports' elements per wavelength"), QString(), QStringLiteral("30"),
+               tr("Of each port's cut, whose modes the port absorbs: λ0/n over this in each material")),
+          flag(QStringLiteral("throughpml"), tr("Ports through the PMLs"), false,
+               tr("Off: a port's faces on a PML left out, metal behind the PML there, its modes the window's inside. On: kept, its "
+                  "modes those of the cross-section with the PMLs stretched as the 3D field's are - the PMLs' own modes then crowd "
+                  "its cut's (some eight times the modes found for those it absorbs)"))},
+         {QStringLiteral("waves3/port"), QStringLiteral("waves3/pml")}, {}, false, false, QStringLiteral("ewfd"),
+         tr("Light through a 3D device - a junction, a bend, a crossing, a Y-branch, an MMI, a grating - by the finite element method "
+            "at each wavelength of a Wavelength Domain step: E on edge elements (Nédélec's) of the prism mesh, the curl-curl equation "
+            "∇ × µr⁻¹ ∇ × E - k0² εr E = 0 over the whole geometry (εr = (n - jκ)², each material's at the wavelength), metal on its "
+            "outside but where an Optical Port is - which absorbs every mode of its cross-section it takes (found by the full-vector "
+            "mode solver, as many as asked) - and Perfectly Matched Layers let light out. Its ports' modes give the S-parameters "
+            "(ewfd.S21, ewfd.S21dB, ewfd.S21_arg; ewfd.R, ewfd.T), and the first port mode fed its field (ewfd.normE, ewfd.Ex, "
+            "ewfd.Ey, ewfd.Ez: |E| and E's real parts, rms, of 1 W fed). The mesh must resolve the wavelength in each material - its "
+            "longest edges a quarter of λ0/n at quadratic order (a size per domain), checked; its memory is said before it starts (some 20 kB an "
+            "unknown) and the solve refused past the limit (Multiphysics 3D > Settings).")});
+    add({QStringLiteral("waves3/port"), tr("Optical Port"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
+          text(QStringLiteral("modes"), tr("Its modes"), QStringLiteral("TE0"),
+               tr("The modes it takes, each an S-parameter's port: by polarization and order (TE0, TM0, TE1 - TE where most of its "
+                  "transverse E lies across the guide in the plane), or by index (1, 2), split by commas")),
+          integer(QStringLiteral("absorbed"), tr("Modes it absorbs"), 20,
+                  tr("Its cross-section's modes it lets out - those it takes and the rest, guided or not, so that what reaches it "
+                     "leaves as down a waveguide going on: more where light reaches it scattered (near a junction)")),
+          flag(QStringLiteral("excite"), tr("Fed"), true, tr("Each of its modes fed in turn: their columns of the S-matrix"))},
+         {}, {}, false, false, QStringLiteral("op"),
+         tr("Where light comes in and goes out: the end of a waveguide - its faces in one vertical plane on the geometry's outside. "
+            "Its modes, each normalized to 1 W, are the S-parameters' ports; it absorbs as many of its cross-section's modes as "
+            "asked.")});
+    add({QStringLiteral("waves3/pml"), tr("Perfectly Matched Layer"), QStringLiteral("ewfd"), QStringLiteral("pml"), Level::Domain,
+         {selectionProp(none),
+          expr(QStringLiteral("reflection"), tr("Its reflection"), QString(), QStringLiteral("1e-6"),
+               tr("Of a wave at normal incidence, from its outside and back: its stretching's strength"))},
+         {}, {}, false, false, QStringLiteral("pml"),
+         tr("Domains that absorb what reaches them: stretched outward from the box of the rest (s = 1 - jσ0 ξ², σ0 = 1.5 ln(1/R)/(k d)) - "
+            "boxes round the device, in the material at its edge, half a micrometre or more thick.")});
 
     // Semiconductors.
     add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,
@@ -4016,10 +4061,11 @@ QList<NodeKind> makeKinds()
                   // (A 3D model's: an eigenmode expansion's S-matrix.)
                   P optics;
                   optics.key = QStringLiteral("optics");
-                  optics.label = tr("Eigenmode expansion");
+                  optics.label = tr("Eigenmode expansion or full-wave solve");
                   optics.kind = P::Physics;
                   optics.defaultValue = QJsonArray();
-                  optics.tooltip = tr("Its S-matrix between its Optical Ports' modes at each wavelength (none chosen: the first)");
+                  optics.tooltip = tr("Its S-matrix between its Optical Ports' modes at each wavelength (none chosen: the first) - an "
+                                      "Electromagnetic Waves, Eigenmode Expansion's or Frequency Domain's");
                   optics.spaces = Spaces::ThreeD;
                   return optics;
               }(),
@@ -4198,7 +4244,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
     const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
                                   QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("eme/periodic"),
-                                  QStringLiteral("wavelength")};
+                                  QStringLiteral("waves3"), QStringLiteral("waves3/port"), QStringLiteral("waves3/pml"), QStringLiteral("wavelength")};
     // Solved in 3D too: heat, electrostatics and currents with their
     // features, and a study's Stationary and Time Dependent steps and its
     // Parametric Sweep - the first's adaptive refinement and light loop the
@@ -4305,7 +4351,7 @@ QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
             QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
-            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme")};
+            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde"), QStringLiteral("eme"), QStringLiteral("waves3")};
 }
 
 // ------------------------------------------------------------------ Node

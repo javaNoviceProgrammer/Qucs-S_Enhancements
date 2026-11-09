@@ -104,7 +104,9 @@ void showMultiphysics3DSettings(QWidget *parent)
                                      "later, its Cholesky any macOS. In 3D it is what factorizes where a solve factorizes: heat, "
                                      "electrostatics and currents by Cholesky where a matrix has many right-hand sides (a "
                                      "capacitance matrix's) or the step asks for the direct solver - else they iterate "
-                                     "(multigrid) -, and an eigenmode expansion's cuts, each mode solve an LU. QUCS_FEM_SOLVER=eigen, "
+                                     "(multigrid) -, an eigenmode expansion's cuts, each mode solve an LU, and a full-wave solve's system "
+                                     "(Electromagnetic Waves, Frequency Domain): Accelerate's LDLT of a complex symmetric matrix, "
+                                     "macOS 26 or later, else an LU. QUCS_FEM_SOLVER=eigen, "
                                      "accelerate or auto in the environment chooses, whatever this says."),
                          solver);
   how->setWordWrap(true);

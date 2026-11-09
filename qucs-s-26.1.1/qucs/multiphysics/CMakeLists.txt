@@ -30,6 +30,7 @@ set(FEM_SRCS
   fem3_export.cpp
   fem3_estimate.cpp
   fem3_eme.cpp
+  fem3_wave.cpp
   fem_elastic.cpp
   fem_magnetic.cpp
   fem_edge.cpp
