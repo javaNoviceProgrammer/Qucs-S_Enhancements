@@ -168,10 +168,11 @@ Estimate3 estimateOn(const Space3& space, qint64 nonzeros, const QString& solver
     e.directBytes = std::max(assembly, matrix + directSolverBytes(n, nnz)) + vectors;
     e.iterativeSeconds = assemblySeconds(entries) + iterativeSolverSeconds(nnz);
     e.directSeconds = assemblySeconds(entries) + directSolverSeconds(n, nnz);
-    // (As System3::factorize chooses: direct asked, or on macOS a matrix of
-    // many right-hand sides; off macOS auto iterates.)
+    // (As System3::factorize chooses: direct asked, or where a Cholesky is
+    // multithreaded - Accelerate's, MUMPS's, STRUMPACK's - a matrix of many
+    // right-hand sides; with Eigen's alone auto iterates.)
     if (solver == QLatin1String("direct")) e.method = QStringLiteral("direct");
-    else if (solver != QLatin1String("iterative") && accelerateInBuild() && acceleratedCholesky() && e.unknowns <= kAutoDirectAtMost)
+    else if (solver != QLatin1String("iterative") && threadedCholesky() && e.unknowns <= kAutoDirectAtMost)
         e.method = QStringLiteral("auto");
     else e.method = QStringLiteral("iterative");
     return e;

@@ -91,14 +91,33 @@ jobs:
             /usr/share/swift /opt/hostedtoolcache/CodeQL
           df -h /
 
+      # (MUMPS from Ubuntu's libmumps-seq-dev - the sequential build, its
+      # threads its BLAS's: the multiphysics solver's Automatic choice here,
+      # from 20,000 unknowns -; OpenBLAS's OpenMP build, METIS and gfortran
+      # for STRUMPACK's, built below.)
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build flex bison gperf dos2unix \
             libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev \
-            ngspice fonts-dejavu-core
+            ngspice fonts-dejavu-core \
+            gfortran libmumps-seq-dev libopenblas-openmp-dev libmetis-dev
           ngspice --version | sed -n '2p'
+
+      # STRUMPACK, which no distribution packages: built from its source
+      # (checked against its SHA-256) by the script the Linux releases use,
+      # kept between runs while the script is unchanged.
+      - name: Cache STRUMPACK
+        id: strumpack-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/sparse-solvers
+          key: strumpack-${{ runner.os }}-ubuntu-24.04-${{ hashFiles('scripts/ci/build-sparse-solvers.sh') }}
+
+      - name: Build STRUMPACK
+        if: steps.strumpack-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/build-sparse-solvers.sh ~/sparse-solvers strumpack
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
@@ -159,6 +178,8 @@ jobs:
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DQUCS_SHARED_TEST_CORE=ON \
             -DQUCS_TEST_TIMEOUT_SCALE=3 \
+            -DSTRUMPACK_DIR="$HOME/sparse-solvers/lib/cmake/STRUMPACK" \
+            -DQUCS_SPARSE_SOLVERS_REQUIRED=ON \
             -DGIT="${GITHUB_SHA::7}"
 
       - name: Build
@@ -302,12 +323,15 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p
+          # (mumps and strumpack: the multiphysics solver's multithreaded
+          # factorizations, MSYS2's OpenMP builds - as the release bundles.)
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p pkgconf:p mumps:p strumpack:p
 
       - name: Configure and build (Release)
         run: |
           cmake -S "$SRC_DIR" -B "$SRC_DIR/build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DQUCS_SPARSE_SOLVERS_REQUIRED=ON \
             -DGIT="${GITHUB_SHA::7}"
           cmake --build "$SRC_DIR/build" --parallel
 
