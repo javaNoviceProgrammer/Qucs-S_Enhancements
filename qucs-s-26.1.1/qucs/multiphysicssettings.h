@@ -27,9 +27,10 @@ namespace qucs_s::fem {
  * as the view's own menu and Settings… > Viewers set it;
  * on OK every open view drawn so. What keeps the GPU from drawing here
  * (QUCS_GPU=0, a build without Qt's RHI, no backend for it) said under it. The
- * sparse direct solver - Automatic, Eigen's or Accelerate's at every size
- * (Multiphysics/solver) - and what is in effect: QUCS_FEM_SOLVER over it,
- * Accelerate's LU only on macOS 26 and later.
+ * sparse direct solver - Automatic, Eigen's or Accelerate's at every size,
+ * MUMPS's or STRUMPACK's from their sizes (Multiphysics/solver) - and what
+ * is in effect: QUCS_FEM_SOLVER over it, Accelerate's LU only on macOS 26
+ * and later, MUMPS's and STRUMPACK's where the build has them.
  */
 class MultiphysicsSettingsDialog : public QDialog
 {
@@ -42,13 +43,18 @@ public:
     /// The setting (Viewers/multiphysicsGpu; off unless chosen).
     static bool gpuWanted();
 
-    /// The solver setting (Multiphysics/solver: auto, eigen, accelerate;
-    /// Automatic unless set) - 0 Automatic, 1 Eigen, 2 Accelerate.
+    /// The solver setting (Multiphysics/solver: auto, eigen, accelerate,
+    /// mumps, strumpack; Automatic unless set) - 0 Automatic, 1 Eigen, 2
+    /// Accelerate, 3 MUMPS, 4 STRUMPACK (DirectSolver's order).
     static int solverWanted();
     /// The setting given to the solver (at the start, and on OK).
     static void applySolverSetting();
-    /// What factorizes here with \a choice (0, 1, 2), the environment's
-    /// QUCS_FEM_SOLVER and this macOS taken in.
+    /// The choices, in that order, into \a box (this dialog's, and
+    /// Multiphysics 3D's Settings…): each named by what it takes, a library
+    /// this build has not said so.
+    static void addSolverChoices(QComboBox* box);
+    /// What factorizes here with \a choice (0 to 4), the environment's
+    /// QUCS_FEM_SOLVER, the build and this macOS taken in.
     static QString solverStatus(int choice);
 
     QCheckBox* gpuBox() const { return a_gpu; }

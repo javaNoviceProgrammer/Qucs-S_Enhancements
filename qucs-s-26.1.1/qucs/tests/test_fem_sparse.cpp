@@ -1,18 +1,22 @@
 /*
  * The multiphysics solver's sparse direct factorizations (fem_sparse.h):
- * Accelerate's LU (macOS 26) and Cholesky where there are, Eigen's
- * elsewhere, below a size and when asked - each solving what Eigen's does,
- * a pattern changing between factorizations, a singular matrix said, one
- * singular to rounding too, the solver chosen and said.
+ * Accelerate's LU (macOS 26) and Cholesky where there are, MUMPS's and
+ * STRUMPACK's where the build has them (each skipped, saying so, where it
+ * has not), Eigen's elsewhere, below a size and when asked - each solving
+ * what Eigen's does, a pattern changing between factorizations, a singular
+ * matrix said, one singular to rounding too, the solver chosen and said.
  */
 #include "fem_problem.h"
 #include "fem_sparse.h"
+
+#include <Eigen/SparseLU>
 
 #include <QElapsedTimer>
 #include <QtTest>
 
 #include <complex>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace qucs_s::fem;
@@ -90,6 +94,92 @@ Eigen::SparseMatrix<double> laplacian(int m, bool floating, bool scaled = false)
     return a;
 }
 
+/// A Helmholtz operator on an m by m grid: the Laplacian less \a k2 (so
+/// indefinite), a loss on its edge - complex symmetric, not Hermitian: a
+/// full-wave system's kind.
+Eigen::SparseMatrix<std::complex<double>> helmholtz(int m, double k2)
+{
+    using cd = std::complex<double>;
+    const int n = m * m;
+    std::vector<Eigen::Triplet<cd>> t;
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < m; ++j) {
+            const int p = i * m + j;
+            const bool edge = i == 0 || j == 0 || i == m - 1 || j == m - 1;
+            t.emplace_back(p, p, cd(4.0 - k2, edge ? 0.7 : 0.0));
+            if (i > 0) t.emplace_back(p, p - m, cd(-1.0));
+            if (i < m - 1) t.emplace_back(p, p + m, cd(-1.0));
+            if (j > 0) t.emplace_back(p, p - 1, cd(-1.0));
+            if (j < m - 1) t.emplace_back(p, p + 1, cd(-1.0));
+        }
+    Eigen::SparseMatrix<cd> a(n, n);
+    a.setFromTriplets(t.begin(), t.end());
+    a.makeCompressed();
+    return a;
+}
+
+/// A 3D grid's operator, m by m by m, the 7-point Laplacian: 6.01 on its
+/// diagonal (symmetric positive definite), or 6 less \a k2 with a loss on
+/// its faces (\a complex: complex symmetric, indefinite - a full-wave
+/// system's kind).
+template <typename Scalar> Eigen::SparseMatrix<Scalar> grid3(int m, double k2 = -0.01)
+{
+    const int n = m * m * m;
+    std::vector<Eigen::Triplet<Scalar>> t;
+    t.reserve(std::size_t(n) * 7);
+    auto id = [m](int i, int j, int k) { return (i * m + j) * m + k; };
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < m; ++j)
+            for (int k = 0; k < m; ++k) {
+                const int p = id(i, j, k);
+                const bool face = i == 0 || j == 0 || k == 0 || i == m - 1 || j == m - 1 || k == m - 1;
+                Scalar d = Scalar(6.0 - k2);
+                if constexpr (!std::is_same_v<Scalar, double>) d += Scalar(0, face ? 0.7 : 0.0);
+                t.emplace_back(p, p, d);
+                if (i > 0) t.emplace_back(p, id(i - 1, j, k), Scalar(-1));
+                if (i < m - 1) t.emplace_back(p, id(i + 1, j, k), Scalar(-1));
+                if (j > 0) t.emplace_back(p, id(i, j - 1, k), Scalar(-1));
+                if (j < m - 1) t.emplace_back(p, id(i, j + 1, k), Scalar(-1));
+                if (k > 0) t.emplace_back(p, id(i, j, k - 1), Scalar(-1));
+                if (k < m - 1) t.emplace_back(p, id(i, j, k + 1), Scalar(-1));
+            }
+    Eigen::SparseMatrix<Scalar> a(n, n);
+    a.setFromTriplets(t.begin(), t.end());
+    a.makeCompressed();
+    return a;
+}
+
+/// A library of the choice's: MUMPS's or STRUMPACK's.
+struct Library {
+    DirectSolver solver = DirectSolver::Mumps;
+    Backend backend = Backend::Mumps;
+    const char* fromVariable = "QUCS_FEM_MUMPS_FROM";
+    QString hindrance;   // (empty: in this build)
+};
+Library library(int solver)
+{
+    Library l;
+    l.solver = DirectSolver(solver);
+    if (l.solver == DirectSolver::Strumpack) {
+        l.backend = Backend::Strumpack;
+        l.fromVariable = "QUCS_FEM_STRUMPACK_FROM";
+        l.hindrance = strumpackHindrance();
+    } else {
+        l.hindrance = mumpsHindrance();
+    }
+    return l;
+}
+
+/// The choice put back at the end of a test, whatever happens in it.
+struct ChoiceReset {
+    ~ChoiceReset()
+    {
+        setDirectSolver(DirectSolver::Automatic);
+        qunsetenv("QUCS_FEM_MUMPS_FROM");
+        qunsetenv("QUCS_FEM_STRUMPACK_FROM");
+    }
+};
+
 template <typename Scalar> double residual(const Eigen::SparseMatrix<Scalar>& a, const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& x,
                                            const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& b)
 {
@@ -107,6 +197,8 @@ private slots:
     {
         qunsetenv("QUCS_FEM_SOLVER");
         qunsetenv("QUCS_FEM_ACCELERATE_FROM");
+        qunsetenv("QUCS_FEM_MUMPS_FROM");
+        qunsetenv("QUCS_FEM_STRUMPACK_FROM");
     }
     void cleanupTestCase() { init(); }
 
@@ -328,9 +420,7 @@ private slots:
         }
         const QString used = solverUseText(before, solverUse());
         QVERIFY2(used.contains(acceleratedLu() ? QStringLiteral("Accelerate's LU") : QStringLiteral("Eigen's LU")), qPrintable(used));
-#if defined(__APPLE__)
-        QVERIFY2(used.contains(QStringLiteral("Accelerate's Cholesky")), qPrintable(used));
-#endif
+        if (accelerateInBuild()) QVERIFY2(used.contains(QStringLiteral("Accelerate's Cholesky")), qPrintable(used));
         // The environment over the choice, both ways.
         qputenv("QUCS_FEM_SOLVER", "eigen");
         QVERIFY(directSolver() == DirectSolver::Eigen && !acceleratedCholesky());
@@ -361,10 +451,19 @@ private slots:
         const auto floating = laplacian(m, true), sound = laplacian(m, false, true);
         Eigen::VectorXd b = Eigen::VectorXd::Zero(floating.rows());
         b[17] = 1;   // (a charge: no solution, any constant added)
-        for (DirectSolver solver : {DirectSolver::Eigen, DirectSolver::Accelerate}) {
+        for (DirectSolver solver : {DirectSolver::Eigen, DirectSolver::Accelerate, DirectSolver::Mumps, DirectSolver::Strumpack}) {
             init();
+            // (MUMPS's and STRUMPACK's where the build has them, at every
+            // size.)
+            if (solver == DirectSolver::Mumps && !mumpsInBuild()) continue;
+            if (solver == DirectSolver::Strumpack && !strumpackInBuild()) continue;
+            qputenv("QUCS_FEM_MUMPS_FROM", "0");
+            qputenv("QUCS_FEM_STRUMPACK_FROM", "0");
             setDirectSolver(solver);
-            const char* which = solver == DirectSolver::Eigen ? "Eigen" : "Accelerate";
+            const char* which = solver == DirectSolver::Eigen        ? "Eigen"
+                                : solver == DirectSolver::Accelerate ? "Accelerate"
+                                : solver == DirectSolver::Mumps      ? "MUMPS"
+                                                                     : "STRUMPACK";
             SparseCholesky c;
             c.analyzePattern(floating);
             c.factorize(floating);
@@ -383,7 +482,8 @@ private slots:
             QVERIFY(residual(sound, checked.solve(b), b) < 1e-10);
             SparseLu<double> unchecked;
             unchecked.compute(floating);
-            if (solver == DirectSolver::Eigen || !acceleratedLu()) QVERIFY2(unchecked.info() == Eigen::Success, which);
+            if (solver == DirectSolver::Eigen || (solver == DirectSolver::Accelerate && !acceleratedLu()))
+                QVERIFY2(unchecked.info() == Eigen::Success, which);
             // The linear system: said singular, not solved.
             detail::LinearSystem system;
             system.setPattern(m * m, [m](const std::function<void(const int*, int)>& element) {
@@ -407,7 +507,11 @@ private slots:
             const SolverUse before = solverUse();
             QVERIFY2(!system.factorize(true, QStringLiteral("auto"), 1e-6, QStringLiteral("Floating"), nullptr, &error), which);
             QVERIFY2(error.contains(QStringLiteral("the matrix is singular")), qPrintable(error));
-            QVERIFY2(!solverUseText(before, solverUse()).contains(QStringLiteral("LU")), qPrintable(solverUseText(before, solverUse())));
+            // (STRUMPACK's Cholesky its LU: that one alone.)
+            const SolverUse after = solverUse();
+            QVERIFY2(solver == DirectSolver::Strumpack ? solverUseText(before, after) == QStringLiteral("STRUMPACK's LU") && after.strumpackLu == before.strumpackLu + 1
+                                                       : !solverUseText(before, after).contains(QStringLiteral("LU")),
+                     qPrintable(solverUseText(before, after)));
             qInfo("%s: %s", which, qPrintable(error));
             // Singular and indefinite (the floating grid beside -1 on a
             // diagonal): its Cholesky fails by its sign, its LU says it.
@@ -489,6 +593,378 @@ private slots:
             c.factorize(bad);
             QVERIFY2(c.info() != Eigen::Success, from);
         }
+    }
+
+    // MUMPS's and STRUMPACK's LU, where the build has them (skipped, saying
+    // why, where not): chosen, from its size up - every size here -, a real
+    // and a complex system solved to 1e-12, several right-hand sides at
+    // once, the factorizations counted and named; a pattern that changes
+    // (an entry more, then fewer: analysed three times, as Accelerate's);
+    // another size; a singular matrix said, its solve no number; below its
+    // size Eigen's; one of many at once from 50 000.
+    void eachLibrarysLu_data()
+    {
+        QTest::addColumn<int>("solver");
+        QTest::newRow("MUMPS") << int(DirectSolver::Mumps);
+        QTest::newRow("STRUMPACK") << int(DirectSolver::Strumpack);
+    }
+    void eachLibrarysLu()
+    {
+        QFETCH(int, solver);
+        const Library lib = library(solver);
+        if (!lib.hindrance.isEmpty()) QSKIP(qPrintable(lib.hindrance));
+        const ChoiceReset reset;
+        setDirectSolver(lib.solver);
+        QCOMPARE(luBackend(), lib.backend);
+        QCOMPARE(directSolverName(), backendName(lib.backend));
+        QCOMPARE(backendFrom(lib.backend), 20000);
+        QCOMPARE(backendFrom(lib.backend, true), 50000);
+        qputenv(lib.fromVariable, "0");
+        QCOMPARE(backendFrom(lib.backend), 0);
+        const QString name = backendName(lib.backend) + QStringLiteral("'s LU");
+        const SolverUse before = solverUse();
+        {
+            const auto a = grid<double>(40);
+            SparseLu<double> lu;
+            lu.compute(a);
+            QVERIFY2(lu.info() == Eigen::Success, lu.lastErrorMessage().c_str());
+            QCOMPARE(lu.backend(), lib.backend);
+            QCOMPARE(lu.name(), name);
+            QVERIFY(!lu.accelerated());
+            const Eigen::VectorXd b = Eigen::VectorXd::Random(a.rows());
+            const double r = residual(a, lu.solve(b), b);
+            QVERIFY2(r < 1e-12, qPrintable(QString::number(r)));
+            const Eigen::MatrixXd B = Eigen::MatrixXd::Random(a.rows(), 3);
+            const Eigen::MatrixXd X = lu.solveMany(B);
+            for (int c = 0; c < 3; ++c) {
+                const Eigen::VectorXd x = X.col(c), bc = B.col(c);
+                QVERIFY(residual(a, x, bc) < 1e-12);
+            }
+        }
+        {
+            using cd = std::complex<double>;
+            const auto a = grid<cd>(40, cd(0.2, 1.7));
+            SparseLu<cd> lu;
+            lu.compute(a);
+            QVERIFY2(lu.info() == Eigen::Success, lu.lastErrorMessage().c_str());
+            QCOMPARE(lu.name(), name);
+            const Eigen::VectorXcd b = Eigen::VectorXcd::Random(a.rows());
+            const double r = residual(a, lu.solve(b), b);
+            QVERIFY2(r < 1e-12, qPrintable(QString::number(r)));
+        }
+        QVERIFY2(solverUseText(before, solverUse()) == name, qPrintable(solverUseText(before, solverUse())));
+        {
+            const auto a = grid<double>(30), b = grid<double>(30, 0.5, 1), c = grid<double>(30, 1.0, 2);
+            SparseLu<double> lu;
+            lu.analyzePattern(a);
+            const Eigen::VectorXd rhs = Eigen::VectorXd::Random(a.rows());
+            for (const auto* m : {&a, &b, &c, &b, &c, &a}) {
+                lu.factorize(*m);
+                QVERIFY2(lu.info() == Eigen::Success, lu.lastErrorMessage().c_str());
+                const double r = residual(*m, lu.solve(rhs), rhs);
+                QVERIFY2(r < 1e-12, qPrintable(QString::number(r)));
+            }
+            QCOMPARE(lu.analyses(), 3);
+            const auto d = grid<double>(20);
+            lu.factorize(d);
+            QCOMPARE(lu.info(), Eigen::Success);
+            QCOMPARE(lu.backend(), lib.backend);
+            const Eigen::VectorXd ones = Eigen::VectorXd::Ones(d.rows());
+            QVERIFY(residual(d, lu.solve(ones), ones) < 1e-12);
+        }
+        {
+            auto a = grid<double>(20);
+            for (int j = 0; j < a.cols(); ++j)
+                for (Eigen::SparseMatrix<double>::InnerIterator it(a, j); it; ++it)
+                    if (it.row() == 7 || it.col() == 7) it.valueRef() = 0;
+            SparseLu<double> lu;
+            lu.compute(a);
+            QVERIFY(lu.info() != Eigen::Success);
+            QVERIFY(!lu.lastErrorMessage().empty());
+            QVERIFY(!lu.solve(Eigen::VectorXd::Ones(a.rows())).allFinite());
+            qInfo("singular, %s: %s", qPrintable(name), lu.lastErrorMessage().c_str());
+        }
+        // Below its size: Eigen's.
+        qputenv(lib.fromVariable, "100000");
+        {
+            SparseLu<double> lu;
+            lu.compute(grid<double>(40));
+            QCOMPARE(lu.backend(), Backend::Eigen);
+            QCOMPARE(lu.name(), QStringLiteral("Eigen's LU"));
+        }
+        // One of many at once: from 50 000 (30 258 unknowns: Eigen's).
+        qunsetenv(lib.fromVariable);
+        {
+            const auto a = grid<double>(123);
+            for (bool many : {false, true}) {
+                SparseLu<double> lu;
+                lu.setManyAtOnce(many);
+                lu.compute(a);
+                QCOMPARE(lu.info(), Eigen::Success);
+                QCOMPARE(lu.backend(), many ? Backend::Eigen : lib.backend);
+                const Eigen::VectorXd b = Eigen::VectorXd::Random(a.rows());
+                QVERIFY(residual(a, lu.solve(b), b) < 1e-12);
+            }
+        }
+    }
+
+    // Their Cholesky: MUMPS's LDLT without pivoting - a matrix not positive
+    // definite refused (a negative pivot), its caller taking an LU -, and
+    // STRUMPACK's LU in its place - any matrix solved, positive definite or
+    // not; a potential left floating refused by both (singular to
+    // rounding); the factorization named and counted.
+    void eachLibrarysCholesky_data()
+    {
+        eachLibrarysLu_data();
+    }
+    void eachLibrarysCholesky()
+    {
+        QFETCH(int, solver);
+        const Library lib = library(solver);
+        if (!lib.hindrance.isEmpty()) QSKIP(qPrintable(lib.hindrance));
+        const ChoiceReset reset;
+        setDirectSolver(lib.solver);
+        qputenv(lib.fromVariable, "0");
+        QCOMPARE(choleskyBackend(), lib.backend);
+        QVERIFY(threadedCholesky());
+        const auto a = laplacian(40, false);
+        const SolverUse before = solverUse();
+        SparseCholesky c;
+        c.analyzePattern(a);
+        c.factorize(a);
+        QVERIFY2(c.info() == Eigen::Success, c.lastErrorMessage().c_str());
+        QCOMPARE(c.backend(), lib.backend);
+        QCOMPARE(c.name(), lib.backend == Backend::Mumps ? QStringLiteral("MUMPS's Cholesky") : QStringLiteral("STRUMPACK's LU"));
+        const Eigen::VectorXd b = Eigen::VectorXd::Random(a.rows());
+        QVERIFY(residual(a, c.solve(b), b) < 1e-12);
+        const Eigen::MatrixXd B = Eigen::MatrixXd::Random(a.rows(), 4);
+        const Eigen::MatrixXd X = c.solveMany(B);
+        QVERIFY((Eigen::MatrixXd(a * X) - B).norm() / B.norm() < 1e-12);
+        QVERIFY2(c.factorBytes() > 0, qPrintable(QString::number(c.factorBytes())));
+        QCOMPARE(solverUseText(before, solverUse()), c.name());
+        // Indefinite (one diagonal entry -3.9).
+        Eigen::SparseMatrix<double> bad = a;
+        bad.coeffRef(a.rows() / 2, a.rows() / 2) = -3.9;
+        c.factorize(bad);
+        if (lib.backend == Backend::Mumps) {
+            QVERIFY(c.info() != Eigen::Success);
+            QVERIFY(!c.singularToRounding());
+            qInfo("indefinite: %s", c.lastErrorMessage().c_str());
+        } else {
+            QCOMPARE(c.info(), Eigen::Success);
+            QVERIFY(residual(bad, c.solve(b), b) < 1e-10);
+        }
+        // Floating: singular to rounding.
+        const auto floating = laplacian(40, true);
+        c.analyzePattern(floating);
+        c.factorize(floating);
+        QVERIFY(c.info() != Eigen::Success);
+        QVERIFY(c.singularToRounding());
+        qInfo("floating: %s", c.lastErrorMessage().c_str());
+        // And sound again.
+        c.factorize(a);
+        QCOMPARE(c.info(), Eigen::Success);
+        QVERIFY(residual(a, c.solve(b), b) < 1e-12);
+    }
+
+    // A complex symmetric matrix, indefinite (a Helmholtz operator with a
+    // loss on its edge, as a full-wave system with its PMLs): MUMPS's LDLT
+    // where MUMPS is chosen - its factors' estimate, a memory limit under it
+    // refused before it factorizes -, STRUMPACK's LU where it is; each
+    // solving what Eigen's LU does.
+    void aComplexSymmetricMatrix_data()
+    {
+        eachLibrarysLu_data();
+    }
+    void aComplexSymmetricMatrix()
+    {
+        QFETCH(int, solver);
+        const Library lib = library(solver);
+        if (!lib.hindrance.isEmpty()) QSKIP(qPrintable(lib.hindrance));
+        const ChoiceReset reset;
+        setDirectSolver(lib.solver);
+        qputenv(lib.fromVariable, "0");
+        const auto a = helmholtz(60, 0.5);
+        const Eigen::VectorXcd b = Eigen::VectorXcd::Random(a.rows());
+        Eigen::SparseLU<Eigen::SparseMatrix<std::complex<double>>> eigen(a);
+        const Eigen::VectorXcd expected = eigen.solve(b);
+        const SolverUse before = solverUse();
+        SparseComplexLdlt l;
+        l.compute(a);
+        QVERIFY2(l.info() == Eigen::Success, l.lastErrorMessage().c_str());
+        const bool mumps = lib.backend == Backend::Mumps;
+        QCOMPARE(l.name(), mumps ? QStringLiteral("MUMPS's LDLT") : QStringLiteral("STRUMPACK's LU"));
+        QVERIFY2(solverUseText(before, solverUse()) == (mumps ? QStringLiteral("MUMPS's LDLT") : QStringLiteral("STRUMPACK's LU")),
+                 qPrintable(solverUseText(before, solverUse())));
+        const Eigen::VectorXcd x = l.solve(b);
+        QVERIFY(residual(a, x, b) < 1e-12);
+        QVERIFY((x - expected).norm() / expected.norm() < 1e-10);
+        const Eigen::MatrixXcd B = Eigen::MatrixXcd::Random(a.rows(), 3);
+        QVERIFY((Eigen::MatrixXcd(a * l.solveMany(B)) - B).norm() / B.norm() < 1e-12);
+        if (mumps) {
+            QVERIFY(l.factorBytes() > 0);
+            SparseComplexLdlt small;
+            small.setMemoryLimit(1000);
+            small.compute(a);
+            QVERIFY(small.info() != Eigen::Success);
+            QVERIFY2(QString::fromStdString(small.lastErrorMessage()).contains(QStringLiteral("past the limit")), small.lastErrorMessage().c_str());
+            QVERIFY(!small.solve(b).allFinite());
+        }
+    }
+
+    // On several threads at once (a sweep's points solved at once): the
+    // library called one call at a time, each solved to 1e-12.
+    void eachLibraryOnThreadsAtOnce_data()
+    {
+        eachLibrarysLu_data();
+    }
+    void eachLibraryOnThreadsAtOnce()
+    {
+        QFETCH(int, solver);
+        const Library lib = library(solver);
+        if (!lib.hindrance.isEmpty()) QSKIP(qPrintable(lib.hindrance));
+        const ChoiceReset reset;
+        setDirectSolver(lib.solver);
+        qputenv(lib.fromVariable, "0");
+        std::vector<double> worst(8, 1.0);
+        std::vector<int> wrong(8, 0);
+        std::vector<std::thread> pool;
+        for (int k = 0; k < 8; ++k)
+            pool.emplace_back([k, &worst, &wrong, &lib] {
+                double w = 0;
+                for (int m : {30, 34, 30, 38}) {
+                    using cd = std::complex<double>;
+                    const auto a = grid<cd>(m, cd(0.1 * k, 0.3));
+                    SparseLu<cd> lu;
+                    lu.compute(a);
+                    if (lu.backend() != lib.backend) ++wrong[std::size_t(k)];
+                    const Eigen::VectorXcd b = Eigen::VectorXcd::Ones(a.rows());
+                    w = std::max(w, lu.info() == Eigen::Success ? residual(a, lu.solve(b), b) : 1.0);
+                }
+                worst[std::size_t(k)] = w;
+            });
+        for (std::thread& t : pool) t.join();
+        for (double w : worst) QVERIFY2(w < 1e-12, qPrintable(QString::number(w)));
+        for (int n : wrong) QCOMPARE(n, 0);
+    }
+
+    // Each backend's time against Eigen's (QUCS_FEM_BENCH set; skipped
+    // else): a 2D grid's unsymmetric LU, a 3D Laplacian's Cholesky, a 3D
+    // Helmholtz operator's complex symmetric factorization (an LDLT where
+    // the backend has one, else an LU) - each analysed, factorized and
+    // solved once, its residual checked. QUCS_FEM_BENCH=full adds the
+    // larger sizes (a few hundred thousand unknowns: minutes on one thread);
+    // OMP_NUM_THREADS the libraries' threads.
+    //   QUCS_FEM_BENCH=1 ctest --test-dir build -R '^test_fem_sparse$' -V
+    void benchmarkAgainstEigen()
+    {
+        const QByteArray asked = qgetenv("QUCS_FEM_BENCH");
+        if (asked.isEmpty()) QSKIP("QUCS_FEM_BENCH not set");
+        const bool full = asked == "full";
+        const ChoiceReset reset;
+        qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
+        qputenv("QUCS_FEM_MUMPS_FROM", "0");
+        qputenv("QUCS_FEM_STRUMPACK_FROM", "0");
+        std::vector<DirectSolver> solvers{DirectSolver::Eigen};
+        if (accelerateInBuild()) solvers.push_back(DirectSolver::Accelerate);
+        if (mumpsInBuild()) solvers.push_back(DirectSolver::Mumps);
+        if (strumpackInBuild()) solvers.push_back(DirectSolver::Strumpack);
+        qInfo("threads: %u hardware; OMP_NUM_THREADS %s", std::thread::hardware_concurrency(),
+              qEnvironmentVariableIsSet("OMP_NUM_THREADS") ? qPrintable(qEnvironmentVariable("OMP_NUM_THREADS")) : "unset");
+        auto report = [](const char* problem, int n, const QString& who, double seconds, double r) {
+            qInfo("%-26s %8d unknowns  %-22s %9.3f s  residual %.1e", problem, n, qPrintable(who), seconds, r);
+            QVERIFY2(r < 1e-8, qPrintable(QStringLiteral("%1, %2: %3").arg(QLatin1String(problem), who).arg(r)));
+        };
+        // (Eigen's single thread past these is minutes - QUCS_FEM_BENCH=full.)
+        const std::vector<int> sizes2 = full ? std::vector<int>{50, 100, 160, 250, 350} : std::vector<int>{50, 100, 160};
+        const std::vector<int> sizes3 = full ? std::vector<int>{20, 30, 40, 50, 60} : std::vector<int>{20, 30, 40};
+        const std::vector<int> sizesW = full ? std::vector<int>{20, 30, 40, 50} : std::vector<int>{20, 30};
+        for (int m : sizes2) {
+            const auto a = grid<double>(m);
+            const Eigen::VectorXd b = Eigen::VectorXd::Random(a.rows());
+            for (DirectSolver solver : solvers) {
+                setDirectSolver(solver);
+                QElapsedTimer clock;
+                clock.start();
+                SparseLu<double> lu;
+                lu.compute(a);
+                const Eigen::VectorXd x = lu.solve(b);
+                const double seconds = clock.nsecsElapsed() * 1e-9;
+                report("2D LU (convection)", int(a.rows()), lu.name(), seconds, residual(a, x, b));
+            }
+        }
+        for (int m : sizes3) {
+            const auto a = grid3<double>(m);
+            const Eigen::VectorXd b = Eigen::VectorXd::Random(a.rows());
+            for (DirectSolver solver : solvers) {
+                setDirectSolver(solver);
+                QElapsedTimer clock;
+                clock.start();
+                SparseCholesky c;
+                c.setOrdering(SparseCholesky::Ordering::Metis);
+                c.analyzePattern(a);
+                c.factorize(a);
+                const Eigen::VectorXd x = c.solve(b);
+                const double seconds = clock.nsecsElapsed() * 1e-9;
+                report("3D Cholesky (Laplacian)", int(a.rows()), c.name(), seconds, residual(a, x, b));
+            }
+        }
+        for (int m : sizesW) {
+            using cd = std::complex<double>;
+            const auto a = grid3<cd>(m, 1.5);
+            const Eigen::VectorXcd b = Eigen::VectorXcd::Random(a.rows());
+            for (DirectSolver solver : solvers) {
+                setDirectSolver(solver);
+                QElapsedTimer clock;
+                clock.start();
+                SparseComplexLdlt l;
+                l.compute(a);
+                const Eigen::VectorXcd x = l.solve(b);
+                const double seconds = clock.nsecsElapsed() * 1e-9;
+                report("3D complex symmetric", int(a.rows()), l.name(), seconds, residual(a, x, b));
+            }
+        }
+    }
+
+    // The choice of a library the build has not: Eigen's factorizes, and
+    // why is said; where it has it, nothing is in its way. The environment
+    // chooses them too; Automatic takes Accelerate's where there is, else
+    // MUMPS's, else STRUMPACK's.
+    void aLibraryNotInTheBuild()
+    {
+        const ChoiceReset reset;
+        for (int solver : {int(DirectSolver::Mumps), int(DirectSolver::Strumpack)}) {
+            init();
+            const Library lib = library(solver);
+            setDirectSolver(lib.solver);
+            qputenv(lib.fromVariable, "0");
+            const bool in = lib.hindrance.isEmpty();
+            QCOMPARE(in, lib.solver == DirectSolver::Mumps ? mumpsInBuild() : strumpackInBuild());
+            QCOMPARE(luBackend(), in ? lib.backend : Backend::Eigen);
+            QCOMPARE(choleskyBackend(), in ? lib.backend : Backend::Eigen);
+            SparseLu<double> lu;
+            lu.compute(grid<double>(10));
+            QCOMPARE(lu.info(), Eigen::Success);
+            QCOMPARE(lu.backend(), in ? lib.backend : Backend::Eigen);
+            qInfo("%s: %s", qPrintable(backendName(lib.backend)), in ? "in this build" : qPrintable(lib.hindrance));
+        }
+        qputenv("QUCS_FEM_SOLVER", "mumps");
+        QVERIFY(directSolver() == DirectSolver::Mumps);
+        qputenv("QUCS_FEM_SOLVER", "strumpack");
+        QVERIFY(directSolver() == DirectSolver::Strumpack);
+        qunsetenv("QUCS_FEM_SOLVER");
+        const Backend automaticLu = acceleratedLuHindrance().isEmpty() ? Backend::Accelerate
+                                    : mumpsInBuild()                   ? Backend::Mumps
+                                    : strumpackInBuild()               ? Backend::Strumpack
+                                                                       : Backend::Eigen;
+        QCOMPARE(luBackendFor(DirectSolver::Automatic), automaticLu);
+        const Backend automaticCholesky = accelerateInBuild() ? Backend::Accelerate
+                                          : mumpsInBuild()    ? Backend::Mumps
+                                          : strumpackInBuild() ? Backend::Strumpack
+                                                               : Backend::Eigen;
+        QCOMPARE(choleskyBackendFor(DirectSolver::Automatic), automaticCholesky);
+        QCOMPARE(luBackendFor(DirectSolver::Eigen), Backend::Eigen);
+        QCOMPARE(choleskyBackendFor(DirectSolver::Eigen), Backend::Eigen);
     }
 };
 

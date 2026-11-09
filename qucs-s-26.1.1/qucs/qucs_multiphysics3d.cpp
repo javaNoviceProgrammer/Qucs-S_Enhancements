@@ -93,22 +93,23 @@ void showMultiphysics3DSettings(QWidget *parent)
   solverLine->addWidget(new QLabel(QObject::tr("Sparse direct solver:"), solver));
   auto *choice = new QComboBox(solver);
   choice->setObjectName(QStringLiteral("mp3SolverBox"));
-  choice->addItem(QObject::tr("Automatic (Accelerate from 20,000 unknowns, Eigen below)"), QStringLiteral("auto"));
-  choice->addItem(QObject::tr("Eigen at every size"), QStringLiteral("eigen"));
-  choice->addItem(QObject::tr("Accelerate at every size"), QStringLiteral("accelerate"));
+  MultiphysicsSettingsDialog::addSolverChoices(choice);
   choice->setCurrentIndex(MultiphysicsSettingsDialog::solverWanted());
   solverLine->addWidget(choice, 1);
   solverRows->addLayout(solverLine);
-  auto *how = new QLabel(QObject::tr("The same setting as the Multiphysics menu's: Apple's Accelerate factorizes on many threads, "
-                                     "Eigen's on one (the quicker below some 20,000 unknowns); Accelerate's LU needs macOS 26 or "
-                                     "later, its Cholesky any macOS. In 3D it is what factorizes where a solve factorizes: heat, "
+  auto *how = new QLabel(QObject::tr("The same setting as the Multiphysics menu's: Apple's Accelerate, MUMPS and STRUMPACK "
+                                     "factorize on many threads, Eigen's on one (the quicker below some 20,000 unknowns); "
+                                     "Accelerate's LU needs macOS 26 or later, its Cholesky any macOS; MUMPS and STRUMPACK are "
+                                     "there where this build has them (Linux's and Windows' releases do). In 3D it is what "
+                                     "factorizes where a solve factorizes: heat, "
                                      "electrostatics and currents by Cholesky where a matrix has many right-hand sides (a "
                                      "capacitance matrix's) or the step asks for the direct solver - else they iterate "
                                      "(multigrid) -, an eigenmode expansion's cuts, each mode solve an LU, and a full-wave solve's system "
                                      "(Electromagnetic Waves, Frequency Domain): Accelerate's LDLT of a complex symmetric matrix, "
-                                     "macOS 26 or later, else an LU; a time-domain one's (Time Domain) a Cholesky, factorized once "
-                                     "for all its steps. QUCS_FEM_SOLVER=eigen, "
-                                     "accelerate or auto in the environment chooses, whatever this says."),
+                                     "macOS 26 or later, or MUMPS's, else an LU; a time-domain one's (Time Domain) a Cholesky, "
+                                     "factorized once for all its steps. Where the Cholesky is a multithreaded one, heat and "
+                                     "electrostatics of many right-hand sides factorize by themselves. QUCS_FEM_SOLVER=eigen, "
+                                     "accelerate, mumps, strumpack or auto in the environment chooses, whatever this says."),
                          solver);
   how->setWordWrap(true);
   solverRows->addWidget(how);
