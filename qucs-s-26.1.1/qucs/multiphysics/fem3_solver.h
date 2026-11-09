@@ -15,6 +15,7 @@
 #define QUCS_FEM3_SOLVER_H
 
 #include "fem3_eme.h"
+#include "fem3_wave.h"
 #include "fem3_estimate.h"
 #include "fem3_fe.h"
 #include "fem_expr.h"
@@ -111,11 +112,14 @@ public:
     void setFrequency(double f) { a_frequency = f; }
     /// An eigenmode expansion's results, by physics: its device as read, and
     /// its S-parameters and ports' modes at each wavelength solved (the
-    /// snapshots' order).
+    /// snapshots' order). A full-wave solve's (Electromagnetic Waves,
+    /// Frequency Domain) the same: its ports' names and whether each is fed
+    /// in the device, its S-parameters and ports' modes in the results.
     struct Optics {
         QString physics;
         EmeDevice device;
         std::vector<EmeResult> results;
+        bool fullWave = false;
     };
     std::vector<Optics> optics;
 

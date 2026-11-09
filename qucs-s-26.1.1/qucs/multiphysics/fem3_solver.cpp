@@ -662,7 +662,7 @@ QStringList unsolvedPhysics3(const Model& model)
 {
     QStringList out;
     for (const Node* p : model.physics())
-        if (p->enabled && !fieldKind(p->type) && p->type != QLatin1String("eme")) out << p->name();
+        if (p->enabled && !fieldKind(p->type) && p->type != QLatin1String("eme") && p->type != QLatin1String("waves3")) out << p->name();
     return out;
 }
 
@@ -745,6 +745,37 @@ QString globalPart(const QString& name)
 /// port modes' columns (by their numbers as S-parameter ports: eme.S21,
 /// eme.S21dB...; eme.S_12_3 past nine), and the first fed one's R, T and
 /// what is lost.
+/// A full-wave solve's result as an expansion's is kept: its ports' modes,
+/// its S-matrix, what each fed one leaves by, its log.
+EmeResult asEmeResult(const Wave3Result& w)
+{
+    EmeResult r;
+    r.frequency = w.frequency;
+    for (const Wave3Result::PortMode& pm : w.portModes) r.portModes.push_back({pm.port, pm.label, pm.neff, pm.te});
+    r.S = w.S;
+    r.balance = w.balance;
+    r.log = w.log;
+    r.warnings = w.warnings;
+    r.error = w.error;
+    return r;
+}
+
+/// The device a full-wave solve's results are kept with: its ports' names
+/// and whether each is fed.
+EmeDevice deviceOfPorts(const Wave3Settings& st)
+{
+    EmeDevice d;
+    d.fullWave = true;
+    for (const Wave3Port& wp : st.ports) {
+        EmePort p;
+        p.name = wp.name;
+        p.modes = wp.modes;
+        p.excite = wp.excite;
+        d.ports.push_back(p);
+    }
+    return d;
+}
+
 void setEmeGlobals(Solution3& s, const QString& tag, const EmeDevice& d, const EmeResult& r)
 {
     const QString p = tag + QLatin1Char('.');
@@ -796,7 +827,7 @@ void setEmeGlobals(Solution3& s, const QString& tag, const EmeDevice& d, const E
  * wavelengths side by side, each a snapshot of its globals. The devices
  * read once, at the first wavelength.
  */
-bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(double, const QString&)>& tell, QStringList* warnings,
+bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(double, const QString&)>& tell, double memoryLimit, QStringList* warnings,
                      QString* error)
 {
     Dim dim;
@@ -824,14 +855,126 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
         return false;
     }
     const QStringList chosen = step.list(QStringLiteral("physics"));
-    std::vector<const Node*> physics;
-    for (const Node* p : s.model().physics())
-        if (p->enabled && p->type == QLatin1String("eme") && (chosen.isEmpty() || chosen.contains(p->tag))) physics.push_back(p);
-    if (physics.empty()) {
-        *error = tr("%1: there is no eigenmode expansion (Electromagnetic Waves, Eigenmode Expansion) for it to solve").arg(step.name());
+    std::vector<const Node*> physics, waves;
+    for (const Node* p : s.model().physics()) {
+        if (!p->enabled || !(chosen.isEmpty() || chosen.contains(p->tag))) continue;
+        if (p->type == QLatin1String("eme")) physics.push_back(p);
+        if (p->type == QLatin1String("waves3")) waves.push_back(p);
+    }
+    if (physics.empty() && waves.empty()) {
+        *error = tr("%1: there is no eigenmode expansion or full-wave solve (Electromagnetic Waves, Eigenmode Expansion or Frequency "
+                    "Domain) for it to solve")
+                     .arg(step.name());
         return false;
     }
     const Topology3& topology = s.topology();
+    // The full-wave solves: each wavelength after another, each its
+    // factorization on every core - their fields' |E| and real parts at the
+    // mesh's nodes kept, of the first port mode fed.
+    const int WP = int(waves.size());
+    std::vector<Wave3Settings> waveSettings(static_cast<std::size_t>(WP));
+    for (int k = 0; k < WP; ++k) {
+        QString why;
+        if (!readWave3Settings(s.model(), *waves[std::size_t(k)], topology, s.parameters(), &waveSettings[std::size_t(k)], &why)) {
+            *error = tr("%1: %2").arg(waves[std::size_t(k)]->name(), why);
+            return false;
+        }
+        waveSettings[std::size_t(k)].memoryLimit = memoryLimit;
+        waveSettings[std::size_t(k)].fieldsKept = 1;
+    }
+    const int Wn = int(frequencies.size());
+    std::vector<std::vector<EmeResult>> waveResults(static_cast<std::size_t>(WP));
+    std::vector<std::vector<std::vector<std::array<std::complex<double>, 3>>>> waveFields(static_cast<std::size_t>(WP));
+    std::shared_ptr<const Space3> nodes;
+    if (WP > 0) nodes = std::make_shared<Space3>(s.meshPtr(), 1);
+    {
+        const double share = physics.empty() ? 1.0 : 0.5;
+        bool stopped = false;
+        for (int k = 0; k < WP && !stopped; ++k)
+            for (int w = 0; w < Wn && !stopped; ++w) {
+                Wave3Settings st = waveSettings[std::size_t(k)];
+                const double from = share * double(k * Wn + w) / double(WP * Wn), span = share / double(WP * Wn);
+                const QString name = waves[std::size_t(k)]->name();
+                st.progress = [&](double f, const QString& what) {
+                    if (tell && !tell(from + span * std::clamp(f, 0.0, 1.0), tr("%1 at %2: %3").arg(name, formatQuantity(C0 / frequencies[std::size_t(w)], Dim::length()), what)))
+                        stopped = true;
+                };
+                st.cancelled = [&] { return stopped; };
+                Wave3Result r = solveWave3(s.model(), s.parametersPtr(), topology, s.meshPtr(), st, frequencies[std::size_t(w)]);
+                if (!r.ok()) {
+                    *error = stopped ? tr("cancelled")
+                                     : tr("%1 at %2: %3").arg(name, formatQuantity(C0 / frequencies[std::size_t(w)], Dim::length()), r.error);
+                    return false;
+                }
+                waveFields[std::size_t(k)].push_back(r.fields.empty() ? std::vector<std::array<std::complex<double>, 3>>()
+                                                                      : nodalField(*r.space, r.fields.front(), *nodes));
+                waveResults[std::size_t(k)].push_back(asEmeResult(r));
+            }
+        if (stopped) {
+            *error = tr("cancelled");
+            return false;
+        }
+    }
+    if (physics.empty()) {
+        // Its fields: |E| and E's real parts (V/m, of 1 W fed), each a field
+        // of its own, kept at each wavelength.
+        const std::size_t firstField = s.fields().size();
+        for (int k = 0; k < WP; ++k)
+            for (const char* v : {"normE", "Ex", "Ey", "Ez"}) {
+                Field3 f;
+                f.tag = waves[std::size_t(k)]->tag;
+                f.type = QStringLiteral("waves3");
+                f.variable = QString::fromLatin1(v);
+                f.dim = Dim::voltage() / Dim::length();
+                f.space = nodes;
+                f.values.assign(std::size_t(nodes->size()), 0.0);
+                f.domains.assign(topology.domains.size(), 1);
+                f.solved = true;
+                s.fields().push_back(std::move(f));
+            }
+        s.coefficients().resize(s.fields().size());
+        s.defineVariables();
+        for (int k = 0; k < WP; ++k) {
+            Solution3::Optics o;
+            o.physics = waves[std::size_t(k)]->tag;
+            o.device = deviceOfPorts(waveSettings[std::size_t(k)]);
+            o.fullWave = true;
+            s.optics.push_back(o);
+        }
+        const std::size_t opticsFrom = s.optics.size() - std::size_t(WP);
+        for (int w = 0; w < Wn; ++w) {
+            for (int k = 0; k < WP; ++k) {
+                const EmeResult& r = waveResults[std::size_t(k)][std::size_t(w)];
+                const QString tag = waves[std::size_t(k)]->tag;
+                setEmeGlobals(s, tag, s.optics[opticsFrom + std::size_t(k)].device, r);
+                for (const QString& line : r.log) s.log << QStringLiteral("%1: %2").arg(waves[std::size_t(k)]->name(), line);
+                for (const QString& wn : r.warnings) {
+                    const QString said = QStringLiteral("%1: %2").arg(waves[std::size_t(k)]->name(), wn);
+                    if (!warnings->contains(said)) *warnings << said;
+                }
+                s.optics[opticsFrom + std::size_t(k)].results.push_back(r);
+                const auto& E = waveFields[std::size_t(k)][std::size_t(w)];
+                for (int c = 0; c < 4; ++c) {
+                    Field3& f = s.fields()[firstField + std::size_t(4 * k + c)];
+                    for (std::size_t i = 0; i < f.values.size(); ++i) {
+                        if (i >= E.size()) {
+                            f.values[i] = 0;
+                            continue;
+                        }
+                        f.values[i] = c == 0 ? std::sqrt(std::norm(E[i][0]) + std::norm(E[i][1]) + std::norm(E[i][2])) : E[i][std::size_t(c - 1)].real();
+                    }
+                }
+            }
+            s.setFrequency(frequencies[std::size_t(w)]);
+            s.addSnapshot();
+        }
+        s.spectral = true;
+        return true;
+    }
+    if (WP > 0) {
+        *error = tr("%1: an eigenmode expansion and a full-wave solve in one step - give each a step of its own (its Physics)").arg(step.name());
+        return false;
+    }
     std::vector<EmeDevice> devices(physics.size());
     for (std::size_t k = 0; k < physics.size(); ++k)
         if (!readEmeDevice(s.model(), *physics[k], topology, s.parameters(), frequencies.front(), &devices[k], error)) return false;
@@ -1203,7 +1346,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         // (An eigenmode expansion has no field on the mesh: its cuts' own,
         // solved by a Wavelength Domain step.)
         if (!k) {
-            optics = optics || p->type == QLatin1String("eme");
+            optics = optics || p->type == QLatin1String("eme") || p->type == QLatin1String("waves3");
             continue;
         }
         Field3 f;
@@ -1241,6 +1384,16 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             Estimate3 e = estimateOn(*f.space, nonzeros[order], solver);
             e.physics = f.tag;
             if (const Node* p = s->model().find(f.tag)) e.name = p->name();
+            s->log << tr("Estimated: %1").arg(estimateText(e));
+            out.estimates.push_back(e);
+        }
+        // A full-wave solve's: its edge elements' unknowns, its factorization's
+        // memory.
+        for (const Node* p : s->model().physics()) {
+            if (!p->enabled || p->type != QLatin1String("waves3")) continue;
+            Estimate3 e = estimateWave3(mesh, p->text(QStringLiteral("order")) == QLatin1String("1") ? 1 : 2);
+            e.physics = p->tag;
+            e.name = p->name();
             s->log << tr("Estimated: %1").arg(estimateText(e));
             out.estimates.push_back(e);
         }
@@ -1285,7 +1438,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
                 return !progress || progress(from + span * std::clamp(f, 0.0, 1.0), what);
             };
             QString why;
-            if (!wavelengthStep3(*s, step, tell, &out.warnings, &why)) {
+            if (!wavelengthStep3(*s, step, tell, asked.force ? 0.0 : asked.limit, &out.warnings, &why)) {
                 out.error = why;
                 out.log = s->log;
                 return out;
@@ -1300,7 +1453,8 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             return out;
         }
         if (s->fields().empty()) {
-            out.error = tr("%1: the model's physics are an eigenmode expansion's, which a Wavelength Domain step solves (not a %2 step)")
+            out.error = tr("%1: the model's physics are light's (an eigenmode expansion or a full-wave solve), which a Wavelength Domain step "
+                           "solves (not a %2 step)")
                             .arg(step.name(), step.kind() ? step.kind()->title : step.type);
             out.log = s->log;
             return out;

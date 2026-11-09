@@ -97,6 +97,11 @@ struct EmeSettings {
     /// junction radiates dies out there rather than coming back off a wall.
     double absorberThickness = 1, absorberKappa = 0.3;
     int absorberLayers = 4;
+    /// The 3D domains that are PMLs (a full-wave solve's): their rectangles
+    /// of a cut are its PMLs - stretched outward from the box of the rest, as
+    /// the 3D solve stretches them, \a pmlReflection - so a port's modes are
+    /// those of the cross-section the 3D field sees there.
+    std::vector<int> pmlDomains;
     std::function<bool()> cancelled;
     /// How far a solve is, of 1, and in what (its cuts, then its junctions'
     /// overlaps) - called from its threads, one at a time.
@@ -167,6 +172,12 @@ struct EmeModes {
     /// and H along u, v, s. False outside its mesh.
     bool fieldAt(int m, double u, double v, std::complex<double> E[3], std::complex<double> H[3]) const;
 };
+
+/// \a m's modes' signs as the eigenmode expansion sets them, but seen in the
+/// cut's frame \a mirrored - u and the field across it turned over: a port
+/// at a device's far end, whose frame looks back, its modes signed as the
+/// near end's are (a straight guide's S21 e^-jβL, a TE mode's as a TM's).
+void orientModes(EmeModes& m, bool mirrored);
 
 /// The modes of \a section of 3D \a model at \a frequency (Hz): its
 /// rectangles a 2D model's, each of its 3D domain's materials, meshed to the
@@ -269,6 +280,9 @@ struct EmePeriodic {
 /// along `along`) - or a path of straight pieces and arcs, s its length -,
 /// its range, the window of its cuts (u across it, to the left), its ports.
 struct EmeDevice {
+    /// A full-wave solve's ports kept as a device's (Solution3::Optics): their
+    /// names and feeds alone, no axis.
+    bool fullWave = false;
     QPointF origin, along{1, 0}, across{0, 1};
     /// A path's pieces in order (empty: the straight axis); its s from 0 at
     /// its start to the sum of their lengths.

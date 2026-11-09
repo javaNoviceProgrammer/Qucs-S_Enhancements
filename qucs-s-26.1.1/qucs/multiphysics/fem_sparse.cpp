@@ -380,6 +380,7 @@ template <> struct AccelerateTypes<double> {
     using Dense = DenseVector_Double;
     static Matrix matrix(SparseMatrixStructure s, double* v) { return Matrix{s, v}; }
     static Dense dense(int n, double* v) { return Dense{n, v}; }
+    static DenseMatrix_Double denseMatrix(int rows, int cols, double* v) { return DenseMatrix_Double{rows, cols, rows, SparseAttributes_t{}, v}; }
 };
 template <> struct AccelerateTypes<std::complex<double>> {
     using Matrix = SparseMatrix_Complex_Double;
@@ -393,6 +394,10 @@ template <> struct AccelerateTypes<std::complex<double>> {
                       reinterpret_cast<__SPARSE_double_complex*>(v)};
     }
     static Dense dense(int n, std::complex<double>* v) { return Dense{n, reinterpret_cast<__SPARSE_double_complex*>(v)}; }
+    static DenseMatrix_Complex_Double denseMatrix(int rows, int cols, std::complex<double>* v)
+    {
+        return DenseMatrix_Complex_Double{rows, cols, rows, SparseAttributesComplex_t{}, reinterpret_cast<__SPARSE_double_complex*>(v)};
+    }
 };
 } // namespace
 #endif
@@ -402,6 +407,7 @@ struct SparseLu<Scalar>::Impl {
     bool accelerate = false;
     bool conditionChecked = false;
     bool manyAtOnce = false;   // setManyAtOnce()
+    bool metis = false;        // setMetisOrdering()
     int analyses = 0;
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     std::string error;
@@ -532,7 +538,8 @@ struct SparseLu<Scalar>::Impl {
         if (n == 0) return;
         if (__builtin_available(macOS 15.5, *)) {
             const bool complex = !std::is_same_v<Scalar, double>;
-            const std::uint64_t hash = patternHash(starts, rows);
+            // (An ordering of its own another analysis.)
+            const std::uint64_t hash = patternHash(starts, rows) ^ (metis ? 0x9e3779b97f4a7c15ull : 0ull);
             std::lock_guard<std::mutex> one(analysingLock);
             if (findAnalysed(complex, hash, starts, rows, &symbolic)) {
                 analysed = true;
@@ -540,13 +547,15 @@ struct SparseLu<Scalar>::Impl {
             }
             SparseMatrixStructure st = structure();
             ++analysesMade;
+            SparseSymbolicFactorOptions so = symbolicOptions();
+            if (metis) so.orderMethod = SparseOrderMetis;
             if constexpr (std::is_same_v<Scalar, double>) {
-                symbolic = SparseFactor(SparseFactorizationLU, st, symbolicOptions());
+                symbolic = SparseFactor(SparseFactorizationLU, st, so);
             } else {
                 SparseAttributesComplex_t ac{};
                 ac.kind = SparseOrdinary;
                 symbolic = SparseFactor(SparseFactorizationLU, SparseMatrixStructureComplex{st.rowCount, st.columnCount, st.columnStarts, st.rowIndices, ac, 1},
-                                        symbolicOptions());
+                                        so);
             }
             analysed = symbolic.status == SparseStatusOK;
             if (!analysed) {
@@ -677,6 +686,11 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
     }
 }
 
+template <typename Scalar> void SparseLu<Scalar>::setMetisOrdering(bool on)
+{
+    a_impl->metis = on;
+}
+
 template <typename Scalar> void SparseLu<Scalar>::setManyAtOnce(bool on)
 {
     a_impl->manyAtOnce = on;
@@ -730,8 +744,180 @@ template <typename Scalar> typename SparseLu<Scalar>::Vector SparseLu<Scalar>::s
     return Vector(d.eigen->solve(b));
 }
 
+template <typename Scalar> typename SparseLu<Scalar>::DenseMatrix SparseLu<Scalar>::solveMany(const DenseMatrix& b) const
+{
+    const Impl& d = *a_impl;
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    if (d.accelerate) {
+        if (__builtin_available(macOS 15.5, *)) {
+            DenseMatrix x = b;
+            if (d.n == 0 || !d.factored || b.rows() != d.n || d.info != Eigen::Success) {
+                x.setConstant(Scalar(std::numeric_limits<double>::quiet_NaN()));
+                return x;
+            }
+            if (x.cols() > 0) SparseSolve(d.numeric, Impl::T::denseMatrix(d.n, int(x.cols()), x.data()));
+            return x;
+        }
+    }
+#endif
+    if (!d.eigen || d.info != Eigen::Success) return DenseMatrix::Constant(b.rows(), b.cols(), Scalar(std::numeric_limits<double>::quiet_NaN()));
+    return DenseMatrix(d.eigen->solve(b));
+}
+
 template class SparseLu<double>;
 template class SparseLu<std::complex<double>>;
+
+// ------------------------------------------------- complex symmetric LDLT
+
+struct SparseComplexLdlt::Impl {
+    bool accelerate = false;
+    double limit = 0, bytes = 0;
+    Eigen::ComputationInfo info = Eigen::InvalidInput;
+    std::string error;
+    std::unique_ptr<SparseLu<std::complex<double>>> lu;   // where Accelerate's LDLT is not
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    Matrix lower;
+    std::vector<long> starts;
+    int n = 0;
+    bool analysed = false, factored = false;
+    SparseOpaqueSymbolicFactorization symbolic{};
+    SparseOpaqueFactorization_Complex_Double numeric{};
+    SparseMatrixStructureComplex structure()
+    {
+        SparseAttributesComplex_t a{};
+        a.kind = SparseSymmetric;
+        a.triangle = SparseLowerTriangle;
+        return SparseMatrixStructureComplex{n, n, starts.data(), lower.innerIndexPtr(), a, 1};
+    }
+    void release()
+    {
+        if (factored) SparseCleanup(numeric);
+        if (analysed) SparseCleanup(symbolic);
+        factored = analysed = false;
+    }
+#endif
+    ~Impl()
+    {
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+        release();
+#endif
+    }
+};
+
+SparseComplexLdlt::SparseComplexLdlt() : a_impl(std::make_unique<Impl>()) {}
+SparseComplexLdlt::~SparseComplexLdlt() = default;
+
+void SparseComplexLdlt::compute(const Matrix& a)
+{
+    Impl& d = *a_impl;
+    d.error.clear();
+    d.accelerate = false;
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    if (acceleratedLu() && a.rows() == a.cols()) {
+        if (__builtin_available(macOS 26.0, *)) {
+            d.accelerate = true;
+            d.lu.reset();
+            d.release();
+            d.lower = a.triangularView<Eigen::Lower>();
+            d.lower.makeCompressed();
+            d.n = int(a.rows());
+            d.starts.assign(d.lower.outerIndexPtr(), d.lower.outerIndexPtr() + d.lower.cols() + 1);
+            d.info = Eigen::Success;
+            if (d.n == 0) return;
+            accelerateError.clear();
+            SparseSymbolicFactorOptions so = symbolicOptions();
+            so.orderMethod = SparseOrderMetis;
+            d.symbolic = SparseFactor(SparseFactorizationLDLT, d.structure(), so);
+            d.analysed = d.symbolic.status == SparseStatusOK;
+            if (!d.analysed) {
+                d.error = statusText(d.symbolic.status);
+                SparseCleanup(d.symbolic);
+                d.info = Eigen::InvalidInput;
+                return;
+            }
+            // (Complex: twice a double's factor and workspace.)
+            d.bytes = 2.0 * (double(d.symbolic.factorSize_Double) + double(d.symbolic.workspaceSize_Double));
+            if (d.limit > 0 && d.bytes > d.limit) {
+                char text[160];
+                std::snprintf(text, sizeof text, "its factors would take %.1f GB, past the limit of %.1f GB", d.bytes / 1073741824.0,
+                              d.limit / 1073741824.0);
+                d.error = text;
+                d.info = Eigen::InvalidInput;
+                return;
+            }
+            SparseMatrix_Complex_Double m{d.structure(), reinterpret_cast<__SPARSE_double_complex*>(d.lower.valuePtr())};
+            ++usedAccelerateLu;
+            d.numeric = SparseFactor(d.symbolic, m);
+            d.factored = d.numeric.status == SparseStatusOK;
+            if (!d.factored) {
+                d.error = statusText(d.numeric.status);
+                SparseCleanup(d.numeric);
+                d.info = Eigen::NumericalIssue;
+            }
+            return;
+        }
+    }
+#endif
+    d.lu = std::make_unique<SparseLu<std::complex<double>>>();
+    d.lu->setMetisOrdering(true);
+    d.lu->compute(a);
+    d.info = d.lu->info();
+    if (d.info != Eigen::Success) d.error = d.lu->lastErrorMessage();
+}
+
+Eigen::ComputationInfo SparseComplexLdlt::info() const
+{
+    return a_impl->info;
+}
+
+std::string SparseComplexLdlt::lastErrorMessage() const
+{
+    return a_impl->error;
+}
+
+SparseComplexLdlt::DenseMatrix SparseComplexLdlt::solveMany(const DenseMatrix& b) const
+{
+    const Impl& d = *a_impl;
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    if (d.accelerate) {
+        DenseMatrix x = b;
+        if (d.n == 0 || !d.factored || b.rows() != d.n || d.info != Eigen::Success) {
+            x.setConstant(std::complex<double>(std::numeric_limits<double>::quiet_NaN()));
+            return x;
+        }
+        if (__builtin_available(macOS 26.0, *)) {
+            if (x.cols() > 0)
+                SparseSolve(d.numeric, DenseMatrix_Complex_Double{d.n, int(x.cols()), d.n, SparseAttributesComplex_t{},
+                                                                  reinterpret_cast<__SPARSE_double_complex*>(x.data())});
+        }
+        return x;
+    }
+#endif
+    if (!d.lu || d.info != Eigen::Success) return DenseMatrix::Constant(b.rows(), b.cols(), std::complex<double>(std::numeric_limits<double>::quiet_NaN()));
+    return d.lu->solveMany(b);
+}
+
+SparseComplexLdlt::Vector SparseComplexLdlt::solve(const Vector& b) const
+{
+    DenseMatrix B = b;
+    return solveMany(B).col(0);
+}
+
+void SparseComplexLdlt::setMemoryLimit(double bytes)
+{
+    a_impl->limit = bytes;
+}
+
+double SparseComplexLdlt::factorBytes() const
+{
+    return a_impl->bytes;
+}
+
+QString SparseComplexLdlt::name() const
+{
+    if (a_impl->accelerate) return QStringLiteral("Accelerate's LDLT");
+    return a_impl->lu && a_impl->lu->accelerated() ? QStringLiteral("Accelerate's LU") : QStringLiteral("Eigen's LU");
+}
 
 // ---------------------------------------------------------------- Cholesky
 
