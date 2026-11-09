@@ -2052,6 +2052,114 @@ private slots:
         QCOMPARE_LE(plot.calibration.toValue(blues.first()->points.first()).x(), 0.001);
     }
 
+    void aLegendsSampleAndABarAreTakenRight()
+    {
+        // As Chen et al. (1996) draw them (the Chen recheck's D1 to D3): a
+        // model curve dashed dash by dash, in two pieces where it went under
+        // the axis; between them, of its style, the legend's sample, dashed
+        // the same way, just before its words, far above where the curve
+        // stopped; after them a stroke of the style with no words, as far
+        // above; and a histogram's bar, drawn before the curve it ends.
+        const QString file = path(QStringLiteral("legend_sample.pdf"));
+        Axes a;
+        a.xMin = 0;
+        a.xMax = 0.3;
+        a.yLog = true;
+        a.yMin = 1e15;
+        a.yMax = 1e21;
+        const auto logLine = [&](double x0, double v0, double x1, double v1) {
+            QPolygonF line;
+            for (int k = 0; k <= 200; ++k) {
+                const double t = k / 200.0;
+                line << a.at(x0 + t * (x1 - x0), std::pow(10.0, std::log10(v0) + t * (std::log10(v1) - std::log10(v0))));
+            }
+            return line;
+        };
+        // Dashes of 5 pt, 2.5 pt apart, each a segment of its own.
+        const auto dashesOf = [](const QPolygonF& line) {
+            QList<QPolygonF> dashes;
+            QPolygonF dash;
+            double along = 0;
+            for (int i = 0; i + 1 < line.size(); ++i) {
+                const QLineF step(line.at(i), line.at(i + 1));
+                for (double s = 0; s < step.length(); s += 0.25) {
+                    const bool on = std::fmod(along + s, 7.5) < 5;
+                    if (on) dash << step.pointAt(s / step.length());
+                    else if (!dash.isEmpty()) {
+                        if (dash.size() >= 2) dashes << QPolygonF{dash.first(), dash.last()};
+                        dash.clear();
+                    }
+                }
+                along += step.length();
+            }
+            if (dash.size() >= 2) dashes << QPolygonF{dash.first(), dash.last()};
+            return dashes;
+        };
+        const QPolygonF first = logLine(0.005, 1e20, 0.15, 2e15);
+        const QPolygonF sample = logLine(0.153, 1e20, 0.168, 1e20);
+        const QPolygonF second = logLine(0.175, 2e15, 0.28, 5e15);
+        const QPolygonF stroke = logLine(0.285, 1e20, 0.295, 1e20);
+        const QPolygonF bar{a.at(0.2, 3e16), a.at(0.2, 1e18), a.at(0.204, 1e18), a.at(0.204, 3e16)};
+        const QPolygonF ended = logLine(0.05, 1e19, 0.2, 2e16);
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(Qt::black, 0.8));
+            p.drawRect(a.frame);
+            for (int k = 1; k < 15; ++k) p.drawLine(QPointF(a.px(k * 0.02), a.frame.bottom()), QPointF(a.px(k * 0.02), a.frame.bottom() - (k % 5 ? 3 : 6)));
+            for (const double t : {1e16, 1e17, 1e18, 1e19, 1e20}) p.drawLine(QPointF(a.frame.left(), a.py(t)), QPointF(a.frame.left() + 6, a.py(t)));
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setFont(plotFont(9, u));
+            const auto text = [&](QRectF box, int align, const QString& s) { p.drawText(QRectF(box.topLeft() * u, box.size() * u), align, s); };
+            for (const double t : {0.0, 0.1, 0.2, 0.3})
+                text(QRectF(a.px(t) - 30, a.frame.bottom() + 6, 60, 12), Qt::AlignHCenter | Qt::AlignTop, QString::number(t, 'f', 1));
+            for (int e = 15; e <= 21; ++e) text(QRectF(a.frame.left() - 66, a.py(std::pow(10.0, e)) - 7, 60, 14), Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("1e%1").arg(e));
+            text(QRectF(a.px(0.171), a.py(1e20) - 7, 60, 14), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Model"));
+            p.restore();
+            p.setPen(QPen(Qt::blue, 0.6));
+            for (const QPolygonF& line : {first, sample, second, stroke})
+                for (const QPolygonF& dash : dashesOf(line)) p.drawPolyline(dash);
+            p.setPen(QPen(Qt::darkGreen, 0.6));
+            p.drawPolyline(bar);
+            p.drawPolyline(ended);
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QCOMPARE(plot.yAxis.scale, Scale::Log);
+        QVERIFY(extract(source, plot, Options{}));
+        QList<const Series*> blues, greens;
+        for (const Series& s : std::as_const(plot.series)) {
+            if (s.shape != Series::Shape::Line) continue;
+            if (s.colour == QColor(Qt::blue)) blues << &s;
+            else if (s.colour == QColor(Qt::darkGreen)) greens << &s;
+        }
+        // D2: the sample names the curve and is no series; D1: the curve is
+        // its two pieces, and the stroke far above its end is not joined on.
+        QCOMPARE(blues.size(), 2);
+        const Series* curve = blues.first()->points.size() > blues.last()->points.size() ? blues.first() : blues.last();
+        const Series* other = curve == blues.first() ? blues.last() : blues.first();
+        QCOMPARE(curve->name, QStringLiteral("Model"));
+        QVERIFY(curve->dashed);
+        QCOMPARE(curve->breaks.size(), 1);
+        for (const QPointF& v : values(plot, *curve)) QVERIFY2(v.x() < 0.152 || v.x() > 0.17, qPrintable(QString::number(v.x())));
+        const QPointF last = values(plot, *curve).last();
+        QVERIFY2(std::abs(last.x() - 0.28) < 0.003 && last.y() < 1e16, qPrintable(QStringLiteral("%1, %2").arg(last.x()).arg(last.y())));
+        for (const QPointF& v : values(plot, *other)) {
+            QVERIFY2(v.x() > 0.284, qPrintable(QString::number(v.x())));
+            QVERIFY2(std::abs(std::log10(v.y()) - 20) < 0.05, qPrintable(QString::number(v.y())));
+        }
+        // D3: the bar is the end of the curve it was drawn before.
+        QCOMPARE(greens.size(), 1);
+        QCOMPARE(greens.first()->breaks.size(), 1);
+        const QList<QPointF> green = values(plot, *greens.first());
+        QVERIFY2(std::abs(green.first().x() - 0.05) < 0.002, qPrintable(QString::number(green.first().x())));
+        QVERIFY2(std::abs(green.last().x() - 0.204) < 0.002 && std::abs(std::log10(green.last().y()) - std::log10(3e16)) < 0.05,
+                 qPrintable(QStringLiteral("%1, %2").arg(green.last().x()).arg(green.last().y())));
+    }
+
     void seriesLeftOutAndWhatWasAskedAreKept()
     {
         // B3: series beyond those asked for are counted and said; B8: what

@@ -426,6 +426,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
     // --- The legend: words with a sample of a line or a marker just before them.
     QHash<QString, QString> nameOfStyle, nameOfMarker;
     QList<QRectF> legendSamples;
+    QList<Phrase> legendPhrases;
     {
         const QRectF reach = frame.adjusted(-10, -60, 170, 80);
         QList<Token> words;
@@ -439,6 +440,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
             if (frame.contains(c) || besideFrame) usable << t;
         }
         const QList<Phrase> phrases = phrasesOf(usable);
+        legendPhrases = phrases;
         for (const Phrase& phrase : phrases) {
             const double cy = phrase.box.center().y();
             const double h = std::max(phrase.box.height(), 5.0);
@@ -469,6 +471,25 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         return false;
     };
 
+    // A line's sample drawn dash by dash: each dash is short, so the dashes
+    // are judged together, as the chain they make. Short and flat, ending just
+    // before the words, at their height.
+    QList<bool> sampleChain(chains.size(), false);
+    for (int i = 0; i < chains.size(); ++i) {
+        const Chain& c = chains.at(i);
+        const QRectF box = c.points.boundingRect();
+        if (c.closed || c.points.size() > 16 || box.width() < 4 || box.width() > 70 || box.height() > 1.5) continue;
+        for (const Phrase& phrase : std::as_const(legendPhrases)) {
+            const double h = std::max(phrase.box.height(), 5.0);
+            if (box.right() > phrase.box.left() + 1 || phrase.box.left() - box.right() > 22) continue;
+            if (std::abs(box.center().y() - phrase.box.center().y()) > h) continue;
+            const QString key = styleKey(c.colour, c.width, c.dash);
+            if (!nameOfStyle.contains(key)) nameOfStyle.insert(key, phrase.text);
+            sampleChain[i] = true;
+            break;
+        }
+    }
+
     // --- Series from the chains.
     QList<Series> found;
     QList<QString> foundKeys;    // each line's style, whether it closes on itself, whether it is a scrap
@@ -478,9 +499,10 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
     const double inkScale = 3;
     double agreementSum = 0;
     Q_UNUSED(agreementSum)
-    for (const Chain& c : std::as_const(chains)) {
+    for (int ci = 0; ci < chains.size(); ++ci) {
+        const Chain& c = chains.at(ci);
         if (!wanted(options, c.colour)) continue;
-        if (isSample(c.points.boundingRect())) continue;
+        if (sampleChain.at(ci) || isSample(c.points.boundingRect())) continue;
         // A legend's frame, rounded or not: a closed outline round a box.
         if (c.closed && c.curved && achromatic(c.colour)) {
             const QRectF outline = c.points.boundingRect();
@@ -551,10 +573,15 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 int j = i + 1;
                 while (j < found.size() && foundKeys.at(j) != foundKeys.at(i)) ++j;
                 if (j >= found.size() || foundClosed.at(j)) break;
+                // (Or a bar's sides, up and down at one x.)
                 const int next = direction(found.at(j));
-                if (next != way && !(next == 0 && foundTiny.at(j))) break;
+                const bool narrow = QPolygonF(found.at(j).points).boundingRect().width() <= 0.02 * frame.width();
+                if (next != way && !(next == 0 && (foundTiny.at(j) || narrow))) break;
                 const double gap = way * (found.at(j).points.first().x() - found.at(i).points.last().x());
                 if (gap < -0.6 || gap > reach) break;
+                // (Not something else of the style that starts far above or
+                // below where the curve stopped: a legend's sample.)
+                if (std::abs(found.at(j).points.first().y() - found.at(i).points.last().y()) > 0.3 * frame.height()) break;
                 Series& a = found[i];
                 const Series& b = found.at(j);
                 const int at = int(a.points.size());
@@ -568,6 +595,33 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 foundClosed.removeAt(j);
                 foundTiny.removeAt(j);
             }
+        }
+        // A bar at one x the file draws before the curve it ends: joined to
+        // the curve whose end it starts from, the nearest in y.
+        for (int i = found.size() - 1; i >= 0; --i) {
+            if (foundClosed.at(i) || QPolygonF(found.at(i).points).boundingRect().width() > 0.02 * frame.width()) continue;
+            const QPointF start = found.at(i).points.first();
+            int best = -1;
+            for (int k = 0; k < found.size(); ++k) {
+                if (k == i || foundClosed.at(k) || foundKeys.at(k) != foundKeys.at(i)) continue;
+                if (QPolygonF(found.at(k).points).boundingRect().width() <= 0.02 * frame.width()) continue;
+                const QPointF end = found.at(k).points.last();
+                if (std::abs(end.x() - start.x()) > 0.6 || std::abs(end.y() - start.y()) > 0.3 * frame.height()) continue;
+                if (best < 0 || std::abs(end.y() - start.y()) < std::abs(found.at(best).points.last().y() - start.y())) best = k;
+            }
+            if (best < 0) continue;
+            Series& a = found[best];
+            const Series& b = found.at(i);
+            const int at = int(a.points.size());
+            a.breaks << at;
+            for (const int k : b.breaks) a.breaks << at + k;
+            a.points << b.points;
+            ++joinedPieces;
+            foundTiny[best] = false;
+            found.removeAt(i);
+            foundKeys.removeAt(i);
+            foundClosed.removeAt(i);
+            foundTiny.removeAt(i);
         }
         for (int i = found.size() - 1; i >= 0; --i)
             if (foundTiny.at(i)) {
