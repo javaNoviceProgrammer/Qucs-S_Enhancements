@@ -384,9 +384,24 @@ private slots:
     // 0.87, 0.10, 0.13; the histogram itself (40k ions here) 0.10, 0.07,
     // 0.71, 1.01, 0.12, 0.20 - on axis at 100 and 200 keV the model's tail
     // ends short of the deepest SIMS points, which a fit's tail ran on past.
-    // The Pearson of the tables (no channelling) misses each by more.
+    // The Pearson of the tables (no channelling) misses each by more. Each
+    // figure a row, each its own of QtTest's 300 s: the six in one went past
+    // it on CI's macOS runner of three processors (fig1 to fig6 252 s there,
+    // 17 s on an M2 Ultra; fig7 not reached).
+    void againstTheSims_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<double>("bound");
+        const QList<std::pair<const char*, double>> figures = {{"fig1", 0.15}, {"fig2", 0.15}, {"fig3", 0.8}, {"fig4", 1.15}, {"fig6", 0.2}, {"fig7", 0.25}};
+        for (const auto& [name, bound] : figures) {
+            if (slowBuild() && QByteArray(name) != "fig1" && QByteArray(name) != "fig6") continue;
+            QTest::newRow(name) << QString::fromLatin1(name) << bound;
+        }
+    }
     void againstTheSims()
     {
+        QFETCH(QString, name);
+        QFETCH(double, bound);
         QFile f(QStringLiteral(QUCS_TEST_DATA "/cai1998_phosphorus_sims.csv"));
         QVERIFY(f.open(QIODevice::ReadOnly | QIODevice::Text));
         struct Case {
@@ -406,31 +421,25 @@ private slots:
             c.sims.emplace_back(w[5].toDouble(), w[6].toDouble());
         }
         QCOMPARE(int(cases.size()), 6);
-        const std::map<QString, double> bound = {{QStringLiteral("fig1"), 0.15}, {QStringLiteral("fig2"), 0.15}, {QStringLiteral("fig3"), 0.8},
-                                                 {QStringLiteral("fig4"), 1.15},  {QStringLiteral("fig6"), 0.2},  {QStringLiteral("fig7"), 0.25}};
-        const QStringList run = slowBuild() ? QStringList{QStringLiteral("fig1"), QStringLiteral("fig6")} : QStringList{};
-        QStringList failed;
-        for (const auto& [name, c] : cases) {
-            if (!run.isEmpty() && !run.contains(name)) continue;
-            const double depth = c.keV > 150 ? 2.0 : c.keV > 30 ? 1.4 : 0.6;
-            const QString props = QStringLiteral(R"("energy": "%1", "dose": "%2", "tilt": "%3", "rotation": "%4")").arg(c.keV).arg(c.dose).arg(c.tilt).arg(c.rot);
-            QElapsedTimer clock;
-            clock.start();
-            // (Tilted: a window wide enough that the column read is fed by
-            // paths that came in through its top.)
-            const double width = c.tilt > 0 ? 2.5 : 0.2, x = c.tilt > 0 ? 2.0 : -1;
-            const long ions = slowBuild() ? 10000 : 40000;
-            const ProcessRun mc = runFlow(implantFlow(props + QStringLiteral(R"(, "profile": "crystal", "ions": "%1")").arg(ions), depth,
-                                                      QStringLiteral("100"), QStringLiteral("Silicon"), width));
-            const double ms = double(clock.elapsed());
-            const ProcessRun lss = runFlow(implantFlow(props, depth, QStringLiteral("100"), QStringLiteral("Silicon"), width));
-            QVERIFY2(mc.ok() && lss.ok(), qPrintable(said(mc) + said(lss)));
-            const auto [rms, worst] = decades(column(mc, QStringLiteral("P"), x), c.sims);
-            const auto [rmsL, worstL] = decades(column(lss, QStringLiteral("P"), x), c.sims);
-            qInfo("%s, %g keV %g°/%g°: crystal %.2f / %.2f decades (%.1f s), LSS tables %.2f / %.2f", qPrintable(name), c.keV, c.tilt, c.rot, rms, worst, ms / 1e3, rmsL, worstL);
-            if (!(rms < bound.at(name) && rms < rmsL - 0.3)) failed << QStringLiteral("%1: %2 decades rms (%3 the tables'): %4").arg(name).arg(rms).arg(rmsL).arg(said(mc));
-        }
-        QVERIFY2(failed.isEmpty(), qPrintable(failed.join(QLatin1Char('\n'))));
+        QVERIFY(cases.count(name));
+        const Case& c = cases.at(name);
+        const double depth = c.keV > 150 ? 2.0 : c.keV > 30 ? 1.4 : 0.6;
+        const QString props = QStringLiteral(R"("energy": "%1", "dose": "%2", "tilt": "%3", "rotation": "%4")").arg(c.keV).arg(c.dose).arg(c.tilt).arg(c.rot);
+        QElapsedTimer clock;
+        clock.start();
+        // (Tilted: a window wide enough that the column read is fed by
+        // paths that came in through its top.)
+        const double width = c.tilt > 0 ? 2.5 : 0.2, x = c.tilt > 0 ? 2.0 : -1;
+        const long ions = slowBuild() ? 10000 : 40000;
+        const ProcessRun mc = runFlow(implantFlow(props + QStringLiteral(R"(, "profile": "crystal", "ions": "%1")").arg(ions), depth,
+                                                  QStringLiteral("100"), QStringLiteral("Silicon"), width));
+        const double ms = double(clock.elapsed());
+        const ProcessRun lss = runFlow(implantFlow(props, depth, QStringLiteral("100"), QStringLiteral("Silicon"), width));
+        QVERIFY2(mc.ok() && lss.ok(), qPrintable(said(mc) + said(lss)));
+        const auto [rms, worst] = decades(column(mc, QStringLiteral("P"), x), c.sims);
+        const auto [rmsL, worstL] = decades(column(lss, QStringLiteral("P"), x), c.sims);
+        qInfo("%s, %g keV %g°/%g°: crystal %.2f / %.2f decades (%.1f s), LSS tables %.2f / %.2f", qPrintable(name), c.keV, c.tilt, c.rot, rms, worst, ms / 1e3, rmsL, worstL);
+        QVERIFY2(rms < bound && rms < rmsL - 0.3, qPrintable(QStringLiteral("%1: %2 decades rms (%3 the tables'): %4").arg(name).arg(rms).arg(rmsL).arg(said(mc))));
     }
 
     // Built again, the flow takes its run from the cache (said); stopped

@@ -240,8 +240,10 @@ jobs:
     runs-on: macos-15
     # The build some 28 minutes and the tests, one at a time, 31 at ce8d2b0
     # (October 2026): past the 60 the job had. The tests now run as many at
-    # a time as the runner has processors (three).
-    timeout-minutes: 90
+    # a time as the runner has processors (three). At eb1cece9 the build 33
+    # minutes and the tests 53, at 81e8e078 35 and 47 with four tests ended
+    # early by QtTest's limit: 120 now, room for those four run through.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

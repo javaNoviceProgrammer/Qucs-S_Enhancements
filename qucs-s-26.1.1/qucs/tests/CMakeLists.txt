@@ -551,6 +551,14 @@ if(APPLE)
   # that.)
   math(EXPR _qucs_measured_ms "2 * ${_qucs_memory_ms}")
   set_property(TEST test_rf25_measured APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_measured_ms}")
+  # (Before macOS 26 - CI's runner has 15 - complex systems are factorized
+  # by Eigen's LU, on one thread: the eigenmode expansion's cuts and the RF
+  # solver's compressed solves. test_fem3_eme's threads function and the
+  # thick comb of test_rf25_fullwave_2 went past QtTest's 300 s there on
+  # v27.0.9's tag run, each split since; by Eigen's LU on an M2 Ultra the
+  # heaviest of them 98 s, the comb's first solve 72 (10 by Accelerate's).
+  # The same 900 s as the tests above, within their TIMEOUT of 900.)
+  set_property(TEST test_fem3_eme test_rf25_fullwave_2 APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
 endif()
 # (The toy laser's threshold cases - three walks to 1.4 V and more, one of
 # them failing on purpose, halved to 10 µV and tried again from rest - some

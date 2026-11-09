@@ -418,6 +418,58 @@ double linePair(double a0, double a1, double b0, double b1, double rho)
     return f(a1 - b0) - f(a1 - b1) - f(a0 - b0) + f(a0 - b1);
 }
 
+/// The MOM comb of theSideWallsChargeIsInAThickCombsCapacitance and the two
+/// after it: 12 fingers of 1 µm in 1 µm gaps between two bars, in oxide 4 µm
+/// over the ground; its metal \a t thick, solved as its two faces or as a
+/// sheet.
+rf::Stack combStack(double t, bool faces)
+{
+    rf::Stack s;
+    rf::Layer ground;
+    ground.kind = rf::Layer::Ground;
+    ground.name = QStringLiteral("GND");
+    ground.tag = QStringLiteral("gnd");
+    rf::Layer oxide;
+    oxide.kind = rf::Layer::Substrate;
+    oxide.name = QStringLiteral("OX");
+    oxide.tag = QStringLiteral("ox");
+    oxide.thickness = 4e-6;
+    oxide.epsr = 4.1;
+    rf::Layer metal;
+    metal.kind = rf::Layer::Metal;
+    metal.name = QStringLiteral("M1");
+    metal.tag = QStringLiteral("m1");
+    metal.thickness = t;
+    metal.sigma = 1e12;
+    metal.twoSheets = faces;
+    rf::Layer above = oxide;
+    above.kind = rf::Layer::Dielectric;
+    above.name = QStringLiteral("OX2");
+    above.tag = QStringLiteral("ox2");
+    above.thickness = 4e-6 - t;
+    s.layers << ground << oxide << metal << above;
+    return s;
+}
+
+QList<rf::Conductor> momComb()
+{
+    QList<rf::Conductor> c = {strip(0, -3, 23, 3), strip(0, 42, 23, 3)};
+    for (int i = 0; i < 12; ++i) c << (i % 2 == 0 ? strip(2 * i, 0, 1, 41) : strip(2 * i, 1, 1, 41));
+    return c;
+}
+
+QList<rf::FullWavePort> combPorts()
+{
+    return {edgePort(QPointF(11.5, -3), QString(), QPointF(0, -1)), edgePort(QPointF(11.5, 45), QString(), QPointF(0, 1))};
+}
+
+/// The comb's capacitance at frequency \a k of \a w, \a f.
+double combCapacitance(const rf::FullWave& w, int k, double f)
+{
+    const Matrix2 y = zOf(w, k).inverse();
+    return -y(0, 1).imag() / (2 * M_PI * f);
+}
+
 } // namespace
 
 class TestRf25Fullwave : public QObject
@@ -2576,80 +2628,67 @@ private slots:
     // A MOM comb of 1 µm metal in 1 µm gaps solved as its two faces holds the
     // charge on its side walls (wallGapsOf()): within 3 % of Palace's 31.8 fF
     // at six cells across, its rise from 1 to 100 GHz within 1 % of Palace's
-    // 1.135, and the quasi-static solve's the full wave's at 1 GHz within 1 %.
-    // Without the walls it read 25.1 fF, 21 % under (B2 of the open items of
-    // 8 November). And in the thin limit two faces 0.01 µm apart are the
-    // sheet, which never converged as two faces: within 0.1 % of it, and
-    // within 1 % of Palace's 14.45 fF.
+    // 1.135. Without the walls it read 25.1 fF, 21 % under (B2 of the open
+    // items of 8 November). (The quasi-static solve and the thin limit are
+    // the two functions after it: the three were one, past QtTest's 300 s on
+    // CI's macOS 15 runner, where Eigen's LU factorizes for the compressed
+    // solve - 72 s by it on an M2 Ultra, 10 by Accelerate's.)
     void theSideWallsChargeIsInAThickCombsCapacitance()
     {
         if (slowBuild()) QSKIP("compressed solves of 45 000 unknowns: Release only");
-        const auto stackOf = [](double t, bool faces) {
-            rf::Stack s;
-            rf::Layer ground;
-            ground.kind = rf::Layer::Ground;
-            ground.name = QStringLiteral("GND");
-            ground.tag = QStringLiteral("gnd");
-            rf::Layer oxide;
-            oxide.kind = rf::Layer::Substrate;
-            oxide.name = QStringLiteral("OX");
-            oxide.tag = QStringLiteral("ox");
-            oxide.thickness = 4e-6;
-            oxide.epsr = 4.1;
-            rf::Layer metal;
-            metal.kind = rf::Layer::Metal;
-            metal.name = QStringLiteral("M1");
-            metal.tag = QStringLiteral("m1");
-            metal.thickness = t;
-            metal.sigma = 1e12;
-            metal.twoSheets = faces;
-            rf::Layer above = oxide;
-            above.kind = rf::Layer::Dielectric;
-            above.name = QStringLiteral("OX2");
-            above.tag = QStringLiteral("ox2");
-            above.thickness = 4e-6 - t;
-            s.layers << ground << oxide << metal << above;
-            return s;
-        };
-        QList<rf::Conductor> comb = {strip(0, -3, 23, 3), strip(0, 42, 23, 3)};
-        for (int i = 0; i < 12; ++i) comb << (i % 2 == 0 ? strip(2 * i, 0, 1, 41) : strip(2 * i, 1, 1, 41));
-        const QList<rf::FullWavePort> ports = {edgePort(QPointF(11.5, -3), QString(), QPointF(0, -1)),
-                                               edgePort(QPointF(11.5, 45), QString(), QPointF(0, 1))};
+        const QList<rf::Conductor> c = momComb();
         rf::MeshSettings how;
         how.cellsAcross = 6;
-        const auto capacitance = [](const rf::FullWave& w, int k, double f) {
-            const Matrix2 y = zOf(w, k).inverse();
-            return -y(0, 1).imag() / (2 * M_PI * f);
-        };
-        const rf::Stack thick = stackOf(1e-6, true);
-        const rf::Mesh mesh = rf::meshOf(comb, how, thick, 100e9);
+        const rf::Stack thick = combStack(1e-6, true);
+        const rf::Mesh mesh = rf::meshOf(c, how, thick, 100e9);
         rf::FullWaveControl control;
         control.matrix = rf::FullWaveControl::Matrix::Compressed;
-        const rf::FullWave w = rf::fullWaveOf(mesh, comb, thick, ports, {1e9, 100e9}, 1e-6, &control);
+        const rf::FullWave w = rf::fullWaveOf(mesh, c, thick, combPorts(), {1e9, 100e9}, 1e-6, &control);
         QVERIFY2(w.ok(), qPrintable(w.problems.join(" | ")));
-        const double c1 = capacitance(w, 0, 1e9), c100 = capacitance(w, 1, 100e9);
+        const double c1 = combCapacitance(w, 0, 1e9), c100 = combCapacitance(w, 1, 100e9);
         qWarning("two faces: C %.3f fF at 1 GHz, %.3f at 100 GHz, the rise %.4f", c1 * 1e15, c100 * 1e15, c100 / c1);
         QVERIFY2(std::abs(c1 - 31.8e-15) < 0.03 * 31.8e-15, qPrintable(QString::number(c1 * 1e15)));
         QVERIFY2(std::abs(c100 / c1 - 1.135) < 0.01 * 1.135, qPrintable(QString::number(c100 / c1)));
         QVERIFY2(std::any_of(w.lines.begin(), w.lines.end(), [](const QString& l) { return l.contains(QStringLiteral("side walls across their narrow gaps")); }),
                  qPrintable(w.lines.join(" | ")));
-        // The quasi-static solve: the same walls (at three across, within
-        // its dense limit).
-        rf::MeshSettings coarse = how;
+    }
+
+    // The same comb's quasi-static solve, the same walls, the full wave's at
+    // 1 GHz within 1 % (at three cells across, within its dense limit).
+    void aThickCombsQuasiStaticSolveIsItsFullWave()
+    {
+        if (slowBuild()) QSKIP("compressed solves of 45 000 unknowns: Release only");
+        const QList<rf::Conductor> c = momComb();
+        rf::MeshSettings coarse;
         coarse.cellsAcross = 3;
-        const rf::Mesh mesh3 = rf::meshOf(comb, coarse, thick, 100e9);
-        const rf::FullWave w3 = rf::fullWaveOf(mesh3, comb, thick, ports, {1e9}, 1e-6, &control);
-        const rf::Extraction e = rf::extract(mesh3, comb, thick);
+        const rf::Stack thick = combStack(1e-6, true);
+        rf::FullWaveControl control;
+        control.matrix = rf::FullWaveControl::Matrix::Compressed;
+        const rf::Mesh mesh3 = rf::meshOf(c, coarse, thick, 100e9);
+        const rf::FullWave w3 = rf::fullWaveOf(mesh3, c, thick, combPorts(), {1e9}, 1e-6, &control);
+        const rf::Extraction e = rf::extract(mesh3, c, thick);
         QVERIFY2(w3.ok() && e.ok() && e.c.size() == 2, qPrintable((w3.problems + e.problems).join(" | ")));
-        qWarning("three across: quasi-static %.3f fF, full wave %.3f", e.c.at(0).at(1) * 1e15, capacitance(w3, 0, 1e9) * 1e15);
-        QVERIFY2(std::abs(e.c.at(0).at(1) - capacitance(w3, 0, 1e9)) < 0.01 * e.c.at(0).at(1),
-                 qPrintable(QStringLiteral("%1 against %2").arg(e.c.at(0).at(1)).arg(capacitance(w3, 0, 1e9))));
-        // The thin limit.
-        const rf::Stack film = stackOf(0.01e-6, true), sheet = stackOf(0, false);
-        const rf::FullWave wf = rf::fullWaveOf(rf::meshOf(comb, how, film, 100e9), comb, film, ports, {1e9}, 1e-6, &control);
-        const rf::FullWave ws = rf::fullWaveOf(rf::meshOf(comb, how, sheet, 100e9), comb, sheet, ports, {1e9}, 1e-6, &control);
+        qWarning("three across: quasi-static %.3f fF, full wave %.3f", e.c.at(0).at(1) * 1e15, combCapacitance(w3, 0, 1e9) * 1e15);
+        QVERIFY2(std::abs(e.c.at(0).at(1) - combCapacitance(w3, 0, 1e9)) < 0.01 * e.c.at(0).at(1),
+                 qPrintable(QStringLiteral("%1 against %2").arg(e.c.at(0).at(1)).arg(combCapacitance(w3, 0, 1e9))));
+    }
+
+    // In the thin limit the comb's two faces 0.01 µm apart are the sheet,
+    // which never converged as two faces: within 0.1 % of it, and within 1 %
+    // of Palace's 14.45 fF.
+    void aThinCombsTwoFacesAreItsSheet()
+    {
+        if (slowBuild()) QSKIP("compressed solves of 45 000 unknowns: Release only");
+        const QList<rf::Conductor> c = momComb();
+        rf::MeshSettings how;
+        how.cellsAcross = 6;
+        rf::FullWaveControl control;
+        control.matrix = rf::FullWaveControl::Matrix::Compressed;
+        const rf::Stack film = combStack(0.01e-6, true), sheet = combStack(0, false);
+        const rf::FullWave wf = rf::fullWaveOf(rf::meshOf(c, how, film, 100e9), c, film, combPorts(), {1e9}, 1e-6, &control);
+        const rf::FullWave ws = rf::fullWaveOf(rf::meshOf(c, how, sheet, 100e9), c, sheet, combPorts(), {1e9}, 1e-6, &control);
         QVERIFY2(wf.ok() && ws.ok(), qPrintable((wf.problems + ws.problems).join(" | ")));
-        const double cf = capacitance(wf, 0, 1e9), cs = capacitance(ws, 0, 1e9);
+        const double cf = combCapacitance(wf, 0, 1e9), cs = combCapacitance(ws, 0, 1e9);
         qWarning("0.01 µm two faces %.3f fF, the sheet %.3f", cf * 1e15, cs * 1e15);
         QVERIFY2(std::abs(cf - cs) < 1e-3 * cs && std::abs(cf - 14.45e-15) < 0.01 * 14.45e-15,
                  qPrintable(QStringLiteral("%1 %2").arg(cf * 1e15).arg(cs * 1e15)));
