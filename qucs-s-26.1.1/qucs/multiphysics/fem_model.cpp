@@ -5036,6 +5036,7 @@ QJsonObject nodeObject(const Node& parent, const Node& node, const QString& chil
     if (!node.label.isEmpty()) o.insert(QStringLiteral("label"), node.label);
     if (!node.enabled) o.insert(QStringLiteral("enabled"), false);
     if (node.isDefault) o.insert(QStringLiteral("default"), true);
+    if (!node.visibility.isEmpty()) o.insert(QStringLiteral("visibility"), node.visibility);
     for (auto it = node.props.begin(); it != node.props.end(); ++it) o.insert(it.key(), it.value());
     if (!node.children.empty()) {
         QJsonArray children;
@@ -5047,7 +5048,7 @@ QJsonObject nodeObject(const Node& parent, const Node& node, const QString& chil
 
 const QStringList Reserved = {QStringLiteral("type"), QStringLiteral("tag"), QStringLiteral("label"),
                               QStringLiteral("enabled"), QStringLiteral("default"), QStringLiteral("features"),
-                              QStringLiteral("steps"), QStringLiteral("plots")};
+                              QStringLiteral("steps"), QStringLiteral("plots"), QStringLiteral("visibility")};
 
 std::optional<Node> nodeFrom(const QString& parentType, const QJsonValue& value, QStringList& problems,
                              const QString& childKey = QStringLiteral("features"), const QString& defaultType = {})
@@ -5064,6 +5065,9 @@ std::optional<Node> nodeFrom(const QString& parentType, const QJsonValue& value,
     n.label = o.value(QStringLiteral("label")).toString();
     n.enabled = o.value(QStringLiteral("enabled")).toBool(true);
     n.isDefault = o.value(QStringLiteral("default")).toBool(false);
+    // (Shown, hidden or frame: another word read as shown.)
+    const QString visibility = o.value(QStringLiteral("visibility")).toString();
+    if (visibility == QLatin1String("hidden") || visibility == QLatin1String("frame")) n.visibility = visibility;
     const NodeKind* k = nodeKind(n.type);
     if (!k) problems << tr("an unknown kind of node, %1 (kept as it is)").arg(n.type);
     if (k && k->group == QLatin1String("geometry") && n.label.isEmpty() && o.contains(QStringLiteral("name")))
