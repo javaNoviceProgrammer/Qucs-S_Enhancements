@@ -37,6 +37,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QRadioButton>
 #include <QStandardPaths>
@@ -71,6 +72,7 @@
 #include "node.h"
 #include "qucs.h"
 #include "rf25doc.h"
+#include "rf25panel.h"
 #include "rf25/rf25_dense.h"
 #include "qucslib_common.h"
 #include "dataset.h"
@@ -3162,6 +3164,154 @@ private slots:
         QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "none.s2p"}}, 60000)));
         QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"order", QJsonArray{1, 9}}}, 60000)));
         QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"order", "1, 2"}}, 60000)));
+        QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
+    }
+
+    // An RF 2.5D model's stack alone, out and back in, by the tools and by the
+    // Stack's menu: rf25_stack_export and rf25_stack_import. (What the files
+    // hold is test_rf25_stack's.)
+    void anRf25StackGoesOutAndBackThroughItsToolsAndItsMenu()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/stackfiles"));
+        hfssLine(ws + "/stackfiles");
+        const QString model = ws + "/stackfiles/line.qrf25";
+        QVERIFY(!failed(call("open_document", {{"path", model}})));
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        const auto stackOf = [&doc] {
+            QStringList out;
+            for (const qucs_s::rf25::Layer& l : doc->model().stack().layers)
+                out << QStringLiteral("%1 %2 %3 %4 %5").arg(int(l.kind)).arg(l.name).arg(l.thickness).arg(l.epsr).arg(l.sigma);
+            return out;
+        };
+        const QStringList original = stackOf();
+
+        // Out, as either file by its suffix.
+        for (const QPair<const char*, const char*>& f : {qMakePair("line_stack.xml", "hfss"), qMakePair("line_stack.proc", "emx")}) {
+            const QJsonObject wrote = call("rf25_stack_export", {{"path", model}, {"file", f.first}});
+            QVERIFY2(!failed(wrote), qPrintable(text(wrote)));
+            const QJsonObject out = json(wrote).toObject();
+            QCOMPARE(out.value("format").toString(), QLatin1String(f.second));
+            QVERIFY(out.value("layers").toInt() >= 2);
+            QCOMPARE(out.value("file").toString(), QDir::cleanPath(ws + "/stackfiles/" + f.first));
+            QVERIFY(QFileInfo::exists(ws + "/stackfiles/" + f.first));
+        }
+        QCOMPARE(json(call("rf25_stack_export", {{"path", model}, {"file", "line_stack.proc"}})).toObject().value("gds_layers").toInt(), 1);
+        for (const QJsonObject& bad : {QJsonObject{{"path", model}}, QJsonObject{{"path", model}, {"file", "a.txt"}}, QJsonObject{{"path", model}, {"file", "nofolder/a.xml"}},
+                                       QJsonObject{{"path", ws + "/stackfiles/strip.gds"}, {"file", "a.xml"}}})
+            QVERIFY2(failed(call("rf25_stack_export", bad)), qPrintable(QString::fromUtf8(QJsonDocument(bad).toJson())));
+        QVERIFY(!QFileInfo::exists(ws + "/stackfiles/a.txt"));
+
+        // In: another stack in its place, its layer map row; one step of Undo.
+        {
+            QFile f(ws + "/stackfiles/one.proc");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("assume microns\ndefine Top = L4T0\nlayer 200 3.5 name core\nlayer 1 3.5\nconductor 1 5.8e7 Top\nlayer infinity 1\n");
+        }
+        QVERIFY(!failed(call("open_document", {{"path", model}})));
+        const QJsonObject in = call("rf25_stack_import", {{"path", model}, {"file", "one.proc"}});
+        QVERIFY2(!failed(in), qPrintable(text(in)));
+        const QJsonObject read = json(in).toObject();
+        QCOMPARE(read.value("format").toString(), QStringLiteral("emx"));
+        QVERIFY2(read.value("stack").toArray().contains(QStringLiteral("Top")), qPrintable(text(in)));
+        QJsonArray topRow;
+        topRow.append(QJsonArray{"4", "0", "Top"});
+        QCOMPARE(read.value("layer_map_rows").toArray(), topRow);
+        // The ports were on M1, which is gone: said.
+        QVERIFY2(text(in).contains(QLatin1String("M1")), qPrintable(text(in)));
+        QVERIFY(stackOf() != original);
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(stackOf(), original);
+        // Its own files read back as the same stack (EMX's plane has no name of
+        // its own: GND).
+        for (const char* f : {"line_stack.xml", "line_stack.proc"}) {
+            const QJsonObject back = call("rf25_stack_import", {{"path", model}, {"file", f}});
+            QVERIFY2(!failed(back), qPrintable(text(back)));
+            QStringList expected = original;
+            if (QByteArray(f).endsWith(".proc")) expected.first().replace(QLatin1String(" Ground "), QLatin1String(" GND "));
+            QCOMPARE(stackOf(), expected);
+            QVERIFY(!failed(call("undo")));
+        }
+        {
+            QFile f(ws + "/stackfiles/junk.proc");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("this is not a process\n");
+        }
+        for (const QJsonObject& bad : {QJsonObject{{"path", model}}, QJsonObject{{"path", model}, {"file", "none.proc"}}, QJsonObject{{"path", model}, {"file", "junk.proc"}}})
+            QVERIFY2(failed(call("rf25_stack_import", bad)), qPrintable(QString::fromUtf8(QJsonDocument(bad).toJson())));
+        QCOMPARE(stackOf(), original);
+
+        // The Stack's menu: its two items, through their dialogs and boxes.
+        QVERIFY(!failed(call("open_document", {{"path", model}})));
+        RF25Panel* panel = app->rf25Panel();
+        QVERIFY(panel != nullptr);
+        QMenu* menu = panel->menuFor(QStringLiteral("stack"));
+        QVERIFY(menu != nullptr);
+        bool hasImport = false, hasExport = false;
+        for (QAction* a : menu->actions()) {
+            hasImport = hasImport || a->objectName() == QLatin1String("rfImportStackAction");
+            hasExport = hasExport || a->objectName() == QLatin1String("rfExportStackAction");
+        }
+        QVERIFY(hasImport && hasExport);
+        delete menu;
+        QMenu* other = panel->menuFor(QStringLiteral("ports"));
+        for (QAction* a : other->actions()) QVERIFY(a->objectName() != QLatin1String("rfImportStackAction"));
+        delete other;
+
+        const bool nativeBefore = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+        QString chosen, filter;
+        QStringList suggested, boxes;
+        QTimer answers;
+        answers.setInterval(50);
+        connect(&answers, &QTimer::timeout, this, [&chosen, &filter, &suggested, &boxes] {
+            QWidget* w = QApplication::activeModalWidget();
+            if (auto* d = qobject_cast<QFileDialog*>(w)) {
+                suggested << d->selectedFiles().value(0);
+                if (chosen.isEmpty()) {
+                    d->reject();
+                } else {
+                    if (!filter.isEmpty()) d->selectNameFilter(filter);
+                    d->setDirectory(QFileInfo(chosen).absolutePath());
+                    d->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"))->setText(QFileInfo(chosen).fileName());
+                    static_cast<QDialog*>(d)->accept();
+                }
+            } else if (auto* b = qobject_cast<QMessageBox*>(w)) {
+                boxes << b->text();
+                b->accept();
+            }
+        });
+        answers.start();
+        // Export: a name beside the model suggested; turned down, nothing.
+        panel->exportStackFile();
+        QCOMPARE(QFileInfo(suggested.value(0)).fileName(), QStringLiteral("line_stack.xml"));
+        QVERIFY(boxes.isEmpty());
+        // A name with no suffix takes the kind chosen.
+        chosen = ws + "/stackfiles/bymenu";
+        filter = tr("EMX process files") + QStringLiteral(" (*.proc)");
+        panel->exportStackFile();
+        QVERIFY2(QFileInfo::exists(ws + "/stackfiles/bymenu.proc"), qPrintable(boxes.join(QLatin1Char('\n'))));
+        QCOMPARE(boxes.size(), 1);
+        QVERIFY2(boxes.first().contains(QLatin1String("bymenu.proc written")), qPrintable(boxes.first()));
+        boxes.clear();
+        // Import: another stack in its place, and what it says.
+        filter.clear();
+        chosen = ws + "/stackfiles/one.proc";
+        panel->importStackFile();
+        QCOMPARE(boxes.size(), 1);
+        QVERIFY2(boxes.first().contains(QLatin1String("The stack of one.proc")) && boxes.first().contains(QLatin1String("Top")), qPrintable(boxes.first()));
+        QVERIFY(stackOf() != original);
+        boxes.clear();
+        // What cannot be read, in a box of its own; the stack as it was.
+        const QStringList now = stackOf();
+        chosen = ws + "/stackfiles/junk.proc";
+        panel->importStackFile();
+        QCOMPARE(boxes.size(), 1);
+        QVERIFY2(boxes.first().contains(QLatin1String("junk.proc")), qPrintable(boxes.first()));
+        QCOMPARE(stackOf(), now);
+        answers.stop();
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nativeBefore);
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
     }
 
@@ -7679,6 +7829,10 @@ private slots:
         QVERIFY(asked("fem_model", {{"action", "save"}, {"as", outside + "/m2"}}).contains("writes"));
         said = asked("rf25_hfss_export", {{"file", outside + "/h.py"}});
         QVERIFY2(said.contains("writes " + shown(real + "/h.py")) && said.contains(shown(real + "/h.xml")) && said.contains(shown(real + "/h.gds")), qPrintable(said));
+        said = asked("rf25_stack_export", {{"file", outside + "/s.proc"}});
+        QVERIFY2(said.contains("writes " + shown(real + "/s.proc")), qPrintable(said));
+        said = asked("rf25_stack_import", {{"file", outside + "/in.xml"}});
+        QVERIFY2(!said.contains("writes"), qPrintable(said));
         said = asked("rf25_compare", {{"file", "inside.s2p"}, {"table", outside + "/both.csv"}});
         QVERIFY2(said.contains("writes " + shown(real + "/both.csv")), qPrintable(said));
         said = asked("rf25_hfss_import", {{"path", dir.filePath("inside.aedt")}, {"save_as", outside + "/back.qrf25"}});

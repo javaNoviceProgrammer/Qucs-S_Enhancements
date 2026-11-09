@@ -523,6 +523,10 @@ private:
     /// rf25_hfss_export, rf25_hfss_import, rf25_compare: HFSS™ 3D Layout.
     QJsonObject rf25HfssExport(const QJsonObject& args);
     QJsonObject rf25HfssImport(const QJsonObject& args);
+    /// rf25_stack_export, rf25_stack_import: the stack alone, as an HFSS™ 3D
+    /// Layout XML stackup or an EMX process file.
+    QJsonObject rf25StackExport(const QJsonObject& args);
+    QJsonObject rf25StackImport(const QJsonObject& args);
     QJsonObject rf25Compare(const QJsonObject& args);
     QJsonObject newDocument(const QJsonObject& args);
     QJsonObject showDocument(const QJsonObject& args);

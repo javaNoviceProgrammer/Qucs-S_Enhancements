@@ -1,0 +1,47 @@
+First run, 9 November: 34 of 38 caught.
+The four not caught led to: a length with its own unit in the test, two vias written upper first, random in a value that counts, and the EMX reader's plane layer taken out as code that did nothing (its break replaced by 'an open ground's plane kept').
+
+===== what each break did =====
+a metal's room of the air, not the dielectric above it         aStackIsWrittenAsAnHfssStackup failed (caught); aStackIsWrittenAsAnEmxProcess failed (caught)
+HFSS: the conductors bottom first                              aStackIsWrittenAsAnHfssStackup failed (caught)
+HFSS: a metal's room not among the dielectrics                 aStackIsWrittenAsAnHfssStackup failed (caught); anHfssStackupReadsBackTheSameStack failed (caught)
+HFSS: a via's StartLayer the lower                             aStackIsWrittenAsAnHfssStackup failed (caught); anHfssStackupReadsBackTheSameStack PASSED - NOT CAUGHT
+HFSS: a perfect plane of copper                                aStackIsWrittenAsAnHfssStackup failed (caught); anHfssStackupReadsBackTheSameStack failed (caught)
+HFSS: a metal plane four skin depths                           groundsAndLidsGoThereAndBack failed (caught)
+HFSS: a lid with no gap under it                               groundsAndLidsGoThereAndBack failed (caught)
+EMX: a substrate's conductivity left out                       aStackIsWrittenAsAnEmxProcess failed (caught); anEmxProcessReadsBackTheSameStack failed (caught)
+EMX: a dielectric's loss left out                              aStackIsWrittenAsAnEmxProcess failed (caught); anEmxProcessReadsBackTheSameStack failed (caught)
+EMX: an open ground not written as air below                   groundsAndLidsGoThereAndBack failed (caught)
+EMX: its own words left as names                               aStackIsWrittenAsAnEmxProcess failed (caught)
+EMX: a via to the ground not to the backside                   aStackIsWrittenAsAnEmxProcess failed (caught)
+EMX: no define of the layer map                                aStackIsWrittenAsAnEmxProcess failed (caught); anEmxProcessReadsBackTheSameStack failed (caught)
+EMX: offsets not added up                                      anEmxProcessIsReadAsItsGrammarSays failed (caught)
+EMX: a sheet resistance taken as a conductivity                anEmxProcessIsReadAsItsGrammarSays failed (caught); variationsUnitsFlipsAndHiddenParts failed (caught)
+EMX: a layer's ohm-cm taken as S/m                             anEmxProcessIsReadAsItsGrammarSays failed (caught); variationsUnitsFlipsAndHiddenParts failed (caught)
+EMX: a length's unit not read                                  variationsUnitsFlipsAndHiddenParts PASSED - NOT CAUGHT; anEmxProcessIsReadAsItsGrammarSays PASSED - NOT CAUGHT
+EMX: a flip's conductors not turned                            variationsUnitsFlipsAndHiddenParts failed (caught)
+EMX: the 'via' of ohms/via begins a statement                  variationsUnitsFlipsAndHiddenParts failed (caught)
+EMX: no plane                                                  anEmxProcessIsReadAsItsGrammarSays PASSED - NOT CAUGHT; anEmxProcessReadsBackTheSameStack PASSED - NOT CAUGHT
+EMX: a via from the upper                                      anEmxProcessIsReadAsItsGrammarSays PASSED - NOT CAUGHT
+EMX: rf25_open_ground not known again                          groundsAndLidsGoThereAndBack failed (caught)
+EMX: a conducting top no lid                                   variationsUnitsFlipsAndHiddenParts failed (caught); groundsAndLidsGoThereAndBack failed (caught)
+EMX: a name defined nowhere taken as nought                    whatCannotBeReadIsRefused failed (caught)
+EMX: a difference read as exact                                anEmxProcessIsReadAsItsGrammarSays failed (caught)
+EMX: random not nought                                         variationsUnitsFlipsAndHiddenParts PASSED - NOT CAUGHT
+HFSS: Permeability read as the permittivity (the bug fixed)    theControlFileImportKeepsEachPermi failed (caught); anHfssStackupReadsBackTheSameStack failed (caught)
+HFSS: two streams to one target two metals (the bug fixed)     aStackupOfAnotherHandReads failed (caught)
+HFSS: no plane at the bottom                                   anHfssStackupReadsBackTheSameStack failed (caught); aStackupOfAnotherHandReads failed (caught)
+HFSS: no lid                                                   groundsAndLidsGoThereAndBack failed (caught)
+HFSS: a via from the upper                                     anHfssStackupReadsBackTheSameStack failed (caught); aStackupOfAnotherHandReads failed (caught)
+HFSS: layers by number not mapped                              aStackupOfAnotherHandReads failed (caught)
+a lid's gap not its height                                     groundsAndLidsGoThereAndBack failed (caught)
+the layer map's old rows for the file's layers kept            theStackReplacesTheModelsAlone failed (caught)
+the stack read but not put in the model                        anRf25StackGoesOutAndBackThroughIt failed (caught)
+the menu's name with no suffix left so                         anRf25StackGoesOutAndBackThroughIt failed (caught)
+the menu's items not on the Stack                              anRf25StackGoesOutAndBackThroughIt failed (caught)
+the guard not told what the stack export writes                guardsAskAboutCommandsAndFilesOuts failed (caught)
+
+4 of 38 uncaught
+
+
+Second run of those four (BRK_ONLY=17,20,21,26): 0 of 4 uncaught.

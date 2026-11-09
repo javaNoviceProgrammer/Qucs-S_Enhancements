@@ -31,6 +31,7 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
@@ -419,6 +420,14 @@ QMenu* RF25Panel::menuFor(const QString& tag)
     }
     if (n->type == QLatin1String("rf_layout"))
         menu->addAction(tr("Read the Layout Again"), a_doc.data(), &RF25Doc::refreshLayout);
+    if (n->type == QLatin1String("rf_stack")) {
+        QAction* in = menu->addAction(tr("Import Stack…"), this, &RF25Panel::importStackFile);
+        in->setObjectName(QStringLiteral("rfImportStackAction"));
+        in->setStatusTip(tr("The stack of an HFSS™ 3D Layout XML stackup or an EMX process file, in place of this one"));
+        QAction* out = menu->addAction(tr("Export Stack…"), this, &RF25Panel::exportStackFile);
+        out->setObjectName(QStringLiteral("rfExportStackAction"));
+        out->setStatusTip(tr("This stack as an HFSS™ 3D Layout XML stackup or an EMX process file"));
+    }
     if (!menu->actions().isEmpty() && !menu->actions().last()->isSeparator()) menu->addSeparator();
     const bool editable = k != nullptr && !k->fixed;
     if (editable) {
@@ -433,6 +442,62 @@ QMenu* RF25Panel::menuFor(const QString& tag)
         del->setShortcut(QKeySequence::Delete);
     }
     return menu;
+}
+
+namespace {
+
+QString stackFilters()
+{
+    return RF25Panel::tr("HFSS™ 3D Layout XML stackups") + QStringLiteral(" (*.xml);;") + RF25Panel::tr("EMX process files")
+           + QStringLiteral(" (*.proc)");
+}
+
+} // namespace
+
+void RF25Panel::importStackFile()
+{
+    if (!a_doc) return;
+    const QString title = tr("Import Stack");
+    const QString name = a_doc->getDocName();
+    const QString file = QFileDialog::getOpenFileName(this, title, name.isEmpty() ? QDir::homePath() : QFileInfo(name).absolutePath(),
+                                                      tr("Stack files") + QStringLiteral(" (*.xml *.proc);;") + stackFilters() + QStringLiteral(";;")
+                                                          + tr("All files") + QStringLiteral(" (*)"));
+    if (file.isEmpty() || !a_doc) return;
+    QString why;
+    QStringList notes;
+    StackRead read;
+    if (!a_doc->importStack(file, &read, &notes, &why)) {
+        QMessageBox::warning(this, title, why);
+        return;
+    }
+    QStringList said{tr("The stack of %1, from the bottom up: %2.").arg(QFileInfo(file).fileName(), read.layers.join(QStringLiteral(", ")))};
+    if (!read.rows.isEmpty()) said << tr("The layer map has %n row(s) of it for its layers.", nullptr, int(read.rows.size()));
+    said << notes;
+    QMessageBox::information(this, title, said.join(QStringLiteral("\n\n")));
+}
+
+void RF25Panel::exportStackFile()
+{
+    if (!a_doc) return;
+    const QString title = tr("Export Stack");
+    const QString name = a_doc->getDocName();
+    const QString suggested = name.isEmpty() ? QDir::home().filePath(QStringLiteral("stack.xml"))
+                                             : QFileInfo(name).dir().filePath(QFileInfo(name).completeBaseName() + QStringLiteral("_stack.xml"));
+    QString filter;
+    QString file = QFileDialog::getSaveFileName(this, title, suggested, stackFilters(), &filter);
+    if (file.isEmpty() || !a_doc) return;
+    // (No suffix typed: the one of the kind chosen.)
+    if (!stackFormatOf(file)) file += filter.contains(QLatin1String("*.proc")) ? QStringLiteral(".proc") : QStringLiteral(".xml");
+    QString why;
+    StackWritten written;
+    if (!a_doc->exportStack(file, &written, &why)) {
+        QMessageBox::warning(this, title, why);
+        return;
+    }
+    QStringList said{tr("%1 written: %2 layer(s), %3 via(s), %4 GDSII layer(s) named.")
+                         .arg(QDir::toNativeSeparators(file)).arg(written.layers).arg(written.vias).arg(written.mapped)};
+    said << written.notes;
+    QMessageBox::information(this, title, said.join(QStringLiteral("\n\n")));
 }
 
 QString RF25Panel::addNode(const QString& parentTag, const QString& type)

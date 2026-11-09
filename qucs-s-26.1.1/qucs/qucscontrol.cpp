@@ -1137,6 +1137,16 @@ const char* const kTools = R"JSON([
    "save_as": {"type": "string", "description": "Where to write the model (.qrf25), relative to the file read; its name beside it when not given. Its shapes go in a GDSII file of the same name where they are not in a file already"},
    "layout": {"type": "string", "description": "A control file's GDSII file, where it is not of the same name beside it"},
    "replace": {"type": "boolean", "description": "Write over a model already there, and a GDSII file of its name (false)"}}}},
+{"name": "rf25_stack_export",
+ "description": "Writes an RF 2.5D model's stack alone, by the suffix of 'file': .xml an HFSS™ 3D Layout XML stackup (Layout > Layers > Stackup > Import XML in Ansys® Electronics Desktop: materials, dielectrics, signal layers at their elevations, each metal's room a dielectric of what is above it, vias by their start and stop layers, the ground a signal layer under them and a metal lid one over a gap of air), or .proc an EMX process file (a define of each metal and via from the layer map's GDSII layers, the layers from the bottom up over EMX's plane, each metal a conductor in a layer of its own room, the vias, the air without end on top; names EMX cannot have are changed). The same file reads back as the same stack with rf25_stack_import. Where a file cannot say what the model has - a metal or impedance ground in EMX, an open ground in EMX (air far below), roughness, a via's filled fraction, a lid - 'notes' says so. Returns the file, its format, the counts and those notes.",
+ "inputSchema": {"type": "object", "required": ["file"], "properties": {
+   "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
+   "file": {"type": "string", "description": "Where to write it, relative to the model: a .xml (HFSS™ 3D Layout) or a .proc (EMX)"}}}},
+{"name": "rf25_stack_import",
+ "description": "Reads an HFSS™ 3D Layout XML stackup or control file (.xml: its <Stackup> alone) or an EMX process file (.proc: its layers, conductors, offsets and positions, vias, defines, units, flipped parts, the nominal value of what varies) as an RF 2.5D model's stack: the Stack's children in place of its own, one step of Undo, and the layer map's rows for the layers the file draws by GDSII number (an EMX region's layers, a control file's stream numbers) in place of those it had for them. A dielectric a metal is in is cut round it; a metal at the bottom of every dielectric, or EMX's plane, is the ground; a perfect metal over a layer of air at the top, or EMX's conducting layer without end, is a lid; a sheet resistance is the conductivity that gives it at the conductor's thickness. Returns the format, the stack from the bottom up, the vias, the rows, 'notes' on what is not as it was (a via's resistance a via, regions that grow or cut, what EMX has that a stack has not) and the model's 'problems' after it (a port or a row naming a layer now gone).",
+ "inputSchema": {"type": "object", "required": ["file"], "properties": {
+   "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
+   "file": {"type": "string", "description": "The stack file, relative to the model: a .xml or a .proc (else read as what it begins with)"}}}},
 {"name": "rf25_compare",
  "description": "Sets an RF 2.5D model's full-wave solve beside a Touchstone file's S (from HFSS™ 3D Layout, or anything else that writes one): each port into the file's own reference, every term at the solve's frequencies, read between the file's points in magnitude and angle where they differ. Returns for each term how far apart at most and where, the rms, and the most in dB (where above -60 dB) and in degrees (where above -40 dB); the worst of them all; and with 'table' writes both, every term at every frequency, as CSV. The model must be solved full wave first (rf25_solve, or Solve on its tab).",
  "inputSchema": {"type": "object", "required": ["file"], "properties": {
@@ -5495,6 +5505,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("rf25_inductance")) return rf25Inductance(args);
     if (tool == QLatin1String("rf25_hfss_export")) return rf25HfssExport(args);
     if (tool == QLatin1String("rf25_hfss_import")) return rf25HfssImport(args);
+    if (tool == QLatin1String("rf25_stack_export")) return rf25StackExport(args);
+    if (tool == QLatin1String("rf25_stack_import")) return rf25StackImport(args);
     if (tool == QLatin1String("rf25_compare")) return rf25Compare(args);
     if (tool == QLatin1String("get_netlist")) {
         QJsonObject looking = args;
