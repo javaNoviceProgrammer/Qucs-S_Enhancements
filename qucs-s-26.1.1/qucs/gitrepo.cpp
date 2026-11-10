@@ -257,7 +257,11 @@ Raw runRaw(const QString& dir, const QStringList& args, bool readOnly, int timeo
     if (readOnly) {
         lookingEnvironment(env);
         const QString root = topLevel(dir);
-        applyGuards(readOnlyGuards(root.isEmpty() ? dir : root), all, env);
+        if (!applyGuards(readOnlyGuards(root.isEmpty() ? dir : root), all, env)) {
+            r.err = tr("git was not run: it could not be asked in time which filters this repository's own configuration "
+                       "sets, and looking could have started one");
+            return r;
+        }
     }
     all << args;
     p.setProcessEnvironment(env);
