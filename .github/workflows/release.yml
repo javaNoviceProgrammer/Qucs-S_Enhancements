@@ -462,37 +462,13 @@ jobs:
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # Never deletes a release: the files of an existing one are swapped in
+      # place, and a version tag's release is made without --target, which
+      # GitHub refuses for an older commit (v27.0.3 was lost that way).
+      # .github/scripts/publish-release.sh says how.
       - name: Create or replace release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.setup.outputs.tag }}
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            TITLE="Qucs-S enhanced ${TAG}"
-            # The notes: the annotated tag's message, when it has one, with
-            # the generated list of changes appended.
-            EXTRA=(--generate-notes)
-            # actions/checkout leaves refs/tags/<tag> pointing at the commit;
-            # a forced fetch brings the annotated tag object itself.
-            git fetch --no-tags --force origin "+refs/tags/${TAG}:refs/tags/${TAG}" || true
-            echo "tag object: $(git cat-file -t "$TAG" 2>/dev/null)"
-            if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
-              git tag -l --format='%(contents)' "$TAG" > tag-notes.md
-              if [ -s tag-notes.md ]; then EXTRA+=(--notes-file tag-notes.md); fi
-            fi
-            # A tag moved and pushed again replaces its release (the tag stays).
-            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "replacing the existing release $TAG"
-              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
-            fi
-          else
-            TITLE="Continuous build (${GITHUB_SHA::7})"
-            EXTRA=(--prerelease --notes "Automated build of commit ${GITHUB_SHA} from ${GITHUB_REF_NAME}. Replaced on every publish; use a tag for a permanent release.")
-            # The rolling pre-release is recreated so its tag follows the commit.
-            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
-            fi
-          fi
-          gh release create "$TAG" artifacts/* \
-            --repo "$GITHUB_REPOSITORY" --title "$TITLE" --target "$GITHUB_SHA" "${EXTRA[@]}"
-          echo "Published $TAG with:"; ls artifacts
+          KIND: ${{ github.ref_type }}
+        run: .github/scripts/publish-release.sh artifacts

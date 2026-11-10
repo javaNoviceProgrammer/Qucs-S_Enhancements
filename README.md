@@ -377,8 +377,12 @@ Nothing either workflow builds goes into git: CI keeps logs as short-lived
 artifacts, and the Release workflow uploads the bundles as release assets
 only. A manual run publishes to the rolling `continuous` pre-release
 (replaced each time); a tag push (`git tag -a v27.1.1 && git push origin v27.1.1`)
-publishes a permanent release named after the tag, with the annotated tag's
-message as its notes and the generated change list below it. All platforms, the ARM
+publishes a permanent release named after the tag. Releases carry no text.
+Building a tag that already has a release swaps that release's files in
+place and never deletes it; only the highest version tag takes *Latest*
+([publish-release.sh](.github/scripts/publish-release.sh) has the details).
+Since the run uses the workflow of the commit it builds, this holds only for
+tags on commits made after this change. All platforms, the ARM
 ones included, are built by default; deselect any in the dispatch form, or
 set the repository variable `BUILD_ARM=false` to leave ARM out of tag builds.
 
