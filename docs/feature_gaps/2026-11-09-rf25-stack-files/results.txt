@@ -45,3 +45,5 @@ the guard not told what the stack export writes                guardsAskAboutCom
 
 
 Second run of those four (BRK_ONLY=17,20,21,26): 0 of 4 uncaught.
+
+The check of 9 November, S1 and S2 (BRK_ONLY=38-43): 0 of 6 uncaught.
