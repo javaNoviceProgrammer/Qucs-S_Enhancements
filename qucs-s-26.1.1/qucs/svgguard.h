@@ -22,8 +22,10 @@ constexpr qint64 kMaxNodes = 2000000;
 /// What \a bytes would draw, once every <use> reference is expanded,
 /// counted no further than kMaxNodes (a reference nothing defines, and
 /// one that leads round to itself, count as nothing - QtSvg stops at
-/// those too). 0 for what is not an SVG, and for an SVG with no <use> in
-/// it, whose work is its size. An .svgz is inflated first.
+/// those too); or, where more, what any part with a <use> in it would
+/// draw, drawn or not (QtSvg expands each as it reads it). 0 for what is
+/// not an SVG, and for an SVG with no <use> in it, whose work is its size.
+/// An .svgz is inflated first.
 qint64 nodes(const QByteArray& bytes);
 
 /// Whether \a bytes hold an SVG that draws more nodes than kMaxNodes.
