@@ -517,7 +517,7 @@ bool System3::factorize(const Eigen::SparseMatrix<double>& a, const QString& sol
             a_lu = std::make_unique<SparseLu<double>>();
             a_lu->compute(a);
             if (a_lu->info() == Eigen::Success) {
-                if (log) *log << tr("%1: %2 unknowns, %3 LU (Newton's matrix)").arg(name).arg(a_n).arg(a_lu->accelerated() ? tr("Accelerate's") : tr("Eigen's"));
+                if (log) *log << tr("%1: %2 unknowns, %3 LU (Newton's matrix)").arg(name).arg(a_n).arg(a_lu->name().chopped(3));
                 return true;
             }
             if (error) *error = tr("%1: Newton's matrix could not be factorized (%2)").arg(name, QString::fromStdString(a_lu->lastErrorMessage()));
@@ -536,7 +536,7 @@ bool System3::factorize(const Eigen::SparseMatrix<double>& a, const QString& sol
     // Cholesky's, measured: even at 6 for 28,830 unknowns, 9 for 130,050, 17
     // for 270,400.)
     const bool direct = solver == QLatin1String("direct")
-                        || (solver != QLatin1String("iterative") && accelerateInBuild() && acceleratedCholesky() && rhs >= 6 + a_n / 20000
+                        || (solver != QLatin1String("iterative") && threadedCholesky() && rhs >= 6 + a_n / 20000
                             && a_n <= 300000);
     if (direct) {
         a_chol = std::make_unique<SparseCholesky>();
@@ -545,10 +545,10 @@ bool System3::factorize(const Eigen::SparseMatrix<double>& a, const QString& sol
         a_chol->factorize(a);
         if (a_chol->info() == Eigen::Success) {
             if (log)
-                *log << tr("%1: %2 unknowns, %3 Cholesky (METIS order)")
+                *log << tr("%1: %2 unknowns, %3 (METIS order)")
                             .arg(name)
                             .arg(a_n)
-                            .arg(accelerateInBuild() && acceleratedCholesky() ? tr("Accelerate's") : tr("Eigen's"));
+                            .arg(a_chol->backend() == Backend::Strumpack ? a_chol->name() : tr("%1's Cholesky").arg(backendName(a_chol->backend())));
             return true;
         }
         // (Not positive definite, or singular to rounding: said.)

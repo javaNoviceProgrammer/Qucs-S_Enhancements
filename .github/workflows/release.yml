@@ -155,8 +155,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build flex bison gperf dos2unix gcc-12 g++-12 \
-            libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev fuse wget
+            ninja-build flex bison gperf dos2unix gcc-12 g++-12 gfortran-12 \
+            libglx-dev libgl1-mesa-dev libcups2-dev zlib1g-dev fuse wget curl \
+            libopenblas-openmp-dev libmetis-dev
           # linuxdeploy runs as an AppImage: FUSE 2 is libfuse2t64 on 24.04
           sudo apt-get install -y --no-install-recommends libfuse2t64 \
             || sudo apt-get install -y --no-install-recommends libfuse2
@@ -174,12 +175,35 @@ jobs:
           cache: true
           install-deps: true
 
+      # MUMPS and STRUMPACK, the multiphysics solver's multithreaded
+      # factorizations (Ubuntu's MUMPS has no OpenMP, nothing packages
+      # STRUMPACK): built from their sources, checked against their SHA-256,
+      # as static libraries linked into the programs - the AppImage carries
+      # what they need of the system's (OpenBLAS, METIS, libgfortran,
+      # libgomp), which linuxdeploy copies. Kept between runs while the
+      # script is unchanged.
+      - name: Cache MUMPS and STRUMPACK
+        if: ${{ matrix.enabled }}
+        id: sparse-cache
+        uses: actions/cache@v4
+        with:
+          path: sparse-solvers
+          key: sparse-solvers-${{ matrix.os }}-${{ hashFiles('scripts/ci/build-sparse-solvers.sh') }}
+
+      - name: Build MUMPS and STRUMPACK
+        if: ${{ matrix.enabled && steps.sparse-cache.outputs.cache-hit != 'true' }}
+        run: CC=gcc-12 CXX=g++-12 FC=gfortran-12 bash scripts/ci/build-sparse-solvers.sh "$PWD/sparse-solvers"
+
       - name: Configure
         if: ${{ matrix.enabled }}
         run: |
           cmake -S "$SRC_DIR" -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$PWD/AppDir/usr" \
+            -DMUMPS_ROOT="$PWD/sparse-solvers" \
+            -DMUMPS_EXTRA_LIBRARIES="metis;openblas;gfortran;gomp" \
+            -DSTRUMPACK_DIR="$PWD/sparse-solvers/lib/cmake/STRUMPACK" \
+            -DQUCS_SPARSE_SOLVERS_REQUIRED=ON \
             -DCI_VERSION="${{ needs.setup.outputs.version }}" \
             -DGIT="${GITHUB_SHA::7}"
 
@@ -344,7 +368,10 @@ jobs:
           update: true
           cache: true
           install: bison flex dos2unix curl zip p7zip
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p
+          # (mumps and strumpack: the multiphysics solver's multithreaded
+          # factorizations - MSYS2's OpenMP builds -, their DLLs bundled by
+          # windows-bundle.sh with the rest.)
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p pkgconf:p mumps:p strumpack:p
 
       - name: Configure and build
         if: ${{ matrix.enabled }}
@@ -354,6 +381,7 @@ jobs:
           cmake -S "$SRC_DIR" -B "$SRC_DIR/build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$SRC_DIR/build/qucs-suite" \
+            -DQUCS_SPARSE_SOLVERS_REQUIRED=ON \
             -DCI_VERSION="${{ needs.setup.outputs.version }}" \
             -DGIT="${GITHUB_SHA::7}"
           cmake --build "$SRC_DIR/build" --parallel

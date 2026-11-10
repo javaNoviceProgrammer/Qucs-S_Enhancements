@@ -1317,6 +1317,10 @@ private slots:
         QTRY_VERIFY((dialog = app->findChild<QDialog*>(QStringLiteral("multiphysics3DSettings"))) != nullptr && dialog->isVisible());
         auto* solverBox = dialog->findChild<QComboBox*>(QStringLiteral("mp3SolverBox"));
         QVERIFY(solverBox && solverBox->currentIndex() == qucs_s::fem::MultiphysicsSettingsDialog::solverWanted());
+        // (The Multiphysics menu's choices, the same five.)
+        QCOMPARE(solverBox->count(), 5);
+        QCOMPARE(solverBox->itemData(3).toString(), QStringLiteral("mumps"));
+        QCOMPARE(solverBox->itemData(4).toString(), QStringLiteral("strumpack"));
         QVERIFY(!dialog->findChild<QLabel*>(QStringLiteral("mp3SolverStatus"))->text().isEmpty());
         const int solverBefore = qucs_s::fem::MultiphysicsSettingsDialog::solverWanted();
         solverBox->setCurrentIndex(1);
@@ -1325,8 +1329,8 @@ private slots:
         QCOMPARE(qucs_s::fem::directSolver(), qucs_s::fem::DirectSolver::Eigen);
         {
             // (Put back.)
-            QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"),
-                                        solverBefore == 1 ? QStringLiteral("eigen") : solverBefore == 2 ? QStringLiteral("accelerate") : QStringLiteral("auto"));
+            const char* const values[] = {"auto", "eigen", "accelerate", "mumps", "strumpack"};
+            QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"), QString::fromLatin1(values[solverBefore]));
             qucs_s::fem::MultiphysicsSettingsDialog::applySolverSetting();
         }
         // Solved within it, then refused past a limit under its estimate -
