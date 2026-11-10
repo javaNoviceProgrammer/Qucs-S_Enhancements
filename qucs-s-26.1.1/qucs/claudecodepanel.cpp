@@ -114,6 +114,17 @@ const QString kShowConversationTokens = QStringLiteral("ClaudeCode/showConversat
 const QString kShowPromptCost = QStringLiteral("ClaudeCode/showPromptCost");
 const QString kShowConversationCost = QStringLiteral("ClaudeCode/showConversationCost");
 const QString kShowPromptDates = QStringLiteral("ClaudeCode/showPromptDates");   // each prompt's date in its corner
+const QString kConversationCache = QStringLiteral("ClaudeCode/conversationCache");   // ClaudeCodePanel::cacheChoice()
+// A long conversation's prompt cache. Claude Code caches a conversation for an
+// hour (its log: every write is a 1-hour one), each turn reading it from the
+// cache at a twentieth of the input price; a turn after that hour writes all of
+// it again, at twice the price - 40 times as much. A conversation counts as
+// long from this many tokens of context; one is compacted this long after its
+// last turn, and Compact Earlier has Claude Code compact near this many tokens.
+constexpr qint64 kLongContext = 100000;
+constexpr qint64 kCacheLifetimeMs = 60LL * 60 * 1000;
+constexpr qint64 kCompactIdleAfterMs = 50LL * 60 * 1000;
+constexpr int kEarlyCompactWindow = 200000;
 
 struct Colours {
     QColor base, text, muted, faint, border, accent, onAccent, bubble, code, ok, warn, error;
@@ -193,6 +204,29 @@ QString seconds(qint64 ms)
 QString cost(double usd)
 {
     return QStringLiteral("$") + QLocale::c().toString(usd, 'f', usd < 1.0 ? 3 : 2);
+}
+
+// A model's price for input, in dollars a million tokens, at Anthropic's own
+// prices of November 2026; 0 for one not known here. (Only to say about what a
+// cold conversation costs: a subscription's usage is not dollars.)
+double inputPrice(const QString& model)
+{
+    static const std::pair<const char*, double> prices[] = {
+        {"fable-5-2", 8.0}, {"mythos-5-2", 8.0}, {"fable-5-1", 10.0}, {"mythos-5-1", 10.0}, {"fable-5", 10.0},
+        {"opus-5-5", 4.0},  {"opus-5", 5.0},     {"opus-4", 5.0},     {"sonnet-5-5", 2.0},  {"sonnet-5", 2.0},
+        {"sonnet-4", 3.0},  {"haiku-5-5", 0.1},  {"haiku-4-5", 1.0}};
+    for (const auto& [name, price] : prices)
+        if (model.contains(QLatin1String(name))) return price;
+    return 0.0;
+}
+
+// How long, short: 1 h 49 min, 64 min.
+QString longWhile(qint64 ms)
+{
+    const qint64 minutes = ms / 60000;
+    if (minutes < 120) return ClaudeCodePanel::tr("%1 min").arg(minutes);
+    if (minutes < 48 * 60) return ClaudeCodePanel::tr("%1 h %2 min").arg(minutes / 60).arg(minutes % 60);
+    return ClaudeCodePanel::tr("%1 days").arg(minutes / (24 * 60));
 }
 
 // A number of tokens, short: 812, 12.3k, 1.24M.
@@ -938,6 +972,10 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     layout->addWidget(cardHolder);
 
     buildComposer();
+    a_idleCompact = new QTimer(this);
+    a_idleCompact->setSingleShot(true);
+    a_idleCompact->setTimerType(Qt::PreciseTimer);   // (a coarse one is 5 % either way: 2.5 minutes in 50)
+    connect(a_idleCompact, &QTimer::timeout, this, &ClaudeCodePanel::compactWhileWarm);
     // The commands matching a "/" typed, above the composer.
     a_commandList = new QListWidget(this);
     a_commandList->setObjectName(QStringLiteral("claudeCommands"));
@@ -1084,6 +1122,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_session->setPermissionMode(settings.value(kMode).toString());
     a_session->setModel(settings.value(kModel).toString());
     a_session->setAutoCompact(settings.value(kAutoCompact, true).toBool());
+    applyCacheChoice();
     applyGuards();
     a_listedModels = QJsonDocument::fromJson(settings.value(kModels).toString().toUtf8()).array();
     rebuildModelMenu();
@@ -1381,6 +1420,40 @@ void ClaudeCodePanel::buildComposer()
     strip->setWidget(a_imageRow);
     a_imageStrip = strip;
     a_imageStrip->hide();
+    // A prompt to a long conversation gone cold, held (Conversation Cache >
+    // Warn): what it would cost, and what to do.
+    a_cacheNote = new QFrame(a_composer);
+    a_cacheNote->setObjectName(QStringLiteral("claudeCacheNote"));
+    auto* noteLayout = new QVBoxLayout(a_cacheNote);
+    noteLayout->setContentsMargins(0, 0, 0, 2);
+    noteLayout->setSpacing(4);
+    a_cacheNoteText = new WrappedLabel(a_cacheNote);
+    a_cacheNoteText->setObjectName(QStringLiteral("claudeCacheNoteText"));
+    noteLayout->addWidget(a_cacheNoteText);
+    auto* noteButtons = new QHBoxLayout;
+    noteButtons->setSpacing(6);
+    auto* compactFirst = new QPushButton(tr("Compact First"), a_cacheNote);
+    compactFirst->setObjectName(QStringLiteral("claudeCompactFirst"));
+    compactFirst->setToolTip(tr("Compacts the conversation, then sends the prompt: Claude reads its summary, not all of it"));
+    auto* sendAnyway = new QPushButton(tr("Send Anyway"), a_cacheNote);
+    sendAnyway->setObjectName(QStringLiteral("claudeSendAnyway"));
+    auto* notNow = new QPushButton(tr("Cancel"), a_cacheNote);
+    notNow->setObjectName(QStringLiteral("claudeCacheNoteCancel"));
+    notNow->setToolTip(tr("Sends nothing; the prompt stays to be changed"));
+    noteButtons->addWidget(compactFirst);
+    noteButtons->addWidget(sendAnyway);
+    noteButtons->addStretch(1);
+    noteButtons->addWidget(notNow);
+    noteLayout->addLayout(noteButtons);
+    a_cacheNote->hide();
+    connect(compactFirst, &QPushButton::clicked, this, [this] { releaseHeldSend(true); });
+    connect(sendAnyway, &QPushButton::clicked, this, [this] { releaseHeldSend(false); });
+    connect(notNow, &QPushButton::clicked, this, [this] {
+        a_held.reset();
+        a_cacheNote->hide();
+        focusComposer();
+    });
+    layout->addWidget(a_cacheNote);
     layout->addWidget(a_imageStrip);
     a_input = new ComposerEdit(a_composer);
     a_input->setObjectName(QStringLiteral("claudeInput"));
@@ -1573,6 +1646,37 @@ void ClaudeCodePanel::buildMenu()
         const bool on = QucsSettingsFile().value(kAutoCompact, true).toBool();   // (another tab may have changed it)
         compact->setChecked(on);
         a_session->setAutoCompact(on);
+    });
+
+    // Conversation Cache: what is done about a long conversation's cache,
+    // one of three (the user, 10 November); for every conversation, at once.
+    QMenu* cache = a_menu->addMenu(tr("Conversation Cache"));
+    cache->setObjectName(QStringLiteral("claudeConversationCache"));
+    cache->setToolTipsVisible(true);
+    auto* cacheChoices = new QActionGroup(cache);
+    cacheChoices->setExclusive(true);
+    const std::tuple<CacheChoice, QString, QString, QString> choices[] = {
+        {CacheChoice::Warn, QStringLiteral("claudeCacheWarn"), tr("Warn Before an Expensive Send"),
+         tr("A prompt to a long conversation whose cache has expired (an hour after its last turn) is held, with what "
+            "it would cost to read it all again, and Compact First or Send Anyway offered")},
+        {CacheChoice::CompactIdle, QStringLiteral("claudeCacheCompactIdle"), tr("Compact Idle Conversations"),
+         tr("A long conversation is compacted 50 minutes after its last turn, while its cache is warm: coming back to "
+            "it later reads its summary, not all of it - though Claude then has the summary, not every detail")},
+        {CacheChoice::CompactEarly, QStringLiteral("claudeCacheCompactEarly"), tr("Compact Earlier"),
+         tr("Claude Code compacts a conversation near %1 tokens rather than near its model's limit: every turn reads "
+            "less, more often from a summary (with Auto-Compact on)")
+             .arg(tokenCount(kEarlyCompactWindow))}};
+    for (const auto& [choice, name, text, tip] : choices) {
+        QAction* a = cache->addAction(text);
+        a->setObjectName(name);
+        a->setCheckable(true);
+        a->setToolTip(tip);
+        a->setData(int(choice));
+        cacheChoices->addAction(a);
+        connect(a, &QAction::triggered, this, [choice = choice] { setCacheChoice(choice); });
+    }
+    connect(cache, &QMenu::aboutToShow, this, [cacheChoices] {
+        for (QAction* a : cacheChoices->actions()) a->setChecked(a->data().toInt() == int(cacheChoice()));
     });
 
     a_menu->addSeparator();
@@ -1885,6 +1989,7 @@ void ClaudeCodePanel::reloadSettings()
     const QucsSettingsFile settings;
     a_attach->setChecked(settings.value(kAttach, true).toBool());
     a_session->setAutoCompact(settings.value(kAutoCompact, true).toBool());
+    applyCacheChoice();
     applyGuards();
     if (!hasConversation() && !a_session->isRunning()) {
         a_session->setPermissionMode(settings.value(kMode).toString());
@@ -2649,6 +2754,8 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument, const QSt
             return sent;
         }
     }
+    // A long conversation gone cold: held, as the user chose (Conversation Cache).
+    if (holdsColdSend(text, withDocument, images)) return false;
 
     QString prompt = text;
     // Its images shown to Claude (Session::send()), their files said too:
@@ -2726,6 +2833,13 @@ void ClaudeCodePanel::newConversation()
     a_entries.clear();
     a_expanded.clear();
     a_requests.clear();
+    a_contextTokens = 0;
+    a_lastTurnAt = 0;
+    a_lastModel.clear();
+    a_held.reset();
+    a_afterCompact.reset();
+    a_cacheNote->hide();
+    a_idleCompact->stop();
     emit titleChanged();
     showNextRequest();
     updateState();
@@ -2895,6 +3009,21 @@ void ClaudeCodePanel::onTurnFinished(const qucs_s::claude::TurnResult& r)
     if (!summary.text.isEmpty() || !summary.result.isEmpty() || !summary.allTokens.isEmpty() || summary.allCost > 0.0)
         append(summary);
     a_requests.clear();
+    // Its context and when it ended, for its cache; compacted, the prompt that
+    // waited for that sent (and put back, when it failed).
+    if (a_session->turnContextTokens() >= 0) a_contextTokens = a_session->turnContextTokens();
+    a_lastTurnAt = QDateTime::currentMSecsSinceEpoch();
+    if (!a_session->modelInUse().isEmpty()) a_lastModel = a_session->modelInUse();
+    if (std::optional<HeldSend> next = std::exchange(a_afterCompact, std::nullopt)) {
+        if (r.ok && a_contextTokens < kLongContext) {
+            QTimer::singleShot(0, this, [this, next = *next] { sendText(next.text, next.withDocument, next.images); });
+        } else if (a_input->toPlainText().trimmed().isEmpty()) {
+            a_input->setPlainText(next->text);
+            a_images = next->images;
+            updateImageStrip();
+        }
+    }
+    armIdleCompact();
     showNextRequest();
     updateState();
     if (a_gitBar != nullptr) a_gitBar->refresh(true);   // committed, pushed, a pull request opened...
@@ -3975,7 +4104,12 @@ QJsonObject ClaudeCodePanel::conversationJson() const
         }
         entries.append(o);
     }
+    QJsonObject cacheFacts;
+    if (a_contextTokens > 0) cacheFacts.insert(QStringLiteral("contextTokens"), a_contextTokens);
+    if (a_lastTurnAt > 0) cacheFacts.insert(QStringLiteral("lastTurnAt"), a_lastTurnAt);
+    if (!a_lastModel.isEmpty()) cacheFacts.insert(QStringLiteral("model"), a_lastModel);
     return {{QStringLiteral("title"), exportTitle()},
+            {QStringLiteral("cache"), cacheFacts},
             {QStringLiteral("name"), a_name},
             {QStringLiteral("folder"), workingDirectory()},
             {QStringLiteral("pinned"), a_pinned},
@@ -4058,6 +4192,15 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
         a_session->setConversationTotals(it->allTokens, it->allCost);
         break;
     }
+    // Its cache: how long it was, and when its last turn ended.
+    const QJsonObject cacheFacts = conversation.value(QLatin1String("cache")).toObject();
+    a_contextTokens = std::max<qint64>(0, cacheFacts.value(QLatin1String("contextTokens")).toInteger(0));
+    a_lastTurnAt = std::max<qint64>(0, cacheFacts.value(QLatin1String("lastTurnAt")).toInteger(0));
+    a_lastModel = cacheFacts.value(QLatin1String("model")).toString();
+    a_held.reset();
+    a_afterCompact.reset();
+    a_cacheNote->hide();
+    armIdleCompact();
     showNextRequest();
     updateState();
     scheduleRender();
@@ -4076,6 +4219,8 @@ bool ClaudeCodePanel::importClaudeSession(const QString& file)
     QString folder, title;
     QList<Entry> entries;
     QHash<QString, qsizetype> tools;   // a tool use's id: its entry
+    qint64 contextTokens = 0, lastTurnAt = 0;
+    QString model;
     // What a tool gave: its text, the first lines.
     const auto outputOf = [](const QJsonValue& content) {
         QString text = content.toString();
@@ -4133,6 +4278,17 @@ bool ClaudeCodePanel::importClaudeSession(const QString& file)
                 entries.append(e);
             }
         } else if (type == QLatin1String("assistant")) {
+            // Its cache: the context its last request read, and when.
+            const QJsonObject message = o.value(QLatin1String("message")).toObject();
+            const QJsonObject usage = message.value(QLatin1String("usage")).toObject();
+            if (!usage.isEmpty()) {
+                contextTokens = qint64(usage.value(QLatin1String("input_tokens")).toDouble())
+                                + qint64(usage.value(QLatin1String("cache_read_input_tokens")).toDouble())
+                                + qint64(usage.value(QLatin1String("cache_creation_input_tokens")).toDouble());
+                const QDateTime at = QDateTime::fromString(o.value(QLatin1String("timestamp")).toString(), Qt::ISODateWithMs);
+                if (at.isValid()) lastTurnAt = at.toMSecsSinceEpoch();
+                model = message.value(QLatin1String("model")).toString();
+            }
             for (const QJsonValue& v : content.toArray()) {
                 const QJsonObject part = v.toObject();
                 const QString kind = part.value(QLatin1String("type")).toString();
@@ -4168,6 +4324,13 @@ bool ClaudeCodePanel::importClaudeSession(const QString& file)
     pinDocument(QString());
     a_session->resume(QFileInfo(file).completeBaseName());
     placePrompts(a_session->sessionId());
+    a_contextTokens = contextTokens;
+    a_lastTurnAt = lastTurnAt;
+    a_lastModel = model;
+    a_held.reset();
+    a_afterCompact.reset();
+    a_cacheNote->hide();
+    armIdleCompact();
     showNextRequest();
     updateState();
     scheduleRender();
@@ -4460,6 +4623,113 @@ void ClaudeCodePanel::setPromptDatesShown(bool on)
 {
     QucsSettingsFile().setValue(kShowPromptDates, on);
     for (ClaudeCodePanel* panel : std::as_const(openPanels())) panel->scheduleRender();
+}
+
+ClaudeCodePanel::CacheChoice ClaudeCodePanel::cacheChoice()
+{
+    const QString chosen = QucsSettingsFile().value(kConversationCache).toString();
+    if (chosen == QLatin1String("warn")) return CacheChoice::Warn;
+    if (chosen == QLatin1String("compactEarly")) return CacheChoice::CompactEarly;
+    return CacheChoice::CompactIdle;   // (the default, the user's choice)
+}
+
+void ClaudeCodePanel::setCacheChoice(CacheChoice choice)
+{
+    QucsSettingsFile().setValue(kConversationCache, choice == CacheChoice::Warn           ? QStringLiteral("warn")
+                                                    : choice == CacheChoice::CompactEarly ? QStringLiteral("compactEarly")
+                                                                                          : QStringLiteral("compactIdle"));
+    for (ClaudeCodePanel* panel : std::as_const(openPanels())) panel->applyCacheChoice();
+}
+
+void ClaudeCodePanel::applyCacheChoice()
+{
+    const CacheChoice choice = cacheChoice();
+    a_session->setAutoCompactWindow(choice == CacheChoice::CompactEarly ? kEarlyCompactWindow : 0);
+    if (choice != CacheChoice::Warn && a_cacheNote != nullptr && a_cacheNote->isVisible()) {
+        a_held.reset();
+        a_cacheNote->hide();
+    }
+    armIdleCompact();
+}
+
+void ClaudeCodePanel::armIdleCompact()
+{
+    if (a_idleCompact == nullptr) return;
+    a_idleCompact->stop();
+    if (cacheChoice() != CacheChoice::CompactIdle || a_contextTokens < kLongContext || a_lastTurnAt <= 0
+        || a_session->sessionId().isEmpty())
+        return;
+    // At 50 minutes, or at once when that has passed and a minute of its cache
+    // is left (Qucs-S opened again within the hour); none when it has gone.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now >= a_lastTurnAt + kCacheLifetimeMs - 60000) return;
+    a_idleCompact->start(int(std::max<qint64>(0, a_lastTurnAt + kCompactIdleAfterMs - now)));
+}
+
+qint64 ClaudeCodePanel::idleCompactIn() const
+{
+    return a_idleCompact != nullptr && a_idleCompact->isActive() ? a_idleCompact->remainingTime() : -1;
+}
+
+void ClaudeCodePanel::compactWhileWarm()
+{
+    if (cacheChoice() != CacheChoice::CompactIdle || a_contextTokens < kLongContext || a_session->isBusy()
+        || a_session->sessionId().isEmpty() || a_editing >= 0)
+        return;
+    if (QDateTime::currentMSecsSinceEpoch() >= a_lastTurnAt + kCacheLifetimeMs - 60000) return;
+    if (a_session->program().isEmpty()) findProgram();
+    if (a_session->program().isEmpty()) return;
+    addNote(tr("Compacting this conversation (%1 tokens) while its cache is warm, so that coming back to it later reads its "
+               "summary rather than all of it (⋯ › Conversation Cache).")
+                .arg(tokenCount(a_contextTokens)));
+    a_session->send(QStringLiteral("/compact"));
+    updateState();
+}
+
+bool ClaudeCodePanel::holdsColdSend(const QString& text, bool withDocument, const QStringList& images)
+{
+    if (std::exchange(a_coldSendAllowed, false)) return false;
+    if (cacheChoice() != CacheChoice::Warn || a_contextTokens < kLongContext || a_lastTurnAt <= 0) return false;
+    const qint64 idle = QDateTime::currentMSecsSinceEpoch() - a_lastTurnAt;
+    if (idle < kCacheLifetimeMs) return false;
+    // Written to the cache again, an hour's: twice the price of input.
+    const double price = inputPrice(a_lastModel);
+    const QString dollars = price > 0.0 ? tr(", about %1 at API prices").arg(cost(a_contextTokens * 2.0 * price / 1e6)) : QString();
+    a_cacheNoteText->setText(tr("This conversation holds %1 tokens, and its last turn was %2 ago, so its cache has expired (it "
+                                "lasts an hour): this prompt has Claude read all of it again%3. Compacting first reads its summary "
+                                "instead.")
+                                 .arg(tokenCount(a_contextTokens), longWhile(idle), dollars));
+    a_held = HeldSend{text, withDocument, images};
+    a_cacheNote->show();
+    return true;
+}
+
+void ClaudeCodePanel::releaseHeldSend(bool compactFirst)
+{
+    if (!a_held) return;
+    const HeldSend held = *std::exchange(a_held, std::nullopt);
+    a_cacheNote->hide();
+    // The composer's prompt goes with it (it is the one held, unless changed since).
+    const bool fromComposer = a_input->toPlainText().trimmed() == held.text;
+    const auto taken = [this, fromComposer, &held] {
+        if (!fromComposer) return;
+        a_input->clear();
+        if (!held.images.isEmpty() && a_images == held.images) {
+            a_images.clear();
+            updateImageStrip();
+        }
+        updateComposer();
+    };
+    if (!compactFirst) {
+        a_coldSendAllowed = true;
+        if (sendText(held.text, held.withDocument, held.images)) taken();
+        a_coldSendAllowed = false;
+        return;
+    }
+    if (sendText(QStringLiteral("/compact"), false, {})) {
+        a_afterCompact = held;
+        taken();
+    }
 }
 
 QList<QPair<QRectF, QString>> ClaudeCodePanel::promptDates() const

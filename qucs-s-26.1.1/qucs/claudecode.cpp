@@ -302,6 +302,15 @@ TokenUsage tokensOf(const QJsonObject& result, bool* running)
     return tokens;
 }
 
+namespace {
+// Claude Code's autoCompactWindow for \a tokens told to a running program:
+// "auto", its own choice, for none (a window given at its start taken back).
+QJsonValue compactWindowSetting(int tokens)
+{
+    return tokens > 0 ? QJsonValue(tokens) : QJsonValue(QStringLiteral("auto"));
+}
+} // namespace
+
 QStringList arguments(const Options& options)
 {
     QStringList args = {QStringLiteral("-p"),
@@ -327,9 +336,11 @@ QStringList arguments(const Options& options)
     if (!options.allowedTools.isEmpty())
         args << QStringLiteral("--allowedTools") << options.allowedTools.join(QLatin1Char(','));
     // Auto-compact as the dock says, over the user's own settings.
-    args << QStringLiteral("--settings")
-         << QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("autoCompactEnabled"), options.autoCompact}})
-                                  .toJson(QJsonDocument::Compact));
+    // And the context it compacts near, when one is given (else the user's
+    // own settings, or the program's choice for the model).
+    QJsonObject flags{{QStringLiteral("autoCompactEnabled"), options.autoCompact}};
+    if (options.autoCompactWindow > 0) flags.insert(QStringLiteral("autoCompactWindow"), options.autoCompactWindow);
+    args << QStringLiteral("--settings") << QString::fromUtf8(QJsonDocument(flags).toJson(QJsonDocument::Compact));
     return args;
 }
 
@@ -777,6 +788,16 @@ void Session::setAutoCompact(bool on)
                {{QStringLiteral("settings"), QJsonObject{{QStringLiteral("autoCompactEnabled"), on}}}});
 }
 
+void Session::setAutoCompactWindow(int tokens)
+{
+    tokens = std::max(0, tokens);
+    if (tokens == a_autoCompactWindow) return;
+    a_autoCompactWindow = tokens;
+    if (!isRunning()) return;
+    askProgram(QStringLiteral("apply_flag_settings"),
+               {{QStringLiteral("settings"), QJsonObject{{QStringLiteral("autoCompactWindow"), compactWindowSetting(tokens)}}}});
+}
+
 void Session::setGuards(const Guards& guards)
 {
     a_guards = guards;
@@ -888,6 +909,7 @@ void Session::start()
     options.permissionMode = a_mode;
     options.model = a_model;
     options.autoCompact = a_autoCompact;
+    options.autoCompactWindow = a_autoCompactWindow;
     options.resume = a_sessionId;
     // A prompt edited: the conversation up to the message before it, as a
     // new session (until the program says it started on it).
@@ -1007,6 +1029,7 @@ void Session::beginTurn()
 {
     a_busy = true;
     a_interrupted = false;
+    a_turnContext = -1;
     a_turnClock.start();
     a_tools.clear();
     a_running.clear();
@@ -1427,6 +1450,8 @@ void Session::handleSystem(const QJsonObject& m)
         jobs::Registry::instance().taskEvent(a_caller, m, a_toolSubjects.value(m.value(QLatin1String("tool_use_id")).toString()),
                                              [self](const QString& task) { return self && self->stopTask(task); });
     }
+    // Compacted: what follows is read from its summary.
+    if (subtype == QLatin1String("compact_boundary")) a_turnContext = 0;
     if (subtype == QLatin1String("init")) {
         a_initSeen = true;
         a_sessionId = m.value(QLatin1String("session_id")).toString();
@@ -1519,6 +1544,14 @@ void Session::handleAssistant(const QJsonObject& m)
 {
     const bool subagent = fromSubagent(m);
     if (!subagent && m.value(QLatin1String("uuid")).isString()) a_lastMessageId = m.value(QLatin1String("uuid")).toString();
+    // What the request read: the conversation's context as it stands.
+    if (!subagent) {
+        const QJsonObject usage = m.value(QLatin1String("message")).toObject().value(QLatin1String("usage")).toObject();
+        if (!usage.isEmpty())
+            a_turnContext = qint64(usage.value(QLatin1String("input_tokens")).toDouble())
+                            + qint64(usage.value(QLatin1String("cache_read_input_tokens")).toDouble())
+                            + qint64(usage.value(QLatin1String("cache_creation_input_tokens")).toDouble());
+    }
     const QJsonArray content = m.value(QLatin1String("message")).toObject().value(QLatin1String("content")).toArray();
     for (const QJsonValue& v : content) {
         const QJsonObject block = v.toObject();

@@ -543,6 +543,31 @@ const char* const kCapper = "#!/bin/sh\nIFS= read -r line\nprintf '%s' \"${CLAUD
 
 // A program that has no conversation to continue (--resume): it says so as
 // Claude Code does, and ends; without, it answers, with its commands.
+// Logs its arguments (cacher-args) and each prompt (cacher-prompts). A prompt of
+// /compact is answered as Claude Code compacts; any other with a reply that
+// read 305 010 tokens of context.
+const char* const kCacher = R"SH(#!/bin/sh
+printf '%s\n' "$@" >> "$QUCS_FAKE_DIR/cacher-args"
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"user"'*)
+      printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/cacher-prompts"
+      echo '{"type":"system","subtype":"init","session_id":"cache-1","model":"claude-opus-5-5","slash_commands":["compact"]}'
+      case "$line" in
+        *[[:punct:]]/compact[[:punct:]]*)
+          echo '{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":305010}}'
+          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"","total_cost_usd":0.001,"session_id":"cache-1"}'
+          ;;
+        *)
+          echo '{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Read it."}],"usage":{"input_tokens":10,"cache_read_input_tokens":300000,"cache_creation_input_tokens":5000,"output_tokens":20}}}'
+          echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"Read it.","total_cost_usd":0.001,"session_id":"cache-1"}'
+          ;;
+      esac
+      ;;
+  esac
+done
+)SH";
+
 const char* const kResumer = R"SH(#!/bin/sh
 printf '%s\n' "$@" >> "$QUCS_FAKE_DIR/resumer-args"
 case " $* " in
@@ -7019,11 +7044,10 @@ private slots:
         const int narrow = int(2 * doc->documentMargin() + captionLine.naturalTextWidth() + at.width() + 4);
         view->setLineWrapMode(QTextEdit::FixedPixelWidth);
         view->setLineWrapColumnOrWidth(narrow);
-        QCoreApplication::processEvents();
-        QVERIFY(panel.promptDates().isEmpty());
+        // (Laid out in steps when the machine is busy: waited for.)
+        QTRY_VERIFY(panel.promptDates().isEmpty());
         view->setLineWrapMode(QTextEdit::WidgetWidth);
-        QCoreApplication::processEvents();
-        QCOMPARE(panel.promptDates().size(), 1);
+        QTRY_COMPARE(panel.promptDates().size(), 1);
         panel.resize(420, 700);
         panel.renderNow();
 
@@ -7072,6 +7096,262 @@ private slots:
         QString error;
         QVERIFY2(panel.exportConversation(fresh("promptdates-pdf") + "/c.pdf", ClaudeCodePanel::ExportFormat::Pdf, &error), qPrintable(error));
         ClaudeCodePanel::setPromptDatesShown(false);
+    }
+
+    // ⋯ > Conversation Cache: one of three, Compact Idle Conversations at
+    // first (the user, 10 November); Compact Earlier has Claude Code compact
+    // near 200k tokens (its autoCompactWindow), told as Auto-Compact is.
+    void theConversationCacheIsOneOfThree()
+    {
+        QucsSettingsFile().remove("ClaudeCode/conversationCache");
+        QCOMPARE(ClaudeCodePanel::cacheChoice(), ClaudeCodePanel::CacheChoice::CompactIdle);
+        ClaudeCodePanel panel;
+        auto* menu = panel.findChild<QMenu*>("claudeConversationCache");
+        QVERIFY(menu != nullptr);
+        QCOMPARE(menu->title().remove('&'), QStringLiteral("Conversation Cache"));
+        QCOMPARE(menu->actions().size(), 3);
+        const auto checked = [menu] {
+            emit menu->aboutToShow();
+            QStringList on;
+            for (QAction* a : menu->actions())
+                if (a->isChecked()) on << a->objectName();
+            return on;
+        };
+        QCOMPARE(checked(), QStringList{"claudeCacheCompactIdle"});
+        QCOMPARE(panel.session()->autoCompactWindow(), 0);
+        panel.findChild<QAction*>("claudeCacheWarn")->trigger();
+        QCOMPARE(ClaudeCodePanel::cacheChoice(), ClaudeCodePanel::CacheChoice::Warn);
+        // One at a time as it is chosen, before the menu opens again.
+        QVERIFY(!panel.findChild<QAction*>("claudeCacheCompactIdle")->isChecked());
+        QCOMPARE(checked(), QStringList{"claudeCacheWarn"});
+        // Compact Earlier: this conversation and any other, and one opened later.
+        ClaudeCodePanel other;
+        panel.findChild<QAction*>("claudeCacheCompactEarly")->trigger();
+        QCOMPARE(checked(), QStringList{"claudeCacheCompactEarly"});
+        QCOMPARE(panel.session()->autoCompactWindow(), 200000);
+        QCOMPARE(other.session()->autoCompactWindow(), 200000);
+        ClaudeCodePanel later;
+        QCOMPARE(later.session()->autoCompactWindow(), 200000);
+        // As Claude Code is told it: not at all unless one is given (the user's
+        // own settings, or the program's choice).
+        qucs_s::claude::Options options;
+        const auto settingsOf = [](const QStringList& args) {
+            return QJsonDocument::fromJson(args.at(args.indexOf("--settings") + 1).toUtf8()).object();
+        };
+        QVERIFY(!settingsOf(qucs_s::claude::arguments(options)).contains("autoCompactWindow"));
+        options.autoCompactWindow = 200000;
+        QCOMPARE(settingsOf(qucs_s::claude::arguments(options)).value("autoCompactWindow").toInt(), 200000);
+        QCOMPARE(settingsOf(qucs_s::claude::arguments(options)).value("autoCompactEnabled").toBool(), true);
+        // Back to compacting idle ones: Claude Code's own window again.
+        panel.findChild<QAction*>("claudeCacheCompactIdle")->trigger();
+        QCOMPARE(panel.session()->autoCompactWindow(), 0);
+        QCOMPARE(later.session()->autoCompactWindow(), 0);
+        // The context it read, from what the program says.
+        qucs_s::claude::Session s;
+        QCOMPARE(s.turnContextTokens(), qint64(-1));
+        s.handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"x"}],"usage":{"input_tokens":7,"cache_read_input_tokens":1000,"cache_creation_input_tokens":20}}})");
+        QCOMPARE(s.turnContextTokens(), qint64(1027));
+        s.handleLine(R"({"type":"assistant","parent_tool_use_id":"t9","message":{"content":[{"type":"text","text":"x"}],"usage":{"input_tokens":5,"cache_read_input_tokens":9}}})");
+        QCOMPARE(s.turnContextTokens(), qint64(1027));   // (a subagent's: its own)
+        s.handleLine(R"({"type":"system","subtype":"compact_boundary","compact_metadata":{"pre_tokens":1027}})");
+        QCOMPARE(s.turnContextTokens(), qint64(0));
+    }
+
+    // Warn Before an Expensive Send: a prompt to a long conversation whose cache
+    // has gone (an hour after its last turn) is held, with what it would cost;
+    // Compact First compacts it, then sends the prompt; Send Anyway sends it.
+    void aColdLongConversationIsHeld()
+    {
+        skipWithoutShell();
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::Warn);
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("cachewarn"));
+        panel.session()->setProgram(script("cacher", kCacher));
+        panel.resize(640, 800);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        const QString prompts = dir.filePath("cacher-prompts");
+        const auto sent = [&prompts] {
+            QFile f(prompts);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const auto conversation = [](qint64 context, qint64 lastTurnAt) {
+            return QJsonObject{{"sessionId", "cache-1"},
+                               {"cache", QJsonObject{{"contextTokens", context}, {"lastTurnAt", lastTurnAt}, {"model", "claude-opus-5-5"}}},
+                               {"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "Earlier"}}}}};
+        };
+        QFile::remove(prompts);
+        panel.restoreConversation(conversation(560000, now - 2 * 3600 * 1000));
+        QCOMPARE(panel.contextTokens(), qint64(560000));
+        auto* note = panel.cacheNote();
+        auto* text = note->findChild<QLabel*>("claudeCacheNoteText");
+        QVERIFY(!note->isVisible());
+
+        // Held: nothing sent, the prompt kept, what it would cost said.
+        panel.composer()->setPlainText(QStringLiteral("A new question"));
+        panel.sendComposer();
+        QVERIFY(note->isVisible());
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("A new question"));
+        QVERIFY2(text->text().contains(QStringLiteral("560k")) && text->text().contains(QStringLiteral("2 h 0 min"))
+                     && text->text().contains(QStringLiteral("$4.48")), qPrintable(text->text()));
+        QTest::qWait(300);
+        QVERIFY(sent().isEmpty());
+        // Cancel: nothing sent, the prompt still there.
+        note->findChild<QPushButton*>("claudeCacheNoteCancel")->click();
+        QVERIFY(!note->isVisible());
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("A new question"));
+        // Send Anyway: sent as it is, the composer emptied; its context and time
+        // known after it.
+        panel.sendComposer();
+        QVERIFY(note->isVisible());
+        note->findChild<QPushButton*>("claudeSendAnyway")->click();
+        QVERIFY(!note->isVisible());
+        QTRY_VERIFY(sent().contains(QStringLiteral("A new question")));
+        QVERIFY(panel.composer()->toPlainText().isEmpty());
+        QTRY_VERIFY(!panel.session()->isBusy());
+        QCOMPARE(panel.contextTokens(), qint64(305010));
+        QVERIFY(panel.lastTurnAt() >= now);
+        QCOMPARE(panel.conversationJson().value("cache").toObject().value("contextTokens").toInteger(), qint64(305010));
+        // Warm now: not held.
+        panel.composer()->setPlainText(QStringLiteral("And another"));
+        panel.sendComposer();
+        QVERIFY(!note->isVisible());
+        QTRY_VERIFY(sent().contains(QStringLiteral("And another")));
+        QTRY_VERIFY(!panel.session()->isBusy());
+
+        // Compact First: /compact, then the prompt once it is compacted.
+        QFile::remove(prompts);
+        panel.restoreConversation(conversation(560000, now - 2 * 3600 * 1000));
+        panel.composer()->setPlainText(QStringLiteral("After compacting"));
+        panel.sendComposer();
+        QVERIFY(note->isVisible());
+        note->findChild<QPushButton*>("claudeCompactFirst")->click();
+        QVERIFY(!note->isVisible());
+        QVERIFY(panel.composer()->toPlainText().isEmpty());
+        QTRY_VERIFY(sent().contains(QStringLiteral("After compacting")));
+        const QStringList lines = sent().split('\n', Qt::SkipEmptyParts);
+        QCOMPARE(lines.size(), 2);
+        QVERIFY(lines.at(0).contains(QStringLiteral("/compact\"")));
+        QVERIFY(lines.at(1).contains(QStringLiteral("After compacting")));
+        QVERIFY(panel.transcriptText().contains(QStringLiteral("/compact")));
+        QTRY_VERIFY(!panel.session()->isBusy());
+
+        // Not held: short, or warm, or another choice.
+        for (const auto& [context, lastTurnAt, choice] :
+             {std::tuple{qint64(50000), now - 2 * 3600 * 1000, ClaudeCodePanel::CacheChoice::Warn},
+              std::tuple{qint64(560000), now - 10 * 60 * 1000, ClaudeCodePanel::CacheChoice::Warn},
+              std::tuple{qint64(560000), now - 2 * 3600 * 1000, ClaudeCodePanel::CacheChoice::CompactEarly}}) {
+            ClaudeCodePanel::setCacheChoice(choice);
+            QFile::remove(prompts);
+            panel.restoreConversation(conversation(context, lastTurnAt));
+            panel.composer()->setPlainText(QStringLiteral("Straight through"));
+            panel.sendComposer();
+            QVERIFY(!note->isVisible());
+            QTRY_VERIFY(sent().contains(QStringLiteral("Straight through")));
+            QTRY_VERIFY(!panel.session()->isBusy());
+        }
+
+        // A session of Claude Code's own: its context and time from its file.
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::Warn);
+        const QString jsonl = fresh("cachewarn-history") + "/s.jsonl";
+        {
+            QFile f(jsonl);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(R"({"type":"user","timestamp":"2025-03-04T05:06:07.890Z","cwd":"/tmp","sessionId":"s1","message":{"role":"user","content":"Hello"}})" "\n");
+            f.write(R"({"type":"assistant","timestamp":"2025-03-04T05:07:00.000Z","message":{"model":"claude-sonnet-5-5","content":[{"type":"text","text":"Hi"}],"usage":{"input_tokens":3,"cache_read_input_tokens":200000,"cache_creation_input_tokens":40}}})" "\n");
+        }
+        QVERIFY(panel.importClaudeSession(jsonl));
+        QCOMPARE(panel.contextTokens(), qint64(200043));
+        QCOMPARE(panel.lastTurnAt(), QDateTime::fromString("2025-03-04T05:07:00.000Z", Qt::ISODateWithMs).toMSecsSinceEpoch());
+        panel.composer()->setPlainText(QStringLiteral("Back to it"));
+        panel.sendComposer();
+        QVERIFY(note->isVisible());
+        QVERIFY2(note->findChild<QLabel*>("claudeCacheNoteText")->text().contains(QStringLiteral("$0.80")), qPrintable(text->text()));
+        // A new conversation: nothing held.
+        panel.newConversation();
+        QVERIFY(!note->isVisible());
+        QCOMPARE(panel.contextTokens(), qint64(0));
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::CompactIdle);
+    }
+
+    // Compact Idle Conversations (the default): a long one is compacted 50
+    // minutes after its last turn, its cache warm - from a conversation brought
+    // back as well, at once when those 50 minutes have passed in the hour.
+    void aLongIdleConversationIsCompactedWhileWarm()
+    {
+        skipWithoutShell();
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::CompactIdle);
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("cacheidle"));
+        panel.session()->setProgram(script("cacher", kCacher));
+        panel.resize(640, 800);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        const QString prompts = dir.filePath("cacher-prompts");
+        const auto sent = [&prompts] {
+            QFile f(prompts);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
+        const auto conversation = [](qint64 context, qint64 lastTurnAt, const QString& session) {
+            return QJsonObject{{"sessionId", session},
+                               {"cache", QJsonObject{{"contextTokens", context}, {"lastTurnAt", lastTurnAt}}},
+                               {"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "Earlier"}}}}};
+        };
+        const qint64 minute = 60 * 1000;
+        // Fifty minutes, less 400 ms, after its last turn: compacted in a moment.
+        QFile::remove(prompts);
+        panel.restoreConversation(conversation(300000, QDateTime::currentMSecsSinceEpoch() - 50 * minute + 400, "cache-1"));
+        QTRY_VERIFY_WITH_TIMEOUT(sent().contains(QStringLiteral("/compact\"")), 10000);
+        panel.renderNow();
+        QVERIFY2(panel.transcriptText().contains(QStringLiteral("Compacting this conversation (300k tokens)")), qPrintable(panel.transcriptText()));
+        QTRY_VERIFY(!panel.session()->isBusy());
+        QCOMPARE(panel.contextTokens(), qint64(0));
+        QVERIFY(!panel.conversationJson().value("cache").toObject().contains("contextTokens"));
+        QCOMPARE(sent().split('\n', Qt::SkipEmptyParts).size(), 1);
+        // Brought back 55 minutes after: at once, a minute of its cache left.
+        QFile::remove(prompts);
+        panel.restoreConversation(conversation(300000, QDateTime::currentMSecsSinceEpoch() - 55 * minute, "cache-1"));
+        QTRY_VERIFY_WITH_TIMEOUT(sent().contains(QStringLiteral("/compact\"")), 10000);
+        QTRY_VERIFY(!panel.session()->isBusy());
+        // Not: short; its cache gone already; no session to compact; another choice.
+        for (const auto& [context, ago, session, choice] :
+             {std::tuple{qint64(50000), 50 * minute - 300, QStringLiteral("cache-1"), ClaudeCodePanel::CacheChoice::CompactIdle},
+              std::tuple{qint64(300000), 59 * minute + 30000, QStringLiteral("cache-1"), ClaudeCodePanel::CacheChoice::CompactIdle},
+              std::tuple{qint64(300000), 50 * minute - 300, QString(), ClaudeCodePanel::CacheChoice::CompactIdle},
+              std::tuple{qint64(300000), 50 * minute - 300, QStringLiteral("cache-1"), ClaudeCodePanel::CacheChoice::Warn},
+              std::tuple{qint64(300000), 50 * minute - 300, QStringLiteral("cache-1"), ClaudeCodePanel::CacheChoice::CompactEarly}}) {
+            ClaudeCodePanel::setCacheChoice(choice);
+            QFile::remove(prompts);
+            panel.restoreConversation(conversation(context, QDateTime::currentMSecsSinceEpoch() - ago, session));
+            QCOMPARE(panel.idleCompactIn(), qint64(-1));   // (not even due)
+            QTest::qWait(1200);
+            QVERIFY2(sent().isEmpty(), qPrintable(QStringLiteral("%1 tokens, %2 ms ago").arg(context).arg(ago)));
+        }
+        // Chosen again with one waiting: compacted.
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::Warn);
+        panel.restoreConversation(conversation(300000, QDateTime::currentMSecsSinceEpoch() - 50 * minute + 300, "cache-1"));
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::CompactIdle);
+        QTRY_VERIFY_WITH_TIMEOUT(sent().contains(QStringLiteral("/compact\"")), 10000);
+        QTRY_VERIFY(!panel.session()->isBusy());
+        // After a turn that read a long context: armed for 50 minutes from its
+        // end (not waited for). Compacted: not armed.
+        QCOMPARE(panel.idleCompactIn(), qint64(-1));
+        panel.composer()->setPlainText(QStringLiteral("A question"));
+        panel.sendComposer();
+        QTRY_VERIFY(sent().contains(QStringLiteral("A question")));
+        QTRY_VERIFY(!panel.session()->isBusy());
+        QCOMPARE(panel.contextTokens(), qint64(305010));
+        QVERIFY2(panel.idleCompactIn() > 49 * minute && panel.idleCompactIn() <= 50 * minute, qPrintable(QString::number(panel.idleCompactIn())));
+        // Another choice: not armed; this one again: armed.
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::Warn);
+        QCOMPARE(panel.idleCompactIn(), qint64(-1));
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::CompactIdle);
+        QVERIFY(panel.idleCompactIn() > 49 * minute);
+        // A new conversation: nothing.
+        panel.newConversation();
+        QCOMPARE(panel.contextTokens(), qint64(0));
+        QCOMPARE(panel.idleCompactIn(), qint64(-1));
     }
 
     void longTextsLeaveTheDockNarrow()
