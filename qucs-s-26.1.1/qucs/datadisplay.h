@@ -1,7 +1,8 @@
 /*
- * datadisplay.h - a data display's page (.dpl): its toolbar - the zoom,
- *                 its data read again, the pen (markup.h) - and what the
- *                 pen drew on it, read against its diagrams for Claude
+ * datadisplay.h - a schematic's or data display's page: its toolbar - the
+ *                 zoom, a data display's data read again, the pen
+ *                 (markup.h) - and what the pen drew on it, read against
+ *                 what is on the page for Claude
  *
  * This file is part of Qucs-S.
  *
@@ -27,9 +28,10 @@ class PenButton;
 namespace qucs_s::datadisplay {
 
 /*!
- * The toolbar over a data display's page, in the room the page leaves
- * above its canvas (Schematic::setMargins()): zoom out, zoom in, all of it
- * in sight, its datasets read again; and on the right, the pen - pressed,
+ * The toolbar over a schematic's or data display's page, in the room the
+ * page leaves above its canvas (Schematic::setMargins()): zoom out, zoom
+ * in, all of it in sight, a data display's datasets read again; and on the
+ * right, the pen - pressed,
  * a drag on the page draws on it with the pen in hand (its menu: the pen,
  * the highlighter, the eraser, colours, how broad, undo, clear), as in a
  * layout's and a presentation's tab.
@@ -47,6 +49,8 @@ public:
     QToolButton* reloadButton() const { return a_reload; }
     /// The pen's menu as the page's drawing is.
     void updatePen();
+    /// The buttons as the page is: a data display's, or a schematic's.
+    void updateKind();
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -60,18 +64,22 @@ private:
     QToolButton* a_zoomIn = nullptr;
     QToolButton* a_fit = nullptr;
     QToolButton* a_reload = nullptr;
+    QWidget* a_reloadGap = nullptr;
 };
 
-/// What the pen drew on \a page, read as one would read it
-/// (markup::readPage()), its diagrams the targets: for each stroke, in the
-/// order drawn, its number, how it was drawn, its tool, colour and box, in
-/// the page's coordinates (as get_schematic gives them, y down), what it is
-/// round, on or points at - and, for each diagram it is in ("in
-/// diagrams"), the diagram's number and title, the values its points span
-/// on the axes ("x", "y", the right axis' "y right"; a stacked diagram's
-/// "pane"), the traces it is round, lies on or crosses with the values of
-/// theirs it takes in, and where its tip or point is - its values and the
-/// nearest trace's point. With \a points, its points simplified.
+/// What the pen drew on \a page - its strokes on the page, then on its
+/// symbol's ("page" says which: page or symbol) - read as one would read it
+/// (markup::readPage()): for each stroke, in the order drawn, its number,
+/// how it was drawn, its tool, colour and box, in the part's coordinates
+/// (as get_schematic gives them, y down), what it is round, on or points
+/// at - the components by their refs, the wires by their ends, net labels,
+/// paintings and diagrams by their numbers (on the symbol, its paintings) -
+/// and, for each diagram it is in ("in diagrams"), the diagram's number and
+/// title, the values its points span on the axes ("x", "y", the right
+/// axis' "y right"; a stacked diagram's "pane"), the traces it is round,
+/// lies on or crosses with the values of theirs it takes in, and where its
+/// tip or point is - its values and the nearest trace's point. With
+/// \a points, its points simplified.
 QJsonArray readDrawing(const Schematic* page, bool points = false);
 
 /// The readings a sentence each, a line each, for a prompt: the latest

@@ -598,12 +598,11 @@ std::pair<quint64, QString> QucsApp::drawingsOf(const QString &file, quint64 kno
       return {revision, revision == known ? QString()
                                           : penSaid(qucs_s::markup::sentencesOf(layout->view()->readDrawing(true), false), layout->penButton(), "show_layout")};
     }
-    if (auto *page = dynamic_cast<Schematic *>(doc); page != nullptr && page->isDataDisplayPage()) {
+    if (auto *page = dynamic_cast<Schematic *>(doc)) {
       const quint64 revision = page->penDrawing().revision();
       return {revision, revision == known ? QString()
                                           : penSaid(qucs_s::datadisplay::sentencesOf(qucs_s::datadisplay::readDrawing(page, true)),
-                                                    page->dataDisplayBar() != nullptr ? page->dataDisplayBar()->penButton() : nullptr,
-                                                    "show_data_display")};
+                                                    page->pageBar() != nullptr ? page->pageBar()->penButton() : nullptr, "show_schematic")};
     }
     if (auto *deck = dynamic_cast<PptxDoc *>(doc)) {
       const quint64 revision = deck->view()->drawing().revision();
