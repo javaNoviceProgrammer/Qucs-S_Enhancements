@@ -280,6 +280,21 @@ QIcon glyph(const QString& icon)
         p.drawRect(QRectF(5.5, 8.5, 9, 5));
     } else if (icon == QLatin1String("map")) letters(QStringLiteral("→"), brown);
     else if (icon == QLatin1String("processing")) letters(QStringLiteral("⚙"), gray);
+    else if (icon == QLatin1String("cutout") || icon == QLatin1String("region")) {
+        // (RF 2.5D's Cutout and its regions.) The part of a layout kept: a
+        // dashed frame, and for the Cutout the shapes it cuts across.
+        if (icon == QLatin1String("cutout")) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(green.red(), green.green(), green.blue(), 110));
+            p.drawRect(QRectF(0.5, 6, 15, 4));
+            p.drawRect(QRectF(9, 0.5, 3.5, 15));
+        }
+        QPen dashed(orange, 1.4);
+        dashed.setDashPattern({2.0, 1.5});
+        p.setPen(dashed);
+        p.setBrush(icon == QLatin1String("region") ? QBrush(QColor(orange.red(), orange.green(), orange.blue(), 60)) : QBrush());
+        p.drawRect(QRectF(3, 3, 10, 10));
+    }
     else if (icon == QLatin1String("ports")) letters(QStringLiteral("P"), blue);
     else if (icon == QLatin1String("port")) {
         // A port on the edge of a line.

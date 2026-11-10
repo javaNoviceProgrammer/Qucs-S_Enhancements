@@ -287,6 +287,204 @@ QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within)
     return kept;
 }
 
+namespace {
+
+/// gdstk's boolean \a op of \a a with \a b; \a ok false where it failed.
+QList<QPolygonF> booleanOf(const QList<QPolygonF>& a, const QList<QPolygonF>& b, gdstk::Operation op, bool* ok)
+{
+    std::vector<gdstk::Polygon> owned;
+    owned.reserve(a.size() + b.size());
+    gdstk::Array<gdstk::Polygon*> in1{}, in2{};
+    for (const QPolygonF& s : a) {
+        owned.push_back(gdstkOf(s));
+        in1.append(&owned.back());
+    }
+    for (const QPolygonF& s : b) {
+        owned.push_back(gdstkOf(s));
+        in2.append(&owned.back());
+    }
+    gdstk::Array<gdstk::Polygon*> out{};
+    const gdstk::ErrorCode code = gdstk::boolean(in1, in2, op, kScaling, out);
+    QList<QPolygonF> result;
+    if (code == gdstk::ErrorCode::NoError)
+        for (uint64_t i = 0; i < out.count; ++i) result << polygonOf(*out[i]);
+    freeAll(out);
+    in1.clear();
+    in2.clear();
+    for (gdstk::Polygon& p : owned) p.clear();
+    *ok = code == gdstk::ErrorCode::NoError;
+    return result;
+}
+
+/// The model's parameters as a scope their expressions are read in.
+fem::Scope scopeOf(const QList<fem::Model::Parameter>& parameters)
+{
+    fem::Scope scope(&fem::Scope::builtins());
+    for (const fem::Model::Parameter& p : parameters) {
+        const fem::Expression e = fem::Expression::compile(p.expression, scope);
+        if (e.isValid() && e.isConstant()) scope.setConstant(p.name, e.constant(), e.dim());
+    }
+    return scope;
+}
+
+} // namespace
+
+Cutout cutoutOf(const Model& model, QStringList* problems)
+{
+    Cutout out;
+    const Node* node = model.layout().child(QStringLiteral("rf_cutout"));
+    if (node == nullptr || !flagIn(*node, QStringLiteral("apply"), true)) return out;
+    const fem::Scope scope = scopeOf(model.parameters());
+    const Stack stack = model.stack();
+    const auto say = [problems](const QString& text) {
+        if (problems != nullptr) *problems << text;
+    };
+    for (const Node& r : node->children) {
+        if (!r.enabled || r.type != QLatin1String("rf_region")) continue;
+        const QString name = nameOf(r);
+        // A length of it in µm, or nothing and why.
+        bool readable = true;
+        const auto length = [&](const QJsonValue& v, const QString& what) {
+            const QString text = v.isDouble() ? QString::number(v.toDouble(), 'g', 17) : v.toString();
+            const fem::Expression e = fem::Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, scope);
+            if (!e.isValid() || !e.isConstant()) {
+                if (readable)
+                    say(tr("Cutout: %1's %2 is not a number (%3).")
+                            .arg(name, what, e.isValid() ? tr("it is not a constant") : e.error()));
+                readable = false;
+                return 0.0;
+            }
+            return e.constant() / 1e-6;
+        };
+        const auto lengthOf = [&](const char* key) {
+            return length(valueOf(r, QLatin1String(key)), QLatin1String(key));
+        };
+        CutRegion region;
+        region.name = name;
+        region.keep = textOf(r, QStringLiteral("action")) != QLatin1String("remove");
+        region.layers = namesOf(r, QStringLiteral("layers"));
+        const QString shape = textOf(r, QStringLiteral("shape"));
+        if (shape == QLatin1String("polygon")) {
+            const QJsonArray rows = valueOf(r, QStringLiteral("points")).toArray();
+            for (int i = 0; i < rows.size(); ++i) {
+                const QJsonArray cells = rows.at(i).toArray();
+                const double x = length(cells.at(0), tr("corner %1's x").arg(i + 1));
+                const double y = length(cells.at(1), tr("corner %1's y").arg(i + 1));
+                if (region.outline.isEmpty() || region.outline.last() != QPointF(x, y)) region.outline << QPointF(x, y);
+            }
+            while (region.outline.size() > 1 && region.outline.last() == region.outline.first()) region.outline.removeLast();
+            if (readable && region.outline.size() < 3) {
+                say(tr("Cutout: %1 is a polygon of %2 corner(s): it wants three at least.")
+                        .arg(name).arg(region.outline.size()));
+                continue;
+            }
+        } else if (shape == QLatin1String("circle")) {
+            const QPointF centre(lengthOf("x"), lengthOf("y"));
+            const double radius = lengthOf("radius");
+            if (readable && !(radius > 0)) {
+                say(tr("Cutout: %1's radius is not a length above zero.").arg(name));
+                continue;
+            }
+            // Its sides no further than a nanometre in from the circle.
+            const double sagitta = 1e-3;
+            const int sides = radius > 0 ? std::clamp(int(std::ceil(M_PI / std::sqrt(2 * sagitta / radius))), 32, 1024) : 0;
+            for (int i = 0; i < sides; ++i) {
+                const double a = 2 * M_PI * i / sides;
+                region.outline << centre + radius * QPointF(std::cos(a), std::sin(a));
+            }
+        } else {
+            const QPointF a(lengthOf("x0"), lengthOf("y0"));
+            const QPointF b(lengthOf("x1"), lengthOf("y1"));
+            region.outline = QPolygonF(QRectF(a, b).normalized());
+            region.outline.removeLast();   // (QPolygonF of a rectangle closes its ring)
+        }
+        if (!readable) continue;
+        if (!(areaOf(region.outline) > 0)) {
+            say(tr("Cutout: %1 has no area.").arg(name));
+            continue;
+        }
+        bool named = true;
+        for (const QString& layer : std::as_const(region.layers))
+            if (stack.named(layer) == nullptr) {
+                say(tr("Cutout: %1 cuts %2, which is no layer of the stack.").arg(name, layer));
+                named = false;
+            }
+        if (!named) continue;
+        out.regions << region;
+    }
+    return out;
+}
+
+QList<QPolygonF> cutOf(const QList<QPolygonF>& shapes, const Cutout& cutout, const QString& layer, int* cut, int* masked)
+{
+    if (cut != nullptr) *cut = 0;
+    if (masked != nullptr) *masked = 0;
+    QList<QPolygonF> keep, remove;
+    QList<QRectF> keepBoxes, removeBoxes;
+    for (const CutRegion& r : cutout.regions) {
+        if (!r.cuts(layer)) continue;
+        (r.keep ? keep : remove) << r.outline;
+        (r.keep ? keepBoxes : removeBoxes) << r.outline.boundingRect();
+    }
+    if (keep.isEmpty() && remove.isEmpty()) return shapes;
+    // (The regions that keep are one operand of the boolean, and so their
+    //  union: a shape across two of them is kept whole - whichever way each
+    //  is wound, since gdstk turns every polygon anticlockwise before its
+    //  boolean.)
+    const auto near = [](const QRectF& box, const QList<QRectF>& boxes) {
+        for (const QRectF& b : boxes)
+            if (box.intersects(b)) return true;
+        return false;
+    };
+    QList<QPolygonF> out;
+    out.reserve(shapes.size());
+    for (const QPolygonF& s : shapes) {
+        // QRectF::intersects() is false for a box of no width: a shape
+        // drawn as a line (healed away later) is tested by its points.
+        const QRectF box = s.boundingRect().adjusted(-1e-9, -1e-9, 1e-9, 1e-9);
+        QList<QPolygonF> part{s};
+        bool touched = false;
+        if (!keep.isEmpty()) {
+            if (!near(box, keepBoxes)) {
+                if (masked != nullptr) ++*masked;
+                continue;
+            }
+            bool ok = false;
+            part = booleanOf(part, keep, gdstk::Operation::And, &ok);
+            if (!ok) part = {s};
+            touched = true;
+        }
+        if (!remove.isEmpty() && !part.isEmpty() && near(box, removeBoxes)) {
+            bool ok = false;
+            const QList<QPolygonF> left = booleanOf(part, remove, gdstk::Operation::Not, &ok);
+            if (ok) part = left;
+            touched = true;
+        }
+        if (!touched) {
+            out << s;
+            continue;
+        }
+        if (part.isEmpty()) {
+            if (masked != nullptr) ++*masked;
+            continue;
+        }
+        // A shape the regions hold whole is handed on as it was drawn - its
+        // points and their order -, not as the boolean redrew it.
+        double after = 0;
+        for (const QPolygonF& p : std::as_const(part)) after += areaOf(p);
+        // (Within what the boolean's grid moves it by: half a step at each
+        //  side, along its whole boundary.)
+        const double before = areaOf(s);
+        if (part.size() == 1 && std::abs(after - before) <= perimeterOf(s) / kScaling) {
+            out << s;
+            continue;
+        }
+        if (cut != nullptr) ++*cut;
+        out += part;
+    }
+    return out;
+}
+
 double Conductor::area() const
 {
     return areaOf(outline);
@@ -357,6 +555,8 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
                         const Processing& how, const Stack& stack, double micrometre)
 {
     Processed out;
+    if (!how.cutout.isEmpty())
+        out.report.lines << tr("The cutout's %1 region(s) applied first.").arg(how.cutout.regions.size());
     // The settings are metres; the polygons are the layout's own units.
     const double perUnit = micrometre > 0 ? micrometre : 1e-6;
     const double viaDistance = how.viaDistance / perUnit;
@@ -377,6 +577,19 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
         if (isFill && how.removeFill) {
             out.report.fill += int(shapes.size());
             continue;
+        }
+
+        // The Cutout first: what it masks is never merged, healed or
+        // meshed, which on a whole chip's layout is most of the work.
+        if (!how.cutout.isEmpty()) {
+            int cut = 0, masked = 0;
+            shapes = cutOf(shapes, how.cutout, layer, &cut, &masked);
+            out.report.cut += cut;
+            out.report.masked += masked;
+            if (cut > 0 || masked > 0)
+                out.report.lines << tr("%1: the cutout cut %2 shape(s) along its regions' edges and masked %3 other(s).")
+                                        .arg(layer).arg(cut).arg(masked);
+            if (shapes.isEmpty()) continue;
         }
 
         // Heal first: a shape that crosses itself confuses every step
@@ -512,7 +725,10 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
     if (out.report.ignored > 0)
         out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(out.report.ignored);
     if (out.conductors.isEmpty() && out.report.read > 0)
-        out.problems << tr("Every shape was dropped: nothing is left to solve on.");
+        out.problems << (out.report.masked > 0
+                             ? tr("The cutout's regions keep none of the shapes: nothing is left to solve on. Their lengths "
+                                  "are the layout's coordinates, in metres: 30[um].")
+                             : tr("Every shape was dropped: nothing is left to solve on."));
     return out;
 }
 
@@ -550,7 +766,8 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     });
 
     QStringList said;
-    const Processing how = processingOf(*model.layout().child(QStringLiteral("rf_processing")), model.parameters(), &said);
+    Processing how = processingOf(*model.layout().child(QStringLiteral("rf_processing")), model.parameters(), &said);
+    how.cutout = cutoutOf(model, &said);
     out = processShapes(byLayer, map.fill, how, model.stack(), 1e-6);
     out.report.ignored = ignored;
     if (ignored > 0)
