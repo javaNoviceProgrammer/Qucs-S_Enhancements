@@ -22,6 +22,8 @@
 #include <QTemporaryDir>
 #include <QXmlStreamReader>
 
+#include <algorithm>
+
 #include <cmath>
 
 using namespace qucs_s::rf25;
@@ -618,7 +620,8 @@ void TestRf25Stack::theStackReplacesTheModelsAlone()
 
 // The check of 9 November (qucs-reviews/RF2p5D/2026-11-09-claude-rf25-stack-
 // roundtrip.md): S1, a metal solved as its two faces came back a sheet, unsaid;
-// S2, EMX's renames of a dielectric and of the plane went unsaid.
+// S2, EMX's renames of a dielectric and of the plane went unsaid. The
+// recheck: a metal with no namesake came in a sheet and smooth, unsaid.
 void TestRf25Stack::whatNeitherFileSaysOfAMetalIsKeptByName()
 {
     Model m = modelOf(twoMetals());
@@ -651,17 +654,31 @@ void TestRf25Stack::whatNeitherFileSaysOfAMetalIsKeptByName()
         QVERIFY(std::abs(metal->roughness - 0.2e-6) < 1e-15);
         const QString kept = notes.join(QLatin1Char('\n'));
         QVERIFY2(kept.contains(QLatin1String("still solved as their two faces")) && kept.contains(QLatin1String("keep the roughness")), qPrintable(kept));
-        // Into a model with no such metal: a sheet, smooth, nothing to say of it.
+        // Into a model with no such metal: a sheet, smooth, and said, for
+        // every metal that had no namesake to keep them from.
         notes.clear();
         const Model fresh = withStackOf(Model::blank(), *r, &notes);
         const Layer* other = fresh.stack().named(metal->name);
         QVERIFY(other != nullptr);
         QVERIFY(!other->twoSheets);
         QCOMPARE(other->roughness, 0.0);
-        QVERIFY(!notes.join(QLatin1Char(' ')).contains(QLatin1String("two faces")));
-        // M1, a sheet before, a sheet still, and not said.
+        const QString freshSaid = notes.join(QLatin1Char('\n'));
+        QVERIFY(!freshSaid.contains(QLatin1String("two faces")));
+        // A blank model's own M1, a sheet, has M1's namesake: only M2 is said.
+        QVERIFY2(freshSaid.contains(QStringLiteral("\n%1 came in as a sheet with no roughness").arg(metal->name)) || freshSaid.startsWith(QStringLiteral("%1 came in as a sheet with no roughness").arg(metal->name)), qPrintable(freshSaid));
+        QVERIFY2(!freshSaid.contains(QLatin1String("M1 came in")) && !freshSaid.contains(QLatin1String("M1,")), qPrintable(freshSaid));
+        // Into a model whose stack has no metal at all: both said, together.
+        Model bare = Model::blank();
+        bare.stackNode().children.erase(std::remove_if(bare.stackNode().children.begin(), bare.stackNode().children.end(),
+                                                       [](const Node& n) { return n.type == QLatin1String("rf_metal"); }),
+                                        bare.stackNode().children.end());
+        notes.clear();
+        withStackOf(bare, *r, &notes);
+        QVERIFY2(notes.join(QLatin1Char('\n')).contains(QStringLiteral("M1, %1 came in as sheets with no roughness").arg(metal->name)), qPrintable(notes.join(QLatin1Char('\n'))));
+        // M1, a sheet before, a sheet still, and not said; nor is a metal kept.
         QVERIFY(!back.stack().named(QStringLiteral("M1"))->twoSheets);
         QVERIFY(!kept.contains(QLatin1String("M1 still")));
+        QVERIFY2(!kept.contains(QLatin1String("came in as sheets")), qPrintable(kept));
     }
 }
 
