@@ -6557,7 +6557,12 @@ private slots:
                 for (int i = 0; i < b.layout()->lineCount(); ++i) most = std::max(most, b.layout()->position().x() + b.layout()->lineAt(i).x() + b.layout()->lineAt(i).naturalTextWidth());
             return most;
         };
-        const auto block = [doc](const QString& word) { return doc->find(word, 0, QTextDocument::FindCaseSensitively).block(); };
+        // (Laid out first: Qt lays out lazily, and a block not yet laid out has no lines.)
+        const auto block = [doc](const QString& word) {
+            const QTextBlock b = doc->find(word, 0, QTextDocument::FindCaseSensitively).block();
+            doc->documentLayout()->blockBoundingRect(b);
+            return b;
+        };
         const QString said = QStringLiteral("launchctl setenv SPICE_LIB_DIR \"/Volumes/Archive 01/git/Ngspice_OpenVAF_Enhancements/bin/macos/apple-silicon\"");
         const QString path = QLatin1Char('/') + QStringLiteral("segment/").repeated(40);
         const QString solid(400, QLatin1Char('x'));
@@ -6646,6 +6651,7 @@ private slots:
         settle();
         QCOMPARE(view->horizontalScrollBar()->maximum(), 0);
         QCOMPARE(block(QStringLiteral("xxx")).text(), indented);
+        QVERIFY(block(QStringLiteral("xxx")).layout()->lineCount() > 0);
         QVERIFY(block(QStringLiteral("xxx")).layout()->lineAt(0).textLength() > 8);
         QCOMPARE(copied(QStringLiteral("xxx"), QStringLiteral("xxx")), indented);
 
@@ -6746,7 +6752,12 @@ private slots:
             }
             return most;
         };
-        const auto block = [doc](const QString& word) { return doc->find(word, 0, QTextDocument::FindCaseSensitively).block(); };
+        // (Laid out first: Qt lays out lazily, and a block not yet laid out has no lines.)
+        const auto block = [doc](const QString& word) {
+            const QTextBlock b = doc->find(word, 0, QTextDocument::FindCaseSensitively).block();
+            doc->documentLayout()->blockBoundingRect(b);
+            return b;
+        };
         const auto chooseBlock = [view, doc, &block](const QString& word) {
             const QTextBlock b = block(word);
             QTextCursor c(doc);
@@ -7006,11 +7017,20 @@ private slots:
             return nullptr;
         };
         const auto firstBlock = [doc, &bubble] { return doc->findBlock(bubble()->firstPosition()); };
+        // A block's lines as they are now. Qt lays a document out lazily, after a
+        // change and in steps when busy: a block not yet laid out again has no
+        // lines, and a QTextLine taken before reads one that is gone (a width of
+        // 631 px, or a crash). blockBoundingRect() lays it out first.
+        const auto laidOut = [doc](const QTextBlock& b) {
+            doc->documentLayout()->blockBoundingRect(b);
+            return b.layout();
+        };
         QVERIFY(bubble() != nullptr);
         // Not shown: none drawn.
         QVERIFY(panel.promptDates().isEmpty());
-        const qreal firstWidth = firstBlock().layout()->lineAt(0).naturalTextWidth();
-        const int firstRows = firstBlock().layout()->lineCount();
+        QVERIFY(laidOut(firstBlock())->lineCount() > 0);
+        const qreal firstWidth = laidOut(firstBlock())->lineAt(0).naturalTextWidth();
+        const int firstRows = laidOut(firstBlock())->lineCount();
         const QImage without = view->viewport()->grab().toImage();
 
         // Shown, from the menu: the date, on the caption's line above the bubble,
@@ -7033,14 +7053,15 @@ private slots:
         const QTextBlock caption = firstBlock().previous();
         QVERIFY(caption.text().startsWith(QStringLiteral("You")));
         const QRectF captionBox = doc->documentLayout()->blockBoundingRect(caption).translated(0, -scrolled);
-        const QTextLine captionLine = caption.layout()->lineAt(0);
+        QVERIFY(laidOut(caption)->lineCount() > 0);
+        const QTextLine captionLine = laidOut(caption)->lineAt(0);
         const qreal captionBaseline = captionBox.top() + captionLine.y() + captionLine.ascent();
         const qreal dateBaseline = at.top() + QFontMetricsF(caption.begin().fragment().charFormat().font()).ascent();
         QVERIFY2(std::abs(dateBaseline - captionBaseline) < 1.0, qPrintable(QStringLiteral("%1 %2").arg(dateBaseline).arg(captionBaseline)));
         QVERIFY(at.left() > captionBox.left() + captionLine.naturalTextWidth() + 12);   // (clear of "You  Edit")
         QCOMPARE(firstBlock().blockFormat().rightMargin(), 0.0);
-        QCOMPARE(firstBlock().layout()->lineCount(), firstRows);
-        QCOMPARE(firstBlock().layout()->lineAt(0).naturalTextWidth(), firstWidth);
+        QCOMPARE(laidOut(firstBlock())->lineCount(), firstRows);
+        QCOMPARE(laidOut(firstBlock())->lineAt(0).naturalTextWidth(), firstWidth);
         // Drawn: ink where it is, none there without it.
         const QImage with = view->viewport()->grab().toImage();
         const qreal ratio = with.devicePixelRatio();
@@ -7090,11 +7111,16 @@ private slots:
         QVERIFY(std::abs(dates.first().first.right() - doc->documentLayout()->frameBoundingRect(bubble()).right()) < 1.0);
         // Too narrow for both (the dock is never this narrow; its text is laid
         // out so here): the caption's words alone, the date not over them.
-        // (Room for the caption's words and the date, not the gap between them.)
-        const int narrow = int(2 * doc->documentMargin() + captionLine.naturalTextWidth() + at.width() + 4);
+        // Room for the caption's words and the date side by side, none for the
+        // 12 px between them, whatever the fonts: the widths as laid out now,
+        // after the resize (captionLine is of the layout before it).
+        const QTextLayout* captionNow = laidOut(firstBlock().previous());
+        QVERIFY(captionNow->lineCount() > 0);
+        const int narrow = int(std::ceil(2 * doc->documentMargin() + captionNow->lineAt(0).naturalTextWidth() + dates.first().first.width()));
+        QVERIFY2(narrow < 2 * doc->documentMargin() + 200, qPrintable(QString::number(narrow)));
         view->setLineWrapMode(QTextEdit::FixedPixelWidth);
         view->setLineWrapColumnOrWidth(narrow);
-        // (Laid out in steps when the machine is busy: waited for.)
+        QCOMPARE(doc->pageSize().width(), qreal(narrow));
         QTRY_VERIFY(panel.promptDates().isEmpty());
         view->setLineWrapMode(QTextEdit::WidgetWidth);
         QTRY_COMPARE(panel.promptDates().size(), 1);
