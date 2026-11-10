@@ -119,7 +119,12 @@ INCS    = \$(INCSEQ)
 LIBS    = \$(LIBSEQ)
 LIBSEQNEEDED = libseqneeded
 EOF
-  make -C "$src" -j "$JOBS" d z
+  # (One arithmetic after the other: d and z at once build the common
+  # library's Fortran modules twice side by side, and one gfortran's
+  # renaming of a .mod raced the other's - "Cannot rename module file
+  # mumps_ana_blk_m.mod0" on the arm runner.)
+  make -C "$src" -j "$JOBS" d
+  make -C "$src" -j "$JOBS" z
   cp "$src"/include/*.h "$prefix/include/"
   for lib in dmumps zmumps mumps_common pord mpiseq; do
     cp "$src/lib/lib$lib.a" "$prefix/lib/" 2>/dev/null || cp "$src"/*/"lib$lib.a" "$prefix/lib/"
