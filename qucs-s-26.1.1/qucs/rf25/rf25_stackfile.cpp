@@ -84,19 +84,6 @@ QString modelName(const Model& model, const QString& name)
 const char* const kColours[] = {"#c0c0c0", "#ff8000", "#00a0ff", "#ff00ff", "#00c000", "#ffff00",
                                 "#8000ff", "#ff0000", "#00ffff", "#804000", "#008080", "#808000"};
 
-/// The first dielectric above layer \a i short of another metal or the cover:
-/// what fills a metal's room, as the export to HFSS 3D Layout has it. Null:
-/// the air.
-const Layer* fillAbove(const Stack& stack, int i)
-{
-    for (int j = i + 1; j < stack.layers.size(); ++j) {
-        const Layer& above = stack.layers.at(j);
-        if (above.kind == Layer::Metal || above.kind == Layer::Cover) break;
-        if (above.kind == Layer::Dielectric) return &above;
-    }
-    return nullptr;
-}
-
 /// What a file of \a format cannot say of the stack's metals: those solved
 /// as their two faces (and how that comes back), empty where there are none.
 QString facesNote(const Stack& stack, const QString& format)
@@ -128,7 +115,18 @@ std::optional<StackFormat> stackFormatOf(const QString& path)
     const QString suffix = QFileInfo(path).suffix().toLower();
     if (suffix == QLatin1String("xml")) return StackFormat::Hfss;
     if (suffix == QLatin1String("proc")) return StackFormat::Emx;
+    if (suffix == QLatin1String("pdf")) return StackFormat::Pdf;
     return std::nullopt;
+}
+
+const Layer* fillAbove(const Stack& stack, int i)
+{
+    for (int j = i + 1; j < stack.layers.size(); ++j) {
+        const Layer& above = stack.layers.at(j);
+        if (above.kind == Layer::Metal || above.kind == Layer::Cover) break;
+        if (above.kind == Layer::Dielectric) return &above;
+    }
+    return nullptr;
 }
 
 // ============================================================ HFSS 3D Layout
@@ -1000,6 +998,10 @@ public:
 std::optional<StackRead> stackTextRead(const QByteArray& text, StackFormat format, const QString& name, QString* error)
 {
     if (format == StackFormat::Hfss) return hfssStackupRead(text, name, error);
+    if (format == StackFormat::Pdf) {
+        if (error != nullptr) *error = tr("%1 is a drawing of a stack, which cannot be read back: import the stack from its .xml or .proc.").arg(name);
+        return std::nullopt;
+    }
 
     StackRead out;
     out.format = StackFormat::Emx;
@@ -1466,7 +1468,7 @@ std::optional<StackRead> stackFileRead(const QString& path, QString* error)
     }
     const QByteArray text = file.readAll();
     std::optional<StackFormat> format = stackFormatOf(path);
-    if (!format) format = text.trimmed().startsWith('<') ? StackFormat::Hfss : StackFormat::Emx;
+    if (!format) format = text.startsWith("%PDF") ? StackFormat::Pdf : text.trimmed().startsWith('<') ? StackFormat::Hfss : StackFormat::Emx;
     return stackTextRead(text, *format, QFileInfo(path).fileName(), error);
 }
 
