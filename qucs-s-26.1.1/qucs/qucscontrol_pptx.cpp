@@ -19,6 +19,8 @@
 #include "pptx.h"
 #include "layoutdoc.h"
 #include "pptxdoc.h"
+#include "datadisplay.h"
+#include "schematic.h"
 #include "qucs.h"
 
 #include <QDir>
@@ -425,8 +427,10 @@ QJsonObject QucsControl::readDrawings(const QJsonObject& args)
         QString error;
         QucsDoc* doc = document(QJsonObject{{QStringLiteral("path"), path}}, &error);
         if (doc == nullptr) return errorResult(error.isEmpty() ? tr("%1 is not open.").arg(path) : error);
-        if (qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc)) == nullptr && dynamic_cast<PptxDoc*>(doc) == nullptr)
-            return errorResult(tr("%1 is not a layout or a presentation: the pen draws on those.").arg(titleOf(doc)));
+        auto* page = dynamic_cast<Schematic*>(doc);
+        if (qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc)) == nullptr && dynamic_cast<PptxDoc*>(doc) == nullptr
+            && (page == nullptr || !page->isDataDisplayPage()))
+            return errorResult(tr("%1 is not a layout, a presentation or a data display: the pen draws on those.").arg(titleOf(doc)));
         docs << doc;
     } else {
         docs = a_app->allDocuments();
@@ -436,12 +440,18 @@ QJsonObject QucsControl::readDrawings(const QJsonObject& args)
     for (QucsDoc* doc : std::as_const(docs)) {
         auto* layout = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc));
         auto* deck = dynamic_cast<PptxDoc*>(doc);
-        if (layout == nullptr && deck == nullptr) continue;
-        const QJsonArray strokes = layout != nullptr ? layout->view()->readDrawing(points) : deck->readDrawing(points);
+        auto* page = dynamic_cast<Schematic*>(doc);
+        if (page != nullptr && !page->isDataDisplayPage()) page = nullptr;
+        if (layout == nullptr && deck == nullptr && page == nullptr) continue;
+        const QJsonArray strokes = layout != nullptr ? layout->view()->readDrawing(points)
+                                 : deck != nullptr   ? deck->readDrawing(points)
+                                                     : qucs_s::datadisplay::readDrawing(page, points);
         if (strokes.isEmpty() && path.isEmpty()) continue;
         QJsonObject one{{QStringLiteral("document"), titleOf(doc)},
                         {QStringLiteral("file"), QDir::toNativeSeparators(doc->getDocName())},
-                        {QStringLiteral("measures"), layout != nullptr ? tr("µm of the cell, y up") : tr("points from the slide's top left")}};
+                        {QStringLiteral("measures"), layout != nullptr ? tr("µm of the cell, y up")
+                                                     : deck != nullptr ? tr("points from the slide's top left")
+                                                                       : tr("the page's coordinates, as get_schematic gives them (y down)")}};
         QJsonArray kept;
         for (int i = std::max(0, int(strokes.size()) - most); i < strokes.size(); ++i) kept.append(strokes.at(i));
         one.insert(QStringLiteral("strokes"), kept);
@@ -449,7 +459,7 @@ QJsonObject QucsControl::readDrawings(const QJsonObject& args)
         documents.append(one);
     }
     if (documents.isEmpty())
-        return jsonResult(QJsonObject{{QStringLiteral("drawings"), tr("Nothing is drawn on an open layout or presentation: the pen is in each one's toolbar.")}});
+        return jsonResult(QJsonObject{{QStringLiteral("drawings"), tr("Nothing is drawn on an open layout, presentation or data display: the pen is in each one's toolbar.")}});
     return jsonResult(QJsonObject{{QStringLiteral("documents"), documents}});
 }
 

@@ -34,6 +34,7 @@
 #include "erc.h"
 #include "oppoint.h"
 #include "librarysettings.h"
+#include "markup.h"
 
 #include "qt3_compat/q3scrollview.h"
 #include <QVector>
@@ -58,6 +59,9 @@ class QDragEnterEvent;
 class QPainter;
 
 class Element;
+namespace qucs_s::datadisplay {
+class Bar;
+}
 class Component;
 class Conductor;
 class Diagram;
@@ -445,6 +449,33 @@ public:
 
   std::list<Painting*> a_SymbolPaints;  // symbol definition for subcircuit
 
+  // ---- A data display's page (a .dpl): its toolbar and the pen ----
+  /// Whether this is a data display's page: a .dpl file. Its toolbar is
+  /// shown above its canvas, with the pen (datadisplay.h).
+  bool isDataDisplayPage() const;
+  /// The toolbar over a data display's page (null on any other document).
+  qucs_s::datadisplay::Bar* dataDisplayBar() const { return a_dataDisplayBar; }
+  /// The pen taken up: a drag on the page draws on it with the pen in hand
+  /// (markup.h), or erases with the eraser, instead of selecting; Escape
+  /// puts it down, Undo takes back the last stroke.
+  bool penActive() const { return a_pen; }
+  void setPenActive(bool active);
+  /// What is drawn on the page: strokes in its coordinates (y down), all
+  /// on one part (penPart()); kept when the file is read again, not saved
+  /// in it, not printed or exported.
+  const qucs_s::markup::Drawing& penDrawing() const { return a_penDrawing; }
+  static QString penPart() { return QStringLiteral("page"); }
+  /// A stroke added as though it was drawn (Claude's tools, the tests).
+  void addStroke(const qucs_s::markup::Stroke& stroke);
+  /// The last change to the drawing undone; whether there was one.
+  bool undoDrawing();
+  /// Every stroke taken away; whether there were any.
+  bool clearDrawing();
+  /// The strokes numbered \a ids marked addressed (or not); how many changed.
+  int setStrokesAddressed(const QList<int>& ids, bool addressed = true);
+  /// The stroke being drawn, the pen held down (for the tests).
+  bool inking() const { return a_inking; }
+
   /** Whether \a e is part of what is on screen now - the components,
       wires, nodes, diagrams (with their graphs and markers), paintings
       and labels of the schematic, or of the symbol in symbol mode. For
@@ -544,6 +575,10 @@ signals:
       Every Element* obtained from this schematic before the signal is
       invalid; holders must drop or re-resolve their pointers. */
   void signalDocumentRebuilt(Schematic *);
+  /// The pen taken up or put down (setPenActive()).
+  void penActiveChanged(bool active);
+  /// A stroke drawn, erased, undone, cleared or marked addressed.
+  void drawingChanged();
 
 protected:
   // overloaded function to get actions of user
@@ -560,6 +595,10 @@ protected:
   void contentsNativeGestureZoomEvent( QNativeGestureEvent* ) override;
   /// The canvas's tooltips (operatingPointTooltip()).
   bool eventFilter(QObject* watched, QEvent* event) override;
+  /// A data display's toolbar laid out above the canvas, the vertical
+  /// scroll bar below it.
+  void resizeEvent(QResizeEvent* event) override;
+  void setVBarGeometry(QScrollBar& vbar, int x, int y, int w, int h) override;
 
 protected slots:
   void slotScrollUp();
@@ -568,6 +607,24 @@ protected slots:
   void slotScrollRight();
 
 private:
+  /// The toolbar made or taken away as the file's name says (a .dpl).
+  void updateDataDisplayBar();
+  /// A point of the canvas (contents coordinates) on the page, unrounded.
+  QPointF contentsToPage(QPointF contents) const;
+  void penPress(QMouseEvent* event);
+  void penMove(QMouseEvent* event);
+  void penRelease();
+  void eraseAt(QPointF page);
+  /// Undo is on while there is a stroke to take back, the pen up.
+  void updateUndoState();
+
+  qucs_s::datadisplay::Bar* a_dataDisplayBar = nullptr;
+  bool a_pen = false;
+  qucs_s::markup::Drawing a_penDrawing;
+  qucs_s::markup::Stroke a_stroke;                 // the one being drawn
+  bool a_inking = false, a_erasing = false, a_erased = false;
+  QList<qucs_s::markup::Stroke> a_beforeErase;    // the strokes as an eraser's drag found them
+
   // Describes the area occupied by all elements of schematic, i.e. it is
   // the union of bounding rectangles of all elements.
   // This rectangle exists in the same coordinate system as View*-rectangle
