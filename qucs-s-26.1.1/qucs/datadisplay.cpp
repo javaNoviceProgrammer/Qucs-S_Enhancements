@@ -1,6 +1,7 @@
 /*
- * datadisplay.cpp - a data display's page (.dpl): its toolbar, and what
- *                   the pen drew on it, read against its diagrams
+ * datadisplay.cpp - a schematic's or data display's page: its toolbar,
+ *                   and what the pen drew on it, read against its
+ *                   components, wires, labels, paintings and diagrams
  *
  * This file is part of Qucs-S.
  *
@@ -15,8 +16,14 @@
 #include "diagrams/diagram.h"
 #include "diagrams/graph.h"
 #include "diagrams/stackeddiagram.h"
+#include "components/component.h"
 #include "markup.h"
+#include "node.h"
+#include "paintings/painting.h"
+#include "qucscontrol_p.h"
 #include "schematic.h"
+#include "wire.h"
+#include "wirelabel.h"
 #include "statusbar.h"
 
 #include <QApplication>
@@ -123,13 +130,15 @@ Bar::Bar(Schematic* page) : QWidget(page), a_page(page)
     a_zoomIn = toolButton(this, Glyph::Plus, tr("Zoom in"), "dplZoomIn");
     a_fit = toolButton(this, Glyph::Fit, tr("Show all of the page"), "dplFit");
     a_reload = toolButton(this, Glyph::Reload, tr("Read the page's simulation data again (its datasets changed on disk)"), "dplReload");
+    a_reloadGap = new QWidget(this);
+    a_reloadGap->setFixedWidth(12);
     a_pen = new markup::PenButton(tr("Page"), this);
     a_pen->setObjectName(QStringLiteral("dplPen"));
     a_pen->setProperty("dplTool", true);
     bar->addWidget(a_zoomOut);
     bar->addWidget(a_zoomIn);
     bar->addWidget(a_fit);
-    bar->addSpacing(12);
+    bar->addWidget(a_reloadGap);
     bar->addWidget(a_reload);
     bar->addStretch(1);
     bar->addWidget(a_pen);
@@ -165,18 +174,27 @@ Bar::Bar(Schematic* page) : QWidget(page), a_page(page)
         return QColorDialog::getColor(now, this, tr("The Pen's Colour"));
     });
     connect(a_pen, &markup::PenButton::undoRequested, this, [this] { a_page->undoDrawing(); });
+    // (The schematic's strokes and its symbol's: the part shown, and both.)
     connect(a_pen, &markup::PenButton::clearPartRequested, this, [this] { a_page->clearDrawing(); });
-    connect(a_pen, &markup::PenButton::clearAllRequested, this, [this] { a_page->clearDrawing(); });
+    connect(a_pen, &markup::PenButton::clearAllRequested, this, [this] { a_page->clearDrawing(true); });
     connect(a_page, &Schematic::drawingChanged, this, &Bar::updatePen);
     updatePen();
+    updateKind();
     restyle();
 }
 
 void Bar::updatePen()
 {
     const markup::Drawing& d = a_page->penDrawing();
-    const int n = int(d.strokes().size());
-    a_pen->setDrawingState(d.canUndo(), n, n);
+    a_pen->setDrawingState(d.canUndo(), d.count(a_page->penPart()), int(d.strokes().size()));
+}
+
+void Bar::updateKind()
+{
+    // Its datasets read again: a data display's.
+    const bool data = a_page->isDataDisplayPage();
+    a_reload->setVisible(data);
+    a_reloadGap->setVisible(data);
 }
 
 void Bar::restyle()
@@ -424,41 +442,118 @@ QJsonObject inDiagram(const markup::Stroke& s, markup::Gesture g, QPointF tip, D
 
 } // namespace
 
+namespace {
+
+/// A thin box round a wire, so that a stroke on it or pointing at it finds
+/// it, in the page's coordinates.
+QPolygonF wireOutline(const Wire* w)
+{
+    constexpr int half = 3;
+    return QPolygonF(QRectF(QPointF(std::min(w->x1, w->x2) - half, std::min(w->y1, w->y2) - half),
+                            QPointF(std::max(w->x1, w->x2) + half, std::max(w->y1, w->y2) + half)));
+}
+
+/// Each component's ref, as get_schematic gives it: its name; a type's
+/// unnamed parts, when there are several, GND#1, GND#2...; a name given
+/// twice, R1 then R1#2.
+QHash<const Component*, QString> refsOf(const Schematic* page)
+{
+    QHash<QString, QList<const Component*>> unnamed, named;
+    for (const Component* c : page->a_DocComps) {
+        if (c->Name.isEmpty() || c->Name == QLatin1String("*")) unnamed[c->Model] << c;
+        else named[c->Name] << c;
+    }
+    QHash<const Component*, QString> refs;
+    for (auto it = unnamed.cbegin(); it != unnamed.cend(); ++it)
+        for (int k = 0; k < it.value().size(); ++k)
+            refs.insert(it.value().at(k), it.value().size() > 1 ? QStringLiteral("%1#%2").arg(it.key()).arg(k + 1) : it.key());
+    for (auto it = named.cbegin(); it != named.cend(); ++it)
+        for (int k = 0; k < it.value().size(); ++k)
+            refs.insert(it.value().at(k), k == 0 ? it.key() : QStringLiteral("%1#%2").arg(it.key()).arg(k + 1));
+    return refs;
+}
+
+/// A painting as a target: its number, its type, a text's words.
+markup::Target paintingTarget(Painting* p, int n)
+{
+    const QJsonObject o = qucs_s::control::paintingJson(p, n);
+    QString text = QStringLiteral("%1 (%2)").arg(n).arg(o.value(QStringLiteral("type")).toString());
+    if (const QString words = o.value(QStringLiteral("text")).toString().simplified(); !words.isEmpty())
+        text += QStringLiteral(": ") + words;
+    return markup::Target{QStringLiteral("painting"), text, QPolygonF(QRectF(p->boundingRect())), {}};
+}
+
+} // namespace
+
 QJsonArray readDrawing(const Schematic* page, bool points)
 {
-    const QList<markup::Stroke> strokes = page->penDrawing().on(Schematic::penPart());
-    if (strokes.isEmpty()) return {};
-    // The diagrams, by their numbers (as get_schematic gives them).
-    QList<markup::Target> targets;
-    QList<Diagram*> diagrams;
-    for (Diagram* d : page->a_DocDiags) {
-        diagrams << d;
-        const int n = int(diagrams.size());
-        const QRectF w = wholeOf(d);
-        targets << markup::Target{QStringLiteral("diagram"),
-                                  d->title.isEmpty() ? QString::number(n) : QStringLiteral("%1: %2").arg(n).arg(d->title),
-                                  QPolygonF(w),
-                                  {}};
-    }
-    QJsonArray read = markup::readPage(strokes, targets, points);
-    QList<QPointF> tips;
-    QList<int> heads;
-    const QList<markup::Gesture> gestures = markup::gesturesOf(strokes, &tips, &heads);
     QJsonArray out;
-    for (int i = 0; i < read.size(); ++i) {
-        QJsonObject r = read.at(i).toObject();
-        const int id = r.value(QStringLiteral("stroke")).toInt();
-        int k = -1;
-        for (int j = 0; j < strokes.size(); ++j)
-            if (strokes.at(j).id == id) k = j;
-        r.insert(QStringLiteral("page"), Schematic::penPart());
-        if (k >= 0 && gestures.at(k) != markup::Gesture::Arrowhead) {
-            QJsonArray in;
-            for (int n = 0; n < diagrams.size(); ++n)
-                if (const QJsonObject o = inDiagram(strokes.at(k), gestures.at(k), tips.at(k), diagrams.at(n), n + 1); !o.isEmpty()) in.append(o);
-            if (!in.isEmpty()) r.insert(QStringLiteral("in diagrams"), in);
+    for (const QString& part : {QStringLiteral("page"), QStringLiteral("symbol")}) {
+        const QList<markup::Stroke> strokes = page->penDrawing().on(part);
+        if (strokes.isEmpty()) continue;
+        // What is on the part, the uppermost last: the symbol's paintings;
+        // or the diagrams (by their numbers, as get_schematic gives them),
+        // the paintings, the wires, the components and the net labels.
+        QList<markup::Target> targets;
+        QList<Diagram*> diagrams;
+        if (part == QLatin1String("symbol")) {
+            int n = 0;
+            for (Painting* p : page->a_SymbolPaints) targets << paintingTarget(p, ++n);
+        } else {
+            for (Diagram* d : page->a_DocDiags) {
+                diagrams << d;
+                const int n = int(diagrams.size());
+                targets << markup::Target{QStringLiteral("diagram"),
+                                          d->title.isEmpty() ? QString::number(n) : QStringLiteral("%1: %2").arg(n).arg(d->title),
+                                          QPolygonF(wholeOf(d)),
+                                          {}};
+            }
+            int n = 0;
+            for (Painting* p : page->a_DocPaints) targets << paintingTarget(p, ++n);
+            for (const Wire* w : page->a_DocWires)
+                targets << markup::Target{QStringLiteral("wire"),
+                                          QStringLiteral("[%1, %2, %3, %4]").arg(w->x1).arg(w->y1).arg(w->x2).arg(w->y2),
+                                          wireOutline(w),
+                                          {}};
+            const QHash<const Component*, QString> refs = refsOf(page);
+            for (const Component* c : page->a_DocComps)
+                targets << markup::Target{QStringLiteral("component"), refs.value(c), QPolygonF(QRectF(c->boundingRect())), {}};
+            for (const Wire* w : page->a_DocWires)
+                if (w->hasLabel())
+                    targets << markup::Target{QStringLiteral("label"), w->label()->Name, QPolygonF(QRectF(w->label()->boundingRect())), {}};
+            for (const Node* nd : page->a_DocNodes)
+                if (nd->hasLabel())
+                    targets << markup::Target{QStringLiteral("label"), nd->label()->Name, QPolygonF(QRectF(nd->label()->boundingRect())), {}};
         }
-        out.append(r);
+        const QJsonArray read = markup::readPage(strokes, targets, points);
+        QList<QPointF> tips;
+        QList<int> heads;
+        const QList<markup::Gesture> gestures = markup::gesturesOf(strokes, &tips, &heads);
+        for (int i = 0; i < read.size(); ++i) {
+            QJsonObject r = read.at(i).toObject();
+            const int id = r.value(QStringLiteral("stroke")).toInt();
+            int k = -1;
+            for (int j = 0; j < strokes.size(); ++j)
+                if (strokes.at(j).id == id) k = j;
+            r.insert(QStringLiteral("page"), part);
+            // A ring round a part of the circuit: the parts, labels and
+            // diagrams it takes in - not each wire between them.
+            if (r.contains(QStringLiteral("around"))) {
+                QJsonArray kept;
+                for (const QJsonValue& v : r.value(QStringLiteral("around")).toArray())
+                    if (!v.toObject().contains(QStringLiteral("wire"))) kept.append(v);
+                if (kept.isEmpty()) r.remove(QStringLiteral("around"));
+                else r.insert(QStringLiteral("around"), kept);
+            }
+            if (k >= 0 && gestures.at(k) != markup::Gesture::Arrowhead) {
+                QJsonArray in;
+                for (int n = 0; n < diagrams.size(); ++n)
+                    if (const QJsonObject o = inDiagram(strokes.at(k), gestures.at(k), tips.at(k), diagrams.at(n), n + 1); !o.isEmpty())
+                        in.append(o);
+                if (!in.isEmpty()) r.insert(QStringLiteral("in diagrams"), in);
+            }
+            out.append(r);
+        }
     }
     return out;
 }
@@ -524,7 +619,9 @@ QString sentencesOf(const QJsonArray& readings, int most)
     if (from > 0) lines << QStringLiteral("(%1 earlier stroke(s) left out: read_drawings has them all)").arg(from);
     for (int i = from; i < open.size(); ++i) {
         const QJsonObject r = open.at(i).toObject();
-        QString line = markup::sentenceOf(r, QStringLiteral("The page"), QStringLiteral("in the page's coordinates"));
+        const bool symbol = r.value(QStringLiteral("page")).toString() == QLatin1String("symbol");
+        QString line = markup::sentenceOf(r, symbol ? QStringLiteral("The symbol") : QStringLiteral("The page"),
+                                          symbol ? QStringLiteral("in the symbol's coordinates") : QStringLiteral("in the page's coordinates"));
         for (const QJsonValue& v : r.value(QStringLiteral("in diagrams")).toArray()) line += QStringLiteral("; ") + diagramSaid(v.toObject());
         lines << line;
     }
