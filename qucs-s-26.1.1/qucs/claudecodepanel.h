@@ -28,6 +28,7 @@
 #include <memory>
 
 #include <functional>
+#include <optional>
 #include <utility>
 
 class ClaudeGitBar;
@@ -203,6 +204,26 @@ public:
     static void setPromptDatesShown(bool on);
     /// The dates drawn, each where it is in the transcript's viewport: for the tests.
     QList<QPair<QRectF, QString>> promptDates() const;
+    /// What is done about a long conversation's prompt cache (⋯ > Conversation
+    /// Cache), in every conversation. Its cache lasts an hour after a turn;
+    /// after that a prompt has the whole conversation read again, a long one
+    /// at some 40 times a warm turn's price. Warn: a prompt to such a one is
+    /// held, and Compact First or Send Anyway offered. CompactIdle (the
+    /// default): a long one is compacted 50 minutes after its last turn, its
+    /// cache still warm. CompactEarly: Claude Code compacts near 200k tokens.
+    enum class CacheChoice { Warn, CompactIdle, CompactEarly };
+    static CacheChoice cacheChoice();
+    static void setCacheChoice(CacheChoice choice);
+    /// The conversation's context at its latest request, in tokens (0 not
+    /// known, or compacted since), and when its last turn ended (ms since the
+    /// epoch, 0 not known): kept with it. For the tests too.
+    qint64 contextTokens() const { return a_contextTokens; }
+    qint64 lastTurnAt() const { return a_lastTurnAt; }
+    /// The note that holds a prompt to a long conversation gone cold (Warn).
+    QFrame* cacheNote() const { return a_cacheNote; }
+    /// When this conversation is to be compacted while idle, in ms from now;
+    /// -1 not. For the tests.
+    qint64 idleCompactIn() const;
     /// The whole conversation - a header (what it is about, when, the
     /// folder, the model, the session), then every prompt, reply, tool
     /// (its input and what it gave, as when it is opened, unless
@@ -350,6 +371,26 @@ protected:
     void showEvent(QShowEvent* event) override;
 
 private:
+    // The prompt cache (cacheChoice()).
+    void applyCacheChoice();
+    void armIdleCompact();
+    void compactWhileWarm();
+    bool holdsColdSend(const QString& text, bool withDocument, const QStringList& images);
+    void releaseHeldSend(bool compactFirst);
+    qint64 a_contextTokens = 0;
+    qint64 a_lastTurnAt = 0;
+    QString a_lastModel;   // the model of its last turn, for the price
+    QTimer* a_idleCompact = nullptr;
+    QFrame* a_cacheNote = nullptr;
+    QLabel* a_cacheNoteText = nullptr;
+    bool a_coldSendAllowed = false;
+    // A prompt held, and one to send once the conversation is compacted.
+    struct HeldSend {
+        QString text;
+        bool withDocument = true;
+        QStringList images;
+    };
+    std::optional<HeldSend> a_held, a_afterCompact;
     struct Entry {
         enum Kind { You, Claude, Tool, Note, Problem, Summary } kind;
         QString text;          // the prompt, the reply (Markdown), the note
