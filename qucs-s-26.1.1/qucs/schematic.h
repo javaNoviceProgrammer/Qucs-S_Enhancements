@@ -449,30 +449,35 @@ public:
 
   std::list<Painting*> a_SymbolPaints;  // symbol definition for subcircuit
 
-  // ---- A data display's page (a .dpl): its toolbar and the pen ----
-  /// Whether this is a data display's page: a .dpl file. Its toolbar is
-  /// shown above its canvas, with the pen (datadisplay.h).
+  // ---- The page's toolbar and the pen (a schematic's, a data display's) ----
+  /// Whether this is a data display's page: a .dpl file.
   bool isDataDisplayPage() const;
-  /// The toolbar over a data display's page (null on any other document).
-  qucs_s::datadisplay::Bar* dataDisplayBar() const { return a_dataDisplayBar; }
+  /// The toolbar above the canvas (datadisplay.h): the zoom, a data
+  /// display's datasets read again, and the pen.
+  qucs_s::datadisplay::Bar* pageBar() const { return a_pageBar; }
   /// The pen taken up: a drag on the page draws on it with the pen in hand
-  /// (markup.h), or erases with the eraser, instead of selecting; Escape
-  /// puts it down, Undo takes back the last stroke.
+  /// (markup.h), or erases with the eraser, instead of selecting or what
+  /// the editing mode does; Escape puts it down, Undo takes back the last
+  /// stroke.
   bool penActive() const { return a_pen; }
   void setPenActive(bool active);
-  /// What is drawn on the page: strokes in its coordinates (y down), all
-  /// on one part (penPart()); kept when the file is read again, not saved
-  /// in it, not printed or exported.
+  /// What is drawn on the page: strokes in its coordinates (y down), on
+  /// the part shown (penPart()); kept when the file is read again, not
+  /// saved in it, not printed or exported.
   const qucs_s::markup::Drawing& penDrawing() const { return a_penDrawing; }
-  static QString penPart() { return QStringLiteral("page"); }
+  /// The part the pen draws on and the page shows: "page", or "symbol"
+  /// while the symbol is edited - each its own strokes.
+  QString penPart() const { return a_symbolMode ? QStringLiteral("symbol") : QStringLiteral("page"); }
   /// A stroke added as though it was drawn (Claude's tools, the tests).
   void addStroke(const qucs_s::markup::Stroke& stroke);
   /// The last change to the drawing undone; whether there was one.
   bool undoDrawing();
-  /// Every stroke taken away; whether there were any.
-  bool clearDrawing();
-  /// The strokes numbered \a ids marked addressed (or not); how many changed.
-  int setStrokesAddressed(const QList<int>& ids, bool addressed = true);
+  /// Every stroke on the part shown taken away (\a everyPart: on the
+  /// symbol's too); whether there were any.
+  bool clearDrawing(bool everyPart = false);
+  /// The strokes numbered \a ids on \a part (empty: the part shown) marked
+  /// addressed (or not); how many changed.
+  int setStrokesAddressed(const QList<int>& ids, bool addressed = true, const QString& part = QString());
   /// The stroke being drawn, the pen held down (for the tests).
   bool inking() const { return a_inking; }
 
@@ -595,8 +600,8 @@ protected:
   void contentsNativeGestureZoomEvent( QNativeGestureEvent* ) override;
   /// The canvas's tooltips (operatingPointTooltip()).
   bool eventFilter(QObject* watched, QEvent* event) override;
-  /// A data display's toolbar laid out above the canvas, the vertical
-  /// scroll bar below it.
+  /// The toolbar laid out above the canvas, the vertical scroll bar below
+  /// it.
   void resizeEvent(QResizeEvent* event) override;
   void setVBarGeometry(QScrollBar& vbar, int x, int y, int w, int h) override;
 
@@ -607,8 +612,6 @@ protected slots:
   void slotScrollRight();
 
 private:
-  /// The toolbar made or taken away as the file's name says (a .dpl).
-  void updateDataDisplayBar();
   /// A point of the canvas (contents coordinates) on the page, unrounded.
   QPointF contentsToPage(QPointF contents) const;
   void penPress(QMouseEvent* event);
@@ -618,7 +621,7 @@ private:
   /// Undo is on while there is a stroke to take back, the pen up.
   void updateUndoState();
 
-  qucs_s::datadisplay::Bar* a_dataDisplayBar = nullptr;
+  qucs_s::datadisplay::Bar* a_pageBar = nullptr;
   bool a_pen = false;
   qucs_s::markup::Drawing a_penDrawing;
   qucs_s::markup::Stroke a_stroke;                 // the one being drawn

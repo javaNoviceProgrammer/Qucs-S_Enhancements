@@ -1,7 +1,7 @@
 /*
- * qucscontrol_datadisplay.cpp - show_data_display: a data display's page
- *                               (.dpl) as its tab and toolbar show it, and
- *                               the user's pen on it
+ * qucscontrol_showschematic.cpp - show_schematic: a schematic's or data
+ *                                 display's page as its tab and toolbar
+ *                                 show it, and the user's pen on it
  *
  * This file is part of Qucs-S.
  *
@@ -25,15 +25,11 @@
 
 using namespace qucs_s::control;
 
-QJsonObject QucsControl::showDataDisplay(const QJsonObject& args)
+QJsonObject QucsControl::showSchematic(const QJsonObject& args)
 {
     QString error;
     Schematic* page = schematic(args, &error, false);
     if (page == nullptr) return errorResult(error);
-    if (!page->isDataDisplayPage())
-        return errorResult(tr("%1 is not a data display's page (.dpl): the pen and its toolbar are a data display's. A schematic's "
-                              "data display is its .dpl (open_document opens it, new_document's data_display makes one).")
-                               .arg(titleOf(page)));
 
     // Every argument checked before anything is done.
     const QJsonValue pen = args.value(QLatin1String("pen"));
@@ -42,6 +38,10 @@ QJsonObject QucsControl::showDataDisplay(const QJsonObject& args)
     const QString drawings = args.value(QLatin1String("drawings")).toString().trimmed().toLower();
     if (args.contains(QLatin1String("drawings")) && drawings != QLatin1String("clear"))
         return errorResult(tr("'drawings' is clear: what the pen drew on the page taken away (the pen's Undo gives it back)."));
+    const QJsonValue symbol = args.value(QLatin1String("symbol"));
+    if (args.contains(QLatin1String("symbol")) && !symbol.isBool())
+        return errorResult(tr("'symbol' is true: the strokes 'addressed' numbers are the symbol's (read_drawings' page: symbol)."));
+    const QString part = symbol.toBool() ? QStringLiteral("symbol") : QStringLiteral("page");
     const QJsonValue addressed = args.value(QLatin1String("addressed"));
     const bool addressedNone = addressed.isString() && addressed.toString().trimmed().compare(QLatin1String("none"), Qt::CaseInsensitive) == 0;
     QList<int> addressedIds;
@@ -57,20 +57,29 @@ QJsonObject QucsControl::showDataDisplay(const QJsonObject& args)
     }
 
     a_app->showDocument(QucsApp::documentWidget(page));
-    QJsonObject o{{QStringLiteral("document"), titleOf(page)}};
+    const bool data = page->isDataDisplayPage();
+    QJsonObject o{{QStringLiteral("document"), titleOf(page)},
+                  {QStringLiteral("page"), data                     ? tr("a data display")
+                                           : page->getSymbolMode() ? tr("a schematic, its symbol in the editor (what the pen draws now is the symbol's)")
+                                                                   : tr("a schematic")}};
     QStringList done;
     if (drawings == QLatin1String("clear"))
-        done << (page->clearDrawing() ? tr("what the pen drew taken away") : tr("nothing was drawn to take away"));
+        done << (page->clearDrawing(true) ? tr("what the pen drew taken away") : tr("nothing was drawn to take away"));
     if (addressedNone) {
-        QList<int> all;
-        for (const qucs_s::markup::Stroke& s : page->penDrawing().strokes()) all << s.id;
-        done << tr("%n stroke(s) no longer marked addressed", "", page->setStrokesAddressed(all, false));
+        int changed = 0;
+        for (const QString& on : page->penDrawing().parts()) {
+            QList<int> all;
+            for (const qucs_s::markup::Stroke& s : page->penDrawing().on(on)) all << s.id;
+            changed += page->setStrokesAddressed(all, false, on);
+        }
+        done << tr("%n stroke(s) no longer marked addressed", "", changed);
     } else if (!addressedIds.isEmpty()) {
         QStringList missing;
         for (const int id : std::as_const(addressedIds))
-            if (page->penDrawing().find(Schematic::penPart(), id) == nullptr) missing << QString::number(id);
-        done << tr("%n stroke(s) marked addressed", "", page->setStrokesAddressed(addressedIds, true));
-        if (!missing.isEmpty()) o.insert(QStringLiteral("not drawn"), tr("no stroke numbered %1 on the page").arg(missing.join(QStringLiteral(", "))));
+            if (page->penDrawing().find(part, id) == nullptr) missing << QString::number(id);
+        done << tr("%n stroke(s) marked addressed", "", page->setStrokesAddressed(addressedIds, true, part));
+        if (!missing.isEmpty())
+            o.insert(QStringLiteral("not drawn"), tr("no stroke numbered %1 on the %2").arg(missing.join(QStringLiteral(", ")), symbol.toBool() ? tr("symbol") : tr("page")));
     }
     if (pen.isBool()) {
         page->setPenActive(pen.toBool());
@@ -79,7 +88,12 @@ QJsonObject QucsControl::showDataDisplay(const QJsonObject& args)
     if (!done.isEmpty()) o.insert(QStringLiteral("done"), done.join(QStringLiteral("; ")));
 
     // What the page shows: its diagrams and their traces, by the numbers
-    // the other tools take.
+    // the other tools take; a schematic's parts counted (get_schematic
+    // lists them).
+    if (!data) {
+        o.insert(QStringLiteral("components"), int(page->a_DocComps.size()));
+        o.insert(QStringLiteral("wires"), int(page->a_DocWires.size()));
+    }
     QJsonArray diagrams;
     int n = 0;
     for (const Diagram* d : page->a_DocDiags) {
@@ -90,11 +104,11 @@ QJsonObject QucsControl::showDataDisplay(const QJsonObject& args)
         one.insert(QStringLiteral("traces"), traces);
         diagrams.append(one);
     }
-    o.insert(QStringLiteral("diagrams"), diagrams);
+    if (data || !diagrams.isEmpty()) o.insert(QStringLiteral("diagrams"), diagrams);
     o.insert(QStringLiteral("pen"), page->penActive() ? tr("taken up: a drag on the page draws on it (Escape puts it down)")
                                                       : tr("put down: its toolbar's pen takes it up"));
-    // What the user drew, read stroke by stroke - what each is, what of the
-    // diagrams it marks, its box in the page's coordinates - the latest 40.
+    // What the user drew, read stroke by stroke - what each is, what it
+    // marks, its box in the page's coordinates - the latest 40.
     if (!page->penDrawing().isEmpty()) insertDrawings(o, qucs_s::datadisplay::readDrawing(page, false));
     else o.insert(QStringLiteral("drawings"), tr("nothing is drawn on the page"));
     return jsonResult(o);

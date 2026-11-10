@@ -130,6 +130,9 @@ bool QucsApp::performToggleAction(bool on, QAction *Action,
     slotEscape();
     return false;
   }
+  // A tool picked to edit with (a wire, a part, a painting...) puts the
+  // page's pen down: its drags are the tool's again.
+  if (Action != select && Doc->penActive()) Doc->setPenActive(false);
 
   do {
     if (Function)
@@ -511,7 +514,7 @@ void QucsApp::slotZoomIn() {
 }
 
 void QucsApp::slotEscape() {
-  // A data display's pen put down (the stroke being drawn let go).
+  // The page's pen put down (the stroke being drawn let go).
   if (Schematic *doc = currentSchematic(); doc != nullptr && doc->penActive()) {
     doc->setPenActive(false);
     return;

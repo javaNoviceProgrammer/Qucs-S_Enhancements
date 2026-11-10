@@ -140,8 +140,12 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
         connect(this, SIGNAL(signalRedoState(bool)), App_, SLOT(slotUpdateRedo(bool)));
         connect(this, SIGNAL(signalFileChanged(bool)), App_, SLOT(slotFileChanged(bool)));
         connect(this, SIGNAL(signalDocumentRebuilt(Schematic*)), App_, SLOT(slotDocumentRebuilt(Schematic*)));
+        // The page's toolbar, with the pen, above the canvas (not on a page
+        // read without the editor: a check's, the command line's).
+        a_pageBar = new qucs_s::datadisplay::Bar(this);
+        a_pageBar->show();
+        setMargins(leftMargin(), a_pageBar->sizeHint().height(), rightMargin(), bottomMargin());
     }
-    updateDataDisplayBar();
 }
 
 Schematic::~Schematic()
@@ -529,7 +533,7 @@ void Schematic::setName(const QString &Name_)
         a_DataDisplay = base + ".dpl";
     else
         a_DataDisplay = base + ".sch";
-    updateDataDisplayBar();   // (saved as a .dpl, or as something else)
+    if (a_pageBar != nullptr) a_pageBar->updateKind();   // (saved as a .dpl, or as something else)
 }
 
 // ---------------------------------------------------
@@ -763,7 +767,7 @@ void Schematic::drawContents(QPainter *p, int clipx, int clipy, int clipw, int c
 
     drawPostPaintEvents(p);
 
-    // What the pen drew on a data display's page, over all of it, and the
+    // What the pen drew on the page (or the symbol), over all of it, and the
     // stroke being drawn: in the canvas's pixels, as broad as the pen was
     // at the zoom it was drawn at.
     if (!a_penDrawing.isEmpty() || a_inking) {
@@ -2770,6 +2774,8 @@ bool Schematic::redo()
 // ---------------------------------------------------
 void Schematic::switchPaintMode()
 {
+    // A stroke being drawn ends on the part it was begun on.
+    if (a_inking || a_erasing) penRelease();
     a_symbolMode = !a_symbolMode; // change mode
 
     std::swap(a_Scale, a_tmpScale);
@@ -2783,6 +2789,7 @@ void Schematic::switchPaintMode()
     std::swap(a_ViewX2, a_tmpViewX2);
     std::swap(a_ViewY2, a_tmpViewY2);
     std::swap(a_UsedArea, a_tmpUsedArea);
+    emit drawingChanged();   // (the pen's menu: the strokes of the part shown)
 }
 
 // *********************************************************************
@@ -3223,45 +3230,28 @@ bool Schematic::checkDplAndDatNames()
 }
 
 // ---------------------------------------------------------------------
-// A data display's page: its toolbar and the pen
+// The page's toolbar and the pen
 
 bool Schematic::isDataDisplayPage() const
 {
     return a_DocName.endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive);
 }
 
-void Schematic::updateDataDisplayBar()
-{
-    const bool wanted = isDataDisplayPage();
-    if (wanted == (a_dataDisplayBar != nullptr)) return;
-    if (wanted) {
-        a_dataDisplayBar = new qucs_s::datadisplay::Bar(this);
-        a_dataDisplayBar->show();
-        setMargins(leftMargin(), a_dataDisplayBar->sizeHint().height(), rightMargin(), bottomMargin());
-    } else {
-        setPenActive(false);
-        delete std::exchange(a_dataDisplayBar, nullptr);
-        setMargins(leftMargin(), 0, rightMargin(), bottomMargin());
-    }
-    QResizeEvent event(size(), size());
-    resizeEvent(&event);
-}
-
 void Schematic::resizeEvent(QResizeEvent* event)
 {
     Q3ScrollView::resizeEvent(event);
-    if (a_dataDisplayBar != nullptr) {
-        const int h = a_dataDisplayBar->sizeHint().height();
+    if (a_pageBar != nullptr) {
+        const int h = a_pageBar->sizeHint().height();
         if (topMargin() != h) setMargins(leftMargin(), h, rightMargin(), bottomMargin());
-        a_dataDisplayBar->setGeometry(0, 0, width(), h);
-        a_dataDisplayBar->raise();
+        a_pageBar->setGeometry(0, 0, width(), h);
+        a_pageBar->raise();
     }
 }
 
 void Schematic::setVBarGeometry(QScrollBar& vbar, int x, int y, int w, int h)
 {
     // (Its bar across the whole width: the scroll bar starts below it.)
-    const int top = a_dataDisplayBar != nullptr ? topMargin() : 0;
+    const int top = a_pageBar != nullptr ? topMargin() : 0;
     Q3ScrollView::setVBarGeometry(vbar, x, y + top, w, std::max(0, h - top));
 }
 
@@ -3273,8 +3263,6 @@ QPointF Schematic::contentsToPage(QPointF contents) const
 void Schematic::setPenActive(bool active)
 {
     if (active == a_pen) return;
-    // Taken up on a data display's page only: it is that page's.
-    if (active && !isDataDisplayPage()) return;
     a_pen = active;
     // Put down mid-stroke: the stroke let go, what an eraser took kept.
     if (!active && (a_inking || a_erasing)) {
@@ -3316,18 +3304,18 @@ bool Schematic::undoDrawing()
     return true;
 }
 
-bool Schematic::clearDrawing()
+bool Schematic::clearDrawing(bool everyPart)
 {
-    if (!a_penDrawing.clear()) return false;
+    if (!a_penDrawing.clear(everyPart ? QString() : penPart())) return false;
     viewport()->update();
     updateUndoState();
     emit drawingChanged();
     return true;
 }
 
-int Schematic::setStrokesAddressed(const QList<int>& ids, bool addressed)
+int Schematic::setStrokesAddressed(const QList<int>& ids, bool addressed, const QString& part)
 {
-    const int changed = a_penDrawing.setAddressed(penPart(), ids, addressed);
+    const int changed = a_penDrawing.setAddressed(part.isEmpty() ? penPart() : part, ids, addressed);
     if (changed > 0) {
         viewport()->update();
         updateUndoState();
