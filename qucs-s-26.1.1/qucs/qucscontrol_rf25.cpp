@@ -1315,7 +1315,7 @@ namespace {
 
 QString stackFormatName(StackFormat format)
 {
-    return format == StackFormat::Hfss ? QStringLiteral("hfss") : QStringLiteral("emx");
+    return format == StackFormat::Hfss ? QStringLiteral("hfss") : format == StackFormat::Emx ? QStringLiteral("emx") : QStringLiteral("pdf");
 }
 
 } // namespace
@@ -1333,14 +1333,14 @@ QJsonObject QucsControl::rf25StackExport(const QJsonObject& args)
         return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_stack_export writes the stack of one.")
                                .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
     QString where = args.value(QLatin1String("file")).toString().trimmed();
-    if (where.isEmpty()) return errorResult(tr("'file' says where: a .xml for an HFSS™ 3D Layout XML stackup, a .proc for an EMX process file."));
+    if (where.isEmpty()) return errorResult(tr("'file' says where: a .xml for an HFSS™ 3D Layout XML stackup, a .proc for an EMX process file, a .pdf for a drawing of its cross-section."));
     if (const QString bad = badFileName(QFileInfo(where).fileName()); !bad.isEmpty()) return errorResult(tr("'file': %1.").arg(bad));
     const QString name = model->getDocName();
     const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
     where = QDir::cleanPath(dir.absoluteFilePath(where));
     const std::optional<StackFormat> format = stackFormatOf(where);
     if (!format)
-        return errorResult(tr("'file' is a .xml (an HFSS™ 3D Layout XML stackup) or a .proc (an EMX process file), not %1.").arg(QFileInfo(where).fileName()));
+        return errorResult(tr("'file' is a .xml (an HFSS™ 3D Layout XML stackup), a .proc (an EMX process file) or a .pdf (a drawing of its cross-section), not %1.").arg(QFileInfo(where).fileName()));
     if (!QFileInfo(QFileInfo(where).absolutePath()).isDir()) return errorResult(tr("There is no folder %1.").arg(QFileInfo(where).absolutePath()));
     if (const QString no = aboutToWrite(where); !no.isEmpty()) return errorResult(no);
     StackWritten written;
@@ -1351,6 +1351,7 @@ QJsonObject QucsControl::rf25StackExport(const QJsonObject& args)
                                   {QStringLiteral("layers"), written.layers},
                                   {QStringLiteral("vias"), written.vias},
                                   {QStringLiteral("gds_layers"), written.mapped},
+                                  {QStringLiteral("pages"), written.pages},
                                   {QStringLiteral("notes"), QJsonArray::fromStringList(written.notes)}});
 }
 

@@ -47,6 +47,7 @@
 #include <QPointer>
 #include <QTimer>
 #include <QPdfWriter>
+#include <QPushButton>
 #include <QProcess>
 #include <QPainter>
 #include <QUrl>
@@ -3188,7 +3189,7 @@ private slots:
         const QStringList original = stackOf();
 
         // Out, as either file by its suffix.
-        for (const QPair<const char*, const char*>& f : {qMakePair("line_stack.xml", "hfss"), qMakePair("line_stack.proc", "emx")}) {
+        for (const QPair<const char*, const char*>& f : {qMakePair("line_stack.xml", "hfss"), qMakePair("line_stack.proc", "emx"), qMakePair("line_stack.pdf", "pdf")}) {
             const QJsonObject wrote = call("rf25_stack_export", {{"path", model}, {"file", f.first}});
             QVERIFY2(!failed(wrote), qPrintable(text(wrote)));
             const QJsonObject out = json(wrote).toObject();
@@ -3198,6 +3199,14 @@ private slots:
             QVERIFY(QFileInfo::exists(ws + "/stackfiles/" + f.first));
         }
         QCOMPARE(json(call("rf25_stack_export", {{"path", model}, {"file", "line_stack.proc"}})).toObject().value("gds_layers").toInt(), 1);
+        // The drawing: a PDF of a page, which is not read back.
+        QCOMPARE(json(call("rf25_stack_export", {{"path", model}, {"file", "line_stack.pdf"}})).toObject().value("pages").toInt(), 1);
+        {
+            QFile f(ws + "/stackfiles/line_stack.pdf");
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QVERIFY(f.read(5) == "%PDF-");
+        }
+        QVERIFY(failed(call("rf25_stack_import", {{"path", model}, {"file", "line_stack.pdf"}})));
         for (const QJsonObject& bad : {QJsonObject{{"path", model}}, QJsonObject{{"path", model}, {"file", "a.txt"}}, QJsonObject{{"path", model}, {"file", "nofolder/a.xml"}},
                                        QJsonObject{{"path", ws + "/stackfiles/strip.gds"}, {"file", "a.xml"}}})
             QVERIFY2(failed(call("rf25_stack_export", bad)), qPrintable(QString::fromUtf8(QJsonDocument(bad).toJson())));
@@ -3295,6 +3304,35 @@ private slots:
         QCOMPARE(boxes.size(), 1);
         QVERIFY2(boxes.first().contains(QLatin1String("bymenu.proc written")), qPrintable(boxes.first()));
         boxes.clear();
+        // The drawing, chosen the same way.
+        filter = tr("PDF drawings of the cross-section") + QStringLiteral(" (*.pdf)");
+        panel->exportStackFile();
+        QVERIFY2(QFileInfo::exists(ws + "/stackfiles/bymenu.pdf"), qPrintable(boxes.join(QLatin1Char('\n'))));
+        QVERIFY2(boxes.value(0).contains(QLatin1String("bymenu.pdf written: a drawing of")), qPrintable(boxes.join(QLatin1Char('\n'))));
+        boxes.clear();
+        // The Stack's form: the same as buttons - Add, Import, Export.
+        panel->selectNode(QStringLiteral("stack"));
+        QPushButton* addMetal = nullptr;
+        QPushButton* exportButton = nullptr;
+        QTRY_VERIFY((addMetal = panel->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfStackAdd_rf_metal"))) != nullptr);
+        QVERIFY(panel->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfStackAdd_rf_dielectric")) != nullptr);
+        QVERIFY(panel->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfStackAdd_rf_via")) != nullptr);
+        QVERIFY(panel->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfImportStackButton")) != nullptr);
+        const int layersBefore = int(doc->model().stack().layers.size());
+        addMetal->click();
+        QCOMPARE(int(doc->model().stack().layers.size()), layersBefore + 1);
+        QVERIFY(!failed(call("undo")));
+        QCOMPARE(int(doc->model().stack().layers.size()), layersBefore);
+        panel->selectNode(QStringLiteral("stack"));
+        QTRY_VERIFY((exportButton = panel->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfExportStackButton"))) != nullptr);
+        chosen = ws + "/stackfiles/bybutton.xml";
+        filter.clear();
+        exportButton->click();
+        QVERIFY2(QFileInfo::exists(chosen), qPrintable(boxes.join(QLatin1Char('\n'))));
+        boxes.clear();
+        // Not under another node.
+        panel->selectNode(QStringLiteral("ports"));
+        QTRY_VERIFY(panel->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfExportStackButton")) == nullptr);
         // Import: another stack in its place, and what it says.
         filter.clear();
         chosen = ws + "/stackfiles/one.proc";

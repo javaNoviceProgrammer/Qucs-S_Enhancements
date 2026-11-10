@@ -3101,18 +3101,20 @@ bool RF25Doc::exportStack(const QString& path, StackWritten* written, QString* e
 {
     const std::optional<StackFormat> format = stackFormatOf(path);
     if (!format) {
-        if (error != nullptr) *error = tr("%1 is neither an XML stackup (.xml) nor an EMX process file (.proc).").arg(QFileInfo(path).fileName());
+        if (error != nullptr) *error = tr("%1 is neither an XML stackup (.xml), an EMX process file (.proc) nor a drawing (.pdf).").arg(QFileInfo(path).fileName());
         return false;
     }
     const QString name = getDocName().isEmpty() ? QString() : QFileInfo(getDocName()).completeBaseName();
     const QString madeBy = QStringLiteral("Qucs-S %1").arg(misc::buildName());
-    const StackWritten w = *format == StackFormat::Hfss ? hfssStackupOf(a_model, name, madeBy) : emxProcessOf(a_model, name, madeBy);
+    const StackWritten w = *format == StackFormat::Hfss ? hfssStackupOf(a_model, name, madeBy)
+                           : *format == StackFormat::Emx ? emxProcessOf(a_model, name, madeBy)
+                                                         : stackPdfOf(a_model, name, madeBy);
     if (written != nullptr) *written = w;
     if (!w.ok()) {
         if (error != nullptr) *error = tr("The stack cannot be written as it stands: %1").arg(w.problems.join(QLatin1Char(' ')));
         return false;
     }
-    const QByteArray bytes = w.text.toUtf8();
+    const QByteArray bytes = w.bytes();
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
         if (error != nullptr) *error = tr("%1 could not be written: %2.").arg(QDir::toNativeSeparators(path), file.errorString());

@@ -150,3 +150,51 @@ metal of those names was here to keep them from." A metal whose namesake was her
 was a sheet too. The same test holds this, into a blank model (whose own M1 is a namesake) and into a stack with no metal at
 all; two more breaks (46 in all) are each caught.
 
+## The drawing, and the Stack's form (10 November)
+
+The request: "EMX has a nice way of converting .proc file to a pdf view of the cross-section with details of material
+permitivities and conductivities. Can you add a third export option to "Export Stack..." export options which is ".pdf"
+and then it generates the cross-section view drawing as a pdf file similar to EMX. Also, can you also add the right click
+options of "Stack" node to its panel under the tree as well."
+
+**Export Stack…** now offers a third kind, **PDF drawings of the cross-section** (`.pdf`), and so does
+`rf25_stack_export` (its result says `"format": "pdf"` and the `pages`). A PDF is never read back: Import Stack… and
+`rf25_stack_import` refuse one, by its suffix or by its first bytes, and say to import the `.xml` or `.proc` instead.
+
+What is drawn is what EMX's `--print-process` draws of a process, in its manner:
+- **The levels**, one line where each layer gives way to the next, its z in µm on the left (where there is room to say it:
+  the plane's always).
+- **Beside each layer**, on the right: its thickness and permittivity, its loss tangent where it has one, and for the
+  substrate its conductivity in S/m and its resistivity in Ω-cm. A metal's room is a layer of its own, of the dielectric
+  above it (named), as both files write it. A line a word where they fit, else one line, smaller.
+- **The metals and vias** as boxes, the vias narrower, each via from the top of its lower metal (or the plane) to the bottom
+  of its upper one. A via goes in a column with the metals it joins, in a column where one of them is already drawn if it
+  can, so a run of vias stands in one column; one that would overlap another goes in a column of its own, its metals drawn
+  again there. A metal no via joins goes in the first column with room for it.
+- **The ends:** the ground a dark plane under it all, said ("GND: a perfect plane", a metal plane's conductivity, an
+  impedance plane's ohms a square), or a dashed level and "No ground plane: open below". On top, "h=∞, ε=1", or a perfect
+  lid as a dark plane over its gap of air.
+- **The key** below, from the top down: each metal's thickness, conductivity and sheet resistance, and whether it is solved
+  as its two faces and its roughness; each via's metals, height and conductivity, and its filled fraction. Where the layers
+  fill the page, the key goes on a second.
+- **Not to scale**, as EMX's is not: each layer is drawn by the cube root of its thickness (300 µm some eight times 0.5 µm),
+  none thinner than a line of small print. The page says so under its title.
+- A4, or US Letter where the locale measures in inches. The text is text: it can be selected and searched.
+
+It is laid out apart from its painting (`stackSheetOf`, then `paintStackPage`), so the test asks where everything went.
+`rf25/rf25_stackdrawing.cpp` holds it.
+
+**The Stack's form** under the tree now has its menu as buttons: **Add** (Dielectric, Metal, Via, and Cover where there
+is none, as the menu's Add offers them), **Import Stack…** and **Export Stack…**.
+
+**Checked:**
+- **`test_rf25_stack_drawing`** (8 functions): what is said of each layer and in the key; grounds of each kind, an open one
+  and a lid; vias in columns, one named downwards, two that overlap, a metal no via joins; where things go on A4 and Letter
+  (levels in order, every layer at least a line of small print, each box at its z, nothing off the page, the cube-root
+  scale); a stack of sixty metals with its key on a second page; the PDF and its refusal on reading; a page painted, by its
+  pixels. With `QUCS_STACK_DRAWING_OF` and `QUCS_STACK_DRAWING_TO` it draws a model given to a PDF and PNGs, to look at:
+  the 15-node stack of the round-trip check was looked at so.
+- **`test_qucs_control`:** the tool writes a `.pdf` and will not read one; the menu's Export with the PDF filter and a bare
+  name; the form's buttons (Add Metal and its Undo, Export through its dialog) and their absence under another node.
+- **19 more breaks**, 65 in all, each caught.
+
