@@ -95,6 +95,16 @@ on Cocoa at first, its 150 px wide enough there for both; it now takes the capti
 changes were run again: the whole of `test_claude_code` in Release, the new test on Cocoa and under ASan, and the three
 breaks concerned.
 
+**The narrow case failed again on `main`** (d3d7f02b, about half the runs, and on CI's v27.1.0 macOS run), and the
+test sometimes crashed, SIGSEGV at 0xe0. The cause was the test itself: it worked out the narrow width from a
+`QTextLine` of the caption taken before `panel.resize(700, 700)`. Qt lays a document out lazily, so after the resize the
+caption often had no lines yet, and that line read memory already freed. The width came out at some 631 px, so
+`narrow` was 720 rather than 142 and the date still fitted. Sometimes the read crashed instead. The app was never at
+fault: `promptDatePlaces` skips a caption with no lines. Every line the test reads is now laid out first
+(`blockBoundingRect`), checked to have lines, and taken after the resize. The narrow width now leaves no room at all for
+the 12 px gap, whatever the fonts. 30 runs of the test alone, 10 of `test_claude_code` through ctest, and 3 at
+`-j 8` beside six other GUI suites all passed. With `promptDatePlaces`' check taken out, the test still fails every time.
+
 **Broken on purpose:** the time not kept, not saved, not brought back, not read from Claude Code's history; the day before
 the month; a day not the prompt's; drawn in the bubble on the prompt's first line; drawn at the left; short of the
 bubble's edge; placed as if the caption's layout were the document's; drawn over the caption's words when narrow; never
