@@ -49,6 +49,11 @@ endif()
 message(STATUS "${PROJECT_NAME} ${CMAKE_INSTALL_PREFIX} ${qucs-suite_BINARY_DIR}" )
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets LinguistTools)
+# Qt's own macOS builds need a hand on current Xcode, and in a folder whose
+# path has a space (cmake/qt_macos.cmake).
+if(APPLE)
+  include(cmake/qt_macos.cmake)
+endif()
 set(QT_VERSION ${Qt6Core_VERSION})
 
 message(STATUS "Qt Version: " ${QT_VERSION})

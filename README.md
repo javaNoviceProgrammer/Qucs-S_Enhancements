@@ -95,6 +95,30 @@ suites run against it unchanged. If Homebrew upgrades Qt underneath an
 existing build directory, rebuild from scratch: the new headers carry old
 timestamps, and an incremental build mixes objects of two Qt versions.
 
+### macOS, with Qt's own build
+
+Homebrew builds Qt, and every library it brings, for the macOS it runs on,
+so a bundle made with Homebrew's Qt needs that macOS or newer. A bundle for
+older macOS takes Qt's own build instead — from the Qt installer, or
+aqtinstall, which the Release workflow uses — and names the oldest macOS it
+runs on:
+
+```bash
+python3 -m venv ~/aqt && ~/aqt/bin/pip install aqtinstall
+~/aqt/bin/aqt install-qt mac desktop 6.10.3 clang_64 -m qtcharts qtpdf -O ~/Qt
+export PATH="$HOME/Qt/6.10.3/macos/bin:$(brew --prefix bison)/bin:$PATH"
+cmake -S qucs-s-26.1.1 -B build-qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$HOME/Qt/6.10.3/macos" -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DGIT="$(git rev-parse --short HEAD)"
+cmake --build build-qt --parallel
+scripts/package-macos.sh build-qt bin/macos/apple-silicon
+```
+
+Qt 6.10 runs on macOS 13 and newer, Qt 6.12 on 14.4 and newer. With that
+Qt's `bin` first on `PATH`, the package script takes its `macdeployqt`, not
+Homebrew's. The configure step sees to what Qt's own builds need on current
+Xcode, and says so as it goes (`cmake/qt_macos.cmake`): Qt 6.10's
+`qyieldcpu.h` with the macOS 27 SDK, Qt 6.12's forwarding headers, and Qt
+6.12 in a folder whose path has a space.
+
 ### Linux
 
 Debian / Ubuntu (22.04 or newer):
