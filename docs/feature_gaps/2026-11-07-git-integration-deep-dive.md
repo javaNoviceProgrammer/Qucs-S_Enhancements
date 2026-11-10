@@ -467,6 +467,49 @@ The File Browser's Git submenu is now reachable, and is tested.
 - **Control:** the installed app of `1d154f23` scored 15 of 20, failing exactly the five recheck cases.
 - **Not run:** the whole ctest. `qucsator_rf` needs `dos2unix`, which is not installed.
 
+## The filter guard failed open
+
+The coordinating session's DMG check of 45e744e0 (`retest_packaged.py`, as committed) once gave 104 of 106: "a filter named a=b
+does not run" and "a filter added just after a look does not run". The second check used the first's mark file. Reruns of the same
+DMG passed 106 of 106, as had about 15 checks before, on a machine loaded by other sessions' builds.
+
+**The cause:** `guards()` asks git which filter drivers the repository's own configuration sets, in order to unset them for a look.
+If that git did not start within 5 s, or was stopped at its 10 s limit, its exit code was -1. That was taken for a git too old for
+`--show-scope`, and `config --local` was asked instead. When that failed too, no driver was known, none was unset, and the look's
+`git status` or `git diff` ran the repository's filter. `readOnlyGuards` then kept that incomplete answer for up to 30 s.
+
+**Reproduced** in the installed app of 1d154f23, with a `QUCS_GIT` that sleeps 12 s before answering the question: `git_status` ran
+the repository's filter after 20 s. In a test, with a git killed on the question: `aFilterGuardThatCannotBeToldFailsClosed` ran
+the filter on the old code.
+
+**Now it fails closed:**
+
+| Step | Before | Now |
+|---|---|---|
+| The question unanswered (not started, stopped) | taken for an old git | asked once more, with a 20 s limit |
+| Unanswered again, or an old git's own file unanswered | no driver known; the look ran | a marker that `applyGuards()` refuses. Both runners then start no git, and `gitrepo`'s says why: "git was not run: it could not be asked in time which filters this repository's own configuration sets, and looking could have started one" |
+| The unknown answer kept | as an answer, up to 30 s | 3 s, so the rest of the look is refused at once, then asked again |
+| Claude's `git_status` | an empty answer | "git could not read <repository>: …" with the reason; `git_diff` gives the reason as its text |
+
+With the slow git, the fixed build answers after the retry (22 s), guarded. With a git that never answers, it refuses after
+30 s and says why. Neither ran the filter.
+
+**`retest_packaged.py`:** the two filter checks each have their own program and mark file.
+
+**Checked:**
+
+- **Breaks:** 6 new breaks, all caught by `aFilterGuardThatCannotBeToldFailsClosed` (test_git_robust) and
+  `claudeIsToldALookWasNotGuarded` (test_git_integration). These tests cover a git that never answers the question, one that
+  answers the second time, and a git before `--show-scope` whose `--local` question dies.
+- **Release, on a clean overlay of 45e744e0 with only these files on it, 4 at a time:** 10 suites passed. They were
+  `test_git_robust`, `test_git_fuzz`, `test_git_perf`, `test_git_integration`, `test_claude_git`, `test_project_folders`,
+  `test_qucs_control`, `test_mcp_server`, `test_file_browser` and `test_claude_code`.
+- **ASan and UBSan:** `test_git_robust`, `test_git_integration` and `test_claude_git` passed, with no reports.
+  - `test_qucs_control` failed once there, in `anRf25StackGoesOutAndBackThroughItsToolsAndItsMenu` (the stack file was not
+    written in time). Two knock-on failures followed, from the native-dialog setting it left on.
+  - That function passed twice on its own under ASan. It touches no git code.
+- **`retest_packaged.py`, whole:** 106 of 106 on this build (not packaged).
+
 ## What could not be verified
 
 - **Linux and Windows:** not built or run. The tests are written for them (the `#ifdef`s), but CI will be their first

@@ -680,6 +680,81 @@ private slots:
         QVERIFY2(!QFileInfo::exists(marks + "/clean"), "a filter whose name holds '=' ran");
     }
 
+    // The guards' own question to git unanswered - not started, or stopped at
+    // its limit on a busy machine: no look runs a git that could start the
+    // repository's filter, and it says so (the packaged app of 45e744e0 ran
+    // it once, the question taken for "none"). Asked once more first.
+    void aFilterGuardThatCannotBeToldFailsClosed()
+    {
+        const QString repo = makeRepo();
+        const QString marks = folder("marks");
+        QVERIFY(write(repo + "/.gitattributes", "*.txt filter=evil\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "attributes"}).isNull());
+        QVERIFY(!gitIn(repo, {"config", "filter.evil.clean", evilProgram(marks, marks, "clean")}).isNull());
+        QVERIFY(write(repo + "/a.txt", "changed\n"));
+        // A git whose config question dies (as one killed would) - always, or
+        // the first time alone.
+        const QString work = folder("shim");
+        const QString asked = work + "/asked";
+        const auto shim = [&](const QString& name, bool once) {
+            const QString path = work + "/" + name;
+            const QByteArray unless = once ? "[ \"$(wc -l < '" + QFile::encodeName(asked) + "')\" -gt 1 ] || " : QByteArray();
+            write(path, "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = --get-regexp ]; then\n    echo asked >> '" + QFile::encodeName(asked)
+                            + "'\n    " + unless + "kill -9 $$\n  fi\ndone\nexec '" + QFile::encodeName(QStandardPaths::findExecutable("git"))
+                            + "' \"$@\"\n");
+            QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+            return path;
+        };
+        qputenv("QUCS_GIT", QFile::encodeName(shim("never.sh", false)));
+        const Repository r = read(repo);
+        const bool looked = status(repo).repository;
+        const QString changes = diff(repo);
+        const Result refused = run(repo, {"status", "--porcelain"}, true);
+        qunsetenv("QUCS_GIT");
+        QVERIFY2(!QFileInfo::exists(marks + "/clean"), "a look ran the repository's filter, its guards unknown");
+        QVERIFY(!r.valid);
+        QVERIFY(!looked);
+        QVERIFY2(changes.contains("filters") && !changes.contains("changed"), qPrintable(changes));   // (the refusal, said)
+        QVERIFY(!refused.ok());
+        QVERIFY2(refused.err.contains("filters"), qPrintable(refused.err));
+        QVERIFY(readAll(asked).count('\n') >= 2);   // (asked again before giving up)
+        // Kept a moment only (the rest of a look refused at once): once git
+        // answers, it is looked at - the filter still not run.
+        QTest::qWait(3200);
+        QVERIFY(read(repo).valid);
+        QVERIFY(!QFileInfo::exists(marks + "/clean"));
+
+        // Unanswered once, then answered: the look goes on, guarded.
+        QVERIFY(write(repo + "/a.txt", "changed again\n"));
+        QFile::remove(asked);
+        const QString other = repo + "-once";
+        QVERIFY(!gitIn(QFileInfo(repo).absolutePath(), {"clone", "-q", repo, other}).isNull());
+        QVERIFY(!gitIn(other, {"config", "filter.evil.clean", evilProgram(marks, marks, "clean")}).isNull());
+        QVERIFY(write(other + "/a.txt", "changed in the clone\n"));
+        qputenv("QUCS_GIT", QFile::encodeName(shim("once.sh", true)));
+        const Repository again = read(other);
+        qunsetenv("QUCS_GIT");
+        QVERIFY(again.valid);
+        QVERIFY(entry(again, "a.txt") != nullptr);
+        QVERIFY2(!QFileInfo::exists(marks + "/clean"), "the look asked again ran the filter");
+        // A git before --show-scope (it stops at the option, 129), its
+        // repository's own file then asked about - unanswered: closed too.
+        const QString old = work + "/old.sh";
+        QVERIFY(write(old, "#!/bin/sh\nfor a in \"$@\"; do\n  [ \"$a\" = --show-scope ] && exit 129\n  [ \"$a\" = --local ] && kill -9 $$\ndone\nexec '"
+                               + QFile::encodeName(QStandardPaths::findExecutable("git")) + "' \"$@\"\n"));
+        QVERIFY(QFile::setPermissions(old, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const QString third = repo + "-old";
+        QVERIFY(!gitIn(QFileInfo(repo).absolutePath(), {"clone", "-q", repo, third}).isNull());
+        QVERIFY(!gitIn(third, {"config", "filter.evil.clean", evilProgram(marks, marks, "clean")}).isNull());
+        QVERIFY(write(third + "/a.txt", "changed for an old git\n"));
+        qputenv("QUCS_GIT", QFile::encodeName(old));
+        const Repository byOld = read(third);
+        qunsetenv("QUCS_GIT");
+        QVERIFY(!byOld.valid);
+        QVERIFY2(!QFileInfo::exists(marks + "/clean"), "a look ran the filter, the repository's file unread");
+    }
+
     void aSubmodulesOwnProgramsAreNotRun()
     {
         const QString sub = makeRepo("sub");
