@@ -98,16 +98,30 @@ void breakLongRuns(QTextDocument* document, int from, const RunBreaks& how)
         // block's end: put one at a time, each cost the block's length - 128
         // kB 3.7 s with no layout at all. Each fragment built in one pass: a
         // break inserted at a time, the same again within the fragment.)
-        std::vector<QTextFragment> pieces;
-        for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) pieces.push_back(it.fragment());
+        // (Each fragment's place, format and text taken before any is put
+        // in again, not the fragments: a QTextFragment is the document's
+        // fragment by its number, and putting one in again can merge the
+        // others - the next one's length() then walked for ever to an end
+        // it no longer had: four lines of a quote after HTML hung the
+        // program - the hunt of 9 November, H4.)
+        struct Piece {
+            int position, length;
+            QTextCharFormat format;
+            QString text;
+        };
+        std::vector<Piece> pieces;
+        for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fr = it.fragment();
+            pieces.push_back({fr.position(), fr.length(), fr.charFormat(), fr.text()});
+        }
         const int start = b.position();
         for (auto piece = pieces.rbegin(); piece != pieces.rend(); ++piece) {
-            const int first = piece->position() - start, end = first + piece->length();
-            const QTextCharFormat f = piece->charFormat();
+            const int first = piece->position - start, end = first + piece->length;
+            const QTextCharFormat& f = piece->format;
             if (f.isImageFormat() || f.objectType() != QTextFormat::NoObject) continue;
             auto k = std::upper_bound(at.cbegin(), at.cend(), first);
             if (k == at.cend() || *k >= end) continue;
-            const QString was = piece->text();
+            const QString& was = piece->text;
             QString t;
             t.reserve(was.size() + was.size() / how.every + 1);
             int done = first;
@@ -118,8 +132,8 @@ void breakLongRuns(QTextDocument* document, int from, const RunBreaks& how)
             }
             t += QStringView(was).mid(done - first);
             QTextCursor put(document);
-            put.setPosition(piece->position());
-            put.setPosition(piece->position() + piece->length(), QTextCursor::KeepAnchor);
+            put.setPosition(piece->position);
+            put.setPosition(piece->position + piece->length, QTextCursor::KeepAnchor);
             put.insertText(t, f);
         }
     }

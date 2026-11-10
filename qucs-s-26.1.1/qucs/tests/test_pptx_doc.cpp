@@ -1296,6 +1296,16 @@ private slots:
         // And whatever stands before the root: a comment of its own longer
         // than any window the bytes might be looked at through.
         QVERIFY(qucs_s::svg::expandsTooFar("<!-- " + QByteArray(6000, 'x') + " -->\n" + bomb));
+        // The bomb in <defs> that nothing at the root draws, and one cut off
+        // by bad XML before the <use> that would: QtSvg resolves each
+        // reference as it reads it, drawn or not, and hung on both; only
+        // the root's were counted (the hunt of 9 November, H1).
+        QByteArray unused = bomb, cut = bomb;
+        unused.replace("<use xlink:href=\"#r15\"/></svg>", "</svg>");
+        cut.replace("</defs><use", "</defs><<>><use");
+        QVERIFY(!unused.contains("\"#r15\""));
+        QVERIFY(qucs_s::svg::expandsTooFar(unused));
+        QVERIFY(qucs_s::svg::expandsTooFar(cut));
         // Deep enough that the count would run past what a whole number
         // holds if it did not stop at the limit.
         QByteArray far = "<rect id=\"d0\" width=\"1\" height=\"1\"/>";

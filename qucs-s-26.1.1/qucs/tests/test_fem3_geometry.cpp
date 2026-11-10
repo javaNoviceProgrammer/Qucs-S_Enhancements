@@ -503,6 +503,27 @@ private slots:
         QVERIFY2(b.errors.value(tag).contains(QStringLiteral("no object blk")), qPrintable(errorsOf(b)));
     }
 
+    /// An Extrude's sketch of a ring 9e6 mm across built; one 1e308 across a
+    /// failed build, said: Clipper threw on both, and nothing caught it
+    /// (the hunt of 9 November, C1).
+    void hugeSketches()
+    {
+        for (const char* r : {"9e6", "2147483648", "1e308"}) {
+            const std::optional<Model> m = Model::fromJson(QStringLiteral(R"({"format": "qucs-s multiphysics 3d 1",
+                "parameters": [{"name": "r", "expression": "%1"}],
+                "components": [{"unit": "mm", "space": "3D", "geometry": [
+                {"type": "box", "label": "plate", "base": "center", "position": ["0", "0"], "size": ["3*r", "3*r"], "z": "-r/10", "height": "r/10"},
+                {"type": "extrude", "label": "ring", "z": "0", "height": "r/10", "features": [
+                    {"type": "circle", "label": "outer", "radius": "r"},
+                    {"type": "circle", "label": "inner", "radius": "0.7*r"},
+                    {"type": "difference", "label": "band", "input": ["outer"], "tools": ["inner"]}]}]}]})").arg(QLatin1String(r)).toUtf8());
+            QVERIFY(m);
+            const GeometryBuild3 b = build(*m);
+            if (QByteArray(r) == "1e308") QVERIFY(!b.ok());
+            else QVERIFY2(b.ok(), qPrintable(QStringLiteral("r = %1: ").arg(QLatin1String(r)) + errorsOf(b)));
+        }
+    }
+
     /// Booleans of solids: a box with a cylinder cut out (a hole through it),
     /// an empty intersection refused.
     void booleans()

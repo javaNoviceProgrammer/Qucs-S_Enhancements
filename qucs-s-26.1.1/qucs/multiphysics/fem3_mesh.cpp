@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 #include <set>
 
 namespace qucs_s::fem {
@@ -104,7 +105,9 @@ std::vector<std::vector<double>> sweptDivisions(const std::vector<double>& level
         }
         const double total = cumulative.back();
         const int given = k < int(count.size()) ? count[std::size_t(k)] : 0;
-        const int n = given > 0 ? given : std::max(1, int(std::ceil(total - 1e-6)));
+        // (So many at most: a size of 1e-9 across 1 mm asked 1e6, and more
+        // than an int's range overflowed - the hunt of 9 November, C3.)
+        const int n = given > 0 ? given : int(std::clamp(std::ceil(total - 1e-6), 1.0, double(MaxSweptDivisions)));
         std::vector<double>& cuts = out[std::size_t(k)];
         int s = 0;
         for (int j = 1; j < n; ++j) {
@@ -118,8 +121,10 @@ std::vector<std::vector<double>> sweptDivisions(const std::vector<double>& level
     return out;
 }
 
-Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std::shared_ptr<const Topology3> topology,
-                      const Progress& progress)
+namespace {
+
+Mesh3Build buildMesh3Within(const Model& model, const ParameterScope& parameters, std::shared_ptr<const Topology3> topology,
+                            const Progress& progress)
 {
     Mesh3Build out;
     if (!topology || !topology->plan || topology->domains.empty()) {
@@ -253,6 +258,31 @@ Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std:
     mesh->levelHeight.push_back(int(mesh->heights.size()));
     mesh->heights.push_back(t.levels.back());
     const std::size_t N = m2.nodes.size(), H = mesh->heights.size();
+    // Its prisms counted before they are made: a size far smaller than the
+    // geometry (1e-9 for 1e-3, a slip) asked for more than the memory
+    // holds, and running out of it in the mesh's thread aborted Qucs-S
+    // (the hunt of 9 November, C3).
+    {
+        double prisms = 0;
+        std::vector<char> inSlab(std::size_t(D) * std::size_t(std::max(K, 1)), 0);
+        for (int pd = 0; pd < D; ++pd)
+            for (int k = 0; k < K; ++k) inSlab[std::size_t(pd) * std::size_t(K) + std::size_t(k)] = t.cell(pd, k) >= 0;
+        std::vector<double> perSlab(std::size_t(std::max(K, 1)), 0);
+        for (std::size_t i = 0; i < m2.triangles.size(); ++i)
+            for (int k = 0; k < K; ++k)
+                if (inSlab[std::size_t(m2.domain[i]) * std::size_t(K) + std::size_t(k)]) perSlab[std::size_t(k)] += 1;
+        for (int k = 0; k < K; ++k)
+            prisms += perSlab[std::size_t(k)] * (mesh->levelHeight[std::size_t(k) + 1] - mesh->levelHeight[std::size_t(k)]);
+        if (prisms > double(MaxPrisms) || double(N) * double(H) > double(MaxNodeSlots)) {
+            out.error = tr("the mesh would have about %1 prisms (%2 plan triangles, %3 heights), more than %4: a larger size, or "
+                           "fewer divisions across the heights")
+                            .arg(prisms, 0, 'g', 3)
+                            .arg(m2.triangles.size())
+                            .arg(H)
+                            .arg(double(MaxPrisms), 0, 'g', 3);
+            return out;
+        }
+    }
     // The nodes the prisms use, numbered by height, then by plan node.
     std::vector<char> used(N * H, 0);
     for (std::size_t i = 0; i < m2.triangles.size(); ++i) {
@@ -337,6 +367,22 @@ Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std:
     if (progress) progress(1.0, tr("Done"));
     out.mesh = mesh;
     return out;
+}
+
+} // namespace
+
+Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std::shared_ptr<const Topology3> topology,
+                      const Progress& progress)
+{
+    // (Out of memory, a failed mesh: thrown in the mesh's thread, it was
+    // uncaught and aborted Qucs-S - the hunt of 9 November, C3.)
+    try {
+        return buildMesh3Within(model, parameters, std::move(topology), progress);
+    } catch (const std::bad_alloc&) {
+        Mesh3Build out;
+        out.error = tr("there was not memory enough for the mesh: a larger size makes a smaller one");
+        return out;
+    }
 }
 
 } // namespace qucs_s::fem

@@ -164,6 +164,26 @@ class TestFemLayout : public QObject
     Q_OBJECT
 
 private slots:
+    /// A layout whose database unit is damaged - about 7e75 m, a
+    /// coordinate past Clipper's range - is an error, not an abort: Clipper
+    /// threw, and nothing caught it (the hunt of 9 November, C1).
+    void damagedUnits()
+    {
+        QByteArray bytes = heaterLayout();
+        const qsizetype at = bytes.indexOf(QByteArray::fromHex("00140305"));
+        QVERIFY(at >= 0);
+        bytes.replace(at + 12, 8, QByteArray::fromHex("7f10000000000000"));
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("damaged.gds"));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(bytes);
+        f.close();
+        const LayoutShapes s = readLayoutShapes(path);
+        QVERIFY2(s.error.contains(QStringLiteral("out of range")), qPrintable(s.error));
+        QVERIFY(s.layers.empty());
+    }
+
     void readFlattened()
     {
         QTemporaryDir dir;

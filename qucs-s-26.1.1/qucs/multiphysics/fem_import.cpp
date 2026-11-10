@@ -1244,6 +1244,11 @@ LayoutShapes readLayoutShapes(const QString& path, const QString& cellName, cons
     cell->get_polygons(true, true, -1, false, 0, polygons);
     // Each layer's polygons, in 0.1 nm (Clipper's integers).
     const double scale = 1e4;
+    // (A coordinate past about 1e14 µm - a damaged UNITS record, say - is
+    // past Clipper's range in 0.1 nm, and it threw: the hunt of 9 November,
+    // C1.)
+    const double largest = 1e14;
+    bool outOfRange = false;
     std::map<LayoutLayer, ClipperLib::Paths> byLayer;
     for (uint64_t i = 0; i < polygons.count; ++i) {
         gdstk::Polygon* p = polygons[i];
@@ -1259,9 +1264,13 @@ LayoutShapes readLayoutShapes(const QString& path, const QString& cellName, cons
                 x1 = std::max(x1, v.x);
                 y0 = std::min(y0, v.y);
                 y1 = std::max(y1, v.y);
+                if (!(std::abs(v.x) < largest && std::abs(v.y) < largest)) {
+                    outOfRange = true;
+                    break;
+                }
                 path.emplace_back(ClipperLib::cInt(std::llround(v.x * scale)), ClipperLib::cInt(std::llround(v.y * scale)));
             }
-            if (window.isEmpty() || QRectF(QPointF(x0, y0), QPointF(x1, y1)).intersects(window) || window.contains(QPointF(x0, y0)))
+            if (!outOfRange && (window.isEmpty() || QRectF(QPointF(x0, y0), QPointF(x1, y1)).intersects(window) || window.contains(QPointF(x0, y0))))
                 byLayer[key].push_back(std::move(path));
         }
         p->clear();
@@ -1269,11 +1278,22 @@ LayoutShapes readLayoutShapes(const QString& path, const QString& cellName, cons
     }
     polygons.clear();
     library.free_all();
+    if (outOfRange) {
+        out.error = tr("%1 has a coordinate out of range (past %2 µm): its units are damaged, or it is not whole")
+                        .arg(QFileInfo(path).fileName(), QString::number(largest, 'g', 3));
+        return out;
+    }
     for (auto& [key, paths] : byLayer) {
-        ClipperLib::Clipper clipper;
-        clipper.AddPaths(paths, ClipperLib::ptSubject, true);
         ClipperLib::Paths merged;
-        clipper.Execute(ClipperLib::ctUnion, merged, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        try {
+            ClipperLib::Clipper clipper;
+            clipper.AddPaths(paths, ClipperLib::ptSubject, true);
+            clipper.Execute(ClipperLib::ctUnion, merged, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        } catch (const ClipperLib::clipperException& e) {
+            out.error = tr("%1 could not be read: %2").arg(QFileInfo(path).fileName(), QString::fromUtf8(e.what()));
+            out.layers.clear();
+            return out;
+        }
         LayoutShapes::Layer layer;
         layer.key = key;
         for (const ClipperLib::Path& path : merged) {

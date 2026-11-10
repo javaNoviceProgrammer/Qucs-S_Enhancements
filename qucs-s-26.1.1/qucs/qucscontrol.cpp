@@ -12688,7 +12688,16 @@ private:
         if (a_stopped && a_next < a_calls.size())
             head += a_atomic ? tr("; stopped there, the rest not run") : tr("; stopped there, the rest not run (keep_going goes on)");
         head += QLatin1Char('.');
-        if (a_failed > 0 && a_atomic) {
+        // (A dialog open over a schematic - a label's, the user's double
+        // click a call of the batch made - holds its parts: putting the
+        // schematic back under it freed them, and its OK wrote to the freed
+        // label - the hunt of 9 November, C2. Not rolled back then: said,
+        // with the undo that takes the changes back.)
+        const bool underADialog = a_failed > 0 && a_atomic && QApplication::activeModalWidget() != nullptr;
+        if (underADialog)
+            head += QLatin1Char(' ') + tr("Atomic: not undone - a dialog is open (%1), and putting a schematic back under it is not "
+                                          "safe.").arg(QApplication::activeModalWidget()->windowTitle());
+        if (a_failed > 0 && a_atomic && !underADialog) {
             // All or nothing: back as they were.
             QStringList back;
             for (const Before& b : std::as_const(a_before))
@@ -12699,7 +12708,7 @@ private:
                                     : tr("Atomic: the changes of the calls before it were undone - %1 as it was (one step to undo "
                                          "brings the changes back). Files written, simulations run and documents opened stay.")
                                           .arg(back.join(QStringLiteral(", "))));
-        } else if (a_failed > 0 && a_stopped) {
+        } else if (a_failed > 0 && (a_stopped || underADialog)) {
             // What the calls before it left, to undo in one call.
             QStringList made;
             int most = 0;
@@ -12710,8 +12719,10 @@ private:
                                             : tr("%1 on %2").arg(it.value()).arg(QFileInfo(it.key()).fileName()));
             }
             if (!made.isEmpty()) {
-                head += QLatin1Char(' ') + tr("The calls before it made changes that stay: %1 (undo with 'steps' takes them back%2; atomic: "
-                                              "true would have).")
+                head += QLatin1Char(' ') + (underADialog ? tr("The calls before it made changes that stay: %1 (undo with 'steps' takes them "
+                                                              "back, once the dialog is closed%2).")
+                                                         : tr("The calls before it made changes that stay: %1 (undo with 'steps' takes them "
+                                                              "back%2; atomic: true would have)."))
                                                .arg(made.join(QStringLiteral(", ")))
                                                .arg(most > int(QucsSettings.maxUndo) - 1
                                                         ? tr(" - Edit > Undo keeps %1 steps, fewer than that").arg(QucsSettings.maxUndo)

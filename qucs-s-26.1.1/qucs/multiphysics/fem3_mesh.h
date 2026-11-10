@@ -80,6 +80,14 @@ struct Mesh3Build {
     QStringList warnings;
 };
 
+/// A slab's divisions by size at most (a Distribution's count is clamped
+/// the same).
+constexpr int MaxSweptDivisions = 100000;
+/// A mesh's prisms at most, and its plan nodes times its heights: past
+/// them it is refused before it is made, said, not run out of memory.
+constexpr long long MaxPrisms = 20000000;
+constexpr long long MaxNodeSlots = 200000000;
+
 /// The divisions of slabs \a levels (rising) in z: each slab's heights
 /// between its levels, its own excluded. \a hmax by slab (its largest
 /// element, infinite: none), \a count by slab (0: by size), \a hLevel by
@@ -91,7 +99,7 @@ std::vector<std::vector<double>> sweptDivisions(const std::vector<double>& level
 /// Meshes 3D \a model's geometry \a topology as its mesh node says: its plan
 /// meshed to its sizes (the Size features' domains, faces and points taken to
 /// the plan), each slab divided in z, the triangles swept through the slabs
-/// their domains fill.
+/// their domains fill. One past MaxPrisms, or out of memory, is an error.
 Mesh3Build buildMesh3(const Model& model, const ParameterScope& parameters, std::shared_ptr<const Topology3> topology,
                       const Progress& progress = {});
 

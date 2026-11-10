@@ -617,7 +617,14 @@ private:
     {
         double extent = std::max({1.0, std::abs(window.left()), std::abs(window.right()), std::abs(window.top()), std::abs(window.bottom())});
         for (const auto& loop : loops)
-            for (QPointF p : loop) extent = std::max({extent, std::abs(p.x() * scale), std::abs(p.y() * scale)});
+            for (QPointF p : loop)
+                for (double v : {p.x() * scale, p.y() * scale}) extent = std::isnan(v) ? HUGE_VAL : std::max(extent, std::abs(v));
+        // (A coordinate not finite made Clipper throw, and nothing caught it:
+        // the hunt of 9 November, C1.)
+        if (!std::isfinite(extent) || extent > 1e300) {
+            fail(tr("a coordinate of the plan is out of range: it is not a finite number, or too large"));
+            return GObject();
+        }
         const double k = std::pow(2.0, std::floor(std::log2(1e12 / extent)));
         ClipperLib::Paths subject, clip, result;
         for (const auto& loop : loops) {
@@ -630,10 +637,15 @@ private:
                         {ClipperLib::cInt(std::llround(window.right() * k)), ClipperLib::cInt(std::llround(window.top() * k))},
                         {ClipperLib::cInt(std::llround(window.right() * k)), ClipperLib::cInt(std::llround(window.bottom() * k))},
                         {ClipperLib::cInt(std::llround(window.left() * k)), ClipperLib::cInt(std::llround(window.bottom() * k))}});
-        ClipperLib::Clipper c;
-        c.AddPaths(subject, ClipperLib::ptSubject, true);
-        c.AddPaths(clip, ClipperLib::ptClip, true);
-        c.Execute(ClipperLib::ctIntersection, result, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        try {
+            ClipperLib::Clipper c;
+            c.AddPaths(subject, ClipperLib::ptSubject, true);
+            c.AddPaths(clip, ClipperLib::ptClip, true);
+            c.Execute(ClipperLib::ctIntersection, result, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        } catch (const ClipperLib::clipperException& e) {
+            fail(tr("the plan could not be cut to its window: %1").arg(QString::fromUtf8(e.what())));
+            return GObject();
+        }
         ClipperLib::CleanPolygons(result, 1.0);
         GObject o;
         for (const ClipperLib::Path& path : result) {

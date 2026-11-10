@@ -139,34 +139,40 @@ qint64 nodes(const QByteArray& raw)
     };
     std::vector<qint64> cost(scopes.size(), 0);
     std::vector<char> state(scopes.size(), 0);   // 0 untouched, 1 under way, 2 counted
-    std::vector<Frame> stack{{0, scopes[0].own, 0}};
-    state[0] = 1;
-    qint64 answer = 0;
-    while (!stack.empty()) {
-        Frame& f = stack.back();
-        const Scope& sc = scopes[std::size_t(f.scope)];
-        if (f.sum >= kMaxNodes || f.next >= sc.inside.size() + std::size_t(sc.refers.size())) {
-            const qint64 value = f.sum;
-            cost[std::size_t(f.scope)] = value;
-            state[std::size_t(f.scope)] = 2;
-            stack.pop_back();
-            if (stack.empty()) {
-                answer = value;
-                break;
+    const auto countFrom = [&](int root) {
+        std::vector<Frame> stack{{root, scopes[std::size_t(root)].own, 0}};
+        state[std::size_t(root)] = 1;
+        while (!stack.empty()) {
+            Frame& f = stack.back();
+            const Scope& sc = scopes[std::size_t(f.scope)];
+            if (f.sum >= kMaxNodes || f.next >= sc.inside.size() + std::size_t(sc.refers.size())) {
+                const qint64 value = f.sum;
+                cost[std::size_t(f.scope)] = value;
+                state[std::size_t(f.scope)] = 2;
+                stack.pop_back();
+                if (stack.empty()) return value;
+                stack.back().sum = plus(stack.back().sum, value);
+                continue;
             }
-            stack.back().sum = plus(stack.back().sum, value);
-            continue;
+            const int kid = childOf(f.scope, f.next++);
+            if (kid < 0) continue;                                      // a name nothing defines
+            if (state[std::size_t(kid)] == 2) {                         // counted before
+                f.sum = plus(f.sum, cost[std::size_t(kid)]);
+                continue;
+            }
+            if (state[std::size_t(kid)] == 1) continue;                 // round to itself
+            state[std::size_t(kid)] = 1;
+            stack.push_back({kid, scopes[std::size_t(kid)].own, 0});
         }
-        const int kid = childOf(f.scope, f.next++);
-        if (kid < 0) continue;                                      // a name nothing defines
-        if (state[std::size_t(kid)] == 2) {                         // counted before
-            f.sum = plus(f.sum, cost[std::size_t(kid)]);
-            continue;
-        }
-        if (state[std::size_t(kid)] == 1) continue;                 // round to itself
-        state[std::size_t(kid)] = 1;
-        stack.push_back({kid, scopes[std::size_t(kid)].own, 0});
-    }
+        return qint64(0);
+    };
+    qint64 answer = countFrom(0);
+    // And every scope nothing at the root draws: QtSvg resolves each <use>
+    // as it reads it, drawn or not - a bomb in <defs> that nothing used
+    // counted 0 here and hung the reader (the hunt of 9 November, H1).
+    // The most any of them asks for.
+    for (int s = 1; s < int(scopes.size()) && answer < kMaxNodes; ++s)
+        if (state[std::size_t(s)] == 0 && !scopes[std::size_t(s)].refers.isEmpty()) answer = std::max(answer, countFrom(s));
     return answer;
 }
 
