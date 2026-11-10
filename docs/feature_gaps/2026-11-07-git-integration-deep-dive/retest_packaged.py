@@ -353,12 +353,17 @@ err, t = s.call("git_resolve", path=r + "/a.txt", action="take_theirs"); report(
 err, t = s.call("git_commit", path=r, message="merged"); report("the merge committed", not err, t)
 # ---- pattern names, and the repository's own programs
 open(r + "/amp[1].sch", "w").write("edit\n"); open(r + "/amp1.sch", "w").write("edit\n"); err, t = s.call("git_discard", path=r, paths=["amp[1].sch"]); report("discard takes that file alone", not err and open(r + "/amp1.sch").read() == "edit\n" and open(r + "/amp[1].sch").read() == "a\n", t)
-mark = wk + "/ran"; prog = wk + "/prog.sh"; open(prog, "w").write('#!/bin/sh\necho "$0 $*" >> "%s"\ncat\n' % mark); os.chmod(prog, 0o755)
+def marking(name):   # (a program of its own for each check, and its own mark: one that ran is not blamed on the next)
+    mark, prog = wk + "/ran-" + name, wk + "/prog-" + name + ".sh"
+    open(prog, "w").write('#!/bin/sh\necho "$0 $*" >> "%s"\ncat\n' % mark); os.chmod(prog, 0o755)
+    return mark, prog
+mark, prog = marking("a=b")
 f = repo(ws + "/flt", {"a.flt": "one\n"})
 open(f + "/.gitattributes", "w").write("*.flt filter=a=b\n"); git(f, "add", "-A"); git(f, "commit", "-q", "-m", "attr")
 open(f + "/.git/config", "a").write('[filter "a=b"]\n\tclean = %s\n' % prog); open(f + "/a.flt", "w").write("TWO\n")
 s.call("git_status", path=f); s.call("git_diff", path=f); report("a filter named a=b does not run (fault 11)", not os.path.exists(mark))
 g = repo(ws + "/late", {"a.txt": "one\n"}); s.call("git_status", path=g)
+mark, prog = marking("late")
 open(g + "/.git/config", "a").write('[filter "late"]\n\tclean = %s\n' % prog); open(g + "/.gitattributes", "w").write("* filter=late\n"); open(g + "/a.txt", "w").write("TWO\n")
 s.call("git_status", path=g); s.call("git_diff", path=g); report("a filter added just after a look does not run", not os.path.exists(mark))
 s.close()

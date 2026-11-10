@@ -69,7 +69,9 @@ QString program();
 /// The settings that keep git from running what a repository's own
 /// configuration names - a file system monitor, its filters, its hooks -
 /// while Qucs-S only looks at it (status, diff, log, blame): "key=value"
-/// pairs, for -c. The user's own filters (git-lfs's) are kept.
+/// pairs, for -c. The user's own filters (git-lfs's) are kept. Where git
+/// could not be asked which filters the repository sets, a marker that
+/// applyGuards() refuses.
 QStringList readOnlyGuards(const QString& root);
 
 /// \a env without what points git at one repository whatever the folder
@@ -91,8 +93,9 @@ void lookingEnvironment(QProcessEnvironment& env);
 
 /// readOnlyGuards() on their way to a git: before \a args as -c options, and
 /// through \a env the one -c cannot say - a driver whose name holds '=' (it
-/// reads the key to the first '=', and that driver would stay).
-void applyGuards(const QStringList& guards, QStringList& args, QProcessEnvironment& env);
+/// reads the key to the first '=', and that driver would stay). False, and
+/// nothing added, where they could not be told: that git must not run.
+[[nodiscard]] bool applyGuards(const QStringList& guards, QStringList& args, QProcessEnvironment& env);
 
 /// What git diff --numstat -z wrote (--no-renames: a file a record).
 QList<FileChange> readNumstat(const QByteArray& out);

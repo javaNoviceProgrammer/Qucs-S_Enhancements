@@ -3416,6 +3416,41 @@ private slots:
         app->closeAllFiles();
     }
 
+    // A look whose filters' guard cannot be told (git's question to it
+    // unanswered, as on a busy machine): Claude is told why, and the
+    // repository's filter does not run.
+    void claudeIsToldALookWasNotGuarded()
+    {
+        const QString repo = makeRepo("unguarded");
+        QVERIFY(!repo.isEmpty());
+        const QString marks = canonical(dir.path()) + "/unguarded-marks";
+        QVERIFY(QDir().mkpath(marks));
+        const QString filter = marks + "/clean.sh";
+        QVERIFY(write(filter, "#!/bin/sh\necho ran >> '" + QFile::encodeName(marks) + "/ran'\ncat\n"));
+        QVERIFY(QFile::setPermissions(filter, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QVERIFY(write(repo + "/.gitattributes", "*.txt filter=evil\n"));
+        QVERIFY(!gitIn(repo, {"add", "-A"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "attributes"}).isNull());
+        QVERIFY(!gitIn(repo, {"config", "filter.evil.clean", filter}).isNull());
+        QVERIFY(write(repo + "/a.txt", "changed\n"));
+        const QString shim = marks + "/git.sh";
+        QVERIFY(write(shim, "#!/bin/sh\nfor a in \"$@\"; do\n  [ \"$a\" = --get-regexp ] && kill -9 $$\ndone\nexec '"
+                                + QFile::encodeName(QStandardPaths::findExecutable("git")) + "' \"$@\"\n"));
+        QVERIFY(QFile::setPermissions(shim, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        qputenv("QUCS_GIT", QFile::encodeName(shim));
+        const QJsonObject st = call("git_status", {{"path", repo}});
+        const QJsonObject df = call("git_diff", {{"path", repo}});
+        qunsetenv("QUCS_GIT");
+        QVERIFY2(failed(st) && text(st).contains("filters"), qPrintable(text(st)));
+        QVERIFY2(text(df).contains("filters") && !text(df).contains("+changed"), qPrintable(text(df)));
+        QVERIFY2(!QFileInfo::exists(marks + "/ran"), "a look ran the repository's filter");
+        // Answered again (a moment after): looked at, guarded.
+        QTest::qWait(3200);
+        QJsonObject again = call("git_status", {{"path", repo}});
+        QVERIFY2(!failed(again) && text(again).contains("a.txt"), qPrintable(text(again)));
+        QVERIFY(!QFileInfo::exists(marks + "/ran"));
+    }
+
     void claudesGitTools()
     {
         const QString repo = makeRepo("claude");
