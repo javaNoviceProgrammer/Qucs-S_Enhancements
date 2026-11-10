@@ -76,6 +76,7 @@
 #include "imagedoc.h"
 #include "pptx.h"
 #include "pptxdoc.h"
+#include "datadisplay.h"
 #include "gitrepo.h"
 #include "gitui.h"
 #endif
@@ -596,6 +597,13 @@ std::pair<quint64, QString> QucsApp::drawingsOf(const QString &file, quint64 kno
       const quint64 revision = layout->view()->drawing().revision();
       return {revision, revision == known ? QString()
                                           : penSaid(qucs_s::markup::sentencesOf(layout->view()->readDrawing(true), false), layout->penButton(), "show_layout")};
+    }
+    if (auto *page = dynamic_cast<Schematic *>(doc); page != nullptr && page->isDataDisplayPage()) {
+      const quint64 revision = page->penDrawing().revision();
+      return {revision, revision == known ? QString()
+                                          : penSaid(qucs_s::datadisplay::sentencesOf(qucs_s::datadisplay::readDrawing(page, true)),
+                                                    page->dataDisplayBar() != nullptr ? page->dataDisplayBar()->penButton() : nullptr,
+                                                    "show_data_display")};
     }
     if (auto *deck = dynamic_cast<PptxDoc *>(doc)) {
       const quint64 revision = deck->view()->drawing().revision();
