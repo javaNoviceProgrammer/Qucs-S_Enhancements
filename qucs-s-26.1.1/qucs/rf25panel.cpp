@@ -381,6 +381,14 @@ void RF25Panel::updateStatusColumn()
             }
         } else if (n->type == QLatin1String("rf_ports")) {
             status = tr("%1 port(s)").arg(n->children.size());
+        } else if (n->type == QLatin1String("rf_cutout")) {
+            int regions = 0;
+            for (const Node& r : n->children) regions += r.enabled ? 1 : 0;
+            status = !flagOf(*n, QStringLiteral("apply")) ? tr("not applied")
+                   : regions == 0                         ? tr("the whole layout")
+                                                          : tr("%1 region(s)").arg(regions);
+        } else if (n->type == QLatin1String("rf_region")) {
+            status = textOf(*n, QStringLiteral("action")) == QLatin1String("remove") ? tr("taken out") : tr("kept");
         } else if (const Layer* layer = stack.named(nameOf(*n)); layer != nullptr && layer->tag == tag) {
             // A layer of the stack: how thick it is, and where it sits.
             if (layer->z1 > layer->z0)
@@ -434,11 +442,15 @@ QMenu* RF25Panel::menuFor(const QString& tag)
     menu->setObjectName(QStringLiteral("rfNodeMenu"));
     // What may be added under it.
     if (k != nullptr && !k->children.isEmpty()) {
-        QMenu* add = n->type == QLatin1String("rf_model") ? menu : menu->addMenu(tr("Add"));
+        // (The model's, and the Cutout's one kind: "Add Region" in the menu
+        //  itself, not under an Add of one item.)
+        const bool flat = n->type == QLatin1String("rf_model") || n->type == QLatin1String("rf_cutout");
+        QMenu* add = flat ? menu : menu->addMenu(tr("Add"));
         for (const QString& type : addableUnder(*n)) {
             const NodeKind* ck = nodeKind(type);
-            add->addAction(glyph(ck->icon), n->type == QLatin1String("rf_model") ? tr("Add %1").arg(ck->title) : ck->title, this,
-                           [this, tag, type] { addNode(tag, type); });
+            QAction* a = add->addAction(glyph(ck->icon), flat ? tr("Add %1").arg(ck->title) : ck->title, this,
+                                        [this, tag, type] { addNode(tag, type); });
+            a->setObjectName(QStringLiteral("rfAdd_") + type);
         }
         if (add != menu && add->actions().isEmpty()) {
             menu->removeAction(add->menuAction());
@@ -832,6 +844,21 @@ void RF25Panel::showSettings()
         f->addStretch(1);
         v->addWidget(fileRow);
     }
+    // The Cutout's Add Region, in its form as well as its menu.
+    if (n->type == QLatin1String("rf_cutout")) {
+        auto* row = new QWidget(a_form);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        const QString tag = n->tag;
+        const NodeKind* rk = nodeKind(QStringLiteral("rf_region"));
+        auto* add = new QPushButton(glyph(rk->icon), tr("Add Region"), row);
+        add->setObjectName(QStringLiteral("rfCutoutAddRegion"));
+        add->setToolTip(tr("Adds a region to the cutout, as the menu's Add Region does"));
+        connect(add, &QPushButton::clicked, this, [this, tag] { addNode(tag, QStringLiteral("rf_region")); });
+        h->addWidget(add);
+        h->addStretch(1);
+        v->addWidget(row);
+    }
     // An export writes: the button that does it, and what it said - an
     // equivalent circuit's values and how well it fits too.
     if (n->type == QLatin1String("rf_touchstone") || n->type == QLatin1String("rf_circuit")) {
@@ -877,7 +904,7 @@ void RF25Panel::showSettings()
     const std::shared_ptr<const Mesh> mesh = a_doc->mesh();
     QStringList cannot;
     const bool itsOwn = n->type == QLatin1String("rf_processing") || n->type == QLatin1String("rf_mesh")
-                        || n->type == QLatin1String("rf_layout");
+                        || n->type == QLatin1String("rf_layout") || n->type == QLatin1String("rf_cutout");
     // (The Results node is not one of those: what it shows is of the last
     // solve, which a run of the shapes and the mesh has already thrown
     // away, so it says so for itself.)
@@ -895,6 +922,15 @@ void RF25Panel::showSettings()
         if (processed)
             did << tr("%1 shape(s) sent to a layer of the stack, %2 left out by the map.")
                        .arg(processed->report.read).arg(processed->report.ignored);
+    } else if (n->type == QLatin1String("rf_cutout")) {
+        // What its regions did to the layout as read, and those that
+        // cannot be read.
+        const Cutout cutout = cutoutOf(m, &cannot);
+        if (!cutout.isEmpty() && processed)
+            did << tr("%1 shape(s) cut along the regions' edges, %2 masked.").arg(processed->report.cut).arg(processed->report.masked);
+        else if (cutout.isEmpty() && cannot.isEmpty())
+            did << (flagOf(*n, QStringLiteral("apply")) ? tr("No region: the whole layout is solved.")
+                                                        : tr("Not applied: the whole layout is solved."));
     } else if (n->type == QLatin1String("rf_results")) {
         // What the solve found, where there is one: the ports' S of a
         // full-wave solve, or the capacitance of each net and each as a line.
@@ -1035,6 +1071,43 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
                 });
             pick->setMenu(menu);
             edit->setParent(w);
+            h->addWidget(edit, 1);
+            h->addWidget(pick);
+            connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
+            a_editors.insert(key, edit);   // (the line, not the row: the tests type into it)
+            return w;
+        }
+        // A region's layers: the stack's metals and vias, each taken in or
+        // out from its menu.
+        if (key == QLatin1String("layers") && node.type == QLatin1String("rf_region")) {
+            auto* w = new QWidget(a_form);
+            auto* h = new QHBoxLayout(w);
+            h->setContentsMargins(0, 0, 0, 0);
+            edit->setParent(w);
+            edit->setPlaceholderText(tr("every layer"));
+            auto* pick = new QToolButton(w);
+            pick->setText(QStringLiteral("…"));
+            pick->setObjectName(QStringLiteral("rfPick_") + key);
+            pick->setPopupMode(QToolButton::InstantPopup);
+            auto* menu = new QMenu(pick);
+            const QStringList chosen = namesOf(node, key);
+            if (a_doc)
+                for (const Layer& layer : a_doc->model().stack().layers) {
+                    if (layer.kind != Layer::Metal && layer.kind != Layer::Via) continue;
+                    QAction* a = menu->addAction(layer.name);
+                    a->setCheckable(true);
+                    a->setChecked(chosen.contains(layer.name));
+                    connect(a, &QAction::toggled, this, [this, key, name = layer.name](bool on) {
+                        const Node* now = a_doc ? a_doc->model().find(a_shownTag) : nullptr;
+                        if (now == nullptr) return;
+                        QStringList list = namesOf(*now, key);
+                        if (on && !list.contains(name)) list << name;
+                        if (!on) list.removeAll(name);
+                        commit(key, list.join(QStringLiteral(", ")));
+                    });
+                }
+            if (menu->actions().isEmpty()) menu->addAction(tr("The stack has no metal or via"))->setEnabled(false);
+            pick->setMenu(menu);
             h->addWidget(edit, 1);
             h->addWidget(pick);
             connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });

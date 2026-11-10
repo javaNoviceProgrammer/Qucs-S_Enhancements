@@ -1008,6 +1008,124 @@ private slots:
         QCOMPARE(doc->layout(), read);
     }
 
+    // The Cutout: a region added from its menu's Add Region and from its
+    // form's button, each a step of Undo; the region's form its shape's
+    // lengths alone; the shapes the tab solves cut to it, and it drawn over
+    // the layout - whatever else is shown.
+    void aCutoutSolvesAPartOfTheLayout()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("cutout.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")},
+                    {QStringLiteral("11"), QStringLiteral("0"), QStringLiteral("M2")}});
+        QVERIFY(doc->waitForPrepared(60000));
+        const std::shared_ptr<const rf::Processed> whole = doc->processed();
+        QVERIFY(whole != nullptr && !whole->conductors.isEmpty());
+        QRectF all;
+        double wholeArea = 0;
+        for (const rf::Conductor& c : whole->conductors) {
+            all = all.united(c.outline.boundingRect());
+            wholeArea += c.area();
+        }
+        QTreeWidget* tree = panel()->tree();
+        QTreeWidgetItem* item = itemOf(tree, QStringLiteral("cutout"));
+        QVERIFY(item != nullptr);
+        QCOMPARE(item->text(0), QStringLiteral("Cutout"));
+        QCOMPARE(item->parent(), itemOf(tree, QStringLiteral("layout")));
+        QCOMPARE(item->text(1), QStringLiteral("the whole layout"));
+
+        // Its menu: Add Region, in the menu itself.
+        const rf::Node* cutout = doc->model().layout().child(QStringLiteral("rf_cutout"));
+        QMenu* menu = panel()->menuFor(QStringLiteral("cutout"));
+        QVERIFY(menu != nullptr);
+        QAction* addRegion = nullptr;
+        for (QAction* a : menu->actions())
+            if (a->objectName() == QLatin1String("rfAdd_rf_region")) addRegion = a;
+        QVERIFY(addRegion != nullptr);
+        QCOMPARE(addRegion->text(), QStringLiteral("Add Region"));
+        const int steps = doc->undoStack()->count();
+        addRegion->trigger();
+        menu->deleteLater();
+        QCOMPARE(int(cutout->children.size()), 1);
+        QCOMPARE(cutout->children.at(0).type, QStringLiteral("rf_region"));
+        QCOMPARE(doc->undoStack()->count(), steps + 1);
+        doc->undo();
+        QCOMPARE(int(cutout->children.size()), 0);
+
+        // Its form: the same as a button.
+        panel()->selectNode(QStringLiteral("cutout"));
+        QPushButton* button = nullptr;
+        QTRY_VERIFY((button = panel()->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfCutoutAddRegion"))) != nullptr);
+        QVERIFY2(reportText().contains(QStringLiteral("the whole layout is solved")), qPrintable(reportText()));
+        button->click();
+        QCOMPARE(int(cutout->children.size()), 1);
+        const QString tag = cutout->children.at(0).tag;
+        QTRY_COMPARE(itemOf(tree, QStringLiteral("cutout"))->text(1), QStringLiteral("1 region(s)"));
+        QCOMPARE(itemOf(tree, tag)->text(1), QStringLiteral("kept"));
+
+        // The region's form: a rectangle's corners; a polygon's corners as a
+        // table in their place.
+        panel()->selectNode(tag);
+        QTRY_VERIFY(panel()->editorFor(QStringLiteral("x0")) != nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("points")) == nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("radius")) == nullptr);
+        QVERIFY(panel()->settingsArea()->findChild<QToolButton*>(QStringLiteral("rfPick_layers")) != nullptr);
+        auto* shape = qobject_cast<QComboBox*>(panel()->editorFor(QStringLiteral("shape")));
+        QVERIFY(shape != nullptr);
+        shape->setCurrentIndex(shape->findData(QStringLiteral("polygon")));
+        emit shape->activated(shape->currentIndex());
+        QTRY_VERIFY(panel()->editorFor(QStringLiteral("points")) != nullptr);
+        QVERIFY(panel()->editorFor(QStringLiteral("x0")) == nullptr);
+        doc->undo();
+        QCOMPARE(rf::textOf(*doc->model().find(tag), QStringLiteral("shape")), QStringLiteral("rectangle"));
+
+        // Over the left half of the layout: what the tab solves is in it.
+        const QRectF left(all.left() - 1, all.top() - 1, all.width() / 2 + 1, all.height() + 2);
+        QVERIFY(doc->editNode(tag,
+                              [&left](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("x0"), QStringLiteral("%1[um]").arg(left.left(), 0, 'g', 12));
+                                  n.props.insert(QStringLiteral("y0"), QStringLiteral("%1[um]").arg(left.top(), 0, 'g', 12));
+                                  n.props.insert(QStringLiteral("x1"), QStringLiteral("%1[um]").arg(left.right(), 0, 'g', 12));
+                                  n.props.insert(QStringLiteral("y1"), QStringLiteral("%1[um]").arg(left.bottom(), 0, 'g', 12));
+                              },
+                              QStringLiteral("region")));
+        QVERIFY(doc->waitForPrepared(60000));
+        double halfArea = 0;
+        for (const rf::Conductor& c : doc->processed()->conductors) {
+            halfArea += c.area();
+            QVERIFY2(c.outline.boundingRect().right() <= left.right() + 1e-3, qPrintable(QString::number(c.outline.boundingRect().right())));
+        }
+        QVERIFY2(halfArea > 0 && halfArea < wholeArea * 0.95, qPrintable(QStringLiteral("%1 of %2").arg(halfArea).arg(wholeArea)));
+        QVERIFY(doc->mesh() != nullptr);
+        for (const auto& cell : doc->mesh()->cells) QVERIFY(cell.outline.boundingRect().right() <= left.right() + 1e-3);
+        // Drawn: its outline, with the processed shapes and the ports off.
+        doc->setProcessedShown(false);
+        doc->setPortsShown(false);
+        bool drawn = false;
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays())
+            if (o.name.contains(QLatin1String("cutout's regions that keep"))) {
+                drawn = true;
+                QCOMPARE(o.shapes.size(), 1);
+                QVERIFY(qAbs(o.shapes.first().boundingRect().width() - left.width()) < 1e-6);
+            }
+        QVERIFY(drawn);
+        // What it did, under the Cutout.
+        panel()->selectNode(QStringLiteral("cutout"));
+        QTRY_VERIFY2(reportText().contains(QStringLiteral("masked")), qPrintable(reportText()));
+
+        // Not applied: the whole layout again, and nothing drawn of it.
+        QVERIFY(doc->editNode(QStringLiteral("cutout"), [](rf::Node& n) { n.props.insert(QStringLiteral("apply"), false); },
+                              QStringLiteral("apply")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QCOMPARE(doc->processed()->conductors.size(), whole->conductors.size());
+        QTRY_COMPARE(itemOf(tree, QStringLiteral("cutout"))->text(1), QStringLiteral("not applied"));
+        for (const qucs_s::layout::LayoutView::Overlay& o : doc->view()->overlays()) QVERIFY(!o.name.contains(QLatin1String("cutout")));
+        doc->setProcessedShown(true);
+        doc->setPortsShown(true);
+    }
+
     // The processed shapes and the cells drawn over the layout they came
     // from, each layer in the colour the stack gives it, and either of the
     // two shown or hidden by its own button.
