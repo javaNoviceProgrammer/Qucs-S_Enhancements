@@ -423,10 +423,10 @@ private slots:
     // selecting; Claude reads each stroke against the diagrams - the trace
     // a ring is round and over which values, the point a dot marks -, takes
     // the pen up or puts it down, clears and marks the strokes
-    // (show_data_display), draws with send_input, and is told of them with
-    // the next prompt. Undo takes a stroke back with the pen up, Escape puts
-    // it down; the page itself is not changed, and keeps the strokes when
-    // its file is read again. A schematic has no such toolbar or pen.
+    // (show_schematic), draws with send_input, and is told of them with the
+    // next prompt. Undo takes a stroke back with the pen up, Escape puts it
+    // down; the page itself is not changed, and keeps the strokes when its
+    // file is read again.
     void aDataDisplaysPenDrawsAndIsRead()
     {
         // y = x² over 0 to 10, in one diagram.
@@ -443,7 +443,7 @@ private slots:
         QVERIFY(app->gotoPage(file, false, false));
         Schematic* page = front();
         QVERIFY(page != nullptr && page->isDataDisplayPage());
-        auto* bar = page->dataDisplayBar();
+        auto* bar = page->pageBar();
         QVERIFY(bar != nullptr);
         QTest::qWait(50);
         // The toolbar across the top, the canvas and its scroll bar below it.
@@ -454,6 +454,7 @@ private slots:
                  qPrintable(QStringLiteral("the canvas at %1, the bar %2 high").arg(page->viewport()->mapTo(page, QPoint(0, 0)).y()).arg(bar->height())));
         QVERIFY(page->verticalScrollBar()->geometry().top() >= bar->height());
         QVERIFY(bar->penButton() != nullptr && bar->zoomInButton() != nullptr && bar->fitButton() != nullptr && bar->reloadButton() != nullptr);
+        QVERIFY(bar->reloadButton()->isVisible());
         // Its zoom.
         const double before = page->getScale();
         bar->zoomInButton()->click();
@@ -523,18 +524,19 @@ private slots:
         QVERIFY(one.value("strokes").toArray().at(0).toObject().contains("points"));
         const auto [revision, told] = app->drawingsOf(page->getDocName());
         QVERIFY(revision != 0);
-        QVERIFY2(told.contains("ring") && told.contains("diagram 1") && told.contains("round the trace(s) y") && told.contains("show_data_display"),
+        QVERIFY2(told.contains("ring") && told.contains("diagram 1") && told.contains("round the trace(s) y") && told.contains("show_schematic"),
                  qPrintable(told));
-        QVERIFY(control->inEveryTurn().contains("read_drawings") && control->inEveryTurn().contains("show_data_display"));
+        QVERIFY(control->inEveryTurn().contains("read_drawings") && control->inEveryTurn().contains("show_schematic"));
 
-        // show_data_display: the diagrams, the pen; strokes marked addressed
+        // show_schematic: the diagrams, the pen; strokes marked addressed
         // (left out of the prompt), then every mark taken away.
-        r = structured(callTool("show_data_display", {{"path", file}, {"addressed", QJsonArray{1}}}));
+        r = structured(callTool("show_schematic", {{"path", file}, {"addressed", QJsonArray{1}}}));
+        QCOMPARE(r.value("page").toString(), QStringLiteral("a data display"));
         QCOMPARE(r.value("diagrams").toArray().at(0).toObject().value("traces").toArray().at(0).toString(), QStringLiteral("y"));
         QVERIFY(r.value("pen").toString().startsWith("taken up"));
         QVERIFY(r.value("drawings").toArray().at(0).toObject().value("addressed").toBool());
         QVERIFY(!app->drawingsOf(page->getDocName()).second.contains("ring"));
-        callTool("show_data_display", {{"path", file}, {"addressed", "none"}});
+        callTool("show_schematic", {{"path", file}, {"addressed", "none"}});
         QVERIFY(!page->penDrawing().strokes().at(0).addressed);
 
         // Undo, the pen up: the drawing's last changes taken back in turn -
@@ -558,24 +560,110 @@ private slots:
                                 {"drag_to", QJsonArray{middle.x() + 40, middle.y() + 40}}});
         QCOMPARE(page->penDrawing().strokes().size(), 1);
         // Taken up again and cleared by Claude.
-        r = structured(callTool("show_data_display", {{"path", file}, {"pen", true}, {"drawings", "clear"}}));
+        r = structured(callTool("show_schematic", {{"path", file}, {"pen", true}, {"drawings", "clear"}}));
         QVERIFY(page->penActive() && bar->penButton()->isChecked());
         QVERIFY(page->penDrawing().isEmpty());
         QVERIFY2(r.value("done").toString().contains("taken away"), qPrintable(QJsonDocument(r).toJson()));
-        QVERIFY(callTool("show_data_display", {{"path", file}, {"drawings", "all"}}).value("isError").toBool());
-        callTool("show_data_display", {{"path", file}, {"pen", false}});
+        QVERIFY(callTool("show_schematic", {{"path", file}, {"drawings", "all"}}).value("isError").toBool());
+        callTool("show_schematic", {{"path", file}, {"pen", false}});
         QVERIFY(!page->penActive());
-
-        // A schematic: no toolbar, no pen.
-        callTool("new_document", {{"kind", "schematic"}});
-        Schematic* sch = front();
-        QVERIFY(sch != nullptr && sch != page);
-        QVERIFY(sch->dataDisplayBar() == nullptr);
-        sch->setPenActive(true);
-        QVERIFY(!sch->penActive());
-        QVERIFY(callTool("show_data_display", {}).value("isError").toBool());
-        callTool("close_document", {{"unsaved", "discard"}});
         page->setChanged(false);
+        callTool("close_document", {{"path", file}, {"unsaved", "discard"}});
+    }
+
+    // A schematic's page has the toolbar too - the zoom and the pen, not a
+    // data display's reload. The pen up, a drag draws instead of selecting
+    // or wiring; Claude reads each stroke against the circuit - the parts a
+    // ring is round, by their refs (not the wires between them), the wire
+    // or label a dot is on -, and with the symbol in the editor the pen
+    // draws on the symbol, its strokes its own and numbered apart. The
+    // schematic itself is not changed.
+    void aSchematicsPenMarksItsParts()
+    {
+        callTool("new_document", {{"kind", "schematic"}});
+        callTool("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}});
+        callTool("add_component", {{"type", "C"}, {"name", "C1"}, {"x", 400}, {"y", 100}});
+        callTool("add_wire", {{"points", QJsonArray{QJsonArray{100, 300}, QJsonArray{400, 300}}}});
+        callTool("set_label", {{"at", QJsonArray{250, 300}}, {"name", "out"}});
+        const QString file = dir.filePath("workspace/marked.sch");
+        callTool("save_document", {{"as", file}, {"replace", true}});
+        Schematic* sch = front();
+        QVERIFY(sch != nullptr && !sch->isDataDisplayPage());
+        auto* bar = sch->pageBar();
+        QVERIFY(bar != nullptr);
+        QTest::qWait(50);
+        QVERIFY(bar->isVisible() && bar->penButton()->isVisible() && bar->zoomInButton()->isVisible());
+        QVERIFY(!bar->reloadButton()->isVisible());
+        QVERIFY(sch->verticalScrollBar()->geometry().top() >= bar->height());
+        QVERIFY(!sch->getDocChanged());
+
+        // Taken up by Claude; a ring round R1 drawn with send_input.
+        QJsonObject r = structured(callTool("show_schematic", {{"path", file}, {"pen", true}}));
+        QVERIFY2(r.value("page").toString() == QStringLiteral("a schematic") && r.value("components").toInt() == 2, qPrintable(QJsonDocument(r).toJson()));
+        QVERIFY(sch->penActive() && bar->penButton()->isChecked());
+        const Component* r1 = nullptr;
+        for (const Component* c : sch->a_DocComps)
+            if (c->Name == QLatin1String("R1")) r1 = c;
+        QVERIFY(r1 != nullptr);
+        const QRect box = r1->boundingRect();
+        const QPointF centre = QRectF(box).center();
+        const double radius = 0.75 * std::hypot(box.width(), box.height());
+        QJsonArray ring;
+        for (int k = 1; k <= 24; ++k) ring.append(QJsonArray{centre.x() + radius * std::cos(k * M_PI / 12), centre.y() + radius * std::sin(k * M_PI / 12)});
+        r = structured(callTool("send_input", {{"target", "canvas"}, {"path", file}, {"click", QJsonArray{centre.x() + radius, centre.y()}}, {"drag_through", ring}}));
+        QJsonObject stroke = r.value("drawn").toArray().at(0).toObject();
+        QCOMPARE(stroke.value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(stroke.value("page").toString(), QStringLiteral("page"));
+        const QJsonArray around = stroke.value("around").toArray();
+        QVERIFY2(around.size() == 1 && around.at(0).toObject().value("component").toString() == QStringLiteral("R1"), qPrintable(QJsonDocument(stroke).toJson()));
+        // A dot on the wire, away from its label: the wire, by its ends.
+        r = structured(callTool("send_input", {{"target", "canvas"}, {"path", file}, {"click", QJsonArray{140, 300}}}));
+        stroke = r.value("drawn").toArray().at(0).toObject();
+        QCOMPARE(stroke.value("drawn as").toString(), QStringLiteral("dot"));
+        QVERIFY2(stroke.value("on").toObject().value("wire").toString() == QStringLiteral("[100, 300, 400, 300]"), qPrintable(QJsonDocument(stroke).toJson()));
+        // Nothing of the schematic changed: no part moved, no wire drawn.
+        QVERIFY(!sch->getDocChanged());
+        QCOMPARE(sch->a_DocWires.size(), size_t(1));
+
+        // The prompt is told of them; read_drawings too.
+        const auto [revision, told] = app->drawingsOf(sch->getDocName());
+        QVERIFY(revision != 0);
+        QVERIFY2(told.contains("R1") && told.contains("show_schematic"), qPrintable(told));
+        QVERIFY(control->inEveryTurn().contains("show_schematic") && control->inEveryTurn().contains("read_drawings"));
+        QCOMPARE(structured(callTool("read_drawings", {{"path", file}})).value("documents").toArray().at(0).toObject().value("strokes").toArray().size(), 2);
+
+        // The symbol in the editor: the pen draws on it, numbered apart;
+        // the schematic's strokes not shown, nor counted in its menu.
+        QVERIFY(QMetaObject::invokeMethod(app, "slotSymbolEdit"));
+        QVERIFY(sch->getSymbolMode());
+        QCOMPARE(sch->penPart(), QStringLiteral("symbol"));
+        r = structured(callTool("send_input", {{"target", "canvas"}, {"path", file}, {"click", QJsonArray{0, 0}}}));
+        stroke = r.value("drawn").toArray().at(0).toObject();
+        QVERIFY2(stroke.value("page").toString() == QStringLiteral("symbol") && stroke.value("stroke").toInt() == 1, qPrintable(QJsonDocument(r).toJson()));
+        QCOMPARE(sch->penDrawing().count("page"), 2);
+        QCOMPARE(sch->penDrawing().count("symbol"), 1);
+        r = structured(callTool("show_schematic", {{"path", file}, {"addressed", QJsonArray{1}}, {"symbol", true}}));
+        QVERIFY(r.value("page").toString().contains("symbol"));
+        QVERIFY(sch->penDrawing().on("symbol").at(0).addressed && !sch->penDrawing().on("page").at(0).addressed);
+        QVERIFY(QMetaObject::invokeMethod(app, "slotSymbolEdit"));
+        QVERIFY(!sch->getSymbolMode());
+
+        // Escape puts the pen down: a drag selects again, draws nothing.
+        QVERIFY(QMetaObject::invokeMethod(app, "slotEscape"));
+        QVERIFY(!sch->penActive() && !bar->penButton()->isChecked());
+        callTool("send_input", {{"target", "canvas"}, {"path", file}, {"click", QJsonArray{600, 500}}, {"drag_to", QJsonArray{650, 550}}});
+        QCOMPARE(sch->penDrawing().strokes().size(), 3);
+        // A tool picked to edit with puts it down too: its drags are the
+        // tool's.
+        callTool("show_schematic", {{"path", file}, {"pen", true}});
+        QVERIFY(sch->penActive());
+        app->insWire->trigger();
+        QVERIFY(!sch->penActive() && !bar->penButton()->isChecked());
+        QVERIFY(QMetaObject::invokeMethod(app, "slotEscape"));
+        // Cleared by Claude: the page's strokes and the symbol's.
+        r = structured(callTool("show_schematic", {{"path", file}, {"drawings", "clear"}}));
+        QVERIFY(sch->penDrawing().isEmpty());
+        sch->setChanged(false);
         callTool("close_document", {{"path", file}, {"unsaved", "discard"}});
     }
 

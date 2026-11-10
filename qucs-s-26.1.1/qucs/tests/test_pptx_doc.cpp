@@ -3510,7 +3510,7 @@ private slots:
         QVERIFY(write(notes, "a note\n"));
         QVERIFY(app.gotoPage(notes));
         const QJsonObject refused = call("read_drawings", {{"path", "notes.txt"}});
-        QVERIFY2(failed(refused) && QucsControl::textOf(refused).contains(QStringLiteral("not a layout, a presentation or a data display")), qPrintable(QucsControl::textOf(refused)));
+        QVERIFY2(failed(refused) && QucsControl::textOf(refused).contains(QStringLiteral("not a layout, a presentation, a schematic or a data display")), qPrintable(QucsControl::textOf(refused)));
         app.closeAllFiles();
     }
 

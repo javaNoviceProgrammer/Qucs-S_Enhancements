@@ -648,8 +648,8 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QHash<QString, int> drawnBefore;
     int strokesBefore = 0;
     quint64 revisionBefore = 0;
-    // (A data display's page: its own pen, on its canvas.)
-    QPointer<Schematic> page = sch && sch->isDataDisplayPage() ? sch : QPointer<Schematic>();
+    // (A schematic's or data display's page: its own pen, on its canvas.)
+    QPointer<Schematic> page = sch ? sch : QPointer<Schematic>();
     if (layoutView || slideView || page) {
         const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : page->penDrawing();
         for (const qucs_s::markup::Stroke& s : drawing.strokes()) drawnBefore[s.on] = std::max(drawnBefore.value(s.on), s.id);   // (the last number each part gave)
@@ -718,7 +718,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                     const QJsonObject r = v.toObject();
                     const QString part = layoutView ? r.value(QLatin1String("cell")).toString()
                                        : slides     ? QString::number(r.value(QLatin1String("slide")).toInt())
-                                                    : Schematic::penPart();
+                                                    : r.value(QLatin1String("page")).toString();
                     if (r.value(QLatin1String("stroke")).toInt() > drawnBefore.value(part)) drawn.append(r);
                 }
                 if (!drawn.isEmpty()) o.insert(QStringLiteral("drawn"), drawn);
