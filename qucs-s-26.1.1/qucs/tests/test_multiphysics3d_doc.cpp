@@ -35,6 +35,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QProgressBar>
+#include <QPointer>
 #include <QPushButton>
 #include <QSlider>
 #include <QStackedWidget>
@@ -506,6 +507,54 @@ private slots:
         QVERIFY2(ring->geometry().ok(), qPrintable(ring->messages().join(QStringLiteral("\n"))));
         QCOMPARE(ring->geometry().topology->objectNames, (QStringList{QStringLiteral("plate"), QStringLiteral("band")}));
         QCOMPARE(int(ring->geometry().topology->domains.size()), 2);
+    }
+
+    /// A tab closed while its geometry builds - a build that does not ask
+    /// whether to stop, 400 circles on one another - closes at once: the
+    /// build told to stop, left to end on its own (the job holds what it
+    /// reads), its thread gone after. The tab waited for the job, and one
+    /// that never ended - an Array of 2 by 2147483647 copies, its count
+    /// made -2 as ints - hung the program (the hunt of 9 November, H2).
+    void closedWhileItBuilds()
+    {
+        const auto model = [](const char* nx, const char* ny) {
+            return QStringLiteral(R"({"format": "qucs-s multiphysics 3d 1", "components": [{"unit": "mm", "space": "3D", "geometry": [
+                {"type": "extrude", "label": "rod", "z": "0", "height": "1", "features": [
+                    {"type": "circle", "label": "c", "radius": "1"},
+                    {"type": "array", "label": "many", "input": ["c"], "count": ["%1", "%2"], "displacement": ["0", "0"]}]}]}]})")
+                .arg(QLatin1String(nx), QLatin1String(ny))
+                .toUtf8();
+        };
+        // The count past its limit refused, said.
+        QFile f(path(QStringLiteral("endless.qfem3d")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(model("2", "2147483647"));
+        f.close();
+        Multiphysics3DDoc* endless = open(f.fileName());
+        QVERIFY(endless);
+        QVERIFY(endless->waitForIdle(30000));
+        QVERIFY(!endless->geometry().ok());
+        QVERIFY2(endless->messages().join(QStringLiteral("\n")).contains(QStringLiteral("1 to 10000 copies")),
+                 qPrintable(endless->messages().join(QStringLiteral("\n"))));
+        app->closeAllFiles();
+        // Closed while it builds.
+        QFile g(path(QStringLiteral("slow.qfem3d")));
+        QVERIFY(g.open(QIODevice::WriteOnly));
+        g.write(model("400", "1"));
+        g.close();
+        Multiphysics3DDoc* slow = open(g.fileName());
+        QVERIFY(slow);
+        QTRY_VERIFY_WITH_TIMEOUT(slow->jobThread() != nullptr, 10000);
+        QPointer<QThread> thread = slow->jobThread();
+        QTest::qWait(300);
+        QVERIFY2(!thread.isNull() && thread->isRunning(), "still building when it is closed");
+        QElapsedTimer t;
+        t.start();
+        slow->setDocChanged(false);
+        app->closeAllFiles();
+        QVERIFY2(t.elapsed() < 8000, qPrintable(QString::number(t.elapsed())));
+        qInfo("closed in %lld ms, its build %s", t.elapsed(), thread.isNull() ? "ended" : "left to end");
+        QTRY_VERIFY_WITH_TIMEOUT(thread.isNull(), 600000);
     }
 
     /// The chip heater solved through its tab (Compute; F2): the solution

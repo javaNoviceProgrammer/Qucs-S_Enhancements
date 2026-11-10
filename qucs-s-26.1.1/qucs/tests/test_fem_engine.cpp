@@ -172,6 +172,8 @@ private slots:
     void formUnionCounts();
     void selectionRules();
     void booleans();
+    void booleansOfHugeAndEndlessCoordinates();
+    void extentsPastMeshingRefused();
     void meshQuality();
     void parallelPlates();
     void floatingPotential();
@@ -758,6 +760,77 @@ void TestFemEngine::booleans()
     const GeometryBuild g = buildGeometry(bad, *evaluateParameters(bad));
     QVERIFY(!g.ok());
     QVERIFY(g.errors.value(g.failedAt).contains(QStringLiteral("a")));
+}
+
+// A boolean's integers scaled to its own inputs too, and a coordinate out
+// of Clipper's range a failed build: a 20 mm die with a hole drawn in nm
+// made the scale 2^39 (the inputs no longer among the objects it measured)
+// and Clipper threw, which nothing caught - Qucs-S aborted on opening it
+// (the hunt of 9 November, C1).
+void TestFemEngine::booleansOfHugeAndEndlessCoordinates()
+{
+    const Model die = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "nm", "geometry": [
+        {"type": "rectangle", "name": "die", "base": "center", "size": ["20e6", "20e6"]},
+        {"type": "rectangle", "name": "hole", "base": "center", "size": ["2e6", "2e6"]},
+        {"type": "difference", "name": "frame", "input": ["die"], "tools": ["hole"]}]}]})");
+    GeometryBuild g = buildGeometry(die, *evaluateParameters(die));
+    QVERIFY2(g.ok(), qPrintable(QStringList(g.errors.values()).join(QLatin1String("; "))));
+    QCOMPARE(int(g.topology->domains.size()), 1);
+    QVERIFY(std::abs(g.topology->domains[0].area / (400e12 - 4e12) - 1) < 1e-9);
+    // Two squares 2^31 wide united, and intersected.
+    for (const char* op : {"union", "intersection"}) {
+        const Model wide = modelOf(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+            {"type": "rectangle", "name": "a", "size": ["2147483648", "2147483648"]},
+            {"type": "rectangle", "name": "b", "position": ["1e9", "1e9"], "size": ["2147483648", "2147483648"]},
+            {"type": "%1", "name": "u", "input": ["a", "b"]}]}]})").arg(QLatin1String(op)).toUtf8());
+        g = buildGeometry(wide, *evaluateParameters(wide));
+        QVERIFY2(g.ok(), qPrintable(QStringList(g.errors.values()).join(QLatin1String("; "))));
+    }
+    // Past every range: a failed build, said - no abort.
+    for (const char* size : {"1e308", "1e308*10", "-1e308"}) {
+        const Model huge = modelOf(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+            {"type": "rectangle", "name": "a", "base": "center", "size": ["%1", "%1"]},
+            {"type": "circle", "name": "c", "radius": "1"},
+            {"type": "difference", "name": "d", "input": ["a"], "tools": ["c"]}]}]})").arg(QLatin1String(size)).toUtf8());
+        g = buildGeometry(huge, *evaluateParameters(huge));
+        QVERIFY2(!g.ok(), size);
+    }
+}
+
+// A geometry past 1e60 refused before it is triangulated, said: the SOI
+// waveguide's absorbing rectangle 1e308 tall sent the triangulation
+// flipping edges for ever, on the GUI thread as it opened (the hunt of 9
+// November, H3).
+void TestFemEngine::extentsPastMeshingRefused()
+{
+    QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/soi_waveguide_modes.qfem"));
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QByteArray json = f.readAll();
+    const QByteArray at = R"("size": ["W + 2*d", "H + 2*d"])";
+    QVERIFY(json.contains(at));
+    QElapsedTimer t;
+    t.start();
+    for (const char* height : {"H + 1e308*d", "1e70", "1e300"}) {
+        QByteArray tall = json;
+        tall.replace(at, QByteArray(R"("size": ["W + 2*d", ")") + height + R"("])");
+        const Model m = modelOf(tall);
+        const GeometryBuild g = buildGeometry(m, *evaluateParameters(m));
+        QVERIFY2(!g.ok(), height);
+        const QString said = QStringList(g.errors.values()).join(QLatin1String("; "));
+        QVERIFY2(said.contains(QLatin1String("thinner than the union's tolerance")) || said.contains(QLatin1String("past what is meshed")), qPrintable(said));
+    }
+    // Alone, nothing lost to the tolerance: its extent said.
+    const Model alone = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+        {"type": "rectangle", "name": "a", "base": "center", "size": ["1e70", "1e70"]}]}]})");
+    const GeometryBuild g = buildGeometry(alone, *evaluateParameters(alone));
+    QVERIFY(!g.ok());
+    QVERIFY2(QStringList(g.errors.values()).join(QLatin1String("; ")).contains(QLatin1String("past what is meshed (1e60)")),
+             qPrintable(QStringList(g.errors.values()).join(QLatin1String("; "))));
+    // (And a large one that is no hostile number: built.)
+    const Model big = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+        {"type": "rectangle", "name": "a", "base": "center", "size": ["1e20", "1e20"]}]}]})");
+    QVERIFY(buildGeometry(big, *evaluateParameters(big)).ok());
+    QVERIFY2(t.elapsed() < 30000, qPrintable(QString::number(t.elapsed())));
 }
 
 void TestFemEngine::meshQuality()

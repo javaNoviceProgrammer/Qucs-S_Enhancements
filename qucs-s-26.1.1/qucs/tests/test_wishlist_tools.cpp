@@ -684,6 +684,11 @@ private slots:
         r = call("synthesize_power_combiner", {{"f", 1e9}, {"simulator", "qucsator"}, {"type", "bagley"}, {"ways", 5}});
         QVERIFY2(!failed(r) && json(r).value("parts").toVariant().toStringList().contains("P6"), qPrintable(text(r)));
         QVERIFY(text(call("synthesize_power_combiner", {{"f", 1e9}, {"type", "branchline"}})).contains("only the Wilkinson"));
+        // Numbers past all sense: an answer, the program's own. (Its values'
+        // prefix found as int(log10(inf) / 3): UBSan stopped the program -
+        // the hunt of 9 November, U2.)
+        r = call("synthesize_power_combiner", {{"f", 1e300}, {"ratio_db", 868997928504.3684}});
+        QVERIFY2(!text(r).contains("gave no answer"), qPrintable(text(r)));
         if (!withNgspice()) QSKIP("no ngspice here: designed, not simulated");
         QVERIFY(json(call("simulate", {{"path", "wilk.sch"}})).value("succeeded").toBool());
         const double s21 = at("wilk.sch", "S21_dB", 1e9);

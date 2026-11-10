@@ -17,6 +17,7 @@
 #include "qucs.h"
 #include "schematic.h"
 
+#include <QApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPointer>
@@ -225,7 +226,13 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
         }
         result.insert(QStringLiteral("error"), message);
         if (!stopped && value.hasProperty(QStringLiteral("lineNumber"))) result.insert(QStringLiteral("line"), value.property(QStringLiteral("lineNumber")).toInt());
-        if (atomic) {
+        if (atomic && QApplication::activeModalWidget() != nullptr) {
+            // (Not under a dialog: one open over a schematic holds its parts,
+            // which putting it back freed - the hunt of 9 November, C2.)
+            result.insert(QStringLiteral("put back"), tr("nothing: a dialog is open (%1), and putting a schematic back under it is not "
+                                                         "safe - undo takes the script's changes back once it is closed")
+                                                          .arg(QApplication::activeModalWidget()->windowTitle()));
+        } else if (atomic) {
             for (const Kept& k : std::as_const(kept)) {
                 if (!k.sch) continue;
                 k.sch->restoreAll(k.state, false);
