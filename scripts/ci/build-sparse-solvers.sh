@@ -57,9 +57,11 @@ prefix="$(cd "$prefix" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# The first of a library's files under the system's library folders.
+# The first of a library's files under the system's library folders. (A
+# folder that is not there - /usr/lib64 on an arm64 runner - makes find exit
+# 1, and under pipefail that stopped the script without a word.)
 find_library_file() {
-  find /usr/lib /usr/lib64 /usr/local/lib -name "$1" 2>/dev/null | sort | head -n 1
+  { find /usr/lib /usr/lib64 /usr/local/lib -name "$1" 2>/dev/null || true; } | sort | head -n 1
 }
 METIS_LIBRARY="${METIS_LIBRARY:-$(find_library_file libmetis.so)}"
 BLAS_LIBRARY="${BLAS_LIBRARY:-$(find_library_file libopenblas.so)}"
@@ -81,7 +83,8 @@ if [ "$want_mumps" -eq 1 ]; then
   metis_dir="$(dirname "$METIS_LIBRARY")"
   # (Its own Makefile.inc, after Make.inc/Makefile.debian.SEQ: METIS and
   # PORD, OpenMP, position-independent code - CI's tests link a shared
-  # library of the core.)
+  # library of the core. AR ends in a space, as MUMPS's own Make.inc files
+  # have it: its rules write $(AR)$@, and "ar vr" alone made "ar vrlibpord.a".)
   cat > "$src/Makefile.inc" <<EOF
 LPORDDIR = \$(topdir)/PORD/lib/
 IPORD    = -I\$(topdir)/PORD/include/
@@ -101,7 +104,7 @@ RM      = /bin/rm -f
 CC      = $CC
 FC      = $FC
 FL      = $FC
-AR      = ar vr
+AR      = ar vr \$(empty)
 RANLIB  = ranlib
 LAPACK  = -L$blas_dir -lopenblas
 INCSEQ  = -I\$(topdir)/libseq
