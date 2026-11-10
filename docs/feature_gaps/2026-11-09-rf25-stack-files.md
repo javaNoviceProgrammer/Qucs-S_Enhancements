@@ -98,7 +98,7 @@ resistance on a conductor of no thickness, a name defined by itself.
 **Not checked: neither Electronics Desktop nor EMX has read a file written here.** Neither runs on macOS, and neither is
 here. The stackups follow documented examples, attribute for attribute. The process files follow the format's grammar.
 
-- **`test_rf25_stack`** (13 functions):
+- **`test_rf25_stack`** (14 functions):
   - **Out:** the exact lines and layers of each file written, for a two-metal process with a via, a lossy substrate and a
     layer map.
   - **Round trips:** each format reads back as the same stack. Grounds (perfect, metal, impedance, open) and a lid go there
@@ -124,3 +124,22 @@ here. The stackups follow documented examples, attribute for attribute. The proc
    `<Permittivity>`. rf25_hfss_export writes both, so every dielectric of a control file imported through
    rf25_hfss_import came in at εr 1.
 2. **Duplicate metals.** Several streams to one `TargetLayer` (a documented example) made one metal of each.
+
+## The check of 9 November
+
+`qucs-reviews/RF2p5D/2026-11-09-claude-rf25-stack-roundtrip.md` took a 15-node stack out and back in both formats, through
+the built app. Everything either file can carry held, and a second pass was stable. It found three things.
+
+- **S1: a metal's "Solved as faces" came back a sheet, and nothing said so.** That changes answers: the wall charge, and
+  the effective permittivity of thick lines. Neither file has a place for it, since each solves a metal at its thickness.
+  - **On export:** a note now names the metals solved as their faces, as it already did for roughness.
+  - **On import:** a metal keeps its `model` and `roughness` from the metal of the same name in the stack being replaced,
+    and the box says which. EMX's spelling of a name also counts (`M3_thick` for "M3 thick"). A metal with no namesake
+    comes in as a sheet, as before.
+- **S2: some of EMX's renames went unsaid.** Every rename is now said: dielectrics and the substrate as well as metals and
+  vias, and a ground that comes back as GND because EMX's plane has no name.
+- **S3: a metal lid is offered but not solved** (`rf25_green.cpp`). This is a gap in the solver, not in the round trip,
+  and it is left as it is.
+
+`whatNeitherFileSaysOfAMetalIsKeptByName` holds S1 and S2, and six more breaks (44 in all) are each caught.
+

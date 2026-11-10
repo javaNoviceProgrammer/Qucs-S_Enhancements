@@ -97,6 +97,30 @@ const Layer* fillAbove(const Stack& stack, int i)
     return nullptr;
 }
 
+/// What a file of \a format cannot say of the stack's metals: those solved
+/// as their two faces (and how that comes back), empty where there are none.
+QString facesNote(const Stack& stack, const QString& format)
+{
+    QStringList faces;
+    for (const Layer& l : stack.layers)
+        if (l.kind == Layer::Metal && l.twoSheets) faces << l.name;
+    if (faces.isEmpty()) return {};
+    return QCoreApplication::translate("qucs_s::rf25::StackFile",
+                                       "%1 solved as their two faces, which %2 has no place for (it solves each metal at its thickness): "
+                                       "read back into this model, a metal of the same name keeps it, else it is a sheet.")
+        .arg(faces.join(QStringLiteral(", ")), format);
+}
+
+/// A name as EMX may have made it: \a name without case, and anything but a
+/// letter or a digit an underscore - for finding the metal it was.
+QString looseName(const QString& name)
+{
+    QString out;
+    for (const QChar c : name.toLower()) out += c.isLetterOrNumber() ? c : QLatin1Char('_');
+    while (out.endsWith(QLatin1Char('_'))) out.chop(1);
+    return out;
+}
+
 } // namespace
 
 std::optional<StackFormat> stackFormatOf(const QString& path)
@@ -244,6 +268,7 @@ StackWritten hfssStackupOf(const Model& model, const QString& name, const QStrin
             }
     }
     if (rough) out.notes << tr("The metals' roughness is not in an XML stackup: set it on each signal layer in Electronics Desktop (rf25_hfss_export's script does).");
+    if (const QString faces = facesNote(stack, tr("an XML stackup")); !faces.isEmpty()) out.notes << faces;
 
     QStringList vias;
     for (const Layer& v : stack.layers) {
@@ -424,12 +449,17 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
         out.notes << tr("%1 is a %2 plane: EMX's plane is perfect, so its loss is not in the process file.")
                          .arg(ground->name, ground->variant == QLatin1String("metal") ? tr("metal") : tr("surface-impedance"));
     }
+    if (!open && ground->name != QLatin1String("GND"))
+        out.notes << tr("%1 is EMX's plane, which has no name: it reads back as GND.").arg(ground->name);
     bool rough = false, cover = false;
     for (int i = 0; i < stack.layers.size(); ++i) {
         const Layer& l = stack.layers.at(i);
         // (A metal and a via have theirs already; the others a name to show.)
         const QString id = l.kind == Layer::Metal || l.kind == Layer::Via ? idOf.value(l.name)
                          : l.kind == Layer::Ground ? QString() : emxIdentifier(l.name, &used);
+        // (A metal's and a via's said already, with the others.)
+        if (!id.isEmpty() && id != l.name && l.kind != Layer::Metal && l.kind != Layer::Via)
+            out.notes << tr("%1 is %2 in the process file: EMX's names are letters, digits and underscores, and not its own words.").arg(l.name, id);
         switch (l.kind) {
         case Layer::Substrate: {
             QString line = QStringLiteral("layer %1 %2").arg(um(l.thickness), num(l.epsr));
@@ -476,6 +506,7 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
     }
     if (!cover) layers << QStringLiteral("layer infinity 1 name air");
     if (rough) out.notes << tr("The metals' roughness has no place in a process file: it is left out.");
+    if (const QString faces = facesNote(stack, tr("a process file")); !faces.isEmpty()) out.notes << faces;
 
     QStringList vias;
     for (const Layer& v : stack.layers) {
@@ -1442,9 +1473,31 @@ std::optional<StackRead> stackFileRead(const QString& path, QString* error)
 Model withStackOf(const Model& model, const StackRead& read, QStringList* notes)
 {
     Model m = model;
+    // What neither file says of a metal - how it is solved, its roughness -
+    // kept from the metal of the same name in the stack replaced (by EMX's
+    // spelling of it where that is all that matches).
+    QHash<QString, const Node*> before, beforeLoose;
+    for (const Node& n : model.stackNode().children)
+        if (n.type == QLatin1String("rf_metal")) {
+            before.insert(n.label, &n);
+            beforeLoose.insert(looseName(n.label), &n);
+        }
+    QStringList keptFaces, keptRough;
     m.stackNode().children.clear();
     for (Node n : read.nodes) {
         n.tag = m.make(n.type).tag;
+        if (n.type == QLatin1String("rf_metal")) {
+            const Node* was = before.value(n.label, beforeLoose.value(looseName(n.label)));
+            if (was != nullptr) {
+                for (const char* key : {"model", "roughness"}) {
+                    const QString k = QLatin1String(key);
+                    if (n.props.contains(k) || !was->props.contains(k)) continue;
+                    n.props.insert(k, was->props.value(k));
+                    if (k == QLatin1String("model") && textOf(n, k) == QLatin1String("faces")) keptFaces << n.label;
+                    if (k == QLatin1String("roughness") && valueOf(n, k).toVariant().toString().trimmed() != QLatin1String("0")) keptRough << n.label;
+                }
+            }
+        }
         m.stackNode().children.push_back(n);
     }
     if (!read.rows.isEmpty()) {
@@ -1471,9 +1524,13 @@ Model withStackOf(const Model& model, const StackRead& read, QStringList* notes)
     }
     m.normalise();
     if (notes != nullptr) {
-        const QStringList before = model.problems();
+        if (!keptFaces.isEmpty())
+            notes->append(tr("%1 still solved as their two faces, as the metals of those names were: the file does not say.").arg(keptFaces.join(QStringLiteral(", "))));
+        if (!keptRough.isEmpty())
+            notes->append(tr("%1 keep the roughness the metals of those names had: the file does not say.").arg(keptRough.join(QStringLiteral(", "))));
+        const QStringList problemsBefore = model.problems();
         for (const QString& p : m.problems())
-            if (!before.contains(p)) notes->append(p);
+            if (!problemsBefore.contains(p)) notes->append(p);
     }
     return m;
 }

@@ -192,6 +192,7 @@ private slots:
     void whatCannotBeReadIsRefused();
     void aFileCutAnywhereNeverFaults();
     void theStackReplacesTheModelsAlone();
+    void whatNeitherFileSaysOfAMetalIsKeptByName();
     void realProcessFilesRead();
 };
 
@@ -613,6 +614,55 @@ void TestRf25Stack::theStackReplacesTheModelsAlone()
         for (const Node& c : n.children) walk(c);
     };
     walk(back.root);
+}
+
+// The check of 9 November (qucs-reviews/RF2p5D/2026-11-09-claude-rf25-stack-
+// roundtrip.md): S1, a metal solved as its two faces came back a sheet, unsaid;
+// S2, EMX's renames of a dielectric and of the plane went unsaid.
+void TestRf25Stack::whatNeitherFileSaysOfAMetalIsKeptByName()
+{
+    Model m = modelOf(twoMetals());
+    m.find(QStringLiteral("m2"))->props.insert(QStringLiteral("model"), QStringLiteral("faces"));
+    m.find(QStringLiteral("m2"))->props.insert(QStringLiteral("roughness"), QStringLiteral("0.2[um]"));
+    m.renameLayer(QStringLiteral("M2"), QStringLiteral("M2 thick"));
+    m.find(QStringLiteral("m2"))->label = QStringLiteral("M2 thick");
+    m.find(QStringLiteral("d1"))->label = QStringLiteral("Si oxide");
+    m.find(QStringLiteral("g"))->label = QStringLiteral("Plane");
+    for (const StackFormat f : {StackFormat::Hfss, StackFormat::Emx}) {
+        const StackWritten w = f == StackFormat::Hfss ? hfssStackupOf(m) : emxProcessOf(m);
+        QVERIFY2(w.ok(), qPrintable(w.problems.join(QLatin1Char('\n'))));
+        const QString said = w.notes.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QLatin1String("M2 thick solved as their two faces")), qPrintable(said));
+        QVERIFY(said.contains(QLatin1String("roughness")));
+        if (f == StackFormat::Emx) {
+            QVERIFY2(said.contains(QLatin1String("M2 thick is M2_thick")), qPrintable(said));
+            QVERIFY2(said.contains(QLatin1String("Si oxide is Si_oxide")), qPrintable(said));
+            QVERIFY2(said.contains(QLatin1String("Plane is EMX's plane")), qPrintable(said));
+        }
+        // Into this model: kept (by EMX's spelling of the name too), and said.
+        QString why;
+        const std::optional<StackRead> r = stackTextRead(w.text.toUtf8(), f, QStringLiteral("back"), &why);
+        QVERIFY2(r, qPrintable(why));
+        QStringList notes;
+        const Model back = withStackOf(m, *r, &notes);
+        const Layer* metal = back.stack().named(f == StackFormat::Hfss ? QStringLiteral("M2 thick") : QStringLiteral("M2_thick"));
+        QVERIFY(metal != nullptr);
+        QVERIFY(metal->twoSheets);
+        QVERIFY(std::abs(metal->roughness - 0.2e-6) < 1e-15);
+        const QString kept = notes.join(QLatin1Char('\n'));
+        QVERIFY2(kept.contains(QLatin1String("still solved as their two faces")) && kept.contains(QLatin1String("keep the roughness")), qPrintable(kept));
+        // Into a model with no such metal: a sheet, smooth, nothing to say of it.
+        notes.clear();
+        const Model fresh = withStackOf(Model::blank(), *r, &notes);
+        const Layer* other = fresh.stack().named(metal->name);
+        QVERIFY(other != nullptr);
+        QVERIFY(!other->twoSheets);
+        QCOMPARE(other->roughness, 0.0);
+        QVERIFY(!notes.join(QLatin1Char(' ')).contains(QLatin1String("two faces")));
+        // M1, a sheet before, a sheet still, and not said.
+        QVERIFY(!back.stack().named(QStringLiteral("M1"))->twoSheets);
+        QVERIFY(!kept.contains(QLatin1String("M1 still")));
+    }
 }
 
 void TestRf25Stack::realProcessFilesRead()

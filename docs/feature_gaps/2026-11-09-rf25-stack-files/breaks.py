@@ -32,6 +32,7 @@ OTHER = (S, "aStackupOfAnotherHandReads")
 PERM = (S, "theControlFileImportKeepsEachPermittivity")
 REFUSED = (S, "whatCannotBeReadIsRefused")
 ALONE = (S, "theStackReplacesTheModelsAlone")
+KEPT = (S, "whatNeitherFileSaysOfAMetalIsKeptByName")
 TOOLS = ("test_qucs_control", "anRf25StackGoesOutAndBackThroughItsToolsAndItsMenu")
 GUARD = ("test_qucs_control", "guardsAskAboutCommandsAndFilesOutside")
 
@@ -118,6 +119,19 @@ BREAKS = [
   [(P, "    if (!stackFormatOf(file)) file += ", "    if (false) file += ")], [TOOLS]),
  ("the menu's items not on the Stack",
   [(P, "    if (n->type == QLatin1String(\"rf_stack\")) {\n        QAction* in", "    if (n->type == QLatin1String(\"rf_stackx\")) {\n        QAction* in")], [TOOLS]),
+ # ---- The check of 9 November: S1 and S2
+ ("S1: faces not said on export",
+  [(F, "    if (faces.isEmpty()) return {};", "    return {};")], [KEPT]),
+ ("S1: a metal's model not kept on import",
+  [(F, "                    n.props.insert(k, was->props.value(k));", "")], [KEPT]),
+ ("S1: EMX's spelling of a name not matched",
+  [(F, "before.value(n.label, beforeLoose.value(looseName(n.label)))", "before.value(n.label)")], [KEPT]),
+ ("S1: what was kept not said",
+  [(F, "        if (!keptFaces.isEmpty())", "        if (false)")], [KEPT]),
+ ("S2: a dielectric's EMX name not said",
+  [(F, "        if (!id.isEmpty() && id != l.name && l.kind != Layer::Metal && l.kind != Layer::Via)", "        if (false)")], [KEPT]),
+ ("S2: the plane's lost name not said",
+  [(F, "    if (!open && ground->name != QLatin1String(\"GND\"))", "    if (false)")], [KEPT]),
  ("the guard not told what the stack export writes",
   [(G, "    } else if (tool == QLatin1String(\"rf25_stack_export\")) {", "    } else if (tool == QLatin1String(\"rf25_stack_exportx\")) {")], [GUARD]),
 ]
