@@ -1631,23 +1631,6 @@ void ClaudeCodePanel::buildMenu()
         askOutside->setChecked(a_session->guards().outside);
         dates->setChecked(promptDatesShown());
     });
-    // Auto-compact: on unless set off here, whatever Claude Code's own
-    // settings say; for every conversation, at once.
-    QAction* compact = a_menu->addAction(tr("Auto-Compact"));
-    compact->setObjectName(QStringLiteral("claudeAutoCompact"));
-    compact->setCheckable(true);
-    compact->setToolTip(tr("When a conversation's context fills, Claude Code compacts it - sums up what was said - and "
-                           "goes on (off: it stops at the limit)"));
-    connect(compact, &QAction::triggered, this, [this](bool on) {
-        QucsSettingsFile().setValue(kAutoCompact, on);
-        a_session->setAutoCompact(on);
-    });
-    connect(a_menu, &QMenu::aboutToShow, this, [this, compact] {
-        const bool on = QucsSettingsFile().value(kAutoCompact, true).toBool();   // (another tab may have changed it)
-        compact->setChecked(on);
-        a_session->setAutoCompact(on);
-    });
-
     // Conversation Cache: what is done about a long conversation's cache,
     // one of three (the user, 10 November); for every conversation, at once.
     QMenu* cache = a_menu->addMenu(tr("Conversation Cache"));
@@ -1677,6 +1660,23 @@ void ClaudeCodePanel::buildMenu()
     }
     connect(cache, &QMenu::aboutToShow, this, [cacheChoices] {
         for (QAction* a : cacheChoices->actions()) a->setChecked(a->data().toInt() == int(cacheChoice()));
+    });
+
+    // Auto-compact: on unless set off here, whatever Claude Code's own
+    // settings say; for every conversation, at once.
+    QAction* compact = a_menu->addAction(tr("Auto-Compact"));
+    compact->setObjectName(QStringLiteral("claudeAutoCompact"));
+    compact->setCheckable(true);
+    compact->setToolTip(tr("When a conversation's context fills, Claude Code compacts it - sums up what was said - and "
+                           "goes on (off: it stops at the limit)"));
+    connect(compact, &QAction::triggered, this, [this](bool on) {
+        QucsSettingsFile().setValue(kAutoCompact, on);
+        a_session->setAutoCompact(on);
+    });
+    connect(a_menu, &QMenu::aboutToShow, this, [this, compact] {
+        const bool on = QucsSettingsFile().value(kAutoCompact, true).toBool();   // (another tab may have changed it)
+        compact->setChecked(on);
+        a_session->setAutoCompact(on);
     });
 
     a_menu->addSeparator();

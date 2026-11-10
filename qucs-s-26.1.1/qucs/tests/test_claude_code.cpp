@@ -7186,6 +7186,16 @@ private slots:
         QVERIFY(menu != nullptr);
         QCOMPARE(menu->title().remove('&'), QStringLiteral("Conversation Cache"));
         QCOMPARE(menu->actions().size(), 3);
+        // In the ⋯ menu, just above Auto-Compact (the user, 10 November).
+        {
+            auto* compact = panel.findChild<QAction*>("claudeAutoCompact");
+            QVERIFY(compact != nullptr);
+            const QList<QAction*> items = compact->associatedObjects().isEmpty() ? QList<QAction*>()
+                                          : qobject_cast<QMenu*>(compact->associatedObjects().first())->actions();
+            const qsizetype at = items.indexOf(compact);
+            QVERIFY(at > 0);
+            QCOMPARE(items.at(at - 1), menu->menuAction());
+        }
         const auto checked = [menu] {
             emit menu->aboutToShow();
             QStringList on;
