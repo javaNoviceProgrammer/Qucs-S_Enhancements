@@ -260,6 +260,11 @@ std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDesc
     }
     p->setTargetBlends({blend});
     if (spec.scissor) p->setFlags(QRhiGraphicsPipeline::UsesScissor);
+    if (spec.depth) {
+        p->setDepthTest(true);
+        p->setDepthWrite(true);
+        p->setDepthOp(spec.depthOp);
+    }
     if (!p->create()) return nullptr;
     return p;
 }

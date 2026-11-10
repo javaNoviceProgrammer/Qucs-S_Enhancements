@@ -312,6 +312,7 @@ qucs_add_test(test_multiphysics_optimize)
 qucs_add_test(test_multiphysics_converge)
 qucs_add_test(test_multiphysics3d_doc)
 qucs_add_test(test_multiphysics_view)
+qucs_add_test(test_view3d)
 # (The window's multiphysics end to end - every physics' examples solved:
 # five minutes and more under the sanitizers on CI's runners, as the
 # engine's tests. There 1131 to 2254 s of its 2700 (900 times the scale of

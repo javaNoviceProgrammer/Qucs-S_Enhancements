@@ -491,10 +491,10 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
         auto *lead = new QLabel(tr("The CPU draws each viewer unless the GPU is chosen for it here."), gpuGroup);
         lead->setWordWrap(true);
         rows->addWidget(lead);
-        const qucs_s::gpu::Viewer viewers[4] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
-                                                qucs_s::gpu::Viewer::Multiphysics};
-        const char *names[4] = {"gpuPdf", "gpuMarkdown", "gpuLayout", "gpuMultiphysics"};
-        const QString tips[4] = {
+        const qucs_s::gpu::Viewer viewers[5] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
+                                                qucs_s::gpu::Viewer::Multiphysics, qucs_s::gpu::Viewer::Multiphysics3D};
+        const char *names[5] = {"gpuPdf", "gpuMarkdown", "gpuLayout", "gpuMultiphysics", "gpuMultiphysics3D"};
+        const QString tips[5] = {
             tr("Its tiles kept on the GPU as textures and drawn, scaled and scrolled by it; the pages themselves "
                "are drawn by pdfium on the CPU, as with the CPU."),
             tr("Its text and images drawn by the CPU in tiles, kept on the GPU as textures and scrolled by it: "
@@ -503,8 +503,10 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
             tr("The cell flattened into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU drawing "
                "nothing. Past two million shapes the CPU draws it."),
             tr("The geometry, mesh, surfaces and lines from the GPU's buffers (also in Multiphysics > Settings… and "
-               "the view's own menu).")};
-        for (int i = 0; i < 4; ++i) {
+               "the view's own menu)."),
+            tr("Its faces, edges and points from the GPU's buffers, their depth the GPU's: an orbit, a pan or a zoom "
+               "a frame of the GPU's, the CPU drawing nothing (also in Multiphysics 3D > Settings… and the view's own menu).")};
+        for (int i = 0; i < 5; ++i) {
             gpuBoxes[i] = new QCheckBox(qucs_s::gpu::viewerName(viewers[i]), gpuGroup);
             gpuBoxes[i]->setObjectName(names[i]);
             gpuBoxes[i]->setToolTip(tips[i]);
@@ -1113,9 +1115,9 @@ void QucsSettingsDialog::slotApply()
 
     // Each viewer drawn as chosen: told to the open ones.
     {
-        const qucs_s::gpu::Viewer viewers[4] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
-                                                qucs_s::gpu::Viewer::Multiphysics};
-        for (int i = 0; i < 4; ++i) {
+        const qucs_s::gpu::Viewer viewers[5] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
+                                                qucs_s::gpu::Viewer::Multiphysics, qucs_s::gpu::Viewer::Multiphysics3D};
+        for (int i = 0; i < 5; ++i) {
             if (gpuBoxes[i] == nullptr) continue;
             const bool gpu = gpuBoxes[i]->isChecked();
             if (gpu != qucs_s::gpu::wanted(viewers[i])) qucs_s::gpu::setWanted(viewers[i], gpu);
