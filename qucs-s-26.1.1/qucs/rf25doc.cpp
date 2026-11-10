@@ -1919,6 +1919,24 @@ void RF25Doc::showOverlays()
         for (const LayoutView::Overlay* o : {&regions, &grounds, &returns, &links, &terminals, &faces})
             if (!o->shapes.isEmpty() || !o->labels.isEmpty()) overlays << *o;
     }
+    // The Cutout's regions, whatever else is shown: the outline of each
+    // that keeps, and each that takes out tinted as well.
+    const Cutout cutout = cutoutOf(a_model, nullptr);
+    if (!cutout.isEmpty()) {
+        const bool dark = a_view->colors().background.lightness() < 128;
+        LayoutView::Overlay kept, taken;
+        kept.line = dark ? QColor(90, 210, 200) : QColor(0, 128, 118);
+        taken.line = dark ? QColor(240, 110, 100) : QColor(198, 40, 40);
+        QColor tint = taken.line;
+        tint.setAlpha(50);
+        taken.fill = tint;
+        kept.width = taken.width = 2;
+        kept.name = tr("the cutout's regions that keep");
+        taken.name = tr("the cutout's regions that take out");
+        for (const CutRegion& r : cutout.regions) (r.keep ? kept : taken).shapes << r.outline;
+        for (const LayoutView::Overlay* o : {&taken, &kept})
+            if (!o->shapes.isEmpty()) overlays << *o;
+    }
     a_view->setOverlays(overlays);
     a_view->setLegend(legend);
 }

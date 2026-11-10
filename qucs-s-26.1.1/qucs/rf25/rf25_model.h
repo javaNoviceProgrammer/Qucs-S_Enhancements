@@ -181,9 +181,9 @@ public:
     /// share is made its own.
     void normalise();
     /// A layer renamed wherever the model names it: the vias that join it,
-    /// the ports and terminals on it, and the rows of the layer map that
-    /// send shapes to it. Nothing happens for an empty name or one that is
-    /// not a layer's.
+    /// the ports and terminals on it, the rows of the layer map that send
+    /// shapes to it and the Cutout's regions that cut it. Nothing happens
+    /// for an empty name or one that is not a layer's.
     void renameLayer(const QString& from, const QString& to);
     /// A port or a terminal renamed wherever the model names it: the ports'
     /// returns (a port's "returns") and pairs.

@@ -77,10 +77,46 @@ struct LayoutReport {
     int snapped = 0;        ///< shapes whose points moved to the grid
     int healed = 0;         ///< shapes a heal changed
     int fill = 0;           ///< dummy fill shapes dropped
+    int cut = 0;            ///< shapes the Cutout cut along a region's edge...
+    int masked = 0;         ///< ...and those it dropped, wholly outside what it keeps
     QString summary() const;   ///< the lines joined, for a status bar or a tooltip
 };
 
-/// The rf_processing node read: its flags, and its lengths in metres.
+/// One region of the model's Cutout, read: its outline in the layout's
+/// micrometres, whether what is inside it is kept or taken out, and the
+/// layers it cuts.
+struct CutRegion {
+    QString name;           ///< its label, for what is said of it
+    QPolygonF outline;      ///< µm; a circle as a polygon of many sides
+    bool keep = true;       ///< kept, the rest masked (false: taken out)
+    QStringList layers;     ///< the stack layers it cuts, by name (empty: every one)
+    bool cuts(const QString& layer) const { return layers.isEmpty() || layers.contains(layer); }
+};
+
+/*!
+ * The Cutout read: the regions that are enabled, in order. On each layer,
+ * what the regions that keep and cut it hold is kept - all of it where none
+ * keeps -, and then what those that take out and cut it hold is taken out.
+ */
+struct Cutout {
+    QList<CutRegion> regions;
+    bool isEmpty() const { return regions.isEmpty(); }
+};
+/// \a model's Cutout read, its lengths in its parameters, in micrometres.
+/// Empty where it has no region or its regions are not applied. A region
+/// that cannot be read - a length that is no number, a polygon of fewer than
+/// three corners, no area, a layer no layer of the stack - is said in
+/// \a problems and left out.
+Cutout cutoutOf(const Model& model, QStringList* problems);
+/// \a shapes of \a layer cut as \a cutout says: a shape wholly outside what
+/// it keeps dropped, one across a region's edge cut along it, one it leaves
+/// whole returned as it was. \a cut and \a masked, given, count the shapes
+/// cut and those dropped.
+QList<QPolygonF> cutOf(const QList<QPolygonF>& shapes, const Cutout& cutout, const QString& layer, int* cut = nullptr,
+                       int* masked = nullptr);
+
+/// The rf_processing node read: its flags, and its lengths in metres - and
+/// the Cutout beside it, which the processing applies first.
 struct Processing {
     bool merge = true;
     bool mergeVias = true;
@@ -92,6 +128,10 @@ struct Processing {
     double viaDistance = 1e-6;
     double sliverWidth = 1e-7;
     double grid = 5e-9;
+    /// The part of the layout to solve, in the polygons' own units
+    /// (processRead() reads it with cutoutOf(); processingOf() leaves it
+    /// empty).
+    Cutout cutout;
 };
 /// \a node (an rf_processing) read in the model's parameters; what cannot
 /// be read is said in \a problems and left at its default.

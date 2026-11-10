@@ -252,8 +252,8 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("cell"), tr("Cell"), QString(), tr("The cell to solve; the top cell when empty")),
           expr(QStringLiteral("unit"), tr("Unit of its coordinates"), QStringLiteral("m"), QStringLiteral("1[um]"),
                tr("What one unit of the file means, where the file itself does not say"))},
-         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing")},
-         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing")}, true, true, QString(),
+         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")},
+         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")}, true, true, QString(),
          tr("The shapes in x and y, read with gdstk as get_layout and find_shapes read them.")});
     add({QStringLiteral("rf_layer_map"), tr("Layer map"), QString(), QStringLiteral("map"), none,
          {rows(QStringLiteral("rows"), tr("Layers"), {tr("Layer"), tr("Datatype"), tr("Stack layer")},
@@ -280,6 +280,44 @@ QList<NodeKind> makeKinds()
          {}, {}, true, true, QString(),
          tr("What is done to the shapes before they are meshed. Each step says what it changed, and the processed "
             "layout is drawn over the original.")});
+    add({QStringLiteral("rf_cutout"), tr("Cutout"), QString(), QStringLiteral("cutout"), none,
+         {boolean(QStringLiteral("apply"), tr("Apply its regions"), true,
+                  tr("Off: the whole layout is solved, the regions kept for later"))},
+         {QStringLiteral("rf_region")}, {}, true, true, QString(),
+         tr("The part of the layout to solve. Each region under it keeps what is inside it, the rest of the layout "
+            "masked, or takes out what is inside it; with none, the whole layout is solved. Its shapes are cut along "
+            "the regions' edges before the processing's steps, and the solve, the mesh and an export see only what is "
+            "left.")});
+    add({QStringLiteral("rf_region"), tr("Region"), QStringLiteral("cutout"), QStringLiteral("region"), none,
+         {choice(QStringLiteral("shape"), tr("Shape"),
+                 {QStringLiteral("rectangle"), QStringLiteral("polygon"), QStringLiteral("circle")},
+                 {tr("A rectangle"), tr("A polygon"), tr("A circle")}, QStringLiteral("rectangle")),
+          shownIf(expr(QStringLiteral("x0"), tr("From x"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("One corner of the rectangle, in the layout's coordinates")),
+                  "shape=rectangle"),
+          shownIf(expr(QStringLiteral("y0"), tr("From y"), QStringLiteral("m"), QStringLiteral("0")), "shape=rectangle"),
+          shownIf(expr(QStringLiteral("x1"), tr("To x"), QStringLiteral("m"), QStringLiteral("100[um]"),
+                       tr("The corner across from it")),
+                  "shape=rectangle"),
+          shownIf(expr(QStringLiteral("y1"), tr("To y"), QStringLiteral("m"), QStringLiteral("100[um]")), "shape=rectangle"),
+          shownIf(rows(QStringLiteral("points"), tr("Corners"), {tr("x"), tr("y")},
+                       tr("The polygon's corners in order, each an x and a y in the layout's coordinates: 30[um], "
+                          "-5[um]. Three at least.")),
+                  "shape=polygon"),
+          shownIf(expr(QStringLiteral("x"), tr("Centre x"), QStringLiteral("m"), QStringLiteral("0")), "shape=circle"),
+          shownIf(expr(QStringLiteral("y"), tr("Centre y"), QStringLiteral("m"), QStringLiteral("0")), "shape=circle"),
+          shownIf(expr(QStringLiteral("radius"), tr("Radius"), QStringLiteral("m"), QStringLiteral("50[um]")),
+                  "shape=circle"),
+          choice(QStringLiteral("action"), tr("What is inside"), {QStringLiteral("keep"), QStringLiteral("remove")},
+                 {tr("Kept, the rest masked"), tr("Taken out")}, QStringLiteral("keep"),
+                 tr("Kept: of the shapes, only what is inside this region or another region that keeps is solved. "
+                    "Taken out: what is inside is cut away, from what the regions that keep left")),
+          text(QStringLiteral("layers"), tr("On layers"), QString(),
+               tr("The stack's layers it cuts, by name, apart by commas: M1, M2, V1. Empty: every layer"))},
+         {}, {}, false, false, QStringLiteral("cut"),
+         tr("A part of the layout, in its coordinates: a rectangle by two corners, a polygon by its corners or a "
+            "circle. What is inside it is kept, the rest of the layout masked - or taken out. A shape across its edge "
+            "is cut along it.")});
 
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
@@ -727,6 +765,7 @@ Model Model::blank()
     // The layout's own fixed children.
     child(m.layout(), QStringLiteral("rf_layer_map"));
     child(m.layout(), QStringLiteral("rf_processing"));
+    child(m.layout(), QStringLiteral("rf_cutout"));
     // A stack one can see at once and solve as a line: a ground plane, a
     // substrate, an oxide and one metal. (Without the ground, its first
     // solve was of a strip with nothing to return through - a capacitance
@@ -806,6 +845,7 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
         child(m.root, QLatin1String(type));
     child(m.layout(), QStringLiteral("rf_layer_map"));
     child(m.layout(), QStringLiteral("rf_processing"));
+    child(m.layout(), QStringLiteral("rf_cutout"));
     m.normalise();
     // What was not read, as the read's own notes (the multiphysics reader's
     // way too): the tab says them where it says what it read.
@@ -1321,6 +1361,15 @@ void Model::renameLayer(const QString& from, const QString& to)
         }
         if (changed) map->props.insert(QStringLiteral("rows"), out);
     }
+    // The Cutout's regions that cut it alone.
+    if (Node* cutout = layout().child(QStringLiteral("rf_cutout")))
+        for (Node& r : cutout->children) {
+            QStringList layers = namesOf(r, QStringLiteral("layers"));
+            if (!layers.contains(from)) continue;
+            for (QString& l : layers)
+                if (l == from) l = to;
+            r.props.insert(QStringLiteral("layers"), layers.join(QStringLiteral(", ")));
+        }
 }
 
 void Model::renamePort(const QString& from, const QString& to)
