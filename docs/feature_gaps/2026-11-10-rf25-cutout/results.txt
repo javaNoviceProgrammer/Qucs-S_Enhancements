@@ -1,0 +1,29 @@
+First run, 10 November: 22 of 23 caught. Two findings from it:
+- The winding step (every region made anticlockwise) was code that did nothing, since gdstk turns every polygon anticlockwise before its boolean. It was taken out, with its break; the test of two regions of opposite winding stays.
+- aLayoutFileIsCutByTheModelsCutout let the Cutout be applied though turned off: it compared only how many shapes there were. It now compares their area and what is said too (BRK_ONLY=4 again: caught by all three).
+
+===== what each break did =====
+a file of a build before it given no Cutout                    everyModelHasACutout failed (caught)
+a layer renamed not renamed in the regions                     everyModelHasACutout failed (caught)
+a polygon's corners shown for a rectangle                      aCutoutSolvesAPartOfTheLayout failed (caught)
+the Cutout applied though turned off                           theCutoutIsReadFromItsRegions failed (caught); aLayoutFileIsCutByTheModelsCutout failed (caught); aCutoutSolvesAPartOfTheLayout failed (caught)
+a disabled region applied                                      theCutoutIsReadFromItsRegions failed (caught)
+a polygon's closing corner counted as a corner                 theCutoutIsReadFromItsRegions failed (caught)
+a circle of 32 sides, whatever its size                        theCutoutIsReadFromItsRegions failed (caught)
+a circle of no radius used                                     theCutoutIsReadFromItsRegions failed (caught)
+a region of no area used                                       theCutoutIsReadFromItsRegions failed (caught)
+a region on no layer of the stack used                         theCutoutIsReadFromItsRegions failed (caught)
+a region's layers not heeded                                   theCutoutKeepsWhatIsInsideAndMasks failed (caught)
+what a region takes out left in                                theCutoutKeepsWhatIsInsideAndMasks failed (caught)
+a shape kept whole handed on as the boolean redrew it          theCutoutKeepsWhatIsInsideAndMasks failed (caught)
+the processing not cutting                                     theProcessingCutsFirst failed (caught); aLayoutFileIsCutByTheModelsCutout failed (caught); aCutoutSolvesAPartOfTheLayout failed (caught)
+processRead() not reading the Cutout                           aLayoutFileIsCutByTheModelsCutout failed (caught); aCutoutSolvesAPartOfTheLayout failed (caught)
+what the cutout did on a layer not said                        theProcessingCutsFirst failed (caught)
+nothing left not said to be the cutout's doing                 theProcessingCutsFirst failed (caught)
+the Cutout's Add Region under an Add of one item               aCutoutSolvesAPartOfTheLayout failed (caught)
+the Cutout's form without its button                           aCutoutSolvesAPartOfTheLayout failed (caught)
+the Cutout's status not said                                   aCutoutSolvesAPartOfTheLayout failed (caught)
+a region's layers with no picker                               aCutoutSolvesAPartOfTheLayout failed (caught)
+the regions not drawn                                          aCutoutSolvesAPartOfTheLayout failed (caught)
+
+0 of 22 uncaught

@@ -7,6 +7,7 @@
  */
 #include <QtTest>
 
+#include <cmath>
 #include <functional>
 #include <random>
 
@@ -57,6 +58,24 @@ rf::Model stacked()
     rf::Node& m2 = add(m.stackNode(), "rf_metal", QStringLiteral("m2"), QStringLiteral("M2"));
     set(m2, "thickness", QStringLiteral("0.9[um]"));
     return m;
+}
+
+/// A region added to \a m's Cutout: its shape and its properties.
+rf::Node& region(rf::Model& m, const char* shape, const QList<QPair<const char*, QJsonValue>>& props, const QString& label = {})
+{
+    rf::Node& cutout = *m.layout().child(QStringLiteral("rf_cutout"));
+    const QString name = label.isEmpty() ? QStringLiteral("Region %1").arg(cutout.children.size() + 1) : label;
+    rf::Node& r = add(cutout, "rf_region", m.newTag(QStringLiteral("cut")), name);
+    set(r, "shape", QLatin1String(shape));
+    for (const auto& [key, value] : props) set(r, key, value);
+    return r;
+}
+
+double areaOfAll(const QList<QPolygonF>& shapes)
+{
+    double a = 0;
+    for (const QPolygonF& s : shapes) a += rf::areaOf(s);
+    return a;
 }
 
 bool says(const QStringList& lines, const char* words)
@@ -385,6 +404,276 @@ private slots:
         const rf::Processed gone = rf::processShapes(slivers, {}, how, stack);
         QVERIFY(gone.conductors.isEmpty());
         QVERIFY2(says(gone.problems, "nothing is left to solve on"), qPrintable(gone.problems.join(" | ")));
+    }
+
+    // The Cutout: a part of the tree in every model - a new one, and one of
+    // a file written before it -, written and read back with its regions,
+    // and a layer renamed in the regions that cut it.
+    void everyModelHasACutout()
+    {
+        rf::Model m = rf::Model::blank();
+        const rf::Node* cutout = m.layout().child(QStringLiteral("rf_cutout"));
+        QVERIFY(cutout != nullptr);
+        QCOMPARE(cutout->tag, QStringLiteral("cutout"));
+        QVERIFY(cutout->children.empty());
+        QVERIFY(rf::cutoutOf(m, nullptr).isEmpty());
+
+        // A file of a build before it: the Cutout made.
+        QJsonObject tree = m.toObject();
+        QJsonObject root = tree.value("tree").toObject();
+        QJsonArray parts = root.value("children").toArray();
+        for (int i = 0; i < parts.size(); ++i) {
+            QJsonObject part = parts.at(i).toObject();
+            if (part.value("type").toString() != QLatin1String("rf_layout")) continue;
+            QJsonArray kept;
+            for (const QJsonValue& c : part.value("children").toArray())
+                if (c.toObject().value("type").toString() != QLatin1String("rf_cutout")) kept.append(c);
+            part.insert("children", kept);
+            parts.replace(i, part);
+        }
+        root.insert("children", parts);
+        tree.insert("tree", root);
+        QVERIFY(!QJsonDocument(tree).toJson().contains("rf_cutout"));
+        QString why;
+        const std::optional<rf::Model> old = rf::Model::fromJson(QJsonDocument(tree).toJson(), &why);
+        QVERIFY2(old.has_value(), qPrintable(why));
+        QVERIFY(old->layout().child(QStringLiteral("rf_cutout")) != nullptr);
+
+        // Its regions go out and come back; a layer renamed in them.
+        m = stacked();
+        region(m, "rectangle", {{"x1", QStringLiteral("50[um]")}, {"layers", QStringLiteral("M1, V1")}}, QStringLiteral("Pads"));
+        const std::optional<rf::Model> back = rf::Model::fromJson(m.toJson(), &why);
+        QVERIFY2(back.has_value() && why.isEmpty(), qPrintable(why));
+        const rf::Node& r = back->layout().child(QStringLiteral("rf_cutout"))->children.at(0);
+        QCOMPARE(r.label, QStringLiteral("Pads"));
+        QCOMPARE(rf::textOf(r, QStringLiteral("x1")), QStringLiteral("50[um]"));
+        m.renameLayer(QStringLiteral("M1"), QStringLiteral("Metal1"));
+        QCOMPARE(rf::namesOf(m.layout().child(QStringLiteral("rf_cutout"))->children.at(0), QStringLiteral("layers")),
+                 QStringList({QStringLiteral("Metal1"), QStringLiteral("V1")}));
+        // (Its own kinds: a Region goes under the Cutout and nowhere else.)
+        QString no;
+        QVERIFY(m.add(QStringLiteral("cutout"), m.make(QStringLiteral("rf_region")), -1, &no) != nullptr);
+        QVERIFY(m.add(QStringLiteral("ports"), m.make(QStringLiteral("rf_region")), -1, &no) == nullptr);
+        QVERIFY(m.add(QStringLiteral("cutout"), m.make(QStringLiteral("rf_metal")), -1, &no) == nullptr);
+    }
+
+    // Its regions read: a rectangle by two corners in either order, a
+    // polygon by its corners, a circle, each in µm through the parameters;
+    // one disabled, or the Cutout not applied, left out; and what cannot be
+    // read said and left out.
+    void theCutoutIsReadFromItsRegions()
+    {
+        rf::Model m = stacked();
+        QJsonArray parameters;
+        parameters.append(QJsonArray{QStringLiteral("w"), QStringLiteral("40[um]")});
+        set(*m.root.child(QStringLiteral("rf_parameters")), "rows", parameters);
+        region(m, "rectangle", {{"x0", QStringLiteral("w")}, {"y0", QStringLiteral("30[um]")},
+                                {"x1", QStringLiteral("-10[um]")}, {"y1", QStringLiteral("0")}});
+        QJsonArray corners;
+        corners.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
+        corners.append(QJsonArray{QStringLiteral("w"), QStringLiteral("0")});
+        corners.append(QJsonArray{QStringLiteral("0"), QStringLiteral("w")});
+        corners.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});   // (closing the ring: not a corner)
+        region(m, "polygon", {{"points", corners}, {"action", QStringLiteral("remove")}, {"layers", QStringLiteral("M2")}});
+        region(m, "circle", {{"x", QStringLiteral("100[um]")}, {"y", QStringLiteral("-20[um]")}, {"radius", QStringLiteral("25[um]")}});
+        region(m, "rectangle", {{"x1", QStringLiteral("1[mm]")}}).enabled = false;
+
+        QStringList problems;
+        const rf::Cutout read = rf::cutoutOf(m, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        QCOMPARE(read.regions.size(), 3);
+        const rf::CutRegion& box = read.regions.at(0);
+        QVERIFY(box.keep);
+        QVERIFY(box.layers.isEmpty() && box.cuts(QStringLiteral("M1")) && box.cuts(QStringLiteral("V1")));
+        QCOMPARE(box.outline.size(), 4);
+        QCOMPARE(box.outline.boundingRect(), QRectF(QPointF(-10, 0), QPointF(40, 30)));
+        const rf::CutRegion& triangle = read.regions.at(1);
+        QVERIFY(!triangle.keep);
+        QCOMPARE(triangle.layers, QStringList({QStringLiteral("M2")}));
+        QVERIFY(triangle.cuts(QStringLiteral("M2")) && !triangle.cuts(QStringLiteral("M1")));
+        QCOMPARE(triangle.outline.size(), 3);
+        QVERIFY(qAbs(rf::areaOf(triangle.outline) - 800) < 1e-9);
+        const rf::CutRegion& circle = read.regions.at(2);
+        QVERIFY2(circle.outline.size() >= 32, qPrintable(QString::number(circle.outline.size())));
+        for (const QPointF& p : circle.outline) QVERIFY(qAbs(std::hypot(p.x() - 100, p.y() + 20) - 25) < 1e-9);
+        // Its sides within a nanometre of the circle.
+        const double sagitta = 25 * (1 - std::cos(M_PI / circle.outline.size()));
+        QVERIFY2(sagitta <= 1e-3, qPrintable(QString::number(sagitta)));
+
+        // Not applied: none, and nothing said.
+        set(*m.layout().child(QStringLiteral("rf_cutout")), "apply", false);
+        QVERIFY(rf::cutoutOf(m, &problems).isEmpty());
+        QVERIFY(problems.isEmpty());
+        set(*m.layout().child(QStringLiteral("rf_cutout")), "apply", true);
+
+        // What cannot be read: each said by its name, and left out.
+        m.layout().child(QStringLiteral("rf_cutout"))->children.clear();
+        region(m, "rectangle", {{"x1", QStringLiteral("50[um")}}, QStringLiteral("Typo"));
+        QJsonArray two;
+        two.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
+        two.append(QJsonArray{QStringLiteral("1[um]"), QStringLiteral("0")});
+        region(m, "polygon", {{"points", two}}, QStringLiteral("Line"));
+        region(m, "rectangle", {{"x1", QStringLiteral("0")}}, QStringLiteral("Flat"));
+        region(m, "circle", {{"radius", QStringLiteral("0")}}, QStringLiteral("Dot"));
+        region(m, "rectangle", {{"layers", QStringLiteral("M9")}}, QStringLiteral("Elsewhere"));
+        region(m, "rectangle", {}, QStringLiteral("Good"));
+        problems.clear();
+        const rf::Cutout bad = rf::cutoutOf(m, &problems);
+        QCOMPARE(bad.regions.size(), 1);
+        QCOMPARE(bad.regions.at(0).name, QStringLiteral("Good"));
+        QCOMPARE(bad.regions.at(0).outline.boundingRect(), QRectF(0, 0, 100, 100));
+        for (const char* said : {"Typo's x1 is not a number", "Line is a polygon of 2 corner", "Flat has no area",
+                                 "Dot's radius is not a length above zero", "Elsewhere cuts M9, which is no layer"})
+            QVERIFY2(says(problems, said), qPrintable(QLatin1String(said) + QLatin1String(": ") + problems.join(" | ")));
+        QCOMPARE(problems.size(), 5);
+    }
+
+    // What the regions do to a layer's shapes: one inside kept as it was
+    // drawn, one across an edge cut along it, one outside masked; what a
+    // region takes out cut away; two regions that keep as their union; a
+    // region of another layer nothing to this one.
+    void theCutoutKeepsWhatIsInsideAndMasksTheRest()
+    {
+        rf::Cutout cutout;
+        cutout.regions << rf::CutRegion{QStringLiteral("A"), QPolygonF(QRectF(0, 0, 100, 100)), true, {}};
+        const QPolygonF inside = box(10, 10, 20, 20);
+        const QPolygonF across = box(80, 40, 50, 10);
+        const QPolygonF outside = box(200, 0, 10, 10);
+        int cut = -1, masked = -1;
+        const QList<QPolygonF> kept = rf::cutOf({inside, across, outside}, cutout, QStringLiteral("M1"), &cut, &masked);
+        QCOMPARE(cut, 1);
+        QCOMPARE(masked, 1);
+        QCOMPARE(kept.size(), 2);
+        QCOMPARE(kept.at(0), inside);   // (its points as drawn)
+        QVERIFY(qAbs(rf::areaOf(kept.at(1)) - 200) < 1e-6);
+        QVERIFY(kept.at(1).boundingRect().right() <= 100 + 1e-9);
+
+        // Taken out: a hole in a plane, and a shape inside it gone.
+        cutout.regions << rf::CutRegion{QStringLiteral("B"), QPolygonF(QRectF(40, 40, 20, 20)), false, {}};
+        const QList<QPolygonF> holed = rf::cutOf({box(0, 0, 100, 100), box(45, 45, 5, 5)}, cutout, QStringLiteral("M1"), &cut, &masked);
+        QCOMPARE(cut, 1);
+        QCOMPARE(masked, 1);
+        QVERIFY2(qAbs(areaOfAll(holed) - (10000 - 400)) < 1e-6, qPrintable(QString::number(areaOfAll(holed))));
+
+        // Two that keep, overlapping, one given clockwise and one
+        // anticlockwise, as a model reads them: a shape across both is whole.
+        rf::Model m = stacked();
+        region(m, "rectangle", {{"x1", QStringLiteral("60[um]")}, {"y1", QStringLiteral("10[um]")}});
+        QJsonArray clockwise;
+        for (const QPointF& p : {QPointF(40, 0), QPointF(40, 10), QPointF(100, 10), QPointF(100, 0)})
+            clockwise.append(QJsonArray{QStringLiteral("%1[um]").arg(p.x()), QStringLiteral("%1[um]").arg(p.y())});
+        region(m, "polygon", {{"points", clockwise}});
+        const rf::Cutout two = rf::cutoutOf(m, nullptr);
+        QCOMPARE(two.regions.size(), 2);
+        const QPolygonF bridge = box(20, 2, 60, 6);
+        const QList<QPolygonF> joined = rf::cutOf({bridge}, two, QStringLiteral("M1"), &cut, &masked);
+        QCOMPARE(joined, QList<QPolygonF>{bridge});
+        QCOMPARE(cut + masked, 0);
+
+        // Of another layer: nothing done here; on its own layer, its work.
+        rf::Cutout other;
+        other.regions << rf::CutRegion{QStringLiteral("M2 only"), QPolygonF(QRectF(0, 0, 1, 1)), true, {QStringLiteral("M2")}};
+        QCOMPARE(rf::cutOf({outside}, other, QStringLiteral("M1"), &cut, &masked), QList<QPolygonF>{outside});
+        QCOMPARE(cut + masked, 0);
+        QVERIFY(rf::cutOf({outside}, other, QStringLiteral("M2"), &cut, &masked).isEmpty());
+        QCOMPARE(masked, 1);
+        // Only what takes out, on this layer: everything else kept.
+        rf::Cutout hole;
+        hole.regions << rf::CutRegion{QStringLiteral("H"), QPolygonF(QRectF(0, 0, 10, 10)), false, {}};
+        QCOMPARE(rf::cutOf({outside, inside}, hole, QStringLiteral("M1"), &cut, &masked), (QList<QPolygonF>{outside, inside}));
+        QCOMPARE(cut + masked, 0);
+    }
+
+    // In the processing, the Cutout comes first: what it masks is never
+    // merged, two shapes it keeps whole are not joined by it with the merge
+    // off, and what it did is said - and, where it keeps nothing, why
+    // nothing is left.
+    void theProcessingCutsFirst()
+    {
+        const rf::Stack stack = stacked().stack();
+        QMap<QString, QList<QPolygonF>> shapes;
+        shapes[QStringLiteral("M1")] = {box(0, 0, 10, 10), box(5, 5, 10, 10), box(90, 0, 20, 5), box(300, 300, 5, 5)};
+        shapes[QStringLiteral("M2")] = {box(500, 500, 5, 5)};
+        rf::Processing how;
+        how.cutout.regions << rf::CutRegion{QStringLiteral("A"), QPolygonF(QRectF(0, 0, 100, 100)), true, {}};
+        how.merge = false;
+        const rf::Processed done = rf::processShapes(shapes, {}, how, stack);
+        QVERIFY2(done.ok(), qPrintable(done.problems.join(" | ")));
+        QCOMPARE(done.byLayer().value(QStringLiteral("M1")), 3);
+        QCOMPARE(done.byLayer().value(QStringLiteral("M2")), 0);
+        QCOMPARE(done.report.cut, 1);
+        QCOMPARE(done.report.masked, 2);
+        QVERIFY2(says(done.report.lines, "cutout's 1 region(s) applied first"), qPrintable(done.report.summary()));
+        QVERIFY2(says(done.report.lines, "M1: the cutout cut 1 shape(s) along its regions' edges and masked 1"),
+                 qPrintable(done.report.summary()));
+        how.merge = true;
+        QCOMPARE(rf::processShapes(shapes, {}, how, stack).byLayer().value(QStringLiteral("M1")), 2);
+
+        // A region nowhere near the shapes: nothing left, and the Cutout said
+        // to be why.
+        how.cutout.regions = {rf::CutRegion{QStringLiteral("Far"), QPolygonF(QRectF(1e5, 1e5, 10, 10)), true, {}}};
+        const rf::Processed none = rf::processShapes(shapes, {}, how, stack);
+        QVERIFY(none.conductors.isEmpty());
+        QVERIFY2(says(none.problems, "regions keep none of the shapes"), qPrintable(none.problems.join(" | ")));
+        // No Cutout: nothing of it said.
+        how.cutout = {};
+        QVERIFY(!says(rf::processShapes(shapes, {}, how, stack).report.lines, "cutout"));
+    }
+
+    // A layout file cut: half of it kept by a rectangle over its left half,
+    // a model's Cutout as processRead() reads it - the shapes all inside that
+    // half, less of their area than the whole layout's, and none of it
+    // outside; turned off, the whole layout again.
+    void aLayoutFileIsCutByTheModelsCutout()
+    {
+        const QString file = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(file)) QSKIP("the example layout is not in this build");
+        rf::Model m = stacked();
+        m.layout().props.insert(QStringLiteral("file"), file);
+        QJsonArray rows;
+        for (int layer = 0; layer < 64; ++layer)
+            rows.append(QJsonArray{QString::number(layer), QStringLiteral("0"), QStringLiteral("M1")});
+        set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", rows);
+        QString why;
+        const std::shared_ptr<qucs_s::layout::Layout> read = qucs_s::layout::read(file, &why);
+        QVERIFY2(read != nullptr, qPrintable(why));
+        const rf::Processed whole = rf::processRead(m, *read, QStringLiteral("heater.gds"));
+        QVERIFY(!whole.conductors.isEmpty());
+        QRectF all;
+        double wholeArea = 0;
+        for (const rf::Conductor& c : whole.conductors) {
+            all = all.united(c.outline.boundingRect());
+            wholeArea += c.area();
+        }
+        const QRectF left(all.left() - 1, all.top() - 1, all.width() / 2 + 1, all.height() + 2);
+        region(m, "rectangle", {{"x0", QStringLiteral("%1[um]").arg(left.left(), 0, 'g', 12)},
+                                {"y0", QStringLiteral("%1[um]").arg(left.top(), 0, 'g', 12)},
+                                {"x1", QStringLiteral("%1[um]").arg(left.right(), 0, 'g', 12)},
+                                {"y1", QStringLiteral("%1[um]").arg(left.bottom(), 0, 'g', 12)}});
+        const rf::Processed half = rf::processRead(m, *read, QStringLiteral("heater.gds"));
+        QVERIFY2(half.ok(), qPrintable(half.problems.join(" | ")));
+        QVERIFY(!half.conductors.isEmpty());
+        double halfArea = 0;
+        for (const rf::Conductor& c : half.conductors) {
+            halfArea += c.area();
+            QVERIFY2(c.outline.boundingRect().right() <= left.right() + 1e-3,
+                     qPrintable(QString::number(c.outline.boundingRect().right())));
+        }
+        QVERIFY2(halfArea < wholeArea * 0.95 && halfArea > 0, qPrintable(QStringLiteral("%1 of %2").arg(halfArea).arg(wholeArea)));
+        QVERIFY2(half.report.cut + half.report.masked > 0, qPrintable(half.report.summary()));
+        QVERIFY2(says(half.report.lines, "cutout"), qPrintable(half.report.summary()));
+
+        set(*m.layout().child(QStringLiteral("rf_cutout")), "apply", false);
+        const rf::Processed off = rf::processRead(m, *read, QStringLiteral("heater.gds"));
+        QCOMPARE(off.conductors.size(), whole.conductors.size());
+        double offArea = 0;
+        for (const rf::Conductor& c : off.conductors) offArea += c.area();
+        QCOMPARE(offArea, wholeArea);
+        QVERIFY(!says(off.report.lines, "cutout"));
+        // A region that cannot be read is the processing's problem too.
+        set(*m.layout().child(QStringLiteral("rf_cutout")), "apply", true);
+        set(m.layout().child(QStringLiteral("rf_cutout"))->children.at(0), "x1", QStringLiteral("nonsense"));
+        QVERIFY(says(rf::processRead(m, *read, QStringLiteral("heater.gds")).problems, "is not a number"));
     }
 
     // End to end: a real layout file read, mapped and processed.
