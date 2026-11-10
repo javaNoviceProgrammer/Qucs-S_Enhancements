@@ -72,10 +72,13 @@ void spembed::initSP (void) {
   // load S-parameter file
   const char * file = getPropertyString ("File");
   if (data == NULL) data = dataset::load_touchstone (file);
-  if (data != NULL) {
-    // determine the number of ports defined by that file
-    nPorts = (int) std::sqrt ((double) data->countVariables ());
+  if (data == NULL) {
+    // (Not read: said, nothing more - see spfile's constructor.)
+    logprint (LOG_ERROR, "ERROR: file `%s' of `%s' could not be read\n", file, getName ());
+    return;
   }
+  // determine the number of ports defined by that file
+  nPorts = (int) std::sqrt ((double) data->countVariables ());
   if (nPorts == getSize () - 1) {
     if (spara == NULL) {
       // find matrix vector entries in touchstone dataset

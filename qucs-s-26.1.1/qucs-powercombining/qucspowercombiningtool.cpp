@@ -25,6 +25,7 @@
 #endif
 
 #include <math.h>
+#include <cmath>
 
 #include "qucspowercombiningtool.h"
 #include "../qucs/qucs.h"
@@ -2090,6 +2091,9 @@ QString QucsPowerCombiningTool::ConvertLengthFromM(double len)
 // Converts a double number into string adding the corresponding prefix
 QString QucsPowerCombiningTool::num2str(double Num)
 {
+  // (Not finite: as it is. Its prefix's power, int(log10(inf) / 3), was
+  // undefined - UBSan.)
+  if (!std::isfinite(Num)) return QString::number(Num);
   char c = 0;
   double cal = fabs(Num);
   if(cal > 1e-20) {
