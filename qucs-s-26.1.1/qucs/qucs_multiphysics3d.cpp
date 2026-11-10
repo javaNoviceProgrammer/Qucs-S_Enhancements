@@ -16,6 +16,7 @@
 #include "multiphysics3dpanel.h"
 #include "multiphysicspanel.h"
 #include "multiphysicssettings.h"
+#include "gpurendering.h"
 #include "settings.h"
 
 #include "main.h"
@@ -23,6 +24,7 @@
 #include "fem3_estimate.h"
 
 #include <QAction>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -43,7 +45,8 @@ extern QString lastDirOpenSave;   // (qucs.cpp: the last folder a file was opene
 
 namespace {
 
-/// Multiphysics 3D > Settings: the memory a solve may take, past which it is
+/// Multiphysics 3D > Settings: the view drawn by the GPU or the CPU, the
+/// memory a solve may take, past which it is
 /// not solved (half of this machine's by default; 0, no limit), and the
 /// sparse direct solver - the Multiphysics menu's own setting, the same for
 /// both (Multiphysics/solver). Opened, not run: the window goes on behind it.
@@ -57,6 +60,35 @@ void showMultiphysics3DSettings(QWidget *parent)
   dialog->setWindowTitle(QObject::tr("Multiphysics 3D Settings"));
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   auto *layout = new QVBoxLayout(dialog);
+  // The view: drawn by the GPU or the CPU (Settings… > Viewers, the view's
+  // own menu: the same setting).
+  auto *view = new QGroupBox(QObject::tr("3D view"), dialog);
+  auto *viewRows = new QVBoxLayout(view);
+  auto *gpu = new QCheckBox(QObject::tr("Draw with the GPU"), view);
+  gpu->setObjectName(QStringLiteral("mp3GpuBox"));
+  gpu->setChecked(qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Multiphysics3D));
+  viewRows->addWidget(gpu);
+  auto *gpuAbout = new QLabel(QObject::tr("The faces, edges and points drawn by the GPU from buffers made once, their depth its own: "
+                                          "turning, panning and zooming a large mesh or plot stay smooth. Off, the CPU draws the "
+                                          "same picture. The view's own menu has it too (right-click the view); either way the "
+                                          "setting is kept. Pictures and exports are the CPU's either way. QUCS_GPU=0 in the "
+                                          "environment turns it off, whatever this says."),
+                              view);
+  gpuAbout->setWordWrap(true);
+  viewRows->addWidget(gpuAbout);
+  auto *gpuStatus = new QLabel(view);
+  gpuStatus->setObjectName(QStringLiteral("mp3GpuStatus"));
+  gpuStatus->setWordWrap(true);
+  auto showGpu = [gpu, gpuStatus] {
+    const QString hindrance = qucs_s::gpu::hindrance();
+    gpuStatus->setText(!hindrance.isEmpty() ? hindrance
+                       : gpu->isChecked()   ? QObject::tr("The GPU draws the 3D view (%1).").arg(qucs_s::gpu::backendName())
+                                            : QObject::tr("The CPU draws the 3D view."));
+  };
+  showGpu();
+  QObject::connect(gpu, &QCheckBox::toggled, gpuStatus, showGpu);
+  viewRows->addWidget(gpuStatus);
+  layout->addWidget(view);
   auto *memory = new QGroupBox(QObject::tr("Memory"), dialog);
   auto *memoryRows = new QVBoxLayout(memory);
   auto *line = new QHBoxLayout();
@@ -122,7 +154,10 @@ void showMultiphysics3DSettings(QWidget *parent)
   solverRows->addWidget(status);
   layout->addWidget(solver);
   auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
-  QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, [dialog, limit, choice] {
+  QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, [dialog, limit, choice, gpu] {
+    // (Kept, and each open view told.)
+    if (gpu->isChecked() != qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Multiphysics3D))
+      qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Multiphysics3D, gpu->isChecked());
     Multiphysics3DDoc::setMemoryLimitGB(limit->value());
     QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"), choice->currentData().toString());
     MultiphysicsSettingsDialog::applySolverSetting();
