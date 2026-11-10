@@ -134,6 +134,11 @@ BREAKS = [
   [(F, "    if (!open && ground->name != QLatin1String(\"GND\"))", "    if (false)")], [KEPT]),
  ("the guard not told what the stack export writes",
   [(G, "    } else if (tool == QLatin1String(\"rf25_stack_export\")) {", "    } else if (tool == QLatin1String(\"rf25_stack_exportx\")) {")], [GUARD]),
+ # ---- The recheck: metals with no namesake
+ ("the recheck: metals come in as sheets unsaid",
+  [(F, "        if (!sheets.isEmpty())", "        if (false)")], [KEPT]),
+ ("the recheck: a metal with a namesake said to come in as a sheet",
+  [(F, "            } else if (!n.props.contains(QLatin1String(\"model\"))", "            } if (!n.props.contains(QLatin1String(\"model\"))")], [KEPT]),
 ]
 
 

@@ -98,7 +98,7 @@ resistance on a conductor of no thickness, a name defined by itself.
 **Not checked: neither Electronics Desktop nor EMX has read a file written here.** Neither runs on macOS, and neither is
 here. The stackups follow documented examples, attribute for attribute. The process files follow the format's grammar.
 
-- **`test_rf25_stack`** (14 functions):
+- **`test_rf25_stack`** (15 functions):
   - **Out:** the exact lines and layers of each file written, for a two-metal process with a via, a lossy substrate and a
     layer map.
   - **Round trips:** each format reads back as the same stack. Grounds (perfect, metal, impedance, open) and a lid go there
@@ -142,4 +142,11 @@ the built app. Everything either file can carry held, and a second pass was stab
   and it is left as it is.
 
 `whatNeitherFileSaysOfAMetalIsKeptByName` holds S1 and S2, and six more breaks (44 in all) are each caught.
+
+**The recheck after `507865e7`** found S1 and S2 fixed, and one small thing left. A file imported into a model with no metal
+of the same names brought its metals in as smooth sheets, as designed, but said nothing of it, so a file written elsewhere
+gave no hint. The import now says it: "M2, M3 thick came in as sheets with no roughness: the file says neither, and no
+metal of those names was here to keep them from." A metal whose namesake was here is not listed, even where that namesake
+was a sheet too. The same test holds this, into a blank model (whose own M1 is a namesake) and into a stack with no metal at
+all; two more breaks (46 in all) are each caught.
 

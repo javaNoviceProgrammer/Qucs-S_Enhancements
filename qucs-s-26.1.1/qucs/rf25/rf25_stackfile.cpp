@@ -1482,7 +1482,7 @@ Model withStackOf(const Model& model, const StackRead& read, QStringList* notes)
             before.insert(n.label, &n);
             beforeLoose.insert(looseName(n.label), &n);
         }
-    QStringList keptFaces, keptRough;
+    QStringList keptFaces, keptRough, sheets;
     m.stackNode().children.clear();
     for (Node n : read.nodes) {
         n.tag = m.make(n.type).tag;
@@ -1496,6 +1496,8 @@ Model withStackOf(const Model& model, const StackRead& read, QStringList* notes)
                     if (k == QLatin1String("model") && textOf(n, k) == QLatin1String("faces")) keptFaces << n.label;
                     if (k == QLatin1String("roughness") && valueOf(n, k).toVariant().toString().trimmed() != QLatin1String("0")) keptRough << n.label;
                 }
+            } else if (!n.props.contains(QLatin1String("model")) && !n.props.contains(QLatin1String("roughness"))) {
+                sheets << n.label;
             }
         }
         m.stackNode().children.push_back(n);
@@ -1528,6 +1530,10 @@ Model withStackOf(const Model& model, const StackRead& read, QStringList* notes)
             notes->append(tr("%1 still solved as their two faces, as the metals of those names were: the file does not say.").arg(keptFaces.join(QStringLiteral(", "))));
         if (!keptRough.isEmpty())
             notes->append(tr("%1 keep the roughness the metals of those names had: the file does not say.").arg(keptRough.join(QStringLiteral(", "))));
+        if (!sheets.isEmpty())
+            notes->append((sheets.size() == 1 ? tr("%1 came in as a sheet with no roughness: the file says neither, and no metal of that name was here to keep them from.")
+                                              : tr("%1 came in as sheets with no roughness: the file says neither, and no metal of those names was here to keep them from."))
+                              .arg(sheets.join(QStringLiteral(", "))));
         const QStringList problemsBefore = model.problems();
         for (const QString& p : m.problems())
             if (!problemsBefore.contains(p)) notes->append(p);
