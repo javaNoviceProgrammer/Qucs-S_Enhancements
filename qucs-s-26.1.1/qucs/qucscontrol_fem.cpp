@@ -664,7 +664,7 @@ QString formatTextRf25()
         "rf_touchstone and rf_circuit. rf25_hfss_export writes a model for HFSS™ 3D Layout, rf25_hfss_import makes one of a "
         "project, its control file or an exported script, and rf25_compare sets a solve beside a Touchstone file's S. "
         "rf25_stack_export and rf25_stack_import write and read the stack alone, as an HFSS™ 3D Layout XML stackup or an EMX "
-        "process file.");
+        "process file; rf25_stack_export also draws it as a PDF of its cross-section.");
 }
 
 /// The RF 2.5D kinds, each with its properties as propertyLine() says them -

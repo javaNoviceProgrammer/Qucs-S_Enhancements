@@ -35,6 +35,16 @@ ALONE = (S, "theStackReplacesTheModelsAlone")
 KEPT = (S, "whatNeitherFileSaysOfAMetalIsKeptByName")
 TOOLS = ("test_qucs_control", "anRf25StackGoesOutAndBackThroughItsToolsAndItsMenu")
 GUARD = ("test_qucs_control", "guardsAskAboutCommandsAndFilesOutside")
+DR = "rf25/rf25_stackdrawing.cpp"
+C = "qucscontrol_rf25.cpp"
+DW = "test_rf25_stack_drawing"
+DRAWN = (DW, "whatIsDrawn")
+COVERS = (DW, "groundsAndCovers")
+COLS = (DW, "viasStandInColumns")
+LAID = (DW, "itIsLaidOutOnThePage")
+APART = (DW, "aTallStackPutsItsKeyApart")
+PDF = (DW, "thePdfIsWrittenAndNotRead")
+PAINT = (DW, "aPageIsPainted")
 
 BREAKS = [
  # ---- Writing
@@ -116,7 +126,7 @@ BREAKS = [
  ("the stack read but not put in the model",
   [(D, "    setModel(changed, tr(\"Import Stack\"));", "")], [TOOLS]),
  ("the menu's name with no suffix left so",
-  [(P, "    if (!stackFormatOf(file)) file += ", "    if (false) file += ")], [TOOLS]),
+  [(P, "    if (!stackFormatOf(file))\n        file += ", "    if (false)\n        file += ")], [TOOLS]),
  ("the menu's items not on the Stack",
   [(P, "    if (n->type == QLatin1String(\"rf_stack\")) {\n        QAction* in", "    if (n->type == QLatin1String(\"rf_stackx\")) {\n        QAction* in")], [TOOLS]),
  # ---- The check of 9 November: S1 and S2
@@ -139,6 +149,45 @@ BREAKS = [
   [(F, "        if (!sheets.isEmpty())", "        if (false)")], [KEPT]),
  ("the recheck: a metal with a namesake said to come in as a sheet",
   [(F, "            } else if (!n.props.contains(QLatin1String(\"model\"))", "            } if (!n.props.contains(QLatin1String(\"model\"))")], [KEPT]),
+ # ---- The drawing (10 November)
+ ("drawing: a metal's room not said to be of the dielectric above",
+  [(DR, "(fill != nullptr ? tr(\"%1 (%2)\").arg(epsWords(fill->epsr), fill->name)", "(fill != nullptr ? epsWords(fill->epsr)")], [DRAWN]),
+ ("drawing: the substrate's conductivity not said",
+  [(DR, "            if (l.sigma > 0) b.words << sigmaWords(l.sigma)", "            if (false) b.words << sigmaWords(l.sigma)")], [DRAWN]),
+ ("drawing: a via from its lower metal's bottom",
+  [(DR, "joined << Joined{&v, a, b, a != nullptr ? a->z1 : 0, b->z0};", "joined << Joined{&v, a, b, a != nullptr ? a->z0 : 0, b->z0};")], [DRAWN, COLS]),
+ ("drawing: a via named downwards not turned up",
+  [(DR, "if (b == nullptr || (a != nullptr && a->z0 > b->z0)) std::swap(a, b);", "if (b == nullptr) std::swap(a, b);")], [COLS]),
+ ("drawing: boxes of a column may overlap",
+  [(DR, "[&](const Item& it) { return z0 < it.z1 - eps && it.z0 < z1 - eps; });", "[&](const Item& it) { return false && z0 < it.z1 - eps && it.z0 < z1 - eps; });")], [COLS]),
+ ("drawing: a metal no via joins not drawn",
+  [(DR, "        columns[chosen] << metalItem(l);", "")], [COLS]),
+ ("drawing: the gap under a lid left out",
+  [(DR, "            if (l.variant != QLatin1String(\"perfect\") || !(l.thickness > 0)) continue;", "            continue;")], [COVERS]),
+ ("drawing: an open ground's level drawn solid",
+  [(DR, "i == 0 && d.ground.isEmpty()}", "false}")], [COVERS]),
+ ("drawing: heights in proportion, not by the cube root",
+  [(DR, "k * std::cbrt(std::max(0.0, (b.z1 - b.z0) * 1e6))", "k * (std::max(0.0, (b.z1 - b.z0) * 1e6))")], [LAID]),
+ ("drawing: no least height",
+  [(DR, "return std::max(thinnest, k * std::cbrt(", "return std::max(0.0, k * std::cbrt(")], [LAID]),
+ ("drawing: the key never apart",
+  [(DR, "const bool keyApart = drawH < std::max(220.0, n * 7.0);", "const bool keyApart = false;")], [APART]),
+ ("drawing: the plane not painted",
+  [(DR, "p.setBrush(plane ? QColor(70, 70, 70)", "p.setBrush(plane ? QColor(255, 255, 255)")], [PAINT]),
+ ("drawing: a PDF read as a process file",
+  [(F, "    if (format == StackFormat::Pdf) {", "    if (false) {")], [PDF]),
+ ("drawing: a PDF with no suffix not known by its first bytes",
+  [(F, "text.startsWith(\"%PDF\") ? StackFormat::Pdf : ", "")], [PDF]),
+ ("drawing: the model writes the text, not the PDF's bytes",
+  [(D, "    const QByteArray bytes = w.bytes();", "    const QByteArray bytes = w.text.toUtf8();")], [TOOLS]),
+ ("drawing: the tool's format said as emx",
+  [(C, "format == StackFormat::Emx ? QStringLiteral(\"emx\") : QStringLiteral(\"pdf\")", "QStringLiteral(\"emx\")")], [TOOLS]),
+ ("drawing: the PDF filter's suffix not given a bare name",
+  [(P, ": filter.contains(QLatin1String(\"*.pdf\")) ? QStringLiteral(\".pdf\")", ": false ? QStringLiteral(\".pdf\")")], [TOOLS]),
+ ("the Stack's form without its buttons",
+  [(P, "    if (n->type == QLatin1String(\"rf_stack\")) {\n        auto* addRow", "    if (false) {\n        auto* addRow")], [TOOLS]),
+ ("the Stack's Export button not connected",
+  [(P, "        connect(out, &QPushButton::clicked, this, &RF25Panel::exportStackFile);", "")], [TOOLS]),
 ]
 
 

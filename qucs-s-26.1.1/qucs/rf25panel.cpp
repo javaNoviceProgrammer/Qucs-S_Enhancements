@@ -393,6 +393,36 @@ void RF25Panel::updateStatusColumn()
     }
 }
 
+namespace {
+
+QString importStackTip()
+{
+    return RF25Panel::tr("The stack of an HFSS™ 3D Layout XML stackup or an EMX process file, in place of this one");
+}
+
+QString exportStackTip()
+{
+    return RF25Panel::tr("This stack as an HFSS™ 3D Layout XML stackup or an EMX process file, or drawn as a PDF of its cross-section");
+}
+
+/// The kinds that may be added under \a n now, in its kind's order: what its
+/// menu's Add offers, and the Stack's form its buttons for.
+QStringList addableUnder(const Node& n)
+{
+    QStringList out;
+    const NodeKind* k = kindOf(n);
+    if (k == nullptr) return out;
+    for (const QString& type : k->children) {
+        const NodeKind* ck = nodeKind(type);
+        if (ck == nullptr || ck->fixed) continue;
+        if (ck->unique && n.child(type) != nullptr) continue;
+        out << type;
+    }
+    return out;
+}
+
+} // namespace
+
 QMenu* RF25Panel::menuFor(const QString& tag)
 {
     if (!a_doc) return nullptr;
@@ -405,10 +435,8 @@ QMenu* RF25Panel::menuFor(const QString& tag)
     // What may be added under it.
     if (k != nullptr && !k->children.isEmpty()) {
         QMenu* add = n->type == QLatin1String("rf_model") ? menu : menu->addMenu(tr("Add"));
-        for (const QString& type : k->children) {
+        for (const QString& type : addableUnder(*n)) {
             const NodeKind* ck = nodeKind(type);
-            if (ck == nullptr || ck->fixed) continue;
-            if (ck->unique && n->child(type) != nullptr) continue;
             add->addAction(glyph(ck->icon), n->type == QLatin1String("rf_model") ? tr("Add %1").arg(ck->title) : ck->title, this,
                            [this, tag, type] { addNode(tag, type); });
         }
@@ -423,10 +451,10 @@ QMenu* RF25Panel::menuFor(const QString& tag)
     if (n->type == QLatin1String("rf_stack")) {
         QAction* in = menu->addAction(tr("Import Stack…"), this, &RF25Panel::importStackFile);
         in->setObjectName(QStringLiteral("rfImportStackAction"));
-        in->setStatusTip(tr("The stack of an HFSS™ 3D Layout XML stackup or an EMX process file, in place of this one"));
+        in->setStatusTip(importStackTip());
         QAction* out = menu->addAction(tr("Export Stack…"), this, &RF25Panel::exportStackFile);
         out->setObjectName(QStringLiteral("rfExportStackAction"));
-        out->setStatusTip(tr("This stack as an HFSS™ 3D Layout XML stackup or an EMX process file"));
+        out->setStatusTip(exportStackTip());
     }
     if (!menu->actions().isEmpty() && !menu->actions().last()->isSeparator()) menu->addSeparator();
     const bool editable = k != nullptr && !k->fixed;
@@ -450,6 +478,12 @@ QString stackFilters()
 {
     return RF25Panel::tr("HFSS™ 3D Layout XML stackups") + QStringLiteral(" (*.xml);;") + RF25Panel::tr("EMX process files")
            + QStringLiteral(" (*.proc)");
+}
+
+/// What Export Stack… offers: the two stack files, and a drawing.
+QString stackExportFilters()
+{
+    return stackFilters() + QStringLiteral(";;") + RF25Panel::tr("PDF drawings of the cross-section") + QStringLiteral(" (*.pdf)");
 }
 
 } // namespace
@@ -484,18 +518,24 @@ void RF25Panel::exportStackFile()
     const QString suggested = name.isEmpty() ? QDir::home().filePath(QStringLiteral("stack.xml"))
                                              : QFileInfo(name).dir().filePath(QFileInfo(name).completeBaseName() + QStringLiteral("_stack.xml"));
     QString filter;
-    QString file = QFileDialog::getSaveFileName(this, title, suggested, stackFilters(), &filter);
+    QString file = QFileDialog::getSaveFileName(this, title, suggested, stackExportFilters(), &filter);
     if (file.isEmpty() || !a_doc) return;
     // (No suffix typed: the one of the kind chosen.)
-    if (!stackFormatOf(file)) file += filter.contains(QLatin1String("*.proc")) ? QStringLiteral(".proc") : QStringLiteral(".xml");
+    if (!stackFormatOf(file))
+        file += filter.contains(QLatin1String("*.proc")) ? QStringLiteral(".proc")
+                : filter.contains(QLatin1String("*.pdf")) ? QStringLiteral(".pdf")
+                                                           : QStringLiteral(".xml");
     QString why;
     StackWritten written;
     if (!a_doc->exportStack(file, &written, &why)) {
         QMessageBox::warning(this, title, why);
         return;
     }
-    QStringList said{tr("%1 written: %2 layer(s), %3 via(s), %4 GDSII layer(s) named.")
-                         .arg(QDir::toNativeSeparators(file)).arg(written.layers).arg(written.vias).arg(written.mapped)};
+    QStringList said{stackFormatOf(file) == StackFormat::Pdf
+                         ? tr("%1 written: a drawing of %2 layer(s) and %3 via(s) on %4 page(s).")
+                               .arg(QDir::toNativeSeparators(file)).arg(written.layers).arg(written.vias).arg(written.pages)
+                         : tr("%1 written: %2 layer(s), %3 via(s), %4 GDSII layer(s) named.")
+                               .arg(QDir::toNativeSeparators(file)).arg(written.layers).arg(written.vias).arg(written.mapped)};
     said << written.notes;
     QMessageBox::information(this, title, said.join(QStringLiteral("\n\n")));
 }
@@ -758,6 +798,40 @@ void RF25Panel::showSettings()
             }
         }
     v->addLayout(form);
+    // The Stack's menu, in its form as well: what may be added under it,
+    // and its stack to and from a file.
+    if (n->type == QLatin1String("rf_stack")) {
+        auto* addRow = new QWidget(a_form);
+        auto* h = new QHBoxLayout(addRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->addWidget(new QLabel(tr("Add"), addRow));
+        const QString tag = n->tag;
+        for (const QString& type : addableUnder(*n)) {
+            const NodeKind* ck = nodeKind(type);
+            auto* add = new QPushButton(glyph(ck->icon), ck->title, addRow);
+            add->setObjectName(QStringLiteral("rfStackAdd_") + type);
+            add->setToolTip(tr("Adds a %1 to the stack, as the menu's Add does").arg(ck->title.toLower()));
+            connect(add, &QPushButton::clicked, this, [this, tag, type] { addNode(tag, type); });
+            h->addWidget(add);
+        }
+        h->addStretch(1);
+        v->addWidget(addRow);
+        auto* fileRow = new QWidget(a_form);
+        auto* f = new QHBoxLayout(fileRow);
+        f->setContentsMargins(0, 0, 0, 0);
+        auto* in = new QPushButton(tr("Import Stack…"), fileRow);
+        in->setObjectName(QStringLiteral("rfImportStackButton"));
+        in->setToolTip(importStackTip());
+        connect(in, &QPushButton::clicked, this, &RF25Panel::importStackFile);
+        auto* out = new QPushButton(tr("Export Stack…"), fileRow);
+        out->setObjectName(QStringLiteral("rfExportStackButton"));
+        out->setToolTip(exportStackTip());
+        connect(out, &QPushButton::clicked, this, &RF25Panel::exportStackFile);
+        f->addWidget(in);
+        f->addWidget(out);
+        f->addStretch(1);
+        v->addWidget(fileRow);
+    }
     // An export writes: the button that does it, and what it said - an
     // equivalent circuit's values and how well it fits too.
     if (n->type == QLatin1String("rf_touchstone") || n->type == QLatin1String("rf_circuit")) {

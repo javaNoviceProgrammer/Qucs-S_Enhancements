@@ -69,8 +69,9 @@ public:
     bool setNodeEnabled(const QString& tag, bool enabled);
     bool renameNode(const QString& tag, const QString& label);
     /// The Stack's Import Stack… and Export Stack…: a file asked for, an XML
-    /// stackup of HFSS™ 3D Layout or an EMX process file, and what came of it
-    /// said in a box.
+    /// stackup of HFSS™ 3D Layout or an EMX process file (or, written, a PDF
+    /// drawing of the cross-section), and what came of it said in a box. The
+    /// Stack's form has them as buttons too, with its Add.
     void importStackFile();
     void exportStackFile();
 
