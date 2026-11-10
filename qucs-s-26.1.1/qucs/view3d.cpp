@@ -1,6 +1,7 @@
 /*
- * view3d.cpp - a 3D view drawn on the CPU: a depth buffer of our own under
- *              shaded triangles, lines and dots
+ * view3d.cpp - a 3D view drawn on the CPU (a depth buffer of our own under
+ *              shaded triangles, lines and dots) or by the GPU's canvas over
+ *              it (view3dgpu.cpp)
  *
  * This file is part of Qucs-S.
  *
@@ -11,7 +12,16 @@
  */
 #include "view3d.h"
 
+#include "gpurendering.h"
+#include "popupmenu.h"
+#include "settings.h"
+#ifdef QUCS_GPU_VIEW
+#include "view3dgpu.h"
+#endif
+
+#include <QContextMenuEvent>
 #include <QEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -43,11 +53,121 @@ View3D::View3D(QWidget* parent) : QWidget(parent)
     setObjectName(QStringLiteral("View3D"));
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    // (Settings… > Viewers, Multiphysics 3D > Settings…, its menu: drawn so.)
+    connect(qucs_s::gpu::Notifier::instance(), &qucs_s::gpu::Notifier::changed, this, [this](qucs_s::gpu::Viewer viewer) {
+        if (viewer == qucs_s::gpu::Viewer::Multiphysics3D) setGpu(qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Multiphysics3D));
+    });
+#ifdef QUCS_GPU_VIEW
+    // The GPU's canvas over it, where there can be one and it is wanted.
+    if (qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Multiphysics3D) && gpuAvailable()) a_canvas = new View3DCanvas(this);
+#endif
+}
+
+View3D::~View3D()
+{
+#ifdef QUCS_GPU_VIEW
+    // (Its canvas first: its last frame paints through the view.)
+    delete a_canvas;
+    a_canvas = nullptr;
+#endif
+}
+
+bool View3D::gpuAvailable()
+{
+    return qucs_s::gpu::hindrance().isEmpty();
+}
+
+void View3D::setGpu(bool on)
+{
+#ifdef QUCS_GPU_VIEW
+    if (on && !a_canvas && !a_gpuBroken && gpuAvailable()) {
+        a_canvas = new View3DCanvas(this);
+        a_canvas->setGeometry(rect());
+        a_canvas->show();
+    } else if (!on && a_canvas) {
+        delete a_canvas;
+        a_canvas = nullptr;
+    }
+#else
+    Q_UNUSED(on);
+#endif
+    invalidate();
+}
+
+int View3D::gpuFrames() const
+{
+#ifdef QUCS_GPU_VIEW
+    return a_canvas ? a_canvas->frames() : 0;
+#else
+    return 0;
+#endif
+}
+
+int View3D::gpuBuilds() const
+{
+#ifdef QUCS_GPU_VIEW
+    return a_canvas ? a_canvas->builds() : 0;
+#else
+    return 0;
+#endif
+}
+
+QWidget* View3D::gpuCanvas() const
+{
+#ifdef QUCS_GPU_VIEW
+    return a_canvas;
+#else
+    return nullptr;
+#endif
+}
+
+void View3D::canvasFailed()
+{
+#ifdef QUCS_GPU_VIEW
+    if (!a_canvas) return;
+    a_gpuBroken = true;
+    a_canvas->deleteLater();
+    a_canvas = nullptr;
+#endif
+    invalidate();
+}
+
+void View3D::paintFrame(QPainter& p, View3DCanvas* canvas)
+{
+#ifdef QUCS_GPU_VIEW
+    canvas->fillBackground(p, palette().color(QPalette::Base));
+    canvas->drawScene(p);
+#else
+    Q_UNUSED(canvas);
+#endif
+    paintOverlay(p, QSizeF(size()));
+}
+
+void View3D::contextMenuEvent(QContextMenuEvent* event)
+{
+    auto* menu = new QMenu(this);
+    menu->addAction(tr("Fit"), this, [this] { fit(); });
+    QAction* gpuAction = menu->addAction(tr("Draw with the GPU"));
+    gpuAction->setCheckable(true);
+    gpuAction->setChecked(gpu());
+    gpuAction->setEnabled(gpuAvailable() && !a_gpuBroken);
+    // (The setting, every open view told.)
+    connect(gpuAction, &QAction::toggled, this, [](bool on) { qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Multiphysics3D, on); });
+    qucs_s::popUp(menu, event->globalPos());
+}
+
+void View3D::redraw()
+{
+    update();
+#ifdef QUCS_GPU_VIEW
+    if (a_canvas) a_canvas->update();
+#endif
 }
 
 void View3D::setScene(Scene scene, bool fitIt)
 {
     a_scene = std::move(scene);
+    ++a_sceneStamp;
     if (a_scene.bounds.isEmpty()) {
         for (const Triangle& t : a_scene.triangles)
             for (const Vec3& p : t.p) a_scene.bounds.add(p);
@@ -64,7 +184,7 @@ void View3D::setScene(Scene scene, bool fitIt)
 void View3D::setEmptyText(const QString& text)
 {
     a_emptyText = text;
-    update();
+    redraw();
 }
 
 void View3D::viewFrom(Preset preset)
@@ -151,7 +271,7 @@ void View3D::setClip(int axis, double at)
 void View3D::invalidate()
 {
     a_dirty = true;
-    update();
+    redraw();
 }
 
 void View3D::render(QImage& image, std::vector<int>* ids) const
@@ -165,14 +285,7 @@ void View3D::render(QImage& image, std::vector<int>* ids) const
     const Camera c = camera();
     const Box3& b = a_scene.bounds;
     const bool clipping = a_clipAxis >= 0 && !b.isEmpty();
-    double clipValue = 0;
-    if (clipping) {
-        const double lo = a_clipAxis == 0 ? b.x0 : a_clipAxis == 1 ? b.y0 : b.z0;
-        const double hi = a_clipAxis == 0 ? b.x1 : a_clipAxis == 1 ? b.y1 : b.z1;
-        // (A hair beyond the cut kept: a face on it - its cut face, a slice
-        // there - kept whole, not each pixel by its rounding.)
-        clipValue = lo + (hi - lo) * a_clipAt + 1e-9 * (hi - lo);
-    }
+    const double clipValue = clipping ? cutValue() : 0;
     auto along = [this](const Vec3& p) { return a_clipAxis == 0 ? p.x : a_clipAxis == 1 ? p.y : p.z; };
     auto line = [&](int y) { return reinterpret_cast<QRgb*>(image.scanLine(y)); };
     // Triangles: shaded by the light at the eye, both sides alike (a face
@@ -266,6 +379,10 @@ void View3D::render(QImage& image, std::vector<int>* ids) const
 
 void View3D::paintEvent(QPaintEvent*)
 {
+#ifdef QUCS_GPU_VIEW
+    // (The GPU's canvas over it draws it.)
+    if (a_canvas) return;
+#endif
     const qreal dpr = devicePixelRatioF();
     const QSize pixels = (QSizeF(size()) * dpr).toSize();
     if (a_dirty || a_cache.size() != pixels) {
@@ -344,7 +461,18 @@ QImage View3D::picture(double scale)
 void View3D::setLegend(Legend legend)
 {
     a_legend = std::move(legend);
-    update();
+    redraw();
+}
+
+double View3D::cutValue() const
+{
+    const Box3& b = a_scene.bounds;
+    if (a_clipAxis < 0 || b.isEmpty()) return 0;
+    const double lo = a_clipAxis == 0 ? b.x0 : a_clipAxis == 1 ? b.y0 : b.z0;
+    const double hi = a_clipAxis == 0 ? b.x1 : a_clipAxis == 1 ? b.y1 : b.z1;
+    // (A hair beyond the cut kept: a face on it - its cut face, a slice
+    // there - kept whole, not each pixel by its rounding.)
+    return lo + (hi - lo) * a_clipAt + 1e-9 * (hi - lo);
 }
 
 double View3D::clipValue() const
@@ -372,6 +500,9 @@ void View3D::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
     a_dirty = true;
+#ifdef QUCS_GPU_VIEW
+    if (a_canvas) a_canvas->setGeometry(rect());
+#endif
 }
 
 void View3D::changeEvent(QEvent* event)

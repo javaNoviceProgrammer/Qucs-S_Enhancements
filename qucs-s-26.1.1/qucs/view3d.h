@@ -1,9 +1,10 @@
 /*
- * view3d.h - a 3D view drawn on the CPU: triangles shaded by a light at the
- *            eye, lines and dots over them, each hidden where something is
- *            in front (a depth buffer of our own); an orthographic camera
- *            orbited, panned and zoomed by the mouse, set from the top, the
- *            front, the side or a corner; a half-space clipped away
+ * view3d.h - a 3D view: triangles shaded by a light at the eye, lines and
+ *            dots over them, each hidden where something is in front; an
+ *            orthographic camera orbited, panned and zoomed by the mouse, set
+ *            from the top, the front, the side or a corner; a half-space
+ *            clipped away. Drawn by the CPU (a depth buffer of our own) or,
+ *            chosen, by the GPU (view3dgpu.h: Qt's RHI)
  *
  * This file is part of Qucs-S.
  *
@@ -22,6 +23,7 @@
 #include <QWidget>
 
 class QPainter;
+class View3DCanvas;
 
 #include <array>
 #include <vector>
@@ -67,6 +69,7 @@ public:
     };
 
     explicit View3D(QWidget* parent = nullptr);
+    ~View3D() override;
 
     /// What it draws; the camera kept, or (\a fit) framing it.
     void setScene(Scene scene, bool fit = false);
@@ -100,6 +103,21 @@ public:
     /// there - or -1.
     int idAt(QPoint p);
 
+    /// Drawn by the GPU (Settings… > Viewers, Multiphysics 3D > Settings…,
+    /// its own menu): where nothing is in its way (QUCS_GPU=0, no backend
+    /// here) and its shaders built; else the CPU. picture() and idAt() are
+    /// the CPU's either way.
+    bool gpu() const { return a_canvas != nullptr; }
+    void setGpu(bool on);
+    /// Whether the GPU can draw here at all.
+    static bool gpuAvailable();
+    /// The GPU's frames drawn (for the tests); 0 on the CPU.
+    int gpuFrames() const;
+    /// The scenes the GPU has made buffers of (for the tests).
+    int gpuBuilds() const;
+    /// The GPU's canvas over it (for the tests), or null.
+    QWidget* gpuCanvas() const;
+
     QSize sizeHint() const override { return QSize(640, 480); }
     QSize minimumSizeHint() const override { return QSize(120, 90); }
 
@@ -116,8 +134,10 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void changeEvent(QEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
+    friend class View3DCanvas;
     struct Camera {
         qucs_s::fem::Vec3 right, up, toward;   ///< the screen's axes in the model's
     };
@@ -130,7 +150,16 @@ private:
     /// What is drawn over it: a word where it is empty, the axes, the cut,
     /// the legend.
     void paintOverlay(QPainter& p, const QSizeF& size) const;
+    /// A frame on the GPU's canvas: its background, the scene by the GPU,
+    /// the overlay.
+    void paintFrame(QPainter& p, View3DCanvas* canvas);
+    /// The GPU's shaders not built: the CPU's from now on.
+    void canvasFailed();
+    /// Where the Cut is - a hair beyond clipValue(), a face on it kept.
+    double cutValue() const;
     void invalidate();
+    /// Drawn again, by whichever draws it.
+    void redraw();
 
     Scene a_scene;
     Legend a_legend;
@@ -142,6 +171,9 @@ private:
     double a_clipAt = 0.5;
     QImage a_cache;
     bool a_dirty = true;
+    quint64 a_sceneStamp = 1;             // a scene set: the GPU's buffers made again
+    View3DCanvas* a_canvas = nullptr;     // the GPU's, over the view
+    bool a_gpuBroken = false;
     QPoint a_press, a_last;
     Qt::MouseButton a_button = Qt::NoButton;
     bool a_dragged = false;
