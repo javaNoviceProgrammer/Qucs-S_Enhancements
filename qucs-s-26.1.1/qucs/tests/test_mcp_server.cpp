@@ -34,6 +34,8 @@
 #include "claudejobs.h"
 #include "claudejobswindow.h"
 #include "config.h"
+#include "datadisplay.h"
+#include "markup.h"
 #include "diagrams/diagram.h"
 #include "diagrams/graph.h"
 #include "simulationconsole.h"
@@ -412,6 +414,168 @@ private slots:
         why = drawn("third");
         QVERIFY2(why.isEmpty(), qPrintable("not read, what it had put back: " + why));
         doc->setChanged(false);
+        callTool("close_document", {{"path", file}, {"unsaved", "discard"}});
+    }
+
+    // A data display's page has a toolbar above its canvas - zoom, all of
+    // it in sight, its data read again, and the pen, as a layout's and a
+    // presentation's tab. The pen up, a drag on the page draws instead of
+    // selecting; Claude reads each stroke against the diagrams - the trace
+    // a ring is round and over which values, the point a dot marks -, takes
+    // the pen up or puts it down, clears and marks the strokes
+    // (show_data_display), draws with send_input, and is told of them with
+    // the next prompt. Undo takes a stroke back with the pen up, Escape puts
+    // it down; the page itself is not changed, and keeps the strokes when
+    // its file is read again. A schematic has no such toolbar or pen.
+    void aDataDisplaysPenDrawsAndIsRead()
+    {
+        // y = x² over 0 to 10, in one diagram.
+        QByteArray xs, ys;
+        for (int k = 0; k <= 40; ++k) {
+            xs += QByteArray::number(k * 0.25) + "\n";
+            ys += QByteArray::number(k * 0.25 * k * 0.25) + "\n";
+        }
+        write("inked.dat", "<Qucs Dataset " PACKAGE_VERSION ">\n<indep x 41>\n" + xs + "</indep>\n<dep y x>\n" + ys + "</dep>\n");
+        const QString file = write("inked.dpl", "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=inked.dat>\n</Properties>\n"
+                                                "<Symbol>\n</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                                                "  <Rect 100 400 500 300 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 0 -1 \"x\" \"\" \"\">\n"
+                                                "    <\"y\" #0000ff 2 3 0 0 0>\n  </Rect>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QVERIFY(app->gotoPage(file, false, false));
+        Schematic* page = front();
+        QVERIFY(page != nullptr && page->isDataDisplayPage());
+        auto* bar = page->dataDisplayBar();
+        QVERIFY(bar != nullptr);
+        QTest::qWait(50);
+        // The toolbar across the top, the canvas and its scroll bar below it.
+        QVERIFY(bar->isVisible());
+        QCOMPARE(bar->geometry().top(), 0);
+        QCOMPARE(bar->width(), page->width());
+        QVERIFY2(page->viewport()->mapTo(page, QPoint(0, 0)).y() >= bar->height(),
+                 qPrintable(QStringLiteral("the canvas at %1, the bar %2 high").arg(page->viewport()->mapTo(page, QPoint(0, 0)).y()).arg(bar->height())));
+        QVERIFY(page->verticalScrollBar()->geometry().top() >= bar->height());
+        QVERIFY(bar->penButton() != nullptr && bar->zoomInButton() != nullptr && bar->fitButton() != nullptr && bar->reloadButton() != nullptr);
+        // Its zoom.
+        const double before = page->getScale();
+        bar->zoomInButton()->click();
+        QVERIFY(page->getScale() > before * 1.5);
+        bar->fitButton()->click();
+
+        // Where the trace's middle point is drawn, on the page.
+        const Diagram* d = page->a_DocDiags.front();
+        QList<QPointF> curve;
+        for (const Graph* g : d->Graphs)
+            for (auto it = g->begin(); it != g->end(); ++it)
+                if (it->isPt()) curve << QPointF(d->cx + it->getScrX(), d->cy - it->getScrY());
+        QVERIFY2(curve.size() > 20, qPrintable(QString::number(curve.size())));
+        const QPointF middle = curve.at(curve.size() / 2);   // x = 5, y = 25
+
+        // The pen taken up with its button: a ring round the middle drawn
+        // with send_input, read as round the trace y near x = 5.
+        bar->penButton()->click();
+        QVERIFY(page->penActive());
+        QJsonArray ring;
+        for (int k = 1; k <= 24; ++k)
+            ring.append(QJsonArray{middle.x() + 30 * std::cos(k * M_PI / 12), middle.y() + 30 * std::sin(k * M_PI / 12)});
+        QJsonObject r = structured(callTool("send_input", {{"target", "canvas"}, {"path", file},
+                                                           {"click", QJsonArray{middle.x() + 30, middle.y()}}, {"drag_through", ring}}));
+        const QJsonArray drawn = r.value("drawn").toArray();
+        QVERIFY2(drawn.size() == 1, qPrintable(QJsonDocument(r).toJson()));
+        QJsonObject stroke = drawn.at(0).toObject();
+        QCOMPARE(stroke.value("drawn as").toString(), QStringLiteral("ring"));
+        QCOMPARE(stroke.value("page").toString(), QStringLiteral("page"));
+        QJsonObject in = stroke.value("in diagrams").toArray().at(0).toObject();
+        QCOMPARE(in.value("diagram").toInt(), 1);
+        QCOMPARE(in.value("x is").toString(), QStringLiteral("x"));
+        const QJsonObject round = in.value("round").toArray().at(0).toObject();
+        QCOMPARE(round.value("trace").toString(), QStringLiteral("y"));
+        const QJsonArray span = round.value("x").toArray();
+        QVERIFY2(span.size() == 2 && span.at(0).toDouble() < 5 && span.at(1).toDouble() > 5 && span.at(0).toDouble() > 2 && span.at(1).toDouble() < 8,
+                 qPrintable(QJsonDocument(in).toJson()));
+        // Drawn on the canvas, in the pen's colour; the page not changed.
+        QCOMPARE(page->penDrawing().strokes().size(), 1);
+        QVERIFY(!page->getDocChanged());
+        const QImage seen = page->viewport()->grab().toImage();
+        const QColor ink = qucs_s::markup::currentPen().color;
+        int inked = 0;
+        for (int y = 0; y < seen.height(); ++y)
+            for (int x = 0; x < seen.width(); ++x)
+                if (const QColor c = seen.pixelColor(x, y); std::abs(c.red() - ink.red()) < 30 && std::abs(c.green() - ink.green()) < 30 && std::abs(c.blue() - ink.blue()) < 30) ++inked;
+        QVERIFY2(inked > 50, qPrintable(QString::number(inked)));
+
+        // A dot on the trace: its values, and the trace's nearest point.
+        const QPointF late = curve.at(curve.size() * 3 / 4);   // x = 7.5, y = 56.25
+        r = structured(callTool("send_input", {{"target", "canvas"}, {"path", file}, {"click", QJsonArray{late.x(), late.y()}}}));
+        stroke = r.value("drawn").toArray().at(0).toObject();
+        QCOMPARE(stroke.value("drawn as").toString(), QStringLiteral("dot"));
+        in = stroke.value("in diagrams").toArray().at(0).toObject();
+        const QJsonObject at = in.value("at").toObject();
+        QVERIFY2(std::abs(at.value("x").toDouble() - 7.5) < 0.3 && at.contains("readout"), qPrintable(QJsonDocument(in).toJson()));
+        const QJsonObject nearest = in.value("nearest trace").toObject();
+        QCOMPARE(nearest.value("trace").toString(), QStringLiteral("y"));
+        QVERIFY2(std::abs(nearest.value("x").toDouble() - 7.5) < 0.3 && std::abs(nearest.value("y").toDouble() - 56.25) < 3,
+                 qPrintable(QJsonDocument(nearest).toJson()));
+
+        // read_drawings has them, with their points; the next prompt is
+        // told of them, the pen still up.
+        const QJsonObject one = structured(callTool("read_drawings", {{"path", file}})).value("documents").toArray().at(0).toObject();
+        QVERIFY(one.value("measures").toString().contains("page's coordinates"));
+        QCOMPARE(one.value("strokes").toArray().size(), 2);
+        QVERIFY(one.value("strokes").toArray().at(0).toObject().contains("points"));
+        const auto [revision, told] = app->drawingsOf(page->getDocName());
+        QVERIFY(revision != 0);
+        QVERIFY2(told.contains("ring") && told.contains("diagram 1") && told.contains("round the trace(s) y") && told.contains("show_data_display"),
+                 qPrintable(told));
+        QVERIFY(control->inEveryTurn().contains("read_drawings") && control->inEveryTurn().contains("show_data_display"));
+
+        // show_data_display: the diagrams, the pen; strokes marked addressed
+        // (left out of the prompt), then every mark taken away.
+        r = structured(callTool("show_data_display", {{"path", file}, {"addressed", QJsonArray{1}}}));
+        QCOMPARE(r.value("diagrams").toArray().at(0).toObject().value("traces").toArray().at(0).toString(), QStringLiteral("y"));
+        QVERIFY(r.value("pen").toString().startsWith("taken up"));
+        QVERIFY(r.value("drawings").toArray().at(0).toObject().value("addressed").toBool());
+        QVERIFY(!app->drawingsOf(page->getDocName()).second.contains("ring"));
+        callTool("show_data_display", {{"path", file}, {"addressed", "none"}});
+        QVERIFY(!page->penDrawing().strokes().at(0).addressed);
+
+        // Undo, the pen up: the drawing's last changes taken back in turn -
+        // the marks taken away, the mark, the dot -, not the page's edits.
+        QVERIFY(QMetaObject::invokeMethod(app, "slotEditUndo"));
+        QVERIFY(page->penDrawing().strokes().at(0).addressed);
+        QVERIFY(QMetaObject::invokeMethod(app, "slotEditUndo"));
+        QVERIFY(!page->penDrawing().strokes().at(0).addressed);
+        QCOMPARE(page->penDrawing().strokes().size(), 2);
+        QVERIFY(QMetaObject::invokeMethod(app, "slotEditUndo"));
+        QCOMPARE(page->penDrawing().strokes().size(), 1);
+        QVERIFY(!page->getDocChanged());
+        // Read again from its file: the strokes kept.
+        QCOMPARE(app->reloadFromDisk(page), QucsApp::Reloaded::Yes);
+        QCOMPARE(page->penDrawing().strokes().size(), 1);
+        // Escape puts the pen down (its button too); a drag selects again.
+        QVERIFY(QMetaObject::invokeMethod(app, "slotEscape"));
+        QVERIFY(!page->penActive());
+        QVERIFY(!bar->penButton()->isChecked());
+        callTool("send_input", {{"target", "canvas"}, {"path", file}, {"click", QJsonArray{middle.x(), middle.y()}},
+                                {"drag_to", QJsonArray{middle.x() + 40, middle.y() + 40}}});
+        QCOMPARE(page->penDrawing().strokes().size(), 1);
+        // Taken up again and cleared by Claude.
+        r = structured(callTool("show_data_display", {{"path", file}, {"pen", true}, {"drawings", "clear"}}));
+        QVERIFY(page->penActive() && bar->penButton()->isChecked());
+        QVERIFY(page->penDrawing().isEmpty());
+        QVERIFY2(r.value("done").toString().contains("taken away"), qPrintable(QJsonDocument(r).toJson()));
+        QVERIFY(callTool("show_data_display", {{"path", file}, {"drawings", "all"}}).value("isError").toBool());
+        callTool("show_data_display", {{"path", file}, {"pen", false}});
+        QVERIFY(!page->penActive());
+
+        // A schematic: no toolbar, no pen.
+        callTool("new_document", {{"kind", "schematic"}});
+        Schematic* sch = front();
+        QVERIFY(sch != nullptr && sch != page);
+        QVERIFY(sch->dataDisplayBar() == nullptr);
+        sch->setPenActive(true);
+        QVERIFY(!sch->penActive());
+        QVERIFY(callTool("show_data_display", {}).value("isError").toBool());
+        callTool("close_document", {{"unsaved", "discard"}});
+        page->setChanged(false);
         callTool("close_document", {{"path", file}, {"unsaved", "discard"}});
     }
 

@@ -18,6 +18,7 @@
  */
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
+#include "datadisplay.h"
 #include "layoutdoc.h"
 #include "pptx.h"
 #include "pptxdoc.h"
@@ -647,8 +648,10 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QHash<QString, int> drawnBefore;
     int strokesBefore = 0;
     quint64 revisionBefore = 0;
-    if (layoutView || slideView) {
-        const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView->drawing();
+    // (A data display's page: its own pen, on its canvas.)
+    QPointer<Schematic> page = sch && sch->isDataDisplayPage() ? sch : QPointer<Schematic>();
+    if (layoutView || slideView || page) {
+        const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : page->penDrawing();
         for (const qucs_s::markup::Stroke& s : drawing.strokes()) drawnBefore[s.on] = std::max(drawnBefore.value(s.on), s.id);   // (the last number each part gave)
         strokesBefore = int(drawing.strokes().size());
         revisionBefore = drawing.revision();
@@ -662,7 +665,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                                                 : drag ? tr(", dragged to %1, %2").arg(dragTo.x()).arg(dragTo.y())
                                                        : QString())
                                      : QString();
-    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, layoutView, slideView, slides, slide, drawnBefore,
+    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, layoutView, slideView, slides, slide, page, drawnBefore,
                                             strokesBefore, revisionBefore, where, clicked, sets, typed, intoDialog] {
         if (run->answered) return;
         // (Each key as it went: an action, the field's, the list's.)
@@ -704,14 +707,18 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         if (list != nullptr) o.insert(QStringLiteral("list"), listRead(list));
         // (On a layout or slides: each stroke the pen drew, read as
         //  read_drawings reads it - what it marks -, or how many went.)
-        if (layoutView || (slideView && slides)) {
-            const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView->drawing();
+        if (layoutView || (slideView && slides) || page) {
+            const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : page->penDrawing();
             if (drawing.revision() != revisionBefore) {
                 QJsonArray drawn;
-                for (const QJsonValue& v : layoutView ? layoutView->readDrawing(false) : slides->readDrawing(false)) {
+                const QJsonArray read = layoutView ? layoutView->readDrawing(false)
+                                        : slides   ? slides->readDrawing(false)
+                                                   : qucs_s::datadisplay::readDrawing(page, false);
+                for (const QJsonValue& v : read) {
                     const QJsonObject r = v.toObject();
                     const QString part = layoutView ? r.value(QLatin1String("cell")).toString()
-                                                    : QString::number(r.value(QLatin1String("slide")).toInt());
+                                       : slides     ? QString::number(r.value(QLatin1String("slide")).toInt())
+                                                    : Schematic::penPart();
                     if (r.value(QLatin1String("stroke")).toInt() > drawnBefore.value(part)) drawn.append(r);
                 }
                 if (!drawn.isEmpty()) o.insert(QStringLiteral("drawn"), drawn);

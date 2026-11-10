@@ -34,6 +34,7 @@
 #include "paintings/paintings.h"
 #include "schematic.h"
 #include "cursorvalues.h"
+#include "datadisplay.h"
 #include "probe.h"
 #include "statusbar.h"
 #include "ink.h"
@@ -140,6 +141,7 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
         connect(this, SIGNAL(signalFileChanged(bool)), App_, SLOT(slotFileChanged(bool)));
         connect(this, SIGNAL(signalDocumentRebuilt(Schematic*)), App_, SLOT(slotDocumentRebuilt(Schematic*)));
     }
+    updateDataDisplayBar();
 }
 
 Schematic::~Schematic()
@@ -503,7 +505,7 @@ void Schematic::becomeCurrent(bool update)
         a_Paintings = &a_DocPaints;
         a_Components = &a_DocComps;
 
-        emit signalUndoState(a_undoActionIdx != 0);
+        emit signalUndoState(a_undoActionIdx != 0 || (a_pen && a_penDrawing.canUndo()));
         emit signalRedoState(a_undoActionIdx != a_undoAction.size() - 1);
         if (update)
             reloadGraphs(); // load recent simulation data
@@ -527,6 +529,7 @@ void Schematic::setName(const QString &Name_)
         a_DataDisplay = base + ".dpl";
     else
         a_DataDisplay = base + ".sch";
+    updateDataDisplayBar();   // (saved as a .dpl, or as something else)
 }
 
 // ---------------------------------------------------
@@ -759,6 +762,17 @@ void Schematic::drawContents(QPainter *p, int clipx, int clipy, int clipw, int c
     if (a_cursorValues) drawCursorValues(p);
 
     drawPostPaintEvents(p);
+
+    // What the pen drew on a data display's page, over all of it, and the
+    // stroke being drawn: in the canvas's pixels, as broad as the pen was
+    // at the zoom it was drawn at.
+    if (!a_penDrawing.isEmpty() || a_inking) {
+        QList<qucs_s::markup::Stroke> shown = a_penDrawing.on(penPart());
+        if (a_inking) shown << a_stroke;
+        p->setTransform(base);
+        const double scale = a_Scale, x0 = a_ViewX1, y0 = a_ViewY1;
+        qucs_s::markup::paint(*p, shown, [scale, x0, y0](QPointF m) { return QPointF((m.x() - x0) * scale, (m.y() - y0) * scale); }, scale);
+    }
 }
 
 void Schematic::setUpModelPainter(QPainter* p) const
@@ -1377,6 +1391,10 @@ void Schematic::callView(Handler handler, Args... args)
 
 void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
 {
+    if (a_inking || a_erasing) {
+        penMove(Event);
+        return;
+    }
     a_App->view->dropStaleElements(this);
     const QPoint modelPos = contentsToModel(Event->pos());
     auto xpos = modelPos.x();
@@ -1398,6 +1416,8 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
     }
 
     emit signalCursorPosChanged(xpos, ypos, text);
+    // (The pen up: the readout follows the cursor, nothing else does.)
+    if (a_pen && !(Event->buttons() & Qt::MiddleButton)) return;
 
     // Perform "pan with mouse"
     if (Event->buttons() & Qt::MiddleButton) {
@@ -1443,6 +1463,12 @@ void Schematic::contentsMouseMoveEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 {
+    // The pen up: the left button draws (or erases), whatever mode the
+    // window is in.
+    if (a_pen && Event->button() == Qt::LeftButton) {
+        if (!a_inking && !a_erasing) penPress(Event);
+        return;
+    }
     a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->view->dropStaleElements(this);
     a_App->editText->setHidden(true); // disable text edit of component property
@@ -1490,6 +1516,11 @@ void Schematic::contentsMousePressEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
 {
+    if (Event->button() == Qt::LeftButton && (a_inking || a_erasing)) {
+        penRelease();
+        return;
+    }
+    if (a_pen && Event->button() == Qt::LeftButton) return;
     a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->view->dropStaleElements(this);
     // End "pan with mouse" action.
@@ -1505,6 +1536,11 @@ void Schematic::contentsMouseReleaseEvent(QMouseEvent *Event)
 // -----------------------------------------------------------
 void Schematic::contentsMouseDoubleClickEvent(QMouseEvent *Event)
 {
+    // With the pen up a double click is two presses of it: a dot.
+    if (a_pen) {
+        if (Event->button() == Qt::LeftButton && !a_inking && !a_erasing) penPress(Event);
+        return;
+    }
     a_gesture = Gesture::None;   // what it does is painted as a whole
     a_App->view->dropStaleElements(this);
     if (a_App->MouseDoubleClickAction)
@@ -3184,4 +3220,172 @@ bool Schematic::checkDplAndDatNames()
         return false;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------
+// A data display's page: its toolbar and the pen
+
+bool Schematic::isDataDisplayPage() const
+{
+    return a_DocName.endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive);
+}
+
+void Schematic::updateDataDisplayBar()
+{
+    const bool wanted = isDataDisplayPage();
+    if (wanted == (a_dataDisplayBar != nullptr)) return;
+    if (wanted) {
+        a_dataDisplayBar = new qucs_s::datadisplay::Bar(this);
+        a_dataDisplayBar->show();
+        setMargins(leftMargin(), a_dataDisplayBar->sizeHint().height(), rightMargin(), bottomMargin());
+    } else {
+        setPenActive(false);
+        delete std::exchange(a_dataDisplayBar, nullptr);
+        setMargins(leftMargin(), 0, rightMargin(), bottomMargin());
+    }
+    QResizeEvent event(size(), size());
+    resizeEvent(&event);
+}
+
+void Schematic::resizeEvent(QResizeEvent* event)
+{
+    Q3ScrollView::resizeEvent(event);
+    if (a_dataDisplayBar != nullptr) {
+        const int h = a_dataDisplayBar->sizeHint().height();
+        if (topMargin() != h) setMargins(leftMargin(), h, rightMargin(), bottomMargin());
+        a_dataDisplayBar->setGeometry(0, 0, width(), h);
+        a_dataDisplayBar->raise();
+    }
+}
+
+void Schematic::setVBarGeometry(QScrollBar& vbar, int x, int y, int w, int h)
+{
+    // (Its bar across the whole width: the scroll bar starts below it.)
+    const int top = a_dataDisplayBar != nullptr ? topMargin() : 0;
+    Q3ScrollView::setVBarGeometry(vbar, x, y + top, w, std::max(0, h - top));
+}
+
+QPointF Schematic::contentsToPage(QPointF contents) const
+{
+    return QPointF(contents.x() / a_Scale + a_ViewX1, contents.y() / a_Scale + a_ViewY1);
+}
+
+void Schematic::setPenActive(bool active)
+{
+    if (active == a_pen) return;
+    // Taken up on a data display's page only: it is that page's.
+    if (active && !isDataDisplayPage()) return;
+    a_pen = active;
+    // Put down mid-stroke: the stroke let go, what an eraser took kept.
+    if (!active && (a_inking || a_erasing)) {
+        if (a_erasing && a_erased) a_penDrawing.changed(a_beforeErase);
+        a_inking = a_erasing = a_erased = false;
+        a_stroke = qucs_s::markup::Stroke();
+        a_beforeErase.clear();
+        emit drawingChanged();
+    }
+    viewport()->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
+    viewport()->update();
+    updateUndoState();
+    emit penActiveChanged(active);
+}
+
+void Schematic::updateUndoState()
+{
+    if (a_symbolMode) return;
+    emit signalUndoState(a_undoActionIdx != 0 || (a_pen && a_penDrawing.canUndo()));
+}
+
+void Schematic::addStroke(const qucs_s::markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    qucs_s::markup::Stroke s = stroke;
+    s.on = penPart();
+    a_penDrawing.add(s);
+    viewport()->update();
+    updateUndoState();
+    emit drawingChanged();
+}
+
+bool Schematic::undoDrawing()
+{
+    if (!a_penDrawing.undo()) return false;
+    viewport()->update();
+    updateUndoState();
+    emit drawingChanged();
+    return true;
+}
+
+bool Schematic::clearDrawing()
+{
+    if (!a_penDrawing.clear()) return false;
+    viewport()->update();
+    updateUndoState();
+    emit drawingChanged();
+    return true;
+}
+
+int Schematic::setStrokesAddressed(const QList<int>& ids, bool addressed)
+{
+    const int changed = a_penDrawing.setAddressed(penPart(), ids, addressed);
+    if (changed > 0) {
+        viewport()->update();
+        updateUndoState();
+        emit drawingChanged();
+    }
+    return changed;
+}
+
+void Schematic::penPress(QMouseEvent* event)
+{
+    setFocus();
+    const QPointF at = contentsToPage(event->position());
+    const qucs_s::markup::Pen pen = qucs_s::markup::currentPen();
+    if (pen.tool == qucs_s::markup::Tool::Eraser) {
+        a_erasing = true;
+        a_erased = false;
+        a_beforeErase = a_penDrawing.strokes();
+        eraseAt(at);
+    } else {
+        a_stroke = qucs_s::markup::begin(pen, penPart(), at, a_Scale);
+        a_inking = true;
+        viewport()->update();
+    }
+}
+
+void Schematic::eraseAt(QPointF page)
+{
+    bool erased = false;
+    while (a_penDrawing.eraseAt(penPart(), page, qucs_s::markup::EraserReach / a_Scale)) erased = true;
+    if (erased) {
+        a_erased = true;
+        viewport()->update();
+        emit drawingChanged();
+    }
+}
+
+void Schematic::penMove(QMouseEvent* event)
+{
+    // The pen and the eraser follow every move, the least of them too.
+    const QPointF at = contentsToPage(event->position());
+    if (a_inking) {
+        if (QLineF(a_stroke.points.last(), at).length() * a_Scale >= qucs_s::markup::LeastStep) {
+            a_stroke.points << at;
+            viewport()->update();
+        }
+        return;
+    }
+    if (a_erasing) eraseAt(at);
+}
+
+void Schematic::penRelease()
+{
+    if (a_inking) a_penDrawing.add(a_stroke);
+    else if (a_erased) a_penDrawing.changed(a_beforeErase);
+    a_stroke = qucs_s::markup::Stroke();
+    a_inking = a_erasing = a_erased = false;
+    a_beforeErase.clear();
+    viewport()->update();
+    updateUndoState();
+    emit drawingChanged();
 }
