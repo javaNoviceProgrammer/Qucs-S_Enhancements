@@ -60,6 +60,11 @@ struct Output {
     QByteArray out;
 };
 
+// What readOnlyGuards() gives where it could not tell which filters the
+// repository's configuration sets: applyGuards() refuses it, and no git that
+// could start one runs.
+const QString kGuardsUnknown = QStringLiteral("qucs-s.guards=unknown");
+
 // "key=value" apart: the value is after the last '.' (the driver's name,
 // in the key, may hold a '=').
 qsizetype equalsOf(const QString& setting)
@@ -97,7 +102,7 @@ Output run(const QString& program, const QString& dir, const QStringList& args, 
         addConfig(env, c.left(at), c.mid(at + 1));
     }
     QStringList all;
-    applyGuards(guard, all, env);
+    if (!applyGuards(guard, all, env)) return o;
     all << args;
     p.setProcessEnvironment(env);
     p.setWorkingDirectory(dir);
@@ -133,9 +138,15 @@ QStringList guards(const QString& root)
     const QString pattern = QStringLiteral("^filter\\..*\\.(clean|smudge|process|required)$");
     QStringList keys;
     // "scope<tab>key" lines, the key whole (a driver's name may hold spaces).
-    Output o = run(program(), root,
-                   {QStringLiteral("-c"), config.at(0), QStringLiteral("config"), QStringLiteral("--show-scope"),
-                    QStringLiteral("--includes"), QStringLiteral("--name-only"), QStringLiteral("--get-regexp"), pattern});
+    const QStringList asked{QStringLiteral("-c"), config.at(0), QStringLiteral("config"), QStringLiteral("--show-scope"),
+                            QStringLiteral("--includes"), QStringLiteral("--name-only"), QStringLiteral("--get-regexp"), pattern};
+    Output o = run(program(), root, asked);
+    // (Not started, or stopped at its limit - a machine busy elsewhere: asked
+    // once more, and with no answer then, no git that could start a filter
+    // runs. Taken for none, the repository's own filter ran on a look: the
+    // packaged app of 45e744e0, once in about fifteen checks under load.)
+    if (o.exitCode == -1) o = run(program(), root, asked, 20000);
+    if (o.exitCode == -1) return {kGuardsUnknown};
     if (o.exitCode == 0) {
         for (const QByteArray& l : o.out.split('\n')) {
             const QString entry = QString::fromUtf8(l);
@@ -147,6 +158,7 @@ QStringList guards(const QString& root)
         o = run(program(), root,
                 {QStringLiteral("config"), QStringLiteral("--local"), QStringLiteral("--includes"), QStringLiteral("--name-only"),
                  QStringLiteral("--get-regexp"), pattern});
+        if (o.exitCode != 0 && o.exitCode != 1) return {kGuardsUnknown};
         for (const QByteArray& l : o.out.split('\n')) keys << QString::fromUtf8(l);
     }
     QStringList drivers;
@@ -319,10 +331,13 @@ QStringList readOnlyGuards(const QString& root)
     QMutexLocker lock(&mutex);
     if (!clock.isValid()) clock.start();
     const auto it = kept.constFind(root);
-    if (it != kept.cend() && it->stamp == stamp && clock.elapsed() - it->at < 30000) return it->guards;
+    // (Not told: the rest of a look refused at once, not each git asking
+    // again for half a minute; asked again after.)
+    if (it != kept.cend() && it->guards.contains(kGuardsUnknown) && clock.elapsed() - it->at < 3000) return it->guards;
+    if (it != kept.cend() && !it->guards.contains(kGuardsUnknown) && it->stamp == stamp && clock.elapsed() - it->at < 30000) return it->guards;
     lock.unlock();
     const QStringList found = guards(root);
-    const bool lasting = none || (!files.isEmpty() && !includesOthers(files));
+    const bool lasting = found.contains(kGuardsUnknown) || none || (!files.isEmpty() && !includesOthers(files));
     lock.relock();
     if (lasting) kept.insert(root, {found, stamp, clock.elapsed()});
     else kept.remove(root);
@@ -355,13 +370,15 @@ void lookingEnvironment(QProcessEnvironment& env)
     env.insert(QStringLiteral("GIT_LITERAL_PATHSPECS"), QStringLiteral("1"));
 }
 
-void applyGuards(const QStringList& guards, QStringList& args, QProcessEnvironment& env)
+bool applyGuards(const QStringList& guards, QStringList& args, QProcessEnvironment& env)
 {
+    if (guards.contains(kGuardsUnknown)) return false;
     for (const QString& g : guards) {
         const qsizetype at = equalsOf(g);
         if (g.first(at).contains(QLatin1Char('='))) addConfig(env, g.left(at), g.mid(at + 1));
         else args << QStringLiteral("-c") << g;
     }
+    return true;
 }
 
 QString fileIn(const QString& root, const QString& path)
