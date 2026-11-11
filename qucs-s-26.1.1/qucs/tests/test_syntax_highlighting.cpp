@@ -21,6 +21,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
 #include <QTimer>
@@ -90,6 +91,23 @@ public:
         const int first = styleOfColumn(block, column);
         const int last = styleOfColumn(block, column + int(needle.size()) - 1);
         return first == last ? first : -3;
+    }
+
+    // The \a nth \a needle on \a line replaced by \a with, as an edit:
+    // the lines after it highlighted again where what it opened changed.
+    void replace(int line, const QString& needle, const QString& with, int nth = 0)
+    {
+        const QTextBlock block = a_doc.findBlockByNumber(line);
+        int column = -1;
+        for (int i = 0; i <= nth; ++i) column = int(block.text().indexOf(needle, column + 1));
+        QVERIFY(column >= 0);
+        // A document tells of its changes (contentsChange, which the
+        // highlighter follows) once it is laid out, as an editor's is.
+        a_doc.documentLayout();
+        QTextCursor cursor(&a_doc);
+        cursor.setPosition(block.position() + column);
+        cursor.setPosition(block.position() + column + int(needle.size()), QTextCursor::KeepAnchor);
+        cursor.insertText(with);
     }
 
 private:
@@ -182,7 +200,8 @@ private slots:
             {"e.vhd", LANG_VHDL}, {"f.v", LANG_VERILOG}, {"g.sv", LANG_VERILOG}, {"h.m", LANG_OCTAVE},
             {"i.cir", LANG_SPICE}, {"j.lib", LANG_SPICE}, {"k.net", LANG_QUCS_NETLIST}, {"l.sh", LANG_SHELL},
             {"m.md", LANG_MARKDOWN}, {"n.json", LANG_JSON}, {"o.xml", LANG_XML}, {"p.txt", LANG_NONE},
-            {"Makefile", LANG_NONE}, {"/some/dir.py/q.vhdl", LANG_VHDL},
+            {"Makefile", LANG_NONE}, {"/some/dir.py/q.vhdl", LANG_VHDL}, {"r.yaml", LANG_YAML},
+            {"s.YML", LANG_YAML},
         };
         for (const auto& f : files) QCOMPARE(languageFor(f.file), f.language);
         // Each language named once, plain text first, the others by name.
@@ -386,6 +405,142 @@ private slots:
         QCOMPARE(xml.styleAt(3, "</a"), as(Style::Tag));
     }
 
+    // YAML: keys, plain and quoted, before ": "; strings and their
+    // escapes; the core schema's literals and numbers; anchors, aliases,
+    // tags; directives and document markers; a # a comment only after a
+    // blank; a block scalar's lines text, not keys or comments, as far as
+    // they are indented more than its key; a quoted string over two lines.
+    void yamlIsHighlighted()
+    {
+        Highlighted h(LANG_YAML,
+                      "%YAML 1.2 # version\n"                       // 0
+                      "%TAG ! tag:example.com,2000:\n"               // 1
+                      "---\n"                                        // 2
+                      "# a comment\n"                                // 3
+                      "name: amp   # trailing\n"                     // 4
+                      "\"quoted key\": 'it''s'\n"                    // 5
+                      "url: http://x.org/a#frag\n"                   // 6
+                      "path: \"a # b \\t \\x41 \\q\"\n"              // 7
+                      "on: true\n"                                   // 8
+                      "off: False\n"                                 // 9
+                      "none: ~\n"                                    // 10
+                      "empty: null\n"                                // 11
+                      "n: -1.5e3\n"                                  // 12
+                      "hex: 0x1F\n"                                  // 13
+                      "inf: .inf\n"                                  // 14
+                      "version: 1.2.3\n"                             // 15
+                      "list:\n"                                      // 16
+                      "  - &first one\n"                             // 17
+                      "  - *first\n"                                 // 18
+                      "  - !!str x\n"                                // 19
+                      "  - [1, \"two\", {k: v}]\n"                   // 20
+                      "text: |-\n"                                   // 21
+                      "  key: not a key\n"                           // 22
+                      "  # not a comment\n"                          // 23
+                      "\n"                                           // 24
+                      "    \"still\" text\n"                         // 25
+                      "next: >2 # folded\n"                          // 26
+                      "  more\n"                                     // 27
+                      "true: a key, not a literal\n"                 // 28
+                      "long: \"first line\n"                         // 29
+                      "  second line\" # after\n"                    // 30
+                      "after: 3\n"                                   // 31
+                      "...\n"                                        // 32
+                      "--- !custom\n"                                // 33
+                      "- |\n"                                        // 34
+                      "  in a sequence\n"                            // 35
+                      "- x: |\n"                                     // 36
+                      "    deeper\n"                                 // 37
+                      "  y: 1\n"                                     // 38
+                      "flow: [a,\n"                                  // 39
+                      "  b: c]\n"                                    // 40
+                      "a#b: -x\n");                                  // 41
+        QCOMPARE(h.styleAt(0, "%YAML 1.2"), as(Style::Directive));
+        QCOMPARE(h.styleAt(0, "# version"), as(Style::Comment));
+        QCOMPARE(h.styleAt(1, "%TAG ! tag:example.com,2000:"), as(Style::Directive));
+        QCOMPARE(h.styleAt(2, "---"), as(Style::Directive));
+        QCOMPARE(h.styleAt(3, "# a comment"), as(Style::Comment));
+        QCOMPARE(h.styleAt(4, "name"), as(Style::Key));
+        QCOMPARE(h.styleAt(4, ":"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(4, "amp"), -1);
+        QCOMPARE(h.styleAt(4, "# trailing"), as(Style::Comment));
+        QCOMPARE(h.styleAt(5, "\"quoted key\""), as(Style::Key));
+        QCOMPARE(h.styleAt(5, "'it''s'"), as(Style::String));
+        QCOMPARE(h.styleAt(5, "''"), as(Style::Unit));   // a quote in a single-quoted string
+        QCOMPARE(h.styleAt(6, "url"), as(Style::Key));
+        QCOMPARE(h.styleAt(6, "http://x.org/a#frag"), -1);   // a # in a word: no comment
+        QCOMPARE(h.styleAt(7, "\"a # b"), as(Style::String));   // nor in a string
+        QCOMPARE(h.styleAt(7, "\\t"), as(Style::Unit));
+        QCOMPARE(h.styleAt(7, "\\x41"), as(Style::Unit));
+        QCOMPARE(h.styleAt(7, "\\q"), as(Style::String));   // no escape of YAML's
+        QCOMPARE(h.styleAt(7, "\\q\""), as(Style::String));   // and the string goes on to its quote
+        QCOMPARE(h.styleAt(8, "on"), as(Style::Key));   // YAML 1.2: a word, not a boolean
+        QCOMPARE(h.styleAt(8, "true"), as(Style::Keyword));
+        QCOMPARE(h.styleAt(9, "False"), as(Style::Keyword));
+        QCOMPARE(h.styleAt(10, "~"), as(Style::Keyword));
+        QCOMPARE(h.styleAt(11, "null"), as(Style::Keyword));
+        QCOMPARE(h.styleAt(12, "-1.5e3"), as(Style::Number));
+        QCOMPARE(h.styleAt(13, "0x1F"), as(Style::Number));
+        QCOMPARE(h.styleAt(14, ".inf"), as(Style::Number));
+        QCOMPARE(h.styleAt(15, "1.2.3"), -1);   // not a number
+        QCOMPARE(h.styleAt(16, "list"), as(Style::Key));
+        QCOMPARE(h.styleAt(17, "-"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(17, "&first"), as(Style::Attribute));
+        QCOMPARE(h.styleAt(17, "one"), -1);
+        QCOMPARE(h.styleAt(18, "*first"), as(Style::Attribute));
+        QCOMPARE(h.styleAt(19, "!!str"), as(Style::Type));
+        QCOMPARE(h.styleAt(20, "["), as(Style::Builtin));
+        QCOMPARE(h.styleAt(20, "1"), as(Style::Number));
+        QCOMPARE(h.styleAt(20, ","), as(Style::Builtin));
+        QCOMPARE(h.styleAt(20, "\"two\""), as(Style::String));
+        QCOMPARE(h.styleAt(20, "{"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(20, "k"), as(Style::Key));
+        QCOMPARE(h.styleAt(20, "v"), -1);
+        QCOMPARE(h.styleAt(20, "}]"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(21, "text"), as(Style::Key));
+        QCOMPARE(h.styleAt(21, "|-"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(22, "key: not a key"), as(Style::String));   // text, not a key
+        QCOMPARE(h.styleAt(23, "# not a comment"), as(Style::String));
+        QCOMPARE(h.styleAt(25, "\"still\" text"), as(Style::String));   // after a blank line
+        QCOMPARE(h.styleAt(26, "next"), as(Style::Key));   // back at the key's column: ended
+        QCOMPARE(h.styleAt(26, ">2"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(26, "# folded"), as(Style::Comment));
+        QCOMPARE(h.styleAt(27, "more"), as(Style::String));
+        QCOMPARE(h.styleAt(28, "true"), as(Style::Key));   // a key, whatever its word
+        QCOMPARE(h.styleAt(28, "a key, not a literal"), -1);
+        QCOMPARE(h.styleAt(29, "\"first line"), as(Style::String));
+        QCOMPARE(h.styleAt(30, "second line\""), as(Style::String));   // the string goes on
+        QCOMPARE(h.styleAt(30, "# after"), as(Style::Comment));          // and ends
+        QCOMPARE(h.styleAt(31, "after"), as(Style::Key));
+        QCOMPARE(h.styleAt(31, "3"), as(Style::Number));
+        QCOMPARE(h.styleAt(32, "..."), as(Style::Directive));
+        QCOMPARE(h.styleAt(33, "---"), as(Style::Directive));
+        QCOMPARE(h.styleAt(33, "!custom"), as(Style::Type));
+        QCOMPARE(h.styleAt(34, "|"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(35, "in a sequence"), as(Style::String));
+        QCOMPARE(h.styleAt(36, "x"), as(Style::Key));
+        QCOMPARE(h.styleAt(37, "deeper"), as(Style::String));   // under "x", in the entry
+        QCOMPARE(h.styleAt(38, "y"), as(Style::Key));          // at x's column: ended
+        QCOMPARE(h.styleAt(38, "1"), as(Style::Number));
+        QCOMPARE(h.styleAt(40, "b"), as(Style::Key));   // in the flow collection still
+        QCOMPARE(h.styleAt(40, "]"), as(Style::Builtin));
+        QCOMPARE(h.styleAt(41, "a#b"), as(Style::Key));
+        QCOMPARE(h.styleAt(41, "-x"), -1);   // a word, not a sequence's entry
+
+        // The block scalar taken away: its lines are keys and comments again;
+        // put back, text again.
+        h.replace(21, "|-", "x");
+        QCOMPARE(h.styleAt(22, "key"), as(Style::Key));
+        QCOMPARE(h.styleAt(23, "# not a comment"), as(Style::Comment));
+        h.replace(21, "x", "|-", 1);
+        QCOMPARE(h.styleAt(22, "key: not a key"), as(Style::String));
+        // A quote opened over the next lines, closed again.
+        h.replace(4, "amp", "\"amp");
+        QCOMPARE(h.styleAt(5, "\""), as(Style::String));   // the quote that closes it
+        h.replace(4, "\"amp", "amp");
+        QCOMPARE(h.styleAt(5, "\"quoted key\""), as(Style::Key));
+    }
+
     // Every language that has styles has a sample that shows each of them.
     void eachSampleShowsEveryStyle()
     {
@@ -470,6 +625,35 @@ private slots:
             if (r.start == 0) import = r.format;
         QCOMPARE(import.foreground().color().rgb(), qucs_s::syntax::format(LANG_PYTHON, Style::Keyword).colour.rgb());
         QCOMPARE(import.fontWeight(), int(QFont::Bold));
+        app.closeAllFiles();
+    }
+
+    // A YAML file opens highlighted, YAML named in the status bar and its
+    // menu.
+    void aYamlFileOpensHighlighted()
+    {
+        SyntaxGuard guard;
+        QucsSettings.SyntaxFormats.clear();
+        QucsSettings.SyntaxForSuffix.clear();
+        const QString yml = write("config.yml", "name: amp # the name\n");
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        app.setAttribute(Qt::WA_DontShowOnScreen);
+        app.resize(1600, 800);
+        app.show();
+        QVERIFY(app.gotoPage(yml));
+        TextDoc* doc = current(app);
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->language, int(LANG_YAML));
+        QTextCharFormat key;
+        for (const QTextLayout::FormatRange& r : doc->document()->firstBlock().layout()->formats())
+            if (r.start == 0) key = r.format;
+        QCOMPARE(key.foreground().color().rgb(), qucs_s::syntax::format(LANG_YAML, Style::Key).colour.rgb());
+        app.statusPanel()->refresh();
+        QCOMPARE(chip(app, "statusLanguage")->text(), QString("YAML"));
+        QAction* yaml = languageAction(app, "YAML");
+        QVERIFY(yaml != nullptr && yaml->isChecked());
+        closeMenus(app);
         app.closeAllFiles();
     }
 
