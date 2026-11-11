@@ -21,6 +21,7 @@
 #include "settings.h"
 
 #include <QApplication>
+#include <QColorDialog>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -714,6 +715,11 @@ void RF25Doc::buildUi()
     a_layoutLabel->setObjectName(QStringLiteral("rfLayoutLabel"));
     a_layoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     row->addWidget(a_layoutLabel, 1);
+    // The pen, as a layout's tab has it: what the user draws over the
+    // layout, Claude reads (its menu: the arrow beside it).
+    a_penButton = new qucs_s::markup::PenButton(tr("Cell"), bar);
+    a_penButton->setObjectName(QStringLiteral("rfPen"));
+    row->addWidget(a_penButton);
     all->addWidget(bar);
 
     a_splitter = new QSplitter(Qt::Vertical, this);
@@ -745,8 +751,25 @@ void RF25Doc::buildUi()
         if ((shift ? placeTerminal(box, &why) : placeInternalPort(box, &why)).isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
-        if (mode == LayoutView::Mode::Select && a_placing != Placing::None) setPlacing(Placing::None);
+        if ((mode == LayoutView::Mode::Select || mode == LayoutView::Mode::Draw) && a_placing != Placing::None) setPlacing(Placing::None);
+        const QSignalBlocker quiet(a_penButton);
+        a_penButton->setChecked(mode == LayoutView::Mode::Draw);
     });
+    // The pen taken up - the port tools put down - and put down; its menu's
+    // undo and clearing.
+    connect(a_penButton, &QToolButton::toggled, this, [this](bool on) {
+        if (on && a_placing != Placing::None) setPlacing(Placing::None);
+        a_view->setMode(on ? LayoutView::Mode::Draw : LayoutView::Mode::Select);
+        a_view->setFocus();
+    });
+    a_penButton->setColorChooser([this](const QColor& now) {
+        const InADialog inADialog(this);   // (not freed under its own dialog)
+        return QColorDialog::getColor(now, this, tr("The Pen's Colour"));
+    });
+    connect(a_penButton, &qucs_s::markup::PenButton::undoRequested, this, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(true); });
+    connect(a_view, &LayoutView::drawingChanged, this, &RF25Doc::updatePen);
     // The canvas went light or dark: the outlines and the cells' ink are
     // told against it, so they are taken again.
     connect(a_view, &LayoutView::colorsChanged, this, &RF25Doc::showOverlays);
@@ -1276,6 +1299,13 @@ void RF25Doc::showLayout()
     // where the user left it; a layout just read is fitted.
     if (again) a_view->setView(center, scale);
     else a_view->fit();
+    updatePen();
+}
+
+void RF25Doc::updatePen()
+{
+    const qucs_s::markup::Drawing& d = a_view->drawing();
+    a_penButton->setDrawingState(d.canUndo(), d.count(a_view->drawingPart()), int(d.strokes().size()));
 }
 
 // ------------------------------- What the solver would be given

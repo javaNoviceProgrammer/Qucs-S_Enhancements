@@ -438,6 +438,11 @@ public:
     void setPlacing(Placing placing);
     QToolButton* edgePortButton() const { return a_edgePortButton; }
     QToolButton* internalPortButton() const { return a_internalPortButton; }
+    /// The pen, at the toolbar's right end, as a layout's tab has it: taken
+    /// up, a drag over the layout draws on its cell, for Claude to read
+    /// (read_drawings, and each prompt about this model); it and the port
+    /// tools are one at a time.
+    qucs_s::markup::PenButton* penButton() const { return a_penButton; }
     /// An edge port put on the edge of a metal's processed shape nearest
     /// \a at (µm), within \a reach µm (nought: ten pixels as the view is
     /// zoomed): at its middle, facing out of it, its conductor that metal -
@@ -569,6 +574,8 @@ private:
     QString a_lastPlaced;          ///< the port put on the layout last: a Shift-drag's terminal returns it
     QToolButton* a_edgePortButton = nullptr;
     QToolButton* a_internalPortButton = nullptr;
+    qucs_s::markup::PenButton* a_penButton = nullptr;
+    void updatePen();
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
