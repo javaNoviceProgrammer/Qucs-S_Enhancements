@@ -28,11 +28,12 @@ namespace qucs_s::gpu {
 
 class Canvas2D;
 
-enum class Viewer { Pdf, Markdown, Layout, Multiphysics };
+enum class Viewer { Pdf, Markdown, Layout, Multiphysics, Multiphysics3D };
 
 /// The setting's key: Viewers/pdfGpu, Viewers/markdownGpu,
 /// Viewers/layoutGpu, Viewers/multiphysicsGpu (the Graphics view's own menu
-/// and Multiphysics > Settings… set it too).
+/// and Multiphysics > Settings… set it too), Viewers/multiphysics3dGpu
+/// (Multiphysics 3D's view: its menu, Multiphysics 3D > Settings…).
 QString settingKey(Viewer viewer);
 /// "PDF viewer", "Markdown preview", ...
 QString viewerName(Viewer viewer);

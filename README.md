@@ -13,9 +13,9 @@ with Claude Code, reviewed and driven by a human.
 
 Ready-made bundles for macOS, Linux and Windows are on the
 [Releases page](https://github.com/javaNoviceProgrammer/Qucs-S_Enhancements/releases).
-This build calls itself **27.1.0** (`qucs-s-26.1.1/VERSION`; the source
+This build calls itself **27.1.1** (`qucs-s-26.1.1/VERSION`; the source
 directory keeps the name of the upstream version it started from). Documents
-it saves say `<Qucs Schematic 27.1.0>`; upstream 26.1.1 asks before opening a
+it saves say `<Qucs Schematic 27.1.1>`; upstream 26.1.1 asks before opening a
 file from a newer version unless *Load documents from future versions* is on.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the upstream code base is put together
@@ -94,6 +94,30 @@ Qt's offscreen platform plugin, so its binary works headless too — the smoke
 suites run against it unchanged. If Homebrew upgrades Qt underneath an
 existing build directory, rebuild from scratch: the new headers carry old
 timestamps, and an incremental build mixes objects of two Qt versions.
+
+### macOS, with Qt's own build
+
+Homebrew builds Qt, and every library it brings, for the macOS it runs on,
+so a bundle made with Homebrew's Qt needs that macOS or newer. A bundle for
+older macOS takes Qt's own build instead — from the Qt installer, or
+aqtinstall, which the Release workflow uses — and names the oldest macOS it
+runs on:
+
+```bash
+python3 -m venv ~/aqt && ~/aqt/bin/pip install aqtinstall
+~/aqt/bin/aqt install-qt mac desktop 6.10.3 clang_64 -m qtcharts qtpdf -O ~/Qt
+export PATH="$HOME/Qt/6.10.3/macos/bin:$(brew --prefix bison)/bin:$PATH"
+cmake -S qucs-s-26.1.1 -B build-qt -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$HOME/Qt/6.10.3/macos" -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DGIT="$(git rev-parse --short HEAD)"
+cmake --build build-qt --parallel
+scripts/package-macos.sh build-qt bin/macos/apple-silicon
+```
+
+Qt 6.10 runs on macOS 13 and newer, Qt 6.12 on 14.4 and newer. With that
+Qt's `bin` first on `PATH`, the package script takes its `macdeployqt`, not
+Homebrew's. The configure step sees to what Qt's own builds need on current
+Xcode, and says so as it goes (`cmake/qt_macos.cmake`): Qt 6.10's
+`qyieldcpu.h` with the macOS 27 SDK, Qt 6.12's forwarding headers, and Qt
+6.12 in a folder whose path has a space.
 
 ### Linux
 
@@ -352,9 +376,13 @@ fixed in WS1.1; it is blocking.
 Nothing either workflow builds goes into git: CI keeps logs as short-lived
 artifacts, and the Release workflow uploads the bundles as release assets
 only. A manual run publishes to the rolling `continuous` pre-release
-(replaced each time); a tag push (`git tag -a v27.1.0 && git push origin v27.1.0`)
-publishes a permanent release named after the tag, with the annotated tag's
-message as its notes and the generated change list below it. All platforms, the ARM
+(replaced each time); a tag push (`git tag -a v27.1.1 && git push origin v27.1.1`)
+publishes a permanent release named after the tag. Releases carry no text.
+Building a tag that already has a release swaps that release's files in
+place and never deletes it; only the highest version tag takes *Latest*
+([publish-release.sh](.github/scripts/publish-release.sh) has the details).
+Since the run uses the workflow of the commit it builds, this holds only for
+tags on commits made after this change. All platforms, the ARM
 ones included, are built by default; deselect any in the dispatch form, or
 set the repository variable `BUILD_ARM=false` to leave ARM out of tag builds.
 
@@ -372,7 +400,7 @@ directories (checksums verified; needs the GitHub CLI):
 
 ```bash
 scripts/fetch-binaries.sh              # latest "continuous" pre-release
-scripts/fetch-binaries.sh v27.1.0      # a tagged release
+scripts/fetch-binaries.sh v27.1.1      # a tagged release
 scripts/fetch-binaries.sh --run 12345  # artifacts of one workflow run
 ```
 

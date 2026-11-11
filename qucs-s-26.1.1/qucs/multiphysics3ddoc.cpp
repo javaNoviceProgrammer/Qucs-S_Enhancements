@@ -58,10 +58,14 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <new>
 
 using namespace qucs_s::fem;
 
 namespace {
+
+// How long a closed tab waits for its job to stop when told to.
+constexpr int kJobStopMs = 2000;
 
 class ModelCommand3 : public QUndoCommand
 {
@@ -224,8 +228,17 @@ Multiphysics3DDoc::~Multiphysics3DDoc()
     disconnect(a_undo, nullptr, this, nullptr);
     if (a_job && a_job->thread) {
         a_job->cancel = true;
-        a_job->thread->wait();
-        delete a_job->thread;
+        // (A build that does not ask whether it is to stop - a geometry
+        // feature's loop - is not waited for past a moment: closing the tab
+        // waited for ever - the hunt of 9 November, H2. Left to end on its
+        // own: the thread holds the job, all it reads, and deletes itself.)
+        if (a_job->thread->wait(QDeadlineTimer(kJobStopMs))) {
+            delete a_job->thread;
+        } else {
+            QThread* left = a_job->thread;
+            QObject::connect(left, &QThread::finished, left, &QObject::deleteLater);
+            if (left->isFinished()) left->deleteLater();
+        }
         a_job->thread = nullptr;
     }
     // (Calls waiting for its work told it ended without them - after it has
@@ -783,6 +796,11 @@ void Multiphysics3DDoc::wakeWaiting()
     for (const auto& w : ready) w->then(true);
 }
 
+QThread* Multiphysics3DDoc::jobThread() const
+{
+    return a_job ? a_job->thread : nullptr;
+}
+
 bool Multiphysics3DDoc::waitForIdle(int ms)
 {
     QElapsedTimer t;
@@ -814,32 +832,49 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
     a_progress->show();
     a_cancel->show();
     job->thread = QThread::create([job] {
-        if (!job->topology) {
-            job->geometry = buildGeometry3(job->model, *job->parameters);
-            job->built = true;
-            if (!job->geometry.ok() || job->cancel) return;
-            job->topology = job->geometry.topology;
-        }
-        // (A solve's mesh made first, where it has none: its first part.)
-        const double meshShare = job->solve ? 0.3 : 1.0;
-        if ((job->mesh || job->solve) && !job->givenMesh) {
-            job->meshBuild = buildMesh3(job->model, *job->parameters, job->topology, [job, meshShare](double fraction, const QString&) {
-                job->permille = int(1000 * meshShare * fraction);
-                return !job->cancel.load();
-            });
-            if (!job->meshBuild.mesh || job->cancel) return;
-            job->givenMesh = job->meshBuild.mesh;
-            // (A mesh made alone: what a solve on it would hold and take.)
-            if (!job->solve) job->estimates = estimate3(job->model, job->givenMesh);
-        }
-        if (job->solve)
-            job->study = runStudy3(
-                job->model, job->parameters, job->topology, job->givenMesh, job->studyTag,
-                [job, meshShare](double fraction, const QString&) {
-                    job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
+        // (Out of memory in this thread: a failed job, said - uncaught, it
+        // aborted Qucs-S, every document with it: the hunt of 9 November,
+        // C3.)
+        try {
+            if (!job->topology) {
+                job->geometry = buildGeometry3(job->model, *job->parameters);
+                job->built = true;
+                if (!job->geometry.ok() || job->cancel) return;
+                job->topology = job->geometry.topology;
+            }
+            // (A solve's mesh made first, where it has none: its first part.)
+            const double meshShare = job->solve ? 0.3 : 1.0;
+            if ((job->mesh || job->solve) && !job->givenMesh) {
+                job->meshBuild = buildMesh3(job->model, *job->parameters, job->topology, [job, meshShare](double fraction, const QString&) {
+                    job->permille = int(1000 * meshShare * fraction);
                     return !job->cancel.load();
-                },
-                job->asked);
+                });
+                if (!job->meshBuild.mesh || job->cancel) return;
+                job->givenMesh = job->meshBuild.mesh;
+                // (A mesh made alone: what a solve on it would hold and take.)
+                if (!job->solve) job->estimates = estimate3(job->model, job->givenMesh);
+            }
+            if (job->solve)
+                job->study = runStudy3(
+                    job->model, job->parameters, job->topology, job->givenMesh, job->studyTag,
+                    [job, meshShare](double fraction, const QString&) {
+                        job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
+                        return !job->cancel.load();
+                    },
+                    job->asked);
+        } catch (const std::bad_alloc&) {
+            const QString why = Multiphysics3DDoc::tr("there was not memory enough for it");
+            if (!job->topology) {
+                job->built = true;
+                job->geometry.failedAt = job->model.geometry().tag;
+                job->geometry.errors.insert(job->geometry.failedAt, why);
+            } else if ((job->mesh || job->solve) && !job->givenMesh) {
+                job->meshBuild.mesh.reset();
+                job->meshBuild.error = why;
+            } else {
+                job->study.error = why;
+            }
+        }
     });
     // (A main thread's stack: the expressions compile by recursion.)
     job->thread->setStackSize(8u << 20);

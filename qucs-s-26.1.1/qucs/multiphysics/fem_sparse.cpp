@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "fem_sparse.h"
+#include "fem_sparse_external.h"
 
 #include <Eigen/SparseCholesky>
 #include <Eigen/SparseLU>
@@ -38,6 +39,7 @@ namespace {
 
 std::atomic<int> chosen{int(DirectSolver::Automatic)};
 std::atomic<long long> usedAccelerateLu{0}, usedEigenLu{0}, usedAccelerateCholesky{0}, usedEigenCholesky{0}, usedIterative{0};
+std::atomic<long long> usedMumpsLu{0}, usedMumpsLdlt{0}, usedMumpsCholesky{0}, usedStrumpackLu{0};
 
 /// Accelerate's LU in this build and on this macOS (26 and later - which
 /// says 16.0 to a program built with an older SDK).
@@ -273,8 +275,124 @@ DirectSolver directSolver()
     const QByteArray asked = qgetenv("QUCS_FEM_SOLVER").trimmed().toLower();
     if (asked == "eigen") return DirectSolver::Eigen;
     if (asked == "accelerate") return DirectSolver::Accelerate;
+    if (asked == "mumps") return DirectSolver::Mumps;
+    if (asked == "strumpack") return DirectSolver::Strumpack;
     if (asked == "auto" || asked == "automatic") return DirectSolver::Automatic;
     return DirectSolver(chosen.load());
+}
+
+bool mumpsInBuild()
+{
+    return external::mumpsInBuild();
+}
+
+bool strumpackInBuild()
+{
+    return external::strumpackInBuild();
+}
+
+QString mumpsHindrance()
+{
+    if (mumpsInBuild()) return QString();
+    return QStringLiteral("this build has no MUMPS (CMake found none: QUCS_WITH_MUMPS, MUMPS_ROOT)");
+}
+
+QString strumpackHindrance()
+{
+    if (strumpackInBuild()) return QString();
+    return QStringLiteral("this build has no STRUMPACK (CMake found none: QUCS_WITH_STRUMPACK, STRUMPACK_DIR)");
+}
+
+Backend luBackend()
+{
+    return luBackendFor(directSolver());
+}
+
+Backend choleskyBackend()
+{
+    return choleskyBackendFor(directSolver());
+}
+
+Backend luBackendFor(DirectSolver solver)
+{
+    switch (solver) {
+    case DirectSolver::Eigen: return Backend::Eigen;
+    case DirectSolver::Accelerate: return luHere() ? Backend::Accelerate : Backend::Eigen;
+    case DirectSolver::Mumps: return mumpsInBuild() ? Backend::Mumps : Backend::Eigen;
+    case DirectSolver::Strumpack: return strumpackInBuild() ? Backend::Strumpack : Backend::Eigen;
+    case DirectSolver::Automatic: break;
+    }
+    if (luHere()) return Backend::Accelerate;
+    if (mumpsInBuild()) return Backend::Mumps;
+    if (strumpackInBuild()) return Backend::Strumpack;
+    return Backend::Eigen;
+}
+
+Backend choleskyBackendFor(DirectSolver solver)
+{
+    const bool accelerate = accelerateInBuild();
+    switch (solver) {
+    case DirectSolver::Eigen: return Backend::Eigen;
+    case DirectSolver::Accelerate: return accelerate ? Backend::Accelerate : Backend::Eigen;
+    case DirectSolver::Mumps: return mumpsInBuild() ? Backend::Mumps : Backend::Eigen;
+    case DirectSolver::Strumpack: return strumpackInBuild() ? Backend::Strumpack : Backend::Eigen;
+    case DirectSolver::Automatic: break;
+    }
+    if (accelerate) return Backend::Accelerate;
+    if (mumpsInBuild()) return Backend::Mumps;
+    if (strumpackInBuild()) return Backend::Strumpack;
+    return Backend::Eigen;
+}
+
+QString backendName(Backend backend)
+{
+    switch (backend) {
+    case Backend::Accelerate: return QStringLiteral("Accelerate");
+    case Backend::Mumps: return QStringLiteral("MUMPS");
+    case Backend::Strumpack: return QStringLiteral("STRUMPACK");
+    case Backend::Eigen: break;
+    }
+    return QStringLiteral("Eigen");
+}
+
+namespace {
+/// An external library's size: the environment's (\a variable), else
+/// \a single, or \a atOnce for one of many solved at once.
+int externalFrom(const char* variable, bool many, int single, int atOnce)
+{
+    bool ok = false;
+    const int from = qgetenv(variable).toInt(&ok);
+    if (ok && from >= 0) return from;
+    return many ? atOnce : single;
+}
+} // namespace
+
+// (Measured on 9 November - docs/feature_gaps/2026-11-09-linux-parallel-
+// solvers.md: a 2D grid's LU, where Eigen's and MUMPS's take the same time.)
+int mumpsFrom(bool atOnce)
+{
+    return externalFrom("QUCS_FEM_MUMPS_FROM", atOnce, 20000, 50000);
+}
+
+int strumpackFrom(bool atOnce)
+{
+    return externalFrom("QUCS_FEM_STRUMPACK_FROM", atOnce, 20000, 50000);
+}
+
+int backendFrom(Backend backend, bool atOnce)
+{
+    switch (backend) {
+    case Backend::Accelerate: return atOnce ? acceleratedFromAtOnce() : acceleratedFrom();
+    case Backend::Mumps: return mumpsFrom(atOnce);
+    case Backend::Strumpack: return strumpackFrom(atOnce);
+    case Backend::Eigen: break;
+    }
+    return 0;
+}
+
+bool threadedCholesky()
+{
+    return choleskyBackend() != Backend::Eigen;
 }
 
 int acceleratedFrom()
@@ -295,16 +413,12 @@ int acceleratedFromAtOnce()
 
 bool acceleratedLu()
 {
-    return directSolver() != DirectSolver::Eigen && luHere();
+    return luBackend() == Backend::Accelerate;
 }
 
 bool acceleratedCholesky()
 {
-#if defined(QUCS_ACCELERATE)
-    return directSolver() != DirectSolver::Eigen;
-#else
-    return false;
-#endif
+    return choleskyBackend() == Backend::Accelerate;
 }
 
 bool accelerateInBuild()
@@ -336,6 +450,10 @@ SolverUse solverUse()
     u.accelerateCholesky = usedAccelerateCholesky;
     u.eigenCholesky = usedEigenCholesky;
     u.iterative = usedIterative;
+    u.mumpsLu = usedMumpsLu;
+    u.mumpsLdlt = usedMumpsLdlt;
+    u.mumpsCholesky = usedMumpsCholesky;
+    u.strumpackLu = usedStrumpackLu;
     return u;
 }
 
@@ -349,6 +467,10 @@ QString solverUseText(const SolverUse& before, const SolverUse& after)
     QStringList used;
     if (after.accelerateLu > before.accelerateLu) used << QStringLiteral("Accelerate's LU");
     if (after.accelerateCholesky > before.accelerateCholesky) used << QStringLiteral("Accelerate's Cholesky");
+    if (after.mumpsLu > before.mumpsLu) used << QStringLiteral("MUMPS's LU");
+    if (after.mumpsLdlt > before.mumpsLdlt) used << QStringLiteral("MUMPS's LDLT");
+    if (after.mumpsCholesky > before.mumpsCholesky) used << QStringLiteral("MUMPS's Cholesky");
+    if (after.strumpackLu > before.strumpackLu) used << QStringLiteral("STRUMPACK's LU");
     if (after.eigenLu > before.eigenLu) used << QStringLiteral("Eigen's LU");
     if (after.eigenCholesky > before.eigenCholesky) used << QStringLiteral("Eigen's Cholesky (LDLT)");
     if (after.iterative > before.iterative) used << QStringLiteral("Eigen's conjugate gradients");
@@ -366,8 +488,27 @@ int acceleratedAnalysesMade()
 
 QString directSolverName()
 {
-    return acceleratedLu() ? QStringLiteral("Accelerate") : QStringLiteral("Eigen");
+    return backendName(luBackend());
 }
+
+namespace {
+/// An external library's factorization of a square matrix.
+template <typename Scalar> std::unique_ptr<external::Factorization<Scalar>> makeExternal(Backend backend, external::Kind kind)
+{
+    if (backend == Backend::Mumps) return external::makeMumps<Scalar>(kind);
+    if (backend == Backend::Strumpack) return external::makeStrumpack<Scalar>();
+    return nullptr;
+}
+
+/// \a b solved by \a f (NaNs where it cannot be).
+template <typename Matrix> Matrix externalSolve(const external::Factorization<typename Matrix::Scalar>* f, bool factored, int n, const Matrix& b)
+{
+    Matrix x = b;
+    if (!f || !factored || b.rows() != n || !f->solve(x.data(), int(x.cols())))
+        x.setConstant(typename Matrix::Scalar(std::numeric_limits<double>::quiet_NaN()));
+    return x;
+}
+} // namespace
 
 // ---------------------------------------------------------------------- LU
 
@@ -458,36 +599,17 @@ struct SparseLu<Scalar>::Impl {
         eigen->analyzePattern(eigenPattern);
         ++analyses;
     }
-#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
-    using T = AccelerateTypes<Scalar>;
-    // The pattern analysed (P: Accelerate's long column starts, int rows)
-    // and the values in it. A matrix of another pattern within P is
-    // factorized in P, its other entries nought; one with an entry outside
-    // it, P becomes their union and is analysed again - a Newton's Jacobian
-    // whose entries come and go (an avalanche's ionization where the field
-    // is high) analysed 2264 times in 8500 factorizations, each analysis
-    // eight factorizations' time.
+    // The pattern analysed (P: long column starts, int rows) - Accelerate's,
+    // MUMPS's and STRUMPACK's - and the values in it. A matrix of another
+    // pattern within P is factorized in P, its other entries nought; one
+    // with an entry outside it, P becomes their union and is analysed again
+    // - a Newton's Jacobian whose entries come and go (an avalanche's
+    // ionization where the field is high) analysed 2264 times in 8500
+    // factorizations, each analysis eight factorizations' time.
     std::vector<long> starts;
     std::vector<int> rows;
     std::vector<Scalar> values;
     int n = 0;
-    bool analysed = false, factored = false;
-    SparseOpaqueSymbolicFactorization symbolic{};
-    typename T::Factorization numeric{};
-    SparseMatrixStructure structure() const
-    {
-        SparseAttributes_t a{};
-        a.kind = SparseOrdinary;
-        return SparseMatrixStructure{n, n, const_cast<long*>(starts.data()), const_cast<int*>(rows.data()), a, 1};
-    }
-    void release()
-    {
-        if (__builtin_available(macOS 15.5, *)) {
-            if (factored) SparseCleanup(numeric);
-            if (analysed) SparseCleanup(symbolic);
-        }
-        factored = analysed = false;
-    }
     /// \a a's values put in P (false: an entry of it outside P).
     bool scatter(const Matrix& a)
     {
@@ -527,6 +649,31 @@ struct SparseLu<Scalar>::Impl {
         }
         starts = std::move(s);
         rows = std::move(r);
+    }
+    // MUMPS's or STRUMPACK's (library: which; Eigen's none), analysed at its
+    // first factorization of P - with its values -, made again for each
+    // analysis.
+    Backend library = Backend::Eigen;
+    std::unique_ptr<external::Factorization<Scalar>> ext;
+    bool extFactored = false;
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    using T = AccelerateTypes<Scalar>;
+    bool analysed = false, factored = false;
+    SparseOpaqueSymbolicFactorization symbolic{};
+    typename T::Factorization numeric{};
+    SparseMatrixStructure structure() const
+    {
+        SparseAttributes_t a{};
+        a.kind = SparseOrdinary;
+        return SparseMatrixStructure{n, n, const_cast<long*>(starts.data()), const_cast<int*>(rows.data()), a, 1};
+    }
+    void release()
+    {
+        if (__builtin_available(macOS 15.5, *)) {
+            if (factored) SparseCleanup(numeric);
+            if (analysed) SparseCleanup(symbolic);
+        }
+        factored = analysed = false;
     }
     /// P analysed (Accelerate's symbolic factorization).
     void analyse()
@@ -586,7 +733,23 @@ template <typename Scalar> void SparseLu<Scalar>::analyzePattern(const Matrix& g
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) d.release();
 #endif
-    d.accelerate = acceleratedLu() && given.rows() == given.cols() && given.rows() >= (d.manyAtOnce ? acceleratedFromAtOnce() : acceleratedFrom());
+    const Backend backend = luBackend();
+    const bool large = given.rows() == given.cols() && given.rows() >= backendFrom(backend, d.manyAtOnce);
+    d.accelerate = backend == Backend::Accelerate && large;
+    d.library = (backend == Backend::Mumps || backend == Backend::Strumpack) && large ? backend : Backend::Eigen;
+    d.ext.reset();
+    d.extFactored = false;
+    if (d.library != Backend::Eigen) {
+        // (P its pattern; analysed by the library at its first
+        // factorization, with its values.)
+        d.eigen.reset();
+        d.n = int(given.rows());
+        d.starts.assign(std::size_t(d.n) + 1, 0);
+        d.rows.clear();
+        d.unite(given);
+        d.info = Eigen::Success;
+        return;
+    }
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) {
         d.eigen.reset();
@@ -608,6 +771,57 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
 {
     Impl& d = *a_impl;
     d.error.clear();
+    if (d.library != Backend::Eigen) {
+        if (given.rows() != d.n || given.cols() != d.n) {
+            analyzePattern(given);
+            if (d.library == Backend::Eigen) {
+                factorize(given);
+                return;
+            }
+        }
+        d.extFactored = false;
+        if (d.n == 0) {
+            d.info = Eigen::Success;
+            return;
+        }
+        // A pattern within P factorized there; one outside it, P their union
+        // analysed again.
+        const bool within = d.scatter(given);
+        if (!within) {
+            d.unite(given);
+            (void)d.scatter(given);
+        }
+        if (!within || !d.ext) {
+            ++d.analyses;
+            d.ext = makeExternal<Scalar>(d.library, external::Kind::General);
+            if (!d.ext || !d.ext->analyse(d.n, d.starts, d.rows, d.values)) {
+                d.info = Eigen::InvalidInput;
+                d.error = d.ext ? d.ext->error() : std::string("no such library in this build");
+                d.ext.reset();
+                return;
+            }
+        }
+        ++(d.library == Backend::Mumps ? usedMumpsLu : usedStrumpackLu);
+        if (!d.ext->factorize(d.values)) {
+            d.info = Eigen::NumericalIssue;
+            d.error = d.ext->error();
+            return;
+        }
+        d.extFactored = true;
+        const Check check = checkSolve(
+            given,
+            [&d](const Vector& b) {
+                return externalSolve<Vector>(d.ext.get(), true, d.n, b);
+            },
+            d.library == Backend::Mumps ? "mumps-lu" : "strumpack-lu");
+        if (check.backward < 1e-6 && (!d.conditionChecked || check.condition < singularCondition())) {
+            d.info = Eigen::Success;
+        } else {
+            d.info = Eigen::NumericalIssue;
+            d.error = checkText(check);
+        }
+        return;
+    }
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) {
         if (__builtin_available(macOS 15.5, *)) {
@@ -716,6 +930,16 @@ template <typename Scalar> bool SparseLu<Scalar>::accelerated() const
     return a_impl->accelerate;
 }
 
+template <typename Scalar> Backend SparseLu<Scalar>::backend() const
+{
+    return a_impl->accelerate ? Backend::Accelerate : a_impl->library;
+}
+
+template <typename Scalar> QString SparseLu<Scalar>::name() const
+{
+    return backendName(backend()) + QStringLiteral("'s LU");
+}
+
 template <typename Scalar> int SparseLu<Scalar>::analyses() const
 {
     return a_impl->analyses;
@@ -724,6 +948,7 @@ template <typename Scalar> int SparseLu<Scalar>::analyses() const
 template <typename Scalar> typename SparseLu<Scalar>::Vector SparseLu<Scalar>::solve(const Vector& b) const
 {
     const Impl& d = *a_impl;
+    if (d.library != Backend::Eigen) return externalSolve<Vector>(d.ext.get(), d.extFactored && d.info == Eigen::Success, d.n, b);
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) {
         if (__builtin_available(macOS 15.5, *)) {
@@ -747,6 +972,7 @@ template <typename Scalar> typename SparseLu<Scalar>::Vector SparseLu<Scalar>::s
 template <typename Scalar> typename SparseLu<Scalar>::DenseMatrix SparseLu<Scalar>::solveMany(const DenseMatrix& b) const
 {
     const Impl& d = *a_impl;
+    if (d.library != Backend::Eigen) return externalSolve<DenseMatrix>(d.ext.get(), d.extFactored && d.info == Eigen::Success, d.n, b);
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) {
         if (__builtin_available(macOS 15.5, *)) {
@@ -775,6 +1001,10 @@ struct SparseComplexLdlt::Impl {
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     std::string error;
     std::unique_ptr<SparseLu<std::complex<double>>> lu;   // where Accelerate's LDLT is not
+    // MUMPS's LDLT: its lower triangle's pattern and values.
+    std::unique_ptr<external::Factorization<std::complex<double>>> mumps;
+    int mumpsN = 0;
+    bool mumpsFactored = false;
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     Matrix lower;
     std::vector<long> starts;
@@ -812,6 +1042,49 @@ void SparseComplexLdlt::compute(const Matrix& a)
     Impl& d = *a_impl;
     d.error.clear();
     d.accelerate = false;
+    d.mumps.reset();
+    d.mumpsFactored = false;
+    d.bytes = 0;
+    if (luBackend() == Backend::Mumps && a.rows() == a.cols() && a.rows() >= mumpsFrom()) {
+        d.lu.reset();
+        Matrix lower = a.triangularView<Eigen::Lower>();
+        lower.makeCompressed();
+        d.mumpsN = int(a.rows());
+        d.info = Eigen::Success;
+        d.mumps = external::makeMumps<std::complex<double>>(external::Kind::Symmetric);
+        if (d.mumpsN == 0) return;
+        const std::vector<long> starts(lower.outerIndexPtr(), lower.outerIndexPtr() + lower.cols() + 1);
+        const std::vector<int> rows(lower.innerIndexPtr(), lower.innerIndexPtr() + lower.nonZeros());
+        const std::vector<std::complex<double>> values(lower.valuePtr(), lower.valuePtr() + lower.nonZeros());
+        if (!d.mumps->analyse(d.mumpsN, starts, rows, values)) {
+            d.error = d.mumps->error();
+            d.info = Eigen::InvalidInput;
+            return;
+        }
+        d.bytes = d.mumps->bytes();
+        if (d.limit > 0 && d.bytes > d.limit) {
+            char text[160];
+            std::snprintf(text, sizeof text, "its factors would take %.1f GB, past the limit of %.1f GB", d.bytes / 1073741824.0,
+                          d.limit / 1073741824.0);
+            d.error = text;
+            d.info = Eigen::InvalidInput;
+            return;
+        }
+        ++usedMumpsLdlt;
+        if (!d.mumps->factorize(values)) {
+            d.error = d.mumps->error();
+            d.info = Eigen::NumericalIssue;
+            return;
+        }
+        d.mumpsFactored = true;
+        const Check check = checkSolve(
+            a, [&d](const Vector& b) { return externalSolve<Vector>(d.mumps.get(), true, d.mumpsN, b); }, "mumps-ldlt");
+        if (check.backward >= 1e-6) {
+            d.info = Eigen::NumericalIssue;
+            d.error = checkText(check);
+        }
+        return;
+    }
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (acceleratedLu() && a.rows() == a.cols()) {
         if (__builtin_available(macOS 26.0, *)) {
@@ -878,6 +1151,7 @@ std::string SparseComplexLdlt::lastErrorMessage() const
 SparseComplexLdlt::DenseMatrix SparseComplexLdlt::solveMany(const DenseMatrix& b) const
 {
     const Impl& d = *a_impl;
+    if (d.mumps) return externalSolve<DenseMatrix>(d.mumps.get(), d.mumpsFactored && d.info == Eigen::Success, d.mumpsN, b);
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) {
         DenseMatrix x = b;
@@ -916,7 +1190,8 @@ double SparseComplexLdlt::factorBytes() const
 QString SparseComplexLdlt::name() const
 {
     if (a_impl->accelerate) return QStringLiteral("Accelerate's LDLT");
-    return a_impl->lu && a_impl->lu->accelerated() ? QStringLiteral("Accelerate's LU") : QStringLiteral("Eigen's LU");
+    if (a_impl->mumps) return QStringLiteral("MUMPS's LDLT");
+    return a_impl->lu ? a_impl->lu->name() : QStringLiteral("Eigen's LU");
 }
 
 // ---------------------------------------------------------------- Cholesky
@@ -937,6 +1212,19 @@ struct SparseCholesky::Impl {
         error = checkText(c);
     }
     std::unique_ptr<Eigen::SimplicialLDLT<Matrix>> eigen;
+    // MUMPS's (its lower triangle) or STRUMPACK's (the whole matrix): the
+    // part given it - its pattern compared at each factorization, analysed
+    // again where it changed -, made at the first factorization.
+    Backend library = Backend::Eigen;
+    std::unique_ptr<external::Factorization<double>> ext;
+    Matrix part;
+    bool extFactored = false;
+    Matrix partOf(const Matrix& a) const
+    {
+        Matrix m = library == Backend::Mumps ? Matrix(a.triangularView<Eigen::Lower>()) : a;
+        m.makeCompressed();
+        return m;
+    }
 #if defined(QUCS_ACCELERATE)
     // (Its lower triangle's pattern, kept: the matrix is given whole.)
     Matrix lower;
@@ -981,7 +1269,21 @@ void SparseCholesky::setOrdering(Ordering ordering)
 void SparseCholesky::analyzePattern(const Matrix& a)
 {
     Impl& d = *a_impl;
-    d.accelerate = acceleratedCholesky() && a.rows() >= acceleratedFrom();
+    const Backend backend = choleskyBackend();
+    const bool large = a.rows() == a.cols() && a.rows() >= backendFrom(backend);
+#if defined(QUCS_ACCELERATE)
+    if (d.accelerate) d.release();
+#endif
+    d.accelerate = backend == Backend::Accelerate && large;
+    d.library = (backend == Backend::Mumps || backend == Backend::Strumpack) && large ? backend : Backend::Eigen;
+    d.ext.reset();
+    d.extFactored = false;
+    if (d.library != Backend::Eigen) {
+        d.eigen.reset();
+        d.part = d.partOf(a);
+        d.info = Eigen::Success;
+        return;
+    }
 #if defined(QUCS_ACCELERATE)
     if (d.accelerate) {
         d.release();
@@ -1011,6 +1313,63 @@ void SparseCholesky::factorize(const Matrix& a)
     Impl& d = *a_impl;
     d.singular = false;
     d.error.clear();
+    if (d.library != Backend::Eigen) {
+        d.extFactored = false;
+        Matrix part = d.partOf(a);
+        const bool same = part.rows() == d.part.rows() && part.nonZeros() == d.part.nonZeros()
+                          && std::equal(part.outerIndexPtr(), part.outerIndexPtr() + part.cols() + 1, d.part.outerIndexPtr())
+                          && std::equal(part.innerIndexPtr(), part.innerIndexPtr() + part.nonZeros(), d.part.innerIndexPtr());
+        if (!same) {
+            // (Another pattern - or size -: the backend asked again.)
+            analyzePattern(a);
+            if (d.library == Backend::Eigen) {
+                factorize(a);
+                return;
+            }
+        }
+        d.part = std::move(part);
+        const int n = int(d.part.rows());
+        if (n == 0) {
+            d.info = Eigen::Success;
+            return;
+        }
+        const std::vector<double> values(d.part.valuePtr(), d.part.valuePtr() + d.part.nonZeros());
+        if (!d.ext) {
+            d.ext = d.library == Backend::Mumps ? external::makeMumps<double>(external::Kind::PositiveDefinite) : external::makeStrumpack<double>();
+            const std::vector<long> starts(d.part.outerIndexPtr(), d.part.outerIndexPtr() + n + 1);
+            const std::vector<int> rows(d.part.innerIndexPtr(), d.part.innerIndexPtr() + d.part.nonZeros());
+            if (!d.ext->analyse(n, starts, rows, values)) {
+                d.info = Eigen::InvalidInput;
+                d.error = d.ext->error();
+                d.ext.reset();
+                return;
+            }
+        }
+        ++(d.library == Backend::Mumps ? usedMumpsCholesky : usedStrumpackLu);
+        if (!d.ext->factorize(values)) {
+            // (A pivot of nought: singular to rounding, said - an LU would
+            // solve it, garbage. Else - not positive definite, MUMPS's -40 -
+            // its LU checked in turn, as where Eigen's LDLT failed.)
+            d.info = Eigen::NumericalIssue;
+            d.singular = d.ext->singular();
+            d.error = d.singular ? "singular to rounding: " + d.ext->error() : d.ext->error();
+            return;
+        }
+        // (MUMPS's LDLT without pivoting: a negative pivot, not positive
+        // definite - the caller takes an LU.)
+        if (d.ext->negativePivots() > 0) {
+            d.info = Eigen::NumericalIssue;
+            d.error = "the matrix is not positive definite (" + std::to_string(d.ext->negativePivots()) + " negative pivots)";
+            return;
+        }
+        d.extFactored = true;
+        d.info = Eigen::Success;
+        d.judge(checkSolve(
+            a, [&d, n](const Eigen::VectorXd& b) { return externalSolve<Eigen::VectorXd>(d.ext.get(), true, n, b); },
+            d.library == Backend::Mumps ? "mumps-cholesky" : "strumpack-lu"));
+        if (d.info != Eigen::Success) d.extFactored = false;
+        return;
+    }
 #if defined(QUCS_ACCELERATE)
     if (d.accelerate) {
         if (d.n == 0) {
@@ -1094,6 +1453,7 @@ Eigen::ComputationInfo SparseCholesky::info() const
 Eigen::VectorXd SparseCholesky::solve(const Eigen::VectorXd& b) const
 {
     Impl& d = *a_impl;
+    if (d.library != Backend::Eigen) return externalSolve<Eigen::VectorXd>(d.ext.get(), d.extFactored, int(d.part.rows()), b);
 #if defined(QUCS_ACCELERATE)
     if (d.accelerate) {
         Eigen::VectorXd x(b.size());
@@ -1113,6 +1473,7 @@ Eigen::VectorXd SparseCholesky::solve(const Eigen::VectorXd& b) const
 Eigen::MatrixXd SparseCholesky::solveMany(const Eigen::MatrixXd& b) const
 {
     Impl& d = *a_impl;
+    if (d.library != Backend::Eigen) return externalSolve<Eigen::MatrixXd>(d.ext.get(), d.extFactored, int(d.part.rows()), b);
 #if defined(QUCS_ACCELERATE)
     if (d.accelerate) {
         Eigen::MatrixXd x = b;
@@ -1134,6 +1495,7 @@ Eigen::MatrixXd SparseCholesky::solveMany(const Eigen::MatrixXd& b) const
 
 double SparseCholesky::factorBytes() const
 {
+    if (a_impl->ext) return a_impl->ext->bytes();
 #if defined(QUCS_ACCELERATE)
     const Impl& d = *a_impl;
     if (d.accelerate && d.analysed) return double(d.symbolic.factorSize_Double) + double(d.symbolic.workspaceSize_Double);
@@ -1141,8 +1503,15 @@ double SparseCholesky::factorBytes() const
     return 0;
 }
 
+Backend SparseCholesky::backend() const
+{
+    return a_impl->accelerate ? Backend::Accelerate : a_impl->library;
+}
+
 QString SparseCholesky::name() const
 {
+    if (a_impl->library == Backend::Mumps) return QStringLiteral("MUMPS's Cholesky");
+    if (a_impl->library == Backend::Strumpack) return QStringLiteral("STRUMPACK's LU");
     return a_impl->accelerate ? QStringLiteral("Accelerate's Cholesky") : QStringLiteral("Eigen's LDLT");
 }
 

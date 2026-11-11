@@ -1364,7 +1364,8 @@ private slots:
     // missing), math in every form, the private use area the renderer
     // marks math with - rendered at random widths and pixel ratios, its
     // images fitted and drawn under random transforms; random TeX typeset
-    // alone. Nothing may crash, hang or trip a sanitizer.
+    // alone. Nothing may crash, hang or trip a sanitizer. The current
+    // document in QUCS_FUZZ_OUT/markdown-current.md.
     void fuzz()
     {
         const int seconds = qEnvironmentVariableIntValue("QUCS_MARKDOWN_FUZZ");
@@ -1448,6 +1449,14 @@ private slots:
             one.start();
             QString md;
             for (int k = 1 + int(rng.bounded(8u)); k-- > 0;) md += block(0);
+            // (The current one written first, where QUCS_FUZZ_OUT says: one
+            // that never ends is never kept as slow - the hunt of 9
+            // November's H4 was found by a line added for the run.)
+            if (const QString out = qEnvironmentVariable("QUCS_FUZZ_OUT"); !out.isEmpty()) {
+                QDir().mkpath(out);
+                QFile f(out + QStringLiteral("/markdown-current.md"));
+                if (f.open(QIODevice::WriteOnly)) f.write(md.toUtf8());
+            }
             QTextDocument doc;
             doc.setDocumentMargin(rng.bounded(3u) * 6);
             qucs_s::math::MathObject::install(&doc);
@@ -1768,6 +1777,28 @@ private slots:
         QVERIFY2(many < 8 * few, qPrintable(QStringLiteral("%1 ms, a quarter of them %2 ms").arg(many / 1e6).arg(few / 1e6)));
 #endif
         app.closeAllFiles();
+    }
+
+    // A run of 64 braces after HTML in a quote, the quote's next line
+    // empty: breaking the long runs went on for ever - its break put in
+    // made the block anew, and the loop met it again (the hunt of 9
+    // November, H4; the fuzzer's seed 8).
+    void aRunAfterHtmlInAQuoteEnds()
+    {
+        const QString md = "><summary></summary>\n>\n><b>b</b>" + QString(64, QLatin1Char('}')) + "\n> \n";
+        QElapsedTimer t;
+        t.start();
+        QTextDocument doc;
+        qucs_s::markdown::render(&doc, md, QFont(), {});
+        QVERIFY2(t.elapsed() < 20000, qPrintable(QString::number(t.elapsed())));
+        QVERIFY2(doc.toPlainText().contains(QString(32, QLatin1Char('}'))), qPrintable(doc.toPlainText()));
+        // Wider and deeper: the same.
+        for (int n : {65, 200, 4000}) {
+            QTextDocument more;
+            qucs_s::markdown::render(&more, "> > <summary></summary>\n>\n> > <i>x</i><b>b</b>" + QString(n, QLatin1Char('}')) + "\n> > \n>", QFont(), {});
+            QCOMPARE(more.toPlainText().count(QLatin1Char('}')), n);
+        }
+        QVERIFY2(t.elapsed() < 20000, qPrintable(QString::number(t.elapsed())));
     }
 
     // A long document - a formula on each line, code blocks - is laid out

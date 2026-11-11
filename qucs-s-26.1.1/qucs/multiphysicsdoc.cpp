@@ -57,6 +57,8 @@
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <QDeadlineTimer>
+#include <QThread>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QVBoxLayout>
@@ -69,6 +71,9 @@
 using namespace qucs_s::fem;
 
 namespace {
+
+/// How long a closed tab waits for its job to stop before leaving it to end.
+constexpr int kJobStopMs = 2000;
 
 /// A change of the model: the model before and after, whole (it is small).
 class ModelCommand : public QUndoCommand
@@ -340,10 +345,23 @@ MultiphysicsDoc::~MultiphysicsDoc()
     // or time step.)
     for (const std::shared_ptr<Job>& job : {a_job, a_build})
         if (job && job->thread) job->cancel = true;
+    // A job that does not ask whether to stop - a ray trace, a mesh's
+    // boundaries walked, a long spectrum - is not waited for past a moment:
+    // closing the tab (or quitting) waited for ever - the hunt of 10
+    // November, S1; the 3D model's the same since the hunt of 9 November,
+    // H2. Left to end on its own: the thread holds the job, all it reads
+    // (its work captures values, not this), and deletes itself.
     for (const std::shared_ptr<Job>& job : {a_job, a_build})
         if (job && job->thread) {
-            job->thread->wait();
-            delete job->thread;
+            if (job->thread->wait(QDeadlineTimer(kJobStopMs))) {
+                delete job->thread;
+            } else {
+                QThread* left = job->thread;
+                QObject::disconnect(left, nullptr, this, nullptr);
+                QObject::connect(left, &QThread::finished, left, &QObject::deleteLater);
+                if (left->isFinished()) left->deleteLater();
+            }
+            job->thread = nullptr;
         }
 }
 

@@ -327,6 +327,7 @@ public:
         layerColumns();
         if (!step(0.08, tr("Boundaries"))) return cancelled();
         discretize();
+        if (a_cancelled) return cancelled();
         if (!a_error.isEmpty()) {
             out.error = a_error;
             return out;
@@ -501,7 +502,7 @@ private:
                 // The rest even, no column wider than the lateral size.
                 const double from = a + usedA, to = b - usedB, rest = to - from;
                 if (rest > tol) {
-                    const int n = std::clamp(int(std::ceil(rest / h - 1e-9)), 1, 100000);
+                    const int n = int(std::clamp(std::ceil(rest / h - 1e-9), 1.0, 100000.0));
                     for (int k = 1; k < n; ++k) points.push_back(from + rest * k / n);
                     points.push_back(to);
                 }
@@ -559,7 +560,7 @@ private:
             const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
             const BoundaryPath path(a_t, bd);
             const double len = path.length();
-            const int n = std::clamp(int(std::ceil(len / spacing)), 1, 20000);
+            const int n = int(std::clamp(std::ceil(len / spacing), 1.0, 20000.0));
             *least = Infinity;
             for (int i = 0; i <= n; ++i) {
                 const double s = len * i / n;
@@ -623,7 +624,18 @@ private:
         // from its start).
         const int nb = int(a_t.boundaries.size());
         std::vector<std::vector<double>> where(static_cast<std::size_t>(nb));
+        // The nodes the boundaries will have, counted before any is placed:
+        // past the mesh's budget the mesh is refused - an hmax of 1e-7 for
+        // 1e-3 gave a circle 6e7 nodes, and memory without end (the hunt of
+        // 10 November, S2).
+        double planned = 0;
+        auto tooMany = [this](double nodes) {
+            a_error = tr("the mesh would have %1 nodes on its boundaries, more than %2: a larger size there")
+                          .arg(std::isfinite(nodes) ? tr("about %1").arg(QString::number(nodes, 'g', 3)) : tr("countless"))
+                          .arg(kMaxNodes);
+        };
         for (int b = 0; b < nb; ++b) {
+            if (!step(0.08, tr("Boundaries"))) return;
             const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
             const BoundaryPath path(a_t, bd);
             const double len = path.length();
@@ -635,6 +647,7 @@ private:
                 fAt.push_back(0);
                 double h = boundarySize(path.at(0), bd);
                 for (int guard = 0; s < len && guard < 2000000; ++guard) {
+                    if ((guard & 0xffff) == 0xffff && !step(0.08, tr("Boundaries"))) return;   // (a long walk asks too)
                     const double ds = std::min(std::max(h / 4, len * 1e-6), len - s);
                     const double h2 = boundarySize(path.at(s + ds), bd);
                     f += ds * 0.5 * (1 / h + 1 / h2);
@@ -643,7 +656,18 @@ private:
                     sAt.push_back(s);
                     fAt.push_back(f);
                 }
-                n = std::max(1, int(std::lround(f)));
+                // (as a double first: an int of 1e308 is undefined)
+                const double count = std::max(1.0, std::round(f));
+                if (!(planned + count <= kMaxNodes)) {
+                    tooMany(planned + count);
+                    return;
+                }
+                n = int(count);
+            }
+            planned += n;
+            if (!(planned <= kMaxNodes)) {   // (counts given per boundary too)
+                tooMany(planned);
+                return;
             }
             // A curve, or a boundary not straight, in two pieces at least
             // (two boundaries between the same two points are not one edge);
@@ -748,7 +772,18 @@ private:
             }
         }
         // A layered region's grid inside it: its lateral spacing along the
-        // layers, so many rows across each.
+        // layers, so many rows across each - counted first, as the
+        // boundaries' nodes were.
+        double grid = 0;
+        for (int d = 0; d < int(a_t.domains.size()); ++d)
+            if (layered(d))
+                grid += double(std::max<std::size_t>(a_columns[std::size_t(d)].size(), 2) - 2) * (std::max(1, a_sizes.layerCount[std::size_t(d)]) - 1);
+        if (!(double(a_nodes.size()) + grid <= kMaxNodes)) {
+            a_error = tr("the mesh would have about %1 nodes with its layered regions', more than %2: a larger lateral size, or fewer layers")
+                          .arg(QString::number(double(a_nodes.size()) + grid, 'g', 3))
+                          .arg(kMaxNodes);
+            return;
+        }
         for (int d = 0; d < int(a_t.domains.size()); ++d) {
             if (!layered(d)) continue;
             const QRectF r = a_t.domains[std::size_t(d)].bounds;
@@ -885,7 +920,7 @@ private:
         // A layered region's sides never split: its grid kept.
         for (const ConstraintEdge& e : a_edges)
             if (layeredBoundary(e.boundary)) cdt.unsplitEdges.insert(CDT::Edge(CDT::VertInd(e.a + offset), CDT::VertInd(e.b + offset)));
-        const std::size_t budget = 4000000;   // vertices at most
+        const std::size_t budget = kMaxNodes;   // vertices at most
         // Every vertex's place, to a tolerance: no point put twice (two
         // circumcenters alike; one on a vertex there).
         const double snap = std::max(diag * 1e-11, 1e-300);
@@ -1417,6 +1452,9 @@ private:
     Progress a_progress;
     double a_k = 0.3;
     bool a_cancelled = false;
+    /// The mesh's vertices at most: its boundaries' and layered regions'
+    /// counted before they are placed, the refinement's as it goes.
+    static constexpr std::size_t kMaxNodes = 4000000;
     QString a_error;
     QStringList a_warnings;
     SizeTree a_tree;
@@ -1655,10 +1693,13 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
             const bool lateral = yStack ? std::abs(along.x()) > std::abs(along.y()) : std::abs(along.y()) > std::abs(along.x());
             const double len = std::hypot(along.x(), along.y());
             if (lateral) {
-                count = std::max(count, int(std::ceil(len / s.layerLateral[std::size_t(d)] - 1e-9)));
+                // (as doubles, held to an int's range: a lateral size of 1e-301
+                // was an int of 4e301 - the hunt of 10 November; past the mesh's
+                // budget it is refused as it is counted)
+                count = std::max(count, int(std::clamp(std::ceil(len / s.layerLateral[std::size_t(d)] - 1e-9), 0.0, 1e9)));
             } else {
                 const double thick = yStack ? dm.bounds.height() : dm.bounds.width();
-                count = std::max(count, std::max(1, int(std::lround(s.layerCount[std::size_t(d)] * len / thick))));
+                count = std::max(count, int(std::clamp(std::round(s.layerCount[std::size_t(d)] * len / thick), 1.0, 1e9)));
             }
         }
         if (count > 0) s.boundaryCount[std::size_t(b)] = std::min(count, 100000);

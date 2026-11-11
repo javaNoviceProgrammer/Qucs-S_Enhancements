@@ -1061,9 +1061,13 @@ private:
             maps.push_back(a);
         } else {   // array
             const QStringList count = f.pair(QStringLiteral("count"));
-            const int nx = int(std::lround(number(count.value(0), 1))), ny = int(std::lround(number(count.value(1), 1)));
+            // (Counted as numbers, not ints: 2 by 2147483647 made -2 as ints,
+            // under the limit, and the build made copies for ever - the hunt
+            // of 9 November, H2.)
+            const double cx = std::round(number(count.value(0), 1)), cy = std::round(number(count.value(1), 1));
             const QPointF d = lengths(f.pair(QStringLiteral("displacement")));
-            if (nx < 1 || ny < 1 || nx * ny > 10000) return fail(tr("an array of 1 to 10000 copies"));
+            if (!(cx >= 1 && cy >= 1 && cx * cy <= 10000)) return fail(tr("an array of 1 to 10000 copies"));
+            const int nx = int(cx), ny = int(cy);
             for (int j = 0; j < ny; ++j)
                 for (int i = 0; i < nx; ++i) maps.push_back(Affine::translate(i * d.x(), j * d.y()));
         }
@@ -1093,13 +1097,25 @@ private:
     // --- Booleans, on Clipper ------------------------------------------
     using Path = ClipperLib::Path;
     using Paths = ClipperLib::Paths;
-    double clipperScale() const
+    /// The scale of the integers Clipper works in: about 1e12 steps across
+    /// the largest coordinate of the model's objects and of \a more - the
+    /// boolean's own inputs and tools, which are no longer among the
+    /// objects (a coordinate of theirs left out made the scale 2^39 and
+    /// Clipper's range, about 4.6e18, too small: it threw, and nothing
+    /// caught it). 0 where a coordinate is not finite.
+    double clipperScale(std::initializer_list<const std::vector<GObject>*> more = {}) const
     {
         double extent = 1;
-        for (const GObject& o : a_objects) {
-            const QRectF b = o.bounds();
-            extent = std::max({extent, std::abs(b.left()), std::abs(b.right()), std::abs(b.top()), std::abs(b.bottom())});
-        }
+        auto measure = [&](const std::vector<GObject>& objects) {
+            for (const GObject& o : objects)
+                for (const auto& loop : o.loops)
+                    for (const GEdge& e : loop)
+                        for (double v : {e.a.x(), e.a.y(), e.b.x(), e.b.y()})
+                            extent = std::isnan(v) ? HUGE_VAL : std::max(extent, std::abs(v));
+        };
+        measure(a_objects);
+        for (const std::vector<GObject>* m : more) measure(*m);
+        if (!std::isfinite(extent) || extent > 1e300) return 0;
         // About 1e12 steps across the largest coordinate.
         return std::pow(2.0, std::floor(std::log2(1e12 / extent)));
     }
@@ -1203,9 +1219,11 @@ private:
             for (const GObject& o : in)
                 for (const auto& loop : o.loops) result.loops.push_back(loop);
         } else {
-            const double scale = clipperScale();
+            const double scale = clipperScale({&in, &tools});
+            if (!(scale > 0)) return fail(tr("a coordinate is out of range: it is not a finite number, or too large to cut or unite"));
             ClipperLib::Clipper clipper;
             Paths solution;
+            try {
             if (unite) {
                 clipper.AddPaths(paths(in, scale), ClipperLib::ptSubject, true);
                 clipper.Execute(ClipperLib::ctUnion, solution, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
@@ -1225,6 +1243,9 @@ private:
                     acc = next;
                 }
                 solution = acc;
+            }
+            } catch (const ClipperLib::clipperException& e) {
+                return fail(tr("the shapes could not be cut or united: %1").arg(QString::fromUtf8(e.what())));
             }
             ClipperLib::CleanPolygons(solution, 1.0);
             std::vector<GObject> all = in;
@@ -1335,6 +1356,19 @@ std::shared_ptr<Topology> formUnionOf(const std::vector<GObject>& objects, const
         : tr("%1: thinner than the union's tolerance, %2 %3 (%4 of the geometry's extent, %5 %3), lost to it - a position far off, or a smaller tolerance (Form Union's)")
               .arg(lost.size() <= 3 ? lost.join(QStringLiteral(", ")) : lost.mid(0, 3).join(QStringLiteral(", ")) + tr(" and %1 more").arg(lost.size() - 3),
                    formatNumber(eps, 3), unitName, formatNumber(relTolerance, 3), formatNumber(diag, 3));
+    // A geometry past 1e60 of its unit, or not finite, refused before it is
+    // triangulated: the triangulation's in-circle test multiplies four of
+    // its differences, past a double's range at about 1e77, and a rectangle
+    // 1e308 tall sent it flipping edges for ever, on the GUI thread as the
+    // model opened (the hunt of 9 November, H3).
+    const double farthest = std::max({std::abs(box.left()), std::abs(box.right()), std::abs(box.top()), std::abs(box.bottom()), diag});
+    if (!(farthest <= 1e60)) {
+        *why = tr("Form Union failed: %1")
+                   .arg(lostText.isEmpty() ? tr("the geometry reaches %1 %2, past what is meshed (1e60): a size or a position far off")
+                                                 .arg(formatNumber(farthest, 3), unitName)
+                                           : lostText);
+        return nullptr;
+    }
     VertexPool pool(eps);
     std::vector<RawSegment> segs;
     for (int oi = 0; oi < int(objects.size()); ++oi) {

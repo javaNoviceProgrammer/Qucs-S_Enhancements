@@ -5,6 +5,8 @@
  * when there was nobody to click it.
  */
 #include <QtTest>
+#include <QImage>
+#include <QPainter>
 #include <QTemporaryDir>
 
 #include "config.h"
@@ -15,6 +17,7 @@
 #include "module.h"
 #include "main.h"
 #include "misc.h"
+#include "paintings/painting.h"
 #include "extsimkernels/spicecompat.h"
 
 class TestLoader : public QObject
@@ -229,6 +232,32 @@ private slots:
         const QRect all = sch->allBoundingRect();      // must not overflow
         QVERIFY(all.width() >= 0 && all.height() >= 0);
         QVERIFY(std::abs(all.left()) <= 2 * misc::MaxCoordinate + 100);
+        delete sch;
+    }
+
+    // A text painting at any angle: kept within a turn. Drawn at -angle,
+    // and -INT_MIN overflowed (UBSan; the hunt of 9 November, U1).
+    void aTextAtAnyAngle()
+    {
+        Schematic* sch = nullptr;
+        QVERIFY(load(write("angles.sch", header() + "<Paintings>\n"
+            "  <Text 100 100 12 #000000 -2147483648 \"a\">\n"
+            "  <Text 200 100 12 #000000 2147483647 \"b\">\n"
+            "  <Text 300 100 12 #000000 -90 \"c\">\n"
+            "</Paintings>\n"), &sch));
+        QCOMPARE(int(sch->a_DocPaints.size()), 3);
+        QImage image(400, 300, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        QStringList angles;
+        for (Painting* p : sch->a_DocPaints) {
+            p->paint(&painter);
+            angles << p->save().section(' ', 5, 5);
+        }
+        painter.end();
+        // (-2147483648 is -128 a turn on; 2147483647 is 127.)
+        QCOMPARE(angles, (QStringList{"-128", "127", "-90"}));
+        QVERIFY(sch->allBoundingRect().isValid());
         delete sch;
     }
 

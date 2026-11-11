@@ -302,8 +302,9 @@ private slots:
 
     // The settings' sparse direct solver: Automatic by default; Eigen's
     // chosen, kept and given to the solver on OK (not on Cancel), each
-    // solve's line saying which ran; QUCS_FEM_SOLVER said over it; this
-    // macOS's LU said.
+    // solve's line saying which ran; MUMPS's and STRUMPACK's likewise, said
+    // not in the build where they are not (Eigen's then); QUCS_FEM_SOLVER
+    // said over it; this macOS's LU said.
     void theSettingsHaveTheSolver()
     {
         qunsetenv("QUCS_FEM_SOLVER");
@@ -312,19 +313,33 @@ private slots:
             MultiphysicsSettingsDialog d(app);
             QComboBox* box = d.solverBox();
             QVERIFY(box != nullptr);
-            QCOMPARE(box->count(), 3);
+            QCOMPARE(box->count(), 5);
             QCOMPARE(box->currentIndex(), 0);
             QVERIFY(box->itemText(0).startsWith(QLatin1String("Automatic")));
             const QString status = d.solverStatusLabel()->text();
             qInfo("solver: %s", qPrintable(status));
             QVERIFY2(acceleratedLuHindrance().isEmpty() ? status.contains(QLatin1String("Accelerate's LU and Cholesky from 20,000"))
-                                                        : status.contains(QLatin1String("Eigen's LU")),
+                                                        : status.contains(QLatin1String("'s LU")),
                      qPrintable(status));
             box->setCurrentIndex(1);
-            // (A build without Accelerate - Linux's, Windows' - says so.)
-            QCOMPARE(d.solverStatusLabel()->text(), accelerateInBuild() ? QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size.")
-                                                                        : QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size: this build "
-                                                                                         "has no Accelerate."));
+            QCOMPARE(d.solverStatusLabel()->text(), QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size."));
+            // MUMPS's and STRUMPACK's: from 20,000 unknowns where the build
+            // has them, else Eigen's, the box and the status saying why.
+            QVERIFY(box->itemText(3).startsWith(QLatin1String("MUMPS from 20,000 unknowns")));
+            QCOMPARE(box->itemText(3).endsWith(QLatin1String(" - not in this build")), !mumpsInBuild());
+            QVERIFY(box->itemText(4).startsWith(QLatin1String("STRUMPACK from 20,000 unknowns")));
+            QCOMPARE(box->itemText(4).endsWith(QLatin1String(" - not in this build")), !strumpackInBuild());
+            box->setCurrentIndex(3);
+            const QString mumps = d.solverStatusLabel()->text();
+            QVERIFY2(mumpsInBuild() ? mumps.startsWith(QLatin1String("MUMPS's LU, LDLT and Cholesky from 20,000 unknowns, Eigen's below (MUMPS "))
+                                    : mumps.startsWith(QLatin1String("Eigen's LU and Cholesky (LDLT) at every size: this build has no MUMPS")),
+                     qPrintable(mumps));
+            box->setCurrentIndex(4);
+            const QString strumpack = d.solverStatusLabel()->text();
+            QVERIFY2(strumpackInBuild()
+                         ? strumpack.startsWith(QLatin1String("STRUMPACK's LU, for the Cholesky too, from 20,000 unknowns, Eigen's below (STRUMPACK "))
+                         : strumpack.startsWith(QLatin1String("Eigen's LU and Cholesky (LDLT) at every size: this build has no STRUMPACK")),
+                     qPrintable(strumpack));
             d.reject();
         }
         QCOMPARE(MultiphysicsSettingsDialog::solverWanted(), 0);
@@ -350,19 +365,31 @@ private slots:
         r = call("fem_solve");
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY2(text(r).contains(QLatin1String("with Eigen's Cholesky (LDLT)")), qPrintable(text(r)));
+        // MUMPS's, kept as "mumps": its Cholesky where the build has it.
+        {
+            MultiphysicsSettingsDialog d(app);
+            d.solverBox()->setCurrentIndex(3);
+            d.apply();
+        }
+        QCOMPARE(MultiphysicsSettingsDialog::solverWanted(), 3);
+        QVERIFY(directSolver() == DirectSolver::Mumps);
+        r = call("fem_solve");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(mumpsInBuild() ? QLatin1String("with MUMPS's Cholesky") : QLatin1String("with Eigen's Cholesky (LDLT)")),
+                 qPrintable(text(r)));
         // Back to Automatic: Accelerate's where this macOS has it.
         {
             MultiphysicsSettingsDialog d(app);
-            QCOMPARE(d.solverBox()->currentIndex(), 1);
+            QCOMPARE(d.solverBox()->currentIndex(), 3);
             d.solverBox()->setCurrentIndex(0);
             d.apply();
         }
         QVERIFY(directSolver() == DirectSolver::Automatic);
         r = call("fem_solve");
         QVERIFY2(!failed(r), qPrintable(text(r)));
-#if defined(__APPLE__)
-        QVERIFY2(text(r).contains(QLatin1String("with Accelerate's Cholesky")), qPrintable(text(r)));
-#endif
+        // (Else MUMPS's, where the build has it: Linux's, Windows'.)
+        if (accelerateInBuild()) QVERIFY2(text(r).contains(QLatin1String("with Accelerate's Cholesky")), qPrintable(text(r)));
+        else if (mumpsInBuild()) QVERIFY2(text(r).contains(QLatin1String("with MUMPS's Cholesky")), qPrintable(text(r)));
         // The environment's over the setting, said.
         qputenv("QUCS_FEM_SOLVER", "eigen");
         {
@@ -855,6 +882,50 @@ private slots:
         QVERIFY(doc->solution() == nullptr);
         QVERIFY(doc->lastError().contains(QStringLiteral("cancelled")));
         QVERIFY(!doc->cancelButton()->isVisible());
+    }
+
+    // Closed while it solves, at once: the graded-index lens with its air's
+    // corner at -4e-300 for -4 traces for minutes - its trace deaf to a stop,
+    // and the tab's close waiting for it with no end, the window frozen (the
+    // hunt of 10 November, S1). Now the trace asks, and a job that does not
+    // is waited for 2 s, then left to end on its own.
+    void closedWhileItTraces()
+    {
+        const QString file = copyOf(QStringLiteral("grin_lens.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QByteArray json = f.readAll();
+        f.close();
+        QVERIFY(json.contains(R"x("-4"])x"));
+        json.replace(R"x("-4"])x", R"x("(-4)*1e-300"])x");
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(json);
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForJob(jobWait()));
+        doc->compute();
+        QVERIFY(doc->isBusy());
+        QTest::qWait(1500);
+        QVERIFY2(doc->isBusy(), "still tracing when it is closed");
+        // (Asked whether to keep it running without its tab: Stop and Close.)
+        auto* answer = new QTimer(this);
+        answer->setInterval(20);
+        connect(answer, &QTimer::timeout, this, [answer] {
+            QWidget* box = QApplication::activeModalWidget();
+            auto* stop = box != nullptr ? box->findChild<QPushButton*>(QStringLiteral("stopAndClose")) : nullptr;
+            if (stop == nullptr) return;
+            answer->deleteLater();
+            answer->stop();
+            stop->click();
+        });
+        answer->start();
+        QElapsedTimer t;
+        t.start();
+        doc->setDocChanged(false);
+        app->closeAllFiles();
+        qInfo("closed in %lld ms", t.elapsed());
+        QVERIFY2(t.elapsed() < 8000, qPrintable(QString::number(t.elapsed())));
     }
 
     // A job's progress in a row below the toolbar, once the job has taken a

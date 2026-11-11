@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -298,6 +299,40 @@ private slots:
             const Vec3 a = b.mesh.mesh->nodes[std::size_t(b.mesh.mesh->prisms[p][0])];
             if (a.z >= 1) QVERIFY(std::hypot(a.x, a.y) <= 0.75 + 1e-9);
         }
+    }
+
+    /// A slab's divisions by a size far smaller than it clamped: 1e-9
+    /// across 1 asked for a million, and smaller sizes past an int's range
+    /// (the hunt of 9 November, C3).
+    void divisionsClamped()
+    {
+        const double inf = std::numeric_limits<double>::infinity();
+        for (double h : {1e-9, 1e-15, 1e-300}) {
+            const std::vector<std::vector<double>> d = sweptDivisions({0, 1}, {h}, {0}, {inf, inf}, 1.2);
+            QCOMPARE(int(d.size()), 1);
+            QCOMPARE(int(d[0].size()), MaxSweptDivisions - 1);
+            QVERIFY(std::is_sorted(d[0].begin(), d[0].end()) && d[0].front() > 0 && d[0].back() < 1);
+        }
+    }
+
+    /// A mesh of more prisms than MaxPrisms refused before it is made,
+    /// said: a size far smaller than the geometry (1e-9 for a photodiode in
+    /// mm) ran the mesh's thread out of memory, uncaught, and Qucs-S
+    /// aborted (the hunt of 9 November, C3).
+    void hugeMeshesRefused()
+    {
+        Model m = model3d(0.02);
+        addBox(m, QStringLiteral("blk"), 0, 0, 0, 1, 1, 1);
+        Node dist = m.make(QStringLiteral("mesh/zdistribution"));
+        dist.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+        dist.props.insert(QStringLiteral("count"), 100000);
+        m.add(m.mesh().tag, dist);
+        QElapsedTimer t;
+        t.start();
+        const Built b = meshOf(m);
+        QVERIFY(!b.mesh.mesh);
+        QVERIFY2(b.mesh.error.contains(QStringLiteral("prisms")) && b.mesh.error.contains(QStringLiteral("a larger size")), qPrintable(b.mesh.error));
+        QVERIFY2(t.elapsed() < 60000, "refused before it is made");
     }
 
     /// What it refuses and says.

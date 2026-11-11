@@ -707,6 +707,11 @@ private:
     QJsonObject pptxView(PptxDoc* deck) const;
     /// What the pen drew on the open layouts and presentations, read.
     QJsonObject readDrawings(const QJsonObject& args);
+    /// show_schematic (qucscontrol_showschematic.cpp): a schematic's or
+    /// data display's page brought to the front, its pen taken up or put
+    /// down, its strokes cleared or marked addressed; what it is, its
+    /// diagrams and the drawing returned.
+    QJsonObject showSchematic(const QJsonObject& args);
     /// \a readings as a tab's answer has them: the latest 40, the earlier
     /// ones counted.
     static void insertDrawings(QJsonObject& o, const QJsonArray& readings);

@@ -226,6 +226,20 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/qucsator_rf/CMakeLists.txt)
   target_compile_definitions(test_library_export PRIVATE QUCSCONV="$<TARGET_FILE:qucsconv_rf>")
   add_dependencies(test_library_export qucsconv_rf)
 endif()
+# qucsator_rf on damaged netlists, and qucsconv_rf on damaged data and SPICE
+# files: an error said, never a signal (the hunts of 9 November, Q1, and 10
+# November, R1-R4).
+if(EXISTS ${CMAKE_SOURCE_DIR}/qucsator_rf/CMakeLists.txt)
+  add_executable(test_qucsator_robustness test_qucsator_robustness.cpp)
+  target_link_libraries(test_qucsator_robustness Qt6::Core Qt6::Test)
+  target_compile_definitions(test_qucsator_robustness PRIVATE QUCSATOR="$<TARGET_FILE:qucsator_rf>"
+                                                             QUCSCONV="$<TARGET_FILE:qucsconv_rf>")
+  add_dependencies(test_qucsator_robustness qucsator_rf qucsconv_rf)
+  add_test(NAME test_qucsator_robustness COMMAND test_qucsator_robustness)
+  set_tests_properties(test_qucsator_robustness PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
+    TIMEOUT 300)
+endif()
 qucs_add_test(test_text_doc_settings)
 qucs_add_test(test_mouse_wheel)
 qucs_add_test(test_text_editing)
@@ -313,6 +327,7 @@ qucs_add_test(test_multiphysics_optimize)
 qucs_add_test(test_multiphysics_converge)
 qucs_add_test(test_multiphysics3d_doc)
 qucs_add_test(test_multiphysics_view)
+qucs_add_test(test_view3d)
 # (The window's multiphysics end to end - every physics' examples solved:
 # five minutes and more under the sanitizers on CI's runners, as the
 # engine's tests. There 1131 to 2254 s of its 2700 (900 times the scale of

@@ -1,0 +1,12 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "C1: a 20 mm die with a hole, drawn in nm",
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "die", "base": "center", "size": ["20e6", "20e6"]},
+            {"type": "rectangle", "label": "hole", "base": "center", "size": ["2e6", "2e6"]},
+            {"type": "difference", "label": "frame", "input": ["die"], "tools": ["hole"]}
+        ]
+    }]
+}

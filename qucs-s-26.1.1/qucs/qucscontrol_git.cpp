@@ -287,6 +287,12 @@ QJsonObject QucsControl::gitStatus(const QJsonObject& args)
     const QString root = gitRootOf(path, &error);
     if (root.isEmpty()) return errorResult(error);
     QJsonObject state = gitState(root);
+    // (Not read: git's reason - its filters' guard that could not be told
+    // among them - not an empty answer.)
+    if (state.isEmpty()) {
+        const git::Result why = git::run(root, {QStringLiteral("rev-parse"), QStringLiteral("--git-dir")}, true, 15000);
+        return errorResult(tr("git could not read %1: %2").arg(native(root), why.ok() ? tr("ask again") : why.error()));
+    }
     const QString file = !path.isEmpty() ? gitPath(path) : a_app->gitFile();
     if (!file.isEmpty()) {
         bool inside = false;

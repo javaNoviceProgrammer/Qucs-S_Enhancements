@@ -109,6 +109,9 @@ bool GraphicText::load(const QString &s)
     angle = n.toInt(&ok);
     if (!ok)
         return false;
+    // (Within a turn: drawn at -angle, and -INT_MIN overflowed - UBSan, the
+    // hunt of 9 November, U1.)
+    angle %= 360;
 
     text = s.mid(s.indexOf('"') + 1); // Text (can contain " !!!)
     text.truncate(text.length() - 1);

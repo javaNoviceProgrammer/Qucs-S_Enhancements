@@ -3014,6 +3014,12 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         if (sw > 0 && var > 0) field = std::abs((sw * sze - sz * se) / var);   // eV/m: V/m
     }
     const double kT = KB * a_T, gamma = o.linewidth + o.dlinewidth * field;
+    // (A broadening that is not a number, or infinite, is none: its cells
+    // were int(ceil(inf)) - the hunt of 10 November, U5.)
+    if (!std::isfinite(gamma)) {
+        *error = tr("%1: the spectrum's broadening is not a finite number").arg(a_node->name());
+        return -1;
+    }
     if (!wells && !(gamma > 0)) {
         *error = tr("%1: a wire's spectrum wants a broadening more than 0").arg(a_node->name());
         return -1;
@@ -3813,7 +3819,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // cells, the line integrated exactly over each.
     const double top = std::max(60 * gamma, std::max(0.3 * Q, 30 * kT));
     const double step = std::max(1e-6 * Q, std::min(gamma > 0 ? gamma / 6 : kT / 6, kT / 6));
-    const int cells = std::clamp(int(std::ceil(top / step)), 50, 20000);
+    const int cells = int(std::clamp(std::ceil(top / step), 50.0, 20000.0));   // (clamped as a double: no int of inf)
     auto occupation = [&](const Transition& t, double eps) {
         if (!a_spec.carriers) return 1.0;
         const double Ec = t.Ee + t.mr / t.me * eps, Ev = t.Eh - t.mr / t.mh * eps;
@@ -4709,7 +4715,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 const double e0 = pr.eps[m - 1], e1 = pr.eps[m], de = std::abs(e1 - e0);
                 int cellsHere = 1;
                 if (gamma > 0 && std::abs(E - 0.5 * (e0 + e1)) < 20 * gamma + de)
-                    cellsHere = std::clamp(int(std::ceil(de / (0.25 * std::min(kT, gamma)))), 1, 32);
+                    cellsHere = int(std::clamp(std::ceil(de / (0.25 * std::min(kT, gamma))), 1.0, 32.0));
                 for (int q = 0; q < cellsHere; ++q) {
                     const double t0 = double(q) / cellsHere, t1 = double(q + 1) / cellsHere;
                     double ea = e0 + (e1 - e0) * t0, eb = e0 + (e1 - e0) * t1, part = 1;
@@ -4777,7 +4783,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 // (Fading: the step's cells past the fade's end, each cell's
                 // part its transition energy's fadeAt.)
                 const double reachT = fading ? std::max(top, barrierGap + o.fade + 20 * gamma - t.E) : top;
-                const int cellsT = fading ? std::clamp(int(std::ceil(reachT / step)), 50, 40000) : cells;
+                const int cellsT = fading ? int(std::clamp(std::ceil(reachT / step), 50.0, 40000.0)) : cells;
                 if (gamma > 0 && !a_spec.carriers && !enhanced && !fading && !window) sum = cdf(delta);   // (a step's, broadened: exact)
                 else if (gamma > 0) {
                     for (int k = 0; k < cellsT; ++k) {
@@ -4883,7 +4889,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             // spectrum's line, or Urbach's e^(-|x|/E_U)/2E_U (the check of 21
             // October: Miller's barriers' own edge at 1.74-1.76 eV).
             const double delta = E - bulk.Eg, reach = std::max(top, delta + top);
-            const int n = std::clamp(int(std::ceil(reach / step)), 50, 40000);
+            const int n = int(std::clamp(std::ceil(reach / step), 50.0, 40000.0));
             auto in = [&](double eps) { return bulk.fadesIn ? 1 - fadeAt(bulk.Eg + eps) : 1.0; };
             // (An excess bulk's free carriers, taken off, broadened as the
             // box's states that are theirs: by the spectrum's line.)

@@ -23,7 +23,10 @@
 #include "fem_results.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <functional>
+#include <mutex>
 #include <map>
 #include <optional>
 #include <thread>
@@ -156,7 +159,9 @@ private:
     };
     /// Release \a r traced: its paths and hits in \a out, what the media
     /// absorb added to \a deposit (by triangle, W).
-    void trace(const Release& r, Traced& out, std::vector<double>& deposit, PointEvaluator& ev, const Locator& locator) const;
+    /// (\a stop: whether to stop - asked per ray, and every so many steps.)
+    void trace(const Release& r, Traced& out, std::vector<double>& deposit, PointEvaluator& ev, const Locator& locator,
+               const std::function<bool()>& stop) const;
     /// n and κ of domain \a d at \a p (m) at the ray's wavelength (set on \a ev).
     bool indexAt(int d, QPointF p, PointEvaluator& ev, const Locator& locator, double* n, double* kappa) const;
     void depositAlong(QPointF a, QPointF b, double p0, double alpha, std::vector<double>& deposit, const Locator& locator) const;
@@ -522,7 +527,8 @@ void RayProblem::depositAlong(QPointF a, QPointF b, double p0, double alpha, std
     }
 }
 
-void RayProblem::trace(const Release& release, Traced& out, std::vector<double>& deposit, PointEvaluator& ev, const Locator& locator) const
+void RayProblem::trace(const Release& release, Traced& out, std::vector<double>& deposit, PointEvaluator& ev, const Locator& locator,
+                       const std::function<bool()>& stop) const
 {
     const Topology& topo = a_s.topology();
     const Field& f = a_s.fields()[std::size_t(a_fi)];
@@ -545,7 +551,7 @@ void RayProblem::trace(const Release& release, Traced& out, std::vector<double>&
     stack.push_back(first);
     const double floor = a_threshold * release.power;
     while (!stack.empty()) {
-        if (out.rays >= a_maxRays) break;
+        if (out.rays >= a_maxRays || stop()) break;
         Ray ray = stack.back();
         stack.pop_back();
         ++out.rays;
@@ -565,6 +571,10 @@ void RayProblem::trace(const Release& release, Traced& out, std::vector<double>&
                 break;
             }
             if (ray.interactions >= a_maxInteractions || ray.length >= a_maxLength) {
+                status = 0;
+                break;
+            }
+            if ((ray.interactions & 63) == 63 && stop()) {
                 status = 0;
                 break;
             }
@@ -614,6 +624,14 @@ void RayProblem::trace(const Release& release, Traced& out, std::vector<double>&
                 QPointF r = ray.p, T = ray.d * n;
                 bool crossed = false, lost = false;
                 for (int step = 0; step < 1000000; ++step) {
+                    // (A million steps a segment, five lookups each: asked
+                    // whether to stop as it goes - a trace that did not end
+                    // could not be stopped, nor its tab closed: the hunt of
+                    // 10 November, S1.)
+                    if ((step & 4095) == 4095 && stop()) {
+                        lost = true;
+                        break;
+                    }
                     double n1 = 0;
                     QPointF g1, g2, g3, g4;
                     double n2 = 0, n3 = 0, n4 = 0;
@@ -776,9 +794,20 @@ bool RayProblem::solve(const SolveOptions& o, QString* error)
     std::vector<Traced> traced(static_cast<std::size_t>(count));
     const int threads = count < 8 ? 1 : std::clamp(int(std::thread::hardware_concurrency()), 1, 16);
     std::vector<std::vector<double>> deposits(std::size_t(threads), std::vector<double>(std::size_t(nt), 0.0));
+    // Whether to stop: asked of the study by one thread at a time, kept once
+    // it is yes.
+    std::mutex asking;
+    std::atomic<bool> stopped{false};
+    auto stop = [&]() -> bool {
+        if (stopped.load(std::memory_order_relaxed)) return true;
+        std::lock_guard<std::mutex> lock(asking);
+        if (cancelled()) stopped = true;
+        return stopped.load();
+    };
     auto work = [&](int thread, int begin, int end) {
         PointEvaluator ev(a_s);
-        for (int k = begin; k < end; ++k) trace(a_releases[std::size_t(k)], traced[std::size_t(k)], deposits[std::size_t(thread)], ev, locator);
+        for (int k = begin; k < end; ++k)
+            trace(a_releases[std::size_t(k)], traced[std::size_t(k)], deposits[std::size_t(thread)], ev, locator, stop);
     };
     if (threads == 1) work(0, 0, count);
     else {
@@ -790,6 +819,10 @@ bool RayProblem::solve(const SolveOptions& o, QString* error)
             pool.start([&work, k, b, e] { work(k, b, e); });
         }
         pool.join();
+    }
+    if (stopped) {
+        if (error) *error = tr("cancelled");
+        return false;
     }
     // The power absorbed by triangle, as a density at the nodes: each node
     // the mean of its absorbing triangles', by area - its integral over the

@@ -4391,6 +4391,55 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // An atomic batch that fails while a dialog is open over the schematic
+    // - a wire label's, opened by the batch's own double click - is not put
+    // back under it: putting it back made its labels anew, the dialog's
+    // freed, and its OK read and wrote the freed label (the hunt of 9
+    // November, C2; ASan's heap-use-after-free in LabelDialog::slotOk).
+    // Said, with the undo that takes its changes back.
+    void anAtomicBatchIsNotPutBackUnderADialog()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        Schematic* sch = front();
+        QVERIFY(!failed(call("add_wire", {{"points", QJsonArray{QJsonArray{100, 100}, QJsonArray{300, 100}}}})));
+        QJsonObject r = call("set_label", {{"at", QJsonArray{200, 100}}, {"name", "lab"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject batch, answered;
+        bool dialogUp = false;
+        // (The dialog's loop runs inside the event loop that waits for the
+        // batch: answered from a timer, once the batch has answered.)
+        QTimer poll;
+        poll.setInterval(100);
+        connect(&poll, &QTimer::timeout, this, [&] {
+            if (batch.isEmpty() || !QApplication::activeModalWidget() || !answered.isEmpty()) return;
+            dialogUp = true;
+            answered = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "c1"}, {"value", "other"}}}}, {"press", "Ok"}});
+            if (QWidget* d = QApplication::activeModalWidget()) d->close();
+        });
+        poll.start();
+        control->callToolFor(1, "batch", {{"atomic", true}, {"calls", QJsonArray{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 300}}}},
+            QJsonObject{{"tool", "send_input"}, {"arguments", QJsonObject{{"click", QJsonArray{200, 100}}, {"double", true}}}},
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "C"}, {"name", "C1"}, {"x", 300}, {"y", 300}}}}}}},
+                             [&](const QJsonObject& reply) { batch = reply; });
+        QTRY_VERIFY_WITH_TIMEOUT(!batch.isEmpty() && !answered.isEmpty(), 20000);
+        poll.stop();
+        QVERIFY(dialogUp);
+        QTRY_VERIFY(QApplication::activeModalWidget() == nullptr);
+        QVERIFY(failed(batch));
+        QVERIFY2(text(batch).contains("Atomic: not undone - a dialog is open") && text(batch).contains("1 on the document in front"),
+                 qPrintable(text(batch).left(800)));
+        QVERIFY2(!failed(answered), qPrintable(text(answered)));
+        // The batch's part stays, and the dialog's answer is the label's.
+        QVERIFY(sch->getComponentByName("R1") != nullptr);
+        QVERIFY(sch->getComponentByName("C1") == nullptr);
+        QStringList labels;
+        for (const Wire* w : sch->a_DocWires)
+            if (w->hasLabel()) labels << w->label()->Name;
+        QCOMPARE(labels, QStringList{"other"});
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // Distortion and a loop's stability read from a dataset: the THD of a
     // transient at a stated fundamental over two periods, and a loop
     // gain's gain, phase margin and gain margin - its phase taken along.

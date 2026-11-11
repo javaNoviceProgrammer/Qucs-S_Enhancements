@@ -1288,7 +1288,16 @@ private:
 ProcessRun runProcess(const Node& flow, const Model& model, const ParameterScope& parameters, double unitScale, const QString& until,
                       const std::function<bool(double, const QString&)>& progress)
 {
-    return Runner(flow, model, parameters, unitScale, progress).run(until);
+    // (Clipper throws where a coordinate is past its range, about 4.6e18 of
+    // the flow's grid steps: a failed run, not an abort - the hunt of 9
+    // November, C1.)
+    try {
+        return Runner(flow, model, parameters, unitScale, progress).run(until);
+    } catch (const ClipperLib::clipperException& e) {
+        ProcessRun run;
+        run.error = tr("a coordinate is out of range of the flow's grid: %1").arg(QString::fromUtf8(e.what()));
+        return run;
+    }
 }
 
 bool processStepMakesRegion(const QString& type)

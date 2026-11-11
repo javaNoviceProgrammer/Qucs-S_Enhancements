@@ -18,6 +18,7 @@
 #include <QtTest>
 #include <QDockWidget>
 #include <QJsonDocument>
+#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QTextBrowser>
 #include <QFontDatabase>
@@ -613,6 +614,19 @@ private slots:
         QVERIFY(panel->exportConversation(QDir(folder).filePath(QStringLiteral("dates-%1.pdf").arg(theme)), ClaudeCodePanel::ExportFormat::Pdf));
         qInfo("dates: %d shown", int(panel->promptDates().size()));
         ClaudeCodePanel::setPromptDatesShown(false);
+        // A prompt to a long conversation gone cold, held (Conversation Cache > Warn).
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::Warn);
+        panel->session()->setProgram(QStringLiteral("/usr/bin/true"));   // (never started: held)
+        panel->restoreConversation(QJsonObject{
+            {"sessionId", "cold-1"},
+            {"cache", QJsonObject{{"contextTokens", 558342}, {"lastTurnAt", QDateTime::currentMSecsSinceEpoch() - 109 * 60000}, {"model", "claude-opus-5-5"}}},
+            {"entries", entries}});
+        panel->composer()->setPlainText(QStringLiteral("Now let's look at the mesh again"));
+        panel->sendComposer();
+        settle();
+        QVERIFY(panel->cacheNote()->isVisible());
+        QVERIFY(panel->grab().save(QDir(folder).filePath(QStringLiteral("cache-%1-panel.png").arg(theme))));
+        ClaudeCodePanel::setCacheChoice(ClaudeCodePanel::CacheChoice::CompactIdle);
     }
 };
 

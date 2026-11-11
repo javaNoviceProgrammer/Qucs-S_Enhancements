@@ -20,6 +20,8 @@
 
 #include <QDir>
 #include <QElapsedTimer>
+#include <optional>
+#include <tuple>
 #include <QFile>
 #include <QRandomGenerator>
 #include <QJsonArray>
@@ -172,6 +174,8 @@ private slots:
     void formUnionCounts();
     void selectionRules();
     void booleans();
+    void booleansOfHugeAndEndlessCoordinates();
+    void extentsPastMeshingRefused();
     void meshQuality();
     void parallelPlates();
     void floatingPotential();
@@ -187,6 +191,11 @@ private slots:
     void largeModelTiming();
     void everyExamplesSelectionsResolve();
     void aMeshStopsWhileItSmooths();
+    void boundaryNodesPastTheBudgetRefused();
+    void aMeshStopsWhileItWalksItsBoundaries();
+    void periodicOrdersPastTheLimitRefused();
+    void aHugeLinewidthCountedInDoubles();
+    void aRayTraceStops();
     void fuzz();
     void dumpKinds();
 };
@@ -760,6 +769,77 @@ void TestFemEngine::booleans()
     QVERIFY(g.errors.value(g.failedAt).contains(QStringLiteral("a")));
 }
 
+// A boolean's integers scaled to its own inputs too, and a coordinate out
+// of Clipper's range a failed build: a 20 mm die with a hole drawn in nm
+// made the scale 2^39 (the inputs no longer among the objects it measured)
+// and Clipper threw, which nothing caught - Qucs-S aborted on opening it
+// (the hunt of 9 November, C1).
+void TestFemEngine::booleansOfHugeAndEndlessCoordinates()
+{
+    const Model die = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "nm", "geometry": [
+        {"type": "rectangle", "name": "die", "base": "center", "size": ["20e6", "20e6"]},
+        {"type": "rectangle", "name": "hole", "base": "center", "size": ["2e6", "2e6"]},
+        {"type": "difference", "name": "frame", "input": ["die"], "tools": ["hole"]}]}]})");
+    GeometryBuild g = buildGeometry(die, *evaluateParameters(die));
+    QVERIFY2(g.ok(), qPrintable(QStringList(g.errors.values()).join(QLatin1String("; "))));
+    QCOMPARE(int(g.topology->domains.size()), 1);
+    QVERIFY(std::abs(g.topology->domains[0].area / (400e12 - 4e12) - 1) < 1e-9);
+    // Two squares 2^31 wide united, and intersected.
+    for (const char* op : {"union", "intersection"}) {
+        const Model wide = modelOf(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+            {"type": "rectangle", "name": "a", "size": ["2147483648", "2147483648"]},
+            {"type": "rectangle", "name": "b", "position": ["1e9", "1e9"], "size": ["2147483648", "2147483648"]},
+            {"type": "%1", "name": "u", "input": ["a", "b"]}]}]})").arg(QLatin1String(op)).toUtf8());
+        g = buildGeometry(wide, *evaluateParameters(wide));
+        QVERIFY2(g.ok(), qPrintable(QStringList(g.errors.values()).join(QLatin1String("; "))));
+    }
+    // Past every range: a failed build, said - no abort.
+    for (const char* size : {"1e308", "1e308*10", "-1e308"}) {
+        const Model huge = modelOf(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+            {"type": "rectangle", "name": "a", "base": "center", "size": ["%1", "%1"]},
+            {"type": "circle", "name": "c", "radius": "1"},
+            {"type": "difference", "name": "d", "input": ["a"], "tools": ["c"]}]}]})").arg(QLatin1String(size)).toUtf8());
+        g = buildGeometry(huge, *evaluateParameters(huge));
+        QVERIFY2(!g.ok(), size);
+    }
+}
+
+// A geometry past 1e60 refused before it is triangulated, said: the SOI
+// waveguide's absorbing rectangle 1e308 tall sent the triangulation
+// flipping edges for ever, on the GUI thread as it opened (the hunt of 9
+// November, H3).
+void TestFemEngine::extentsPastMeshingRefused()
+{
+    QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/soi_waveguide_modes.qfem"));
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QByteArray json = f.readAll();
+    const QByteArray at = R"("size": ["W + 2*d", "H + 2*d"])";
+    QVERIFY(json.contains(at));
+    QElapsedTimer t;
+    t.start();
+    for (const char* height : {"H + 1e308*d", "1e70", "1e300"}) {
+        QByteArray tall = json;
+        tall.replace(at, QByteArray(R"("size": ["W + 2*d", ")") + height + R"("])");
+        const Model m = modelOf(tall);
+        const GeometryBuild g = buildGeometry(m, *evaluateParameters(m));
+        QVERIFY2(!g.ok(), height);
+        const QString said = QStringList(g.errors.values()).join(QLatin1String("; "));
+        QVERIFY2(said.contains(QLatin1String("thinner than the union's tolerance")) || said.contains(QLatin1String("past what is meshed")), qPrintable(said));
+    }
+    // Alone, nothing lost to the tolerance: its extent said.
+    const Model alone = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+        {"type": "rectangle", "name": "a", "base": "center", "size": ["1e70", "1e70"]}]}]})");
+    const GeometryBuild g = buildGeometry(alone, *evaluateParameters(alone));
+    QVERIFY(!g.ok());
+    QVERIFY2(QStringList(g.errors.values()).join(QLatin1String("; ")).contains(QLatin1String("past what is meshed (1e60)")),
+             qPrintable(QStringList(g.errors.values()).join(QLatin1String("; "))));
+    // (And a large one that is no hostile number: built.)
+    const Model big = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+        {"type": "rectangle", "name": "a", "base": "center", "size": ["1e20", "1e20"]}]}]})");
+    QVERIFY(buildGeometry(big, *evaluateParameters(big)).ok());
+    QVERIFY2(t.elapsed() < 30000, qPrintable(QString::number(t.elapsed())));
+}
+
 void TestFemEngine::meshQuality()
 {
     const Model m = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
@@ -1252,6 +1332,113 @@ void TestFemEngine::aMeshStopsWhileItSmooths()
     const MeshBuild stopped = buildMesh(m, *ps, g.topology, [&asked](double, const QString& w) { return !(w == QLatin1String("Smoothing") && ++asked == 2); });
     QVERIFY(!stopped.mesh);
     QCOMPARE(stopped.error, QStringLiteral("cancelled"));
+}
+
+// An example's model with one value changed (\a from there, once); none
+// when the example or the value is not there.
+static std::optional<Model> exampleWith(const char* file, const QByteArray& from, const QByteArray& to)
+{
+    QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/") + QLatin1String(file));
+    if (!f.open(QIODevice::ReadOnly)) return std::nullopt;
+    QByteArray json = f.readAll();
+    const qsizetype at = json.indexOf(from);
+    if (at < 0) return std::nullopt;
+    json.replace(at, from.size(), to);
+    return modelOf(json);
+}
+
+// A 2D mesh whose boundaries (or layered regions) would have more nodes than
+// the mesh's budget refused before they are placed, said: an hmax of 1e-7
+// (a typo for 1e-3) gave the annulus's circles 6e7 nodes each, memory
+// without end (the hunt of 10 November, S2).
+void TestFemEngine::boundaryNodesPastTheBudgetRefused()
+{
+    QElapsedTimer t;
+    t.start();
+    for (const auto& [file, from, to] : {std::tuple<const char*, QByteArray, QByteArray>{"annulus_laplace.qfem", R"("hmax": "0.15")", R"("hmax": "0.0000001")"},
+                                         {"annulus_laplace.qfem", R"("hmax": "0.15")", R"("hmax": "1e-308")"},
+                                         {"vcsel_laser.qfem", R"("hlateral": "0.1")", R"("hlateral": "1e-301")"}}) {
+        const std::optional<Model> m = exampleWith(file, from, to);
+        QVERIFY2(m, file);
+        const Run r = run(*m, false);
+        QVERIFY2(!r.mesh, qPrintable(QStringLiteral("%1 %2").arg(QLatin1String(file), QLatin1String(to))));
+        QVERIFY2(r.error.contains(QLatin1String("the mesh would have")) && r.error.contains(QLatin1String("more than 4000000")), qPrintable(r.error));
+        qInfo("%s %s: %s", file, to.constData(), qPrintable(r.error));
+    }
+    // (The examples as they are: meshed.)
+    const Run plain = run(*exampleWith("annulus_laplace.qfem", R"("hmax": "0.15")", R"("hmax": "0.15")"), false);
+    QVERIFY2(plain.mesh, qPrintable(plain.error));
+    QVERIFY2(t.elapsed() < 60000, qPrintable(QString::number(t.elapsed())));
+}
+
+// The boundaries' nodes walked asking whether to stop: a mesh still placing
+// them could not be stopped, nor its tab closed (the hunt of 10 November,
+// S1).
+void TestFemEngine::aMeshStopsWhileItWalksItsBoundaries()
+{
+    const std::optional<Model> om = exampleWith("annulus_laplace.qfem", R"("hmax": "0.15")", R"("hmax": "0.00001")");
+    QVERIFY(om);
+    const Model& m = *om;
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+    const GeometryBuild g = buildGeometry(m, *ps);
+    QVERIFY(g.ok());
+    int asked = 0;
+    const MeshBuild stopped = buildMesh(m, *ps, g.topology, [&asked](double, const QString& w) { return !(w == QLatin1String("Boundaries") && ++asked == 2); });
+    QVERIFY(!stopped.mesh);
+    QCOMPARE(stopped.error, QStringLiteral("cancelled"));
+}
+
+// A periodic port so many wavelengths wide that its orders pass the most
+// solved refused before they are made: at 1e30 Hz their count passed an
+// int's range, wrapped negative, listed none, and the solve read the fed
+// port's empty list - SIGSEGV (the hunt of 10 November, S3).
+void TestFemEngine::periodicOrdersPastTheLimitRefused()
+{
+    for (const char* f : {"1e30", "1e20"}) {
+        const std::optional<Model> m = exampleWith("grating_orders.qfem", R"("frequencies": "c0/lambda0")", QByteArray(R"("frequencies": ")") + f + '"');
+        QVERIFY(m);
+        const Run r = run(*m, true);
+        QVERIFY2(!r.solution, f);
+        QVERIFY2(r.error.contains(QLatin1String("orders propagate, more than the 500 solved")), qPrintable(r.error));
+    }
+    const Run plain = run(*exampleWith("grating_orders.qfem", "c0/lambda0", "c0/lambda0"), true);
+    QVERIFY2(plain.solution, qPrintable(plain.error));
+}
+
+// A quantum spectrum's broadening of 1e308 eV - finite, past any spectrum's
+// width - its cells counted in doubles: they were int(ceil(inf)), undefined
+// (UBSan stops on it; the hunt of 10 November, U5). One of infinity refused.
+void TestFemEngine::aHugeLinewidthCountedInDoubles()
+{
+    const std::optional<Model> m = exampleWith("gaas_eam_excitons.qfem", R"("linewidth": "3[meV]")", R"("linewidth": "3[meV]/0")");
+    QVERIFY(m);
+    const Run r = run(*m, true);
+    QVERIFY2(!r.solution, "solved");
+    QVERIFY2(r.error.contains(QLatin1String("broadening")), qPrintable(r.error));
+    const std::optional<Model> wide = exampleWith("gaas_eam_excitons.qfem", R"("linewidth": "3[meV]")", R"("linewidth": "3[meV]+1e308")");
+    QVERIFY(wide);
+    const Run w = run(*wide, true);
+    qInfo("a linewidth of 1e308 eV: %s", w.solution ? "solved" : qPrintable(w.error));
+}
+
+// A ray trace asked whether to stop as it goes: the graded-index lens with
+// its air's corner at -4e-300 for -4 traced for more than 7 minutes, deaf
+// to a stop, and closing its tab waited for it (the hunt of 10 November,
+// S1).
+void TestFemEngine::aRayTraceStops()
+{
+    const std::optional<Model> om = exampleWith("grin_lens.qfem", R"x("-4"])x", R"x("(-4)*1e-300"])x");
+    QVERIFY(om);
+    const Model& m = *om;
+    const Run r = run(m, false);
+    QVERIFY2(r.mesh, qPrintable(r.error));
+    QElapsedTimer t;
+    t.start();
+    const StudyResult s = solveStudy(m, r.parameters, r.mesh, QString(), [&t](double, const QString&) { return t.elapsed() < 2000; });
+    qInfo("stopped after %lld ms: %s", t.elapsed(), qPrintable(s.error));
+    QVERIFY(!s.solution);
+    QVERIFY2(s.error.contains(QLatin1String("cancelled")), qPrintable(s.error));
+    QVERIFY2(t.elapsed() < 20000, qPrintable(QString::number(t.elapsed())));
 }
 
 // The node kinds as JSON (QUCS_KINDS_DUMP: the file): each kind's type,
