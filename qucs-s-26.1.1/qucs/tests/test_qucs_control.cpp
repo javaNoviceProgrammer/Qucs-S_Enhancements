@@ -3956,6 +3956,105 @@ private slots:
     // by show_layout, screenshot's region pointing there, and its tree's
     // menu opened by context_menu - none of which reached it (the phase A
     // check of 24 October).
+    // An RF 2.5D model's tab has the pen a layout's has, at its toolbar's
+    // right end: show_layout takes it up and puts it down, clears what it
+    // drew and marks strokes addressed; send_input draws with it; the
+    // strokes are read in show_layout's answer, by read_drawings and in
+    // what a prompt is told. The pen and the port tools are one at a time.
+    void anRf25ModelsPenIsReadThroughTheTools()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString gds = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(gds)) QSKIP("the example layout is not in this build");
+        QVERIFY(QDir().mkpath(ws + "/rf"));
+        QFile::remove(ws + "/rf/heater.gds");
+        QVERIFY(QFile::copy(gds, ws + "/rf/heater.gds"));
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
+        QJsonArray rows;
+        rows.append(QJsonArray{"1", "0", "M1"});
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        const QString model = ws + "/rf/penned.qrf25";
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        QJsonObject r = call("show_layout", {{"path", model}, {"pen", true}, {"region", QJsonArray{-60, -60, 60, 60}}}, 60000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr && doc->penButton() != nullptr);
+        qucs_s::layout::LayoutView* view = doc->view();
+        QVERIFY(doc->penButton()->isChecked());
+        QCOMPARE(view->mode(), qucs_s::layout::LayoutView::Mode::Draw);
+        QVERIFY2(json(r).toObject().value("pen").toString().contains(QStringLiteral("taken up")), qPrintable(text(r)));
+        QVERIFY(!json(r).toObject().contains("drawings"));
+        // At the toolbar's right end, after the layout's line.
+        {
+            QWidget* bar = doc->penButton()->parentWidget();
+            QVERIFY(bar != nullptr && bar->layout() != nullptr);
+            QCOMPARE(bar->layout()->itemAt(bar->layout()->count() - 1)->widget(), static_cast<QWidget*>(doc->penButton()));
+        }
+
+        // Drawn with the mouse, through send_input: a line across the wire.
+        r = call("send_input", {{"target", "layout"}, {"click", QJsonArray{-40, 10}}, {"drag_to", QJsonArray{40, 10}}}, 30000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject answer = QJsonDocument::fromJson(text(r).section(QLatin1Char('\n'), 0, 0).toUtf8()).object();
+        QVERIFY2(answer.value("on").toString().endsWith(QStringLiteral("of penned.qrf25")), qPrintable(text(r)));
+        QCOMPARE(answer.value("drawn").toArray().size(), 1);
+        const QString part = view->drawingPart();
+        QVERIFY(!part.isEmpty());
+        QCOMPARE(view->drawing().count(part), 1);
+        // Read in show_layout's answer, by read_drawings and for a prompt.
+        r = call("show_layout", {{"path", model}}, 60000);
+        const QJsonArray drawn = json(r).toObject().value("drawings").toArray();
+        QCOMPARE(drawn.size(), 1);
+        QCOMPARE(drawn.at(0).toObject().value("cell").toString(), part);
+        QCOMPARE(drawn.at(0).toObject().value("drawn as").toString(), QStringLiteral("line"));
+        const QJsonArray docs = json(call("read_drawings", {{"path", model}})).toObject().value("documents").toArray();
+        QCOMPARE(docs.size(), 1);
+        QCOMPARE(docs.at(0).toObject().value("document").toString(), QStringLiteral("penned.qrf25"));
+        QVERIFY(docs.at(0).toObject().value("measures").toString().contains(QStringLiteral("µm")));
+        QVERIFY(!docs.at(0).toObject().value("strokes").toArray().at(0).toObject().value("points").toArray().isEmpty());
+        QCOMPARE(json(call("read_drawings", {})).toObject().value("documents").toArray().size(), 1);
+        const auto [revision, told] = app->drawingsOf(doc->getDocName());
+        QVERIFY(revision > 0 && revision == view->drawing().revision());
+        QVERIFY2(told.startsWith(QStringLiteral("cell %1, stroke 1: a ").arg(part)), qPrintable(told));
+        QVERIFY2(told.contains(QStringLiteral("show_layout's pen: false")), qPrintable(told));
+        QVERIFY(app->drawingsOf(doc->getDocName(), revision).second.isEmpty());
+        // Marked addressed, and a stroke it has not refused.
+        r = call("show_layout", {{"path", model}, {"addressed", QJsonArray{1}}}, 60000);
+        QVERIFY2(json(r).toObject().value("addressed").toString().startsWith(QStringLiteral("1 stroke")), qPrintable(text(r)));
+        QVERIFY(view->drawing().find(part, 1)->addressed);
+        r = call("show_layout", {{"path", model}, {"addressed", QJsonArray{9}}}, 60000);
+        QVERIFY2(failed(r) && text(r).contains(QStringLiteral("no stroke 9")), qPrintable(text(r)));
+
+        // The pen and the port tools, one at a time.
+        doc->internalPortButton()->click();
+        QCOMPARE(doc->placing(), RF25Doc::Placing::InternalPort);
+        QVERIFY(!doc->penButton()->isChecked());
+        doc->penButton()->click();
+        QCOMPARE(doc->placing(), RF25Doc::Placing::None);
+        QVERIFY(!doc->internalPortButton()->isChecked());
+        QCOMPARE(view->mode(), qucs_s::layout::LayoutView::Mode::Draw);
+        // Its menu's Undo is there while there is a change to undo.
+        bool undoable = false;
+        for (QAction* a : doc->penButton()->penMenu()->actions()) undoable = undoable || (a->text().contains(QStringLiteral("Undo")) && a->isEnabled());
+        QVERIFY(undoable);
+
+        // Put down, and what it drew taken away.
+        r = call("show_layout", {{"path", model}, {"pen", false}, {"drawings", "clear"}}, 60000);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(view->drawing().isEmpty());
+        QCOMPARE(view->mode(), qucs_s::layout::LayoutView::Mode::Select);
+        QVERIFY(!doc->penButton()->isChecked());
+        QVERIFY(json(r).toObject().value("done").toString().contains(QStringLiteral("taken away")));
+        QVERIFY(!json(r).toObject().contains("drawings") && !json(r).toObject().contains("pen"));
+        // (A prompt is then told it went: a revision moved on, nothing read.)
+        const auto after = app->drawingsOf(doc->getDocName(), revision);
+        QVERIFY(after.first != revision && after.second.isEmpty());
+    }
+
     void anRf25ModelIsFramedAndItsTreeMenuReached()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();

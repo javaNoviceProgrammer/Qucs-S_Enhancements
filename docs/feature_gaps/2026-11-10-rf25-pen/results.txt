@@ -1,0 +1,17 @@
+breaks.py, 10 November, the first run (build-rel, macOS):
+
+===== what each break did =====
+the pen not in the toolbar                                     anRf25ModelsPenIsReadThroughTheToo failed (caught)
+the pen taken up, the view not drawing                         anRf25ModelsPenIsReadThroughTheToo failed (caught)
+a port tool taken up, the pen left pressed                     anRf25ModelsPenIsReadThroughTheToo failed (caught)
+the pen taken up, a port tool left pressed                     anRf25ModelsPenIsReadThroughTheToo failed (caught)
+the pen's menu not told of the drawing                         anRf25ModelsPenIsReadThroughTheToo failed (caught)
+a prompt not told what was drawn                               anRf25ModelsPenIsReadThroughTheToo failed (caught)
+read_drawings not reading a model                              anRf25ModelsPenIsReadThroughTheToo failed (caught)
+show_layout not taking a model's pen up                        anRf25ModelsPenIsReadThroughTheToo failed (caught)
+show_layout not clearing a model's drawings                    anRf25ModelsPenIsReadThroughTheToo failed (caught)
+show_layout marking a stroke a model has not                   anRf25ModelsPenIsReadThroughTheToo failed (caught)
+show_layout not saying a model's drawings                      anRf25ModelsPenIsReadThroughTheToo failed (caught)
+send_input not drawing on a model                              anRf25ModelsPenIsReadThroughTheToo failed (caught)
+
+0 of 12 uncaught
