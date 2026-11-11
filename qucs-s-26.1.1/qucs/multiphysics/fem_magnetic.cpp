@@ -136,13 +136,22 @@ double BHCurve::energy(double b) const
 }
 
 namespace detail {
+namespace {
+std::shared_ptr<const BHCurve> curveOf(const QJsonValue& value, const Scope& scope, QString* error);
+}
+} // namespace detail
+
+std::shared_ptr<const BHCurve> bhCurveOf(const QJsonValue& value, const Scope& scope, QString* error)
+{
+    return detail::curveOf(value, scope, error);
+}
+
+namespace detail {
 
 namespace {
 
 using cd = std::complex<double>;
 
-/// A B-H curve as a material or a feature gives it: a table of rows [B, H]
-/// (numbers in T and A/m, or with units), or text "0 0; 0.5 120; 1 300".
 std::shared_ptr<const BHCurve> curveOf(const QJsonValue& value, const Scope& scope, QString* error)
 {
     std::vector<std::pair<double, double>> points;

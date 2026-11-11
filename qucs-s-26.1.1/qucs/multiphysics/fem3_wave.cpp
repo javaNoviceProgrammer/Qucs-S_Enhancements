@@ -1205,6 +1205,26 @@ std::vector<std::array<std::complex<double>, 3>> nodalField(const EdgeSpace3& sp
     return out;
 }
 
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order)
+{
+    Estimate3 e;
+    e.order = order;
+    e.method = QStringLiteral("direct");
+    if (!mesh || mesh->prisms.empty()) return e;
+    const EdgeSpace3 space(mesh, order);
+    const Space3 nodes(mesh, order);
+    e.unknowns = qint64(space.size()) + nodes.size();
+    e.elements = space.elements();
+    e.perElement = space.perElement() + nodes.perElement();
+    e.nonzeros = qint64(e.unknowns) * (order == 2 ? 70 : 25);
+    const double n = double(e.unknowns);
+    e.directBytes = 1.0e4 * n;
+    e.directSeconds = 1.4e-10 * std::pow(n, 1.9) + 1e-6 * n;
+    e.iterativeBytes = e.directBytes;
+    e.iterativeSeconds = e.directSeconds;
+    return e;
+}
+
 Estimate3 estimateWave3(std::shared_ptr<const Mesh3> mesh, int order)
 {
     Estimate3 e;

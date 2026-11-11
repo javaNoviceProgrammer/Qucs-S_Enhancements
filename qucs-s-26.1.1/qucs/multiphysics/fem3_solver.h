@@ -33,12 +33,21 @@ namespace qucs_s::fem {
 
 /// One physics solved in 3D: its field on its space, and what was found.
 struct Field3 {
-    QString tag;           ///< es, ec, ht
-    QString type;          ///< electrostatics, currents, heat
-    QString variable;      ///< its dependent variable's name: V, T
+    QString tag;           ///< es, ec, ht, solid
+    QString type;          ///< electrostatics, currents, heat, solid
+    QString variable;      ///< its dependent variable's name: V, T (a vector's first component's: u)
+    /// A vector field's components' names (u, v, w: a displacement); empty:
+    /// a scalar.
+    QStringList components;
+    int count() const { return components.isEmpty() ? 1 : int(components.size()); }
     Dim dim;
     std::shared_ptr<const Space3> space;
-    std::vector<double> values;   ///< by degree of freedom, SI
+    /// A magnetic field's edge elements: its values A's on them first, then
+    /// the gauge's multiplier's on \a space.
+    std::shared_ptr<const EdgeSpace3> edges;
+    /// By degree of freedom, SI; a vector field's components one after the
+    /// other (component c of dof i at c * space->size() + i).
+    std::vector<double> values;
     std::vector<char> domains;    ///< by domain: solved there
     struct Terminal {
         QString name;
@@ -106,6 +115,12 @@ public:
     /// Its snapshots are of wavelengths (a Wavelength Domain step's), each of
     /// its frequency (Hz).
     bool spectral = false;
+    /// Its snapshots are modes (an Eigenfrequency step's), each of its
+    /// eigenfrequency (Hz).
+    bool eigen = false;
+    /// Its snapshots are frequencies (a Frequency Domain step's small
+    /// signal about the solution at rest), each of its frequency (Hz).
+    bool smallSignal = false;
     double snapshotFrequency(int i) const { return a_snapshots[std::size_t(i)].frequency; }
     /// The frequency the globals are of (Hz; 0: none).
     double frequency() const { return a_frequency; }
@@ -145,6 +160,14 @@ public:
         std::vector<double> sourceScale;
         /// By domain: what multiplies ∂u/∂t (heat: ρ Cp; invalid: not given).
         std::vector<Expression> capacity;
+        /// A physics' own coefficients by name, each by domain (a solid's
+        /// C11..C66 in the model's axes, alpha1..alpha6, dT, rho).
+        std::map<QString, std::vector<Expression>> named;
+        /// By domain: a magnetic field's B-H curve (null: linear).
+        std::vector<std::shared_ptr<const BHCurve>> curves;
+        /// A physics' values by mesh prism, by name (a semiconductor's
+        /// mobilities as solved: mun, mup).
+        std::map<QString, std::vector<double>> elements;
     };
     std::vector<Coefficients>& coefficients() { return a_coefficients; }
     const std::vector<Coefficients>& coefficients() const { return a_coefficients; }
@@ -156,6 +179,7 @@ public:
         Kind kind = X;
         int field = -1;
         int component = 0;     ///< a gradient's axis; a coefficient's tensor entry (-1: its diagonal's mean)
+        int part = 0;          ///< a vector field's component (u 0, v 1, w 2)
         double sign = 1;       ///< a gradient's (E is -∇V)
         std::function<double(PointEvaluator3&)> derived;
     };
@@ -180,6 +204,11 @@ public:
 private:
     int define(const QString& name, const Dim& dim, const QString& description, VariableDef::Kind kind, int field, int component = 0,
                double sign = 1, std::function<double(PointEvaluator3&)> derived = {});
+    /// A vector field's component's value (\a axis -1) or gradient.
+    int definePart(const QString& name, const Dim& dim, const QString& description, int field, int part, int axis = -1);
+    void defineSolid(int f);
+    void defineMagnetic(int f);
+    void defineSemiconductor(int f);
 
     Model a_model;   // (a copy: the window's changes after)
     std::shared_ptr<ParameterScope> a_params;
@@ -232,13 +261,18 @@ public:
     const Solution3& solution() const { return a_s; }
     int prism() const { return a_prism; }
     int domain() const { return a_domain; }
+    double xi() const { return a_xi; }
+    double eta() const { return a_eta; }
+    double zeta() const { return a_zeta; }
     Vec3 point() const { return a_x; }
     double value(int slot);
     /// \a e's value here (NaN where it reads what is not here).
     double eval(const Expression& e);
     /// Field \a f's value here and its gradient (m^-1 times its unit); false
     /// where it is not solved here.
-    bool field(int f, double& u, double g[3]);
+    bool field(int f, double& u, double g[3]) { return field(f, 0, u, g); }
+    /// The same of a vector field's component \a part.
+    bool field(int f, int part, double& u, double g[3]);
     /// Field \a f's value here taken as \a du more (0: as it is), every value
     /// read of it found again: a coefficient's derivative in its field, as
     /// Newton's method takes it.
@@ -321,8 +355,9 @@ QList<Variable> modelVariables3(const Model& model);
 void setAssemblyParts(int parts);
 int assemblyParts();
 
-/// The physics a 3D model solves (heat, electrostatics, currents): those of
-/// its enabled physics that are not, by type.
+/// The physics a 3D model solves (heat, electrostatics, currents, solid
+/// mechanics, magnetic fields, semiconductors): those of its enabled
+/// physics that are not, by type.
 QStringList unsolvedPhysics3(const Model& model);
 
 } // namespace qucs_s::fem

@@ -17,9 +17,11 @@
 #include "fem3_solver.h"
 #include "fem_amg.h"
 #include "fem_sparse.h"
+#include "fem_tensor.h"
 
 #include <QSet>
 
+#include <complex>
 #include <functional>
 #include <memory>
 
@@ -63,6 +65,14 @@ public:
     /// Solves for \a b, from \a x as it is (an iterative solve's guess).
     bool solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, const QString& name, QStringList* log, QString* error);
     bool direct() const { return a_chol != nullptr || a_lu != nullptr; }
+    /// Multigrid's near null space (AmgSolver::setNearNullspace), before
+    /// factorize().
+    void setNearNullspace(int cols, std::vector<double> b, int blockSize = 1)
+    {
+        a_nullCols = cols;
+        a_nullB = std::move(b);
+        a_blockSize = blockSize;
+    }
     int size() const { return a_n; }
 
 private:
@@ -71,6 +81,9 @@ private:
     std::unique_ptr<SparseLu<double>> a_lu;
     bool a_symmetric = true;
     int a_n = 0;
+    int a_nullCols = 0;
+    std::vector<double> a_nullB;
+    int a_blockSize = 1;
     double a_tolerance = 1e-9;
 };
 
@@ -91,6 +104,23 @@ public:
     /// Whether its field changes in time (heat: ρ Cp ∂T/∂t), or is at rest
     /// at each step (electrostatics, currents).
     virtual bool hasMass() const { return false; }
+    /// Whether a step in time starts from its solution at rest at its first
+    /// time (a semiconductor's), not from its field as it is.
+    virtual bool solvedAtRestFirst() const { return false; }
+    /// Its \a count eigenfrequencies nearest \a shift (Hz) and their modes
+    /// (its field's values, each scaled to a largest value of 1), lowest
+    /// first - a solid's, K x = ω² M x; false and why (one that has none).
+    virtual bool eigenmodes(const Options3& options, int count, double shift, std::vector<double>* frequencies,
+                            std::vector<std::vector<double>>* modes, QString* error)
+    {
+        (void)options;
+        (void)count;
+        (void)shift;
+        (void)frequencies;
+        (void)modes;
+        *error = QStringLiteral("no eigenfrequencies");
+        return false;
+    }
     /// Whether what it reads reads field \a f.
     bool reads(int f) const { return a_reads.contains(f); }
     int index() const { return a_fi; }
@@ -119,6 +149,52 @@ protected:
 /// The problem of field \a field of \a solution (heat, electrostatics,
 /// currents).
 std::unique_ptr<Problem3> makeScalarProblem3(Solution3& solution, int field);
+/// A solid mechanics' (fem3_solid.cpp).
+std::unique_ptr<Problem3> makeSolidProblem3(Solution3& solution, int field);
+
+/// A semiconductor's (fem3_semiconductor.cpp).
+std::unique_ptr<Problem3> makeSemiconductorProblem3(Solution3& solution, int field);
+
+/// A semiconductor's small-signal admittance at \a frequency (Hz) about its
+/// solution: Y[k][l] its contact k's current per volt at contact l.
+bool semiconductorSmallSignal3(Problem3& problem, double frequency, std::vector<std::vector<std::complex<double>>>* Y, QStringList* names,
+                               QString* error);
+
+/// A magnetic field's (fem3_magnetic.cpp).
+std::unique_ptr<Problem3> makeMagneticProblem3(Solution3& solution, int field);
+
+/// A magnetic field at a point: A (Wb/m), B = ∇ × A (T), H (A/m), its
+/// energy density (J/m³: ½ H·(B - Br), or ∫ H dB on a B-H curve) and its
+/// relative permeability (a tensor's diagonal's mean; a curve's B/(µ0 H)).
+struct MagneticState {
+    double A[3] = {0, 0, 0}, B[3] = {0, 0, 0}, H[3] = {0, 0, 0};
+    double energy = 0;
+    double mur = 1;
+};
+/// Field \a f's (a magnetic field's) at \a ev's point; false where it is
+/// not solved.
+bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out);
+
+/// The outward normal of mesh face \a face at its point \a fp, from the
+/// prism beside it: a floor's ±z, a wall's from its triangle's edge (exact
+/// on an order 2 arc).
+Vec3 outwardNormal3(const Space3& space, const Mesh3::Face& face, const Space3::FacePoint& fp);
+
+/// A piezoelectric solid's stress constants e (3 x 6, Voigt's) in a 3D
+/// model's axes: its feature's own, or its material's - e, or d C - turned
+/// by its orientation. None, and why.
+std::optional<VoigtText> piezoMatrix3(const Scope& params, const Node& feature, const Node* material, QString* why);
+
+/// A solid's state at a point: its strain (Voigt's order xx, yy, zz, yz, xz,
+/// xy, engineering shears), its stress σ = C (ε - ε0) - eᵀE (Pa) and its
+/// strain energy density ½ (ε - ε0)·C (ε - ε0).
+struct SolidState {
+    double strain[6] = {0, 0, 0, 0, 0, 0};
+    double stress[6] = {0, 0, 0, 0, 0, 0};
+    double energy = 0;
+};
+/// Field \a f's (a solid's) at \a ev's point; false where it is not solved.
+bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out);
 
 } // namespace qucs_s::fem::detail3
 

@@ -94,8 +94,8 @@ Multiphysics3DPanel::Multiphysics3DPanel(QWidget* parent) : QWidget(parent)
         auto* about = new QLabel(tr("A 3D finite element model: its solids - boxes and cylinders along z, sketches extruded "
                                     "(rectangles, circles, polygons, a drawing's or a layout's shapes), a chip's layer stack over a "
                                     "layout -, united, cut and intersected, made one into domains, faces, edges and points; its "
-                                    "materials, and its mesh of prisms swept from a mesh of its plan. Solving in 3D (heat, "
-                                    "electrostatics, currents) comes next. Open a model (.qfem3d) to see its tree here."),
+                                    "materials, and its mesh of prisms swept from a mesh of its plan; heat, electrostatics, currents, "
+                                    "solid mechanics and light solved on it. Open a model (.qfem3d) to see its tree here."),
                                  a_start);
         about->setWordWrap(true);
         about->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);

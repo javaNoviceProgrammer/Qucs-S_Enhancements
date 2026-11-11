@@ -23,6 +23,7 @@
 #include "fem_fe.h"
 
 #include <QHash>
+#include <QJsonValue>
 #include <QMap>
 
 #include <array>
@@ -135,6 +136,10 @@ private:
     int segment(double b) const;
     std::vector<double> a_b, a_h, a_m, a_w;   // the points, H's slopes there, the energy to them
 };
+/// A B-H curve as a material or a feature gives it: a table of rows [B, H]
+/// (numbers in T and A/m, or with units), or text "0 0; 0.5 120; 1 300".
+/// Null, and why.
+std::shared_ptr<const BHCurve> bhCurveOf(const QJsonValue& value, const Scope& scope, QString* error = nullptr);
 
 /// A variable an expression may use where a solution is evaluated.
 struct Variable {
