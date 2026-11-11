@@ -1575,13 +1575,25 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             Eigen::VectorXcd x;
             if (coupled) {
                 beta = shift * (1.0 + 1.0 / r.values[i]);
-                // (K0's null space - Ez alone, β nought - is no mode.)
-                if (std::abs(beta) < 1e-4 * k0) continue;
+                // (K0's null space - Ez alone, β nought - is no mode: its
+                // eigenvalues found to the search's accuracy about its shift,
+                // a thousandth of it here as below.)
+                if (std::abs(beta) < 1e-3 * std::abs(shift)) continue;
                 x = r.vectors[i].head(a_n);
             } else {
                 const cd lambda = sigma + 1.0 / r.values[i];
-                // (The null space of A - its Ez alone, λ nought - is no mode.)
-                if (std::abs(lambda) < 1e-8 * k0 * k0) continue;
+                // (The null space of A - its Ez alone, λ nought - is no mode.
+                // A cluster of many, between the propagating modes and the
+                // evanescent: its λ found to the search's accuracy about the
+                // shift - some 1e-9 of σ, by rounding that differs from run
+                // to run with the factorization's threads -, not to k0²'s:
+                // one at 1.35e-8 k0² (σ 12 k0²) passed a bound of 1e-8 k0²
+                // now and then, a port's mode of n_eff 4e-5 - 1e-4j, its field
+                // at 1 W enormous, a junction's every S 1e-3 off. Within
+                // 1e-6 of σ - |n_eff| a thousandth of the index searched
+                // about: at its cutoff, no mode a port can take either -,
+                // none.)
+                if (std::abs(lambda) < 1e-6 * std::abs(sigma)) continue;
                 beta = std::sqrt(-lambda);
                 if (beta.real() < 0) beta = -beta;
                 x = r.vectors[i];
