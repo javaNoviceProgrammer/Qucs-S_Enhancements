@@ -9,11 +9,13 @@
  * changes; saved under another name - copied, or converted; printed; a
  * file that is no picture refused; and every command of the Edit,
  * Positioning, Insert, Simulation and View menus used with it in front -
- * none of them may take it for a schematic.
+ * none of them may take it for a schematic. Drawn on with the pen, and
+ * what it drew read by Claude's tools and told with each prompt.
  */
 #include <QtTest>
 #include <QAction>
 #include <QApplication>
+#include <QBoxLayout>
 #include <QBuffer>
 #include <QClipboard>
 #include <QComboBox>
@@ -21,6 +23,9 @@
 #include <QDialog>
 #include <QImageReader>
 #include <QImageWriter>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QMimeData>
@@ -41,6 +46,7 @@
 #include "menu_owner_close.h"
 #include "isolated_settings.h"
 #include "main.h"
+#include "markup.h"
 #include "misc.h"
 #include "module.h"
 #include "qucs.h"
@@ -49,6 +55,7 @@
 #include "textdoc.h"
 
 using qucs_s::image::ImageView;
+namespace markup = qucs_s::markup;
 
 namespace {
 
@@ -1075,6 +1082,386 @@ private slots:
         QVERIFY(near(page.pixelColor(400, 100), kRed));
         QVERIFY(near(page.pixelColor(400, 900), kBlue));
         v->rotateLeft();
+    }
+
+    // The pen, as the other viewers have it (docs/feature_gaps/
+    // 2026-11-11-image-pen.md): first of the toolbar's right-hand group;
+    // taken up, a drag over the picture draws on it in its pixels - before
+    // a part is selected -, as broad as the pen at the zoom it is drawn
+    // at; zoomed and turned with the picture, no further than its edge; a
+    // double click two dots, not a zoom; the middle button still moves the
+    // view; Ctrl+Z and the eraser; copied and printed with it, never
+    // written into a file; Escape puts the pen down; kept when the file is
+    // read again; the menu clears it.
+    void thePenDrawsOnThePicture()
+    {
+        const QString file = dir.filePath("ws/pen.png");
+        QVERIFY(probe().save(file));
+        ImageDoc* d = open(file);
+        QVERIFY(d != nullptr && d->penButton() != nullptr);
+        // Where it is: first after the stretch, before the background's.
+        auto* bar = d->findChild<QWidget*>(QStringLiteral("imageToolbar"));
+        QVERIFY(bar != nullptr);
+        auto* row = qobject_cast<QBoxLayout*>(bar->layout());
+        QVERIFY(row != nullptr);
+        QToolButton* background = nullptr;
+        for (QToolButton* b : bar->findChildren<QToolButton*>())
+            if (b->toolTip().contains(QStringLiteral("transparent parts"))) background = b;
+        QVERIFY(background != nullptr);
+        const int at = row->indexOf(d->penButton());
+        QVERIFY(at > 0);
+        QCOMPARE(row->indexOf(background), at + 1);
+        QVERIFY(row->itemAt(at - 1)->spacerItem() != nullptr);
+        QVERIFY(d->penButton()->isVisible());
+
+        const QColor orange(0xff, 0x80, 0x00);
+        markup::Pen pen;
+        pen.color = orange;
+        pen.width = 6;
+        markup::setCurrentPen(pen);
+        ImageView* view = d->view();
+        view->setTurns(0);
+        view->setZoom(4.0);
+        QApplication::processEvents();
+        QWidget* port = view->viewport();
+        const auto send = [port](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, pos, port->mapToGlobal(pos), button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(port, &e);
+        };
+        const auto drag = [&send, view](QPointF from, QPointF to, Qt::MouseButton button = Qt::LeftButton) {
+            // (Picture pixels, to the viewport as it is when each event goes.)
+            send(QEvent::MouseButtonPress, view->toViewport(from), button, button);
+            for (int i = 1; i <= 8; ++i) send(QEvent::MouseMove, view->toViewport(from + (to - from) * (i / 8.0)), Qt::NoButton, button);
+            send(QEvent::MouseButtonRelease, view->toViewport(to), button, Qt::NoButton);
+        };
+        d->penButton()->click();
+        QVERIFY(view->penActive() && d->penButton()->isChecked());
+        // Before the selection mode's drag: a stroke, no selection.
+        view->setSelecting(true);
+        drag(QPointF(5, 22.5), QPointF(35, 22.5));
+        view->setSelecting(false);
+        QVERIFY(view->selection().isEmpty());
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        const markup::Stroke stroke = view->drawing().strokes().first();
+        QCOMPARE(stroke.on, QStringLiteral("1"));
+        QVERIFY2(QLineF(stroke.points.first(), QPointF(5, 22.5)).length() < 1e-3 && QLineF(stroke.points.last(), QPointF(35, 22.5)).length() < 1e-3,
+                 qPrintable(QStringLiteral("%1, %2").arg(stroke.points.first().x()).arg(stroke.points.first().y())));
+        QCOMPARE(stroke.width, 1.5);   // the pen's 6 pixels at 400%
+        // On screen where it was drawn - 3 pixels of the screen either side
+        // of its line -, and zoomed with the picture: twice as broad at 800%.
+        const auto screenAt = [view](const QImage& screen, QPointF point) {
+            return screen.pixelColor((view->toViewport(point) * screen.devicePixelRatio()).toPoint());
+        };
+        QImage screen = shot(view);
+        QVERIFY2(near(screenAt(screen, QPointF(10, 22.5)), orange), qPrintable(describe(screenAt(screen, QPointF(10, 22.5)))));
+        QVERIFY(near(screenAt(screen, QPointF(10, 24.5)), kBlue));
+        grab("pen");
+        view->setZoom(8.0);
+        QApplication::processEvents();
+        screen = shot(view);
+        QVERIFY(near(screenAt(screen, QPointF(10, 23.1)), orange));
+        QVERIFY(!near(screenAt(screen, QPointF(10, 23.8)), orange, 60));
+        // Past the picture's right edge a stroke goes on, drawn no further.
+        drag(QPointF(30, 5.5), QPointF(46, 5.5));
+        QCOMPARE(view->drawing().strokes().size(), 2);
+        screen = shot(view);
+        QVERIFY(near(screenAt(screen, QPointF(38, 5.5)), orange));
+        QVERIFY(!near(screenAt(screen, QPointF(43, 5.5)), orange, 60));
+        QVERIFY(view->undoDrawing());
+        // Beside the picture a press draws nothing.
+        drag(QPointF(-10, 5), QPointF(-5, 5));
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // Turned with the picture: a quarter clockwise, where the turned
+        // picture has it, and not where the picture unturned had it.
+        view->setZoom(4.0);
+        d->rotateRight();
+        QApplication::processEvents();
+        screen = shot(view);
+        QVERIFY(near(screenAt(screen, QPointF(10, 22.5)), orange));
+        const QPointF unturned = view->pictureRect().topLeft() + QPointF(10, 22.5) * view->zoom();
+        QVERIFY(!near(screen.pixelColor((unturned * screen.devicePixelRatio()).toPoint()), orange, 60));
+        d->rotateLeft();
+        // A double click is two presses of the pen: two dots, the zoom left.
+        const QPointF dot = view->toViewport(QPointF(20, 8));
+        send(QEvent::MouseButtonPress, dot, Qt::LeftButton, Qt::LeftButton);
+        send(QEvent::MouseButtonRelease, dot, Qt::LeftButton, Qt::NoButton);
+        send(QEvent::MouseButtonDblClick, dot, Qt::LeftButton, Qt::LeftButton);
+        send(QEvent::MouseButtonRelease, dot, Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(view->zoom(), 4.0);
+        QCOMPARE(view->drawing().strokes().size(), 3);
+        // Ctrl+Z, pressed: the pen's.
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // The middle button moves the view, and draws nothing.
+        view->setZoom(40.0);
+        QApplication::processEvents();
+        QVERIFY(view->horizontalScrollBar()->maximum() > 0);
+        const int scrolled = view->horizontalScrollBar()->value();
+        const QPointF middle = QRectF(port->rect()).center();
+        send(QEvent::MouseButtonPress, middle, Qt::MiddleButton, Qt::MiddleButton);
+        send(QEvent::MouseMove, middle + QPointF(-120, 0), Qt::NoButton, Qt::MiddleButton);
+        send(QEvent::MouseButtonRelease, middle + QPointF(-120, 0), Qt::MiddleButton, Qt::NoButton);
+        QCOMPARE(view->horizontalScrollBar()->value(), scrolled + 120);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        view->setZoom(4.0);
+        QApplication::processEvents();
+        // The eraser across the line, and the erasing undone.
+        pen.tool = markup::Tool::Eraser;
+        markup::setCurrentPen(pen);
+        drag(QPointF(20, 18), QPointF(20, 27));
+        QVERIFY(view->drawing().isEmpty());
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        pen.tool = markup::Tool::Pen;
+        markup::setCurrentPen(pen);
+        // Copied with it, a picture's pixel to a pixel; and printed (800
+        // wide: 20 a pixel of it).
+        d->copyImage();
+        const QImage copied = QApplication::clipboard()->image();
+        QVERIFY2(near(copied.pixelColor(10, 22), orange, 40), qPrintable(describe(copied.pixelColor(10, 22))));
+        QVERIFY(near(copied.pixelColor(10, 25), kBlue));
+        {
+            QPrinter printer(QPrinter::HighResolution);
+            QImage page(800, 1000, QImage::Format_RGB32);
+            page.fill(Qt::white);
+            {
+                QPainter painter(&page);
+                d->print(&printer, &painter, true, true);
+            }
+            QVERIFY2(near(page.pixelColor(200, 450), orange, 40), qPrintable(describe(page.pixelColor(200, 450))));
+            QVERIFY(near(page.pixelColor(200, 520), kBlue));
+        }
+        // Never written into a file: the picture as in the file, a copy of
+        // it, one converted.
+        QVERIFY(near(d->filePicture().pixelColor(10, 22), kBlue));
+        const QString copy = dir.filePath("ws/pen-copy.png");
+        QVERIFY(app->saveDocumentAs(d, copy));
+        QCOMPARE(readBytes(copy), readBytes(file));
+        const QString bmp = dir.filePath("ws/pen-converted.bmp");
+        QVERIFY(app->saveDocumentAs(d, bmp));
+        QVERIFY(near(QImage(bmp).pixelColor(10, 22), kBlue));
+        // Escape puts the pen down.
+        QTest::keyClick(view, Qt::Key_Escape);
+        QVERIFY(!view->penActive() && !d->penButton()->isChecked());
+        // Kept when the file is read again (converted, it was).
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QVERIFY(d->reload());
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // The pen's menu: the picture's cleared; all of them.
+        QAction* clearHere = nullptr;
+        QAction* clearAll = nullptr;
+        QAction* undo = nullptr;
+        for (QAction* a : d->penButton()->penMenu()->actions()) {
+            if (a->text() == QStringLiteral("Clear the Drawings on This Picture")) clearHere = a;
+            if (a->text() == QStringLiteral("Clear All the Drawings")) clearAll = a;
+            if (a->text().startsWith(QStringLiteral("Undo"))) undo = a;
+        }
+        QVERIFY(clearHere != nullptr && clearAll != nullptr && undo != nullptr);
+        QVERIFY(clearHere->isEnabled() && clearAll->isEnabled());
+        clearHere->trigger();
+        QVERIFY(view->drawing().isEmpty());
+        QVERIFY(!clearHere->isEnabled() && !clearAll->isEnabled() && undo->isEnabled());
+        undo->trigger();
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        clearAll->trigger();
+        QVERIFY(view->drawing().isEmpty());
+        markup::setCurrentPen(markup::Pen());
+        app->slotFileClose(app->DocumentTab->currentIndex());
+    }
+
+    // What the pen drew on a picture, as Claude has it: show_picture takes
+    // the pen up and down, clears and marks strokes addressed; send_input's
+    // 'target' picture draws as the mouse does, in the picture's pixels;
+    // read_drawings and a prompt's note read each stroke - its gesture,
+    // box and points, an arrow's tip and tail, nothing of what is under it
+    // -, the note once a change; both tools in every turn while it is drawn
+    // on.
+    void whatThePenDrewIsReadByClaude()
+    {
+        const QString file = dir.filePath("ws/marked.png");
+        QVERIFY(probe().save(file));
+        auto* control = app->findChild<QucsControl*>();
+        QVERIFY(control != nullptr);
+        const auto call = [control](const QString& tool, const QJsonObject& args) { return control->callNow(tool, args, 30000); };
+        const auto json = [](const QJsonObject& r) { return QJsonDocument::fromJson(QucsControl::textOf(r).section(QLatin1Char('\n'), 0, 0).toUtf8()).object(); };
+        const auto failed = [](const QJsonObject& r) { return r.value("isError").toBool(); };
+        QVERIFY(failed(call("show_picture", {{"path", "nothing.png"}})));
+        QJsonObject r = call("show_picture", {{"path", "marked.png"}, {"pen", true}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        ImageDoc* d = doc();
+        QVERIFY(d != nullptr && misc::isSameFile(d->getDocName(), file));
+        ImageView* view = d->view();
+        QVERIFY(view->penActive() && d->penButton()->isChecked());
+        QJsonObject o = json(r);
+        QCOMPARE(o.value("size").toString(), QStringLiteral("40 × 30 pixels"));
+        QVERIFY2(o.value("pen").toString().startsWith(QStringLiteral("taken up")), qPrintable(o.value("pen").toString()));
+        QVERIFY(control->inEveryTurn().contains("show_picture"));
+        QVERIFY(!control->inEveryTurn().contains("read_drawings"));
+        // Refused, nothing done.
+        QVERIFY(failed(call("show_picture", {{"pen", "down"}})));
+        QVERIFY(failed(call("show_picture", {{"drawings", "erase"}})));
+        QVERIFY(failed(call("show_picture", {{"addressed", QJsonArray{0}}})));
+        QVERIFY(view->penActive());
+
+        view->setTurns(0);
+        view->setZoom(4.0);
+        QApplication::processEvents();
+        // A ring round the middle of the green quarter, drawn by the mouse.
+        QJsonArray ring;
+        for (int k = 1; k <= 36; ++k) ring.append(QJsonArray{30 + 6 * std::cos(2 * M_PI * k / 36), 7 + 5 * std::sin(2 * M_PI * k / 36)});
+        r = call("send_input", {{"target", "picture"}, {"click", QJsonArray{36, 7}}, {"drag_through", ring}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        o = json(r);
+        QCOMPARE(o.value("on").toString(), QStringLiteral("marked.png"));
+        QVERIFY2(QucsControl::textOf(r).contains(QStringLiteral("of its pixels as in the file")), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(o.value("drawn").toArray().size(), 1);
+        QJsonObject drawn = o.value("drawn").toArray().at(0).toObject();
+        QCOMPARE(drawn.value("drawn as").toString(), QStringLiteral("ring"));
+        QVERIFY(!drawn.contains("frame"));
+        const QJsonArray box = drawn.value("box").toArray();
+        QVERIFY2(box.size() == 4 && std::abs(box.at(0).toDouble() - 24) < 1 && std::abs(box.at(1).toDouble() - 2) < 1
+                     && std::abs(box.at(2).toDouble() - 36) < 1 && std::abs(box.at(3).toDouble() - 12) < 1,
+                 qPrintable(QString::fromUtf8(QJsonDocument(box).toJson(QJsonDocument::Compact))));
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QVERIFY(QLineF(view->drawing().strokes().first().points.first(), QPointF(36, 7)).length() <= 1 / view->zoom());
+        // An arrow drawn at one go, out to its tip and back along a barb:
+        // its tip and its tail.
+        QJsonArray arrow;
+        for (const QPointF& p : {QPointF(10, 22.5), QPointF(15, 20), QPointF(13, 18.2)}) arrow.append(QJsonArray{p.x(), p.y()});
+        r = call("send_input", {{"target", "picture"}, {"click", QJsonArray{5, 25}}, {"drag_through", arrow}});
+        drawn = json(r).value("drawn").toArray().at(0).toObject();
+        QCOMPARE(drawn.value("drawn as").toString(), QStringLiteral("arrow"));
+        const QJsonArray tip = drawn.value("tip").toArray(), tail = drawn.value("tail").toArray();
+        QVERIFY2(tip.size() == 2 && std::abs(tip.at(0).toDouble() - 15) < 0.3 && std::abs(tip.at(1).toDouble() - 20) < 0.3,
+                 qPrintable(QString::fromUtf8(QJsonDocument(drawn).toJson(QJsonDocument::Compact))));
+        QVERIFY(tail.size() == 2 && std::abs(tail.at(0).toDouble() - 5) < 0.3 && std::abs(tail.at(1).toDouble() - 25) < 0.3);
+        QVERIFY(control->inEveryTurn().contains("read_drawings"));
+        // read_drawings: in the picture's pixels, with the points.
+        r = call("read_drawings", {{"path", "marked.png"}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        const QJsonObject one = json(r).value("documents").toArray().at(0).toObject();
+        QVERIFY2(one.value("measures").toString().contains(QStringLiteral("pixels")) && one.value("measures").toString().contains(QStringLiteral("40 × 30"))
+                     && one.value("measures").toString().contains(QStringLiteral("not known")),
+                 qPrintable(one.value("measures").toString()));
+        QCOMPARE(one.value("strokes").toArray().size(), 2);
+        QVERIFY(!one.value("strokes").toArray().at(0).toObject().value("points").toArray().isEmpty());
+        bool listed = false;
+        for (const QJsonValue& v : json(call("read_drawings", {})).value("documents").toArray())
+            listed = listed || v.toObject().value("document").toString() == QStringLiteral("marked.png");
+        QVERIFY(listed);
+        QVERIFY(failed(call("read_drawings", {{"path", "elsewhere.png"}})));
+        // A prompt's note: a sentence a stroke, the pen still up; once.
+        auto [revision, told] = app->drawingsOf(d->getDocName(), 0);
+        QVERIFY(revision > 0);
+        QVERIFY2(told.contains(QStringLiteral("the picture, stroke 1: a ")) && told.contains(QStringLiteral(" ring ("))
+                     && told.contains(QStringLiteral("the picture, stroke 2: a ")) && told.contains(QStringLiteral("arrow"))
+                     && told.contains(QStringLiteral("its tip at (15, 20)")) && told.contains(QStringLiteral(" pixels)"))
+                     && told.contains(QStringLiteral("not known: screenshot shows it"))
+                     && told.contains(QStringLiteral("show_picture's pen: false puts it down")),
+                 qPrintable(told));
+        QVERIFY(app->drawingsOf(d->getDocName(), revision).second.isEmpty());
+        // show_picture's answer reads them too; a stroke marked addressed is
+        // left out of the note, and named; one it does not have refused.
+        o = json(call("show_picture", {}));
+        QCOMPARE(o.value("drawings").toArray().size(), 2);
+        QVERIFY(o.value("measures").toString().contains(QStringLiteral("pixels")));
+        r = call("show_picture", {{"addressed", QJsonArray{7}}});
+        QVERIFY2(failed(r) && QucsControl::textOf(r).contains(QStringLiteral("its strokes: 1, 2")), qPrintable(QucsControl::textOf(r)));
+        r = call("show_picture", {{"addressed", QJsonArray{1}}});
+        QVERIFY2(json(r).value("done").toString().contains(QStringLiteral("1 stroke(s) marked addressed")), qPrintable(QucsControl::textOf(r)));
+        QVERIFY(view->drawing().strokes().first().addressed);
+        told = app->drawingsOf(d->getDocName(), revision).second;
+        QVERIFY2(!told.contains(QStringLiteral("the picture, stroke 1:")) && told.contains(QStringLiteral("the picture, stroke 2:"))
+                     && told.contains(QStringLiteral("(1 stroke(s) marked addressed, left out: the picture stroke 1)")),
+                 qPrintable(told));
+        QVERIFY(!failed(call("show_picture", {{"addressed", "none"}})));
+        QVERIFY(!view->drawing().strokes().first().addressed);
+        // Its keys, through send_input: Ctrl+Z undoes a change at a time -
+        // the marks taken away, then made, then the arrow drawn -; Escape
+        // puts the pen down - a drag then draws nothing.
+        r = call("send_input", {{"target", "picture"}, {"keys", "Ctrl+Z"}});
+        QVERIFY(view->drawing().strokes().first().addressed);
+        r = call("send_input", {{"target", "picture"}, {"keys", "Ctrl+Z, Ctrl+Z"}});
+        QVERIFY2(json(r).value("taken away").toString().startsWith(QStringLiteral("1 of the pen's")), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QVERIFY(!view->drawing().strokes().first().addressed);
+        QVERIFY(!failed(call("send_input", {{"target", "picture"}, {"keys", "Escape"}})));
+        QVERIFY(!view->penActive() && !d->penButton()->isChecked());
+        r = call("send_input", {{"target", "picture"}, {"click", QJsonArray{5, 5}}, {"drag_to", QJsonArray{30, 5}}});
+        QVERIFY2(!failed(r) && !json(r).contains("drawn"), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // Cleared; the pen taken up and put down again.
+        o = json(call("show_picture", {{"drawings", "clear"}, {"pen", true}}));
+        QVERIFY(view->drawing().isEmpty() && view->penActive());
+        QCOMPARE(o.value("drawings").toString(), QStringLiteral("nothing is drawn on the picture"));
+        QVERIFY(!failed(call("show_picture", {{"pen", false}})));
+        QVERIFY(!view->penActive());
+        QVERIFY(!control->inEveryTurn().contains("show_picture") && !control->inEveryTurn().contains("read_drawings"));
+        app->slotFileClose(app->DocumentTab->currentIndex());
+    }
+
+    // A file of several pictures is drawn on picture by picture: each
+    // frame's strokes its own, read and told with the frame; an
+    // animation's strokes on the whole of it.
+    void severalPicturesAreDrawnOnOneByOne()
+    {
+        const QByteArray ico = icon({16, 32, 48});
+        if (ico.isEmpty()) QSKIP("This Qt writes no icons");
+        const QString file = dir.filePath("ws/drawn.ico");
+        QVERIFY(writeBytes(file, ico));
+        ImageDoc* d = open(file);
+        QVERIFY(d != nullptr && d->drawnByFrame());
+        ImageView* view = d->view();
+        d->setFrame(0);
+        QCOMPARE(view->part(), QStringLiteral("1"));
+        view->setZoom(8.0);
+        QApplication::processEvents();
+        auto* control = app->findChild<QucsControl*>();
+        QJsonObject r = control->callNow("show_picture", {{"pen", true}}, 30000);
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        r = control->callNow("send_input", {{"target", "picture"}, {"click", QJsonArray{2, 8}}, {"drag_to", QJsonArray{14, 8}}}, 30000);
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(view->drawing().count(QStringLiteral("1")), 1);
+        QCOMPARE(d->readDrawing().size(), 1);
+        QCOMPARE(d->readDrawing().at(0).toObject().value("frame").toInt(), 1);
+        QVERIFY2(d->drawingSentences().startsWith(QStringLiteral("frame 1, stroke 1: a ")), qPrintable(d->drawingSentences()));
+        // Another frame: none of the first's drawn or cleared there.
+        d->setFrame(1);
+        QCOMPARE(view->part(), QStringLiteral("2"));
+        QAction* clearHere = nullptr;
+        for (QAction* a : d->penButton()->penMenu()->actions())
+            if (a->text() == QStringLiteral("Clear the Drawings on This Picture")) clearHere = a;
+        QVERIFY(clearHere != nullptr && !clearHere->isEnabled());
+        QVERIFY(control->callNow("show_picture", {{"addressed", QJsonArray{1}}}, 30000).value("isError").toBool());
+        markup::Stroke second = view->drawing().strokes().first();
+        second.on = QStringLiteral("2");
+        view->addStroke(second);
+        QVERIFY(clearHere->isEnabled());
+        clearHere->trigger();
+        QCOMPARE(view->drawing().count(QStringLiteral("2")), 0);
+        QCOMPARE(view->drawing().count(QStringLiteral("1")), 1);
+        d->setFrame(0);
+        QVERIFY(clearHere->isEnabled());
+        QVERIFY(!control->callNow("show_picture", {{"pen", false}, {"drawings", "clear"}}, 30000).value("isError").toBool());
+        app->slotFileClose(app->DocumentTab->currentIndex());
+
+        QList<QImage> frames;
+        for (const QColor& c : {kRed, kGreen}) {
+            QImage f(12, 8, QImage::Format_RGB32);
+            f.fill(c);
+            frames << f;
+        }
+        const QString gifFile = dir.filePath("ws/drawn.gif");
+        QVERIFY(writeBytes(gifFile, gif(frames, {60, 60})));
+        ImageDoc* a = open(gifFile);
+        QVERIFY(a != nullptr && a->isAnimated() && !a->drawnByFrame());
+        QCOMPARE(a->partOf(0), QStringLiteral("1"));
+        QCOMPARE(a->partOf(1), QStringLiteral("1"));
+        a->setPlaying(false);
+        a->setFrame(1);
+        QCOMPARE(a->view()->part(), QStringLiteral("1"));
+        app->slotFileClose(app->DocumentTab->currentIndex());
     }
 
     // Closed like any document.

@@ -1,0 +1,50 @@
+breaks.py, 11 November, the first run (build-rel, Release, macOS; each test in ctest's environment for test_image_doc):
+
+===== what each break did =====
+ 1 the pen not in the toolbar                                   thePenDrawsOnThePicture failed at line 1112 (caught)
+ 2 the button not taking the pen up                             thePenDrawsOnThePicture failed at line 1138 (caught)
+ 3 the pen not first on a press: the selection's drag           thePenDrawsOnThePicture failed at line 1143 (caught)
+ 4 the strokes not painted                                      thePenDrawsOnThePicture failed at line 1156 (caught)
+ 5 the strokes not turned with the picture                      thePenDrawsOnThePicture failed at line 1180 (caught)
+ 6 the strokes drawn past the picture's edge                    thePenDrawsOnThePicture failed at line 1169 (caught)
+ 7 a stroke as broad in the picture's pixels as on the screen   thePenDrawsOnThePicture failed at line 1149 (caught)
+ 8 a press beside the picture drawing                           thePenDrawsOnThePicture failed at line 1173 (caught)
+ 9 a double click with the pen up a zoom                        thePenDrawsOnThePicture failed at line 1190 (caught)
+10 the middle button drawing with the pen up                    thePenDrawsOnThePicture failed at line 1205 (caught)
+11 Ctrl+Z not the pen's                                         thePenDrawsOnThePicture failed at line 1195 (caught); whatThePenDrewIsReadByClaude failed at line 1384 (caught)
+12 Ctrl+Z not claimed before the window's shortcuts             thePenDrawsOnThePicture PASSED - NOT CAUGHT; whatThePenDrewIsReadByClaude PASSED - NOT CAUGHT
+13 Escape not putting the pen down                              thePenDrawsOnThePicture failed at line 1246 (caught); whatThePenDrewIsReadByClaude failed at line 1390 (caught)
+14 Escape left to the window's shortcuts                        thePenDrawsOnThePicture failed at line 1246 (caught)
+15 the eraser not erasing                                       thePenDrawsOnThePicture failed at line 1213 (caught)
+16 a copy without the strokes                                   thePenDrawsOnThePicture failed at line 1222 (caught)
+17 a print without the strokes                                  thePenDrawsOnThePicture failed at line 1232 (caught)
+18 the strokes written into the file (Save As)                  thePenDrawsOnThePicture failed at line 1237 (caught)
+19 the strokes dropped when the file is read again              thePenDrawsOnThePicture failed at line 1248 (caught)
+20 the pen's menu not told of the drawing                       thePenDrawsOnThePicture failed at line 1264 (caught)
+21 the menu's Clear the Drawings on This Picture clearing every severalPicturesAreDrawnOnOne failed at line 1443 (caught)
+22 a frame shown, the strokes kept on the one before            severalPicturesAreDrawnOnOne failed at line 1417 (caught)
+23 an animation's frames drawn on one by one                    severalPicturesAreDrawnOnOne failed at line 1460 (caught)
+24 a prompt not told what was drawn on a picture                whatThePenDrewIsReadByClaude failed at line 1356 (caught)
+25 a prompt not told the pen is still up                        whatThePenDrewIsReadByClaude failed at line 1362 (caught)
+26 a prompt telling the strokes marked addressed                whatThePenDrewIsReadByClaude failed at line 1377 (caught)
+27 a prompt not saying what a picture's measures are            whatThePenDrewIsReadByClaude failed at line 1362 (caught)
+28 an arrow's tip and tail not read                             whatThePenDrewIsReadByClaude failed at line 1337 (caught)
+29 a stroke's frame not read                                    severalPicturesAreDrawnOnOne failed at line 1427 (caught)
+30 read_drawings not reading a picture                          whatThePenDrewIsReadByClaude failed at line 1346 (caught)
+31 read_drawings not saying a picture's measures                whatThePenDrewIsReadByClaude failed at line 1346 (caught)
+32 show_picture not taking the pen up                           whatThePenDrewIsReadByClaude failed at line 1295 (caught)
+33 show_picture not clearing the drawings                       whatThePenDrewIsReadByClaude failed at line 1396 (caught)
+34 show_picture marking a stroke the picture has not            whatThePenDrewIsReadByClaude failed at line 1370 (caught)
+35 show_picture not marking strokes addressed                   whatThePenDrewIsReadByClaude failed at line 1372 (caught)
+36 show_picture not saying what was drawn                       whatThePenDrewIsReadByClaude failed at line 1367 (caught)
+37 send_input not reaching a picture                            whatThePenDrewIsReadByClaude failed at line 1314 (caught)
+38 send_input's points not a picture's pixels                   whatThePenDrewIsReadByClaude failed at line 1314 (caught)
+39 send_input not saying what it drew on a picture              whatThePenDrewIsReadByClaude failed at line 1318 (caught)
+40 show_picture not in every turn while a picture's pen is up   whatThePenDrewIsReadByClaude failed at line 1299 (caught)
+41 read_drawings not in every turn while a picture is drawn on  whatThePenDrewIsReadByClaude failed at line 1339 (caught)
+
+1 of 41 uncaught (a break with two tests is caught when either fails)
+
+Break 12 showed that the view's claim of Ctrl+Z ahead of the window's shortcuts did nothing: the window's Undo is off
+while a picture is in front, and Ctrl+Z reached the view without it (as the presentation's pen found on 2 November).
+The claim was taken out, and break 12 with it: breaks.py now holds 40, numbered from 12 on one less than above.

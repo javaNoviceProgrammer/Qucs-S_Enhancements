@@ -1,7 +1,8 @@
 /*
  * imagedoc.h - a picture in a tab of Qucs-S: a PNG, a JPEG, an SVG - what
  *              Qt reads - zoomed and panned, turned, its pixels read, a
- *              part of it selected and copied, its frames played
+ *              part of it selected and copied, its frames played, drawn
+ *              on with the pen
  *
  * This file is part of Qucs-S.
  *
@@ -13,6 +14,7 @@
 #ifndef QUCS_IMAGEDOC_H
 #define QUCS_IMAGEDOC_H
 
+#include "markup.h"
 #include "qucsdoc.h"
 
 #include <QAbstractScrollArea>
@@ -66,7 +68,10 @@ QImage thumbnail(const QString& path, int side, QSize* size = nullptr);
  * with a drag in the selection mode, or with Shift and a drag.
  *
  * Its coordinates are the picture's pixels as they are in the file, not
- * turned: the selection's, the pointer's.
+ * turned: the selection's, the pointer's, the pen's strokes'. With the
+ * pen taken up, a drag over the picture draws on it with the pen in hand
+ * (markup.h), or erases, before it selects or moves the view; the strokes
+ * zoom, move and turn with the picture, drawn no further than its edge.
  */
 class ImageView : public QAbstractScrollArea
 {
@@ -110,6 +115,9 @@ public:
     void setFit(Fit fit);
     /// Shows \a rect (picture pixels) whole, as large as it goes.
     void showRect(const QRectF& rect);
+    /// Scrolls \a point (picture pixels) to the middle of the view, as far
+    /// as it goes, the zoom as it is.
+    void centerOn(QPointF point);
 
     /// Quarter turns clockwise, 0 to 3: the picture as it is shown, not
     /// the file.
@@ -143,6 +151,28 @@ public:
     /// The pixel at \a pos of the viewport; (-1, -1) off the picture.
     QPoint pixelAt(QPointF pos) const;
 
+    /// The pen taken up: a drag over the picture draws on it (the middle
+    /// button still moves the view).
+    bool penActive() const { return a_pen; }
+    void setPenActive(bool active);
+    /// What is drawn on the picture: strokes in its pixels as in the file,
+    /// on the part that was shown (part()).
+    const qucs_s::markup::Drawing& drawing() const { return a_drawing; }
+    /// What the strokes drawn now are kept on, and which are drawn: the
+    /// frame shown's number from 1 (ImageDoc::partOf()).
+    QString part() const { return a_part; }
+    void setPart(const QString& part);
+    /// A stroke added as though it was drawn (the tests).
+    void addStroke(const qucs_s::markup::Stroke& stroke);
+    /// The last change to the drawing undone; whether there was one.
+    bool undoDrawing();
+    /// The strokes on \a part taken away, or (empty) every one; whether
+    /// any were.
+    bool clearDrawing(const QString& part = QString());
+    /// The strokes on part() numbered \a ids marked addressed (drawn faded,
+    /// left out of what a prompt tells), or not; how many changed.
+    int setAddressed(const QList<int>& ids, bool addressed = true);
+
     /// How often an SVG was drawn, and at which scale (device pixels per
     /// pixel of it) the last time - for the tests.
     int svgRenders() const { return a_svgRenders; }
@@ -168,6 +198,9 @@ signals:
     void stepRequested(int by);
     /// Space: an animation played or stopped.
     void playRequested();
+    void penActiveChanged(bool active);
+    /// A stroke drawn, erased, undone or cleared, or marked addressed.
+    void drawingChanged();
 
 protected:
     bool event(QEvent* event) override;
@@ -205,6 +238,9 @@ private:
     const QImage& halved(int level);
     QPixmap checkers() const;
     QRect selectionFrom(QPointF a, QPointF b) const;
+    void eraseAt(QPointF pos);
+    /// A stroke being drawn let go, what an eraser took kept.
+    void endInking();
 
     QImage a_image;              // as read
     QImage a_paint;              // in a format drawn fast
@@ -233,6 +269,15 @@ private:
     QPoint a_panScroll;
     QPointF a_selectFrom;
     bool a_moved = false;
+
+    bool a_pen = false;
+    QString a_part = QStringLiteral("1");
+    qucs_s::markup::Drawing a_drawing;
+    qucs_s::markup::Stroke a_stroke;               // the one being drawn
+    bool a_inking = false;
+    bool a_erasing = false;
+    bool a_erased = false;
+    QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
 };
 
 } // namespace qucs_s::image
@@ -240,11 +285,15 @@ private:
 /*!
  * A picture in a tab: a toolbar (zoom, the turns, the selection mode, an
  * animation's or a file of several pictures' frames, the background, a
- * menu), the picture, and under it what it is - its format, size, colours
- * - with the pixel under the pointer and the selection. It is read, not
- * edited: Save As writes a copy, converted when its suffix is another
- * format's. When its file changes - a plot written again - it is read
- * again, the view kept. Opened for the suffixes of suffixes().
+ * menu, the pen), the picture, and under it what it is - its format,
+ * size, colours - with the pixel under the pointer and the selection. It
+ * is read, not edited: Save As writes a copy, converted when its suffix is
+ * another format's. When its file changes - a plot written again - it is
+ * read again, the view kept, and what the pen drew with it. Opened for the
+ * suffixes of suffixes().
+ *
+ * What the pen draws is the tab's, not the file's: it is copied and printed
+ * with the picture, never written into a file (Save As, converted or not).
  */
 class ImageDoc : public QFrame, public QucsDoc
 {
@@ -299,6 +348,23 @@ public:
     /// Reads the file again, the view kept.
     bool reload();
 
+    /// What frame \a frame's strokes are kept on: its number from 1 - an
+    /// animation's, all of them on 1, drawn over every frame.
+    QString partOf(int frame) const;
+    /// Whether its strokes are said by frame: a file of several pictures
+    /// not played (a TIFF's pages, an icon's sizes).
+    bool drawnByFrame() const { return frameCount() > 1 && !isAnimated(); }
+    /// What the pen drew read for Claude (markup::readPage(), with nothing
+    /// known of what is under it): each stroke in the order drawn, its
+    /// number, how it was drawn, its tool, colour and box in the picture's
+    /// pixels as in the file - an arrow's tip and tail too -, its frame
+    /// when drawnByFrame(), and (\a points) its points.
+    QJsonArray readDrawing(bool points = false) const;
+    /// The readings a sentence each, for a prompt: the latest \a most, the
+    /// earlier counted, those marked addressed left out and named.
+    QString drawingSentences(int most = 30) const;
+    qucs_s::markup::PenButton* penButton() const { return a_penButton; }
+
     // For the tests.
     QComboBox* zoomBox() const { return a_zoomBox; }
     QWidget* frameBar() const { return a_frameBar; }
@@ -342,6 +408,11 @@ private:
     void watch();
     void setBackground(qucs_s::image::ImageView::Background background);
     void setPixelGrid(bool shown);
+    /// The pen's menu as the drawing is.
+    void updatePen();
+    /// \a image (the picture as in the file, or \a part of it, \a scale
+    /// pixels to one of its) with what the pen drew on the frame shown.
+    void drawStrokes(QImage& image, const QRectF& part, qreal scale) const;
 
     QString a_source;   // the file it was read from
     QString a_format;
@@ -372,6 +443,7 @@ private:
     QToolButton* a_playButton = nullptr;
     QToolButton* a_nextButton = nullptr;
     QLabel* a_frameLabel = nullptr;
+    qucs_s::markup::PenButton* a_penButton = nullptr;
     QToolButton* a_backgroundButton = nullptr;
     QToolButton* a_menuButton = nullptr;
     QMenu* a_moreMenu = nullptr;
