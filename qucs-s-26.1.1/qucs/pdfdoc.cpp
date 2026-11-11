@@ -11,8 +11,10 @@
  */
 #include "pdfdoc.h"
 #include "plotdigitizer.h"
+#include "plotdigitizer_p.h"
 #include "plotdigitizerpanel.h"
 
+#include "apptheme.h"
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
 #include "rhicanvas.h"
@@ -26,6 +28,7 @@
 #include <QApplication>
 #include <QBoxLayout>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
@@ -35,6 +38,8 @@
 #include <QFileSystemWatcher>
 #include <QHeaderView>
 #include <QIconEngine>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -1062,6 +1067,16 @@ void PageView::paintPages(Surface& p, const QRect& visible)
                 p.drawImage(toViewport(i, at), over);
             }
         }
+        // The pen's strokes, over all.
+        if (!a_drawing.isEmpty() || a_inking) {
+            QPointF at;
+            const QRectF sight((shown.topLeft() - r.topLeft()) / pixelsPerPoint(), shown.size() / pixelsPerPoint());
+            QImage strokes = paintedStrokes(i, sight, scale, &at);
+            if (!strokes.isNull()) {
+                strokes.setDevicePixelRatio(dpr);
+                p.drawImage(toViewport(i, at), strokes);
+            }
+        }
     }
     if (pending) QTimer::singleShot(0, viewport(), qOverload<>(&QWidget::update));
 }
@@ -1179,6 +1194,25 @@ void PageView::mousePressEvent(QMouseEvent* event)
         return;
     }
     setFocus(Qt::MouseFocusReason);
+    // The pen up: a drag draws, or erases, before anything else takes it.
+    if (a_pen) {
+        if (a_inking || a_erasing) return;
+        const int page = pageAt(a_pressPos);
+        if (page < 0) return;
+        a_inkPage = page;
+        const markup::Pen pen = markup::currentPen();
+        if (pen.tool == markup::Tool::Eraser) {
+            a_erasing = true;
+            a_erased = false;
+            a_beforeErase = a_drawing.strokes();
+            eraseAt(event->position());
+        } else {
+            a_stroke = markup::begin(pen, partOf(page), toPage(page, event->position()), pixelsPerPoint());
+            a_inking = true;
+            viewport()->update();
+        }
+        return;
+    }
     if (a_tool != nullptr && a_tool->takesMouse()) {
         QPointF point;
         const int page = pageAt(a_pressPos, &point);
@@ -1209,6 +1243,23 @@ void PageView::mousePressEvent(QMouseEvent* event)
 void PageView::mouseMoveEvent(QMouseEvent* event)
 {
     const QPoint pos = event->position().toPoint();
+    // The pen and the eraser follow every move, the least of them too.
+    if (a_inking) {
+        if (QLineF(toViewport(a_inkPage, a_stroke.points.last()), event->position()).length() >= markup::LeastStep) {
+            a_stroke.points << toPage(a_inkPage, event->position());
+            viewport()->update();
+        }
+        return;
+    }
+    if (a_erasing) {
+        eraseAt(event->position());
+        return;
+    }
+    if (a_pen && a_drag != Drag::Pan) {
+        viewport()->setCursor(Qt::CrossCursor);
+        viewport()->setToolTip(QString());
+        return;
+    }
     if (a_tool != nullptr && a_drag != Drag::Pan && (a_tool->takesMouse() || a_toolDown)) {
         QPointF point;
         const int page = pageAt(pos, &point);
@@ -1247,6 +1298,17 @@ void PageView::mouseMoveEvent(QMouseEvent* event)
 
 void PageView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if ((a_inking || a_erasing) && event->button() == Qt::LeftButton) {
+        if (a_inking) a_drawing.add(a_stroke);
+        else if (a_erased) a_drawing.changed(a_beforeErase);
+        a_stroke = markup::Stroke();
+        a_inking = a_erasing = a_erased = false;
+        a_beforeErase.clear();
+        a_inkPage = -1;
+        viewport()->update();
+        emit drawingChanged();
+        return;
+    }
     if (a_toolDown && event->button() == Qt::LeftButton) {
         a_toolDown = false;
         QPointF point;
@@ -1271,6 +1333,11 @@ void PageView::mouseReleaseEvent(QMouseEvent* event)
 void PageView::mouseDoubleClickEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton) return;
+    // With the pen up a double click is two presses of it, not a word.
+    if (a_pen) {
+        mousePressEvent(event);
+        return;
+    }
     QPointF point;
     const int page = pageAt(event->position().toPoint(), &point);
     if (page >= 0) selectWordAt(page, point);
@@ -1283,8 +1350,108 @@ void PageView::setTool(PageTool* tool)
     viewport()->update();
 }
 
+void PageView::setPenActive(bool active)
+{
+    if (active == a_pen) return;
+    a_pen = active;
+    // Put down mid-stroke: the stroke let go, what an eraser took kept.
+    if (!active && (a_inking || a_erasing)) {
+        if (a_erasing && a_erased) a_drawing.changed(a_beforeErase);
+        a_inking = a_erasing = a_erased = false;
+        a_stroke = markup::Stroke();
+        a_inkPage = -1;
+        emit drawingChanged();
+    }
+    if (active) {
+        // (What a drag had begun is let go: the pen has the button now.)
+        a_drag = Drag::None;
+        a_toolDown = false;
+        viewport()->setCursor(Qt::CrossCursor);
+    } else {
+        viewport()->unsetCursor();
+    }
+    viewport()->update();
+    emit penActiveChanged(active);
+}
+
+void PageView::addStroke(const markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    a_drawing.add(stroke);
+    viewport()->update();
+    emit drawingChanged();
+}
+
+bool PageView::undoDrawing()
+{
+    if (!a_drawing.undo()) return false;
+    viewport()->update();
+    emit drawingChanged();
+    return true;
+}
+
+bool PageView::clearDrawing(int page)
+{
+    if (!a_drawing.clear(page < 0 ? QString() : partOf(page))) return false;
+    viewport()->update();
+    emit drawingChanged();
+    return true;
+}
+
+QPointF PageView::toPage(int page, QPointF pos) const
+{
+    return (pos - toViewport(page, QPointF(0, 0))) / pixelsPerPoint();
+}
+
+void PageView::eraseAt(QPointF pos)
+{
+    bool erased = false;
+    while (a_drawing.eraseAt(partOf(a_inkPage), toPage(a_inkPage, pos), markup::EraserReach / pixelsPerPoint())) erased = true;
+    if (erased) {
+        a_erased = true;
+        viewport()->update();
+        emit drawingChanged();
+    }
+}
+
+QImage PageView::paintedStrokes(int page, const QRectF& visible, qreal scale, QPointF* at) const
+{
+    QList<markup::Stroke> strokes = a_drawing.on(partOf(page));
+    if (a_inking && a_inkPage == page && !a_stroke.points.isEmpty()) strokes << a_stroke;
+    if (strokes.isEmpty()) return QImage();
+    // What of them is in sight alone (a page at 800% is not one image), a
+    // pixel more for a line drawn a pixel broad.
+    QRectF reach;
+    for (const markup::Stroke& st : std::as_const(strokes)) reach = reach.isNull() ? st.bounds() : reach.united(st.bounds());
+    const qreal ppp = pixelsPerPoint();
+    const qreal margin = 2 / ppp;
+    const QRectF area = reach.adjusted(-margin, -margin, margin, margin).intersected(visible);
+    if (area.isEmpty()) return QImage();
+    const QPointF corner(std::floor(area.left() * scale) / scale, std::floor(area.top() * scale) / scale);
+    const QSize size(int(std::ceil((area.right() - corner.x()) * scale)) + 1, int(std::ceil((area.bottom() - corner.y()) * scale)) + 1);
+    if (size.width() <= 0 || size.height() <= 0) return QImage();
+    QImage image(size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter p(&image);
+    // (In the screen's pixels, as the other viewers draw them: a pen as
+    // broad as it was, scaled to the device's after.)
+    p.scale(scale / ppp, scale / ppp);
+    markup::paint(p, strokes, [corner, ppp](QPointF pt) { return (pt - corner) * ppp; }, ppp);
+    p.end();
+    *at = corner;
+    return image;
+}
+
 bool PageView::event(QEvent* event)
 {
+    // Escape and Ctrl+Z, with the pen up, are its: before the window's.
+    if (event->type() == QEvent::ShortcutOverride && (a_pen || a_inking)) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if ((key->key() == Qt::Key_Escape && key->modifiers() == Qt::NoModifier) || (a_pen && key->matches(QKeySequence::Undo))) {
+            event->accept();
+            return true;
+        }
+    }
     // (Escape and Ctrl+Z are the window's too: the tool's first, while it is
     // at work, as the pens' are.)
     if (event->type() == QEvent::ShortcutOverride && a_tool != nullptr && a_tool->wantsKey(static_cast<QKeyEvent*>(event))) {
@@ -1296,6 +1463,22 @@ bool PageView::event(QEvent* event)
 
 void PageView::keyPressEvent(QKeyEvent* event)
 {
+    if (a_pen && event->matches(QKeySequence::Undo)) {
+        undoDrawing();
+        return;
+    }
+    // One thing at a time: the stroke being drawn, then the pen.
+    if (event->key() == Qt::Key_Escape && event->modifiers() == Qt::NoModifier && (a_inking || a_pen)) {
+        if (a_inking) {
+            a_inking = false;
+            a_stroke = markup::Stroke();
+            a_inkPage = -1;
+            viewport()->update();
+        } else {
+            setPenActive(false);
+        }
+        return;
+    }
     if (a_tool != nullptr && a_tool->keyPressed(event)) return;
     if (a_pages.isEmpty()) {
         QAbstractScrollArea::keyPressEvent(event);
@@ -1515,6 +1698,9 @@ void PdfDoc::buildUi()
     a_digitizeButton->setFocusPolicy(Qt::NoFocus);
     a_digitizeButton->setProperty("pdfTool", true);
     connect(a_digitizeButton, &QToolButton::toggled, this, &PdfDoc::setDigitizerShown);
+    a_penButton = new qucs_s::markup::PenButton(tr("Page"), a_toolbar);
+    a_penButton->setProperty("pdfTool", true);
+    a_penButton->setFocusPolicy(Qt::NoFocus);
     a_menuButton = toolButton(a_toolbar, glyph(GlyphIcon::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     auto* menu = new QMenu(a_menuButton);
@@ -1537,6 +1723,7 @@ void PdfDoc::buildUi()
     bar->addWidget(a_zoomInButton);
     bar->addStretch(1);
     bar->addWidget(a_digitizeButton);
+    bar->addWidget(a_penButton);
     bar->addWidget(a_findButton);
     bar->addWidget(a_menuButton);
     layout->addWidget(a_toolbar);
@@ -1681,6 +1868,24 @@ void PdfDoc::buildUi()
         }
     });
     connect(a_view, &PageView::zoomChanged, this, &PdfDoc::updateZoomBox);
+    // The pen taken up and put down; its menu's undo and clearing.
+    connect(a_penButton, &QToolButton::toggled, this, [this](bool on) {
+        a_view->setPenActive(on);
+        a_view->setFocus();
+    });
+    connect(a_view, &PageView::penActiveChanged, this, [this](bool on) {
+        const QSignalBlocker block(a_penButton);
+        a_penButton->setChecked(on);
+    });
+    a_penButton->setColorChooser([this](const QColor& now) {
+        const InADialog inADialog(this);   // (not freed under its own dialog)
+        return QColorDialog::getColor(now, this, tr("The Pen's Colour"));
+    });
+    connect(a_penButton, &qucs_s::markup::PenButton::undoRequested, this, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(a_view->currentPage()); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(-1); });
+    connect(a_view, &PageView::drawingChanged, this, &PdfDoc::updatePen);
+    connect(a_view, &PageView::currentPageChanged, this, &PdfDoc::updatePen);
     // A link of the PDF: a web page or mail to the system's; a document
     // Qucs-S opens, here; anything else - a program would run - only shown
     // in the file manager, or asked about (links.h).
@@ -1724,7 +1929,8 @@ void PdfDoc::restyle()
                               "QToolButton[pdfTool=\"true\"]:hover { background: %2; }"
                               "QToolButton[pdfTool=\"true\"]:checked { background: %3; }"
                               "QToolButton[pdfTool=\"true\"]::menu-indicator { image: none; }")
-                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name());
+                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name())
+        + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton[pdfTool=\"true\"]"));
     if (sheet != styleSheet()) setStyleSheet(sheet);
     a_view->viewport()->update();
 }
@@ -1734,6 +1940,69 @@ void PdfDoc::changeEvent(QEvent* event)
     QFrame::changeEvent(event);
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
         QTimer::singleShot(0, this, &PdfDoc::restyle);
+}
+
+void PdfDoc::updatePen()
+{
+    const qucs_s::markup::Drawing& d = a_view->drawing();
+    a_penButton->setDrawingState(d.canUndo(), d.count(PageView::partOf(a_view->currentPage())), int(d.strokes().size()));
+}
+
+QJsonArray PdfDoc::readDrawing(bool points) const
+{
+    QJsonArray out;
+    if (a_pdf == nullptr) return out;
+    const qucs_s::markup::Drawing& d = a_view->drawing();
+    qucs_s::digitizer::Source source(a_pdf, a_DocName);
+    for (const QString& part : d.parts()) {
+        bool numbered = false;
+        const int n = part.toInt(&numbered);
+        if (!numbered || n < 1 || n > a_pdf->pageCount()) continue;
+        const QList<qucs_s::markup::Stroke> strokes = d.on(part);
+        // The page's lines about the strokes (40 points above and below,
+        // across the page: a line whole), a line of words a target.
+        QRectF reach;
+        for (const qucs_s::markup::Stroke& st : strokes) reach = reach.isNull() ? st.bounds() : reach.united(st.bounds());
+        const QSizeF page = a_pdf->pagePointSize(n - 1);
+        const QList<qucs_s::digitizer::Token> words = source.tokens(n - 1, QRectF(0, reach.top() - 40, page.width(), reach.height() + 80));
+        QList<qucs_s::markup::Target> targets;
+        for (const qucs_s::digitizer::Phrase& line : qucs_s::digitizer::phrasesOf(words)) {
+            qucs_s::markup::Target t{QStringLiteral("text"), line.text, QPolygonF(line.box), {}};
+            for (const qucs_s::digitizer::Token& w : words)
+                if (line.box.adjusted(-0.5, -0.5, 0.5, 0.5).contains(w.box.center())) t.words.append({w.text, QPolygonF(w.box)});
+            targets << t;
+        }
+        for (const QJsonValue& v : qucs_s::markup::readPage(strokes, targets, points)) {
+            QJsonObject o = v.toObject();
+            o.insert(QStringLiteral("page"), n);
+            out.append(o);
+        }
+    }
+    return out;
+}
+
+QString PdfDoc::drawingSentences(int most) const
+{
+    // (As markup::sentencesOf() says a presentation's, by page.)
+    QStringList lines;
+    QJsonArray open;
+    QStringList addressed;
+    for (const QJsonValue& v : readDrawing(true)) {
+        const QJsonObject r = v.toObject();
+        if (r.value(QStringLiteral("addressed")).toBool())
+            addressed << QStringLiteral("page %1 %2").arg(r.value(QStringLiteral("page")).toInt()).arg(r.value(QStringLiteral("stroke")).toInt());
+        else
+            open.append(r);
+    }
+    const int from = std::max(0, int(open.size()) - most);
+    if (from > 0) lines << QStringLiteral("(%1 earlier stroke(s) left out)").arg(from);
+    for (int i = from; i < open.size(); ++i) {
+        const QJsonObject r = open.at(i).toObject();
+        lines << qucs_s::markup::sentenceOf(r, QStringLiteral("page %1").arg(r.value(QStringLiteral("page")).toInt()), QStringLiteral("points"));
+    }
+    if (!addressed.isEmpty())
+        lines << QStringLiteral("(%1 stroke(s) marked addressed, left out: %2)").arg(addressed.size()).arg(addressed.join(QStringLiteral(", ")));
+    return lines.join(QLatin1Char('\n'));
 }
 
 QWidget* PdfDoc::sidebar() const

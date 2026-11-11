@@ -765,6 +765,116 @@ private slots:
         QVERIFY(!view->hasSelection());
     }
 
+    // The pen, right of Digitize: a drag draws on the page in sight instead
+    // of selecting; it is seen, undone, put down with Escape, and Claude's
+    // prompt is told what it is round.
+    void thePenDrawsOnThePages()
+    {
+        namespace markup = qucs_s::markup;
+        PdfDoc* doc = pdf();
+        PageView* view = doc->view();
+        QWidget* port = view->viewport();
+        QVERIFY(doc->penButton() != nullptr && doc->penButton()->isVisible());
+        QCOMPARE(doc->penButton()->parentWidget(), doc->digitizeButton()->parentWidget());
+        QVERIFY(doc->penButton()->x() > doc->digitizeButton()->geometry().right());
+        auto* bar = qobject_cast<QBoxLayout*>(doc->digitizeButton()->parentWidget()->layout());
+        QVERIFY(bar != nullptr);
+        QCOMPARE(bar->indexOf(doc->penButton()), bar->indexOf(doc->digitizeButton()) + 1);
+        const auto send = [port](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, at, port->mapToGlobal(at), button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(port, &e);
+        };
+        const auto drag = [&send](QPointF from, QPointF to) {
+            send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            for (int i = 1; i <= 8; ++i) send(QEvent::MouseMove, from + (to - from) * (i / 8.0), Qt::NoButton, Qt::LeftButton);
+            send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+        };
+        const auto near = [](const QColor& a, const QColor& b, int tolerance) {
+            return std::abs(a.red() - b.red()) <= tolerance && std::abs(a.green() - b.green()) <= tolerance && std::abs(a.blue() - b.blue()) <= tolerance;
+        };
+        const markup::Pen before = markup::currentPen();
+        const auto restore = qScopeGuard([&] {
+            view->setPenActive(false);
+            view->clearDrawing(-1);
+            markup::setCurrentPen(before);
+        });
+        const QColor green(0, 160, 0);
+        markup::Pen pen;
+        pen.color = green;
+        pen.width = 6;
+        markup::setCurrentPen(pen);
+        view->clearSelection();
+        view->setZoom(1.0);
+        view->goToPage(0);
+        QApplication::processEvents();
+        doc->penButton()->click();
+        QVERIFY(view->penActive() && doc->penButton()->isChecked());
+        const qreal ppp = view->pixelsPerPoint();
+        const QPointF corner = view->pageRect(0).topLeft();
+        drag(corner + QPointF(100, 300) * ppp, corner + QPointF(300, 350) * ppp);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QVERIFY(!view->hasSelection());   // drawn, not selected
+        const markup::Stroke s = view->drawing().strokes().first();
+        QCOMPARE(s.on, QStringLiteral("1"));
+        QVERIFY(QLineF(s.points.first(), QPointF(100, 300)).length() < 0.01 && QLineF(s.points.last(), QPointF(300, 350)).length() < 0.01);
+        QVERIFY(std::abs(s.width - 6 / ppp) < 1e-9);
+        // On screen, where it was drawn, and not beside it.
+        QApplication::processEvents();
+        QImage screen = port->grab().toImage();
+        const qreal dpr = screen.devicePixelRatio();
+        QVERIFY(near(screen.pixelColor(((corner + QPointF(200, 325) * ppp) * dpr).toPoint()), green, 40));
+        QVERIFY(!near(screen.pixelColor(((corner + QPointF(200, 345) * ppp) * dpr).toPoint()), green, 60));
+        // The menu's state: one to undo, one here, one in all.
+        QVERIFY(doc->penButton()->penMenu() != nullptr);
+        // Claude is told, once a revision, and what a ring is round.
+        const auto [revision, told] = app->drawingsOf(doc->getDocName());
+        QVERIFY(revision > 0);
+        QVERIFY2(told.contains(QStringLiteral("page 1")), qPrintable(told));
+        QVERIFY(app->drawingsOf(doc->getDocName(), revision).second.isEmpty());
+        doc->find(QStringLiteral("Hello"));
+        QTRY_COMPARE(doc->searchResultCount(), 1);
+        auto* model = doc->findChild<QPdfSearchModel*>();
+        QRectF word;
+        for (const QRectF& r : model->resultAtIndex(0).rectangles()) word = word.isNull() ? r : word.united(r);
+        doc->hideSearch();
+        markup::Stroke ring;
+        ring.on = PageView::partOf(0);
+        ring.color = green;
+        ring.width = 2;
+        for (int k = 0; k <= 36; ++k) {
+            const double a = k * M_PI / 18;
+            ring.points << word.center() + QPointF(std::cos(a) * (word.width() / 2 + 6), std::sin(a) * (word.height() / 2 + 6));
+        }
+        view->addStroke(ring);
+        const QString read = QString::fromUtf8(QJsonDocument(doc->readDrawing(false)).toJson(QJsonDocument::Compact));
+        QVERIFY2(read.contains(QStringLiteral("Hello")) && read.contains(QStringLiteral("\"page\":1")), qPrintable(read));
+        // (Its line as far as the link, not cut at a word where the strokes'
+        // reach ends.)
+        const QString note = app->drawingsOf(doc->getDocName(), revision).second;
+        QVERIFY2(note.contains(QStringLiteral("around \"Hello\" in the text \"Page 1. Hello world, see the\"")), qPrintable(note));
+        // Ctrl+Z takes the ring back, Escape puts the pen down; then a drag
+        // selects again.
+        QTest::keyClick(port, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        QTest::keyClick(port, Qt::Key_Escape);
+        QVERIFY(!view->penActive() && !doc->penButton()->isChecked());
+        QTest::keyClick(port, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);   // the pen down: not its
+        // The eraser takes the line away where it is crossed.
+        markup::Pen eraser = pen;
+        eraser.tool = markup::Tool::Eraser;
+        markup::setCurrentPen(eraser);
+        doc->penButton()->click();
+        QVERIFY(view->penActive());
+        drag(corner + QPointF(200, 300) * ppp, corner + QPointF(200, 350) * ppp);
+        QVERIFY(view->drawing().isEmpty());
+        QTest::keyClick(port, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        // Kept when the file is read again.
+        QVERIFY(doc->reload());
+        QCOMPARE(view->drawing().strokes().size(), 1);
+    }
+
     // A link to the web: opened (here, caught); the hand over it.
     void linksAreFollowed()
     {
