@@ -132,7 +132,9 @@ constexpr int kStripsPerLength = 3;
  * where those do not agree - meshed as \a how and \a top say - as the
  * structure was - and what they say of the port. \a control, given, can
  * stop it; \a length, given, is the shorter strip's (the layout's units),
- * else it is chosen.
+ * else it is chosen: eight heights of the metal over the ground and twice
+ * the width - a coplanar feed's with no ground plane, eight of its signal
+ * and gaps and twice its width.
  */
 Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const QString& metal, double width,
                       const QList<double>& frequencies, double micrometre = 1e-6, const FullWaveControl* control = nullptr,
