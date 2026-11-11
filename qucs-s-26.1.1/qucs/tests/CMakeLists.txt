@@ -110,6 +110,10 @@ qucs_add_fem_test(test_fem3_solve)
 qucs_add_fem_test(test_fem3_solid)
 qucs_add_fem_test(test_fem3_magnetic)
 qucs_add_fem_test(test_fem3_semiconductor)
+# (177 s alone on an M2 Ultra on 11 November, where the 2D suite takes 81 s
+# alone and 462 s on CI's macOS runner: some 1010 s there by that rate, past
+# the 900 s its tests have. The 2D suite's limit; its functions' below.)
+set_tests_properties(test_fem3_semiconductor PROPERTIES TIMEOUT 2400)
 qucs_add_fem_test(test_fem3_devices)
 qucs_add_fem_test(test_fem3_eme)
 # (770 to 834 s of its 900 on CI's macOS runner on 10 November, Eigen's LU
@@ -597,9 +601,14 @@ endif()
 # rate of the functions before them on an EPYC 7763, went past that 900 on
 # c6c7eb2's tag run and not on its main run, the same build on the same
 # processor, with the RF tests beside them on both. The avalanche's function,
-# as long here, and the ionizations', longer, are as near.)
+# as long here, and the ionizations', longer, are as near. The 3D
+# semiconductor suite's comparisons with the 2D solver too: its models' 65 s
+# alone on an M2 Ultra, its impact ionization's drivings' 47 - some 370 and
+# 270 s on CI's macOS runner by the 2D suite's rate, past QtTest's 300 or
+# near it.)
 math(EXPR _qucs_long_function_ms "600000 * ${QUCS_TEST_TIMEOUT_SCALE}")
 if(APPLE AND _qucs_long_function_ms LESS 900000)
   set(_qucs_long_function_ms 900000)
 endif()
-set_property(TEST test_fem_laser test_fem_devices APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_long_function_ms}")
+set_property(TEST test_fem_laser test_fem_devices test_fem3_semiconductor
+             APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_long_function_ms}")
