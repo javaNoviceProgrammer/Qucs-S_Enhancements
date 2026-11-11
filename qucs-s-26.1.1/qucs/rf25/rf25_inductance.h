@@ -76,6 +76,7 @@
 #include <QStringList>
 
 #include <array>
+#include <atomic>
 
 namespace qucs_s::rf25 {
 
@@ -167,6 +168,11 @@ struct Inductance {
     double frequency = 0;     ///< Hz, for q
     int branches = 0;         ///< the runs of current it solved for
     int nodes = 0;            ///< the cells they join
+    /// Solved compressed, past the dense limit (loopDenseLimit()): L as
+    /// H-matrices, GMRES's iterations and its residual at the end.
+    bool compressed = false;
+    int iterations = 0;
+    double residual = 0;
     QList<double> current;    ///< each run's current, A, for the drawing
     QList<Filament> runs;     ///< the runs themselves, beside the currents
     QStringList problems;
@@ -224,10 +230,20 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
  * solve is said in problems() rather than answered: a mesh with no two
  * cells sharing an edge (nothing for current to flow through), terminals
  * that land on the same cell or in parts of the layout that are not
- * joined, and a mesh past what a dense matrix of this build holds.
+ * joined, and a mesh past what this build sets up even compressed. Past
+ * loopDenseLimit() runs and cells L is held compressed - the full-wave
+ * solve's H-matrices - and the system solved by GMRES, preconditioned by
+ * the near field's LU; \a stop, given, is heeded there.
  */
 Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, QPointF from, QPointF to,
-                        double micrometre = 1e-6, double frequency = 0);
+                        double micrometre = 1e-6, double frequency = 0, const std::atomic_bool* stop = nullptr);
+
+/// How many runs and cells a loop is solved dense up to: 3000, or RF 2.5D >
+/// Settings…' dense limit where that is lower. Past it inductanceOf() holds
+/// L compressed and solves by GMRES (F5 of the open items of 8 November).
+int loopDenseLimit();
+/// Tests: that limit set (0: as above).
+void setLoopDenseLimit(int runsAndCells);
 
 /// The runs of current the mesh of \a conductors makes: the pairs of
 /// cells that share an edge, and - unless not \a vias - the vias that join

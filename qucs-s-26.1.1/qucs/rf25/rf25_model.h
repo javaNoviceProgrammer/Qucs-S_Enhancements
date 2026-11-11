@@ -73,6 +73,9 @@ struct Layer {
     double epsr = 1;       ///< a dielectric's or substrate's
     double tand = 0;       ///< its loss tangent
     double sigma = 0;      ///< S/m: a metal's, a via's, a lossy substrate's
+    /// A dielectric's or the substrate's relative permittivity beyond its
+    /// shapes, where the layer map gives it any (rf25_dielectric.h).
+    double beyond = 1;
     double roughness = 0;  ///< m, rms
     QString from, to;      ///< a via's metals, by name
     /// A ground's or a cover's own kind: "perfect", "impedance" or "open"

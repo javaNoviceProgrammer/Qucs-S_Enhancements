@@ -15,6 +15,7 @@
 #include "rf25/rf25_inductance.h"
 
 #include <cmath>
+#include <tuple>
 
 namespace rf = qucs_s::rf25;
 
@@ -607,14 +608,85 @@ private slots:
         QVERIFY(!one.ok());
         QVERIFY2(one.problems.join(QLatin1Char(' ')).contains(QStringLiteral("nowhere for a current to flow")),
                  qPrintable(one.problems.join(" | ")));
-        // And a mesh past what a dense matrix of this build holds is
-        // refused before one is set up, with the count in the message.
+        // (A mesh past what a dense matrix of this build holds is no longer
+        // refused but solved compressed: aLoopPastTheDenseLimitIsSolvedCompressed.)
+    }
+
+    // Past the dense limit (F5 of the open items of 8 November): the same
+    // loop solved compressed - L as H-matrices, GMRES preconditioned by the
+    // near field's LU - is the dense solve's, on a U of three strips, a
+    // plate whose current turns a corner and two metals joined by a via:
+    // L, L and R at direct current to a part in 1e6, each run's current to
+    // 1e-5 A. And the mesh this build used to refuse, past 3000 runs and
+    // cells, is solved, its L within 2 % of a coarser dense mesh's, said.
+    void aLoopPastTheDenseLimitIsSolvedCompressed()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6, 3e-6, 5.8e7);
+        const auto both = [&stack](const QList<rf::Conductor>& shapes, const rf::Stack& on, double cell, QPointF from, QPointF to) {
+            const rf::Mesh mesh = meshed(shapes, cell);
+            const rf::Inductance dense = rf::inductanceOf(mesh, shapes, on, from, to);
+            rf::setLoopDenseLimit(50);
+            const rf::Inductance compressed = rf::inductanceOf(mesh, shapes, on, from, to);
+            rf::setLoopDenseLimit(0);
+            Q_UNUSED(stack);
+            QString said;
+            if (!dense.ok() || dense.compressed) said += QStringLiteral("dense: %1; ").arg(dense.problems.join(" | "));
+            if (!compressed.ok() || !compressed.compressed) said += QStringLiteral("compressed: %1; ").arg(compressed.problems.join(" | "));
+            if (!said.isEmpty()) return said;
+            for (const auto& [name, a, b] : {std::make_tuple("L", dense.l, compressed.l), std::make_tuple("L dc", dense.lDc, compressed.lDc),
+                                            std::make_tuple("R dc", dense.rDc, compressed.rDc)})
+                if (std::abs(b / a - 1) > 1e-6) said += QStringLiteral("%1: %2 against %3; ").arg(QLatin1String(name)).arg(b).arg(a);
+            double most = 0;
+            for (int i = 0; i < dense.current.size(); ++i) most = std::max(most, std::abs(dense.current.at(i) - compressed.current.value(i)));
+            if (most > 1e-5) said += QStringLiteral("a run's current %1 A out; ").arg(most);
+            if (!compressed.lines.join(' ').contains(QStringLiteral("solved compressed: L held in")))
+                said += compressed.lines.join(" | ");
+            return said;
+        };
+        const QList<rf::Conductor> u{strip(0, 0, 600, 40), strip(560, 40, 40, 300), strip(0, 340, 600, 40)};
+        QString said = both(u, stack, 10, QPointF(0, 20), QPointF(0, 360));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        const QList<rf::Conductor> plate{strip(0, 0, 400, 200)};
+        said = both(plate, stack, 20, QPointF(0, 100), QPointF(200, 0));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        // Two metals and a via between them: a strip on M1, back on M2.
+        rf::Stack two = stack;
+        rf::Layer ild;
+        ild.kind = rf::Layer::Dielectric;
+        ild.name = QStringLiteral("ILD");
+        ild.tag = QStringLiteral("ild");
+        ild.thickness = 5e-6;
+        ild.epsr = 4;
+        rf::Layer via;
+        via.kind = rf::Layer::Via;
+        via.name = QStringLiteral("V1");
+        via.tag = QStringLiteral("v1");
+        via.from = QStringLiteral("M1");
+        via.to = QStringLiteral("M2");
+        via.sigma = 5.8e7;
+        rf::Layer m2 = two.layers.last();
+        m2.name = QStringLiteral("M2");
+        m2.tag = QStringLiteral("m2");
+        two.layers << ild << via << m2;
+        rf::Conductor upper = strip(0, 60, 400, 40), post = strip(380, 40, 20, 20);
+        rf::Conductor lower = strip(0, 0, 400, 40);
+        upper.layer = QStringLiteral("M2");
+        post.layer = QStringLiteral("V1");
+        rf::Conductor lowerReach = strip(380, 40, 20, 20);
+        rf::Conductor upperReach = strip(380, 40, 20, 20);
+        upperReach.layer = QStringLiteral("M2");
+        said = both({lower, lowerReach, post, upperReach, upper}, two, 10, QPointF(0, 20), QPointF(0, 80));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+
+        // The mesh this build used to refuse.
         const QList<rf::Conductor> big{strip(0, 0, 400, 120)};
         const rf::Inductance over = rf::inductanceOf(meshed(big, 5), big, stack, QPointF(0, 60), QPointF(400, 60));
-        QVERIFY2(!over.ok(), qPrintable(QStringLiteral("it set up %1 runs").arg(over.branches)));
-        QVERIFY2(over.problems.join(QLatin1Char(' ')).contains(QStringLiteral("more than this build")),
-                 qPrintable(over.problems.join(" | ")));
-        QVERIFY2(over.branches > 3000, qPrintable(QStringLiteral("%1 runs").arg(over.branches)));
+        QVERIFY2(over.ok() && over.compressed && over.branches + over.nodes > 3000, qPrintable(over.problems.join(" | ")));
+        QCOMPARE(rf::loopDenseLimit(), 3000);
+        const rf::Inductance coarse = rf::inductanceOf(meshed(big, 10), big, stack, QPointF(0, 60), QPointF(400, 60));
+        QVERIFY2(coarse.ok() && !coarse.compressed, qPrintable(coarse.problems.join(" | ")));
+        QVERIFY2(std::abs(over.l / coarse.l - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 nH").arg(over.l * 1e9).arg(coarse.l * 1e9)));
+        qWarning().noquote() << over.lines.join(QStringLiteral(" | "));
     }
 };
 
