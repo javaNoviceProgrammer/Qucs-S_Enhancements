@@ -54,6 +54,7 @@
 #include <Eigen/Dense>
 
 #include <QList>
+#include <QPair>
 
 #include <atomic>
 #include <complex>
@@ -195,6 +196,15 @@ private:
  */
 bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, const int* columns, int n, double tolerance,
                         int most, Eigen::MatrixXcd* u, Eigen::MatrixXcd* v);
+
+/*!
+ * The pairs of \a a and \a b whose boxes are near: no further apart than
+ * \a reach times the longer of the two's longest sides in the plane. Of
+ * one list (\a b null), each pair once, the first no later than the
+ * second. What a compressed solve's near field - its preconditioner - is
+ * made of (the full-wave solve's, the loop's inductance).
+ */
+QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach);
 
 /// What GMRES did.
 struct Gmres {

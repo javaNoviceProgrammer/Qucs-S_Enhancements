@@ -11,6 +11,8 @@
  */
 #include "rf25_fast.h"
 
+#include <QHash>
+
 #include <QThread>
 
 #include <algorithm>
@@ -577,5 +579,52 @@ double physicalMemory()
     return pages > 0 && size > 0 ? double(pages) * double(size) : 0;
 #endif
 }
+
+/*!
+ * The pairs of \a a and \a b whose boxes are near: no further apart than
+ * \a reach times the longer of the two's longest sides in the plane. Of
+ * one list (\a b null), each pair once, the first no later than the
+ * second. Found by bins in the plane as wide as the widest box.
+ */
+QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach)
+{
+    const QList<Box>& other = b != nullptr ? *b : a;
+    QList<QPair<int, int>> out;
+    if (a.isEmpty() || other.isEmpty()) return out;
+    const auto size = [](const Box& x) { return std::max(x.side(0), x.side(1)); };
+    double widest = 0, lo[2] = {a.first().lo[0], a.first().lo[1]};
+    for (const QList<Box>* list : {&a, &other})
+        for (const Box& x : *list) {
+            widest = std::max(widest, size(x));
+            lo[0] = std::min(lo[0], x.lo[0]);
+            lo[1] = std::min(lo[1], x.lo[1]);
+        }
+    const double bin = widest > 0 ? widest : 1.0, grow = reach * widest;
+    const auto binOf = [&lo, bin](double v, int axis) { return qint64(std::floor((v - lo[axis]) / bin)); };
+    const auto key = [](qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); };
+    QHash<qint64, QList<int>> bins;
+    for (int j = 0; j < other.size(); ++j) {
+        const Box& x = other.at(j);
+        for (qint64 i0 = binOf(x.lo[0], 0); i0 <= binOf(x.hi[0], 0); ++i0)
+            for (qint64 i1 = binOf(x.lo[1], 1); i1 <= binOf(x.hi[1], 1); ++i1) bins[key(i0, i1)] << j;
+    }
+    std::vector<int> seen(std::size_t(other.size()), -1);
+    for (int i = 0; i < a.size(); ++i) {
+        const Box& x = a.at(i);
+        for (qint64 i0 = binOf(x.lo[0] - grow, 0); i0 <= binOf(x.hi[0] + grow, 0); ++i0)
+            for (qint64 i1 = binOf(x.lo[1] - grow, 1); i1 <= binOf(x.hi[1] + grow, 1); ++i1) {
+                const auto found = bins.constFind(key(i0, i1));
+                if (found == bins.constEnd()) continue;
+                for (const int j : found.value()) {
+                    if (seen[std::size_t(j)] == i) continue;
+                    seen[std::size_t(j)] = i;
+                    if (b == nullptr && j < i) continue;
+                    if (x.distance(other.at(j)) <= reach * std::max(size(x), size(other.at(j)))) out << qMakePair(i, j);
+                }
+            }
+    }
+    return out;
+}
+
 
 } // namespace qucs_s::rf25

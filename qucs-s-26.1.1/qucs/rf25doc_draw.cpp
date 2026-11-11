@@ -205,7 +205,11 @@ void RF25Doc::drawPicked(QPointF at)
 QString RF25Doc::drawLayer() const
 {
     const Stack stack = a_model.stack();
-    const auto drawable = [](const Layer* l) { return l != nullptr && (l->kind == Layer::Metal || l->kind == Layer::Via); };
+    // (A dielectric or the substrate drawn on is its extent: there only
+    // inside what is drawn - rf25_dielectric.h.)
+    const auto drawable = [](const Layer* l) {
+        return l != nullptr && (l->kind == Layer::Metal || l->kind == Layer::Via || l->kind == Layer::Dielectric || l->kind == Layer::Substrate);
+    };
     if (drawable(stack.named(a_drawLayer))) return stack.named(a_drawLayer)->name;
     // The metal or via chosen in the stack (its tag), else the topmost metal.
     if (drawable(stack.named(a_focus))) return stack.named(a_focus)->name;
@@ -320,8 +324,11 @@ void RF25Doc::fillDrawMenu()
     const Stack stack = a_model.stack();
     const QString now = drawLayer();
     for (auto it = stack.layers.crbegin(); it != stack.layers.crend(); ++it) {
-        if (it->kind != Layer::Metal && it->kind != Layer::Via) continue;
-        QAction* a = layers->addAction(it->kind == Layer::Via ? tr("%1 (a via)").arg(it->name) : it->name);
+        const bool dielectric = it->kind == Layer::Dielectric || it->kind == Layer::Substrate;
+        if (it->kind != Layer::Metal && it->kind != Layer::Via && !dielectric) continue;
+        QAction* a = layers->addAction(it->kind == Layer::Via ? tr("%1 (a via)").arg(it->name)
+                                       : dielectric          ? tr("%1 (where it is)").arg(it->name)
+                                                             : it->name);
         a->setCheckable(true);
         a->setChecked(it->name == now);
         a->setActionGroup(group);
@@ -497,8 +504,8 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
             *why = tr("%1 is no via of the stack: a via is drawn on one").arg(l->name);
             return nullptr;
         }
-        if (l->kind != Layer::Metal && l->kind != Layer::Via) {
-            *why = tr("%1 is no metal or via: shapes are drawn on those (a ground plane has none)").arg(l->name);
+        if (l->kind != Layer::Metal && l->kind != Layer::Via && l->kind != Layer::Dielectric && l->kind != Layer::Substrate) {
+            *why = tr("%1 is no metal, via, dielectric or substrate: shapes are drawn on those (a ground plane has none)").arg(l->name);
             return nullptr;
         }
         return l;
