@@ -422,6 +422,10 @@ int touchstone_check (void) {
 
   int i, n, errors = 0;
 
+  /* Qucs-S: an option line with no options ('#' alone) is the
+     defaults' (GHz S MA R 50), not a list that was never made */
+  if (touchstone_idents == NULL) touchstone_idents = new strlist ();
+
   /* first checking the options */
   if (touchstone_idents->length () > 3) {
     logprint (LOG_ERROR, "checker error, found %d options\n",

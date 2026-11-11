@@ -134,7 +134,8 @@ Declaration:
    }
    | t_TIMESCALE TimeScaleDeclaration t_END
    | t_UPSCOPE t_END {
-     if (vcd->currentscope->parent) {
+     /* Qucs-S: an $upscope before any $scope has no scope to leave */
+     if (vcd->currentscope && vcd->currentscope->parent) {
        /* up one scope */
        vcd->currentscope = vcd->currentscope->parent;
      } else {
@@ -276,6 +277,12 @@ SimulationCommand:
   | t_DUMPOFF  ValueChangeList t_END /* probably unsupported */
   | t_DUMPON   ValueChangeList t_END /* probably unsupported */
   | t_DUMPVARS ValueChangeList t_END {
+      /* Qucs-S: $dumpvars before the first time stamp: the values at 0 */
+      if (!vcd->changesets) {
+        vcd->changesets = (struct vcd_changeset *)
+          calloc (1, sizeof (struct vcd_changeset));
+        vcd->changesets->t = 0;
+      }
       vcd->changesets->changes = $2;
   }
   | ValueChangeset {

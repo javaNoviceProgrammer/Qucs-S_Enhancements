@@ -115,7 +115,7 @@ static void netlist_list_value (struct value_t * value) {
    netlists based upon the given identifier. */
 static char * netlist_instance (const char * instance) {
   static char ret[256];
-  sprintf (ret, "%s%s", isdigit (instance[0]) ? "X" : "", instance);
+  snprintf (ret, sizeof (ret), "%s%s", isdigit ((unsigned char) instance[0]) ? "X" : "", instance);
   return ret;
 }
 
@@ -372,7 +372,7 @@ static void qucslib_list_device (struct definition_t * def) {
 
   /* Qucs-S: the device's SPICE letter left out of a part number only
      (D1N4148 is 1N4148, Q2N3904 2N3904): MYNMOS stays MYNMOS, not YNMOS. */
-  sprintf (txt, "\n<Component %s>\n",
+  snprintf (txt, sizeof (txt), "\n<Component %s>\n",
 	   toupper ((unsigned char) def->instance[0]) == toupper ((unsigned char) dev->stype[0]) &&
 	   isdigit ((unsigned char) def->instance[1]) ? &def->instance[1] : def->instance);
   fprintf (qucs_out, "%s", txt);

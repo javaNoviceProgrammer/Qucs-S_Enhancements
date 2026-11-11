@@ -206,7 +206,7 @@ int citi_check (void) {
     if (packages < 2) {
       opack[0] = '\0';
     } else {
-      sprintf (opack, "%s.", package);
+      snprintf (opack, sizeof (opack), "%s.", package);
     }
 
     /* go through each header */
@@ -217,14 +217,14 @@ int citi_check (void) {
 	if (h->i1 >= 0) {
 	  /* dependent variables */
 	  if (h->i2 >= 0) {
-	    sprintf (txt, "%s%s[%d,%d]", opack, h->var, h->i1, h->i2);
+	    snprintf (txt, sizeof (txt), "%s%s[%d,%d]", opack, h->var, h->i1, h->i2);
 	    v = citi_create_vector (p, n, txt, h->type);
 	    v->setDependencies (new strlist (deps));
 	    errors += citi_check_dep_length (v, deps, package);
 	    citi_result->addVariable (v);
 	    n++;
 	  } else {
-	    sprintf (txt, "%s%s[%d]", opack, h->var, h->i1);
+	    snprintf (txt, sizeof (txt), "%s%s[%d]", opack, h->var, h->i1);
 	    v = citi_create_vector (p, n, txt, h->type);
 	    v->setDependencies (new strlist (deps));
 	    errors += citi_check_dep_length (v, deps, package);
@@ -233,7 +233,7 @@ int citi_check (void) {
 	  }
 	} else if (h->n >= 0) {
 	  /* independent variable */
-	  sprintf (txt, "%s%s", opack, h->var);
+	  snprintf (txt, sizeof (txt), "%s%s", opack, h->var);
 	  v = citi_create_vector (p, n, txt, h->type);
 	  deps.add (txt);
 	  if (!citi_result->findDependency (txt)) {
@@ -250,7 +250,7 @@ int citi_check (void) {
 	  }
 	} else {
 	  /* dependent variables, no indices */
-	  sprintf (txt, "%s%s", opack, h->var);
+	  snprintf (txt, sizeof (txt), "%s%s", opack, h->var);
 	  v = citi_create_vector (p, n, txt, h->type);
 	  v->setDependencies (new strlist (deps));
 	  errors += citi_check_dep_length (v, deps, package);

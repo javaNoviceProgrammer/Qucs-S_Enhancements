@@ -38,10 +38,12 @@ using namespace qucs;
 /* Calculate the hash code for a given string. This is the standard
    callback for any newly created hash table.  */
 static inline int hash_code (char * key) {
-  int code = 0;
+  /* Qucs-S: shifted unsigned - a byte past 127 made it negative, and a
+     negative int shifted left is undefined */
+  unsigned int code = 0;
   char * p = key;
-  while (*p) { code = (code << 1) ^ *p; p++; }
-  return code;
+  while (*p) { code = (code << 1) ^ (unsigned int) (unsigned char) *p; p++; }
+  return (int) code;
 }
 
 /* This is the default callback for any newly created hash for
