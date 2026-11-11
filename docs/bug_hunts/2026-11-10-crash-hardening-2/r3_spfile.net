@@ -1,0 +1,3 @@
+.SP:SP1 Type="lin" Start="1 GHz" Stop="2 GHz" Points="3" Noise="no" NoiseIP="1" NoiseOP="2" saveCVs="no" saveAll="no"
+Pac:P1 _net0 gnd Num="1" Z="50 Ohm" P="0 dBm" f="1 GHz" Temp="26.85"
+SPfile:X1 _net0 gnd File="{./r3_touchstone_hash.s1p}" Data="rectangular" Interpolator="linear" duringDC="open"

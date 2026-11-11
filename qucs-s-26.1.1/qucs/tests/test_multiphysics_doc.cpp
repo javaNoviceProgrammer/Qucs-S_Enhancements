@@ -884,6 +884,50 @@ private slots:
         QVERIFY(!doc->cancelButton()->isVisible());
     }
 
+    // Closed while it solves, at once: the graded-index lens with its air's
+    // corner at -4e-300 for -4 traces for minutes - its trace deaf to a stop,
+    // and the tab's close waiting for it with no end, the window frozen (the
+    // hunt of 10 November, S1). Now the trace asks, and a job that does not
+    // is waited for 2 s, then left to end on its own.
+    void closedWhileItTraces()
+    {
+        const QString file = copyOf(QStringLiteral("grin_lens.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QByteArray json = f.readAll();
+        f.close();
+        QVERIFY(json.contains(R"x("-4"])x"));
+        json.replace(R"x("-4"])x", R"x("(-4)*1e-300"])x");
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(json);
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForJob(jobWait()));
+        doc->compute();
+        QVERIFY(doc->isBusy());
+        QTest::qWait(1500);
+        QVERIFY2(doc->isBusy(), "still tracing when it is closed");
+        // (Asked whether to keep it running without its tab: Stop and Close.)
+        auto* answer = new QTimer(this);
+        answer->setInterval(20);
+        connect(answer, &QTimer::timeout, this, [answer] {
+            QWidget* box = QApplication::activeModalWidget();
+            auto* stop = box != nullptr ? box->findChild<QPushButton*>(QStringLiteral("stopAndClose")) : nullptr;
+            if (stop == nullptr) return;
+            answer->deleteLater();
+            answer->stop();
+            stop->click();
+        });
+        answer->start();
+        QElapsedTimer t;
+        t.start();
+        doc->setDocChanged(false);
+        app->closeAllFiles();
+        qInfo("closed in %lld ms", t.elapsed());
+        QVERIFY2(t.elapsed() < 8000, qPrintable(QString::number(t.elapsed())));
+    }
+
     // A job's progress in a row below the toolbar, once the job has taken a
     // quarter of a second: its stage on one line, elided to the room it has
     // and whole in its tool tip (in the bar, Fusion wrapped it to two lines

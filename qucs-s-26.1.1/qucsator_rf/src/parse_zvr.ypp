@@ -126,7 +126,8 @@ BodyStart:
     $$->start = $2;
     $$->stop = $4;
     $$->funit = $6;
-    $$->points = (int) $8;
+    /* Qucs-S: a count past an int's range (or not a number) as none */
+    $$->points = ($8 >= 0 && $8 <= 2147483647.0) ? (int) $8 : 0;
     $$->zref = $12;
     $$->d_TYP = $10;
     $$->d_UNT = $20;
