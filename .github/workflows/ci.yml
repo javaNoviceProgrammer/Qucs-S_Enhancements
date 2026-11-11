@@ -205,10 +205,29 @@ jobs:
       # limit and QtTest's per function three times theirs (the configure's
       # QUCS_TEST_TIMEOUT_SCALE): a slow runner's time is not a failure. Its
       # processors said, the next slow run's machine on record.
+      #
+      # Left out here for now, all still run by the macOS job (the user,
+      # 11 November: "maybe just exclude the problematic tests from CI for
+      # now"; docs/bug_hunts/2026-11-11-linux-asan-time.md). With them the
+      # tests needed some 340 of the job's 355 minutes on an EPYC 7763.
+      # - The eight over 50 minutes each on a 7763, 38,000 of its 82,000
+      #   test-seconds; what is left some 155 minutes there.
+      # - The nine that failed on this job's runs of 1ad5bbba and 6c99e4d3:
+      #   test_rf25_stack (an ASan heap-use-after-free in the test, line 651's
+      #   pointer into a temporary Stack), test_gui_monkey, test_theme_switch,
+      #   and six cut by their limits or a 60 s wall-clock check on slow
+      #   runners.
+      # Each comes back once it is fixed or fits.
       - name: Unit tests (QtTest, headless)
         run: |
           echo "$(nproc) processors: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
-          ctest --test-dir build --output-on-failure --parallel "$(nproc)"
+          slow=(test_fem3_semiconductor test_fem_devices test_fem_semiconductor test_fem_waves
+                test_multiphysics_doc test_fem_quantum_2 test_fem_optoelectronics test_fem_photodiode_power)
+          failing=(test_rf25_stack test_gui_monkey test_theme_switch test_multiphysics3d_doc test_fem_crystal
+                   test_rf25_returns test_fem_modulator test_fem_engine test_fem_sparse)
+          left_out="^($(IFS='|'; echo "${slow[*]}|${failing[*]}"))\$"
+          echo "Left out: $left_out"
+          ctest --test-dir build --output-on-failure --parallel "$(nproc)" -E "$left_out"
 
       - name: Smoke test · load and render every ngspice example
         run: scripts/ci/smoke-test.sh load build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
