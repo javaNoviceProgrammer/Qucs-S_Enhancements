@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 namespace qucs_s::rf25 {
@@ -102,21 +103,23 @@ Eigen::VectorXd misfit(const QString& form, const QList<double>& w, const QList<
     return r;
 }
 
-// Levenberg and Marquardt's on the values' logarithms from \a start: the
-// least squares misfit's values, and its rms in \a error.
-Eigen::VectorXd fitted(const QString& form, const QList<double>& w, const QList<Complex>& y, Eigen::VectorXd logs, double* error)
+// Levenberg and Marquardt's on the values' logarithms from \a logs,
+// minimizing the squares of \a misfit: the values found, the sum of the
+// squares in \a cost. Each value is kept within 1e-30 to 1e30.
+Eigen::VectorXd levenberg(const std::function<Eigen::VectorXd(const Eigen::VectorXd&)>& misfit, Eigen::VectorXd logs,
+                          double* cost, int most = 400)
 {
     const int n = int(logs.size());
     const double low = std::log(1e-30), high = std::log(1e30);
-    Eigen::VectorXd r = misfit(form, w, y, logs);
-    double cost = r.squaredNorm();
+    Eigen::VectorXd r = misfit(logs);
+    double now = r.squaredNorm();
     double lambda = 1e-3;
-    for (int it = 0; it < 400 && cost > 0; ++it) {
+    for (int it = 0; it < most && now > 0; ++it) {
         Eigen::MatrixXd jac(r.size(), n);
         for (int j = 0; j < n; ++j) {
             Eigen::VectorXd moved = logs;
             moved(j) += 1e-6;
-            jac.col(j) = (misfit(form, w, y, moved) - r) / 1e-6;
+            jac.col(j) = (misfit(moved) - r) / 1e-6;
         }
         const Eigen::MatrixXd a = jac.transpose() * jac;
         const Eigen::VectorXd g = jac.transpose() * r;
@@ -126,22 +129,32 @@ Eigen::VectorXd fitted(const QString& form, const QList<double>& w, const QList<
             for (int j = 0; j < n; ++j) damped(j, j) += lambda * std::max(a(j, j), 1e-12);
             const Eigen::VectorXd step = damped.ldlt().solve(-g);
             Eigen::VectorXd next = (logs + step).cwiseMax(low).cwiseMin(high);
-            const Eigen::VectorXd rn = misfit(form, w, y, next);
+            const Eigen::VectorXd rn = misfit(next);
             const double cn = rn.squaredNorm();
-            if (std::isfinite(cn) && cn < cost) {
-                const bool still = cost - cn < 1e-14 * cost || step.norm() < 1e-10;
+            if (std::isfinite(cn) && cn < now) {
+                const bool still = now - cn < 1e-14 * now || step.norm() < 1e-10;
                 logs = next;
                 r = rn;
-                cost = cn;
+                now = cn;
                 lambda = std::max(lambda / 3, 1e-12);
                 better = true;
-                if (still) it = 400;
+                if (still) it = most;
             } else {
                 lambda *= 4;
             }
         }
         if (!better) break;
     }
+    *cost = now;
+    return logs;
+}
+
+// Levenberg and Marquardt's on form \a form's values' logarithms from
+// \a logs, to its share \a y: the values found, and its rms in \a error.
+Eigen::VectorXd fitted(const QString& form, const QList<double>& w, const QList<Complex>& y, Eigen::VectorXd logs, double* error)
+{
+    double cost = 0;
+    logs = levenberg([&](const Eigen::VectorXd& at) { return misfit(form, w, y, at); }, logs, &cost);
     *error = std::sqrt(cost / std::max(1, int(w.size())));
     return logs;
 }
@@ -223,7 +236,10 @@ CircuitBranch fitForm(const Form& form, const QList<double>& w, const QList<Comp
 // The branch of the forms \a forms that fits \a y best - a simpler one
 // where it fits nearly as well: within a quarter of the best's misfit,
 // or a fifth of a percent more.
-CircuitBranch fitBranch(const QList<Form>& forms, const QList<double>& w, const QList<Complex>& y, double reference, bool between)
+// (\a tried, given: every form fitted, the fewest values first - the
+// joint fit's other candidates.)
+CircuitBranch fitBranch(const QList<Form>& forms, const QList<double>& w, const QList<Complex>& y, double reference, bool between,
+                        QList<CircuitBranch>* triedOut = nullptr)
 {
     // None to speak of, or (between two ports) a wire.
     double most = 0, least = std::numeric_limits<double>::infinity();
@@ -245,6 +261,7 @@ CircuitBranch fitBranch(const QList<Form>& forms, const QList<double>& w, const 
     // (The fewest values first, whatever order the forms came in.)
     std::stable_sort(tried.begin(), tried.end(),
                      [](const CircuitBranch& a, const CircuitBranch& b) { return a.values.size() < b.values.size(); });
+    if (triedOut != nullptr) *triedOut = tried;
     double best = std::numeric_limits<double>::infinity();
     for (const CircuitBranch& b : std::as_const(tried)) best = std::min(best, b.error);
     for (const CircuitBranch& b : std::as_const(tried))
@@ -328,6 +345,108 @@ QList<QList<Complex>> EquivalentCircuit::sAt(double frequency) const
     return out;
 }
 
+namespace {
+
+// The circuit's S less the solve's at every frequency and term, Re then Im.
+Eigen::VectorXd sMisfit(const EquivalentCircuit& c, const QList<double>& frequencies, const QList<QList<QList<Complex>>>& s)
+{
+    const int n = c.ports;
+    Eigen::VectorXd r(2 * n * n * frequencies.size());
+    int at = 0;
+    for (int k = 0; k < frequencies.size(); ++k) {
+        const QList<QList<Complex>> fit = c.sAt(frequencies.at(k));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) {
+                const Complex d = fit.at(i).at(j) - s.at(k).value(i).value(j);
+                r(at++) = std::isfinite(d.real()) ? d.real() : 1e6;
+                r(at++) = std::isfinite(d.imag()) ? d.imag() : 1e6;
+            }
+    }
+    return r;
+}
+
+// The branches of \a c that have values, in a fixed order: the joint fit's
+// (\a tied: the second port's to the ground left out, as the first's).
+QList<CircuitBranch*> valuedBranches(EquivalentCircuit& c, bool tied)
+{
+    QList<CircuitBranch*> out;
+    if (c.ports == 2 && !c.between.values.isEmpty()) out << &c.between;
+    for (int i = 0; i < (tied ? 1 : c.ports); ++i)
+        if (!c.toGround[i].values.isEmpty()) out << &c.toGround[i];
+    return out;
+}
+
+// \a b's own misfit, as fitBranch says it: the rms of |Y fitted / Y - 1|.
+double ownError(const CircuitBranch& b, const QList<double>& w, const QList<Complex>& y)
+{
+    if (b.values.isEmpty() || w.isEmpty()) return b.error;
+    double sum = 0;
+    for (int k = 0; k < w.size(); ++k) sum += std::norm(b.admittance(w.at(k)) / y.at(k) - 1.0);
+    return std::sqrt(sum / w.size());
+}
+
+// \a c with every value of every branch fitted at once to the solve's S -
+// Levenberg and Marquardt's on their logarithms, from their values as they
+// are: the sum of the squares of its S's misfit in \a cost. \a tied: the
+// two ports' branches to the ground one and the same, a symmetric
+// two-port's.
+EquivalentCircuit fittedJointly(EquivalentCircuit c, const QList<double>& frequencies, const QList<QList<QList<Complex>>>& s,
+                                double* cost, int most, bool tied)
+{
+    if (tied) c.toGround[1] = c.toGround[0];
+    const QList<CircuitBranch*> branches = valuedBranches(c, tied);
+    int count = 0;
+    for (const CircuitBranch* b : branches) count += int(b->values.size());
+    Eigen::VectorXd logs(count);
+    int at = 0;
+    for (const CircuitBranch* b : branches)
+        for (const auto& v : b->values) logs(at++) = std::log(std::max(v.second, 1e-30));
+    const auto spread = [&branches, &c, tied](const Eigen::VectorXd& x) {
+        int i = 0;
+        for (CircuitBranch* b : branches)
+            for (auto& v : b->values) v.second = std::exp(x(i++));
+        if (tied) c.toGround[1].values = c.toGround[0].values;
+    };
+    if (count == 0) {
+        *cost = sMisfit(c, frequencies, s).squaredNorm();
+        return c;
+    }
+    const Eigen::VectorXd found = levenberg(
+        [&](const Eigen::VectorXd& x) {
+            spread(x);
+            return sMisfit(c, frequencies, s);
+        },
+        logs, cost, most);
+    spread(found);
+    return c;
+}
+
+int valuesOf(const EquivalentCircuit& c)
+{
+    int n = int(c.between.values.size());
+    for (int i = 0; i < c.ports; ++i) n += int(c.toGround[i].values.size());
+    return n;
+}
+
+// The forms worth trying together for a branch: the one chosen, then those
+// that fit its own share within three times the best's misfit (or a
+// hundredth more), the best first - three at most.
+QList<CircuitBranch> candidatesOf(const CircuitBranch& chosen, QList<CircuitBranch> tried)
+{
+    QList<CircuitBranch> out{chosen};
+    if (chosen.values.isEmpty()) return out;
+    std::stable_sort(tried.begin(), tried.end(), [](const CircuitBranch& a, const CircuitBranch& b) { return a.error < b.error; });
+    const double best = tried.isEmpty() ? 0 : tried.first().error;
+    for (const CircuitBranch& b : std::as_const(tried)) {
+        if (out.size() >= 3) break;
+        if (b.form == chosen.form || b.error > std::max(3 * best, best + 0.01)) continue;
+        out << b;
+    }
+    return out;
+}
+
+} // namespace
+
 EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& frequencies, const QList<QList<QList<Complex>>>& s,
                              const QList<double>& references)
 {
@@ -388,11 +507,15 @@ EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& freq
     }
     // Each branch on its own: to the reference Y11 + Y12 and Y22 + Y12, and
     // between the two -Y12.
+    // (What each tried, and each one's share: the joint fit's.)
+    QList<CircuitBranch> tried[3];
+    QList<Complex> shares[3];
     if (n == 1) {
+        shares[1] = y11;
         QList<Form> all = groundForms();
         for (const Form& f : betweenForms())
             if (!std::any_of(all.begin(), all.end(), [&f](const Form& g) { return g.name == f.name; })) all << f;
-        c.toGround[0] = fitBranch(all, w, y11, references.at(0), false);
+        c.toGround[0] = fitBranch(all, w, y11, references.at(0), false, &tried[1]);
     } else {
         QList<Complex> between, first, second;
         for (int k = 0; k < w.size(); ++k) {
@@ -400,32 +523,106 @@ EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& freq
             first << y11.at(k) + y12.at(k);
             second << y22.at(k) + y12.at(k);
         }
-        c.between = fitBranch(betweenForms(), w, between, std::sqrt(references.at(0) * references.at(1)), true);
+        c.between = fitBranch(betweenForms(), w, between, std::sqrt(references.at(0) * references.at(1)), true, &tried[0]);
         if (c.between.form == QLatin1String("short")) {
             c.problems << tr("The two ports are joined by no more than a wire: there is no circuit between them to fit.");
             c.ports = 0;
             return c;
         }
-        c.toGround[0] = fitBranch(groundForms(), w, first, references.at(0), false);
-        c.toGround[1] = fitBranch(groundForms(), w, second, references.at(1), false);
+        c.toGround[0] = fitBranch(groundForms(), w, first, references.at(0), false, &tried[1]);
+        c.toGround[1] = fitBranch(groundForms(), w, second, references.at(1), false, &tried[2]);
+        shares[0] = between;
+        shares[1] = first;
+        shares[2] = second;
     }
     // The circuit held to the solve: its S beside the solve's.
-    double sum = 0;
-    int terms = 0;
-    for (int k = 0; k < frequencies.size(); ++k) {
-        const QList<QList<Complex>> fit = c.sAt(frequencies.at(k));
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                const double d = std::abs(fit.at(i).at(j) - s.at(k).value(i).value(j));
-                sum += d * d;
-                ++terms;
-                if (d > c.worst) {
-                    c.worst = d;
-                    c.worstAt = frequencies.at(k);
+    const auto heldToTheSolve = [&](EquivalentCircuit& e) {
+        double sum = 0;
+        int terms = 0;
+        e.worst = 0;
+        e.worstAt = 0;
+        for (int k = 0; k < frequencies.size(); ++k) {
+            const QList<QList<Complex>> fit = e.sAt(frequencies.at(k));
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j) {
+                    const double d = std::abs(fit.at(i).at(j) - s.at(k).value(i).value(j));
+                    sum += d * d;
+                    ++terms;
+                    if (d > e.worst) {
+                        e.worst = d;
+                        e.worstAt = frequencies.at(k);
+                    }
                 }
-            }
+        }
+        e.rms = std::sqrt(sum / std::max(1, terms));
+    };
+    heldToTheSolve(c);
+    c.branchwiseRms = c.rms;
+    c.branchwiseWorst = c.worst;
+    // Then every value at once, fitted to the solve's S rather than each
+    // branch to its own share of Y (F6 of the open items of 8 November): a
+    // branch's share weighs each frequency by its own Y, the circuit's S by
+    // what the ports see. From each branch's fit, and from those of the
+    // forms that fitted their share nearly as well, taken together; the
+    // best kept - the fewest values where one fits nearly as well - and
+    // only where it does better than the branches on their own (by more
+    // than 2 %).
+    {
+        const QList<CircuitBranch> between = n == 2 ? candidatesOf(c.between, tried[0]) : QList<CircuitBranch>{c.between};
+        const QList<CircuitBranch> first = candidatesOf(c.toGround[0], tried[1]);
+        const QList<CircuitBranch> second = n == 2 ? candidatesOf(c.toGround[1], tried[2]) : QList<CircuitBranch>{c.toGround[1]};
+        // A two-port the same from either end - S11 and S22 within a
+        // thousandth at every frequency - keeps its two branches to the
+        // ground alike: one form and one set of values.
+        bool symmetric = n == 2 && c.toGround[0].form == c.toGround[1].form;
+        for (int k = 0; symmetric && k < frequencies.size(); ++k)
+            symmetric = std::abs(s.at(k).value(0).value(0) - s.at(k).value(1).value(1)) < 1e-3;
+        // Each combination's misfit as it starts; the six best of them, and
+        // the branches' own, fitted.
+        QList<std::pair<double, EquivalentCircuit>> starts;
+        for (const CircuitBranch& a : between)
+            for (const CircuitBranch& b : first)
+                for (const CircuitBranch& d : second) {
+                    if (symmetric && d.form != b.form) continue;
+                    EquivalentCircuit e = c;
+                    e.between = a;
+                    e.toGround[0] = b;
+                    e.toGround[1] = d;
+                    const double start = sMisfit(e, frequencies, s).squaredNorm();
+                    const bool own = a.form == c.between.form && b.form == c.toGround[0].form && d.form == c.toGround[1].form;
+                    starts.append({own ? -1.0 : (std::isfinite(start) ? start : 1e300), e});
+                }
+        std::stable_sort(starts.begin(), starts.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+        QList<std::pair<double, EquivalentCircuit>> fittedAll;
+        for (int i = 0; i < starts.size() && i < 7; ++i) {
+            double cost = 0;
+            EquivalentCircuit e = fittedJointly(starts.at(i).second, frequencies, s, &cost, 200, symmetric);
+            heldToTheSolve(e);
+            if (std::isfinite(e.rms)) fittedAll.append({e.rms, e});
+        }
+        double best = std::numeric_limits<double>::infinity();
+        for (const auto& [rms, e] : std::as_const(fittedAll)) best = std::min(best, rms);
+        const EquivalentCircuit* kept = nullptr;
+        for (const auto& [rms, e] : std::as_const(fittedAll)) {
+            // (Nearly as well, as a branch's form is chosen: within a quarter
+            // of the best's misfit, or a thousandth of S more.)
+            if (rms > std::max(1.25 * best, best + 1e-3)) continue;
+            if (kept == nullptr || valuesOf(e) < valuesOf(*kept) || (valuesOf(e) == valuesOf(*kept) && rms < kept->rms)) kept = &e;
+        }
+        if (kept != nullptr && kept->rms < 0.98 * c.branchwiseRms) {
+            const EquivalentCircuit was = c;
+            c = *kept;
+            c.joint = true;
+            c.branchwiseRms = was.branchwiseRms;
+            c.branchwiseWorst = was.branchwiseWorst;
+            // (Each branch's own misfit said of its values as they now are.)
+            if (n == 2) c.between.error = ownError(c.between, w, shares[0]);
+            c.toGround[0].error = ownError(c.toGround[0], w, shares[1]);
+            if (n == 2) c.toGround[1].error = ownError(c.toGround[1], w, shares[2]);
+            c.formsChanged = was.between.form != c.between.form || was.toGround[0].form != c.toGround[0].form
+                             || was.toGround[1].form != c.toGround[1].form;
+        }
     }
-    c.rms = std::sqrt(sum / std::max(1, terms));
     const double lowest = *std::min_element(frequencies.begin(), frequencies.end()),
                  highest = *std::max_element(frequencies.begin(), frequencies.end());
     if (n == 1)
@@ -449,6 +646,11 @@ EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& freq
                       "long - and those were left out of the fit.")
                        .arg(at.join(QStringLiteral(", ")));
     }
+    if (c.joint)
+        c.lines << tr("Its values fitted together to the solve's S%1: %2 rms, where each branch fitted to its own share gave %3.")
+                       .arg(c.formsChanged ? tr(", and the forms that fit it best together chosen") : QString())
+                       .arg(c.rms, 0, 'g', 2)
+                       .arg(c.branchwiseRms, 0, 'g', 2);
     c.lines << tr("Its S differs from the solve's by %1 at most (at %2 GHz), %3 rms.")
                    .arg(c.worst, 0, 'g', 2)
                    .arg(c.worstAt / 1e9, 0, 'g', 4)

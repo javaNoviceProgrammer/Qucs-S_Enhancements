@@ -49,7 +49,10 @@ struct CircuitBranch {
  * Each branch is fitted on its own to what the solve's Y-parameters give it
  * - Y11 + Y12 and Y22 + Y12 to the reference, -Y12 between - by each form,
  * the values kept positive; the form chosen is the one that fits best, a
- * simpler one where it fits nearly as well. How far the circuit's S then
+ * simpler one where it fits nearly as well. Then every value of every
+ * branch is fitted at once to the solve's S - from those fits, and from
+ * the forms that fitted their share nearly as well, taken together - and
+ * that is kept where it lowers the rms of S. How far the circuit's S then
  * is from the solve's, at most and on the whole, is said: a lumped circuit
  * holds only while what it stands for is short beside the wavelength.
  */
@@ -63,6 +66,15 @@ struct EquivalentCircuit {
     double worst = 0;            ///< the most |S - S of the solve| over every term and frequency
     double worstAt = 0;          ///< Hz, where
     double rms = 0;              ///< its rms over them all
+    /// Its values fitted together to the solve's S, after each branch to
+    /// its own share (kept only where that does better); and whether that
+    /// chose other forms than the branches' own fits.
+    bool joint = false;
+    bool formsChanged = false;
+    /// The rms and the most of |S - S of the solve| with each branch
+    /// fitted to its own share alone: rms and worst where joint is false.
+    double branchwiseRms = 0;
+    double branchwiseWorst = 0;
     QStringList problems;
     QStringList lines;           ///< what was fitted, and how well, in words
     bool ok() const { return problems.isEmpty() && ports > 0; }

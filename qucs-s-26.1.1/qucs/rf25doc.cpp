@@ -32,6 +32,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLocale>
+#include <QMenu>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -733,6 +736,22 @@ void RF25Doc::buildUi()
         if (on) setPlacing(Placing::InternalPort);
         else if (a_placing == Placing::InternalPort) setPlacing(Placing::None);
     });
+    // The shapes themselves drawn (F4 of the open items of 8 November): the
+    // button takes the last tool up again, its arrow chooses the tool, the
+    // layer, the via's size.
+    a_viaSize = std::max(1e-3, settings.value(QLatin1String("RF25/viaSize"), 1.0).toDouble());
+    a_drawButton = button(tr("Draw"),
+                          tr("Draw shapes on a layer of the stack - rectangles, polygons, vias -, written at once to the layout "
+                             "file (one begun beside the model where it names none); its arrow chooses the tool and the layer. "
+                             "Delete deletes the shape selected"),
+                          "rfDraw");
+    a_drawButton->setCheckable(true);
+    a_drawButton->setPopupMode(QToolButton::MenuButtonPopup);
+    a_drawMenu = new QMenu(a_drawButton);
+    a_drawMenu->setObjectName(QStringLiteral("rfDrawMenu"));
+    a_drawButton->setMenu(a_drawMenu);
+    connect(a_drawMenu, &QMenu::aboutToShow, this, &RF25Doc::fillDrawMenu);
+    connect(a_drawButton, &QToolButton::toggled, this, [this](bool on) { setDrawTool(on ? a_lastTool : DrawTool::None); });
     row->addSpacing(10);
     // The one piece of work this build does on being asked rather than at
     // every edit: a dense matrix of the unknowns is cubic.
@@ -764,12 +783,16 @@ void RF25Doc::buildUi()
     a_view = new LayoutView(a_sides);
     a_view->setObjectName(QStringLiteral("rfView"));
     connect(a_stack, &StackView::layerChosen, this, &RF25Doc::focusNode);
+    // (Enter, Backspace and a double click for a polygon being drawn;
+    // Delete for the shape selected.)
+    a_view->installEventFilter(this);
     connect(a_view, &LayoutView::pointerMoved, this, &RF25Doc::pointerMoved);
     // A port placed where the pointer picks, by the tool in hand; the view
     // back in its own mode (Escape) puts the tool down.
     // (With the Internal Port tool, Shift puts a terminal among the returns
     //  of the port it drew last: its signal's rectangle, then its grounds'.)
     connect(a_view, &LayoutView::picked, this, [this](QPointF at) {
+        if (a_drawTool != DrawTool::None) return drawPicked(at);
         QString why;
         const bool shift = a_view->pickModifiers().testFlag(Qt::ShiftModifier);
         const QString tag = a_placing == Placing::EdgePort ? placeEdgePortAt(at, 0, &why)
@@ -779,6 +802,21 @@ void RF25Doc::buildUi()
         if (tag.isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::boxPicked, this, [this](QRectF box) {
+        if (a_drawTool == DrawTool::Rectangle) {
+            const QRectF r = QRectF(drawSnapped(box.topLeft()), drawSnapped(box.bottomRight())).normalized();
+            if (!(r.width() > 0 && r.height() > 0)) {
+                a_status->setText(tr("The rectangle snapped to nothing: drag a larger one, or zoom in for a finer grid."));
+                return;
+            }
+            QStringList done;
+            QString why;
+            const bool ok = drawShapes(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("rectangle")},
+                                                              {QStringLiteral("layer"), drawLayer()},
+                                                              {QStringLiteral("box"), QJsonArray{r.left(), r.top(), r.right(), r.bottom()}}}},
+                                       &done, &why);
+            a_status->setText(ok ? done.join(QLatin1Char(' ')) : why);
+            return;
+        }
         if (a_placing != Placing::InternalPort) return;
         QString why;
         const bool shift = a_view->pickModifiers().testFlag(Qt::ShiftModifier);
@@ -786,6 +824,7 @@ void RF25Doc::buildUi()
     });
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
         if ((mode == LayoutView::Mode::Select || mode == LayoutView::Mode::Draw) && a_placing != Placing::None) setPlacing(Placing::None);
+        if ((mode == LayoutView::Mode::Select || mode == LayoutView::Mode::Draw) && a_drawTool != DrawTool::None) dropDrawTool();
         const QSignalBlocker quiet(a_penButton);
         a_penButton->setChecked(mode == LayoutView::Mode::Draw);
     });
@@ -793,6 +832,7 @@ void RF25Doc::buildUi()
     // undo and clearing.
     connect(a_penButton, &QToolButton::toggled, this, [this](bool on) {
         if (on && a_placing != Placing::None) setPlacing(Placing::None);
+        if (on && a_drawTool != DrawTool::None) dropDrawTool();
         a_view->setMode(on ? LayoutView::Mode::Draw : LayoutView::Mode::Select);
         a_view->setFocus();
     });
@@ -1138,7 +1178,9 @@ void RF25Doc::showProblems()
     else if (a_inductance && a_inductance->ok()) tail += tr("; the loop is %1 nH").arg(a_inductance->l * 1e9, 0, 'g', 4);
     else if (a_extraction && a_extraction->ok() && !a_extraction->names.isEmpty())
         tail += tr("; %1").arg(lineSummary().value(0, tr("solved")));
-    a_status->setText(tail);
+    // (What a drawing did, till the pointer moves on: the read and the
+    // making of the shapes that follow it said no more of it.)
+    a_status->setText(a_drawnSaid.isEmpty() ? tail : a_drawnSaid);
 }
 
 // ------------------------------------------------------------------ The layout
@@ -1336,9 +1378,11 @@ void RF25Doc::showLayout()
     const int at = cell.isEmpty() ? a_layout->mainCell() : a_layout->cellIndex(cell);
     a_view->setCell(at >= 0 ? at : a_layout->mainCell());
     // The same layout with another map or another colour: the view stays
-    // where the user left it; a layout just read is fitted.
-    if (again) a_view->setView(center, scale);
+    // where the user left it; a layout just read is fitted - but for one
+    // read again after a drawing, which stays as drawn on.
+    if (again || a_keepView) a_view->setView(center, scale);
     else a_view->fit();
+    if (!again) a_keepView = false;
     updatePen();
 }
 
@@ -1548,6 +1592,7 @@ void RF25Doc::setPortsShown(bool shown)
 
 void RF25Doc::setPlacing(Placing placing)
 {
+    if (placing != Placing::None && a_drawTool != DrawTool::None) dropDrawTool();
     a_placing = placing;
     // The two tools, one at a time; the view picking for the one in hand.
     if (a_edgePortButton != nullptr) {
@@ -2011,7 +2056,9 @@ void RF25Doc::showOverlays()
         for (const LayoutView::Overlay* o : {&taken, &kept})
             if (!o->shapes.isEmpty()) overlays << *o;
     }
-    a_view->setOverlays(overlays);
+    // (What is being drawn over them: showDrawing().)
+    a_overlaysShown = overlays;
+    showDrawing();
     a_view->setLegend(legend);
 }
 
@@ -3429,6 +3476,22 @@ double RF25Doc::solvedLength() const
 
 void RF25Doc::pointerMoved(QPointF point, bool inside)
 {
+    a_drawnSaid.clear();
+    // Where a drawing tool would put a corner: snapped, said, and the
+    // polygon being drawn led to it.
+    if (a_drawTool != DrawTool::None) {
+        a_drawPointerIn = inside;
+        if (inside) {
+            a_drawPointer = drawSnapped(point);
+            a_status->setText(tr("x = %1, y = %2 µm on %3%4")
+                                  .arg(QString::number(a_drawPointer.x(), 'g', 7), QString::number(a_drawPointer.y(), 'g', 7), drawLayer(),
+                                       a_drawTool == DrawTool::Polygon && !a_polygon.isEmpty()
+                                           ? tr(" (corner %1; a double click, Enter or the first corner closes it)").arg(a_polygon.size() + 1)
+                                           : QString()));
+        }
+        if (a_drawTool == DrawTool::Polygon && !a_polygon.isEmpty()) showDrawing();
+        return;
+    }
     if (!inside || !a_layout) {
         showProblems();
         return;

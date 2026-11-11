@@ -2402,6 +2402,281 @@ private slots:
         QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("cell(s) of M1 under its")), qPrintable(w->portsSaid.join(" | ")));
     }
 
+    // The shapes drawn on the tab (F4 of the open items of 8 November): a
+    // model that names no layout begins one beside itself at its first
+    // shape - its Layout naming it, the map sending a layer of it to the
+    // layer drawn on -, each shape one step of Undo that puts the file and
+    // the model back. A rectangle dragged, its corners snapped; a polygon
+    // clicked corner by corner, Backspace taking one back, Enter closing
+    // it; a via clicked on a via of the stack (refused where there is none);
+    // the shape selected deleted by Delete; what cannot be drawn refused,
+    // and nothing drawn. The strip drawn solves as the same strip read from
+    // a GDS made elsewhere: the same S.
+    void aModelsShapesAreDrawnOnItsTab()
+    {
+        const QString reference = fullWaveLine(QStringLiteral("drawnref.qrf25"));
+        QVERIFY(!reference.isEmpty());
+        const QString model = path(QStringLiteral("drawn.qrf25"));
+        QFile::remove(path(QStringLiteral("drawn.gds")));
+        {
+            QFile f(reference);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            m.layout().props.remove(QStringLiteral("file"));
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.remove(QStringLiteral("rows"));
+            m.ports().children.clear();
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            QVERIFY(study != nullptr);
+            study->props.insert(QStringLiteral("to"), QStringLiteral("1[GHz]"));
+            study->props.insert(QStringLiteral("points"), 1);
+            QFile out(model);
+            QVERIFY(out.open(QIODevice::WriteOnly));
+            out.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->layoutFile().isEmpty());
+        QCOMPARE(doc->drawLayer(), QStringLiteral("M1"));
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(QPointF(-100, -150), QPointF(1100, 400)));
+
+        // A rectangle dragged: the file begun, named, mapped; its corners
+        // snapped as the tool snaps them.
+        doc->drawButton()->click();
+        QCOMPARE(doc->drawTool(), RF25Doc::DrawTool::Rectangle);
+        QCOMPARE(view->mode(), LayoutView::Mode::PickBox);
+        const QPointF a = view->toPixel(QPointF(3, 2)), b = view->toPixel(QPointF(1002, 51));
+        const QRectF want = QRectF(doc->drawSnapped(view->toLayout(a)), doc->drawSnapped(view->toLayout(b))).normalized();
+        QVERIFY(want.width() > 500 && want.height() > 0);
+        drag(view, a, b);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        const QString gds = path(QStringLiteral("drawn.gds"));
+        QVERIFY2(QFileInfo::exists(gds), qPrintable(doc->statusLabel()->text()));
+        QCOMPARE(doc->model().layout().props.value(QStringLiteral("file")).toString(), QStringLiteral("drawn.gds"));
+        QCOMPARE(doc->layoutFile(), QFileInfo(gds).absoluteFilePath());
+        const QJsonArray rows = doc->model().layout().child(QStringLiteral("rf_layer_map"))->props.value(QStringLiteral("rows")).toArray();
+        QCOMPARE(rows, QJsonArray{row({QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")})});
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("Begun drawn.gds beside the model")), qPrintable(doc->statusLabel()->text()));
+        QVERIFY(doc->processed() != nullptr);
+        QCOMPARE(int(doc->processed()->conductors.size()), 1);
+        QCOMPARE(doc->processed()->conductors.first().layer, QStringLiteral("M1"));
+        const QRectF drawn = doc->processed()->conductors.first().outline.boundingRect();
+        QVERIFY2(std::abs(drawn.left() - want.left()) < 1e-6 && std::abs(drawn.right() - want.right()) < 1e-6
+                     && std::abs(drawn.top() - want.top()) < 1e-6 && std::abs(drawn.bottom() - want.bottom()) < 1e-6,
+                 qPrintable(QStringLiteral("%1 %2 %3 %4").arg(drawn.left()).arg(drawn.top()).arg(drawn.right()).arg(drawn.bottom())));
+        // Undone: no file, no name, no row; done again: all three back.
+        doc->undo();
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(!QFileInfo::exists(gds));
+        QVERIFY(doc->layoutFile().isEmpty());
+        QVERIFY(doc->model().layout().child(QStringLiteral("rf_layer_map"))->props.value(QStringLiteral("rows")).toArray().isEmpty());
+        doc->undoStack()->redo();
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(QFileInfo::exists(gds) && doc->layout() != nullptr && doc->layout()->shapeCount == 1);
+        doc->undo();
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(!QFileInfo::exists(gds));
+
+        // The strip as the reference's, drawn exactly.
+        QStringList done;
+        QString why;
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "M1"}, {"box", QJsonArray{0, 0, 1000, 50}}}}, &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(done.first().startsWith(QStringLiteral("Drew in drawn.gds: a rectangle of M1 from (0, 0) to (1000, 50) µm")), qPrintable(done.join(" | ")));
+        QFile stripFile(gds);
+        QVERIFY(stripFile.open(QIODevice::ReadOnly));
+        const QByteArray bytes = stripFile.readAll();
+        stripFile.close();
+
+        // What cannot be drawn: refused, each said, nothing drawn.
+        const auto refused = [&](const QJsonObject& e, const QString& words) {
+            QString no;
+            const bool drew = doc->drawShapes(QJsonArray{e}, nullptr, &no);
+            QFile f(gds);
+            const bool same = f.open(QIODevice::ReadOnly) && f.readAll() == bytes;
+            return !drew && no.contains(words) && same ? QString() : QStringLiteral("%1: %2").arg(drew).arg(no);
+        };
+        QString said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{0, 0, 10, 10}}}, QStringLiteral("Substrate is no metal or via"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "M9"}, {"box", QJsonArray{0, 0, 10, 10}}}, QStringLiteral("M9 is no layer of the stack"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "M1"}, {"box", QJsonArray{0, 0, 10, 0}}}, QStringLiteral("no area"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "circle"}, {"layer", "M1"}}, QStringLiteral("a rectangle, a polygon, a path or a via"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "rectangle"}, {"colour", "red"}}, QStringLiteral("'colour' is not a key"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "via"}, {"at", QJsonArray{5, 5}}}, QStringLiteral("M1 is no via of the stack"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{500, 300}}}, QStringLiteral("no shape of M1's own at (500, 300)"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "polygon"}, {"layer", "M1"}, {"points", QJsonArray{QJsonArray{0, 0}, QJsonArray{1, 1}}}}, QStringLiteral("3 at least"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+
+        // A polygon clicked corner by corner: one taken back by Backspace,
+        // closed by Enter - a stub off the strip.
+        doc->setDrawTool(RF25Doc::DrawTool::Polygon);
+        QCOMPARE(view->mode(), LayoutView::Mode::PickPoint);
+        QVERIFY(doc->drawButton()->isChecked());
+        const QList<QPointF> corners{{400, 50}, {600, 50}, {600, 300}, {777, 333}, {400, 300}};
+        for (const QPointF& c : corners) {
+            const QPointF at = view->toPixel(c);
+            drag(view, at, at);
+        }
+        QCOMPARE(int(doc->polygonDrawn().size()), 5);
+        QTest::keyClick(view, Qt::Key_Backspace);
+        QCOMPARE(int(doc->polygonDrawn().size()), 4);
+        // (Drawn while it is drawn: an overlay of its own.)
+        bool shown = false;
+        for (const LayoutView::Overlay& o : view->overlays()) shown = shown || o.name == QStringLiteral("the polygon being drawn");
+        QVERIFY(shown);
+        QTest::keyClick(view, Qt::Key_Backspace);
+        QCOMPARE(int(doc->polygonDrawn().size()), 3);
+        drag(view, view->toPixel(QPointF(400, 300)), view->toPixel(QPointF(400, 300)));
+        QTest::keyClick(view, Qt::Key_Return);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->polygonDrawn().isEmpty() && doc->layout() != nullptr && doc->layout()->shapeCount == 2, qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("a polygon of M1 of 4 corner(s)")), qPrintable(doc->statusLabel()->text()));
+        // (Merged with the strip it touches: one conductor.)
+        QCOMPARE(int(doc->processed()->conductors.size()), 1);
+        // A double click closes one too; a click on its first corner too.
+        for (const QPointF& c : QList<QPointF>{{100, 200}, {200, 200}, {200, 250}}) {
+            const QPointF at = view->toPixel(c);
+            drag(view, at, at);
+        }
+        // (A view of its own, not the layout fitted: kept as it is.)
+        view->setView(QPointF(321, 123), view->scale() * 1.37);
+        const QPointF centre = view->center();
+        const double scale = view->scale();
+        QTest::mouseDClick(view, Qt::LeftButton, Qt::NoModifier, view->toPixel(QPointF(100, 250)).toPoint());
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(doc->layout() != nullptr && doc->layout()->shapeCount == 3, qPrintable(doc->statusLabel()->text()));
+        // (The view as it was drawn on, not fitted to the layout read again.)
+        QVERIFY(view->center() == centre && view->scale() == scale);
+        // A corner within a few pixels of a shape's is that corner, though it
+        // is on no grid; a click on the first corner closes a polygon.
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "M1"}, {"box", QJsonArray{800.37, 200.13, 850.37, 250.13}}}}, &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        const QPointF near = doc->drawSnapped(QPointF(800.37, 200.13) + QPointF(1.5, -1.5) / view->scale());
+        QVERIFY2(QLineF(near, QPointF(800.37, 200.13)).length() < 1e-6, qPrintable(QStringLiteral("%1, %2").arg(near.x()).arg(near.y())));
+        for (const QPointF& c : QList<QPointF>{{650, 200}, {700, 200}, {700, 250}, {650, 200}}) {
+            const QPointF at = view->toPixel(c);
+            drag(view, at, at);
+        }
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(doc->polygonDrawn().isEmpty() && doc->layout()->shapeCount == 5, qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"box", QJsonArray{640, 190, 860, 260}}}}, &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(doc->layout()->shapeCount == 3 && done.first().contains(QStringLiteral("deleted 2 shape(s) of M1 wholly inside")), qPrintable(done.join(" | ")));
+        // The port tools and these, one at a time.
+        doc->edgePortButton()->click();
+        QCOMPARE(doc->drawTool(), RF25Doc::DrawTool::None);
+        QVERIFY(!doc->drawButton()->isChecked());
+        doc->setDrawTool(RF25Doc::DrawTool::Polygon);
+        QCOMPARE(doc->placing(), RF25Doc::Placing::None);
+        QVERIFY(!doc->edgePortButton()->isChecked());
+        // (Escape puts the tool down.)
+        QTest::keyClick(view, Qt::Key_Escape);
+        QCOMPARE(doc->drawTool(), RF25Doc::DrawTool::None);
+        QVERIFY(!doc->drawButton()->isChecked());
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+
+        // That one selected and deleted by Delete.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(180, 210))));
+        QTest::keyClick(view, Qt::Key_Delete);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(doc->layout()->shapeCount == 2, qPrintable(doc->statusLabel()->text()));
+        // And the stub by its point.
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{500, 200}}}}, &done, &why), qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        QCOMPARE(doc->layout()->shapeCount, quint64(1));
+
+        // A via, on a via of the stack: the Via tool's click, its own row.
+        {
+            rf::Model m = doc->model();
+            rf::Node via = m.make(QStringLiteral("rf_via"));
+            via.label = QStringLiteral("V0");
+            via.props.insert(QStringLiteral("from"), QStringLiteral("ground"));
+            via.props.insert(QStringLiteral("to"), QStringLiteral("M1"));
+            QVERIFY(m.add(QStringLiteral("stack"), via) != nullptr);
+            QVERIFY(doc->setModel(m, QStringLiteral("a via")));
+        }
+        doc->setViaSize(20);
+        // The menu, filled as it opens (twice, the second time anew): its
+        // tools, the stack's metals and vias, the via's size.
+        QMenu* menu = doc->drawButton()->menu();
+        QVERIFY(menu != nullptr);
+        emit menu->aboutToShow();
+        emit menu->aboutToShow();
+        QStringList items;
+        QAction* viaTool = nullptr;
+        for (QAction* act : menu->actions()) {
+            items << act->text();
+            if (act->text() == QStringLiteral("Via")) viaTool = act;
+        }
+        QVERIFY2(items.contains(QStringLiteral("Rectangle")) && items.contains(QStringLiteral("Polygon")) && viaTool != nullptr
+                     && items.contains(QStringLiteral("Layer: M1")) && items.contains(QStringLiteral("Via Size: 20 µm…")),
+                 qPrintable(items.join(" | ")));
+        QMenu* layers = menu->findChild<QMenu*>(QStringLiteral("rfDrawLayers"));
+        QVERIFY(layers != nullptr);
+        QStringList named;
+        for (QAction* act : layers->actions()) named << act->text();
+        QCOMPARE(named, (QStringList{QStringLiteral("V0 (a via)"), QStringLiteral("M1")}));   // (the stack's top first)
+        viaTool->trigger();
+        QCOMPARE(doc->drawTool(), RF25Doc::DrawTool::Via);
+        QVERIFY(doc->drawButton()->isChecked());
+        // (The via chosen in the stack is the layer drawn on.)
+        doc->focusNode(doc->model().stack().named(QStringLiteral("V0"))->tag);
+        QCOMPARE(doc->drawLayer(), QStringLiteral("V0"));
+        doc->setDrawTool(RF25Doc::DrawTool::Via);
+        drag(view, view->toPixel(QPointF(900, 25)), view->toPixel(QPointF(900, 25)));
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("a via of V0 at (")) && doc->statusLabel()->text().contains(QStringLiteral("20 µm square")),
+                 qPrintable(doc->statusLabel()->text()));
+        QVERIFY(doc->model().layout().child(QStringLiteral("rf_layer_map"))->props.value(QStringLiteral("rows")).toArray().contains(
+            row({QStringLiteral("2"), QStringLiteral("0"), QStringLiteral("V0")})));
+        int vias = 0;
+        for (const rf::Conductor& c : doc->processed()->conductors) vias += c.layer == QStringLiteral("V0");
+        QCOMPARE(vias, 1);
+        // Undone - the via and nothing else.
+        doc->undo();
+        QVERIFY(doc->waitForLayout(60000));
+        QCOMPARE(doc->layout()->shapeCount, quint64(1));
+        doc->undo();   // (the via layer)
+        QTest::keyClick(view, Qt::Key_Escape);
+
+        // The strip drawn and the strip read: the same S.
+        QVERIFY(!doc->placeEdgePortAt(QPointF(0, 25)).isEmpty());
+        QVERIFY(!doc->placeEdgePortAt(QPointF(1000, 25)).isEmpty());
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        RF25Doc* ref = open(reference);
+        QVERIFY(ref != nullptr && ref->waitForLayout(60000) && ref->waitForPrepared(60000));
+        RF25Doc::SolveRequest one;
+        one.frequencies = {1e9};
+        ref->solveWith(one);
+        QVERIFY2(ref->waitForSolved(300000), "the reference's solve ended");
+        const std::shared_ptr<const rf::FullWave> r = ref->fullWave();
+        QVERIFY2(r != nullptr && r->ok(), qPrintable(ref->solveProblem()));
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                QVERIFY2(std::abs(w->s.at(0).at(i).at(j) - r->s.at(0).at(i).at(j)) < 1e-6,
+                         qPrintable(QStringLiteral("S%1%2: %3 against %4").arg(i + 1).arg(j + 1).arg(std::abs(w->s.at(0).at(i).at(j))).arg(std::abs(r->s.at(0).at(i).at(j)))));
+    }
+
     // A port's returns given as a list (the feature request of 4 November):
     // terminals under Ports - a ground pad's patch each - and the ports'
     // Return "terminals" with their names, as a list in one and a text in

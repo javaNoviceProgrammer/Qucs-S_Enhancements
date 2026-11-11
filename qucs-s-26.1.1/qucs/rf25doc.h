@@ -39,7 +39,9 @@
 #include <memory>
 #include <optional>
 
+class QJsonArray;
 class QLabel;
+class QMenu;
 class QPlainTextEdit;
 class QProgressBar;
 class QSplitter;
@@ -478,6 +480,63 @@ public:
     /// empty and why: no port put yet, no metal under it.
     QString placeTerminal(const QRectF& box, QString* why = nullptr);
 
+    /*!
+     * Drawing the shapes themselves (F4 of the open items of 8 November):
+     * with the Rectangle tool a drag draws a rectangle, with the Polygon
+     * tool each click a corner - a double click, Enter or a click on the
+     * first corner closes it, Backspace takes the last back -, with the Via
+     * tool a click a square via of viaSize() there; each on drawLayer(),
+     * its corners snapped to a shape's corner or edge within reach, else to
+     * the grid shown. In Select, Delete deletes the shape selected. What is
+     * drawn is written at once to the layout file the model names - a
+     * GDSII file begun beside the model where it names none -, on the
+     * layer of the file the layer map sends to that layer of the stack (a
+     * row added for one it has none for); each shape one step of Undo, the
+     * file as it was put back. The port tools, the pen and these are one
+     * at a time; Escape puts it down.
+     */
+    enum class DrawTool { None, Rectangle, Polygon, Via };
+    DrawTool drawTool() const { return a_drawTool; }
+    void setDrawTool(DrawTool tool);
+    /// The Draw button (its arrow, the menu: the tools, the layer, the
+    /// via's size, Delete).
+    QToolButton* drawButton() const { return a_drawButton; }
+    /// The layer of the stack drawn on, by name: as chosen in the Draw menu
+    /// (or setDrawLayer()), else the metal or via chosen in the stack, else
+    /// the topmost metal; empty where the stack has no metal.
+    QString drawLayer() const;
+    void setDrawLayer(const QString& name);
+    /// A via's side, µm (kept for the next model opened); 1 where unset.
+    double viaSize() const { return a_viaSize; }
+    void setViaSize(double um);
+    /// \a at (µm) as the drawing tools snap it: to the corner, else the
+    /// edge, of a shape shown within a few pixels; else to the grid shown.
+    QPointF drawSnapped(QPointF at) const;
+    /// The corners of the polygon being drawn, µm (empty: none is).
+    const QPolygonF& polygonDrawn() const { return a_polygon; }
+    /// The polygon being drawn closed and drawn (three corners at least);
+    /// whether it was.
+    bool finishPolygon(QString* why = nullptr);
+    /*!
+     * \a edits drawn, all of them or none, as one step of Undo; what each
+     * did in \a done, else why in \a error. Each is an object:
+     *
+     *   {"add": "rectangle", "layer": L, "box": [x0, y0, x1, y1]}
+     *   {"add": "polygon", "layer": L, "points": [[x, y], ...]}
+     *   {"add": "path", "layer": L, "points": [...], "width": w, "ends": "flush"|"round"|"extended"}
+     *   {"add": "via", "layer": V, "at": [x, y], "size": s}    (V: a via; the stack's first where not given; s: viaSize())
+     *   {"delete": "shape", "layer": L, "at": [x, y]}         the smallest of L's there
+     *   {"delete": "shape", "layer": L, "box": [x0, y0, x1, y1]}   every one of L's wholly inside
+     *
+     * L a metal or a via of the stack by name or tag, µm in the cell
+     * solved. The layout is written at once (begun beside the model, which
+     * must be saved, where it names none), then read again.
+     */
+    bool drawShapes(const QJsonArray& edits, QStringList* done = nullptr, QString* error = nullptr);
+    /// The shape selected in the view deleted from the layout file (one of
+    /// the cell solved's own, on a layer the map sends to the stack).
+    bool deleteSelectedShape(QString* why = nullptr);
+
     // What is shown.
     qucs_s::layout::LayoutView* view() const { return a_view; }
     qucs_s::rf25::StackView* stackView() const { return a_stack; }
@@ -605,6 +664,31 @@ private:
     QToolButton* a_internalPortButton = nullptr;
     qucs_s::markup::PenButton* a_penButton = nullptr;
     void updatePen();
+    DrawTool a_drawTool = DrawTool::None;
+    DrawTool a_lastTool = DrawTool::Rectangle;   ///< the button's click takes it up again
+    QString a_drawLayer;                         ///< chosen in the menu; empty: drawLayer()'s own choice
+    double a_viaSize = 1;
+    QPolygonF a_polygon;                         ///< the polygon being drawn
+    QPointF a_drawPointer;                       ///< where the pointer is, snapped
+    bool a_drawPointerIn = false;
+    QToolButton* a_drawButton = nullptr;
+    QMenu* a_drawMenu = nullptr;
+    QObject* a_drawMenuParts = nullptr;          ///< what the menu's last filling made beside its actions
+    QString a_drawnSaid;                         ///< what the last drawing did, said till the pointer moves
+    bool a_keepView = false;                     ///< the layout read next is shown where the view is: a drawing's
+    QList<qucs_s::layout::LayoutView::Overlay> a_overlaysShown;   ///< showOverlays()' own, under what is being drawn
+    /// The overlays shown again: showOverlays()' and what is being drawn.
+    void showDrawing();
+    void fillDrawMenu();
+    /// The drawing tool put down, the view's mode as it is (the pen, a port
+    /// tool, taken up).
+    void dropDrawTool();
+    /// A click with a drawing tool: a polygon's corner, a via.
+    void drawPicked(QPointF at);
+    /// The model and the layout file's bytes \a bytes (none: no file) in
+    /// place, the layout read again: a drawing's Undo and Redo.
+    void applyDrawn(const qucs_s::rf25::Model& model, const QString& path, const std::optional<QByteArray>& bytes);
+    bool eventFilter(QObject* watched, QEvent* event) override;
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
