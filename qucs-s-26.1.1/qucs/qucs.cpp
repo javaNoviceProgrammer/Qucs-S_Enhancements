@@ -614,6 +614,14 @@ std::pair<quint64, QString> QucsApp::drawingsOf(const QString &file, quint64 kno
       const quint64 revision = deck->view()->drawing().revision();
       return {revision, revision == known ? QString() : penSaid(qucs_s::markup::sentencesOf(deck->readDrawing(true), true), deck->penButton(), "show_pptx")};
     }
+#ifdef QUCS_HAVE_QTPDF
+    // A PDF's pages, read against their words. (No tool takes its pen up or
+    // down, or reads it apart: the prompt's note is what Claude has.)
+    if (auto *pdf = dynamic_cast<PdfDoc *>(doc)) {
+      const quint64 revision = pdf->view()->drawing().revision();
+      return {revision, revision == known ? QString() : pdf->drawingSentences()};
+    }
+#endif
   }
   return {0, QString()};
 }
