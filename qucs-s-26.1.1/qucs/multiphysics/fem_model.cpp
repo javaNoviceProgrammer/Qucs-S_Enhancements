@@ -206,6 +206,14 @@ P shownIf(P p, const QString& condition)
     return p;
 }
 
+/// A property shown and read in \a spaces alone (Spaces): a 3D model's z
+/// component.
+P inSpaces(P p, unsigned spaces)
+{
+    p.spaces = spaces;
+    return p;
+}
+
 /// A Choice that takes a value in its place too.
 P orValue(P p)
 {
@@ -1176,17 +1184,18 @@ QList<NodeKind> makeKinds()
     // Solid mechanics.
     add({QStringLiteral("solid"), tr("Solid Mechanics"), QStringLiteral("physics"), QStringLiteral("solid"), Level::Domain,
          {selectionProp(),
-          shownIf(choice(QStringLiteral("model"), tr("2D approximation"), {QStringLiteral("planestrain"), QStringLiteral("planestress")},
-                         {tr("Plane strain (long in z: no strain out of the plane)"), tr("Plane stress (thin in z: no stress out of the plane)")},
-                         QStringLiteral("planestrain")),
-                  QString()),
+          inSpaces(choice(QStringLiteral("model"), tr("2D approximation"), {QStringLiteral("planestrain"), QStringLiteral("planestress")},
+                          {tr("Plane strain (long in z: no strain out of the plane)"), tr("Plane stress (thin in z: no stress out of the plane)")},
+                          QStringLiteral("planestrain")),
+                   Spaces::TwoD),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                  QStringLiteral("2"))},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
           QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo")},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free")}, false, false, QStringLiteral("solid"),
          tr("The displacement (u, v) of a linear elastic solid: -∇·σ = f, σ = D (ε - ε0), ε0 a thermal strain. In the plane, "
-            "in plane strain or plane stress; about an axis, axisymmetric (the component's space).")});
+            "in plane strain or plane stress; about an axis, axisymmetric (the component's space); in 3D (u, v, w) on prisms, "
+            "order 2 for bending (a linear prism locks).")});
     add({QStringLiteral("solid/elastic"), tr("Linear Elastic Material"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(), source,
           shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("anisotropic")},
@@ -1198,8 +1207,12 @@ QList<NodeKind> makeKinds()
           shownIf(spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QStringLiteral("0.3")), QStringLiteral("source=user&anisotropy=isotropic")),
           shownIf(text(QStringLiteral("C"), tr("Stiffness Cij"), QStringLiteral("C11=165.7[GPa]; C12=63.9[GPa]; C13=63.9[GPa]; C22=165.7[GPa]; C23=63.9[GPa]; C33=165.7[GPa]; C44=79.6[GPa]; C55=79.6[GPa]; C66=79.6[GPa]"),
                        tr("Voigt's, the model's axes (xx, yy, zz, yz, xz, xy), entries split by ';' - silicon's along its cube's axes "
-                          "by default")),
+                          "by default. In 3D all 21 of a triclinic crystal's may be named (C14, C15...)")),
                   QStringLiteral("source=user&anisotropy=anisotropic")),
+          inSpaces(shownIf(spatial(QStringLiteral("rho"), tr("Density ρ"), QStringLiteral("kg/m^3"), QStringLiteral("7850[kg/m^3]"),
+                                   tr("Its mass: an Eigenfrequency step's")),
+                           QStringLiteral("source=user")),
+                   Spaces::ThreeD),
           flag(QStringLiteral("thermal"), tr("Thermal expansion"), false, tr("A strain α (T - Tref), T from a heat physics or as given")),
           shownIf(spatial(QStringLiteral("alpha"), tr("Coefficient of thermal expansion α"), QStringLiteral("1/K"), QStringLiteral("1e-5[1/K]"),
                           tr("One, or a tensor: x; y; z (or six, symmetric)")),
@@ -1241,8 +1254,11 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), flag(QStringLiteral("x"), tr("Prescribed in x (r)"), true),
           shownIf(spatial(QStringLiteral("u0"), tr("Displacement u0"), QStringLiteral("m"), QStringLiteral("0[m]")), QStringLiteral("x=true")),
           flag(QStringLiteral("y"), tr("Prescribed in y (z)"), true),
-          shownIf(spatial(QStringLiteral("v0"), tr("Displacement v0"), QStringLiteral("m"), QStringLiteral("0[m]")), QStringLiteral("y=true"))},
-         {}, {}, false, false, QStringLiteral("disp"), tr("A displacement given, in x, in y or both: of x, y and t.")});
+          shownIf(spatial(QStringLiteral("v0"), tr("Displacement v0"), QStringLiteral("m"), QStringLiteral("0[m]")), QStringLiteral("y=true")),
+          inSpaces(flag(QStringLiteral("z"), tr("Prescribed in z"), true), Spaces::ThreeD),
+          inSpaces(shownIf(spatial(QStringLiteral("w0"), tr("Displacement w0"), QStringLiteral("m"), QStringLiteral("0[m]")), QStringLiteral("z=true")),
+                   Spaces::ThreeD)},
+         {}, {}, false, false, QStringLiteral("disp"), tr("A displacement given, in x, in y (and in z in 3D) or each: of x, y (z) and t.")});
     add({QStringLiteral("solid/roller"), tr("Roller"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp(none)}, {}, {}, false, false, QStringLiteral("rol"),
          tr("No displacement across the boundary, free along it: a symmetry plane.")});
@@ -1252,12 +1268,17 @@ QList<NodeKind> makeKinds()
                  {tr("Force per area (Fx, Fy)"), tr("Pressure (pushing in)")}, QStringLiteral("force")),
           shownIf(spatial(QStringLiteral("Fx"), tr("Fx"), QStringLiteral("N/m^2"), QStringLiteral("0[N/m^2]")), QStringLiteral("kind=force")),
           shownIf(spatial(QStringLiteral("Fy"), tr("Fy"), QStringLiteral("N/m^2"), QStringLiteral("0[N/m^2]")), QStringLiteral("kind=force")),
+          inSpaces(shownIf(spatial(QStringLiteral("Fz"), tr("Fz"), QStringLiteral("N/m^2"), QStringLiteral("0[N/m^2]")), QStringLiteral("kind=force")),
+                   Spaces::ThreeD),
           shownIf(spatial(QStringLiteral("p"), tr("Pressure p"), QStringLiteral("Pa"), QStringLiteral("0[Pa]")), QStringLiteral("kind=pressure"))},
          {}, {}, false, false, QStringLiteral("bndl"), tr("A force on the boundary, per area (per length times the thickness).")});
     add({QStringLiteral("solid/bodyload"), tr("Body Load"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(none), spatial(QStringLiteral("fx"), tr("fx"), QStringLiteral("N/m^3"), QStringLiteral("0[N/m^3]")),
           spatial(QStringLiteral("fy"), tr("fy"), QStringLiteral("N/m^3"), QStringLiteral("0[N/m^3]"),
-                  tr("Its weight: -rho*g_const, with rho a parameter or a value"))},
+                  tr("Its weight: -rho*g_const, with rho a parameter or a value")),
+          inSpaces(spatial(QStringLiteral("fz"), tr("fz"), QStringLiteral("N/m^3"), QStringLiteral("0[N/m^3]"),
+                           tr("A 3D model's weight is along -z: -rho*g_const")),
+                   Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("bl"), tr("A force per volume: weight, an inertial force.")});
 
     // Magnetic fields.
@@ -1265,15 +1286,17 @@ QList<NodeKind> makeKinds()
          {selectionProp(),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                  QStringLiteral("2")),
-          text(QStringLiteral("reference"), tr("Reference coil"), QString(),
-               tr("A coil's name: the coils' matrix reduced against it - each coil's current returning in it, the voltage "
-                  "between them: mf.Lr_i_j, mf.Rr_i_j = Z_ij - Z_ir - Z_rj + Z_rr (empty: none)"))},
+          inSpaces(text(QStringLiteral("reference"), tr("Reference coil"), QString(),
+                        tr("A coil's name: the coils' matrix reduced against it - each coil's current returning in it, the voltage "
+                           "between them: mf.Lr_i_j, mf.Rr_i_j = Z_ij - Z_ir - Z_rj + Z_rr (empty: none)")),
+                   Spaces::TwoD)},
          {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/current"), QStringLiteral("magnetic/coil"),
           QStringLiteral("magnetic/magnet"), QStringLiteral("magnetic/insulation"), QStringLiteral("magnetic/potential"),
           QStringLiteral("magnetic/pmc"), QStringLiteral("magnetic/surfacecurrent")},
          {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/insulation")}, false, false, QStringLiteral("mf"),
          tr("The magnetic vector potential A out of the plane (round the axis): ∇×(µ⁻¹ ∇×A) = J, with B-H curves at rest "
-            "and eddy currents (jωσA) in the frequency domain. Coils give an inductance or impedance matrix.")});
+            "and eddy currents (jωσA) in the frequency domain. Coils give an inductance or impedance matrix. In 3D, A on edge "
+            "elements at rest, ∇·A = 0 held by a nodal multiplier; its coils' currents a currents physics'.")});
     add({QStringLiteral("magnetic/ampere"), tr("Ampère's Law"), QStringLiteral("mf"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("constitutive"), tr("Magnetization model"), {QStringLiteral("mur"), QStringLiteral("bh")},
@@ -1290,8 +1313,17 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("source=user&constitutive=mur&anisotropy!=isotropic")),
           shownIf(spatial(QStringLiteral("muryy"), tr("µr, yy"), QString(), QStringLiteral("1")),
                   QStringLiteral("source=user&constitutive=mur&anisotropy!=isotropic")),
+          inSpaces(shownIf(spatial(QStringLiteral("murzz"), tr("µr, zz"), QString(), QStringLiteral("1")),
+                           QStringLiteral("source=user&constitutive=mur&anisotropy!=isotropic")),
+                   Spaces::ThreeD),
           shownIf(spatial(QStringLiteral("murxy"), tr("µr, xy"), QString(), QStringLiteral("0")),
                   QStringLiteral("source=user&constitutive=mur&anisotropy=symmetric")),
+          inSpaces(shownIf(spatial(QStringLiteral("murxz"), tr("µr, xz"), QString(), QStringLiteral("0")),
+                           QStringLiteral("source=user&constitutive=mur&anisotropy=symmetric")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(spatial(QStringLiteral("muryz"), tr("µr, yz"), QString(), QStringLiteral("0")),
+                           QStringLiteral("source=user&constitutive=mur&anisotropy=symmetric")),
+                   Spaces::ThreeD),
           shownIf(bhRows(), QStringLiteral("source=user&constitutive=bh")),
           shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]")),
                   QStringLiteral("source=user"))},
@@ -1300,16 +1332,33 @@ QList<NodeKind> makeKinds()
             "their material or as given.")});
     add({QStringLiteral("magnetic/current"), tr("External Current Density"), QStringLiteral("mf"), QStringLiteral("domainfeature"),
          Level::Domain,
-         {selectionProp(none), spatial(QStringLiteral("Je"), tr("Current density Je"), QStringLiteral("A/m^2"), QStringLiteral("0[A/m^2]"),
-                                       tr("Out of the plane (round the axis)"))},
-         {}, {}, false, false, QStringLiteral("ecd"), tr("A current density given: out of the plane, or round the axis.")});
+         {selectionProp(none),
+          inSpaces(spatial(QStringLiteral("Je"), tr("Current density Je"), QStringLiteral("A/m^2"), QStringLiteral("0[A/m^2]"),
+                           tr("Out of the plane (round the axis)")),
+                   Spaces::TwoD),
+          inSpaces(spatial(QStringLiteral("Jex"), tr("Jex"), QStringLiteral("A/m^2"), QStringLiteral("0[A/m^2]"),
+                           tr("A currents physics' ec.Jx, or any expression")),
+                   Spaces::ThreeD),
+          inSpaces(spatial(QStringLiteral("Jey"), tr("Jey"), QStringLiteral("A/m^2"), QStringLiteral("0[A/m^2]")), Spaces::ThreeD),
+          inSpaces(spatial(QStringLiteral("Jez"), tr("Jez"), QStringLiteral("A/m^2"), QStringLiteral("0[A/m^2]")), Spaces::ThreeD)},
+         {}, {}, false, false, QStringLiteral("ecd"), tr("A current density given: out of the plane, or round the axis; in 3D its three components.")});
+    P coilCurrents;
+    coilCurrents.key = QStringLiteral("ec");
+    coilCurrents.label = tr("Electric currents");
+    coilCurrents.kind = P::Physics;
+    coilCurrents.defaultValue = QJsonArray{QStringLiteral("ec")};
+    coilCurrents.tooltip = tr("The currents physics whose J, between its terminal and the rest, the coil carries: N I0 / I_ec times it");
+    coilCurrents.spaces = Spaces::ThreeD;
     add({QStringLiteral("magnetic/coil"), tr("Coil"), QStringLiteral("mf"), QStringLiteral("coil"), Level::Domain,
-         {selectionProp(none), text(QStringLiteral("name"), tr("Coil name"), QStringLiteral("1")),
+         {selectionProp(none), text(QStringLiteral("name"), tr("Coil name"), QStringLiteral("1")), coilCurrents,
+          inSpaces(text(QStringLiteral("terminal"), tr("Its terminal"), QString(),
+                        tr("The currents physics' terminal whose current I_ec its J carries (empty: its first)")),
+                   Spaces::ThreeD),
           choice(QStringLiteral("conductor"), tr("Conductor model"), {QStringLiteral("single"), QStringLiteral("multi")},
                  {tr("Single conductor"), tr("Homogenized multi-turn")}, QStringLiteral("single"),
                  tr("A single conductor: its current spread as its voltage drives it (the skin effect in the frequency domain); "
                     "turns of thin wire: evenly, no eddy currents")),
-          shownIf(choice(QStringLiteral("role"), tr("Role"),
+          inSpaces(shownIf(choice(QStringLiteral("role"), tr("Role"),
                          {QStringLiteral("current"), QStringLiteral("voltage"), QStringLiteral("floating"), QStringLiteral("grounded")},
                          {tr("Fixed current"), tr("Fixed voltage"), tr("Floating (no net current)"), tr("Grounded (no voltage)")},
                          QStringLiteral("current"),
@@ -1317,13 +1366,15 @@ QList<NodeKind> makeKinds()
                             "between its ends - a ground whose current the fields set (an odd mode's half-model: its "
                             "return partly in the mirror signal, not a fixed -1 A). A conductor with no coil is grounded.")),
                   QStringLiteral("conductor=single")),
+                   Spaces::TwoD),
           shownIf(expr(QStringLiteral("I0"), tr("Coil current"), QStringLiteral("A"), QStringLiteral("1[A]"),
                        tr("Its amplitude in the frequency domain; out of the plane (round the axis)")),
                   QStringLiteral("conductor=multi|role=current")),
-          shownIf(expr(QStringLiteral("V0"), tr("Coil voltage"), QStringLiteral("V"), QStringLiteral("1[V]"),
-                       tr("Between its ends, over the model's thickness (round the axis: one turn); its amplitude in the "
-                          "frequency domain")),
-                  QStringLiteral("conductor=single&role=voltage")),
+          inSpaces(shownIf(expr(QStringLiteral("V0"), tr("Coil voltage"), QStringLiteral("V"), QStringLiteral("1[V]"),
+                                tr("Between its ends, over the model's thickness (round the axis: one turn); its amplitude in the "
+                                   "frequency domain")),
+                           QStringLiteral("conductor=single&role=voltage")),
+                   Spaces::TwoD),
           shownIf(expr(QStringLiteral("N"), tr("Number of turns"), QString(), QStringLiteral("10")), QStringLiteral("conductor=multi"))},
          {}, {}, false, false, QStringLiteral("coil"),
          tr("A conductor fed a current (or held at a voltage, floating, grounded), the rest found: mf.I_<name>, "
@@ -1334,8 +1385,12 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), source,
           shownIf(expr(QStringLiteral("Br"), tr("Remanent flux density Br"), QStringLiteral("T"), QStringLiteral("1[T]")),
                   QStringLiteral("source=user")),
-          pair(QStringLiteral("direction"), tr("Direction (x, y)"), QString(), QStringLiteral("0"), QStringLiteral("1"),
-               tr("Its magnetization's direction: (r, z) about the axis"))},
+          inSpaces(pair(QStringLiteral("direction"), tr("Direction (x, y)"), QString(), QStringLiteral("0"), QStringLiteral("1"),
+                        tr("Its magnetization's direction: (r, z) about the axis")),
+                   Spaces::TwoD),
+          inSpaces(expr(QStringLiteral("dx"), tr("Direction, x"), QString(), QStringLiteral("0")), Spaces::ThreeD),
+          inSpaces(expr(QStringLiteral("dy"), tr("Direction, y"), QString(), QStringLiteral("0")), Spaces::ThreeD),
+          inSpaces(expr(QStringLiteral("dz"), tr("Direction, z"), QString(), QStringLiteral("1")), Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("mag"),
          tr("A permanent magnet: B = µ0 µr H + Br, µr (its recoil permeability) from Ampère's Law.")});
     add({QStringLiteral("magnetic/insulation"), tr("Magnetic Insulation"), QStringLiteral("mf"), QStringLiteral("ground"), Level::Boundary,
@@ -1343,14 +1398,24 @@ QList<NodeKind> makeKinds()
          tr("A = 0: no flux crosses it (a perfect conductor). On the physics' outer boundaries.")});
     add({QStringLiteral("magnetic/potential"), tr("Magnetic Potential"), QStringLiteral("mf"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
-         {selectionProp(none), spatial(QStringLiteral("A0"), tr("Magnetic vector potential A0"), QStringLiteral("Wb/m"), QStringLiteral("0[Wb/m]"))},
-         {}, {}, false, false, QStringLiteral("mp"), tr("A given: the flux between two boundaries is the difference of their A.")});
+         {selectionProp(none),
+          inSpaces(spatial(QStringLiteral("A0"), tr("Magnetic vector potential A0"), QStringLiteral("Wb/m"), QStringLiteral("0[Wb/m]")), Spaces::TwoD),
+          inSpaces(spatial(QStringLiteral("A0x"), tr("A0x"), QStringLiteral("Wb/m"), QStringLiteral("0[Wb/m]"),
+                           tr("Its tangential part held: a uniform B0 is A0 = B0 × r / 2, or (0, 0, B0 y) for B0 along x")),
+                   Spaces::ThreeD),
+          inSpaces(spatial(QStringLiteral("A0y"), tr("A0y"), QStringLiteral("Wb/m"), QStringLiteral("0[Wb/m]")), Spaces::ThreeD),
+          inSpaces(spatial(QStringLiteral("A0z"), tr("A0z"), QStringLiteral("Wb/m"), QStringLiteral("0[Wb/m]")), Spaces::ThreeD)},
+         {}, {}, false, false, QStringLiteral("mp"), tr("A given: the flux between two boundaries is the difference of their A; in 3D n × A held.")});
     add({QStringLiteral("magnetic/pmc"), tr("Perfect Magnetic Conductor"), QStringLiteral("mf"), QStringLiteral("boundaryfeature"),
          Level::Boundary, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pmc"),
          tr("n × H = 0: the field meets it at right angles (a symmetry plane of the currents).")});
     add({QStringLiteral("magnetic/surfacecurrent"), tr("Surface Current Density"), QStringLiteral("mf"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
-         {selectionProp(none), spatial(QStringLiteral("Js"), tr("Surface current density Js"), QStringLiteral("A/m"), QStringLiteral("0[A/m]"))},
+         {selectionProp(none),
+          inSpaces(spatial(QStringLiteral("Js"), tr("Surface current density Js"), QStringLiteral("A/m"), QStringLiteral("0[A/m]")), Spaces::TwoD),
+          inSpaces(spatial(QStringLiteral("Jsx"), tr("Jsx"), QStringLiteral("A/m"), QStringLiteral("0[A/m]")), Spaces::ThreeD),
+          inSpaces(spatial(QStringLiteral("Jsy"), tr("Jsy"), QStringLiteral("A/m"), QStringLiteral("0[A/m]")), Spaces::ThreeD),
+          inSpaces(spatial(QStringLiteral("Jsz"), tr("Jsz"), QStringLiteral("A/m"), QStringLiteral("0[A/m]")), Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("scd"), tr("A current sheet on the boundary, out of the plane.")});
 
     // Electromagnetic waves: a cross-section's modes, waves in the plane.
@@ -2033,7 +2098,13 @@ QList<NodeKind> makeKinds()
                tr("Out of the plane: its Lorentz force turns each carrier's current, J = (J0 ∓ µH Bz ẑ×J0)/(1 + (µH Bz)²) - "
                   "electrons' minus, holes' plus -, µH = r µ the Hall mobility (the material model's Hall factors r): a Hall bar's "
                   "voltage across r I Bz/(q n t), its sign its carriers'. (In the plane a field turns the current out of it: "
-                  "nothing in 2D.)")) },
+                  "nothing in 2D.)")),
+          inSpaces(expr(QStringLiteral("Bx"), tr("Magnetic flux density Bx"), QStringLiteral("T"), QStringLiteral("0[T]"),
+                        tr("A 3D model's field along x: each carrier's current turned, J = (J0 + J0×β + (J0·β) β)/(1 + β²), β = ∓ r µ B "
+                           "(electrons' minus)")),
+                   Spaces::ThreeD),
+          inSpaces(expr(QStringLiteral("By"), tr("Magnetic flux density By"), QStringLiteral("T"), QStringLiteral("0[T]"), tr("A 3D model's field along y")),
+                   Spaces::ThreeD) },
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
           QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/btbt"),
@@ -2400,6 +2471,12 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("profile=box")),
           shownIf(expr(QStringLiteral("Nb"), tr("Background concentration"), QStringLiteral("1/m^3"), QStringLiteral("1e15[1/cm^3]")),
                   QStringLiteral("profile=box")),
+          inSpaces(shownIf(expr(QStringLiteral("zmin"), tr("Box's bottom z"), QStringLiteral("m"), QString(), tr("Empty: no bottom")),
+                           QStringLiteral("profile=box")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(expr(QStringLiteral("zmax"), tr("Box's top z"), QStringLiteral("m"), QString(), tr("Empty: no top")),
+                           QStringLiteral("profile=box")),
+                   Spaces::ThreeD),
           shownIf(spatial(QStringLiteral("N"), tr("Concentration N"), QStringLiteral("1/m^3"), QStringLiteral("1e16[1/cm^3]"),
                           tr("Of x and y")),
                   QStringLiteral("profile=expression"))},
@@ -2547,7 +2624,10 @@ QList<NodeKind> makeKinds()
             "photodiode's bandwidth.")});
     add({QStringLiteral("semiconductor/optical"), tr("Optical Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
-         {selectionProp(none), text(QStringLiteral("mode"), tr("Mode analysis"), QStringLiteral("emw"), tr("The Electromagnetic Waves, Mode Analysis whose mode is fed")),
+         {selectionProp(none), text(QStringLiteral("mode"), tr("Mode analysis"), QStringLiteral("emw"),
+                                    tr("The Electromagnetic Waves, Mode Analysis whose mode is fed. In 3D the Electromagnetic Waves, Frequency Domain "
+                                       "(waves3) whose light it is - a Wavelength Domain step solving it before this physics' step: its |E| of 1 W "
+                                       "fed, P0 of it, each photon absorbed by the media's κ a pair at η")),
           integer(QStringLiteral("number"), tr("Mode number"), 1,
                   tr("Which of the mode step's modes is fed: 1 the highest effective index, as emw.mode numbers them (the step "
                      "leaves it selected; it must find that many)")),
@@ -2630,7 +2710,8 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("semiconductor/polarization"), tr("Polarization Charge (wurtzite)"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
          {selectionProp(none),
-          choice(QStringLiteral("axis"), tr("c axis along"), {QStringLiteral("y"), QStringLiteral("x")}, {tr("y"), tr("x")}, QStringLiteral("y")),
+          choice(QStringLiteral("axis"), tr("c axis along"), {QStringLiteral("y"), QStringLiteral("x"), QStringLiteral("z")}, {tr("y"), tr("x"), tr("z (3D)")},
+                 QStringLiteral("y")),
           choice(QStringLiteral("polarity"), tr("Growth face"), {QStringLiteral("metal"), QStringLiteral("nitrogen")},
                  {tr("Metal (Ga) face: c along the axis"), tr("Nitrogen face: c against it")}, QStringLiteral("metal")),
           text(QStringLiteral("substrate"), tr("Substrate (strain)"), QString(),
@@ -3311,17 +3392,23 @@ QList<NodeKind> makeKinds()
                 "eigenfunctions: each a solution, as a mode is.")});
         add({QStringLiteral("eigenfrequency"), tr("Eigenfrequency"), QStringLiteral("step"), QStringLiteral("eigenfrequency"), Level::None,
              {physics, integer(QStringLiteral("count"), tr("Eigenfrequencies"), 6, tr("Those nearest what it searches about")),
-              expr(QStringLiteral("around"), tr("Search about"), QString(), QStringLiteral("1[um]"),
-                   tr("A free-space wavelength (980[nm]) or a frequency (306[THz]); its media taken there")),
-              integer(QStringLiteral("keep"), tr("Mode kept for the steps after"), 0,
-                      tr("The mode a laser's step after it lases in: its number of those found (0: the one of highest Q)")),
+              inSpaces(expr(QStringLiteral("around"), tr("Search about"), QString(), QStringLiteral("1[um]"),
+                            tr("A free-space wavelength (980[nm]) or a frequency (306[THz]); its media taken there")),
+                       Spaces::TwoD),
+              inSpaces(expr(QStringLiteral("fshift"), tr("Search about"), QStringLiteral("Hz"), QStringLiteral("0[Hz]"),
+                            tr("A frequency: the modes nearest it (0: the lowest)")),
+                       Spaces::ThreeD),
+              inSpaces(integer(QStringLiteral("keep"), tr("Mode kept for the steps after"), 0,
+                               tr("The mode a laser's step after it lases in: its number of those found (0: the one of highest Q)")),
+                       Spaces::TwoD),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved before")),
               before, nonlinear},
              {}, {}, false, false, QStringLiteral("eig"),
              tr("A resonator's (Electromagnetic Waves, Eigenfrequency) modes nearest a frequency or wavelength: each a solution, "
                 "by frequency - its eigenfrequency, Q and fields. Physics at rest are solved first; the steps after see the mode "
-                "kept.")});
+                "kept. In 3D a solid's natural frequencies, K x = ω² M x, its density ρ its mass: each mode a solution, "
+                "solid.freq its frequency.")});
         add({QStringLiteral("laser"), tr("Laser L-I"), QStringLiteral("step"), QStringLiteral("laser"), Level::None,
              {physics,
               text(QStringLiteral("contact"), tr("Contact swept"), QStringLiteral("anode"), tr("A semiconductor's metal contact, by name")),
@@ -4313,19 +4400,67 @@ QList<NodeKind> makeKinds()
                                   QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("eme/periodic"),
                                   QStringLiteral("waves3"), QStringLiteral("waves3/port"), QStringLiteral("waves3/pml"), QStringLiteral("waves3t"),
                                   QStringLiteral("waves3t/port"), QStringLiteral("waves3t/pml"), QStringLiteral("wavelength")};
-    // Solved in 3D too: heat, electrostatics and currents with their
-    // features, and a study's Stationary and Time Dependent steps and its
+    // Solved in 3D too: heat, electrostatics, currents and solid mechanics
+    // with their features, and a study's Stationary and Time Dependent steps and its
     // Parametric Sweep - the first's adaptive refinement and light loop the
     // plane's, a field that reads itself by Newton's method (or Picard's),
     // physics in turn, the sweep's points one after another.
+    // A semiconductor's in 3D: its features the 3D solver takes, each its
+    // properties taken there (the rest the plane's: the 1D line, the process
+    // flow's doping, Schrödinger-Poisson and lasing - a quantum wells
+    // physics' states and a resonator's mode, neither a 3D model's - and the
+    // optical generation's slices and mode number).
+    static const std::map<QString, QStringList> semi3 = {
+        {QStringLiteral("semiconductor"), {QStringLiteral("T"), QStringLiteral("TL"), QStringLiteral("heterojunctions"), QStringLiteral("Bx"), QStringLiteral("By"), QStringLiteral("Bz"), QStringLiteral("noise")}},
+        {QStringLiteral("semiconductor/model"), {QStringLiteral("source"), QStringLiteral("epsilonr"), QStringLiteral("Eg"), QStringLiteral("chi"), QStringLiteral("Nc"), QStringLiteral("Nv"), QStringLiteral("mun"), QStringLiteral("mup"), QStringLiteral("mobility"), QStringLiteral("munmin"), QStringLiteral("nrefn"), QStringLiteral("alphan"), QStringLiteral("mupmin"), QStringLiteral("nrefp"), QStringLiteral("alphap"), QStringLiteral("mmaxn"), QStringLiteral("m1n"), QStringLiteral("m2n"), QStringLiteral("mu1n"), QStringLiteral("pcn"), QStringLiteral("crn"), QStringLiteral("csn"), QStringLiteral("man"), QStringLiteral("mbn"), QStringLiteral("mmaxp"), QStringLiteral("m1p"), QStringLiteral("m2p"), QStringLiteral("mu1p"), QStringLiteral("pcp"), QStringLiteral("crp"), QStringLiteral("csp"), QStringLiteral("map"), QStringLiteral("mbp"), QStringLiteral("arminn"), QStringLiteral("aran"), QStringLiteral("ardn"), QStringLiteral("arbn"), QStringLiteral("arnrefn"), QStringLiteral("arcn"), QStringLiteral("aralphan"), QStringLiteral("ardexpn"), QStringLiteral("arminp"), QStringLiteral("arap"), QStringLiteral("ardp"), QStringLiteral("arbp"), QStringLiteral("arnrefp"), QStringLiteral("arcp"), QStringLiteral("aralphap"), QStringLiteral("ardexpp"), QStringLiteral("dlmun"), QStringLiteral("dlgamman"), QStringLiteral("dlan"), QStringLiteral("dlbn"), QStringLiteral("dlmup"), QStringLiteral("dlgammap"), QStringLiteral("dlap"), QStringLiteral("dlbp"), QStringLiteral("klmaxn"), QStringLiteral("klminn"), QStringLiteral("klthetan"), QStringLiteral("klnrefn"), QStringLiteral("klalphan"), QStringLiteral("klmaxp"), QStringLiteral("klminp"), QStringLiteral("klthetap"), QStringLiteral("klnrefp"), QStringLiteral("klalphap"), QStringLiteral("klnrefd"), QStringLiteral("klnrefa"), QStringLiteral("klcd"), QStringLiteral("klca"), QStringLiteral("klme"), QStringLiteral("klmh"), QStringLiteral("muexpn"), QStringLiteral("muexpp"), QStringLiteral("zetan"), QStringLiteral("zetap"), QStringLiteral("saturation"), QStringLiteral("vsatn"), QStringLiteral("vsatp"), QStringLiteral("betan"), QStringLiteral("betap"), QStringLiteral("vsatmodel"), QStringLiteral("Avn"), QStringLiteral("Avp"), QStringLiteral("fermi"), QStringLiteral("bgn"), QStringLiteral("Ebgn"), QStringLiteral("Nbgn"), QStringLiteral("Cbgn"), QStringLiteral("incomplete"), QStringLiteral("Ed"), QStringLiteral("gd"), QStringLiteral("Ea"), QStringLiteral("ga"), QStringLiteral("rhalln"), QStringLiteral("rhallp"), QStringLiteral("driving"), QStringLiteral("tauwn"), QStringLiteral("tauwp"), QStringLiteral("velocity"), QStringLiteral("E0n"), QStringLiteral("surface"), QStringLiteral("surfmodel"), QStringLiteral("Bn"), QStringLiteral("Cn"), QStringLiteral("lambdan"), QStringLiteral("deltan"), QStringLiteral("Bp"), QStringLiteral("Cp"), QStringLiteral("lambdap"), QStringLiteral("deltap"), QStringLiteral("lcrit"), QStringLiteral("shmu0n"), QStringLiteral("shthetan"), QStringLiteral("she1n"), QStringLiteral("she2n"), QStringLiteral("shp1n"), QStringLiteral("shp2n"), QStringLiteral("shmu0p"), QStringLiteral("shthetap"), QStringLiteral("she1p"), QStringLiteral("she2p"), QStringLiteral("shp1p"), QStringLiteral("shp2p"), QStringLiteral("ymuln"), QStringLiteral("ysn"), QStringLiteral("ynrefn"), QStringLiteral("yasn"), QStringLiteral("yuln"), QStringLiteral("yvsn"), QStringLiteral("ygn"), QStringLiteral("ymulp"), QStringLiteral("ysp"), QStringLiteral("ynrefp"), QStringLiteral("yasp"), QStringLiteral("yulp"), QStringLiteral("yvsp"), QStringLiteral("ygp"), QStringLiteral("ylcrit")}},
+        {QStringLiteral("semiconductor/doping"), {QStringLiteral("dopant"), QStringLiteral("profile"), QStringLiteral("N0"), QStringLiteral("N"), QStringLiteral("position"), QStringLiteral("size"), QStringLiteral("dj"), QStringLiteral("Nb"), QStringLiteral("zmin"), QStringLiteral("zmax"), QStringLiteral("dose"), QStringLiteral("Rp"), QStringLiteral("dRp"), QStringLiteral("dRl"), QStringLiteral("surface"), QStringLiteral("x1"), QStringLiteral("x2"), QStringLiteral("D0"), QStringLiteral("Ea"), QStringLiteral("Ta"), QStringLiteral("ta")}},
+        {QStringLiteral("semiconductor/srh"), {QStringLiteral("taun"), QStringLiteral("taup"), QStringLiteral("Et"), QStringLiteral("dependence"), QStringLiteral("N0n"), QStringLiteral("N0p"), QStringLiteral("fA"), QStringLiteral("fB"), QStringLiteral("fC"), QStringLiteral("fE"), QStringLiteral("tat"), QStringLiteral("mtn"), QStringLiteral("mtp")}},
+        {QStringLiteral("semiconductor/auger"), {QStringLiteral("Cn"), QStringLiteral("Cp")}},
+        {QStringLiteral("semiconductor/radiative"), {QStringLiteral("B")}},
+        {QStringLiteral("semiconductor/generation"), {QStringLiteral("G"), QStringLiteral("Eph")}},
+        {QStringLiteral("semiconductor/insulation"), {}},
+        {QStringLiteral("semiconductor/ohmic"), {QStringLiteral("name"), QStringLiteral("V0"), QStringLiteral("circuit"), QStringLiteral("Rs"), QStringLiteral("RL"), QStringLiteral("Cp")}},
+        {QStringLiteral("semiconductor/schottky"), {QStringLiteral("name"), QStringLiteral("V0"), QStringLiteral("phiB"), QStringLiteral("vn"), QStringLiteral("vp"), QStringLiteral("circuit"), QStringLiteral("Rs"), QStringLiteral("RL"), QStringLiteral("Cp")}},
+        {QStringLiteral("semiconductor/gate"), {QStringLiteral("name"), QStringLiteral("V0"), QStringLiteral("phim")}},
+        {QStringLiteral("semiconductor/charge"), {QStringLiteral("rhos")}},
+        {QStringLiteral("semiconductor/surfacerec"), {QStringLiteral("Sn"), QStringLiteral("Sp"), QStringLiteral("Et"), QStringLiteral("majority")}},
+        {QStringLiteral("semiconductor/polarization"), {QStringLiteral("axis"), QStringLiteral("polarity"), QStringLiteral("substrate")}},
+        {QStringLiteral("semiconductor/fn"), {QStringLiteral("phiB"), QStringLiteral("mox")}},
+        {QStringLiteral("semiconductor/traps"), {QStringLiteral("kind"), QStringLiteral("distribution"), QStringLiteral("Nit"), QStringLiteral("Et"), QStringLiteral("Dit"), QStringLiteral("Elow"), QStringLiteral("Ehigh"), QStringLiteral("levels"), QStringLiteral("sigman"), QStringLiteral("sigmap"), QStringLiteral("vth")}},
+        {QStringLiteral("semiconductor/btbt"), {QStringLiteral("kind"), QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("gamma")}},
+        {QStringLiteral("semiconductor/optical"), {QStringLiteral("mode"), QStringLiteral("P0"), QStringLiteral("eta"), QStringLiteral("RL")}},
+        {QStringLiteral("semiconductor/stimulated"), {QStringLiteral("c"), QStringLiteral("Jth"), QStringLiteral("t")}},
+        {QStringLiteral("semiconductor/impact"), {QStringLiteral("currents"), QStringLiteral("driving"), QStringLiteral("model"), QStringLiteral("an"), QStringLiteral("bn"), QStringLiteral("ap"), QStringLiteral("bp"), QStringLiteral("an2"), QStringLiteral("bn2"), QStringLiteral("ap2"), QStringLiteral("bp2"), QStringLiteral("E0"), QStringLiteral("betan"), QStringLiteral("betap"), QStringLiteral("Eph")}}};
     auto solvedIn3D = [](const QString& type) {
-        for (const char* p : {"heat", "electrostatics", "currents"})
+        if (semi3.count(type)) return true;
+        for (const char* p : {"heat", "electrostatics", "currents", "solid", "magnetic"})
             if (type == QLatin1String(p) || type.startsWith(QLatin1String(p) + QLatin1Char('/'))) return true;
         return type == QLatin1String("study") || type == QLatin1String("stationary") || type == QLatin1String("transient")
-               || type == QLatin1String("sweep");
+               || type == QLatin1String("sweep") || type == QLatin1String("eigenfrequency") || type == QLatin1String("frequency");
     };
     for (NodeKind& kind : k) {
         if (shared.contains(kind.type) || solvedIn3D(kind.type)) kind.spaces = Spaces::All;
+        if (const auto it = semi3.find(kind.type); it != semi3.end()) {
+            for (P& p : kind.properties) {
+                if (p.kind == P::Selection || it->second.contains(p.key)) continue;
+                p.spaces = Spaces::TwoD;
+            }
+            // (Its doping not the process flow's in 3D.)
+            for (P& p : kind.properties) {
+                // (Wurtzite's c axis along z: a 3D model's alone.)
+                if (p.key == QLatin1String("axis") && kind.type == QLatin1String("semiconductor/polarization"))
+                    for (int c = 0; c < p.choices.size(); ++c) {
+                        if (p.choiceSpaces.size() < p.choices.size()) p.choiceSpaces = QList<unsigned>(p.choices.size(), Spaces::All);
+                        if (p.choices.at(c) == QLatin1String("z")) p.choiceSpaces[c] = Spaces::ThreeD;
+                    }
+                if (p.key == QLatin1String("profile") && kind.type == QLatin1String("semiconductor/doping"))
+                    for (int c = 0; c < p.choices.size(); ++c) {
+                        if (p.choiceSpaces.size() < p.choices.size()) p.choiceSpaces = QList<unsigned>(p.choices.size(), Spaces::All);
+                        const QString v = p.choices.at(c);
+                        if (v == QLatin1String("process")) p.choiceSpaces[c] = Spaces::TwoD;
+                    }
+            }
+        }
         else if (threeD.contains(kind.type)) kind.spaces = Spaces::ThreeD;
         if (kind.type == QLatin1String("sweep"))
             for (P& p : kind.properties)
@@ -4833,8 +4968,11 @@ Node Model::make(const QString& type) const
         n.children.push_back(c);
     }
     // (A 3D model's physics of order 1: a quadratic prism has some eight
-    // times as many unknowns - order 2 its own choice.)
-    if (k->group == QLatin1String("physics") && is3D() && k->property(QStringLiteral("order"))) n.props.insert(QStringLiteral("order"), QStringLiteral("1"));
+    // times as many unknowns - order 2 its own choice. A solid's of order 2:
+    // a linear prism locks in bending, a cantilever of one layer far too
+    // stiff.)
+    if (k->group == QLatin1String("physics") && is3D() && k->property(QStringLiteral("order")))
+        n.props.insert(QStringLiteral("order"), k->type == QLatin1String("solid") ? QStringLiteral("2") : QStringLiteral("1"));
     return n;
 }
 
@@ -5416,12 +5554,13 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     m.root.children.push_back(results);
 
     m.normalise(&problems);
-    // A 3D model's physics without an order: order 1, as one made in it.
+    // A 3D model's physics without an order: order 1 (a solid's 2), as one
+    // made in it.
     if (m.is3D())
         for (Node& c : m.component().children)
             if (c.kind() && c.kind()->group == QLatin1String("physics") && c.kind()->property(QStringLiteral("order"))
                 && !c.props.contains(QStringLiteral("order")))
-                c.props.insert(QStringLiteral("order"), QStringLiteral("1"));
+                c.props.insert(QStringLiteral("order"), c.type == QLatin1String("solid") ? QStringLiteral("2") : QStringLiteral("1"));
     if (error) *error = problems.join(QLatin1String("; "));
     return m;
 }

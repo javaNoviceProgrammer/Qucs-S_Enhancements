@@ -118,6 +118,41 @@ QStringList titles(QTreeWidget* tree)
 /// A block of 2 x 1 x 0.5 mm, k 2 W/(m K), its bottom held at 300 K and q
 /// (1e4 W/m^2) flowing in through its top, its walls insulated: T = 300 K +
 /// q z / k, linear in z - exact on order 1. As a tool takes it, JSON.
+/// A cantilever 4 mm long, 1 mm square, of a solid of order 2: its left face
+/// fixed, its right pushed down by 10 MPa (10 N).
+QJsonObject loadedBeam()
+{
+    Model m = Model::blank3d();
+    m.component().props.insert(QStringLiteral("unit"), QStringLiteral("mm"));
+    FNode box = m.make(QStringLiteral("box"));
+    box.label = QStringLiteral("beam");
+    box.props.insert(QStringLiteral("position"), QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
+    box.props.insert(QStringLiteral("size"), QJsonArray{QStringLiteral("4"), QStringLiteral("1")});
+    box.props.insert(QStringLiteral("z"), QStringLiteral("0"));
+    box.props.insert(QStringLiteral("height"), QStringLiteral("1"));
+    m.add(m.geometry().tag, box);
+    FNode solid = m.make(QStringLiteral("solid"));
+    const QString sm = solid.tag;
+    m.add(m.component().tag, solid);
+    for (FNode& c : m.find(sm)->children)
+        if (c.type == QLatin1String("solid/elastic")) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(QStringLiteral("E"), QStringLiteral("200[GPa]"));
+            c.props.insert(QStringLiteral("nu"), QStringLiteral("0.3"));
+        }
+    auto side = [](const QString& which) { return QJsonObject{{QStringLiteral("of"), QJsonArray{QStringLiteral("beam")}}, {QStringLiteral("side"), which}}; };
+    FNode fixed = m.make(QStringLiteral("solid/fixed"));
+    fixed.props.insert(QStringLiteral("selection"), side(QStringLiteral("left")));
+    m.add(sm, fixed);
+    FNode load = m.make(QStringLiteral("solid/load"));
+    load.props.insert(QStringLiteral("selection"), side(QStringLiteral("right")));
+    load.props.insert(QStringLiteral("Fz"), QStringLiteral("-10[MPa]"));
+    m.add(sm, load);
+    m.mesh().props.insert(QStringLiteral("custom"), true);
+    m.mesh().props.insert(QStringLiteral("hmax"), QStringLiteral("0.5"));
+    return QJsonDocument::fromJson(m.toJson()).object();
+}
+
 QJsonObject heatedBlock()
 {
     Model m = Model::blank3d();
@@ -1454,18 +1489,143 @@ private slots:
         QVERIFY2(lost == 0, qPrintable(said));
     }
 
-    /// A 3D model's physics through the panel: heat, electrostatics and
-    /// currents offered on its component (no solid mechanics, no
-    /// semiconductor); its study's step without the plane's adaptive
-    /// refinement, its nonlinear methods without Newton's.
+    /// A 3D solid through Claude's tools and its file: made, saved as a
+    /// .qfem3d and read back with its z components, solved - its reaction
+    /// the load, its tip down -, its displacement at a point, and its tab's
+    /// Plot offering its von Mises stress.
+    void aSolidThroughTheTools()
+    {
+        const QString file = path(QStringLiteral("beam3d.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", loadedBeam()}, {"path", "beam3d"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(file));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const std::optional<Model> read = Model::fromJson(f.readAll());
+        QVERIFY(read && read->is3D());
+        QString sm;
+        for (const FNode& c : read->component().children)
+            if (c.type == QLatin1String("solid")) sm = c.tag;
+        QVERIFY(!sm.isEmpty());
+        QCOMPARE(read->find(sm)->text(QStringLiteral("order")), QStringLiteral("2"));
+        bool fz = false;
+        for (const FNode& c : read->find(sm)->children) fz = fz || c.text(QStringLiteral("Fz")) == QLatin1String("-10[MPa]");
+        QVERIFY(fz);
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "solid.Rz; solid.dmax"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QList<double> v = si(r);
+        QCOMPARE(v.size(), 2);
+        QVERIFY2(std::abs(v[0] - 10) < 1e-6 && v[1] > 0, qPrintable(text(r)));
+        QJsonArray at;
+        at.append(QJsonArray{4.0, 0.5, 0.5});
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "solid.w"}, {"at", at}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        v = si(r);
+        QVERIFY2(!v.isEmpty() && v[0] < 0, qPrintable(text(r)));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc);
+        auto* plot = doc->findChild<QComboBox*>(QStringLiteral("mp3Plot"));
+        QVERIFY(plot);
+        QTRY_VERIFY(plot->findText(QStringLiteral("solid.mises")) >= 0);
+        QVERIFY(plot->findText(QStringLiteral("solid.disp")) >= 0);
+    }
+
+    /// A 3D magnetic field through Claude's tools: a bar of 1e8 A/m² along z
+    /// in an insulated air box, made, solved and read - its energy positive,
+    /// B round the bar, Plot offering mf.normB.
+    void aMagneticFieldThroughTheTools()
+    {
+        Model m = Model::blank3d();
+        m.component().props.insert(QStringLiteral("unit"), QStringLiteral("mm"));
+        for (const auto& [label, x, w] : {std::tuple{QStringLiteral("air"), 0.0, 3.0}, std::tuple{QStringLiteral("bar"), 1.25, 0.5}}) {
+            FNode box = m.make(QStringLiteral("box"));
+            box.label = label;
+            box.props.insert(QStringLiteral("position"), QJsonArray{QString::number(x), QString::number(x)});
+            box.props.insert(QStringLiteral("size"), QJsonArray{QString::number(w), QString::number(w)});
+            box.props.insert(QStringLiteral("z"), QStringLiteral("0"));
+            box.props.insert(QStringLiteral("height"), QStringLiteral("0.5"));
+            m.add(m.geometry().tag, box);
+        }
+        FNode mf = m.make(QStringLiteral("magnetic"));
+        const QString tag = mf.tag;
+        m.add(m.component().tag, mf);
+        for (FNode& c : m.find(tag)->children)
+            if (c.type == QLatin1String("magnetic/ampere")) {
+                c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+                c.props.insert(QStringLiteral("mur"), QStringLiteral("1"));
+            }
+        FNode cur = m.make(QStringLiteral("magnetic/current"));
+        cur.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("bar")}}});
+        cur.props.insert(QStringLiteral("Jez"), QStringLiteral("1e8[A/m^2]"));
+        m.add(tag, cur);
+        m.mesh().props.insert(QStringLiteral("custom"), true);
+        m.mesh().props.insert(QStringLiteral("hmax"), QStringLiteral("0.3"));
+        const QString file = path(QStringLiteral("magnetic3d.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", QJsonDocument::fromJson(m.toJson()).object()}, {"path", "magnetic3d"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "mf.W"}});
+        QList<double> v = si(r);
+        QVERIFY2(v.size() == 1 && v[0] > 0, qPrintable(text(r)));
+        // Beside the bar, B goes round it: +y on its right, -y on its left.
+        QJsonArray at;
+        at.append(QJsonArray{2.0, 1.5, 0.25});
+        at.append(QJsonArray{1.0, 1.5, 0.25});
+        r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "mf.By"}, {"at", at}});
+        v = si(r);
+        QVERIFY2(v.size() == 2 && v[0] > 0 && v[1] < 0, qPrintable(text(r)));
+        auto* plot = front()->findChild<QComboBox*>(QStringLiteral("mp3Plot"));
+        QVERIFY(plot);
+        QTRY_VERIFY(plot->findText(QStringLiteral("mf.normB")) >= 0);
+    }
+
+    /// A 3D model's physics through the panel: heat, electrostatics,
+    /// currents, solid mechanics, magnetic fields and semiconductors offered
+    /// on its component (not the plane's alone: rays) - a solid of order 2, its z components shown and
+    /// the plane's approximation not; its study's step without the plane's
+    /// adaptive refinement, its nonlinear methods Newton's and Picard's.
     void physicsThroughThePanel()
     {
         Multiphysics3DDoc* doc = app->newMultiphysics3DModel();
         const QStringList adds = addsOf(panel()->menuFor(doc->model().component().tag));
         QVERIFY2(adds.contains(QStringLiteral("Heat Transfer in Solids")) && adds.contains(QStringLiteral("Electrostatics"))
-                     && adds.contains(QStringLiteral("Electric Currents")) && !adds.contains(QStringLiteral("Solid Mechanics"))
-                     && !adds.contains(QStringLiteral("Semiconductor")),
+                     && adds.contains(QStringLiteral("Electric Currents")) && adds.contains(QStringLiteral("Solid Mechanics"))
+                     && adds.contains(QStringLiteral("Magnetic Fields")) && adds.contains(QStringLiteral("Semiconductor"))
+                     && !adds.contains(QStringLiteral("Geometrical Optics")),
                  qPrintable(adds.join(QStringLiteral(", "))));
+        {
+            const QString sm = panel()->addNode(doc->model().component().tag, QStringLiteral("solid"));
+            QVERIFY(!sm.isEmpty());
+            QCOMPARE(doc->model().find(sm)->text(QStringLiteral("order")), QStringLiteral("2"));
+            panel()->selectNode(sm);
+            QVERIFY(panel()->editorFor(QStringLiteral("model")) == nullptr);
+            const QStringList solidFeatures = addsOf(panel()->menuFor(sm));
+            QVERIFY2(solidFeatures.contains(QStringLiteral("Prescribed Displacement")) && solidFeatures.contains(QStringLiteral("Boundary Load")),
+                     qPrintable(solidFeatures.join(QStringLiteral(", "))));
+            const QString disp = panel()->addNode(sm, QStringLiteral("solid/displacement"));
+            panel()->selectNode(disp);
+            QTRY_VERIFY(panel()->editorFor(QStringLiteral("w0")) != nullptr);
+            QVERIFY(panel()->editorFor(QStringLiteral("z")) != nullptr);
+            QVERIFY(panel()->removeNode(sm));
+            QVERIFY(!doc->model().find(sm));
+            // A semiconductor's features in 3D: those 3D takes (impact
+            // ionization among them), not the plane's alone (lasing).
+            const QString semi = panel()->addNode(doc->model().component().tag, QStringLiteral("semiconductor"));
+            QVERIFY(!semi.isEmpty());
+            const QStringList semiFeatures = addsOf(panel()->menuFor(semi));
+            QVERIFY2(semiFeatures.contains(QStringLiteral("Metal Contact")) && semiFeatures.contains(QStringLiteral("Gate Contact"))
+                         && semiFeatures.contains(QStringLiteral("Analytic Doping Model")) && semiFeatures.contains(QStringLiteral("Impact Ionization"))
+                         && !semiFeatures.contains(QStringLiteral("Lasing (Cavity Mode)")),
+                     qPrintable(semiFeatures.join(QStringLiteral(", "))));
+            panel()->selectNode(semi);
+            QVERIFY(panel()->editorFor(QStringLiteral("space")) == nullptr);
+            QVERIFY(panel()->removeNode(semi));
+        }
         const QString ht = panel()->addNode(doc->model().component().tag, QStringLiteral("heat"));
         QVERIFY(!ht.isEmpty());
         QCOMPARE(doc->model().find(ht)->text(QStringLiteral("order")), QStringLiteral("1"));
@@ -1478,10 +1638,13 @@ private slots:
                 for (const FNode& st : c.children) step = st.tag;
             }
         QVERIFY(!step.isEmpty());
-        // Its study's steps: at rest and in time, not the plane's others.
+        // Its study's steps: at rest, in time, eigenfrequencies and the
+        // frequency domain (a semiconductor's small signal), not the plane's
+        // others.
         const QStringList steps = addsOf(panel()->menuFor(study));
         QVERIFY2(steps.contains(QStringLiteral("Stationary")) && steps.contains(QStringLiteral("Time Dependent"))
-                     && !steps.contains(QStringLiteral("Frequency Domain")) && !steps.contains(QStringLiteral("Mode Analysis")),
+                     && steps.contains(QStringLiteral("Eigenfrequency")) && steps.contains(QStringLiteral("Frequency Domain"))
+                     && !steps.contains(QStringLiteral("Mode Analysis")),
                  qPrintable(steps.join(QStringLiteral(", "))));
         const QString inTime = panel()->addNode(study, QStringLiteral("transient"));
         QVERIFY(!inTime.isEmpty());

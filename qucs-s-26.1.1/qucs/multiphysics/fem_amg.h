@@ -60,6 +60,11 @@ public:
     /// same multigrid over its rows, an incomplete LU's BiCGStab the
     /// fallback. Before compute().
     void setNonsymmetric(bool nonsymmetric);
+    /// The near null space its coarse levels keep: \a cols vectors, \a b
+    /// row by row (b[i * cols + j] row i's entry of vector j) - an elastic
+    /// solid's six rigid-body modes, without which smoothed aggregation
+    /// converges slowly. Empty: the constant. Before compute().
+    void setNearNullspace(int cols, std::vector<double> b, int blockSize = 1);
     /// Sets matrix \a a up - its hierarchy; false and why when it cannot.
     bool compute(const Eigen::SparseMatrix<double>& a, QString* error);
     /// Solves for \a b from \a x as it is (zeros: none known); false and why

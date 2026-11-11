@@ -226,7 +226,7 @@ void QucsApp::initMultiphysics3D()
     if (Multiphysics3DDoc *doc = model()) doc->compute();
   });
   compute->setObjectName(QStringLiteral("mp3ComputeAction"));
-  compute->setStatusTip(tr("Solve the 3D model's study: heat, electrostatics, electric currents"));
+  compute->setStatusTip(tr("Solve the 3D model's study: heat, electrostatics, electric currents, solid mechanics"));
   a_multiphysics3DMenu->addSeparator();
   // (No role, as the Multiphysics menu's: on macOS a "Settings…" of the
   // text-heuristic role is taken into the application's menu as its
