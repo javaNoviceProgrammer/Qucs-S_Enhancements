@@ -20,6 +20,7 @@
 #include "layoutdoc.h"
 #include "rf25doc.h"
 #include "pptxdoc.h"
+#include "imagedoc.h"
 #include "datadisplay.h"
 #include "schematic.h"
 #include "qucs.h"
@@ -420,7 +421,7 @@ void QucsControl::insertDrawings(QJsonObject& o, const QJsonArray& readings)
 
 QJsonObject QucsControl::readDrawings(const QJsonObject& args)
 {
-    // Every open layout and presentation, or the one asked.
+    // Every open layout, presentation, page and picture, or the one asked.
     const bool points = !args.contains(QLatin1String("points")) || args.value(QLatin1String("points")).toBool();
     const QString path = args.value(QLatin1String("path")).toString().trimmed();
     QList<QucsDoc*> docs;
@@ -430,8 +431,8 @@ QJsonObject QucsControl::readDrawings(const QJsonObject& args)
         if (doc == nullptr) return errorResult(error.isEmpty() ? tr("%1 is not open.").arg(path) : error);
         auto* page = dynamic_cast<Schematic*>(doc);
         if (qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc)) == nullptr && dynamic_cast<PptxDoc*>(doc) == nullptr && page == nullptr
-            && dynamic_cast<RF25Doc*>(doc) == nullptr)
-            return errorResult(tr("%1 is not a layout, a presentation, a schematic or a data display, nor an RF 2.5D model: the pen draws on those.").arg(titleOf(doc)));
+            && dynamic_cast<RF25Doc*>(doc) == nullptr && dynamic_cast<ImageDoc*>(doc) == nullptr)
+            return errorResult(tr("%1 is not a layout, a presentation, a schematic or a data display, nor an RF 2.5D model or a picture: the pen draws on those.").arg(titleOf(doc)));
         docs << doc;
     } else {
         docs = a_app->allDocuments();
@@ -443,17 +444,24 @@ QJsonObject QucsControl::readDrawings(const QJsonObject& args)
         auto* deck = dynamic_cast<PptxDoc*>(doc);
         auto* page = dynamic_cast<Schematic*>(doc);
         auto* model = dynamic_cast<RF25Doc*>(doc);   // (its layout, drawn on as a layout's tab is)
-        if (layout == nullptr && deck == nullptr && page == nullptr && model == nullptr) continue;
-        const QJsonArray strokes = layout != nullptr ? layout->view()->readDrawing(points)
-                                 : model != nullptr  ? model->view()->readDrawing(points)
-                                 : deck != nullptr   ? deck->readDrawing(points)
-                                                     : qucs_s::datadisplay::readDrawing(page, points);
+        auto* picture = dynamic_cast<ImageDoc*>(doc);
+        if (layout == nullptr && deck == nullptr && page == nullptr && model == nullptr && picture == nullptr) continue;
+        const QJsonArray strokes = layout != nullptr  ? layout->view()->readDrawing(points)
+                                 : model != nullptr   ? model->view()->readDrawing(points)
+                                 : deck != nullptr    ? deck->readDrawing(points)
+                                 : picture != nullptr ? picture->readDrawing(points)
+                                                      : qucs_s::datadisplay::readDrawing(page, points);
         if (strokes.isEmpty() && path.isEmpty()) continue;
         QJsonObject one{{QStringLiteral("document"), titleOf(doc)},
                         {QStringLiteral("file"), QDir::toNativeSeparators(doc->getDocName())},
                         {QStringLiteral("measures"), layout != nullptr || model != nullptr ? tr("µm of the cell, y up")
                                                      : deck != nullptr ? tr("points from the slide's top left")
-                                                                       : tr("the page's coordinates (a symbol's strokes, page: symbol, the symbol's), as get_schematic gives them (y down)")}};
+                                                     : picture != nullptr
+                                                         ? tr("the picture's pixels from its top left, as in the file (%1 × %2), not turned; what is under a "
+                                                              "stroke is not known: screenshot shows it")
+                                                               .arg(picture->imageSize().width())
+                                                               .arg(picture->imageSize().height())
+                                                         : tr("the page's coordinates (a symbol's strokes, page: symbol, the symbol's), as get_schematic gives them (y down)")}};
         QJsonArray kept;
         for (int i = std::max(0, int(strokes.size()) - most); i < strokes.size(); ++i) kept.append(strokes.at(i));
         one.insert(QStringLiteral("strokes"), kept);
@@ -461,7 +469,7 @@ QJsonObject QucsControl::readDrawings(const QJsonObject& args)
         documents.append(one);
     }
     if (documents.isEmpty())
-        return jsonResult(QJsonObject{{QStringLiteral("drawings"), tr("Nothing is drawn on an open layout, RF 2.5D model, presentation, schematic or data display: the pen is in each one's toolbar.")}});
+        return jsonResult(QJsonObject{{QStringLiteral("drawings"), tr("Nothing is drawn on an open layout, RF 2.5D model, presentation, picture, schematic or data display: the pen is in each one's toolbar.")}});
     return jsonResult(QJsonObject{{QStringLiteral("documents"), documents}});
 }
 
