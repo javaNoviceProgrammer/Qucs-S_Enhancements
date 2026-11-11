@@ -1,0 +1,23 @@
+breaks.py, 11 November: 15 breaks, each built and its tests run.
+
+Break 13 (the reflect taken for a short) passed in the first run: a symmetric device's S is the same whichever the
+reflect is taken for, both error boxes' signs turned together. The calibration now says the reflect it found, and the
+pads' test holds it near an open; the break run again alone (BRK_ONLY=13): caught.
+
+e00 from the other eigenvector                                 aDeviceBehindTwoFixturesIsFoundAga failed (caught)
+e33 of the wrong sign                                          aDeviceBehindTwoFixturesIsFoundAga failed (caught)
+the reflect's sign not told by its kind                        aShortReflectIsTold failed (caught)
+every frequency taking the first line                          eachFrequencyTakesTheLineThatTells failed (caught)
+gamma's phase not unwrapped                                    aDeviceBehindTwoFixturesIsFoundAga failed (caught)
+e10 e32 the thru's S21 alone                                   aDeviceBehindTwoFixturesIsFoundAga failed (caught)
+the correction's shared scale left out                         aDeviceBehindTwoFixturesIsFoundAga failed (caught)
+lines that hardly tell not said                                aDeviceBehindTwoFixturesIsFoundAga failed (caught); eachFrequencyTakesTheLineThatTells failed (caught)
+S renormalized into where it came from                         anSIsRenormalized failed (caught)
+a line no longer than the thru taken                           whatCannotBeCalibratedIsSaid failed (caught)
+the solve not calibrated                                       aTrlCalibrationTakesThePadsOut failed (caught)
+each line taken as a millimetre longer                         aTrlCalibrationTakesThePadsOut failed (caught)
+the reflect taken for a short                                  aTrlCalibrationTakesThePadsOut failed (caught) - run again alone after the test was made to see it
+the lines' own impedance not said                              aTrlCalibrationTakesThePadsOut failed (caught)
+a calibration with no thru not said                            aTrlCalibrationTakesThePadsOut failed (caught)
+
+0 of 15 uncaught

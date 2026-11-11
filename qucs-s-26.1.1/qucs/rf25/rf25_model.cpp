@@ -328,7 +328,7 @@ QList<NodeKind> makeKinds()
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
          {QStringLiteral("rf_edge_port"), QStringLiteral("rf_internal_port"), QStringLiteral("rf_terminal"),
-          QStringLiteral("rf_return")},
+          QStringLiteral("rf_return"), QStringLiteral("rf_trl")},
          {}, true, true, QString(),
          tr("Where the structure is driven, and what its lines return through. The ports' order is the order of the "
             "S matrix.")});
@@ -450,6 +450,25 @@ QList<NodeKind> makeKinds()
             "against it - a symmetric pair's even and odd modes by name - and a coplanar port returns through the "
             "nearest of them either side. With none, what a via joins to the ground is one, and with no ground plane "
             "the two outermost conductors of a coplanar line are.")});
+    // F3 of the open items of 8 November: a fixture - a GSG pad and its feed
+    // at each port - taken out by standards made with it (rf25_trl.h).
+    add({QStringLiteral("rf_trl"), tr("TRL Calibration"), QStringLiteral("port"), QStringLiteral("port"), none,
+         {file(QStringLiteral("thru"), tr("Thru"),
+               tr("A model (.qrf25) of the two fixtures joined: its line between them as long as the fixture's feed on "
+                  "each side of the device. Relative to this model's folder")),
+          rows(QStringLiteral("lines"), tr("Lines"), {tr("Model (.qrf25)"), tr("Longer than the thru by")},
+               tr("One or more models of the fixtures joined by a longer line, each with how much longer: \"500[um]\". "
+                  "Lengths whose phases differ by a quarter wave or so tell best; each frequency takes the best of them")),
+          file(QStringLiteral("reflect"), tr("Reflect"), tr("A model of the two fixtures each ended alike, open or short")),
+          choice(QStringLiteral("reflect_kind"), tr("The reflect is"), {QStringLiteral("open"), QStringLiteral("short")},
+                 {tr("Near an open"), tr("Near a short")}, QStringLiteral("open")),
+          expr(QStringLiteral("impedance"), tr("The lines' impedance"), QStringLiteral("Ohm"), QString(),
+               tr("What the calibrated S is stated in by the lines; given it, S is in the ports' references. Empty: "
+                  "the lines' own, which a calibration of lines alone cannot know"))},
+         {}, {}, false, true, QStringLiteral("trl"),
+         tr("A full-wave solve's two ports calibrated by standards solved as the structure is - a thru, lines and a "
+            "reflect, each its own model with the same fixtures -: each fixture's error box found by multiline TRL and "
+            "taken out, the S at the thru's middle. Each standard is solved at this model's frequencies with it.")});
 
     // ---- the mesh, the study, the results ----
     add({QStringLiteral("rf_mesh"), tr("Mesh"), QString(), QStringLiteral("mesh"), none,
@@ -1163,6 +1182,22 @@ QStringList Model::problems() const
             else if (!terminals.contains(r) && !driven.contains(r))
                 said << tr("The port %1 returns through %2, which is no terminal or port of the model.").arg(who, r);
     }
+    // A TRL calibration (rf25_trl.h): its standards named, and a two-port.
+    int driven2 = 0, calibrations = 0;
+    for (const Node& p : ports().children) {
+        if (!p.enabled) continue;
+        if (p.type == QLatin1String("rf_edge_port") || p.type == QLatin1String("rf_internal_port")) ++driven2;
+        if (p.type != QLatin1String("rf_trl")) continue;
+        ++calibrations;
+        if (textOf(p, QStringLiteral("thru")).trimmed().isEmpty()) said << tr("The TRL calibration names no thru.");
+        if (textOf(p, QStringLiteral("reflect")).trimmed().isEmpty()) said << tr("The TRL calibration names no reflect.");
+        bool line = false;
+        for (const QJsonValue& row : p.props.value(QLatin1String("lines")).toArray())
+            line = line || !row.toArray().at(0).toString().trimmed().isEmpty();
+        if (!line) said << tr("The TRL calibration names no line: one at least, longer than the thru.");
+    }
+    if (calibrations > 0 && driven2 != 2)
+        said << tr("A TRL calibration is of a two-port, and the model has %1 port(s).").arg(driven2);
     if (ports().children.empty())
         said << tr("The model has no port: there is nothing to drive it with.");
     return said;
