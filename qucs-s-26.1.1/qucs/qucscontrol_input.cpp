@@ -19,6 +19,7 @@
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
 #include "layoutdoc.h"
+#include "rf25doc.h"
 #include "pptx.h"
 #include "pptxdoc.h"
 #include "qucs.h"
@@ -257,22 +258,43 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                 if (auto* l = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(d)); l != nullptr && sameFile(l->getDocName(), absolute(file)))
                     doc = l;
         }
-        if (doc == nullptr) {
+        // (Or an RF 2.5D model's layout, drawn on as a layout's tab is.)
+        RF25Doc* model = nullptr;
+        if (doc == nullptr && file.isEmpty()) {
+            model = dynamic_cast<RF25Doc*>(a_app->getDoc());
+        } else if (doc == nullptr) {
+            for (QucsDoc* d : a_app->allDocuments())
+                if (auto* m = dynamic_cast<RF25Doc*>(d); m != nullptr && sameFile(m->getDocName(), absolute(file))) model = m;
+        }
+        if (model != nullptr) {
+            if (!model->layout() || model->view()->drawingPart().isEmpty()) {
+                done(errorResult(model->layoutProblem().isEmpty() ? tr("%1 shows no layout yet: show_layout waits for it.").arg(titleOf(model))
+                                                                  : model->layoutProblem()));
+                return;
+            }
+            a_app->showDocument(QucsApp::documentWidget(model));
+            layoutView = model->view();
+            root = layoutView.data();
+            laidOut(root);
+            where = tr("the cell %1 of %2").arg(layoutView->drawingPart(), titleOf(model));
+        } else if (doc == nullptr) {
             done(errorResult(file.isEmpty() ? tr("Which layout? 'path' (the document in front is none): show_layout opens one.")
                                             : tr("%1 is not open as a layout: show_layout opens it.").arg(file)));
             return;
         }
-        if (doc->isLoading() || !doc->layout() || doc->view()->drawingPart().isEmpty()) {
-            done(errorResult(doc->isLoading() ? tr("%1 is still being read: show_layout waits for it.").arg(titleOf(doc))
-                             : doc->problem().isEmpty() ? tr("%1 shows no cell.").arg(titleOf(doc))
-                                                        : doc->problem()));
-            return;
+        if (model == nullptr) {
+            if (doc->isLoading() || !doc->layout() || doc->view()->drawingPart().isEmpty()) {
+                done(errorResult(doc->isLoading() ? tr("%1 is still being read: show_layout waits for it.").arg(titleOf(doc))
+                                 : doc->problem().isEmpty() ? tr("%1 shows no cell.").arg(titleOf(doc))
+                                                            : doc->problem()));
+                return;
+            }
+            a_app->showDocument(doc);
+            layoutView = doc->view();
+            root = layoutView.data();
+            laidOut(root);
+            where = tr("the cell %1 of %2").arg(layoutView->drawingPart(), titleOf(doc));
         }
-        a_app->showDocument(doc);
-        layoutView = doc->view();
-        root = layoutView.data();
-        laidOut(root);
-        where = tr("the cell %1 of %2").arg(layoutView->drawingPart(), titleOf(doc));
     } else if (target.compare(QLatin1String("slide"), Qt::CaseInsensitive) == 0) {
         // An open presentation's slides: the points from the top left of
         // 'slide' (the one in sight), as its pen's strokes and read_drawings

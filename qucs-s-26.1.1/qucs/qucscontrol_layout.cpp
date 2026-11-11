@@ -805,12 +805,12 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (model != nullptr) {
             // Which cell, and which layers, are the model's to say - its
             // Layout node and its layer map - and are not set from here.
-            for (const char* key : {"cell", "layers", "depth", "pen", "drawings", "overlay", "addressed", "select", "rulers", "colours",
+            for (const char* key : {"cell", "layers", "depth", "overlay", "select", "rulers", "colours",
                                     "layer_properties", "layer_look", "theme", "contrast", "grid_style", "reload"})
                 if (args.contains(QLatin1String(key))) {
                     done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
                                         "its layers are its layer map's. 'region', 'texts', 'grid', 'processed' and "
-                                        "'mesh' frame what it shows.").arg(QLatin1String(key))));
+                                        "'mesh' frame what it shows; 'pen', 'drawings' and 'addressed' are its pen's.").arg(QLatin1String(key))));
                     return;
                 }
             // (Held while it waits: closed meanwhile, it is not deleted under
@@ -841,6 +841,27 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             if (args.contains(QLatin1String("processed"))) model->setProcessedShown(args.value(QLatin1String("processed")).toBool());
             if (args.contains(QLatin1String("mesh"))) model->setMeshShown(args.value(QLatin1String("mesh")).toBool());
             LayoutView* view = model->view();
+            // Its pen, as a layout's tab's: taken up or put down, what it
+            // drew taken away, its strokes marked addressed.
+            if (pen.isBool()) model->penButton()->setChecked(pen.toBool());
+            const bool cleared = drawings == QLatin1String("clear") && view->clearDrawing(true);
+            int marked = 0;
+            if (!addressedIds.isEmpty()) {
+                QStringList missing, there;
+                for (const int id : std::as_const(addressedIds))
+                    if (view->drawing().find(view->drawingPart(), id) == nullptr) missing << QString::number(id);
+                if (!missing.isEmpty()) {
+                    for (const qucs_s::markup::Stroke& s : view->drawing().on(view->drawingPart())) there << QString::number(s.id);
+                    done(errorResult(tr("The cell shown has no stroke %1 (its strokes: %2).")
+                                         .arg(missing.join(QStringLiteral(", ")), there.isEmpty() ? tr("none") : there.join(QStringLiteral(", ")))));
+                    return;
+                }
+                marked = view->setAddressed(addressedIds, true);
+            } else if (addressedNone) {
+                QList<int> all;
+                for (const qucs_s::markup::Stroke& s : view->drawing().on(view->drawingPart())) all << s.id;
+                marked = -view->setAddressed(all, false);
+            }
             if (textsGiven) view->setLabelsShown(texts);
             if (grid.isBool()) view->setGridShown(grid.toBool());
             if (region.size() == 4)
@@ -880,6 +901,12 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                 over.append(o);
             }
             if (!over.isEmpty()) result.insert(QStringLiteral("overlays"), over);
+            // What the user drew with the pen, read as on a layout's tab.
+            if (!view->drawing().isEmpty()) insertDrawings(result, view->readDrawing(false));
+            if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));
+            if (cleared) result.insert(QStringLiteral("done"), tr("What the pen drew taken away (the pen's Undo gives it back)."));
+            if (marked > 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) marked addressed: drawn faded, and left out of what a prompt tells").arg(marked));
+            if (marked < 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) no longer marked addressed").arg(-marked));
             done(jsonResult(result));
             return;
         }
