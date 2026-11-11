@@ -472,7 +472,16 @@ QList<NodeKind> makeKinds()
           integer(QStringLiteral("points"), tr("Points"), 41),
           choice(QStringLiteral("scale"), tr("Spacing"), {QStringLiteral("linear"), QStringLiteral("log")},
                  {tr("Linear"), tr("Logarithmic")}, QStringLiteral("linear")),
-          boolean(QStringLiteral("adaptive"), tr("Add points where it changes"), false),
+          shownIf(boolean(QStringLiteral("adaptive"), tr("Add points where it changes"), false,
+                          tr("Solve a few of the sweep's frequencies and read the rest from a rational fit of the "
+                             "ports' Z through them, adding frequencies where the fit is least sure until what it "
+                             "says of them is what solving them gives: a sweep of many points in a fraction of the "
+                             "time. A sweep of 12 points or fewer is solved whole")),
+                  "kind=full_wave"),
+          shownIf(expr(QStringLiteral("adaptive_tolerance"), tr("Tolerance"), QString(), QStringLiteral("0.002"),
+                       tr("How far any term of S may be from what the fit said of a frequency before it was solved, "
+                          "at the frequencies it was least sure of, for the fit to be taken")),
+                  "kind=full_wave&adaptive=true"),
           shownIf(choice(QStringLiteral("matrix"), tr("Matrix"),
                          {QStringLiteral("automatic"), QStringLiteral("dense"), QStringLiteral("compressed")},
                          {tr("Automatic"), tr("Dense"), tr("Compressed")}, QStringLiteral("automatic"),

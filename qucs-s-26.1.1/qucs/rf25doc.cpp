@@ -541,11 +541,45 @@ struct RF25Doc::SolveJob {
     // of the Green's function it built last (ExtractControl).
     std::atomic_int step{ExtractControl::Starting}, stepDone{0}, stepAll{0}, images{0};
 
+    // An adaptive sweep's (rf25_adaptive.h): whether it is one, its
+    // tolerance on S, and the frequencies it has asked for so far, which
+    // the bar counts against.
+    bool adaptive = false;
+    double tolerance = 2e-3;
+    std::atomic_int asked{0};
+    // A mesh convergence check's: the cells across of each mesh, the one it
+    // is at, and what it found.
+    QList<int> levels;
+    std::atomic_int levelAt{0};
+    std::shared_ptr<MeshConvergence> check;
+
     // The tab's holdSolves() and allowFrequencies(), which a test holds it
     // back by.
     std::shared_ptr<std::atomic_bool> held;
     std::shared_ptr<std::atomic_int> allowed;
 };
+
+namespace {
+
+/// What a solve's mesh is against what it cuts - its smallest and largest
+/// cells, the cells across the narrowest conductor and the narrowest gap -,
+/// the first of the solve's own lines: how fine it is, said where the
+/// answer is (F1 of the open items of 8 November).
+QString meshNoteOf(const Mesh& mesh)
+{
+    if (mesh.cells.isEmpty()) return QString();
+    QString note = RF25Doc::tr("Solved on %1 cell(s) from %2 to %3 µm")
+                       .arg(mesh.cells.size()).arg(mesh.smallest, 0, 'g', 3).arg(mesh.largest, 0, 'g', 3);
+    if (mesh.narrowest > 0 && mesh.across > 0)
+        note += RF25Doc::tr("; %1 across the narrowest conductor, %2 µm, each %3 µm there")
+                    .arg(mesh.across).arg(mesh.narrowest, 0, 'g', 4).arg(mesh.acrossCell, 0, 'g', 3);
+    if (mesh.narrowestGap > 0 && mesh.smallest > 0)
+        note += RF25Doc::tr("; the narrowest gap %1 µm, %2 times the smallest cell")
+                    .arg(mesh.narrowestGap, 0, 'g', 4).arg(mesh.narrowestGap / mesh.smallest, 0, 'g', 2);
+    return note + RF25Doc::tr(". How far that is from the limit: RF 2.5D > Check Mesh Convergence.");
+}
+
+} // namespace
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
 {
@@ -1037,7 +1071,7 @@ void RF25Doc::showProblems()
     // (And how long it should take yet, where that can be said.)
     const QString left = timeLeft();
     if (a_solveJob) {
-        lines << (!a_solveJob->fullWave       ? countNow().said
+        lines << (!a_solveJob->fullWave || a_solveJob->adaptive || !a_solveJob->levels.isEmpty() ? countNow().said
                   : a_solveJob->calibrating ? tr("Taking out the ports' own discontinuities: solving strips of their feeds…")
                                             : tr("Solving full-wave: %1 of %2 frequencies…")
                                                   .arg(frequenciesSolved()).arg(frequenciesToSolve()))
@@ -1053,6 +1087,12 @@ void RF25Doc::showProblems()
         for (const QString& line : a_extraction->lines) lines << QStringLiteral("  • ") + line;
         for (const QString& line : lineSummary()) lines << QStringLiteral("  • ") + line;
         for (const QString& line : inductanceSummary()) lines << QStringLiteral("  • ") + line;
+    }
+    // The last mesh convergence check, while the model is as it was checked.
+    if (a_convergence) {
+        lines << tr("Its mesh convergence:");
+        for (const QString& line : a_convergence->lines) lines << QStringLiteral("  • ") + line;
+        for (const QString& line : a_convergence->problems) lines << QStringLiteral("  • ") + line;
     }
     // What became of the solution kept beside the model: shown, or why not.
     if (!a_keptSaid.isEmpty()) lines << a_keptSaid;
@@ -1386,6 +1426,10 @@ void RF25Doc::prepareDone()
     // solve and the same layout make the same mesh.
     const bool unchanged = (a_fullWave || a_extraction) && !a_solvedModel.isEmpty() && solveStampOf(a_model) == a_solvedModel
                            && layoutStamp() == a_solvedLayout && a_mesh && int(a_mesh->cells.size()) == a_solvedCells;
+    // (A convergence check stands while the model and its layout are those
+    //  it checked: its meshes are its own.)
+    if (a_convergence && (solveStampOf(a_model) != a_convergenceModel || layoutStamp() != a_convergenceLayout))
+        a_convergence.reset();
     if (!unchanged) {
         a_extraction.reset();
         a_fullWave.reset();
@@ -2040,6 +2084,12 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (!problem.isEmpty()) return nothing(problem);
     }
     job->fullWave = request.solver.isEmpty() ? studyIsFullWave() : request.solver == QLatin1String("full_wave");
+    job->levels = request.levels;
+    {
+        QStringList said;
+        job->how = tabMeshSettings(a_model, &said);
+        job->top = topFrequency(a_model);
+    }
     if (job->fullWave) {
         // The full-wave solve is driven at the ports, at each of the
         // study's frequencies (or of those asked for).
@@ -2064,20 +2114,31 @@ void RF25Doc::solveWith(const SolveRequest& request)
                                        idle.size() == 1 ? tr("it does") : tr("they do"));
         }
         QString why;
-        job->frequencies = request.frequencies.isEmpty() ? studySweep(a_model, &why) : request.frequencies;
-        if (job->frequencies.isEmpty())
+        // (A convergence check at the sweep's top, where none are asked: a
+        //  mesh is worst at its highest frequency.)
+        job->frequencies = !request.frequencies.isEmpty() ? request.frequencies
+                           : job->levels.isEmpty()        ? studySweep(a_model, &why)
+                                                          : QList<double>{topFrequency(a_model)};
+        if (job->frequencies.isEmpty() || !(job->frequencies.first() > 0))
             return nothing(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
-        QStringList said;
-        job->how = tabMeshSettings(a_model, &said);
         job->matrix = request.matrix.isEmpty() ? studyMatrix(a_model)
                       : request.matrix == QLatin1String("dense")    ? FullWaveControl::Matrix::Dense
                       : request.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed
                                                                       : FullWaveControl::Matrix::Automatic;
-        job->top = topFrequency(a_model);
         const Node* study = a_model.root.child(QStringLiteral("rf_study"));
-        if (request.frequencies.isEmpty() && study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool())
-            job->notes << tr("Adding points where the answer changes is not done yet: the study's own %1 are solved.")
-                              .arg(job->frequencies.size());
+        const bool studyAdaptive = study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool();
+        job->adaptive = request.frequencies.isEmpty() && job->levels.isEmpty()
+                        && (request.adaptive < 0 ? studyAdaptive : request.adaptive > 0);
+        if (job->adaptive && study != nullptr) {
+            bool ok = true;
+            const double tolerance = numberOf(*study, QStringLiteral("adaptive_tolerance"), a_model, 2e-3, &ok);
+            if (!ok || !(tolerance > 0) || tolerance >= 1)
+                return nothing(tr("The study's Tolerance is to be a number between nought and one: the most a term of "
+                                  "S may differ from what the fit said of it."));
+            job->tolerance = tolerance;
+        }
+    } else if (!job->levels.isEmpty()) {
+        // A quasi-static convergence check: the charge on each mesh, no loop.
     } else {
         // An inductor's L is of a loop, and what the loop is comes from the
         // ports: the current goes in at one and out at another. Two is what
@@ -2120,96 +2181,13 @@ void RF25Doc::solveWith(const SolveRequest& request)
         // nothing to compute.
         while (job->held->load() && !job->stop.load()) QThread::msleep(2);
         if (job->stop.load()) return;
+        if (!job->levels.isEmpty()) {
+            convergeOn(*job);
+            return;
+        }
         if (job->fullWave) {
-            FullWaveControl control;
-            control.stop = &job->stop;
-            control.done = &job->done;
-            control.gmresIterations = &job->gmresIterations;
-            control.gmresResidual = &job->gmresResidual;
-            control.atOnce = &job->atOnce;
-            control.allowed = job->allowed.get();
-            control.matrix = job->matrix;
-            job->wave = std::make_shared<FullWave>(
-                fullWaveOf(job->mesh, job->conductors, job->stack, job->ports, job->frequencies, 1e-6, &control, job->returns));
-            // The ports that asked: their own discontinuity taken out by
-            // strips of their feeds - one calibration for each feed, its
-            // metal and its width, and a coplanar one's grounds and vias -
-            // and their reference planes moved.
-            if (!job->wave->ok()) return;
-            FullWaveControl quiet;
-            quiet.stop = &job->stop;
-            quiet.matrix = job->matrix;
-            // (Counted for the bar: the strips as they begin, with their
-            //  frequencies, and those frequencies as they are solved.)
-            quiet.done = &job->calibrated;
-            quiet.allowed = job->allowed.get();
-            quiet.begins = [counted = job.get()](int frequencies) {
-                counted->stripFrequencies += frequencies;
-                ++counted->stripsBegun;
-            };
-            // (One calibration for feeds alike and strips asked alike.)
-            const auto keyOf = [](const Feed& feed, const FullWavePort& port) {
-                return feed.key() + QLatin1Char('|') + QString::number(port.strips, 'g', 9);
-            };
-            {
-                // The calibrations to make, counted before the first is: the
-                // bar says which of them is going on.
-                QSet<QString> keys;
-                for (int p = 0; p < job->ports.size(); ++p) {
-                    const FullWavePort& port = job->ports.at(p);
-                    const Feed feed = job->wave->feeds.value(p);
-                    if (port.wantsStrips() && !port.internal && feed.width > 0) keys.insert(keyOf(feed, port));
-                }
-                job->calibrations = int(keys.size());
-            }
-            QList<Deembedding> each(job->ports.size());
-            QMap<QString, std::shared_ptr<Calibration>> feeds;
-            bool asked = false;
-            for (int p = 0; p < job->ports.size(); ++p) {
-                const FullWavePort& port = job->ports.at(p);
-                if (!port.deembeds()) continue;
-                asked = true;
-                each[p] = Deembedding{nullptr, port.shift, port.lineImpedance, port.lineEps};
-                if (!port.wantsStrips()) continue;
-                const QString name = job->wave->portNames.at(p);
-                const Feed feed = job->wave->feeds.value(p);
-                if (port.internal || !(feed.width > 0)) {
-                    job->notes << tr("%1 is not on the face of a conductor, so it has no feed to calibrate: it is "
-                                     "solved as it is.").arg(name);
-                    continue;
-                }
-                std::shared_ptr<Calibration>& calibration = feeds[keyOf(feed, port)];
-                if (!calibration) {
-                    job->calibrating = true;
-                    // (The bar counts each calibration from nought: its
-                    //  strips begun first, so that it is busy meanwhile.)
-                    job->stripsBegun = 0;
-                    job->stripFrequencies = 0;
-                    job->calibrated = 0;
-                    ++job->calibrationsBegun;
-                    calibration = std::make_shared<Calibration>(
-                        calibrate(job->stack, job->how, job->top, feed, job->frequencies, 1e-6, &quiet, port.strips / 1e-6));
-                }
-                if (job->stop.load()) {
-                    job->wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
-                    return;
-                }
-                if (!calibration->ok()) {
-                    job->notes << tr("%1's feed could not be calibrated: %2 It is solved as it is.")
-                                      .arg(name, calibration->problems.join(QLatin1Char(' ')));
-                    continue;
-                }
-                each[p].calibration = calibration.get();
-            }
-            if (!asked) return;
-            *job->wave = deembedded(*job->wave, each);
-            for (const std::shared_ptr<Calibration>& c : std::as_const(feeds))
-                if (c->ok()) {
-                    job->wave->lines << c->lines;
-                    // (Its strips' solves short of their residual: doubtful.)
-                    job->wave->warnings << c->warnings;
-                    job->wave->lines << c->warnings;
-                }
+            job->wave = solveWaveOn(*job, job->mesh, job->how, job->frequencies, job->adaptive, job->tolerance, &job->notes);
+            if (job->wave->ok()) job->wave->lines.prepend(meshNoteOf(job->mesh));
             return;
         }
         // Told to stop, it stops: let go and left to run, an extraction whose
@@ -2224,6 +2202,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         job->result =
             std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack, 1e-6, job->returns, &control));
         if (job->stop.load()) return;
+        if (job->result->ok()) job->result->lines.prepend(meshNoteOf(job->mesh));
         if (job->loop)
             job->inductance = std::make_shared<Inductance>(
                 inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency));
@@ -2246,6 +2225,198 @@ void RF25Doc::solveWith(const SolveRequest& request)
     emit solvedChanged();
 }
 
+std::shared_ptr<FullWave> RF25Doc::solveWaveOn(SolveJob& job, const Mesh& mesh, const MeshSettings& how,
+                                               const QList<double>& frequencies, bool adaptive, double tolerance,
+                                               QStringList* notes)
+{
+    FullWaveControl control;
+    control.stop = &job.stop;
+    control.done = &job.done;
+    control.gmresIterations = &job.gmresIterations;
+    control.gmresResidual = &job.gmresResidual;
+    control.atOnce = &job.atOnce;
+    control.allowed = job.allowed.get();
+    control.matrix = job.matrix;
+    const auto solveAt = [&job, &mesh, &control](const QList<double>& f) {
+        job.asked += int(f.size());
+        return fullWaveOf(mesh, job.conductors, job.stack, job.ports, f, 1e-6, &control, job.returns);
+    };
+    std::shared_ptr<FullWave> wave;
+    // The frequencies solved, which the ports' feeds are calibrated at: an
+    // adaptive sweep's few, its calibrations read at the rest as it reads
+    // the structure (calibrationAt()).
+    QList<double> solvedAt = frequencies;
+    if (adaptive) {
+        AdaptiveSettings settings;
+        settings.tolerance = tolerance;
+        const Adapted a = adaptiveSweep(frequencies, solveAt, settings, [&job] { return job.stop.load(); });
+        wave = std::make_shared<FullWave>(a.wave);
+        if (!a.whole) solvedAt = a.solved;
+    } else {
+        wave = std::make_shared<FullWave>(solveAt(frequencies));
+    }
+    // The ports that asked: their own discontinuity taken out by strips of
+    // their feeds - one calibration for each feed, its metal and its width,
+    // and a coplanar one's grounds and vias - and their reference planes
+    // moved.
+    if (!wave->ok()) return wave;
+    FullWaveControl quiet;
+    quiet.stop = &job.stop;
+    quiet.matrix = job.matrix;
+    // (Counted for the bar: the strips as they begin, with their
+    //  frequencies, and those frequencies as they are solved.)
+    quiet.done = &job.calibrated;
+    quiet.allowed = job.allowed.get();
+    quiet.begins = [counted = &job](int count) {
+        counted->stripFrequencies += count;
+        ++counted->stripsBegun;
+    };
+    // (One calibration for feeds alike and strips asked alike.)
+    const auto keyOf = [](const Feed& feed, const FullWavePort& port) {
+        return feed.key() + QLatin1Char('|') + QString::number(port.strips, 'g', 9);
+    };
+    {
+        // The calibrations to make, counted before the first is: the bar
+        // says which of them is going on.
+        QSet<QString> keys;
+        for (int p = 0; p < job.ports.size(); ++p) {
+            const FullWavePort& port = job.ports.at(p);
+            const Feed feed = wave->feeds.value(p);
+            if (port.wantsStrips() && !port.internal && feed.width > 0) keys.insert(keyOf(feed, port));
+        }
+        job.calibrations = int(keys.size());
+        job.calibrationsBegun = 0;
+    }
+    QList<Deembedding> each(job.ports.size());
+    QMap<QString, std::shared_ptr<Calibration>> feeds;
+    bool asked = false;
+    for (int p = 0; p < job.ports.size(); ++p) {
+        const FullWavePort& port = job.ports.at(p);
+        if (!port.deembeds()) continue;
+        asked = true;
+        each[p] = Deembedding{nullptr, port.shift, port.lineImpedance, port.lineEps};
+        if (!port.wantsStrips()) continue;
+        const QString name = wave->portNames.at(p);
+        const Feed feed = wave->feeds.value(p);
+        if (port.internal || !(feed.width > 0)) {
+            *notes << tr("%1 is not on the face of a conductor, so it has no feed to calibrate: it is solved as it is.").arg(name);
+            continue;
+        }
+        std::shared_ptr<Calibration>& calibration = feeds[keyOf(feed, port)];
+        if (!calibration) {
+            job.calibrating = true;
+            // (The bar counts each calibration from nought: its strips
+            //  begun first, so that it is busy meanwhile.)
+            job.stripsBegun = 0;
+            job.stripFrequencies = 0;
+            job.calibrated = 0;
+            ++job.calibrationsBegun;
+            calibration = std::make_shared<Calibration>(
+                calibrate(job.stack, how, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
+            if (calibration->ok() && solvedAt.size() < frequencies.size()) {
+                *calibration = calibrationAt(*calibration, frequencies);
+                calibration->lines << tr("Its strips solved at the %1 frequencies the structure was, and read at the "
+                                         "sweep's other %2 from a rational fit through them, as the structure is.")
+                                          .arg(solvedAt.size()).arg(frequencies.size() - solvedAt.size());
+            }
+        }
+        if (job.stop.load()) {
+            wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
+            return wave;
+        }
+        if (!calibration->ok()) {
+            *notes << tr("%1's feed could not be calibrated: %2 It is solved as it is.")
+                          .arg(name, calibration->problems.join(QLatin1Char(' ')));
+            continue;
+        }
+        each[p].calibration = calibration.get();
+    }
+    if (!asked) return wave;
+    *wave = deembedded(*wave, each);
+    for (const std::shared_ptr<Calibration>& c : std::as_const(feeds))
+        if (c->ok()) {
+            wave->lines << c->lines;
+            // (Its strips' solves short of their residual: doubtful.)
+            wave->warnings << c->warnings;
+            wave->lines << c->warnings;
+        }
+    return wave;
+}
+
+void RF25Doc::convergeOn(SolveJob& job)
+{
+    auto check = std::make_shared<MeshConvergence>();
+    check->fullWave = job.fullWave;
+    if (job.fullWave) check->frequencies = job.frequencies;
+    for (int i = 0; i < job.levels.size() && !job.stop.load(); ++i) {
+        job.levelAt = i;
+        job.done = 0;
+        job.asked = 0;
+        job.calibrating = false;
+        job.gmresIterations = 0;
+        job.step = ExtractControl::Starting;
+        job.stepDone = 0;
+        job.stepAll = 0;
+        QElapsedTimer t;
+        t.start();
+        // The model's mesh refined as a whole - the cells across, per
+        // wavelength and at the gaps, and the largest - so many times as the
+        // cells across asked are of the model's own: a mesh whose largest
+        // cell, or the wavelength, sets its size was the same mesh at every
+        // level when the cells across alone were changed.
+        const double factor = double(job.levels.at(i)) / std::max(1, job.how.cellsAcross);
+        MeshSettings how = refinedBy(job.how, factor);
+        how.cellsAcross = job.levels.at(i);
+        const Mesh mesh = meshOf(job.conductors, how, job.stack, job.top);
+        if (!mesh.ok() || mesh.cells.isEmpty()) {
+            check->problems << tr("The mesh of %1 cells across could not be made: %2")
+                                   .arg(job.levels.at(i)).arg(mesh.problems.join(QLatin1Char(' ')));
+            break;
+        }
+        MeshLevel level;
+        level.asked = job.levels.at(i);
+        level.factor = factor;
+        level.across = mesh.across;
+        level.cell = mesh.acrossCell;
+        level.smallest = mesh.smallest;
+        level.largest = mesh.largest;
+        level.cells = int(mesh.cells.size());
+        level.unknowns = mesh.cost.unknowns;
+        QList<Watched> watched;
+        if (job.fullWave) {
+            QStringList notes;
+            const std::shared_ptr<FullWave> wave = solveWaveOn(job, mesh, how, job.frequencies, false, 0, &notes);
+            if (job.stop.load()) break;
+            if (!wave->ok()) {
+                check->problems << tr("At %1 cells across: %2").arg(level.asked).arg(wave->problems.join(QLatin1Char(' ')));
+                break;
+            }
+            watched = watchedOf(*wave, job.frequencies);
+        } else {
+            ExtractControl control;
+            control.stop = &job.stop;
+            control.step = &job.step;
+            control.done = &job.stepDone;
+            control.all = &job.stepAll;
+            control.images = &job.images;
+            const Extraction e = extract(mesh, job.conductors, job.stack, 1e-6, job.returns, &control);
+            if (job.stop.load()) break;
+            if (!e.ok()) {
+                check->problems << tr("At %1 cells across: %2").arg(level.asked).arg(e.problems.join(QLatin1Char(' ')));
+                break;
+            }
+            watched = watchedOf(e);
+        }
+        level.seconds = double(t.elapsed()) / 1000;
+        check->levels << level;
+        addWatched(*check, watched);
+    }
+    if (job.stop.load())
+        check->problems << tr("Stopped, %1 of %2 meshes solved.").arg(check->levels.size()).arg(job.levels.size());
+    judge(*check);
+    job.check = check;
+}
+
 int RF25Doc::frequenciesSolved() const
 {
     return a_solveJob && a_solveJob->fullWave ? a_solveJob->done.load() : 0;
@@ -2253,7 +2424,20 @@ int RF25Doc::frequenciesSolved() const
 
 int RF25Doc::frequenciesToSolve() const
 {
-    return a_solveJob && a_solveJob->fullWave ? int(a_solveJob->frequencies.size()) : 0;
+    // (An adaptive sweep's: those it has asked for so far.)
+    if (!a_solveJob || !a_solveJob->fullWave) return 0;
+    return a_solveJob->adaptive ? a_solveJob->asked.load() : int(a_solveJob->frequencies.size());
+}
+
+bool RF25Doc::isCheckingConvergence() const
+{
+    return a_solveJob && !a_solveJob->levels.isEmpty();
+}
+
+QList<int> RF25Doc::convergenceLevels() const
+{
+    QStringList said;
+    return defaultLevels(tabMeshSettings(a_model, &said).cellsAcross);
 }
 
 void RF25Doc::stopSolving()
@@ -2288,6 +2472,7 @@ bool RF25Doc::solvingAlike(const SolveRequest& request) const
         return r.solver.isEmpty() ? (studyIsFullWave() ? QStringLiteral("full_wave") : QStringLiteral("quasi_static")) : r.solver;
     };
     if (solverOf(a_solveRequest) != solverOf(request)) return false;
+    if (a_solveRequest.levels != request.levels) return false;
     if (solverOf(request) == QLatin1String("quasi_static")) return true;
     const auto matrixOf = [this](const SolveRequest& r) {
         return r.matrix.isEmpty() ? studyMatrix(a_model)
@@ -2295,7 +2480,8 @@ bool RF25Doc::solvingAlike(const SolveRequest& request) const
                : r.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed
                                                          : FullWaveControl::Matrix::Automatic;
     };
-    return a_solveRequest.frequencies == request.frequencies && matrixOf(a_solveRequest) == matrixOf(request);
+    return a_solveRequest.frequencies == request.frequencies && matrixOf(a_solveRequest) == matrixOf(request)
+           && a_solveRequest.adaptive == request.adaptive;
 }
 
 QString RF25Doc::solveCount(int* done, int* of) const
@@ -2351,7 +2537,10 @@ RF25Doc::Count RF25Doc::countNow() const
     } else if (job != nullptr && job->fullWave) {
         c.of = frequenciesToSolve();
         c.done = std::min(frequenciesSolved(), c.of);
-        c.said = tr("Solving full-wave: %1 of %2 frequencies…").arg(c.done).arg(c.of);
+        c.said = job->adaptive ? tr("Solving full-wave, adding points where the answer changes: %1 of the %2 frequencies "
+                                    "asked for so far solved, of the sweep's %3…")
+                                     .arg(c.done).arg(c.of).arg(job->frequencies.size())
+                               : tr("Solving full-wave: %1 of %2 frequencies…").arg(c.done).arg(c.of);
         // (Several at a time, none is counted until it ends: said, so that a
         //  count standing still is not taken for a solve standing still.)
         if (const int side = job->atOnce.load(); side > 1 && c.done < c.of)
@@ -2373,6 +2562,13 @@ RF25Doc::Count RF25Doc::countNow() const
             c.done = std::min(done, all);
             c.key = QStringLiteral("static %1").arg(step);
         }
+    }
+    // A convergence check: which of its meshes, each counted from nought.
+    if (job != nullptr && !job->levels.isEmpty()) {
+        const int at = std::clamp(job->levelAt.load(), 0, int(job->levels.size()) - 1);
+        c.said = tr("Checking mesh convergence, mesh %1 of %2 (%3 cells across): %4")
+                     .arg(at + 1).arg(job->levels.size()).arg(job->levels.at(at)).arg(c.said);
+        c.key = QStringLiteral("mesh %1 %2").arg(at).arg(c.key);
     }
     return c;
 }
@@ -2436,6 +2632,17 @@ void RF25Doc::solveDone()
     const std::shared_ptr<SolveJob> job = a_solveJob;
     a_solveJob.reset();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
+    // A convergence check leaves the solution shown as it was: its meshes
+    // are not the model's.
+    if (!job->levels.isEmpty()) {
+        a_convergence = job->check;
+        a_convergenceModel = job->modelStamp;
+        a_convergenceLayout = job->layoutStamp;
+        showProblems();
+        showProgress();
+        emit solvedChanged();
+        return;
+    }
     if (job->fullWave) {
         a_extraction.reset();
         a_inductance.reset();

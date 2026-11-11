@@ -2975,6 +2975,202 @@ private slots:
     // saved, its layout written again, the file damaged: not taken, and why
     // said. A quasi-static solve is kept as well; an unsaved model's solve
     // only once it is saved.
+    // The study's "Add points where it changes": a sweep of 41 points over a
+    // line a third of a wavelength long at its top, its ports calibrated by
+    // strips of their feeds, solved at a few of them and read at the rest -
+    // the strips solved at those few alone -, within the tolerance of the
+    // whole sweep solved; kept beside the model with which it solved; the
+    // mesh said first; a sweep of 12 points or fewer solved whole.
+    void anAdaptiveSweepSolvesFewOfItsFrequencies()
+    {
+        const QString file = fullWaveLine(QStringLiteral("adaptive.qrf25"));
+        QVERIFY(!file.isEmpty());
+        QFile::remove(rf::solutionPathOf(file));
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        rf::Model m = doc->model();
+        rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+        QVERIFY(study != nullptr);
+        study->props.insert(QStringLiteral("to"), QStringLiteral("41[GHz]"));
+        study->props.insert(QStringLiteral("points"), 41);
+        study->props.insert(QStringLiteral("adaptive"), true);
+        for (rf::Node& port : m.ports().children)
+            if (port.type == QLatin1String("rf_edge_port")) port.props.insert(QStringLiteral("calibrate"), true);
+        QVERIFY(doc->setModel(m, QStringLiteral("adaptive")));
+        QVERIFY(doc->waitForPrepared(60000));
+        // Its Tolerance shown with it, and only with it.
+        {
+            const qucs_s::fem::NodeKind* kind = rf::nodeKind(QStringLiteral("rf_study"));
+            QVERIFY(kind != nullptr);
+            const qucs_s::fem::PropertyDef* tolerance = kind->property(QStringLiteral("adaptive_tolerance"));
+            QVERIFY(tolerance != nullptr);
+            QVERIFY(qucs_s::fem::propertyVisible(*doc->model().root.child(QStringLiteral("rf_study")), *tolerance, kind));
+            rf::Node off = *doc->model().root.child(QStringLiteral("rf_study"));
+            off.props.insert(QStringLiteral("adaptive"), false);
+            QVERIFY(!qucs_s::fem::propertyVisible(off, *tolerance, kind));
+        }
+        doc->solve();
+        QVERIFY(doc->waitForSolved(600000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        const rf::FullWave adapted = *doc->fullWave();
+        QCOMPARE(adapted.frequencies.size(), 41);
+        QVERIFY2(adapted.solvedFrequencies.size() >= 9 && adapted.solvedFrequencies.size() < 25,
+                 qPrintable(QString::number(adapted.solvedFrequencies.size())));
+        QCOMPARE(adapted.solvedFrequencies.first(), 1e9);
+        QCOMPARE(adapted.solvedFrequencies.last(), 41e9);
+        QVERIFY2(adapted.lines.first().startsWith(QStringLiteral("Solved on ")), qPrintable(adapted.lines.first()));
+        QVERIFY2(adapted.lines.first().contains(QStringLiteral("3 across the narrowest conductor, 50 µm")), qPrintable(adapted.lines.first()));
+        QVERIFY2(says(adapted.lines, "Adding points where the answer changes: "), qPrintable(adapted.lines.join('\n')));
+        QVERIFY2(says(adapted.lines, "Its strips solved at the "), qPrintable(adapted.lines.join('\n')));
+        QVERIFY(adapted.deembedding.value(0).calibrated);
+        // The whole sweep, solved for this solve alone: the same S within a
+        // little of the tolerance, at every frequency.
+        RF25Doc::SolveRequest whole;
+        whole.adaptive = 0;
+        doc->solveWith(whole);
+        QVERIFY(doc->waitForSolved(600000));
+        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        const rf::FullWave full = *doc->fullWave();
+        QVERIFY(full.solvedFrequencies.isEmpty());
+        QCOMPARE(full.frequencies, adapted.frequencies);
+        double worst = 0;
+        for (int k = 0; k < full.frequencies.size(); ++k)
+            for (int r = 0; r < 2; ++r)
+                for (int c = 0; c < 2; ++c) worst = std::max(worst, std::abs(full.s[k][r][c] - adapted.s[k][r][c]));
+        QVERIFY2(worst < 5e-3, qPrintable(QString::number(worst)));
+        qInfo("41 points: %d solved, S within %.2g of the whole sweep", int(adapted.solvedFrequencies.size()), worst);
+        // Solved again as the study says, kept, and opened again: shown with
+        // what it solved.
+        doc->solve();
+        QVERIFY(doc->waitForSolved(600000));
+        const QList<double> solvedAt = doc->fullWave()->solvedFrequencies;
+        QVERIFY(!solvedAt.isEmpty());
+        QCOMPARE(doc->save(), 0);
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY2(doc->showsKeptSolution(), qPrintable(doc->keptSaid()));
+        QCOMPARE(doc->fullWave()->solvedFrequencies, solvedAt);
+        // Twelve points: too few to gain by it, solved whole and said.
+        m = doc->model();
+        m.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("points"), 12);
+        QVERIFY(doc->setModel(m, QStringLiteral("twelve")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(600000));
+        QVERIFY(doc->fullWave() != nullptr && doc->fullWave()->ok());
+        QVERIFY(doc->fullWave()->solvedFrequencies.isEmpty());
+        QVERIFY2(says(doc->fullWave()->lines, "The study's 12 frequencies are too few for adding points to save anything"),
+                 qPrintable(doc->fullWave()->lines.join('\n')));
+        // A Tolerance that is none is refused, and why said.
+        m = doc->model();
+        m.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("points"), 41);
+        m.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("adaptive_tolerance"), QStringLiteral("2"));
+        QVERIFY(doc->setModel(m, QStringLiteral("tolerance")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(60000));
+        QVERIFY2(doc->solveProblem().startsWith(QStringLiteral("The study's Tolerance is to be a number between nought and one")),
+                 qPrintable(doc->solveProblem()));
+        doc->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // RF 2.5D > Check Mesh Convergence: the line solved on meshes of 2, 4 and
+    // 8 cells across, full-wave at the top of its sweep and quasi-statically,
+    // each value's reading and verdict said; the solution shown left as it
+    // was; counted on the bar as it goes; gone with an edit of the model.
+    void aMeshConvergenceCheckSaysHowFarTheMeshIsFromTheLimit()
+    {
+        const QString file = fullWaveLine(QStringLiteral("converge.qrf25"));
+        QVERIFY(!file.isEmpty());
+        QFile::remove(rf::solutionPathOf(file));
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        // (Cells along the line as long as the largest cell lets them: it,
+        //  not the cells across, sets their size, and a check refines it.)
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { n.props.insert(QStringLiteral("stretch"), QStringLiteral("20")); },
+                              QStringLiteral("stretch")));
+        QVERIFY(doc->waitForPrepared(60000));
+        // What it checks unasked: a quarter, a half and all of the model's 3.
+        QCOMPARE(doc->convergenceLevels(), (QList<int>{1, 2, 3}));
+        QCOMPARE(rf::defaultLevels(10), (QList<int>{3, 5, 10}));
+        QCOMPARE(rf::defaultLevels(2), (QList<int>{2, 4, 8}));
+        QCOMPARE(rf::defaultLevels(0), (QList<int>{1, 2, 4}));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> before = doc->fullWave();
+        QVERIFY(before != nullptr && before->ok());
+        // The menu's action, there and ready.
+        QAction* action = nullptr;
+        for (QAction* a : app->findChildren<QAction*>())
+            if (a->objectName() == QLatin1String("rfConvergeAction")) action = a;
+        QVERIFY(action != nullptr);
+        RF25Doc::SolveRequest check;
+        check.levels = {2, 4, 8};
+        doc->holdSolves(true);
+        doc->solveWith(check);
+        QVERIFY(doc->isCheckingConvergence());
+        int done = 0, of = 0;
+        QVERIFY2(doc->solveCount(&done, &of).startsWith(QStringLiteral("Checking mesh convergence, mesh 1 of 3 (2 cells across): ")),
+                 qPrintable(doc->solveCount(&done, &of)));
+        doc->holdSolves(false);
+        QVERIFY(doc->waitForSolved(600000));
+        QVERIFY(!doc->isCheckingConvergence());
+        const std::shared_ptr<const rf::MeshConvergence> c = doc->convergence();
+        QVERIFY2(c != nullptr && c->ok(), c ? qPrintable(c->problems.join(' ')) : "none");
+        QCOMPARE(doc->fullWave(), before);
+        QVERIFY(c->fullWave);
+        QCOMPARE(c->frequencies, QList<double>{5e9});
+        QCOMPARE(c->levels.size(), 3);
+        for (int i = 0; i < 3; ++i) {
+            QCOMPARE(c->levels.at(i).asked, check.levels.at(i));
+            QCOMPARE(c->levels.at(i).across, check.levels.at(i));
+            QVERIFY(std::abs(c->levels.at(i).cell - 50.0 / check.levels.at(i)) < 1e-6 * 50);
+        }
+        QVERIFY(c->levels.at(0).cells < c->levels.at(1).cells && c->levels.at(1).cells < c->levels.at(2).cells);
+        // The largest cell, 100 µm in the model, 150 and 37.5 at 2 and 8 across.
+        QVERIFY2(c->levels.at(0).largest > 110 && c->levels.at(2).largest < 40,
+                 qPrintable(QStringLiteral("%1 %2").arg(c->levels.at(0).largest).arg(c->levels.at(2).largest)));
+        QStringList names;
+        for (const rf::Watched& w : c->values) names << w.name;
+        QCOMPARE(names, (QStringList{QStringLiteral("S11 at 5 GHz"), QStringLiteral("S21 at 5 GHz"), QStringLiteral("S22 at 5 GHz")}));
+        for (const rf::Watched& w : c->values) {
+            QCOMPARE(w.values.size(), 3);
+            QVERIFY(w.verdict.kind != rf::Convergence::Kind::TwoMeshes);
+        }
+        QVERIFY2(c->lines.first().startsWith(QStringLiteral("Mesh convergence over 3 mesh(es) of 2, 4 and 8 cells across the narrowest conductor, each the model's own refined as a whole - 0.667, 1.33 and 2.67 times as fine, its largest cells, cells per wavelength and cells at the gaps with it, at 5 GHz: of 3 value(s), ")),
+                 qPrintable(c->lines.first()));
+        QVERIFY2(c->lines.at(1).startsWith(QStringLiteral("Mesh 1: 2 across, ")), qPrintable(c->lines.at(1)));
+        QVERIFY2(c->lines.at(4).startsWith(QStringLiteral("S11 at 5 GHz: ")), qPrintable(c->lines.at(4)));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("Its mesh convergence:\n  • Mesh convergence over 3 mesh(es) of 2, 4 and 8")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        for (const QString& line : c->lines) qInfo("%s", qPrintable(line));
+        // Quasi-statically: each net's capacitance, and the line's.
+        RF25Doc::SolveRequest quasi = check;
+        quasi.solver = QStringLiteral("quasi_static");
+        doc->solveWith(quasi);
+        QVERIFY(doc->waitForSolved(600000));
+        const std::shared_ptr<const rf::MeshConvergence> q = doc->convergence();
+        QVERIFY2(q != nullptr && q->ok(), q ? qPrintable(q->problems.join(' ')) : "none");
+        QVERIFY(!q->fullWave);
+        QVERIFY(q->frequencies.isEmpty());
+        QVERIFY2(q->values.first().name.startsWith(QStringLiteral("C of ")), qPrintable(q->values.first().name));
+        QCOMPARE(q->values.first().unit, QStringLiteral("fF"));
+        QVERIFY2(q->lines.first().startsWith(QStringLiteral("Mesh convergence over 3 mesh(es) of 2, 4 and 8 cells across the narrowest conductor, each the model's own refined as a whole - 0.667, 1.33 and 2.67 times as fine, its largest cells, cells per wavelength and cells at the gaps with it: of ")),
+                 qPrintable(q->lines.first()));
+        // The capacitance converges as the cells do.
+        QCOMPARE(int(q->values.first().verdict.kind), int(rf::Convergence::Kind::Converging));
+        QCOMPARE(doc->fullWave(), before);
+        // An edit of the mesh: the check is of another model, and goes.
+        QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { n.props.insert(QStringLiteral("cells_across"), 4); },
+                              QStringLiteral("across")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->convergence() == nullptr);
+        doc->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
     void theSolutionIsKeptBesideTheModel()
     {
         const QString file = fullWaveLine(QStringLiteral("kept.qrf25"));
@@ -3123,7 +3319,7 @@ private slots:
             QDataStream s(&later);
             s.setVersion(QDataStream::Qt_6_0);
             s.writeRawData("QRF25SOL", 8);
-            s << quint32(3) << QByteArray("a later build's");
+            s << quint32(4) << QByteArray("a later build's");
         }
         doc = open(file);
         QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));

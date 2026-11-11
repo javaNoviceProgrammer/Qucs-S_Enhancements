@@ -1,0 +1,27 @@
+===== what each break did =====
+the fit's weights not the Loewner matrix's least singular vect aRationalFunctionIsFoundAgain failed (caught)
+no more than two support points                                aRationalFunctionIsFoundAgain failed (caught)
+the points solved last not held to what the fit said of them   aLineOfManyResonancesIsReadWithinT failed (caught)
+the currents not carried by the fit, the first support's taken theCurrentsAreCarriedByTheFit failed (caught)
+a short sweep not solved whole                                 aShortSweepIsSolvedWhole failed (caught)
+a stop not heeded between rounds                               aStoppedOrFailedSweepSaysSo failed (caught)
+the fit's frequencies solved not said in the answer            anAdaptiveSweepSolvesFewAndReadsTh failed (caught); anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+a calibration not read between its frequencies                 aCalibrationIsReadBetweenItsFreque failed (caught); anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+Richardson's order of halving cells, whatever the sizes        aValueConvergingIsExtrapolated failed (caught)
+the limit extrapolated as if the cells halved                  aValueConvergingIsExtrapolated failed (caught)
+changes that turn back taken as converging                     aValueNotConvergingIsSaid failed (caught)
+changes shrinking slower than the root of the cells taken as c aValueNotConvergingIsSaid failed (caught)
+a mesh refined by its cells across alone                       aMeshIsRefinedAsAWhole failed (caught); aMeshConvergenceCheckSaysHowFarThe failed (caught)
+the check's meshes not refined as a whole                      aMeshConvergenceCheckSaysHowFarThe failed (caught)
+the strips calibrated at every frequency of an adaptive sweep  anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+the study's Add points where it changes not read               anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+the mesh not said first in a full-wave solve's lines           anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+the frequencies an adaptive sweep solved not kept beside the m anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+a convergence check taken as the model's solve                 aMeshConvergenceCheckSaysHowFarThe failed (caught)
+the bar not saying which of the check's meshes it is at        aMeshConvergenceCheckSaysHowFarThe failed (caught)
+a check kept past an edit of the model                         aMeshConvergenceCheckSaysHowFarThe failed (caught)
+rf25_converge's meshes taken in the order given                anRf25ModelsSweepAndMeshAreChecked failed (caught)
+rf25_solve's 'adaptive' not passed on                          anRf25ModelsSweepAndMeshAreChecked failed (caught)
+
+0 of 23 uncaught
+

@@ -76,10 +76,20 @@ struct MeshSettings {
     /// both edges. The tab sets it for both studies, and a full-wave one's
     /// calibration strips are meshed so too; not read from the node.
     bool gaps = false;
+    /// How wide, as a share of the gap, the outermost cells facing it are
+    /// halved down to (\a gaps); not read from the node: a convergence
+    /// check's meshes refine it with the rest (refinedBy()).
+    double gapShare = 0.25;
     /// The most cells, as the solver has it.
     int mostCells() const;
 };
 MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>& parameters, QStringList* problems);
+/// \a how with every size it sets divided by \a factor - the cells across
+/// a conductor and per wavelength times it (at least one), the largest cell
+/// and the share of a gap its facing cells are graded to over it -, the
+/// edges' halving and the stretch along a line as they were: the same mesh,
+/// \a factor times finer (a convergence check's meshes).
+MeshSettings refinedBy(const MeshSettings& how, double factor);
 
 /// How many cells the charge solve of a static extraction will set up a
 /// dense matrix of: 8000 is half a gigabyte a matrix and some thirty
@@ -118,6 +128,17 @@ struct Mesh {
     /// How many conductors' sides it graded where they face another across a
     /// narrow gap (MeshSettings::gaps).
     int facing = 0;
+    /// What its cells are against what they cut, for the solve's note of it
+    /// and the convergence check (µm): the narrowest conductor, how many
+    /// cells were put across it and how wide they are there; the narrowest
+    /// gap between two pieces of a layer facing each other (nought: none);
+    /// and the smallest and the largest cell, each by its bounding box's
+    /// shorter and longer side.
+    double narrowest = 0;
+    int across = 0;
+    double acrossCell = 0;
+    double narrowestGap = 0;
+    double smallest = 0, largest = 0;
     bool ok() const { return problems.isEmpty(); }
     QMap<QString, int> byLayer() const;
 };

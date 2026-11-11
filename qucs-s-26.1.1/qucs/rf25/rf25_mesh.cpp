@@ -86,7 +86,6 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
 /// (two where graded).
 /// How fine a conductor's outermost cells are made where it faces another
 /// across a gap: no wider than this share of the gap (meshOf()).
-constexpr double kGapShare = 0.25;
 /// A metal's thickness, as a share of the narrowest gap beside it, from
 /// which the side walls' missing capacitance is said (meshOf()).
 constexpr double kThickBesideGap = 0.25;
@@ -362,6 +361,17 @@ QMap<QString, int> Mesh::byLayer() const
     QMap<QString, int> counts;
     for (const MeshCell& c : cells) ++counts[c.layer];
     return counts;
+}
+
+MeshSettings refinedBy(const MeshSettings& how, double factor)
+{
+    MeshSettings out = how;
+    if (!(factor > 0)) return out;
+    if (how.cellsAcross > 0) out.cellsAcross = std::max(1, int(std::lround(how.cellsAcross * factor)));
+    out.perWavelength = std::max(1, int(std::lround(how.perWavelength * factor)));
+    if (how.maximum > 0) out.maximum = how.maximum / factor;
+    out.gapShare = std::min(1.0, how.gapShare / factor);
+    return out;
 }
 
 MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>& parameters, QStringList* problems)
@@ -720,7 +730,7 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         QList<int> order(pieces.size());
         std::iota(order.begin(), order.end(), 0);
         std::sort(order.begin(), order.end(), [&pieces](int a, int b) { return pieces.at(a).box.left() < pieces.at(b).box.left(); });
-        const double reach = size / (2 * kGapShare);
+        const double reach = size / (2 * how.gapShare);
         for (int oi = 0; oi < order.size(); ++oi) {
             Piece& p = pieces[order.at(oi)];
             const QRectF& A = p.box;
@@ -819,15 +829,15 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             }
             const double* gap = piece.gap;
             piece.xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges && piece.grade[0], how.edges && piece.grade[1],
-                                 kGapShare * gap[0], kGapShare * gap[1]);
+                                 how.gapShare * gap[0], how.gapShare * gap[1]);
             piece.ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges && piece.grade[2], how.edges && piece.grade[3],
-                                 kGapShare * gap[2], kGapShare * gap[3]);
+                                 how.gapShare * gap[2], how.gapShare * gap[3]);
             // (The sides graded past the edges' one halving, for the line
             //  that says so: those whose quarter gap is narrower than it.)
             for (int k = 0; k < 4 && how.edges; ++k) {
                 const double span = k < 2 ? bounds.width() : bounds.height(), step = k < 2 ? stepX : stepY;
                 const double outermost = span / std::max(1, int(std::ceil(span / step - 1e-9))) / 2;
-                if (gap[k] > 0 && kGapShare * gap[k] < outermost) ++facing;
+                if (gap[k] > 0 && how.gapShare * gap[k] < outermost) ++facing;
             }
             if (narrowest <= 0 || feature < narrowest) narrowest = feature;
             if (finest <= 0 || across < finest) finest = across;
@@ -996,6 +1006,11 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         mesh.lines << tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
                          "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
                           .arg(most);
+    if (perFeature > 0 && narrowest > 0) {
+        mesh.narrowest = narrowest;
+        mesh.across = perFeature;
+        mesh.acrossCell = finest;
+    }
     if (perFeature > 0 && narrowest > 0)
         mesh.lines << tr("%1 cell(s) across the narrowest conductor (%2 µm across): cells of %3 µm there%4.")
                           .arg(perFeature).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
@@ -1075,6 +1090,8 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                 if (gap <= 1e-9 * size) continue;
                 if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
             }
+        for (const double gap : std::as_const(narrowestGap))
+            if (mesh.narrowestGap <= 0 || gap < mesh.narrowestGap) mesh.narrowestGap = gap;
         for (auto it = narrowestGap.constBegin(); it != narrowestGap.constEnd(); ++it) {
             const Layer* metal = stack.named(it.key());
             if (metal == nullptr || metal->kind != Layer::Metal || !(metal->thickness > 0)) continue;
@@ -1121,6 +1138,12 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             if (!faced.contains(cell.layer)) faced << cell.layer;
         }
     mesh.charges = charges;
+    for (const MeshCell& cell : std::as_const(mesh.cells)) {
+        const QRectF box = cell.outline.boundingRect();
+        const double shorter = std::min(box.width(), box.height()), longer = std::max(box.width(), box.height());
+        if (shorter > 0 && (mesh.smallest <= 0 || shorter < mesh.smallest)) mesh.smallest = shorter;
+        mesh.largest = std::max(mesh.largest, longer);
+    }
     mesh.cost = how.compressed ? costOf(unknowns + charges, true) : costOf(unknowns);
     // (For a full-wave solve held compressed, its cells and runs together
     //  are its unknowns, and the charge solve's dense matrix is no one's.)
