@@ -1,0 +1,36 @@
+breaks.py, 11 November: 28 breaks, each built and its tests run.
+
+Break 24 (the view fitted after each drawing) passed in the first run: the view was fitted already and the polygon
+drawn lay inside the layout's bounds, so the fit changed nothing. The test now sets a view of its own before that
+drawing; break 24 run again alone (BRK_ONLY=24): caught.
+
+the joint fit never kept                                       theCircuitIsFittedTogetherOnS failed (caught)
+the joint fit's choice not of the fewest values nearly as good aSlightlyLossyCapacitorIsACapacito failed (caught)
+only the branches' own forms fitted together                   theCircuitIsFittedTogetherOnS failed (caught)
+a symmetric two-port's branches to the ground not kept alike   theCircuitIsFittedTogetherOnS failed (caught)
+S's imaginary part left out of the joint misfit                theCircuitIsFittedTogetherOnS failed (caught)
+the branches' own rms not kept beside the joint one            theCircuitIsFittedTogetherOnS failed (caught)
+the joint fit not said                                         theCircuitIsFittedTogetherOnS failed (caught)
+rf25_circuit not saying how it was fitted                      anRf25ModelIsSolvedFullWaveThrough failed (caught)
+no file named by the model's Layout when one is begun          aModelsShapesAreDrawnOnItsTab failed (caught); anRf25ModelIsDrawnThroughItsTool failed (caught)
+no row of the map added for a layer drawn on                   aModelsShapesAreDrawnOnItsTab failed (caught); anRf25ModelIsDrawnThroughItsTool failed (caught)
+Undo not taking a begun file away                              aModelsShapesAreDrawnOnItsTab failed (caught)
+Undo not putting the model back                                aModelsShapesAreDrawnOnItsTab failed (caught)
+a drawing not a step of Undo                                   aModelsShapesAreDrawnOnItsTab failed (caught); anRf25ModelIsDrawnThroughItsTool failed (caught)
+a rectangle's corners not snapped                              aModelsShapesAreDrawnOnItsTab failed (caught)
+a corner not snapped to a shape's                              aModelsShapesAreDrawnOnItsTab failed (caught)
+Backspace not taking a corner back                             aModelsShapesAreDrawnOnItsTab failed (caught)
+the application's shortcuts not told the keys are the tab's    aModelsShapesAreDrawnOnItsTab failed (caught)
+a double click not closing a polygon                           aModelsShapesAreDrawnOnItsTab failed (caught)
+a click on the first corner not closing a polygon              aModelsShapesAreDrawnOnItsTab failed (caught)
+Delete not deleting the shape selected                         aModelsShapesAreDrawnOnItsTab failed (caught)
+a deletion by a shape's own box taking any shape of its layer  aModelsShapesAreDrawnOnItsTab failed (caught)
+a port tool not putting the drawing tool down                  aModelsShapesAreDrawnOnItsTab failed (caught)
+Escape not putting the drawing tool down                       aModelsShapesAreDrawnOnItsTab failed (caught)
+the view fitted to the layout read after each drawing          aModelsShapesAreDrawnOnItsTab failed (caught) - run again alone after the test was made to see it
+the via chosen in the stack not the layer drawn on             aModelsShapesAreDrawnOnItsTab failed (caught)
+a via drawn on a metal                                         aModelsShapesAreDrawnOnItsTab failed (caught)
+rf25_draw answering before the layout is read again            anRf25ModelIsDrawnThroughItsTool failed (caught)
+rf25_draw not saying what the processing leaves                anRf25ModelIsDrawnThroughItsTool failed (caught)
+
+0 of 28 uncaught

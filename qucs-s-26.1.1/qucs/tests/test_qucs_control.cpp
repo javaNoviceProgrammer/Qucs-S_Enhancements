@@ -3583,6 +3583,69 @@ private slots:
         QVERIFY(failed(notRf));
     }
 
+    // rf25_draw (F4 of the open items of 8 November): a model that names no
+    // layout drawn on from nothing - a file begun beside it, its Layout
+    // naming it, the map's row added -, a strip and a path in one call;
+    // what the processing leaves, by layer; a shape deleted by its point;
+    // undo taking the deletion back; what it does not take refused, nothing
+    // drawn.
+    void anRf25ModelIsDrawnThroughItsTool()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rfd"));
+        QFile::remove(ws + "/rfd/drawn.gds");
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        QFile f(ws + "/rfd/drawn.qrf25");
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(m.toJson());
+        f.close();
+        const QString model = ws + "/rfd/drawn.qrf25";
+
+        const QJsonObject drawn = call("rf25_draw", {{"path", model},
+                                                     {"shapes", QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "M1"}, {"box", QJsonArray{0, 0, 1000, 50}}},
+                                                                           QJsonObject{{"add", "path"}, {"layer", "M1"}, {"width", 10},
+                                                                                       {"points", QJsonArray{QJsonArray{500, 400}, QJsonArray{800, 400}}}}}}},
+                                       120000);
+        QVERIFY2(!failed(drawn), qPrintable(text(drawn)));
+        const QJsonObject d = json(drawn).toObject();
+        QCOMPARE(QFileInfo(d.value("file").toString()).fileName(), QStringLiteral("drawn.gds"));
+        QVERIFY(QFileInfo::exists(ws + "/rfd/drawn.gds"));
+        QVERIFY2(d.value("drawn").toArray().first().toString().startsWith(
+                     QStringLiteral("Drew in drawn.gds: a rectangle of M1 from (0, 0) to (1000, 50) µm; a path of M1, 10 µm wide")),
+                 qPrintable(text(drawn)));
+        QVERIFY2(text(drawn).contains(QStringLiteral("Begun drawn.gds beside the model")) && text(drawn).contains(QStringLiteral("1/0 to M1, a row added")),
+                 qPrintable(text(drawn)));
+        QVERIFY(d.value("model changed").toString().startsWith(QStringLiteral("Its Layout now names drawn.gds")));
+        QCOMPARE(d.value("shapes in the file").toInt(), 2);
+        QCOMPARE(d.value("processed shapes by layer").toObject().value("M1").toInt(), 2);
+
+        // The path deleted by a point on it; undo puts it back.
+        const QJsonObject deleted = call("rf25_draw", {{"path", model}, {"shapes", QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{600, 401}}}}}},
+                                         120000);
+        QVERIFY2(!failed(deleted) && json(deleted).toObject().value("shapes in the file").toInt() == 1, qPrintable(text(deleted)));
+        QVERIFY(!json(deleted).toObject().contains("model changed"));
+        QVERIFY2(!failed(call("undo", {{"path", model}})), "undone");
+        auto* doc = qobject_cast<RF25Doc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000));
+        QCOMPARE(doc->layout()->shapeCount, quint64(2));
+
+        // Refused: no list, a layer that is not drawn on, a model that is
+        // none - and the file as it was.
+        QFile g(ws + "/rfd/drawn.gds");
+        QVERIFY(g.open(QIODevice::ReadOnly));
+        const QByteArray bytes = g.readAll();
+        g.close();
+        const QJsonObject noList = call("rf25_draw", {{"path", model}, {"shapes", "a strip"}}, 60000);
+        QVERIFY2(failed(noList) && text(noList).contains(QStringLiteral("shapes is a list")), qPrintable(text(noList)));
+        const QJsonObject ground = call("rf25_draw", {{"path", model}, {"shapes", QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Ground"}, {"box", QJsonArray{0, 0, 9, 9}}}}}}, 60000);
+        QVERIFY2(failed(ground) && text(ground).contains(QStringLiteral("Ground is no metal or via")), qPrintable(text(ground)));
+        QVERIFY(g.open(QIODevice::ReadOnly) && g.readAll() == bytes);
+        g.close();
+        const QJsonObject notRf = call("rf25_draw", {{"path", "nothing.sch"}, {"shapes", QJsonArray{}}}, 60000);
+        QVERIFY(failed(notRf));
+        QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
+    }
+
     void anRf25ModelIsSolvedFullWaveThroughItsTool()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
@@ -3670,6 +3733,11 @@ private slots:
             QVERIFY2(fit.value("S differs by at most").isDouble() && fit.value("S differs by at most").toDouble() < 0.05,
                      qPrintable(QString::fromUtf8(QJsonDocument(fit).toJson())));
             QCOMPARE(fit.value("frequencies").toInt(), 1);
+            // How it was fitted: together on S, the branches' own rms beside
+            // it, or branch by branch (F6 of the open items of 8 November).
+            const bool together = fit.value("fitted").toString().startsWith(QStringLiteral("every value together, to the solve's S"));
+            QVERIFY(together || fit.value("fitted").toString().startsWith(QStringLiteral("each branch to its own share")));
+            QCOMPARE(fit.value("S rms, each branch on its own").isDouble(), together);
             const QJsonObject part = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave_part.sch"}}, 120000)).toObject();
             QCOMPARE(part.value("file").toString(), ws + "/rf/wave_part.sch");
             QFile sch(ws + "/rf/wave_part.sch");

@@ -965,6 +965,62 @@ QJsonObject QucsControl::rf25Converge(const QJsonObject& args)
     return jsonResult(out);
 }
 
+QJsonObject QucsControl::rf25Draw(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_draw draws on a planar structure's layout; edit_layout "
+                              "changes any GDS or OASIS file.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    if (!args.value(QLatin1String("shapes")).isArray())
+        return errorResult(tr("'shapes' is a list of what is drawn: {\"add\": \"rectangle\", \"layer\": \"M1\", \"box\": [x0, y0, x1, y1]}, ..."));
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
+    if (!model->waitForLayout(120000)) {
+        if (model->closedWhenFree()) return closedWhileWaited(heldName);
+        return errorResult(tr("Its layout is still being read after 120 s."));
+    }
+    const QString before = model->layoutFile();
+    QStringList done;
+    QString why;
+    if (!model->drawShapes(args.value(QLatin1String("shapes")).toArray(), &done, &why)) return errorResult(why);
+    // What the processing then leaves: its shapes read again, and made.
+    const bool laidOut = model->waitForLayout(120000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    const bool prepared = laidOut && model->waitForPrepared(120000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    QJsonObject out;
+    out.insert(QStringLiteral("model"), heldName);
+    out.insert(QStringLiteral("file"), model->layoutFile());
+    out.insert(QStringLiteral("drawn"), QJsonArray::fromStringList(done));
+    if (model->layoutFile() != before)
+        out.insert(QStringLiteral("model changed"), tr("Its Layout now names %1: save the model to keep that (Undo takes the drawing and "
+                                                       "the name back).")
+                                                        .arg(QFileInfo(model->layoutFile()).fileName()));
+    if (!model->layoutProblem().isEmpty()) out.insert(QStringLiteral("layout problem"), model->layoutProblem());
+    if (const auto layout = model->layout()) out.insert(QStringLiteral("shapes in the file"), qint64(layout->shapeCount));
+    if (!prepared) {
+        out.insert(QStringLiteral("processed"), tr("its shapes are still being made"));
+    } else if (const auto processed = model->processed()) {
+        QMap<QString, int> byLayer;
+        for (const Conductor& c : processed->conductors) ++byLayer[c.layer];
+        QJsonObject layers;
+        for (auto it = byLayer.cbegin(); it != byLayer.cend(); ++it) layers.insert(it.key(), it.value());
+        out.insert(QStringLiteral("processed shapes by layer"), layers);
+    }
+    out.insert(QStringLiteral("undo"), tr("Edit > Undo on its tab (or undo) puts the file and the model back as they were."));
+    return jsonResult(out);
+}
+
 QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
 {
     // The model, as rf25_export finds it: the one named, else in front.
@@ -1045,6 +1101,14 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
     out.insert(QStringLiteral("S differs by at most"), c->worst);
     out.insert(QStringLiteral("most at"), c->worstAt);
     out.insert(QStringLiteral("S differs by rms"), c->rms);
+    // How it was fitted: each branch to its own share, then every value at
+    // once to S where that did better (F6 of the open items of 8 November).
+    out.insert(QStringLiteral("fitted"), c->joint ? QStringLiteral("every value together, to the solve's S (each branch to its own share first)")
+                                                  : QStringLiteral("each branch to its own share (fitting every value together to S did no better)"));
+    if (c->joint) {
+        out.insert(QStringLiteral("S rms, each branch on its own"), c->branchwiseRms);
+        out.insert(QStringLiteral("S at most, each branch on its own"), c->branchwiseWorst);
+    }
     out.insert(QStringLiteral("fitted from"), *std::min_element(c->frequencies.begin(), c->frequencies.end()));
     out.insert(QStringLiteral("fitted to"), *std::max_element(c->frequencies.begin(), c->frequencies.end()));
     out.insert(QStringLiteral("frequencies"), int(c->frequencies.size()));

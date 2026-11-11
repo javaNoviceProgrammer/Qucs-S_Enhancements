@@ -949,6 +949,69 @@ private slots:
         QVERIFY2(c.between.error > 0.5 && !said.contains(QStringLiteral("e+02 %")), qPrintable(said));
     }
 
+    // Every value fitted together to S (F6 of the open items of 8 November):
+    // a line 30 degrees long at the top of its sweep, with a pad's
+    // capacitance at either end - what a lumped pi stands for only
+    // roughly. Each branch fitted to its own share of Y weighs the
+    // frequencies by that share; fitted together to S, the rms of S falls
+    // by more than a third, and the most by more than a quarter; a line the
+    // same from either end keeps its two branches to the ground alike, in
+    // forms that fit S better together than the branches' own; what it
+    // says is its S's rms and the branches' own, and the rms is the
+    // circuit's.
+    void theCircuitIsFittedTogetherOnS()
+    {
+        const QList<double> f = logSweep(0.5e9, 40e9, 41);
+        QList<QList<QList<std::complex<double>>>> s;
+        const double z0 = 70, eeff = 6.8, length = 0.5e-3, pad = 10e-15;
+        for (const double x : f) {
+            const double w = 2 * M_PI * x;
+            const std::complex<double> g(10 * std::sqrt(x / 1e9), w * std::sqrt(eeff) / 299792458.0);
+            Eigen::Matrix2cd line, end;
+            line << std::cosh(g * length), z0 * std::sinh(g * length), std::sinh(g * length) / z0, std::cosh(g * length);
+            end << 1.0, 0.0, std::complex<double>(0, w * pad), 1.0;
+            const Eigen::Matrix2cd m = end * line * end;
+            const std::complex<double> a = m(0, 0), b = m(0, 1) / 50.0, c = m(1, 0) * 50.0, d = m(1, 1);
+            const std::complex<double> den = a + b + c + d;
+            s << QList<QList<std::complex<double>>>{{(a + b - c - d) / den, 2.0 * (a * d - b * c) / den}, {2.0 / den, (-a + b - c + d) / den}};
+        }
+        const rf::EquivalentCircuit c = rf::fitCircuit({QStringLiteral("P1"), QStringLiteral("P2")}, f, s, {50, 50});
+        const QString said = c.lines.join(QStringLiteral(" | "));
+        QVERIFY2(c.ok() && c.joint && c.formsChanged, qPrintable(said));
+        QVERIFY2(c.rms < 0.67 * c.branchwiseRms && c.worst < 0.75 * c.branchwiseWorst, qPrintable(said));
+        QCOMPARE(c.toGround[0].form, c.toGround[1].form);
+        for (const auto& [element, value] : c.toGround[0].values) QCOMPARE(c.toGround[1].value(element), value);
+        // (Its rms, of the circuit as it is.)
+        double sum = 0;
+        for (int k = 0; k < f.size(); ++k) {
+            const auto fit = c.sAt(f.at(k));
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) sum += std::norm(fit.at(i).at(j) - s.at(k).at(i).at(j));
+        }
+        QVERIFY2(std::abs(std::sqrt(sum / (4 * f.size())) / c.rms - 1) < 1e-9, qPrintable(said));
+        static const QRegularExpression together(QStringLiteral("Its values fitted together to the solve's S, and the forms that fit it best "
+                                                                "together chosen: ([0-9.e-]+) rms, where each branch "
+                                                                "fitted to its own share gave ([0-9.e-]+)\\."));
+        const QRegularExpressionMatch m = together.match(said);
+        QVERIFY2(m.hasMatch() && std::abs(m.captured(1).toDouble() / c.rms - 1) < 0.05
+                     && std::abs(m.captured(2).toDouble() / c.branchwiseRms - 1) < 0.05,
+                 qPrintable(said));
+        QVERIFY2(c.lines.last().startsWith(QStringLiteral("Its S differs from the solve's by ")), qPrintable(said));
+        // A circuit it finds exactly is found so still: its forms, its
+        // values, its S to a millionth.
+        rf::EquivalentCircuit truth;
+        truth.ports = 2;
+        truth.portNames = {QStringLiteral("P1"), QStringLiteral("P2")};
+        truth.references = {50, 50};
+        truth.between = branch(QStringLiteral("R+L"), {{QStringLiteral("R"), 0.5}, {QStringLiteral("L"), 200e-12}});
+        truth.toGround[0] = branch(QStringLiteral("C"), {{QStringLiteral("C"), 40e-15}});
+        truth.toGround[1] = branch(QStringLiteral("C"), {{QStringLiteral("C"), 60e-15}});
+        const rf::EquivalentCircuit exact = rf::fitCircuit(truth.portNames, f, sOf(truth, f), truth.references);
+        QVERIFY2(exact.ok() && exact.rms < 1e-6 && exact.rms <= exact.branchwiseRms, qPrintable(exact.lines.join(" | ")));
+        QCOMPARE(exact.toGround[1].form, QStringLiteral("C"));
+        QVERIFY(std::abs(exact.toGround[1].value(QStringLiteral("C")) / 60e-15 - 1) < 1e-3);
+    }
+
     // A capacitor with a little loss - a Q of some thousands across the band
     // - is a capacitor: R||C fits it to the last digit, but C to within the
     // fit's 2e-3, and has the fewer values.
