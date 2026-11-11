@@ -675,6 +675,7 @@ void TextDoc::commentSelected ()
   case LANG_PYTHON:
   case LANG_SHELL:
   case LANG_QUCS_NETLIST:
+  case LANG_YAML:
     co = "#";
     break;
   case LANG_SPICE:

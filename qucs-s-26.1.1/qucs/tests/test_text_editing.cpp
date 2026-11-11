@@ -226,6 +226,17 @@ private slots:
         v.commentSelected();
         QCOMPARE(v.toPlainText(), QString("   a\n   b\n"));
 
+        // YAML's comments: #.
+        const QString yaml = dir.filePath("c.yaml");
+        QVERIFY(write(yaml, "a: 1\nb: 2\n"));
+        TextDoc y(nullptr, yaml);
+        QVERIFY(y.load());
+        select(y, 0, 6);
+        y.commentSelected();
+        QCOMPARE(y.toPlainText(), QString("#a: 1\n#b: 2\n"));
+        y.commentSelected();
+        QCOMPARE(y.toPlainText(), QString("a: 1\nb: 2\n"));
+
         // No line comment (JSON): nothing.
         const QString json = dir.filePath("x.json");
         QVERIFY(write(json, "{\n  \"a\": 1\n}\n"));
