@@ -1,0 +1,10 @@
+breaks.py, 11 November, the first run (build-rel, macOS):
+
+===== what each break did =====
+the strips eight heights long whatever the ground              aCoplanarFeedWithNoGroundPlaneIsCa failed (caught)
+a ground plane not told from none                              aCoplanarFeedWithNoGroundPlaneIsCa failed (caught)
+the gaps not counted, the signal alone                         aCoplanarFeedWithNoGroundPlaneIsCa failed (caught)
+a thin substrate's height bounding the strips                  aCoplanarFeedWithNoGroundPlaneIsCa failed (caught)
+why the strips are so long not said                            aCoplanarFeedWithNoGroundPlaneIsCa failed (caught)
+
+0 of 5 uncaught

@@ -643,6 +643,80 @@ private slots:
         }
     }
 
+    // A coplanar feed over a thick substrate with no ground plane under it:
+    // its field is across its gaps, and its strips are as long as eight of
+    // its signal and gaps and twice its width - 596 µm here, not the 4.1 mm
+    // of eight of the metal's 500 µm over the bottom of the stack, which
+    // took a 1 s solve to 102 s and read the same. The longer strips read
+    // the same line and the same de-embedded structure. Over a ground plane,
+    // eight heights it stays; with none under a thin substrate, by the gaps
+    // still.
+    void aCoplanarFeedWithNoGroundPlaneIsCalibratedByItsGaps()
+    {
+        rf::Stack open = grounded(11.7, 500e-6);
+        open.layers[0].variant = QStringLiteral("open");
+        const double length = 1000;
+        const QList<rf::Conductor> line = {strip(0, 0, length, 50), strip(0, 56, length, 200), strip(0, -206, length, 200)};
+        const rf::MeshSettings how = meshing(2, 25);
+        rf::FullWavePort near = edgePort(QPointF(0, 25), QPointF(-1, 0)), far = edgePort(QPointF(length, 25), QPointF(1, 0));
+        near.coplanar = far.coplanar = true;
+        const QList<double> fs = {20e9, 60e9};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, open, 0), line, open, {near, far}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        const rf::Feed& feed = raw.feeds.at(0);
+        QVERIFY(feed.coplanar);
+        QVERIFY2(std::abs(feed.width - 50) < 1e-6 && std::abs(feed.gap[0] - 6) < 1e-6 && std::abs(feed.gap[1] - 6) < 1e-6,
+                 qPrintable(QStringLiteral("%1 wide, gaps %2 and %3").arg(feed.width).arg(feed.gap[0]).arg(feed.gap[1])));
+
+        const rf::Calibration cal = rf::calibrate(open, how, 0, feed, fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        QVERIFY2(std::abs(cal.strip - 596) < 1e-6, qPrintable(QString::number(cal.strip)));
+        QVERIFY2(cal.worst <= rf::kStripsAgree, qPrintable(QStringLiteral("%1 at %2 GHz").arg(cal.worst).arg(cal.worstAt / 1e9)));
+        const QString said = cal.lines.join(QStringLiteral(" | "));
+        QVERIFY2(said.contains(QStringLiteral("There is no ground plane under the stack: the strips as long as eight of the "
+                                              "feed's signal and gaps, 62 µm")),
+                 qPrintable(said));
+        // Strips two and a half times as long read the same line, and the
+        // same structure de-embedded.
+        const rf::Calibration longer = rf::calibrate(open, how, 0, feed, fs, 1e-6, nullptr, 1500);
+        QVERIFY2(longer.ok(), qPrintable(longer.problems.join(" | ")));
+        QVERIFY(!longer.lines.join(QLatin1Char(' ')).contains(QStringLiteral("no ground plane")));   // (a length given)
+        const rf::FullWave d = rf::deembedded(raw, {{&cal, 0}, {&cal, 0}});
+        const rf::FullWave dl = rf::deembedded(raw, {{&longer, 0}, {&longer, 0}});
+        QVERIFY2(d.ok() && dl.ok(), qPrintable(why(d) + why(dl)));
+        for (int k = 0; k < fs.size(); ++k) {
+            const double eps = std::pow(cal.gamma.at(k).imag() * kC0 / (2 * M_PI * fs.at(k)), 2);
+            const double epsLonger = std::pow(longer.gamma.at(k).imag() * kC0 / (2 * M_PI * fs.at(k)), 2);
+            const double z = std::abs(cal.impedance.at(k) / longer.impedance.at(k) - 1.0);
+            const Complex s21 = d.s.at(k).at(1).at(0), s21l = dl.s.at(k).at(1).at(0);
+            const Complex s11 = d.s.at(k).at(0).at(0), s11l = dl.s.at(k).at(0).at(0);
+            QVERIFY2(std::abs(eps / epsLonger - 1) < 5e-3 && z < 1e-2 && std::abs(s21 - s21l) < 1e-2 && std::abs(s11 - s11l) < 1e-2,
+                     qPrintable(QStringLiteral("%1 GHz: eps_eff %2 against %3, Z %4 apart, S21 %5 apart, S11 %6 apart")
+                                    .arg(fs.at(k) / 1e9).arg(eps).arg(epsLonger).arg(z).arg(std::abs(s21 - s21l))
+                                    .arg(std::abs(s11 - s11l))));
+        }
+
+        // Over a ground plane 100 µm down, the strips are eight heights and
+        // twice the width, 900 µm, though the gaps would make them 596.
+        const rf::Stack plane = grounded(11.7, 100e-6);
+        const rf::FullWave rawPlane = rf::fullWaveOf(rf::meshOf(line, how, plane, 0), line, plane, {near, far}, {20e9});
+        QVERIFY2(rawPlane.ok(), qPrintable(why(rawPlane)));
+        const rf::Calibration overPlane = rf::calibrate(plane, how, 0, rawPlane.feeds.at(0), {20e9});
+        QVERIFY2(overPlane.ok(), qPrintable(overPlane.problems.join(" | ")));
+        QVERIFY2(std::abs(overPlane.strip - 900) < 1e-6, qPrintable(QString::number(overPlane.strip)));
+        QVERIFY(!overPlane.lines.join(QLatin1Char(' ')).contains(QStringLiteral("no ground plane")));
+        // With no plane under a thin substrate, by its gaps still: eight of
+        // its 20 µm over the bottom of the stack, 260 µm, would be shorter
+        // than its field across them reaches.
+        rf::Stack thin = grounded(11.7, 20e-6);
+        thin.layers[0].variant = QStringLiteral("open");
+        const rf::FullWave rawThin = rf::fullWaveOf(rf::meshOf(line, how, thin, 0), line, thin, {near, far}, {20e9});
+        QVERIFY2(rawThin.ok(), qPrintable(why(rawThin)));
+        const rf::Calibration overThin = rf::calibrate(thin, how, 0, rawThin.feeds.at(0), {20e9});
+        QVERIFY2(overThin.ok(), qPrintable(overThin.problems.join(" | ")));
+        QVERIFY2(std::abs(overThin.strip - 596) < 1e-6, qPrintable(QString::number(overThin.strip)));
+    }
+
     // Strips too large for a dense solve on the structure's mesh - the
     // recheck's coplanar line at eight cells across, three conductors 3.7
     // mm long, past the build's limit, and not calibrated at all - are cut
