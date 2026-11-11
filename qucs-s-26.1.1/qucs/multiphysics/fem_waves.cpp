@@ -41,6 +41,9 @@ namespace {
 
 using cd = std::complex<double>;
 constexpr double C0 = 299792458.0;
+// A periodic port's propagating orders at most (each two vectors of the
+// system's size): a cell 250 wavelengths wide; ordinary gratings have tens.
+constexpr int kMaxPeriodicOrders = 500;
 constexpr double Mu0 = 1.25663706127e-6;
 const cd J(0, 1);
 
@@ -3150,11 +3153,15 @@ void WaveProblem::periodicOrders(double k0, const double kF[2], double kIn, std:
     for (PeriodicPort& port : ports) {
         const double ktF = kF[0] * port.along.x() + kF[1] * port.along.y();
         const double kmax = std::sqrt(std::max(0.0, (k0 * k0 * port.q / port.pt).real()));
-        const int propagating = int(std::ceil((kmax + std::abs(ktF)) * port.length / (2 * M_PI))) + 1;
+        // (Counted in doubles, then held to the most solved: at 1e30 Hz the
+        // count passed an int's range, wrapped negative and listed no order -
+        // the hunt of 10 November, S3. solve() refuses such a cell first.)
+        const double many = double(kMaxPeriodicOrders);
+        const int propagating = int(std::clamp(std::ceil((kmax + std::abs(ktF)) * port.length / (2 * M_PI)) + 1, 1.0, many));
         // (The orders that propagate here at some angle of the fed wave's -
         // its tangential k up to the fed medium's k: each its global at
         // every angle, nought where it does not: a sweep's the same names.)
-        port.reach = int(std::floor((kmax + kIn) * port.length / (2 * M_PI) + 1e-9));
+        port.reach = int(std::clamp(std::floor((kmax + kIn) * port.length / (2 * M_PI) + 1e-9), 0.0, many));
         const int M = std::min(propagating + 10, std::max(propagating, int(port.edges.size()) / 2));
         port.m.clear();
         port.kt.clear();
@@ -3676,6 +3683,21 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
                 break;
             }
     }
+    // Each periodic port's propagating orders, counted before they are made:
+    // past kMaxPeriodicOrders a port's orders (two vectors of the system's
+    // size each) are not solved.
+    for (const PeriodicPort& port : a_pports) {
+        const double kmax = std::sqrt(std::max(0.0, (k0 * k0 * port.q / port.pt).real()));
+        const double kt = std::max(std::abs(kIn), std::hypot(a_kF[0], a_kF[1])) + 2 * M_PI / port.length;
+        const double orders = std::ceil((kmax + kt) * port.length / (2 * M_PI)) + 1;
+        if (!(orders <= kMaxPeriodicOrders)) {
+            *error = tr("%1: periodic port %2 is %3 wavelengths wide at %4: about %5 orders propagate, more than the %6 solved")
+                         .arg(a_node->name(), port.name, QString::number(kmax * port.length / (2 * M_PI), 'g', 3),
+                              formatQuantity(omega / (2 * M_PI), Dim::of(0, 0, -1)), QString::number(orders, 'g', 3))
+                         .arg(kMaxPeriodicOrders);
+            return false;
+        }
+    }
     cd incident = 0;
     std::size_t specular = 0;
     // Fed: each port that is, in turn (the field kept: the first's, the plane
@@ -3728,6 +3750,10 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         if (a_pfed >= 0) {
             const PeriodicPort& fp = a_pports[std::size_t(a_pfed)];
             specular = std::size_t(std::find(fp.m.begin(), fp.m.end(), 0) - fp.m.begin());
+            if (specular >= fp.m.size()) {   // (no order 0: nothing to feed)
+                *error = tr("%1: periodic port %2 has no specular order").arg(a_node->name(), fp.name);
+                return false;
+            }
             incident = fp.E0 * std::sqrt(fp.length);
             F += 2.0 * J * fp.beta[specular] * fp.p * incident * fp.c[specular];
         }
