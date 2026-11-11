@@ -7,6 +7,7 @@
  */
 #include <QtTest>
 #include <QElapsedTimer>
+#include "thread_clock.h"
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QAbstractButton>
@@ -1734,7 +1735,7 @@ private slots:
         const auto best = [md] {
             qint64 least = std::numeric_limits<qint64>::max();
             for (int i = 0; i < 2; ++i) {
-                QElapsedTimer t;
+                qucs_test::ThreadClock t;
                 t.start();
                 md->renderNow();
                 least = std::min(least, t.nsecsElapsed());
@@ -1841,7 +1842,7 @@ private slots:
         const auto best = [md] {
             qint64 least = std::numeric_limits<qint64>::max();
             for (int i = 0; i < 2; ++i) {
-                QElapsedTimer t;
+                qucs_test::ThreadClock t;
                 t.start();
                 md->renderNow();
                 least = std::min(least, t.nsecsElapsed());
