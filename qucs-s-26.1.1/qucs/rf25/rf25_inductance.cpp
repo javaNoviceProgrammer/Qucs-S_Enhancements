@@ -11,14 +11,24 @@
  */
 #include "rf25_inductance.h"
 
+#include "multiphysics/fem_sparse.h"
+#include "rf25_fast.h"
+#include "rf25_fullwave.h"
+
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QHash>
+#include <QThread>
 
 #include <Eigen/Dense>
+#include <Eigen/Sparse>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <functional>
+#include <memory>
 
 namespace qucs_s::rf25 {
 
@@ -30,8 +40,28 @@ QString tr(const char* text)
 }
 
 constexpr double kMu0 = 4e-7 * M_PI;
-/// Beyond this many runs and cells a dense solve is not set up.
+/// Beyond this many runs and cells a dense solve is not set up (nor beyond
+/// RF 2.5D > Settings…' dense limit, denseLimit(), where that is lower):
+/// the loop is solved compressed instead, as the full-wave solve is past
+/// its own (F5 of the open items of 8 November) - up to
+/// kMostCompressedRuns, past which nothing is set up.
 constexpr int kMostRuns = 3000;
+constexpr int kMostCompressedRuns = 1000000;
+/// The compressed loop solve: each low-rank block of L to a part in 1e6
+/// of its own size, clusters of up to 32 runs, a pair of clusters low rank
+/// where the smaller is no wider than 1.5 times their distance, the near
+/// field - the preconditioner - the pairs within a side and a half of the
+/// larger's longest side, as the full-wave solve's (rf25_fullwave.cpp);
+/// GMRES to a residual of 1e-10, 100 vectors at a time, 3000 in all.
+constexpr double kLoopTolerance = 1e-6;
+constexpr int kLoopLeaf = 32;
+constexpr double kLoopEta = 1.5;
+constexpr double kLoopNear = 1.5;
+constexpr double kLoopResidual = 1e-10;
+constexpr int kLoopRestart = 100;
+constexpr int kLoopMostIterations = 3000;
+/// Tests: the dense limit, where set (0: kMostRuns and denseLimit()'s).
+std::atomic<int> loopDenseLimitSet{0};
 /// Two runs further apart than this many of their widths have their
 /// transverse distance taken between their middles; nearer than it, it is
 /// averaged across both widths.
@@ -288,6 +318,11 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         const MeshCell& cb = mesh.cells.at(b);
         const double z = height.value(ca.layer, -1);
         if (!(z >= 0)) continue;
+        // (Not between two cells of a via: a via's current runs from one
+        // metal to the other, below. Its cells joined in the plane were an
+        // island of their own, joined to nothing - a loop through a via of
+        // more than one cell "in pieces that nothing joins".)
+        if (const Layer* l = stack.named(ca.layer); l != nullptr && l->kind == Layer::Via) continue;
         // Its width is the edge the two cells share; its length is from
         // one centre to the other.
         double edge = 0;
@@ -514,8 +549,132 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     return cells;
 }
 
+namespace {
+
+/*!
+ * The runs' partial inductances held compressed: as the full-wave solve
+ * holds its L (rf25_fullwave.cpp's Compression), three kernels, of the runs
+ * with a part along x, along y, and the vias, each between the runs'
+ * cosines' parts -
+ *
+ *     L_ab = (x_a x_b + y_a y_b + z_a z_b) K_ab
+ *
+ * K alignedInductance() in the plane and the vias' own partial inductance
+ * between them. Neither is nought between a pair of its runs as L is
+ * between two at right angles, which a cross approximation would take for
+ * a block done when it was half done. Two runs parallel or at right angles
+ * - an axis-aligned mesh's every pair - have the dense solve's L to the
+ * digit; two oblique ones Neumann's cosine times their aligned integral,
+ * where the dense solve measures both along the first.
+ *
+ * Made in place, and never copied: the matrices point at the trees.
+ */
+struct LoopL {
+    QList<int> xRun, yRun, zRun;
+    QList<double> dx, dy, dz;
+    ClusterTree xTree, yTree, zTree;
+    HMatrix kx, ky, kz;
+    QList<QPair<int, int>> near;   ///< the runs' near pairs not at right angles
+
+    double cosine(int a, int b) const { return dx.at(a) * dx.at(b) + dy.at(a) * dy.at(b) + dz.at(a) * dz.at(b); }
+    /// y = L x.
+    void apply(const VectorC& x, VectorC& y) const
+    {
+        y = VectorC::Zero(x.size());
+        const auto part = [&x, &y](const HMatrix& k, const QList<int>& runs, const QList<double>& d) {
+            if (runs.isEmpty()) return;
+            VectorC in(runs.size()), out = VectorC::Zero(runs.size());
+            for (int i = 0; i < runs.size(); ++i) in(i) = d.at(runs.at(i)) * x(runs.at(i));
+            k.multiply(in, out);
+            for (int i = 0; i < runs.size(); ++i) y(runs.at(i)) += d.at(runs.at(i)) * out(i);
+        };
+        part(kx, xRun, dx);
+        part(ky, yRun, dy);
+        part(kz, zRun, dz);
+    }
+};
+
+/// The kernel of \a a and \a b, as LoopL holds it.
+double loopKernel(const Filament& a, const Filament& b)
+{
+    const bool planar = a.z0 == a.z1 && b.z0 == b.z1;
+    return planar ? alignedInductance(a, b) : std::abs(partialInductance(a, b));
+}
+
+/// \a runs' L held compressed into \a l, filled; false (and why) where it
+/// cannot be, or \a stop was set on the way.
+bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::atomic_bool* stop, QString* why)
+{
+    QList<Box> boxes, xs, ys, zs;
+    for (int a = 0; a < runs.size(); ++a) {
+        const Filament& f = runs.at(a);
+        double x = 0, y = 0, z = 0;
+        f.direction(&x, &y, &z);
+        l.dx << x;
+        l.dy << y;
+        l.dz << z;
+        Box box;
+        if (f.z0 != f.z1) {
+            // A via: what it covers, from one metal to the other.
+            const QPointF c = f.from;
+            box = Box::of(c.x() - f.width / 2, c.y() - f.width / 2, f.z0, c.x() + f.width / 2, c.y() + f.width / 2, f.z1);
+        } else {
+            // A run covers the halves of its two cells it joins: from one
+            // centre to the other, as wide as the edge between them.
+            const double nx = -y * f.width / 2, ny = x * f.width / 2;
+            box = Box::of(f.from.x() - nx, f.from.y() - ny, f.z0, f.from.x() + nx, f.from.y() + ny, f.z0)
+                      .united(Box::of(f.to.x() - nx, f.to.y() - ny, f.z0, f.to.x() + nx, f.to.y() + ny, f.z0));
+        }
+        boxes << box;
+        if (std::abs(x) > 1e-9) {
+            l.xRun << a;
+            xs << box;
+        }
+        if (std::abs(y) > 1e-9) {
+            l.yRun << a;
+            ys << box;
+        }
+        if (std::abs(z) > 1e-9) {
+            l.zRun << a;
+            zs << box;
+        }
+    }
+    l.xTree = ClusterTree(xs, kLoopLeaf);
+    l.yTree = ClusterTree(ys, kLoopLeaf);
+    l.zTree = ClusterTree(zs, kLoopLeaf);
+    l.kx = HMatrix(&l.xTree, &l.xTree, true, kLoopEta);
+    l.ky = HMatrix(&l.yTree, &l.yTree, true, kLoopEta);
+    l.kz = HMatrix(&l.zTree, &l.zTree, true, kLoopEta);
+    const auto entry = [&runs](const QList<int>& which) {
+        const QList<int>* w = &which;
+        return [&runs, w](int a, int b) { return Complex(loopKernel(runs.at(w->at(a)), runs.at(w->at(b))), 0); };
+    };
+    const bool filled = l.kx.fill(entry(l.xRun), kLoopTolerance, threads, stop) && l.ky.fill(entry(l.yRun), kLoopTolerance, threads, stop)
+                        && l.kz.fill(entry(l.zRun), kLoopTolerance, threads, stop);
+    if (!filled) {
+        if (why != nullptr) *why = tr("The inductance was stopped.");
+        return false;
+    }
+    for (const QPair<int, int>& pair : nearPairs(boxes, nullptr, kLoopNear))
+        if (std::abs(l.cosine(pair.first, pair.second)) >= 1e-9) l.near << pair;
+    return true;
+}
+
+} // namespace
+
+void setLoopDenseLimit(int runsAndCells)
+{
+    loopDenseLimitSet = std::max(0, runsAndCells);
+}
+
+int loopDenseLimit()
+{
+    const int set = loopDenseLimitSet.load();
+    return set > 0 ? set : std::min(kMostRuns, denseLimit());
+}
+
 Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, QPointF from, QPointF to,
-                        double micrometre, double frequency)
+                        double micrometre, double frequency, const std::atomic_bool* stop)
 {
     Inductance out;
     if (mesh.cells.isEmpty()) {
@@ -538,11 +697,13 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         if (!nodeOf.contains(e.second)) nodeOf.insert(e.second, nodeOf.size());
     }
     out.nodes = int(nodeOf.size());
-    if (out.branches + out.nodes > kMostRuns) {
-        out.problems << tr("%1 runs of current over %2 cells is more than this build will set up a dense matrix for "
+    // Past the dense limit, compressed (F5 of the open items of 8
+    // November); past what that sets up, refused.
+    if (out.branches + out.nodes > kMostCompressedRuns) {
+        out.problems << tr("%1 runs of current over %2 cells is more than this build will set up even compressed "
                            "(%3 in all). Mesh the layout more coarsely: fewer cells across a conductor (the Mesh "
                            "node's, ten by default), or a larger largest cell.")
-                            .arg(out.branches).arg(out.nodes).arg(kMostRuns);
+                            .arg(out.branches).arg(out.nodes).arg(kMostCompressedRuns);
         return out;
     }
 
@@ -649,8 +810,6 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                      .arg(sourceFace.size()).arg(sinkFace.size()).arg(stubs);
 
     const int nb = out.branches, nn = out.nodes;
-    const QList<QList<double>> lp = partialInductances(out.runs);
-
     // Of every current that obeys Kirchhoff's law and carries the
     // terminal current, the one that flows is the one of least magnetic
     // energy. Minimising 1/2 I'LI subject to AI = s is a saddle-point
@@ -663,44 +822,148 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     // the potentials are only fixed up to a constant.
     const int drop = nodeOf.value(outAt);
     const int rows = nb + nn - 1;
-    Eigen::MatrixXd m = Eigen::MatrixXd::Zero(rows, rows);
-    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(rows);
-    for (int i = 0; i < nb; ++i)
-        for (int j = 0; j < nb; ++j) m(i, j) = lp.at(i).at(j);
     const auto row = [drop, nb](int node) { return node < drop ? nb + node : nb + node - 1; };
-    for (int b = 0; b < nb; ++b) {
-        const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
-        if (a != drop) {
-            m(row(a), b) += 1;
-            m(b, row(a)) += 1;
-        }
-        if (c != drop) {
-            m(row(c), b) -= 1;
-            m(b, row(c)) -= 1;
-        }
-    }
     const int in = nodeOf.value(inAt);
     if (in == drop) {
         out.problems << tr("The current would go in and out at the same node.");
         return out;
     }
-    rhs(row(in)) = 1.0;   // one amp in, and out at the node that was dropped
-
-    const Eigen::FullPivLU<Eigen::MatrixXd> lu(m);
-    if (!lu.isInvertible()) {
-        out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout is "
-                           "in pieces that nothing joins.");
-        return out;
+    // A, sparse: each run's two cells.
+    std::vector<Eigen::Triplet<double>> incidence;
+    for (int b = 0; b < nb; ++b) {
+        const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
+        if (a != drop) incidence.emplace_back(row(a) - nb, b, 1.0);
+        if (c != drop) incidence.emplace_back(row(c) - nb, b, -1.0);
     }
-    const Eigen::VectorXd answer = lu.solve(rhs);
+    const bool dense = nb + nn <= loopDenseLimit();
+    // L applied to a current: of the dense matrix, or the compressed one.
+    QList<QList<double>> lp;
+    std::unique_ptr<LoopL> compressed;
+    std::function<void(const Eigen::VectorXd&, Eigen::VectorXd&)> applyL;
+    Eigen::VectorXd answer;
+    if (dense) {
+        lp = partialInductances(out.runs);
+        Eigen::MatrixXd m = Eigen::MatrixXd::Zero(rows, rows);
+        Eigen::VectorXd rhs = Eigen::VectorXd::Zero(rows);
+        for (int i = 0; i < nb; ++i)
+            for (int j = 0; j < nb; ++j) m(i, j) = lp.at(i).at(j);
+        for (const Eigen::Triplet<double>& t : incidence) {
+            m(nb + t.row(), t.col()) += t.value();
+            m(t.col(), nb + t.row()) += t.value();
+        }
+        rhs(row(in)) = 1.0;   // one amp in, and out at the node that was dropped
+        const Eigen::FullPivLU<Eigen::MatrixXd> lu(m);
+        if (!lu.isInvertible()) {
+            out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout is "
+                               "in pieces that nothing joins.");
+            return out;
+        }
+        answer = lu.solve(rhs);
+        applyL = [&lp, nb](const Eigen::VectorXd& x, Eigen::VectorXd& y) {
+            y = Eigen::VectorXd::Zero(nb);
+            for (int i = 0; i < nb; ++i)
+                for (int j = 0; j < nb; ++j) y(i) += lp.at(i).at(j) * x(j);
+        };
+    } else {
+        // Compressed: L as H-matrices, the system by GMRES preconditioned
+        // by the near field's LU - the near pairs' L with the whole of A.
+        QElapsedTimer clock;
+        clock.start();
+        compressed = std::make_unique<LoopL>();
+        QString why;
+        const int threads = std::max(1, QThread::idealThreadCount());
+        if (!compressedL(*compressed, out.runs, threads, stop, &why)) {
+            out.problems << why;
+            return out;
+        }
+        const LoopL& l = *compressed;
+        // L in its own scale, the runs' own partial inductances' mean: L's
+        // rows are picohenries, A's ones, and GMRES's residual - of the
+        // whole - would hold the first to nothing (unscaled, the near field
+        // alone met 1e-10 on a U of three strips, its L 2 % out).
+        double scale = 0;
+        for (int a = 0; a < nb; ++a) scale += loopKernel(out.runs.at(a), out.runs.at(a));
+        scale = scale > 0 ? scale / nb : 1.0;
+        std::vector<Eigen::Triplet<Complex>> near;
+        for (const QPair<int, int>& p : l.near) {
+            const double v = l.cosine(p.first, p.second) * loopKernel(out.runs.at(p.first), out.runs.at(p.second)) / scale;
+            near.emplace_back(p.first, p.second, v);
+            if (p.first != p.second) near.emplace_back(p.second, p.first, v);
+        }
+        for (const Eigen::Triplet<double>& t : incidence) {
+            near.emplace_back(nb + t.row(), t.col(), t.value());
+            near.emplace_back(t.col(), nb + t.row(), t.value());
+        }
+        Eigen::SparseMatrix<Complex> pre(rows, rows);
+        pre.setFromTriplets(near.begin(), near.end());
+        pre.makeCompressed();
+        fem::SparseLu<Complex> lu;
+        lu.compute(pre);
+        if (lu.info() != Eigen::Success) {
+            out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout is "
+                               "in pieces that nothing joins (the near field's LU, which the compressed solve is "
+                               "preconditioned with, failed).");
+            return out;
+        }
+        Eigen::SparseMatrix<double> a(nn - 1, nb);
+        a.setFromTriplets(incidence.begin(), incidence.end());
+        const Eigen::SparseMatrix<double> at = a.transpose();
+        const Operator system = [&l, &a, &at, nb, rows, scale](const VectorC& x, VectorC& y) {
+            VectorC li;
+            l.apply(x.head(nb), li);
+            li /= scale;
+            y.resize(rows);
+            const Eigen::VectorXd re = x.tail(rows - nb).real(), im = x.tail(rows - nb).imag();
+            y.head(nb) = li + (at * re).cast<Complex>() + Complex(0, 1) * (at * im).cast<Complex>();
+            const Eigen::VectorXd ire = x.head(nb).real(), iim = x.head(nb).imag();
+            y.tail(rows - nb) = (a * ire).cast<Complex>() + Complex(0, 1) * (a * iim).cast<Complex>();
+        };
+        const Operator precondition = [&lu](const VectorC& x, VectorC& y) { y = lu.solve(x); };
+        VectorC rhs = VectorC::Zero(rows), x = VectorC::Zero(rows);
+        rhs(row(in)) = 1.0;
+        const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, kLoopRestart, kLoopMostIterations, stop);
+        if (solved.stopped) {
+            out.problems << tr("The inductance was stopped.");
+            return out;
+        }
+        if (!(solved.residual < 1e-4) || !x.allFinite()) {
+            out.problems << tr("The compressed solve of the loop did not converge: GMRES left a residual of %1 after %2 "
+                               "iterations. Mesh the layout more coarsely, so that it is solved dense.")
+                                .arg(solved.residual, 0, 'g', 2)
+                                .arg(solved.iterations);
+            return out;
+        }
+        answer = x.real();
+        applyL = [&l](const Eigen::VectorXd& v, Eigen::VectorXd& y) {
+            VectorC r;
+            l.apply(v.cast<Complex>(), r);
+            y = r.real();
+        };
+        const double held = l.kx.bytes() + l.ky.bytes() + l.kz.bytes();
+        const double whole = 8.0 * double(rows) * rows;
+        out.compressed = true;
+        out.iterations = solved.iterations;
+        out.residual = solved.residual;
+        out.lines << tr("Past the dense limit (%1 runs and cells), solved compressed: L held in %2 MB where the dense "
+                        "system would take %3 MB, GMRES %4 iteration(s) to a residual of %5%6, in %7 s.")
+                         .arg(loopDenseLimit())
+                         .arg(held / 1048576.0, 0, 'f', 1)
+                         .arg(whole / 1048576.0, 0, 'f', 0)
+                         .arg(solved.iterations)
+                         .arg(solved.residual, 0, 'g', 2)
+                         .arg(solved.converged ? QString() : tr(" (short of the 1e-10 asked)"))
+                         .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
+    }
 
     // The energy the current carries is the inductance.
-    double energy = 0, loss = 0;
+    Eigen::VectorXd current = answer.head(nb), li;
+    applyL(current, li);
+    const double energy = current.dot(li);
+    double loss = 0;
     out.current.clear();
     for (int i = 0; i < nb; ++i) {
-        out.current << answer(i);
-        loss += out.runs.at(i).resistance() * answer(i) * answer(i);
-        for (int j = 0; j < nb; ++j) energy += lp.at(i).at(j) * answer(i) * answer(j);
+        out.current << current(i);
+        loss += out.runs.at(i).resistance() * current(i) * current(i);
     }
     if (!(energy > 0) || !std::isfinite(energy)) {
         out.problems << tr("The loop's inductance came out as %1 H, which is none.").arg(energy, 0, 'g', 3);
@@ -715,7 +978,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     // current's loss, given as that until the phase B check of 24
     // October, counted its crowding as resistance: 29 % high on a bar ten
     // cells across.) Where a run says no resistance there is no such
-    // current, and the least-energy one's loss is all there is.
+    // current, and the least-energy one's loss is all there is. (Sparse:
+    // a compressed loop's nodes are past what a dense G holds.)
     bool resistive = nb > 0;
     for (const Filament& f : std::as_const(out.runs))
         if (!(f.resistance() > 0)) resistive = false;
@@ -724,33 +988,35 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     if (resistive) {
         const int m = nn - 1;
         const auto at = [drop](int node) { return node < drop ? node : node - 1; };
-        Eigen::MatrixXd g = Eigen::MatrixXd::Zero(m, m);
+        std::vector<Eigen::Triplet<double>> terms;
         for (int b = 0; b < nb; ++b) {
             const double y = 1.0 / out.runs.at(b).resistance();
             const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
-            if (a != drop) g(at(a), at(a)) += y;
-            if (c != drop) g(at(c), at(c)) += y;
+            if (a != drop) terms.emplace_back(at(a), at(a), y);
+            if (c != drop) terms.emplace_back(at(c), at(c), y);
             if (a != drop && c != drop) {
-                g(at(a), at(c)) -= y;
-                g(at(c), at(a)) -= y;
+                terms.emplace_back(at(a), at(c), -y);
+                terms.emplace_back(at(c), at(a), -y);
             }
         }
+        Eigen::SparseMatrix<double> g(m, m);
+        g.setFromTriplets(terms.begin(), terms.end());
         Eigen::VectorXd s = Eigen::VectorXd::Zero(m);
         s(at(in)) = 1.0;
-        const Eigen::LDLT<Eigen::MatrixXd> ldlt(g);
+        const Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt(g);
         const Eigen::VectorXd u = ldlt.solve(s);
         if (ldlt.info() == Eigen::Success && u.allFinite()) {
-            QList<double> dc;
+            Eigen::VectorXd dc(nb);
             for (int b = 0; b < nb; ++b) {
                 const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
                 const double ua = a == drop ? 0.0 : u(at(a)), uc = c == drop ? 0.0 : u(at(c));
-                dc << (ua - uc) / out.runs.at(b).resistance();
+                dc(b) = (ua - uc) / out.runs.at(b).resistance();
             }
-            double dcLoss = 0, dcEnergy = 0;
-            for (int i = 0; i < nb; ++i) {
-                dcLoss += out.runs.at(i).resistance() * dc.at(i) * dc.at(i);
-                for (int j = 0; j < nb; ++j) dcEnergy += lp.at(i).at(j) * dc.at(i) * dc.at(j);
-            }
+            double dcLoss = 0;
+            for (int i = 0; i < nb; ++i) dcLoss += out.runs.at(i).resistance() * dc(i) * dc(i);
+            Eigen::VectorXd ldc;
+            applyL(dc, ldc);
+            const double dcEnergy = dc.dot(ldc);
             if (dcLoss > 0 && dcEnergy > 0) {
                 out.rDc = dcLoss;
                 out.lDc = dcEnergy;

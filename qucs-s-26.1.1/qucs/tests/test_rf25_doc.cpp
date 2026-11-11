@@ -2502,7 +2502,8 @@ private slots:
             const bool same = f.open(QIODevice::ReadOnly) && f.readAll() == bytes;
             return !drew && no.contains(words) && same ? QString() : QStringLiteral("%1: %2").arg(drew).arg(no);
         };
-        QString said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{0, 0, 10, 10}}}, QStringLiteral("Substrate is no metal or via"));
+        QString said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "Ground"}, {"box", QJsonArray{0, 0, 10, 10}}},
+                               QStringLiteral("Ground is no metal, via, dielectric or substrate"));
         QVERIFY2(said.isEmpty(), qPrintable(said));
         said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "M9"}, {"box", QJsonArray{0, 0, 10, 10}}}, QStringLiteral("M9 is no layer of the stack"));
         QVERIFY2(said.isEmpty(), qPrintable(said));
@@ -2630,7 +2631,7 @@ private slots:
         QVERIFY(layers != nullptr);
         QStringList named;
         for (QAction* act : layers->actions()) named << act->text();
-        QCOMPARE(named, (QStringList{QStringLiteral("V0 (a via)"), QStringLiteral("M1")}));   // (the stack's top first)
+        QCOMPARE(named, (QStringList{QStringLiteral("V0 (a via)"), QStringLiteral("M1"), QStringLiteral("Substrate (where it is)")}));   // (the stack's top first)
         viaTool->trigger();
         QCOMPARE(doc->drawTool(), RF25Doc::DrawTool::Via);
         QVERIFY(doc->drawButton()->isChecked());
@@ -2675,6 +2676,101 @@ private slots:
             for (int j = 0; j < 2; ++j)
                 QVERIFY2(std::abs(w->s.at(0).at(i).at(j) - r->s.at(0).at(i).at(j)) < 1e-6,
                          qPrintable(QStringLiteral("S%1%2: %3 against %4").arg(i + 1).arg(j + 1).arg(std::abs(w->s.at(0).at(i).at(j))).arg(std::abs(r->s.at(0).at(i).at(j)))));
+    }
+
+    // A substrate that ends (F2 of the open items of 8 November), drawn on
+    // the tab: a rectangle drawn on the Substrate is where it is - the map
+    // sending its layer of the file there, the processing keeping it apart
+    // from the conductors as the substrate's extent, the tab outlining it.
+    // A strip's open stub over it ending 30 µm beside the strip holds less
+    // than over the whole substrate, as the quasi-static solve and the
+    // full-wave one's capacitance at a low frequency both say, alike within
+    // 3 % - as they are without the end -, and its line per metre as the 2D
+    // multiphysics engine's cross-section does. Undone, the whole substrate
+    // again.
+    void aSubstrateThatEndsIsSolvedByBothSolvers()
+    {
+        const QString model = fullWaveLine(QStringLiteral("ended.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.layout().props.insert(QStringLiteral("file"), QStringLiteral("ended.gds"));
+            // One port: an open stub, its capacitance at a low frequency.
+            m.ports().children.erase(m.ports().children.begin() + 1);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        QVERIFY(writeStrip(path(QStringLiteral("ended.gds")), 1000, 50));
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        const double f0 = 0.5e9;
+        double perMetre = 0;
+        const auto capacitances = [&](double* quasi, double* wave, QStringList* said) {
+            RF25Doc::SolveRequest q;
+            q.solver = QStringLiteral("quasi_static");
+            doc->solveWith(q);
+            if (!doc->waitForSolved(300000) || !doc->extraction() || !doc->extraction()->ok()) return false;
+            *quasi = doc->extraction()->maxwell.at(0).at(0);
+            *said = doc->extraction()->lines;
+            perMetre = doc->extraction()->perMetre.maxwell.isEmpty() ? 0 : doc->extraction()->perMetre.maxwell.at(0).at(0);
+            RF25Doc::SolveRequest w;
+            w.solver = QStringLiteral("full_wave");
+            w.frequencies = {f0};
+            doc->solveWith(w);
+            if (!doc->waitForSolved(300000) || !doc->fullWave() || !doc->fullWave()->ok()) return false;
+            *wave = -1 / (2 * M_PI * f0 * doc->fullWave()->z.at(0).at(0).at(0).imag());
+            *said += doc->fullWave()->lines;
+            return true;
+        };
+        double wholeQ = 0, wholeW = 0, endedQ = 0, endedW = 0;
+        QStringList said;
+        QVERIFY2(capacitances(&wholeQ, &wholeW, &said), qPrintable(doc->solveProblem()));
+        QVERIFY2(std::abs(wholeW / wholeQ - 1) < 0.03, qPrintable(QStringLiteral("%1 against %2 fF").arg(wholeW * 1e15).arg(wholeQ * 1e15)));
+        const double wholePerMetre = perMetre;
+        QVERIFY(wholePerMetre > 0);
+
+        // Drawn on the Substrate: where it is.
+        QStringList done;
+        QString why;
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{-600, -400, 1600, 80}}}}, &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY(doc->processed() != nullptr && doc->processed()->extents.contains(QStringLiteral("Substrate")));
+        QCOMPARE(int(doc->processed()->conductors.size()), 1);
+        bool outlined = false;
+        for (const LayoutView::Overlay& o : doc->view()->overlays()) outlined = outlined || o.name.startsWith(QStringLiteral("where Substrate is"));
+        QVERIFY(outlined);
+        QVERIFY2(capacitances(&endedQ, &endedW, &said), qPrintable(doc->solveProblem()));
+        const QString lines = said.join(QStringLiteral(" | "));
+        QVERIFY2(endedQ < 0.99 * wholeQ && endedQ > 0.5 * wholeQ, qPrintable(QStringLiteral("%1 against %2 fF | %3").arg(endedQ * 1e15).arg(wholeQ * 1e15).arg(lines)));
+        QVERIFY2(std::abs(endedW / endedQ - 1) < 0.03, qPrintable(QStringLiteral("%1 against %2 fF | %3").arg(endedW * 1e15).arg(endedQ * 1e15).arg(lines)));
+        QVERIFY2(lines.contains(QStringLiteral("Substrate ends: eps_r 9.8 inside its shapes, 1 beyond them")) && lines.contains(QStringLiteral("The ended dielectric's faces in")),
+                 qPrintable(lines));
+        // Its line's per metre against the 2D multiphysics engine's
+        // cross-section - the strip 0.5 µm thick, the substrate ending 30 µm
+        // beside it, air beyond, in a box 6 mm wide; at two mesh sizes 125.95
+        // and 111.61 pF/m, a ratio of 0.886 - within 3 %.
+        QVERIFY2(std::abs(perMetre / wholePerMetre / 0.886 - 1) < 0.03,
+                 qPrintable(QStringLiteral("%1 against %2 pF/m").arg(perMetre * 1e12).arg(wholePerMetre * 1e12)));
+        qWarning().noquote() << QStringLiteral("stub: whole %1 / %2 fF, ended %3 / %4 fF; per metre %5 and %6 pF/m")
+                                    .arg(wholeQ * 1e15).arg(wholeW * 1e15).arg(endedQ * 1e15).arg(endedW * 1e15)
+                                    .arg(wholePerMetre * 1e12).arg(perMetre * 1e12);
+
+        // Undone: the whole substrate.
+        doc->undo();
+        QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY(doc->processed()->extents.isEmpty());
+        RF25Doc::SolveRequest q;
+        q.solver = QStringLiteral("quasi_static");
+        doc->solveWith(q);
+        QVERIFY(doc->waitForSolved(300000) && doc->extraction() && doc->extraction()->ok());
+        QVERIFY(std::abs(doc->extraction()->maxwell.at(0).at(0) / wholeQ - 1) < 1e-9);
     }
 
     // A port's returns given as a list (the feature request of 4 November):

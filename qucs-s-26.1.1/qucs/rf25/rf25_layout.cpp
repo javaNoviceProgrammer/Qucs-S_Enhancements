@@ -316,6 +316,19 @@ QList<QPolygonF> booleanOf(const QList<QPolygonF>& a, const QList<QPolygonF>& b,
     return result;
 }
 
+} // namespace
+
+QList<QPolygonF> differenceOf(const QList<QPolygonF>& shapes, const QList<QPolygonF>& less)
+{
+    if (shapes.isEmpty()) return {};
+    if (less.isEmpty()) return shapes;
+    bool ok = false;
+    const QList<QPolygonF> out = booleanOf(shapes, less, gdstk::Operation::Not, &ok);
+    return ok ? out : QList<QPolygonF>();
+}
+
+namespace {
+
 /// The model's parameters as a scope their expressions are read in.
 fem::Scope scopeOf(const QList<fem::Model::Parameter>& parameters)
 {
@@ -571,6 +584,16 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
         const Layer* of = stack.named(layer);
         if (of == nullptr) {
             out.problems << tr("%1 has shapes but is no layer of the stack.").arg(layer);
+            continue;
+        }
+        // A dielectric's or the substrate's shapes are where it is: its
+        // extent, beyond which it is something else (rf25_dielectric.h) -
+        // not a conductor, and not processed as one.
+        if (of->kind == Layer::Dielectric || of->kind == Layer::Substrate) {
+            const QList<QPolygonF> joined = unionOf(shapes);
+            out.extents[layer] += joined;
+            out.report.lines << tr("%1: %2 shape(s) give it its extent - there only inside them, eps_r %3 beyond.")
+                                    .arg(layer).arg(shapes.size()).arg(of->beyond);
             continue;
         }
         const bool isFill = fillLayers.contains(layer);

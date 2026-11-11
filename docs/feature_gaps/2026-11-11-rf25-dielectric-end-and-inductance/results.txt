@@ -1,0 +1,29 @@
+breaks.py, 11 November: 20 breaks, each built and its tests run.
+
+Break 11 (a horizontal distance of nought read as such) passed in the first run: at the walls' eight rows no point of the
+tests is straight below a far wall panel. test_rf25_dielectric's wall test now reads one there, and the break, its test
+changed to that one, run again alone (BRK_ONLY=11): caught. Break 10 (a non-convex piece kept) is caught by the region's
+test; the flush plate's passes with it.
+
+the compressed loop's L not in its own scale                   aLoopPastTheDenseLimitIsSolvedComp failed (caught)
+the compressed loop's y kernel left out                        aLoopPastTheDenseLimitIsSolvedComp failed (caught)
+the compressed loop's vias' kernel left out                    aLoopPastTheDenseLimitIsSolvedComp failed (caught)
+a set dense limit not heeded                                   aLoopPastTheDenseLimitIsSolvedComp failed (caught)
+a via's cells joined in the plane                              aLoopPastTheDenseLimitIsSolvedComp failed (caught)
+Wilton's closed form's out-of-plane term left out              aPolygonsIntegralIsItsClosedForm failed (caught)
+the background not the layer as beyond its shapes              aSubstrateThatEndsIsSolvedByItsReg failed (caught)
+the region's permittivity the wrong way round                  aSubstrateThatEndsIsSolvedByItsReg failed (caught)
+a face under a metal not that metal's cells                    aSubstrateThatEndsIsSolvedByItsReg failed (caught)
+a non-convex piece kept as it is                               aSubstrateThatEndsIsSolvedByItsReg failed (caught); aPlateOnAMesaFlushWithItFringesAsI PASSED - NOT CAUGHT
+a horizontal distance of nought read as such                   aWallsPotentialIsItsGreensFunction failed (caught) - run again alone after the test was made to see it
+a wall's direct path not recognised first                      aWallsPotentialIsItsGreensFunction failed (caught)
+a wall's images as lines, not whole                            aWallsPotentialIsItsGreensFunction failed (caught)
+the static solve's potential coefficients not corrected        aSubstrateThatEndsIsSolvedByBothSo failed (caught)
+a line per metre corrected by the region whole, not the end's  aSubstrateThatEndsIsSolvedByBothSo failed (caught)
+the full wave's potential coefficients not corrected           aSubstrateThatEndsIsSolvedByBothSo failed (caught)
+the full wave's Green's functions not the background's         aSubstrateThatEndsIsSolvedByBothSo failed (caught)
+a dielectric's shapes processed as conductors                  aSubstrateThatEndsIsSolvedByBothSo failed (caught)
+the ended layers not handed to the quasi-static solve          aSubstrateThatEndsIsSolvedByBothSo failed (caught); anRf25ModelIsDrawnThroughItsTool failed (caught)
+a dielectric not drawn on                                      aSubstrateThatEndsIsSolvedByBothSo failed (caught); anRf25ModelIsDrawnThroughItsTool failed (caught)
+
+0 of 20 uncaught

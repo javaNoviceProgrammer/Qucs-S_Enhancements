@@ -3638,11 +3638,20 @@ private slots:
         const QJsonObject noList = call("rf25_draw", {{"path", model}, {"shapes", "a strip"}}, 60000);
         QVERIFY2(failed(noList) && text(noList).contains(QStringLiteral("shapes is a list")), qPrintable(text(noList)));
         const QJsonObject ground = call("rf25_draw", {{"path", model}, {"shapes", QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Ground"}, {"box", QJsonArray{0, 0, 9, 9}}}}}}, 60000);
-        QVERIFY2(failed(ground) && text(ground).contains(QStringLiteral("Ground is no metal or via")), qPrintable(text(ground)));
+        QVERIFY2(failed(ground) && text(ground).contains(QStringLiteral("Ground is no metal, via, dielectric or substrate")), qPrintable(text(ground)));
         QVERIFY(g.open(QIODevice::ReadOnly) && g.readAll() == bytes);
         g.close();
         const QJsonObject notRf = call("rf25_draw", {{"path", "nothing.sch"}, {"shapes", QJsonArray{}}}, 60000);
         QVERIFY(failed(notRf));
+        // Drawn on the substrate: where it is (F2 of the open items of 8
+        // November) - a row of the map, no conductor, and the quasi-static
+        // solve saying the substrate ends there.
+        const QJsonObject extent = call("rf25_draw", {{"path", model}, {"shapes", QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"},
+                                                                                                        {"box", QJsonArray{-200, -200, 1200, 80}}}}}}, 120000);
+        QVERIFY2(!failed(extent), qPrintable(text(extent)));
+        QVERIFY2(!json(extent).toObject().value("processed shapes by layer").toObject().contains("Substrate"), qPrintable(text(extent)));
+        const QJsonObject solved = call("rf25_solve", {{"path", model}, {"solver", "quasi_static"}}, 600000);
+        QVERIFY2(!failed(solved) && text(solved).contains(QStringLiteral("Substrate ends: eps_r")), qPrintable(text(solved)));
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
     }
 
