@@ -12,6 +12,7 @@
 #ifndef QUCS_PDFDOC_H
 #define QUCS_PDFDOC_H
 
+#include "markup.h"
 #include "qucsdoc.h"
 
 #include <QAbstractScrollArea>
@@ -177,6 +178,26 @@ public:
     /// What lies over the pages and takes the mouse (not owned; null: none).
     void setTool(PageTool* tool);
     PageTool* tool() const { return a_tool; }
+
+    /// The pen taken up: a drag over a page draws on it with the pen in
+    /// hand (markup.h), or erases with the eraser - before the selection,
+    /// the links and the digitizer's tools; Ctrl+Z undoes, Escape puts it
+    /// down. A stroke goes on past its page's edge, drawn as far as it.
+    bool penActive() const { return a_pen; }
+    void setPenActive(bool active);
+    /// What is drawn on the pages: strokes in points from a page's top
+    /// left, each on its page (partOf()), kept when the file is read again.
+    /// Not part of the document: not saved, printed or digitized.
+    const qucs_s::markup::Drawing& drawing() const { return a_drawing; }
+    /// What page \a page's strokes are kept on: its number, from 1.
+    static QString partOf(int page) { return QString::number(page + 1); }
+    /// A stroke added as though it was drawn (the tests).
+    void addStroke(const qucs_s::markup::Stroke& stroke);
+    /// The last change to the drawing undone; whether there was one.
+    bool undoDrawing();
+    /// The strokes on page \a page taken away, or (-1) every one; whether
+    /// there were any.
+    bool clearDrawing(int page);
     /// What the pages are drawn on (pdfdoc.cpp): the CPU's painter on the
     /// viewport, or the GPU's frame.
     class Surface;
@@ -192,6 +213,9 @@ signals:
     void menuRequested(QPoint globalPos);
     /// A link to outside the document was clicked.
     void urlActivated(const QUrl& url);
+    void penActiveChanged(bool active);
+    /// A stroke drawn, erased, undone or cleared.
+    void drawingChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -264,6 +288,19 @@ private:
 
     PageTool* a_tool = nullptr;
     bool a_toolDown = false;
+
+    /// \a pos (viewport) in points of \a page, outside it too.
+    QPointF toPage(int page, QPointF pos) const;
+    void eraseAt(QPointF pos);
+    /// The strokes on \a page where \a visible (points) is in sight, at
+    /// \a scale device pixels a point, its corner at \a at; null: none.
+    QImage paintedStrokes(int page, const QRectF& visible, qreal scale, QPointF* at) const;
+    bool a_pen = false;
+    qucs_s::markup::Drawing a_drawing;
+    qucs_s::markup::Stroke a_stroke;               // the one being drawn
+    int a_inkPage = -1;                            // the page a drag draws or erases on (-1: none)
+    bool a_inking = false, a_erasing = false, a_erased = false;
+    QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
     QPdfDocument* a_document = nullptr;
     QPdfSearchModel* a_search = nullptr;
     int a_searchIndex = -1;
@@ -409,6 +446,15 @@ public:
     /// The panel open on \a plot, shown but not kept (Claude's show without keep).
     void showTransient(const qucs_s::digitizer::Plot& plot);
     QToolButton* digitizeButton() const { return a_digitizeButton; }
+    /// The toolbar's pen, right of Digitize: what the pages are drawn on with.
+    qucs_s::markup::PenButton* penButton() const { return a_penButton; }
+    /// What the user drew, read (markup::readPage()): each stroke, page by
+    /// page in the order drawn, against the page's words where it lies,
+    /// with its page (from 1); \a points: its points simplified too.
+    QJsonArray readDrawing(bool points) const;
+    /// The same in sentences, a line each, for a prompt: the latest \a most,
+    /// the earlier counted; those marked addressed left out, and counted.
+    QString drawingSentences(int most = 30) const;
 
     // For the tests.
     QLineEdit* pageField() const { return a_pageField; }
@@ -446,6 +492,7 @@ private:
     void fillThumbnails();
     void renderSomeThumbnails();
     void showProblem(const QString& text, bool askPassword);
+    void updatePen();
 
     QPdfDocument* a_pdf = nullptr;
     QPdfSearchModel* a_search = nullptr;
@@ -469,6 +516,7 @@ private:
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;
     QToolButton* a_digitizeButton = nullptr;
+    qucs_s::markup::PenButton* a_penButton = nullptr;
     qucs_s::digitizer::Panel* a_digitizer = nullptr;
     QWidget* a_searchBar = nullptr;
     QLineEdit* a_searchField = nullptr;
