@@ -27,6 +27,7 @@
 #include "paintings/painting.h"
 #include "pptx.h"
 #include "pptxdoc.h"
+#include "imagedoc.h"
 #include "layoutdoc.h"
 #include "rf25doc.h"
 #include "qucs.h"
@@ -343,12 +344,12 @@ const char* const kTools = R"JSON([
  "description": "Stops a simulation - the one 'id' names (followed since simulate's 'background' or its timeout), or without it the one running now, the user's too (as Simulation > Stop Simulation, or Qucsator's Abort) - and returns its outcome once it has ended.",
  "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The run's id; the one running when not given"}}}},
 {"name": "send_input",
- "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says right or middle; 'double'; 'drag_to' drags from it in steps, 'drag_through' through points in turn; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action unless the field with the focus claims it, as the keyboard does), then 'text' typed into what has the focus there - while a list is open below a field (names offered as typed), keys and text go to it as the keyboard's do: Return or Tab takes the one chosen, Escape closes it. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them), a layout's view ('target' layout: µm on the cell shown, y up; an RF 2.5D model's too) or a presentation's slides ('target' slide: points from the top left of 'slide', the one in sight unless given) - brought into view, or with 'pixels' the picture's pixels; with the pen taken up (show_layout's, show_pptx's or show_schematic's 'pen') a drag draws there, and the answer reads each stroke drawn as read_drawings does -, a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; its picture's pixels), or the dialog that waits for an answer ('target' dialog: its picture's pixels - get_dialog's 'at' -, keys and text into its field with the focus, the window's shortcuts not set off: the only input that reaches a dialog besides set_dialog). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses from one; a list below a field: 'list'), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
+ "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says; 'double'; 'drag_to' drags from it in steps, 'drag_through' through points in turn; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action unless the field with the focus claims it, as the keyboard does), then 'text' typed into what has the focus there - while a list is open below a field (names offered as typed), keys and text go to it as the keyboard's do: Return or Tab takes the one chosen, Escape closes it. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them), a layout's view ('target' layout: µm on the cell shown, y up; an RF 2.5D model's too) a presentation's slides ('target' slide: points from the top left of 'slide', the one in sight unless given) or a picture ('target' picture: its pixels as in its file) - brought into view, or with 'pixels' the view's pixels; with the pen taken up (a show_ tool's 'pen') a drag draws there, and the answer reads each stroke drawn as read_drawings does -, a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; its picture's pixels), or the dialog that waits for an answer ('target' dialog: its picture's pixels - get_dialog's 'at' -, keys and text into its field with the focus, the window's shortcuts not set off: the only input that reaches a dialog besides set_dialog). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses; a list below a field: 'list'), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
  "inputSchema": {"type": "object", "properties": {
-   "target": {"type": "string", "description": "canvas (the default), layout, slide, dock:<title>, a panel's name, toolbar:<title>, statusbar, or dialog (the one open)"},
-   "path": {"type": "string", "description": "For the canvas, a layout or slides: the document, the one in front unless given"},
+   "target": {"type": "string", "description": "canvas (the default), layout, slide, picture, dock:<title>, a panel's name, toolbar:<title>, statusbar, or dialog (the one open)"},
+   "path": {"type": "string", "description": "For the canvas, a layout, slides or a picture: the document, the one in front unless given"},
    "slide": {"type": "integer", "minimum": 1, "description": "For 'target' slide: the slide the points are on, from 1 (the one in sight unless given), scrolled into view"},
-   "click": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: on the canvas the schematic's coordinates, on a layout µm, on a slide its points (pixels with 'pixels'); on a part of the window its picture's pixels"},
+   "click": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: on the canvas the schematic's coordinates, on a layout µm, on a slide its points, on a picture its own pixels (the view's with 'pixels'); on a part of the window its picture's pixels"},
    "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "The mouse button, left unless given"},
    "double": {"type": "boolean", "description": "A double click"},
    "drag_to": {"type": "array", "items": {"type": "number"}, "description": "[x, y] where a drag from 'click' ends, the button held"},
@@ -356,7 +357,7 @@ const char* const kTools = R"JSON([
    "modifiers": {"type": "array", "items": {"type": "string", "enum": ["shift", "ctrl", "alt", "meta"]}, "description": "Keys held during the click or drag (ctrl is Command on a Mac)"},
    "keys": {"type": "string", "description": "Keys pressed after: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" (at most four)"},
    "text": {"type": "string", "description": "Characters typed after, into what has the focus there"},
-   "pixels": {"type": "boolean", "description": "On the canvas, a layout or slides: the points in the picture's pixels, not its own measures"}}}},
+   "pixels": {"type": "boolean", "description": "On the canvas, a layout, slides or a picture: the points in the view's pixels, not its own measures"}}}},
 {"name": "read_help",
  "description": "Finds what this build of Qucs-S says on a topic, to answer from the help this version ships: each menu action's own help (its What's This, status tip and shortcut), the component types (describe_component_type explains one), the example schematics (open_document opens one), and any papers or tutorials it has (read_pdf reads them) - and the Qucs-S manual: 'manual' fetches its text once into the cache (from qucs-s-help.readthedocs.io) and searches it by section, offline after, and 'page' gives a page whole; the Getting Started tutorial is online only. 'topic' is words a match has all of (tuner, s-parameter, monte carlo); without it, what help there is.",
  "inputSchema": {"type": "object", "properties": {"topic": {"type": "string", "description": "Words to find: tuner, s-parameter, monte carlo; none: what help there is"},
@@ -780,8 +781,8 @@ const char* const kTools = R"JSON([
    "reload": {"type": "boolean", "description": "Its file read again first (changed elsewhere)"}, "copy": {"type": "string", "enum": ["picture", "text"], "description": "The slide shown to the clipboard: a picture 1920 pixels wide, or its text with its notes"},
    "pen": {"type": "boolean", "description": "The user's pen taken up (true: a drag over a slide draws on it) or put down (false)"}, "drawings": {"type": "string", "enum": ["clear"], "description": "clear: what the pen drew on the slides taken away (the pen's Undo gives it back)"}}}},
 {"name": "read_drawings",
- "description": "Reads what the user drew with the pen on open layouts, RF 2.5D models, presentations, schematics and data displays. Each stroke: where (a slide; a layout's cell; a schematic's page or its symbol), how it was drawn (a ring, a line, an arrow - its head drawn with it, one side of a V or both or a triangle, or as a stroke of its own, which reads as its arrowhead - a corner, an L or a V, a mark, a dot), its tool (pen or highlighter), colour and box, and what it marks. On a slide: the paragraphs, table cells, pictures, charts and shapes a ring is round, or some of their words; the words a line underlines or strikes through; what a highlighter or a mark lies on; what a line or an arrow begins at and points at; what a dot is on, and what a corner's point is at. On a schematic: the components (by ref), wires (by ends), net labels and paintings, as on a slide; per diagram ('in diagrams'): the values it spans ('x', 'y'), the traces it is round or on, where it points ('at', 'nearest trace'). On a layout: the shapes by layer, the texts and the cells placed, of the layers shown to the depth drawn, shapes much larger than the stroke under all of it apart in 'over'; and what it is about: 'holds part of' (a ring: a large shape's vertices or segments inside), an arrow's 'tip', 'tail', 'comes from' and 'nearest its tip', 'follows' (along a path or edge, and where it leaves it), 'polyline' (straight runs snapped to what is near or to round values, corners, rounding, symmetry). Strokes keep their numbers; 'addressed' marks one dealt with. With its points, simplified to a few dozen, in the part's own measures. 'path' one document, its file or its tab's title; every open one drawn on when not given. show_pptx, show_layout and show_schematic give the same readings without the points; a prompt from the Claude Code panel brings what changed since the last, a stroke's points when it has ten or fewer. send_input draws a stroke as the user's mouse does ('target' layout, slide or canvas, 'drag_through' its shape, the pen taken up).",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "An open layout, RF 2.5D model, presentation, schematic or data display, its file or its tab's title; every one drawn on when not given"},
+ "description": "Reads what the user drew with the pen on open layouts, RF 2.5D models, presentations, schematics, data displays and pictures. Each stroke: where (a slide; a layout's cell; a schematic's page or its symbol; a picture, or its frame), how it was drawn (a ring, a line, an arrow - its head drawn with it, or as a stroke of its own, read as its arrowhead - a corner, an L or a V, a mark, a dot), its tool (pen or highlighter), colour and box, and what it marks. On a slide: the paragraphs, table cells, pictures, charts and shapes a ring is round, or some of their words; the words a line underlines or strikes through; what a highlighter or a mark lies on; what a line or an arrow begins at and points at; what a dot or a corner's point is on. On a schematic: the components (by ref), wires (by ends), net labels and paintings, as on a slide; per diagram ('in diagrams'): the values it spans ('x', 'y'), the traces it is round or on, where it points ('at', 'nearest trace'). On a layout: the shapes by layer, the texts and the cells placed, of the layers shown to the depth drawn, shapes much larger than the stroke under all of it apart in 'over'; and what it is about: 'holds part of' (a ring: a large shape's vertices or segments inside), an arrow's 'tip', 'tail', 'comes from' and 'nearest its tip', 'follows' (along a path or edge, and where it leaves it), 'polyline' (straight runs snapped to what is near or to round values, corners, rounding, symmetry). On a picture: nothing of what it shows, in its pixels; an arrow's 'tip' and 'tail'. Strokes keep their numbers; 'addressed' marks one dealt with. Its points simplified to a few dozen, in the part's measures. 'path' one document (its file or tab's title), else every one drawn on. The show_ tools give the same readings without the points; a Claude Code panel prompt brings what changed since the last, a stroke's points when it has ten or fewer. send_input draws a stroke as the user's mouse does ('target' layout, slide, picture or canvas, 'drag_through' its shape, the pen taken up).",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "An open layout, RF 2.5D model, presentation, schematic, data display or picture, its file or its tab's title; every one drawn on when not given"},
    "points": {"type": "boolean", "description": "Each stroke's points, simplified (true by default)"}}}},
 {"name": "show_schematic",
  "description": "Drives a schematic's or data display's page (.sch, .dpl) as the user does with its toolbar - brought to the front: 'pen' takes the user's pen up (true: a drag on the page draws on it, with the pen, highlighter or eraser picked in its menu, instead of selecting or wiring; Escape puts it down) or puts it down (false); 'drawings': \"clear\" takes away what it drew, on the page and its symbol (the pen's Undo gives it back); 'addressed' [n, ...] marks strokes dealt with by read_drawings' numbers - drawn faded and left out of what a prompt tells - or none takes every mark away. Returns what the page is (a schematic, its symbol in the editor, a data display), its diagrams by their numbers (the other tools' 'diagram') with their traces, whether the pen is up, and what the user drew, read as read_drawings reads it: each stroke's gesture, its box in the page's coordinates (get_schematic's, y down), the components (by ref), wires (by their ends), net labels, paintings and diagrams it is round, on or points at; in a diagram, the values it spans on its axes, the traces it is round, highlights or lies on with their values there, and where an arrow, a dot or a corner points - its values and the nearest trace's point. A symbol's strokes are its own (read_drawings' page: symbol), numbered apart, read against its paintings. screenshot's picture of the tab shows the drawing (not export_image or a print: the pen's marks are not part of the page, and are not saved). send_input draws a stroke on the canvas as the user's mouse does, the pen up; zoom frames the page.",
@@ -790,6 +791,12 @@ const char* const kTools = R"JSON([
    "drawings": {"type": "string", "enum": ["clear"], "description": "clear: what the pen drew on the page and its symbol taken away (the pen's Undo gives it back)"},
    "addressed": {"description": "[n, ...] the pen's strokes, by read_drawings' numbers, marked dealt with - drawn faded and left out of what a prompt tells (the pen's Undo takes the mark away) -; or none, every mark taken away"},
    "symbol": {"type": "boolean", "description": "The strokes 'addressed' numbers are the symbol's (read_drawings' page: symbol); the page's when not given"}}}},
+{"name": "show_picture",
+ "description": "Drives a picture's tab (a PNG, JPEG, GIF, SVG... in the image viewer) as the user does - opened when it is not, brought to the front: 'pen' takes the user's pen up (true: a drag over the picture draws on it with the pen, highlighter or eraser picked in its menu, rather than moving the view or selecting; Escape puts it down) or puts it down (false); 'drawings': \"clear\" takes away what it drew, on every frame (the pen's Undo gives it back); 'addressed' [n, ...] marks strokes on the frame shown dealt with, by read_drawings' numbers - drawn faded and left out of what a prompt tells - or none takes every mark there away. Returns what the tab shows - its format, size in pixels, the frame shown of how many, the zoom, the quarter turns, the selection -, whether the pen is up, and what the user drew, read as read_drawings reads it: each stroke's gesture, tool, colour and box (an arrow's tip and tail) in the picture's pixels from its top left as in the file, not turned. Nothing is known of what lies under a stroke: screenshot takes a picture of the tab, strokes and all. send_input with 'target' picture draws a stroke as the user's mouse does, the pen up. The strokes are the tab's: kept when the file is read again, copied and printed with the picture, never written into a file.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The picture, relative to the project (else the workspace), or its tab's title; the one in front when not given"},
+   "pen": {"type": "boolean", "description": "The user's pen taken up (true: a drag over the picture draws on it) or put down (false)"},
+   "drawings": {"type": "string", "enum": ["clear"], "description": "clear: what the pen drew on the picture taken away, every frame's (the pen's Undo gives it back)"},
+   "addressed": {"description": "[n, ...] the pen's strokes on the frame shown, by read_drawings' numbers, marked dealt with - drawn faded and left out of what a prompt tells (the pen's Undo takes the mark away) -; or none, every mark there taken away"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -1178,6 +1185,7 @@ const struct {
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "drive a presentation's tab in Qucs-S")},
     {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "read what was drawn with the pen in Qucs-S")},
     {"show_schematic", QT_TRANSLATE_NOOP("QucsControl", "drive a schematic's or data display's page and its pen in Qucs-S")},
+    {"show_picture", QT_TRANSLATE_NOOP("QucsControl", "drive a picture's tab and its pen in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -1285,7 +1293,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
                                  "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
-                                 "show_layout", "show_pdf", "digitize_plot", "show_pptx", "show_schematic", "git_init", "git_clone"};
+                                 "show_layout", "show_pdf", "digitize_plot", "show_pptx", "show_schematic", "show_picture", "git_init", "git_clone"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -1386,8 +1394,9 @@ const struct {
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "Reads a PowerPoint presentation's slides - titles, text, tables' rows, notes, what is not drawn - and draws them with 'image'.")},
     {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Drives a presentation's tab: a slide (next, previous, by title), its find bar, the zoom or a region, its panes; plays it full screen and steps the show; reloads; copies a slide.")},
-    {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "Reads what the user drew with the pen on open layouts, slides and data displays - each stroke's gesture, what it marks, its points - without a picture.")},
+    {"read_drawings", QT_TRANSLATE_NOOP("QucsControl", "Reads what the user drew with the pen on open layouts, slides, data displays and pictures - each stroke's gesture, what it marks, its points - without a picture.")},
     {"show_schematic", QT_TRANSLATE_NOOP("QucsControl", "Drives a schematic's or data display's page (.sch, .dpl): takes the user's pen up or puts it down, clears or marks its strokes; returns its diagrams and traces and what the pen drew, read against its components, wires, labels and diagrams.")},
+    {"show_picture", QT_TRANSLATE_NOOP("QucsControl", "Drives a picture's tab (PNG, JPEG, SVG...): takes the user's pen up or puts it down, clears or marks its strokes; returns its size, frame, zoom and turns, and what the pen drew, in its pixels.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -1566,8 +1575,9 @@ const struct {
     {"get_digitized", "pdf plot digitized digitizer points kept saved read what the user marked curve data"},
     {"read_pptx", "powerpoint pptx presentation slides deck talk notes text read"},
     {"show_pptx", "powerpoint pptx presentation slide show play deck go to next previous find zoom region notes thumbnails reload copy clipboard"},
-    {"read_drawings", "pen drawing drawn draw marks markup annotation ink highlighter circle ring arrow underline sketch layout slide data display dpl plot user"},
+    {"read_drawings", "pen drawing drawn draw marks markup annotation ink highlighter circle ring arrow underline sketch layout slide data display dpl plot picture image user"},
     {"show_schematic", "schematic sch data display dpl page plot diagram pen marker draw drawing markup annotation highlighter toolbar ink circle trace component wire symbol user"},
+    {"show_picture", "picture image png jpeg jpg gif svg photo plot viewer tab pen marker draw drawing markup annotation highlighter ink circle arrow frame zoom user"},
     {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
     {"edit_text", "text document tab edit change replace lines cir va verilog-a netlist script"},
     {"goto_line", "text document line cursor show error"},
@@ -4061,13 +4071,23 @@ QSet<QString> QucsControl::inEveryTurn() const
     if (deck)
         for (const char* t : kPptx) out << QString::fromLatin1(t);
     if (page) out << QStringLiteral("show_schematic");
-    // (While something is drawn on with the pen: its reading.)
+    // (While something is drawn on with the pen: its reading. A picture's
+    //  tab has no tool of its own but show_picture: in every turn while its
+    //  pen is up or drew on it.)
+    for (QucsDoc* doc : a_app->allDocuments()) {
+        auto* picture = dynamic_cast<ImageDoc*>(doc);
+        if (picture != nullptr && (picture->view()->penActive() || !picture->view()->drawing().isEmpty())) {
+            out << QStringLiteral("show_picture");
+            break;
+        }
+    }
     for (QucsDoc* doc : a_app->allDocuments()) {
         auto* layout = qobject_cast<LayoutDoc*>(QucsApp::documentWidget(doc));
         auto* drawn = dynamic_cast<PptxDoc*>(doc);
         auto* sch = dynamic_cast<Schematic*>(doc);
+        auto* picture = dynamic_cast<ImageDoc*>(doc);
         if ((layout != nullptr && !layout->view()->drawing().isEmpty()) || (drawn != nullptr && !drawn->view()->drawing().isEmpty())
-            || (sch != nullptr && !sch->penDrawing().isEmpty())) {
+            || (sch != nullptr && !sch->penDrawing().isEmpty()) || (picture != nullptr && !picture->view()->drawing().isEmpty())) {
             out << QStringLiteral("read_drawings");
             break;
         }
@@ -4163,7 +4183,7 @@ namespace {
 // docks, raw input, consoles), changes the settings, git, scripts, the
 // Verilog-A compiler. A tool not named here is checked as before.
 const char* const kAutonomous[] = {
-    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "digitize_plot", "show_pptx", "show_schematic", "show_background_jobs",
+    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "digitize_plot", "show_pptx", "show_schematic", "show_picture", "show_background_jobs",
     "set_schematic", "add_component", "edit_component", "replace_component", "delete", "move", "arrange", "connect",
     "add_wire", "set_label", "rename_net", "add_analysis", "create_subcircuit", "make_symbol", "set_subcircuit_parameters",
     "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "add_marker",
@@ -4377,6 +4397,10 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     else if (tool == QLatin1String("read_drawings")) subject = s("path").isEmpty() ? tr("the pen's drawings") : tr("the pen's drawings on %1").arg(s("path"));
     else if (tool == QLatin1String("show_schematic"))
         subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path"))
+                  + (a.value(QLatin1String("pen")).isBool() ? (a.value(QLatin1String("pen")).toBool() ? tr(", the pen taken up") : tr(", the pen put down")) : QString())
+                  + (s("drawings") == QLatin1String("clear") ? tr(", its drawings cleared") : QString());
+    else if (tool == QLatin1String("show_picture"))
+        subject = (s("path").isEmpty() ? tr("the picture in front") : s("path"))
                   + (a.value(QLatin1String("pen")).isBool() ? (a.value(QLatin1String("pen")).toBool() ? tr(", the pen taken up") : tr(", the pen put down")) : QString())
                   + (s("drawings") == QLatin1String("clear") ? tr(", its drawings cleared") : QString());
     else if (tool == QLatin1String("show_pptx"))
@@ -5567,6 +5591,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("read_pptx")) return readPptx(args);
     if (tool == QLatin1String("show_pptx")) return showPptx(args);
     if (tool == QLatin1String("show_schematic")) return showSchematic(args);
+    if (tool == QLatin1String("show_picture")) return showPicture(args);
     if (tool == QLatin1String("read_drawings")) return readDrawings(args);
     if (tool == QLatin1String("get_text")) return getText(args);
     if (tool == QLatin1String("edit_text")) return editText(args);

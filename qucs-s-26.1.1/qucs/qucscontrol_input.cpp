@@ -23,6 +23,7 @@
 #include "rf25doc.h"
 #include "pptx.h"
 #include "pptxdoc.h"
+#include "imagedoc.h"
 #include "qucs.h"
 #include "schematic.h"
 
@@ -224,6 +225,8 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     QPointer<qucs_s::pptx::SlideView> slideView;
     QPointer<PptxDoc> slides;    // whose they are
     int slide = -1;              // the slide the points are on
+    QPointer<qucs_s::image::ImageView> pictureView;
+    QPointer<ImageDoc> pictureDoc;  // whose it is
     QPointer<QWidget> root;      // what the picture shows, what the points are in
     QString where;
     const bool intoDialog = target.compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
@@ -330,9 +333,27 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         root = slideView->viewport();
         laidOut(root);
         where = tr("slide %1 of %2").arg(slide + 1).arg(titleOf(deck));
+    } else if (target.compare(QLatin1String("picture"), Qt::CaseInsensitive) == 0) {
+        // An open picture: the points its pixels from its top left as in
+        // the file, not turned, as its pen's strokes and read_drawings
+        // have them.
+        QString error;
+        ImageDoc* found = pictureDocument(args, false, &error);
+        if (found == nullptr || found->view()->isEmpty()) {
+            done(errorResult(!error.isEmpty() ? error
+                             : found != nullptr ? (found->problem().isEmpty() ? tr("%1 shows nothing.").arg(titleOf(found)) : found->problem())
+                                                : tr("%1 is not open: show_picture opens it.").arg(args.value(QLatin1String("path")).toString())));
+            return;
+        }
+        a_app->showDocument(found);
+        pictureDoc = found;
+        pictureView = found->view();
+        root = pictureView->viewport();
+        laidOut(root);
+        where = titleOf(found);
     } else if (target.compare(QLatin1String("tabs"), Qt::CaseInsensitive) == 0) {
-        done(errorResult(tr("send_input reaches a schematic's canvas, a layout's view, a presentation's slides, a dock or panel, a "
-                            "toolbar or the status bar: set_ui brings a tab forward, context_menu opens its menu.")));
+        done(errorResult(tr("send_input reaches a schematic's canvas, a layout's view, a presentation's slides, a picture, a dock or "
+                            "panel, a toolbar or the status bar: set_ui brings a tab forward, context_menu opens its menu.")));
         return;
     } else {
         QString name, error;
@@ -358,10 +379,11 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     // narrower viewport it leaves: a stroke drawn 23 points off its click,
     // on CI's Linux.)
     std::function<QList<QPoint>()> mapped;
-    if (hasClick && !pixels && (sch || layoutView || slideView)) {
-        const auto toPixel = [sch, layoutView, slideView, slide](QPointF p) {
+    if (hasClick && !pixels && (sch || layoutView || slideView || pictureView)) {
+        const auto toPixel = [sch, layoutView, slideView, slide, pictureView](QPointF p) {
             if (sch) return sch->modelToViewport(p.toPoint());
             if (layoutView) return layoutView->toPixel(p).toPoint();
+            if (pictureView) return pictureView->toViewport(p).toPoint();
             return slideView ? slideView->toViewport(slide, p).toPoint() : p.toPoint();
         };
         const QRect shown = root->rect().adjusted(4, 4, -4, -4);
@@ -381,13 +403,17 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
             const QPointF middle((x0 + x1) / 2, (y0 + y1) / 2);
             if (sch) sch->centerOn(middle.toPoint());
             else if (layoutView) layoutView->setView(middle, layoutView->scale());
+            else if (pictureView) pictureView->centerOn(middle);
             else slideView->centerOn(slide, middle);
             if (!inSight()) {
                 done(errorResult(tr("%1 does not fit in %2 at this zoom: zoom out first (%3).")
                                      .arg(drag ? tr("The drag from %1, %2 to %3, %4").arg(x0).arg(y0).arg(x1).arg(y1)
                                                : tr("%1, %2").arg(click.x()).arg(click.y()),
                                           where,
-                                          sch ? tr("zoom") : layoutView ? tr("show_layout's 'region'") : tr("show_pptx's 'zoom'"))));
+                                          sch            ? tr("zoom")
+                                          : layoutView   ? tr("show_layout's 'region'")
+                                          : pictureView  ? tr("View > View All, its key 0, fits the picture")
+                                                         : tr("show_pptx's 'zoom'"))));
                 return;
             }
         }
@@ -511,7 +537,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     if (hasClick) {
         // On the widget under the point (a view's viewport, a button) - a
         // canvas, a layout's view and slides taking their own.
-        if (QWidget* under = sch || layoutView || slideView ? nullptr : root->childAt(at)) receiver = under;
+        if (QWidget* under = sch || layoutView || slideView || pictureView ? nullptr : root->childAt(at)) receiver = under;
     }
     // (The status bar's Claude chip shows and hides the Claude Code panel:
     // the user's, as the panel is.)
@@ -672,8 +698,8 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
     quint64 revisionBefore = 0;
     // (A schematic's or data display's page: its own pen, on its canvas.)
     QPointer<Schematic> page = sch ? sch : QPointer<Schematic>();
-    if (layoutView || slideView || page) {
-        const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : page->penDrawing();
+    if (layoutView || slideView || pictureView || page) {
+        const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : pictureView ? pictureView->drawing() : page->penDrawing();
         for (const qucs_s::markup::Stroke& s : drawing.strokes()) drawnBefore[s.on] = std::max(drawnBefore.value(s.on), s.id);   // (the last number each part gave)
         strokesBefore = int(drawing.strokes().size());
         revisionBefore = drawing.revision();
@@ -687,7 +713,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                                                 : drag ? tr(", dragged to %1, %2").arg(dragTo.x()).arg(dragTo.y())
                                                        : QString())
                                      : QString();
-    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, layoutView, slideView, slides, slide, page, drawnBefore,
+    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, layoutView, slideView, slides, slide, pictureView, pictureDoc, page, drawnBefore,
                                             strokesBefore, revisionBefore, where, clicked, sets, typed, intoDialog] {
         if (run->answered) return;
         // (Each key as it went: an action, the field's, the list's.)
@@ -729,17 +755,20 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         if (list != nullptr) o.insert(QStringLiteral("list"), listRead(list));
         // (On a layout or slides: each stroke the pen drew, read as
         //  read_drawings reads it - what it marks -, or how many went.)
-        if (layoutView || (slideView && slides) || page) {
-            const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : page->penDrawing();
+        if (layoutView || (slideView && slides) || (pictureView && pictureDoc) || page) {
+            const qucs_s::markup::Drawing& drawing = layoutView ? layoutView->drawing() : slideView ? slideView->drawing() : pictureView ? pictureView->drawing() : page->penDrawing();
             if (drawing.revision() != revisionBefore) {
                 QJsonArray drawn;
                 const QJsonArray read = layoutView ? layoutView->readDrawing(false)
                                         : slides   ? slides->readDrawing(false)
+                                        : pictureDoc ? pictureDoc->readDrawing(false)
                                                    : qucs_s::datadisplay::readDrawing(page, false);
                 for (const QJsonValue& v : read) {
                     const QJsonObject r = v.toObject();
+                    // (A picture's strokes by frame, when it has several not played; else all on 1.)
                     const QString part = layoutView ? r.value(QLatin1String("cell")).toString()
                                        : slides     ? QString::number(r.value(QLatin1String("slide")).toInt())
+                                       : pictureDoc ? QString::number(r.value(QLatin1String("frame")).toInt(1))
                                                     : r.value(QLatin1String("page")).toString();
                     if (r.value(QLatin1String("stroke")).toInt() > drawnBefore.value(part)) drawn.append(r);
                 }
@@ -761,6 +790,12 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                 const QPointF low = layoutView->toLayout(QPointF(0, root->height())), high = layoutView->toLayout(QPointF(root->width(), 0));
                 how += tr(" - the cell from %1, %2 to %3, %4 µm, y up (a point there is 'click' as it is; with 'pixels', its pixel)")
                            .arg(low.x(), 0, 'g', 6).arg(low.y(), 0, 'g', 6).arg(high.x(), 0, 'g', 6).arg(high.y(), 0, 'g', 6);
+            } else if (pictureView) {
+                const QPointF a = pictureView->toPicture(QPointF(0, 0)), b = pictureView->toPicture(QPointF(root->width(), root->height()));
+                how += tr(" - the picture from %1, %2 to %3, %4 of its pixels as in the file, not turned (a point there is 'click' as it is; "
+                          "with 'pixels', its pixel)")
+                           .arg(std::min(a.x(), b.x()), 0, 'f', 1).arg(std::min(a.y(), b.y()), 0, 'f', 1)
+                           .arg(std::max(a.x(), b.x()), 0, 'f', 1).arg(std::max(a.y(), b.y()), 0, 'f', 1);
             } else if (slideView) {
                 const QPointF topLeft = slideView->toSlide(slide, QPointF(0, 0)),
                               bottomRight = slideView->toSlide(slide, QPointF(root->width(), root->height()));

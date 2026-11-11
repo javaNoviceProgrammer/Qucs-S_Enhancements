@@ -44,6 +44,7 @@ class MultiphysicsDoc;
 class Multiphysics3DDoc;
 class PdfDoc;
 class PptxDoc;
+class ImageDoc;
 namespace qucs_s::pptx {
 class Presentation;
 }
@@ -712,6 +713,14 @@ private:
     /// down, its strokes cleared or marked addressed; what it is, its
     /// diagrams and the drawing returned.
     QJsonObject showSchematic(const QJsonObject& args);
+    /// show_picture (qucscontrol_picture.cpp): a picture's tab opened or
+    /// brought to the front, its pen taken up or put down, its strokes
+    /// cleared or marked addressed; what it shows and the drawing returned.
+    QJsonObject showPicture(const QJsonObject& args);
+    /// The picture 'path' names (the one in front when not given), opened
+    /// when it is not and \a open; else null, with why in \a error (none
+    /// when it is a picture's file, not open).
+    ImageDoc* pictureDocument(const QJsonObject& args, bool open, QString* error);
     /// \a readings as a tab's answer has them: the latest 40, the earlier
     /// ones counted.
     static void insertDrawings(QJsonObject& o, const QJsonArray& readings);
