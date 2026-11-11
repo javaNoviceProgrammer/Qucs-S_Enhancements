@@ -109,6 +109,9 @@ qucs_add_fem_test(test_fem3_fe)
 qucs_add_fem_test(test_fem3_solve)
 qucs_add_fem_test(test_fem3_devices)
 qucs_add_fem_test(test_fem3_eme)
+# (770 to 834 s of its 900 on CI's macOS runner on 10 November, Eigen's LU
+# there for its cuts' modes.)
+set_tests_properties(test_fem3_eme PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem3_wave)
 qucs_add_fem_test(test_fem3_wavetd)
 qucs_add_fem_test(test_fem_amg)
@@ -185,6 +188,9 @@ qucs_add_fem_test(test_fem_crystal)
 # (The crystal implant's Monte Carlo: its insides, Clipper's header with them.)
 target_include_directories(test_fem_crystal SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/gdstk/external)
 target_compile_definitions(test_fem_crystal PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+# (630 to 670 s of its 900 on CI's macOS runner on 10 November: its Monte
+# Carlo runs on three processors shared with two other tests.)
+set_tests_properties(test_fem_crystal PROPERTIES TIMEOUT 1800)
 # (Sanitized here some 800 s - the toy laser walked to 1.6 V, its threshold's
 # cases, a reverse bias -: CI's Debug 2 to 2.5 times that, near 900 times its
 # scale.)
@@ -570,13 +576,13 @@ if(APPLE)
   math(EXPR _qucs_measured_ms "2 * ${_qucs_memory_ms}")
   set_property(TEST test_rf25_measured APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_measured_ms}")
   # (Before macOS 26 - CI's runner has 15 - complex systems are factorized
-  # by Eigen's LU, on one thread: the eigenmode expansion's cuts and the RF
-  # solver's compressed solves. test_fem3_eme's threads function and the
-  # thick comb of test_rf25_fullwave_2 went past QtTest's 300 s there on
-  # v27.0.9's tag run, each split since; by Eigen's LU on an M2 Ultra the
-  # heaviest of them 98 s, the comb's first solve 72 (10 by Accelerate's).
-  # The same 900 s as the tests above, within their TIMEOUT of 900.)
-  set_property(TEST test_fem3_eme test_rf25_fullwave_2 APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
+  # by Eigen's LU, on one thread: the eigenmode expansion's cuts. Its threads
+  # function went past QtTest's 300 s there on v27.0.9's tag run, split
+  # since, its heaviest half 98 s by Eigen's LU on an M2 Ultra. The same
+  # 900 s as the tests above. test_rf25_fullwave_2's thick comb, given it
+  # too, swapped for 800 s and more on the runner: left out where Eigen's LU
+  # is, its 300 s again.)
+  set_property(TEST test_fem3_eme APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
 endif()
 # (The toy laser's threshold cases - three walks to 1.4 V and more, one of
 # them failing on purpose, halved to 10 µV and tried again from rest - some
