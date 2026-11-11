@@ -1,7 +1,8 @@
 /*
  * imagedoc.cpp - a picture in a tab of Qucs-S: a PNG, a JPEG, an SVG - what
  *                Qt reads - zoomed and panned, turned, its pixels read, a
- *                part of it selected and copied, its frames played
+ *                part of it selected and copied, its frames played, drawn
+ *                on with the pen
  *
  * This file is part of Qucs-S.
  *
@@ -12,6 +13,7 @@
  */
 #include "imagedoc.h"
 
+#include "apptheme.h"
 #include "elidedlabel.h"
 #include "links.h"
 #include "misc.h"
@@ -25,6 +27,7 @@
 #include <QApplication>
 #include <QBoxLayout>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QColorSpace>
 #include <QComboBox>
 #include <QContextMenuEvent>
@@ -36,6 +39,8 @@
 #include <QIconEngine>
 #include <QImageReader>
 #include <QImageWriter>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -587,6 +592,13 @@ void ImageView::showRect(const QRectF& rect)
     emit zoomChanged(a_zoom);
 }
 
+void ImageView::centerOn(QPointF point)
+{
+    const QPointF by = toViewport(point) - QRectF(viewport()->rect()).center();
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() + int(std::lround(by.x())));
+    verticalScrollBar()->setValue(verticalScrollBar()->value() + int(std::lround(by.y())));
+}
+
 void ImageView::setTurns(int turns)
 {
     turns = ((turns % 4) + 4) % 4;
@@ -630,6 +642,84 @@ void ImageView::setSelection(const QRect& rect)
 void ImageView::clearSelection()
 {
     setSelection(QRect());
+}
+
+// ----------------------------------------------------------------------
+// The pen
+
+void ImageView::setPenActive(bool active)
+{
+    if (active == a_pen) return;
+    a_pen = active;
+    // Put down mid-stroke: the stroke let go, what an eraser took kept.
+    if (!active) endInking();
+    viewport()->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
+    viewport()->update();
+    emit penActiveChanged(active);
+}
+
+void ImageView::endInking()
+{
+    if (!a_inking && !a_erasing) return;
+    if (a_erasing && a_erased) a_drawing.changed(a_beforeErase);
+    a_inking = a_erasing = a_erased = false;
+    a_stroke = qucs_s::markup::Stroke();
+    a_beforeErase.clear();
+    viewport()->update();
+    emit drawingChanged();
+}
+
+void ImageView::setPart(const QString& part)
+{
+    if (part == a_part) return;
+    endInking();
+    a_part = part;
+    viewport()->update();
+}
+
+void ImageView::addStroke(const qucs_s::markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    a_drawing.add(stroke);
+    viewport()->update();
+    emit drawingChanged();
+}
+
+bool ImageView::undoDrawing()
+{
+    if (!a_drawing.undo()) return false;
+    viewport()->update();
+    emit drawingChanged();
+    return true;
+}
+
+bool ImageView::clearDrawing(const QString& part)
+{
+    if (!a_drawing.clear(part)) return false;
+    viewport()->update();
+    emit drawingChanged();
+    return true;
+}
+
+int ImageView::setAddressed(const QList<int>& ids, bool addressed)
+{
+    const int changed = a_drawing.setAddressed(a_part, ids, addressed);
+    if (changed > 0) {
+        viewport()->update();
+        emit drawingChanged();
+    }
+    return changed;
+}
+
+void ImageView::eraseAt(QPointF pos)
+{
+    bool erased = false;
+    while (a_drawing.eraseAt(a_part, toPicture(pos), qucs_s::markup::EraserReach / a_zoom)) erased = true;
+    if (erased) {
+        a_erased = true;
+        viewport()->update();
+        emit drawingChanged();
+    }
 }
 
 QRect ImageView::selectionFrom(QPointF a, QPointF b) const
@@ -694,6 +784,17 @@ void ImageView::paintEvent(QPaintEvent* event)
         if (a_svg != nullptr) drawSvg(p, visible, dpr);
         else drawBitmap(p, visible, dpr);
         if (a_grid && a_svg == nullptr && a_zoom >= GridZoom - 1e-9) drawGrid(p, visible);
+        // What the pen drew on the part shown, and the stroke being drawn:
+        // turned and zoomed with the picture, no further than its edge.
+        QList<qucs_s::markup::Stroke> strokes = a_drawing.on(a_part);
+        if (a_inking) strokes << a_stroke;
+        if (!strokes.isEmpty()) {
+            p.save();
+            p.setClipRect(visible);
+            const QTransform v = toViewportTransform();
+            qucs_s::markup::paint(p, strokes, [&v](QPointF pt) { return v.map(pt); }, a_zoom);
+            p.restore();
+        }
     }
     if (!a_selection.isEmpty()) {
         const QRectF r = toViewportTransform().mapRect(QRectF(a_selection)).adjusted(0.5, 0.5, -0.5, -0.5);
@@ -843,6 +944,25 @@ bool ImageView::viewportEvent(QEvent* event)
 
 void ImageView::mousePressEvent(QMouseEvent* event)
 {
+    // With the pen up, a press of the left button on the picture draws or
+    // erases, before it selects or moves the view (beside it, nothing).
+    if (a_pen && event->button() == Qt::LeftButton) {
+        if (isEmpty() || a_inking || a_erasing || !pictureRect().contains(event->position())) return;
+        setFocus(Qt::MouseFocusReason);
+        const qucs_s::markup::Pen pen = qucs_s::markup::currentPen();
+        if (pen.tool == qucs_s::markup::Tool::Eraser) {
+            a_erasing = true;
+            a_erased = false;
+            a_beforeErase = a_drawing.strokes();
+            eraseAt(event->position());
+        } else {
+            a_stroke = qucs_s::markup::begin(pen, a_part, toPicture(event->position()), a_zoom);
+            a_inking = true;
+            viewport()->update();
+        }
+        event->accept();
+        return;
+    }
     a_pressPos = event->position().toPoint();
     a_moved = false;
     const bool select = event->button() == Qt::LeftButton && (a_selecting || (event->modifiers() & Qt::ShiftModifier));
@@ -866,6 +986,21 @@ void ImageView::mousePressEvent(QMouseEvent* event)
 void ImageView::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF pos = event->position();
+    // The pen and the eraser follow every move, the least of them too; a
+    // stroke goes on past the picture's edge, drawn as far as the edge.
+    if (a_inking) {
+        if (QLineF(toViewport(a_stroke.points.last()), pos).length() >= qucs_s::markup::LeastStep) {
+            a_stroke.points << toPicture(pos);
+            viewport()->update();
+        }
+        emit hovered(pixelAt(pos));
+        return;
+    }
+    if (a_erasing) {
+        eraseAt(pos);
+        emit hovered(pixelAt(pos));
+        return;
+    }
     switch (a_drag) {
     case Drag::Pan: {
         const QPoint d = event->globalPosition().toPoint() - a_panStart;
@@ -880,7 +1015,7 @@ void ImageView::mouseMoveEvent(QMouseEvent* event)
         break;
     case Drag::None: {
         const bool movable = horizontalScrollBar()->maximum() > 0 || verticalScrollBar()->maximum() > 0;
-        viewport()->setCursor(a_selecting || (event->modifiers() & Qt::ShiftModifier) ? Qt::CrossCursor
+        viewport()->setCursor(a_pen || a_selecting || (event->modifiers() & Qt::ShiftModifier) ? Qt::CrossCursor
                               : movable                                                 ? Qt::OpenHandCursor
                                                                                         : Qt::ArrowCursor);
         break;
@@ -891,9 +1026,20 @@ void ImageView::mouseMoveEvent(QMouseEvent* event)
 
 void ImageView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if ((a_inking || a_erasing) && event->button() == Qt::LeftButton) {
+        if (a_inking) a_drawing.add(a_stroke);
+        else if (a_erased) a_drawing.changed(a_beforeErase);
+        a_stroke = qucs_s::markup::Stroke();
+        a_inking = a_erasing = a_erased = false;
+        a_beforeErase.clear();
+        viewport()->update();
+        emit drawingChanged();
+        return;
+    }
     const Drag drag = a_drag;
     a_drag = Drag::None;
-    if (drag == Drag::Pan) viewport()->setCursor(horizontalScrollBar()->maximum() > 0 || verticalScrollBar()->maximum() > 0
+    if (drag == Drag::Pan) viewport()->setCursor(a_pen ? Qt::CrossCursor
+                                                 : horizontalScrollBar()->maximum() > 0 || verticalScrollBar()->maximum() > 0
                                                      ? Qt::OpenHandCursor
                                                      : Qt::ArrowCursor);
     // A click (no drag): the selection goes.
@@ -903,6 +1049,11 @@ void ImageView::mouseReleaseEvent(QMouseEvent* event)
 
 void ImageView::mouseDoubleClickEvent(QMouseEvent* event)
 {
+    // With the pen up a double click is two presses of it, not a zoom.
+    if (a_pen && event->button() == Qt::LeftButton) {
+        mousePressEvent(event);
+        return;
+    }
     if (event->button() != Qt::LeftButton || isEmpty()) return;
     // Between 100% at the pointer and the whole picture.
     if (a_fit == Fit::None && std::abs(a_zoom - 1.0) < 1e-9) setFit(Fit::Auto);
@@ -911,6 +1062,26 @@ void ImageView::mouseDoubleClickEvent(QMouseEvent* event)
 
 void ImageView::keyPressEvent(QKeyEvent* event)
 {
+    // With the pen up, Ctrl+Z is its own; Escape lets go of the stroke
+    // being drawn, then puts the pen down - one thing at a time.
+    if (a_pen && event->matches(QKeySequence::Undo)) {
+        if (!a_inking && !a_erasing) undoDrawing();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && event->modifiers() == Qt::NoModifier && (a_inking || a_erasing || a_pen)) {
+        if (a_inking || a_erasing) {
+            if (a_inking) {
+                a_inking = false;
+                a_stroke = qucs_s::markup::Stroke();
+                viewport()->update();
+            } else {
+                endInking();
+            }
+        } else {
+            setPenActive(false);
+        }
+        return;
+    }
     switch (event->key()) {
     case Qt::Key_PageDown:
         if (a_frameKeys) {
@@ -952,11 +1123,14 @@ void ImageView::keyPressEvent(QKeyEvent* event)
 bool ImageView::event(QEvent* event)
 {
     // Its keys before the window's shortcuts: Escape (Select) clears the
-    // selection; Page Up and Down, Space go through the frames.
+    // selection, or with the pen up puts it down (the window's Escape ends
+    // a schematic's mode); Page Up and Down, Space go through the frames.
+    // (Ctrl+Z reaches it as it is: the window's Undo is off while a picture
+    // is in front.)
     if (event->type() == QEvent::ShortcutOverride) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->modifiers() == Qt::NoModifier
-            && ((key->key() == Qt::Key_Escape && !a_selection.isEmpty())
+            && ((key->key() == Qt::Key_Escape && (!a_selection.isEmpty() || a_pen || a_inking))
                 || (a_frameKeys && (key->key() == Qt::Key_PageUp || key->key() == Qt::Key_PageDown || key->key() == Qt::Key_Space)))) {
             event->accept();
             return true;
@@ -1122,6 +1296,9 @@ void ImageDoc::buildUi()
     frames->addWidget(a_frameLabel);
     a_frameBar->hide();
 
+    // The pen, as the other viewers have it: first of the right-hand group.
+    a_penButton = new qucs_s::markup::PenButton(tr("Picture"), a_toolbar);
+    a_penButton->setProperty("imageTool", true);
     a_backgroundButton = toolButton(a_toolbar, glyph(Glyph::Checkers), tr("What is under its transparent parts; the pixels' grid"));
     a_backgroundButton->setPopupMode(QToolButton::InstantPopup);
     auto* backgrounds = new QMenu(a_backgroundButton);
@@ -1168,6 +1345,7 @@ void ImageDoc::buildUi()
     bar->addSpacing(12);
     bar->addWidget(a_frameBar);
     bar->addStretch(1);
+    bar->addWidget(a_penButton);
     bar->addWidget(a_backgroundButton);
     bar->addWidget(a_menuButton);
     layout->addWidget(a_toolbar);
@@ -1253,6 +1431,18 @@ void ImageDoc::buildUi()
     connect(a_view, &ImageView::selectionChanged, this, &ImageDoc::updateSelection);
     connect(a_view, &ImageView::stepRequested, this, &ImageDoc::stepFrame);
     connect(a_view, &ImageView::playRequested, this, &ImageDoc::togglePlaying);
+    // The pen taken up and put down; its menu's undo and clearing.
+    connect(a_penButton, &QToolButton::toggled, a_view, &ImageView::setPenActive);
+    connect(a_view, &ImageView::penActiveChanged, this, [this](bool on) {
+        const QSignalBlocker block(a_penButton);
+        a_penButton->setChecked(on);
+    });
+    a_penButton->setColorChooser([this](const QColor& now) { return QColorDialog::getColor(now, this, tr("The Pen's Colour")); });
+    connect(a_penButton, &qucs_s::markup::PenButton::undoRequested, a_view, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearPartRequested, a_view, [this] { a_view->clearDrawing(a_view->part()); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearAllRequested, a_view, [this] { a_view->clearDrawing(); });
+    connect(a_view, &ImageView::drawingChanged, this, &ImageDoc::updatePen);
+    connect(this, &ImageDoc::frameChanged, this, &ImageDoc::updatePen);
     connect(a_view, &ImageView::menuRequested, this, [this](QPoint at, QPoint pixel) {
         auto* menu = new QMenu(this);
         const bool selected = !a_view->selection().isEmpty();
@@ -1301,7 +1491,8 @@ void ImageDoc::restyle()
                               "QToolButton[imageTool=\"true\"]:hover { background: %2; }"
                               "QToolButton[imageTool=\"true\"]:checked { background: %3; }"
                               "QToolButton[imageTool=\"true\"]::menu-indicator { image: none; }")
-                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name());
+                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name())
+        + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton[imageTool=\"true\"]"));
     if (sheet != styleSheet()) setStyleSheet(sheet);
     a_view->viewport()->update();
 }
@@ -1441,6 +1632,7 @@ void ImageDoc::show(Picture& picture, bool keepView)
         a_frame = std::clamp(frame, 0, int(a_frames.size()) - 1);
         a_view->setImage(a_frames.at(a_frame));
     }
+    a_view->setPart(partOf(a_frame));
     old.reset();
     a_view->setFrameKeys(frameCount() > 1);
     a_editAsText->setVisible(a_svg != nullptr && a_format == QLatin1String("svg"));
@@ -1450,6 +1642,7 @@ void ImageDoc::show(Picture& picture, bool keepView)
     updateZoomBox();
     updatePointer(a_hover);
     updateSelection();
+    updatePen();
     a_playing = false;
     setPlaying(play);
 }
@@ -1616,6 +1809,7 @@ void ImageDoc::setFrame(int frame)
     if (frame == a_frame) return;
     a_frame = frame;
     a_view->setImage(a_frames.at(frame));
+    a_view->setPart(partOf(frame));
     updateFrameBar();
     updatePointer(a_hover);
     // A file of several pictures: each its size, its colours.
@@ -1705,6 +1899,95 @@ void ImageDoc::showNoZoom()
 }
 
 // ----------------------------------------------------------------------
+// The pen
+
+QString ImageDoc::partOf(int frame) const
+{
+    return QString::number(isAnimated() || a_svg != nullptr ? 1 : frame + 1);
+}
+
+void ImageDoc::updatePen()
+{
+    const qucs_s::markup::Drawing& d = a_view->drawing();
+    a_penButton->setDrawingState(d.canUndo(), d.count(a_view->part()), int(d.strokes().size()));
+}
+
+QJsonArray ImageDoc::readDrawing(bool points) const
+{
+    // Nothing is known of what the picture shows: each stroke's gesture,
+    // box and points, an arrow's tip and tail (where it points), by frame
+    // in a file of several pictures.
+    namespace markup = qucs_s::markup;
+    QJsonArray out;
+    const markup::Drawing& d = a_view->drawing();
+    const bool byFrame = drawnByFrame();
+    for (const QString& part : d.parts()) {
+        const QList<markup::Stroke> strokes = d.on(part);
+        QList<QPointF> tips;
+        QList<int> heads;
+        const QList<markup::Gesture> gestures = markup::gesturesOf(strokes, &tips, &heads);
+        const QJsonArray read = markup::readPage(strokes, {}, points);
+        for (int i = 0; i < read.size(); ++i) {
+            QJsonObject o = read.at(i).toObject();
+            if (i < gestures.size() && gestures.at(i) == markup::Gesture::Arrow && !strokes.at(i).points.isEmpty()) {
+                const auto at = [](QPointF p) { return QJsonArray{std::round(p.x() * 10) / 10, std::round(p.y() * 10) / 10}; };
+                o.insert(QStringLiteral("tip"), at(tips.at(i)));
+                o.insert(QStringLiteral("tail"), at(strokes.at(i).points.first()));
+            }
+            if (byFrame) o.insert(QStringLiteral("frame"), part.toInt());
+            out.append(o);
+        }
+    }
+    return out;
+}
+
+QString ImageDoc::drawingSentences(int most) const
+{
+    // (As markup::sentencesOf() says a presentation's, by frame or of the
+    //  picture whole.)
+    const auto whereOf = [](const QJsonObject& r) {
+        return r.contains(QStringLiteral("frame")) ? QStringLiteral("frame %1").arg(r.value(QStringLiteral("frame")).toInt())
+                                                   : QStringLiteral("the picture");
+    };
+    QStringList lines;
+    QJsonArray open;
+    QStringList addressed;
+    for (const QJsonValue& v : readDrawing(true)) {
+        const QJsonObject r = v.toObject();
+        if (r.value(QStringLiteral("addressed")).toBool())
+            addressed << QStringLiteral("%1 stroke %2").arg(whereOf(r)).arg(r.value(QStringLiteral("stroke")).toInt());
+        else
+            open.append(r);
+    }
+    const int from = std::max(0, int(open.size()) - most);
+    if (from > 0) lines << QStringLiteral("(%1 earlier stroke(s) left out: read_drawings has them all)").arg(from);
+    for (int i = from; i < open.size(); ++i) {
+        const QJsonObject r = open.at(i).toObject();
+        lines << qucs_s::markup::sentenceOf(r, whereOf(r), QStringLiteral("pixels"));
+    }
+    if (!addressed.isEmpty())
+        lines << QStringLiteral("(%1 stroke(s) marked addressed, left out: %2)").arg(addressed.size()).arg(addressed.join(QStringLiteral(", ")));
+    if (!lines.isEmpty())
+        lines << QStringLiteral("(In the picture's pixels from its top left, as in the file (%1 × %2), not turned; what is under a stroke is "
+                                "not known: screenshot shows it.)")
+                     .arg(imageSize().width())
+                     .arg(imageSize().height());
+    return lines.join(QLatin1Char('\n'));
+}
+
+void ImageDoc::drawStrokes(QImage& image, const QRectF& part, qreal scale) const
+{
+    const QList<qucs_s::markup::Stroke> strokes = a_view->drawing().on(partOf(a_frame));
+    if (strokes.isEmpty() || image.isNull()) return;
+    // (A palette's picture cannot be painted on.)
+    if (image.format() != QImage::Format_ARGB32_Premultiplied && image.format() != QImage::Format_ARGB32 && image.format() != QImage::Format_RGB32)
+        image = image.convertToFormat(image.hasAlphaChannel() ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32);
+    QPainter p(&image);
+    const QPointF from = part.topLeft();
+    qucs_s::markup::paint(p, strokes, [from, scale](QPointF pt) { return (pt - from) * scale; }, scale);
+}
+
+// ----------------------------------------------------------------------
 // The picture, out
 
 QImage ImageDoc::picture(bool selectionOnly, qreal svgScale) const
@@ -1723,9 +2006,12 @@ QImage ImageDoc::picture(bool selectionOnly, qreal svgScale) const
         q.scale(k, k);
         q.translate(-part.topLeft());
         a_svg->render(&q, QRectF(QPointF(0, 0), QSizeF(own)));
+        q.end();
+        drawStrokes(image, part, k);
     } else if (!a_frames.isEmpty()) {
         image = a_frames.at(a_frame);
         if (!selection.isEmpty()) image = image.copy(selection);
+        drawStrokes(image, selection.isEmpty() ? QRectF(QPointF(0, 0), QSizeF(image.size())) : QRectF(selection), 1);
     }
     if (!image.isNull() && a_view->turns() != 0) image = image.transformed(QTransform().rotate(90.0 * a_view->turns()));
     return image;
@@ -1883,5 +2169,7 @@ void ImageDoc::print(QPrinter* printer, QPainter* painter, bool printAll, bool f
     painter->setClipRect(piece);
     if (a_svg != nullptr) a_svg->render(painter, QRectF(QPointF(0, 0), QSizeF(imageSize())));
     else painter->drawImage(piece, a_frames.at(a_frame), piece);
+    // What the pen drew on it, in its pixels as the picture is.
+    qucs_s::markup::paint(*painter, a_view->drawing().on(partOf(a_frame)), [](QPointF pt) { return pt; }, 1);
     painter->restore();
 }
