@@ -131,6 +131,9 @@ struct Options {
     /// autoCompactEnabled), whatever the user's own settings say: told
     /// always, as a flag setting (--settings).
     bool autoCompact = true;
+    /// The context it compacts near (Claude Code's autoCompactWindow), in
+    /// tokens; 0: not told (the user's own settings, or the program's choice).
+    int autoCompactWindow = 0;
 };
 QStringList arguments(const Options& options);
 
@@ -400,6 +403,14 @@ public:
     /// it after the turn when it refuses).
     void setAutoCompact(bool on);
     bool autoCompact() const { return a_autoCompact; }
+    /// The context Claude Code compacts near (Options::autoCompactWindow), in
+    /// tokens, 0 its own choice: told as autoCompact is.
+    void setAutoCompactWindow(int tokens);
+    int autoCompactWindow() const { return a_autoCompactWindow; }
+    /// How big the conversation's context was at its latest request in the
+    /// turn now or last run, in tokens (what it read, cached or not); 0 once
+    /// it was compacted; -1 not known (no request in that turn).
+    qint64 turnContextTokens() const { return a_turnContext; }
     /// The guards the user chose (Guards): given to the host, at once and
     /// whenever it is set.
     void setGuards(const Guards& guards);
@@ -591,6 +602,8 @@ private:
     QString a_mode;
     QString a_model;
     bool a_autoCompact = true;
+    int a_autoCompactWindow = 0;
+    qint64 a_turnContext = -1;
     Guards a_guards;
     QString a_systemPrompt;
     bool a_restartAfterTurn = false;   // the program would not take another mode or model

@@ -67,10 +67,13 @@ static void csv_finalize (void) {
 /* Validates a data vector identifier. */
 static void csv_validate_str (char * n) {
   char * p = n;
-  if (!isalpha (*p)) *p = '_';
+  /* Qucs-S: an empty name (one that begins with a NUL) ends here, not
+     past its terminator */
+  if (*p == '\0') return;
+  if (!isalpha ((unsigned char) *p)) *p = '_';
   p++;
   while (*p) {
-    if (!isalnum (*p) && *p != '.' && *p != ',' && *p != '[' && *p != ']')
+    if (!isalnum ((unsigned char) *p) && *p != '.' && *p != ',' && *p != '[' && *p != ']')
       *p = '_';
     p++;
   }

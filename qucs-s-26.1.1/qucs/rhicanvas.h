@@ -61,6 +61,10 @@ struct PipelineSpec {
     // Min or Max: each channel the lesser or greater of what is drawn and
     // what is there (a layout's transparent layer, KLayout's); else blended.
     QRhiGraphicsPipeline::BlendOp blendOp = QRhiGraphicsPipeline::Add;
+    // Depth tested and written (a 3D view's), by this comparison: the pass's
+    // depth cleared to 1, nearer smaller.
+    bool depth = false;
+    QRhiGraphicsPipeline::CompareOp depthOp = QRhiGraphicsPipeline::Less;
 };
 std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDescriptor* pass, int samples, QRhiShaderResourceBindings* layout,
                                                    const PipelineSpec& spec);

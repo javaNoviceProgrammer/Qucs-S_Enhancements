@@ -130,6 +130,9 @@ bool QucsApp::performToggleAction(bool on, QAction *Action,
     slotEscape();
     return false;
   }
+  // A tool picked to edit with (a wire, a part, a painting...) puts the
+  // page's pen down: its drags are the tool's again.
+  if (Action != select && Doc->penActive()) Doc->setPenActive(false);
 
   do {
     if (Function)
@@ -511,6 +514,11 @@ void QucsApp::slotZoomIn() {
 }
 
 void QucsApp::slotEscape() {
+  // The page's pen put down (the stroke being drawn let go).
+  if (Schematic *doc = currentSchematic(); doc != nullptr && doc->penActive()) {
+    doc->setPenActive(false);
+    return;
+  }
   // A move made with the cursor keys is taken back (#1525).
   if (Schematic *doc = currentSchematic()) {
     if (doc->cancelKeyboardMove()) {
@@ -863,6 +871,13 @@ void QucsApp::slotEditUndo() {
   Schematic *Doc = currentSchematic();
   if (Doc == nullptr)
     return;
+
+  // The pen up on a data display's page: its last stroke taken back, not
+  // the page's last edit.
+  if (Doc->penActive()) {
+    Doc->undoDrawing();
+    return;
+  }
 
   slotHideEdit(); // disable text edit of component property
 

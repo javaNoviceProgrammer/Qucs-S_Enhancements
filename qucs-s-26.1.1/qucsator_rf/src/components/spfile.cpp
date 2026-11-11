@@ -80,6 +80,10 @@ nr_complex_t spfile_vector::interpolate (nr_double_t x) {
 // Constructor creates an empty and unnamed instance of the spfile class.
 spfile::spfile () {
   data = NULL;
+  // (No ports until a file is read: a part whose file is missing compared
+  // the uninitialised count with its own, and a one-node part's 0 matched
+  // it - createIndex () read the missing file's data: SIGSEGV.)
+  nPorts = 0;
   sfreq = nfreq = NULL;
   spara = FMIN = SOPT = RN = NULL;
   interpolType = dataType = 0;

@@ -90,7 +90,7 @@ static void mdl_create_vardataset (struct mdl_point_t * point,
     for (int y = 1; y < dsize->y + 1; y++) {
       // create vector description
       int n = (y - 1) * 2 + x - 1;
-      char * txt = (char *) malloc (strlen (name) + strlen (type) + 4 + 2 * 3);
+      char * txt = (char *) malloc (strlen (name) + strlen (type) + 4 + 2 * 12);
       if (dsize->x > 1 || dsize->y > 1)
 	sprintf (txt, "%s%s[%d,%d]", name, type, x, y);
       else

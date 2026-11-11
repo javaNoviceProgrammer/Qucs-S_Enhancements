@@ -35,6 +35,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QSlider;
 class QTableWidget;
+class QThread;
 class QTimer;
 class QToolButton;
 class QUndoStack;
@@ -147,6 +148,9 @@ public:
     /// Lets the work going on go.
     void cancel();
     bool isBusy() const { return a_job != nullptr; }
+    /// The thread its work goes on in; null: none. (Closed while it works,
+    /// the thread is told to stop and left to end on its own.)
+    QThread* jobThread() const;
     /// Waits for the work going on, and a build waiting to start, \a ms at
     /// most; whether it ended.
     bool waitForIdle(int ms = 120000);

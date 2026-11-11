@@ -181,6 +181,12 @@
         <file>shaders/fem_fill.vert.qsb</file>
         <file>shaders/fem_line.frag.qsb</file>
         <file>shaders/fem_line.vert.qsb</file>
+        <file>shaders/view3d_dot.frag.qsb</file>
+        <file>shaders/view3d_dot.vert.qsb</file>
+        <file>shaders/view3d_line.frag.qsb</file>
+        <file>shaders/view3d_line.vert.qsb</file>
+        <file>shaders/view3d_tri.frag.qsb</file>
+        <file>shaders/view3d_tri.vert.qsb</file>
         <file>shaders/fem_surface.frag.qsb</file>
         <file>shaders/fem_surface.vert.qsb</file>
         <file>shaders/layout_dot.frag.qsb</file>
