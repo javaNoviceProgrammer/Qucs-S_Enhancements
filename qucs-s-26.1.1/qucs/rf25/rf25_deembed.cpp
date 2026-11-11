@@ -352,7 +352,22 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
     double epsMax = 1;
     for (const Layer& l : stack.layers)
         if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) epsMax = std::max(epsMax, l.epsr);
-    const double first = chosen > 0 ? chosen : 8 * h / micrometre + 2 * width;   // the layout's units
+    // With no ground plane under the stack, a coplanar feed's field is across
+    // its gaps, between its signal and the conductors beside it: the metal's
+    // height over the bottom of the stack - all of a thick substrate - is
+    // no reach of it. Its strips are then as long as eight of its signal
+    // and gaps and twice its width, as a grounded feed's are of eight
+    // heights. (A feed 50 µm wide in gaps of 6 µm over 500 µm of silicon:
+    // strips of 4.1, 8.3 and 6.7 mm took a 1 s solve to 102 s; from 400 µm
+    // up the strips read the same line and discontinuity, within their own
+    // scatter - eps_eff 4.13, 1.44 fF - at 110 GHz. Nor is a thin
+    // substrate's height a bound on them: with no plane, it bounds nothing.)
+    bool plane = false;
+    for (const Layer& l : stack.layers) plane = plane || (l.kind == Layer::Ground && l.variant != QLatin1String("open"));
+    const double span = width + feed.gap[0] + feed.gap[1];
+    const double byHeight = 8 * h / micrometre + 2 * width;
+    const bool byGaps = feed.coplanar && !plane && span > width;
+    const double first = chosen > 0 ? chosen : byGaps ? 8 * span + 2 * width : byHeight;   // the layout's units
     if (!feed.coplanar) out.reach = 4 * h / micrometre + width;
     const double offset = feed.offset();
     // Where the strips at that length are more than a dense solve takes on
@@ -481,6 +496,11 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
                          .arg(base.third / base.between, 0, 'g', 4)
                          .arg(frequencies.size())
                          .arg(following);
+        if (byGaps && chosen <= 0)
+            out.lines << tr("There is no ground plane under the stack: the strips as long as eight of the feed's signal and "
+                            "gaps, %1 µm, and twice its width, not as eight of the metal's %2 µm over the bottom of the stack.")
+                             .arg(span, 0, 'g', 4)
+                             .arg(h / micrometre, 0, 'g', 4);
         // (Meshed as the structure was - its mesh's settings, narrow gaps
         //  graded as its own are - so that the cells at a port are the cells
         //  at its own.)

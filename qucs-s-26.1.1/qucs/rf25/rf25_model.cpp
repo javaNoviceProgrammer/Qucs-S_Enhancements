@@ -355,8 +355,9 @@ QList<NodeKind> makeKinds()
                      "wave)")),
           shownIf(expr(QStringLiteral("strips"), tr("Calibration strips"), QStringLiteral("m"), QStringLiteral("0"),
                        tr("How long the shortest strip of its feed is: nought chooses - eight heights over the ground and "
-                          "twice its width, and shorter strips beside them where a third says those do not agree on one "
-                          "line. On a substrate thick beside the wavelength, shorter strips agree to a higher frequency")),
+                          "twice its width (a coplanar feed with no ground plane: eight of its signal and gaps), and "
+                          "shorter strips beside them where a third says those do not agree on one line. On a substrate "
+                          "thick beside the wavelength, shorter strips agree to a higher frequency")),
                   "calibrate=true"),
           expr(QStringLiteral("deembed"), tr("De-embed"), QStringLiteral("m"), QStringLiteral("0"),
                tr("How far the reference plane is then moved in along the line (out, below nought)")),
