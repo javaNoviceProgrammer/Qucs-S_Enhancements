@@ -48,10 +48,17 @@ struct EditResult {
  * what picks it in the cell's own elements: "layer" (a shape's or a
  * text's) with "at": [x, y] - the smallest there (a path: within half its
  * width of its spine; a text: within a µm of its place; a placement: its
- * box) - or "box": [x0, y0, x1, y1], those wholly inside; a text's "text",
- * a placement's "of". All in µm, the cell's own coordinates.
+ * box) - or "box": [x0, y0, x1, y1], those wholly inside, or (a deletion)
+ * "box_is": [x0, y0, x1, y1], the one whose own box it is; a text's
+ * "text", a placement's "of". All in µm, the cell's own coordinates.
  */
 EditResult editLayout(const QString& file, const QString& cell, const QJsonArray& edits);
+
+/// A layout with nothing in it - one cell, \a cell ("TOP" where empty), its
+/// unit the µm and its grid the nm - written to \a file, a .gds or an .oas;
+/// false, and why, when it cannot be. (RF 2.5D's drawing begins one beside
+/// a model that names no layout.)
+bool newLayout(const QString& file, const QString& cell, QString* error = nullptr);
 
 /// What changed from \a before to \a after, two reads of a layout: the
 /// cells added and taken away; in each cell there in both, by layer, the

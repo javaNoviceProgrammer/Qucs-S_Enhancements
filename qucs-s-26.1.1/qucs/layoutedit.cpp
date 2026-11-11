@@ -265,7 +265,10 @@ void Editor::remove(const Element& el)
 bool Editor::pick(Kind kind, const QJsonObject& e, bool one, QList<Element>* out, QString* why)
 {
     gdstk::Cell* c = a_e.cell;
-    const bool hasAt = e.contains(QLatin1String("at")), hasBox = e.contains(QLatin1String("box"));
+    // (Its box itself, "box_is": the one shape whose box that is - a shape
+    // picked as the viewer selected it, RF 2.5D's Delete.)
+    const bool exact = e.contains(QLatin1String("box_is"));
+    const bool hasAt = e.contains(QLatin1String("at")), hasBox = e.contains(QLatin1String("box")) || exact;
     QPointF at;
     QRectF box;
     if (hasAt && !pointOf(e.value(QLatin1String("at")), &at)) {
@@ -273,7 +276,7 @@ bool Editor::pick(Kind kind, const QJsonObject& e, bool one, QList<Element>* out
         return false;
     }
     if (hasBox) {
-        const QJsonArray b = e.value(QLatin1String("box")).toArray();
+        const QJsonArray b = e.value(QLatin1String(exact ? "box_is" : "box")).toArray();
         QPointF p, q;
         if (b.size() != 4 || !pointOf(QJsonArray{b.at(0), b.at(1)}, &p) || !pointOf(QJsonArray{b.at(2), b.at(3)}, &q)) {
             *why = QObject::tr("'box' is [x0, y0, x1, y1] in µm");
@@ -288,7 +291,7 @@ bool Editor::pick(Kind kind, const QJsonObject& e, bool one, QList<Element>* out
                      : QObject::tr("what is changed is picked by 'at' [x, y] (the smallest there) or 'box' [x0, y0, x1, y1] (those wholly inside)");
         return false;
     }
-    if (hasAt && hasBox) {
+    if ((hasAt && hasBox) || (exact && e.contains(QLatin1String("box")))) {
         *why = QObject::tr("'at' or 'box' picks what is changed, not both");
         return false;
     }
@@ -305,8 +308,15 @@ bool Editor::pick(Kind kind, const QJsonObject& e, bool one, QList<Element>* out
     const QString text = e.value(QLatin1String("text")).toString();
     const QString of = e.value(QLatin1String("of")).toString();
     QList<Element> found;
+    // (A box the same within a thousandth of a µm, or of its size.)
+    const double slack = std::max(1e-3, 1e-6 * std::max(box.width(), box.height()));
+    const auto same = [&](const QRectF& b) {
+        return std::abs(b.left() - box.left()) <= slack && std::abs(b.right() - box.right()) <= slack
+               && std::abs(b.top() - box.top()) <= slack && std::abs(b.bottom() - box.bottom()) <= slack;
+    };
     const auto consider = [&](Element el, const std::function<bool(QPointF)>& contains) {
-        if (hasBox && !box.contains(el.box)) return;
+        if (exact && !same(el.box)) return;
+        if (hasBox && !exact && !box.contains(el.box)) return;
         if (hasAt && !contains(at)) return;
         found << el;
     };
@@ -372,7 +382,9 @@ bool Editor::pick(Kind kind, const QJsonObject& e, bool one, QList<Element>* out
                         hasAt ? QObject::tr("at %1").arg(pointSaid(at)) : hasBox ? QObject::tr("wholly inside %1").arg(boxSaid(box)) : QString());
         return false;
     }
-    // At a point, the smallest there (a text, the nearest); in a box, all.
+    // At a point, the smallest there (a text, the nearest); in a box, all;
+    // its own box, the first.
+    if (exact) found = found.mid(0, 1);
     if (hasAt || one) {
         std::stable_sort(found.begin(), found.end(), [](const Element& a, const Element& b) {
             return a.distance != b.distance ? a.distance < b.distance : a.area < b.area;
@@ -404,7 +416,8 @@ bool Editor::apply(const QJsonObject& edit, QString* done, QString* why)
                                      QStringLiteral("layer"),    QStringLiteral("points"),   QStringLiteral("width"),   QStringLiteral("ends"),
                                      QStringLiteral("text"),     QStringLiteral("at"),       QStringLiteral("of"),      QStringLiteral("rotation"),
                                      QStringLiteral("mirrored"), QStringLiteral("magnification"), QStringLiteral("box"), QStringLiteral("by"),
-                                     QStringLiteral("layer_to"), QStringLiteral("text_to"),  QStringLiteral("at_to")};
+                                     QStringLiteral("layer_to"), QStringLiteral("text_to"),  QStringLiteral("at_to"),
+                                     QStringLiteral("box_is")};
     for (auto it = edit.begin(); it != edit.end(); ++it)
         if (!known.contains(it.key())) {
             *why = QObject::tr("'%1' is not a key of an edit").arg(it.key());
@@ -543,7 +556,7 @@ bool Editor::apply(const QJsonObject& edit, QString* done, QString* why)
     // What is deleted, replaced or moved: picked.
     QList<Element> picked;
     if (op == QLatin1String("delete")) {
-        if (!only({"layer", "at", "box", "text", "of"})) return false;
+        if (!only({"layer", "at", "box", "box_is", "text", "of"})) return false;
         if (!pick(kind, edit, false, &picked, why)) return false;
         QStringList said;
         for (const Element& el : std::as_const(picked)) said << describe(el);
@@ -759,6 +772,24 @@ EditResult editLayout(const QString& file, const QString& cellName, const QJsonA
     }
     result.ok = true;
     return result;
+}
+
+bool newLayout(const QString& file, const QString& cellName, QString* error)
+{
+    if (!router::isWritableLayout(file)) {
+        if (error != nullptr) *error = QObject::tr("a new layout is a .gds or an .oas; %1 is neither").arg(QFileInfo(file).fileName());
+        return false;
+    }
+    gdstk::Library lib = {};
+    lib.init(QFileInfo(file).completeBaseName().toUtf8().constData(), 1e-6, 1e-9);
+    auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+    cell->name = gdstk::copy_string((cellName.isEmpty() ? QStringLiteral("TOP") : cellName).toUtf8().constData(), nullptr);
+    lib.cell_array.append(cell);
+    QString why;
+    const bool written = router::writeLibrary(lib, file, &why);
+    lib.free_all();
+    if (!written && error != nullptr) *error = why;
+    return written;
 }
 
 // ----------------------------------------------------------------------

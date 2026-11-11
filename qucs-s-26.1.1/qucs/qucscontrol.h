@@ -520,6 +520,8 @@ private:
     QJsonObject rf25Stop(const QJsonObject& args);
     QJsonObject rf25Export(const QJsonObject& args);
     QJsonObject rf25Circuit(const QJsonObject& args);
+    /// rf25_draw: shapes drawn on (deleted from) the model's layout.
+    QJsonObject rf25Draw(const QJsonObject& args);
     QJsonObject rf25Inductance(const QJsonObject& args);
     /// rf25_hfss_export, rf25_hfss_import, rf25_compare: HFSS™ 3D Layout.
     QJsonObject rf25HfssExport(const QJsonObject& args);
