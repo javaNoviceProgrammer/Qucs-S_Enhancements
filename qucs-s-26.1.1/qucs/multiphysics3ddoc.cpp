@@ -298,7 +298,7 @@ void Multiphysics3DDoc::buildUi()
     a_plotBox->setObjectName(QStringLiteral("mp3Plot"));
     a_plotBox->setEditable(true);
     a_plotBox->setMinimumContentsLength(10);
-    a_plotBox->setToolTip(tr("What the solution is coloured by: a variable (ht.T, es.normE, ec.Qrh...) or an expression of them"));
+    a_plotBox->setToolTip(tr("What the solution is coloured by: a variable (ht.T, es.normE, ec.Qrh, solid.mises...) or an expression of them"));
     a_plotBox->setEnabled(false);
     row->addWidget(a_plotBox);
     connect(a_plotBox, &QComboBox::activated, this, [this](int) { setPlotExpression(a_plotBox->currentText()); });
@@ -1155,6 +1155,18 @@ void Multiphysics3DDoc::fillPlotChoices()
     a_plotBox->clear();
     for (const Field3& f : a_solution->fields()) {
         const QString p = f.tag + QLatin1Char('.');
+        if (f.type == QLatin1String("solid")) {
+            for (const char* v : {"disp", "mises", "u", "v", "w", "Ws"}) a_plotBox->addItem(p + QString::fromLatin1(v));
+            continue;
+        }
+        if (f.type == QLatin1String("semiconductor")) {
+            for (const char* v : {"V", "n", "p", "Ndop", "normE", "normJ", "Ec", "R"}) a_plotBox->addItem(p + QString::fromLatin1(v));
+            continue;
+        }
+        if (f.type == QLatin1String("magnetic")) {
+            for (const char* v : {"normB", "Bx", "By", "Bz", "normH", "Wm", "Az"}) a_plotBox->addItem(p + QString::fromLatin1(v));
+            continue;
+        }
         a_plotBox->addItem(p + f.variable);
         if (f.type == QLatin1String("heat")) a_plotBox->addItem(p + QStringLiteral("normq"));
         else if (f.type == QLatin1String("electrostatics")) {
@@ -1262,15 +1274,20 @@ void Multiphysics3DDoc::fillTimeChoices()
 {
     if (!a_timeBox) return;
     a_timeBox->clear();
-    // (In time, its output times; over wavelengths, its wavelengths.)
+    // (In time, its output times; over wavelengths, its wavelengths; of an
+    // Eigenfrequency step, its modes' frequencies.)
     const bool spectral = a_solution && a_solution->spectral && a_solution->snapshotCount() > 0;
-    const bool inTime = a_solution && (a_solution->timeDependent || spectral) && a_solution->snapshotCount() > 0;
+    const bool modes = a_solution && a_solution->eigen && a_solution->snapshotCount() > 0;
+    const bool small = a_solution && a_solution->smallSignal && a_solution->snapshotCount() > 0;
+    const bool inTime = a_solution && (a_solution->timeDependent || spectral || modes || small) && a_solution->snapshotCount() > 0;
     a_timeLabel->setVisible(inTime);
     a_timeBox->setVisible(inTime);
     if (!inTime) return;
-    a_timeLabel->setText(spectral ? tr("Wavelength:") : tr("Time:"));
+    a_timeLabel->setText(spectral ? tr("Wavelength:") : modes ? tr("Eigenfrequency:") : small ? tr("Frequency:") : tr("Time:"));
     for (int i = 0; i < a_solution->snapshotCount(); ++i)
         a_timeBox->addItem(spectral ? formatQuantity(299792458.0 / a_solution->snapshotFrequency(i), Dim::length())
+                           : modes  ? tr("%1: %2").arg(i + 1).arg(formatQuantity(a_solution->snapshotFrequency(i), Dim::of(0, 0, -1)))
+                           : small  ? formatQuantity(a_solution->snapshotFrequency(i), Dim::of(0, 0, -1))
                                     : formatQuantity(a_solution->snapshotTime(i), Dim::of(0, 0, 1)));
     a_timeBox->setCurrentIndex(a_solution->selected());
 }

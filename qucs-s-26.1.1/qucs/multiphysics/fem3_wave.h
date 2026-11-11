@@ -191,6 +191,10 @@ std::vector<std::array<std::complex<double>, 3>> nodalField(const EdgeSpace3& sp
 /// 973,000 unknowns 19.8 GB, 1.92 million 43 GB; a long guide's 11 kB) - and
 /// seconds (a box's: 68 s and 249 s there; a long guide's a fifth).
 Estimate3 estimateWave3(std::shared_ptr<const Mesh3> mesh, int order);
+/// What a magnetic field of \a order on \a mesh will hold and take: A on
+/// its edge elements and the gauge's multiplier on its nodes, a real LU of
+/// the two - half a full-wave solve's complex one, some 10 kB an unknown.
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order);
 
 /// What a time-domain solve of \a order on \a mesh will hold and take: a
 /// real Cholesky's factors (half a frequency domain's), its PMLs' states;

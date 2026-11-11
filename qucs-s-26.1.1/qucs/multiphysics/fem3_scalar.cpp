@@ -170,6 +170,7 @@ private:
     std::vector<Expression> a_init;               // by domain
     std::vector<double> a_volume;                 // by domain (m³)
     bool a_self = false;
+    bool a_polarized = false;   // a piezoelectric solid's polarization (es)
     bool a_converged = true;
     double a_made = 0;
     bool a_assembled = false;   // a_made of a system assembled (not at a step in time's start)
@@ -466,6 +467,47 @@ bool ScalarProblem3::setup(QString* error)
             }
         }
     }
+    // A piezoelectric solid's polarization, e S: where a solid mechanics'
+    // Piezoelectric Effect names this electrostatics (its strain a field of
+    // that physics, the two solved in turn till they agree). D = -ε∇V + P,
+    // so P·∇φ on the right of each equation.
+    a_polarized = false;
+    if (a_es) {
+        coef.named[QStringLiteral("Px")].assign(D, Expression());
+        coef.named[QStringLiteral("Py")].assign(D, Expression());
+        coef.named[QStringLiteral("Pz")].assign(D, Expression());
+        for (const Node* solid : model.physics()) {
+            if (!solid->enabled || solid->type != QLatin1String("solid")) continue;
+            // (Its strain, Voigt's engineering one, the model's axes.)
+            const QString st = solid->tag + QLatin1Char('.');
+            const QString S[6] = {st + QStringLiteral("ex"), st + QStringLiteral("ey"), st + QStringLiteral("ez"), QStringLiteral("2*") + st + QStringLiteral("eyz"),
+                                  QStringLiteral("2*") + st + QStringLiteral("exz"), QStringLiteral("2*") + st + QStringLiteral("exy")};
+            for (const Node& pz : solid->children) {
+                if (!pz.enabled || pz.type != QLatin1String("solid/piezo")) continue;
+                const QStringList tags = pz.list(QStringLiteral("es"));
+                if ((tags.isEmpty() ? QStringLiteral("es") : tags.first()) != f.tag) continue;
+                const QVector<int> on = resolveSelection3(topo, model, Level::Domain, pz.selection(), &why);
+                for (int d : on) {
+                    if (d < 0 || d >= int(D) || !f.domains[std::size_t(d)]) continue;
+                    QString err;
+                    const std::optional<VoigtText> e = piezoMatrix3(params, pz, material[std::size_t(d)], &err);
+                    if (!e) {
+                        problem(tr("domain %1: %2").arg(d + 1).arg(err));
+                        continue;
+                    }
+                    static const char* keys[3] = {"Px", "Py", "Pz"};
+                    for (int i = 0; i < 3; ++i) {
+                        QStringList terms;
+                        for (int J = 0; J < 6; ++J)
+                            if (e->c[i][J] != QLatin1String("0") && !e->c[i][J].trimmed().isEmpty()) terms << QStringLiteral("(%1)*%2").arg(e->c[i][J], S[J]);
+                        coef.named[QString::fromLatin1(keys[i])][std::size_t(d)] =
+                            terms.isEmpty() ? Expression::compile(QStringLiteral("0[C/m^2]"), a_s.pointScope()) : compile(terms.join(QLatin1String(" + ")), pz, QStringLiteral("e"));
+                    }
+                    a_polarized = true;
+                }
+            }
+        }
+    }
     a_self = a_reads.contains(a_fi);
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
@@ -680,7 +722,15 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
     const int partCount = std::clamp(asked > 0 ? asked : E / 2000, 1, asked > 0 ? std::max(1, E) : 64);
     std::vector<Part> parts(static_cast<std::size_t>(partCount));
     // (Its captures named: a long lambda's [&] crashed CI's GCC, d7ae967.)
-    const auto assemblePart = [this, &parts, &sp, &mesh, &f, &coef, &rule, &scatterInto, &q, E, partCount, per, mass, withSources, history,
+    // (A piezoelectric solid's polarization, by domain: P·∇φ on the right.)
+    static const std::vector<Expression> noPolarization;
+    const std::vector<Expression>* pol[3] = {&noPolarization, &noPolarization, &noPolarization};
+    if (a_polarized && withSources) {
+        pol[0] = &coef.named.at(QStringLiteral("Px"));
+        pol[1] = &coef.named.at(QStringLiteral("Py"));
+        pol[2] = &coef.named.at(QStringLiteral("Pz"));
+    }
+    const auto assemblePart = [this, &parts, &sp, &mesh, &f, &coef, &rule, &scatterInto, &q, &pol, E, partCount, per, mass, withSources, history,
                                newton](int k) {
         Part& part = parts[std::size_t(k)];
         const int from = int(qint64(E) * k / partCount), to = int(qint64(E) * (k + 1) / partCount);
@@ -703,6 +753,7 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
             }
             const std::vector<Expression>& sources = coef.sources[std::size_t(d)];
             const bool sourced = withSources && !sources.empty();
+            const bool polarized = std::size_t(d) < pol[0]->size() && (*pol[0])[std::size_t(d)].isValid();
             // (A step in time's capacity, ρ Cp.)
             const bool massed = mass != 0 && coef.capacity[std::size_t(d)].isValid();
             const Expression& cap = coef.capacity[std::size_t(d)];
@@ -721,7 +772,18 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
                 PrismShape s;
                 prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
                 for (int i = 0; i < per; ++i) Space3::gradient(m, s.dxi[i], s.deta[i], s.dzeta[i], &grads[std::size_t(3 * i)]);
-                if (!constant || sourced || (massed && !cap.isConstant())) ev.at(e, qp[0], qp[1], qp[2], m.x);
+                if (!constant || sourced || polarized || (massed && !cap.isConstant())) ev.at(e, qp[0], qp[1], qp[2], m.x);
+                if (polarized) {
+                    double P[3];
+                    for (int c = 0; c < 3; ++c) {
+                        P[c] = ev.eval((*pol[c])[std::size_t(d)]);
+                        if (!std::isfinite(P[c])) P[c] = 0;
+                    }
+                    for (int i = 0; i < per; ++i) {
+                        const double* gi = &grads[std::size_t(3 * i)];
+                        Fe[std::size_t(i)] += w * (P[0] * gi[0] + P[1] * gi[1] + P[2] * gi[2]);
+                    }
+                }
                 // Newton's: the coefficient's and the source's derivatives in
                 // the field here, by a perturbation of its value - ∂(c ∇u)/∂u_j
                 // = c ∇φ_j + c' φ_j ∇u, and -Q' φ_j.

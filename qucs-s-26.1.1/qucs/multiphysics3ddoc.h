@@ -2,8 +2,9 @@
  * multiphysics3ddoc.h - a 3D multiphysics model (.qfem3d) in a tab of
  *                       Qucs-S: its geometry and swept mesh, built in the
  *                       background, and its solution - heat, electrostatics,
- *                       currents -, drawn in a 3D view; each change one step
- *                       of Undo. The Multiphysics 3D panel shows its tree.
+ *                       currents, solid mechanics, light -, drawn in a 3D
+ *                       view; each change one step of Undo. The
+ *                       Multiphysics 3D panel shows its tree.
  *
  * This file is part of Qucs-S.
  *

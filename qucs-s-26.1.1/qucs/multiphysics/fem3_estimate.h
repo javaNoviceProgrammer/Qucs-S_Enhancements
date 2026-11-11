@@ -67,8 +67,13 @@ struct Estimate3 {
 qint64 patternNonzeros(const Space3& space, int threads = 0);
 
 /// One physics on \a space, its matrix of \a nonzeros, solved by \a solver
-/// (auto, direct, iterative; empty: auto).
-Estimate3 estimateOn(const Space3& space, qint64 nonzeros, const QString& solver);
+/// (auto, direct, iterative; empty: auto); a vector field of \a components
+/// (a solid's 3) as many unknowns at each degree of freedom, their square as
+/// many nonzeros.
+Estimate3 estimateOn(const Space3& space, qint64 nonzeros, const QString& solver, int components = 1);
+/// The unknowns at each degree of freedom of physics type \a type (a
+/// solid's displacement 3, else 1).
+int componentsOf(const QString& type);
 
 /// Each enabled physics of \a model on \a mesh, each on its order's space
 /// (made once an order), solved by \a solver.

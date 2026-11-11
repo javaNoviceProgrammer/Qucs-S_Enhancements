@@ -27,13 +27,15 @@ namespace {
 
 const double NaN = std::numeric_limits<double>::quiet_NaN();
 
-/// The field whose own variable \a e is alone (ht.T, T), or -1.
-int ownVariable(const Solution3& s, const Expression& e)
+/// The field whose own variable \a e is alone (ht.T, T, solid.w), or -1;
+/// its component in \a part.
+int ownVariable(const Solution3& s, const Expression& e, int* part)
 {
     if (e.variables().size() != 1) return -1;
     const int slot = e.variables().front();
     const Solution3::VariableDef& d = s.definitions()[std::size_t(slot)];
     if (d.kind != Solution3::VariableDef::Value) return -1;
+    *part = d.part;
     return e.text().trimmed() == d.info.name ? d.field : -1;
 }
 
@@ -46,13 +48,15 @@ std::vector<double> nodalValues(const Solution3& s, const Expression& e)
     if (!e.isValid()) return out;
     // (A field's own variable: its values at the nodes, the first of its
     // degrees of freedom, where it is solved.)
-    if (const int f = ownVariable(s, e); f >= 0) {
+    int part = 0;
+    if (const int f = ownVariable(s, e, &part); f >= 0) {
         const Field3& field = s.fields()[std::size_t(f)];
+        const std::size_t offset = field.space ? std::size_t(part) * std::size_t(field.space->size()) : 0;
         for (std::size_t p = 0; p < m.prisms.size(); ++p) {
             const int d = m.domain[p];
             if (d < 0 || d >= int(field.domains.size()) || !field.domains[std::size_t(d)]) continue;
             for (int n : m.prisms[p])
-                if (std::size_t(n) < field.values.size()) out[std::size_t(n)] = field.values[std::size_t(n)];
+                if (offset + std::size_t(n) < field.values.size()) out[std::size_t(n)] = field.values[offset + std::size_t(n)];
         }
         return out;
     }

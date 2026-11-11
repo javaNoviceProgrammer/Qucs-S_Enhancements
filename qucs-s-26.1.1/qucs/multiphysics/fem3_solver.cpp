@@ -56,7 +56,10 @@ const std::vector<FieldKind>& fieldKinds()
 {
     static const std::vector<FieldKind> kinds = {{"heat", "T", Dim::temperature(), 293.15},
                                                  {"electrostatics", "V", Dim::voltage(), 0},
-                                                 {"currents", "V", Dim::voltage(), 0}};
+                                                 {"currents", "V", Dim::voltage(), 0},
+                                                 {"solid", "u", Dim::length(), 0},
+                                                 {"magnetic", "A", Dim::of(1, 1, -2, -1), 0},
+                                                 {"semiconductor", "V", Dim::voltage(), 0}};
     return kinds;
 }
 
@@ -117,6 +120,18 @@ void Solution3::defineVariables()
     for (int f = 0; f < int(a_fields.size()); ++f) {
         const Field3& field = a_fields[std::size_t(f)];
         const QString p = field.tag + QLatin1Char('.');
+        if (field.type == QLatin1String("solid")) {
+            defineSolid(f);
+            continue;
+        }
+        if (field.type == QLatin1String("magnetic")) {
+            defineMagnetic(f);
+            continue;
+        }
+        if (field.type == QLatin1String("semiconductor")) {
+            defineSemiconductor(f);
+            continue;
+        }
         define(p + field.variable, field.dim, tr("the dependent variable"), K::Value, f);
         define(field.variable, field.dim, tr("the dependent variable of %1").arg(field.tag), K::Value, f);
         // (A coefficient's tensor entry at a point, as the domain's
@@ -146,10 +161,22 @@ void Solution3::defineVariables()
                 const QString name = p + (es ? QStringLiteral("D") : QStringLiteral("J")) + QString::fromLatin1(axis[i]);
                 const QString what = es ? tr("electric displacement, %1 component").arg(QString::fromLatin1(axis[i]))
                                         : tr("current density, %1 component").arg(QString::fromLatin1(axis[i]));
-                flux[i] = define(name, es ? dfield : jfield, what, K::Derived, f, 0, 1, [entry, e, i, scale](PointEvaluator3& ev) {
+                // (A piezoelectric solid's polarization P = e S in D too.)
+                const QString pkey = QStringLiteral("P") + QString::fromLatin1(axis[i]);
+                flux[i] = define(name, es ? dfield : jfield, what, K::Derived, f, 0, 1, [entry, e, i, scale, es, f, pkey](PointEvaluator3& ev) {
                     double s = 0;
                     for (int j = 0; j < 3; ++j) s += entry(ev, 3 * i + j) * ev.value(e[j]);
-                    return scale * s;
+                    double p = 0;
+                    if (es) {
+                        const auto& named = ev.solution().coefficients()[std::size_t(f)].named;
+                        const auto it = named.find(pkey);
+                        const int d = ev.domain();
+                        if (it != named.end() && d >= 0 && d < int(it->second.size()) && it->second[std::size_t(d)].isValid()) {
+                            p = ev.eval(it->second[std::size_t(d)]);
+                            if (!std::isfinite(p)) p = 0;
+                        }
+                    }
+                    return scale * s + p;
                 });
             }
             define(p + (es ? QStringLiteral("normD") : QStringLiteral("normJ")), es ? dfield : jfield,
@@ -190,6 +217,231 @@ void Solution3::defineVariables()
             });
         }
     }
+}
+
+int Solution3::definePart(const QString& name, const Dim& dim, const QString& description, int field, int part, int axis)
+{
+    const bool known = a_pointScope->variable(name) >= 0;
+    const int slot = define(name, dim, description, axis < 0 ? VariableDef::Value : VariableDef::Gradient, field, std::max(axis, 0));
+    if (slot >= 0 && !known) a_defs[std::size_t(slot)].part = part;
+    return slot;
+}
+
+void Solution3::defineSolid(int f)
+{
+    using K = VariableDef::Kind;
+    const Field3& field = a_fields[std::size_t(f)];
+    const QString p = field.tag + QLatin1Char('.');
+    const Dim pressure = Dim::of(-1, 1, -2);
+    const char* axis[3] = {"x", "y", "z"};
+    int u[3];
+    for (int c = 0; c < 3; ++c) {
+        const QString name = field.components.value(c);
+        u[c] = definePart(p + name, Dim::length(), tr("displacement, %1 component").arg(QString::fromLatin1(axis[c])), f, c);
+        definePart(name, Dim::length(), tr("displacement, %1 component (%2)").arg(QString::fromLatin1(axis[c]), field.tag), f, c);
+    }
+    define(p + QStringLiteral("disp"), Dim::length(), tr("displacement, magnitude"), K::Derived, f, 0, 1, [u](PointEvaluator3& e) {
+        const double a = e.value(u[0]), b = e.value(u[1]), c = e.value(u[2]);
+        return std::sqrt(a * a + b * b + c * c);
+    });
+    // (Its strain and stress at the point, Voigt's order xx, yy, zz, yz, xz,
+    // xy: a tensor's shear strain half the engineering one.)
+    struct Out {
+        const char* name;
+        bool stress;
+        int k;
+        double factor;
+        const char* what;
+    };
+    static const Out outs[] = {
+        {"ex", false, 0, 1, "strain, x component"},
+        {"ey", false, 1, 1, "strain, y component"},
+        {"ez", false, 2, 1, "strain, z component"},
+        {"eyz", false, 3, 0.5, "shear strain, yz (tensor: half the engineering shear)"},
+        {"exz", false, 4, 0.5, "shear strain, xz (tensor: half the engineering shear)"},
+        {"exy", false, 5, 0.5, "shear strain, xy (tensor: half the engineering shear)"},
+        {"sx", true, 0, 1, "stress, x component"},
+        {"sy", true, 1, 1, "stress, y component"},
+        {"sz", true, 2, 1, "stress, z component"},
+        {"syz", true, 3, 1, "shear stress, yz"},
+        {"sxz", true, 4, 1, "shear stress, xz"},
+        {"sxy", true, 5, 1, "shear stress, xy"},
+    };
+    for (const Out& o : outs) {
+        const bool stress = o.stress;
+        const int k = o.k;
+        const double factor = o.factor;
+        define(p + QString::fromLatin1(o.name), stress ? pressure : Dim(), tr(o.what), K::Derived, f, 0, 1,
+               [f, stress, k, factor](PointEvaluator3& e) {
+                   detail3::SolidState st;
+                   if (!detail3::solidStateAt(e, f, st)) return NaN;
+                   return factor * (stress ? st.stress[k] : st.strain[k]);
+               });
+    }
+    define(p + QStringLiteral("Ws"), pressure, tr("strain energy density"), K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+        detail3::SolidState st;
+        return detail3::solidStateAt(e, f, st) ? st.energy : NaN;
+    });
+    define(p + QStringLiteral("mises"), pressure, tr("von Mises stress"), K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+        detail3::SolidState st;
+        if (!detail3::solidStateAt(e, f, st)) return NaN;
+        const double* s = st.stress;
+        return std::sqrt(0.5 * ((s[0] - s[1]) * (s[0] - s[1]) + (s[1] - s[2]) * (s[1] - s[2]) + (s[2] - s[0]) * (s[2] - s[0]))
+                         + 3 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]));
+    });
+    define(p + QStringLiteral("p"), pressure, tr("pressure: minus the mean of the normal stresses"), K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+        detail3::SolidState st;
+        return detail3::solidStateAt(e, f, st) ? -(st.stress[0] + st.stress[1] + st.stress[2]) / 3 : NaN;
+    });
+    // Its material at the point: E and ν (isotropic), α and T - Tref.
+    auto named = [f](PointEvaluator3& e, const QString& key) {
+        const auto& m = e.solution().coefficients()[std::size_t(f)].named;
+        const auto it = m.find(key);
+        const int d = e.domain();
+        if (it == m.end() || d < 0 || d >= int(it->second.size()) || !it->second[std::size_t(d)].isValid()) return NaN;
+        return e.eval(it->second[std::size_t(d)]);
+    };
+    define(p + QStringLiteral("E"), pressure, tr("Young's modulus (an isotropic solid's)"), K::Derived, f, 0, 1,
+           [named](PointEvaluator3& e) { return named(e, QStringLiteral("E")); });
+    define(p + QStringLiteral("nu"), Dim(), tr("Poisson's ratio (an isotropic solid's)"), K::Derived, f, 0, 1,
+           [named](PointEvaluator3& e) { return named(e, QStringLiteral("nu")); });
+    define(p + QStringLiteral("rho"), Dim::of(-3, 1), tr("density"), K::Derived, f, 0, 1,
+           [named](PointEvaluator3& e) { return named(e, QStringLiteral("rho")); });
+    define(p + QStringLiteral("dT"), Dim::temperature(), tr("temperature above the strain-free one"), K::Derived, f, 0, 1,
+           [named](PointEvaluator3& e) { return named(e, QStringLiteral("dT")); });
+}
+
+void Solution3::defineMagnetic(int f)
+{
+    using K = VariableDef::Kind;
+    const QString p = a_fields[std::size_t(f)].tag + QLatin1Char('.');
+    const Dim aDim = Dim::of(1, 1, -2, -1), bDim = Dim::of(0, 1, -2, -1), hDim = Dim::of(-1, 0, 0, 1);
+    const char* axis[3] = {"x", "y", "z"};
+    using S = detail3::MagneticState;
+    struct Vec {
+        const char* name;
+        Dim dim;
+        const char* what;
+        int which;   // 0 A, 1 B, 2 H
+    };
+    const Vec vecs[] = {{"A", aDim, "magnetic vector potential", 0}, {"B", bDim, "magnetic flux density", 1}, {"H", hDim, "magnetic field", 2}};
+    for (const Vec& v : vecs) {
+        const int which = v.which;
+        const auto get = [which](const S& st, int k) { return which == 0 ? st.A[k] : which == 1 ? st.B[k] : st.H[k]; };
+        for (int k = 0; k < 3; ++k)
+            define(p + QString::fromLatin1(v.name) + QString::fromLatin1(axis[k]), v.dim,
+                   tr("%1, %2 component").arg(tr(v.what), QString::fromLatin1(axis[k])), K::Derived, f, 0, 1, [f, get, k](PointEvaluator3& e) {
+                       S st;
+                       return detail3::magneticStateAt(e, f, st) ? get(st, k) : NaN;
+                   });
+        if (which > 0)
+            define(p + QStringLiteral("norm") + QString::fromLatin1(v.name), v.dim, tr("%1, norm").arg(tr(v.what)), K::Derived, f, 0, 1,
+                   [f, get](PointEvaluator3& e) {
+                       S st;
+                       if (!detail3::magneticStateAt(e, f, st)) return NaN;
+                       return std::sqrt(get(st, 0) * get(st, 0) + get(st, 1) * get(st, 1) + get(st, 2) * get(st, 2));
+                   });
+    }
+    define(p + QStringLiteral("Wm"), Dim::of(-1, 1, -2), tr("magnetic energy density"), K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+        S st;
+        return detail3::magneticStateAt(e, f, st) ? st.energy : NaN;
+    });
+    define(p + QStringLiteral("mur"), Dim(), tr("relative permeability (a tensor's diagonal's mean; a B-H curve's B/(µ0 H) here)"), K::Derived, f, 0,
+           1, [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st) ? st.mur : NaN;
+           });
+    // The current density its sources give (the External Current Densities'
+    // and the coils').
+    for (int k = 0; k < 3; ++k) {
+        const QString key = QStringLiteral("J") + QString::fromLatin1(axis[k]);
+        define(p + key, Dim::current() / Dim::area(), tr("current density, %1 component (its sources')").arg(QString::fromLatin1(axis[k])), K::Derived, f, 0, 1,
+               [f, key](PointEvaluator3& e) {
+                   const auto& named = e.solution().coefficients()[std::size_t(f)].named;
+                   const auto it = named.find(key);
+                   const int d = e.domain();
+                   if (it == named.end() || d < 0 || d >= int(it->second.size())) return NaN;
+                   if (!it->second[std::size_t(d)].isValid()) return 0.0;
+                   return e.eval(it->second[std::size_t(d)]);
+               });
+    }
+}
+
+void Solution3::defineSemiconductor(int f)
+{
+    using K = VariableDef::Kind;
+    const Field3& field = a_fields[std::size_t(f)];
+    const QString p = field.tag + QLatin1Char('.');
+    const Dim conc = Dim::of(-3), energy = Dim::of(2, 1, -2), efield = Dim::voltage() / Dim::length(), jfield = Dim::current() / Dim::area();
+    const char* const what[13] = {"electrostatic potential", "electron concentration", "hole concentration", "donor concentration", "acceptor concentration",
+                                  "the carriers' heat (Joule and recombination: a heat physics' source)", "conduction band edge", "valence band edge",
+                                  "electrons' quasi-Fermi level", "holes' quasi-Fermi level", "net recombination rate (SRH, Auger, direct)",
+                                  "electrons' temperature (hot carriers'; else the lattice's)", "holes' temperature (hot carriers'; else the lattice's)"};
+    int slot[13];
+    for (int c = 0; c < 13; ++c) {
+        const QString name = field.components.value(c);
+        const Dim dim = c == 0 ? Dim::voltage() : c == 5 ? Dim::power() / Dim::of(3) : c == 10 ? Dim::of(-3, 0, -1) : c >= 11 ? Dim::temperature() : c >= 6 ? energy : conc;
+        slot[c] = definePart(p + name, dim, tr(what[c]), f, c);
+    }
+    int e[3];
+    const char* axis[3] = {"x", "y", "z"};
+    for (int k = 0; k < 3; ++k)
+        e[k] = definePart(p + QStringLiteral("E") + QString::fromLatin1(axis[k]), efield, tr("electric field, %1 component").arg(QString::fromLatin1(axis[k])), f, 0, k);
+    for (int k = 0; k < 3; ++k) a_defs[std::size_t(e[k])].sign = -1;
+    define(p + QStringLiteral("normE"), efield, tr("electric field, norm"), K::Derived, f, 0, 1, [e](PointEvaluator3& ev) {
+        const double a = ev.value(e[0]), b = ev.value(e[1]), c = ev.value(e[2]);
+        return std::sqrt(a * a + b * b + c * c);
+    });
+    // Its domain's constants (ni, dEc, Eg, µ...) at the point.
+    auto named = [f](PointEvaluator3& ev, const char* key) {
+        const auto& m = ev.solution().coefficients()[std::size_t(f)].named;
+        const auto it = m.find(QString::fromLatin1(key));
+        const int d = ev.domain();
+        if (it == m.end() || d < 0 || d >= int(it->second.size()) || !it->second[std::size_t(d)].isValid()) return NaN;
+        return ev.eval(it->second[std::size_t(d)]);
+    };
+    const int V = slot[0], n = slot[1], pp = slot[2], nd = slot[3], na = slot[4];
+    define(p + QStringLiteral("Ndop"), conc, tr("net doping, Nd - Na"), K::Derived, f, 0, 1, [nd, na](PointEvaluator3& ev) { return ev.value(nd) - ev.value(na); });
+    define(p + QStringLiteral("ni"), conc, tr("intrinsic carrier concentration"), K::Derived, f, 0, 1, [named](PointEvaluator3& ev) { return named(ev, "ni"); });
+    // (The bands and quasi-Fermi levels: the solver's own by node - a
+    // heterojunction's, narrowing's -, against the reference semiconductor's
+    // intrinsic level at V = 0.)
+    constexpr double Qe = 1.602176634e-19, KB = 1.380649e-23;
+    (void)V;
+    // The currents' densities from the carriers' gradients and the field
+    // (linear between the nodes: the edges' own currents are Scharfetter
+    // and Gummel's).
+    int jn[3], jp[3];
+    for (int k = 0; k < 3; ++k) {
+        jn[k] = define(p + QStringLiteral("Jn") + QString::fromLatin1(axis[k]), jfield, tr("electron current density, %1 component").arg(QString::fromLatin1(axis[k])),
+                       K::Derived, f, 0, 1, [n, e, k, f, named](PointEvaluator3& ev) {
+                           const auto& el = ev.solution().coefficients()[std::size_t(f)].elements;
+                           const auto it = el.find(QStringLiteral("mun"));
+                           const double mu = it != el.end() && ev.prism() >= 0 && ev.prism() < int(it->second.size()) ? it->second[std::size_t(ev.prism())] : named(ev, "mun");
+                           const double vt = KB * named(ev, "T") / Qe;
+                           double u = 0, g[3];
+                           if (!ev.field(f, 1, u, g)) return NaN;
+                           return Qe * mu * (ev.value(n) * ev.value(e[k]) + vt * g[k]);
+                       });
+        jp[k] = define(p + QStringLiteral("Jp") + QString::fromLatin1(axis[k]), jfield, tr("hole current density, %1 component").arg(QString::fromLatin1(axis[k])),
+                       K::Derived, f, 0, 1, [pp, e, k, f, named](PointEvaluator3& ev) {
+                           const auto& el = ev.solution().coefficients()[std::size_t(f)].elements;
+                           const auto it = el.find(QStringLiteral("mup"));
+                           const double mu = it != el.end() && ev.prism() >= 0 && ev.prism() < int(it->second.size()) ? it->second[std::size_t(ev.prism())] : named(ev, "mup");
+                           const double vt = KB * named(ev, "T") / Qe;
+                           double u = 0, g[3];
+                           if (!ev.field(f, 2, u, g)) return NaN;
+                           return Qe * mu * (ev.value(pp) * ev.value(e[k]) - vt * g[k]);
+                       });
+    }
+    for (int k = 0; k < 3; ++k)
+        define(p + QStringLiteral("J") + QString::fromLatin1(axis[k]), jfield, tr("current density, %1 component").arg(QString::fromLatin1(axis[k])), K::Derived, f, 0, 1,
+               [jn, jp, k](PointEvaluator3& ev) { return ev.value(jn[k]) + ev.value(jp[k]); });
+    define(p + QStringLiteral("normJ"), jfield, tr("current density, norm"), K::Derived, f, 0, 1, [jn, jp](PointEvaluator3& ev) {
+        double s = 0;
+        for (int k = 0; k < 3; ++k) s += std::pow(ev.value(jn[k]) + ev.value(jp[k]), 2);
+        return std::sqrt(s);
+    });
 }
 
 bool Solution3::varies(const Expression& e) const
@@ -402,30 +654,33 @@ bool PointEvaluator3::at(const Vec3& x)
     return true;
 }
 
-bool PointEvaluator3::field(int f, double& u, double g[3])
+bool PointEvaluator3::field(int f, int part, double& u, double g[3])
 {
+    // (A field's values its nodes' by component, then any of its own after
+    // them - a semiconductor's contacts' voltages and charges.)
     u = NaN;
     g[0] = g[1] = g[2] = NaN;
     if (f < 0 || f >= int(a_s.fields().size()) || a_prism < 0) return false;
     const Field3& field = a_s.fields()[std::size_t(f)];
     if (!field.space || a_domain < 0 || a_domain >= int(field.domains.size()) || !field.domains[std::size_t(a_domain)]
-        || field.values.size() != std::size_t(field.space->size()))
+        || field.values.size() < std::size_t(field.space->size()) * std::size_t(field.count()) || part < 0 || part >= field.count())
         return false;
     const Space3& sp = *field.space;
     PrismShape s;
     prismShapeAt(sp.order(), a_xi, a_eta, a_zeta, s);
     const Space3::Map m = sp.map(a_prism, a_xi, a_eta, a_zeta);
     const int* d = sp.dofs(a_prism);
+    const std::size_t offset = std::size_t(part) * std::size_t(sp.size());
     u = 0;
     g[0] = g[1] = g[2] = 0;
     for (int i = 0; i < s.count; ++i) {
-        const double v = field.values[std::size_t(d[i])];
+        const double v = field.values[offset + std::size_t(d[i])];
         double gi[3];
         Space3::gradient(m, s.dxi[i], s.deta[i], s.dzeta[i], gi);
         u += s.n[i] * v;
         for (int k = 0; k < 3; ++k) g[k] += gi[k] * v;
     }
-    if (f == a_perturbed) u += a_perturbation;
+    if (f == a_perturbed && part == 0) u += a_perturbation;
     return true;
 }
 
@@ -455,7 +710,7 @@ double PointEvaluator3::value(int slot)
     case K::Gradient:
     case K::GradNorm: {
         double u = NaN, g[3];
-        if (field(d.field, u, g)) {
+        if (field(d.field, d.part, u, g)) {
             if (d.kind == K::Value) v = u;
             else if (d.kind == K::Gradient) v = d.sign * g[std::clamp(d.component, 0, 2)];
             else v = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
@@ -562,6 +817,7 @@ bool System3::factorize(const Eigen::SparseMatrix<double>& a, const QString& sol
     }
     a_amg = std::make_unique<AmgSolver>();
     a_amg->setTolerance(a_tolerance);
+    if (a_nullCols > 0) a_amg->setNearNullspace(a_nullCols, a_nullB, a_blockSize);
     QString why;
     if (!a_amg->compute(a, &why) && log) *log << tr("%1: %2 - the incomplete Cholesky's conjugate gradients instead").arg(name, why);
     return true;
@@ -1121,6 +1377,112 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
  * output time, its first included. \a tell is told how far (0 to 1) and
  * cancels with false.
  */
+/// A Frequency Domain step: each semiconductor's small signal about its
+/// solution at rest, at each frequency a snapshot of its contacts'
+/// admittance - <tag>.G_<k>_<l> and <tag>.C_<k>_<l> (its real part, and its
+/// imaginary over ω), <tag>.Cqs... where both contacts' names are one letter
+/// as Gkl, Ckl.
+bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const std::vector<int>& subset, QString* error)
+{
+    std::vector<int> semis;
+    for (int i : subset)
+        if (s.fields()[std::size_t(i)].type == QLatin1String("semiconductor")) semis.push_back(i);
+    if (semis.empty()) {
+        *error = tr("%1: a Frequency Domain step in 3D is a semiconductor's small signal - its physics have none").arg(node.name());
+        return false;
+    }
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("frequencies")), s.parameters().scope, &dim, &why);
+    if (!listed || listed->empty()) {
+        *error = tr("%1: its frequencies: %2").arg(node.name(), why.isEmpty() ? tr("none") : why);
+        return false;
+    }
+    s.smallSignal = true;
+    for (double f : *listed) {
+        s.setFrequency(f);
+        for (int i : semis) {
+            std::vector<std::vector<std::complex<double>>> Y;
+            QStringList names;
+            if (!detail3::semiconductorSmallSignal3(*problems[std::size_t(i)], f, &Y, &names, error)) return false;
+            problems[std::size_t(i)]->setGlobals();
+            const QString tag = s.fields()[std::size_t(i)].tag + QLatin1Char('.');
+            const double w = 2 * M_PI * f;
+            for (int k = 0; k < int(names.size()); ++k)
+                for (int l = 0; l < int(names.size()); ++l) {
+                    const QString a = names[k], b = names[l];
+                    const std::complex<double> y = Y[std::size_t(k)][std::size_t(l)];
+                    s.setGlobal(tag + QStringLiteral("G_") + a + QLatin1Char('_') + b, y.real(), Dim::conductance(), tr("small-signal conductance, %1 %2").arg(a, b));
+                    s.setGlobal(tag + QStringLiteral("C_") + a + QLatin1Char('_') + b, w > 0 ? y.imag() / w : 0.0, Dim::capacitance(),
+                                tr("small-signal capacitance, %1 %2").arg(a, b));
+                    if (a.size() == 1 && b.size() == 1) {
+                        s.setGlobal(tag + QStringLiteral("G") + a + b, y.real(), Dim::conductance());
+                        s.setGlobal(tag + QStringLiteral("C") + a + b, w > 0 ? y.imag() / w : 0.0, Dim::capacitance());
+                    }
+                }
+        }
+        s.setGlobal(QStringLiteral("freq"), f, Dim::of(0, 0, -1), tr("frequency"));
+        s.addSnapshot();
+    }
+    s.log << tr("%1: the contacts' admittance at %2 frequencies").arg(node.name()).arg(listed->size());
+    return true;
+}
+
+/// An Eigenfrequency step: its physics at rest solved first (in turn till
+/// they agree), then its solid's \a count modes nearest its frequency, each
+/// a snapshot of its eigenfrequency - the solid's field the mode (scaled to
+/// a largest displacement of 1), its globals <tag>.freq and <tag>.omega.
+bool eigenStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& o, const std::vector<int>& subset,
+                QString* error)
+{
+    std::vector<int> atRest, modal;
+    for (int i : subset) (s.fields()[std::size_t(i)].type == QLatin1String("solid") ? modal : atRest).push_back(i);
+    if (modal.size() != 1) {
+        *error = modal.empty() ? tr("%1: an Eigenfrequency step in 3D finds a solid's modes - its physics have no solid mechanics").arg(node.name())
+                               : tr("%1: an Eigenfrequency step in 3D finds one solid's modes at a time - choose one").arg(node.name());
+        return false;
+    }
+    if (!atRest.empty()) {
+        if (!solveTogether(problems, atRest, [&o](int) { return o; }, s, node.name(), error)) return false;
+        for (int i : atRest) s.fields()[std::size_t(i)].solved = true;
+    }
+    const int count = std::clamp(node.integer(QStringLiteral("count")), 1, 200);
+    double shift = 0;
+    {
+        QString why;
+        const QString text = node.text(QStringLiteral("fshift")).trimmed();
+        if (!text.isEmpty()) {
+            const std::optional<double> v = evaluateConstant(text, s.parameters().scope, Dim::of(0, 0, -1), &why);
+            if (!v) {
+                *error = tr("%1: what it searches about: %2").arg(node.name(), why);
+                return false;
+            }
+            shift = std::max(0.0, *v);
+        }
+    }
+    const int fi = modal.front();
+    detail3::Problem3& p = *problems[std::size_t(fi)];
+    std::vector<double> frequencies;
+    std::vector<std::vector<double>> modes;
+    if (!p.eigenmodes(o, count, shift, &frequencies, &modes, error)) return false;
+    Field3& f = s.fields()[std::size_t(fi)];
+    f.solved = true;
+    const QString tag = f.tag + QLatin1Char('.');
+    s.eigen = true;
+    for (std::size_t k = 0; k < frequencies.size(); ++k) {
+        f.values = modes[k];
+        s.setFrequency(frequencies[k]);
+        for (int i : atRest) problems[std::size_t(i)]->setGlobals();
+        p.setGlobals();
+        s.setGlobal(tag + QStringLiteral("freq"), frequencies[k], Dim::of(0, 0, -1), tr("eigenfrequency"));
+        s.setGlobal(tag + QStringLiteral("omega"), 2 * M_PI * frequencies[k], Dim::of(0, 0, -1), tr("angular eigenfrequency"));
+        s.setGlobal(tag + QStringLiteral("mode"), double(k + 1), Dim(), tr("the mode's number, lowest first"));
+        s.addSnapshot();
+        s.log << tr("%1: mode %2 at %3").arg(node.name()).arg(k + 1).arg(formatQuantity(frequencies[k], Dim::of(0, 0, -1), 6));
+    }
+    return true;
+}
+
 bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& base, const std::vector<int>& subset,
                     const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
 {
@@ -1179,6 +1541,16 @@ bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const d
     s.setTime(t0);
     if (!quasi.empty() && !solveTogether(problems, quasi, atRest, s, node.name(), error)) return false;
     for (int i : quasi) s.fields()[std::size_t(i)].solved = true;
+    // (A field that starts from its solution at rest - a semiconductor's -,
+    // not yet solved: solved so at its first time.)
+    for (int i : stepped)
+        if (problems[std::size_t(i)]->solvedAtRestFirst() && !s.fields()[std::size_t(i)].solved) {
+            detail3::Options3 o = atRest(i);
+            o.mass = 0;
+            o.history = nullptr;
+            if (!problems[std::size_t(i)]->solve(o, error)) return false;
+            s.fields()[std::size_t(i)].solved = true;
+        }
     setSolvedGlobals(problems, subset);
     s.addSnapshot();
     s.timeDependent = true;
@@ -1366,7 +1738,8 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     }
     if (!parameters) parameters = evaluateParameters(model);
     if (const QStringList unsolved = unsolvedPhysics3(model); !unsolved.isEmpty()) {
-        out.error = tr("%1: not solved in 3D yet - heat, electrostatics and electric currents are").arg(unsolved.join(QLatin1String(", ")));
+        out.error = tr("%1: not solved in 3D yet - heat, electrostatics, electric currents, solid mechanics, magnetic fields and semiconductors are")
+                        .arg(unsolved.join(QLatin1String(", ")));
         return out;
     }
     const Node* study = nullptr;
@@ -1397,12 +1770,25 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         f.tag = p->tag;
         f.type = p->type;
         f.variable = QString::fromLatin1(k->variable);
+        if (p->type == QLatin1String("solid")) f.components = {QStringLiteral("u"), QStringLiteral("v"), QStringLiteral("w")};
+        // (A semiconductor's potential and carriers, and its doping: of
+        // order 1, its box method's.)
+        if (p->type == QLatin1String("semiconductor"))
+            f.components = {QStringLiteral("V"),  QStringLiteral("n"),  QStringLiteral("p"),   QStringLiteral("Nd"),  QStringLiteral("Na"), QStringLiteral("H"),
+                            QStringLiteral("Ec"), QStringLiteral("Ev"), QStringLiteral("Efn"), QStringLiteral("Efp"), QStringLiteral("R"), QStringLiteral("Tn"),
+                            QStringLiteral("Tp")};
         f.dim = k->dim;
         f.initial = k->initial;
-        const int order = p->text(QStringLiteral("order")) == QLatin1String("2") ? 2 : 1;
+        const int order = p->text(QStringLiteral("order")) == QLatin1String("2") && p->type != QLatin1String("semiconductor") ? 2 : 1;
         if (!spaces[order]) spaces[order] = std::make_shared<Space3>(mesh, order);
         f.space = spaces[order];
-        f.values.assign(std::size_t(f.space->size()), f.initial);
+        f.values.assign(std::size_t(f.space->size()) * std::size_t(f.count()), f.initial);
+        // (A magnetic field: A on edge elements of its order, then the
+        // gauge's multiplier on the nodal space.)
+        if (p->type == QLatin1String("magnetic")) {
+            f.edges = std::make_shared<EdgeSpace3>(mesh, order);
+            f.values.assign(std::size_t(f.edges->size()) + std::size_t(f.space->size()), 0.0);
+        }
         f.domains.assign(mesh->topology->domains.size(), 0);
         s->fields().push_back(std::move(f));
     }
@@ -1424,8 +1810,16 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         qint64 nonzeros[3] = {-1, -1, -1};
         for (const Field3& f : s->fields()) {
             const int order = f.space->order();
+            if (f.edges) {
+                Estimate3 e = estimateMagnetic3(mesh, order);
+                e.physics = f.tag;
+                if (const Node* p = s->model().find(f.tag)) e.name = p->name();
+                s->log << tr("Estimated: %1").arg(estimateText(e));
+                out.estimates.push_back(e);
+                continue;
+            }
             if (nonzeros[order] < 0) nonzeros[order] = patternNonzeros(*f.space);
-            Estimate3 e = estimateOn(*f.space, nonzeros[order], solver);
+            Estimate3 e = estimateOn(*f.space, nonzeros[order], solver, componentsOf(f.type));
             e.physics = f.tag;
             if (const Node* p = s->model().find(f.tag)) e.name = p->name();
             s->log << tr("Estimated: %1").arg(estimateText(e));
@@ -1456,7 +1850,11 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     std::vector<std::unique_ptr<detail3::Problem3>> problems;
     QStringList errors;
     for (int i = 0; i < int(s->fields().size()); ++i) {
-        problems.push_back(detail3::makeScalarProblem3(*s, i));
+        const QString& type = s->fields()[std::size_t(i)].type;
+        problems.push_back(type == QLatin1String("solid")           ? detail3::makeSolidProblem3(*s, i)
+                           : type == QLatin1String("magnetic")      ? detail3::makeMagneticProblem3(*s, i)
+                           : type == QLatin1String("semiconductor") ? detail3::makeSemiconductorProblem3(*s, i)
+                                                                    : detail3::makeScalarProblem3(*s, i));
         QString why;
         if (!problems.back()->setup(&why)) errors << why;
     }
@@ -1491,8 +1889,10 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             ++steps;
             continue;
         }
-        if (step.type != QLatin1String("stationary") && !inTime) {
-            out.error = tr("%1: a %2 step is not solved in 3D yet - a Stationary, a Time Dependent or a Wavelength Domain one is")
+        const bool modal = step.type == QLatin1String("eigenfrequency");
+        const bool small = step.type == QLatin1String("frequency");
+        if (step.type != QLatin1String("stationary") && !inTime && !modal && !small) {
+            out.error = tr("%1: a %2 step is not solved in 3D yet - a Stationary, a Time Dependent, an Eigenfrequency or a Wavelength Domain one is")
                             .arg(step.name(), step.kind() ? step.kind()->title : step.type);
             out.log = s->log;
             return out;
@@ -1517,14 +1917,28 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         // Its physics: those chosen, else all.
         const QStringList chosen = step.list(QStringLiteral("physics"));
         std::vector<int> subset;
-        for (int i = 0; i < int(s->fields().size()); ++i)
+        // (A Wavelength Domain step's fields after the physics' - its light's
+        // |E| and E, solved: none of them a problem to solve again.)
+        for (int i = 0; i < int(s->fields().size()) && i < int(problems.size()); ++i)
             if (chosen.isEmpty() || chosen.contains(s->fields()[std::size_t(i)].tag)) subset.push_back(i);
         if (subset.empty()) {
             out.error = tr("%1 solves none of the model's physics (%2)").arg(step.name(), chosen.join(QLatin1String(", ")));
             return out;
         }
         QString why;
-        if (inTime) {
+        if (small) {
+            if (!frequencyStep3(problems, *s, step, subset, &why)) {
+                out.error = why;
+                out.log = s->log;
+                return out;
+            }
+        } else if (modal) {
+            if (!eigenStep3(problems, *s, step, o, subset, &why)) {
+                out.error = why;
+                out.log = s->log;
+                return out;
+            }
+        } else if (inTime) {
             auto tell = [progress, at, from, span](double f, const QString& what) {
                 *at = {from + span * std::clamp(f, 0.0, 1.0), what};
                 return !progress || progress(at->first, at->second);
@@ -1557,7 +1971,8 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     }
     // The globals: those of the last output time, kept, or of the fields at
     // rest.
-    if (s->snapshotCount() > 0) s->select(s->snapshotCount() - 1);
+    // (An Eigenfrequency step's: its lowest mode.)
+    if (s->snapshotCount() > 0) s->select(s->eigen ? 0 : s->snapshotCount() - 1);
     else
         for (auto& p : problems)
             if (p->field().solved) p->setGlobals();
