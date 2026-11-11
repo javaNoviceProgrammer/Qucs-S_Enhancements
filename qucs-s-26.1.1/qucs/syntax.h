@@ -42,6 +42,7 @@ enum language_type {
   LANG_MARKDOWN,
   LANG_JSON,
   LANG_XML,
+  LANG_YAML,
   LANG_COUNT
 };
 
@@ -148,6 +149,7 @@ private:
 
   void makeFormats();
   void scanSpans(const QString& text);
+  void scanYaml(const QString& text);
 };
 
 #endif

@@ -451,6 +451,18 @@ QList<Language> build()
                  span("<![CDATA[", "]]>", Style::String, false, true)};
     table.append(xml);
   }
+  // YAML is read by a scanner of its own (scanYaml), not by rules: what a
+  // word is depends on where it stands - a key before ": ", text under a |.
+  table.append({LANG_YAML, "yaml", QT_TRANSLATE_NOOP("SyntaxHighlighter", "YAML"), {"yaml", "yml"},
+                {{Style::Key, nullptr}, {Style::String, nullptr},
+                 {Style::Unit, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Escape")}, {Style::Number, nullptr},
+                 {Style::Keyword, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Literal")},
+                 {Style::Attribute, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Anchor, alias")},
+                 {Style::Type, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Tag")},
+                 {Style::Builtin, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Indicator")},
+                 {Style::Directive, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Directive, document marker")},
+                 {Style::Comment, nullptr}},
+                {}, {}});
   return table;
 }
 
@@ -547,6 +559,277 @@ Format general(Style style)
 QString formatKey(int language, Style style)
 {
   return qucs_s::syntax::key(language) + '/' + qucs_s::syntax::styleKey(style);
+}
+
+// ---------------------------------------------------
+// YAML, a line at a time. What is open at a line's end goes on to the next
+// in the block state:
+//   kYamlBlock + parent + 1   a block scalar (| or >): the lines indented
+//                             more than its parent's column, and blank
+//                             ones, are its text;
+//   quote + 4 * depth         otherwise: quote 1 a double-quoted string
+//                             going on, 2 a single-quoted one, 0 none;
+//                             depth the flow collections ([ {) open.
+const int kYamlBlock = 1 << 24;
+const int kYamlMaxDepth = (1 << 20) - 1;
+
+struct Mark {
+  int start, length;
+  Style style;
+};
+
+class YamlLine {
+public:
+  YamlLine(const QString& text, QList<Mark>& marks) : t(text), n(int(text.size())), marks(marks) {}
+
+  // The line read after one that ended in \a previous; what it ends in.
+  int scan(int previous);
+
+private:
+  const QString& t;
+  const int n;
+  QList<Mark>& marks;
+  int depth = 0;
+
+  void mark(int start, int end, Style style)
+  {
+    if (end > start) marks.append({start, end - start, style});
+  }
+  bool space(int at) const { return at >= 0 && at < n && (t.at(at) == ' ' || t.at(at) == '\t'); }
+  // The end of the line or a blank: what ends an indicator (- ? : | >).
+  bool blank(int at) const { return at >= n || space(at); }
+  bool flowIndicator(int at) const
+  {
+    return at < n && QStringView(u",[]{}").contains(t.at(at));
+  }
+  // What ends an anchor's or a tag's name.
+  bool nameEnd(int at) const { return blank(at) || (depth > 0 && flowIndicator(at)); }
+  // A ':' at \a at that ends a key: before a blank, or in a flow
+  // collection before its punctuation (or right after a quoted key).
+  bool valueIndicator(int at, bool afterQuote) const
+  {
+    if (at >= n || t.at(at) != ':') return false;
+    return blank(at + 1) || (depth > 0 && (afterQuote || flowIndicator(at + 1)));
+  }
+  int quoted(int start, QChar quote, int from, bool* closed);
+  int escapeLength(int at) const;
+  int state(int quote) const { return quote + 4 * std::min(depth, kYamlMaxDepth); }
+};
+
+// How long the escape at \a at (a backslash in a double-quoted string) is;
+// 0 for one YAML does not have.
+int YamlLine::escapeLength(int at) const
+{
+  if (at + 1 >= n) return 1;   // at the end of a line: the line break taken away
+  const QChar c = t.at(at + 1);
+  if (QStringView(u"0abt\tnvfre \"/\\N_LP").contains(c)) return 2;
+  const int digits = c == 'x' ? 2 : c == 'u' ? 4 : c == 'U' ? 8 : 0;
+  if (digits == 0 || at + 2 + digits > n) return 0;
+  for (int k = at + 2; k < at + 2 + digits; ++k) {
+    const QChar d = t.at(k);
+    if (!(d.isDigit() || (d >= 'a' && d <= 'f') || (d >= 'A' && d <= 'F'))) return 0;
+  }
+  return 2 + digits;
+}
+
+// A quoted string from \a start (its opening quote, or 0 on a line it goes
+// on to) as \a style, its escapes marked over it; the search for the
+// closing quote begins at \a from. Where it ends (after its quote), the
+// end of the line when it goes on (*closed false).
+int YamlLine::quoted(int start, QChar quote, int from, bool* closed)
+{
+  QList<Mark> escapes;
+  int end = n;
+  *closed = false;
+  for (int k = from; k < n; ++k) {
+    const QChar c = t.at(k);
+    if (quote == '"' && c == '\\') {
+      const int length = escapeLength(k);
+      if (length > 0) escapes.append({k, length, Style::Unit});
+      k += std::max(length, 2) - 1;   // a backslash takes the next character
+    } else if (c == quote) {
+      if (quote == '\'' && k + 1 < n && t.at(k + 1) == '\'') {   // '' is a quote
+        escapes.append({k, 2, Style::Unit});
+        ++k;
+      } else {
+        end = k + 1;
+        *closed = true;
+        break;
+      }
+    }
+  }
+  // A key: a quoted string before ':' (the style set when it is known).
+  Style style = Style::String;
+  if (*closed && start == from - 1) {
+    int j = end;
+    while (space(j)) ++j;
+    if (valueIndicator(j, j == end)) style = Style::Key;
+  }
+  mark(start, end, style);
+  marks.append(escapes);
+  return end;
+}
+
+int YamlLine::scan(int previous)
+{
+  if (previous < 0) previous = 0;
+  int indent = 0;
+  while (indent < n && t.at(indent) == ' ') ++indent;
+  const bool documentMarker = (t.startsWith(QLatin1String("---")) || t.startsWith(QLatin1String("..."))) && blank(3);
+
+  if (previous >= kYamlBlock) {
+    const int parent = previous - kYamlBlock - 1;
+    if (!documentMarker && (indent >= n || QStringView(t).trimmed().isEmpty() || indent > parent)) {
+      mark(0, n, Style::String);
+      return previous;
+    }
+    previous = 0;   // the block scalar ended before this line
+  }
+  if (documentMarker) previous = 0;   // a marker ends what was open
+  depth = previous / 4;
+  const int openQuote = previous % 4;
+
+  int i = 0;
+  bool atNode = true;    // a node may begin here
+  int parent = indent - 1;   // the column a block scalar begun here is under
+  int nodeStart = -1;    // where the node being read began (its anchor, its tag...)
+
+  if (openQuote != 0) {   // a quoted string going on from the line before
+    bool closed = false;
+    i = quoted(0, openQuote == 1 ? QChar('"') : QChar('\''), 0, &closed);
+    if (!closed) return state(openQuote);
+    atNode = false;
+  } else if (documentMarker) {
+    mark(0, 3, Style::Directive);
+    i = 3;
+    parent = -1;
+  } else if (t.startsWith('%')) {   // a directive: %YAML 1.2, %TAG ! tag:...
+    int end = 1;
+    while (end < n && !(t.at(end) == '#' && space(end - 1))) ++end;
+    const int comment = end;
+    while (end > 0 && space(end - 1)) --end;
+    mark(0, end, Style::Directive);
+    mark(comment, n, Style::Comment);
+    return 0;
+  }
+
+  while (i < n) {
+    const QChar c = t.at(i);
+    if (space(i)) {
+      ++i;
+      continue;
+    }
+    if (c == '#' && (i == 0 || space(i - 1))) {
+      mark(i, n, Style::Comment);
+      break;
+    }
+    if (!atNode) {   // after a node: what may follow one
+      if (valueIndicator(i, i > 0 && (t.at(i - 1) == '"' || t.at(i - 1) == '\''))) {
+        mark(i, i + 1, Style::Builtin);
+        ++i;
+        if (nodeStart >= 0) parent = nodeStart;
+        nodeStart = -1;
+        atNode = true;
+        continue;
+      }
+      if (depth > 0 && (c == ',' || c == ']' || c == '}')) {
+        mark(i, i + 1, Style::Builtin);
+        if (c != ',') --depth;
+        ++i;
+        nodeStart = -1;
+        atNode = c == ',';
+        continue;
+      }
+      atNode = true;   // not YAML; read on as if a node began here
+      continue;
+    }
+
+    // A node may begin here.
+    if ((c == '-' || c == '?') && blank(i + 1)) {   // a sequence's entry, a key's
+      mark(i, i + 1, Style::Builtin);
+      parent = i;
+      nodeStart = -1;
+      ++i;
+      continue;
+    }
+    if (c == ':' && blank(i + 1)) {   // the value of an empty key
+      mark(i, i + 1, Style::Builtin);
+      ++i;
+      continue;
+    }
+    if (c == '[' || c == '{') {
+      mark(i, i + 1, Style::Builtin);
+      ++depth;
+      ++i;
+      nodeStart = -1;
+      continue;
+    }
+    if (depth > 0 && (c == ']' || c == '}' || c == ',')) {   // [] {} [a, ]
+      atNode = false;
+      continue;
+    }
+    if (nodeStart < 0) nodeStart = i;
+    if (c == '&' || c == '*' || c == '!') {   // an anchor, an alias, a tag
+      int end = i + 1;
+      if (c == '!' && end < n && t.at(end) == '<') {   // !<tag:yaml.org,2002:str>
+        while (end < n && t.at(end) != '>') ++end;
+        end = std::min(end + 1, n);
+      } else {
+        while (!nameEnd(end)) ++end;
+      }
+      mark(i, end, c == '!' ? Style::Type : Style::Attribute);
+      i = end;
+      if (c == '*') atNode = false;   // an alias is the node
+      continue;
+    }
+    if ((c == '|' || c == '>') && depth == 0) {   // a block scalar's header: |, >-, |2+
+      int end = i + 1;
+      while (end < n && (t.at(end).isDigit() || t.at(end) == '+' || t.at(end) == '-')) ++end;
+      if (blank(end)) {
+        mark(i, end, Style::Builtin);
+        int k = end;
+        while (space(k)) ++k;
+        if (k < n && t.at(k) == '#') mark(k, n, Style::Comment);
+        return kYamlBlock + std::max(parent, -1) + 1;
+      }
+    }
+    if (c == '"' || c == '\'') {
+      bool closed = false;
+      i = quoted(i, c, i + 1, &closed);
+      if (!closed) return state(c == '"' ? 1 : 2);
+      atNode = false;
+      continue;
+    }
+
+    // A plain scalar: to a comment, a ": ", in a flow collection its
+    // punctuation; the first character is its own whatever it is.
+    int end = i + 1;
+    while (end < n) {
+      const QChar d = t.at(end);
+      if (d == '#' && space(end - 1)) break;
+      if (valueIndicator(end, false)) break;
+      if (depth > 0 && flowIndicator(end)) break;
+      ++end;
+    }
+    const int next = end;
+    while (end > i && space(end - 1)) --end;
+    if (valueIndicator(next, false)) {
+      mark(i, end, Style::Key);
+    } else {
+      static const QRegularExpression literal(QStringLiteral("^(?:true|True|TRUE|false|False|FALSE|null|Null|NULL|~)$"));
+      static const QRegularExpression number(QStringLiteral(
+          "^(?:[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|0o[0-7]+|0x[0-9a-fA-F]+|"
+          "[-+]?\\.(?:inf|Inf|INF)|\\.(?:nan|NaN|NAN))$"));
+      const QString word = t.mid(i, end - i);
+      if (literal.match(word).hasMatch())
+        mark(i, end, Style::Keyword);
+      else if (number.match(word).hasMatch())
+        mark(i, end, Style::Number);
+    }
+    i = next;
+    atNode = false;
+  }
+  return state(0);
 }
 
 } // namespace
@@ -757,6 +1040,11 @@ QString sample(int language)
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- A component library -->\n"
         "<library name=\"passives\">\n  <component type=\"R\" value='1k'>A resistor &amp; more</component>\n"
         "  <![CDATA[raw <text>]]>\n</library>\n");
+  case LANG_YAML:
+    return QStringLiteral(
+        "%YAML 1.2\n---\n# An amplifier\nname: \"amp\\tA\"\ngain: 20.5\nstable: true\nnotes: ~\n"
+        "stages: [1, 2]\ndefaults: &base\n  vdd: 3.3\ncorner:\n  <<: *base\n  model: !!str 'it''s typical'\n"
+        "description: |\n  Two stages;\n  # text, not a comment\n...\n");
   default:
     return QString();
   }
@@ -832,6 +1120,10 @@ void SyntaxHighlighter::highlightBlock(const QString& text)
 {
   setCurrentBlockState(0);
   if (a_language == LANG_NONE) return;
+  if (a_language == LANG_YAML) {
+    scanYaml(text);
+    return;
+  }
   const Language& language = definition(a_language);
   const auto apply = [this, &text](const Rule& rule) {
     QRegularExpressionMatchIterator it = rule.pattern.globalMatch(text);
@@ -896,4 +1188,13 @@ void SyntaxHighlighter::scanSpans(const QString& text)
     setFormat(at, end - at, format);
     from = end;
   }
+}
+
+// YAML's scanner (YamlLine): its marks, in order, each over the ones before.
+void SyntaxHighlighter::scanYaml(const QString& text)
+{
+  QList<Mark> marks;
+  const int state = YamlLine(text, marks).scan(previousBlockState());
+  for (const Mark& m : marks) setFormat(m.start, m.length, a_formats[int(m.style)]);
+  setCurrentBlockState(state);
 }
