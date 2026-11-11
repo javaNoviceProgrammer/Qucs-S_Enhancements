@@ -1321,22 +1321,22 @@ static void spice_extract_properties (struct definition_t * def,
 static char * spice_untranslated_text (struct definition_t * def) {
   struct value_t * val;
   char str[256];
-  sprintf (str, "%s%s:%s ", def->action ? "." : "", def->type, def->instance);
+  snprintf (str, sizeof (str), "%s%s:%s ", def->action ? "." : "", def->type, def->instance);
   char * txt = (char *) malloc (strlen (str) + 1);
   strcpy (txt, str);
   for (val = def->values; val != NULL; val = val->next) {
     if (val->hint == HINT_NODE) {
-      sprintf (str, "%s ", val->ident);
+      snprintf (str, sizeof (str), "%s ", val->ident);
     }
     else if (val->hint & (HINT_NODE | HINT_NUMBER)) {
-      sprintf (str, "%s%s ", val->ident, val->hint & HINT_MSTOP ? ")" : "");
+      snprintf (str, sizeof (str), "%s%s ", val->ident, val->hint & HINT_MSTOP ? ")" : "");
     }
     else if (val->hint & HINT_PAIR) {
-      sprintf (str, "%s%s=%s%s ", val->hint & HINT_MSTART ? "(" : "",
+      snprintf (str, sizeof (str), "%s%s=%s%s ", val->hint & HINT_MSTART ? "(" : "",
 	       val->ident, val->unit, val->hint & HINT_MSTOP ? ")" : "");
     }
     else if (val->hint & HINT_NAME) {
-      sprintf (str, "%s%s%s%s",
+      snprintf (str, sizeof (str), "%s%s%s%s",
 	       (val->hint & HINT_MSTART) ? " " : "",
 	       val->ident,
 	       ((val->hint & HINT_MSTART) && val->next &&
@@ -2330,7 +2330,7 @@ spice_translate_poly (struct definition_t * root, struct definition_t * def) {
 	  // create intermediate current controlled voltage source
 	  // passing voltage to an EDD branch
 	  ibuf = spice_create_definition (def, "CCVS");
-	  vn = (char *) malloc (strlen (ibuf->instance) + 3);
+	  vn = (char *) malloc (strlen (ibuf->instance) + 16);
 	  sprintf (vn, "%sV%d", ibuf->instance, p);
 	  free (ibuf->instance);
 	  ibuf->instance = vn;
