@@ -22,6 +22,7 @@
 #include <QApplication>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include "thread_clock.h"
 #include <QAction>
 #include <QFile>
 #include <QJsonArray>
@@ -2069,7 +2070,7 @@ private slots:
         const int typesetShorter = shorter.typesetCount(), typesetLonger = longer.typesetCount();
         qint64 quarter = std::numeric_limits<qint64>::max(), whole = quarter;
         for (int k = 0; k < 5; ++k) {
-            QElapsedTimer clock;
+            qucs_test::ThreadClock clock;
             clock.start();
             shorter.renderNow(true);
             quarter = std::min(quarter, clock.nsecsElapsed());
@@ -3301,7 +3302,7 @@ private slots:
         QString fewerApart, moreApart;
         qint64 a = std::numeric_limits<qint64>::max(), b = a;
         for (int k = 0; k < 5; ++k) {
-            QElapsedTimer clock;
+            qucs_test::ThreadClock clock;
             clock.start();
             fewerApart = tablesApart(fewer);
             a = std::min(a, clock.nsecsElapsed());
@@ -3698,12 +3699,13 @@ private slots:
     void aLongReplyIsReadInLinearTime()
     {
         using qucs_s::markdown::htmlBalanced;
-        // (Each of two texts' best of five, in turn: ns.)
+        // (Each of two texts' best of five, in turn, by the thread's processor
+        // time - thread_clock.h says why: ns.)
         const auto inTurn = [](const auto& read, const QString& small, const QString& large) {
             qint64 a = std::numeric_limits<qint64>::max(), b = a;
             for (int k = 0; k < 5; ++k)
                 for (qint64* t : {&a, &b}) {
-                    QElapsedTimer clock;
+                    qucs_test::ThreadClock clock;
                     clock.start();
                     read(t == &a ? small : large);
                     *t = std::min(*t, clock.nsecsElapsed());
@@ -6433,7 +6435,9 @@ private slots:
         QFile::remove(dir.filePath("prompts"));
         panel.session()->setProgram(script("writer", kWriter));
         panel.sendComposer();
-        QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("plot show"), 10000);
+        // (A shell started and two images encoded: 10.45 s with this Mac's
+        // processors all kept busy, past the 10 s it had.)
+        QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("plot show"), 30000);
         const QJsonObject message = QJsonDocument::fromJson(read(dir.filePath("prompts")).section('\n', 0, 0).toUtf8()).object();
         const QJsonArray content = message.value("message").toObject().value("content").toArray();
         QCOMPARE(content.size(), 3);

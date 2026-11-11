@@ -26,6 +26,7 @@
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_static.h"
+#include "multiphysics/fem_sparse.h"
 
 #include <Eigen/Dense>
 
@@ -2631,11 +2632,18 @@ private slots:
     // 1.135. Without the walls it read 25.1 fF, 21 % under (B2 of the open
     // items of 8 November). (The quasi-static solve and the thin limit are
     // the two functions after it: the three were one, past QtTest's 300 s on
-    // CI's macOS 15 runner, where Eigen's LU factorizes for the compressed
-    // solve - 72 s by it on an M2 Ultra, 10 by Accelerate's.)
+    // CI's macOS 15 runner.) Not where Eigen's LU factorizes the near field
+    // the compressed solve is preconditioned with - before macOS 26 (CI's
+    // runner has 15), on Linux, or chosen: its fill took the process to
+    // 6.7 GB on an M2 Ultra (3.7 by Accelerate's), and on CI's runner of
+    // 7 GB, beside the other tests, it swapped for 800 s and more until
+    // ctest's 900 s ended it, the tests beside it twice as slow.
     void theSideWallsChargeIsInAThickCombsCapacitance()
     {
         if (slowBuild()) QSKIP("compressed solves of 45 000 unknowns: Release only");
+        if (!qucs_s::fem::acceleratedLu())
+            QSKIP(qPrintable(QStringLiteral("Eigen's LU (%1): the near field's fill takes 6.7 GB")
+                                 .arg(qucs_s::fem::acceleratedLuHindrance().isEmpty() ? QStringLiteral("chosen") : qucs_s::fem::acceleratedLuHindrance())));
         const QList<rf::Conductor> c = momComb();
         rf::MeshSettings how;
         how.cellsAcross = 6;
