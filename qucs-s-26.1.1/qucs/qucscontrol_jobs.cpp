@@ -47,7 +47,8 @@ namespace {
 QString kindOfTool(const QString& tool)
 {
     if (tool == QLatin1String("simulate")) return QStringLiteral("simulation");
-    if (tool == QLatin1String("fem_solve") || tool == QLatin1String("fem_converge") || tool == QLatin1String("rf25_solve"))
+    if (tool == QLatin1String("fem_solve") || tool == QLatin1String("fem_converge") || tool == QLatin1String("rf25_solve")
+        || tool == QLatin1String("rf25_converge"))
         return QStringLiteral("solve");
     if (tool == QLatin1String("fem_build")) return QStringLiteral("build");
     if (tool == QLatin1String("tune")) return QStringLiteral("tune");
@@ -78,7 +79,7 @@ QString whyNoPercentOf(const QString& tool)
         return QCoreApplication::translate("QucsControl", "The simulator has said no percentage yet: this run may have none to say (a DC operating point, a build of ngspice that prints none).");
     if (tool == QLatin1String("fem_solve") || tool == QLatin1String("fem_build") || tool == QLatin1String("fem_converge"))
         return QCoreApplication::translate("QucsControl", "The model has not said how far it has got yet.");
-    if (tool == QLatin1String("rf25_solve"))
+    if (tool == QLatin1String("rf25_solve") || tool == QLatin1String("rf25_converge"))
         return QCoreApplication::translate("QucsControl", "This step cannot be counted: a matrix being filled and factored says nothing until it is done.");
     if (tool == QLatin1String("run_script"))
         return QCoreApplication::translate("QucsControl", "A script may do anything: nothing knows how much of it is left.");
@@ -356,7 +357,8 @@ void QucsControl::jobAnswered(quint64 number, const QJsonObject& result)
             jobs::Registry::instance().update(it->id, [](jobs::Job& job) { job.background = true; });
             return;
         }
-    } else if (it->tool == QLatin1String("fem_solve") || it->tool == QLatin1String("fem_build") || it->tool == QLatin1String("rf25_solve")) {
+    } else if (it->tool == QLatin1String("fem_solve") || it->tool == QLatin1String("fem_build") || it->tool == QLatin1String("rf25_solve")
+               || it->tool == QLatin1String("rf25_converge")) {
         if (result.value(QLatin1String("isError")).toBool()) {
             QucsDoc* doc = jobDocument(number);
             bool busy = false;

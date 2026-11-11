@@ -390,6 +390,10 @@ struct PortReturn {
 /// What the full-wave solve found.
 struct FullWave {
     QList<double> frequencies;       ///< Hz
+    /// Where an adaptive sweep solved some of the frequencies and read the
+    /// rest from a rational fit of Z through them (rf25_adaptive.h): those
+    /// it solved, Hz. Empty where every frequency was solved.
+    QList<double> solvedFrequencies;
     /// At each frequency, the ports' impedance matrix, Ohm, and their
     /// scattering matrix, each port into its own reference: [f][row][column].
     QList<QList<QList<Complex>>> z, s;

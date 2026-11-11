@@ -3480,6 +3480,109 @@ private slots:
     // alone: the ports' S and Z, the sweep and the checks; rf25_export of
     // the ports after it; and rf25_inductance's loop found whatever the
     // study's solver.
+    // rf25_solve's 'adaptive' and rf25_converge: a line's sweep of 41 points
+    // solved at a few of them and read at the rest, which the answer names;
+    // its mesh checked on three meshes full-wave and quasi-statically, each
+    // value's reading and verdict; what neither takes refused.
+    void anRf25ModelsSweepAndMeshAreCheckedThroughTheTools()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rfc"));
+        QVERIFY(writeStrip(ws + "/rfc/strip.gds", 1000, 50));
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (qucs_s::rf25::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("100[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("9.8"));
+            }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("strip.gds"));
+        QJsonArray rows;
+        rows.append(QJsonArray{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")});
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("cells_across"), 3);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("100[um]"));
+        for (const QPair<const char*, const char*>& at : {qMakePair("0", "In"), qMakePair("1000[um]", "Out")}) {
+            qucs_s::rf25::Node port = m.make(QStringLiteral("rf_edge_port"));
+            port.label = QLatin1String(at.second);
+            port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+            port.props.insert(QStringLiteral("x"), QLatin1String(at.first));
+            port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
+            QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+        }
+        QFile f(ws + "/rfc/line.qrf25");
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(m.toJson());
+        f.close();
+        const QString model = ws + "/rfc/line.qrf25";
+
+        // The study's own sweep, 41 points to 40 GHz, its points added where
+        // the answer changes for this solve alone.
+        const QJsonObject adapted = call("rf25_solve", {{"path", model}, {"solver", "full_wave"}, {"adaptive", true}}, 600000);
+        QVERIFY2(!failed(adapted), qPrintable(text(adapted)));
+        const QJsonObject a = json(adapted).toObject();
+        QCOMPARE(a.value("frequencies").toInt(), 41);
+        QVERIFY2(a.value("solved").toInt() >= 9 && a.value("solved").toInt() < 30, qPrintable(text(adapted)));
+        QCOMPARE(a.value("solved frequencies").toArray().size(), a.value("solved").toInt());
+        QCOMPARE(a.value("solved frequencies").toArray().first().toDouble(), 0.1e9);
+        QVERIFY(a.value("the others").toString().startsWith(QStringLiteral("read from a rational fit of Z")));
+        QVERIFY2(text(adapted).contains(QStringLiteral("Adding points where the answer changes: ")), qPrintable(text(adapted)));
+        QVERIFY2(text(adapted).contains(QStringLiteral("Solved on ")), qPrintable(text(adapted)));
+        // Every point solved, asked so: no 'solved'.
+        const QJsonObject whole = call("rf25_solve", {{"path", model}, {"solver", "full_wave"}, {"adaptive", false}, {"brief", true}}, 600000);
+        QVERIFY2(!failed(whole) && !json(whole).toObject().contains("solved"), qPrintable(text(whole)));
+        // What 'adaptive' is not for.
+        const QJsonObject one = call("rf25_solve", {{"path", model}, {"solver", "full_wave"}, {"adaptive", true}, {"frequency", "3[GHz]"}}, 60000);
+        QVERIFY2(failed(one) && text(one).contains(QStringLiteral("with 'frequency' there is one point")), qPrintable(text(one)));
+        const QJsonObject quasi = call("rf25_solve", {{"path", model}, {"adaptive", true}}, 60000);
+        QVERIFY2(failed(quasi) && text(quasi).startsWith(QStringLiteral("'adaptive' is the full-wave sweep's")), qPrintable(text(quasi)));
+
+        // Its mesh, full-wave at 5 GHz on 2, 4 and 8 cells across.
+        const QJsonObject checked = call("rf25_converge", {{"path", model}, {"solver", "full_wave"}, {"levels", QJsonArray{8, 2, 4}},
+                                                           {"frequencies", QJsonArray{"5[GHz]"}}}, 600000);
+        QVERIFY2(!failed(checked), qPrintable(text(checked)));
+        const QJsonObject c = json(checked).toObject();
+        QCOMPARE(c.value("solver").toString(), QStringLiteral("full wave"));
+        QCOMPARE(c.value("frequencies").toArray(), QJsonArray{5e9});
+        const QJsonArray meshes = c.value("meshes").toArray();
+        QCOMPARE(meshes.size(), 3);
+        QCOMPARE(meshes.at(0).toObject().value("cells across").toInt(), 2);
+        QCOMPARE(meshes.at(2).toObject().value("cells across").toInt(), 8);
+        QVERIFY(meshes.at(2).toObject().value("unknowns").toInt() > meshes.at(0).toObject().value("unknowns").toInt());
+        const QJsonArray values = c.value("values").toArray();
+        QCOMPARE(values.size(), 3);
+        QCOMPARE(values.at(1).toObject().value("name").toString(), QStringLiteral("S21 at 5 GHz"));
+        QCOMPARE(values.at(1).toObject().value("on each mesh").toArray().size(), 3);
+        QCOMPARE(values.at(1).toObject().value("on each mesh").toArray().at(0).toArray().size(), 2);   // (re, im)
+        QVERIFY(!values.at(1).toObject().value("verdict").toString().isEmpty());
+        QVERIFY2(c.value("said").toArray().first().toString().startsWith(QStringLiteral("Mesh convergence over 3 mesh(es) of 2, 4 and 8 cells across")),
+                 qPrintable(text(checked)));
+        QVERIFY(c.value("note").toString().contains(QStringLiteral("are as they were")));
+        // Quasi-statically, the meshes unasked: a quarter, a half and all of
+        // the model's 3 across.
+        const QJsonObject statics = call("rf25_converge", {{"path", model}}, 600000);
+        QVERIFY2(!failed(statics), qPrintable(text(statics)));
+        const QJsonObject q = json(statics).toObject();
+        QCOMPARE(q.value("solver").toString(), QStringLiteral("quasi-static"));
+        QVERIFY(!q.contains("frequencies"));
+        QCOMPARE(q.value("meshes").toArray().size(), 3);
+        QCOMPARE(q.value("meshes").toArray().at(0).toObject().value("cells across asked").toInt(), 1);
+        QVERIFY(q.value("values").toArray().first().toObject().value("name").toString().startsWith(QStringLiteral("C of ")));
+        QCOMPARE(q.value("values").toArray().first().toObject().value("unit").toString(), QStringLiteral("fF"));
+        // What it does not take.
+        const QJsonObject few = call("rf25_converge", {{"path", model}, {"levels", QJsonArray{3, 3}}}, 60000);
+        QVERIFY2(failed(few) && text(few).startsWith(QStringLiteral("'levels' wants two meshes at least")), qPrintable(text(few)));
+        const QJsonObject none = call("rf25_converge", {{"path", model}, {"levels", QJsonArray{0, 2}}}, 60000);
+        QVERIFY2(failed(none) && text(none).startsWith(QStringLiteral("'levels' are cells across")), qPrintable(text(none)));
+        const QJsonObject at = call("rf25_converge", {{"path", model}, {"frequencies", QJsonArray{"5[GHz]"}}}, 60000);
+        QVERIFY2(failed(at) && text(at).startsWith(QStringLiteral("'frequencies' are the full-wave check's")), qPrintable(text(at)));
+        const QJsonObject notRf = call("rf25_converge", {{"path", "nothing.sch"}}, 60000);
+        QVERIFY(failed(notRf));
+    }
+
     void anRf25ModelIsSolvedFullWaveThroughItsTool()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();

@@ -199,6 +199,14 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     out.insert(QStringLiteral("frequencies"), nf);
     out.insert(QStringLiteral("from"), w.frequencies.first());
     out.insert(QStringLiteral("to"), w.frequencies.last());
+    // An adaptive sweep's: which it solved, the rest read from its fit.
+    if (!w.solvedFrequencies.isEmpty()) {
+        QJsonArray solvedAt;
+        for (const double f : w.solvedFrequencies) solvedAt.append(f);
+        out.insert(QStringLiteral("solved"), int(w.solvedFrequencies.size()));
+        out.insert(QStringLiteral("solved frequencies"), solvedAt);
+        out.insert(QStringLiteral("the others"), QStringLiteral("read from a rational fit of Z through those solved (the study's Add points where it changes)"));
+    }
     int k = nf - 1;
     if (asked > 0)
         for (int i = 0; i < nf; ++i)
@@ -433,6 +441,14 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         asked = *given;
     }
     if (fullWave && asked > 0) request.frequencies = {asked};
+    // A sweep's points added where its answer changes, or not, for this
+    // solve alone: the study's "Add points where it changes" otherwise.
+    if (args.contains(QLatin1String("adaptive"))) {
+        if (!fullWave) return errorResult(tr("'adaptive' is the full-wave sweep's: the quasi-static solve reads every frequency from one solve."));
+        request.adaptive = args.value(QLatin1String("adaptive")).toBool() ? 1 : 0;
+        if (request.adaptive > 0 && asked > 0)
+            return errorResult(tr("'adaptive' adds points to the study's sweep; with 'frequency' there is one point to solve."));
+    }
 
     if (*cancelled || !solving) return errorResult(tr("Cancelled by the client before it was solved."));
     // A solve going on already - the tab's, or an earlier call's that ran
@@ -803,6 +819,149 @@ QJsonObject QucsControl::rf25Stop(const QJsonObject& args)
                               "more).").arg(timeout));
     QJsonObject out{{QStringLiteral("stopped"), true}};
     if (!was.isEmpty()) out.insert(QStringLiteral("note"), tr("Stopped %1, which was %2").arg(name, was));
+    return jsonResult(out);
+}
+
+QJsonObject QucsControl::rf25Converge(const QJsonObject& args)
+{
+    // The model: the one named, else the one in front.
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_converge checks a planar structure's mesh.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
+    const int timeout = waitsFor(QStringLiteral("rf25_converge"), args);
+    QPointer<RF25Doc> solving(model);
+    auto cancelled = std::make_shared<bool>(false);
+    auto startedHere = std::make_shared<bool>(false);
+    const int stop = stoppable(running(), [solving, cancelled, startedHere] {
+        *cancelled = true;
+        if (solving && *startedHere) solving->stopSolving();
+    });
+    const auto over = qScopeGuard([this, stop] { stopped(stop); });
+    const bool laidOut = model->waitForLayout(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(timeout));
+    const bool prepared = model->waitForPrepared(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!prepared) return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
+
+    RF25Doc::SolveRequest request;
+    if (args.contains(QLatin1String("solver"))) {
+        request.solver = args.value(QLatin1String("solver")).toString().trimmed();
+        if (request.solver != QLatin1String("quasi_static") && request.solver != QLatin1String("full_wave"))
+            return errorResult(tr("'solver' is \"quasi_static\" or \"full_wave\"; %1 is neither.").arg(request.solver));
+    }
+    const bool fullWave = request.solver.isEmpty() ? model->studyIsFullWave() : request.solver == QLatin1String("full_wave");
+    // The meshes: the cells across the narrowest conductor of each, given,
+    // else a quarter, a half and all of the model's own.
+    if (args.contains(QLatin1String("levels"))) {
+        const QJsonArray given = args.value(QLatin1String("levels")).toArray();
+        for (const QJsonValue& v : given) {
+            const int n = v.isString() ? v.toString().trimmed().toInt() : v.toInt();
+            if (n < 1 || n > 200) return errorResult(tr("'levels' are cells across the narrowest conductor, each from 1 to 200."));
+            request.levels << n;
+        }
+        std::sort(request.levels.begin(), request.levels.end());
+        request.levels.erase(std::unique(request.levels.begin(), request.levels.end()), request.levels.end());
+        if (request.levels.size() < 2)
+            return errorResult(tr("'levels' wants two meshes at least, three to say whether a value converges."));
+    } else {
+        request.levels = model->convergenceLevels();
+    }
+    if (args.contains(QLatin1String("frequencies"))) {
+        if (!fullWave) return errorResult(tr("'frequencies' are the full-wave check's: the quasi-static one has none."));
+        for (const QJsonValue& v : args.value(QLatin1String("frequencies")).toArray()) {
+            const std::optional<double> f = positiveNumber(v.isString() ? v.toString().trimmed() : QString::number(v.toDouble(), 'g', 17), *model);
+            if (!f) return errorResult(tr("'frequencies' are frequencies above zero (\"40[GHz]\")."));
+            request.frequencies << *f;
+        }
+    }
+    if (args.contains(QLatin1String("matrix"))) {
+        request.matrix = args.value(QLatin1String("matrix")).toString().trimmed();
+        if (request.matrix != QLatin1String("automatic") && request.matrix != QLatin1String("dense")
+            && request.matrix != QLatin1String("compressed"))
+            return errorResult(tr("'matrix' is \"automatic\", \"dense\" or \"compressed\"; %1 is none of them.").arg(request.matrix));
+        if (!fullWave) return errorResult(tr("'matrix' is the full-wave solve's: the quasi-static one is dense."));
+    }
+    if (*cancelled || !solving) return errorResult(tr("Cancelled by the client before it was checked."));
+    const bool joined = model->solvingAlike(request);
+    if (model->isSolving() && !joined)
+        return errorResult(tr("%1 is solving already (%2): rf25_converge asked as it was waits for that check, and rf25_stop "
+                              "stops it.")
+                               .arg(heldName, model->solvingSaid()));
+    if (!joined) {
+        *startedHere = true;
+        model->solveWith(request);
+    }
+    const bool done = model->waitForSolved(timeout * 1000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!done)
+        return errorResult(tr("It is still checking after %1 s: %2 It goes on - rf25_converge asked again waits for it, and "
+                              "rf25_stop stops it.")
+                               .arg(timeout)
+                               .arg(model->solvingSaid()));
+    const std::shared_ptr<const MeshConvergence> check = model->convergence();
+    if (!check)
+        return errorResult(!model->solveProblem().isEmpty() ? model->solveProblem() : tr("It checked nothing, and said no reason."));
+    QJsonObject out;
+    out.insert(QStringLiteral("model"), heldName);
+    out.insert(QStringLiteral("solver"), check->fullWave ? QStringLiteral("full wave") : QStringLiteral("quasi-static"));
+    if (check->fullWave) {
+        QJsonArray at;
+        for (const double f : check->frequencies) at.append(f);
+        out.insert(QStringLiteral("frequencies"), at);
+    }
+    QJsonArray meshes;
+    for (const MeshLevel& l : check->levels)
+        meshes.append(QJsonObject{{QStringLiteral("cells across asked"), l.asked},
+                                  {QStringLiteral("cells across"), l.across},
+                                  {QStringLiteral("cell um"), l.cell},
+                                  {QStringLiteral("cells"), l.cells},
+                                  {QStringLiteral("unknowns"), l.unknowns},
+                                  {QStringLiteral("seconds"), std::round(l.seconds * 10) / 10}});
+    out.insert(QStringLiteral("meshes"), meshes);
+    const auto kindOf = [](Convergence::Kind k) {
+        switch (k) {
+        case Convergence::Kind::Settled: return QStringLiteral("settled");
+        case Convergence::Kind::Converging: return QStringLiteral("converging");
+        case Convergence::Kind::Oscillating: return QStringLiteral("oscillating");
+        case Convergence::Kind::NotYet: return QStringLiteral("not converging yet");
+        case Convergence::Kind::TwoMeshes: return QStringLiteral("two meshes");
+        }
+        return QString();
+    };
+    const auto number = [](const Watched& w, const std::complex<double>& v) {
+        return w.complex ? QJsonValue(QJsonArray{v.real(), v.imag()}) : QJsonValue(v.real());
+    };
+    QJsonArray values;
+    for (const Watched& w : check->values) {
+        QJsonObject value{{QStringLiteral("name"), w.name}, {QStringLiteral("verdict"), kindOf(w.verdict.kind)}};
+        if (!w.unit.isEmpty()) value.insert(QStringLiteral("unit"), w.unit);
+        QJsonArray read;
+        for (const std::complex<double>& v : w.values) read.append(number(w, v));
+        value.insert(QStringLiteral("on each mesh"), read);
+        if (w.verdict.kind == Convergence::Kind::Converging) {
+            value.insert(QStringLiteral("order"), std::round(w.verdict.order * 100) / 100);
+            value.insert(QStringLiteral("limit"), number(w, w.verdict.limit));
+        }
+        if (w.verdict.kind != Convergence::Kind::Settled) value.insert(QStringLiteral("error of the finest"), w.verdict.error);
+        values.append(value);
+    }
+    out.insert(QStringLiteral("values"), values);
+    out.insert(QStringLiteral("said"), QJsonArray::fromStringList(check->lines));
+    if (!check->problems.isEmpty()) out.insert(QStringLiteral("problems"), QJsonArray::fromStringList(check->problems));
+    out.insert(QStringLiteral("note"), tr("The model's own mesh and its solution are as they were: Solve on its tab, or rf25_solve, solves on the Mesh node's settings."));
     return jsonResult(out);
 }
 

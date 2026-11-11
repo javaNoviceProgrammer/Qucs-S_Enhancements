@@ -30,8 +30,10 @@ QString tr(const char* text) { return QCoreApplication::translate("RF25Kept", te
 // what and when, which answer it is - and the answer compressed. Format 2
 // adds a full-wave answer's ports' returns and shares (FullWave::returnsOf,
 // namesReturns) after its notes; a file of format 1 is read without them.
+// Format 3 adds, after those, the frequencies an adaptive sweep solved
+// (FullWave::solvedFrequencies); a file of 1 or 2 is read without them.
 const QByteArray kMagic = QByteArrayLiteral("QRF25SOL");
-constexpr quint32 kFormat = 2;
+constexpr quint32 kFormat = 3;
 // A list longer than this is a damaged file's, not a solve's.
 constexpr qint64 kMostItems = qint64(1) << 28;
 
@@ -408,6 +410,7 @@ bool writeSolution(const QString& path, const KeptSolution& kept, QString* error
             put(s, kept.waveNotes);
             put(s, kept.fullWave->returnsOf);
             put(s, kept.fullWave->namesReturns);
+            put(s, kept.fullWave->solvedFrequencies);
         } else {
             put(s, *kept.extraction);
             put(s, bool(kept.inductance));
@@ -464,6 +467,7 @@ std::optional<KeptSolution> readSolution(const QString& path, QString* why)
         if (!get(b, *wave) || !get(b, kept.waveNotes)) return none(tr("%1 is damaged.").arg(path));
         if (format >= 2 && (!get(b, wave->returnsOf) || !get(b, wave->namesReturns)))
             return none(tr("%1 is damaged.").arg(path));
+        if (format >= 3 && !get(b, wave->solvedFrequencies)) return none(tr("%1 is damaged.").arg(path));
         kept.fullWave = wave;
     } else {
         auto extraction = std::make_shared<Extraction>();

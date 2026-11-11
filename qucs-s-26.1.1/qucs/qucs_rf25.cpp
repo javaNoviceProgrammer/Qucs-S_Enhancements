@@ -23,11 +23,14 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QRegularExpression>
 #include <QStatusBar>
 #include <QTabWidget>
 
@@ -79,6 +82,35 @@ void QucsApp::initRf25()
   });
   layout->setObjectName(QStringLiteral("rfReadLayoutAction"));
   layout->setStatusTip(tr("Read the GDSII or OASIS file the model's Layout names once more"));
+  QAction *converge = a_rf25Menu->addAction(tr("Check Mesh Convergence…"), this, [this, model] {
+    RF25Doc *doc = model();
+    if (doc == nullptr || doc->isSolving()) return;
+    QStringList given;
+    for (const int n : doc->convergenceLevels()) given << QString::number(n);
+    bool ok = false;
+    const QString text = QInputDialog::getText(this, tr("Check Mesh Convergence"),
+                                               tr("The meshes, coarsest first: cells across the narrowest conductor of each.\n"
+                                                  "Each is solved as the study says - a full wave at the top of its sweep - "
+                                                  "and what each value does says how far the finest is from the limit.\n"
+                                                  "The model's own mesh and solution are left as they are."),
+                                               QLineEdit::Normal, given.join(QStringLiteral(", ")), &ok);
+    if (!ok) return;
+    QList<int> levels;
+    for (const QString &part : text.split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts)) {
+      const int n = part.toInt();
+      if (n >= 1 && n <= 200 && !levels.contains(n)) levels << n;
+    }
+    std::sort(levels.begin(), levels.end());
+    if (levels.size() < 2) {
+      QMessageBox::warning(this, tr("Check Mesh Convergence"), tr("Two meshes at least, three to tell whether a value converges: cells across from 1 to 200."));
+      return;
+    }
+    RF25Doc::SolveRequest request;
+    request.levels = levels;
+    doc->solveWith(request);
+  });
+  converge->setObjectName(QStringLiteral("rfConvergeAction"));
+  converge->setStatusTip(tr("Solve the model on meshes ever finer and say how far its own is from the limit"));
   a_rf25Menu->addSeparator();
   QAction *hfssExport = a_rf25Menu->addAction(tr("Export HFSS™ 3D Layout…"), this, [this] { exportRf25Hfss(); });
   hfssExport->setObjectName(QStringLiteral("rfHfssExportAction"));
@@ -117,6 +149,8 @@ void QucsApp::updateRf25Menu()
       a->setEnabled(doc != nullptr && !doc->isBusy());
     else if (a->objectName() == QLatin1String("rfHfssExportAction"))
       a->setEnabled(doc != nullptr);
+    else if (a->objectName() == QLatin1String("rfConvergeAction"))
+      a->setEnabled(doc != nullptr && !doc->isSolving());
     else if (a->objectName() == QLatin1String("rfCompareAction"))
       a->setEnabled(doc != nullptr && doc->fullWave() && doc->fullWave()->ok());
 }
