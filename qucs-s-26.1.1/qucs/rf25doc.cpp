@@ -505,6 +505,7 @@ struct RF25Doc::SolveJob {
     Mesh mesh;
     QList<Conductor> conductors;
     Stack stack;
+    QList<Extent> extents;       ///< the layers that end (rf25_dielectric.h)
     QList<ReturnMark> returns;   ///< the Return Conductors under Ports
     double length = 0;
     std::shared_ptr<Extraction> result;
@@ -2038,6 +2039,18 @@ void RF25Doc::showOverlays()
         for (const LayoutView::Overlay* o : {&regions, &grounds, &returns, &links, &terminals, &faces})
             if (!o->shapes.isEmpty() || !o->labels.isEmpty()) overlays << *o;
     }
+    // Where a layer that ends is (rf25_dielectric.h): its shapes' outline,
+    // in its own colour, dashed by being thin - whatever else is shown.
+    if (a_processed && !a_processed->extents.isEmpty()) {
+        for (auto it = a_processed->extents.cbegin(); it != a_processed->extents.cend(); ++it) {
+            LayoutView::Overlay o;
+            o.line = outlineColor(colourOf(it.key()));
+            o.width = 1.5;
+            o.name = tr("where %1 is: beyond it, eps_r %2").arg(it.key()).arg(stack.named(it.key()) ? stack.named(it.key())->beyond : 1.0);
+            o.shapes = it.value();
+            overlays << o;
+        }
+    }
     // The Cutout's regions, whatever else is shown: the outline of each
     // that keeps, and each that takes out tinted as well.
     const Cutout cutout = cutoutOf(a_model, nullptr);
@@ -2119,6 +2132,16 @@ void RF25Doc::solveWith(const SolveRequest& request)
     job->mesh = *a_mesh;
     job->conductors = a_processed->conductors;
     job->stack = a_model.stack();
+    // The layers that end: their shapes, and what is beyond them.
+    for (auto it = a_processed->extents.cbegin(); it != a_processed->extents.cend(); ++it) {
+        const Layer* layer = job->stack.named(it.key());
+        if (layer == nullptr) continue;
+        Extent e;
+        e.layer = layer->name;
+        e.shapes = it.value();
+        e.beyond = layer->beyond;
+        job->extents << e;
+    }
     // How long the piece that was solved is: the longer side of what it
     // covers, which is a straight line's own length and what makes a
     // capacitance into one per metre.
@@ -2241,6 +2264,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         // stack's Green's function would not end held a core and gigabytes
         // until Qucs-S was killed, and the next solve ran beside it.
         ExtractControl control;
+        control.extents = job->extents;
         control.stop = &job->stop;
         control.step = &job->step;
         control.done = &job->stepDone;
@@ -2252,7 +2276,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (job->result->ok()) job->result->lines.prepend(meshNoteOf(job->mesh));
         if (job->loop)
             job->inductance = std::make_shared<Inductance>(
-                inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency));
+                inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency, &job->stop));
     });
     thread->setStackSize(8u << 20);
     connect(thread, &QThread::finished, this, [this, job] {
@@ -2277,6 +2301,7 @@ std::shared_ptr<FullWave> RF25Doc::solveWaveOn(SolveJob& job, const Mesh& mesh, 
                                                QStringList* notes)
 {
     FullWaveControl control;
+    control.extents = job.extents;
     control.stop = &job.stop;
     control.done = &job.done;
     control.gmresIterations = &job.gmresIterations;
@@ -2441,6 +2466,7 @@ void RF25Doc::convergeOn(SolveJob& job)
             watched = watchedOf(*wave, job.frequencies);
         } else {
             ExtractControl control;
+            control.extents = job.extents;
             control.stop = &job.stop;
             control.step = &job.step;
             control.done = &job.stepDone;

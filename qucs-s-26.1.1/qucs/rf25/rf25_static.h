@@ -48,6 +48,7 @@
 #ifndef QUCS_RF25_STATIC_H
 #define QUCS_RF25_STATIC_H
 
+#include "rf25_dielectric.h"
 #include "rf25_green.h"
 #include "rf25_mesh.h"
 
@@ -269,6 +270,10 @@ struct ExtractControl {
     /// Tests: the most pairs each Green's function's expansion may form
     /// (Green::limitPairs; 0, its own).
     double mostPairs = 0;
+    /// The stack's layers that end: there only inside their shapes
+    /// (rf25_dielectric.h). Not stopping's or counting's, but an input the
+    /// solve's callers already hand it through here.
+    QList<Extent> extents;
 
     bool stopped() const { return stop != nullptr && stop->load(); }
     void at(Step s, int d = 0, int a = 0) const

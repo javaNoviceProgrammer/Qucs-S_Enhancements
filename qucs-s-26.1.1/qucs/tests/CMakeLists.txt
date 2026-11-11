@@ -313,6 +313,7 @@ qucs_add_test(test_rf25_stack)
 qucs_add_test(test_rf25_stack_drawing)
 qucs_add_test(test_rf25_deembed)
 qucs_add_test(test_rf25_adaptive)
+qucs_add_test(test_rf25_dielectric)
 # (Each calibration solves three strips now, and shorter ones beside them
 # where they disagree - the phase E check of 2 November - and every strip's
 # ports their paths up from the ground since G9's fix: 731 s sanitized here,

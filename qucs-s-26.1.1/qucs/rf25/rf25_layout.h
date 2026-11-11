@@ -53,6 +53,9 @@ QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance);
 /// The part of \a shapes that is inside \a within: a cut, which is how a
 /// cell of the mesh is taken out of a conductor.
 QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within);
+/// \a shapes less \a less: what of the first is outside the second (an
+/// ended dielectric's region beyond its shapes, rf25_dielectric.h).
+QList<QPolygonF> differenceOf(const QList<QPolygonF>& shapes, const QList<QPolygonF>& less);
 
 /// One polygon that will become a conductor: the layer of the stack it
 /// belongs to, and its outline in the layout's micrometres.
@@ -140,6 +143,9 @@ Processing processingOf(const Node& node, const QList<fem::Model::Parameter>& pa
 /// The shapes after processing, with what each step did.
 struct Processed {
     QList<Conductor> conductors;
+    /// The shapes the map sends to a dielectric or the substrate, by layer:
+    /// where that layer is, beyond which it is its "beyond" (µm).
+    QMap<QString, QList<QPolygonF>> extents;
     LayoutReport report;
     QStringList problems;
     bool ok() const { return problems.isEmpty(); }

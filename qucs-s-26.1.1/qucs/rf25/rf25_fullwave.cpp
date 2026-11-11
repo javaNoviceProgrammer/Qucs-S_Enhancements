@@ -90,6 +90,9 @@ constexpr double kNear = 1.5;
 constexpr double kResidual = 1e-10;
 constexpr int kRestart = 100;
 constexpr int kMostIterations = 3000;
+/// An ended layer's correction to P (rf25_dielectric.h) held dense up to
+/// this many cells, as its factors past them.
+constexpr int kMostDenseCorrection = 5000;
 constexpr int kMostCompressed = 2000000;
 /// GMRES short of kResidual: the residual below which its answer still
 /// stands, said doubtful (solveCompressed()); and the share of
@@ -876,6 +879,11 @@ struct Context {
     /// cell's static potential of a charge spread over another. (A
     /// compressed solve makes the few it wants as it goes.)
     Eigen::MatrixXd lDirect, lImage, pStatic;
+    /// The stack's ended layers' static polarization in P (rf25_dielectric.h),
+    /// added to every potential coefficient; whether there is any.
+    DielectricCorrection dielectric;
+    bool corrected = false;
+    QStringList dielectricLines;
     QList<Via> vias;
     QList<ViaGreen::Span> spans;         ///< each of the stack's vias that the mesh has
     /// Each port's current into the charges (and out of an internal
@@ -1143,7 +1151,8 @@ Complex Kernels::potential(int i, int j, double pij, double pji) const
         const bool centred = to != from && longest * longest < kCentreBound * scale * scale;
         return v + (centred ? g.scalarRemainder(rho) : remainderOver(g, c.rect.at(from), c.centre.at(to), scale));
     };
-    return i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
+    const Complex base = i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
+    return c.corrected ? base + c.dielectric.at(i, j) : base;
 }
 
 Complex Kernels::potential(int i, int j) const
@@ -1566,52 +1575,6 @@ AtFrequency solveAt(const Context& c, double f, int threads)
     // what the vias' and the paths' currents add along its path - the
     // drive's coupling the other way round, by reciprocity.
     out.z = c.drive.transpose() * pDrive / jw + pathZ - rhs.transpose() * out.current;
-    return out;
-}
-
-/*!
- * The pairs of \a a and \a b whose boxes are near: no further apart than
- * \a reach times the longer of the two's longest sides in the plane. Of
- * one list (\a b null), each pair once, the first no later than the
- * second. Found by bins in the plane as wide as the widest box.
- */
-QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach)
-{
-    const QList<Box>& other = b != nullptr ? *b : a;
-    QList<QPair<int, int>> out;
-    if (a.isEmpty() || other.isEmpty()) return out;
-    const auto size = [](const Box& x) { return std::max(x.side(0), x.side(1)); };
-    double widest = 0, lo[2] = {a.first().lo[0], a.first().lo[1]};
-    for (const QList<Box>* list : {&a, &other})
-        for (const Box& x : *list) {
-            widest = std::max(widest, size(x));
-            lo[0] = std::min(lo[0], x.lo[0]);
-            lo[1] = std::min(lo[1], x.lo[1]);
-        }
-    const double bin = widest > 0 ? widest : 1.0, grow = reach * widest;
-    const auto binOf = [&lo, bin](double v, int axis) { return qint64(std::floor((v - lo[axis]) / bin)); };
-    const auto key = [](qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); };
-    QHash<qint64, QList<int>> bins;
-    for (int j = 0; j < other.size(); ++j) {
-        const Box& x = other.at(j);
-        for (qint64 i0 = binOf(x.lo[0], 0); i0 <= binOf(x.hi[0], 0); ++i0)
-            for (qint64 i1 = binOf(x.lo[1], 1); i1 <= binOf(x.hi[1], 1); ++i1) bins[key(i0, i1)] << j;
-    }
-    std::vector<int> seen(std::size_t(other.size()), -1);
-    for (int i = 0; i < a.size(); ++i) {
-        const Box& x = a.at(i);
-        for (qint64 i0 = binOf(x.lo[0] - grow, 0); i0 <= binOf(x.hi[0] + grow, 0); ++i0)
-            for (qint64 i1 = binOf(x.lo[1] - grow, 1); i1 <= binOf(x.hi[1] + grow, 1); ++i1) {
-                const auto found = bins.constFind(key(i0, i1));
-                if (found == bins.constEnd()) continue;
-                for (const int j : found.value()) {
-                    if (seen[std::size_t(j)] == i) continue;
-                    seen[std::size_t(j)] = i;
-                    if (b == nullptr && j < i) continue;
-                    if (x.distance(other.at(j)) <= reach * std::max(size(x), size(other.at(j)))) out << qMakePair(i, j);
-                }
-            }
-    }
     return out;
 }
 
@@ -2242,6 +2205,23 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     if (!c.layers.ok()) {
         out.problems << c.layers.problems;
         return out;
+    }
+    // A layer that ends (rf25_dielectric.h): the background's Green's
+    // functions - each such layer as it is beyond its shapes - and its
+    // shapes' static polarization added to P, below.
+    DielectricPlan dielectricPlanned;
+    if (control != nullptr && !control->extents.isEmpty()) {
+        QRectF around;
+        for (const MeshCell& cell : mesh.cells) {
+            const QRectF b = cell.outline.boundingRect();
+            around = around.united(QRectF(b.left() * micrometre, b.top() * micrometre, b.width() * micrometre, b.height() * micrometre));
+        }
+        dielectricPlanned = dielectricPlan(c.layers, control->extents, around);
+        if (!dielectricPlanned.ok()) {
+            out.problems << dielectricPlanned.problems;
+            return out;
+        }
+        c.layers = dielectricPlanned.background;
     }
     // A port that names its returns names some, each once and not itself;
     // and it is an ideal source between its cells and theirs, which strips
@@ -3090,6 +3070,26 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.hRun.resize(nr);
     c.cellZ = zOf;
     for (int i = 0; i < nc; ++i) c.hNode[i] = heightIndex(zOf.at(i));
+    // The ended layers' correction to P between the cells: dense, or (past
+    // some thousands of cells, a compressed solve's) as its factors.
+    if (!dielectricPlanned.isEmpty()) {
+        QList<ChargedCell> charged;
+        for (int i = 0; i < nc; ++i) {
+            ChargedCell cell;
+            cell.rect = c.rect.at(i);
+            cell.z = zOf.at(i);
+            charged << cell;
+        }
+        c.dielectric = dielectricCorrection(dielectricPlanned, charged, nc > kMostDenseCorrection,
+                                            control != nullptr ? control->stop : nullptr);
+        if (control != nullptr && control->stop != nullptr && control->stop->load()) return FullWave();
+        if (!c.dielectric.ok()) {
+            out.problems << c.dielectric.problems;
+            return out;
+        }
+        c.corrected = true;
+        c.dielectricLines = dielectricPlanned.lines + c.dielectric.lines;
+    }
     for (int a = 0; a < nr; ++a) c.hRun[a] = a < c.planar ? heightIndex(c.runs.at(a).z0) : -1;
     // Each port's own path to the cells it drives (PortPath): up from the
     // ground, or from the cells of the metal an internal port is driven
@@ -3325,6 +3325,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             return out;
         }
 
+    out.lines << c.dielectricLines;
     out.lines << tr("%1 run(s) of current over %2 cell(s), at %3 metal height(s); %4 port(s), %5 frequency(ies) from "
                     "%6 to %7 GHz, %8 at a time.")
                      .arg(nr).arg(nc).arg(c.nh).arg(np).arg(nf)

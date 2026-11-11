@@ -580,11 +580,26 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         height.insert(name, heightOf(stack, name));
     }
 
-    const Layers layers0 = layersOf(stack);
-    if (!layers0.ok()) {
-        out.problems += layers0.problems;
+    const Layers stackLayers = layersOf(stack);
+    if (!stackLayers.ok()) {
+        out.problems += stackLayers.problems;
         return out;
     }
+    // A layer that ends (rf25_dielectric.h): the Green's functions of the
+    // background - each such layer as it is beyond its shapes -, and its
+    // shapes' polarization added to the potential coefficients below.
+    DielectricPlan plan;
+    if (control != nullptr && !control->extents.isEmpty()) {
+        QRectF around;
+        for (const MeshCell& c : mesh.cells) around = around.united(scaled(c.outline.boundingRect(), micrometre));
+        plan = dielectricPlan(stackLayers, control->extents, around);
+        if (!plan.ok()) {
+            out.problems += plan.problems;
+            return out;
+        }
+        out.lines += plan.lines;
+    }
+    const Layers layers0 = plan.isEmpty() ? stackLayers : plan.background;
     // The same stack with every dielectric vacuum, for C0.
     Layers vacuum = layers0;
     for (Layers::Slab& slab : vacuum.slabs) slab.epsr = 1;
@@ -659,6 +674,27 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                             .arg(n).arg(kMostCharges);
         return out;
     }
+
+    // The ended layers' correction to the potential coefficients, between
+    // the unknowns in their order.
+    DielectricCorrection dielectric;
+    if (!plan.isEmpty()) {
+        QList<ChargedCell> charged;
+        for (const int k : std::as_const(which)) {
+            ChargedCell c;
+            c.rect = scaled(mesh.cells.at(k).outline.boundingRect(), micrometre);
+            c.z = height.value(mesh.cells.at(k).layer);
+            charged << c;
+        }
+        dielectric = dielectricCorrection(plan, charged, false, control != nullptr ? control->stop : nullptr);
+        if (stopped()) return out;
+        if (!dielectric.ok()) {
+            out.problems += dielectric.problems;
+            return out;
+        }
+        out.lines += dielectric.lines;
+    }
+    const bool corrected = dielectric.delta.size() > 0;
 
     // Which net each unknown belongs to, in the order they were gathered.
     QList<int> netOf;
@@ -793,10 +829,68 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // charge crowds across it: R per metre is the surface resistance times
     // the sum of each strip's charge squared over its width, over the
     // whole charge squared - the current running where the charge sits.
+    // An ended layer's correction per metre of the line: the cross-section
+    // of the stack as it is - the layer everywhere -, and of a strip the
+    // difference the layer's end makes, its cells' along it each the charge
+    // per metre times its length, from the whole structure's corrections
+    // with the layer as drawn and with it drawn everywhere, read at the
+    // middle's cells. (The correction alone, with the background's
+    // cross-section, was the substrate's whole effect summed over the
+    // piece solved and not the endless line: a strip's per metre 8 % low
+    // under a substrate drawn far wider than it.) That difference is the
+    // end's, near it, and fades along the line.
+    QList<QList<QPair<int, double>>> stripOf;
+    Eigen::MatrixXd endOnly;
+    QMap<QString, Green> fullGreens;
+    if (corrected && uniform) {
+        QList<Extent> everywhere = control->extents;
+        for (Extent& e : everywhere) e.shapes = {QPolygonF(QRectF(-1e7, -1e7, 2e7, 2e7))};
+        QRectF around;
+        for (const MeshCell& c : mesh.cells) around = around.united(scaled(c.outline.boundingRect(), micrometre));
+        const DielectricPlan all = dielectricPlan(stackLayers, everywhere, around);
+        QList<ChargedCell> charged;
+        for (const int k : std::as_const(which)) {
+            ChargedCell c;
+            c.rect = scaled(mesh.cells.at(k).outline.boundingRect(), micrometre);
+            c.z = height.value(mesh.cells.at(k).layer);
+            charged << c;
+        }
+        const DielectricCorrection whole = dielectricCorrection(all, charged, false, control->stop);
+        if (stopped()) return out;
+        endOnly = whole.ok() && whole.delta.size() > 0 ? Eigen::MatrixXd(dielectric.delta - whole.delta) : dielectric.delta;
+        for (const QString& a : std::as_const(layers))
+            for (const QString& b : std::as_const(layers)) {
+                const QString key = keyOf(a, b);
+                if (fullGreens.contains(key)) continue;
+                fullGreens.insert(key, Green(stackLayers, height.value(a), height.value(b)));
+                Green& g = fullGreens[key];
+                if (control != nullptr) g.stopWith(control->stop);
+                g.images();
+                if (stopped()) return out;
+            }
+        for (int b = 0; b < column.size(); ++b) {
+            const MeshCell& cb = mesh.cells.at(which.at(column.at(b)));
+            const auto [t0, t1] = acrossOf(cb.outline.boundingRect());
+            QList<QPair<int, double>> strip;
+            for (int k = 0; k < n; ++k) {
+                const MeshCell& ck = mesh.cells.at(which.at(k));
+                if (ck.layer != cb.layer) continue;
+                const auto [u0, u1] = acrossOf(ck.outline.boundingRect());
+                if (std::abs(u0 - t0) > eps || std::abs(u1 - t1) > eps) continue;
+                const auto [s0, s1] = alongOf(ck.outline.boundingRect());
+                strip << qMakePair(k, (s1 - s0) * micrometre);
+            }
+            stripOf << strip;
+        }
+    }
     const auto crossSection = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
-                                  QList<QList<double>>* matrix, QList<double>* crowd) {
+                                  QList<QList<double>>* matrix, QList<double>* crowd, bool withDielectric = false) {
         const int m = int(column.size());
         Eigen::MatrixXd p = Eigen::MatrixXd::Zero(m, m);
+        if (withDielectric && !stripOf.isEmpty())
+            for (int a = 0; a < m; ++a)
+                for (int b = 0; b < m; ++b)
+                    for (const auto& [k, length] : stripOf.at(b)) p(a, b) += endOnly(column.at(a), k) * length;
         for (int a = 0; a < m; ++a) {
             if (control != nullptr && control->stopped()) return;
             const MeshCell& ca = mesh.cells.at(which.at(column.at(a)));
@@ -814,7 +908,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                     sum += cellPotential(at, copy, g, side, a == b && k == 0);
                 }
                 // (A charge per metre on the strip puts delta of it on each copy.)
-                p(a, b) = sum * delta;
+                p(a, b) += sum * delta;
             }
         }
         const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
@@ -850,9 +944,10 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
 
     QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
-                           QList<QList<double>>* matrix, QList<double>* crowd = nullptr) {
+                           QList<QList<double>>* matrix, QList<double>* crowd = nullptr, bool withDielectric = false) {
         Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control);
         if (control != nullptr && control->stopped()) return 1.0;
+        if (withDielectric && corrected) p += dielectric.delta;
         ++out.solves;
         const double hint = p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
         // Each net held at a volt and the others at nought, every net at
@@ -895,7 +990,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     };
 
     if (control != nullptr) control->at(ExtractControl::Charge);
-    out.conditionHint = solve(fromStack, &out.maxwell, &crowding);
+    out.conditionHint = solve(fromStack, &out.maxwell, &crowding, true);
     if (stopped()) return out;
     if (control != nullptr) control->at(ExtractControl::Vacuum);
     solve(fromVacuum, &out.maxwell0);
@@ -904,7 +999,15 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     out.grounded = layers0.groundBelow;
     if (uniform) {
         if (control != nullptr) control->at(ExtractControl::CrossSection);
-        crossSection(fromStack, &out.perMetre.maxwell, &out.perMetre.crowding);
+        // (With a layer that ends, of the stack as it is: the end's own
+        //  difference added, above.)
+        const auto fromFull = [&fullGreens, &keyOf, &fromStack](const QString& a, const QString& b) -> const Green& {
+            const auto it = fullGreens.constFind(keyOf(a, b));
+            return it != fullGreens.constEnd() ? it.value() : fromStack(a, b);
+        };
+        crossSection(fullGreens.isEmpty() ? std::function<const Green&(const QString&, const QString&)>(fromStack)
+                                          : std::function<const Green&(const QString&, const QString&)>(fromFull),
+                     &out.perMetre.maxwell, &out.perMetre.crowding, true);
         crossSection(fromVacuum, &out.perMetre.maxwell0, nullptr);
         if (stopped()) return out;
     }
@@ -1076,7 +1179,9 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             const double tand = tandOf(k);
             if (!(tand > 0)) continue;
             if (control != nullptr) control->at(ExtractControl::Losses, lossyDone++, lossyAll);
-            Layers nudged = layers0;
+            // (A uniform line's per metre with a layer that ends: of the
+            //  stack as it is, as its cross-section above.)
+            Layers nudged = corrected && uniform ? stackLayers : layers0;
             const double was = nudged.slabs[k].epsr;
             const double step = was * 1e-3;
             nudged.slabs[k].epsr = was + step;
@@ -1111,8 +1216,8 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             // time once the stack's Green's functions took milliseconds (a
             // coplanar line on that lithium niobate, four lossy layers: its
             // matrix filled and factored six times where twice is enough).
-            if (!uniform) solve(fromNudged, &nudgedMaxwell);
-            if (uniform) crossSection(fromNudged, &nudgedPerMetre, nullptr);
+            if (!uniform) solve(fromNudged, &nudgedMaxwell, nullptr, true);
+            if (uniform) crossSection(fromNudged, &nudgedPerMetre, nullptr, true);
             if (stopped()) return out;
             // The whole matrix's derivative, not one number of it: a
             // layer's loss couples two conductors as well as loading one,

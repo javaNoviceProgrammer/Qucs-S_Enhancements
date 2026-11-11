@@ -313,6 +313,10 @@ struct Feed {
 /// What a long solve is told, and tells: a flag that stops it between
 /// frequencies, how many it has solved, and how many threads it may use.
 struct FullWaveControl {
+    /// The stack's layers that end: there only inside their shapes
+    /// (rf25_dielectric.h) - their static polarization in the potential
+    /// coefficients, the background's Green's functions with each beyond.
+    QList<Extent> extents;
     std::atomic_bool* stop = nullptr;
     std::atomic_int* done = nullptr;
     /// Told, as a solve begins its frequencies - its setup done - how many

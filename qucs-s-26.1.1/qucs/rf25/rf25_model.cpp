@@ -185,13 +185,19 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("11.9")),
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("0"),
-               tr("A lossy silicon substrate: 10[S/m] for 10 Ohm cm. Zero for an insulating one."))},
+               tr("A lossy silicon substrate: 10[S/m] for 10 Ohm cm. Zero for an insulating one.")),
+          expr(QStringLiteral("beyond"), tr("Beyond its shapes"), QString(), QStringLiteral("1"),
+               tr("Where the layer map sends shapes to this layer, it is there only inside them - a chip's or a board's "
+                  "edge, a trench -, and this relative permittivity beyond them: 1 for air."))},
          {}, {}, false, true, QStringLiteral("sub"),
          tr("The bottom layer, below every metal. One at most, and first in the stack.")});
     add({QStringLiteral("rf_dielectric"), tr("Dielectric"), QStringLiteral("stack"), QStringLiteral("layer"), none,
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("1[um]")),
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("4.1")),
-          expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0.002"))},
+          expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0.002")),
+          expr(QStringLiteral("beyond"), tr("Beyond its shapes"), QString(), QStringLiteral("1"),
+               tr("Where the layer map sends shapes to this layer, it is there only inside them - an oxide under one part "
+                  "alone, a dielectric cut back -, and this relative permittivity beyond them: 1 for air."))},
          {}, {}, false, false, QStringLiteral("d"),
          tr("An insulating layer: an oxide between two metals, a passivation over the top metal.")});
     add({QStringLiteral("rf_metal"), tr("Metal"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
@@ -942,11 +948,13 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("epsr"), &layer.epsr);
             read(QStringLiteral("tand"), &layer.tand);
             read(QStringLiteral("sigma"), &layer.sigma);
+            if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
             break;
         case Layer::Dielectric:
             read(QStringLiteral("thickness"), &layer.thickness);
             read(QStringLiteral("epsr"), &layer.epsr);
             read(QStringLiteral("tand"), &layer.tand);
+            if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
             break;
         case Layer::Metal:
             read(QStringLiteral("thickness"), &layer.thickness);
@@ -1028,6 +1036,8 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("%1 has no thickness.").arg(name(l));
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.epsr < 1 && read("epsr"))
             out.problems << tr("%1 has a relative permittivity below 1 (%2).").arg(name(l)).arg(l.epsr);
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.beyond < 1 && read("beyond"))
+            out.problems << tr("%1 has a relative permittivity beyond its shapes below 1 (%2).").arg(name(l)).arg(l.beyond);
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand < 0 && read("tand"))
             out.problems << tr("%1 has a loss tangent below zero.").arg(name(l));
         if (l.kind == Layer::Metal && !(l.sigma > 0) && read("sigma"))
