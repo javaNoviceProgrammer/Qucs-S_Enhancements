@@ -1798,7 +1798,9 @@ private slots:
                 Node t = m.make(QStringLiteral("frequency"));
                 c.children.push_back(t);
             }
-        why = refused(m, QStringLiteral("not solved in 3D yet"));
+        // (A Frequency Domain step in 3D a semiconductor's small signal: a
+        // heat model's refused, said.)
+        why = refused(m, QStringLiteral("a semiconductor's small signal"));
         QVERIFY2(why.isEmpty(), qPrintable(why));
         // A step in time where a domain has no ρ and Cp.
         m = base();
@@ -1821,8 +1823,8 @@ private slots:
         why = refused(m, QStringLiteral("must be a constant, or of t alone"));
         QVERIFY2(why.isEmpty(), qPrintable(why));
         m = base();
-        Node solid = m.make(QStringLiteral("solid"));
-        m.component().children.push_back(solid);   // (as a file could have it: add() refuses it)
+        Node pde = m.make(QStringLiteral("pde"));
+        m.component().children.push_back(pde);   // (as a file could have it: add() refuses it)
         why = refused(m, QStringLiteral("not solved in 3D yet"));
         QVERIFY2(why.isEmpty(), qPrintable(why));
     }

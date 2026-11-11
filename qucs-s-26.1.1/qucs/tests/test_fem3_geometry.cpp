@@ -252,15 +252,16 @@ private slots:
         QVERIFY(!kinds3.contains(QStringLiteral("rectangle")) && !kinds3.contains(QStringLiteral("process")));
         const QStringList sketch = childKinds(*m.find(extTag), m.spaceUnder(*m.find(extTag)));
         QVERIFY(sketch.contains(QStringLiteral("rectangle")) && sketch.contains(QStringLiteral("union")) && !sketch.contains(QStringLiteral("box")));
-        // Its physics heat, electrostatics and currents (phase C) and light's -
-        // the eigenmode expansion and the full-wave solve - alone; a study; a
-        // 2D model's kinds as they were.
+        // Its physics heat, electrostatics and currents (phase C), solid
+        // mechanics, magnetic fields, semiconductors and light's - the eigenmode expansion and the full-wave
+        // solve - alone; a study; a 2D model's kinds as they were.
         QStringList physics3 = childKinds(m.component(), m.space());
         physics3.sort();
         QCOMPARE(physics3, (QStringList{QStringLiteral("currents"), QStringLiteral("electrostatics"), QStringLiteral("eme"), QStringLiteral("heat"),
-                                        QStringLiteral("waves3"), QStringLiteral("waves3t")}));
+                                        QStringLiteral("magnetic"), QStringLiteral("semiconductor"), QStringLiteral("solid"), QStringLiteral("waves3"),
+                                        QStringLiteral("waves3t")}));
         QCOMPARE(childKinds(m.root, m.space()), QStringList{QStringLiteral("study")});
-        QVERIFY(!m.add(m.component().tag, m.make(QStringLiteral("solid")), -1, &why));
+        QVERIFY(!m.add(m.component().tag, m.make(QStringLiteral("pde")), -1, &why));
         // A physics of order 1 in 3D: made so, and read so where a file gives
         // none.
         QCOMPARE(m.make(QStringLiteral("heat")).text(QStringLiteral("order")), QStringLiteral("1"));

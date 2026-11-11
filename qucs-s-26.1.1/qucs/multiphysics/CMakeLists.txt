@@ -26,6 +26,9 @@ set(FEM_SRCS
   fem_amg.cpp
   fem_scalar.cpp
   fem3_scalar.cpp
+  fem3_solid.cpp
+  fem3_magnetic.cpp
+  fem3_semiconductor.cpp
   fem3_results.cpp
   fem3_export.cpp
   fem3_estimate.cpp

@@ -11,6 +11,7 @@
  */
 #include "fem3_estimate.h"
 #include "fem3_mesh.h"
+#include "fem3_wave.h"
 #include "fem_sparse.h"
 
 #include <QCoreApplication>
@@ -149,14 +150,20 @@ qint64 patternNonzeros(const Space3& space, int threads)
     return total;
 }
 
-Estimate3 estimateOn(const Space3& space, qint64 nonzeros, const QString& solver)
+int componentsOf(const QString& type)
+{
+    return type == QLatin1String("solid") || type == QLatin1String("semiconductor") ? 3 : 1;
+}
+
+Estimate3 estimateOn(const Space3& space, qint64 nonzeros, const QString& solver, int components)
 {
     Estimate3 e;
+    const int c = std::max(1, components);
     e.order = space.order();
-    e.unknowns = space.size();
-    e.nonzeros = nonzeros;
+    e.unknowns = qint64(space.size()) * c;
+    e.nonzeros = nonzeros * c * c;
     e.elements = space.elements();
-    e.perElement = space.perElement();
+    e.perElement = space.perElement() * c;
     const double nnz = double(nonzeros), n = double(e.unknowns);
     const double entries = double(e.elements) * e.perElement * e.perElement;
     const double matrix = kMatrixPerNonzero * nnz + kMatrixPerColumn * n;
@@ -186,12 +193,13 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
     qint64 nonzeros[3] = {0, 0, 0};
     for (const Node* p : model.physics()) {
         if (!p->enabled) continue;
-        const int order = p->text(QStringLiteral("order")) == QLatin1String("2") ? 2 : 1;
+        const int order = p->text(QStringLiteral("order")) == QLatin1String("2") && p->type != QLatin1String("semiconductor") ? 2 : 1;
         if (!spaces[order]) {
             spaces[order] = std::make_shared<Space3>(mesh, order);
             nonzeros[order] = patternNonzeros(*spaces[order]);
         }
-        Estimate3 e = estimateOn(*spaces[order], nonzeros[order], solver);
+        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order)
+                                                           : estimateOn(*spaces[order], nonzeros[order], solver, componentsOf(p->type));
         e.physics = p->tag;
         e.name = p->name();
         out.push_back(e);

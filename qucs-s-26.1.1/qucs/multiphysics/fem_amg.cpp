@@ -82,6 +82,9 @@ struct AmgSolver::Impl {
     double tolerance = 1e-9;
     int maxIterations = 500;
     bool nonsymmetric = false;
+    int nullCols = 0;
+    std::vector<double> nullB;
+    int blockSize = 1;
     // (The matrix kept: the fallback's, and the residual's.)
     Eigen::SparseMatrix<double> a;
     // (One of them, by the smoother; a matrix not symmetric BiCGStab's.)
@@ -123,6 +126,13 @@ void AmgSolver::setMaxIterations(int iterations)
 void AmgSolver::setNonsymmetric(bool nonsymmetric)
 {
     a_impl->nonsymmetric = nonsymmetric;
+}
+
+void AmgSolver::setNearNullspace(int cols, std::vector<double> b, int blockSize)
+{
+    a_impl->nullCols = cols > 0 ? cols : 0;
+    a_impl->nullB = cols > 0 ? std::move(b) : std::vector<double>();
+    a_impl->blockSize = std::max(1, blockSize);
 }
 
 std::size_t AmgSolver::bytes() const
@@ -167,6 +177,13 @@ bool AmgSolver::compute(const Eigen::SparseMatrix<double>& a, QString* error)
             typename S::params prm;
             prm.solver.tol = d.tolerance;
             prm.solver.maxiter = std::size_t(d.maxIterations);
+            if (d.nullCols > 0 && d.nullB.size() == std::size_t(std::get<0>(matrix)) * std::size_t(d.nullCols)) {
+                prm.precond.coarsening.nullspace.cols = d.nullCols;
+                prm.precond.coarsening.nullspace.B = d.nullB;
+                // (Rows in blocks - a node's three displacements together -
+                // aggregated as one point.)
+                if (d.blockSize > 1 && std::get<0>(matrix) % d.blockSize == 0) prm.precond.coarsening.aggr.block_size = d.blockSize;
+            }
             solver = std::make_unique<S>(matrix, prm);
             d.bytes = solver->precond().bytes();
         };
