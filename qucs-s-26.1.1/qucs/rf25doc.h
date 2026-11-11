@@ -17,6 +17,7 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "qucsdoc.h"
+#include "rf25/rf25_adaptive.h"
 #include "rf25/rf25_circuit.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_hfss.h"
@@ -197,6 +198,14 @@ public:
     /// quasi-statically, or the model changed since). One of this and
     /// extraction() is what a solve leaves, never both.
     std::shared_ptr<const qucs_s::rf25::FullWave> fullWave() const { return a_fullWave; }
+    /// The last mesh convergence check (SolveRequest::levels), or null: none,
+    /// or the model changed since.
+    std::shared_ptr<const qucs_s::rf25::MeshConvergence> convergence() const { return a_convergence; }
+    /// Whether the solve going on is a mesh convergence check.
+    bool isCheckingConvergence() const;
+    /// What a convergence check is asked for where nothing else is: the
+    /// meshes defaultLevels() says of the model's own mesh's cells across.
+    QList<int> convergenceLevels() const;
     /// Whether the study asks for the full-wave solve (its Solver).
     bool studyIsFullWave() const;
     /// Solves it, in the background, on the shapes and the mesh as they
@@ -213,6 +222,15 @@ public:
         QString solver;              ///< "quasi_static" or "full_wave"; empty: the study's
         QList<double> frequencies;   ///< a full-wave solve's, Hz; empty: the study's sweep
         QString matrix;              ///< "automatic", "dense" or "compressed"; empty: the study's Matrix
+        /// A full-wave sweep's points added where its answer changes
+        /// (rf25_adaptive.h): 1 yes, 0 no, -1 as the study says. Never of
+        /// frequencies asked for, nor of a convergence check.
+        int adaptive = -1;
+        /// A mesh convergence check rather than a solve: the cells across
+        /// the narrowest conductor of each mesh, the coarsest first (a full
+        /// wave at \a frequencies, the top of the study's sweep where none
+        /// are given). Empty: a solve.
+        QList<int> levels;
     };
     /// solve(), as \a request says.
     void solveWith(const SolveRequest& request);
@@ -520,6 +538,17 @@ private:
     void buildUi();
     void prepareDone();
     void solveDone();
+    /// A full-wave solve of \a mesh at \a frequencies, its ports
+    /// de-embedded where they ask - as \a job has them - on the job's
+    /// thread, the strips of its ports' feeds meshed as \a how says (as
+    /// \a mesh was); \a adaptive, its points added where its answer changes
+    /// (\a tolerance on S). What reading the ports said goes to \a notes.
+    static std::shared_ptr<qucs_s::rf25::FullWave> solveWaveOn(SolveJob& job, const qucs_s::rf25::Mesh& mesh,
+                                                               const qucs_s::rf25::MeshSettings& how,
+                                                               const QList<double>& frequencies, bool adaptive,
+                                                               double tolerance, QStringList* notes);
+    /// A convergence check's meshes, each solved, on the job's thread.
+    static void convergeOn(SolveJob& job);
     /// stopSolving() but for the bar: a solve let go to be started again at
     /// once - on an edit's mesh, or as solveWith() asks - keeps it.
     void letSolveGo();
@@ -580,6 +609,8 @@ private:
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
     std::shared_ptr<const qucs_s::rf25::FullWave> a_fullWave;
+    std::shared_ptr<const qucs_s::rf25::MeshConvergence> a_convergence;
+    QByteArray a_convergenceModel, a_convergenceLayout;   ///< what it checked: solveStampOf(), layoutStamp()
     QStringList a_waveNotes;       ///< what reading the ports said (a de-embedding not done...)
     SolveRequest a_solveRequest;   ///< the last asked for, for one waiting for the mesh
     QTimer* a_progress = nullptr;  ///< a solve's bar, and a full-wave one's frequencies, counted while it runs
