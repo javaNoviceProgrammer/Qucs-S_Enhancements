@@ -120,6 +120,25 @@ public:
     /// interfaces to get there, so it is one of the images like the rest,
     /// freeSpace() is nothing and potential() is the images alone.
     Green(const Layers& layers, double zField, double zSource);
+    /*!
+     * The normal field's Green's function: E_z at height \a zField of a
+     * unit charge at \a zSource, V/m per coulomb. Each path's length
+     * changes with the point's height at a slope of one, up or down; its
+     * image carries that sign in its coefficient (Image::a), so that
+     *
+     *     E_z(rho) = sum a z / (4 pi eps (rho^2 + z^2)^(3/2))
+     *
+     * of the same images, signed - exact, where the difference of two
+     * potentials built at two heights (each expansion binned and pruned
+     * on its own) is good to a part in some thousands of what each is,
+     * and a thin film's two faces' bound charge, nearly opposite, is
+     * their small difference. \a side: where the point is at the charge's
+     * own height, just above it (+1) or just below (-1) - the side of a
+     * charged sheet the field is read on.
+     */
+    Green(const Layers& layers, double zField, double zSource, int side);
+    /// Whether this is the normal field's (the constructor above).
+    bool isField() const { return a_side != 0; }
 
     /// Whether it can be read: its heights in the stack and, once its
     /// images are built, that they were - not stopped, nor past the bound
@@ -228,6 +247,13 @@ public:
     /// less the terms strongestTerms() returned.
     double beyondStrongest(double rho, int most) const;
 
+    /// The normal field's (isField()): E_z at \a rho, V/m per coulomb, read
+    /// from its table; summed over the images exactly; what the \a most
+    /// strongest leave out, summed.
+    double normalField(double rho) const;
+    double normalFieldExact(double rho) const;
+    double normalFieldBeyond(double rho, int most) const;
+
 private:
     /// The images and the table, built when something first asks for
     /// them. A Green asked only for its spectral value - which is what
@@ -262,6 +288,8 @@ private:
     mutable QStringList a_unbuilt;     ///< why the images are not there, once built
     const std::atomic_bool* a_stop = nullptr;
     double a_mostPairs = 0;
+    int a_side = 0;                    ///< the normal field's: the side of a charge at its own height
+    mutable double a_fieldScale = 0;   ///< the normal field's: its nearest image's distance, m
     QStringList a_problems;
 };
 

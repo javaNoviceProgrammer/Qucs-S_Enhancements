@@ -28,18 +28,26 @@
  *    beyond its shapes, everywhere, and the region its shapes, within a
  *    box round the conductors - grown by six heights of the stack, past
  *    which what a conductor's field polarizes is a part in some hundreds.
- *  - Its faces in panels: its top and bottom in squares graded from the
- *    conductors and the region's edges outward, cut to it and kept convex,
- *    where a metal lies on it that metal's cells; its walls in strips along
- *    each edge in rows up its thickness. A face on a ground plane has none:
- *    its charge and its image are one.
- *  - Each panel's charge from the field just inside it, the field from the
- *    potential: of a panel near, its own closed form (Wilton, Rao,
- *    Glisson, Schaubert, Al-Bundak and Butler, IEEE Trans. AP 32 (1984)
- *    276) for each of the strongest images of the background, the rest from
- *    its table; of one far, its charge at its middle. The field normal to a
- *    face is a one-sided difference of the potential there and a little
- *    inside, second order - which takes the face's own jump as it is.
+ *  - Its faces in panels: its top and bottom in rectangles graded from the
+ *    conductors and the region's edges outward - across an edge by how far
+ *    it is, along a straight one up to four times that, as the mesh
+ *    stretches a line's cells -, cut to it and kept convex, where a metal
+ *    lies on it that metal's cells; its walls in strips along each edge, in
+ *    rows up its thickness that begin a quarter of the finest cell from a
+ *    face a metal is near and grow by half. A face on a ground plane has
+ *    none: its charge and its image are one.
+ *  - Each panel's charge from the field just inside it. A face's is its
+ *    normal field, of Green's normal-field functions (rf25_green.h) - each
+ *    image signed by how its path moves with the point's height -: of a
+ *    rectangle near, averaged over the face's panel exactly for each strong
+ *    image (rectanglePairField()), of another shape the solid angle it
+ *    subtends at points of the panel, of a wall the line integrals along
+ *    its images' edges, the rest from the images. A wall's is a one-sided
+ *    difference of the potential across a step at its own height: of a
+ *    panel near, its own closed form (Wilton, Rao, Glisson, Schaubert,
+ *    Al-Bundak and Butler, IEEE Trans. AP 32 (1984) 276) for each of the
+ *    strongest images of the background, the rest from its table; of one
+ *    far, its charge at its middle.
  *
  * What the conductors see of it is a correction to their potential
  * coefficients, P = P_background + P_cb M^-1 T: T what their charges put on
@@ -76,6 +84,19 @@ namespace qucs_s::rf25 {
 /// potential at the point is this times its charge density over 4 pi eps.
 /// Exact anywhere, on the polygon itself too.
 double polygonIntegral(const QList<std::array<double, 3>>& corners, const std::array<double, 3>& at);
+/// The solid angle \a polygon subtends at \a at (the same arguments): the
+/// integral of |d| / R^3 over it, d the point's distance from its plane -
+/// its normal field over 4 pi eps per unit charge density. In its plane, 2
+/// pi inside it, pi on an edge and nought outside: the side of a charged
+/// sheet the point is on is the caller's to say.
+double solidAngle(const QList<std::array<double, 3>>& corners, const std::array<double, 3>& at);
+
+/// The integral over rectangle \a a of the integral over rectangle \a b
+/// (parallel, axis-aligned, m) of w / R^3, R between their points and \a w
+/// their planes' distance apart: a's mean normal field of b's even charge
+/// times 4 pi eps a's area b's area. 2 pi their overlap where they share a
+/// plane.
+double rectanglePairField(const QRectF& a, const QRectF& b, double w);
 
 /// A layer of the stack that ends: there only inside \a shapes (µm), and
 /// of permittivity \a beyond outside them.
@@ -137,11 +158,17 @@ struct DielectricCorrection {
 /*!
  * The correction of \a plan for \a cells. \a factored: held as U V^T (a
  * compressed solve's many cells) rather than dense. \a stop is heeded.
- * \a mostPanels (0: the build's) bounds the panels, the grading coarsened
- * to keep within it.
+ * \a mostPanels (0: dielectricMostPanels()) bounds the panels, how fast
+ * they grow away from the conductors coarsened to keep within it - never
+ * those next to them -, and past it refused.
  */
 DielectricCorrection dielectricCorrection(const DielectricPlan& plan, const QList<ChargedCell>& cells, bool factored = false,
                                           const std::atomic_bool* stop = nullptr, int mostPanels = 0);
+
+/// The most panels a correction sets up: 8000 (a dense system of half a
+/// gigabyte), or what setDielectricMostPanels() set - 0 the build's again.
+int dielectricMostPanels();
+void setDielectricMostPanels(int most);
 
 /// Tests: the potential at \a at of a unit charge spread over a wall from
 /// \a from to \a to (m), \a z0 to \a z1, in slab \a slab of \a layers - as
