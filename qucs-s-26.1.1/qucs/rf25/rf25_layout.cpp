@@ -572,6 +572,125 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
     return out;
 }
 
+QList<Dimension> dimensionsOf(const Model& model, QStringList* problems)
+{
+    QList<Dimension> out;
+    const fem::Scope scope = scopeOf(model.parameters());
+    const Stack stack = model.stack();
+    const auto say = [problems](const QString& text) {
+        if (problems != nullptr) *problems << text;
+    };
+    for (const Node& n : model.layout().children) {
+        if (!n.enabled || n.type != QLatin1String("rf_dimension")) continue;
+        Dimension d;
+        d.tag = n.tag;
+        d.name = nameOf(n);
+        bool readable = true;
+        const auto number = [&](const char* key, double unit, const QString& what) {
+            const QJsonValue v = valueOf(n, QLatin1String(key));
+            const QString text = v.isDouble() ? QString::number(v.toDouble(), 'g', 17) : v.toString();
+            const fem::Expression e = fem::Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, scope);
+            if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
+                if (readable)
+                    say(tr("Dimensions: %1's %2 is not a number (%3).").arg(d.name, what, !e.isValid() ? e.error() : tr("it is not a constant")));
+                readable = false;
+                return 0.0;
+            }
+            return e.constant() / unit;
+        };
+        const QPointF a(number("x0", 1e-6, QStringLiteral("x0")), number("y0", 1e-6, QStringLiteral("y0")));
+        const QPointF b(number("x1", 1e-6, QStringLiteral("x1")), number("y1", 1e-6, QStringLiteral("y1")));
+        const double by = number("offset", 1e-6, tr("offset"));
+        const QString direction = textOf(n, QStringLiteral("direction"));
+        double angle = direction == QLatin1String("-x") ? 180 : direction == QLatin1String("+y") ? 90 : direction == QLatin1String("-y") ? 270 : 0;
+        if (direction == QLatin1String("angle")) angle = number("angle", 1, tr("angle"));
+        if (!readable) continue;
+        d.box = QRectF(a, b).normalized();
+        d.layer = textOf(n, QStringLiteral("layer")).trimmed();
+        const Layer* layer = stack.named(d.layer);
+        if (layer == nullptr) {
+            say(d.layer.isEmpty() ? tr("Dimensions: %1 names no layer.").arg(d.name)
+                                  : tr("Dimensions: %1 moves shapes of %2, which is no layer of the stack.").arg(d.name, d.layer));
+            continue;
+        }
+        d.layer = layer->name;
+        const double radians = angle * M_PI / 180;
+        // (Along an axis exactly: a cosine of 90 degrees is not quite nought.)
+        const double c = direction == QLatin1String("angle") ? std::cos(radians) : std::round(std::cos(radians));
+        const double s = direction == QLatin1String("angle") ? std::sin(radians) : std::round(std::sin(radians));
+        d.move = QPointF(c, s) * by;
+        d.offset = textOf(n, QStringLiteral("offset"));
+        out << d;
+    }
+    return out;
+}
+
+namespace {
+
+/// Whether segments a-b and c-d meet.
+bool segmentsMeet(QPointF a, QPointF b, QPointF c, QPointF d)
+{
+    const auto cross = [](QPointF o, QPointF p, QPointF q) { return (p.x() - o.x()) * (q.y() - o.y()) - (p.y() - o.y()) * (q.x() - o.x()); };
+    const auto on = [](QPointF p, QPointF q, QPointF r) {
+        return std::min(p.x(), r.x()) <= q.x() && q.x() <= std::max(p.x(), r.x()) && std::min(p.y(), r.y()) <= q.y() && q.y() <= std::max(p.y(), r.y());
+    };
+    const double d1 = cross(c, d, a), d2 = cross(c, d, b), d3 = cross(a, b, c), d4 = cross(a, b, d);
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+    return (d1 == 0 && on(c, a, d)) || (d2 == 0 && on(c, b, d)) || (d3 == 0 && on(a, c, b)) || (d4 == 0 && on(a, d, b));
+}
+
+/// Whether \a ring's edges cross or touch, but for neighbours at their corner.
+bool crossesItself(const QPolygonF& ring)
+{
+    const int n = int(ring.size());
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 1; j < n; ++j) {
+            if (j == i + 1 || (i == 0 && j == n - 1)) continue;
+            if (segmentsMeet(ring.at(i), ring.at((i + 1) % n), ring.at(j), ring.at((j + 1) % n))) return true;
+        }
+    return false;
+}
+
+} // namespace
+
+bool moveCorners(QPolygonF& outline, const QString& layer, const QList<Dimension>& dimensions, QString* why, QVector<int>* moved)
+{
+    QPolygonF ring = outline;
+    if (ring.size() > 1 && ring.first() == ring.last()) ring.removeLast();
+    bool any = false;
+    QString by;
+    for (int k = 0; k < dimensions.size(); ++k) {
+        const Dimension& d = dimensions.at(k);
+        if (d.layer != layer) continue;
+        // (Its edges in it: a box drawn along an edge holds it, to a part in a
+        //  billion of its size.)
+        const double slack = 1e-9 * std::max({1.0, std::abs(d.box.width()), std::abs(d.box.height())});
+        const QRectF box = d.box.adjusted(-slack, -slack, slack, slack);
+        int count = 0;
+        for (QPointF& p : ring)
+            if (box.contains(p)) {
+                p += d.move;
+                ++count;
+            }
+        if (moved != nullptr && k < moved->size()) (*moved)[k] += count;
+        if (count > 0) {
+            any = true;
+            by = d.name;
+        }
+    }
+    if (!any) return true;
+    if (crossesItself(ring) || !(std::abs(areaOf(ring)) > 0)) {
+        if (why != nullptr)
+            *why = tr("Dimensions: %1 would make a shape of %2 at (%3, %4) µm cross itself: it is left as it was.")
+                       .arg(by, layer)
+                       .arg(outline.boundingRect().center().x(), 0, 'g', 6)
+                       .arg(outline.boundingRect().center().y(), 0, 'g', 6);
+        return false;
+    }
+    outline = ring;
+    return true;
+}
+
 QList<QPolygonF> cutOf(const QList<QPolygonF>& shapes, const Cutout& cutout, const QString& layer, int* cut, int* masked)
 {
     if (cut != nullptr) *cut = 0;
@@ -911,6 +1030,10 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     }
 
     const LayerMap map = layerMapOf(model);
+    // The Dimensions: the file's corners they hold moved as the parameters say.
+    QStringList moving;
+    const QList<Dimension> dimensions = dimensionsOf(model, &moving);
+    QVector<int> moved(dimensions.size(), 0);
     // Every shape of the cell and of what it places, by the stack layer
     // the map sends it to.
     QMap<QString, QList<QPolygonF>> byLayer;
@@ -927,7 +1050,11 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
             ++ignored;
             return true;
         }
-        const QPolygonF outline = layout::outlineOf(read, found);
+        QPolygonF outline = layout::outlineOf(read, found);
+        if (!dimensions.isEmpty() && outline.size() >= 3) {
+            QString why;
+            if (!moveCorners(outline, to, dimensions, &why, &moved) && !moving.contains(why)) moving << why;
+        }
         if (outline.size() >= 3) byLayer[to] << outline;
         return true;
     });
@@ -943,6 +1070,13 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     how.cutout = cutoutOf(model, &said);
     out = processShapes(byLayer, map.fill, how, model.stack(), 1e-6);
     if (own > 0) out.report.lines << tr("%n shape(s) of the model's own (Shapes) added to the layout's.", nullptr, own);
+    for (int k = 0; k < dimensions.size(); ++k)
+        out.report.lines << (moved.at(k) > 0 ? tr("%1 moved %n corner(s) of %2 by %3 µm.", nullptr, moved.at(k))
+                                                   .arg(dimensions.at(k).name, dimensions.at(k).layer)
+                                                   .arg(std::hypot(dimensions.at(k).move.x(), dimensions.at(k).move.y()), 0, 'g', 6)
+                                             : tr("%1 moves no corner: its box holds none of %2's shapes of the layout file.")
+                                                   .arg(dimensions.at(k).name, dimensions.at(k).layer));
+    out.problems += moving;
     out.report.ignored = ignored;
     if (ignored > 0)
         out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(ignored);

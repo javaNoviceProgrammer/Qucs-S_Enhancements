@@ -134,13 +134,14 @@ void RF25Doc::setDrawTool(DrawTool tool)
     a_drawTool = tool;
     if (tool != DrawTool::None) a_lastTool = tool;
     a_polygon.clear();
+    a_dimensionBox = QRectF();
     if (a_drawButton != nullptr) {
         const QSignalBlocker quiet(a_drawButton);
         a_drawButton->setChecked(tool != DrawTool::None);
     }
-    a_view->setMode(tool == DrawTool::Rectangle ? LayoutView::Mode::PickBox
-                    : tool == DrawTool::None    ? LayoutView::Mode::Select
-                                                : LayoutView::Mode::PickPoint);
+    a_view->setMode(tool == DrawTool::Rectangle || tool == DrawTool::Dimension ? LayoutView::Mode::PickBox
+                    : tool == DrawTool::None                                   ? LayoutView::Mode::Select
+                                                                               : LayoutView::Mode::PickPoint);
     if (tool != DrawTool::None) a_view->setFocus();
     const QString layer = drawLayer();
     if (tool != DrawTool::None && layer.isEmpty())
@@ -152,6 +153,9 @@ void RF25Doc::setDrawTool(DrawTool tool)
                              "Backspace takes the last back; Escape to stop.").arg(layer));
     else if (tool == DrawTool::Via)
         a_status->setText(tr("Click where a via of %1 µm is to go; Escape to stop.").arg(um(a_viaSize)));
+    else if (tool == DrawTool::Dimension)
+        a_status->setText(tr("Drag a box round the corners of %1's shapes to move - a line's one edge, a stub's end -, then click "
+                             "the way they move; Escape to stop.").arg(layer));
     showDrawing();
 }
 
@@ -159,6 +163,7 @@ void RF25Doc::dropDrawTool()
 {
     a_drawTool = DrawTool::None;
     a_polygon.clear();
+    a_dimensionBox = QRectF();
     if (a_drawButton != nullptr) {
         const QSignalBlocker quiet(a_drawButton);
         a_drawButton->setChecked(false);
@@ -171,6 +176,19 @@ void RF25Doc::drawPicked(QPointF at)
     const QPointF p = drawSnapped(at);
     if (a_drawTool == DrawTool::Rectangle) {
         a_status->setText(tr("Drag to draw a rectangle."));
+        return;
+    }
+    if (a_drawTool == DrawTool::Dimension) {
+        if (a_dimensionBox.isNull()) {
+            a_status->setText(tr("Drag a box round the corners to move first."));
+            return;
+        }
+        QString why;
+        const QString tag = placeDimension(a_dimensionBox, at, &why);
+        a_dimensionBox = QRectF();
+        a_view->setMode(LayoutView::Mode::PickBox);
+        showDrawing();
+        if (tag.isEmpty()) a_status->setText(why);
         return;
     }
     if (a_drawTool == DrawTool::Via) {
@@ -290,7 +308,52 @@ void RF25Doc::showDrawing()
         for (const QPointF& p : std::as_const(a_polygon)) drawn.labels << LayoutView::Overlay::Label{p, QString(), QPointF()};
         overlays << drawn;
     }
+    if (a_drawTool == DrawTool::Dimension && !a_dimensionBox.isNull()) {
+        LayoutView::Overlay box;
+        box.line = QColor(230, 120, 0);
+        box.width = 2;
+        box.name = tr("the Dimension's box, the way still to click");
+        QPolygonF ring(a_dimensionBox);
+        ring.removeLast();
+        box.shapes << ring;
+        overlays << box;
+    }
     a_view->setOverlays(overlays);
+}
+
+QString RF25Doc::placeDimension(const QRectF& box, QPointF toward, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return QString();
+    };
+    const QRectF b = box.normalized();
+    if (!(b.width() > 0 || b.height() > 0)) return fail(tr("The Dimension's box is a point: drag one round the corners to move."));
+    const QString layer = drawLayer();
+    if (layer.isEmpty()) return fail(tr("The stack has no metal: a Dimension moves a layer's shapes."));
+    const QPointF way = toward - b.center();
+    if (way.isNull()) return fail(tr("Click outside the box's centre: the way from it is the way the corners move."));
+    const QString direction = std::abs(way.x()) >= std::abs(way.y()) ? (way.x() > 0 ? QStringLiteral("+x") : QStringLiteral("-x"))
+                                                                     : (way.y() > 0 ? QStringLiteral("+y") : QStringLiteral("-y"));
+    Model m = a_model;
+    Node n = m.make(QStringLiteral("rf_dimension"));
+    const auto len = [](double v) { return QString::number(v, 'g', 12) + QStringLiteral("[um]"); };
+    n.props.insert(QStringLiteral("layer"), layer);
+    n.props.insert(QStringLiteral("x0"), len(b.left()));
+    n.props.insert(QStringLiteral("y0"), len(b.top()));
+    n.props.insert(QStringLiteral("x1"), len(b.right()));
+    n.props.insert(QStringLiteral("y1"), len(b.bottom()));
+    n.props.insert(QStringLiteral("direction"), direction);
+    n.props.insert(QStringLiteral("offset"), QStringLiteral("0[um]"));
+    QString error;
+    const Node* added = m.add(m.layout().tag, n, -1, &error);
+    if (added == nullptr) return fail(tr("The Dimension could not be added: %1").arg(error));
+    const QString tag = added->tag;
+    if (!setModel(m, tr("a dimension"))) return fail(tr("The Dimension could not be added to the model."));
+    focusNode(tag);
+    a_status->setText(tr("%1 moves the corners of %2 in %3 toward %4: write its By as an expression of a parameter (w - 50[um]).")
+                          .arg(tag, layer, boxSaid(b), direction));
+    return tag;
 }
 
 void RF25Doc::fillDrawMenu()
@@ -313,6 +376,9 @@ void RF25Doc::fillDrawMenu()
     tool(tr("Rectangle"), DrawTool::Rectangle, tr("Drag a rectangle"));
     tool(tr("Polygon"), DrawTool::Polygon, tr("Click its corners; a double click closes it"));
     tool(tr("Via"), DrawTool::Via, tr("Click where a square via goes"));
+    tool(tr("Dimension"), DrawTool::Dimension,
+         tr("Drag a box round corners of the layout file's shapes, then click the way they move: a Dimension, its By to be "
+            "tied to a parameter"));
     a_drawMenu->addSeparator();
     // The layers of the stack one draws on: its metals and vias, the top
     // first, as the stack is drawn.

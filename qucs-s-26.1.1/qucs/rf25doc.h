@@ -496,7 +496,7 @@ public:
      * file as it was put back. The port tools, the pen and these are one
      * at a time; Escape puts it down.
      */
-    enum class DrawTool { None, Rectangle, Polygon, Via };
+    enum class DrawTool { None, Rectangle, Polygon, Via, Dimension };
     DrawTool drawTool() const { return a_drawTool; }
     void setDrawTool(DrawTool tool);
     /// The Draw button (its arrow, the menu: the tools, the layer, the
@@ -540,6 +540,16 @@ public:
     /// draws them where each edit says "parametric": true. Kept for the next
     /// model opened.
     bool drawsParametric() const { return a_drawParametric; }
+    /// A Dimension added (Layout > Dimension, rf_dimension): the corners of
+    /// the layout file's shapes on drawLayer() inside \a box (µm) moved the
+    /// way of \a toward from its centre - along x or y, whichever it is
+    /// further -, its By nought for a parameter to be written in. One step
+    /// of Undo, the panel showing it. Its tag, or empty and why. The Draw
+    /// menu's Dimension tool: a drag the box, a click the way.
+    QString placeDimension(const QRectF& box, QPointF toward, QString* why = nullptr);
+    /// The box the Dimension tool has drawn, the way still to click; empty
+    /// where none is.
+    QRectF dimensionBox() const { return a_dimensionBox; }
     void setDrawsParametric(bool own);
     /// The model's own shapes as its parameters make them (Shapes): drawn
     /// over the layout in their layers' colours, a click on one choosing
@@ -670,6 +680,7 @@ private:
     QString a_drawLayer;                         ///< chosen in the menu; empty: drawLayer()'s own choice
     double a_viaSize = 1;
     bool a_drawParametric = false;               ///< setDrawsParametric()
+    QRectF a_dimensionBox;                       ///< dimensionBox()
     QList<qucs_s::rf25::OwnShape> a_ownShapes;   ///< ownShapes(), as shown
     QPointF a_pressedAt;                         ///< where the button went down in Select: a click there chooses an own shape
     /// \a edits as the tools draw them: each add "parametric" where the
