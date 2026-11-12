@@ -546,6 +546,35 @@ private slots:
         QCOMPARE(tagged.styleAt(5, "3"), -1);
         QCOMPARE(tagged.styleAt(5, "4"), as(Style::Number));
 
+        // An empty key ends there, as a key before its ':' does: its tag
+        // is not its value's (!!str : 42, the spec's example 7.2), and a
+        // block scalar after it, or after a "? " key's ':', is under its
+        // column - the lines back at that column are keys again.
+        const Highlighted flowEmpty(LANG_YAML, "{ !!str : 42 }\n");
+        QCOMPARE(flowEmpty.styleAt(0, "!!str"), as(Style::Type));
+        QCOMPARE(flowEmpty.styleAt(0, "42"), as(Style::Number));
+        const Highlighted empty(LANG_YAML,
+                                "!!str : 43\n"          // 0
+                                "? |\n"                 // 1
+                                "  block key\n"         // 2
+                                ": |\n"                 // 3
+                                "  block value\n"       // 4
+                                "next: 1\n"             // 5
+                                "!!str : |\n"           // 6
+                                "  empty key's text\n"  // 7
+                                "sibling: 2\n");        // 8
+        QCOMPARE(empty.styleAt(0, "43"), as(Style::Number));
+        QCOMPARE(empty.styleAt(1, "?"), as(Style::Builtin));
+        QCOMPARE(empty.styleAt(2, "block key"), as(Style::String));
+        QCOMPARE(empty.styleAt(3, ":"), as(Style::Builtin));
+        QCOMPARE(empty.styleAt(3, "|"), as(Style::Builtin));
+        QCOMPARE(empty.styleAt(4, "block value"), as(Style::String));
+        QCOMPARE(empty.styleAt(5, "next"), as(Style::Key));
+        QCOMPARE(empty.styleAt(5, "1"), as(Style::Number));
+        QCOMPARE(empty.styleAt(7, "empty key's text"), as(Style::String));
+        QCOMPARE(empty.styleAt(8, "sibling"), as(Style::Key));
+        QCOMPARE(empty.styleAt(8, "2"), as(Style::Number));
+
         // The block scalar taken away: its lines are keys and comments again;
         // put back, text again.
         h.replace(21, "|-", "x");

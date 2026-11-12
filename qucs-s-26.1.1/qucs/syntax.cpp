@@ -756,8 +756,13 @@ int YamlLine::scan(int previous)
       ++i;
       continue;
     }
-    if (c == ':' && blank(i + 1)) {   // the value of an empty key
+    if (c == ':' && blank(i + 1)) {   // the value of an empty key (": x", "!!str : x") or of a "? " key
       mark(i, i + 1, Style::Builtin);
+      // The key ends here as one before its ':' does: a block scalar
+      // after it is under the key's column (its tag's), else the ':''s.
+      parent = nodeStart >= 0 ? nodeStart : i;
+      nodeStart = -1;
+      stringTag = false;
       ++i;
       continue;
     }
