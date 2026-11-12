@@ -282,6 +282,10 @@ public:
      */
     bool runAnalysis(const QString& tag = {}, QString* why = nullptr);
     bool isAnalysing() const { return a_analysis != nullptr; }
+    /// The analysis running: its node's tag, and how far it has got - a
+    /// sweep's points solved of how many, an optimization's thousandths of
+    /// its search - and that in words. Empty where none runs.
+    QString analysisRunning(int* done = nullptr, int* of = nullptr, QString* said = nullptr) const;
     void stopAnalysis();
     /// Waits for the analysis running; whether it ended.
     bool waitForAnalysis(int ms = 600000);
