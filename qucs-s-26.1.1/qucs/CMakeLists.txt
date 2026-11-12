@@ -208,7 +208,7 @@ SET(QUCS_SRCS
   simulationruns.cpp qucs_runs.cpp
   qucscontrol_digitizer.cpp
   element.cpp	octave_window.cpp	qucsdoc.cpp
-  textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp svgguard.cpp  zipdoc.cpp  layout.cpp  layerstyles.cpp  layoutdoc.cpp  rf25/rf25_model.cpp  rf25/rf25_layout.cpp  rf25/rf25_mesh.cpp  rf25/rf25_green.cpp  rf25/rf25_static.cpp  rf25/rf25_sparams.cpp  rf25/rf25_inductance.cpp  rf25/rf25_wave.cpp  rf25/rf25_fullwave.cpp  rf25/rf25_dense.cpp  rf25/rf25_deembed.cpp  rf25/rf25_adaptive.cpp  rf25/rf25_dielectric.cpp  rf25/rf25_trl.cpp  rf25/rf25_fast.cpp  rf25/rf25_kept.cpp  rf25/rf25_circuit.cpp  rf25/rf25_edb.cpp  rf25/rf25_hfss.cpp  rf25/rf25_hfss_import.cpp  rf25/rf25_stackfile.cpp  rf25/rf25_stackdrawing.cpp  rf25doc.cpp  rf25doc_draw.cpp  rf25panel.cpp  qucs_rf25.cpp  multiphysicsview.cpp  multiphysicsdoc.cpp multiphysicsoptimization.cpp  multiphysicspanel.cpp  multiphysicssettings.cpp  rf25settings.cpp  gpurendering.cpp  qucs_multiphysics.cpp  view3d.cpp  multiphysics3ddoc.cpp  multiphysics3dpanel.cpp  qucs_multiphysics3d.cpp  imagedoc.cpp  pptx.cpp  pptxdoc.cpp  main.cpp	schematic.cpp
+  textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp svgguard.cpp  zipdoc.cpp  layout.cpp  layerstyles.cpp  layoutdoc.cpp  rf25/rf25_model.cpp  rf25/rf25_layout.cpp  rf25/rf25_mesh.cpp  rf25/rf25_green.cpp  rf25/rf25_static.cpp  rf25/rf25_sparams.cpp  rf25/rf25_inductance.cpp  rf25/rf25_wave.cpp  rf25/rf25_fullwave.cpp  rf25/rf25_dense.cpp  rf25/rf25_openblas.cpp  rf25/rf25_deembed.cpp  rf25/rf25_adaptive.cpp  rf25/rf25_dielectric.cpp  rf25/rf25_trl.cpp  rf25/rf25_fast.cpp  rf25/rf25_kept.cpp  rf25/rf25_circuit.cpp  rf25/rf25_edb.cpp  rf25/rf25_hfss.cpp  rf25/rf25_hfss_import.cpp  rf25/rf25_stackfile.cpp  rf25/rf25_stackdrawing.cpp  rf25doc.cpp  rf25doc_draw.cpp  rf25panel.cpp  qucs_rf25.cpp  multiphysicsview.cpp  multiphysicsdoc.cpp multiphysicsoptimization.cpp  multiphysicspanel.cpp  multiphysicssettings.cpp  rf25settings.cpp  gpurendering.cpp  qucs_multiphysics.cpp  view3d.cpp  multiphysics3ddoc.cpp  multiphysics3dpanel.cpp  qucs_multiphysics3d.cpp  imagedoc.cpp  pptx.cpp  pptxdoc.cpp  main.cpp	schematic.cpp
   multiphysicsconvergence.cpp
   mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_fem.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp qucscontrol_router.cpp qucscontrol_layoutedit.cpp layoutedit.cpp layoutrouting.cpp layoutrouterpanel.cpp  qucscontrol_rf25.cpp qucscontrol_pptx.cpp qucscontrol_showschematic.cpp qucscontrol_picture.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
   qucscontrol_fem_adapt.cpp
@@ -470,6 +470,68 @@ if(APPLE AND QUCS_ACCELERATE_FRAMEWORK)
   endif()
   message(STATUS "RF 2.5D dense LU: Accelerate's LAPACK (its new interface: ${QUCS_ACCELERATE_NEW_LAPACK})")
 endif()
+# Where Accelerate's is not - Linux, Windows -, OpenBLAS's LAPACK
+# (rf25/rf25_openblas.cpp), multithreaded, chosen in RF 2.5D > Settings…
+# (Automatic: Accelerate's, else OpenBLAS's, else Eigen's;
+# docs/feature_gaps/2026-11-09-linux-parallel-solvers.md): pkg-config's
+# openblas, else libopenblas under OpenBLAS_ROOT or the system's - Debian's
+# and Ubuntu's libopenblas-openmp-dev, MSYS2's openblas. Off on macOS by
+# default: Accelerate's is there, and exports the same names (a build with
+# both says which it found them in: rf25_openblas.cpp's here()).
+# QUCS_SPARSE_SOLVERS_REQUIRED (multiphysics/CMakeLists.txt) fails the
+# configure where it is asked for and not found, as for MUMPS and STRUMPACK.
+if(APPLE)
+  set(QUCS_WITH_OPENBLAS_DEFAULT OFF)
+else()
+  set(QUCS_WITH_OPENBLAS_DEFAULT ON)
+endif()
+option(QUCS_WITH_OPENBLAS "Factorize RF 2.5D's dense systems by OpenBLAS's LAPACK where it is found" ${QUCS_WITH_OPENBLAS_DEFAULT})
+set(QUCS_OPENBLAS_LINK "")
+if(QUCS_WITH_OPENBLAS)
+  find_package(PkgConfig QUIET)
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(QUCS_OPENBLAS_PC QUIET IMPORTED_TARGET openblas)
+  endif()
+  if(QUCS_OPENBLAS_PC_FOUND)
+    set(QUCS_OPENBLAS_LINK PkgConfig::QUCS_OPENBLAS_PC)
+    set(QUCS_OPENBLAS_FROM "pkg-config openblas ${QUCS_OPENBLAS_PC_VERSION}")
+  else()
+    find_library(OPENBLAS_LIBRARY NAMES openblas HINTS ${OpenBLAS_ROOT} ENV OpenBLAS_ROOT PATH_SUFFIXES lib lib64)
+    if(OPENBLAS_LIBRARY)
+      set(QUCS_OPENBLAS_LINK ${OPENBLAS_LIBRARY})
+      set(QUCS_OPENBLAS_FROM "${OPENBLAS_LIBRARY}")
+    endif()
+  endif()
+endif()
+if(QUCS_OPENBLAS_LINK)
+  set_property(SOURCE rf25/rf25_openblas.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUCS_OPENBLAS)
+  # A sweep's frequencies at once factorize side by side, OpenBLAS on one
+  # thread each: called inside an OpenMP region of rf25_openblas.cpp's own,
+  # OpenBLAS's OpenMP build keeps to one (rf25/rf25_openblas.h). OpenMP for
+  # that file alone - the rest of the core's Eigen kept to one thread - and
+  # its runtime, OpenBLAS's: GCC's libgomp on Linux and MSYS2, libomp
+  # (OpenMP_ROOT) on macOS. Without it such factorizations are Eigen's.
+  # (OpenMP_ROOT heeded: the project's minimum, 3.10, leaves it not.)
+  if(POLICY CMP0074)
+    cmake_policy(SET CMP0074 NEW)
+  endif()
+  find_package(OpenMP COMPONENTS CXX QUIET)
+  if(OpenMP_CXX_FOUND)
+    separate_arguments(QUCS_OPENMP_FLAGS UNIX_COMMAND "${OpenMP_CXX_FLAGS}")
+    set_property(SOURCE rf25/rf25_openblas.cpp APPEND PROPERTY COMPILE_OPTIONS ${QUCS_OPENMP_FLAGS})
+    if(OpenMP_CXX_INCLUDE_DIRS)
+      set_property(SOURCE rf25/rf25_openblas.cpp APPEND PROPERTY INCLUDE_DIRECTORIES ${OpenMP_CXX_INCLUDE_DIRS})
+    endif()
+    set_property(SOURCE rf25/rf25_openblas.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUCS_OPENBLAS_OPENMP)
+    list(APPEND QUCS_OPENBLAS_LINK ${OpenMP_CXX_LIBRARIES})
+  endif()
+  message(STATUS "RF 2.5D dense LU: OpenBLAS's LAPACK (${QUCS_OPENBLAS_FROM}; side by side through OpenMP: ${OpenMP_CXX_FOUND})")
+else()
+  message(STATUS "RF 2.5D dense LU: no OpenBLAS (QUCS_WITH_OPENBLAS ${QUCS_WITH_OPENBLAS})")
+  if(QUCS_WITH_OPENBLAS AND QUCS_SPARSE_SOLVERS_REQUIRED)
+    message(FATAL_ERROR "OpenBLAS not found (pkg-config's openblas, or OpenBLAS_ROOT) and QUCS_SPARSE_SOLVERS_REQUIRED is on")
+  endif()
+endif()
 add_library(qucs-core OBJECT ${QUCS_HDRS} ${QUCS_CORE_SRCS} ${QUCS_MOC_SRCS})
 set(QUCS_LINK_LIBRARIES
     components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
@@ -487,6 +549,9 @@ endif()
 if(UNIX AND NOT APPLE)
   # forkpty() for the Terminal and Python Shell docks (processconsole.cpp)
   list(APPEND QUCS_LINK_LIBRARIES util)
+endif()
+if(QUCS_OPENBLAS_LINK)
+  list(APPEND QUCS_LINK_LIBRARIES ${QUCS_OPENBLAS_LINK})
 endif()
 target_link_libraries(qucs-core PUBLIC ${QUCS_LINK_LIBRARIES})
 add_dependencies(qucs-core qucs-commit)

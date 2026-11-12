@@ -1,11 +1,12 @@
 /*
  * test_rf25_dense.cpp - the dense LU of RF 2.5D's two large systems
  * (rf25/rf25_dense.h): Accelerate's LAPACK where the build and the macOS
- * have it, Eigen's elsewhere and when asked - the same solutions to
- * rounding and each one's rcond the matrix's, on a random matrix and on
- * one shaped as a method of moments' is, complex and real, past several
- * of the blocked LU's panels; any number of right-hand sides; a singular
- * matrix said to be one; and what chooses between them.
+ * have it, OpenBLAS's where the build has it, Eigen's elsewhere and when
+ * asked - the same solutions to rounding and each one's rcond the
+ * matrix's, on a random matrix and on one shaped as a method of moments'
+ * is, complex and real, past several of the blocked LU's panels; any
+ * number of right-hand sides; a singular matrix said to be one; OpenBLAS's
+ * calls from many threads at once; and what chooses between them.
  */
 #include <QtTest>
 #include <QOperatingSystemVersion>
@@ -16,8 +17,11 @@
 
 #include <cmath>
 #include <complex>
+#include <atomic>
 #include <cstdint>
+#include <thread>
 #include <type_traits>
+#include <vector>
 
 namespace rf = qucs_s::rf25;
 using Complex = std::complex<double>;
@@ -125,17 +129,19 @@ template <class S> double trueRcond(const Mat<S>& a)
     return 1 / (a.cwiseAbs().colwise().sum().maxCoeff() * inverse.cwiseAbs().colwise().sum().maxCoeff());
 }
 
-/// The paths there are here: Eigen's always, Accelerate's where it is.
+/// The paths there are here: Eigen's always, Accelerate's and OpenBLAS's
+/// where they are.
 QList<rf::DenseLu> paths()
 {
     QList<rf::DenseLu> out{rf::DenseLu::Eigen};
     if (rf::accelerateLuHere()) out << rf::DenseLu::Accelerate;
+    if (rf::openBlasLuHere()) out << rf::DenseLu::OpenBlas;
     return out;
 }
 
-const char* nameOf(rf::DenseLu lu)
+QString nameOf(rf::DenseLu lu)
 {
-    return lu == rf::DenseLu::Accelerate ? "Accelerate" : "Eigen";
+    return rf::denseLuName(lu);
 }
 
 /// Each path's solution and rcond of one matrix, checked against the
@@ -151,11 +157,14 @@ template <class S> void solvedAlike(const Mat<S>& a, const Mat<S>& b, double agr
     QList<double> rconds;
     for (const rf::DenseLu lu : paths()) {
         rf::setDenseLu(lu);
-        const long long accelerated = rf::accelerateLuCount(), eigen = rf::eigenLuCount();
+        const long long accelerated = rf::accelerateLuCount(), openBlas = rf::openBlasLuCount(), eigen = rf::eigenLuCount();
         Mat<S> copy = a;
         const rf::DenseFactors<S> factors(std::move(copy));
+        QCOMPARE(factors.library(), lu);
         QCOMPARE(factors.accelerated(), lu == rf::DenseLu::Accelerate);
+        QCOMPARE(factors.openBlas(), lu == rf::DenseLu::OpenBlas);
         QCOMPARE(rf::accelerateLuCount() - accelerated, lu == rf::DenseLu::Accelerate ? 1LL : 0LL);
+        QCOMPARE(rf::openBlasLuCount() - openBlas, lu == rf::DenseLu::OpenBlas ? 1LL : 0LL);
         QCOMPARE(rf::eigenLuCount() - eigen, lu == rf::DenseLu::Eigen ? 1LL : 0LL);
         const Mat<S> x = factors.solve(b);
         QCOMPARE(x.rows(), b.rows());
@@ -172,11 +181,14 @@ template <class S> void solvedAlike(const Mat<S>& a, const Mat<S>& b, double agr
         rconds << rcond;
     }
     rf::setDenseLu(rf::DenseLu::Automatic);
-    if (solutions.size() < 2) return;
-    const double apart = (solutions.at(0) - solutions.at(1)).cwiseAbs().maxCoeff() / solutions.at(0).cwiseAbs().maxCoeff();
-    QVERIFY2(apart < agree, qPrintable(QStringLiteral("%1: the two solutions %2 apart").arg(what).arg(apart)));
-    QVERIFY2(rconds.at(1) <= 2 * rconds.at(0) && rconds.at(0) <= 2 * rconds.at(1),
-             qPrintable(QStringLiteral("%1: rcond %2 and %3").arg(what).arg(rconds.at(0)).arg(rconds.at(1))));
+    // (Each library's against Eigen's.)
+    for (int i = 1; i < solutions.size(); ++i) {
+        const QString which = nameOf(paths().at(i));
+        const double apart = (solutions.at(0) - solutions.at(i)).cwiseAbs().maxCoeff() / solutions.at(0).cwiseAbs().maxCoeff();
+        QVERIFY2(apart < agree, qPrintable(QStringLiteral("%1: Eigen's and %2's solutions %3 apart").arg(what, which).arg(apart)));
+        QVERIFY2(rconds.at(i) <= 2 * rconds.at(0) && rconds.at(0) <= 2 * rconds.at(i),
+                 qPrintable(QStringLiteral("%1: rcond %2 and %3's %4").arg(what).arg(rconds.at(0)).arg(which).arg(rconds.at(i))));
+    }
 }
 
 } // namespace
@@ -194,10 +206,11 @@ private slots:
     }
 
     // A built Qucs-S on macOS 13.3 and later factorizes with Accelerate's
-    // LAPACK: what the build's check found (QUCS_ACCELERATE_LAPACK).
+    // LAPACK: what the build's check found (QUCS_ACCELERATE_LAPACK) - a
+    // build with Accelerate off has it not, as Linux's.
     void macOSFactorizesWithAccelerate()
     {
-#if defined(Q_OS_MACOS)
+#if defined(QUCS_TEST_ACCELERATE_LAPACK)
         if (QOperatingSystemVersion::current() < QOperatingSystemVersion(QOperatingSystemVersion::MacOS, 13, 3))
             QSKIP("macOS before 13.3: Eigen's alone");
         QVERIFY(rf::accelerateLuHere());
@@ -276,35 +289,185 @@ private slots:
     // QUCS_FEM_SOLVER=eigen, Eigen everywhere, as on Linux and Windows.
     void theEnvironmentChoosesOverTheProcess()
     {
+        // (The library that factorized, and the one said to be in effect.)
         const auto factorized = [] {
             Mat<double> a = randomMatrix<double>(30, 30, 14) + 30 * Mat<double>::Identity(30, 30);
-            return rf::DenseFactors<double>(std::move(a)).accelerated();
+            const rf::DenseLu said = rf::denseLuInEffect();
+            const rf::DenseLu by = rf::DenseFactors<double>(std::move(a)).library();
+            return said == by ? by : rf::DenseLu::Automatic;
         };
+        const rf::DenseLu automatic = rf::accelerateLuHere()  ? rf::DenseLu::Accelerate
+                                      : rf::openBlasLuHere() ? rf::DenseLu::OpenBlas
+                                                             : rf::DenseLu::Eigen;
+        const rf::DenseLu accelerate = rf::accelerateLuHere() ? rf::DenseLu::Accelerate : rf::DenseLu::Eigen;
+        const rf::DenseLu openBlas = rf::openBlasLuHere() ? rf::DenseLu::OpenBlas : rf::DenseLu::Eigen;
         QCOMPARE(rf::denseLu(), rf::DenseLu::Automatic);
-        QCOMPARE(factorized(), rf::accelerateLuHere());
+        QCOMPARE(factorized(), automatic);
         rf::setDenseLu(rf::DenseLu::Eigen);
         QCOMPARE(rf::denseLu(), rf::DenseLu::Eigen);
-        QVERIFY(!factorized());
+        QCOMPARE(factorized(), rf::DenseLu::Eigen);
         qputenv("QUCS_RF25_LU", "auto");
         QCOMPARE(rf::denseLu(), rf::DenseLu::Automatic);
-        QCOMPARE(factorized(), rf::accelerateLuHere());
+        QCOMPARE(factorized(), automatic);
         qputenv("QUCS_RF25_LU", " Eigen ");
         rf::setDenseLu(rf::DenseLu::Accelerate);
         QCOMPARE(rf::denseLu(), rf::DenseLu::Eigen);
-        QVERIFY(!factorized());
+        QCOMPARE(factorized(), rf::DenseLu::Eigen);
         qunsetenv("QUCS_RF25_LU");
         QCOMPARE(rf::denseLu(), rf::DenseLu::Accelerate);
-        QCOMPARE(factorized(), rf::accelerateLuHere());
+        QCOMPARE(factorized(), accelerate);
+        rf::setDenseLu(rf::DenseLu::OpenBlas);
+        QCOMPARE(rf::denseLu(), rf::DenseLu::OpenBlas);
+        QCOMPARE(factorized(), openBlas);
         qputenv("QUCS_FEM_SOLVER", "eigen");
         rf::setDenseLu(rf::DenseLu::Automatic);
         QCOMPARE(rf::denseLu(), rf::DenseLu::Eigen);
-        QVERIFY(!factorized());
+        QCOMPARE(factorized(), rf::DenseLu::Eigen);
         qputenv("QUCS_RF25_LU", "accelerate");
         QCOMPARE(rf::denseLu(), rf::DenseLu::Accelerate);
-        QCOMPARE(factorized(), rf::accelerateLuHere());
+        QCOMPARE(factorized(), accelerate);
+        qputenv("QUCS_RF25_LU", "OpenBLAS");
+        QCOMPARE(rf::denseLu(), rf::DenseLu::OpenBlas);
+        QCOMPARE(factorized(), openBlas);
         qunsetenv("QUCS_RF25_LU");
         qunsetenv("QUCS_FEM_SOLVER");
         QCOMPARE(rf::denseLu(), rf::DenseLu::Automatic);
+        QCOMPARE(rf::denseLuName(rf::DenseLu::OpenBlas), QStringLiteral("OpenBLAS"));
+        QCOMPARE(rf::denseLuName(rf::DenseLu::Accelerate), QStringLiteral("Accelerate"));
+        QCOMPARE(rf::denseLuName(rf::DenseLu::Eigen), QStringLiteral("Eigen"));
+    }
+
+    // OpenBLAS where the build has it: it says what it is, and is the
+    // library LAPACK's names were found in (on macOS Accelerate exports
+    // them too); where it is not, nothing is said of it.
+    void openBlasSaysWhatItIs()
+    {
+        const QString about = rf::openBlasLuAbout();
+        qInfo("OpenBLAS: %s", rf::openBlasLuHere() ? qPrintable(about) : "not in this build");
+        if (!rf::openBlasLuHere()) {
+            QVERIFY(about.isEmpty());
+            return;
+        }
+        QVERIFY2(about.startsWith(QLatin1String("OpenBLAS")) && about.contains(QLatin1String(" thread")), qPrintable(about));
+    }
+
+    // A sweep's frequencies factorize side by side: OpenBLAS's calls from
+    // eight threads at once - those with all the threads taking their turns
+    // on its lane, those with one side by side where OpenBLAS can keep to
+    // one (else Eigen's) - each solved as one alone would be, and what each
+    // waited is said: nought for Eigen's and Accelerate's.
+    void openBlasCallsFromManyThreadsTakeTurns()
+    {
+        if (!rf::openBlasLuHere()) QSKIP("No OpenBLAS in this build");
+        rf::setDenseLu(rf::DenseLu::OpenBlas);
+        const int n = slowBuild() ? 200 : 400, threads = 8;
+        std::vector<Mat<Complex>> as, bs, xs(threads);
+        std::vector<double> waited(threads, -1), rconds(threads, -1);
+        for (int t = 0; t < threads; ++t) {
+            as.push_back(randomMatrix<Complex>(n, n, 200 + t));
+            bs.push_back(randomMatrix<Complex>(n, 3, 300 + t));
+        }
+        std::atomic_int byOpenBlas{0};
+        std::vector<std::thread> running;
+        for (int t = 0; t < threads; ++t)
+            running.emplace_back([&, t] {
+                Mat<Complex> copy = as.at(std::size_t(t));
+                // (Half on all the threads, taking turns; half on one each,
+                //  side by side where OpenBLAS can be, else Eigen's.)
+                const rf::DenseFactors<Complex> factors(std::move(copy), t % 2 == 0 ? 0 : 1);
+                if (factors.openBlas()) ++byOpenBlas;
+                xs[std::size_t(t)] = factors.solve(bs.at(std::size_t(t)));
+                rconds[std::size_t(t)] = factors.rcond();
+                waited[std::size_t(t)] = factors.waited();
+            });
+        for (std::thread& t : running) t.join();
+        rf::setDenseLu(rf::DenseLu::Automatic);
+        QCOMPARE(byOpenBlas.load(), rf::openBlasSideBySide() ? threads : threads / 2);
+        for (int t = 0; t < threads; ++t) {
+            const double backward = backwardError(as.at(std::size_t(t)), xs.at(std::size_t(t)), bs.at(std::size_t(t)));
+            QVERIFY2(backward < 1e-14, qPrintable(QStringLiteral("thread %1: a backward error of %2").arg(t).arg(backward)));
+            QVERIFY2(rconds.at(std::size_t(t)) > 0 && rconds.at(std::size_t(t)) <= 1, qPrintable(QString::number(rconds.at(std::size_t(t)))));
+            QVERIFY(waited.at(std::size_t(t)) >= 0);
+        }
+        rf::setDenseLu(rf::DenseLu::Eigen);
+        Mat<Complex> a = as.front();
+        const rf::DenseFactors<Complex> eigen(std::move(a));
+        (void)eigen.solve(bs.front());
+        QCOMPARE(eigen.waited(), 0.0);
+        rf::setDenseLu(rf::DenseLu::Automatic);
+    }
+
+    // Each library's time for one matrix - factorized, solved for two
+    // columns, its rcond -, complex as the full wave's and real as the
+    // charges', and for eight frequencies factorized at once, each given
+    // its share of the threads as a sweep's is (Eigen's side by side, one
+    // thread each; OpenBLAS's side by side on one thread each where the
+    // share is under four threads, else taking turns on all of them).
+    // Skipped unless QUCS_RF25_BENCH is set (full: the larger sizes);
+    // docs/feature_gaps/2026-11-09-linux-parallel-solvers.md.
+    void benchmarkTheLibraries()
+    {
+        const QByteArray bench = qgetenv("QUCS_RF25_BENCH").trimmed().toLower();
+        if (bench.isEmpty()) QSKIP("QUCS_RF25_BENCH not set");
+        const bool full = bench == "full";
+        qInfo("OpenBLAS: %s; threads: %u", rf::openBlasLuHere() ? qPrintable(rf::openBlasLuAbout()) : "not in this build",
+              std::thread::hardware_concurrency());
+        const auto timed = [](auto&& job) {
+            QElapsedTimer clock;
+            clock.start();
+            job();
+            return double(clock.nsecsElapsed()) * 1e-9;
+        };
+        double backward = 0;
+        const auto once = [&timed, &backward](auto a, const auto& b) {
+            using M = std::decay_t<decltype(a)>;
+            const M copy = a;
+            const double seconds = timed([&] {
+                const rf::DenseFactors<typename M::Scalar> factors(std::move(a));
+                const M x = factors.solve(b);
+                (void)factors.rcond();
+                backward = backwardError(copy, x, b);
+            });
+            return seconds;
+        };
+        const QList<int> complexSizes = full ? QList<int>{2000, 4000, 6000, 8000} : QList<int>{2000, 4000};
+        const QList<int> realSizes = full ? QList<int>{4000, 8000, 12000} : QList<int>{4000, 6000};
+        for (const bool complex : {true, false}) {
+            for (const int n : complex ? complexSizes : realSizes) {
+                QString line = QStringLiteral("%1 %2:").arg(complex ? QStringLiteral("complex") : QStringLiteral("real")).arg(n);
+                double eigen = 0;
+                for (const rf::DenseLu lu : paths()) {
+                    rf::setDenseLu(lu);
+                    const double seconds = complex ? once(randomMatrix<Complex>(n, n, 400), randomMatrix<Complex>(n, 2, 401))
+                                                   : once(randomMatrix<double>(n, n, 402), randomMatrix<double>(n, 2, 403));
+                    QVERIFY2(backward < 1e-13, qPrintable(QStringLiteral("%1, %2: %3").arg(line, nameOf(lu)).arg(backward)));
+                    if (lu == rf::DenseLu::Eigen) eigen = seconds;
+                    line += QStringLiteral(" %1 %2 s (%3x)").arg(nameOf(lu)).arg(seconds, 0, 'f', 3).arg(eigen / seconds, 0, 'f', 1);
+                }
+                qInfo("%s", qPrintable(line));
+            }
+        }
+        const int n = full ? 4000 : 2500, atOnce = 8;
+        const int share = std::max(1, int(std::thread::hardware_concurrency()) / atOnce);
+        QString line = QStringLiteral("%1 complex %2 at once, %3 thread(s) each:").arg(atOnce).arg(n).arg(share);
+        double eigen = 0;
+        for (const rf::DenseLu lu : paths()) {
+            rf::setDenseLu(lu);
+            std::vector<std::thread> running;
+            const double seconds = timed([&] {
+                for (int t = 0; t < atOnce; ++t)
+                    running.emplace_back([n, t, share] {
+                        Mat<Complex> a = randomMatrix<Complex>(n, n, 500 + t);
+                        const rf::DenseFactors<Complex> factors(std::move(a), share);
+                        (void)factors.solve(randomMatrix<Complex>(n, 2, 600 + t));
+                    });
+                for (std::thread& t : running) t.join();
+            });
+            if (lu == rf::DenseLu::Eigen) eigen = seconds;
+            line += QStringLiteral(" %1 %2 s (%3x)").arg(nameOf(lu)).arg(seconds, 0, 'f', 3).arg(eigen / seconds, 0, 'f', 1);
+        }
+        qInfo("%s", qPrintable(line));
+        rf::setDenseLu(rf::DenseLu::Automatic);
     }
 };
 

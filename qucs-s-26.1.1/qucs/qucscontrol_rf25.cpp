@@ -290,7 +290,9 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     } else if (!w.frequencies.isEmpty()) {
         // Whose LU, and a frequency's fill and LU, each on its own thread.
         const double nf = double(w.frequencies.size());
-        matrix.insert(QStringLiteral("LU by"), w.accelerated ? QStringLiteral("Accelerate") : QStringLiteral("Eigen"));
+        matrix.insert(QStringLiteral("LU by"), w.accelerated ? QStringLiteral("Accelerate")
+                                               : w.openBlas  ? QStringLiteral("OpenBLAS")
+                                                             : QStringLiteral("Eigen"));
         matrix.insert(QStringLiteral("fill s"), std::round(w.fillSeconds / nf * 1e3) / 1e3);
         matrix.insert(QStringLiteral("LU s"), std::round(w.luSeconds / nf * 1e3) / 1e3);
     }

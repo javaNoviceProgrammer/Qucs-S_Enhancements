@@ -2465,6 +2465,61 @@ private slots:
         QCOMPARE(rf::automaticSweepMemory(), std::max(1.5e9, rf::physicalMemory() / 4));
     }
 
+    // A dense sweep's time with each library there is (rf25_dense.h): a
+    // microstrip of some 2000 runs (full: 4000) at 24 frequencies (full:
+    // 48), as many at once as the threads allow - Eigen's side by side,
+    // one thread each; OpenBLAS's taking turns on all of them; Accelerate's
+    // its own way -, and the same one frequency at a time. Skipped unless
+    // QUCS_RF25_BENCH is set; docs/feature_gaps/2026-11-09-linux-parallel-solvers.md.
+    void benchmarkADenseSweep()
+    {
+        const QByteArray bench = qgetenv("QUCS_RF25_BENCH").trimmed().toLower();
+        if (bench.isEmpty()) QSKIP("QUCS_RF25_BENCH not set");
+        const bool full = bench == "full";
+        const LuOverridesAway away;
+        const rf::Stack stack = grounded(9.8, 254e-6);
+        const double length = full ? 6000 : 4000;
+        const QList<rf::Conductor> line = {strip(0, 0, length, 250)};
+        const rf::Mesh mesh = meshed(line, 8, full ? 18e-6 : 25e-6);
+        // (Held dense whatever its size.)
+        rf::setDenseLimit(30000);
+        const auto limitBack = qScopeGuard([] { rf::setDenseLimit(0); });
+        QList<double> fs;
+        for (int k = 0; k < (full ? 48 : 24); ++k) fs << 1e9 + k * 0.25e9;
+        QList<rf::DenseLu> paths{rf::DenseLu::Eigen};
+        if (rf::accelerateLuHere()) paths << rf::DenseLu::Accelerate;
+        if (rf::openBlasLuHere()) paths << rf::DenseLu::OpenBlas;
+        qInfo("OpenBLAS: %s", rf::openBlasLuHere() ? qPrintable(rf::openBlasLuAbout()) : "not in this build");
+        // (One at a time: a sweep's memory that holds none, so one.)
+        const auto memoryBack = qScopeGuard([] { rf::setSweepMemory(0); });
+        for (const bool oneAtATime : {false, true}) {
+            rf::setSweepMemory(oneAtATime ? 1 : 0);
+            QString said;
+            double eigen = 0;
+            for (const rf::DenseLu lu : paths) {
+                rf::setDenseLu(lu);
+                rf::FullWaveControl control;
+                std::atomic_int atOnce{0};
+                control.atOnce = &atOnce;
+                QElapsedTimer clock;
+                clock.start();
+                const rf::FullWave fw = rf::fullWaveOf(mesh, line, stack,
+                                                       {edgePort(QPointF(0, 125), QString(), QPointF(-1, 0)),
+                                                        edgePort(QPointF(length, 125), QString(), QPointF(1, 0))},
+                                                       fs, 1e-6, &control);
+                const double seconds = double(clock.nsecsElapsed()) * 1e-9;
+                QVERIFY2(fw.ok() && !fw.compressed, qPrintable(why(fw)));
+                if (lu == rf::DenseLu::Eigen) eigen = seconds;
+                if (said.isEmpty())
+                    said = QStringLiteral("%1 runs, %2 cells, %3 frequencies, %4 at once:").arg(fw.runs).arg(fw.cells).arg(fs.size())
+                               .arg(atOnce.load());
+                said += QStringLiteral(" %1 %2 s (%3x; fill %4, LU %5 s a frequency)").arg(rf::denseLuName(lu)).arg(seconds, 0, 'f', 2)
+                            .arg(eigen / seconds, 0, 'f', 1).arg(fw.fillSeconds / fs.size(), 0, 'f', 3).arg(fw.luSeconds / fs.size(), 0, 'f', 3);
+            }
+            qInfo("%s", qPrintable(said));
+        }
+    }
+
     // Its system factorized by Accelerate's LAPACK where the build and the
     // macOS have it, by Eigen's elsewhere and as asked (rf25_dense.h): the
     // same S and currents to rounding either way, and whose LU it was and
@@ -2488,8 +2543,12 @@ private slots:
         const rf::FullWave automatic = solve();
         QVERIFY2(eigen.ok() && automatic.ok(), qPrintable(why(eigen) + why(automatic)));
         QVERIFY(!eigen.compressed && !automatic.compressed);
-        QVERIFY(!eigen.accelerated);
+        QVERIFY(!eigen.accelerated && !eigen.openBlas);
         QCOMPARE(automatic.accelerated, rf::accelerateLuHere());
+        // (OpenBLAS's where it is, unless a frequency has fewer than four
+        //  threads and OpenBLAS cannot keep to one: Eigen's then.)
+        if (rf::accelerateLuHere() || !rf::openBlasLuHere() || rf::openBlasSideBySide())
+            QCOMPARE(automatic.openBlas, !rf::accelerateLuHere() && rf::openBlasLuHere());
         QVERIFY2(eigen.fillSeconds > 0 && eigen.luSeconds > 0 && automatic.fillSeconds > 0 && automatic.luSeconds > 0,
                  qPrintable(QStringLiteral("fill %1 and %2 s, LU %3 and %4 s").arg(eigen.fillSeconds).arg(automatic.fillSeconds)
                                 .arg(eigen.luSeconds).arg(automatic.luSeconds)));

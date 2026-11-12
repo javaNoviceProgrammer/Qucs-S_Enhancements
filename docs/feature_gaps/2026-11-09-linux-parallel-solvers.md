@@ -1,4 +1,4 @@
-# MUMPS and STRUMPACK: the multiphysics solver's factorizations on many threads where Accelerate is not (2026-11-09)
+# MUMPS and STRUMPACK: the multiphysics solver's factorizations on many threads where Accelerate is not (2026-11-09), and RF 2.5D's dense LU by OpenBLAS (2026-11-11)
 
 The user: "Looks like Eigen solver on my linux workspace is super slow since it only runs in one thread eventhough I have 16
 cores. What other solvers can we use on linux to take advantage of parallelism?" Then, given a survey with MUMPS first and
@@ -135,6 +135,92 @@ OMP_NUM_THREADS=8 QUCS_FEM_BENCH=full ctest --test-dir build -R '^test_fem_spars
 
 Its table says whether 20,000 is the right size there, and how STRUMPACK scales on 16 cores.
 
+## RF 2.5D: OpenBLAS's LAPACK, not MUMPS or STRUMPACK (2026-11-11)
+
+The user: "Can we add support for MUMPS and STRUMPACK on linux for RF 2.5D? Looks like currently it only uses Eigen which is
+always single-threaded, whereas on macos it uses Accelerate which multi-threaded."
+
+RF 2.5D's two large systems are dense, not sparse: the full wave's runs of current (a method of moments, complex) and the
+quasi-static extraction's potential coefficients (real), each some thousands of rows (`rf25/rf25_dense.h`). On macOS
+Accelerate factorizes them with its LAPACK (`getrf`, `getrs`, `gecon`), not its sparse solvers. MUMPS and STRUMPACK are sparse
+solvers: given a dense matrix, each makes one front of all of it and factorizes that with the same BLAS, after an ordering
+and a symbolic analysis that find nothing, and with a copy of the matrix. Linux's counterpart of Accelerate's LAPACK is a
+multithreaded LAPACK, and the one already in the builds is OpenBLAS (MUMPS's BLAS: `libopenblas-openmp-dev` in CI and the
+Linux release, MSYS2's `openblas`). The one sparse LU in RF 2.5D, the compressed solve's near-field preconditioner
+(`rf25_fullwave.cpp`'s `solveCompressed`), already goes through `fem::SparseLu`, so MUMPS (Automatic on Linux from 20,000
+unknowns) or STRUMPACK factorizes it as the Multiphysics Settings choose.
+
+What it is:
+
+- `DenseLu::OpenBlas` beside Automatic, Eigen and Accelerate; `QUCS_RF25_LU=openblas`; Automatic is Accelerate's, else
+  OpenBLAS's, else Eigen's (`denseLuInEffect()`), and `QUCS_FEM_SOLVER=eigen` still keeps Eigen's. RF 2.5D > Settings… has a
+  fourth row, "OpenBLAS's LAPACK" (" - not in this build" where it is not), kept as `openblas`; its status names OpenBLAS's
+  version, threading and threads (`OpenBLAS 0.3.34, OpenMP, 24 threads`). The full wave's result and the tools' "LU by" say
+  `OpenBLAS`; an LU's seconds leave out its wait for its turn.
+- `rf25/rf25_openblas.cpp`, a file of its own: OpenBLAS's `zgetrf`/`dgetrf`, `getrs` and `gecon` by LAPACK's Fortran names
+  (32-bit integers; a character argument's length passed, as gfortran's `gecon` takes it), which Accelerate's header declares
+  under its own and may not meet in one file. On macOS, where a program with both binds each name to whichever library came
+  first, OpenBLAS is said to be here only if `zgetrf_` was found in it (`dladdr`).
+- **How a call runs.** A factorization is given the threads it has of the machine's (`DenseFactors(a, threads)`: a sweep's
+  frequency its share, the quasi-static solve all):
+  - with four or more (`kLaneFrom`), on the *lane*: one thread kept for OpenBLAS's calls, one call at a time, on all of
+    OpenBLAS's threads. One at a time because an OpenMP runtime keeps a team for each thread that calls into it, and OpenBLAS's
+    buffers and its count of threads are shared by its callers (a caller that changes the count frees buffers another may be
+    using).
+  - with fewer - many frequencies at once -, *alone*: in its own thread, side by side, on one thread. OpenBLAS's OpenMP build
+    keeps to one thread, and touches nothing shared, when called inside an active OpenMP region; the call is made on the first
+    of a region of two threads (`rf25_openblas.cpp`, the only file compiled with OpenMP: the rest of the core's Eigen stays on
+    one thread). That needs OpenBLAS's OpenMP build and this build's OpenMP its runtime - GCC's libgomp on Linux and MSYS2,
+    Homebrew's libomp here (`OpenMP_ROOT`) -; where it is not (OpenBLAS's pthreads build, no OpenMP), such a factorization is
+    Eigen's, as before. `openblas_set_num_threads_local`, which would do this directly, is OpenBLAS 0.3.27's and its pthreads
+    build's: not in Ubuntu 22.04's 0.3.20 (the release's) or 24.04's 0.3.26 (CI's), nor exported by Homebrew's OpenMP build.
+- CMake: `QUCS_WITH_OPENBLAS` (on, off on macOS where Accelerate's is the one), found by pkg-config's `openblas` or
+  `find_library(openblas)` under `OpenBLAS_ROOT`; `QUCS_SPARSE_SOLVERS_REQUIRED` fails the configure without it, as for MUMPS
+  and STRUMPACK. CI's and the release's Linux jobs have it already; their Windows jobs add `openblas:p`.
+
+Measured here (M2 Ultra, Homebrew's OpenBLAS 0.3.34, OpenMP, 24 threads, an Accelerate-free build:
+`-DQUCS_ACCELERATE_FRAMEWORK=OFF -DQUCS_WITH_OPENBLAS=ON -DOpenBLAS_ROOT=/opt/homebrew/opt/openblas
+-DOpenMP_ROOT=/opt/homebrew/opt/libomp`). `test_rf25_dense`'s `benchmarkTheLibraries` (`QUCS_RF25_BENCH=full`), one matrix
+factorized, solved for two columns and its rcond taken:
+
+| Matrix | Eigen | OpenBLAS |
+|---|---|---|
+| complex 2000 | 0.524 s | 0.167 (3.1x) |
+| complex 4000 | 3.789 | 0.729 (5.2x) |
+| complex 6000 | 12.214 | 1.858 (6.6x) |
+| complex 8000 | 28.464 | 3.676 (7.7x) |
+| real 4000 | 1.062 | 0.222 (4.8x) |
+| real 8000 | 8.156 | 1.055 (7.7x) |
+| real 12000 | 26.415 | 6.807 (3.9x) |
+
+`test_rf25_fullwave`'s `benchmarkADenseSweep` (`QUCS_RF25_BENCH=1`), a microstrip of 3714 runs and 1944 cells at 24
+frequencies:
+
+| Frequencies at once | Eigen | OpenBLAS |
+|---|---|---|
+| 24 (the machine's threads; the sweep's default) | 6.14 s | 6.39 (1.0x), alone, side by side |
+| 1 (a sweep's memory that holds one) | 70.92 | 28.69 (2.5x), on the lane |
+
+The first design took the lane for every call: a sweep of 1059 runs, 24 at once, took 1.60 s against Eigen's 0.86 - the 24
+LUs in turn (24 x 0.063 s) were the sweep. So a sweep that already has a frequency on every thread gains nothing from a
+multithreaded LU; one of few frequencies at a time, one too large for many in memory, and the quasi-static solve (one LU on
+the whole machine) do. Side by side here, Homebrew's arm64 OpenBLAS on one thread was no quicker than Eigen's (4.56 against
+4.24 s a frequency); OpenBLAS's x86-64 kernels (AVX2, AVX-512) are where its single thread should be quicker than Eigen's,
+which the user's machine will say.
+
+For the user's Linux machine (`libopenblas-openmp-dev` installed; GCC, so OpenMP is libgomp, OpenBLAS's):
+
+```bash
+cmake -S qucs-s-26.1.1 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target test_rf25_dense test_rf25_fullwave
+QUCS_RF25_BENCH=full ctest --test-dir build -R '^test_rf25_dense$' -V
+QUCS_RF25_BENCH=1 ctest --test-dir build -R '^test_rf25_fullwave' -V
+```
+
+The configure should say "RF 2.5D dense LU: OpenBLAS's LAPACK (...; side by side through OpenMP: TRUE)". The benchmark lines
+are the `QINFO` ones, and only the part of `test_rf25_fullwave` that holds `benchmarkADenseSweep` runs it (the others say
+"in the test's other part").
+
 ## Tests
 
 - `test_fem_sparse` (each skipped, saying why, where the build has not the library): `eachLibrarysLu` (MUMPS, STRUMPACK: real
@@ -157,11 +243,36 @@ Its table says whether 20,000 is the right size there, and how STRUMPACK scales 
   (`-DQUCS_ACCELERATE_FRAMEWORK=OFF -DQUCS_WITH_MUMPS=OFF -DQUCS_WITH_STRUMPACK=OFF`, Linux's without them):
   `test_fem_sparse` and `test_multiphysics_doc` pass, their Accelerate checks now asked of the build, not of `__APPLE__`.
   The four `scripts/ci/check-*.py` lints pass.
+- RF 2.5D's OpenBLAS (2026-11-11): `test_rf25_dense` takes OpenBLAS as a third path beside Eigen and Accelerate where the
+  build has it (each solution, rcond and count against Eigen's), `openBlasSaysWhatItIs`, `openBlasCallsFromManyThreadsTakeTurns`
+  (eight threads at once, half on the lane and half alone, each solved as one alone would be) and `benchmarkTheLibraries`
+  (only with `QUCS_RF25_BENCH`); `theEnvironmentChoosesOverTheProcess` with `openblas`. `macOSFactorizesWithAccelerate` now asks
+  the build whether it has Accelerate's LAPACK (`QUCS_TEST_ACCELERATE_LAPACK`), not `Q_OS_MACOS`: it failed in a build with
+  Accelerate off. `test_rf25_fullwave` (`benchmarkADenseSweep`, `QUCS_RF25_BENCH` only; the full wave's `openBlas`),
+  `test_rf25_static` (OpenBLAS's count), `test_rf25_doc` (four rows, OpenBLAS's item and status, kept as `openblas`) and
+  `test_qucs_control` ("LU by" is the library in effect).
+  Here: the Accelerate-free build with Homebrew's OpenBLAS and libomp (OpenBLAS Automatic, as on Linux) - the eighteen
+  `test_rf25*` tests and `test_qucs_control` pass; the default macOS build (Accelerate, MUMPS, STRUMPACK, no OpenBLAS) - the
+  same with `test_fem_sparse`, `test_multiphysics_doc`, `test_multiphysics3d_doc` and `test_macos_accelerate_weak`, 22 in
+  all, pass; that build with OpenBLAS on as well - `zgetrf_` found in OpenBLAS, `test_rf25_dense` passes with all three.
 
 ## Not done
 
-- **Linux and Windows not run here.** CI's Linux job is the first run of MUMPS as Automatic under the sanitizers; its Windows job
-  the first link against MSYS2's packages; the release workflow's AppImage and Windows bundle the first bundling.
+- **Linux and Windows not run here.** CI's Linux job is the first run of MUMPS as Automatic under the sanitizers, and of
+  OpenBLAS as RF 2.5D's LU; its Windows job the first link against MSYS2's packages; the release workflow's AppImage and Windows
+  bundle the first bundling. (The run of 9 November that would have been the first went with the history's rewrite of 10
+  November, unseen to its end.)
+- **RF 2.5D's other dense solves.** The ended dielectric's correction (`rf25_dielectric.cpp`, F2, up to 8,000 panels) factorizes
+  its real panel matrix with Eigen's `PartialPivLU` directly, not `DenseFactors`: one thread on Linux, and not Accelerate's on
+  macOS either. TRL (`rf25_trl.cpp`) solves only 2 x 2 matrices; the adaptive sweep's (F1) frequencies go through the full
+  wave's `solveAt`, so through `DenseFactors` (a few at a time: the lane), and its batches' `openBlas`/`accelerated` are now
+  folded together as its other flags are.
+- **STRUMPACK on macOS under load.** After the rebase onto main of 11 November, `test_fem_sparse` in the default macOS build
+  crashed (a segmentation fault after 517 s) while three tests ran at once, and passed alone (144 s): the libomp trouble above,
+  now a crash and not only a stall. The macOS releases carry no STRUMPACK.
+- **RF 2.5D's lane threshold.** Four threads (`kLaneFrom`) is a judgement from this Mac's figures, not a measured crossover;
+  the user's machine may want it elsewhere. And a sweep of many frequencies at once, alone on one thread each, gains only where
+  OpenBLAS's single thread beats Eigen's - not on this Mac's arm64.
 - **Tests skipped where Accelerate's LU is not** (`test_fem3_wave`, `test_fem3_wavetd`, some of `test_fem3_eme`) still look for
   Accelerate's (`acceleratedLuHindrance()`); with MUMPS they could run on Linux and Windows.
 - **macOS CI** (macOS 15: no Accelerate LU) could take MUMPS from Homebrew-built sources the same way, and run the full-size

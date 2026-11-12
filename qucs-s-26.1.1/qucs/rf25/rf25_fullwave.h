@@ -450,10 +450,12 @@ struct FullWave {
     double secondWave = 0;
     int threads = 1;                 ///< how many it used
     /// Dense: the seconds every frequency's fill and LU took, each on its
-    /// own thread (rf25_fullwave.cpp's AtFrequency), and whether
-    /// Accelerate's LAPACK factorized them (rf25_dense.h).
+    /// own thread (rf25_fullwave.cpp's AtFrequency) - an LU's not counting
+    /// its wait for OpenBLAS's thread -, and whether Accelerate's LAPACK or
+    /// OpenBLAS's factorized them (rf25_dense.h).
     double fillSeconds = 0, luSeconds = 0;
     bool accelerated = false;
+    bool openBlas = false;
     /// Held compressed and solved by iteration (rf25_fast.h), not dense: the
     /// low-rank blocks' tolerance; what the matrices of the frequency that
     /// took the most held, bytes, beside what they would dense; their

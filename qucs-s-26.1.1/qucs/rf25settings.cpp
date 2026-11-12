@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 namespace qucs_s::rf25 {
 
@@ -34,15 +35,27 @@ const QString kLuKey = QStringLiteral("RF25/lu");
 const QString kLimitKey = QStringLiteral("RF25/denseLimit");
 const QString kMemoryKey = QStringLiteral("RF25/sweepMemory");
 
-/// The LU \a choice (0, 1, 2) as the environment leaves it, and what it
+/// The values kept, by the box's rows: Automatic, Eigen, Accelerate,
+/// OpenBLAS.
+const char* const kLuValues[] = {"auto", "eigen", "accelerate", "openblas"};
+
+/// \a value's row, Automatic's where it is none.
+int luIndexOf(const QString& value)
+{
+    for (int i = 0; i < int(std::size(kLuValues)); ++i)
+        if (value == QLatin1String(kLuValues[i])) return i;
+    return 0;
+}
+
+/// The LU \a choice (0 to 3) as the environment leaves it, and what it
 /// says of it.
 int chosenAfterEnvironment(int choice, QString* lead)
 {
     const QByteArray asked = qgetenv("QUCS_RF25_LU").trimmed().toLower();
-    if (asked == "eigen" || asked == "accelerate" || asked == "auto" || asked == "automatic") {
+    if (asked == "eigen" || asked == "accelerate" || asked == "openblas" || asked == "auto" || asked == "automatic") {
         if (lead != nullptr)
             *lead = RF25SettingsDialog::tr("QUCS_RF25_LU=%1 is set, whatever this says: ").arg(QString::fromLatin1(asked));
-        return asked == "eigen" ? 1 : asked == "accelerate" ? 2 : 0;
+        return asked == "automatic" ? 0 : luIndexOf(QString::fromLatin1(asked));
     }
     if (qgetenv("QUCS_FEM_SOLVER").trimmed().toLower() == "eigen") {
         if (lead != nullptr) *lead = RF25SettingsDialog::tr("QUCS_FEM_SOLVER=eigen is set, whatever this says: ");
@@ -65,17 +78,23 @@ RF25SettingsDialog::RF25SettingsDialog(QWidget* parent) : QDialog(parent)
     luLine->addWidget(new QLabel(tr("Factorized by:"), lu));
     a_lu = new QComboBox(lu);
     a_lu->setObjectName(QStringLiteral("rf25LuBox"));
-    a_lu->addItem(tr("Automatic (Accelerate's LAPACK on macOS 13.3 and later, Eigen's elsewhere)"), QStringLiteral("auto"));
+    a_lu->addItem(tr("Automatic (Accelerate's LAPACK on macOS 13.3 and later, else OpenBLAS's where this build has it, "
+                     "else Eigen's)"),
+                  QStringLiteral("auto"));
     a_lu->addItem(tr("Eigen's LU"), QStringLiteral("eigen"));
     a_lu->addItem(tr("Accelerate's LAPACK where this macOS has it"), QStringLiteral("accelerate"));
+    a_lu->addItem(openBlasLuHere() ? tr("OpenBLAS's LAPACK") : tr("OpenBLAS's LAPACK - not in this build"),
+                  QStringLiteral("openblas"));
     a_lu->setCurrentIndex(luWanted());
     luLine->addWidget(a_lu, 1);
     luRows->addLayout(luLine);
     auto* luAbout = new QLabel(tr("The full wave's system of runs of current and the quasi-static solve's charges are each a dense "
                                   "matrix of some thousands of rows. Apple's Accelerate factorizes them on many threads: a full wave's "
                                   "of 4000 to 6000 runs 9 to 11 times faster than Eigen's (one thread), the charges' 15 to 17 times, "
-                                  "to the same accuracy. Linux and Windows have Eigen's alone. QUCS_RF25_LU=eigen, accelerate or auto "
-                                  "in the environment chooses, whatever this says, and QUCS_FEM_SOLVER=eigen keeps Eigen's."),
+                                  "to the same accuracy. On Linux and Windows OpenBLAS's LAPACK, where this build has it, does the "
+                                  "same on as many threads as the machine has (OPENBLAS_NUM_THREADS or OMP_NUM_THREADS fewer), a "
+                                  "sweep's frequencies taking turns at it. QUCS_RF25_LU=eigen, accelerate, openblas or auto in the "
+                                  "environment chooses, whatever this says, and QUCS_FEM_SOLVER=eigen keeps Eigen's."),
                                lu);
     luAbout->setWordWrap(true);
     luRows->addWidget(luAbout);
@@ -142,8 +161,7 @@ RF25SettingsDialog::RF25SettingsDialog(QWidget* parent) : QDialog(parent)
 
 int RF25SettingsDialog::luWanted()
 {
-    const QString v = QucsSettingsFile().value(kLuKey, QStringLiteral("auto")).toString();
-    return v == QLatin1String("eigen") ? 1 : v == QLatin1String("accelerate") ? 2 : 0;
+    return luIndexOf(QucsSettingsFile().value(kLuKey, QStringLiteral("auto")).toString());
 }
 
 int RF25SettingsDialog::limitWanted()
@@ -163,7 +181,7 @@ double RF25SettingsDialog::memoryWanted()
 void RF25SettingsDialog::applySettings()
 {
     const int c = luWanted();
-    setDenseLu(c == 1 ? DenseLu::Eigen : c == 2 ? DenseLu::Accelerate : DenseLu::Automatic);
+    setDenseLu(c == 1 ? DenseLu::Eigen : c == 2 ? DenseLu::Accelerate : c == 3 ? DenseLu::OpenBlas : DenseLu::Automatic);
     setDenseLimit(limitWanted());
     setSweepMemory(memoryWanted() * 1e9);
 }
@@ -173,12 +191,24 @@ QString RF25SettingsDialog::luStatus(int choice)
     QString lead;
     choice = chosenAfterEnvironment(choice, &lead);
     if (choice == 1) return lead + tr("Eigen's LU factorizes the dense systems.");
+    const QString openBlas = tr("OpenBLAS's LAPACK factorizes the dense systems (%1).").arg(openBlasLuAbout());
+    if (choice == 3) {
+        if (openBlasLuHere()) return lead + openBlas;
+#if defined(Q_OS_MACOS)
+        return lead + tr("Eigen's LU factorizes the dense systems: this build has no OpenBLAS, or binds LAPACK's names to "
+                         "Accelerate's.");
+#else
+        return lead + tr("Eigen's LU factorizes the dense systems: this build has no OpenBLAS.");
+#endif
+    }
     if (accelerateLuHere()) return lead + tr("Accelerate's LAPACK factorizes the dense systems.");
+    if (choice == 0 && openBlasLuHere()) return lead + openBlas;
 #if defined(Q_OS_MACOS)
     return lead + tr("Eigen's LU factorizes the dense systems: Accelerate's LAPACK needs macOS 13.3 or later, and a build whose "
                      "SDK has it.");
 #else
-    return lead + tr("Eigen's LU factorizes the dense systems: this build has no Accelerate.");
+    return lead + (choice == 2 ? tr("Eigen's LU factorizes the dense systems: this build has no Accelerate.")
+                               : tr("Eigen's LU factorizes the dense systems: this build has neither Accelerate nor OpenBLAS."));
 #endif
 }
 
