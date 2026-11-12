@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-properties>
+ <properties><frame-color>#0000ff</frame-color><fill-color>#0000ff</fill-color><dither-pattern>I0</dither-pattern><name>M2</name><source>2/0@1</source></properties>
+ <properties><frame-color>#ff0000</frame-color><fill-color>#ff0000</fill-color><dither-pattern>C0</dither-pattern><name>M1</name><source>1/0@1</source></properties>
+ <properties><name>FEOL</name><source>*/*@*</source><group-members><frame-color>#000080</frame-color><fill-color>#00a000</fill-color><dither-pattern>I4</dither-pattern><line-style>I2</line-style><name>POLY</name><source>3/0</source></group-members><group-members><fill-color>#ff00ff</fill-color><dither-pattern>I0</dither-pattern><visible>false</visible><name>HIDDEN</name><source>4/0</source></group-members></properties>
+ <properties><frame-color>#000000</frame-color><fill-color>#ff0000</fill-color><dither-pattern>I1</dither-pattern><width>3</width><xfill>true</xfill><marked>true</marked><name>BOX</name><source>5/0@1</source></properties>
+ <properties><frame-color>#ff8040</frame-color><fill-color>#ff8040</fill-color><dither-pattern>I0</dither-pattern><name>UNDER</name><source>7/0@1</source></properties>
+ <properties><frame-color>#80ff20</frame-color><fill-color>#80ff20</fill-color><dither-pattern>I0</dither-pattern><transparent>true</transparent><name>OVER</name><source>6/0@1</source></properties>
+ <custom-dither-pattern><pattern><line>**..</line><line>*...</line><line>....</line></pattern><order>1</order><name>mine</name></custom-dither-pattern>
+</layer-properties>
