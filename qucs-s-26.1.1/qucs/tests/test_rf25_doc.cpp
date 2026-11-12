@@ -63,6 +63,7 @@
 #include "layoutdoc.h"
 #include "rf25doc.h"
 #include "rf25/rf25_dense.h"
+#include "rf25/rf25_dielectric.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_static.h"
 #include "rf25settings.h"
@@ -2765,12 +2766,119 @@ private slots:
         // Undone: the whole substrate.
         doc->undo();
         QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+
+        // A block of substrate beyond the stub's open end, nothing under the
+        // stub, room for its panels and no more: the correction with the
+        // layer drawn everywhere - under the stub too, its cells among its
+        // panels - refused, and so no per metre, and said why, where the
+        // layer everywhere's cross-section and the whole correction as drawn
+        // counted the layer twice. The whole as it is.
+        {
+            QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{1100, -50, 1200, 100}}}}, &done, &why),
+                     qPrintable(why));
+            QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+            double q0 = 0, w0 = 0;
+            QStringList said0;
+            QVERIFY2(capacitances(&q0, &w0, &said0), qPrintable(doc->solveProblem()));
+            const QString lines0 = said0.join(QStringLiteral(" | "));
+            QVERIFY2(perMetre > 0, qPrintable(lines0));
+            const QRegularExpressionMatch panels = QRegularExpression(QStringLiteral("faces in (\\d+) panel")).match(lines0);
+            QVERIFY2(panels.hasMatch(), qPrintable(lines0));
+            rf::setDielectricMostPanels(panels.captured(1).toInt());
+            RF25Doc::SolveRequest q;
+            q.solver = QStringLiteral("quasi_static");
+            doc->solveWith(q);
+            const bool solved = doc->waitForSolved(300000) && doc->extraction() && doc->extraction()->ok();
+            rf::setDielectricMostPanels(0);
+            QVERIFY2(solved, qPrintable(doc->solveProblem()));
+            const QString said2 = doc->extraction()->lines.join(QStringLiteral(" | "));
+            QVERIFY2(doc->extraction()->perMetre.maxwell.isEmpty() && said2.contains(QStringLiteral("No per metre of the line")), qPrintable(said2));
+            QVERIFY(std::abs(doc->extraction()->maxwell.at(0).at(0) / q0 - 1) < 1e-9);
+            doc->undo();
+            QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        }
         QVERIFY(doc->processed()->extents.isEmpty());
         RF25Doc::SolveRequest q;
         q.solver = QStringLiteral("quasi_static");
         doc->solveWith(q);
         QVERIFY(doc->waitForSolved(300000) && doc->extraction() && doc->extraction()->ok());
         QVERIFY(std::abs(doc->extraction()->maxwell.at(0).at(0) / wholeQ - 1) < 1e-9);
+    }
+
+    // A strip of 300 µm on 254 µm of 6.15 over a ground, the substrate cut
+    // flush with it - the strip's edges on its walls' tops, where the field
+    // is most singular -, against the 2D multiphysics engine's
+    // cross-sections of the same (the strip 0.2 µm thick, in a box 8 mm wide
+    // with 4 mm of air): 83.30 pF/m flush, 123.39 with the substrate
+    // everywhere. The ratio of the two within 3.5 % of the engine's at ten
+    // cells across and 2.5 % at twenty (2.8 and 2.1 %), the two meshes
+    // within 1 % of each other. (Its panels coarsened, those next to the
+    // strip too, past 4000: at twenty-eight cells across its line jumped
+    // 10 %, and at thirty read more than the substrate everywhere; the walls'
+    // eight rows read it 2.3 % high where it converged.) The line 3 mm: at
+    // 1.5 mm the end's difference summed along it is a part in a hundred
+    // short of the endless line's.
+    void aStripFlushWithItsMesaIsThe2DEnginesLine()
+    {
+        QVERIFY(writeStrip(path(QStringLiteral("flush.gds")), 3000, 300));
+        rf::Model m = rf::Model::blank();
+        std::vector<rf::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(), [](const rf::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
+        for (rf::Node& n : stack)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("254[um]"));
+                n.props.insert(QStringLiteral("epsr"), QStringLiteral("6.15"));
+            }
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("flush.gds"));
+        m.layout().child(QStringLiteral("rf_layer_map"))
+            ->props.insert(QStringLiteral("rows"), rowsOf({{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}}));
+        m.ports().children.clear();
+        const QString model = path(QStringLiteral("flush.qrf25"));
+        const auto write = [&](int across) {
+            m.mesh().props.insert(QStringLiteral("cells_across"), across);
+            QFile f(model);
+            if (!f.open(QIODevice::WriteOnly)) return false;
+            f.write(m.toJson());
+            return true;
+        };
+        QVERIFY(write(5));
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        const auto perMetre = [&]() {
+            RF25Doc::SolveRequest q;
+            q.solver = QStringLiteral("quasi_static");
+            doc->solveWith(q);
+            if (!doc->waitForSolved(300000) || !doc->extraction() || !doc->extraction()->ok() || doc->extraction()->perMetre.maxwell.isEmpty())
+                return 0.0;
+            return doc->extraction()->perMetre.maxwell.at(0).at(0);
+        };
+        QList<double> ratios;
+        for (const int across : {10, 20}) {
+            QVERIFY(doc->editNode(doc->model().mesh().tag, [across](rf::Node& n) { n.props.insert(QStringLiteral("cells_across"), across); },
+                                  QStringLiteral("across")));
+            QVERIFY(doc->waitForPrepared(60000));
+            const double whole = perMetre();
+            QVERIFY2(whole > 0, qPrintable(doc->solveProblem()));
+            QStringList done;
+            QString why;
+            QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{-2000, 0, 5000, 300}}}}, &done, &why),
+                     qPrintable(why));
+            QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+            const double flush = perMetre();
+            QVERIFY2(flush > 0, qPrintable(doc->solveProblem()));
+            const QString lines = doc->extraction()->lines.join(QStringLiteral(" | "));
+            QVERIFY2(!lines.contains(QStringLiteral("grow by")), qPrintable(lines));
+            ratios << flush / whole;
+            QVERIFY2(std::abs(flush / whole / (83.30 / 123.39) - 1) < (across == 10 ? 0.035 : 0.025),
+                     qPrintable(QStringLiteral("%1 cells across: %2 pF/m flush, %3 everywhere | %4").arg(across).arg(flush * 1e12).arg(whole * 1e12).arg(lines)));
+            qWarning().noquote() << QStringLiteral("%1 across: flush %2, everywhere %3 pF/m").arg(across).arg(flush * 1e12).arg(whole * 1e12);
+            doc->undo();
+            QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        }
+        QVERIFY2(std::abs(ratios.at(1) / ratios.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(ratios.at(1)).arg(ratios.at(0))));
+        doc->setDocChanged(false);
+        app->closeAllFiles();
     }
 
     // A TRL calibration (F3 of the open items of 8 November): 150 µm pads

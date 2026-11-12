@@ -528,6 +528,11 @@ Layers layersOf(const Stack& stack)
 
 Green::Green(const Layers& layers, double z) : Green(layers, z, z) {}
 
+Green::Green(const Layers& layers, double zField, double zSource, int side) : Green(layers, zField, zSource)
+{
+    a_side = side < 0 ? -1 : 1;
+}
+
 double Green::interfaceAt(int i) const
 {
     const double here = a_layers.slabs.at(i).epsr;
@@ -655,15 +660,21 @@ void Green::build() const
         // One bounce down, one up, and the two round trips - whose paths
         // are 2h minus and plus the gap between the heights, both of them
         // longer than the slab itself.
-        Series numerator = shifted(rd, u + us) + shifted(ru, 2 * h - u - us)
-                           + shifted(times(ru, rd, &budget), 2 * h - (u - us))
-                           + shifted(times(ru, rd, &budget), 2 * h + (u - us));
+        // (The normal field's: each path signed by how its length moves
+        // with the point's height u.)
+        const auto sign = [this](double s) { return a_side != 0 ? s : 1.0; };
+        Series numerator = scaled(shifted(rd, u + us), sign(1)) + scaled(shifted(ru, 2 * h - u - us), sign(-1))
+                           + scaled(shifted(times(ru, rd, &budget), 2 * h - (u - us)), sign(-1))
+                           + scaled(shifted(times(ru, rd, &budget), 2 * h + (u - us)), sign(1));
         series = times(tidied(std::move(numerator), &budget), overOneMinus(both, &budget), &budget);
         // Two metals with one dielectric between them are both in that
         // slab, at its two faces: the same slab, but not the same height.
         // The way straight from one to the other is then a term like any
         // other, since there is no 1/rho to take out of it.
-        if (a_z != a_zSource) series << QPair<double, double>{1.0, std::abs(a_z - a_zSource)};
+        if (a_z != a_zSource) series << QPair<double, double>{sign(u > us ? 1.0 : -1.0), std::abs(a_z - a_zSource)};
+        // The normal field at the charge's own height: the charge itself,
+        // on the side asked for.
+        else if (a_side != 0) series << QPair<double, double>{double(a_side), 0.0};
     } else {
         // Across two slabs. The wave that leaves the source's slab on the
         // side the point is, then through each interface between them,
@@ -714,7 +725,11 @@ void Green::build() const
         const int lastFace = upward ? a_fld - 1 : a_fld;
         const Series ahead = upward ? up(a_fld) : down(a_fld);
         const double back = upward ? -interfaceAt(lastFace) : interfaceAt(lastFace);
-        const Series inside = times(Series{{1.0, arriveAt}} + shifted(ahead, 2 * hf - arriveAt),
+        // (The normal field's: arriving, the path grows with the point's
+        // height going up and shrinks going down; round the far face, the
+        // other way.)
+        const double sIn = a_side != 0 ? (upward ? 1.0 : -1.0) : 1.0, sBack = a_side != 0 ? -sIn : 1.0;
+        const Series inside = times(Series{{sIn, arriveAt}} + scaled(shifted(ahead, 2 * hf - arriveAt), sBack),
                                     overOneMinus(shifted(scaled(ahead, back), 2 * hf), &budget), &budget);
         series = times(amp, inside, &budget);
         Q_UNUSED(from);
@@ -773,6 +788,11 @@ void Green::build() const
         small = large = std::max(1e-9, a_zRef);
     }
     const double from = small * 1e-4, to = large * 1e4;
+    if (a_side != 0) {
+        a_fieldScale = large;
+        for (const Image& i : std::as_const(a_images))
+            if (i.z > 0 && std::abs(i.a) > 1e-12) a_fieldScale = std::min(a_fieldScale, i.z);
+    }
     // A hundred and twenty a decade: the product curves most where the
     // nearest image sits, and sixty left a few parts in a hundred
     // thousand there. Filling costs one pass over the images, which is
@@ -783,7 +803,12 @@ void Green::build() const
     for (int i = 0; i < count; ++i) {
         const double rho = from * std::pow(to / from, double(i) / (count - 1));
         a_rho << rho;
-        a_table << rho * reflected(rho);
+        // (The normal field's: (rho^2 + z0^2)^(3/2) times it, z0 its
+        // nearest image's distance - bounded near and far, where rho cubed
+        // times it ran from nothing to its first moment over the decades
+        // below z0, and its cubic was 3e-6 out there under an oxide, not
+        // 4e-7.)
+        a_table << (a_side != 0 ? std::pow(rho * rho + a_fieldScale * a_fieldScale, 1.5) * normalFieldExact(rho) : rho * reflected(rho));
     }
 }
 
@@ -825,7 +850,7 @@ double Green::beyondStrongest(double rho, int most) const
     // (allTerms() puts the charge itself first at one height, so the
     // images beyond the n'th of allTerms() are the images beyond the
     // (n-1)'th of a_images.)
-    if (sameHeight() && most > 0) {
+    if (sameHeight() && most > 0 && a_side == 0) {
         sum = 0;
         for (int i = most - 1; i < a_images.size(); ++i)
             sum += a_images.at(i).a / std::sqrt(rho * rho + a_images.at(i).z * a_images.at(i).z);
@@ -881,7 +906,7 @@ QList<Green::Image> Green::allTerms() const
 {
     build();
     QList<Image> out;
-    if (sameHeight()) out << Image{1.0, 0.0};
+    if (sameHeight() && a_side == 0) out << Image{1.0, 0.0};
     out += a_images;
     return out;
 }
@@ -1027,6 +1052,47 @@ double Green::reflectedByIntegral(double rho) const
     // in a thousand there); the averaged sum is what it tends to.
     integral = covered || partial.size() < 8 ? sum : averaged(partial);
     return integral / (4 * M_PI * epsilon()) + (tail != 0 ? tail / (4 * M_PI * epsilon() * rho) : 0.0);
+}
+
+double Green::normalFieldExact(double rho) const
+{
+    if (!ok()) return 0;
+    build();
+    double sum = 0;
+    for (const Image& i : a_images) {
+        const double r2 = rho * rho + i.z * i.z;
+        if (r2 > 0) sum += i.a * i.z / (r2 * std::sqrt(r2));
+    }
+    return sum / (4 * M_PI * epsilon());
+}
+
+double Green::normalField(double rho) const
+{
+    if (!ok() || rho <= 0) return 0;
+    build();
+    if (a_table.isEmpty() || rho < a_rho.first() || rho > a_rho.last()) return normalFieldExact(rho);
+    const double t = std::log(rho / a_rho.first()) / std::log(a_rho.last() / a_rho.first());
+    const double x = t * (a_table.size() - 1);
+    const int i = std::clamp(int(x), 0, int(a_table.size()) - 2);
+    const double f = x - i;
+    const double p0 = a_table.at(std::max(0, i - 1)), p1 = a_table.at(i), p2 = a_table.at(i + 1),
+                 p3 = a_table.at(std::min(int(a_table.size()) - 1, i + 2));
+    const double product =
+        p1 + 0.5 * f * ((p2 - p0) + f * ((2 * p0 - 5 * p1 + 4 * p2 - p3) + f * (3 * (p1 - p2) + p3 - p0)));
+    return product / std::pow(rho * rho + a_fieldScale * a_fieldScale, 1.5);
+}
+
+double Green::normalFieldBeyond(double rho, int most) const
+{
+    if (!ok()) return 0;
+    build();
+    double sum = 0;
+    for (int k = most; k < a_images.size(); ++k) {
+        const Image& i = a_images.at(k);
+        const double r2 = rho * rho + i.z * i.z;
+        if (r2 > 0) sum += i.a * i.z / (r2 * std::sqrt(r2));
+    }
+    return sum / (4 * M_PI * epsilon());
 }
 
 double Green::potential(double rho) const
