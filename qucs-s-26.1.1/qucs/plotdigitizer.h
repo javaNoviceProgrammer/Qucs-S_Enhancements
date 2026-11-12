@@ -222,6 +222,9 @@ public:
     const pdf::vec::Graphics& graphics(int page);
     bool hasVectors() const;
     QString vectorProblem() const { return a_problem; }
+    /// Some of the page's text went unread: the page so heavy that its calls
+    /// to pdfium were cut short.
+    bool textCut(int page) const;
     /// The words and numbers in \a within (page points).
     QList<Token> tokens(int page, const QRectF& within);
     QImage render(int page, const QRectF& region, double scale) const;
