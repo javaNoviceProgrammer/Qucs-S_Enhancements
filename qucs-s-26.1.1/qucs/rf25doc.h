@@ -28,6 +28,8 @@
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_static.h"
 #include "rf25/rf25_model.h"
+#include "rf25/rf25_optimize.h"
+#include "rf25/rf25_solve.h"
 
 #include <QElapsedTimer>
 #include <QFrame>
@@ -49,7 +51,12 @@ class QTimer;
 class QToolButton;
 class QUndoStack;
 
+namespace qucs_s::fem {
+class OptimizationPage;
+}
 namespace qucs_s::rf25 {
+
+class SweepPage;
 
 /*!
  * The stack in z: its layers from the bottom up, each as tall as it is
@@ -118,6 +125,8 @@ public:
     void becomeCurrent(bool) override;
     double zoomBy(double factor) override;
     void showAll() override;
+    /// The whole layout in sight - a model of its own shapes alone, they.
+    void fitView();
     void zoomToSelection() override;
     void showNoZoom() override;
     /// Reads its file again (changed outside Qucs-S): the steps of Undo go.
@@ -209,7 +218,7 @@ public:
     /// meshes defaultLevels() says of the model's own mesh's cells across.
     QList<int> convergenceLevels() const;
     /// Whether the study asks for the full-wave solve (its Solver).
-    bool studyIsFullWave() const;
+    bool studyIsFullWave() const { return qucs_s::rf25::studyIsFullWave(a_model); }
     /// Solves it, in the background, on the shapes and the mesh as they
     /// stand, by the solver the study names. A solve going on is let go.
     /// Nothing happens where there is no mesh to solve on; solveProblem()
@@ -219,21 +228,8 @@ public:
     /// the mesh before would be thrown away when they were done.
     void solve();
     /// What a solve may be asked to be in place of what the study says - a
-    /// tool's question, which must leave the model as it was.
-    struct SolveRequest {
-        QString solver;              ///< "quasi_static" or "full_wave"; empty: the study's
-        QList<double> frequencies;   ///< a full-wave solve's, Hz; empty: the study's sweep
-        QString matrix;              ///< "automatic", "dense" or "compressed"; empty: the study's Matrix
-        /// A full-wave sweep's points added where its answer changes
-        /// (rf25_adaptive.h): 1 yes, 0 no, -1 as the study says. Never of
-        /// frequencies asked for, nor of a convergence check.
-        int adaptive = -1;
-        /// A mesh convergence check rather than a solve: the cells across
-        /// the narrowest conductor of each mesh, the coarsest first (a full
-        /// wave at \a frequencies, the top of the study's sweep where none
-        /// are given). Empty: a solve.
-        QList<int> levels;
-    };
+    /// tool's question, which must leave the model as it was (rf25_solve.h).
+    using SolveRequest = qucs_s::rf25::SolveRequest;
     /// solve(), as \a request says.
     void solveWith(const SolveRequest& request);
     /// How far a full-wave solve going on has got: frequencies solved, of
@@ -273,6 +269,47 @@ public:
     /// Waits for it, a solve waiting for the mesh included, \a ms at most;
     /// whether it ended.
     bool waitForSolved(int ms = 600000);
+
+    /*!
+     * A Parametric Sweep run (Analyses > Parametric Sweep): \a tag, or
+     * (empty) the one chosen in the panel, else the first. In the
+     * background, each point the model with its parameters solved by its
+     * study; the bar counts the points, its Stop stops the run with what it
+     * has. What it found is kept in its node ("result", saved with the
+     * model) and shown in the tab's page below the layout. False and why
+     * where it cannot be run (no such node, its plan wrong, the layout not
+     * read, one running).
+     */
+    bool runAnalysis(const QString& tag = {}, QString* why = nullptr);
+    bool isAnalysing() const { return a_analysis != nullptr; }
+    /// The analysis running: its node's tag, and how far it has got - a
+    /// sweep's points solved of how many, an optimization's thousandths of
+    /// its search - and that in words. Empty where none runs.
+    QString analysisRunning(int* done = nullptr, int* of = nullptr, QString* said = nullptr) const;
+    void stopAnalysis();
+    /// Waits for the analysis running; whether it ended.
+    bool waitForAnalysis(int ms = 600000);
+    /// What the Parametric Sweep \a tag (empty: the first) found, as its
+    /// node keeps it; empty where it has not run.
+    qucs_s::rf25::SweepResult sweepResult(const QString& tag = {}) const;
+    /// Whether what analysis \a tag found is of the model before a change.
+    bool analysisOld(const QString& tag) const;
+    /// Each solved point of Parametric Sweep \a tag (empty: the first) as a
+    /// Touchstone 1.1 file beside the model: <model>_<sweep>_<point>.sNp,
+    /// its parameters' values in its comments. What was written in
+    /// \a written; false and why where nothing could be.
+    bool writeSweepTouchstones(const QString& tag, QStringList* written = nullptr, QString* why = nullptr);
+    qucs_s::rf25::SweepPage* sweepPage() const { return a_sweepPage; }
+    /// What Optimization \a tag (empty: the first) found, as its node keeps
+    /// it; empty where it has not run. (runAnalysis() runs one as a sweep:
+    /// its page the multiphysics optimization's, each solve told as it ends.)
+    qucs_s::fem::OptimizationResult optimizationResult(const QString& tag = {}) const;
+    /// The optimum of Optimization \a tag (empty: the first) - a Pareto
+    /// front's design \a point, from 1 - written into the parameters, each in
+    /// the unit its expression has: one step of Undo, the model then solved
+    /// there. What it wrote in \a written; false and why.
+    bool applyOptimum(const QString& tag = {}, int point = 0, QStringList* written = nullptr, QString* why = nullptr);
+    qucs_s::fem::OptimizationPage* optimizationPage() const { return a_optimizationPage; }
     /// Held by what waits on it with the window going on - a tool's call,
     /// from its first wait to its answer, and each waitFor...() -: its tab
     /// closed meanwhile (Stop and Close, a close_document, a tab kept running
@@ -506,7 +543,7 @@ public:
      * file as it was put back. The port tools, the pen and these are one
      * at a time; Escape puts it down.
      */
-    enum class DrawTool { None, Rectangle, Polygon, Via };
+    enum class DrawTool { None, Rectangle, Polygon, Via, Dimension };
     DrawTool drawTool() const { return a_drawTool; }
     void setDrawTool(DrawTool tool);
     /// The Draw button (its arrow, the menu: the tools, the layer, the
@@ -544,6 +581,27 @@ public:
      * must be saved, where it names none), then read again.
      */
     bool drawShapes(const QJsonArray& edits, QStringList* done = nullptr, QString* error = nullptr);
+    /// What the Draw tools draw: shapes of the model's own (Layout > Shapes,
+    /// rf_shape - each number a length to be written as an expression of
+    /// the parameters) rather than shapes of the layout file; drawShapes()
+    /// draws them where each edit says "parametric": true. Kept for the next
+    /// model opened.
+    bool drawsParametric() const { return a_drawParametric; }
+    /// A Dimension added (Layout > Dimension, rf_dimension): the corners of
+    /// the layout file's shapes on drawLayer() inside \a box (µm) moved the
+    /// way of \a toward from its centre - along x or y, whichever it is
+    /// further -, its By nought for a parameter to be written in. One step
+    /// of Undo, the panel showing it. Its tag, or empty and why. The Draw
+    /// menu's Dimension tool: a drag the box, a click the way.
+    QString placeDimension(const QRectF& box, QPointF toward, QString* why = nullptr);
+    /// The box the Dimension tool has drawn, the way still to click; empty
+    /// where none is.
+    QRectF dimensionBox() const { return a_dimensionBox; }
+    void setDrawsParametric(bool own);
+    /// The model's own shapes as its parameters make them (Shapes): drawn
+    /// over the layout in their layers' colours, a click on one choosing
+    /// its node.
+    const QList<qucs_s::rf25::OwnShape>& ownShapes() const { return a_ownShapes; }
     /// The shape selected in the view deleted from the layout file (one of
     /// the cell solved's own, on a layer the map sends to the stack).
     bool deleteSelectedShape(QString* why = nullptr);
@@ -597,6 +655,8 @@ signals:
     void preparedChanged();
     /// A solve started, ended, or let go.
     void solvedChanged();
+    /// An analysis began or ended.
+    void analysedChanged();
     void focusChanged(const QString& tag);
 
 private:
@@ -604,24 +664,18 @@ private:
     struct PrepareJob;
     int a_waiting = 0;      // (Held)
     bool a_closed = false;  // (closeWhenFree())
-    struct SolveJob;
+    using SolveJob = qucs_s::rf25::SolveJob;   ///< (rf25_solve.h)
+    struct AnalysisRun;
+    std::shared_ptr<AnalysisRun> a_analysis;
+    qucs_s::rf25::SweepPage* a_sweepPage = nullptr;
+    qucs_s::fem::OptimizationPage* a_optimizationPage = nullptr;
+    void analysisDone();
+    bool runOptimizationNode(const qucs_s::rf25::Node& node, QString* why);
+    /// The page shows analysis \a tag's result (a sweep's), or hides.
+    void showAnalysis(const QString& tag);
     void buildUi();
     void prepareDone();
     void solveDone();
-    /// A full-wave solve of \a mesh at \a frequencies, its ports
-    /// de-embedded where they ask - as \a job has them - on the job's
-    /// thread, the strips of its ports' feeds meshed as \a how says (as
-    /// \a mesh was); \a adaptive, its points added where its answer changes
-    /// (\a tolerance on S). What reading the ports said goes to \a notes.
-    static std::shared_ptr<qucs_s::rf25::FullWave> solveWaveOn(SolveJob& job, const qucs_s::rf25::Mesh& mesh,
-                                                               const qucs_s::rf25::MeshSettings& how,
-                                                               const QList<double>& frequencies, bool adaptive,
-                                                               double tolerance, QStringList* notes);
-    /// A convergence check's meshes, each solved, on the job's thread.
-    static void convergeOn(SolveJob& job);
-    /// \a wave calibrated by the job's TRL standards (rf25_trl.h), each
-    /// solved here at its frequencies, on the job's thread.
-    static std::shared_ptr<qucs_s::rf25::FullWave> trlOn(SolveJob& job, const qucs_s::rf25::FullWave& wave);
     /// stopSolving() but for the bar: a solve let go to be started again at
     /// once - on an edit's mesh, or as solveWith() asks - keeps it.
     void letSolveGo();
@@ -682,6 +736,14 @@ private:
     DrawTool a_lastTool = DrawTool::Rectangle;   ///< the button's click takes it up again
     QString a_drawLayer;                         ///< chosen in the menu; empty: drawLayer()'s own choice
     double a_viaSize = 1;
+    bool a_drawParametric = false;               ///< setDrawsParametric()
+    QRectF a_dimensionBox;                       ///< dimensionBox()
+    QList<qucs_s::rf25::OwnShape> a_ownShapes;   ///< ownShapes(), as shown
+    QPointF a_pressedAt;                         ///< where the button went down in Select: a click there chooses an own shape
+    /// \a edits as the tools draw them: each add "parametric" where the
+    /// Draw menu keeps them so.
+    QJsonArray toolEdits(QJsonArray edits) const;
+    bool drawOwnShapes(const QJsonArray& edits, QStringList* done, QString* error);
     QPolygonF a_polygon;                         ///< the polygon being drawn
     QPointF a_drawPointer;                       ///< where the pointer is, snapped
     bool a_drawPointerIn = false;

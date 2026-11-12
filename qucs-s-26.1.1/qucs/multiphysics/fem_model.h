@@ -279,6 +279,13 @@ struct ParameterScope {
     QHash<QString, Dim> dims;
 };
 std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHash<QString, QString>& overrides = {});
+/// \a parameters evaluated in order into \a ps, after what its scope holds
+/// already (a model's functions): each a constant, or an error by its name.
+/// \a overrides in place of the expressions they name.
+void evaluateParameterRows(ParameterScope& ps, const QList<Model::Parameter>& parameters, const QHash<QString, QString>& overrides = {});
+/// \a parameters alone evaluated (a model of another kind - RF 2.5D's - has
+/// the same rows and no functions).
+std::shared_ptr<ParameterScope> evaluateParameters(const QList<Model::Parameter>& parameters, const QHash<QString, QString>& overrides = {});
 
 /// Whether \a text is a flag as such: true, false (in any case), 1, 0, or
 /// none.
