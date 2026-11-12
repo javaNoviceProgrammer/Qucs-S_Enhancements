@@ -281,6 +281,8 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
             // What the solves had beside their answers: the most any took,
             // and every doubt any had.
             base.compressed = base.compressed || w.compressed;
+            base.accelerated = base.accelerated || w.accelerated;
+            base.openBlas = base.openBlas || w.openBlas;
             base.memory = std::max(base.memory, w.memory);
             base.denseMemory = std::max(base.denseMemory, w.denseMemory);
             base.largestRank = std::max(base.largestRank, w.largestRank);

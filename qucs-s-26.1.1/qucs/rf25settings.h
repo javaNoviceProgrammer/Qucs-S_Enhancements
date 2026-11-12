@@ -26,9 +26,10 @@ namespace qucs_s::rf25 {
 /*!
  * The RF 2.5D settings, each kept in the settings file and given to the
  * solver at the start and on OK (rf25/rf25_dense.h, rf25/rf25_fullwave.h):
- * - the dense LU (RF25/lu: auto, eigen, accelerate): Automatic is
- *   Accelerate's LAPACK where this macOS has it, Eigen's elsewhere -
- *   QUCS_RF25_LU, and QUCS_FEM_SOLVER=eigen, over it;
+ * - the dense LU (RF25/lu: auto, eigen, accelerate, openblas): Automatic
+ *   is Accelerate's LAPACK where this macOS has it, else OpenBLAS's where
+ *   the build has it, else Eigen's - QUCS_RF25_LU, and
+ *   QUCS_FEM_SOLVER=eigen, over it;
  * - the most runs and cells a full-wave system is held dense for, past which
  *   it is held compressed (RF25/denseLimit; 0 Automatic);
  * - the memory a dense sweep's frequencies at once may hold, GB
@@ -40,15 +41,16 @@ class RF25SettingsDialog : public QDialog
 public:
     explicit RF25SettingsDialog(QWidget* parent = nullptr);
 
-    /// The settings as kept: the LU 0 Automatic, 1 Eigen, 2 Accelerate; the
-    /// limit in runs and cells and the memory in GB, 0 for Automatic.
+    /// The settings as kept: the LU 0 Automatic, 1 Eigen, 2 Accelerate, 3
+    /// OpenBLAS; the limit in runs and cells and the memory in GB, 0 for
+    /// Automatic.
     static int luWanted();
     static int limitWanted();
     static double memoryWanted();
     /// The settings given to the solver (at the start, and on OK).
     static void applySettings();
-    /// What factorizes here with \a choice (0, 1, 2), QUCS_RF25_LU,
-    /// QUCS_FEM_SOLVER and this macOS taken in.
+    /// What factorizes here with \a choice (0 to 3), QUCS_RF25_LU,
+    /// QUCS_FEM_SOLVER, this build and this macOS taken in.
     static QString luStatus(int choice);
     /// How large a system is held dense and how many of that size are
     /// solved at once, with \a limit and \a gigabytes (0: Automatic).

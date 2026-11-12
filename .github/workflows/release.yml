@@ -371,7 +371,7 @@ jobs:
           # (mumps and strumpack: the multiphysics solver's multithreaded
           # factorizations - MSYS2's OpenMP builds -, their DLLs bundled by
           # windows-bundle.sh with the rest.)
-          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p pkgconf:p mumps:p strumpack:p
+          pacboy: cmake:p gcc:p qt6-base:p qt6-tools:p qt6-svg:p qt6-charts:p qt6-pdf:p qt6-declarative:p make:p ninja:p gperf:p zlib:p pkgconf:p openblas:p mumps:p strumpack:p
 
       - name: Configure and build
         if: ${{ matrix.enabled }}

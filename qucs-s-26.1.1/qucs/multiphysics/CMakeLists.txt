@@ -127,8 +127,9 @@ endif()
 option(QUCS_WITH_MUMPS "Factorize the multiphysics solver's matrices by MUMPS where it is found" ON)
 option(QUCS_WITH_STRUMPACK "Factorize the multiphysics solver's matrices by STRUMPACK where it is found" ON)
 # (CI and the releases: a library not found fails the configure, not a
-# release that factorizes by Eigen's alone.)
-option(QUCS_SPARSE_SOLVERS_REQUIRED "Fail where MUMPS or STRUMPACK, asked for, is not found" OFF)
+# release that factorizes by Eigen's alone. It covers RF 2.5D's OpenBLAS
+# too, ../CMakeLists.txt.)
+option(QUCS_SPARSE_SOLVERS_REQUIRED "Fail where MUMPS, STRUMPACK or RF 2.5D's OpenBLAS, asked for, is not found" OFF)
 set(MUMPS_EXTRA_LIBRARIES "" CACHE STRING "Libraries a static MUMPS needs besides its own (METIS, BLAS and LAPACK, gfortran, OpenMP)")
 add_library(fem_external STATIC fem_sparse_external.cpp)
 set_target_properties(fem_external PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
