@@ -123,6 +123,24 @@ struct OwnShape {
 /// tab -; one that cannot be read, or is on no layer a shape may be on, left
 /// out and said in \a problems.
 QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems = nullptr);
+
+/// A Dimension (rf_dimension) as its parameters make it: the corners of its
+/// layer's shapes of the layout file inside \a box moved by \a move, µm.
+struct Dimension {
+    QString tag, name, layer;
+    QRectF box;
+    QPointF move;
+    QString offset;   ///< its By as written (w - 50[um])
+};
+/// The model's Dimensions, in order, each evaluated in its parameters; one
+/// that cannot be read left out and said in \a problems.
+QList<Dimension> dimensionsOf(const Model& model, QStringList* problems = nullptr);
+/// \a outline, a shape of \a layer, its corners moved by \a dimensions in
+/// order: each corner inside one's box, its edges too, by its move; \a moved,
+/// given (one per dimension), counts them. False, \a outline as it was and why
+/// in \a why, where it would cross itself or have no area.
+bool moveCorners(QPolygonF& outline, const QString& layer, const QList<Dimension>& dimensions, QString* why = nullptr,
+                 QVector<int>* moved = nullptr);
 /// \a shapes of \a layer cut as \a cutout says: a shape wholly outside what
 /// it keeps dropped, one across a region's edge cut along it, one it leaves
 /// whole returned as it was. \a cut and \a masked, given, count the shapes

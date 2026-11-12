@@ -523,6 +523,13 @@ void RF25Doc::buildUi()
         if (tag.isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::boxPicked, this, [this](QRectF box) {
+        if (a_drawTool == DrawTool::Dimension) {
+            a_dimensionBox = QRectF(drawSnapped(box.topLeft()), drawSnapped(box.bottomRight())).normalized();
+            a_view->setMode(LayoutView::Mode::PickPoint);
+            a_status->setText(tr("Click the way the corners in the box move: beside it, toward +x, -x, +y or -y."));
+            showDrawing();
+            return;
+        }
         if (a_drawTool == DrawTool::Rectangle) {
             const QRectF r = QRectF(drawSnapped(box.topLeft()), drawSnapped(box.bottomRight())).normalized();
             if (!(r.width() > 0 && r.height() > 0)) {
@@ -1623,6 +1630,19 @@ void RF25Doc::showOverlays()
             overlay.name = tr("%1, the model's own shapes").arg(it.key());
             overlays << overlay;
         }
+    }
+    // The Dimensions: each box, an arrow the way it moves, its By by it.
+    for (const Dimension& d : dimensionsOf(a_model)) {
+        LayoutView::Overlay overlay;
+        QPolygonF ring(d.box);
+        ring.removeLast();
+        overlay.shapes << ring;
+        overlay.line = QColor(230, 120, 0);
+        overlay.width = 1.5;
+        overlay.name = tr("%1, moving %2's corners in it").arg(d.name, d.layer);
+        const QPointF way = d.move.isNull() ? QPointF(1, 0) : d.move;
+        overlay.labels << LayoutView::Overlay::Label{d.box.center(), tr("%1: %2").arg(d.name, d.offset), way};
+        overlays << overlay;
     }
     if (a_showProcessed && a_processed) {
         // Each layer's own overlay, in its own colour told against the

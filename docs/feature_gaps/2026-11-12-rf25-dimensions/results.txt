@@ -1,0 +1,12 @@
+===== what each break did =====
+the Dimensions not applied to the file's shapes                aDimensionMovesTheFilesCorners failed (caught); aDimensionWidensALineOnTheTab failed (caught)
+a box's edges not in it                                        aDimensionMovesTheFilesCorners failed (caught)
+every Dimension moving toward +x                               aDimensionMovesTheFilesCorners failed (caught); aDimensionWidensALineOnTheTab failed (caught)
+a shape that crosses itself taken                              aDimensionMovesTheFilesCorners failed (caught)
+what a Dimension could not do not said among the problems      aDimensionMovesTheFilesCorners failed (caught)
+a Dimension that moves nothing not said                        aDimensionMovesTheFilesCorners failed (caught)
+the tab's Dimension tool taking no box                         aDimensionWidensALineOnTheTab failed (caught)
+the way clicked read the wrong way round                       aDimensionWidensALineOnTheTab failed (caught)
+the Dimensions not drawn on the tab                            aDimensionWidensALineOnTheTab failed (caught)
+
+0 of 9 uncaught

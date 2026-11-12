@@ -3157,6 +3157,99 @@ private slots:
         app->closeAllFiles();
     }
 
+    // A Dimension drawn on the tab (phase 4 of RF 2.5D's optimization): the
+    // Draw menu's Dimension tool, a drag round the strip's top edge and a
+    // click above it, adds a node moving those corners +y, chosen in the
+    // panel; its By tied to w widens the strip from the file's 50 µm to w,
+    // drawn as a box with an arrow and its By, and it solves as a strip that
+    // wide read from a GDS: the same S. Undone, the strip as the file has it.
+    void aDimensionWidensALineOnTheTab()
+    {
+        const QString file = fullWaveLine(QStringLiteral("dimmed.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(QPointF(-100, -150), QPointF(1100, 200)));
+        view->repaint();
+        doc->setDrawTool(RF25Doc::DrawTool::Dimension);
+        QCOMPARE(view->mode(), LayoutView::Mode::PickBox);
+        drag(view, view->toPixel(QPointF(-20, 40)), view->toPixel(QPointF(1020, 60)));
+        QVERIFY(!doc->dimensionBox().isNull());
+        QCOMPARE(view->mode(), LayoutView::Mode::PickPoint);
+        drag(view, view->toPixel(QPointF(500, 150)), view->toPixel(QPointF(500, 150)));
+        QVERIFY(doc->dimensionBox().isNull());
+        doc->setDrawTool(RF25Doc::DrawTool::None);
+        const rf::Node* dim = nullptr;
+        for (const rf::Node& n : doc->model().layout().children)
+            if (n.type == QLatin1String("rf_dimension")) dim = &n;
+        QVERIFY(dim != nullptr);
+        const QString tag = dim->tag;
+        QCOMPARE(dim->props.value(QStringLiteral("direction")).toString(), QStringLiteral("+y"));
+        QCOMPARE(dim->props.value(QStringLiteral("layer")).toString(), QStringLiteral("M1"));
+        QCOMPARE(doc->focusedNode(), tag);
+        QVERIFY(doc->waitForPrepared(60000));
+        const auto stripBox = [doc] {
+            QRectF b;
+            for (const rf::Conductor& c : doc->processed()->conductors) b = b.united(c.outline.boundingRect());
+            return b;
+        };
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));   // (By nought: as it was)
+        QVERIFY(doc->editNode(doc->model().root.child(QStringLiteral("rf_parameters"))->tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"w", "80[um]"}); }, QStringLiteral("w")));
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("offset"), QStringLiteral("w - 50[um]")); }, QStringLiteral("by")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 80));
+        bool drawn = false;
+        for (const LayoutView::Overlay& o : view->overlays())
+            for (const LayoutView::Overlay::Label& l : o.labels) drawn = drawn || (l.text.contains(QStringLiteral("w - 50[um]")) && l.towards.y() > 0);
+        QVERIFY(drawn);
+
+        // Solved as a strip of 80 µm read from a GDS.
+        RF25Doc::SolveRequest wave;
+        wave.solver = QStringLiteral("full_wave");
+        wave.frequencies = {3e9};
+        doc->solveWith(wave);
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> mine = doc->fullWave();
+        QVERIFY2(mine != nullptr && mine->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY(writeStrip(path(QStringLiteral("wide.gds")), 1000, 80));
+        rf::Model wide = doc->model();
+        wide.layout().props.insert(QStringLiteral("file"), QStringLiteral("wide.gds"));
+        QVERIFY(wide.remove(tag));
+        const QString wideFile = path(QStringLiteral("wide.qrf25"));
+        {
+            QFile f(wideFile);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(wide.toJson());
+        }
+        RF25Doc* ref = open(wideFile);
+        QVERIFY(ref != nullptr);
+        QVERIFY(ref->waitForLayout(60000));
+        QVERIFY(ref->waitForPrepared(60000));
+        ref->solveWith(wave);
+        QVERIFY(ref->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> theirs = ref->fullWave();
+        QVERIFY2(theirs != nullptr && theirs->ok(), qPrintable(ref->solveProblem()));
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                QVERIFY2(std::abs(mine->s.at(0).at(i).at(j) - theirs->s.at(0).at(i).at(j)) < 1e-9,
+                         qPrintable(QStringLiteral("S%1%2: %3 against %4").arg(i + 1).arg(j + 1).arg(std::abs(mine->s.at(0).at(i).at(j))).arg(std::abs(theirs->s.at(0).at(i).at(j)))));
+
+        // Undone - its By, w, the Dimension itself -: the strip as the file has it.
+        doc->undo();
+        doc->undo();
+        doc->undo();
+        QVERIFY(doc->waitForPrepared(60000));
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
+        bool none = true;
+        for (const rf::Node& n : doc->model().layout().children) none = none && n.type != QLatin1String("rf_dimension");
+        QVERIFY(none);
+        app->closeAllFiles();
+    }
+
     // A substrate that ends (F2 of the open items of 8 November), drawn on
     // the tab: a rectangle drawn on the Substrate is where it is - the map
     // sending its layer of the file there, the processing keeping it apart

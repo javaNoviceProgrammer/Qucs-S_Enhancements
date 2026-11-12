@@ -258,7 +258,7 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("cell"), tr("Cell"), QString(), tr("The cell to solve; the top cell when empty")),
           expr(QStringLiteral("unit"), tr("Unit of its coordinates"), QStringLiteral("m"), QStringLiteral("1[um]"),
                tr("What one unit of the file means, where the file itself does not say"))},
-         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout"), QStringLiteral("rf_shapes")},
+         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout"), QStringLiteral("rf_shapes"), QStringLiteral("rf_dimension")},
          {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")}, true, true, QString(),
          tr("The shapes in x and y, read with gdstk as get_layout and find_shapes read them - and the model's own "
             "shapes, whose sizes are expressions of its parameters (Shapes).")});
@@ -370,6 +370,31 @@ QList<NodeKind> makeKinds()
          tr("A shape of the model's own on a layer of the stack, its numbers expressions of the parameters: a "
             "rectangle by a corner or its centre and its width and height, a polygon by its corners, a path by its "
             "points and width, a square via by its centre and side.")});
+
+    // A parameter tied to the file's own shapes: the corners of a layer's
+    // shapes inside a box moved by an expression - a line widened, a stub
+    // made longer - without drawing them again.
+    add({QStringLiteral("rf_dimension"), tr("Dimension"), QStringLiteral("dimension"), QStringLiteral("region"), none,
+         {text(QStringLiteral("layer"), tr("On layer"), QString(), tr("The layer of the stack whose shapes of the layout file it moves")),
+          expr(QStringLiteral("x0"), tr("Box from x"), QStringLiteral("m"), QStringLiteral("0"),
+               tr("One corner of the box round the corners to move, in the layout's coordinates")),
+          expr(QStringLiteral("y0"), tr("Box from y"), QStringLiteral("m"), QStringLiteral("0")),
+          expr(QStringLiteral("x1"), tr("Box to x"), QStringLiteral("m"), QStringLiteral("10[um]"), tr("The corner across from it")),
+          expr(QStringLiteral("y1"), tr("Box to y"), QStringLiteral("m"), QStringLiteral("10[um]")),
+          choice(QStringLiteral("direction"), tr("Moved toward"),
+                 {QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y"), QStringLiteral("angle")},
+                 {tr("+x"), tr("-x"), tr("+y"), tr("-y"), tr("An angle")}, QStringLiteral("+x")),
+          shownIf(expr(QStringLiteral("angle"), tr("Angle"), QString(), QStringLiteral("0"),
+                       tr("Degrees from +x, counterclockwise")),
+                  "direction=angle"),
+          expr(QStringLiteral("offset"), tr("By"), QStringLiteral("m"), QStringLiteral("0"),
+               tr("How far, an expression of the parameters: w - 50[um] widens a 50 µm line to w where the box holds "
+                  "its one edge"))},
+         {}, {}, false, false, QStringLiteral("dim"),
+         tr("Moves the corners of the layout file's shapes on a layer that are inside a box - its edges too - by an "
+            "expression of the parameters, before the processing: a box round a line's one edge widens it, one round "
+            "a stub's end lengthens it, one round the whole of a shape moves it. Several apply in order. A shape that "
+            "would cross itself is left as it was, and said.")});
 
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
