@@ -17,10 +17,13 @@
 #include "rf25/rf25_deembed.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_sparams.h"
+#include "rf25/rf25_trl.h"
 #include "qucs.h"
 #include "settings.h"
 
 #include <QApplication>
+
+#include <Eigen/Dense>
 #include <QColorDialog>
 #include <QCoreApplication>
 #include <QDir>
@@ -149,6 +152,70 @@ QList<ReturnMark> returnMarksOf(const Model& model, QString* problem)
             return {};
         }
         out << ReturnMark{QPointF(x, y) / 1e-6, textOf(node, QStringLiteral("conductor")).trimmed()};
+    }
+    return out;
+}
+
+QList<FullWavePort> portsOf(const Model& model, QString* problem);
+
+/// A standard of a TRL calibration - the model in \a path, read, its layout
+/// read and processed and meshed as its own tab would - solved full-wave as
+/// it is at \a frequencies, its ports as the model has them, under
+/// \a control's stop. Empty and why in \a why where it cannot be.
+std::optional<FullWave> solvedStandard(const QString& path, const QList<double>& frequencies, const FullWaveControl& control,
+                                       QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        *why = text;
+        return std::optional<FullWave>();
+    };
+    const QString name = QFileInfo(path).fileName();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return fail(QCoreApplication::translate("RF25Doc", "%1 could not be read: %2.").arg(name, f.errorString()));
+    QString notes;
+    const std::optional<Model> model = Model::fromJson(f.readAll(), &notes);
+    if (!model) return fail(QCoreApplication::translate("RF25Doc", "%1 is no RF 2.5D model: %2").arg(name, notes));
+    const QString named = textOf(model->layout(), QStringLiteral("file")).trimmed();
+    if (named.isEmpty()) return fail(QCoreApplication::translate("RF25Doc", "%1 names no layout.").arg(name));
+    const QString layoutPath = QFileInfo(named).isAbsolute() ? named : QFileInfo(path).absoluteDir().absoluteFilePath(named);
+    QString error;
+    std::atomic_bool cancelled{false};
+    qucs_s::layout::Progress progress{0};
+    const std::shared_ptr<const qucs_s::layout::Layout> read = qucs_s::layout::read(layoutPath, &error, &cancelled, &progress);
+    if (!read) return fail(QCoreApplication::translate("RF25Doc", "%1's layout could not be read: %2").arg(name, error));
+    const Processed processed = processRead(*model, *read, QFileInfo(layoutPath).fileName());
+    if (!processed.ok()) return fail(QCoreApplication::translate("RF25Doc", "%1: %2").arg(name, processed.problems.join(QLatin1Char(' '))));
+    QStringList said;
+    const Mesh mesh = meshOf(processed.conductors, tabMeshSettings(*model, &said), model->stack(), topFrequency(*model));
+    QString problem;
+    const QList<FullWavePort> ports = portsOf(*model, &problem);
+    if (!problem.isEmpty()) return fail(QCoreApplication::translate("RF25Doc", "%1: %2").arg(name, problem));
+    if (ports.size() != 2) return fail(QCoreApplication::translate("RF25Doc", "%1 has %2 port(s): a standard has two.").arg(name).arg(ports.size()));
+    const QList<ReturnMark> returns = returnMarksOf(*model, &problem);
+    FullWaveControl c = control;
+    c.extents.clear();
+    const Stack stack = model->stack();
+    for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it)
+        if (const Layer* l = stack.named(it.key())) c.extents << Extent{l->name, it.value(), l->beyond};
+    // (Raw - fullWaveOf() de-embeds nothing: a standard's ports as solved,
+    //  the error boxes taking their faces and their fixtures alike.)
+    FullWave w = fullWaveOf(mesh, processed.conductors, stack, ports, frequencies, 1e-6, &c, returns);
+    if (!w.ok()) return fail(QCoreApplication::translate("RF25Doc", "%1 did not solve: %2").arg(name, w.problems.join(QLatin1Char(' '))));
+    return w;
+}
+
+/// \a wave's S as solved - before any de-embedding - at each frequency, in
+/// 50 Ohm at both ports.
+QList<S2> rawS(const FullWave& wave)
+{
+    const QList<QList<QList<Complex>>>& z = wave.zSolved.isEmpty() ? wave.z : wave.zSolved;
+    QList<S2> out;
+    for (const QList<QList<Complex>>& m : z) {
+        Eigen::Matrix2cd Z;
+        Z << m.at(0).at(0), m.at(0).at(1), m.at(1).at(0), m.at(1).at(1);
+        const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
+        const Eigen::Matrix2cd S = (Z - 50.0 * one) * (Z + 50.0 * one).inverse();
+        out << S2{S(0, 0), S(0, 1), S(1, 0), S(1, 1)};
     }
     return out;
 }
@@ -506,6 +573,16 @@ struct RF25Doc::SolveJob {
     QList<Conductor> conductors;
     Stack stack;
     QList<Extent> extents;       ///< the layers that end (rf25_dielectric.h)
+    /// A TRL calibration's standards (rf25_trl.h), where the model has one:
+    /// each a model's file, a line's how much longer than the thru.
+    struct Trl {
+        QString thru, reflect;
+        QList<QPair<QString, double>> lines;
+        bool shortReflect = false;
+        double impedance = 0;    ///< the lines', Ohm; nought: not given
+        double epsGuess = 1;
+    };
+    std::optional<Trl> trl;
     QList<ReturnMark> returns;   ///< the Return Conductors under Ports
     double length = 0;
     std::shared_ptr<Extraction> result;
@@ -2207,6 +2284,57 @@ void RF25Doc::solveWith(const SolveRequest& request)
                                   "S may differ from what the fit said of it."));
             job->tolerance = tolerance;
         }
+        // A TRL calibration (rf25_trl.h): its standards' files, read here; each
+        // solved with the structure, on its thread.
+        for (const Node& n : a_model.ports().children) {
+            if (!n.enabled || n.type != QLatin1String("rf_trl") || !job->levels.isEmpty()) continue;
+            if (job->ports.size() != 2)
+                return nothing(tr("A TRL calibration is of a two-port, and the model has %n port(s).", nullptr, int(job->ports.size())));
+            if (job->adaptive)
+                return nothing(tr("A TRL calibration wants every frequency solved, its standards at each: untick the study's "
+                                  "Add points where it changes."));
+            SolveJob::Trl t;
+            const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
+            const auto pathOf = [&dir](const QString& v) {
+                const QString given = v.trimmed();
+                return given.isEmpty() ? QString() : QFileInfo(given).isAbsolute() ? given : QDir::cleanPath(dir.absoluteFilePath(given));
+            };
+            const auto there = [this, &nothing](const QString& path, const QString& what) {
+                if (path.isEmpty()) return QString(tr("The TRL calibration names no %1.").arg(what));
+                if (!QFileInfo::exists(path)) return QString(tr("The TRL calibration's %1, %2, is not there.").arg(what, QDir::toNativeSeparators(path)));
+                Q_UNUSED(nothing);
+                return QString();
+            };
+            t.thru = pathOf(textOf(n, QStringLiteral("thru")));
+            t.reflect = pathOf(textOf(n, QStringLiteral("reflect")));
+            if (const QString no = there(t.thru, tr("thru")); !no.isEmpty()) return nothing(no);
+            if (const QString no = there(t.reflect, tr("reflect")); !no.isEmpty()) return nothing(no);
+            for (const QJsonValue& row : n.props.value(QLatin1String("lines")).toArray()) {
+                const QJsonArray cells = row.toArray();
+                const QString file = pathOf(cells.at(0).toString());
+                if (file.isEmpty()) continue;
+                if (const QString no = there(file, tr("line")); !no.isEmpty()) return nothing(no);
+                Node value;
+                value.props.insert(QStringLiteral("v"), cells.size() > 1 ? cells.at(1).toString() : QString());
+                bool ok = true;
+                const double longer = numberOf(value, QStringLiteral("v"), a_model, 0, &ok);
+                if (!ok || !(longer > 0))
+                    return nothing(tr("The TRL calibration's line %1 is longer than the thru by no length: give it as \"500[um]\".")
+                                       .arg(QFileInfo(file).fileName()));
+                t.lines << qMakePair(file, longer);
+            }
+            if (t.lines.isEmpty()) return nothing(tr("The TRL calibration names no line: one at least, longer than the thru."));
+            t.shortReflect = textOf(n, QStringLiteral("reflect_kind")) == QLatin1String("short");
+            if (!textOf(n, QStringLiteral("impedance")).trimmed().isEmpty()) {
+                bool ok = true;
+                t.impedance = numberOf(n, QStringLiteral("impedance"), a_model, 0, &ok);
+                if (!ok || !(t.impedance > 0)) return nothing(tr("The TRL calibration's lines' impedance is no impedance."));
+            }
+            for (const Layer& l : job->stack.layers)
+                if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) t.epsGuess = std::max(t.epsGuess, 0.5 * (l.epsr + 1));
+            job->trl = t;
+            break;
+        }
     } else if (!job->levels.isEmpty()) {
         // A quasi-static convergence check: the charge on each mesh, no loop.
     } else {
@@ -2258,6 +2386,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
         if (job->fullWave) {
             job->wave = solveWaveOn(*job, job->mesh, job->how, job->frequencies, job->adaptive, job->tolerance, &job->notes);
             if (job->wave->ok()) job->wave->lines.prepend(meshNoteOf(job->mesh));
+            if (job->trl && job->wave->ok() && !job->stop.load()) job->wave = trlOn(*job, *job->wave);
             return;
         }
         // Told to stop, it stops: let go and left to run, an extraction whose
@@ -2294,6 +2423,75 @@ void RF25Doc::solveWith(const SolveRequest& request)
     showProblems();
     showProgress();
     emit solvedChanged();
+}
+
+std::shared_ptr<FullWave> RF25Doc::trlOn(SolveJob& job, const FullWave& wave)
+{
+    const SolveJob::Trl& t = *job.trl;
+    auto out = std::make_shared<FullWave>(wave);
+    const auto failed = [&out](const QString& why) {
+        out->problems << why;
+        return out;
+    };
+    FullWaveControl control;
+    control.stop = &job.stop;
+    control.matrix = job.matrix;
+    const QList<double>& f = wave.frequencies;
+    // Each standard as it is, at the structure's frequencies.
+    TrlStandards st;
+    st.frequencies = f;
+    st.shortReflect = t.shortReflect;
+    QString why;
+    std::optional<FullWave> thru = solvedStandard(t.thru, f, control, &why);
+    if (job.stop.load()) return out;
+    if (!thru) return failed(tr("The TRL calibration's thru: %1").arg(why));
+    st.thru = rawS(*thru);
+    for (const auto& [file, longer] : t.lines) {
+        std::optional<FullWave> line = solvedStandard(file, f, control, &why);
+        if (job.stop.load()) return out;
+        if (!line) return failed(tr("The TRL calibration's line: %1").arg(why));
+        st.lines << rawS(*line);
+        st.longer << longer;
+    }
+    std::optional<FullWave> reflect = solvedStandard(t.reflect, f, control, &why);
+    if (job.stop.load()) return out;
+    if (!reflect) return failed(tr("The TRL calibration's reflect: %1").arg(why));
+    st.reflect = rawS(*reflect);
+    const TrlCalibration c = calibrateTrl(st, t.epsGuess);
+    if (!c.ok()) return failed(c.problems.join(QLatin1Char(' ')));
+    // The structure as solved, its fixtures taken out: at the thru's middle,
+    // in the lines' impedance - stated in the ports' references where it is
+    // given.
+    QList<S2> s = corrected(c, rawS(wave));
+    const double r0 = wave.references.value(0, 50), r1 = wave.references.value(1, 50);
+    QStringList said = c.lines;
+    if (t.impedance > 0) {
+        for (S2& m : s) m = renormalized(m, t.impedance, r0);
+        said << tr("Its S stated in the ports' references from the lines' %1 Ohm.").arg(t.impedance, 0, 'g', 4);
+        if (std::abs(r0 - r1) > 1e-9 * r0)
+            out->warnings << tr("The two ports' references differ (%1 and %2 Ohm): the calibrated S is in the first's.").arg(r0).arg(r1);
+    } else {
+        out->warnings << tr("The calibrated S is in the lines' own impedance, which a calibration of lines alone cannot know: "
+                            "give it (the TRL calibration's lines' impedance) to have S in the ports' references.");
+    }
+    if (!wave.zSolved.isEmpty())
+        said << tr("The ports' own de-embedding is not taken: the error boxes hold their faces with the fixtures.");
+    for (int k = 0; k < f.size() && k < s.size(); ++k) {
+        const S2& m = s.at(k);
+        out->s[k] = {{m[0], m[1]}, {m[2], m[3]}};
+        Eigen::Matrix2cd S;
+        S << m[0], m[1], m[2], m[3];
+        const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
+        const Eigen::Matrix2cd root = Eigen::Vector2cd(std::sqrt(r0), std::sqrt(r1)).asDiagonal();
+        const Eigen::Matrix2cd z = root * (one + S) * (one - S).inverse() * root;
+        out->z[k] = {{z(0, 0), z(0, 1)}, {z(1, 0), z(1, 1)}};
+    }
+    // (As solved, beside the calibrated: what the currents are of.)
+    if (out->zSolved.isEmpty()) out->zSolved = wave.z;
+    checkReciprocityAndPassivity(*out);
+    out->lines << said;
+    out->warnings << c.warnings;
+    return out;
 }
 
 std::shared_ptr<FullWave> RF25Doc::solveWaveOn(SolveJob& job, const Mesh& mesh, const MeshSettings& how,

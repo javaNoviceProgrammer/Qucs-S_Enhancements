@@ -2773,6 +2773,128 @@ private slots:
         QVERIFY(std::abs(doc->extraction()->maxwell.at(0).at(0) / wholeQ - 1) < 1e-9);
     }
 
+    // A TRL calibration (F3 of the open items of 8 November): 150 µm pads
+    // and 100 µm of feed at each end - the fixture - and standards made with
+    // them, each its own model: a thru (the feeds joined), lines 500 and 1500
+    // µm longer, a reflect (each fixture open). The device, an 800 µm line
+    // between the fixtures, solved with them: the pads' reflection taken out,
+    // what is left a matched line whose phase is the calibration's own
+    // gamma over 800 µm; the lines' effective permittivity what a microstrip
+    // of 50 µm on 100 µm of 9.8 has; said.
+    void aTrlCalibrationTakesThePadsOut()
+    {
+        const QString base = fullWaveLine(QStringLiteral("trlbase.qrf25"));
+        QVERIFY(!base.isEmpty());
+        QFile f(base);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QString why;
+        const std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+        QVERIFY2(read.has_value(), qPrintable(why));
+        f.close();
+        // A pad at x0 to x0 + 150, its feed's line from 150 on: the fixtures
+        // with a line of \a line between their feeds' ends (the feeds' 100 µm
+        // each beside it); a gap of \a gap for the reflect, each fixture open.
+        const auto made = [&](const QString& name, double line, bool open, rf::Model* into = nullptr) {
+            QList<QRectF> rects;
+            const double inner = 200 + line;   // the feeds and the line
+            rects << QRectF(0, -50, 150, 150);
+            if (open) {
+                rects << QRectF(150, 0, 100, 50) << QRectF(400, 0, 100, 50) << QRectF(500, -50, 150, 150);
+            } else {
+                rects << QRectF(150, 0, inner, 50) << QRectF(150 + inner, -50, 150, 150);
+            }
+            const double end = open ? 650 : 300 + inner;
+            if (!writeRectangles(path(name + QStringLiteral(".gds")), rects)) return QString();
+            rf::Model m = *read;
+            m.layout().props.insert(QStringLiteral("file"), name + QStringLiteral(".gds"));
+            m.ports().children.clear();
+            for (const QPair<double, const char*>& at : {qMakePair(0.0, "P1"), qMakePair(end, "P2")}) {
+                rf::Node port = m.make(QStringLiteral("rf_edge_port"));
+                port.label = QLatin1String(at.second);
+                port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                port.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(at.first));
+                port.props.insert(QStringLiteral("y"), QStringLiteral("25[um]"));
+                if (m.add(QStringLiteral("ports"), port) == nullptr) return QString();
+            }
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            study->props.insert(QStringLiteral("from"), QStringLiteral("5[GHz]"));
+            study->props.insert(QStringLiteral("to"), QStringLiteral("25[GHz]"));
+            study->props.insert(QStringLiteral("points"), 3);
+            if (into != nullptr) {
+                *into = m;
+                return QString(QStringLiteral("ok"));
+            }
+            QFile out(path(name + QStringLiteral(".qrf25")));
+            if (!out.open(QIODevice::WriteOnly)) return QString();
+            out.write(m.toJson());
+            return out.fileName();
+        };
+        QVERIFY(!made(QStringLiteral("trl_thru"), 0, false).isEmpty());
+        QVERIFY(!made(QStringLiteral("trl_line1"), 500, false).isEmpty());
+        QVERIFY(!made(QStringLiteral("trl_line2"), 1500, false).isEmpty());
+        QVERIFY(!made(QStringLiteral("trl_open"), 0, true).isEmpty());
+        rf::Model dut;
+        QVERIFY(!made(QStringLiteral("trl_dut"), 800, false, &dut).isEmpty());
+        rf::Node trl = dut.make(QStringLiteral("rf_trl"));
+        trl.props.insert(QStringLiteral("thru"), QStringLiteral("trl_thru.qrf25"));
+        trl.props.insert(QStringLiteral("lines"), rowsOf({{QStringLiteral("trl_line1.qrf25"), QStringLiteral("500[um]")},
+                                                          {QStringLiteral("trl_line2.qrf25"), QStringLiteral("1500[um]")}}));
+        trl.props.insert(QStringLiteral("reflect"), QStringLiteral("trl_open.qrf25"));
+        QVERIFY(dut.add(QStringLiteral("ports"), trl) != nullptr);
+        QVERIFY2(!dut.problems().join(' ').contains(QStringLiteral("TRL")), qPrintable(dut.problems().join(" | ")));
+        {
+            // (Named nothing to be calibrated by: said.)
+            rf::Model bare = dut;
+            for (rf::Node& n : bare.ports().children)
+                if (n.type == QLatin1String("rf_trl")) n.props.insert(QStringLiteral("thru"), QString());
+            QVERIFY(bare.problems().join(' ').contains(QStringLiteral("The TRL calibration names no thru")));
+        }
+        const QString model = path(QStringLiteral("trl_dut.qrf25"));
+        {
+            QFile out(model);
+            QVERIFY(out.open(QIODevice::WriteOnly));
+            out.write(dut.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(600000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem() + (w ? w->problems.join(" | ") : QString())));
+        const QString lines = w->lines.join(QStringLiteral(" | "));
+        static const QRegularExpression eps(QStringLiteral("effective permittivity ([0-9.]+) at the top"));
+        const QRegularExpressionMatch m = eps.match(lines);
+        QVERIFY2(m.hasMatch(), qPrintable(lines));
+        const double eeff = m.captured(1).toDouble();
+        QVERIFY2(eeff > 6.0 && eeff < 7.2, qPrintable(lines));
+        QVERIFY2(w->warnings.join(' ').contains(QStringLiteral("lines' own impedance")), qPrintable(w->warnings.join(" | ")));
+        // (The reflect an open: its angle near nought.)
+        static const QRegularExpression angle(QStringLiteral("The reflect found to reflect ([0-9.]+) at (-?[0-9.]+) degrees"));
+        const QRegularExpressionMatch r = angle.match(lines);
+        QVERIFY2(r.hasMatch() && std::abs(r.captured(2).toDouble()) < 45 && r.captured(1).toDouble() > 0.8, qPrintable(lines));
+        for (int k = 0; k < w->frequencies.size(); ++k) {
+            const double fk = w->frequencies.at(k);
+            const auto& s = w->s.at(k);
+            // (As solved, the pads reflect - ten times what is left at the
+            // least; calibrated, a matched line.)
+            const std::complex<double> raw11 = [&] {
+                const auto& z = w->zSolved.at(k);
+                Eigen::Matrix2cd Z;
+                Z << z.at(0).at(0), z.at(0).at(1), z.at(1).at(0), z.at(1).at(1);
+                const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
+                return ((Z - 50.0 * one) * (Z + 50.0 * one).inverse())(0, 0);
+            }();
+            const double phase = std::arg(s.at(1).at(0)), expected = -2 * M_PI * fk * std::sqrt(eeff) / 299792458.0 * 800e-6;
+            const double off = std::remainder(phase - expected, 2 * M_PI);
+            QVERIFY2(std::abs(s.at(0).at(0)) < 0.03 && std::abs(s.at(1).at(1)) < 0.03 && std::abs(std::abs(s.at(1).at(0)) - 1) < 0.03
+                         && std::abs(off) < 0.06 && std::abs(raw11) > 10 * std::abs(s.at(0).at(0)),
+                     qPrintable(QStringLiteral("%1 GHz: S11 %2, S22 %3, |S21| %4, its phase %5 off; as solved |S11| %6 | %7")
+                                    .arg(fk / 1e9).arg(std::abs(s.at(0).at(0))).arg(std::abs(s.at(1).at(1))).arg(std::abs(s.at(1).at(0)))
+                                    .arg(off).arg(std::abs(raw11)).arg(lines)));
+        }
+        qWarning().noquote() << lines;
+    }
+
     // A port's returns given as a list (the feature request of 4 November):
     // terminals under Ports - a ground pad's patch each - and the ports'
     // Return "terminals" with their names, as a list in one and a text in
