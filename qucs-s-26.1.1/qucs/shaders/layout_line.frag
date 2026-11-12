@@ -1,7 +1,9 @@
-// A frame's dashes: the t'th of the pattern's pixels along it drawn where
-// its bit is set.
+// A frame's dashes, as KLayout counts them: its pixel x from the screen's
+// left (an edge more across than up) or b from its bottom, a dash's pixel
+// W (the line's width) long - drawn where the bit of floor((x + lo) / W),
+// or floor((b + hi) / W), is set (lo = (W - 1) / 2, hi = W / 2).
 #version 440
-layout(location = 0) in float along;
+layout(location = 0) in float across;
 layout(location = 0) out vec4 fragColor;
 layout(std140, binding = 0) uniform Buf {
     mat4 corr;
@@ -25,10 +27,17 @@ layout(std140, binding = 0) uniform Buf {
 void main()
 {
     if (dashLength > 0.5) {
-        int t = int(mod(floor(along / cell), dashLength));
-        int k = t / 8;
-        float byte = k == 0 ? dash.x : k == 1 ? dash.y : k == 2 ? dash.z : dash.w;
-        if (mod(floor(byte / exp2(float(t - k * 8))), 2.0) < 0.5) discard;
+        float w = max(lineWidth, 1.0);
+        float x = floor(gl_FragCoord.x);
+        float fromTop = yUp > 0.5 ? viewport.y - 1.0 - floor(gl_FragCoord.y) : floor(gl_FragCoord.y);
+        float b = viewport.y - 1.0 - fromTop;
+        float t = across > 0.5 ? floor((x + floor((w - 1.0) / 2.0)) / w) : floor((b + floor(w / 2.0)) / w);
+        int i = int(mod(t, dashLength));
+        int k = i / 8;
+        // (its bit by integers: a float's byte / exp2(n) floored lost a
+        // bit where exp2 came out a hair over - Metal's 14 / 2 was 6)
+        int byte = int(k == 0 ? dash.x : k == 1 ? dash.y : k == 2 ? dash.z : dash.w);
+        if (((byte >> (i - k * 8)) & 1) == 0) discard;
     }
     fragColor = color;
 }

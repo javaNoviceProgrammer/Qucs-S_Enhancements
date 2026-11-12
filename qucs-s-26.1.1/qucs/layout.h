@@ -214,7 +214,7 @@ struct Stipple {
 };
 
 /// KLayout's own dither patterns (I0 solid, I1 hollow, I2 dotted ... I46),
-/// drawn from what their names say.
+/// as KLayout's pictures show them, tiled from the screen's lower left.
 int standardStippleCount();
 /// The \a index'th of them; solid out of their range.
 Stipple standardStipple(int index);
@@ -255,13 +255,23 @@ struct LayerStyle {
     bool klayout = false;
     std::shared_ptr<const Stipple> stipple;   ///< (klayout) the fill's bitmap
     LineStyle line;            ///< (klayout) the frame's dashes
-    int width = 1;             ///< (klayout) the frame's width, pixels
+    int width = 1;             ///< (klayout) the frame's width, pixels (0: none)
     bool transparent = false;  ///< (klayout) its colours mixed with what is under it
     bool xfill = false;        ///< (klayout) a box crossed corner to corner
     bool marked = false;       ///< (klayout) a small cross at each corner
     bool valid = true;         ///< as the file says; drawn either way, as KLayout draws it
     int animation = 0;         ///< (klayout) 0 none, 1 scrolling, 2 blinking, 3 blinking the other way
-    int order = -1;            ///< drawn in this order, the higher over the lower; -1: by its index
+    int order = -1;            ///< drawn in this order, the higher over the lower; -1: by its index (KLayout's look: its row in KLayout's list, groups' rows counted)
+    /// (klayout) A layer the .lyp names more than once: each entry's
+    /// style in the list's order, each drawn in its order (where it is
+    /// shown, and the layer is); this style the last's. Null otherwise.
+    std::shared_ptr<const std::vector<LayerStyle>> passes;
+};
+
+/// A layer drawn in a style - a layer once for each of its passes.
+struct DrawPass {
+    int layer;
+    const LayerStyle* style;
 };
 
 /// The style of the \a index'th layer when nothing says otherwise: one of
@@ -400,11 +410,20 @@ struct RenderOptions {
 /// (a Retina screen's 2: 2 by 2 - the pattern as large as on any other
 /// screen, and as sharp).
 int stipplePixels(qreal ratio);
+/// The rows a KLayout layer's pattern is drawn lower than its first
+/// layer's: one a place in KLayout's list (LayerStyle::order), 32 places
+/// round. (KLayout's own: two layers of a pattern overlapping, their
+/// patterns not on each other.)
+int stippleOffset(const LayerStyle& style);
 /// Whether a transparent layer is ANDed with \a canvas (a light one) -
 /// else ORed.
 bool mixesByAnd(const QColor& canvas);
 /// The layers' indices in their drawing order (LayerStyle::order).
 QVector<int> drawingOrder(const QVector<LayerStyle>& styles, int layers);
+/// What is drawn of the layers, in order: each layer in its style, or in
+/// each of its passes; a pass hidden left out (a layer hidden is the
+/// caller's to leave out). \a styles must outlive the result.
+std::vector<DrawPass> drawingPasses(const QVector<LayerStyle>& styles, int layers);
 /// Whether a layer in \a style is drawn at animation step \a tick.
 bool shownAtTick(const LayerStyle& style, int tick);
 

@@ -319,6 +319,26 @@ QImage drawnAt(const Layout& layout, const QVector<LayerStyle>& styles, qreal ra
     return image;
 }
 
+// \a layout drawn as render() draws it on a picture \a size pixels square,
+// a µm a pixel, (0, 0) its lower left - as KLayout was asked to draw the
+// files of data/klayout_look.
+QImage drawnAs(const Layout& layout, const QVector<LayerStyle>& styles, int size, const QColor& canvas)
+{
+    QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(canvas);
+    QPainter p(&image);
+    RenderOptions o;
+    o.cell = layout.mainCell();
+    o.device = QRectF(0, 0, size, size);
+    o.toDevice = viewTransform(QPointF(size / 2.0, size / 2.0), 1, o.device);
+    o.styles = &styles;
+    o.labels = false;
+    o.canvas = canvas;
+    render(p, layout, o);
+    p.end();
+    return image.convertToFormat(QImage::Format_RGB32);
+}
+
 int layerOf(const Layout& layout, quint32 l)
 {
     for (int i = 0; i < layout.layers.size(); ++i)
@@ -2320,13 +2340,18 @@ private slots:
         QVERIFY(written.entries.at(0).name.isEmpty());
         QCOMPARE(written.entries.at(0).dither, QString("I5"));
         QCOMPARE(written.entries.at(0).animation, std::optional<int>(0));
-        // A file of tabs: its first.
-        const LayerProperties tabs = parseLayerProperties("<layer-properties-tabs><layer-properties><properties><source>7/0</source></properties>"
-                                                          "</layer-properties><layer-properties><properties><source>8/0</source></properties>"
-                                                          "</layer-properties></layer-properties-tabs>",
-                                                          &error);
-        QCOMPARE(tabs.entries.size(), 1);
-        QCOMPARE(tabs.entries.at(0).source, QString("7/0"));
+        // A file of tabs: its last, the one KLayout shows when it has read
+        // them (of three, the third), with every tab's patterns.
+        const LayerProperties tabs = parseLayerProperties(
+            "<layer-properties-tabs><layer-properties><properties><source>7/0</source></properties>"
+            "<custom-dither-pattern><pattern><line>*.</line></pattern><order>1</order></custom-dither-pattern>"
+            "</layer-properties><layer-properties><properties><source>8/0</source></properties></layer-properties>"
+            "<layer-properties><properties><source>9/0</source></properties><properties><source>9/1</source></properties>"
+            "</layer-properties></layer-properties-tabs>",
+            &error);
+        QCOMPARE(tabs.entries.size(), 2);
+        QCOMPARE(tabs.entries.at(0).source, QString("9/0"));
+        QCOMPARE(tabs.stipples.size(), 1);
         // Not one, cut short, or none in it: refused, and why.
         for (const char* bad : {"", "not xml at all", "<layer-properties><properties>", "<other/>", "<layer-properties></layer-properties>",
                                 "<layer-properties><name>tab</name></layer-properties>"}) {
@@ -2362,8 +2387,9 @@ private slots:
         QVERIFY(names("*/*@*", info(63, 5)));
         QVERIFY(names("*/0", info(9, 0)));
         QVERIFY(!names("*/0", info(9, 1)));
-        QVERIFY(names("2-4/0", info(3, 0)));
-        QVERIFY(!names("2-4/0", info(5, 0)));
+        // (KLayout's sources have no ranges: 2-4/0 is 2/0 to it.)
+        QVERIFY(names("2-4/0", info(2, 0)));
+        QVERIFY(!names("2-4/0", info(3, 0)));
         QVERIFY(names("5", info(5, 0)));
         QVERIFY(names("POLY", info(7, 0, "POLY")));
         QVERIFY(!names("POLY", info(7, 0)));
@@ -2372,6 +2398,11 @@ private slots:
         QVERIFY(sourceMatches(withinGroup(parseLayerSource(""), parseLayerSource("6/2@1")), info(6, 2)));
         QVERIFY(sourceMatches(withinGroup(parseLayerSource("3/0"), parseLayerSource("*/*@1")), info(3, 0)));
         QVERIFY(!sourceMatches(withinGroup(parseLayerSource("3/0"), parseLayerSource("*/*@2")), info(3, 0)));
+        // A number the member leaves open, the group's: */5 in 1/* is 1/5
+        // (as KLayout's list shows such a member).
+        QVERIFY(sourceMatches(withinGroup(parseLayerSource("*/5"), parseLayerSource("1/*@1")), info(1, 5)));
+        QVERIFY(!sourceMatches(withinGroup(parseLayerSource("*/5"), parseLayerSource("1/*@1")), info(2, 5)));
+        QVERIFY(sourceMatches(withinGroup(parseLayerSource("2/0"), parseLayerSource("1/*@1")), info(2, 0)));
     }
 
     // KLayout's patterns, each as its name says and each its own; its line
@@ -2413,7 +2444,13 @@ private slots:
         QCOMPARE(standardLineStyle(1).length, 2);
         QVERIFY(standardLineStyle(1).on(0) && !standardLineStyle(1).on(1));
         QCOMPARE(standardLineStyle(2).length, 6);
-        QVERIFY(standardLineStyle(2).on(3) && !standardLineStyle(2).on(4) && !standardLineStyle(2).on(5) && standardLineStyle(2).on(6));
+        // (dashed: "**..**" from the screen's left, as KLayout's pictures
+        // have it - not "****..")
+        QVERIFY(standardLineStyle(2).on(0) && standardLineStyle(2).on(1) && !standardLineStyle(2).on(2) && !standardLineStyle(2).on(3)
+                && standardLineStyle(2).on(4) && standardLineStyle(2).on(5) && standardLineStyle(2).on(6));
+        QCOMPARE(standardLineStyle(3).length, 12);
+        QCOMPARE(standardLineStyle(4).length, 4);
+        QVERIFY(standardLineStyle(4).on(0) && !standardLineStyle(4).on(1) && !standardLineStyle(4).on(2) && standardLineStyle(4).on(3));
         QVERIFY(standardLineStyle(42).isSolid());
         const QColor c("#806040");
         QCOMPARE(brightened(c, 0), c);
@@ -2425,12 +2462,15 @@ private slots:
         QCOMPARE(brightened(QColor("#0a1e3c"), 129), QColor("#86909f"));
     }
 
-    // What a .lyp makes of a layout's layers, in KLayout's look: each
-    // layer by the last entry naming it, a member with its group's
-    // settings where it has none, KLayout's colour where none is given, in
-    // the file's order, those it names none of after them in the
-    // palette's; the list its groups and layers. The viewer's look: the
-    // first entry's colours, the layout's order, a flat list.
+    // What a .lyp makes of a layout's layers, in KLayout's look - every
+    // value as KLayout's own layer list has it for this file and these
+    // layers (read from it): a member with what its group sets over its
+    // own, brightness added; a layer named twice drawn by both entries,
+    // its row the last's; KLayout's colour where none is given (by the
+    // layer's number) and pattern (by its place among the layers); the
+    // order its rows', groups' counted; those it names none of after them;
+    // the list its groups and layers. The viewer's look: the first entry's
+    // colours, the layout's order, a flat list.
     void aLypPlansTheLayers()
     {
         QString error;
@@ -2460,33 +2500,55 @@ private slots:
         QVERIFY(s.at(l4).stipple->isSolid());
         QCOMPARE(s.at(l4).order, 0);
         // A member: its group's fill (made darker as the group says), pattern
-        // and width; no frame colour anywhere, KLayout's default for its
-        // place (the second).
+        // and width; no frame colour anywhere, KLayout's default for layer
+        // 2; the third row (the group's the second).
         QCOMPARE(s.at(l2).name, QString("M2"));
         QCOMPARE(s.at(l2).fill, QColor("#007f00"));
         QCOMPARE(s.at(l2).frame, QColor("#c080ff"));
         QCOMPARE(*s.at(l2).stipple, standardStipple(5));
         QCOMPARE(s.at(l2).width, 2);
-        QCOMPARE(s.at(l2).order, 1);
-        // 1/0 by the last entry naming it: shown, yellow, over the others.
+        QCOMPARE(s.at(l2).order, 2);
+        QVERIFY(!s.at(l2).passes);
+        // 1/0, named twice: drawn by both, its row the last's - shown,
+        // yellow, over the others; M1 hidden and of its group's fill (the
+        // group's over its own blue).
         QCOMPARE(s.at(l1).name, QString("last"));
         QCOMPARE(s.at(l1).fill, QColor("#ffff00"));
+        QCOMPARE(s.at(l1).frame, QColor("#ff80a8"));
         QVERIFY(s.at(l1).visible);
-        QCOMPARE(s.at(l1).order, 3);
+        QCOMPARE(s.at(l1).order, 4);
+        QVERIFY(s.at(l1).passes);
+        QCOMPARE(int(s.at(l1).passes->size()), 2);
+        QCOMPARE(s.at(l1).passes->at(0).fill, QColor("#007f00"));
+        QVERIFY(!s.at(l1).passes->at(0).visible);
+        QCOMPARE(s.at(l1).passes->at(0).width, 2);
+        QCOMPARE(s.at(l1).passes->at(0).order, 3);
+        QCOMPARE(s.at(l1).passes->at(1).fill, QColor("#ffff00"));
         // KLayout's default pattern where none is given: at an odd place
-        // (the fourth) lightly left-hatched, at an even one right-hatched.
+        // among the layers (the fourth: the group not counted) lightly
+        // left-hatched, at an even one right-hatched.
         QCOMPARE(*s.at(l1).stipple, standardStipple(5));
         QCOMPARE(*s.at(l4).stipple, standardStipple(0));
-        // Those it names none of: after its layers, KLayout's colours and
-        // patterns for those places (as its pictures of such layers show).
-        for (const auto& [l, colour, pattern] : {std::tuple{l3, "#80a8ff", 9}, std::tuple{l5, "#ff0000", 5}, std::tuple{l10, "#ff0080", 9}}) {
+        // Those it names none of: after its rows, KLayout's colours for
+        // their numbers and patterns for their places.
+        for (const auto& [l, colour, pattern, order] :
+             {std::tuple{l3, "#9580ff", 9, 5}, std::tuple{l5, "#80a8ff", 5, 6}, std::tuple{l10, "#0000ff", 9, 7}}) {
             QVERIFY(s.at(l).klayout);
             QCOMPARE(s.at(l).frame, QColor(colour));
             QCOMPARE(s.at(l).fill, QColor(colour));
             QCOMPARE(*s.at(l).stipple, standardStipple(pattern));
-            QVERIFY(s.at(l).order >= lyp.leafCount());
+            QCOMPARE(s.at(l).order, order);
         }
         QCOMPARE(drawingOrder(s, int(s.size())), QVector<int>({l4, l2, l1, l3, l5, l10}));
+        // What is drawn: 1/0 once, its hidden entry left out.
+        const std::vector<DrawPass> passes = drawingPasses(s, int(s.size()));
+        QCOMPARE(int(passes.size()), 6);
+        QCOMPARE(passes.at(2).layer, l1);
+        QCOMPARE(passes.at(2).style->fill, QColor("#ffff00"));
+        // The patterns' rows lower by the rows above in the list.
+        QCOMPARE(stippleOffset(s.at(l4)), 0);
+        QCOMPARE(stippleOffset(s.at(l2)), 2);
+        QCOMPARE(stippleOffset(s.at(l10)), 7);
         // The list: the file's order, the group with the layer it draws (M1
         // drawn by "last", not there), then the others.
         QCOMPARE(plan.rows.size(), 6);
@@ -2502,7 +2564,7 @@ private slots:
         // the palette's patterns; the layout's order; no rows.
         const LayerPlan own = planLayers(*layout, lyp, false);
         QVERIFY(!own.styles.at(l1).klayout);
-        QCOMPARE(own.styles.at(l1).fill, QColor("#0000ff"));
+        QCOMPARE(own.styles.at(l1).fill, QColor("#00ff00"));
         QVERIFY(!own.styles.at(l1).visible);
         QCOMPARE(own.styles.at(l1).order, -1);
         QCOMPARE(own.styles.at(l3).frame, paletteStyle(l3).frame);
@@ -2510,14 +2572,46 @@ private slots:
         QCOMPARE(drawingOrder(own.styles, int(own.styles.size())), QVector<int>({0, 1, 2, 3, 4, 5}));
     }
 
-    // Drawn as KLayout draws it, pixel for pixel where KLayout was asked:
-    // its patterns from the lower left at the device's pixels (KLayout's
-    // own picture of the same boxes, read at the same pixels), the later
-    // listed over the earlier, a frame dashed and as wide as given,
-    // crossed and marked, a hidden layer not drawn, a transparent one ANDed
-    // on white and ORed on black (KLayout's colours), the layers it names
-    // none of in its default pattern; on a Retina picture each pattern's
-    // pixel two by two; blinking and scrolling.
+    // KLayout's own pictures of three layouts and their .lyp files
+    // (data/klayout_look.py wrote them, KLayout drew them): drawn here, the
+    // same to the pixel - the 47 patterns, each a row lower a place in the
+    // list; groups, wildcards, a layer named twice, KLayout's defaults,
+    // frames 0 to 3 wide and dashed, crosses, marks, paths' spines,
+    // transparency on white and on black; where KLayout puts an edge.
+    void theKLayoutLookIsKLayoutsOwnPicture()
+    {
+        const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
+        for (const auto& [name, size, dark] : {std::tuple{"sample", 100, false}, std::tuple{"sample", 100, true}, std::tuple{"patterns", 400, false},
+                                               std::tuple{"rules", 200, false}, std::tuple{"rules", 200, true}}) {
+            const QString base = QStringLiteral(QUCS_TEST_DATA "/klayout_look/") + QLatin1String(name);
+            QString error;
+            const auto layout = read(base + QStringLiteral(".gds"), &error);
+            QVERIFY2(layout, qPrintable(error));
+            const LayerProperties lyp = readLayerPropertiesFile(base + QStringLiteral(".lyp"), &error);
+            QVERIFY2(!lyp.isEmpty(), qPrintable(error));
+            const QImage klayout = QImage(base + (dark ? QStringLiteral("_dark.png") : QStringLiteral(".png"))).convertToFormat(QImage::Format_RGB32);
+            QCOMPARE(klayout.size(), QSize(size, size));
+            const QImage mine = drawnAs(*layout, stylesFor(*layout, lyp, true), size, dark ? Qt::black : Qt::white);
+            int differ = 0;
+            QString first;
+            for (int y = 0; y < size; ++y)
+                for (int x = 0; x < size; ++x)
+                    if ((klayout.pixel(x, y) & 0xffffff) != (mine.pixel(x, y) & 0xffffff)) {
+                        if (++differ <= 5)
+                            first += QStringLiteral(" (%1, %2) %3 not %4").arg(x).arg(y).arg(QColor(mine.pixel(x, y)).name(), QColor(klayout.pixel(x, y)).name());
+                    }
+            if (differ > 0 && !shots.isEmpty()) mine.save(shots + QStringLiteral("/klayout_look_%1%2.png").arg(QLatin1String(name), dark ? "_dark" : ""));
+            QVERIFY2(differ == 0, qPrintable(QStringLiteral("%1%2: %3 pixels differ:%4").arg(QLatin1String(name), dark ? " on black" : "").arg(differ).arg(first)));
+        }
+    }
+
+    // What KLayout's pictures cannot show (theKLayoutLookIsKLayoutsOwnPicture
+    // has the rest): on a Retina picture each pattern's pixel two by two
+    // device pixels, a row lower for each place in the list (the pattern
+    // as large as at 1, and sharp); on a transparent picture (an export
+    // without its canvas) a transparent layer mixed where something is
+    // under it, itself elsewhere, nothing where it has nothing; blinking
+    // and scrolling.
     void aLypIsDrawnAsKLayoutDrawsIt()
     {
         writeLypSample(path("klook/drawn.gds"));
@@ -2527,69 +2621,26 @@ private slots:
         const LayerProperties lyp = parseLayerProperties(kLypSample, &error);
         QVERIFY2(!lyp.isEmpty(), qPrintable(error));
         const QVector<LayerStyle> styles = stylesFor(*layout, lyp, true);
-        const QImage image = drawnAt(*layout, styles).convertToFormat(QImage::Format_RGB32);
         if (const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS"); !shots.isEmpty()) {
-            image.save(shots + QStringLiteral("/klayout_look_drawn.png"));
+            drawnAt(*layout, styles).save(shots + QStringLiteral("/klayout_look_drawn.png"));
             drawnAt(*layout, styles, 2).save(shots + QStringLiteral("/klayout_look_drawn_retina.png"));
         }
-        const auto at = [&image](int x, int y) { return QColor(image.pixel(x, y)); };
-        const QColor white(Qt::white), red("#ff0000"), blue("#0000ff"), green("#00a000"), navy("#000080"), black(Qt::black);
-        // 1/0 in the file's pattern, as KLayout drew it: its pixels at
-        // (10..17, 70..72) - "**..", "*...", "...." from the lower left -,
-        // again three rows on (row 70 has 3/0's frame here).
-        const char* const klayoutRows[] = {"..##..##", "..#...#.", "........"};
-        for (int r = 1; r <= 3; ++r)
-            for (int x = 10; x < 18; ++x)
-                QVERIFY2((at(x, 70 + r) == red) == (klayoutRows[r % 3][x - 10] == '#'), qPrintable(QStringLiteral("(%1, %2)").arg(x).arg(70 + r)));
-        // Over 2/0 (listed before it): red where its pattern is, 2/0's
-        // blue under it elsewhere.
-        const Stipple& c0 = lyp.stipples.at(0);
-        for (int y = 71; y < 78; ++y)
-            for (int x = 24; x < 36; ++x) QCOMPARE(at(x, y), stippleAt(c0, x, y, 100) ? red : blue);
-        // 2/0 alone: solid.
-        QCOMPARE(at(55, 75), blue);
-        // 3/0 left-hatched, as KLayout drew I4 at the same pixels.
+        const QColor white(Qt::white), red("#ff0000"), green("#00a000");
+        const int l1 = layerOf(*layout, 1), l3 = layerOf(*layout, 3);
+        // 3/0 (POLY, the fourth row: M2, M1, FEOL above it) left-hatched,
+        // its pattern 3 rows lower; on Retina each of its pixels 2 by 2.
+        QCOMPARE(styles.at(l3).order, 3);
         const Stipple i4 = standardStipple(4);
+        const QImage retina = drawnAt(*layout, styles, 2).convertToFormat(QImage::Format_RGB32);
+        QCOMPARE(retina.size(), QSize(200, 200));
+        for (int y = 64; y < 76; ++y)
+            for (int x = 24; x < 38; ++x) QCOMPARE(QColor(retina.pixel(x, y)), stippleAt(i4, x, y - 2 * 3, 200, 2) ? green : white);
+        const QImage plain = drawnAt(*layout, styles).convertToFormat(QImage::Format_RGB32);
         for (int y = 32; y < 40; ++y)
-            for (int x = 12; x < 19; ++x) QCOMPARE(at(x, y), stippleAt(i4, x, y, 100) ? green : white);
-        // Its top edge dashed, counted from the left: a pixel of the frame
-        // where the line style has one (within a row of the edge).
-        const LineStyle dashed = standardLineStyle(2);
-        for (int x = 13; x < 47; ++x) {
-            bool frame = false;
-            for (int y = 29; y <= 31; ++y) frame = frame || at(x, y) == navy;
-            QVERIFY2(frame == dashed.on(x), qPrintable(QStringLiteral("x %1").arg(x)));
-        }
-        // 4/0 hidden (its group shows it, it does not).
-        QCOMPARE(at(80, 20), white);
-        // 5/0: hollow, its frame 3 wide, crossed as wide, its lower left
-        // and upper right corners marked 4 pixels out (as KLayout marks a
-        // box), the other two not.
-        for (int x : {69, 70, 71}) QCOMPARE(at(x, 80), black);
-        QCOMPARE(at(66, 80), white);
-        QCOMPARE(at(74, 80), white);
-        QCOMPARE(at(80, 80), black);   // (the cross)
-        for (int d : {-1, 0, 1}) QCOMPARE(at(75 + d, 75), black);
-        QCOMPARE(at(78, 86), white);
-        QCOMPARE(at(94, 70), black);   // (the upper right's mark)
-        QCOMPARE(at(90, 66), black);
-        QCOMPARE(at(95, 70), white);
-        QCOMPARE(at(66, 90), black);   // (the lower left's)
-        QCOMPARE(at(70, 94), black);
-        QCOMPARE(at(66, 70), white);   // (the upper left: none)
-        QCOMPARE(at(94, 90), white);
-        // 6/0 transparent over 7/0: ANDed on white - KLayout's #808000 -,
-        // over nothing its own colour.
-        QCOMPARE(at(75, 50), QColor("#808000"));
-        QCOMPARE(at(85, 50), QColor("#80ff20"));
-        QCOMPARE(at(65, 50), QColor("#ff8040"));
-        // ORed on black - KLayout's #ffff60.
-        const QImage dark = drawnAt(*layout, styles, 1, Qt::black).convertToFormat(QImage::Format_RGB32);
-        QCOMPARE(QColor(dark.pixel(75, 50)), QColor("#ffff60"));
-        QCOMPARE(QColor(dark.pixel(85, 50)), QColor("#80ff20"));
-        // On a transparent picture (an export without its canvas): mixed
-        // where something is under it, itself elsewhere, nothing where it
-        // has nothing - for a light canvas and a dark.
+            for (int x = 12; x < 19; ++x) QCOMPARE(QColor(plain.pixel(x, y)), stippleAt(i4, x, y - 3, 100) ? green : white);
+        // 6/0 transparent over 7/0, on a transparent picture: mixed where
+        // something is under it, itself elsewhere, nothing where it has
+        // nothing - for a light canvas and a dark (KLayout's colours).
         for (const QColor& canvas : {QColor(Qt::white), QColor(Qt::black)}) {
             const QImage clear = drawnAt(*layout, styles, 1, canvas, 0, true);
             QCOMPARE(clear.pixelColor(75, 50), QColor(canvas == Qt::white ? "#808000" : "#ffff60"));
@@ -2598,32 +2649,24 @@ private slots:
             QCOMPARE(qAlpha(clear.pixel(50, 90)), 0);
             QCOMPARE(qAlpha(clear.pixel(95, 50)), 0);
         }
-        // 8/0, named by none: after the file's seven, at an odd place -
-        // magenta and lightly left-hatched, as KLayout draws it there.
-        const Stipple i5 = standardStipple(5);
-        int inked = 0;
-        for (int y = 93; y < 98; ++y)
-            for (int x = 93; x < 97; ++x) {
-                QCOMPARE(at(x, y), stippleAt(i5, x, y, 100) ? QColor("#ff00ff") : white);
-                inked += stippleAt(i5, x, y, 100) ? 1 : 0;
-            }
-        QVERIFY(inked > 0);
-        // On a Retina screen's picture: each pattern's pixel 2 by 2 device
-        // pixels - as large as at 1, and sharp.
-        const QImage retina = drawnAt(*layout, styles, 2).convertToFormat(QImage::Format_RGB32);
-        QCOMPARE(retina.size(), QSize(200, 200));
-        for (int y = 64; y < 76; ++y)
-            for (int x = 24; x < 38; ++x) QCOMPARE(QColor(retina.pixel(x, y)), stippleAt(i4, x, y, 200, 2) ? green : white);
         // Blinking: shown at the even steps (or the odd); scrolling: the
         // pattern a pixel on at each step.
         QVector<LayerStyle> blinking = styles;
-        const int l1 = layerOf(*layout, 1), l3 = layerOf(*layout, 3);
         blinking[l1].animation = 2;
         blinking[l3].animation = 1;
-        QCOMPARE(QColor(drawnAt(*layout, blinking, 1, Qt::white, 0).pixel(12, 97)), red);
-        QCOMPARE(QColor(drawnAt(*layout, blinking, 1, Qt::white, 2).pixel(12, 97)), white);
+        // (1/0's red where nothing is over it)
+        const auto reds = [&layout, red](const QVector<LayerStyle>& s, int tick) {
+            const QImage image = drawnAt(*layout, s, 1, Qt::white, tick);
+            int n = 0;
+            for (int y = 82; y < 98; ++y)
+                for (int x = 2; x < 18; ++x) n += image.pixelColor(x, y) == red ? 1 : 0;
+            return n;
+        };
+        QVERIFY(reds(blinking, 0) > 20);
+        QCOMPARE(reds(blinking, 2), 0);
         blinking[l1].animation = 3;
-        QCOMPARE(QColor(drawnAt(*layout, blinking, 1, Qt::white, 0).pixel(12, 97)), white);
+        QCOMPARE(reds(blinking, 0), 0);
+        QVERIFY(reds(blinking, 2) > 20);
         const QImage step0 = drawnAt(*layout, blinking, 1, Qt::white, 0), step1 = drawnAt(*layout, blinking, 1, Qt::white, 1);
         for (int y = 32; y < 40; ++y)
             for (int x = 12; x < 18; ++x) QCOMPARE(step1.pixel(x + 1, y), step0.pixel(x, y));
@@ -2735,25 +2778,36 @@ private slots:
         } back;
         writeLypSample(path("klook/gpu.gds"));
         QVERIFY(write(path("klook/gpu.lyp"), kLypSample));
-        LayoutDoc* doc = open(path("klook/gpu.gds"));
+        // (and data/klayout_look's rules: frames 0 to 3 wide and dashed,
+        // crosses, marks, spines, a group transparent)
+        QFile::remove(path("klook/rules.gds"));
+        QFile::remove(path("klook/rules.lyp"));
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_look/rules.gds"), path("klook/rules.gds")));
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_look/rules.lyp"), path("klook/rules.lyp")));
+        LayoutDoc* doc = nullptr;
+        LayoutView* view = nullptr;
+        QImage gpu;
+        for (const auto& [file, region] : {std::pair{"klook/rules.gds", QRectF(0, 0, 200, 200)}, std::pair{"klook/gpu.gds", QRectF(0, 0, 100, 100)}}) {
+        doc = open(path(file));
         QVERIFY(doc != nullptr);
         QVERIFY(doc->drawsKLayoutLook());
         doc->setGridShown(false);
         doc->setCanvasTheme(LayoutView::Theme::Light);
-        LayoutView* view = doc->view();
+        view = doc->view();
         view->resize(400, 400);
-        view->showRegion(QRectF(0, 0, 100, 100));
+        view->showRegion(region);
         view->setGpu(false);
         const QImage cpu = view->picture().convertToFormat(QImage::Format_RGB32);
         view->setGpu(true);
         QVERIFY(view->gpu());
         QTRY_VERIFY(view->canvas()->frames() > 0);
-        const QImage gpu = view->picture().convertToFormat(QImage::Format_RGB32);
+        gpu = view->picture().convertToFormat(QImage::Format_RGB32);
         QCOMPARE(gpu.size(), cpu.size());
         const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
+        const QString which = QString::fromLatin1(file).contains(QLatin1String("rules")) ? QStringLiteral("_rules") : QString();
         if (!shots.isEmpty()) {
-            cpu.save(shots + QStringLiteral("/klayout_look_cpu.png"));
-            gpu.save(shots + QStringLiteral("/klayout_look_gpu.png"));
+            cpu.save(shots + QStringLiteral("/klayout_look_cpu%1.png").arg(which));
+            gpu.save(shots + QStringLiteral("/klayout_look_gpu%1.png").arg(which));
         }
         const QColor paper = cpu.pixelColor(1, 1);
         const auto near = [](const QImage& in, int x, int y, QColor want) {
@@ -2774,13 +2828,17 @@ private slots:
                 exact += a != b;
                 if (!near(gpu, x, y, a) || !near(cpu, x, y, b)) ++differ;
             }
-        qInfo("KLayout's look: %d of %d pixels inked, %d differ, %d not exactly alike (%s)", inked, cpu.width() * cpu.height(), differ, exact,
+        qInfo("KLayout's look (%s): %d of %d pixels inked, %d differ, %d not exactly alike (%s)", file, inked, cpu.width() * cpu.height(), differ, exact,
               qPrintable(qucs_s::gpu::backendName()));
         QVERIFY(inked > 5000);
-        QVERIFY2(differ < inked / 100 + 1, qPrintable(QStringLiteral("%1 of %2").arg(differ).arg(inked)));
+        // (a thousandth at most: Metal draws them 1 and 2 apart; dashes'
+        // bits lost to exp2's rounding were 0.8%)
+        QVERIFY2(differ < inked / 1000 + 1, qPrintable(QStringLiteral("%1: %2 of %3").arg(QLatin1String(file)).arg(differ).arg(inked)));
+        }
         // The transparent layer over the other: the lesser of each channel.
         const QPoint mixed = (view->toPixel(QPointF(75, 50)) * gpu.devicePixelRatio()).toPoint();
         QCOMPARE(gpu.pixelColor(mixed), QColor("#808020"));
+        const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
         // (For the write-up: the viewer's own look - as a .lyp was drawn
         // before - and what is in sight, for KLayout's picture of it.)
         if (!shots.isEmpty()) {
