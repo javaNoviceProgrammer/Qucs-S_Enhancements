@@ -65,6 +65,7 @@
 #include "layoutdoc.h"
 #include "rf25doc.h"
 #include "rf25/rf25_dense.h"
+#include "rf25/rf25_optimize.h"
 #include "rf25/rf25_dielectric.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_static.h"
@@ -3247,6 +3248,61 @@ private slots:
         bool none = true;
         for (const rf::Node& n : doc->model().layout().children) none = none && n.type != QLatin1String("rf_dimension");
         QVERIFY(none);
+        app->closeAllFiles();
+    }
+
+    // A quasi-static solution's values by name (phase 5 of RF 2.5D's
+    // optimization), as a sweep and an optimization read them: at each of
+    // the study's frequencies, the capacitance matrix, the strip as a line -
+    // Z0, eps_eff, R, L, G, C per metre, alpha in dB per metre - and the
+    // loop its two ports make, each what the extraction, its line and its
+    // inductance say, with its unit.
+    void aQuasiStaticSolutionsValuesAreReadByName()
+    {
+        const QString file = fullWaveLine(QStringLiteral("named.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        RF25Doc::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        rf::SolveJob job;
+        const rf::ModelSolution m = rf::solveModel(job, doc->model(), *doc->layout(), QStringLiteral("strip.gds"), QFileInfo(file).absolutePath(), quasi);
+        QVERIFY2(m.ok() && m.extraction != nullptr && m.inductance != nullptr, qPrintable(m.problem));
+        QVERIFY(m.extraction->perMetre.fromMiddle);
+        const rf::SolutionValues v = rf::solutionValues(m, doc->model());
+        QCOMPARE(v.frequencies, rf::studySweep(doc->model()));
+        QCOMPARE(v.frequencies.size(), 3);
+        const auto at = [&v](const char* name, int k) {
+            const int i = v.index(QLatin1String(name));
+            return i < 0 ? NAN : v.at.at(k).at(i);
+        };
+        for (int k = 0; k < v.frequencies.size(); ++k) {
+            QCOMPARE(at("C11", k), m.extraction->c.at(0).at(0));
+            const qucs_s::fem::LineRLGC line = rf::asLine(*m.extraction, 0, m.length, v.frequencies.at(k));
+            QCOMPARE(at("Z0", k), std::abs(line.Zc));
+            QCOMPARE(at("eps_eff", k), line.epsEff);
+            QCOMPARE(at("R", k), line.R);
+            QCOMPARE(at("C", k), line.C);
+            QCOMPARE(at("alpha_dB", k), line.alphaDb);
+            QCOMPARE(at("Lloop", k), m.inductance->l);
+            QCOMPARE(at("f", k), v.frequencies.at(k));
+        }
+        QVERIFY2(at("Z0", 0) > 20 && at("Z0", 0) < 120, qPrintable(QString::number(at("Z0", 0))));
+        QCOMPARE(v.dims.at(v.index(QStringLiteral("Z0"))), qucs_s::fem::parseUnit(QStringLiteral("Ohm"))->dim);
+        QCOMPARE(v.dims.at(v.index(QStringLiteral("C11"))), qucs_s::fem::parseUnit(QStringLiteral("F"))->dim);
+        QCOMPARE(v.dims.at(v.index(QStringLiteral("Lloop"))), qucs_s::fem::parseUnit(QStringLiteral("H"))->dim);
+        // Read as an objective reads it: Z0 at the top frequency, by name and
+        // with a parameter.
+        qucs_s::fem::ParameterScope ps;
+        rf::Reading r;
+        r.expression = QStringLiteral("Z0 - 50[Ohm]");
+        r.over = rf::Reading::Over::Last;
+        double value = 0;
+        qucs_s::fem::Dim dim;
+        QString why;
+        QVERIFY2(rf::readingValue(v, ps, r, qucs_s::optimization::Goal(), &value, &dim, &why), qPrintable(why));
+        QVERIFY(std::abs(value - (at("Z0", 2) - 50)) < 1e-9);
         app->closeAllFiles();
     }
 
