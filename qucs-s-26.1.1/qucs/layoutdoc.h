@@ -13,6 +13,7 @@
 #define QUCS_LAYOUTDOC_H
 
 #include "fem_materials.h"
+#include "gpurendering.h"
 #include "layout.h"
 #include "markup.h"
 #include "qucsdoc.h"
@@ -67,7 +68,8 @@ class LayoutView : public QWidget
     Q_OBJECT
 
 public:
-    explicit LayoutView(QWidget* parent = nullptr);
+    /// \a gpuViewer: whose setting chooses the GPU for it (setGpuViewer()).
+    explicit LayoutView(QWidget* parent = nullptr, gpu::Viewer gpuViewer = gpu::Viewer::Layout);
 
     void setLayout(std::shared_ptr<const Layout> layout);
     std::shared_ptr<const Layout> layout() const { return a_layout; }
@@ -285,6 +287,12 @@ public:
     /// QUCS_GPU=0, the CPU draws whatever it says.
     void setGpu(bool on);
     bool gpu() const;
+    /// Whose setting chooses the GPU for it: the layout viewer's
+    /// (Viewers/layoutGpu) unless a tab gives it its own - an RF 2.5D
+    /// model's, Viewers/rf25Gpu. Drawn as that one says, now and when it
+    /// changes.
+    void setGpuViewer(gpu::Viewer viewer);
+    gpu::Viewer gpuViewer() const { return a_gpuViewer; }
     LayoutGpu* canvas() const { return a_canvas; }
     /// The view's painting - the canvas's when \a gl, which draws the
     /// layers; else the CPU's, into its picture.
@@ -368,6 +376,7 @@ private:
     bool a_dirty = true;
     LayoutGpu* a_canvas = nullptr;
     bool a_gpuBroken = false;
+    gpu::Viewer a_gpuViewer = gpu::Viewer::Layout;
     RenderStats a_stats;        // the CPU's last picture's
     mutable RenderStats a_counted;   // lastStats(): the view as it stands
     mutable bool a_countStale = true;

@@ -53,6 +53,8 @@
 #include <QUndoStack>
 
 #include "config.h"
+#include "dialogs/qucssettingsdialog.h"
+#include "gpurendering.h"
 #include "extsimkernels/ngspice.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -2677,6 +2679,228 @@ private slots:
             for (int j = 0; j < 2; ++j)
                 QVERIFY2(std::abs(w->s.at(0).at(i).at(j) - r->s.at(0).at(i).at(j)) < 1e-6,
                          qPrintable(QStringLiteral("S%1%2: %3 against %4").arg(i + 1).arg(j + 1).arg(std::abs(w->s.at(0).at(i).at(j))).arg(std::abs(r->s.at(0).at(i).at(j)))));
+    }
+
+    // The Ruler, as a layout's tab has it: taken up from the toolbar, a
+    // drag over the layout measures, its ends snapped to the strip's
+    // corners, the ruler labelled on the canvas and said in the status line
+    // - its length, dx and dy, its ends. It and the port tools, the drawing
+    // tools and the pen are one at a time, each putting the other down. The
+    // rulers stay while the layout is read again in place (a shape drawn);
+    // Escape clears them, then puts the Ruler down. Put down by its button,
+    // the rulers stay, as in a layout's tab.
+    void theRulerMeasuresTheLayout()
+    {
+        const QString model = fullWaveLine(QStringLiteral("ruler.qrf25"));
+        QVERIFY(!model.isEmpty());
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(QPointF(-100, -150), QPointF(1100, 200)));
+        view->repaint();
+        QToolButton* ruler = doc->rulerButton();
+        QVERIFY(ruler != nullptr);
+        QCOMPARE(ruler->objectName(), QStringLiteral("rfRuler"));
+        QCOMPARE(ruler->text(), QStringLiteral("Ruler"));
+        QVERIFY(ruler->isCheckable() && !ruler->isChecked());
+        QVERIFY(ruler->toolTip().contains(QStringLiteral("drag to measure")));
+        // (On the toolbar, beside Zoom Extents and Read the Layout Again.)
+        QToolButton* fit = doc->findChild<QToolButton*>(QStringLiteral("rfFit"));
+        QVERIFY(fit != nullptr && fit->parentWidget() == ruler->parentWidget());
+        QVERIFY(ruler->parentWidget()->layout()->indexOf(ruler) > ruler->parentWidget()->layout()->indexOf(fit));
+
+        ruler->click();
+        QVERIFY(ruler->isChecked());
+        QCOMPARE(view->mode(), LayoutView::Mode::Ruler);
+        QVERIFY2(doc->statusLabel()->text().startsWith(QStringLiteral("Drag over the layout to measure")), qPrintable(doc->statusLabel()->text()));
+        // The strip's lower edge, end to end: a few pixels off each corner,
+        // snapped to it.
+        drag(view, view->toPixel(QPointF(0, 0)) + QPointF(2, -2), view->toPixel(QPointF(1000, 0)) + QPointF(-2, 2));
+        QCOMPARE(int(view->rulers().size()), 1);
+        const QLineF measured = view->rulers().last();
+        QVERIFY2(QLineF(measured.p1(), QPointF(0, 0)).length() < 1e-6 && QLineF(measured.p2(), QPointF(1000, 0)).length() < 1e-6,
+                 qPrintable(QStringLiteral("%1, %2 to %3, %4").arg(measured.x1()).arg(measured.y1()).arg(measured.x2()).arg(measured.y2())));
+        const QString said = QStringLiteral("Ruler: 1000 µm (dx 1000, dy 0) from 0, 0 to 1000, 0");
+        QCOMPARE(doc->rulerSaid(), said);
+        QVERIFY2(doc->statusLabel()->text().startsWith(said), qPrintable(doc->statusLabel()->text()));
+        // Its width, across: a second ruler, the last one said.
+        drag(view, view->toPixel(QPointF(500, 0)), view->toPixel(QPointF(500, 50)));
+        QCOMPARE(int(view->rulers().size()), 2);
+        QCOMPARE(doc->rulerSaid(), QStringLiteral("Ruler: 50 µm (dx 0, dy 50) from 500, 0 to 500, 50"));
+        // The pointer over the layout: where it is said after the ruler.
+        {
+            const QPointF at = view->toPixel(QPointF(250, 25));
+            QMouseEvent move(QEvent::MouseMove, at, view->mapToGlobal(at), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(view, &move);
+        }
+        QVERIFY2(doc->statusLabel()->text().startsWith(QStringLiteral("Ruler: 50 µm")) && doc->statusLabel()->text().contains(QStringLiteral("x = ")),
+                 qPrintable(doc->statusLabel()->text()));
+
+        // One tool at a time: a port tool puts the Ruler down, the Ruler
+        // the port tool; so the pen and a drawing tool.
+        doc->edgePortButton()->click();
+        QCOMPARE(doc->placing(), RF25Doc::Placing::EdgePort);
+        QCOMPARE(view->mode(), LayoutView::Mode::PickPoint);
+        QVERIFY(!ruler->isChecked());
+        ruler->click();
+        QCOMPARE(doc->placing(), RF25Doc::Placing::None);
+        QVERIFY(!doc->edgePortButton()->isChecked());
+        QCOMPARE(view->mode(), LayoutView::Mode::Ruler);
+        QVERIFY(ruler->isChecked());
+        doc->penButton()->click();
+        QCOMPARE(view->mode(), LayoutView::Mode::Draw);
+        QVERIFY(!ruler->isChecked());
+        ruler->click();
+        QCOMPARE(view->mode(), LayoutView::Mode::Ruler);
+        QVERIFY(!doc->penButton()->isChecked());
+        doc->setDrawTool(RF25Doc::DrawTool::Rectangle);
+        QCOMPARE(view->mode(), LayoutView::Mode::PickBox);
+        QVERIFY(!ruler->isChecked());
+        ruler->click();
+        QVERIFY(doc->drawTool() == RF25Doc::DrawTool::None);
+        QVERIFY(!doc->drawButton()->isChecked());
+        QCOMPARE(view->mode(), LayoutView::Mode::Ruler);
+        // The view put in the Ruler's mode another way: the port tool in
+        // hand put down all the same, the view left measuring.
+        doc->setPlacing(RF25Doc::Placing::InternalPort);
+        view->setMode(LayoutView::Mode::Ruler);
+        QCOMPARE(doc->placing(), RF25Doc::Placing::None);
+        QCOMPARE(view->mode(), LayoutView::Mode::Ruler);
+        QVERIFY(ruler->isChecked() && !doc->internalPortButton()->isChecked());
+        QCOMPARE(int(view->rulers().size()), 2);
+
+        // A shape drawn: the layout read again where it is shown, the
+        // rulers kept.
+        QStringList done;
+        QString why;
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("rectangle")},
+                                                        {QStringLiteral("layer"), QStringLiteral("M1")},
+                                                        {QStringLiteral("box"), QJsonArray{200, 100, 300, 150}}}},
+                                 &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        QCOMPARE(int(view->rulers().size()), 2);
+        QCOMPARE(doc->rulerSaid(), QStringLiteral("Ruler: 50 µm (dx 0, dy 50) from 500, 0 to 500, 50"));
+
+        // Escape: the rulers cleared (the status line back to the model's),
+        // then the Ruler put down.
+        view->setFocus();
+        QTest::keyClick(view, Qt::Key_Escape);
+        QVERIFY(view->rulers().isEmpty());
+        QVERIFY(doc->rulerSaid().isEmpty());
+        QVERIFY2(!doc->statusLabel()->text().startsWith(QStringLiteral("Ruler:")), qPrintable(doc->statusLabel()->text()));
+        QCOMPARE(view->mode(), LayoutView::Mode::Ruler);
+        QTest::keyClick(view, Qt::Key_Escape);
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+        QVERIFY(!ruler->isChecked());
+        // Put down by its button, what it measured stays.
+        ruler->click();
+        drag(view, view->toPixel(QPointF(0, 0)), view->toPixel(QPointF(0, 50)));
+        QCOMPARE(int(view->rulers().size()), 1);
+        ruler->click();
+        QCOMPARE(view->mode(), LayoutView::Mode::Select);
+        QCOMPARE(int(view->rulers().size()), 1);
+        QCOMPARE(doc->rulerSaid(), QStringLiteral("Ruler: 50 µm (dx 0, dy 50) from 0, 0 to 0, 50"));
+    }
+
+    // RF 2.5D's layout drawn by the GPU or the CPU as a setting of its own
+    // says (Viewers/rf25Gpu, the CPU's unless chosen), apart from the
+    // layout viewer's: RF 2.5D > Settings… has it, with what draws it said
+    // under it - the GPU and its backend, the CPU, or what keeps the GPU
+    // from drawing here (offscreen, QUCS_GPU=0) -, kept on OK and not on
+    // Cancel; Settings… > Viewers has it too. Each open model's view drawn
+    // as chosen, at once; the layout viewer's setting does not move it.
+    void theLayoutIsDrawnByTheGpuAsItsOwnSettingSays()
+    {
+        using qucs_s::gpu::Viewer;
+        const auto back = qScopeGuard([] {
+            QucsSettingsFile().remove(qucs_s::gpu::settingKey(Viewer::RF25));
+            QucsSettingsFile().remove(qucs_s::gpu::settingKey(Viewer::Layout));
+            emit qucs_s::gpu::Notifier::instance()->changed(Viewer::RF25);
+            emit qucs_s::gpu::Notifier::instance()->changed(Viewer::Layout);
+        });
+        QCOMPARE(qucs_s::gpu::settingKey(Viewer::RF25), QStringLiteral("Viewers/rf25Gpu"));
+        QCOMPARE(qucs_s::gpu::viewerName(Viewer::RF25), QStringLiteral("RF 2.5D layout"));
+        QVERIFY(!qucs_s::gpu::wanted(Viewer::RF25));
+        RF25Doc* doc = app->newRf25Model();
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        QVERIFY(view->gpuViewer() == Viewer::RF25);
+        LayoutView plain;   // (a layout's tab's: the layout viewer's setting)
+        QVERIFY(plain.gpuViewer() == Viewer::Layout);
+        const QString hindrance = qucs_s::gpu::hindrance();
+        qInfo("%s", qPrintable(hindrance.isEmpty() ? QStringLiteral("The GPU can draw here: %1").arg(qucs_s::gpu::backendName()) : hindrance));
+        const auto drawnAsChosen = [&] {
+            QCOMPARE(view->gpu(), qucs_s::gpu::used(Viewer::RF25));
+            QCOMPARE(plain.gpu(), qucs_s::gpu::used(Viewer::Layout));
+        };
+        drawnAsChosen();
+        QVERIFY(!view->gpu());
+        QSignalSpy told(qucs_s::gpu::Notifier::instance(), &qucs_s::gpu::Notifier::changed);
+        {
+            rf::RF25SettingsDialog d(app);
+            QVERIFY(d.gpuBox() != nullptr && d.gpuStatusLabel() != nullptr);
+            QCOMPARE(d.gpuBox()->objectName(), QStringLiteral("rf25GpuBox"));
+            QCOMPARE(d.gpuBox()->text(), QStringLiteral("Draw with the GPU"));
+            QVERIFY(!d.gpuBox()->isChecked());
+            QCOMPARE(d.gpuStatusLabel()->text(), hindrance.isEmpty() ? QStringLiteral("The CPU draws the layout.") : hindrance);
+            d.gpuBox()->setChecked(true);
+            QCOMPARE(d.gpuStatusLabel()->text(),
+                     hindrance.isEmpty() ? QStringLiteral("The GPU draws the layout (%1).").arg(qucs_s::gpu::backendName()) : hindrance);
+            d.reject();   // (Cancel: nothing kept.)
+        }
+        QVERIFY(!qucs_s::gpu::wanted(Viewer::RF25));
+        QCOMPARE(told.count(), 0);
+        {
+            rf::RF25SettingsDialog d(app);
+            d.gpuBox()->setChecked(true);
+            d.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+            QCOMPARE(d.result(), int(QDialog::Accepted));
+        }
+        QVERIFY(qucs_s::gpu::wanted(Viewer::RF25));
+        QVERIFY(!qucs_s::gpu::wanted(Viewer::Layout));
+        QCOMPARE(QucsSettingsFile().value(QStringLiteral("Viewers/rf25Gpu")).toBool(), true);
+        QCOMPARE(told.count(), 1);
+        QVERIFY(told.at(0).at(0).value<Viewer>() == Viewer::RF25);
+        drawnAsChosen();
+        QCOMPARE(view->gpu(), hindrance.isEmpty());
+        {
+            rf::RF25SettingsDialog d(app);
+            QVERIFY(d.gpuBox()->isChecked());
+        }
+        // The layout viewer's setting: the model's view as its own says.
+        qucs_s::gpu::setWanted(Viewer::RF25, false);
+        qucs_s::gpu::setWanted(Viewer::Layout, true);
+        drawnAsChosen();
+        QVERIFY(!view->gpu());
+        // Settings… > Viewers: the same setting.
+        {
+            QucsSettingsDialog dlg(app);
+            auto* box = dlg.findChild<QCheckBox*>(QStringLiteral("gpuRF25"));
+            QVERIFY(box != nullptr);
+            QCOMPARE(box->text(), qucs_s::gpu::viewerName(Viewer::RF25));
+            QVERIFY(box->toolTip().contains(QStringLiteral("RF 2.5D > Settings")));
+            QVERIFY(!box->isChecked());
+            QVERIFY(dlg.findChild<QCheckBox*>(QStringLiteral("gpuLayout"))->isChecked());
+            box->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+        }
+        QVERIFY(qucs_s::gpu::wanted(Viewer::RF25));
+        drawnAsChosen();
+        {
+            rf::RF25SettingsDialog d(app);
+            QVERIFY(d.gpuBox()->isChecked());
+        }
+        // QUCS_GPU=0: the CPU, whatever is chosen, said.
+        qputenv("QUCS_GPU", "0");
+        {
+            rf::RF25SettingsDialog d(app);
+            QVERIFY2(d.gpuStatusLabel()->text().contains(QStringLiteral("QUCS_GPU=0")), qPrintable(d.gpuStatusLabel()->text()));
+        }
+        emit qucs_s::gpu::Notifier::instance()->changed(Viewer::RF25);
+        QVERIFY(!view->gpu());
+        qunsetenv("QUCS_GPU");
     }
 
     // A substrate that ends (F2 of the open items of 8 November), drawn on

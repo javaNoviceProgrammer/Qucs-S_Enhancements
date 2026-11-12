@@ -458,6 +458,17 @@ public:
     void setPlacing(Placing placing);
     QToolButton* edgePortButton() const { return a_edgePortButton; }
     QToolButton* internalPortButton() const { return a_internalPortButton; }
+    /// The Ruler, as a layout's tab has it: taken up, a drag over the layout
+    /// measures, snapped to the shapes' corners and edges (Shift: across or
+    /// up only), each ruler labelled with its length and the last one said
+    /// in the status line - its length, dx and dy, its ends. Escape takes
+    /// back the one being drawn, then clears them, then puts the Ruler
+    /// down; the port tools, the drawing tools, the pen and it are one at a
+    /// time. The rulers stay while the layout is read again in place (a
+    /// drawing, another map), not for another layout.
+    QToolButton* rulerButton() const { return a_rulerButton; }
+    /// The last ruler as the status line says it; empty where there is none.
+    QString rulerSaid() const;
     /// The pen, at the toolbar's right end, as a layout's tab has it: taken
     /// up, a drag over the layout draws on its cell, for Claude to read
     /// (read_drawings, and each prompt about this model); it and the port
@@ -739,6 +750,7 @@ private:
 
     QToolButton* a_fit = nullptr;
     QToolButton* a_reread = nullptr;
+    QToolButton* a_rulerButton = nullptr;
     QToolButton* a_showProcessedButton = nullptr;
     QToolButton* a_showMeshButton = nullptr;
     QToolButton* a_showCurrentsButton = nullptr;

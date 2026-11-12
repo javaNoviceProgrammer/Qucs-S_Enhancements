@@ -762,6 +762,10 @@ void RF25Doc::buildUi()
     connect(a_fit, &QToolButton::clicked, this, [this] { a_view->fit(); });
     a_reread = button(tr("Read the Layout Again"), tr("Read the layout file the model names once more"), "rfReread");
     connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
+    // Measured as in a layout's tab: the view's own ruler.
+    a_rulerButton = button(tr("Ruler"), tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"),
+                           "rfRuler");
+    a_rulerButton->setCheckable(true);
     row->addSpacing(10);
     // What the solver would be given, over the layout it came from.
     const QucsSettingsFile settings;
@@ -858,7 +862,9 @@ void RF25Doc::buildUi()
     a_sides = new QSplitter(Qt::Horizontal, a_splitter);
     a_sides->setObjectName(QStringLiteral("rfSides"));
     a_stack = new StackView(a_sides);
-    a_view = new LayoutView(a_sides);
+    // (Drawn by the GPU as RF 2.5D's own setting says: Viewers/rf25Gpu,
+    //  RF 2.5D > Settings….)
+    a_view = new LayoutView(a_sides, qucs_s::gpu::Viewer::RF25);
     a_view->setObjectName(QStringLiteral("rfView"));
     connect(a_stack, &StackView::layerChosen, this, &RF25Doc::focusNode);
     // (Enter, Backspace and a double click for a polygon being drawn;
@@ -901,10 +907,34 @@ void RF25Doc::buildUi()
         if ((shift ? placeTerminal(box, &why) : placeInternalPort(box, &why)).isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
-        if ((mode == LayoutView::Mode::Select || mode == LayoutView::Mode::Draw) && a_placing != Placing::None) setPlacing(Placing::None);
-        if ((mode == LayoutView::Mode::Select || mode == LayoutView::Mode::Draw) && a_drawTool != DrawTool::None) dropDrawTool();
-        const QSignalBlocker quiet(a_penButton);
+        // The view no longer picking - Select, the pen, the Ruler -: the
+        // port or drawing tool in hand put down. (Putting a port tool down
+        // puts the view in Select: the mode it went to is put back.)
+        const bool picking = mode == LayoutView::Mode::PickPoint || mode == LayoutView::Mode::PickBox;
+        if (!picking && a_placing != Placing::None) {
+            setPlacing(Placing::None);
+            if (a_view->mode() != mode) return a_view->setMode(mode);
+        }
+        if (!picking && a_drawTool != DrawTool::None) dropDrawTool();
+        const QSignalBlocker quiet(a_penButton), quietRuler(a_rulerButton);
         a_penButton->setChecked(mode == LayoutView::Mode::Draw);
+        a_rulerButton->setChecked(mode == LayoutView::Mode::Ruler);
+    });
+    // The Ruler taken up - the other tools put down - and put down.
+    connect(a_rulerButton, &QToolButton::toggled, this, [this](bool on) {
+        if (on && a_placing != Placing::None) setPlacing(Placing::None);
+        if (on && a_drawTool != DrawTool::None) dropDrawTool();
+        a_view->setMode(on ? LayoutView::Mode::Ruler : LayoutView::Mode::Select);
+        a_view->setFocus();
+        if (on && a_view->rulers().isEmpty())
+            a_status->setText(tr("Drag over the layout to measure, snapped to corners and edges (Shift: across or up only); "
+                                 "Escape clears."));
+    });
+    // What the last ruler measures, in the status line; gone with it.
+    connect(a_view, &LayoutView::rulersChanged, this, [this] {
+        const QString said = rulerSaid();
+        if (!said.isEmpty()) a_status->setText(said);
+        else showProblems();
     });
     // The pen taken up - the port tools put down - and put down; its menu's
     // undo and clearing.
@@ -1450,7 +1480,11 @@ void RF25Doc::showLayout()
     const bool again = a_view->layout() == a_layout;
     const QPointF center = a_view->center();
     const double scale = a_view->scale();
+    // (The rulers measure what is still there where it is shown in place: a
+    //  drawing read again, another map or colour.)
+    const QList<QLineF> rulers = again || a_keepView ? a_view->rulers() : QList<QLineF>();
     a_view->setLayout(a_layout);
+    for (const QLineF& r : rulers) a_view->addRuler(r);
     a_view->setStyles(stylesFor(*a_layout));
     const QString cell = textOf(a_model.layout(), QStringLiteral("cell")).trimmed();
     const int at = cell.isEmpty() ? a_layout->mainCell() : a_layout->cellIndex(cell);
@@ -3720,9 +3754,23 @@ void RF25Doc::pointerMoved(QPointF point, bool inside)
         showProblems();
         return;
     }
-    a_status->setText(tr("x = %1, y = %2")
-                          .arg(qucs_s::layout::micrometres(*a_layout, point.x()),
-                               qucs_s::layout::micrometres(*a_layout, point.y())));
+    const QString where = tr("x = %1, y = %2")
+                              .arg(qucs_s::layout::micrometres(*a_layout, point.x()),
+                                   qucs_s::layout::micrometres(*a_layout, point.y()));
+    const QString ruler = rulerSaid();
+    a_status->setText(ruler.isEmpty() ? where : tr("%1 - %2").arg(ruler, where));
+}
+
+QString RF25Doc::rulerSaid() const
+{
+    if (!a_layout || a_view->rulers().isEmpty()) return QString();
+    using qucs_s::layout::micrometres;
+    const QLineF r = a_view->rulers().last();
+    const QPointF d = r.p2() - r.p1();
+    return tr("Ruler: %1 µm (dx %2, dy %3) from %4, %5 to %6, %7")
+        .arg(micrometres(*a_layout, std::hypot(d.x(), d.y())), micrometres(*a_layout, d.x()), micrometres(*a_layout, d.y()),
+             micrometres(*a_layout, r.p1().x()), micrometres(*a_layout, r.p1().y()), micrometres(*a_layout, r.p2().x()))
+        .arg(micrometres(*a_layout, r.p2().y()));
 }
 
 void RF25Doc::focusNode(const QString& tag)
