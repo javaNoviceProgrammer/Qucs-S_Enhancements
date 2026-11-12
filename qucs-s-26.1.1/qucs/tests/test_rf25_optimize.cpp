@@ -156,6 +156,140 @@ private slots:
         QVERIFY(rf::frequencyOf(QString(), ps, &hz, &why) && std::isnan(hz));
         QVERIFY(!rf::frequencyOf(QStringLiteral("3[m]"), ps, &hz, &why));
     }
+
+    // A Parametric Sweep's plan: one or two parameters over a list, or From
+    // to To in Points (linear, logarithmic), crossed or paired; the
+    // quantities, each with its window and Over (not worst: a sweep has no
+    // goal); what cannot be run refused, and why. A point's model is the
+    // model with those parameters; its result kept as JSON, read back the
+    // same; what it is of changes with the model, not with the parameters it
+    // varies or what it found.
+    void aParametricSweepsPlan()
+    {
+        rf::Model m = rf::Model::blank();
+        m.root.child(QStringLiteral("rf_parameters"))->props.insert(QStringLiteral("rows"),
+            QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "1[mm]"}, QJsonArray{"er", "9.8"}});
+        QVERIFY(m.add(m.root.tag, m.make(QStringLiteral("rf_analyses"))) != nullptr);
+        rf::Node sweep = m.make(QStringLiteral("rf_sweep"));
+        sweep.props = QJsonObject{{"parameters", QJsonArray{QJsonArray{"w", "10[um]", "30[um]", "3"}, QJsonArray{"L", "", "", "", "", "1[mm], 2[mm]"}}},
+                                  {"quantities", QJsonArray{QJsonArray{"Z0"}, QJsonArray{"S21_dB", "min", "1[GHz]", "2[GHz]"}, QJsonArray{"S11_dB", "at", "", "", "1.5[GHz]"}}}};
+        const rf::Node* added = m.add(m.root.child(QStringLiteral("rf_analyses"))->tag, sweep);
+        QVERIFY(added != nullptr);
+        const QString tag = added->tag;
+        QCOMPARE(rf::sweepNode(m), m.find(tag));
+        QString why;
+        std::optional<rf::SweepPlan> plan = rf::sweepPlan(m, *m.find(tag), &why);
+        QVERIFY2(plan.has_value(), qPrintable(why));
+        QCOMPARE(plan->axes.size(), 2);
+        QCOMPARE(plan->axes.at(0).values.size(), 3);
+        QVERIFY(std::abs(plan->axes.at(0).values.at(1) - 20e-6) < 1e-15);
+        QCOMPARE(plan->axes.at(1).values, (QList<double>{1e-3, 2e-3}));
+        QCOMPARE(plan->points().size(), 6);   // (crossed)
+        QCOMPARE(plan->points().at(1), (QList<double>{plan->axes.at(0).values.at(1), 1e-3}));
+        QCOMPARE(plan->quantities.size(), 3);
+        QVERIFY(plan->quantities.at(0).over == rf::Reading::Over::Last);
+        QVERIFY(plan->quantities.at(1).over == rf::Reading::Over::Least && plan->quantities.at(1).from == 1e9 && plan->quantities.at(1).to == 2e9);
+        QVERIFY(plan->quantities.at(2).over == rf::Reading::Over::At && plan->quantities.at(2).at == 1.5e9);
+        QCOMPARE(plan->parallel, 1);
+        // Logarithmic; paired.
+        const auto withProps = [&](const QJsonObject& props) {
+            rf::Model c = m;
+            c.find(tag)->props = props;
+            QString bad;
+            const std::optional<rf::SweepPlan> p = rf::sweepPlan(c, *c.find(tag), &bad);
+            why = bad;
+            return p;
+        };
+        plan = withProps({{"parameters", (QJsonArray() << QJsonArray{"er", "1", "100", "3", "log"})}, {"quantities", (QJsonArray() << QJsonArray{"C11"})}});
+        QVERIFY2(plan.has_value(), qPrintable(why));
+        QVERIFY(std::abs(plan->axes.at(0).values.at(1) - 10) < 1e-9);
+        plan = withProps({{"parameters", QJsonArray{QJsonArray{"w", "", "", "", "", "10[um], 20[um]"}, QJsonArray{"L", "", "", "", "", "1[mm], 2[mm]"}}},
+                          {"combine", "paired"}, {"quantities", (QJsonArray() << QJsonArray{"C11"})}});
+        QVERIFY2(plan.has_value(), qPrintable(why));
+        QCOMPARE(plan->points().size(), 2);
+        // Refused, each said.
+        const auto refused = [&](const QJsonObject& props, const char* said) {
+            const bool no = !withProps(props).has_value();
+            if (!no || !why.contains(QLatin1String(said))) qWarning("%s: %s", said, qPrintable(why));
+            return no && why.contains(QLatin1String(said));
+        };
+        const QJsonArray q = QJsonArray() << QJsonArray{"C11"};
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"h", "1", "2"})}, {"quantities", q}}, "no parameter h"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}}, "reads nothing"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", (QJsonArray() << QJsonArray{"C11", "worst"})}}, "last, min, max or at"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "0", "2[um]", "3", "log"})}, {"quantities", q}}, "above nought"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]"})}, {"quantities", q}}, "a From and a To"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[V]", "2[um]"})}, {"quantities", q}}, "From"));
+        QVERIFY(refused({{"parameters", QJsonArray{QJsonArray{"w", "", "", "", "", "1[um], 2[um]"}, QJsonArray{"L", "", "", "", "", "1[mm]"}}},
+                         {"combine", "paired"}, {"quantities", q}}, "as many values"));
+        QVERIFY(refused({{"parameters", QJsonArray{QJsonArray{"w", "1[um]", "2[um]"}, QJsonArray{"L", "1[mm]", "2[mm]"}, QJsonArray{"er", "1", "2"}}}, {"quantities", q}}, "one or two"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", (QJsonArray() << QJsonArray{"C11", "at"})}}, "give it in At"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", q}, {"parallel", 0}}, "Solves at once"));
+
+        // A point's model: the parameters it varies, as SI values in their units.
+        const rf::Model point = rf::withParameters(m, {{"w", rf::siText(20e-6, fem::parseUnit(QStringLiteral("m"))->dim)}});
+        QVERIFY2(point.parameters().at(0).expression.endsWith(QStringLiteral("[m]")), qPrintable(point.parameters().at(0).expression));
+        QVERIFY(std::abs(fem::evaluateParameters(point.parameters())->values.value(QStringLiteral("w")) - 20e-6) < 1e-18);
+        QCOMPARE(point.parameters().at(1).expression, QStringLiteral("1[mm]"));
+
+        // Kept as JSON and read back.
+        rf::SweepResult r;
+        r.columns = {QStringLiteral("w"), QStringLiteral("S21_dB")};
+        r.units = {QStringLiteral("m"), QString()};
+        r.parameters = 1;
+        r.solved = 1;
+        r.failed = 1;
+        rf::SweepPoint good;
+        good.values = {10e-6};
+        good.measured = {-0.5};
+        good.solved = true;
+        good.frequencies = {1e9};
+        good.portNames = {QStringLiteral("P1"), QStringLiteral("P2")};
+        good.references = {50, 50};
+        good.s = {{{rf::Complex(0.1, 0.2), rf::Complex(0.9, -0.1)}, {rf::Complex(0.9, -0.1), rf::Complex(0.1, 0.2)}}};
+        good.z = good.s;
+        rf::SweepPoint bad;
+        bad.values = {20e-6};
+        bad.measured = {NAN};
+        bad.why = QStringLiteral("no mesh");
+        r.points = {good, bad};
+        const rf::SweepResult back = rf::SweepResult::fromJson(r.toJson());
+        QCOMPARE(back.columns, r.columns);
+        QCOMPARE(back.points.size(), 2);
+        QCOMPARE(back.points.at(0).measured, good.measured);
+        QCOMPARE(back.points.at(0).s, good.s);
+        QVERIFY(std::isnan(back.points.at(1).measured.at(0)));
+        QCOMPARE(back.points.at(1).why, QStringLiteral("no mesh"));
+        QVERIFY(back.waveOf(0) != nullptr && back.waveOf(0)->s == good.s);
+        QVERIFY(back.waveOf(1) == nullptr);
+
+        // What a result is of: not its own parameters, nor its result; the rest.
+        const QString setup = rf::analysisSetup(m, *m.find(tag));
+        rf::Model varied = rf::withParameters(m, {{"w", "99[um]"}});
+        QCOMPARE(rf::analysisSetup(varied, *varied.find(tag)), setup);
+        varied.find(tag)->props.insert(QStringLiteral("result"), r.toJson());
+        QCOMPARE(rf::analysisSetup(varied, *varied.find(tag)), setup);
+        rf::Model other = rf::withParameters(m, {{"er", "4.4"}});
+        QVERIFY(rf::analysisSetup(other, *other.find(tag)) != setup);
+    }
+
+    // A run's stop reaches each solve under way at once, and a solve begun
+    // after it is stopped as it begins; one ended is let go.
+    void aStopReachesTheSolvesUnderWay()
+    {
+        rf::RunControl control;
+        rf::SolveJob a, b, c;
+        control.begin(&a);
+        control.begin(&b);
+        control.end(&b);
+        QVERIFY(!a.stop.load());
+        control.requestStop();
+        QVERIFY(control.stop.load());
+        QVERIFY(a.stop.load());
+        QVERIFY(!b.stop.load());   // (ended before it)
+        control.begin(&c);
+        QVERIFY(c.stop.load());
+    }
 };
 
 QTEST_GUILESS_MAIN(TestRf25Optimize)

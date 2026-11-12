@@ -28,6 +28,7 @@
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_static.h"
 #include "rf25/rf25_model.h"
+#include "rf25/rf25_optimize.h"
 #include "rf25/rf25_solve.h"
 
 #include <QElapsedTimer>
@@ -51,6 +52,8 @@ class QToolButton;
 class QUndoStack;
 
 namespace qucs_s::rf25 {
+
+class SweepPage;
 
 /*!
  * The stack in z: its layers from the bottom up, each as tall as it is
@@ -263,6 +266,33 @@ public:
     /// Waits for it, a solve waiting for the mesh included, \a ms at most;
     /// whether it ended.
     bool waitForSolved(int ms = 600000);
+
+    /*!
+     * A Parametric Sweep run (Analyses > Parametric Sweep): \a tag, or
+     * (empty) the one chosen in the panel, else the first. In the
+     * background, each point the model with its parameters solved by its
+     * study; the bar counts the points, its Stop stops the run with what it
+     * has. What it found is kept in its node ("result", saved with the
+     * model) and shown in the tab's page below the layout. False and why
+     * where it cannot be run (no such node, its plan wrong, the layout not
+     * read, one running).
+     */
+    bool runAnalysis(const QString& tag = {}, QString* why = nullptr);
+    bool isAnalysing() const { return a_analysis != nullptr; }
+    void stopAnalysis();
+    /// Waits for the analysis running; whether it ended.
+    bool waitForAnalysis(int ms = 600000);
+    /// What the Parametric Sweep \a tag (empty: the first) found, as its
+    /// node keeps it; empty where it has not run.
+    qucs_s::rf25::SweepResult sweepResult(const QString& tag = {}) const;
+    /// Whether what analysis \a tag found is of the model before a change.
+    bool analysisOld(const QString& tag) const;
+    /// Each solved point of Parametric Sweep \a tag (empty: the first) as a
+    /// Touchstone 1.1 file beside the model: <model>_<sweep>_<point>.sNp,
+    /// its parameters' values in its comments. What was written in
+    /// \a written; false and why where nothing could be.
+    bool writeSweepTouchstones(const QString& tag, QStringList* written = nullptr, QString* why = nullptr);
+    qucs_s::rf25::SweepPage* sweepPage() const { return a_sweepPage; }
     /// Held by what waits on it with the window going on - a tool's call,
     /// from its first wait to its answer, and each waitFor...() -: its tab
     /// closed meanwhile (Stop and Close, a close_document, a tab kept running
@@ -608,6 +638,8 @@ signals:
     void preparedChanged();
     /// A solve started, ended, or let go.
     void solvedChanged();
+    /// An analysis began or ended.
+    void analysedChanged();
     void focusChanged(const QString& tag);
 
 private:
@@ -616,6 +648,12 @@ private:
     int a_waiting = 0;      // (Held)
     bool a_closed = false;  // (closeWhenFree())
     using SolveJob = qucs_s::rf25::SolveJob;   ///< (rf25_solve.h)
+    struct AnalysisRun;
+    std::shared_ptr<AnalysisRun> a_analysis;
+    qucs_s::rf25::SweepPage* a_sweepPage = nullptr;
+    void analysisDone();
+    /// The page shows analysis \a tag's result (a sweep's), or hides.
+    void showAnalysis(const QString& tag);
     void buildUi();
     void prepareDone();
     void solveDone();

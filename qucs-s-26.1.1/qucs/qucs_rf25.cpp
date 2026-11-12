@@ -111,6 +111,15 @@ void QucsApp::initRf25()
   });
   converge->setObjectName(QStringLiteral("rfConvergeAction"));
   converge->setStatusTip(tr("Solve the model on meshes ever finer and say how far its own is from the limit"));
+  // The model's Parametric Sweep: the one chosen in the panel, else its first.
+  QAction *sweep = a_rf25Menu->addAction(tr("Run Parametric Sweep"), this, [this, model] {
+    RF25Doc *doc = model();
+    if (doc == nullptr) return;
+    QString why;
+    if (!doc->runAnalysis(QString(), &why)) QMessageBox::information(this, tr("Run Parametric Sweep"), why);
+  });
+  sweep->setObjectName(QStringLiteral("rfSweepAction"));
+  sweep->setStatusTip(tr("Solve the model at each value of the parameters its Parametric Sweep varies, and read its quantities at each"));
   a_rf25Menu->addSeparator();
   QAction *hfssExport = a_rf25Menu->addAction(tr("Export HFSS™ 3D Layout…"), this, [this] { exportRf25Hfss(); });
   hfssExport->setObjectName(QStringLiteral("rfHfssExportAction"));
@@ -151,6 +160,8 @@ void QucsApp::updateRf25Menu()
       a->setEnabled(doc != nullptr);
     else if (a->objectName() == QLatin1String("rfConvergeAction"))
       a->setEnabled(doc != nullptr && !doc->isSolving());
+    else if (a->objectName() == QLatin1String("rfSweepAction"))
+      a->setEnabled(doc != nullptr && !doc->isAnalysing() && qucs_s::rf25::sweepNode(doc->model()) != nullptr);
     else if (a->objectName() == QLatin1String("rfCompareAction"))
       a->setEnabled(doc != nullptr && doc->fullWave() && doc->fullWave()->ok());
 }
