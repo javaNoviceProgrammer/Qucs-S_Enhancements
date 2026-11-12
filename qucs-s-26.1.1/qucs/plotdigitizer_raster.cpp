@@ -1529,7 +1529,10 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
         for (int y = 1; y + 1 < h; ++y)
             for (int x = 1; x + 1 < w; ++x) {
                 const float v = dt[size_t(t.at(x, y))];
-                if (v < least || v > 0.75 * typical) continue;
+                // (Up to nearly a marker's width: a ring a line of another
+                // colour runs through, its middle filled by it, is deeper
+                // than a lone one - the open items' A2, Fig. 5's steep side.)
+                if (v < least || v > 0.95 * typical) continue;
                 bool top = true;
                 for (int dy = -1; dy <= 1 && top; ++dy)
                     for (int dx = -1; dx <= 1 && top; ++dx) top = dt[size_t(t.at(x + dx, y + dy))] <= v;
