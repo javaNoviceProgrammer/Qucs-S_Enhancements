@@ -33,6 +33,16 @@ With --merge, the parts run (--only) replace theirs in the results file,
 the others kept. With --baseline, exits 1 when a part (or its bench) that passed there
 fails now, or is missing from the results (the nightly job's regression check). Each server gets
 settings, a home and a workspace of its own in a temporary folder.
+
+The results file is guarded, since the app reads it (an emptied one makes
+every part read as untested). Each of these exits 2 before any part is run,
+and writes nothing:
+- no parts to test (no .lib in the library folder, or none --only names);
+- an --only name that is no library there (said by name);
+- an --only run, without --merge, whose results would go to the library's
+  own ngspice-tested.json (the default --out): it is refused, not merged,
+  since it would drop every other library's outcomes. Pass --merge to
+  replace only the libraries run, or --out to write elsewhere.
 """
 import argparse
 import collections
@@ -444,8 +454,18 @@ def write(document, path):
     for n, (k, v) in enumerate(items):
         lines.append("    %s: %s%s" % (json.dumps(k, ensure_ascii=False), json.dumps(v, ensure_ascii=False), "," if n + 1 < len(items) else ""))
     lines += ["  }", "}"]
-    with open(path, "w", encoding="utf-8") as f:
+    # (Written beside it and renamed over it: a run stopped while writing
+    # leaves the old file whole, not a half one.)
+    partial = path + ".partial"
+    with open(partial, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+    os.replace(partial, path)
+
+
+def refuse(why):
+    """Says why nothing is run, and exits 2 with the results file untouched."""
+    print("test-library-parts: %s - nothing run, nothing written" % why, file=sys.stderr)
+    sys.exit(2)
 
 
 def main():
@@ -463,7 +483,19 @@ def main():
     library = os.path.abspath(args.library)
     out = args.out or os.path.join(library, "ngspice-tested.json")
     only = {s for s in args.only.split(",") if s}
+    if not os.path.isdir(library):
+        refuse("no library folder at %s" % library)
+    libs = {name[:-4] for name in os.listdir(library) if name.endswith(".lib")}
+    unknown = sorted(only - libs)
+    if unknown:
+        refuse("--only names no library in %s: %s" % (library, ", ".join(unknown)))
+    own = os.path.join(library, "ngspice-tested.json")
+    if only and not args.merge and os.path.realpath(out) == os.path.realpath(own):
+        refuse("--only without --merge would write %s with only %s, dropping every other library's outcomes; "
+               "pass --merge to replace only these, or --out FILE to write elsewhere" % (out, ", ".join(sorted(only))))
     todo = parts_of(library, only)
+    if not todo:
+        refuse("no parts to test in %s%s" % (library, " (--only %s)" % ",".join(sorted(only)) if only else ""))
     # A part named twice within one library: every lookup by name finds the
     # first, and the second can never be placed or tested (13 were so, until
     # 30 September). Said, and the run fails at the end.
