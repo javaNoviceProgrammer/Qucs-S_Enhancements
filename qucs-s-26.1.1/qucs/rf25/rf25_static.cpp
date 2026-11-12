@@ -842,6 +842,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     QList<QList<QPair<int, double>>> stripOf;
     Eigen::MatrixXd endOnly;
     QMap<QString, Green> fullGreens;
+    DielectricCorrection whole;
     if (corrected && uniform) {
         QList<Extent> everywhere = control->extents;
         for (Extent& e : everywhere) e.shapes = {QPolygonF(QRectF(-1e7, -1e7, 2e7, 2e7))};
@@ -855,9 +856,22 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             c.z = height.value(mesh.cells.at(k).layer);
             charged << c;
         }
-        const DielectricCorrection whole = dielectricCorrection(all, charged, false, control->stop);
+        whole = dielectricCorrection(all, charged, false, control->stop);
         if (stopped()) return out;
-        endOnly = whole.ok() && whole.delta.size() > 0 ? Eigen::MatrixXd(dielectric.delta - whole.delta) : dielectric.delta;
+        // (Without it no per metre at all: the layer everywhere's
+        //  cross-section with the whole of the correction as drawn added
+        //  counted the layer twice - a 28 µm ridge of thin film under a
+        //  coplanar line read 201 pF/m where the film everywhere is 134.)
+        if (!whole.ok() || whole.delta.size() == 0) {
+            out.lines << tr("No per metre of the line: with a layer that ends it is the cross-section with the layer everywhere "
+                            "and the end's own difference, which wants the correction with the layer drawn everywhere too, and "
+                            "that did not solve - %1 A shorter piece of the line gives its per metre.")
+                             .arg(whole.problems.join(QLatin1Char(' ')));
+            uniform = false;
+        }
+    }
+    if (corrected && uniform) {
+        endOnly = dielectric.delta - whole.delta;
         for (const QString& a : std::as_const(layers))
             for (const QString& b : std::as_const(layers)) {
                 const QString key = keyOf(a, b);

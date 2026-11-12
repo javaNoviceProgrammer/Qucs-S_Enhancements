@@ -48,6 +48,11 @@ current to 1e-5 A.
 
 ## F2: a dielectric that ends
 
+> Tested against the 2D engine the same day, and reworked: the faces' normal field, the panels' grading and
+> coarsening, the walls' rows and a line's per metre. See
+> [2026-11-11-rf25-dielectric-end-review.md](../bug_hunts/2026-11-11-rf25-dielectric-end-review.md). What follows is
+> F2 as it was first committed.
+
 **What the model takes.** A row of the layer map that sends a layer of the file to a dielectric or to the substrate
 gives that layer its extent: it is there only inside those shapes. Beyond them its new **Beyond its shapes**
 permittivity applies, 1 (air) by default. The processing keeps such shapes apart as the layer's extent

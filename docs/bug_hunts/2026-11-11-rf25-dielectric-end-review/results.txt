@@ -1,0 +1,19 @@
+breaks.py run on 11 November against the fixes' tree (Release build), all thirteen; then breaks 4 and 10, not caught,
+run again alone after their tests were made to see them (BRK_ONLY=4, BRK_ONLY=10): caught. Break 5 is not caught: see
+the report's "Tests".
+
+the normal field's paths in one slab not signed                aNormalFieldIsItsPotentialsSlope failed (caught); aThinFilmIsItsStacksOwn failed (caught)
+the normal field's round trip across slabs signed as the way s aNormalFieldIsItsPotentialsSlope failed (caught)
+the normal field without the charge itself on its own plane    aThinFilmIsItsStacksOwn failed (caught); aSubstrateThatEndsIsSolvedByItsReg failed (caught)
+the normal field's table scaled by rho cubed alone             aNormalFieldIsItsPotentialsSlope failed (caught) - run again alone after the test was made to see it
+two rectangles' mean field sampled, not in closed form         aThinFilmIsItsStacksOwn PASSED - NOT CAUGHT
+a metal's cell's mean field over a face's panel sampled        aThinFilmIsItsStacksOwn failed (caught)
+the rectangles' antiderivative without its -w R                aRectanglePairsFieldIsItsClosedFor failed (caught)
+the solid angle's edges without the point's height             aRectanglePairsFieldIsItsClosedFor failed (caught)
+an edge of the region refining as near a conductor, wherever i aThinFilmIsItsStacksOwn failed (caught)
+the panels next to a metal coarsened with the rest             panelsNextToTheConductorsAreNotCoa failed (caught) - run again alone after the test was made to see it
+a wall's rows beginning as fine as the finest cell, not a quar aStripFlushWithItsMesaIsThe2DEngin failed (caught)
+a wall's strips beside a line as long as its cells, not as wid aStripFlushWithItsMesaIsThe2DEngin failed (caught)
+a line per metre with the layer drawn everywhere unsolved: the aSubstrateThatEndsIsSolvedByBothSo failed (caught)
+
+1 of 13 uncaught
