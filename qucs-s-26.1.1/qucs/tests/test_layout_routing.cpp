@@ -43,6 +43,7 @@
 #include "layoutdoc.h"
 #include "layoutrouterpanel.h"
 #include "layoutrouting.h"
+#include "layoutrouter/router.h"
 #include "main.h"
 #include "markup.h"
 #include "misc.h"
@@ -314,6 +315,14 @@ private slots:
         bool unroutable = false;
         for (const QJsonValue& f : o.value("findings").toArray()) unroutable = unroutable || f.toObject().value("kind").toString() == "unroutable";
         QVERIFY(unroutable);
+        // Filtered: by kind (none of another kind), by net.
+        QJsonObject filtered = json(call("route_report", {{"path", chip}, {"what", "findings"}, {"kind", "short"}}));
+        QCOMPARE(filtered.value("matching").toInt(), 0);
+        QVERIFY(filtered.value("findings count").toInt() >= 1);
+        QCOMPARE(filtered.value("by kind").toObject().value("unroutable").toInt(), 1);
+        filtered = json(call("route_report", {{"path", chip}, {"what", "findings"}, {"kind", "unroutable"}, {"net", "lost"}}));
+        QCOMPARE(filtered.value("matching").toInt(), 1);
+        QCOMPARE(json(call("route_report", {{"path", chip}, {"what", "nets"}, {"status", "failed"}})).value("nets").toArray().size(), 1);
         r = call("route_commit", {{"path", chip}, {"in_place", true}});
         QVERIFY(failed(r));
         QVERIFY(text(r).contains("unroutable"));
@@ -324,6 +333,161 @@ private slots:
         o = json(call("route_assign_pads", {{"path", chip}}));
         QVERIFY(o.value("distance after µm").toDouble() <= o.value("distance before µm").toDouble());
         QCOMPARE(o.value("applied").toBool(), false);
+    }
+
+    // Every argument of the six tools, as Claude would use them (the check of
+    // 11 November that the tools cover the router): the format reference and
+    // its example, a technology file and a CSV of nets, a cell and a route
+    // cell, options, a keep-out and a guide from the pen of the open tab, the
+    // terminals with warnings alone, the job read back, filters on nets and
+    // findings, a selected run, a commit of some nets as another cell and its
+    // removal, pads paired and applied, a new job, and a run past its timeout
+    // stopped.
+    void theToolsCoverEveryFeature()
+    {
+        MainGuard guard(app);
+        const QString chip = path("cover.gds");
+        writeChip(chip);
+        // The format, and its example technology reads as it is.
+        QJsonObject f = json(call("route_report", {{"path", chip}, {"what", "format"}}));
+        for (const char* key : {"technology", "net", "terminal", "keep_out", "options", "nets_csv", "example technology", "workflow"})
+            QVERIFY2(f.contains(key), key);
+        {
+            QString e;
+            qucs_s::router::readTechnology(f.value("example technology").toObject(), &e);
+            QVERIFY2(e.isEmpty(), qPrintable(e));
+        }
+        {
+            QFile t(path("cover_tech.json"));
+            QVERIFY(t.open(QIODevice::WriteOnly));
+            t.write(QJsonDocument(technology()).toJson());
+            QFile c(path("cover.csv"));
+            QVERIFY(c.open(QIODevice::WriteOnly));
+            c.write("net,start_x,start_y,pad_x,pad_y,class\nh,0,50,100,50,signal\nv,50,0,50,100,power\n");
+        }
+        LayoutDoc* doc = open(chip);
+        QVERIFY(doc);
+        // Strokes of the pen: a ring round the spare pad, a line up from v's start.
+        qucs_s::markup::Stroke ring;
+        ring.on = doc->view()->drawingPart();
+        ring.width = 0.5;
+        for (int k = 0; k <= 24; ++k) ring.points << QPointF(150 + 12 * std::cos(k * std::numbers::pi / 12), 50 + 12 * std::sin(k * std::numbers::pi / 12));
+        doc->view()->addStroke(ring);
+        qucs_s::markup::Stroke line;
+        line.on = ring.on;
+        line.width = 0.5;
+        line.points = {QPointF(50, 0), QPointF(40, 20), QPointF(40, 80), QPointF(50, 100)};
+        doc->view()->addStroke(line);
+
+        QJsonArray hGuide;
+        for (const auto& [x, y] : {std::pair{0.0, 50.0}, {0.0, 70.0}, {100.0, 70.0}}) hGuide.append(xy(x, y));
+        QJsonArray guides, keeps;
+        guides.append(QJsonObject{{"net", "h"}, {"points", hGuide}, {"band", 6}});
+        guides.append(QJsonObject{{"net", "v"}, {"from_stroke", 2}});
+        keeps.append(QJsonObject{{"from_stroke", 1}, {"box", true}, {"name", "ring"}, {"metals", QJsonArray{"M1", "M2"}}});
+        QJsonObject r = call("route_setup", {{"path", chip}, {"technology", "cover_tech.json"}, {"nets_csv", "cover.csv"}, {"cell", "TOP"},
+                                             {"route_cell", "WIRES"}, {"options", QJsonObject{{"passes", 12}, {"stall_passes", 4}, {"search_weight", 1}}},
+                                             {"keep_outs", keeps}, {"guides", guides}, {"terminals", "warnings"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r);
+        QCOMPARE(o.value("nets").toInt(), 2);
+        QCOMPARE(o.value("keep-outs").toInt(), 1);
+        QCOMPARE(o.value("terminals read").toInt(), 4);
+        QVERIFY(o.value("terminals").toArray().isEmpty());   // none has a warning
+        QCOMPARE(o.value("route cell").toString(), QStringLiteral("WIRES"));
+
+        // The job read back: the CSV's nets with their classes, both guides,
+        // the keep-out as the stroke's box, the options, the technology read.
+        o = json(call("route_report", {{"path", chip}, {"what", "job"}}));
+        const QJsonObject job = o.value("job").toObject();
+        QCOMPARE(job.value("route_cell").toString(), QStringLiteral("WIRES"));
+        QCOMPARE(job.value("cell").toString(), QStringLiteral("TOP"));
+        QCOMPARE(job.value("options").toObject().value("passes").toInt(), 12);
+        QCOMPARE(job.value("technology").toString(), QStringLiteral("cover_tech.json"));
+        const QJsonArray jobNets = job.value("nets").toArray();
+        QCOMPARE(jobNets.size(), 2);
+        QCOMPARE(jobNets.at(1).toObject().value("class").toString(), QStringLiteral("power"));
+        QCOMPARE(jobNets.at(0).toObject().value("guide").toArray().size(), 3);
+        QVERIFY(jobNets.at(1).toObject().value("guide").toArray().size() >= 2);
+        QCOMPARE(job.value("keep_outs").toArray().at(0).toObject().value("outline").toArray().size(), 4);
+        QCOMPARE(o.value("technology read").toObject().value("name").toString(), QStringLiteral("two metals"));
+        QCOMPARE(o.value("routes").toString(), QStringLiteral("none yet"));
+
+        r = call("route_run", {{"path", chip}, {"mode", "all"}});
+        o = json(r);
+        QVERIFY2(o.value("clean").toBool(), qPrintable(text(r)));
+        QCOMPARE(json(call("route_report", {{"path", chip}, {"what", "nets"}, {"status", "routed"}})).value("nets").toArray().size(), 2);
+        QCOMPARE(json(call("route_report", {{"path", chip}, {"what", "nets"}, {"status", "failed"}})).value("nets").toArray().size(), 0);
+        o = json(call("route_report", {{"path", chip}, {"what", "findings"}, {"kind", "short"}, {"net", "h"}}));
+        QCOMPARE(o.value("matching").toInt(), 0);
+        QVERIFY(o.value("by kind").isObject());
+        QCOMPARE(json(call("route_report", {{"path", chip}, {"what", "job"}})).value("routes").toString(), QStringLiteral("of this job"));
+        QCOMPARE(json(call("route_report", {{"path", chip}, {"what", "terminals"}, {"terminals", "all"}})).value("terminals").toArray().size(), 4);
+        QVERIFY(json(call("route_report", {{"path", chip}, {"what", "crowding"}})).value("crowded").isArray());
+
+        // One net again, the other kept.
+        o = json(call("route_run", {{"path", chip}, {"mode", "selected"}, {"nets", QJsonArray{"v"}}}));
+        QCOMPARE(o.value("kept from the last run").toInt(), 1);
+        QCOMPARE(o.value("clean").toBool(), true);
+
+        // h alone, as the cell WIRES, then that cell taken away.
+        r = call("route_commit", {{"path", chip}, {"in_place", true}, {"cell", "WIRES"}, {"nets", QJsonArray{"h"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("nets").toInt(), 1);
+        QString error;
+        auto back = read(chip, &error);
+        QVERIFY2(back && back->cellIndex("WIRES") >= 0, qPrintable(error));
+        r = call("route_commit", {{"path", chip}, {"in_place", true}, {"cell", "WIRES"}, {"remove", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        back = read(chip, &error);
+        QVERIFY(back && back->cellIndex("WIRES") < 0);
+
+        // Pads paired among those given, one kept by hand, applied: the same
+        // pads, so nothing changed and the routes stay current.
+        QJsonArray pads;
+        pads.append(xy(100, 50));
+        pads.append(xy(50, 100));
+        o = json(call("route_assign_pads", {{"path", chip}, {"nets", QJsonArray{"h", "v"}}, {"pads", pads}, {"fixed", QJsonObject{{"h", xy(100, 50)}}}, {"apply", true}}));
+        QCOMPARE(o.value("applied").toBool(), true);
+        QCOMPARE(o.value("pairs").toArray().at(0).toObject().value("pad").toArray(), xy(100, 50));
+        QCOMPARE(json(call("route_report", {{"path", chip}})).value("state").toString(), QStringLiteral("done"));
+
+        // A new job: the keep-out and guides gone.
+        QJsonArray fresh, freshPad;
+        freshPad.append(xy(100, 50));
+        fresh.append(QJsonObject{{"name", "h"}, {"start", xy(0, 50)}, {"pads", freshPad}});
+        o = json(call("route_setup", {{"path", chip}, {"clear", true}, {"technology", technology()}, {"nets", fresh}, {"terminals", "none"}}));
+        QCOMPARE(o.value("keep-outs").toInt(), 0);
+        QCOMPARE(o.value("nets").toInt(), 1);
+        QVERIFY(!o.contains("terminals"));
+        QVERIFY(json(call("route_report", {{"path", chip}, {"what", "job"}})).value("job").toObject().value("nets").toArray().at(0).toObject().value("guide").isUndefined());
+
+        // A run past its timeout: said to be running, then stopped. (Whether
+        // it is still running after a second depends on the machine: either
+        // answer is checked for what it should hold.)
+        QJsonArray many;
+        for (int i = 0; i < 24; ++i) {
+            QJsonArray pad;
+            pad.append(xy(120, -60 + 5 * ((i * 7) % 24)));
+            many.append(QJsonObject{{"name", QStringLiteral("m%1").arg(i)}, {"start", xy(-20, -60 + 5 * i)}, {"pads", pad}});
+        }
+        QJsonObject fine = technology();
+        fine.insert("grid", 0.25);
+        call("route_setup", {{"path", chip}, {"clear", true}, {"technology", fine}, {"nets", many}, {"terminals", "none"}});
+        o = json(call("route_run", {{"path", chip}, {"mode", "all"}, {"timeout", 1}}));
+        if (o.value("state").toString() == QLatin1String("running")) {
+            QVERIFY(o.value("passes so far").isArray());
+            QVERIFY(json(call("route_report", {{"path", chip}, {"what", "passes"}})).value("passes").isArray());
+            o = json(call("route_stop", {{"path", chip}, {"timeout", 120}}));
+            QCOMPARE(o.value("ended").toBool(), true);
+            QVERIFY(!o.value("stopped").toString().isEmpty());
+        } else {
+            QCOMPARE(o.value("state").toString(), QStringLiteral("done"));
+        }
+        // No finding is ever wrong, stopped or not: only nets not routed.
+        o = json(call("route_report", {{"path", chip}, {"what", "findings"}, {"max", 5000}}));
+        for (const QJsonValue& v : o.value("findings").toArray())
+            QVERIFY2(v.toObject().value("kind").toString() == QLatin1String("unroutable"), qPrintable(v.toObject().value("text").toString()));
     }
 
     // The tab's Route panel: technology, nets clicked, a pen ring a
