@@ -566,6 +566,14 @@ struct Source::Text {
     QHash<int, QRectF> boxes;
     QHash<qint64, QRectF> words;   // by start << 20 | length
     int calls = 0;
+    // What is left of the page's calls to pdfium (-1: no end). QtPdf loads
+    // the page again at each: a page of a million and a half points of paths
+    // - a scatter of 60,000 markers - took 0.23 s a call, 42 s for one
+    // plot's labels. So a heavy page has calls in inverse proportion to its
+    // weight, some 15 s of them at most (the robustness hunt's R1).
+    int budget = -1;
+    bool frugal = false;   // a heavy page: every word by its box, one call each
+    bool cut = false;      // some went unasked
 };
 
 Source::Source(QPdfDocument* pdf, const QString& file) : a_pdf(pdf)
@@ -582,6 +590,12 @@ Source::Source(QPdfDocument* pdf, const QString& file) : a_pdf(pdf)
 Source::~Source() = default;
 
 bool Source::hasVectors() const { return a_reader != nullptr; }
+
+bool Source::textCut(int page) const
+{
+    const auto t = a_text.constFind(page);
+    return t != a_text.cend() && (*t)->cut;
+}
 
 const pdf::vec::Graphics& Source::graphics(int page)
 {
@@ -644,17 +658,37 @@ QList<Token> Source::tokens(int page, const QRectF& within)
     auto have = a_text.find(page);
     if (have == a_text.end()) {
         auto t = std::make_shared<Text>();
+        if (a_reader != nullptr) {
+            qint64 weight = 0;
+            for (const pdf::vec::Path& p : graphics(page).paths) {
+                weight += 16;
+                for (const pdf::vec::Part& part : p.parts) weight += part.points.size();
+            }
+            // (About 150 ns a point a call: 1e8 is 15 s. A paper's page of
+            // plots weighs 5,000 to 70,000: 1,400 calls and more, two
+            // plots of Chen et al.'s page 14 (60,000) asking 585.)
+            if (weight > 0) t->budget = int(std::clamp<qint64>(qint64(1e8) / weight, 32, 1000000));
+            // (Past a million points, a short label read as a word: its
+            // characters a call each would take the calls of all the rest.
+            // A power of ten raised in one is lost: "5x1014".)
+            t->frugal = t->budget >= 0 && t->budget < 100;
+        }
         const QPdfSelection all = a_pdf->getAllText(page);
         t->all = all.text();
         for (const QPolygonF& run : all.bounds()) t->runs << run.boundingRect();
         const int n = int(t->all.size());
-        for (int i = 0; i < std::min(n, 64) && t->first < 0; ++i)
+        const auto spendFirst = [&] {
+            if (t->budget == 0) return t->cut = true, false;
+            if (t->budget > 0) --t->budget;
+            return true;
+        };
+        for (int i = 0; i < std::min(n, 64) && t->first < 0 && spendFirst(); ++i)
             if (const QRectF b = a_pdf->getSelectionAtIndex(page, i, 1).boundingRectangle(); !b.isEmpty()) {
                 t->first = i;
                 t->firstAt = b.center();
                 t->boxes.insert(i, b);
             }
-        for (int i = n - 1; i >= std::max(t->first + 1, n - 64) && t->last < 0; --i)
+        for (int i = n - 1; i >= std::max(t->first + 1, n - 64) && t->last < 0 && spendFirst(); --i)
             if (const QRectF b = a_pdf->getSelectionAtIndex(page, i, 1).boundingRectangle(); !b.isEmpty()) {
                 t->last = i;
                 t->lastAt = b.center();
@@ -674,11 +708,16 @@ QList<Token> Source::tokens(int page, const QRectF& within)
             lastRun = i;
         }
     if (firstRun < 0) return out;
+    const auto spend = [&] {
+        if (t.budget == 0) return t.cut = true, false;
+        if (t.budget > 0) --t.budget;
+        return true;
+    };
     const auto hit = [&](QPointF point) -> int {
-        if (t.first < 0) return -1;
+        if (t.first < 0 || !spend()) return -1;
         QPdfSelection s = a_pdf->getSelection(page, t.firstAt, point);
         if (s.isValid() && s.endIndex() > t.first) return s.endIndex();
-        if (t.last > t.first) {
+        if (t.last > t.first && spend()) {
             s = a_pdf->getSelection(page, point, t.lastAt);
             if (s.isValid() && s.startIndex() >= t.first && s.startIndex() < t.last) return s.startIndex();
         }
@@ -700,6 +739,7 @@ QList<Token> Source::tokens(int page, const QRectF& within)
     }
     const auto boxOf = [&](int i) {
         if (const auto b = t.boxes.constFind(i); b != t.boxes.cend()) return *b;
+        if (!spend()) return QRectF();
         const QRectF b = a_pdf->getSelectionAtIndex(page, i, 1).boundingRectangle();
         t.boxes.insert(i, b);
         return b;
@@ -731,11 +771,14 @@ QList<Token> Source::tokens(int page, const QRectF& within)
             // (Short ones - most tick labels - are as cheap by their characters;
             // and the text may run two lines together with nothing between,
             // which a word's box taller than its first letter shows.)
-            if (word.size() > 3 && (!word.contains(maybeRaised) || word.size() > 12)) {
+            if (t.frugal || (word.size() > 3 && (!word.contains(maybeRaised) || word.size() > 12))) {
                 const qint64 key = (qint64(i) << 20) | qint64(e - i + 1);
                 QRectF b;
                 if (const auto have = t.words.constFind(key); have != t.words.cend()) b = *have;
-                else {
+                else if (!spend()) {
+                    i = e;
+                    continue;
+                } else {
                     b = a_pdf->getSelectionAtIndex(page, i, e - i + 1).boundingRectangle();
                     t.words.insert(key, b);
                 }
@@ -1552,6 +1595,8 @@ QList<Plot> findPlots(Source& source, int page, const QRectF& within)
                 marksInPicture(*way.picture, box, &shortV, &shortH);
             }
             readAxes(plot, tokens, shortV, shortH, v, h);
+            if (source.textCut(page))
+                plot.notes << tr("The page is so heavy with paths that its text was read only in part: labels may be missing. 'references', or 'x_range' and 'y_range', calibrate it.");
             plot.region = (way.work.isIdentity() ? box : way.work.inverted().mapRect(box)).adjusted(-60, -20, 15, 50).intersected(whole);
             int labelled = 0;
             for (const Tick& t : std::as_const(plot.xAxis.ticks)) labelled += t.used;

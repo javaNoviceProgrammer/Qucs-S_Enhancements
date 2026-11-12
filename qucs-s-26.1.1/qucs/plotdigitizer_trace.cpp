@@ -1490,8 +1490,12 @@ bool traceFrom(Source& source, Plot& plot, QPointF seed, Series* out, QString* w
     return traceRaster(source, plot, seed, options != nullptr ? *options : Options{}, out, why);
 }
 
-bool extract(Source& source, Plot& plot, const Options& options, QString* why)
+bool extract(Source& source, Plot& plot, const Options& asked, QString* why)
 {
+    // (Any count asked: INT_MAX's six times overflowed, a negative one
+    // counted more left out than found - the robustness hunt's R2.)
+    Options options = asked;
+    options.maxSeries = std::clamp(options.maxSeries, 1, 1000);
     plot.series.clear();
     plot.seriesLeftOut = 0;
     plot.annotations.clear();
