@@ -875,6 +875,108 @@ private slots:
         QCOMPARE(view->drawing().strokes().size(), 1);
     }
 
+    // The PDF open items' C2: screenshot's area screen right after a zoom
+    // came back blurred - one paint draws no tile while a zoom settles, and
+    // only what fits in its time after. Now the tiles in sight are drawn
+    // first.
+    void aScreenshotWaitsForTheTiles()
+    {
+        PdfDoc* doc = pdf();
+        PageView* view = doc->view();
+        auto* control = app->findChild<QucsControl*>();
+        QVERIFY(control != nullptr);
+        view->setZoom(1.0);
+        view->goToPage(0);
+        QApplication::processEvents();
+        view->zoomSmoothly(1.37);   // a zoom no tile has been drawn at
+        QVERIFY(view->zooming() || view->tilesMissingInSight() > 0);
+        const QJsonObject r = control->callNow("screenshot", {{"area", "screen"}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        QVERIFY(!view->zooming());
+        QCOMPARE(view->tilesMissingInSight(), 0);
+        QVERIFY2(!QucsControl::textOf(r).contains("still being drawn"), qPrintable(QucsControl::textOf(r)));
+        view->setZoom(1.0);
+    }
+
+    // The PDF open items' C1: the foot of each page cut off in the tab.
+    // Not seen again; kept so: pages whose ink runs to the bottom edge - a
+    // letter page, slides, a media box below nought, a crop box inside its
+    // media box - show their last 24 points whole.
+    void aPagesFootIsShownWhole()
+    {
+        struct Page {
+            QList<int> media, crop;
+        };
+        const QList<Page> pages{{{0, 0, 612, 792}, {}}, {{0, 0, 720, 540}, {}}, {{0, -100, 720, 440}, {}}, {{0, 0, 720, 640}, {0, 50, 720, 590}}};
+        QList<QByteArray> objects{QByteArray(), QByteArray()};
+        QList<int> kids;
+        for (const Page& p : pages) {
+            const QList<int>& box = p.crop.isEmpty() ? p.media : p.crop;
+            const int w = box[2] - box[0];
+            const QByteArray content = QStringLiteral("1 0 0 rg %1 %2 %3 12 re f 0 0 1 rg %1 %4 %3 12 re f").arg(box[0]).arg(box[1]).arg(w).arg(box[1] + 12).toLatin1();
+            objects << "<< /Length " + QByteArray::number(content.size()) + " >>\nstream\n" + content + "\nendstream";
+            const auto list = [](const QList<int>& v) {
+                QByteArray out = "[";
+                for (int x : v) out += QByteArray::number(x) + ' ';
+                return out.trimmed() + ']';
+            };
+            objects << "<< /Type /Page /Parent 2 0 R /MediaBox " + list(p.media) + (p.crop.isEmpty() ? QByteArray() : " /CropBox " + list(p.crop)) +
+                           " /Contents " + QByteArray::number(objects.size()) + " 0 R >>";
+            kids << int(objects.size());
+        }
+        objects[0] = "<< /Type /Catalog /Pages 2 0 R >>";
+        QByteArray k;
+        for (int id : kids) k += QByteArray::number(id) + " 0 R ";
+        objects[1] = "<< /Type /Pages /Kids [" + k.trimmed() + "] /Count " + QByteArray::number(kids.size()) + " >>";
+        QByteArray bytes = "%PDF-1.4\n";
+        QList<qsizetype> offsets;
+        for (int i = 0; i < objects.size(); ++i) {
+            offsets << bytes.size();
+            bytes += QByteArray::number(i + 1) + " 0 obj\n" + objects.at(i) + "\nendobj\n";
+        }
+        const qsizetype xref = bytes.size();
+        bytes += "xref\n0 " + QByteArray::number(objects.size() + 1) + "\n0000000000 65535 f \n";
+        for (qsizetype o : offsets) bytes += QByteArray::number(o).rightJustified(10, '0') + " 00000 n \n";
+        bytes += "trailer\n<< /Size " + QByteArray::number(objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+        const QString feet = dir.filePath("feet.pdf");
+        {
+            QFile f(feet);
+            QVERIFY(f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size());
+        }
+        QVERIFY(app->gotoPage(feet));
+        PdfDoc* doc = pdf();
+        // (Closed after: the probe in front, as the tests after have it.)
+        const auto back = qScopeGuard([this, doc] {
+            app->slotFileClose(app->DocumentTab->indexOf(doc));
+            app->gotoPage(file);
+        });
+        QVERIFY(doc != nullptr && doc->problem().isEmpty());
+        QCOMPARE(doc->pageCount(), int(pages.size()));
+        PageView* view = doc->view();
+        view->setZoom(1.0);
+        for (int i = 0; i < pages.size(); ++i) {
+            const QSizeF size = doc->document()->pagePointSize(i);
+            view->goToPage(i, QPointF(0, size.height() - 60));
+            QApplication::processEvents();
+            QCOMPARE(view->renderInSight(5000), 0);
+            const QImage shot = view->viewport()->grab().toImage();
+            const qreal dpr = shot.devicePixelRatio();
+            const QRect r = view->pageRect(i);
+            const qreal ppp = view->pixelsPerPoint();
+            const auto at = [&](qreal fromBottom) {
+                return shot.pixelColor((QPointF(r.center().x(), r.top() + (size.height() - fromBottom) * ppp) * dpr).toPoint());
+            };
+            const QColor red = at(6), blue = at(18), white = at(36);
+            QVERIFY2(red.red() > 200 && red.green() < 60 && red.blue() < 60, qPrintable(QStringLiteral("page %1: %2").arg(i + 1).arg(red.name())));
+            QVERIFY2(blue.blue() > 200 && blue.red() < 60, qPrintable(QStringLiteral("page %1: %2").arg(i + 1).arg(blue.name())));
+            QVERIFY2(white.lightness() > 240, qPrintable(QStringLiteral("page %1: %2").arg(i + 1).arg(white.name())));
+            // (QtPdf's clipped render puts ink up to 2 pixels above where the
+            // whole page's has it: the last point is not looked at.)
+            const QColor last = at(3);
+            QVERIFY2(last.red() > 200 && last.green() < 60, qPrintable(QStringLiteral("page %1, 3 points from its foot: %2").arg(i + 1).arg(last.name())));
+        }
+    }
+
     // A link to the web: opened (here, caught); the hand over it.
     void linksAreFollowed()
     {

@@ -1737,8 +1737,16 @@ Trust assess(const Plot& plot)
         for (const double l : std::as_const(lengths)) scraps += l < 0.1 * longest;
         if (lengths.size() >= 4 && scraps * 2 >= lengths.size())
             lower(0, tr("%1 of the %2 curves are scraps beside the longest: much of this may not be data. Look at the picture; 'exclude', 'colours' or 'seeds' narrow it.").arg(scraps).arg(lengths.size()));
-        else if (plot.series.size() > 10)
-            lower(1, tr("%1 series were found: more than most plots have. Look at the picture.").arg(plot.series.size()));
+        else {
+            // (Curves the plot's own arrows name are known for what they are.)
+            int unknown = 0;
+            for (const Series& s : plot.series) {
+                bool named = false;
+                for (const Annotation& n : plot.annotations) named = named || n.names.contains(s.name);
+                unknown += !named;
+            }
+            if (unknown > 10) lower(1, tr("%1 series were found: more than most plots have. Look at the picture.").arg(plot.series.size()));
+        }
     }
     // A line of the colour of a set of markers that runs along them may be
     // what is left of the markers, not a curve of its own (a picture's rows of
@@ -1922,25 +1930,42 @@ QByteArray dataset(const Plot& plot, QStringList* variables)
         return name;
     };
     const auto write = [&](const QString& name, const QList<QPointF>& points) {
+        // (A gap's NaN as "nan": what the dataset's reader, strtod, takes.)
+        const auto value = [](double v) { return std::isfinite(v) ? number(v).toUtf8() : QByteArray("nan"); };
         const QByteArray y = name.toUtf8(), x = y + "_x";
         out += "<indep " + x + ' ' + QByteArray::number(points.size()) + ">\n";
-        for (const QPointF& p : points) out += "  " + number(p.x()).toUtf8() + '\n';
+        for (const QPointF& p : points) out += "  " + value(p.x()) + '\n';
         out += "</indep>\n<dep " + y + ' ' + x + ">\n";
-        for (const QPointF& p : points) out += "  " + number(p.y()).toUtf8() + '\n';
+        for (const QPointF& p : points) out += "  " + value(p.y()) + '\n';
         out += "</dep>\n";
         if (variables != nullptr) *variables << name;
     };
+    // Each series' own name first, all of them, its pieces' after: a
+    // series' name does not hang on another having gaps.
+    QList<Written> written;
+    QStringList names;
     for (const Series& s : plot.series) {
-        const Written w = writtenOf(plot, s);
+        written << writtenOf(plot, s);
+        names << (written.last().points.isEmpty() ? QString() : unique(variableName(s.name)));
+    }
+    for (int si = 0; si < plot.series.size(); ++si) {
+        const Written& w = written.at(si);
         if (w.points.isEmpty()) continue;
-        const QString name = unique(variableName(s.name));
-        // A series with gaps: a variable for each piece, NAME_1, NAME_2...,
-        // for a diagram draws a straight line across what is not there.
-        const int pieces = w.piece.last();
-        if (pieces == 1) {
-            write(name, w.points);
-            continue;
+        const QString name = names.at(si);
+        // Every series as NAME over NAME_x, all of it, whether it has gaps
+        // or not - a diagram tracing it keeps working when the plot is done
+        // again (the PDF open items' A1). A gap is a NaN between its pieces,
+        // halfway across it, where a diagram ends the line.
+        QList<QPointF> all;
+        for (int k = 0; k < w.points.size(); ++k) {
+            if (k > 0 && w.piece.at(k) != w.piece.at(k - 1))
+                all << QPointF((w.points.at(k - 1).x() + w.points.at(k).x()) / 2, std::numeric_limits<double>::quiet_NaN());
+            all << w.points.at(k);
         }
+        write(name, all);
+        // With gaps, each piece too, NAME_1, NAME_2... (as before).
+        const int pieces = w.piece.last();
+        if (pieces == 1) continue;
         for (int piece = 1, k = 0; piece <= pieces; ++piece) {
             QList<QPointF> part;
             for (; k < w.points.size() && w.piece.at(k) == piece; ++k) part << w.points.at(k);
@@ -2174,6 +2199,22 @@ QJsonObject toJson(const Plot& plot)
         series.append(item);
     }
     o.insert(QStringLiteral("series"), series);
+    if (!plot.annotations.isEmpty()) {
+        QJsonArray notes;
+        for (const Annotation& a : plot.annotations) {
+            QJsonArray pts;
+            for (const QPointF& p : a.points) {
+                pts.append(p.x());
+                pts.append(p.y());
+            }
+            QJsonObject item{{QStringLiteral("kind"), a.kind == Annotation::Kind::Ellipse ? QStringLiteral("ellipse") : QStringLiteral("arrow")},
+                             {QStringLiteral("points"), pts}};
+            if (!a.text.isEmpty()) item.insert(QStringLiteral("text"), a.text);
+            if (!a.names.isEmpty()) item.insert(QStringLiteral("names"), QJsonArray::fromStringList(a.names));
+            notes.append(item);
+        }
+        o.insert(QStringLiteral("annotations"), notes);
+    }
     if (!plot.asked.isEmpty()) o.insert(QStringLiteral("asked"), plot.asked);
     return o;
 }
@@ -2289,6 +2330,24 @@ bool fromJson(const QJsonObject& o, Plot* out, QString* why)
         const double agreement = item.value(QLatin1String("agreement")).toDouble(-1);
         if (std::isfinite(agreement) && agreement >= 0 && agreement <= 1) s.agreement = agreement;
         plot.series << s;
+    }
+    const QJsonArray annotations = o.value(QLatin1String("annotations")).toArray();
+    if (annotations.size() > kMostSeriesKept) return fail(tr("A plot has too many annotations."));
+    for (const QJsonValue& v : annotations) {
+        const QJsonObject item = v.toObject();
+        Annotation a;
+        a.kind = item.value(QLatin1String("kind")).toString() == QLatin1String("ellipse") ? Annotation::Kind::Ellipse : Annotation::Kind::Arrow;
+        const QJsonArray pts = item.value(QLatin1String("points")).toArray();
+        if (pts.size() % 2 != 0 || pts.size() > 2 * 4096) return fail(tr("An annotation's points do not come in pairs."));
+        for (qsizetype i = 0; i + 1 < pts.size(); i += 2) {
+            const double x = pts.at(i).toDouble(kNaN), y = pts.at(i + 1).toDouble(kNaN);
+            if (!sensibleCoordinate(x) || !sensibleCoordinate(y)) return fail(tr("An annotation's point is not a number."));
+            a.points << QPointF(x, y);
+        }
+        a.text = item.value(QLatin1String("text")).toString().left(400);
+        for (const QJsonValue& n : item.value(QLatin1String("names")).toArray())
+            if (a.names.size() < 64) a.names << n.toString().left(200);
+        plot.annotations << a;
     }
     // (What the call asked for: kept as it came, for reading - small.)
     const QJsonObject asked = o.value(QLatin1String("asked")).toObject();
