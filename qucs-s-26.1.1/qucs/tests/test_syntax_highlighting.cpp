@@ -39,6 +39,7 @@
 #include "dialogs/qucssettingsdialog.h"
 #include "dialogs/syntaxsettings.h"
 #include "extsimkernels/spicecompat.h"
+#include "ink.h"
 #include "isolated_settings.h"
 
 using qucs_s::syntax::Format;
@@ -527,6 +528,53 @@ private slots:
         QCOMPARE(h.styleAt(41, "a#b"), as(Style::Key));
         QCOMPARE(h.styleAt(41, "-x"), -1);   // a word, not a sequence's entry
 
+        // A node tagged a string is a string, whatever it looks like; the
+        // tag is the node's alone.
+        const Highlighted tagged(LANG_YAML,
+                                 "a: !!str 42\n"
+                                 "b: !<tag:yaml.org,2002:str> true\n"
+                                 "c: !custom 42\n"
+                                 "- !!str 1\n"
+                                 "- 2\n"
+                                 "[!!str 3, 4]\n");
+        QCOMPARE(tagged.styleAt(0, "!!str"), as(Style::Type));
+        QCOMPARE(tagged.styleAt(0, "42"), -1);
+        QCOMPARE(tagged.styleAt(1, "true"), -1);
+        QCOMPARE(tagged.styleAt(2, "42"), as(Style::Number));   // another tag: as it looks
+        QCOMPARE(tagged.styleAt(3, "1"), -1);
+        QCOMPARE(tagged.styleAt(4, "2"), as(Style::Number));
+        QCOMPARE(tagged.styleAt(5, "3"), -1);
+        QCOMPARE(tagged.styleAt(5, "4"), as(Style::Number));
+
+        // An empty key ends there, as a key before its ':' does: its tag
+        // is not its value's (!!str : 42, the spec's example 7.2), and a
+        // block scalar after it, or after a "? " key's ':', is under its
+        // column - the lines back at that column are keys again.
+        const Highlighted flowEmpty(LANG_YAML, "{ !!str : 42 }\n");
+        QCOMPARE(flowEmpty.styleAt(0, "!!str"), as(Style::Type));
+        QCOMPARE(flowEmpty.styleAt(0, "42"), as(Style::Number));
+        const Highlighted empty(LANG_YAML,
+                                "!!str : 43\n"          // 0
+                                "? |\n"                 // 1
+                                "  block key\n"         // 2
+                                ": |\n"                 // 3
+                                "  block value\n"       // 4
+                                "next: 1\n"             // 5
+                                "!!str : |\n"           // 6
+                                "  empty key's text\n"  // 7
+                                "sibling: 2\n");        // 8
+        QCOMPARE(empty.styleAt(0, "43"), as(Style::Number));
+        QCOMPARE(empty.styleAt(1, "?"), as(Style::Builtin));
+        QCOMPARE(empty.styleAt(2, "block key"), as(Style::String));
+        QCOMPARE(empty.styleAt(3, ":"), as(Style::Builtin));
+        QCOMPARE(empty.styleAt(3, "|"), as(Style::Builtin));
+        QCOMPARE(empty.styleAt(4, "block value"), as(Style::String));
+        QCOMPARE(empty.styleAt(5, "next"), as(Style::Key));
+        QCOMPARE(empty.styleAt(5, "1"), as(Style::Number));
+        QCOMPARE(empty.styleAt(7, "empty key's text"), as(Style::String));
+        QCOMPARE(empty.styleAt(8, "sibling"), as(Style::Key));
+        QCOMPARE(empty.styleAt(8, "2"), as(Style::Number));
+
         // The block scalar taken away: its lines are keys and comments again;
         // put back, text again.
         h.replace(21, "|-", "x");
@@ -539,6 +587,30 @@ private slots:
         QCOMPARE(h.styleAt(5, "\""), as(Style::String));   // the quote that closes it
         h.replace(4, "\"amp", "amp");
         QCOMPARE(h.styleAt(5, "\"quoted key\""), as(Style::Key));
+    }
+
+    // YAML's escapes stand apart from the strings they are in, on white
+    // and on dark paper, where a colour keeps its hue and gets lighter:
+    // they had the strings' dark red hue, and came out one pink with them.
+    // The style is YAML's alone: Verilog-A's scale factors keep theirs.
+    void yamlEscapesStandApartFromItsStrings()
+    {
+        using namespace qucs_s::syntax;
+        SyntaxGuard guard;
+        QucsSettings.SyntaxFormats.clear();
+        const auto hueApart = [](const QColor& a, const QColor& b) {
+            const double d = std::abs(a.toHsl().hslHueF() - b.toHsl().hslHueF()) * 360.0;
+            return std::min(d, 360.0 - d);
+        };
+        const QColor escape = format(LANG_YAML, Style::Unit).colour, string = format(LANG_YAML, Style::String).colour;
+        QVERIFY2(hueApart(escape, string) >= 20.0, qPrintable(escape.name() + " " + string.name()));
+        {
+            const qucs_s::ink::Paper dark(qucs_s::ink::darkPaperColour());
+            const QColor darkEscape = qucs_s::ink::on(escape), darkString = qucs_s::ink::on(string);
+            QVERIFY2(hueApart(darkEscape, darkString) >= 20.0, qPrintable(darkEscape.name() + " " + darkString.name()));
+        }
+        QVERIFY(format(LANG_VERILOGA, Style::Unit) != format(LANG_YAML, Style::Unit));
+        QCOMPARE(format(LANG_VERILOGA, Style::Unit), format(LANG_VHDL, Style::Unit));
     }
 
     // Every language that has styles has a sample that shows each of them.
