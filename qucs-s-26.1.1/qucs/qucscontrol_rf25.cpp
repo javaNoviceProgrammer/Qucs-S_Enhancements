@@ -30,6 +30,7 @@
 #include "rf25/rf25_sparams.h"
 #include "rf25/rf25_static.h"
 #include "rf25doc.h"
+#include "rf25/rf25_optimize.h"
 
 #include <QCoreApplication>
 #include <QFileInfo>
@@ -38,6 +39,8 @@
 #include <QJsonObject>
 #include <QPointer>
 #include <QScopeGuard>
+
+#include <functional>
 
 using namespace qucs_s::rf25;
 using namespace qucs_s::control;
@@ -808,6 +811,17 @@ QJsonObject QucsControl::rf25Stop(const QJsonObject& args)
     const RF25Doc::Held held(model);
     const QString heldName = QFileInfo(model->getDocName()).fileName();
     const QString name = QFileInfo(model->getDocName()).fileName();
+    // A Parametric Sweep or an Optimization running: stopped, keeping what it has.
+    if (model->isAnalysing()) {
+        QString said;
+        model->analysisRunning(nullptr, nullptr, &said);
+        model->stopAnalysis();
+        const int timeout = waitsFor(QStringLiteral("rf25_stop"), args);
+        const bool ended = model->waitForAnalysis(timeout * 1000);
+        if (model->closedWhenFree()) return closedWhileWaited(heldName);
+        if (!ended) return errorResult(tr("Asked to stop, still at work after %1 s: it stops once its solves under way do (rf25_stop again waits more).").arg(timeout));
+        return jsonResult(QJsonObject{{QStringLiteral("stopped"), true}, {QStringLiteral("note"), tr("Stopped %1; what it found so far is kept.").arg(said)}});
+    }
     if (!model->isSolving() && model->solvesAtWork() == 0)
         return jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
                                       {QStringLiteral("note"), tr("Nothing is solving in %1.").arg(name)}});
@@ -1748,4 +1762,233 @@ QJsonObject QucsControl::rf25Compare(const QJsonObject& args)
         result.insert(QStringLiteral("table"), where);
     }
     return jsonResult(result);
+}
+
+// ---------------------------------------------------------------- Analyses
+
+namespace {
+
+/// \a text as a node of \a m: by tag, else by label, else - one of its kind
+/// alone in the model - by its kind (\"analyses\", \"rf_shapes\", \"Shapes\").
+const qucs_s::rf25::Node* nodeNamed(const qucs_s::rf25::Model& m, const QString& text)
+{
+    if (const qucs_s::rf25::Node* n = m.find(text)) return n;
+    const qucs_s::rf25::Node* byLabel = nullptr;
+    QList<const qucs_s::rf25::Node*> byKind;
+    std::function<void(const qucs_s::rf25::Node&)> walk = [&](const qucs_s::rf25::Node& n) {
+        if (byLabel == nullptr && n.label == text) byLabel = &n;
+        const qucs_s::rf25::NodeKind* kind = qucs_s::rf25::kindOf(n);
+        if (n.type == text || n.type == QLatin1String("rf_") + text || (kind != nullptr && kind->title.compare(text, Qt::CaseInsensitive) == 0))
+            byKind << &n;
+        for (const qucs_s::rf25::Node& c : n.children) walk(c);
+    };
+    walk(m.root);
+    if (byLabel != nullptr) return byLabel;
+    return byKind.size() == 1 ? byKind.first() : nullptr;
+}
+
+QJsonValue number(double v)
+{
+    return std::isfinite(v) ? QJsonValue(v) : QJsonValue();
+}
+
+} // namespace
+
+RF25Doc* QucsControl::rf25ModelOf(const QJsonObject& args, const QString& tool, QString* why)
+{
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    QucsDoc* doc = a_app->getDoc();
+    if (!path.isEmpty()) {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) {
+            *why = opened.value(QStringLiteral("content")).toArray().first().toObject().value(QStringLiteral("text")).toString();
+            return nullptr;
+        }
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        *why = tr("%1 is no RF 2.5D model (.qrf25): %2 is a planar structure's.")
+                   .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing open"), tool);
+    return model;
+}
+
+QJsonObject QucsControl::rf25Edit(const QJsonObject& args)
+{
+    QString why;
+    RF25Doc* doc = rf25ModelOf(args, QStringLiteral("rf25_edit"), &why);
+    if (doc == nullptr) return errorResult(why);
+    namespace rf = qucs_s::rf25;
+    const QString action = args.value(QLatin1String("action")).toString();
+    rf::Model m = doc->model();
+    // The properties given: each one the kind has, a null its default again.
+    const auto setProperties = [&args, &why](rf::Node& n) {
+        const rf::NodeKind* kind = rf::kindOf(n);
+        const QJsonObject given = args.value(QLatin1String("properties")).toObject();
+        for (auto it = given.begin(); it != given.end(); ++it) {
+            if (kind == nullptr || kind->property(it.key()) == nullptr) {
+                QStringList keys;
+                if (kind != nullptr)
+                    for (const rf::PropertyDef& p : kind->properties) keys << p.key;
+                why = tr("%1 has no property '%2' - its kind's are: %3").arg(n.type, it.key(), keys.isEmpty() ? tr("none") : keys.join(QStringLiteral(", ")));
+                return false;
+            }
+            if (it.value().isNull()) n.props.remove(it.key());
+            else n.props.insert(it.key(), it.value());
+        }
+        return true;
+    };
+    QString tag, did;
+    if (action == QLatin1String("add")) {
+        const QString type = args.value(QLatin1String("type")).toString().trimmed();
+        if (rf::nodeKind(type) == nullptr) return errorResult(tr("There is no kind of node '%1' (fem_describe what=format space=\"RF 2.5D\" lists them).").arg(type));
+        const QString parentText = args.value(QLatin1String("parent")).toString().trimmed();
+        if (parentText.isEmpty()) return errorResult(tr("add: 'parent' is the node it goes under (layout, shapes, analyses, stack, ports...)."));
+        const rf::Node* parent = nodeNamed(m, parentText);
+        if (parent == nullptr) return errorResult(tr("There is no node %1 to add under.").arg(parentText));
+        rf::Node n = m.make(type);
+        if (args.contains(QLatin1String("label"))) n.label = args.value(QLatin1String("label")).toString();
+        if (!setProperties(n)) return errorResult(why);
+        QString error;
+        const rf::Node* added = m.add(parent->tag, n, -1, &error);
+        if (added == nullptr) return errorResult(tr("It could not be added: %1").arg(error));
+        tag = added->tag;
+        did = tr("added %1 (%2) under %3").arg(type, tag, parent->tag);
+    } else if (action == QLatin1String("set") || action == QLatin1String("remove")) {
+        const QString nodeText = args.value(QLatin1String("node")).toString().trimmed();
+        const rf::Node* named = nodeNamed(m, nodeText);
+        if (named == nullptr) return errorResult(tr("There is no node %1.").arg(nodeText));
+        tag = named->tag;
+        if (action == QLatin1String("remove")) {
+            QString error;
+            if (!m.remove(tag, &error)) return errorResult(tr("%1 could not be removed: %2").arg(tag, error));
+            did = tr("removed %1").arg(tag);
+        } else {
+            rf::Node* n = m.find(tag);
+            if (args.contains(QLatin1String("label"))) n->label = args.value(QLatin1String("label")).toString();
+            if (args.contains(QLatin1String("enabled"))) n->enabled = args.value(QLatin1String("enabled")).toBool(true);
+            if (!setProperties(*n)) return errorResult(why);
+            did = tr("set %1").arg(tag);
+        }
+    } else {
+        return errorResult(tr("'action' is add, set or remove."));
+    }
+    if (!doc->setModel(m, tr("rf25_edit: %1").arg(did))) did += tr(" (as it was: nothing changed)");
+    return jsonResult(QJsonObject{{QStringLiteral("node"), tag}, {QStringLiteral("did"), did},
+                                  {QStringLiteral("problems"), QJsonArray::fromStringList(doc->model().problems())}});
+}
+
+QJsonObject QucsControl::rf25Sweep(const QJsonObject& args)
+{
+    QString why;
+    RF25Doc* doc = rf25ModelOf(args, QStringLiteral("rf25_sweep"), &why);
+    if (doc == nullptr) return errorResult(why);
+    namespace rf = qucs_s::rf25;
+    const RF25Doc::Held held(doc);
+    const QString heldName = QFileInfo(doc->getDocName()).fileName();
+    QString tag = args.value(QLatin1String("node")).toString().trimmed();
+    if (tag.isEmpty()) {
+        const rf::Node* chosen = doc->model().find(doc->focusedNode());
+        const rf::Node* node = chosen != nullptr && chosen->type == QLatin1String("rf_sweep") ? chosen : rf::sweepNode(doc->model());
+        if (node == nullptr) return errorResult(tr("The model has no Parametric Sweep: add one under Analyses (rf25_edit add rf_sweep under analyses)."));
+        tag = node->tag;
+    }
+    if (rf::sweepNode(doc->model(), tag) == nullptr) return errorResult(tr("There is no Parametric Sweep %1.").arg(tag));
+    const QString action = args.value(QLatin1String("action")).toString(QStringLiteral("run"));
+    if (action == QLatin1String("touchstone")) {
+        QStringList written;
+        if (!doc->writeSweepTouchstones(tag, &written, &why)) return errorResult(why);
+        return jsonResult(QJsonObject{{QStringLiteral("written"), QJsonArray::fromStringList(written)}});
+    }
+    if (action == QLatin1String("run")) {
+        if (doc->analysisRunning() != tag) {
+            if (!doc->waitForLayout(120000)) return errorResult(tr("Its layout is still being read after 120 s."));
+            doc->waitForPrepared(120000);
+            if (!doc->runAnalysis(tag, &why)) return errorResult(why);
+        }
+        const int timeout = waitsFor(QStringLiteral("rf25_sweep"), args);
+        const bool ended = doc->waitForAnalysis(timeout * 1000);
+        if (doc->closedWhenFree()) return closedWhileWaited(heldName);
+        if (!ended) {
+            int done = 0, of = 0;
+            QString said;
+            doc->analysisRunning(&done, &of, &said);
+            return jsonResult(QJsonObject{{QStringLiteral("running"), true}, {QStringLiteral("done"), done}, {QStringLiteral("of"), of},
+                                          {QStringLiteral("note"), tr("%1 after %2 s: rf25_sweep again waits more, rf25_stop stops it.").arg(said).arg(timeout)}});
+        }
+    } else if (action != QLatin1String("result")) {
+        return errorResult(tr("'action' is run, result or touchstone."));
+    }
+    const rf::SweepResult r = doc->sweepResult(tag);
+    if (r.points.isEmpty() && r.error.isEmpty()) return errorResult(tr("%1 has not been run: rf25_sweep runs it.").arg(tag));
+    const int rows = std::clamp(args.value(QLatin1String("rows")).toInt(200), 1, 10000);
+    QJsonArray points;
+    for (int i = 0; i < r.points.size() && i < rows; ++i) {
+        const rf::SweepPoint& p = r.points.at(i);
+        QJsonObject values, measured;
+        for (int a = 0; a < r.parameters && a < p.values.size(); ++a) values.insert(r.columns.at(a), number(p.values.at(a)));
+        for (int q = 0; q < p.measured.size(); ++q) measured.insert(r.columns.value(r.parameters + q), number(p.measured.at(q)));
+        QJsonObject point{{QStringLiteral("values"), values}, {QStringLiteral("measured"), measured}};
+        if (!p.solved) point.insert(QStringLiteral("why"), p.why);
+        points.append(point);
+    }
+    QJsonObject out{{QStringLiteral("node"), tag}, {QStringLiteral("columns"), QJsonArray::fromStringList(r.columns)},
+                    {QStringLiteral("units"), QJsonArray::fromStringList(r.units)}, {QStringLiteral("solved"), r.solved},
+                    {QStringLiteral("failed"), r.failed}, {QStringLiteral("stopped"), r.stopped}, {QStringLiteral("seconds"), r.seconds},
+                    {QStringLiteral("old"), doc->analysisOld(tag)}, {QStringLiteral("points"), points}};
+    if (!r.error.isEmpty()) out.insert(QStringLiteral("error"), r.error);
+    if (r.points.size() > rows) out.insert(QStringLiteral("note"), tr("%1 of its %2 points: 'rows' asks for more.").arg(rows).arg(r.points.size()));
+    return jsonResult(out);
+}
+
+QJsonObject QucsControl::rf25Optimize(const QJsonObject& args)
+{
+    QString why;
+    RF25Doc* doc = rf25ModelOf(args, QStringLiteral("rf25_optimize"), &why);
+    if (doc == nullptr) return errorResult(why);
+    namespace rf = qucs_s::rf25;
+    const RF25Doc::Held held(doc);
+    const QString heldName = QFileInfo(doc->getDocName()).fileName();
+    QString tag = args.value(QLatin1String("node")).toString().trimmed();
+    if (tag.isEmpty()) {
+        const rf::Node* chosen = doc->model().find(doc->focusedNode());
+        const rf::Node* node = chosen != nullptr && chosen->type == QLatin1String("rf_optimization") ? chosen : rf::optimizationNode(doc->model());
+        if (node == nullptr) return errorResult(tr("The model has no Optimization: add one under Analyses (rf25_edit add rf_optimization under analyses)."));
+        tag = node->tag;
+    }
+    if (rf::optimizationNode(doc->model(), tag) == nullptr) return errorResult(tr("There is no Optimization %1.").arg(tag));
+    const QString action = args.value(QLatin1String("action")).toString(QStringLiteral("run"));
+    if (action == QLatin1String("apply")) {
+        QStringList written;
+        if (!doc->applyOptimum(tag, args.value(QLatin1String("point")).toInt(0), &written, &why)) return errorResult(why);
+        QJsonObject out{{QStringLiteral("written"), QJsonArray::fromStringList(written)},
+                        {QStringLiteral("note"), tr("One step of Undo; the model is being solved there (rf25_solve waits for it).")}};
+        if (!why.isEmpty()) out.insert(QStringLiteral("warning"), why);
+        return jsonResult(out);
+    }
+    if (action == QLatin1String("run")) {
+        if (doc->analysisRunning() != tag) {
+            if (!doc->waitForLayout(120000)) return errorResult(tr("Its layout is still being read after 120 s."));
+            doc->waitForPrepared(120000);
+            if (!doc->runAnalysis(tag, &why)) return errorResult(why);
+        }
+        const int timeout = waitsFor(QStringLiteral("rf25_optimize"), args);
+        const bool ended = doc->waitForAnalysis(timeout * 1000);
+        if (doc->closedWhenFree()) return closedWhileWaited(heldName);
+        if (!ended) {
+            QString said;
+            doc->analysisRunning(nullptr, nullptr, &said);
+            return jsonResult(QJsonObject{{QStringLiteral("running"), true},
+                                          {QStringLiteral("note"), tr("%1 after %2 s: rf25_optimize again waits more, rf25_stop stops it with the best so far.").arg(said).arg(timeout)}});
+        }
+    } else if (action != QLatin1String("result")) {
+        return errorResult(tr("'action' is run, result or apply."));
+    }
+    const qucs_s::fem::OptimizationResult r = doc->optimizationResult(tag);
+    if (r.evaluations == 0 && r.error.isEmpty() && !r.hasBest()) return errorResult(tr("%1 has not been run: rf25_optimize runs it.").arg(tag));
+    if (!r.error.isEmpty()) return errorResult(r.error);
+    QJsonObject out = r.toJson(std::clamp(args.value(QLatin1String("rows")).toInt(20), 0, 20000));
+    out.insert(QStringLiteral("node"), tag);
+    out.insert(QStringLiteral("old"), doc->analysisOld(tag));
+    return jsonResult(out);
 }

@@ -2512,6 +2512,17 @@ bool RF25Doc::applyOptimum(const QString& tag, int point, QStringList* written, 
     return true;
 }
 
+QString RF25Doc::analysisRunning(int* done, int* of, QString* said) const
+{
+    if (!a_analysis) return QString();
+    if (done != nullptr) *done = a_analysis->control.done.load();
+    if (of != nullptr) *of = a_analysis->control.of.load();
+    if (said != nullptr)
+        *said = a_analysis->optimization ? tr("%1: %n solve(s) so far", nullptr, a_analysis->control.solves.load()).arg(a_analysis->name)
+                                         : tr("%1: %2 of %3 point(s) solved").arg(a_analysis->name).arg(a_analysis->control.done.load()).arg(a_analysis->control.of.load());
+    return a_analysis->tag;
+}
+
 void RF25Doc::stopAnalysis()
 {
     if (a_analysis) a_analysis->control.requestStop();

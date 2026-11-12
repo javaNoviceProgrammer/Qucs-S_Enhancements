@@ -33,6 +33,7 @@ class Component;
 class Painting;
 class QAction;
 class QucsApp;
+class RF25Doc;
 namespace qucs_s::git {
 struct Result;
 }
@@ -532,6 +533,12 @@ private:
     QJsonObject rf25StackExport(const QJsonObject& args);
     QJsonObject rf25StackImport(const QJsonObject& args);
     QJsonObject rf25Compare(const QJsonObject& args);
+    QJsonObject rf25Edit(const QJsonObject& args);
+    /// The RF 2.5D model a call names (its 'path'), else the one in front;
+    /// null and why where it is none.
+    RF25Doc* rf25ModelOf(const QJsonObject& args, const QString& tool, QString* why);
+    QJsonObject rf25Sweep(const QJsonObject& args);
+    QJsonObject rf25Optimize(const QJsonObject& args);
     QJsonObject newDocument(const QJsonObject& args);
     QJsonObject showDocument(const QJsonObject& args);
     /// What a schematic's save did to the project's library folders (QucsApp::syncProjectLibraries()), as a sentence; empty for none.

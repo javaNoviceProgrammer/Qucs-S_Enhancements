@@ -468,6 +468,43 @@ QMenu* RF25Panel::menuFor(const QString& tag)
         out->setObjectName(QStringLiteral("rfExportStackAction"));
         out->setStatusTip(exportStackTip());
     }
+    // An analysis: run it, stop it, and what its result is for.
+    if (n->type == QLatin1String("rf_sweep") || n->type == QLatin1String("rf_optimization")) {
+        const bool running = a_doc->analysisRunning() == tag;
+        if (running) {
+            QAction* stop = menu->addAction(tr("Stop"), a_doc.data(), &RF25Doc::stopAnalysis);
+            stop->setObjectName(QStringLiteral("rfStopAnalysisAction"));
+        } else {
+            QAction* run = menu->addAction(tr("Run"), this, [this, tag] {
+                QString why;
+                if (a_doc && !a_doc->runAnalysis(tag, &why)) QMessageBox::information(this, tr("Run"), why);
+            });
+            run->setObjectName(QStringLiteral("rfRunAnalysisAction"));
+            run->setEnabled(!a_doc->isAnalysing());
+        }
+        const bool kept = n->props.value(QLatin1String("result")).isObject();
+        if (n->type == QLatin1String("rf_sweep")) {
+            QAction* files = menu->addAction(tr("Write Touchstone Files"), this, [this, tag] {
+                QStringList written;
+                QString why;
+                if (!a_doc) return;
+                if (a_doc->writeSweepTouchstones(tag, &written, &why))
+                    QMessageBox::information(this, tr("Write Touchstone Files"), tr("Written beside the model: %1").arg(written.join(QStringLiteral(", "))));
+                else
+                    QMessageBox::information(this, tr("Write Touchstone Files"), why);
+            });
+            files->setObjectName(QStringLiteral("rfSweepTouchstoneAction"));
+            files->setEnabled(kept && !running);
+        } else {
+            QAction* apply = menu->addAction(tr("Apply Optimum"), this, [this, tag] {
+                QStringList written;
+                QString why;
+                if (a_doc && !a_doc->applyOptimum(tag, 0, &written, &why)) QMessageBox::information(this, tr("Apply Optimum"), why);
+            });
+            apply->setObjectName(QStringLiteral("rfApplyOptimumAction"));
+            apply->setEnabled(kept && !running);
+        }
+    }
     if (!menu->actions().isEmpty() && !menu->actions().last()->isSeparator()) menu->addSeparator();
     const bool editable = k != nullptr && !k->fixed;
     if (editable) {

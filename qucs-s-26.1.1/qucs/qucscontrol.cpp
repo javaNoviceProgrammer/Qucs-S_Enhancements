@@ -1107,7 +1107,7 @@ const char* const kTools = R"JSON([
    "brief": {"type": "boolean", "description": "Quasi-static: only each net's capacitance, its line's C, C0, eps_eff, Z0, L, R, G and alpha, coupled lines' per-metre matrices and modes, the quasi-static limit's frequency and how the per-metre values were taken; full wave: only the ports, the top frequency's S in dB (a pair's mixed-mode S too) and the checks (false)"},
    "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Seconds it is waited for (300). Past them it says what the solve is doing - the stack's Green's functions, the charge on the cells, a frequency - and leaves it going: rf25_solve asked again joins it (as it joins the tab's own Solve; a solve asked otherwise while one goes on is refused), and rf25_stop stops it"}}}},
 {"name": "rf25_stop",
- "description": "Stops an RF 2.5D model's solve (.qrf25) as its tab's Stop does - after rf25_solve's timeout, or the user's own Solve - and waits up to 'timeout' seconds for it to end: a quasi-static solve stops at its next row of a matrix or within its next Green's function, a full-wave one at its next frequency. Returns whether it stopped and what it was doing; nothing solving, it says so.",
+ "description": "Stops an RF 2.5D model's solve (.qrf25) as its tab's Stop does - after rf25_solve's timeout, or the user's own Solve; a Parametric Sweep or an Optimization running too (rf25_sweep, rf25_optimize), keeping what it has - and waits up to 'timeout' seconds for it to end: a quasi-static solve stops at its next row of a matrix or within its next Green's function, a full-wave one at its next frequency. Returns whether it stopped and what it was doing; nothing solving, it says so.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds it is waited for to end (30)"}}}},
@@ -1144,6 +1144,35 @@ const char* const kTools = R"JSON([
    "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
    "shapes": {"type": "array", "items": {"type": "object"}, "description": "What is drawn or deleted, in order: 1 to 10000 objects as above"}},
   "required": ["shapes"]}},
+{"name": "rf25_edit",
+ "description": "Changes an RF 2.5D model (.qrf25) node by node, as its panel does, each change one step of Undo: 'action' add (a node of 'type' under 'parent' - a tag; where its kind belongs when not given -, its 'label' and 'properties'), set ('node', a tag or label: 'properties' merged into its own, a null taking one back to its default; 'label'; 'enabled') or remove ('node'). A property is one its kind has (fem_describe what=format space=\"RF 2.5D\" lists them), a number an expression of the parameters with its unit in brackets (\"w/2 + 5[um]\"). Parameters are the rf_parameters node's \"rows\": [[name, expression, description], ...]. What it is for besides writing the file: a Shape's numbers (Layout > Shapes, rf_shape) or a Dimension's By (rf_dimension) tied to the parameters, an Analyses node's Parametric Sweep (rf_sweep) or Optimization (rf_optimization) set up. Returns the node's tag, what it did and the model's problems after it.",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
+   "action": {"type": "string", "enum": ["add", "set", "remove"], "description": "What is done"},
+   "type": {"type": "string", "description": "add: the kind of node (rf_shape, rf_dimension, rf_analyses, rf_sweep, rf_optimization, rf_metal, rf_edge_port...)"},
+   "parent": {"type": "string", "description": "add: the node it goes under, by tag or label (layout, shapes, analyses, stack, ports...)"},
+   "node": {"type": "string", "description": "set, remove: the node, by tag or label"},
+   "label": {"type": "string", "description": "add, set: its name"},
+   "enabled": {"type": "boolean", "description": "set: false leaves it out"},
+   "properties": {"type": "object", "description": "add, set: its properties by key: {\"layer\": \"M1\", \"width\": \"L\", \"height\": \"w\"}"}},
+  "required": ["action"]}},
+{"name": "rf25_sweep",
+ "description": "Runs an RF 2.5D model's Parametric Sweep (.qrf25; Analyses > Parametric Sweep, rf_sweep: one or two parameters over their values, quantities read at each point), as RF 2.5D > Run Parametric Sweep does: in the background, each point the model with its parameters solved by its study, waiting up to 'timeout' seconds - past it, how far it has got (rf25_sweep again waits more, rf25_stop stops it, keeping what it has). Its quantities are expressions of a solution's values and the parameters: a full wave's S21_dB, S21_mag, S21_deg, S21_re, S21_im, Z21_re, Z21_im, Z21_mag, GD21 (group delay, s), VSWR1 (each pair also S2_1); a quasi-static solve's C11 (F), a uniform line's Z0, eps_eff, R, L, G, C per metre and alpha_dB (Z0_2... of its other nets), a loop's Lloop and Rloop; f. 'action' result reads what its node keeps without running; touchstone writes each full-wave point's S beside the model. Returns its columns with their units and each point's values and quantities (at most 'rows'), why a point did not solve, and whether the result is of the model before a change ('old').",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
+   "node": {"type": "string", "description": "The sweep's tag; the one chosen in the panel, else the first, when not given"},
+   "action": {"type": "string", "enum": ["run", "result", "touchstone"], "description": "run (the default), result (what its node keeps), touchstone (each full-wave point's file)"},
+   "timeout": {"type": "integer", "minimum": 1, "description": "Seconds it is waited for (600)"},
+   "rows": {"type": "integer", "minimum": 1, "maximum": 10000, "description": "Points returned at most (200)"}}}},
+{"name": "rf25_optimize",
+ "description": "Runs an RF 2.5D model's Optimization (.qrf25; Analyses > Optimization, rf_optimization), as RF 2.5D > Run Optimization does: the multiphysics optimizer's methods and settings (as fem_optimize's), each candidate the model with its parameters solved by its study, each objective an expression of the solution's values (as rf25_sweep reads them) over a window of frequencies - its Over worst, last, min, max or at -, in the background, waiting up to 'timeout' seconds (past it, how far it has got: rf25_optimize again waits more, rf25_stop stops it with the best point so far). 'action' result reads what its node keeps; apply writes the optimum - a Pareto front's design 'point', from 1 - into the parameters in their units, one step of Undo, and solves the model there. Returns why it stopped, the best values, each objective there, the limits at the optimum, notes, at most 'rows' of its history, and whether it is of the model before a change ('old').",
+ "inputSchema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "The model (.qrf25), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"},
+   "node": {"type": "string", "description": "The optimization's tag; the one chosen in the panel, else the first, when not given"},
+   "action": {"type": "string", "enum": ["run", "result", "apply"], "description": "run (the default), result, apply"},
+   "point": {"type": "integer", "minimum": 0, "description": "apply: a Pareto front's design, from 1; 0 the one optimum"},
+   "timeout": {"type": "integer", "minimum": 1, "description": "Seconds it is waited for (600)"},
+   "rows": {"type": "integer", "minimum": 0, "maximum": 20000, "description": "Rows of its history returned at most (20)"}}}},
 {"name": "rf25_circuit",
  "description": "Fits a lumped circuit to the full-wave solve of an RF 2.5D model's ports (.qrf25): a two-port as a pi - a branch between its ports and one from each to the ground -, a one-port as one branch to the ground; each branch of a few R, L and C in the form that fits its share of the solve's Y best (R, C, R+L, R+C, R||C, R+L+C, (R+L)||C between the ports; C, R, R||C, R+C, C+(R||C) to the ground - a capacitor over a lossy substrate: Cox, then Rsub beside Csub), the values kept positive; then every value fitted together to the solve's S, kept where that lowers its rms ('fitted'). Returns each branch's form and values and how far the circuit's S is from the solve's, at most and rms: it holds only while what it stands for is short beside the wavelength. With 'file' (or an Equivalent circuit node, 'node') it writes it: .sch, a Qucs-S part to place as a schematic's Subcircuit; else (.cir, .sp, .lib) a SPICE subcircuit, its ports then the reference as pins. The model must be solved full-wave first (rf25_solve, or Solve on its tab; a model opened again shows the solution kept beside it).",
  "inputSchema": {"type": "object", "properties": {
@@ -4990,6 +5019,7 @@ int QucsControl::waitsFor(const QString& tool, const QJsonObject& arguments)
     if (tool == QLatin1String("rf25_solve") || tool == QLatin1String("rf25_inductance")) return std::clamp(given(300), 1, 3600);
     if (tool == QLatin1String("rf25_converge")) return std::clamp(given(600), 1, 7200);
     if (tool == QLatin1String("rf25_stop")) return std::clamp(given(30), 1, 600);
+    if (tool == QLatin1String("rf25_sweep") || tool == QLatin1String("rf25_optimize")) return std::clamp(given(600), 1, 7 * 86400);
     if (tool == QLatin1String("route_run")) return std::clamp(given(120), 1, 3600);
     if (tool == QLatin1String("route_stop")) return std::clamp(given(30), 1, 600);
     // (The others that wait by themselves, by their defaults too - cut at a
@@ -5568,6 +5598,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("route_assign_pads")) return routeAssignPads(args);
     if (tool == QLatin1String("rf25_export")) return rf25Export(args);
     if (tool == QLatin1String("rf25_draw")) return rf25Draw(args);
+    if (tool == QLatin1String("rf25_edit")) return rf25Edit(args);
+    if (tool == QLatin1String("rf25_sweep")) return rf25Sweep(args);
+    if (tool == QLatin1String("rf25_optimize")) return rf25Optimize(args);
     if (tool == QLatin1String("rf25_circuit")) return rf25Circuit(args);
     if (tool == QLatin1String("rf25_inductance")) return rf25Inductance(args);
     if (tool == QLatin1String("rf25_hfss_export")) return rf25HfssExport(args);

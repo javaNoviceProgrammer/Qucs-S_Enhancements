@@ -3646,6 +3646,75 @@ private slots:
         app->closeAllFiles();
     }
 
+    // The panel and the analyses (phase 8 of RF 2.5D's optimization): its
+    // Add offers the new kinds where they go - Analyses under the model, a
+    // Parametric Sweep and an Optimization under it, Shapes and a Dimension
+    // under the Layout, a Shape under Shapes -; an analysis's menu runs it,
+    // stops it while it runs, and once it has run applies its optimum, or
+    // writes a sweep's Touchstone files.
+    void thePanelRunsAndAppliesAnAnalysis()
+    {
+        const auto actionOf = [](QMenu* menu, const char* name) -> QAction* {
+            QList<QAction*> all = menu->actions();
+            for (int i = 0; i < all.size(); ++i) {
+                if (all.at(i)->objectName() == QLatin1String(name)) return all.at(i);
+                if (all.at(i)->menu() != nullptr) all += all.at(i)->menu()->actions();
+            }
+            return nullptr;
+        };
+        // On a new model: what Add offers.
+        RF25Doc* fresh = app->newRf25Model();
+        QVERIFY(fresh != nullptr);
+        QMenu* root = panel()->menuFor(fresh->model().root.tag);
+        QVERIFY(root != nullptr && actionOf(root, "rfAdd_rf_analyses") != nullptr);
+        actionOf(root, "rfAdd_rf_analyses")->trigger();
+        root->deleteLater();
+        const rf::Node* analyses = fresh->model().root.child(QStringLiteral("rf_analyses"));
+        QVERIFY(analyses != nullptr);
+        QMenu* under = panel()->menuFor(analyses->tag);
+        QVERIFY(actionOf(under, "rfAdd_rf_sweep") != nullptr && actionOf(under, "rfAdd_rf_optimization") != nullptr);
+        under->deleteLater();
+        QMenu* layout = panel()->menuFor(fresh->model().layout().tag);
+        QVERIFY(actionOf(layout, "rfAdd_rf_shapes") != nullptr && actionOf(layout, "rfAdd_rf_dimension") != nullptr);
+        actionOf(layout, "rfAdd_rf_shapes")->trigger();
+        layout->deleteLater();
+        const rf::Node* shapes = fresh->model().layout().child(QStringLiteral("rf_shapes"));
+        QVERIFY(shapes != nullptr);
+        QMenu* shapesMenu = panel()->menuFor(shapes->tag);
+        QVERIFY(actionOf(shapesMenu, "rfAdd_rf_shape") != nullptr);
+        shapesMenu->deleteLater();
+        app->closeAllFiles();
+
+        // The shipped microstrip: Run from the Optimization's menu, Stop while
+        // it runs, Apply Optimum once it has.
+        RF25Doc* doc = shippedExample(QStringLiteral("microstrip_width_optimization.qrf25"));
+        if (doc == nullptr) QSKIP("the example is not in this build");
+        const QString tag = rf::optimizationNode(doc->model())->tag;
+        QMenu* menu = panel()->menuFor(tag);
+        QAction* apply = actionOf(menu, "rfApplyOptimumAction");
+        QVERIFY(apply != nullptr && !apply->isEnabled());   // (nothing found yet)
+        QAction* run = actionOf(menu, "rfRunAnalysisAction");
+        QVERIFY(run != nullptr && run->isEnabled());
+        run->trigger();
+        menu->deleteLater();
+        QVERIFY(doc->isAnalysing());
+        menu = panel()->menuFor(tag);
+        QVERIFY(actionOf(menu, "rfStopAnalysisAction") != nullptr);
+        menu->deleteLater();
+        QVERIFY(doc->waitForAnalysis(600000));
+        menu = panel()->menuFor(tag);
+        apply = actionOf(menu, "rfApplyOptimumAction");
+        QVERIFY(apply != nullptr && apply->isEnabled());
+        apply->trigger();
+        menu->deleteLater();
+        QString w;
+        for (const auto& p : doc->model().parameters())
+            if (p.name == QStringLiteral("w")) w = p.expression;
+        QVERIFY2(w != QStringLiteral("60[um]") && w.endsWith(QStringLiteral("[um]")), qPrintable(w));
+        QVERIFY(doc->waitForSolved(300000));
+        app->closeAllFiles();
+    }
+
     // A substrate that ends (F2 of the open items of 8 November), drawn on
     // the tab: a rectangle drawn on the Substrate is where it is - the map
     // sending its layer of the file there, the processing keeping it apart
