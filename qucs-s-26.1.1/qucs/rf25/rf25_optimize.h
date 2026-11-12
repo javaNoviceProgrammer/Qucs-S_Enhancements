@@ -18,6 +18,7 @@
 
 #include "../multiphysics/fem_expr.h"
 #include "../multiphysics/fem_model.h"
+#include "../multiphysics/fem_optimize.h"
 #include "../multiphysics/optimizer_core.h"
 #include "rf25_solve.h"
 
@@ -110,7 +111,8 @@ QString siText(double value, const fem::Dim& dim);
 /// from another thread: each solve under way stopped at once with it.
 struct RunControl {
     std::atomic_bool stop{false};
-    std::atomic_int done{0}, of{0};   ///< points solved, of how many (an optimization's: of its budget)
+    std::atomic_int done{0}, of{0};   ///< points solved, of how many (an optimization's: of its budget, a thousand)
+    std::atomic_int solves{0};        ///< an optimization's solves so far
     void requestStop();
     /// (The solves under way, so that a stop reaches them.)
     void begin(SolveJob* job);
@@ -191,6 +193,37 @@ QString analysisSetup(const Model& model, const Node& node);
  */
 SweepResult runSweep(const Model& model, std::shared_ptr<const qucs_s::layout::Layout> layout, const QString& called, const QString& folder,
                      const SweepPlan& plan, RunControl& control);
+
+/*!
+ * An Optimization (Analyses > Optimization, rf_optimization) read: what the
+ * multiphysics one reads - its mode, method and settings, the parameters it
+ * varies, design centering's spreads, the shared checks of what a method
+ * can take - by the same pieces (fem_optimize.h), and its objectives' own
+ * columns: Over (worst, the default; last, min, max, at), From, To, At - a
+ * Reading for each objective, in order.
+ */
+struct OptimizationPlan {
+    fem::OptimizationPlan plan;
+    QList<Reading> readings;
+};
+std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node& node, QString* error);
+/// The Optimization of \a tag, or (empty) the model's first; null where there
+/// is none.
+const Node* optimizationNode(const Model& model, const QString& tag = {});
+/*!
+ * \a plan run on \a model: each candidate the model with its parameters,
+ * solved as its tab solves it (solveModel()) by its study, each objective
+ * read as its Reading says - by its worst as its goal judges a sweep -, the
+ * search the multiphysics one's (runOptimizationPlan()). Blocking; \a control
+ * stops it, with the best point so far; \a listener told of each solve.
+ */
+fem::OptimizationResult runOptimization(const Model& model, std::shared_ptr<const qucs_s::layout::Layout> layout, const QString& called,
+                                        const QString& folder, const OptimizationPlan& plan, RunControl& control,
+                                        const fem::OptimizationListener& listener = {});
+/// The optimum of Optimization \a node's result (a Pareto front: its design
+/// \a point, from 1) written into \a model's parameters, each in the unit its
+/// expression has; what it wrote in \a written. False and why.
+bool applyOptimum(Model& model, const Node& node, int point, QStringList* written, QString* why);
 
 } // namespace qucs_s::rf25
 

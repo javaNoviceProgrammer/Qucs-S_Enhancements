@@ -1,0 +1,166 @@
+{
+    "format": "qucs-s rf 2.5d 1",
+    "tree": {
+        "children": [
+            {
+                "properties": {
+                    "rows": [
+                        [
+                            "h",
+                            "100[um]",
+                            "the substrate's thickness"
+                        ],
+                        [
+                            "er",
+                            "9.8",
+                            "its permittivity"
+                        ],
+                        [
+                            "w",
+                            "60[um]",
+                            "the strip's width"
+                        ],
+                        [
+                            "L",
+                            "1000[um]",
+                            "its length"
+                        ]
+                    ]
+                },
+                "tag": "parameters",
+                "type": "rf_parameters"
+            },
+            {
+                "children": [
+                    {
+                        "label": "Ground",
+                        "tag": "gnd1",
+                        "type": "rf_ground"
+                    },
+                    {
+                        "label": "Substrate",
+                        "properties": {
+                            "epsr": "er",
+                            "thickness": "h"
+                        },
+                        "tag": "sub1",
+                        "type": "rf_substrate"
+                    },
+                    {
+                        "label": "M1",
+                        "tag": "m1",
+                        "type": "rf_metal"
+                    }
+                ],
+                "tag": "stack",
+                "type": "rf_stack"
+            },
+            {
+                "children": [
+                    {
+                        "tag": "layer_map",
+                        "type": "rf_layer_map"
+                    },
+                    {
+                        "tag": "processing",
+                        "type": "rf_processing"
+                    },
+                    {
+                        "tag": "cutout",
+                        "type": "rf_cutout"
+                    },
+                    {
+                        "children": [
+                            {
+                                "label": "strip",
+                                "properties": {
+                                    "height": "w",
+                                    "layer": "M1",
+                                    "width": "L",
+                                    "x": "0",
+                                    "y": "0"
+                                },
+                                "tag": "shape1",
+                                "type": "rf_shape"
+                            }
+                        ],
+                        "label": "Shapes",
+                        "tag": "shapes1",
+                        "type": "rf_shapes"
+                    }
+                ],
+                "tag": "layout",
+                "type": "rf_layout"
+            },
+            {
+                "tag": "ports",
+                "type": "rf_ports"
+            },
+            {
+                "properties": {
+                    "cells_across": 6,
+                    "maximum": "50[um]"
+                },
+                "tag": "mesh",
+                "type": "rf_mesh"
+            },
+            {
+                "properties": {
+                    "from": "1[GHz]",
+                    "kind": "quasi_static",
+                    "points": 1,
+                    "to": "1[GHz]"
+                },
+                "tag": "study",
+                "type": "rf_study"
+            },
+            {
+                "tag": "results",
+                "type": "rf_results"
+            },
+            {
+                "tag": "exports",
+                "type": "rf_exports"
+            },
+            {
+                "children": [
+                    {
+                        "label": "50 Ohm",
+                        "properties": {
+                            "maxiter": 60,
+                            "method": "nm",
+                            "objectives": [
+                                [
+                                    "Z0",
+                                    "TARGET",
+                                    "50[Ohm]",
+                                    "",
+                                    "last"
+                                ]
+                            ],
+                            "variables": [
+                                [
+                                    "w",
+                                    "",
+                                    "20[um]",
+                                    "200[um]",
+                                    "LOG_DOUBLE"
+                                ]
+                            ]
+                        },
+                        "tag": "opt1",
+                        "type": "rf_optimization"
+                    }
+                ],
+                "label": "Analyses",
+                "tag": "analyses1",
+                "type": "rf_analyses"
+            }
+        ],
+        "properties": {
+            "description": "A microstrip on 100 um of alumina whose width w the Optimization sets for a 50 Ohm line, quasi-static. Hammerstad and Jensen's closed form, for a strip of no thickness, gives 97.2 um; this model's mesh, 6 cells across the strip, about 102 um, and finer meshes approach 99.5 um (100.0 at 16 cells across, 99.7 at 24). Run it from RF 2.5D > Run Optimization; Apply Optimum writes w in."
+        },
+        "tag": "model",
+        "type": "rf_model"
+    }
+}

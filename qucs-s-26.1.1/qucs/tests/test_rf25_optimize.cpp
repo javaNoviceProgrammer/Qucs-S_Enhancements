@@ -273,6 +273,60 @@ private slots:
         QVERIFY(rf::analysisSetup(other, *other.find(tag)) != setup);
     }
 
+    // An Optimization's kind: the multiphysics one's settings, their defaults
+    // and help, but for its study, and its objectives' own columns. Its plan:
+    // read by the shared pieces, the kind's defaults where the node says
+    // nothing, each objective's Reading from its Over, From, To and At; what
+    // cannot be run refused, as a multiphysics plan's is.
+    void anOptimizationsPlan()
+    {
+        const qucs_s::fem::NodeKind* kind = rf::nodeKind(QStringLiteral("rf_optimization"));
+        QVERIFY(kind != nullptr);
+        QVERIFY(kind->property(QStringLiteral("study")) == nullptr);
+        for (const char* key : {"method", "maxiter", "tol", "seed", "polish", "starts", "constraints", "strategy", "parallel", "variables", "objectives", "variation"})
+            QVERIFY2(kind->property(QLatin1String(key)) != nullptr, key);
+        QCOMPARE(kind->property(QStringLiteral("maxiter"))->defaultValue, qucs_s::fem::nodeKind(QStringLiteral("optimization"))->property(QStringLiteral("maxiter"))->defaultValue);
+        QCOMPARE(kind->property(QStringLiteral("objectives"))->choiceLabels.at(5), QStringLiteral("From"));
+
+        rf::Model m = rf::Model::blank();
+        m.root.child(QStringLiteral("rf_parameters"))->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "1[mm]"}});
+        QVERIFY(m.add(m.root.tag, m.make(QStringLiteral("rf_analyses"))) != nullptr);
+        rf::Node opt = m.make(QStringLiteral("rf_optimization"));
+        opt.props = QJsonObject{{"variables", QJsonArray() << QJsonArray{"w", "", "10[um]", "200[um]"}},
+                                {"objectives", QJsonArray{QJsonArray{"Z0", "TARGET", "50[Ohm]"}, QJsonArray{"S21_dB", "MAX", "", "2", "min", "1[GHz]", "2[GHz]"},
+                                                          QJsonArray{"GD21", "LE", "1[ns]", "", "at", "", "", "1.5[GHz]"}}}};
+        const rf::Node* added = m.add(m.root.child(QStringLiteral("rf_analyses"))->tag, opt);
+        QVERIFY(added != nullptr);
+        const QString tag = added->tag;
+        QCOMPARE(rf::optimizationNode(m), m.find(tag));
+        QString why;
+        std::optional<rf::OptimizationPlan> plan = rf::optimizationPlan(m, *m.find(tag), &why);
+        QVERIFY2(plan.has_value(), qPrintable(why));
+        QCOMPARE(plan->plan.search.maxIter, kind->property(QStringLiteral("maxiter"))->defaultValue.toInt());
+        QCOMPARE(int(plan->plan.variables.size()), 1);
+        QCOMPARE(int(plan->plan.objectives.size()), 3);
+        QCOMPARE(plan->readings.size(), 3);
+        QVERIFY(plan->readings.at(0).over == rf::Reading::Over::Worst);
+        QVERIFY(plan->readings.at(1).over == rf::Reading::Over::Least && plan->readings.at(1).from == 1e9 && plan->readings.at(1).to == 2e9);
+        QCOMPARE(plan->plan.objectives[1].weight, 2.0);
+        QVERIFY(plan->readings.at(2).over == rf::Reading::Over::At && plan->readings.at(2).at == 1.5e9);
+        // Refused.
+        const auto refused = [&](const QJsonObject& props, const char* said) {
+            rf::Model c = m;
+            c.find(tag)->props = props;
+            const bool no = !rf::optimizationPlan(c, *c.find(tag), &why).has_value();
+            if (!no || !why.contains(QLatin1String(said))) qWarning("%s: %s", said, qPrintable(why));
+            return no && why.contains(QLatin1String(said));
+        };
+        const QJsonArray w = QJsonArray() << QJsonArray{"w", "", "10[um]", "200[um]"};
+        QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MIN", "", "", "sometimes"}}}, "worst, last, min, max or at"));
+        QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MIN", "", "", "at"}}}, "give it in At"));
+        QVERIFY(refused({{"variables", QJsonArray() << QJsonArray{"h", "", "1", "2"}}, {"objectives", QJsonArray() << QJsonArray{"Z0"}}}, "no parameter h"));
+        QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MON"}}}, "nothing to reach"));
+        QVERIFY(refused({{"variables", w}, {"method", "nsga2"}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MIN"}}}, "two objectives"));
+        QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "LE", "w*1[Ohm/um]"}}}, "moves with w"));
+    }
+
     // A run's stop reaches each solve under way at once, and a solve begun
     // after it is stopped as it begins; one ended is let go.
     void aStopReachesTheSolvesUnderWay()

@@ -711,4 +711,180 @@ SweepResult runSweep(const Model& model, std::shared_ptr<const qucs_s::layout::L
     return result;
 }
 
+const Node* optimizationNode(const Model& model, const QString& tag)
+{
+    const Node* analyses = model.root.child(QStringLiteral("rf_analyses"));
+    if (analyses == nullptr) return nullptr;
+    for (const Node& n : analyses->children)
+        if (n.type == QLatin1String("rf_optimization") && (tag.isEmpty() || n.tag == tag)) return &n;
+    return nullptr;
+}
+
+namespace {
+
+/// \a node with its kind's defaults where it says nothing: the shared
+/// readers read a node by the multiphysics kinds, which know not this one.
+Node withDefaults(const Node& node)
+{
+    Node out = node;
+    if (const NodeKind* kind = kindOf(node))
+        for (const PropertyDef& p : kind->properties)
+            if (!out.props.contains(p.key) && !p.defaultValue.isUndefined() && !p.defaultValue.isNull()) out.props.insert(p.key, p.defaultValue);
+    return out;
+}
+
+} // namespace
+
+std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node& node, QString* error)
+{
+    QString local;
+    QString& why = error != nullptr ? *error : local;
+    const auto refuse = [&why](const QString& text) {
+        why = text;
+        return std::nullopt;
+    };
+    OptimizationPlan out;
+    fem::OptimizationPlan& plan = out.plan;
+    plan.tag = node.tag;
+    plan.name = nameOf(node);
+    const QList<fem::Model::Parameter> rows = model.parameters();
+    const std::shared_ptr<fem::ParameterScope> ps = fem::evaluateParameters(rows);
+    if (!ps->errors.isEmpty()) {
+        QStringList list;
+        for (auto it = ps->errors.cbegin(); it != ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
+        return refuse(tr("%1: the parameters: %2").arg(plan.name, list.join(QStringLiteral("; "))));
+    }
+    const Node filled = withDefaults(node);
+    if (!fem::readOptimizationSettings(filled, *ps, &plan, &why)) return std::nullopt;
+    QStringList known;
+    for (const fem::Model::Parameter& p : rows) known << p.name.trimmed();
+    if (!fem::readOptimizationVariables(filled, *ps, known, &plan, &why)) return std::nullopt;
+    const QJsonValue objectives = filled.props.value(QStringLiteral("objectives"));
+    if (!objectives.isArray()) return refuse(tr("%1: its objectives are not a table").arg(plan.name));
+    for (const QJsonValue& row : objectives.toArray()) {
+        const QJsonArray r = row.toArray();
+        fem::OptimizationObjective o;
+        if (!fem::readOptimizationObjective(r, *ps, plan.name, &o, &why)) {
+            if (!why.isEmpty()) return std::nullopt;
+            continue;
+        }
+        Reading reading;
+        reading.expression = o.expression;
+        if (!overOf(cellText(r.at(4)), Reading::Over::Worst, &reading.over))
+            return refuse(tr("%1: %2's Over is \"%3\" - worst, last, min, max or at").arg(plan.name, o.expression, cellText(r.at(4))));
+        QString bad;
+        if (!frequencyOf(cellText(r.at(5)), *ps, &reading.from, &bad) || !frequencyOf(cellText(r.at(6)), *ps, &reading.to, &bad)
+            || !frequencyOf(cellText(r.at(7)), *ps, &reading.at, &bad))
+            return refuse(tr("%1: %2: %3").arg(plan.name, o.expression, bad));
+        if (reading.over == Reading::Over::At && !std::isfinite(reading.at))
+            return refuse(tr("%1: %2 is read at a frequency: give it in At").arg(plan.name, o.expression));
+        o.last = reading.over == Reading::Over::Last;
+        plan.objectives.push_back(o);
+        out.readings << reading;
+    }
+    if (!fem::checkOptimizationObjectives(&plan, &why)) return std::nullopt;
+    const auto evaluate = [&rows](const QHash<QString, QString>& overrides) { return fem::evaluateParameters(rows, overrides); };
+    if (!fem::checkOptimizationPlan(filled, *ps, evaluate, &plan, &why)) return std::nullopt;
+    return out;
+}
+
+fem::OptimizationResult runOptimization(const Model& model, std::shared_ptr<const qucs_s::layout::Layout> layout, const QString& called,
+                                        const QString& folder, const OptimizationPlan& plan, RunControl& control,
+                                        const fem::OptimizationListener& listener)
+{
+    fem::OptimizationResult result;
+    if (!layout) {
+        result.error = tr("%1: the layout has not been read").arg(plan.plan.name);
+        return result;
+    }
+    const std::shared_ptr<fem::ParameterScope> base = fem::evaluateParameters(model.parameters());
+    control.of = 1000;
+    control.done = 0;
+    control.solves = 0;
+    const fem::OptimizationSolver solve = [&](const fem::OptimizationCandidate& c) {
+        fem::OptimizationMeasured m;
+        // (Told through the candidate's progress, as a multiphysics solve
+        //  tells it: a stop asked for reaches the search there, not only the
+        //  solve under way - else each candidate after it is stopped as it
+        //  begins and the search runs on to its own end.)
+        if ((c.stopped && c.stopped()) || (c.progress && !c.progress(0.0, tr("solving")))) {
+            m.stopped = true;
+            return m;
+        }
+        const Model candidate = withParameters(model, c.overrides);
+        SolveJob job;
+        control.begin(&job);
+        const ModelSolution solution = solveModel(job, candidate, *layout, called, folder);
+        control.end(&job);
+        ++control.solves;
+        if (solution.stopped || control.stop.load() || (c.progress && !c.progress(1.0, tr("solved")))) {
+            m.stopped = true;
+            return m;
+        }
+        if (!solution.ok()) {
+            m.why = solution.problem;
+            return m;
+        }
+        const SolutionValues values = solutionValues(solution, candidate);
+        const std::shared_ptr<fem::ParameterScope> ps = fem::evaluateParameters(candidate.parameters());
+        const int n = int(plan.plan.objectives.size());
+        m.y.assign(std::size_t(n), kNaN);
+        m.dims.assign(std::size_t(n), fem::Dim());
+        for (int i = 0; i < n; ++i) {
+            const fem::OptimizationObjective& o = plan.plan.objectives[std::size_t(i)];
+            const Reading& reading = plan.readings.at(i);
+            QList<double> fs, ys;
+            fem::Dim dim;
+            QString why;
+            const bool at = reading.over == Reading::Over::At;
+            if (!seriesOf(values, *ps, reading.expression, at ? kNaN : reading.from, at ? kNaN : reading.to, &fs, &ys, &dim, &why)) {
+                m.fatal = true;
+                m.why = why;
+                return m;
+            }
+            // Its goal, its target in the unit just read, for its worst.
+            optimization::Goal goal;
+            goal.type = o.goalType();
+            goal.name = o.expression;
+            if (o.kind == fem::OptimizationObjective::Target || o.kind == fem::OptimizationObjective::Equal) {
+                QString bad;
+                const std::optional<double> t = fem::evaluateConstant(o.valueText, base->scope, dim, &bad);
+                goal.target = t ? *t : 0;
+            }
+            double value = kNaN;
+            if (!readingValue(values, *ps, reading, goal, &value, &dim, &why)) {
+                m.fatal = true;
+                m.why = why;
+                return m;
+            }
+            m.y[std::size_t(i)] = value;
+            m.dims[std::size_t(i)] = dim;
+        }
+        m.solved = true;
+        return m;
+    };
+    const fem::Progress progress = [&control](double fraction, const QString&) {
+        control.done = int(std::clamp(fraction, 0.0, 1.0) * 1000);
+        return !control.stop.load();
+    };
+    result = fem::runOptimizationPlan(plan.plan, base, solve, progress, listener);
+    return result;
+}
+
+bool applyOptimum(Model& model, const Node& node, int point, QStringList* written, QString* why)
+{
+    QList<fem::Model::Parameter> rows = model.parameters();
+    const std::shared_ptr<fem::ParameterScope> ps = fem::evaluateParameters(rows);
+    QString ignored;
+    const std::optional<OptimizationPlan> plan = optimizationPlan(model, node, &ignored);
+    if (!fem::applyOptimum(rows, *ps, node, plan ? &plan->plan : nullptr, point, written, why)) return false;
+    Node* parameters = model.root.child(QStringLiteral("rf_parameters"));
+    if (parameters == nullptr) return false;
+    QJsonArray out;
+    for (const fem::Model::Parameter& p : std::as_const(rows))
+        out.append(p.description.isEmpty() ? QJsonArray{p.name, p.expression} : QJsonArray{p.name, p.expression, p.description});
+    parameters->props.insert(QStringLiteral("rows"), out);
+    return true;
+}
+
 } // namespace qucs_s::rf25

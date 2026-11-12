@@ -1,0 +1,207 @@
+{
+    "format": "qucs-s rf 2.5d 1",
+    "tree": {
+        "children": [
+            {
+                "properties": {
+                    "rows": [
+                        [
+                            "h",
+                            "100[um]",
+                            "the substrate's thickness"
+                        ],
+                        [
+                            "er",
+                            "9.8",
+                            "its permittivity"
+                        ],
+                        [
+                            "w",
+                            "95[um]",
+                            "the lines' width: 50 Ohm"
+                        ],
+                        [
+                            "L",
+                            "4000[um]",
+                            "the through line's length"
+                        ],
+                        [
+                            "Ls",
+                            "2500[um]",
+                            "the stub's length from the line's edge"
+                        ]
+                    ]
+                },
+                "tag": "parameters",
+                "type": "rf_parameters"
+            },
+            {
+                "children": [
+                    {
+                        "label": "Ground",
+                        "tag": "gnd1",
+                        "type": "rf_ground"
+                    },
+                    {
+                        "label": "Substrate",
+                        "properties": {
+                            "epsr": "er",
+                            "thickness": "h"
+                        },
+                        "tag": "sub1",
+                        "type": "rf_substrate"
+                    },
+                    {
+                        "label": "M1",
+                        "tag": "m1",
+                        "type": "rf_metal"
+                    }
+                ],
+                "tag": "stack",
+                "type": "rf_stack"
+            },
+            {
+                "children": [
+                    {
+                        "tag": "layer_map",
+                        "type": "rf_layer_map"
+                    },
+                    {
+                        "tag": "processing",
+                        "type": "rf_processing"
+                    },
+                    {
+                        "tag": "cutout",
+                        "type": "rf_cutout"
+                    },
+                    {
+                        "children": [
+                            {
+                                "label": "line",
+                                "properties": {
+                                    "height": "w",
+                                    "layer": "M1",
+                                    "width": "L",
+                                    "x": "0",
+                                    "y": "0"
+                                },
+                                "tag": "shape1",
+                                "type": "rf_shape"
+                            },
+                            {
+                                "label": "stub",
+                                "properties": {
+                                    "height": "Ls + w/2",
+                                    "layer": "M1",
+                                    "width": "w",
+                                    "x": "L/2 - w/2",
+                                    "y": "w/2"
+                                },
+                                "tag": "shape2",
+                                "type": "rf_shape"
+                            }
+                        ],
+                        "label": "Shapes",
+                        "tag": "shapes1",
+                        "type": "rf_shapes"
+                    }
+                ],
+                "tag": "layout",
+                "type": "rf_layout"
+            },
+            {
+                "children": [
+                    {
+                        "label": "P1",
+                        "properties": {
+                            "conductor": "M1",
+                            "x": "0",
+                            "y": "w/2"
+                        },
+                        "tag": "p1",
+                        "type": "rf_edge_port"
+                    },
+                    {
+                        "label": "P2",
+                        "properties": {
+                            "conductor": "M1",
+                            "x": "L",
+                            "y": "w/2"
+                        },
+                        "tag": "p2",
+                        "type": "rf_edge_port"
+                    }
+                ],
+                "tag": "ports",
+                "type": "rf_ports"
+            },
+            {
+                "properties": {
+                    "cells_across": 3,
+                    "maximum": "100[um]"
+                },
+                "tag": "mesh",
+                "type": "rf_mesh"
+            },
+            {
+                "properties": {
+                    "from": "10[GHz]",
+                    "kind": "full_wave",
+                    "points": 1,
+                    "to": "10[GHz]"
+                },
+                "tag": "study",
+                "type": "rf_study"
+            },
+            {
+                "tag": "results",
+                "type": "rf_results"
+            },
+            {
+                "tag": "exports",
+                "type": "rf_exports"
+            },
+            {
+                "children": [
+                    {
+                        "label": "notch at 10 GHz",
+                        "properties": {
+                            "maxiter": 40,
+                            "method": "nm",
+                            "objectives": [
+                                [
+                                    "S21_mag",
+                                    "MIN",
+                                    "",
+                                    "",
+                                    "at",
+                                    "",
+                                    "",
+                                    "10[GHz]"
+                                ]
+                            ],
+                            "variables": [
+                                [
+                                    "Ls",
+                                    "",
+                                    "1500[um]",
+                                    "4500[um]"
+                                ]
+                            ]
+                        },
+                        "tag": "opt1",
+                        "type": "rf_optimization"
+                    }
+                ],
+                "label": "Analyses",
+                "tag": "analyses1",
+                "type": "rf_analyses"
+            }
+        ],
+        "properties": {
+            "description": "A 50 Ohm microstrip on 100 um of alumina with an open stub at its middle, full wave at 10 GHz: the Optimization sets the stub's length Ls for the notch - |S21| at its least - at 10 GHz. The closed form, a quarter of a guided wavelength less the line's half width and the open end's extension, gives 2.85 mm; this model's mesh finds about 2.96 mm, |S21| 0.04 there. Run it from RF 2.5D > Run Optimization; Apply Optimum writes Ls in."
+        },
+        "tag": "model",
+        "type": "rf_model"
+    }
+}
