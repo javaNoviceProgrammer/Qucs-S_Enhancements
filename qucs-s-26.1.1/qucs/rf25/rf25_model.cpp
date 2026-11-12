@@ -592,7 +592,7 @@ QList<NodeKind> makeKinds()
             "frequency, driven at the ports, for their S.")});
     // What varies the parameters: a sweep over their values, an optimization.
     add({QStringLiteral("rf_analyses"), tr("Analyses"), QString(), QStringLiteral("study"), none, {},
-         {QStringLiteral("rf_sweep")}, {}, false, true, QStringLiteral("analyses"),
+         {QStringLiteral("rf_sweep"), QStringLiteral("rf_optimization")}, {}, false, true, QStringLiteral("analyses"),
          tr("What varies the model's parameters, each point a whole solve by the study: a Parametric Sweep over their "
             "values, an Optimization that searches them for what is asked of the results.")});
     add({QStringLiteral("rf_sweep"), tr("Parametric Sweep"), QStringLiteral("analysis"), QStringLiteral("study"), none,
@@ -613,6 +613,37 @@ QList<NodeKind> makeKinds()
          tr("The model solved at each value of one or two of its parameters - a width, a length, a permittivity -, each "
             "point a whole solve by the study, the quantities asked read at each: a table and a plot of them, and each "
             "point's S for a Touchstone file. What it found is kept with the model, marked old once the model changes.")});
+    // The Optimization: the multiphysics one's settings, as that kind has
+    // them (the same defaults, labels and help, so the two cannot drift), but
+    // for its study - an RF 2.5D model has one - and its objectives' own
+    // columns: a window of frequencies in place of a study and a mode.
+    {
+        QList<PropertyDef> settings;
+        if (const fem::NodeKind* own = fem::nodeKind(QStringLiteral("optimization")))
+            for (PropertyDef p : own->properties) {
+                if (p.key == QLatin1String("study")) continue;
+                if (p.key == QLatin1String("objectives")) {
+                    p.choiceLabels = {tr("Expression"), tr("Kind"), tr("Value"), tr("Weight"), tr("Over"), tr("From"), tr("To"), tr("At")};
+                    p.columnChoices = {{}, QStringList{QStringLiteral("MIN"), QStringLiteral("MAX"), QStringLiteral("TARGET"), QStringLiteral("LE"),
+                                                       QStringLiteral("GE"), QStringLiteral("EQ"), QStringLiteral("MON")},
+                                       {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last"), QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("at")},
+                                       {}, {}, {}};
+                    p.tooltip = tr("Each an expression of the solution's values - S21_dB, Z11_re, GD21, VSWR1, Z0, eps_eff, C11, Lloop - and the "
+                                   "parameters, and what is asked of it: MIN as small and MAX as large as it can be; TARGET at Value (least "
+                                   "squares); LE, GE and EQ limits at Value; MON only shown. Weight: how much it counts among the others (1). "
+                                   "Over the frequencies From to To (all of them when empty): its worst (the default, as its kind judges it), its "
+                                   "last, min or max, or at the frequency At.");
+                }
+                settings << p;
+            }
+        add({QStringLiteral("rf_optimization"), tr("Optimization"), QStringLiteral("analysis"), QStringLiteral("study"), none, settings, {}, {},
+             false, false, QStringLiteral("opt"),
+             tr("Varies parameters of the model within their ranges - widths, lengths, a permittivity, a Dimension's By - and solves the model "
+                "by its study for each candidate, to reach its objectives, targets and limits: any method of the multiphysics optimizer "
+                "(differential evolution and its variants, particle swarm, annealing, CMA-ES, Bayesian, Nelder-Mead, trust region, "
+                "Levenberg-Marquardt, NSGA-II's Pareto front, tune), design centering too. The best values and the history in the tab's page, "
+                "kept with the model; Apply Optimum writes them into the parameters.")});
+    }
     add({QStringLiteral("rf_results"), tr("Results"), QString(), QStringLiteral("results"), none, {}, {}, {}, true, true,
          QString(), tr("What the solve found. Quasi-static: each net's capacitance, each as a line with its RLGC and S "
                        "parameters, and the frequency above which that is no longer the whole story. Full wave: the "

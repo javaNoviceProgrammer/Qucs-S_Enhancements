@@ -51,6 +51,9 @@ class QTimer;
 class QToolButton;
 class QUndoStack;
 
+namespace qucs_s::fem {
+class OptimizationPage;
+}
 namespace qucs_s::rf25 {
 
 class SweepPage;
@@ -293,6 +296,16 @@ public:
     /// \a written; false and why where nothing could be.
     bool writeSweepTouchstones(const QString& tag, QStringList* written = nullptr, QString* why = nullptr);
     qucs_s::rf25::SweepPage* sweepPage() const { return a_sweepPage; }
+    /// What Optimization \a tag (empty: the first) found, as its node keeps
+    /// it; empty where it has not run. (runAnalysis() runs one as a sweep:
+    /// its page the multiphysics optimization's, each solve told as it ends.)
+    qucs_s::fem::OptimizationResult optimizationResult(const QString& tag = {}) const;
+    /// The optimum of Optimization \a tag (empty: the first) - a Pareto
+    /// front's design \a point, from 1 - written into the parameters, each in
+    /// the unit its expression has: one step of Undo, the model then solved
+    /// there. What it wrote in \a written; false and why.
+    bool applyOptimum(const QString& tag = {}, int point = 0, QStringList* written = nullptr, QString* why = nullptr);
+    qucs_s::fem::OptimizationPage* optimizationPage() const { return a_optimizationPage; }
     /// Held by what waits on it with the window going on - a tool's call,
     /// from its first wait to its answer, and each waitFor...() -: its tab
     /// closed meanwhile (Stop and Close, a close_document, a tab kept running
@@ -651,7 +664,9 @@ private:
     struct AnalysisRun;
     std::shared_ptr<AnalysisRun> a_analysis;
     qucs_s::rf25::SweepPage* a_sweepPage = nullptr;
+    qucs_s::fem::OptimizationPage* a_optimizationPage = nullptr;
     void analysisDone();
+    bool runOptimizationNode(const qucs_s::rf25::Node& node, QString* why);
     /// The page shows analysis \a tag's result (a sweep's), or hides.
     void showAnalysis(const QString& tag);
     void buildUi();

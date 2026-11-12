@@ -10,6 +10,7 @@
  */
 #include "rf25doc.h"
 #include "rf25analysis.h"
+#include "multiphysicsoptimization.h"
 
 #include "elidedlabel.h"
 #include "main.h"
@@ -299,6 +300,10 @@ struct RF25Doc::AnalysisRun {
     SweepPlan plan;
     RunControl control;
     SweepResult result;
+    // An Optimization's.
+    bool optimization = false;
+    OptimizationPlan search;
+    fem::OptimizationResult found;
 };
 
 struct RF25Doc::PrepareJob {
@@ -626,6 +631,18 @@ void RF25Doc::buildUi()
     a_sweepPage = new SweepPage(a_splitter);
     a_splitter->addWidget(a_sweepPage);
     a_sweepPage->hide();
+    // An Optimization's: the multiphysics optimization's page.
+    a_optimizationPage = new fem::OptimizationPage(a_splitter);
+    a_optimizationPage->setObjectName(QStringLiteral("rfOptimizationPage"));
+    a_splitter->addWidget(a_optimizationPage);
+    a_optimizationPage->hide();
+    connect(a_optimizationPage, &fem::OptimizationPage::applyRequested, this, [this](int point) {
+        const Node* focused = a_model.find(a_focus);
+        const QString tag = focused != nullptr && focused->type == QLatin1String("rf_optimization") ? a_focus : QString();
+        QStringList written;
+        QString why;
+        a_status->setText(applyOptimum(tag, point, &written, &why) ? tr("Written: %1").arg(written.join(QStringLiteral(", "))) : why);
+    });
     connect(a_sweepPage, &SweepPage::touchstoneRequested, this, [this] {
         QStringList written;
         QString why;
@@ -707,7 +724,12 @@ bool RF25Doc::load()
     setDocChanged(false);
     stampedAs(asRead);
     readKeptSolution();
-    if (const Node* sweep = sweepNode(a_model); sweep != nullptr && sweep->props.contains(QStringLiteral("result"))) showAnalysis(sweep->tag);
+    if (const Node* analyses = a_model.root.child(QStringLiteral("rf_analyses")))
+        for (const Node& n : analyses->children)
+            if (n.props.contains(QStringLiteral("result"))) {
+                showAnalysis(n.tag);
+                break;
+            }
     refreshLayout();
     return true;
 }
@@ -729,7 +751,12 @@ bool RF25Doc::reload()
     stampedAs(asRead);
     if (!focus.isEmpty() && a_model.find(focus) != nullptr) focusNode(focus);
     readKeptSolution();
-    if (const Node* sweep = sweepNode(a_model); sweep != nullptr && sweep->props.contains(QStringLiteral("result"))) showAnalysis(sweep->tag);
+    if (const Node* analyses = a_model.root.child(QStringLiteral("rf_analyses")))
+        for (const Node& n : analyses->children)
+            if (n.props.contains(QStringLiteral("result"))) {
+                showAnalysis(n.tag);
+                break;
+            }
     refreshLayout();
     return true;
 }
@@ -2110,7 +2137,8 @@ RF25Doc::Count RF25Doc::countNow() const
         Count c;
         c.of = a_analysis->control.of.load();
         c.done = std::min(a_analysis->control.done.load(), c.of);
-        c.said = tr("%1: %2 of %3 point(s) solved…").arg(a_analysis->name).arg(c.done).arg(c.of);
+        c.said = a_analysis->optimization ? tr("%1: %n solve(s) so far…", nullptr, a_analysis->control.solves.load()).arg(a_analysis->name)
+                                          : tr("%1: %2 of %3 point(s) solved…").arg(a_analysis->name).arg(c.done).arg(c.of);
         c.key = QStringLiteral("analysis");
         return c;
     }
@@ -2362,14 +2390,19 @@ bool RF25Doc::runAnalysis(const QString& tag, QString* why)
     // The one asked for, else the one chosen, else the first.
     QString which = tag;
     if (which.isEmpty())
-        if (const Node* focused = a_model.find(a_focus); focused != nullptr && focused->type == QLatin1String("rf_sweep")) which = a_focus;
+        if (const Node* focused = a_model.find(a_focus);
+            focused != nullptr && (focused->type == QLatin1String("rf_sweep") || focused->type == QLatin1String("rf_optimization")))
+            which = a_focus;
     const Node* node = sweepNode(a_model, which);
+    if (node == nullptr) node = optimizationNode(a_model, which);
     if (node == nullptr)
-        return fail(which.isEmpty() ? tr("The model has no Parametric Sweep: add one under Analyses.") : tr("There is no Parametric Sweep %1.").arg(which));
+        return fail(which.isEmpty() ? tr("The model has no Parametric Sweep or Optimization: add one under Analyses.")
+                                    : tr("There is no Parametric Sweep or Optimization %1.").arg(which));
+    if (!a_layout) return fail(a_layoutProblem.isEmpty() ? tr("The layout has not been read yet.") : a_layoutProblem);
+    if (node->type == QLatin1String("rf_optimization")) return runOptimizationNode(*node, why);
     QString error;
     const std::optional<SweepPlan> plan = sweepPlan(a_model, *node, &error);
     if (!plan) return fail(error);
-    if (!a_layout) return fail(a_layoutProblem.isEmpty() ? tr("The layout has not been read yet.") : a_layoutProblem);
     auto run = std::make_shared<AnalysisRun>();
     run->tag = node->tag;
     run->name = nameOf(*node);
@@ -2399,6 +2432,86 @@ bool RF25Doc::runAnalysis(const QString& tag, QString* why)
     return true;
 }
 
+bool RF25Doc::runOptimizationNode(const Node& node, QString* why)
+{
+    QString error;
+    const std::optional<OptimizationPlan> plan = optimizationPlan(a_model, node, &error);
+    if (!plan) {
+        if (why != nullptr) *why = error;
+        return false;
+    }
+    auto run = std::make_shared<AnalysisRun>();
+    run->tag = node.tag;
+    run->name = nameOf(node);
+    run->model = a_model;
+    run->layout = a_layout;
+    run->called = QFileInfo(a_layoutRead).fileName();
+    run->folder = a_DocName.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : QFileInfo(a_DocName).absolutePath();
+    run->optimization = true;
+    run->search = *plan;
+    run->control.of = 1000;
+    a_analysis = run;
+    a_sweepPage->hide();
+    a_optimizationPage->beginRun(run->name);
+    a_optimizationPage->show();
+    // Each solve told to the page as it ends, on its own thread.
+    QPointer<fem::OptimizationPage> page = a_optimizationPage;
+    fem::OptimizationListener listener;
+    listener.row = [page](const fem::OptimizationRow& row, const QStringList& columns) {
+        QMetaObject::invokeMethod(qApp, [page, row, columns] {
+            if (page) page->addRow(row, columns);
+        }, Qt::QueuedConnection);
+    };
+    QThread* thread = QThread::create([run, listener] {
+        run->found = runOptimization(run->model, run->layout, run->called, run->folder, run->search, run->control, listener);
+        if (const Node* n = optimizationNode(run->model, run->tag)) run->found.setup = analysisSetup(run->model, *n);
+    });
+    thread->setStackSize(8u << 20);
+    connect(thread, &QThread::finished, this, [this, run] {
+        if (run == a_analysis) analysisDone();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });
+    thread->start();
+    a_status->setText(tr("%1: searching…").arg(run->name));
+    showProgress();
+    emit analysedChanged();
+    return true;
+}
+
+fem::OptimizationResult RF25Doc::optimizationResult(const QString& tag) const
+{
+    const Node* node = optimizationNode(a_model, tag);
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return fem::OptimizationResult();
+    return fem::OptimizationResult::fromJson(node->props.value(QLatin1String("result")).toObject());
+}
+
+bool RF25Doc::applyOptimum(const QString& tag, int point, QStringList* written, QString* why)
+{
+    const Node* node = optimizationNode(a_model, tag);
+    if (node == nullptr) {
+        if (why != nullptr) *why = tr("The model has no Optimization.");
+        return false;
+    }
+    Model m = a_model;
+    QStringList said;
+    QString error;
+    if (!qucs_s::rf25::applyOptimum(m, *node, point, &said, &error)) {
+        if (why != nullptr) *why = error;
+        return false;
+    }
+    if (!setModel(m, tr("Apply Optimum"))) {
+        if (why != nullptr) *why = tr("The parameters are at the optimum already.");
+        return false;
+    }
+    if (written != nullptr) *written = said;
+    if (why != nullptr) *why = error;   // (what it could not write, where any)
+    // Solved there, as the multiphysics optimization's Apply Optimum computes
+    // its study.
+    solve();
+    return true;
+}
+
 void RF25Doc::stopAnalysis()
 {
     if (a_analysis) a_analysis->control.requestStop();
@@ -2420,15 +2533,18 @@ void RF25Doc::analysisDone()
     // Kept in its node, saved with the model: not an edit to undo, but the
     // model on disk is no longer the one in the tab.
     if (Node* node = a_model.find(run->tag)) {
-        node->props.insert(QStringLiteral("result"), run->result.toJson());
+        node->props.insert(QStringLiteral("result"), run->optimization ? run->found.toJson() : run->result.toJson());
         setDocChanged(true);
         emit signalFileChanged(true);
         emit modelChanged();
     }
-    a_status->setText(run->result.error.isEmpty()
-                          ? tr("%1: %2 of %3 point(s) solved%4.").arg(run->name).arg(run->result.solved).arg(run->result.points.size())
-                                .arg(run->result.stopped ? tr(", stopped") : QString())
-                          : tr("%1: %2").arg(run->name, run->result.error));
+    if (run->optimization)
+        a_status->setText(run->found.error.isEmpty() ? tr("%1: %2").arg(run->name, run->found.summary) : tr("%1: %2").arg(run->name, run->found.error));
+    else
+        a_status->setText(run->result.error.isEmpty()
+                              ? tr("%1: %2 of %3 point(s) solved%4.").arg(run->name).arg(run->result.solved).arg(run->result.points.size())
+                                    .arg(run->result.stopped ? tr(", stopped") : QString())
+                              : tr("%1: %2").arg(run->name, run->result.error));
     showAnalysis(run->tag);
     showProgress();
     emit analysedChanged();
@@ -2450,18 +2566,23 @@ bool RF25Doc::analysisOld(const QString& tag) const
 
 void RF25Doc::showAnalysis(const QString& tag)
 {
-    if (a_sweepPage == nullptr) return;
+    if (a_sweepPage == nullptr || a_optimizationPage == nullptr) return;
     const Node* node = a_model.find(tag);
     if (a_analysis && a_analysis->tag == tag) {
+        (a_analysis->optimization ? static_cast<QWidget*>(a_optimizationPage) : a_sweepPage)->show();
+        (a_analysis->optimization ? static_cast<QWidget*>(a_sweepPage) : a_optimizationPage)->hide();
+        return;
+    }
+    a_sweepPage->hide();
+    a_optimizationPage->hide();
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return;
+    if (node->type == QLatin1String("rf_sweep")) {
+        a_sweepPage->showResult(nameOf(*node), sweepResult(tag), analysisOld(tag));
         a_sweepPage->show();
-        return;
+    } else if (node->type == QLatin1String("rf_optimization")) {
+        a_optimizationPage->showResult(nameOf(*node), optimizationResult(tag), analysisOld(tag));
+        a_optimizationPage->show();
     }
-    if (node == nullptr || node->type != QLatin1String("rf_sweep") || !node->props.value(QLatin1String("result")).isObject()) {
-        a_sweepPage->hide();
-        return;
-    }
-    a_sweepPage->showResult(nameOf(*node), sweepResult(tag), analysisOld(tag));
-    a_sweepPage->show();
 }
 
 bool RF25Doc::writeSweepTouchstones(const QString& tag, QStringList* written, QString* why)
@@ -3217,6 +3338,7 @@ void RF25Doc::focusNode(const QString& tag)
 {
     a_focus = tag;
     a_stack->setFocused(tag);
-    if (const Node* n = a_model.find(tag); n != nullptr && n->type == QLatin1String("rf_sweep")) showAnalysis(tag);
+    if (const Node* n = a_model.find(tag); n != nullptr && (n->type == QLatin1String("rf_sweep") || n->type == QLatin1String("rf_optimization")))
+        showAnalysis(tag);
     emit focusChanged(tag);
 }
