@@ -160,7 +160,7 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("rf_model"), tr("RF 2.5D Model"), QString(), QStringLiteral("model"), none,
          {text(QStringLiteral("description"), tr("Description"), QString())},
          {QStringLiteral("rf_parameters"), QStringLiteral("rf_stack"), QStringLiteral("rf_layout"),
-          QStringLiteral("rf_ports"), QStringLiteral("rf_mesh"), QStringLiteral("rf_study"),
+          QStringLiteral("rf_ports"), QStringLiteral("rf_mesh"), QStringLiteral("rf_study"), QStringLiteral("rf_analyses"),
           QStringLiteral("rf_results"), QStringLiteral("rf_exports")},
          {}, true, true, QString(),
          tr("A planar structure: a stack in z, a layout in x and y, ports on its metals, and a frequency sweep that "
@@ -590,6 +590,29 @@ QList<NodeKind> makeKinds()
          tr("The frequencies to solve at, and by which solver. The quasi-static one solves the charge once and reads "
             "the frequencies for a line's R and G and its S-parameters; the full-wave one solves the currents at each "
             "frequency, driven at the ports, for their S.")});
+    // What varies the parameters: a sweep over their values, an optimization.
+    add({QStringLiteral("rf_analyses"), tr("Analyses"), QString(), QStringLiteral("study"), none, {},
+         {QStringLiteral("rf_sweep")}, {}, false, true, QStringLiteral("analyses"),
+         tr("What varies the model's parameters, each point a whole solve by the study: a Parametric Sweep over their "
+            "values, an Optimization that searches them for what is asked of the results.")});
+    add({QStringLiteral("rf_sweep"), tr("Parametric Sweep"), QStringLiteral("analysis"), QStringLiteral("study"), none,
+         {rows(QStringLiteral("parameters"), tr("Parameters"), {tr("Parameter"), tr("From"), tr("To"), tr("Points"), tr("Spacing"), tr("List")},
+               tr("One or two of the model's parameters, each over From to To in Points (linear, or log for logarithmic), or over "
+                  "its List of values apart by commas (10[um], 20[um], 40[um])")),
+          choice(QStringLiteral("combine"), tr("Two parameters"), {QStringLiteral("crossed"), QStringLiteral("paired")},
+                 {tr("Crossed: each value of the first with each of the second"), tr("Paired: the first of each, then the second...")},
+                 QStringLiteral("crossed")),
+          rows(QStringLiteral("quantities"), tr("Quantities"), {tr("Expression"), tr("Over"), tr("From"), tr("To"), tr("At")},
+               tr("What is read at each point: an expression of the solution's values and the parameters - S21_dB, Z11_re, GD21, "
+                  "VSWR1, Z0, eps_eff, C11, Lloop - over the frequencies From to To (all of them when empty), Over its last "
+                  "(the default), min, max, or at the frequency At")),
+          integer(QStringLiteral("parallel"), tr("Solves at once"), 1,
+                  tr("How many points are solved at a time: each takes the memory of a solve, and the machine's threads are "
+                     "shared between them"))},
+         {}, {}, false, false, QStringLiteral("sweep"),
+         tr("The model solved at each value of one or two of its parameters - a width, a length, a permittivity -, each "
+            "point a whole solve by the study, the quantities asked read at each: a table and a plot of them, and each "
+            "point's S for a Touchstone file. What it found is kept with the model, marked old once the model changes.")});
     add({QStringLiteral("rf_results"), tr("Results"), QString(), QStringLiteral("results"), none, {}, {}, {}, true, true,
          QString(), tr("What the solve found. Quasi-static: each net's capacitance, each as a line with its RLGC and S "
                        "parameters, and the frequency above which that is no longer the whole story. Full wave: the "

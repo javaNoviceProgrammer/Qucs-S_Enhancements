@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "rf25doc.h"
+#include "rf25analysis.h"
 
 #include "elidedlabel.h"
 #include "main.h"
@@ -290,6 +291,16 @@ struct RF25Doc::Job {
 /// layer map applied and the processing run over the layout as read, and
 /// those shapes divided into cells. The model is copied and the layout
 /// held, so that an edit while it runs changes neither under it.
+struct RF25Doc::AnalysisRun {
+    QString tag, name;
+    Model model;
+    std::shared_ptr<const Layout> layout;
+    QString called, folder;
+    SweepPlan plan;
+    RunControl control;
+    SweepResult result;
+};
+
 struct RF25Doc::PrepareJob {
     Model model;
     std::shared_ptr<const Layout> layout;
@@ -356,6 +367,7 @@ RF25Doc::~RF25Doc()
     // And a full-wave sweep stops at its next frequency rather than run on
     // for minutes for nothing.
     if (a_solveJob) a_solveJob->stop = true;
+    if (a_analysis) a_analysis->control.requestStop();
 }
 
 Model RF25Doc::starterModel()
@@ -610,6 +622,17 @@ void RF25Doc::buildUi()
     a_problemsText->setMaximumBlockCount(400);
     a_splitter->addWidget(a_sides);
     a_splitter->addWidget(a_problemsText);
+    // A Parametric Sweep's page, shown while its node is chosen or it runs.
+    a_sweepPage = new SweepPage(a_splitter);
+    a_splitter->addWidget(a_sweepPage);
+    a_sweepPage->hide();
+    connect(a_sweepPage, &SweepPage::touchstoneRequested, this, [this] {
+        QStringList written;
+        QString why;
+        const Node* focused = a_model.find(a_focus);
+        const QString tag = focused != nullptr && focused->type == QLatin1String("rf_sweep") ? a_focus : QString();
+        a_status->setText(writeSweepTouchstones(tag, &written, &why) ? tr("Written: %1").arg(written.join(QStringLiteral(", "))) : why);
+    });
     a_splitter->setStretchFactor(0, 5);
     a_splitter->setStretchFactor(1, 1);
     a_splitter->setSizes({560, 150});
@@ -644,6 +667,7 @@ void RF25Doc::buildUi()
     a_progressStop->hide();
     connect(a_progressStop, &QToolButton::clicked, this, [this] {
         if (isSolving()) stopSolving();
+        else if (isAnalysing()) stopAnalysis();
     });
     statusRow->addWidget(a_progressStop);
     all->addLayout(statusRow);
@@ -683,6 +707,7 @@ bool RF25Doc::load()
     setDocChanged(false);
     stampedAs(asRead);
     readKeptSolution();
+    if (const Node* sweep = sweepNode(a_model); sweep != nullptr && sweep->props.contains(QStringLiteral("result"))) showAnalysis(sweep->tag);
     refreshLayout();
     return true;
 }
@@ -704,6 +729,7 @@ bool RF25Doc::reload()
     stampedAs(asRead);
     if (!focus.isEmpty() && a_model.find(focus) != nullptr) focusNode(focus);
     readKeptSolution();
+    if (const Node* sweep = sweepNode(a_model); sweep != nullptr && sweep->props.contains(QStringLiteral("result"))) showAnalysis(sweep->tag);
     refreshLayout();
     return true;
 }
@@ -2079,6 +2105,15 @@ bool RF25Doc::waitForSolvesToEnd(int ms)
 
 RF25Doc::Count RF25Doc::countNow() const
 {
+    // A sweep running, no solve of the tab's own: its points.
+    if (a_analysis && !a_solveJob && !a_solveWhenPrepared) {
+        Count c;
+        c.of = a_analysis->control.of.load();
+        c.done = std::min(a_analysis->control.done.load(), c.of);
+        c.said = tr("%1: %2 of %3 point(s) solved…").arg(a_analysis->name).arg(c.done).arg(c.of);
+        c.key = QStringLiteral("analysis");
+        return c;
+    }
     // Nought of nought is busy: the quasi-static extraction, which cannot
     // say how far it has got, and a solve waiting for its mesh.
     const SolveJob* job = a_solveJob.get();
@@ -2162,7 +2197,7 @@ QString RF25Doc::leftSaid(double seconds)
 
 void RF25Doc::showProgress()
 {
-    if (!isSolving()) {
+    if (!isSolving() && !isAnalysing()) {
         a_progress->stop();
         a_progressBar->hide();
         a_progressStop->hide();
@@ -2315,6 +2350,152 @@ bool RF25Doc::waitForSolved(int ms)
     while ((a_solveJob || a_solveWhenPrepared) && !a_closed && t.elapsed() < ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     return !a_solveJob && !a_solveWhenPrepared;
+}
+
+bool RF25Doc::runAnalysis(const QString& tag, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return false;
+    };
+    if (a_analysis) return fail(tr("%1 is running: stop it first, or wait for it.").arg(a_analysis->name));
+    // The one asked for, else the one chosen, else the first.
+    QString which = tag;
+    if (which.isEmpty())
+        if (const Node* focused = a_model.find(a_focus); focused != nullptr && focused->type == QLatin1String("rf_sweep")) which = a_focus;
+    const Node* node = sweepNode(a_model, which);
+    if (node == nullptr)
+        return fail(which.isEmpty() ? tr("The model has no Parametric Sweep: add one under Analyses.") : tr("There is no Parametric Sweep %1.").arg(which));
+    QString error;
+    const std::optional<SweepPlan> plan = sweepPlan(a_model, *node, &error);
+    if (!plan) return fail(error);
+    if (!a_layout) return fail(a_layoutProblem.isEmpty() ? tr("The layout has not been read yet.") : a_layoutProblem);
+    auto run = std::make_shared<AnalysisRun>();
+    run->tag = node->tag;
+    run->name = nameOf(*node);
+    run->model = a_model;
+    run->layout = a_layout;
+    run->called = QFileInfo(a_layoutRead).fileName();
+    run->folder = a_DocName.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : QFileInfo(a_DocName).absolutePath();
+    run->plan = *plan;
+    run->control.of = int(plan->points().size());
+    a_analysis = run;
+    a_sweepPage->beginRun(run->name);
+    a_sweepPage->show();
+    QThread* thread = QThread::create([run] {
+        run->result = runSweep(run->model, run->layout, run->called, run->folder, run->plan, run->control);
+        if (const Node* n = sweepNode(run->model, run->tag)) run->result.setup = analysisSetup(run->model, *n);
+    });
+    thread->setStackSize(8u << 20);
+    connect(thread, &QThread::finished, this, [this, run] {
+        if (run == a_analysis) analysisDone();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });
+    thread->start();
+    a_status->setText(tr("%1: solving %n point(s)…", nullptr, run->control.of.load()).arg(run->name));
+    showProgress();
+    emit analysedChanged();
+    return true;
+}
+
+void RF25Doc::stopAnalysis()
+{
+    if (a_analysis) a_analysis->control.requestStop();
+}
+
+bool RF25Doc::waitForAnalysis(int ms)
+{
+    const Held held(this);
+    QElapsedTimer t;
+    t.start();
+    while (a_analysis && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_analysis;
+}
+
+void RF25Doc::analysisDone()
+{
+    const std::shared_ptr<AnalysisRun> run = a_analysis;
+    a_analysis.reset();
+    // Kept in its node, saved with the model: not an edit to undo, but the
+    // model on disk is no longer the one in the tab.
+    if (Node* node = a_model.find(run->tag)) {
+        node->props.insert(QStringLiteral("result"), run->result.toJson());
+        setDocChanged(true);
+        emit signalFileChanged(true);
+        emit modelChanged();
+    }
+    a_status->setText(run->result.error.isEmpty()
+                          ? tr("%1: %2 of %3 point(s) solved%4.").arg(run->name).arg(run->result.solved).arg(run->result.points.size())
+                                .arg(run->result.stopped ? tr(", stopped") : QString())
+                          : tr("%1: %2").arg(run->name, run->result.error));
+    showAnalysis(run->tag);
+    showProgress();
+    emit analysedChanged();
+}
+
+SweepResult RF25Doc::sweepResult(const QString& tag) const
+{
+    const Node* node = sweepNode(a_model, tag);
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return SweepResult();
+    return SweepResult::fromJson(node->props.value(QLatin1String("result")).toObject());
+}
+
+bool RF25Doc::analysisOld(const QString& tag) const
+{
+    const Node* node = a_model.find(tag);
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return false;
+    return node->props.value(QLatin1String("result")).toObject().value(QLatin1String("setup")).toString() != analysisSetup(a_model, *node);
+}
+
+void RF25Doc::showAnalysis(const QString& tag)
+{
+    if (a_sweepPage == nullptr) return;
+    const Node* node = a_model.find(tag);
+    if (a_analysis && a_analysis->tag == tag) {
+        a_sweepPage->show();
+        return;
+    }
+    if (node == nullptr || node->type != QLatin1String("rf_sweep") || !node->props.value(QLatin1String("result")).isObject()) {
+        a_sweepPage->hide();
+        return;
+    }
+    a_sweepPage->showResult(nameOf(*node), sweepResult(tag), analysisOld(tag));
+    a_sweepPage->show();
+}
+
+bool RF25Doc::writeSweepTouchstones(const QString& tag, QStringList* written, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return false;
+    };
+    const Node* node = sweepNode(a_model, tag);
+    if (node == nullptr) return fail(tr("The model has no Parametric Sweep."));
+    const SweepResult r = sweepResult(node->tag);
+    if (r.points.isEmpty()) return fail(tr("%1 has not been run: run it first.").arg(nameOf(*node)));
+    if (a_DocName.isEmpty()) return fail(tr("Save the model first: the files are written beside it."));
+    const QFileInfo model(a_DocName);
+    const QString stem = model.completeBaseName() + QLatin1Char('_') + node->tag;
+    QStringList done;
+    for (int i = 0; i < r.points.size(); ++i) {
+        const std::shared_ptr<FullWave> w = r.waveOf(i);
+        if (!w) continue;
+        QStringList comments{tr("RF 2.5D model %1, Parametric Sweep %2, point %3:").arg(model.fileName(), nameOf(*node)).arg(i + 1)};
+        for (int a = 0; a < r.parameters && a < r.points.at(i).values.size(); ++a)
+            comments << QStringLiteral("  %1 = %2 %3").arg(r.columns.at(a)).arg(r.points.at(i).values.at(a), 0, 'g', 9).arg(r.units.value(a));
+        const QString text = touchstoneOf(*w, 50, comments);
+        if (text.isEmpty()) continue;
+        const QString path = model.absoluteDir().absoluteFilePath(QStringLiteral("%1_%2.s%3p").arg(stem).arg(i + 1).arg(w->portNames.size()));
+        QSaveFile f(path);
+        if (!f.open(QIODevice::WriteOnly)) return fail(tr("%1 could not be written: %2").arg(path, f.errorString()));
+        f.write(text.toUtf8());
+        if (!f.commit()) return fail(tr("%1 could not be written: %2").arg(path, f.errorString()));
+        done << QFileInfo(path).fileName();
+    }
+    if (done.isEmpty()) return fail(tr("%1 has no full-wave point to write: its study solves quasi-statically.").arg(nameOf(*node)));
+    if (written != nullptr) *written = done;
+    return true;
 }
 
 QStringList RF25Doc::lineSummary() const
@@ -3036,5 +3217,6 @@ void RF25Doc::focusNode(const QString& tag)
 {
     a_focus = tag;
     a_stack->setFocused(tag);
+    if (const Node* n = a_model.find(tag); n != nullptr && n->type == QLatin1String("rf_sweep")) showAnalysis(tag);
     emit focusChanged(tag);
 }

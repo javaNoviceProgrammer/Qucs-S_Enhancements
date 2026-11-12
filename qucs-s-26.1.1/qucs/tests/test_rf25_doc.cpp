@@ -64,6 +64,7 @@
 #include "qucs.h"
 #include "layoutdoc.h"
 #include "rf25doc.h"
+#include "rf25analysis.h"
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_optimize.h"
 #include "rf25/rf25_dielectric.h"
@@ -3303,6 +3304,160 @@ private slots:
         QString why;
         QVERIFY2(rf::readingValue(v, ps, r, qucs_s::optimization::Goal(), &value, &dim, &why), qPrintable(why));
         QVERIFY(std::abs(value - (at("Z0", 2) - 50)) < 1e-9);
+        app->closeAllFiles();
+    }
+
+    // A Parametric Sweep (phase 6 of RF 2.5D's optimization): a strip of the
+    // model's own, L by w, swept over w in the background from the RF 2.5D
+    // menu - the bar counting its points -, each point a whole quasi-static
+    // solve: Z0 falling and C11 rising with w, each point's Z0 the model's
+    // own at that width solved alone, the same two at a time as one at a
+    // time. Its page: the table of the points, the plot of a quantity. Kept
+    // in its node and saved with the model, shown again on opening; old once
+    // another parameter changes. Two parameters crossed; a stop; one at a
+    // time; full wave, each point's Touchstone file.
+    void aParametricSweepVariesTheWidth()
+    {
+        const QString refFile = fullWaveLine(QStringLiteral("swept_ref.qrf25"));
+        QVERIFY(!refFile.isEmpty());
+        rf::Model m;
+        {
+            QFile f(refFile);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            m = *read;
+        }
+        m.layout().props.insert(QStringLiteral("file"), QString());
+        m.root.child(QStringLiteral("rf_parameters"))
+            ->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "1000[um]"}});
+        QVERIFY(m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) != nullptr);
+        rf::Node strip = m.make(QStringLiteral("rf_shape"));
+        strip.props = QJsonObject{{"layer", "M1"}, {"x", "0"}, {"y", "0"}, {"width", "L"}, {"height", "w"}};
+        QVERIFY(m.add(m.layout().child(QStringLiteral("rf_shapes"))->tag, strip) != nullptr);
+        m.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("kind"), QStringLiteral("quasi_static"));
+        QVERIFY(m.add(m.root.tag, m.make(QStringLiteral("rf_analyses"))) != nullptr);
+        rf::Node sweep = m.make(QStringLiteral("rf_sweep"));
+        sweep.props = QJsonObject{{"parameters", QJsonArray() << QJsonArray{"w", "", "", "", "", "30[um], 50[um], 80[um]"}},
+                                  {"quantities", QJsonArray{QJsonArray{"Z0"}, QJsonArray{"C11", "max"}}}};
+        const rf::Node* added = m.add(m.root.child(QStringLiteral("rf_analyses"))->tag, sweep);
+        QVERIFY(added != nullptr);
+        const QString tag = added->tag;
+        const QString file = path(QStringLiteral("swept.qrf25"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->sweepPage() != nullptr && doc->sweepPage()->isHidden());
+
+        // Run from the menu.
+        QAction* item = app->rf25Menu()->findChild<QAction*>(QStringLiteral("rfSweepAction"));
+        QVERIFY(item != nullptr);
+        emit app->rf25Menu()->aboutToShow();
+        QVERIFY(item->isEnabled());
+        item->trigger();
+        QVERIFY(doc->isAnalysing());
+        QString why;
+        QVERIFY(!doc->runAnalysis(QString(), &why));   // (one at a time)
+        QVERIFY2(why.contains(QStringLiteral("is running")), qPrintable(why));
+        QVERIFY(doc->waitForAnalysis(600000));
+        QVERIFY(!doc->isAnalysing());
+        const rf::SweepResult r = doc->sweepResult(tag);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(r.points.size(), 3);
+        QCOMPARE(r.solved, 3);
+        QCOMPARE(r.columns, (QStringList{QStringLiteral("w"), QStringLiteral("Z0"), QStringLiteral("C11")}));
+        QCOMPARE(r.units.at(1), qucs_s::fem::dimName(qucs_s::fem::parseUnit(QStringLiteral("Ohm"))->dim));
+        const auto z0 = [&r](int i) { return r.points.at(i).measured.at(0); };
+        const auto c11 = [&r](int i) { return r.points.at(i).measured.at(1); };
+        QVERIFY2(z0(0) > z0(1) && z0(1) > z0(2), qPrintable(QStringLiteral("%1 %2 %3").arg(z0(0)).arg(z0(1)).arg(z0(2))));
+        QVERIFY(c11(0) < c11(1) && c11(1) < c11(2));
+        // The point at 50 µm: the model as it is, solved alone.
+        {
+            rf::SolveJob job;
+            const rf::ModelSolution alone = rf::solveModel(job, doc->model(), *doc->layout(), QString(), QFileInfo(file).absolutePath());
+            QVERIFY2(alone.ok(), qPrintable(alone.problem));
+            const rf::SolutionValues v = rf::solutionValues(alone, doc->model());
+            QVERIFY2(std::abs(v.at.last().at(v.index(QStringLiteral("Z0"))) - z0(1)) < 1e-9 * z0(1), qPrintable(QString::number(z0(1))));
+        }
+        // Its page.
+        rf::SweepPage* page = doc->sweepPage();
+        QVERIFY(!page->isHidden());
+        QCOMPARE(page->table()->rowCount(), 3);
+        QCOMPARE(page->quantityBox()->count(), 2);
+        QCOMPARE(page->plot()->lines().size(), 1);
+        QCOMPARE(page->plot()->lines().at(0).size(), 3);
+        QVERIFY(page->summaryLabel()->text().contains(QStringLiteral("3 solved")));
+        QVERIFY(!doc->analysisOld(tag));
+
+        // Two at a time: the same.
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("parallel"), 2); }, QStringLiteral("parallel")));
+        QVERIFY2(doc->runAnalysis(tag, &why), qPrintable(why));
+        QVERIFY(doc->waitForAnalysis(600000));
+        const rf::SweepResult two = doc->sweepResult(tag);
+        QCOMPARE(two.solved, 3);
+        for (int i = 0; i < 3; ++i) QCOMPARE(two.points.at(i).measured, r.points.at(i).measured);
+
+        // Kept with the model: saved, read again, shown again.
+        QVERIFY(doc->save() == 0 || QFileInfo(file).exists());
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->sweepResult(tag).points.size(), 3);
+        QVERIFY(!doc->sweepPage()->isHidden());
+        QVERIFY(!doc->analysisOld(tag));
+        // Another parameter changed: old.
+        QVERIFY(doc->editNode(doc->model().root.child(QStringLiteral("rf_parameters"))->tag, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "900[um]"}});
+        }, QStringLiteral("L")));
+        QVERIFY(doc->analysisOld(tag));
+        QVERIFY(doc->waitForPrepared(60000));
+
+        // Two parameters crossed: four points, a line for each L.
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("parameters"), QJsonArray{QJsonArray{"w", "", "", "", "", "30[um], 60[um]"},
+                                                                    QJsonArray{"L", "", "", "", "", "800[um], 1000[um]"}});
+        }, QStringLiteral("two")));
+        doc->focusNode(tag);
+        QVERIFY2(doc->runAnalysis(QString(), &why), qPrintable(why));
+        QVERIFY(doc->waitForAnalysis(600000));
+        QCOMPARE(doc->sweepResult(tag).points.size(), 4);
+        QCOMPARE(doc->sweepPage()->plot()->lines().size(), 2);
+
+        // A stop: what it has kept, said stopped.
+        QVERIFY(doc->runAnalysis(tag, &why));
+        doc->stopAnalysis();
+        QVERIFY(doc->waitForAnalysis(600000));
+        const rf::SweepResult stopped = doc->sweepResult(tag);
+        QVERIFY(stopped.stopped);
+        QVERIFY(stopped.solved < 4);
+
+        // Full wave: each point's Touchstone file beside the model.
+        QVERIFY(doc->editNode(doc->model().root.child(QStringLiteral("rf_study"))->tag, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("kind"), QStringLiteral("full_wave"));
+            n.props.insert(QStringLiteral("points"), 1);
+        }, QStringLiteral("full wave")));
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("parameters"), QJsonArray() << QJsonArray{"w", "", "", "", "", "40[um], 60[um]"});
+            n.props.insert(QStringLiteral("quantities"), QJsonArray() << QJsonArray{"S21_dB"});
+        }, QStringLiteral("full wave")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->runAnalysis(tag, &why), qPrintable(why));
+        QVERIFY(doc->waitForAnalysis(600000));
+        QCOMPARE(doc->sweepResult(tag).solved, 2);
+        QVERIFY(doc->sweepPage()->touchstoneButton()->isEnabled());
+        QStringList written;
+        QVERIFY2(doc->writeSweepTouchstones(tag, &written, &why), qPrintable(why));
+        QCOMPARE(written.size(), 2);
+        QFile first(QFileInfo(file).absoluteDir().absoluteFilePath(written.first()));
+        QVERIFY(first.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(first.readAll());
+        QVERIFY2(text.contains(QStringLiteral("w = 4e-05")) && text.contains(QStringLiteral("# ")), qPrintable(text.left(400)));
         app->closeAllFiles();
     }
 

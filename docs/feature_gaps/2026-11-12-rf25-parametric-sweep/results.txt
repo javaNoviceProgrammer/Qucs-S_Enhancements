@@ -1,0 +1,19 @@
+===== what each break did =====
+two parameters always paired                                   aParametricSweepsPlan failed (caught); aParametricSweepVariesTheWidth failed (caught)
+a logarithmic sweep linear                                     aParametricSweepsPlan failed (caught)
+a point solved with the model's own parameters                 aParametricSweepVariesTheWidth failed (caught)
+a parameter's override not written into its row                aParametricSweepsPlan failed (caught); aParametricSweepVariesTheWidth failed (caught)
+a quantity read worst when a sweep has no goal                 aParametricSweepsPlan failed (caught)
+a result's S not kept                                          aParametricSweepsPlan failed (caught); aParametricSweepVariesTheWidth failed (caught)
+what a result is of changing with the parameters it varies     aParametricSweepsPlan failed (caught); aParametricSweepVariesTheWidth PASSED - NOT CAUGHT
+a stop not reaching the solve under way                        aStopReachesTheSolvesUnderWay failed (caught); aParametricSweepVariesTheWidth PASSED - NOT CAUGHT
+a run's result not kept in its node                            aParametricSweepVariesTheWidth failed (caught)
+two runs at once                                               aParametricSweepVariesTheWidth failed (caught)
+the page's plot of nothing                                     aParametricSweepVariesTheWidth failed (caught)
+no Touchstone files of a full-wave sweep                       aParametricSweepVariesTheWidth failed (caught)
+
+0 of 12 uncaught
+
+(The first run left break 8 uncaught: the tab's stop comes before any point
+begins, so the loop's own check stops it. aStopReachesTheSolvesUnderWay was
+added for it; BRK_ONLY=8 then caught it.)
