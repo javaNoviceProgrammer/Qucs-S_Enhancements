@@ -608,6 +608,9 @@ private:
                                                                double tolerance, QStringList* notes);
     /// A convergence check's meshes, each solved, on the job's thread.
     static void convergeOn(SolveJob& job);
+    /// \a wave calibrated by the job's TRL standards (rf25_trl.h), each
+    /// solved here at its frequencies, on the job's thread.
+    static std::shared_ptr<qucs_s::rf25::FullWave> trlOn(SolveJob& job, const qucs_s::rf25::FullWave& wave);
     /// stopSolving() but for the bar: a solve let go to be started again at
     /// once - on an edit's mesh, or as solveWith() asks - keeps it.
     void letSolveGo();
