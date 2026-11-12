@@ -9,6 +9,8 @@
  * (at your option) any later version.
  */
 #include "rf25doc.h"
+#include "rf25analysis.h"
+#include "multiphysicsoptimization.h"
 
 #include "elidedlabel.h"
 #include "main.h"
@@ -66,42 +68,29 @@ using qucs_s::layout::LayoutView;
 
 namespace {
 
-/// How the study asks a full-wave solve to hold its system (its Matrix).
-FullWaveControl::Matrix studyMatrix(const Model& model)
+/// The layout under a model of its own shapes alone, which names no file:
+/// one empty cell, the same one each time (a tab knows it by it).
+std::shared_ptr<const Layout> ownShapesLayout()
 {
-    const Node* study = model.root.child(QStringLiteral("rf_study"));
-    const QString matrix = study != nullptr ? textOf(*study, QStringLiteral("matrix")) : QString();
-    if (matrix == QLatin1String("dense")) return FullWaveControl::Matrix::Dense;
-    if (matrix == QLatin1String("compressed")) return FullWaveControl::Matrix::Compressed;
-    return FullWaveControl::Matrix::Automatic;
+    static const std::shared_ptr<const Layout> empty = [] {
+        auto l = std::make_shared<Layout>();
+        qucs_s::layout::Cell top;
+        top.name = QStringLiteral("TOP");
+        l->cells << top;
+        l->topCells << 0;
+        l->byName.insert(top.name, 0);
+        return std::shared_ptr<const Layout>(l);
+    }();
+    return empty;
 }
 
-/// Whether the model's mesh is for a full-wave solve held compressed - the
-/// study's Solver full wave, and its Matrix not dense: then the mesh may
-/// have as many cells as that holds (MeshSettings::compressed).
-bool meshedCompressed(const Model& model)
+/// Whether \a model has a shape of its own (Layout > Shapes) enabled.
+bool hasOwnShapes(const Model& model)
 {
-    const Node* study = model.root.child(QStringLiteral("rf_study"));
-    return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave")
-           && studyMatrix(model) != FullWaveControl::Matrix::Dense;
-}
-
-/// How the tab meshes \a model: its Mesh node's settings, held compressed as
-/// its study is, and narrow gaps graded - the structure and, for a full-wave
-/// study, the strips of its ports' feeds alike (calibrate()). For both
-/// studies: a quasi-static one's capacitance is in the charge crowding on
-/// both edges of a gap (a coplanar line's 6 µm gaps on four cells across
-/// left it 10 % short), and a full-wave one's loss and impedance too in the
-/// current crowding there (a measured coplanar line on alumina lost 19 %
-/// under its 2D eddy-current solve on the edges' one halving, its impedance
-/// 17 % over; 1 % under to 10 % over on the graded edges, its impedance 6 %
-/// over).
-MeshSettings tabMeshSettings(const Model& model, QStringList* said)
-{
-    MeshSettings how = meshSettingsOf(model.mesh(), model.parameters(), said);
-    how.compressed = meshedCompressed(model);
-    how.gaps = true;
-    return how;
+    const Node* own = model.layout().child(QStringLiteral("rf_shapes"));
+    return own != nullptr && std::any_of(own->children.cbegin(), own->children.cend(), [](const Node& n) {
+        return n.enabled && n.type == QLatin1String("rf_shape");
+    });
 }
 
 const char* const kShowProcessedKey = "RF25/showProcessed";
@@ -126,257 +115,6 @@ QList<QColor> currentRamp(int bands = 8)
         const QColor& c = anchors.at(i + 1);
         out << QColor(int(std::lround(a.red() + u * (c.red() - a.red()))), int(std::lround(a.green() + u * (c.green() - a.green()))),
                       int(std::lround(a.blue() + u * (c.blue() - a.blue()))), 235);
-    }
-    return out;
-}
-
-/// The model's ports as the full-wave solve takes them: an edge port on its
-/// metal, facing the way it says; an internal port from the metal it names
-/// (or the ground) to the other; each with its own reference and its
-/// de-embedding. One that cannot be read is \a problem, and nothing is
-/// returned.
-/// The model's Return Conductors as the solvers take them: each one's point,
-/// in the layout's units, on its metal. One whose point is no number is
-/// \a problem, and nothing is returned.
-QList<ReturnMark> returnMarksOf(const Model& model, QString* problem)
-{
-    QList<ReturnMark> out;
-    for (const Node& node : model.ports().children) {
-        if (!node.enabled || node.type != QLatin1String("rf_return")) continue;
-        bool okX = true, okY = true;
-        const double x = numberOf(node, QStringLiteral("x"), model, 0, &okX);
-        const double y = numberOf(node, QStringLiteral("y"), model, 0, &okY);
-        if (!okX || !okY) {
-            *problem = QCoreApplication::translate("RF25Doc", "%1's %2 is not a number.")
-                           .arg(node.label.isEmpty() ? node.tag : node.label, !okX ? QStringLiteral("x") : QStringLiteral("y"));
-            return {};
-        }
-        out << ReturnMark{QPointF(x, y) / 1e-6, textOf(node, QStringLiteral("conductor")).trimmed()};
-    }
-    return out;
-}
-
-QList<FullWavePort> portsOf(const Model& model, QString* problem);
-
-/// A standard of a TRL calibration - the model in \a path, read, its layout
-/// read and processed and meshed as its own tab would - solved full-wave as
-/// it is at \a frequencies, its ports as the model has them, under
-/// \a control's stop. Empty and why in \a why where it cannot be.
-std::optional<FullWave> solvedStandard(const QString& path, const QList<double>& frequencies, const FullWaveControl& control,
-                                       QString* why)
-{
-    const auto fail = [why](const QString& text) {
-        *why = text;
-        return std::optional<FullWave>();
-    };
-    const QString name = QFileInfo(path).fileName();
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return fail(QCoreApplication::translate("RF25Doc", "%1 could not be read: %2.").arg(name, f.errorString()));
-    QString notes;
-    const std::optional<Model> model = Model::fromJson(f.readAll(), &notes);
-    if (!model) return fail(QCoreApplication::translate("RF25Doc", "%1 is no RF 2.5D model: %2").arg(name, notes));
-    const QString named = textOf(model->layout(), QStringLiteral("file")).trimmed();
-    if (named.isEmpty()) return fail(QCoreApplication::translate("RF25Doc", "%1 names no layout.").arg(name));
-    const QString layoutPath = QFileInfo(named).isAbsolute() ? named : QFileInfo(path).absoluteDir().absoluteFilePath(named);
-    QString error;
-    std::atomic_bool cancelled{false};
-    qucs_s::layout::Progress progress{0};
-    const std::shared_ptr<const qucs_s::layout::Layout> read = qucs_s::layout::read(layoutPath, &error, &cancelled, &progress);
-    if (!read) return fail(QCoreApplication::translate("RF25Doc", "%1's layout could not be read: %2").arg(name, error));
-    const Processed processed = processRead(*model, *read, QFileInfo(layoutPath).fileName());
-    if (!processed.ok()) return fail(QCoreApplication::translate("RF25Doc", "%1: %2").arg(name, processed.problems.join(QLatin1Char(' '))));
-    QStringList said;
-    const Mesh mesh = meshOf(processed.conductors, tabMeshSettings(*model, &said), model->stack(), topFrequency(*model));
-    QString problem;
-    const QList<FullWavePort> ports = portsOf(*model, &problem);
-    if (!problem.isEmpty()) return fail(QCoreApplication::translate("RF25Doc", "%1: %2").arg(name, problem));
-    if (ports.size() != 2) return fail(QCoreApplication::translate("RF25Doc", "%1 has %2 port(s): a standard has two.").arg(name).arg(ports.size()));
-    const QList<ReturnMark> returns = returnMarksOf(*model, &problem);
-    FullWaveControl c = control;
-    c.extents.clear();
-    const Stack stack = model->stack();
-    for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it)
-        if (const Layer* l = stack.named(it.key())) c.extents << Extent{l->name, it.value(), l->beyond};
-    // (Raw - fullWaveOf() de-embeds nothing: a standard's ports as solved,
-    //  the error boxes taking their faces and their fixtures alike.)
-    FullWave w = fullWaveOf(mesh, processed.conductors, stack, ports, frequencies, 1e-6, &c, returns);
-    if (!w.ok()) return fail(QCoreApplication::translate("RF25Doc", "%1 did not solve: %2").arg(name, w.problems.join(QLatin1Char(' '))));
-    return w;
-}
-
-/// \a wave's S as solved - before any de-embedding - at each frequency, in
-/// 50 Ohm at both ports.
-QList<S2> rawS(const FullWave& wave)
-{
-    const QList<QList<QList<Complex>>>& z = wave.zSolved.isEmpty() ? wave.z : wave.zSolved;
-    QList<S2> out;
-    for (const QList<QList<Complex>>& m : z) {
-        Eigen::Matrix2cd Z;
-        Z << m.at(0).at(0), m.at(0).at(1), m.at(1).at(0), m.at(1).at(1);
-        const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
-        const Eigen::Matrix2cd S = (Z - 50.0 * one) * (Z + 50.0 * one).inverse();
-        out << S2{S(0, 0), S(0, 1), S(1, 0), S(1, 1)};
-    }
-    return out;
-}
-
-/// A way a face is said ("+x"), as a direction; nought for "auto" or none.
-QPointF facingOf(const QString& facing)
-{
-    if (facing == QLatin1String("+x")) return QPointF(1, 0);
-    if (facing == QLatin1String("-x")) return QPointF(-1, 0);
-    if (facing == QLatin1String("+y")) return QPointF(0, 1);
-    if (facing == QLatin1String("-y")) return QPointF(0, -1);
-    return QPointF();
-}
-
-/// The returns a port names (its "returns"), as the full-wave solve takes
-/// them: each a terminal of the model - its point, metal and rectangle, or
-/// its face - or another port, by its name. One that is neither, an empty
-/// list, or a terminal whose numbers are none is \a problem.
-QList<PortTerminal> returnsOf(const Node& port, const Model& model, QString* problem)
-{
-    QList<PortTerminal> out;
-    const QString name = portName(port);
-    const QStringList named = namesOf(port, QStringLiteral("returns"));
-    if (named.isEmpty()) {
-        *problem = QCoreApplication::translate("RF25Doc", "%1 returns through the terminals and ports it names, and names "
-                                                          "none: name them (its Returns - a Terminal under Ports, or "
-                                                          "another port), or return it another way.")
-                       .arg(name);
-        return {};
-    }
-    for (const QString& r : named) {
-        // (A terminal by that name before a port: the model says where the
-        //  two share one.)
-        const Node* terminal = nullptr;
-        const Node* other = nullptr;
-        for (const Node& n : model.ports().children) {
-            if (!n.enabled || portName(n) != r) continue;
-            if (n.type == QLatin1String("rf_terminal") && terminal == nullptr) terminal = &n;
-            else if ((n.type == QLatin1String("rf_edge_port") || n.type == QLatin1String("rf_internal_port")) && other == nullptr)
-                other = &n;
-        }
-        const Node* found = terminal != nullptr ? terminal : other;
-        const bool isPort = terminal == nullptr && other != nullptr;
-        if (found == nullptr) {
-            *problem = QCoreApplication::translate("RF25Doc", "%1 returns through %2, which is no terminal or port of the "
-                                                              "model (or it is disabled).")
-                           .arg(name, r);
-            return {};
-        }
-        PortTerminal t;
-        t.name = r;
-        t.port = isPort;
-        if (!isPort) {
-            bool okX = true, okY = true, okW = true, okH = true;
-            const double x = numberOf(*found, QStringLiteral("x"), model, 0, &okX);
-            const double y = numberOf(*found, QStringLiteral("y"), model, 0, &okY);
-            const double w = numberOf(*found, QStringLiteral("width"), model, 0, &okW);
-            const double h = numberOf(*found, QStringLiteral("height"), model, 0, &okH);
-            if (!okX || !okY) {
-                *problem = QCoreApplication::translate("RF25Doc", "%1's %2 is not a number.").arg(r, !okX ? QStringLiteral("x") : QStringLiteral("y"));
-                return {};
-            }
-            if (!okW || !okH || w < 0 || h < 0) {
-                *problem = QCoreApplication::translate("RF25Doc", "%1's rectangle is none: its width and height are lengths "
-                                                                  "of nought or more.")
-                               .arg(r);
-                return {};
-            }
-            // (The terminals are in metres; the cells are in the layout's own.)
-            t.at = QPointF(x, y) / 1e-6;
-            t.metal = textOf(*found, QStringLiteral("metal")).trimmed();
-            const QString face = textOf(*found, QStringLiteral("face"));
-            t.face = !face.isEmpty() && face != QLatin1String("none");
-            t.facing = facingOf(face);
-            if (!t.face) t.size = QSizeF(w, h) / 1e-6;
-        }
-        out << t;
-    }
-    return out;
-}
-
-QList<FullWavePort> portsOf(const Model& model, QString* problem)
-{
-    QList<FullWavePort> out;
-    for (const Node& port : model.ports().children) {
-        if (!port.enabled) continue;
-        const bool edge = port.type == QLatin1String("rf_edge_port");
-        if (!edge && port.type != QLatin1String("rf_internal_port")) continue;
-        FullWavePort p;
-        p.name = port.label.isEmpty() ? port.tag : port.label;
-        bool okX = true, okY = true, okZ = true;
-        const double x = numberOf(port, QStringLiteral("x"), model, 0, &okX);
-        const double y = numberOf(port, QStringLiteral("y"), model, 0, &okY);
-        p.impedance = numberOf(port, QStringLiteral("impedance"), model, 50, &okZ);
-        if (!okX || !okY || !okZ) {
-            *problem = QCoreApplication::translate("RF25Doc", "%1's %2 is not a number.")
-                           .arg(p.name, !okX ? QStringLiteral("x") : !okY ? QStringLiteral("y")
-                                                                           : QCoreApplication::translate("RF25Doc", "reference impedance"));
-            return {};
-        }
-        // (The ports are in metres; the cells are in the layout's own.)
-        p.at = QPointF(x, y) / 1e-6;
-        p.pair = textOf(port, QStringLiteral("pair")).trimmed();
-        // Through the terminals and ports it names, wherever they are.
-        if (textOf(port, QStringLiteral("return")) == QLatin1String("terminals")) {
-            p.terminals = true;
-            p.returns = returnsOf(port, model, problem);
-            if (p.returns.isEmpty()) return {};
-        }
-        if (edge) {
-            p.metal = textOf(port, QStringLiteral("conductor")).trimmed();
-            p.facing = facingOf(textOf(port, QStringLiteral("facing")));
-            // Its own discontinuity taken out after the solve, by strips of
-            // its feed, and its reference plane moved along the line - asked
-            // for, or implied by a move.
-            bool ok = true;
-            p.shift = numberOf(port, QStringLiteral("deembed"), model, 0, &ok);
-            if (!ok) {
-                *problem = QCoreApplication::translate("RF25Doc", "%1's de-embedding is not a number.").arg(p.name);
-                return {};
-            }
-            p.calibrate = flagOf(port, QStringLiteral("calibrate"));
-            bool okStrips = true;
-            p.strips = numberOf(port, QStringLiteral("strips"), model, 0, &okStrips);
-            if (!okStrips || !(p.strips >= 0)) {
-                *problem = QCoreApplication::translate("RF25Doc", "%1's calibration strips are no length: nought, to have "
-                                                                  "them chosen, or above.")
-                               .arg(p.name);
-                return {};
-            }
-            p.coplanar = textOf(port, QStringLiteral("return")) == QLatin1String("beside");
-            if (textOf(port, QStringLiteral("along")) == QLatin1String("line")) {
-                bool okZ = true, okE = true;
-                p.lineImpedance = numberOf(port, QStringLiteral("line_z0"), model, 50, &okZ);
-                p.lineEps = numberOf(port, QStringLiteral("line_eps"), model, 1, &okE);
-                if (!okZ || !okE || !(p.lineImpedance > 0) || !(p.lineEps >= 1)) {
-                    *problem = QCoreApplication::translate("RF25Doc", "The line %1's reference plane is to move along is "
-                                                                      "none: its impedance above nought and its effective "
-                                                                      "permittivity at least one.")
-                                   .arg(p.name);
-                    return {};
-                }
-            }
-        } else {
-            p.internal = true;
-            p.metal = textOf(port, QStringLiteral("to")).trimmed();
-            // Over a rectangle about its point, where it has one.
-            bool okW = true, okH = true;
-            const double w = numberOf(port, QStringLiteral("width"), model, 0, &okW);
-            const double h = numberOf(port, QStringLiteral("height"), model, 0, &okH);
-            if (!okW || !okH || w < 0 || h < 0) {
-                *problem = QCoreApplication::translate("RF25Doc", "%1's rectangle is none: its width and height are "
-                                                                  "lengths of nought or more.")
-                               .arg(p.name);
-                return {};
-            }
-            p.size = QSizeF(w, h) / 1e-6;
-            const QString from = textOf(port, QStringLiteral("from")).trimmed();
-            p.from = p.terminals || from.compare(QLatin1String("ground"), Qt::CaseInsensitive) == 0 ? QString() : from;
-        }
-        out << p;
     }
     return out;
 }
@@ -554,6 +292,20 @@ struct RF25Doc::Job {
 /// layer map applied and the processing run over the layout as read, and
 /// those shapes divided into cells. The model is copied and the layout
 /// held, so that an edit while it runs changes neither under it.
+struct RF25Doc::AnalysisRun {
+    QString tag, name;
+    Model model;
+    std::shared_ptr<const Layout> layout;
+    QString called, folder;
+    SweepPlan plan;
+    RunControl control;
+    SweepResult result;
+    // An Optimization's.
+    bool optimization = false;
+    OptimizationPlan search;
+    fem::OptimizationResult found;
+};
+
 struct RF25Doc::PrepareJob {
     Model model;
     std::shared_ptr<const Layout> layout;
@@ -561,106 +313,6 @@ struct RF25Doc::PrepareJob {
     std::shared_ptr<Processed> processed;
     std::shared_ptr<Mesh> mesh;
 };
-
-/// A solve on a thread of its own: the shapes and the cells as they
-/// stand, and the stack read out of the model, all copied so that an edit
-/// while it runs changes nothing under it.
-struct RF25Doc::SolveJob {
-    // What it solves, stamped as it starts - the model's JSON and the
-    // layout file's bytes - for the solution kept beside the model.
-    QByteArray modelStamp, layoutStamp;
-    Mesh mesh;
-    QList<Conductor> conductors;
-    Stack stack;
-    QList<Extent> extents;       ///< the layers that end (rf25_dielectric.h)
-    /// A TRL calibration's standards (rf25_trl.h), where the model has one:
-    /// each a model's file, a line's how much longer than the thru.
-    struct Trl {
-        QString thru, reflect;
-        QList<QPair<QString, double>> lines;
-        bool shortReflect = false;
-        double impedance = 0;    ///< the lines', Ohm; nought: not given
-        double epsGuess = 1;
-    };
-    std::optional<Trl> trl;
-    QList<ReturnMark> returns;   ///< the Return Conductors under Ports
-    double length = 0;
-    std::shared_ptr<Extraction> result;
-    // The loop's inductance, where two ports say what the loop is: the
-    // magnetic half of the extraction, solved on the same thread and the
-    // same copies as the charge.
-    bool loop = false;
-    QPointF in, out;
-    double frequency = 0;
-    QString portsSaid;
-    std::shared_ptr<Inductance> inductance;
-    // A full-wave solve's: the ports as the model has them, the sweep, and
-    // what reading the ports said; and the flag that stops it between
-    // frequencies, with the count it keeps of them.
-    bool fullWave = false;
-    QList<FullWavePort> ports;
-    QList<double> frequencies;
-    QStringList notes;
-    std::shared_ptr<FullWave> wave;
-    std::atomic_bool stop{false};
-    std::atomic_int done{0};
-    // A compressed solve's GMRES under way, for the bar (FullWaveControl).
-    std::atomic_int gmresIterations{0};
-    std::atomic<double> gmresResidual{0};
-    std::atomic_int atOnce{0};   // (frequencies at a time, once the solve knows)
-    // The ports' de-embedding after it: the mesh's settings, so that the
-    // strips of their feeds are meshed as the structure was, and whether
-    // those strips are being solved; and how far they have got, for the
-    // bar - the calibrations to make and begun, and of the one going on the
-    // strips begun, the frequencies they have and how many are solved.
-    MeshSettings how;
-    double top = 0;
-    std::atomic_bool calibrating{false};
-    std::atomic_int calibrations{0}, calibrationsBegun{0}, stripsBegun{0}, stripFrequencies{0}, calibrated{0};
-    FullWaveControl::Matrix matrix = FullWaveControl::Matrix::Automatic;   ///< the study's
-    // A quasi-static extraction's: its step, how far into it, and the images
-    // of the Green's function it built last (ExtractControl).
-    std::atomic_int step{ExtractControl::Starting}, stepDone{0}, stepAll{0}, images{0};
-
-    // An adaptive sweep's (rf25_adaptive.h): whether it is one, its
-    // tolerance on S, and the frequencies it has asked for so far, which
-    // the bar counts against.
-    bool adaptive = false;
-    double tolerance = 2e-3;
-    std::atomic_int asked{0};
-    // A mesh convergence check's: the cells across of each mesh, the one it
-    // is at, and what it found.
-    QList<int> levels;
-    std::atomic_int levelAt{0};
-    std::shared_ptr<MeshConvergence> check;
-
-    // The tab's holdSolves() and allowFrequencies(), which a test holds it
-    // back by.
-    std::shared_ptr<std::atomic_bool> held;
-    std::shared_ptr<std::atomic_int> allowed;
-};
-
-namespace {
-
-/// What a solve's mesh is against what it cuts - its smallest and largest
-/// cells, the cells across the narrowest conductor and the narrowest gap -,
-/// the first of the solve's own lines: how fine it is, said where the
-/// answer is (F1 of the open items of 8 November).
-QString meshNoteOf(const Mesh& mesh)
-{
-    if (mesh.cells.isEmpty()) return QString();
-    QString note = RF25Doc::tr("Solved on %1 cell(s) from %2 to %3 µm")
-                       .arg(mesh.cells.size()).arg(mesh.smallest, 0, 'g', 3).arg(mesh.largest, 0, 'g', 3);
-    if (mesh.narrowest > 0 && mesh.across > 0)
-        note += RF25Doc::tr("; %1 across the narrowest conductor, %2 µm, each %3 µm there")
-                    .arg(mesh.across).arg(mesh.narrowest, 0, 'g', 4).arg(mesh.acrossCell, 0, 'g', 3);
-    if (mesh.narrowestGap > 0 && mesh.smallest > 0)
-        note += RF25Doc::tr("; the narrowest gap %1 µm, %2 times the smallest cell")
-                    .arg(mesh.narrowestGap, 0, 'g', 4).arg(mesh.narrowestGap / mesh.smallest, 0, 'g', 2);
-    return note + RF25Doc::tr(". How far that is from the limit: RF 2.5D > Check Mesh Convergence.");
-}
-
-} // namespace
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
 {
@@ -720,6 +372,7 @@ RF25Doc::~RF25Doc()
     // And a full-wave sweep stops at its next frequency rather than run on
     // for minutes for nothing.
     if (a_solveJob) a_solveJob->stop = true;
+    if (a_analysis) a_analysis->control.requestStop();
 }
 
 Model RF25Doc::starterModel()
@@ -759,7 +412,7 @@ void RF25Doc::buildUi()
         return b;
     };
     a_fit = button(tr("Zoom Extents"), tr("Show the whole layout"), "rfFit");
-    connect(a_fit, &QToolButton::clicked, this, [this] { a_view->fit(); });
+    connect(a_fit, &QToolButton::clicked, this, [this] { fitView(); });
     a_reread = button(tr("Read the Layout Again"), tr("Read the layout file the model names once more"), "rfReread");
     connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
     // Measured as in a layout's tab: the view's own ruler.
@@ -822,6 +475,7 @@ void RF25Doc::buildUi()
     // button takes the last tool up again, its arrow chooses the tool, the
     // layer, the via's size.
     a_viaSize = std::max(1e-3, settings.value(QLatin1String("RF25/viaSize"), 1.0).toDouble());
+    a_drawParametric = settings.value(QLatin1String("RF25/drawParametric"), false).toBool();
     a_drawButton = button(tr("Draw"),
                           tr("Draw shapes on a layer of the stack - rectangles, polygons, vias -, written at once to the layout "
                              "file (one begun beside the model where it names none); its arrow chooses the tool and the layer. "
@@ -886,6 +540,13 @@ void RF25Doc::buildUi()
         if (tag.isEmpty() && !why.isEmpty()) a_status->setText(why);
     });
     connect(a_view, &LayoutView::boxPicked, this, [this](QRectF box) {
+        if (a_drawTool == DrawTool::Dimension) {
+            a_dimensionBox = QRectF(drawSnapped(box.topLeft()), drawSnapped(box.bottomRight())).normalized();
+            a_view->setMode(LayoutView::Mode::PickPoint);
+            a_status->setText(tr("Click the way the corners in the box move: beside it, toward +x, -x, +y or -y."));
+            showDrawing();
+            return;
+        }
         if (a_drawTool == DrawTool::Rectangle) {
             const QRectF r = QRectF(drawSnapped(box.topLeft()), drawSnapped(box.bottomRight())).normalized();
             if (!(r.width() > 0 && r.height() > 0)) {
@@ -894,9 +555,9 @@ void RF25Doc::buildUi()
             }
             QStringList done;
             QString why;
-            const bool ok = drawShapes(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("rectangle")},
-                                                              {QStringLiteral("layer"), drawLayer()},
-                                                              {QStringLiteral("box"), QJsonArray{r.left(), r.top(), r.right(), r.bottom()}}}},
+            const bool ok = drawShapes(toolEdits(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("rectangle")},
+                                                                        {QStringLiteral("layer"), drawLayer()},
+                                                                        {QStringLiteral("box"), QJsonArray{r.left(), r.top(), r.right(), r.bottom()}}}}),
                                        &done, &why);
             a_status->setText(ok ? done.join(QLatin1Char(' ')) : why);
             return;
@@ -966,6 +627,29 @@ void RF25Doc::buildUi()
     a_problemsText->setMaximumBlockCount(400);
     a_splitter->addWidget(a_sides);
     a_splitter->addWidget(a_problemsText);
+    // A Parametric Sweep's page, shown while its node is chosen or it runs.
+    a_sweepPage = new SweepPage(a_splitter);
+    a_splitter->addWidget(a_sweepPage);
+    a_sweepPage->hide();
+    // An Optimization's: the multiphysics optimization's page.
+    a_optimizationPage = new fem::OptimizationPage(a_splitter);
+    a_optimizationPage->setObjectName(QStringLiteral("rfOptimizationPage"));
+    a_splitter->addWidget(a_optimizationPage);
+    a_optimizationPage->hide();
+    connect(a_optimizationPage, &fem::OptimizationPage::applyRequested, this, [this](int point) {
+        const Node* focused = a_model.find(a_focus);
+        const QString tag = focused != nullptr && focused->type == QLatin1String("rf_optimization") ? a_focus : QString();
+        QStringList written;
+        QString why;
+        a_status->setText(applyOptimum(tag, point, &written, &why) ? tr("Written: %1").arg(written.join(QStringLiteral(", "))) : why);
+    });
+    connect(a_sweepPage, &SweepPage::touchstoneRequested, this, [this] {
+        QStringList written;
+        QString why;
+        const Node* focused = a_model.find(a_focus);
+        const QString tag = focused != nullptr && focused->type == QLatin1String("rf_sweep") ? a_focus : QString();
+        a_status->setText(writeSweepTouchstones(tag, &written, &why) ? tr("Written: %1").arg(written.join(QStringLiteral(", "))) : why);
+    });
     a_splitter->setStretchFactor(0, 5);
     a_splitter->setStretchFactor(1, 1);
     a_splitter->setSizes({560, 150});
@@ -1000,6 +684,7 @@ void RF25Doc::buildUi()
     a_progressStop->hide();
     connect(a_progressStop, &QToolButton::clicked, this, [this] {
         if (isSolving()) stopSolving();
+        else if (isAnalysing()) stopAnalysis();
     });
     statusRow->addWidget(a_progressStop);
     all->addLayout(statusRow);
@@ -1039,6 +724,12 @@ bool RF25Doc::load()
     setDocChanged(false);
     stampedAs(asRead);
     readKeptSolution();
+    if (const Node* analyses = a_model.root.child(QStringLiteral("rf_analyses")))
+        for (const Node& n : analyses->children)
+            if (n.props.contains(QStringLiteral("result"))) {
+                showAnalysis(n.tag);
+                break;
+            }
     refreshLayout();
     return true;
 }
@@ -1060,6 +751,12 @@ bool RF25Doc::reload()
     stampedAs(asRead);
     if (!focus.isEmpty() && a_model.find(focus) != nullptr) focusNode(focus);
     readKeptSolution();
+    if (const Node* analyses = a_model.root.child(QStringLiteral("rf_analyses")))
+        for (const Node& n : analyses->children)
+            if (n.props.contains(QStringLiteral("result"))) {
+                showAnalysis(n.tag);
+                break;
+            }
     refreshLayout();
     return true;
 }
@@ -1118,6 +815,21 @@ double RF25Doc::zoomBy(double factor)
 
 void RF25Doc::showAll()
 {
+    fitView();
+}
+
+void RF25Doc::fitView()
+{
+    // A model of its own shapes alone: they are what there is to fit.
+    if (a_layout && a_layout == ownShapesLayout()) {
+        QRectF bounds;
+        for (const OwnShape& s : ownShapesOf(a_model)) bounds = bounds.united(s.outline.boundingRect());
+        if (bounds.isValid()) {
+            const double margin = 0.05 * std::max(bounds.width(), bounds.height());
+            a_view->showRegion(bounds.adjusted(-margin, -margin, margin, margin));
+            return;
+        }
+    }
     a_view->fit();
 }
 
@@ -1464,6 +1176,8 @@ void RF25Doc::showLayout()
                                         QLocale().formattedDataSize(QFileInfo(a_job->path).size())));
     } else if (!a_layoutProblem.isEmpty()) {
         a_layoutLabel->setText(a_layoutProblem);
+    } else if (named.isEmpty() && a_layout && a_layout == ownShapesLayout()) {
+        a_layoutLabel->setText(tr("No layout file: the model's own shapes alone (Layout > Shapes)."));
     } else if (named.isEmpty()) {
         a_layoutLabel->setText(tr("The layout names no file yet: its Layout node takes a GDSII or OASIS file."));
     } else if (a_layout) {
@@ -1493,7 +1207,7 @@ void RF25Doc::showLayout()
     // where the user left it; a layout just read is fitted - but for one
     // read again after a drawing, which stays as drawn on.
     if (again || a_keepView) a_view->setView(center, scale);
-    else a_view->fit();
+    else fitView();
     if (!again) a_keepView = false;
     updatePen();
 }
@@ -1523,6 +1237,20 @@ void RF25Doc::prepare()
         return;
     }
     a_prepareAgain = false;
+    // A model of its own shapes alone names no file: they are processed over
+    // an empty layout, which goes when they do.
+    {
+        const bool alone = layoutFile().isEmpty() && !a_job && hasOwnShapes(a_model);
+        if (alone && !a_layout) {
+            a_layout = ownShapesLayout();
+            a_layoutRead.clear();
+            a_layoutProblem.clear();
+            showLayout();
+        } else if (!alone && a_layout && a_layout == ownShapesLayout()) {
+            a_layout.reset();
+            showLayout();
+        }
+    }
     if (!a_layout) {
         // Nothing read: there is nothing to process, and the layout's own
         // problem says why.
@@ -1938,6 +1666,37 @@ void RF25Doc::showOverlays()
             if (stack.layers.at(i).name == layer || stack.layers.at(i).tag == layer) return RF25Doc::layerColor(i);
         return QColor(130, 135, 145);
     };
+    // The model's own shapes, as its parameters make them: filled in their
+    // layers' colours as the layout's shapes are, each named.
+    a_ownShapes = ownShapesOf(a_model);
+    {
+        QMap<QString, QList<QPolygonF>> byLayer;
+        for (const OwnShape& s : std::as_const(a_ownShapes)) byLayer[s.layer] << s.outline;
+        for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
+            LayoutView::Overlay overlay;
+            overlay.shapes = it.value();
+            QColor fill = colourOf(it.key());
+            fill.setAlpha(150);
+            overlay.fill = fill;
+            overlay.line = outlineColor(colourOf(it.key()));
+            overlay.width = 1.0;
+            overlay.name = tr("%1, the model's own shapes").arg(it.key());
+            overlays << overlay;
+        }
+    }
+    // The Dimensions: each box, an arrow the way it moves, its By by it.
+    for (const Dimension& d : dimensionsOf(a_model)) {
+        LayoutView::Overlay overlay;
+        QPolygonF ring(d.box);
+        ring.removeLast();
+        overlay.shapes << ring;
+        overlay.line = QColor(230, 120, 0);
+        overlay.width = 1.5;
+        overlay.name = tr("%1, moving %2's corners in it").arg(d.name, d.layer);
+        const QPointF way = d.move.isNull() ? QPointF(1, 0) : d.move;
+        overlay.labels << LayoutView::Overlay::Label{d.box.center(), tr("%1: %2").arg(d.name, d.offset), way};
+        overlays << overlay;
+    }
     if (a_showProcessed && a_processed) {
         // Each layer's own overlay, in its own colour told against the
         // canvas, not a tint of it: the shape under the outline is drawn
@@ -2188,12 +1947,6 @@ void RF25Doc::showOverlays()
 
 // ------------------------------------------------------ The solve
 
-bool RF25Doc::studyIsFullWave() const
-{
-    const Node* study = a_model.root.child(QStringLiteral("rf_study"));
-    return study != nullptr && textOf(*study, QStringLiteral("kind")) == QLatin1String("full_wave");
-}
-
 void RF25Doc::solve()
 {
     solveWith(SolveRequest());
@@ -2240,166 +1993,10 @@ void RF25Doc::solveWith(const SolveRequest& request)
     auto job = std::make_shared<SolveJob>();
     job->modelStamp = solveStampOf(a_model);
     job->layoutStamp = layoutStamp();
-    job->mesh = *a_mesh;
-    job->conductors = a_processed->conductors;
-    job->stack = a_model.stack();
-    // The layers that end: their shapes, and what is beyond them.
-    for (auto it = a_processed->extents.cbegin(); it != a_processed->extents.cend(); ++it) {
-        const Layer* layer = job->stack.named(it.key());
-        if (layer == nullptr) continue;
-        Extent e;
-        e.layer = layer->name;
-        e.shapes = it.value();
-        e.beyond = layer->beyond;
-        job->extents << e;
-    }
-    // How long the piece that was solved is: the longer side of what it
-    // covers, which is a straight line's own length and what makes a
-    // capacitance into one per metre.
-    QRectF bounds;
-    for (const Conductor& c : std::as_const(job->conductors)) bounds = bounds.united(c.outline.boundingRect());
-    job->length = std::max(bounds.width(), bounds.height()) * 1e-6;
     {
-        QString problem;
-        job->returns = returnMarksOf(a_model, &problem);
+        const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
+        const QString problem = setUpSolve(*job, a_model, *a_processed, *a_mesh, request, dir.absolutePath());
         if (!problem.isEmpty()) return nothing(problem);
-    }
-    job->fullWave = request.solver.isEmpty() ? studyIsFullWave() : request.solver == QLatin1String("full_wave");
-    job->levels = request.levels;
-    {
-        QStringList said;
-        job->how = tabMeshSettings(a_model, &said);
-        job->top = topFrequency(a_model);
-    }
-    if (job->fullWave) {
-        // The full-wave solve is driven at the ports, at each of the
-        // study's frequencies (or of those asked for).
-        QString problem;
-        job->ports = portsOf(a_model, &problem);
-        if (!problem.isEmpty()) return nothing(problem);
-        if (job->ports.isEmpty())
-            return nothing(tr("A full-wave solve is driven at its ports, and the model has none: put an edge port or an "
-                              "internal port under Ports."));
-        // A terminal no port names among its returns does nothing: said (it
-        // solved without a word - the returns check of 4 November).
-        {
-            QSet<QString> named;
-            for (const FullWavePort& p : std::as_const(job->ports))
-                for (const PortTerminal& t : p.returns) named.insert(t.name);
-            QStringList idle;
-            for (const Node& p : a_model.ports().children)
-                if (p.enabled && p.type == QLatin1String("rf_terminal") && !named.contains(portName(p))) idle << portName(p);
-            if (!idle.isEmpty())
-                job->notes << tr("%1 %2 named by no port's returns, so %3 nothing in this solve.")
-                                  .arg(idle.join(QStringLiteral(", ")), idle.size() == 1 ? tr("is") : tr("are"),
-                                       idle.size() == 1 ? tr("it does") : tr("they do"));
-        }
-        QString why;
-        // (A convergence check at the sweep's top, where none are asked: a
-        //  mesh is worst at its highest frequency.)
-        job->frequencies = !request.frequencies.isEmpty() ? request.frequencies
-                           : job->levels.isEmpty()        ? studySweep(a_model, &why)
-                                                          : QList<double>{topFrequency(a_model)};
-        if (job->frequencies.isEmpty() || !(job->frequencies.first() > 0))
-            return nothing(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
-        job->matrix = request.matrix.isEmpty() ? studyMatrix(a_model)
-                      : request.matrix == QLatin1String("dense")    ? FullWaveControl::Matrix::Dense
-                      : request.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed
-                                                                      : FullWaveControl::Matrix::Automatic;
-        const Node* study = a_model.root.child(QStringLiteral("rf_study"));
-        const bool studyAdaptive = study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool();
-        job->adaptive = request.frequencies.isEmpty() && job->levels.isEmpty()
-                        && (request.adaptive < 0 ? studyAdaptive : request.adaptive > 0);
-        if (job->adaptive && study != nullptr) {
-            bool ok = true;
-            const double tolerance = numberOf(*study, QStringLiteral("adaptive_tolerance"), a_model, 2e-3, &ok);
-            if (!ok || !(tolerance > 0) || tolerance >= 1)
-                return nothing(tr("The study's Tolerance is to be a number between nought and one: the most a term of "
-                                  "S may differ from what the fit said of it."));
-            job->tolerance = tolerance;
-        }
-        // A TRL calibration (rf25_trl.h): its standards' files, read here; each
-        // solved with the structure, on its thread.
-        for (const Node& n : a_model.ports().children) {
-            if (!n.enabled || n.type != QLatin1String("rf_trl") || !job->levels.isEmpty()) continue;
-            if (job->ports.size() != 2)
-                return nothing(tr("A TRL calibration is of a two-port, and the model has %n port(s).", nullptr, int(job->ports.size())));
-            if (job->adaptive)
-                return nothing(tr("A TRL calibration wants every frequency solved, its standards at each: untick the study's "
-                                  "Add points where it changes."));
-            SolveJob::Trl t;
-            const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
-            const auto pathOf = [&dir](const QString& v) {
-                const QString given = v.trimmed();
-                return given.isEmpty() ? QString() : QFileInfo(given).isAbsolute() ? given : QDir::cleanPath(dir.absoluteFilePath(given));
-            };
-            const auto there = [this, &nothing](const QString& path, const QString& what) {
-                if (path.isEmpty()) return QString(tr("The TRL calibration names no %1.").arg(what));
-                if (!QFileInfo::exists(path)) return QString(tr("The TRL calibration's %1, %2, is not there.").arg(what, QDir::toNativeSeparators(path)));
-                Q_UNUSED(nothing);
-                return QString();
-            };
-            t.thru = pathOf(textOf(n, QStringLiteral("thru")));
-            t.reflect = pathOf(textOf(n, QStringLiteral("reflect")));
-            if (const QString no = there(t.thru, tr("thru")); !no.isEmpty()) return nothing(no);
-            if (const QString no = there(t.reflect, tr("reflect")); !no.isEmpty()) return nothing(no);
-            for (const QJsonValue& row : n.props.value(QLatin1String("lines")).toArray()) {
-                const QJsonArray cells = row.toArray();
-                const QString file = pathOf(cells.at(0).toString());
-                if (file.isEmpty()) continue;
-                if (const QString no = there(file, tr("line")); !no.isEmpty()) return nothing(no);
-                Node value;
-                value.props.insert(QStringLiteral("v"), cells.size() > 1 ? cells.at(1).toString() : QString());
-                bool ok = true;
-                const double longer = numberOf(value, QStringLiteral("v"), a_model, 0, &ok);
-                if (!ok || !(longer > 0))
-                    return nothing(tr("The TRL calibration's line %1 is longer than the thru by no length: give it as \"500[um]\".")
-                                       .arg(QFileInfo(file).fileName()));
-                t.lines << qMakePair(file, longer);
-            }
-            if (t.lines.isEmpty()) return nothing(tr("The TRL calibration names no line: one at least, longer than the thru."));
-            t.shortReflect = textOf(n, QStringLiteral("reflect_kind")) == QLatin1String("short");
-            if (!textOf(n, QStringLiteral("impedance")).trimmed().isEmpty()) {
-                bool ok = true;
-                t.impedance = numberOf(n, QStringLiteral("impedance"), a_model, 0, &ok);
-                if (!ok || !(t.impedance > 0)) return nothing(tr("The TRL calibration's lines' impedance is no impedance."));
-            }
-            for (const Layer& l : job->stack.layers)
-                if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) t.epsGuess = std::max(t.epsGuess, 0.5 * (l.epsr + 1));
-            job->trl = t;
-            break;
-        }
-    } else if (!job->levels.isEmpty()) {
-        // A quasi-static convergence check: the charge on each mesh, no loop.
-    } else {
-        // An inductor's L is of a loop, and what the loop is comes from the
-        // ports: the current goes in at one and out at another. Two is what
-        // it takes; with one, or none, there is no loop and the quasi-static
-        // L of a uniform line is all that can be said.
-        QList<QPointF> at;
-        for (const Node& port : a_model.ports().children) {
-            if (!port.enabled) continue;
-            if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
-            bool ok = true;
-            const double x = numberOf(port, QStringLiteral("x"), a_model, 0, &ok);
-            if (!ok) continue;
-            const double y = numberOf(port, QStringLiteral("y"), a_model, 0, &ok);
-            if (!ok) continue;
-            // (The ports are in metres; the cells are in the layout's own.)
-            at << QPointF(x, y) / 1e-6;
-        }
-        if (at.size() >= 2) {
-            job->loop = true;
-            job->in = at.at(0);
-            job->out = at.at(1);
-            job->frequency = topFrequency(a_model);
-            if (at.size() > 2)
-                job->portsSaid = tr("%1 ports: the loop is taken from the first two.").arg(at.size());
-        } else {
-            job->portsSaid = at.size() == 1 ? tr("One port: a loop's inductance wants two, so that a current has "
-                                                 "somewhere to go in and somewhere to come out.")
-                                            : tr("No ports: a loop's inductance wants two of them.");
-        }
     }
     job->held = a_solvesHeld;
     job->allowed = a_frequenciesAllowed;
@@ -2417,29 +2014,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
             convergeOn(*job);
             return;
         }
-        if (job->fullWave) {
-            job->wave = solveWaveOn(*job, job->mesh, job->how, job->frequencies, job->adaptive, job->tolerance, &job->notes);
-            if (job->wave->ok()) job->wave->lines.prepend(meshNoteOf(job->mesh));
-            if (job->trl && job->wave->ok() && !job->stop.load()) job->wave = trlOn(*job, *job->wave);
-            return;
-        }
-        // Told to stop, it stops: let go and left to run, an extraction whose
-        // stack's Green's function would not end held a core and gigabytes
-        // until Qucs-S was killed, and the next solve ran beside it.
-        ExtractControl control;
-        control.extents = job->extents;
-        control.stop = &job->stop;
-        control.step = &job->step;
-        control.done = &job->stepDone;
-        control.all = &job->stepAll;
-        control.images = &job->images;
-        job->result =
-            std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack, 1e-6, job->returns, &control));
-        if (job->stop.load()) return;
-        if (job->result->ok()) job->result->lines.prepend(meshNoteOf(job->mesh));
-        if (job->loop)
-            job->inductance = std::make_shared<Inductance>(
-                inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency, &job->stop));
+        runSolve(*job);
     });
     thread->setStackSize(8u << 20);
     connect(thread, &QThread::finished, this, [this, job] {
@@ -2457,269 +2032,6 @@ void RF25Doc::solveWith(const SolveRequest& request)
     showProblems();
     showProgress();
     emit solvedChanged();
-}
-
-std::shared_ptr<FullWave> RF25Doc::trlOn(SolveJob& job, const FullWave& wave)
-{
-    const SolveJob::Trl& t = *job.trl;
-    auto out = std::make_shared<FullWave>(wave);
-    const auto failed = [&out](const QString& why) {
-        out->problems << why;
-        return out;
-    };
-    FullWaveControl control;
-    control.stop = &job.stop;
-    control.matrix = job.matrix;
-    const QList<double>& f = wave.frequencies;
-    // Each standard as it is, at the structure's frequencies.
-    TrlStandards st;
-    st.frequencies = f;
-    st.shortReflect = t.shortReflect;
-    QString why;
-    std::optional<FullWave> thru = solvedStandard(t.thru, f, control, &why);
-    if (job.stop.load()) return out;
-    if (!thru) return failed(tr("The TRL calibration's thru: %1").arg(why));
-    st.thru = rawS(*thru);
-    for (const auto& [file, longer] : t.lines) {
-        std::optional<FullWave> line = solvedStandard(file, f, control, &why);
-        if (job.stop.load()) return out;
-        if (!line) return failed(tr("The TRL calibration's line: %1").arg(why));
-        st.lines << rawS(*line);
-        st.longer << longer;
-    }
-    std::optional<FullWave> reflect = solvedStandard(t.reflect, f, control, &why);
-    if (job.stop.load()) return out;
-    if (!reflect) return failed(tr("The TRL calibration's reflect: %1").arg(why));
-    st.reflect = rawS(*reflect);
-    const TrlCalibration c = calibrateTrl(st, t.epsGuess);
-    if (!c.ok()) return failed(c.problems.join(QLatin1Char(' ')));
-    // The structure as solved, its fixtures taken out: at the thru's middle,
-    // in the lines' impedance - stated in the ports' references where it is
-    // given.
-    QList<S2> s = corrected(c, rawS(wave));
-    const double r0 = wave.references.value(0, 50), r1 = wave.references.value(1, 50);
-    QStringList said = c.lines;
-    if (t.impedance > 0) {
-        for (S2& m : s) m = renormalized(m, t.impedance, r0);
-        said << tr("Its S stated in the ports' references from the lines' %1 Ohm.").arg(t.impedance, 0, 'g', 4);
-        if (std::abs(r0 - r1) > 1e-9 * r0)
-            out->warnings << tr("The two ports' references differ (%1 and %2 Ohm): the calibrated S is in the first's.").arg(r0).arg(r1);
-    } else {
-        out->warnings << tr("The calibrated S is in the lines' own impedance, which a calibration of lines alone cannot know: "
-                            "give it (the TRL calibration's lines' impedance) to have S in the ports' references.");
-    }
-    if (!wave.zSolved.isEmpty())
-        said << tr("The ports' own de-embedding is not taken: the error boxes hold their faces with the fixtures.");
-    for (int k = 0; k < f.size() && k < s.size(); ++k) {
-        const S2& m = s.at(k);
-        out->s[k] = {{m[0], m[1]}, {m[2], m[3]}};
-        Eigen::Matrix2cd S;
-        S << m[0], m[1], m[2], m[3];
-        const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
-        const Eigen::Matrix2cd root = Eigen::Vector2cd(std::sqrt(r0), std::sqrt(r1)).asDiagonal();
-        const Eigen::Matrix2cd z = root * (one + S) * (one - S).inverse() * root;
-        out->z[k] = {{z(0, 0), z(0, 1)}, {z(1, 0), z(1, 1)}};
-    }
-    // (As solved, beside the calibrated: what the currents are of.)
-    if (out->zSolved.isEmpty()) out->zSolved = wave.z;
-    checkReciprocityAndPassivity(*out);
-    out->lines << said;
-    out->warnings << c.warnings;
-    return out;
-}
-
-std::shared_ptr<FullWave> RF25Doc::solveWaveOn(SolveJob& job, const Mesh& mesh, const MeshSettings& how,
-                                               const QList<double>& frequencies, bool adaptive, double tolerance,
-                                               QStringList* notes)
-{
-    FullWaveControl control;
-    control.extents = job.extents;
-    control.stop = &job.stop;
-    control.done = &job.done;
-    control.gmresIterations = &job.gmresIterations;
-    control.gmresResidual = &job.gmresResidual;
-    control.atOnce = &job.atOnce;
-    control.allowed = job.allowed.get();
-    control.matrix = job.matrix;
-    const auto solveAt = [&job, &mesh, &control](const QList<double>& f) {
-        job.asked += int(f.size());
-        return fullWaveOf(mesh, job.conductors, job.stack, job.ports, f, 1e-6, &control, job.returns);
-    };
-    std::shared_ptr<FullWave> wave;
-    // The frequencies solved, which the ports' feeds are calibrated at: an
-    // adaptive sweep's few, its calibrations read at the rest as it reads
-    // the structure (calibrationAt()).
-    QList<double> solvedAt = frequencies;
-    if (adaptive) {
-        AdaptiveSettings settings;
-        settings.tolerance = tolerance;
-        const Adapted a = adaptiveSweep(frequencies, solveAt, settings, [&job] { return job.stop.load(); });
-        wave = std::make_shared<FullWave>(a.wave);
-        if (!a.whole) solvedAt = a.solved;
-    } else {
-        wave = std::make_shared<FullWave>(solveAt(frequencies));
-    }
-    // The ports that asked: their own discontinuity taken out by strips of
-    // their feeds - one calibration for each feed, its metal and its width,
-    // and a coplanar one's grounds and vias - and their reference planes
-    // moved.
-    if (!wave->ok()) return wave;
-    FullWaveControl quiet;
-    quiet.stop = &job.stop;
-    quiet.matrix = job.matrix;
-    // (Counted for the bar: the strips as they begin, with their
-    //  frequencies, and those frequencies as they are solved.)
-    quiet.done = &job.calibrated;
-    quiet.allowed = job.allowed.get();
-    quiet.begins = [counted = &job](int count) {
-        counted->stripFrequencies += count;
-        ++counted->stripsBegun;
-    };
-    // (One calibration for feeds alike and strips asked alike.)
-    const auto keyOf = [](const Feed& feed, const FullWavePort& port) {
-        return feed.key() + QLatin1Char('|') + QString::number(port.strips, 'g', 9);
-    };
-    {
-        // The calibrations to make, counted before the first is: the bar
-        // says which of them is going on.
-        QSet<QString> keys;
-        for (int p = 0; p < job.ports.size(); ++p) {
-            const FullWavePort& port = job.ports.at(p);
-            const Feed feed = wave->feeds.value(p);
-            if (port.wantsStrips() && !port.internal && feed.width > 0) keys.insert(keyOf(feed, port));
-        }
-        job.calibrations = int(keys.size());
-        job.calibrationsBegun = 0;
-    }
-    QList<Deembedding> each(job.ports.size());
-    QMap<QString, std::shared_ptr<Calibration>> feeds;
-    bool asked = false;
-    for (int p = 0; p < job.ports.size(); ++p) {
-        const FullWavePort& port = job.ports.at(p);
-        if (!port.deembeds()) continue;
-        asked = true;
-        each[p] = Deembedding{nullptr, port.shift, port.lineImpedance, port.lineEps};
-        if (!port.wantsStrips()) continue;
-        const QString name = wave->portNames.at(p);
-        const Feed feed = wave->feeds.value(p);
-        if (port.internal || !(feed.width > 0)) {
-            *notes << tr("%1 is not on the face of a conductor, so it has no feed to calibrate: it is solved as it is.").arg(name);
-            continue;
-        }
-        std::shared_ptr<Calibration>& calibration = feeds[keyOf(feed, port)];
-        if (!calibration) {
-            job.calibrating = true;
-            // (The bar counts each calibration from nought: its strips
-            //  begun first, so that it is busy meanwhile.)
-            job.stripsBegun = 0;
-            job.stripFrequencies = 0;
-            job.calibrated = 0;
-            ++job.calibrationsBegun;
-            calibration = std::make_shared<Calibration>(
-                calibrate(job.stack, how, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
-            if (calibration->ok() && solvedAt.size() < frequencies.size()) {
-                *calibration = calibrationAt(*calibration, frequencies);
-                calibration->lines << tr("Its strips solved at the %1 frequencies the structure was, and read at the "
-                                         "sweep's other %2 from a rational fit through them, as the structure is.")
-                                          .arg(solvedAt.size()).arg(frequencies.size() - solvedAt.size());
-            }
-        }
-        if (job.stop.load()) {
-            wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
-            return wave;
-        }
-        if (!calibration->ok()) {
-            *notes << tr("%1's feed could not be calibrated: %2 It is solved as it is.")
-                          .arg(name, calibration->problems.join(QLatin1Char(' ')));
-            continue;
-        }
-        each[p].calibration = calibration.get();
-    }
-    if (!asked) return wave;
-    *wave = deembedded(*wave, each);
-    for (const std::shared_ptr<Calibration>& c : std::as_const(feeds))
-        if (c->ok()) {
-            wave->lines << c->lines;
-            // (Its strips' solves short of their residual: doubtful.)
-            wave->warnings << c->warnings;
-            wave->lines << c->warnings;
-        }
-    return wave;
-}
-
-void RF25Doc::convergeOn(SolveJob& job)
-{
-    auto check = std::make_shared<MeshConvergence>();
-    check->fullWave = job.fullWave;
-    if (job.fullWave) check->frequencies = job.frequencies;
-    for (int i = 0; i < job.levels.size() && !job.stop.load(); ++i) {
-        job.levelAt = i;
-        job.done = 0;
-        job.asked = 0;
-        job.calibrating = false;
-        job.gmresIterations = 0;
-        job.step = ExtractControl::Starting;
-        job.stepDone = 0;
-        job.stepAll = 0;
-        QElapsedTimer t;
-        t.start();
-        // The model's mesh refined as a whole - the cells across, per
-        // wavelength and at the gaps, and the largest - so many times as the
-        // cells across asked are of the model's own: a mesh whose largest
-        // cell, or the wavelength, sets its size was the same mesh at every
-        // level when the cells across alone were changed.
-        const double factor = double(job.levels.at(i)) / std::max(1, job.how.cellsAcross);
-        MeshSettings how = refinedBy(job.how, factor);
-        how.cellsAcross = job.levels.at(i);
-        const Mesh mesh = meshOf(job.conductors, how, job.stack, job.top);
-        if (!mesh.ok() || mesh.cells.isEmpty()) {
-            check->problems << tr("The mesh of %1 cells across could not be made: %2")
-                                   .arg(job.levels.at(i)).arg(mesh.problems.join(QLatin1Char(' ')));
-            break;
-        }
-        MeshLevel level;
-        level.asked = job.levels.at(i);
-        level.factor = factor;
-        level.across = mesh.across;
-        level.cell = mesh.acrossCell;
-        level.smallest = mesh.smallest;
-        level.largest = mesh.largest;
-        level.cells = int(mesh.cells.size());
-        level.unknowns = mesh.cost.unknowns;
-        QList<Watched> watched;
-        if (job.fullWave) {
-            QStringList notes;
-            const std::shared_ptr<FullWave> wave = solveWaveOn(job, mesh, how, job.frequencies, false, 0, &notes);
-            if (job.stop.load()) break;
-            if (!wave->ok()) {
-                check->problems << tr("At %1 cells across: %2").arg(level.asked).arg(wave->problems.join(QLatin1Char(' ')));
-                break;
-            }
-            watched = watchedOf(*wave, job.frequencies);
-        } else {
-            ExtractControl control;
-            control.extents = job.extents;
-            control.stop = &job.stop;
-            control.step = &job.step;
-            control.done = &job.stepDone;
-            control.all = &job.stepAll;
-            control.images = &job.images;
-            const Extraction e = extract(mesh, job.conductors, job.stack, 1e-6, job.returns, &control);
-            if (job.stop.load()) break;
-            if (!e.ok()) {
-                check->problems << tr("At %1 cells across: %2").arg(level.asked).arg(e.problems.join(QLatin1Char(' ')));
-                break;
-            }
-            watched = watchedOf(e);
-        }
-        level.seconds = double(t.elapsed()) / 1000;
-        check->levels << level;
-        addWatched(*check, watched);
-    }
-    if (job.stop.load())
-        check->problems << tr("Stopped, %1 of %2 meshes solved.").arg(check->levels.size()).arg(job.levels.size());
-    judge(*check);
-    job.check = check;
 }
 
 int RF25Doc::frequenciesSolved() const
@@ -2820,6 +2132,16 @@ bool RF25Doc::waitForSolvesToEnd(int ms)
 
 RF25Doc::Count RF25Doc::countNow() const
 {
+    // A sweep running, no solve of the tab's own: its points.
+    if (a_analysis && !a_solveJob && !a_solveWhenPrepared) {
+        Count c;
+        c.of = a_analysis->control.of.load();
+        c.done = std::min(a_analysis->control.done.load(), c.of);
+        c.said = a_analysis->optimization ? tr("%1: %n solve(s) so far…", nullptr, a_analysis->control.solves.load()).arg(a_analysis->name)
+                                          : tr("%1: %2 of %3 point(s) solved…").arg(a_analysis->name).arg(c.done).arg(c.of);
+        c.key = QStringLiteral("analysis");
+        return c;
+    }
     // Nought of nought is busy: the quasi-static extraction, which cannot
     // say how far it has got, and a solve waiting for its mesh.
     const SolveJob* job = a_solveJob.get();
@@ -2903,7 +2225,7 @@ QString RF25Doc::leftSaid(double seconds)
 
 void RF25Doc::showProgress()
 {
-    if (!isSolving()) {
+    if (!isSolving() && !isAnalysing()) {
         a_progress->stop();
         a_progressBar->hide();
         a_progressStop->hide();
@@ -3056,6 +2378,256 @@ bool RF25Doc::waitForSolved(int ms)
     while ((a_solveJob || a_solveWhenPrepared) && !a_closed && t.elapsed() < ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     return !a_solveJob && !a_solveWhenPrepared;
+}
+
+bool RF25Doc::runAnalysis(const QString& tag, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return false;
+    };
+    if (a_analysis) return fail(tr("%1 is running: stop it first, or wait for it.").arg(a_analysis->name));
+    // The one asked for, else the one chosen, else the first.
+    QString which = tag;
+    if (which.isEmpty())
+        if (const Node* focused = a_model.find(a_focus);
+            focused != nullptr && (focused->type == QLatin1String("rf_sweep") || focused->type == QLatin1String("rf_optimization")))
+            which = a_focus;
+    const Node* node = sweepNode(a_model, which);
+    if (node == nullptr) node = optimizationNode(a_model, which);
+    if (node == nullptr)
+        return fail(which.isEmpty() ? tr("The model has no Parametric Sweep or Optimization: add one under Analyses.")
+                                    : tr("There is no Parametric Sweep or Optimization %1.").arg(which));
+    if (!a_layout) return fail(a_layoutProblem.isEmpty() ? tr("The layout has not been read yet.") : a_layoutProblem);
+    if (node->type == QLatin1String("rf_optimization")) return runOptimizationNode(*node, why);
+    QString error;
+    const std::optional<SweepPlan> plan = sweepPlan(a_model, *node, &error);
+    if (!plan) return fail(error);
+    auto run = std::make_shared<AnalysisRun>();
+    run->tag = node->tag;
+    run->name = nameOf(*node);
+    run->model = a_model;
+    run->layout = a_layout;
+    run->called = QFileInfo(a_layoutRead).fileName();
+    run->folder = a_DocName.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : QFileInfo(a_DocName).absolutePath();
+    run->plan = *plan;
+    run->control.of = int(plan->points().size());
+    a_analysis = run;
+    a_sweepPage->beginRun(run->name);
+    a_sweepPage->show();
+    QThread* thread = QThread::create([run] {
+        run->result = runSweep(run->model, run->layout, run->called, run->folder, run->plan, run->control);
+        if (const Node* n = sweepNode(run->model, run->tag)) run->result.setup = analysisSetup(run->model, *n);
+    });
+    thread->setStackSize(8u << 20);
+    connect(thread, &QThread::finished, this, [this, run] {
+        if (run == a_analysis) analysisDone();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });
+    thread->start();
+    a_status->setText(tr("%1: solving %n point(s)…", nullptr, run->control.of.load()).arg(run->name));
+    showProgress();
+    emit analysedChanged();
+    return true;
+}
+
+bool RF25Doc::runOptimizationNode(const Node& node, QString* why)
+{
+    QString error;
+    const std::optional<OptimizationPlan> plan = optimizationPlan(a_model, node, &error);
+    if (!plan) {
+        if (why != nullptr) *why = error;
+        return false;
+    }
+    auto run = std::make_shared<AnalysisRun>();
+    run->tag = node.tag;
+    run->name = nameOf(node);
+    run->model = a_model;
+    run->layout = a_layout;
+    run->called = QFileInfo(a_layoutRead).fileName();
+    run->folder = a_DocName.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : QFileInfo(a_DocName).absolutePath();
+    run->optimization = true;
+    run->search = *plan;
+    run->control.of = 1000;
+    a_analysis = run;
+    a_sweepPage->hide();
+    a_optimizationPage->beginRun(run->name);
+    a_optimizationPage->show();
+    // Each solve told to the page as it ends, on its own thread.
+    QPointer<fem::OptimizationPage> page = a_optimizationPage;
+    fem::OptimizationListener listener;
+    listener.row = [page](const fem::OptimizationRow& row, const QStringList& columns) {
+        QMetaObject::invokeMethod(qApp, [page, row, columns] {
+            if (page) page->addRow(row, columns);
+        }, Qt::QueuedConnection);
+    };
+    QThread* thread = QThread::create([run, listener] {
+        run->found = runOptimization(run->model, run->layout, run->called, run->folder, run->search, run->control, listener);
+        if (const Node* n = optimizationNode(run->model, run->tag)) run->found.setup = analysisSetup(run->model, *n);
+    });
+    thread->setStackSize(8u << 20);
+    connect(thread, &QThread::finished, this, [this, run] {
+        if (run == a_analysis) analysisDone();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });
+    thread->start();
+    a_status->setText(tr("%1: searching…").arg(run->name));
+    showProgress();
+    emit analysedChanged();
+    return true;
+}
+
+fem::OptimizationResult RF25Doc::optimizationResult(const QString& tag) const
+{
+    const Node* node = optimizationNode(a_model, tag);
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return fem::OptimizationResult();
+    return fem::OptimizationResult::fromJson(node->props.value(QLatin1String("result")).toObject());
+}
+
+bool RF25Doc::applyOptimum(const QString& tag, int point, QStringList* written, QString* why)
+{
+    const Node* node = optimizationNode(a_model, tag);
+    if (node == nullptr) {
+        if (why != nullptr) *why = tr("The model has no Optimization.");
+        return false;
+    }
+    Model m = a_model;
+    QStringList said;
+    QString error;
+    if (!qucs_s::rf25::applyOptimum(m, *node, point, &said, &error)) {
+        if (why != nullptr) *why = error;
+        return false;
+    }
+    if (!setModel(m, tr("Apply Optimum"))) {
+        if (why != nullptr) *why = tr("The parameters are at the optimum already.");
+        return false;
+    }
+    if (written != nullptr) *written = said;
+    if (why != nullptr) *why = error;   // (what it could not write, where any)
+    // Solved there, as the multiphysics optimization's Apply Optimum computes
+    // its study.
+    solve();
+    return true;
+}
+
+QString RF25Doc::analysisRunning(int* done, int* of, QString* said) const
+{
+    if (!a_analysis) return QString();
+    if (done != nullptr) *done = a_analysis->control.done.load();
+    if (of != nullptr) *of = a_analysis->control.of.load();
+    if (said != nullptr)
+        *said = a_analysis->optimization ? tr("%1: %n solve(s) so far", nullptr, a_analysis->control.solves.load()).arg(a_analysis->name)
+                                         : tr("%1: %2 of %3 point(s) solved").arg(a_analysis->name).arg(a_analysis->control.done.load()).arg(a_analysis->control.of.load());
+    return a_analysis->tag;
+}
+
+void RF25Doc::stopAnalysis()
+{
+    if (a_analysis) a_analysis->control.requestStop();
+}
+
+bool RF25Doc::waitForAnalysis(int ms)
+{
+    const Held held(this);
+    QElapsedTimer t;
+    t.start();
+    while (a_analysis && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_analysis;
+}
+
+void RF25Doc::analysisDone()
+{
+    const std::shared_ptr<AnalysisRun> run = a_analysis;
+    a_analysis.reset();
+    // Kept in its node, saved with the model: not an edit to undo, but the
+    // model on disk is no longer the one in the tab.
+    if (Node* node = a_model.find(run->tag)) {
+        node->props.insert(QStringLiteral("result"), run->optimization ? run->found.toJson() : run->result.toJson());
+        setDocChanged(true);
+        emit signalFileChanged(true);
+        emit modelChanged();
+    }
+    if (run->optimization)
+        a_status->setText(run->found.error.isEmpty() ? tr("%1: %2").arg(run->name, run->found.summary) : tr("%1: %2").arg(run->name, run->found.error));
+    else
+        a_status->setText(run->result.error.isEmpty()
+                              ? tr("%1: %2 of %3 point(s) solved%4.").arg(run->name).arg(run->result.solved).arg(run->result.points.size())
+                                    .arg(run->result.stopped ? tr(", stopped") : QString())
+                              : tr("%1: %2").arg(run->name, run->result.error));
+    showAnalysis(run->tag);
+    showProgress();
+    emit analysedChanged();
+}
+
+SweepResult RF25Doc::sweepResult(const QString& tag) const
+{
+    const Node* node = sweepNode(a_model, tag);
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return SweepResult();
+    return SweepResult::fromJson(node->props.value(QLatin1String("result")).toObject());
+}
+
+bool RF25Doc::analysisOld(const QString& tag) const
+{
+    const Node* node = a_model.find(tag);
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return false;
+    return node->props.value(QLatin1String("result")).toObject().value(QLatin1String("setup")).toString() != analysisSetup(a_model, *node);
+}
+
+void RF25Doc::showAnalysis(const QString& tag)
+{
+    if (a_sweepPage == nullptr || a_optimizationPage == nullptr) return;
+    const Node* node = a_model.find(tag);
+    if (a_analysis && a_analysis->tag == tag) {
+        (a_analysis->optimization ? static_cast<QWidget*>(a_optimizationPage) : a_sweepPage)->show();
+        (a_analysis->optimization ? static_cast<QWidget*>(a_sweepPage) : a_optimizationPage)->hide();
+        return;
+    }
+    a_sweepPage->hide();
+    a_optimizationPage->hide();
+    if (node == nullptr || !node->props.value(QLatin1String("result")).isObject()) return;
+    if (node->type == QLatin1String("rf_sweep")) {
+        a_sweepPage->showResult(nameOf(*node), sweepResult(tag), analysisOld(tag));
+        a_sweepPage->show();
+    } else if (node->type == QLatin1String("rf_optimization")) {
+        a_optimizationPage->showResult(nameOf(*node), optimizationResult(tag), analysisOld(tag));
+        a_optimizationPage->show();
+    }
+}
+
+bool RF25Doc::writeSweepTouchstones(const QString& tag, QStringList* written, QString* why)
+{
+    const auto fail = [why](const QString& text) {
+        if (why != nullptr) *why = text;
+        return false;
+    };
+    const Node* node = sweepNode(a_model, tag);
+    if (node == nullptr) return fail(tr("The model has no Parametric Sweep."));
+    const SweepResult r = sweepResult(node->tag);
+    if (r.points.isEmpty()) return fail(tr("%1 has not been run: run it first.").arg(nameOf(*node)));
+    if (a_DocName.isEmpty()) return fail(tr("Save the model first: the files are written beside it."));
+    const QFileInfo model(a_DocName);
+    const QString stem = model.completeBaseName() + QLatin1Char('_') + node->tag;
+    QStringList done;
+    for (int i = 0; i < r.points.size(); ++i) {
+        const std::shared_ptr<FullWave> w = r.waveOf(i);
+        if (!w) continue;
+        QStringList comments{tr("RF 2.5D model %1, Parametric Sweep %2, point %3:").arg(model.fileName(), nameOf(*node)).arg(i + 1)};
+        for (int a = 0; a < r.parameters && a < r.points.at(i).values.size(); ++a)
+            comments << QStringLiteral("  %1 = %2 %3").arg(r.columns.at(a)).arg(r.points.at(i).values.at(a), 0, 'g', 9).arg(r.units.value(a));
+        const QString text = touchstoneOf(*w, 50, comments);
+        if (text.isEmpty()) continue;
+        const QString path = model.absoluteDir().absoluteFilePath(QStringLiteral("%1_%2.s%3p").arg(stem).arg(i + 1).arg(w->portNames.size()));
+        QSaveFile f(path);
+        if (!f.open(QIODevice::WriteOnly)) return fail(tr("%1 could not be written: %2").arg(path, f.errorString()));
+        f.write(text.toUtf8());
+        if (!f.commit()) return fail(tr("%1 could not be written: %2").arg(path, f.errorString()));
+        done << QFileInfo(path).fileName();
+    }
+    if (done.isEmpty()) return fail(tr("%1 has no full-wave point to write: its study solves quasi-statically.").arg(nameOf(*node)));
+    if (written != nullptr) *written = done;
+    return true;
 }
 
 QStringList RF25Doc::lineSummary() const
@@ -3777,5 +3349,7 @@ void RF25Doc::focusNode(const QString& tag)
 {
     a_focus = tag;
     a_stack->setFocused(tag);
+    if (const Node* n = a_model.find(tag); n != nullptr && (n->type == QLatin1String("rf_sweep") || n->type == QLatin1String("rf_optimization")))
+        showAnalysis(tag);
     emit focusChanged(tag);
 }

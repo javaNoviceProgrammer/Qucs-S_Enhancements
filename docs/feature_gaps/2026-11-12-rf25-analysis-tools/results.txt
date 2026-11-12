@@ -1,0 +1,13 @@
+===== what each break did =====
+rf25_edit taking a property its kind has not                   anRf25ModelIsOptimizedThroughItsTo failed (caught)
+a node not named by its kind                                   anRf25ModelIsOptimizedThroughItsTo failed (caught)
+rf25_sweep's rows not cut to 'rows'                            anRf25ModelIsOptimizedThroughItsTo failed (caught)
+rf25_sweep not waiting for the sweep it starts                 anRf25ModelIsOptimizedThroughItsTo failed (caught)
+rf25_optimize's apply not applying                             anRf25ModelIsOptimizedThroughItsTo failed (caught)
+rf25_stop not stopping an analysis                             anRf25ModelIsOptimizedThroughItsTo failed (caught)
+the format's text without the analyses                         anRf25ModelIsOptimizedThroughItsTo failed (caught)
+the panel's Run not offered                                    thePanelRunsAndAppliesAnAnalysis failed (caught)
+the panel's Apply Optimum always offered                       thePanelRunsAndAppliesAnAnalysis failed (caught)
+the panel's Stop not offered while it runs                     thePanelRunsAndAppliesAnAnalysis failed (caught)
+
+0 of 10 uncaught

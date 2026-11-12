@@ -111,6 +111,30 @@ void QucsApp::initRf25()
   });
   converge->setObjectName(QStringLiteral("rfConvergeAction"));
   converge->setStatusTip(tr("Solve the model on meshes ever finer and say how far its own is from the limit"));
+  // The model's Parametric Sweep: the one chosen in the panel, else its first.
+  QAction *sweep = a_rf25Menu->addAction(tr("Run Parametric Sweep"), this, [this, model] {
+    RF25Doc *doc = model();
+    if (doc == nullptr) return;
+    const qucs_s::rf25::Node *chosen = doc->model().find(doc->focusedNode());
+    const qucs_s::rf25::Node *node = chosen != nullptr && chosen->type == QLatin1String("rf_sweep") ? chosen : qucs_s::rf25::sweepNode(doc->model());
+    QString why;
+    if (node == nullptr || !doc->runAnalysis(node->tag, &why))
+      QMessageBox::information(this, tr("Run Parametric Sweep"), node == nullptr ? tr("The model has no Parametric Sweep: add one under Analyses.") : why);
+  });
+  sweep->setObjectName(QStringLiteral("rfSweepAction"));
+  // The model's Optimization: the one chosen in the panel, else its first.
+  QAction *optimize = a_rf25Menu->addAction(tr("Run Optimization"), this, [this, model] {
+    RF25Doc *doc = model();
+    if (doc == nullptr) return;
+    const qucs_s::rf25::Node *chosen = doc->model().find(doc->focusedNode());
+    const qucs_s::rf25::Node *node = chosen != nullptr && chosen->type == QLatin1String("rf_optimization") ? chosen : qucs_s::rf25::optimizationNode(doc->model());
+    QString why;
+    if (node == nullptr || !doc->runAnalysis(node->tag, &why))
+      QMessageBox::information(this, tr("Run Optimization"), node == nullptr ? tr("The model has no Optimization: add one under Analyses.") : why);
+  });
+  optimize->setObjectName(QStringLiteral("rfOptimizeAction"));
+  optimize->setStatusTip(tr("Search the parameters its Optimization varies for what it asks of the results, each candidate a whole solve"));
+  sweep->setStatusTip(tr("Solve the model at each value of the parameters its Parametric Sweep varies, and read its quantities at each"));
   a_rf25Menu->addSeparator();
   QAction *hfssExport = a_rf25Menu->addAction(tr("Export HFSS™ 3D Layout…"), this, [this] { exportRf25Hfss(); });
   hfssExport->setObjectName(QStringLiteral("rfHfssExportAction"));
@@ -151,6 +175,10 @@ void QucsApp::updateRf25Menu()
       a->setEnabled(doc != nullptr);
     else if (a->objectName() == QLatin1String("rfConvergeAction"))
       a->setEnabled(doc != nullptr && !doc->isSolving());
+    else if (a->objectName() == QLatin1String("rfSweepAction"))
+      a->setEnabled(doc != nullptr && !doc->isAnalysing() && qucs_s::rf25::sweepNode(doc->model()) != nullptr);
+    else if (a->objectName() == QLatin1String("rfOptimizeAction"))
+      a->setEnabled(doc != nullptr && !doc->isAnalysing() && qucs_s::rf25::optimizationNode(doc->model()) != nullptr);
     else if (a->objectName() == QLatin1String("rfCompareAction"))
       a->setEnabled(doc != nullptr && doc->fullWave() && doc->fullWave()->ok());
 }

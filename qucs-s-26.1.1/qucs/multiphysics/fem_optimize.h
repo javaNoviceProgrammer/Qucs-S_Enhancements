@@ -99,6 +99,36 @@ struct OptimizationPlan {
 /// what is asked.
 std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node& node, const ParameterScope& parameters, QString* error);
 
+/*!
+ * The pieces of an optimization node another kind of model reads its plan by
+ * (RF 2.5D's), as optimizationPlan() reads a multiphysics one's: each false and
+ * why in \a error where the node cannot be run. Its rows' own columns past
+ * the first four of an objective (expression, kind, value, weight) are the
+ * caller's.
+ */
+/// Its mode (optimize, center), method and every setting of the search.
+bool readOptimizationSettings(const Node& node, const ParameterScope& parameters, OptimizationPlan* plan, QString* error);
+/// Its parameters to vary (name, start, minimum, maximum, type, active), each
+/// one of \a known (a model's parameters' names, in order: said where one is
+/// not).
+bool readOptimizationVariables(const Node& node, const ParameterScope& parameters, const QStringList& known, OptimizationPlan* plan, QString* error);
+/// An objective row's first four cells - its expression, kind, value, weight -
+/// into \a objective; false where the row is to be skipped (no expression)
+/// with \a error empty, or is wrong with \a error set.
+bool readOptimizationObjective(const QJsonArray& row, const ParameterScope& parameters, const QString& planName, OptimizationObjective* objective, QString* error);
+/// The objectives read into \a plan ask something to reach, and within the
+/// counts a search holds (targets, limits).
+bool checkOptimizationObjectives(OptimizationPlan* plan, QString* error);
+/// What the objectives read into \a plan ask of its method: what the method
+/// can take (design centering's spreads read here), and the warnings its
+/// choice deserves. \a evaluate gives the
+/// parameters with overrides (a model's own evaluateParameters()), to see
+/// that no value of a target or a limit moves with a parameter varied.
+bool checkOptimizationPlan(const Node& node, const ParameterScope& parameters,
+                           const std::function<std::shared_ptr<ParameterScope>(const QHash<QString, QString>&)>& evaluate, OptimizationPlan* plan,
+                           QString* error);
+
+
 /// The optimization to run or read: \a tag, or (empty) the model's first; null
 /// where there is none.
 const Node* optimizationNode(const Model& model, const QString& tag);
@@ -165,12 +195,42 @@ struct OptimizationResult {
 /// node of one value by its tag). False and why where it is not one number.
 bool solutionValue(Solution& solution, const QString& text, double* value, Dim* dim, QString* why);
 
+
 /// What a run tells as it goes, on its thread.
 struct OptimizationListener {
     std::function<void(const OptimizationRow&, const QStringList& columns)> row;
     std::function<void(const QString&)> line;
 };
-
+/// What one candidate's solve measured: each objective's value, SI, and its
+/// unit; why it did not solve.
+struct OptimizationMeasured {
+    bool solved = false;
+    bool stopped = false;     ///< stopped before it had an answer: nothing is known of it
+    bool fatal = false;       ///< solved, but what is asked cannot be read: no candidate's could be
+    QString why;
+    std::vector<double> y;    ///< by objective (a sweep's points already judged by the worst, or the last)
+    std::vector<Dim> dims;
+    QStringList warnings;     ///< what the solve said, told once in the result's notes
+    double yield = std::numeric_limits<double>::quiet_NaN(), cpk = std::numeric_limits<double>::quiet_NaN();
+};
+/// A candidate to solve: the model's parameters with \a overrides in place of
+/// their expressions (SI values with their units); \a progress how far its
+/// solve has got (false: stop); \a stopped whether the run was asked to stop.
+struct OptimizationCandidate {
+    QHash<QString, QString> overrides;
+    Progress progress;
+    std::function<bool()> stopped;
+};
+/// Solves a candidate and measures the plan's objectives on it. Called on
+/// worker threads, several at once where the plan solves several at once.
+using OptimizationSolver = std::function<OptimizationMeasured(const OptimizationCandidate&)>;
+/// Runs \a plan, each candidate by \a solve: \a parameters the model's own.
+/// \a lastNotes, after the run, adds what only the solver knows to the notes
+/// (each candidate meshed again...). Blocking; \a progress false stops it, with
+/// the best point so far.
+OptimizationResult runOptimizationPlan(const OptimizationPlan& plan, std::shared_ptr<ParameterScope> parameters, const OptimizationSolver& solve,
+                                       const Progress& progress = {}, const OptimizationListener& listener = {},
+                                       const std::function<QStringList()>& lastNotes = {});
 /// Runs \a tag's optimization: \a topology and \a mesh are of the model's own
 /// parameters, either null when not built. Blocking; \a progress false stops
 /// it, with the best point so far.
@@ -186,16 +246,23 @@ QString optimizationSetup(const Model& model, const Node& node);
 /// \a value of parameter \a name as its expression writes it: in the unit it has
 /// (2.5[mm] for one of 3[mm], not 0.0025[m]), else in SI.
 QString parameterText(const Model& model, const ParameterScope& parameters, const QString& name, double value);
+QString parameterText(const QList<Model::Parameter>& rows, const ParameterScope& parameters, const QString& name, double value);
 
 /// A row of an optimization's parameters to vary for \a name: over a factor of
 /// two each way about its value, in its unit.
 QJsonArray optimizationVariableRow(const Model& model, const ParameterScope& parameters, const QString& name);
+QJsonArray optimizationVariableRow(const QList<Model::Parameter>& rows, const ParameterScope& parameters, const QString& name);
 
 /// The optimum of \a node's result (a Pareto front: its design \a point, from
 /// 1) written into the model's parameters - each in the unit its expression
 /// has -; what it wrote ("w = 2.5[mm]") in \a written. False and why where it
 /// cannot.
 bool applyOptimum(Model& model, const Node& node, int point, QStringList* written, QString* error);
+/// The same into \a rows, a model's parameters (\a parameters, theirs
+/// evaluated): \a plan, where the node's plan can be read, holds the
+/// parameters it held at a start of their own, written in too.
+bool applyOptimum(QList<Model::Parameter>& rows, const ParameterScope& parameters, const Node& node, const OptimizationPlan* plan, int point,
+                  QStringList* written, QString* error);
 
 } // namespace qucs_s::fem
 

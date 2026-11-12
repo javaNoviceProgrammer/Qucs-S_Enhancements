@@ -153,6 +153,7 @@ private slots:
     void badSetups_data();
     void badSetups();
     // The shipped example.
+    void anotherModelsPlanRunsByItsOwnSolve();
     void theShippedExample_data();
     void theShippedExample();
     // The file.
@@ -1489,6 +1490,123 @@ void TestFemOptimize::repeatedPointsAreNotSolvedAgain()
     QVERIFY2(r.error.isEmpty(), qPrintable(said(r)));
     QVERIFY2(r.solves <= 4, qPrintable(said(r)));
     QVERIFY2(r.evaluations > r.solves, qPrintable(said(r)));
+}
+
+// The driver another kind of model runs by (RF 2.5D's): its plan read from a
+// node by the shared pieces, each candidate measured by a callback of its own
+// - here a closed form, f = (x - 1)^2 + (y + 2)^2 within x + y >= -0.5, whose
+// optimum is on the limit at (1.25, -1.75) -, several at once; what the
+// solver says told once among the notes, and its last notes after the run; a
+// value that moves with a varied parameter refused; a stop keeps the best;
+// the optimum written into its parameter rows, in their units.
+void TestFemOptimize::anotherModelsPlanRunsByItsOwnSolve()
+{
+    QList<Model::Parameter> rows{{QStringLiteral("x"), QStringLiteral("0.5[m]"), QString()}, {QStringLiteral("y"), QStringLiteral("0[m]"), QString()},
+                                 {QStringLiteral("h"), QStringLiteral("x + 1[m]"), QString()}};
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(rows);
+    QVERIFY(ps->errors.isEmpty());
+    QCOMPARE(ps->values.value(QStringLiteral("h")), 1.5);
+    const auto evaluate = [&rows](const QHash<QString, QString>& overrides) { return evaluateParameters(rows, overrides); };
+    const auto nodeOf = [](const QByteArray& json) {
+        Node n;
+        n.type = QStringLiteral("optimization");
+        n.tag = QStringLiteral("o1");
+        n.label = QStringLiteral("Mine");
+        n.props = QJsonDocument::fromJson(json).object();
+        return n;
+    };
+    const auto planOf = [&](const Node& node, QString* why) -> std::optional<OptimizationPlan> {
+        OptimizationPlan plan;
+        if (!readOptimizationSettings(node, *ps, &plan, why)) return std::nullopt;
+        if (!readOptimizationVariables(node, *ps, {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("h")}, &plan, why)) return std::nullopt;
+        for (const QJsonValue& row : node.value(QStringLiteral("objectives")).toArray()) {
+            OptimizationObjective o;
+            if (!readOptimizationObjective(row.toArray(), *ps, plan.name, &o, why)) {
+                if (!why->isEmpty()) return std::nullopt;
+                continue;
+            }
+            plan.objectives.push_back(o);
+        }
+        if (!checkOptimizationObjectives(&plan, why)) return std::nullopt;
+        if (!checkOptimizationPlan(node, *ps, evaluate, &plan, why)) return std::nullopt;
+        return plan;
+    };
+    const Node node = nodeOf(R"({"method": "de", "seed": 3, "maxiter": 60, "parallel": 4,
+        "variables": [["x", "", "-3[m]", "3[m]"], ["y", "", "-3[m]", "3[m]"]],
+        "objectives": [["f", "MIN"], ["s", "GE", "-0.5[m]"], ["", "MIN"]]})");
+    QString why;
+    const std::optional<OptimizationPlan> plan = planOf(node, &why);
+    QVERIFY2(plan.has_value(), qPrintable(why));
+    QCOMPARE(plan->name, QStringLiteral("Mine"));
+    QCOMPARE(plan->search.method, QStringLiteral("de"));
+    QCOMPARE(plan->parallel, 4);
+    QCOMPARE(int(plan->variables.size()), 2);
+    QCOMPARE(int(plan->objectives.size()), 2);   // (the row of no expression skipped)
+    QCOMPARE(plan->objectives[1].kind, OptimizationObjective::GreaterEqual);
+
+    // Each candidate by the callback, on the threads the plan solves at once.
+    std::atomic<int> calls{0};
+    const Dim metre = ps->dims.value(QStringLiteral("x"));
+    const OptimizationSolver solve = [&](const OptimizationCandidate& c) {
+        ++calls;
+        OptimizationMeasured m;
+        const std::shared_ptr<ParameterScope> at = evaluateParameters(rows, c.overrides);
+        if (!at->errors.isEmpty()) {
+            m.why = at->errors.begin().value();
+            return m;
+        }
+        const double x = at->values.value(QStringLiteral("x")), y = at->values.value(QStringLiteral("y"));
+        m.y = {(x - 1) * (x - 1) + (y + 2) * (y + 2), x + y};
+        m.dims = {Dim(), metre};
+        m.warnings << QStringLiteral("a word from the solver");
+        m.solved = true;
+        return m;
+    };
+    const OptimizationResult r = runOptimizationPlan(*plan, ps, solve, {}, {}, [] { return QStringList{QStringLiteral("the solver's last word")}; });
+    QVERIFY2(r.error.isEmpty() && r.hasBest(), qPrintable(said(r)));
+    QVERIFY2(std::abs(value(r, QStringLiteral("x")) - 1.25) < 0.02 && std::abs(value(r, QStringLiteral("y")) + 1.75) < 0.02, qPrintable(said(r)));
+    QVERIFY2(value(r, QStringLiteral("s")) >= -0.5 - 1e-3, qPrintable(said(r)));
+    QCOMPARE(r.solves, calls.load());
+    QCOMPARE(int(r.notes.count(QStringLiteral("a word from the solver"))), 1);
+    QVERIFY2(r.notes.contains(QStringLiteral("the solver's last word")), qPrintable(said(r)));
+    QVERIFY(r.notes.indexOf(QStringLiteral("the solver's last word")) > r.notes.indexOf(QStringLiteral("a word from the solver")));
+
+    // Written into its rows: each in its unit, the rest as they were.
+    Node kept = node;
+    kept.props.insert(QStringLiteral("result"), r.toJson());
+    QStringList written;
+    QVERIFY2(applyOptimum(rows, *ps, kept, &*plan, 0, &written, &why), qPrintable(why));
+    QCOMPARE(written.size(), 2);
+    QVERIFY2(rows[0].expression.endsWith(QStringLiteral("[m]")) && std::abs(rows[0].expression.chopped(3).toDouble() - 1.25) < 0.02, qPrintable(rows[0].expression));
+    QCOMPARE(rows[2].expression, QStringLiteral("x + 1[m]"));
+    QCOMPARE(parameterText(rows, *ps, QStringLiteral("x"), 0.002), QStringLiteral("0.002[m]"));
+    const QJsonArray row = optimizationVariableRow(rows, *ps, QStringLiteral("y"));
+    QCOMPARE(row.at(0).toString(), QStringLiteral("y"));
+    QCOMPARE(row.at(2).toString(), QStringLiteral("-1[m]"));
+    QCOMPARE(row.at(3).toString(), QStringLiteral("1[m]"));
+
+    // A limit's value that moves with a parameter varied: refused, as on a 2D model.
+    const Node moving = nodeOf(R"({"method": "nm", "variables": [["x", "", "-3[m]", "3[m]"]], "objectives": [["f", "MIN"], ["s", "GE", "h"]]})");
+    QVERIFY(!planOf(moving, &why).has_value());
+    QVERIFY2(why.contains(QStringLiteral("moves with x")), qPrintable(why));
+
+    // A stop, said through a candidate's progress as a solve tells it: the
+    // best so far kept, the search interrupted, the candidate asked to stop.
+    std::atomic<int> told{0};
+    std::atomic<bool> sawStop{false};
+    const OptimizationSolver telling = [&](const OptimizationCandidate& c) {
+        if (c.progress && !c.progress(0.5, QStringLiteral("half way"))) {
+            sawStop = c.stopped && c.stopped();
+            OptimizationMeasured m;
+            m.stopped = true;
+            return m;
+        }
+        return solve(c);
+    };
+    const OptimizationResult stopped = runOptimizationPlan(*plan, ps, telling, [&told](double, const QString&) { return ++told < 40; });
+    QVERIFY(sawStop.load());
+    QCOMPARE(stopped.status, QStringLiteral("interrupted"));
+    QVERIFY2(stopped.hasBest(), qPrintable(said(stopped)));
 }
 
 QTEST_GUILESS_MAIN(TestFemOptimize)

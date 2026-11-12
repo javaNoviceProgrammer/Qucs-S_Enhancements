@@ -160,7 +160,7 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("rf_model"), tr("RF 2.5D Model"), QString(), QStringLiteral("model"), none,
          {text(QStringLiteral("description"), tr("Description"), QString())},
          {QStringLiteral("rf_parameters"), QStringLiteral("rf_stack"), QStringLiteral("rf_layout"),
-          QStringLiteral("rf_ports"), QStringLiteral("rf_mesh"), QStringLiteral("rf_study"),
+          QStringLiteral("rf_ports"), QStringLiteral("rf_mesh"), QStringLiteral("rf_study"), QStringLiteral("rf_analyses"),
           QStringLiteral("rf_results"), QStringLiteral("rf_exports")},
          {}, true, true, QString(),
          tr("A planar structure: a stack in z, a layout in x and y, ports on its metals, and a frequency sweep that "
@@ -258,9 +258,10 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("cell"), tr("Cell"), QString(), tr("The cell to solve; the top cell when empty")),
           expr(QStringLiteral("unit"), tr("Unit of its coordinates"), QStringLiteral("m"), QStringLiteral("1[um]"),
                tr("What one unit of the file means, where the file itself does not say"))},
-         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")},
+         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout"), QStringLiteral("rf_shapes"), QStringLiteral("rf_dimension")},
          {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")}, true, true, QString(),
-         tr("The shapes in x and y, read with gdstk as get_layout and find_shapes read them.")});
+         tr("The shapes in x and y, read with gdstk as get_layout and find_shapes read them - and the model's own "
+            "shapes, whose sizes are expressions of its parameters (Shapes).")});
     add({QStringLiteral("rf_layer_map"), tr("Layer map"), QString(), QStringLiteral("map"), none,
          {rows(QStringLiteral("rows"), tr("Layers"), {tr("Layer"), tr("Datatype"), tr("Stack layer")},
                tr("One row per GDS layer and datatype: the metal or via of the stack it belongs to, or nothing to "
@@ -324,6 +325,76 @@ QList<NodeKind> makeKinds()
          tr("A part of the layout, in its coordinates: a rectangle by two corners, a polygon by its corners or a "
             "circle. What is inside it is kept, the rest of the layout masked - or taken out. A shape across its edge "
             "is cut along it.")});
+
+    // The model's own shapes: each number an expression of the parameters,
+    // added to the file's shapes on their layer before the processing.
+    add({QStringLiteral("rf_shapes"), tr("Shapes"), QString(), QStringLiteral("layout"), none, {},
+         {QStringLiteral("rf_shape")}, {}, false, true, QStringLiteral("shapes"),
+         tr("Shapes of the model's own, beside the layout file's: rectangles, polygons, paths and vias whose corners, "
+            "widths and lengths are expressions of the parameters (w, L/2 + 5[um]) - what a Parametric Sweep or an "
+            "Optimization varies. Each is added to its layer of the stack with the file's shapes, before the "
+            "processing's steps; a model of these alone needs no layout file.")});
+    add({QStringLiteral("rf_shape"), tr("Shape"), QStringLiteral("shapes"), QStringLiteral("region"), none,
+         {text(QStringLiteral("layer"), tr("On layer"), QString(),
+               tr("A metal or a via of the stack, by name - or a dielectric or the substrate, where it is (a layer that "
+                  "ends)")),
+          choice(QStringLiteral("shape"), tr("Shape"),
+                 {QStringLiteral("rectangle"), QStringLiteral("polygon"), QStringLiteral("path"), QStringLiteral("via")},
+                 {tr("A rectangle"), tr("A polygon"), tr("A path"), tr("A via")}, QStringLiteral("rectangle")),
+          shownIf(choice(QStringLiteral("anchor"), tr("Placed by"), {QStringLiteral("corner"), QStringLiteral("centre")},
+                         {tr("Its lower left corner"), tr("Its centre")}, QStringLiteral("corner")),
+                  "shape=rectangle"),
+          shownIf(expr(QStringLiteral("x"), tr("x"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("Of the rectangle's lower left corner or centre, or the via's centre, in the layout's coordinates")),
+                  "shape=rectangle|shape=via"),
+          shownIf(expr(QStringLiteral("y"), tr("y"), QStringLiteral("m"), QStringLiteral("0")), "shape=rectangle|shape=via"),
+          shownIf(expr(QStringLiteral("width"), tr("Width"), QStringLiteral("m"), QStringLiteral("100[um]"), tr("Along x")),
+                  "shape=rectangle"),
+          shownIf(expr(QStringLiteral("height"), tr("Height"), QStringLiteral("m"), QStringLiteral("10[um]"), tr("Along y")),
+                  "shape=rectangle"),
+          shownIf(rows(QStringLiteral("points"), tr("Points"), {tr("x"), tr("y")},
+                       tr("A polygon's corners in order, three at least, or a path's points along its spine, two at least: "
+                          "each an x and a y in the layout's coordinates (0, L/2 + 5[um])")),
+                  "shape=polygon|shape=path"),
+          shownIf(expr(QStringLiteral("path_width"), tr("Width"), QStringLiteral("m"), QStringLiteral("10[um]"),
+                       tr("The path's width, across its spine")),
+                  "shape=path"),
+          shownIf(choice(QStringLiteral("ends"), tr("Ends"),
+                         {QStringLiteral("flush"), QStringLiteral("round"), QStringLiteral("extended")},
+                         {tr("Flush with its first and last points"), tr("Round"), tr("Extended by half its width")},
+                         QStringLiteral("flush")),
+                  "shape=path"),
+          shownIf(expr(QStringLiteral("size"), tr("Side"), QStringLiteral("m"), QStringLiteral("1[um]"), tr("Of a square via")),
+                  "shape=via")},
+         {}, {}, false, false, QStringLiteral("shape"),
+         tr("A shape of the model's own on a layer of the stack, its numbers expressions of the parameters: a "
+            "rectangle by a corner or its centre and its width and height, a polygon by its corners, a path by its "
+            "points and width, a square via by its centre and side.")});
+
+    // A parameter tied to the file's own shapes: the corners of a layer's
+    // shapes inside a box moved by an expression - a line widened, a stub
+    // made longer - without drawing them again.
+    add({QStringLiteral("rf_dimension"), tr("Dimension"), QStringLiteral("dimension"), QStringLiteral("region"), none,
+         {text(QStringLiteral("layer"), tr("On layer"), QString(), tr("The layer of the stack whose shapes of the layout file it moves")),
+          expr(QStringLiteral("x0"), tr("Box from x"), QStringLiteral("m"), QStringLiteral("0"),
+               tr("One corner of the box round the corners to move, in the layout's coordinates")),
+          expr(QStringLiteral("y0"), tr("Box from y"), QStringLiteral("m"), QStringLiteral("0")),
+          expr(QStringLiteral("x1"), tr("Box to x"), QStringLiteral("m"), QStringLiteral("10[um]"), tr("The corner across from it")),
+          expr(QStringLiteral("y1"), tr("Box to y"), QStringLiteral("m"), QStringLiteral("10[um]")),
+          choice(QStringLiteral("direction"), tr("Moved toward"),
+                 {QStringLiteral("+x"), QStringLiteral("-x"), QStringLiteral("+y"), QStringLiteral("-y"), QStringLiteral("angle")},
+                 {tr("+x"), tr("-x"), tr("+y"), tr("-y"), tr("An angle")}, QStringLiteral("+x")),
+          shownIf(expr(QStringLiteral("angle"), tr("Angle"), QString(), QStringLiteral("0"),
+                       tr("Degrees from +x, counterclockwise")),
+                  "direction=angle"),
+          expr(QStringLiteral("offset"), tr("By"), QStringLiteral("m"), QStringLiteral("0"),
+               tr("How far, an expression of the parameters: w - 50[um] widens a 50 µm line to w where the box holds "
+                  "its one edge"))},
+         {}, {}, false, false, QStringLiteral("dim"),
+         tr("Moves the corners of the layout file's shapes on a layer that are inside a box - its edges too - by an "
+            "expression of the parameters, before the processing: a box round a line's one edge widens it, one round "
+            "a stub's end lengthens it, one round the whole of a shape moves it. Several apply in order. A shape that "
+            "would cross itself is left as it was, and said.")});
 
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
@@ -519,6 +590,60 @@ QList<NodeKind> makeKinds()
          tr("The frequencies to solve at, and by which solver. The quasi-static one solves the charge once and reads "
             "the frequencies for a line's R and G and its S-parameters; the full-wave one solves the currents at each "
             "frequency, driven at the ports, for their S.")});
+    // What varies the parameters: a sweep over their values, an optimization.
+    add({QStringLiteral("rf_analyses"), tr("Analyses"), QString(), QStringLiteral("study"), none, {},
+         {QStringLiteral("rf_sweep"), QStringLiteral("rf_optimization")}, {}, false, true, QStringLiteral("analyses"),
+         tr("What varies the model's parameters, each point a whole solve by the study: a Parametric Sweep over their "
+            "values, an Optimization that searches them for what is asked of the results.")});
+    add({QStringLiteral("rf_sweep"), tr("Parametric Sweep"), QStringLiteral("analysis"), QStringLiteral("study"), none,
+         {rows(QStringLiteral("parameters"), tr("Parameters"), {tr("Parameter"), tr("From"), tr("To"), tr("Points"), tr("Spacing"), tr("List")},
+               tr("One or two of the model's parameters, each over From to To in Points (linear, or log for logarithmic), or over "
+                  "its List of values apart by commas (10[um], 20[um], 40[um])")),
+          choice(QStringLiteral("combine"), tr("Two parameters"), {QStringLiteral("crossed"), QStringLiteral("paired")},
+                 {tr("Crossed: each value of the first with each of the second"), tr("Paired: the first of each, then the second...")},
+                 QStringLiteral("crossed")),
+          rows(QStringLiteral("quantities"), tr("Quantities"), {tr("Expression"), tr("Over"), tr("From"), tr("To"), tr("At")},
+               tr("What is read at each point: an expression of the solution's values and the parameters - S21_dB, Z11_re, GD21, "
+                  "VSWR1, Z0, eps_eff, C11, Lloop - over the frequencies From to To (all of them when empty), Over its last "
+                  "(the default), min, max, or at the frequency At")),
+          integer(QStringLiteral("parallel"), tr("Solves at once"), 1,
+                  tr("How many points are solved at a time: each takes the memory of a solve, and the machine's threads are "
+                     "shared between them"))},
+         {}, {}, false, false, QStringLiteral("sweep"),
+         tr("The model solved at each value of one or two of its parameters - a width, a length, a permittivity -, each "
+            "point a whole solve by the study, the quantities asked read at each: a table and a plot of them, and each "
+            "point's S for a Touchstone file. What it found is kept with the model, marked old once the model changes.")});
+    // The Optimization: the multiphysics one's settings, as that kind has
+    // them (the same defaults, labels and help, so the two cannot drift), but
+    // for its study - an RF 2.5D model has one - and its objectives' own
+    // columns: a window of frequencies in place of a study and a mode.
+    {
+        QList<PropertyDef> settings;
+        if (const fem::NodeKind* own = fem::nodeKind(QStringLiteral("optimization")))
+            for (PropertyDef p : own->properties) {
+                if (p.key == QLatin1String("study")) continue;
+                if (p.key == QLatin1String("objectives")) {
+                    p.choiceLabels = {tr("Expression"), tr("Kind"), tr("Value"), tr("Weight"), tr("Over"), tr("From"), tr("To"), tr("At")};
+                    p.columnChoices = {{}, QStringList{QStringLiteral("MIN"), QStringLiteral("MAX"), QStringLiteral("TARGET"), QStringLiteral("LE"),
+                                                       QStringLiteral("GE"), QStringLiteral("EQ"), QStringLiteral("MON")},
+                                       {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last"), QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("at")},
+                                       {}, {}, {}};
+                    p.tooltip = tr("Each an expression of the solution's values - S21_dB, Z11_re, GD21, VSWR1, Z0, eps_eff, C11, Lloop - and the "
+                                   "parameters, and what is asked of it: MIN as small and MAX as large as it can be; TARGET at Value (least "
+                                   "squares); LE, GE and EQ limits at Value; MON only shown. Weight: how much it counts among the others (1). "
+                                   "Over the frequencies From to To (all of them when empty): its worst (the default, as its kind judges it), its "
+                                   "last, min or max, or at the frequency At.");
+                }
+                settings << p;
+            }
+        add({QStringLiteral("rf_optimization"), tr("Optimization"), QStringLiteral("analysis"), QStringLiteral("study"), none, settings, {}, {},
+             false, false, QStringLiteral("opt"),
+             tr("Varies parameters of the model within their ranges - widths, lengths, a permittivity, a Dimension's By - and solves the model "
+                "by its study for each candidate, to reach its objectives, targets and limits: any method of the multiphysics optimizer "
+                "(differential evolution and its variants, particle swarm, annealing, CMA-ES, Bayesian, Nelder-Mead, trust region, "
+                "Levenberg-Marquardt, NSGA-II's Pareto front, tune), design centering too. The best values and the history in the tab's page, "
+                "kept with the model; Apply Optimum writes them into the parameters.")});
+    }
     add({QStringLiteral("rf_results"), tr("Results"), QString(), QStringLiteral("results"), none, {}, {}, {}, true, true,
          QString(), tr("What the solve found. Quasi-static: each net's capacitance, each as a line with its RLGC and S "
                        "parameters, and the frequency above which that is no longer the whole story. Full wave: the "
@@ -1128,7 +1253,12 @@ QStringList Model::problems() const
     const Stack s = stack();
     QStringList said = s.problems;
     // The layout: a file, and a map that names layers of the stack.
-    if (textOf(layout(), QStringLiteral("file")).trimmed().isEmpty())
+    // (A model of its own shapes alone needs no file.)
+    const Node* own = layout().child(QStringLiteral("rf_shapes"));
+    const bool shapes = own != nullptr && std::any_of(own->children.cbegin(), own->children.cend(), [](const Node& n) {
+        return n.enabled && n.type == QLatin1String("rf_shape");
+    });
+    if (textOf(layout(), QStringLiteral("file")).trimmed().isEmpty() && !shapes)
         said << tr("The layout names no file: there are no shapes to solve on.");
     const QJsonArray map = layout().child(QStringLiteral("rf_layer_map")) != nullptr
                                ? layout().child(QStringLiteral("rf_layer_map"))->props.value(QLatin1String("rows")).toArray()

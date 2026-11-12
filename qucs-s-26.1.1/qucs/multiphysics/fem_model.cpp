@@ -5657,7 +5657,6 @@ QByteArray Model::toJson() const
 std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHash<QString, QString>& overrides)
 {
     auto ps = std::make_shared<ParameterScope>();
-    static const QRegularExpression identifier(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
     // The functions first: a parameter may use one.
     const Node* defs = model.root.child(QStringLiteral("definitions"));
     for (const Node& f : defs->children) {
@@ -5777,7 +5776,22 @@ std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHa
             ps->scope.setFunction(name, fn);
         }
     }
-    for (const Model::Parameter& p : model.parameters()) {
+    evaluateParameterRows(*ps, model.parameters(), overrides);
+    return ps;
+}
+
+std::shared_ptr<ParameterScope> evaluateParameters(const QList<Model::Parameter>& parameters, const QHash<QString, QString>& overrides)
+{
+    auto ps = std::make_shared<ParameterScope>();
+    evaluateParameterRows(*ps, parameters, overrides);
+    return ps;
+}
+
+void evaluateParameterRows(ParameterScope& scope, const QList<Model::Parameter>& parameters, const QHash<QString, QString>& overrides)
+{
+    ParameterScope* ps = &scope;
+    static const QRegularExpression identifier(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    for (const Model::Parameter& p : parameters) {
         const QString name = p.name.trimmed();
         if (name.isEmpty()) continue;
         if (!identifier.match(name).hasMatch()) {
@@ -5799,7 +5813,6 @@ std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHa
         ps->values.insert(name, e.constant());
         ps->dims.insert(name, e.dim());
     }
-    return ps;
 }
 
 } // namespace qucs_s::fem

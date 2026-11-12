@@ -1,0 +1,13 @@
+===== what each break did =====
+the group delay's phase not unwrapped                          aFullWavesValuesByName failed (caught)
+the group delay's sign the wrong way                           aFullWavesValuesByName failed (caught)
+a pair written only one way                                    aFullWavesValuesByName failed (caught)
+a VSWR of the size of S alone                                  aFullWavesValuesByName failed (caught)
+a window's ends out of it                                      readingsJudgeTheirFrequencies failed (caught)
+the worst of a reading its last                                readingsJudgeTheirFrequencies failed (caught)
+a value at a frequency the nearer one's, not read between      readingsJudgeTheirFrequencies failed (caught)
+a frequency in another unit taken                              readingsJudgeTheirFrequencies failed (caught)
+a quasi-static line's values not read                          aQuasiStaticSolutionsValuesAreRead failed (caught)
+a loop's inductance not read                                   aQuasiStaticSolutionsValuesAreRead failed (caught)
+
+0 of 10 uncaught

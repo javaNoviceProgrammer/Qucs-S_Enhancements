@@ -1,0 +1,17 @@
+===== what each break did =====
+the kind's study kept                                          anOptimizationsPlan failed (caught)
+an objective's Over read as its worst whatever it says         anOptimizationsPlan failed (caught)
+an objective's window not read                                 anOptimizationsPlan failed (caught)
+a candidate solved with the model's own parameters             theShippedMicrostripReachesItsWidt failed (caught)
+a stop told to the solves alone, not to the search             theShippedMicrostripReachesItsWidt failed (caught)
+Apply Optimum not writing the parameters' rows                 theShippedMicrostripReachesItsWidt failed (caught)
+an optimization's result not kept in its node                  theShippedMicrostripReachesItsWidt failed (caught)
+each solve not told to the page                                theShippedMicrostripReachesItsWidt failed (caught)
+an optimization's page not shown                               theShippedMicrostripReachesItsWidt failed (caught)
+
+0 of 9 uncaught
+
+(A tenth break, a target's value read with no unit expected rather than the
+unit of what it reads, was dropped: it changes nothing - a value written with
+its unit is that unit whichever is expected, and a bare number is SI either
+way - so the line it undid is not one any answer stands on.)

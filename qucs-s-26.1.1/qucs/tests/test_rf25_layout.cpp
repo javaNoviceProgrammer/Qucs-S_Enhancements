@@ -6,12 +6,15 @@
  * turn off.
  */
 #include <QtTest>
+#include <QTemporaryDir>
 
 #include <cmath>
 #include <functional>
 #include <random>
 
 #include "layout.h"
+
+#include <gdstk/gdstk.hpp>
 #include "rf25/rf25_layout.h"
 
 namespace rf = qucs_s::rf25;
@@ -404,6 +407,208 @@ private slots:
         const rf::Processed gone = rf::processShapes(slivers, {}, how, stack);
         QVERIFY(gone.conductors.isEmpty());
         QVERIFY2(says(gone.problems, "nothing is left to solve on"), qPrintable(gone.problems.join(" | ")));
+    }
+
+    // The model's own shapes (Layout > Shapes): each number an expression of
+    // the parameters, in µm as the layout's; a rectangle by its corner or
+    // its centre, a polygon by its corners, a via by its centre and side, a
+    // path outlined as gdstk outlines one - flush, extended by half its width,
+    // round; added to the file's shapes on their layer by the processing.
+    // One that cannot be read - a width no number, a polygon of two corners,
+    // no layer, a layer of the stack no shape may be on - left out, and said.
+    void theModelsOwnShapesAreItsParameters()
+    {
+        rf::Model m = stacked();
+        rf::Node* parameters = m.root.child(QStringLiteral("rf_parameters"));
+        QVERIFY(parameters != nullptr);
+        parameters->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "2*w + 100[um]"}});
+        QVERIFY(m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) != nullptr);
+        const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+        const auto shape = [&](const QJsonObject& props) {
+            rf::Node n = m.make(QStringLiteral("rf_shape"));
+            n.props = props;
+            const rf::Node* added = m.add(shapes, n);
+            return added != nullptr ? added->tag : QString();
+        };
+        const QString rect = shape({{"layer", "M1"}, {"x", "10[um]"}, {"y", "-5[um]"}, {"width", "L"}, {"height", "w"}});
+        const QString centred = shape({{"layer", "M2"}, {"anchor", "centre"}, {"x", "0"}, {"y", "0"}, {"width", "20[um]"}, {"height", "w/5"}});
+        const QString poly = shape({{"layer", "M1"}, {"shape", "polygon"}, {"points", QJsonArray{QJsonArray{"0", "0"}, QJsonArray{"w", "0"}, QJsonArray{"0", "w"}}}});
+        const QString via = shape({{"layer", "V1"}, {"shape", "via"}, {"x", "5[um]"}, {"y", "5[um]"}, {"size", "2[um]"}});
+        const QString flush = shape({{"layer", "M2"}, {"shape", "path"}, {"points", QJsonArray{QJsonArray{"0", "100[um]"}, QJsonArray{"100[um]", "100[um]"}}}, {"path_width", "10[um]"}});
+        QString problem;
+        QStringList problems;
+        QList<rf::OwnShape> own = rf::ownShapesOf(m, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        QCOMPARE(int(own.size()), 5);
+        const auto of = [&own](const QString& tag) {
+            for (const rf::OwnShape& s : own)
+                if (s.tag == tag) return s;
+            return rf::OwnShape();
+        };
+        QCOMPARE(of(rect).layer, QStringLiteral("M1"));
+        QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 200, 50));
+        QCOMPARE(of(centred).outline.boundingRect(), QRectF(-10, -5, 20, 10));
+        QCOMPARE(std::abs(rf::areaOf(of(poly).outline)), 1250.0);
+        QCOMPARE(of(via).outline.boundingRect(), QRectF(4, 4, 2, 2));
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(flush).outline)) - 1000) < 1e-6, qPrintable(QString::number(rf::areaOf(of(flush).outline))));
+        QCOMPARE(of(flush).outline.boundingRect(), QRectF(0, 95, 100, 10));
+        // Its ends: extended by half its width at each, or round.
+        m.find(flush)->props.insert(QStringLiteral("ends"), QStringLiteral("extended"));
+        own = rf::ownShapesOf(m);
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(flush).outline)) - 1100) < 1e-6, qPrintable(QString::number(rf::areaOf(of(flush).outline))));
+        m.find(flush)->props.insert(QStringLiteral("ends"), QStringLiteral("round"));
+        own = rf::ownShapesOf(m);
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(flush).outline)) - (1000 + M_PI * 25)) < 1.0, qPrintable(QString::number(rf::areaOf(of(flush).outline))));
+
+        // A parameter changed: the shapes with it.
+        parameters->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "80[um]"}, QJsonArray{"L", "2*w + 100[um]"}});
+        own = rf::ownShapesOf(m);
+        QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 260, 80));
+
+        // Processed with the file's shapes, on their layers: a model of its
+        // own shapes alone over an empty layout.
+        rf::Node* map = m.layout().child(QStringLiteral("rf_layer_map"));
+        map->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+        qucs_s::layout::Layout empty;
+        qucs_s::layout::Cell top;
+        top.name = QStringLiteral("TOP");
+        empty.cells << top;
+        empty.byName.insert(top.name, 0);
+        const rf::Processed processed = rf::processRead(m, empty, QStringLiteral("none"));
+        QStringList layers;
+        for (const rf::Conductor& c : processed.conductors) layers << c.layer;
+        QVERIFY2(layers.contains(QStringLiteral("M1")) && layers.contains(QStringLiteral("M2")), qPrintable(layers.join(", ")));
+        QVERIFY2(processed.report.lines.join(' ').contains(QStringLiteral("of the model's own")), qPrintable(processed.report.lines.join(" | ")));
+        QVERIFY(m.problems().filter(QStringLiteral("names no file")).isEmpty());
+
+        // What cannot be read: left out, and said.
+        m.find(rect)->props.insert(QStringLiteral("width"), QStringLiteral("q * 2"));
+        m.find(poly)->props.insert(QStringLiteral("points"), QJsonArray{QJsonArray{"0", "0"}, QJsonArray{"w", "0"}});
+        m.find(via)->props.insert(QStringLiteral("layer"), QStringLiteral("M9"));
+        m.find(centred)->props.insert(QStringLiteral("layer"), QString());
+        problems.clear();
+        own = rf::ownShapesOf(m, &problems);
+        QCOMPARE(int(own.size()), 1);
+        const QString said = problems.join(QStringLiteral(" | "));
+        QVERIFY2(said.contains(QStringLiteral("width is not a number")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("a polygon of 2 corner(s)")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("M9, which is no layer of the stack")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("is on no layer")), qPrintable(said));
+        // A ground plane has no shapes.
+        rf::Node& ground = add(m.stackNode(), "rf_ground", QStringLiteral("g1"), QStringLiteral("GND"));
+        Q_UNUSED(ground);
+        m.find(flush)->props.insert(QStringLiteral("layer"), QStringLiteral("GND"));
+        problems.clear();
+        own = rf::ownShapesOf(m, &problems);
+        QVERIFY2(problems.join(' ').contains(QStringLiteral("a ground plane has no shapes")), qPrintable(problems.join(" | ")));
+        Q_UNUSED(problem);
+    }
+
+    // A Dimension (Layout > Dimension): the corners of a layer's shapes of
+    // the layout file inside its box - its edges too - moved by an expression
+    // of the parameters, before the processing. A box round a strip's top
+    // edge widens it to w; one round the whole of it moves it, its width as
+    // it was; another layer's shapes and those outside untouched; an angle
+    // of 90 degrees as +y. One that would make a shape cross itself leaves it
+    // as it was, and says so; one whose box holds no corner says that; one
+    // that cannot be read is left out, and said.
+    void aDimensionMovesTheFilesCorners()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString file = dir.filePath(QStringLiteral("strips.gds"));
+        {
+            gdstk::Library lib = {};
+            lib.init("STRIPS", 1e-6, 1e-9);
+            auto* cell = static_cast<gdstk::Cell*>(gdstk::allocate_clear(sizeof(gdstk::Cell)));
+            cell->init("TOP");
+            lib.cell_array.append(cell);
+            const auto box = [cell](double x0, double y0, double x1, double y1, uint32_t layer) {
+                auto* r = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+                gdstk::Vec2 a, b;
+                a.x = x0;
+                a.y = y0;
+                b.x = x1;
+                b.y = y1;
+                *r = gdstk::rectangle(a, b, gdstk::make_tag(layer, 0));
+                cell->polygon_array.append(r);
+            };
+            box(0, 0, 1000, 50, 1);       // the strip
+            box(2000, 0, 2100, 100, 1);   // a pad apart
+            box(0, 40, 1000, 60, 2);      // another layer's strip over the edge
+            QVERIFY(lib.write_gds(QFile::encodeName(file).constData(), 0, nullptr) == gdstk::ErrorCode::NoError);
+            lib.free_all();
+        }
+        QString why;
+        const std::shared_ptr<qucs_s::layout::Layout> read = qucs_s::layout::read(file, &why);
+        QVERIFY2(read != nullptr, qPrintable(why));
+        rf::Model m = stacked();
+        m.layout().props.insert(QStringLiteral("file"), file);
+        QJsonArray map;
+        map.append(QJsonArray{"1", "0", "M1"});
+        map.append(QJsonArray{"2", "0", "M2"});
+        set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", map);
+        set(*m.root.child(QStringLiteral("rf_parameters")), "rows", QJsonArray() << QJsonArray{"w", "80[um]"});
+        rf::Node d = m.make(QStringLiteral("rf_dimension"));
+        d.props = QJsonObject{{"layer", "M1"}, {"x0", "-1[um]"}, {"y0", "45[um]"}, {"x1", "1001[um]"}, {"y1", "55[um]"},
+                              {"direction", "+y"}, {"offset", "w - 50[um]"}};
+        const rf::Node* added = m.add(m.layout().tag, d);
+        QVERIFY(added != nullptr);
+        const QString tag = added->tag;
+        const auto boxesOn = [&](const QString& layer) {
+            const rf::Processed p = rf::processRead(m, *read, QStringLiteral("strips.gds"));
+            QList<QRectF> out;
+            for (const rf::Conductor& c : p.conductors)
+                if (c.layer == layer) out << c.outline.boundingRect();
+            std::sort(out.begin(), out.end(), [](const QRectF& a, const QRectF& b) { return a.left() < b.left(); });
+            return out;
+        };
+        QCOMPARE(boxesOn(QStringLiteral("M1")), (QList<QRectF>{QRectF(0, 0, 1000, 80), QRectF(2000, 0, 100, 100)}));
+        QCOMPARE(boxesOn(QStringLiteral("M2")), (QList<QRectF>{QRectF(0, 40, 1000, 20)}));
+        {
+            const rf::Processed p = rf::processRead(m, *read, QStringLiteral("strips.gds"));
+            QVERIFY2(p.problems.isEmpty(), qPrintable(p.problems.join(" | ")));
+            QVERIFY2(p.report.lines.join(' ').contains(QStringLiteral("moved 2 corner(s) of M1 by 30 µm")), qPrintable(p.report.lines.join(" | ")));
+        }
+        // A box drawn along the edge itself, of no height: it holds the edge.
+        m.find(tag)->props.insert(QStringLiteral("x0"), QStringLiteral("0"));
+        m.find(tag)->props.insert(QStringLiteral("y0"), QStringLiteral("50[um]"));
+        m.find(tag)->props.insert(QStringLiteral("x1"), QStringLiteral("1000[um]"));
+        m.find(tag)->props.insert(QStringLiteral("y1"), QStringLiteral("50[um]"));
+        QCOMPARE(boxesOn(QStringLiteral("M1")).first(), QRectF(0, 0, 1000, 80));
+        // An angle of 90 degrees: +y.
+        m.find(tag)->props.insert(QStringLiteral("direction"), QStringLiteral("angle"));
+        m.find(tag)->props.insert(QStringLiteral("angle"), QStringLiteral("90"));
+        QCOMPARE(boxesOn(QStringLiteral("M1")).first(), QRectF(0, 0, 1000, 80));
+        // Round the whole strip: moved, as wide as it was.
+        m.find(tag)->props = QJsonObject{{"layer", "M1"}, {"x0", "-1[um]"}, {"y0", "-1[um]"}, {"x1", "1001[um]"}, {"y1", "51[um]"},
+                                         {"direction", "+x"}, {"offset", "100[um]"}};
+        QCOMPARE(boxesOn(QStringLiteral("M1")).first(), QRectF(100, 0, 1000, 50));
+        // A corner alone pulled across its shape: left as it was, and said.
+        m.find(tag)->props = QJsonObject{{"layer", "M1"}, {"x0", "995[um]"}, {"y0", "45[um]"}, {"x1", "1005[um]"}, {"y1", "55[um]"},
+                                         {"direction", "-y"}, {"offset", "100[um]"}};
+        {
+            const rf::Processed p = rf::processRead(m, *read, QStringLiteral("strips.gds"));
+            QVERIFY2(p.problems.join(' ').contains(QStringLiteral("cross itself")), qPrintable(p.problems.join(" | ")));
+        }
+        QCOMPARE(boxesOn(QStringLiteral("M1")).first(), QRectF(0, 0, 1000, 50));
+        // A box of no corner: said.
+        m.find(tag)->props.insert(QStringLiteral("x0"), QStringLiteral("500[um]"));
+        m.find(tag)->props.insert(QStringLiteral("x1"), QStringLiteral("510[um]"));
+        {
+            const rf::Processed p = rf::processRead(m, *read, QStringLiteral("strips.gds"));
+            QVERIFY2(p.report.lines.join(' ').contains(QStringLiteral("moves no corner")), qPrintable(p.report.lines.join(" | ")));
+        }
+        // Not read: left out, and said.
+        m.find(tag)->props.insert(QStringLiteral("offset"), QStringLiteral("q + 1[um]"));
+        QStringList problems;
+        QVERIFY(rf::dimensionsOf(m, &problems).isEmpty());
+        QVERIFY2(problems.join(' ').contains(QStringLiteral("offset is not a number")), qPrintable(problems.join(" | ")));
+        m.find(tag)->props.insert(QStringLiteral("offset"), QStringLiteral("1[um]"));
+        m.find(tag)->props.insert(QStringLiteral("layer"), QStringLiteral("M7"));
+        problems.clear();
+        QVERIFY(rf::dimensionsOf(m, &problems).isEmpty());
+        QVERIFY2(problems.join(' ').contains(QStringLiteral("M7, which is no layer")), qPrintable(problems.join(" | ")));
     }
 
     // The Cutout: a part of the tree in every model - a new one, and one of

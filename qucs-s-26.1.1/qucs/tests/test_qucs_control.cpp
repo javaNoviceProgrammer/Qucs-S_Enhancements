@@ -3583,6 +3583,79 @@ private slots:
         QVERIFY(failed(notRf));
     }
 
+    // Claude's tools for RF 2.5D's analyses (phase 8 of its optimization),
+    // on the shipped microstrip: rf25_edit adds a Parametric Sweep and sets
+    // it, refusing a kind, a property or a node there is not; rf25_sweep runs
+    // it, reads it back, and refuses a quasi-static sweep's Touchstone files;
+    // rf25_optimize runs the Optimization to its width, reads it back, and
+    // applies it - one step of Undo; rf25_stop stops one running; the
+    // format's text tells the new kinds and the values they read.
+    void anRf25ModelIsOptimizedThroughItsTools()
+    {
+        const QString shipped = QStringLiteral(QUCS_EXAMPLES_DIR "/rf25/microstrip_width_optimization.qrf25");
+        if (!QFileInfo::exists(shipped)) QSKIP("the example is not in this build");
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rfo"));
+        const QString model = ws + "/rfo/strip.qrf25";
+        QFile::remove(model);
+        QVERIFY(QFile::copy(shipped, model));
+        QFile::setPermissions(model, QFile::ReadOwner | QFile::WriteOwner);
+
+        // rf25_edit: a sweep added under Analyses, then set.
+        const QJsonObject added = call("rf25_edit", {{"path", model}, {"action", "add"}, {"type", "rf_sweep"}, {"parent", "analyses"}, {"label", "widths"},
+                                                     {"properties", QJsonObject{{"parameters", QJsonArray() << QJsonArray{"w", "", "", "", "", "60[um], 100[um], 140[um]"}}}}}, 60000);
+        QVERIFY2(!failed(added), qPrintable(text(added)));
+        const QString sweep = json(added).toObject().value("node").toString();
+        QVERIFY(!sweep.isEmpty());
+        const QJsonObject set = call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", "widths"},
+                                                   {"properties", QJsonObject{{"quantities", QJsonArray() << QJsonArray{"Z0"}}}}}, 60000);
+        QVERIFY2(!failed(set), qPrintable(text(set)));
+        QVERIFY(failed(call("rf25_edit", {{"path", model}, {"action", "add"}, {"type", "rf_widget"}, {"parent", "analyses"}}, 60000)));
+        const QJsonObject wrong = call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", sweep}, {"properties", QJsonObject{{"colour", "red"}}}}, 60000);
+        QVERIFY2(failed(wrong) && text(wrong).contains(QStringLiteral("quantities")), qPrintable(text(wrong)));
+        QVERIFY(failed(call("rf25_edit", {{"path", model}, {"action", "remove"}, {"node", "nothing here"}}, 60000)));
+
+        // rf25_sweep: run, read back; no Touchstone of a quasi-static one.
+        const QJsonObject swept = call("rf25_sweep", {{"path", model}, {"node", sweep}}, 600000);
+        QVERIFY2(!failed(swept), qPrintable(text(swept)));
+        const QJsonObject sw = json(swept).toObject();
+        QCOMPARE(sw.value("solved").toInt(), 3);
+        QCOMPARE(sw.value("columns").toArray().at(1).toString(), QStringLiteral("Z0"));
+        const QJsonArray points = sw.value("points").toArray();
+        QCOMPARE(points.size(), 3);
+        QVERIFY(points.at(0).toObject().value("measured").toObject().value("Z0").toDouble() > points.at(2).toObject().value("measured").toObject().value("Z0").toDouble());
+        QVERIFY(!sw.value("old").toBool());
+        const QJsonObject again = call("rf25_sweep", {{"path", model}, {"node", sweep}, {"action", "result"}, {"rows", 2}}, 60000);
+        QCOMPARE(json(again).toObject().value("points").toArray().size(), 2);
+        const QJsonObject files = call("rf25_sweep", {{"path", model}, {"node", sweep}, {"action", "touchstone"}}, 60000);
+        QVERIFY2(failed(files) && text(files).contains(QStringLiteral("quasi-statically")), qPrintable(text(files)));
+
+        // rf25_optimize: run to its width, read back, applied.
+        const QJsonObject optimized = call("rf25_optimize", {{"path", model}}, 600000);
+        QVERIFY2(!failed(optimized), qPrintable(text(optimized)));
+        const QJsonObject o = json(optimized).toObject();
+        const double w = o.value("parameters").toArray().first().toObject().value("value").toDouble();
+        QVERIFY2(std::abs(w - 101.8e-6) < 1e-6, qPrintable(QString::number(w * 1e6)));
+        QVERIFY(o.contains("history"));
+        QVERIFY(json(call("rf25_optimize", {{"path", model}, {"action", "result"}, {"rows", 0}}, 60000)).toObject().value("parameters").isArray());
+        const QJsonObject applied = call("rf25_optimize", {{"path", model}, {"action", "apply"}}, 60000);
+        QVERIFY2(!failed(applied) && text(applied).contains(QStringLiteral("w = ")), qPrintable(text(applied)));
+
+        // rf25_stop: an optimization that would not end on its own, stopped.
+        QVERIFY(!failed(call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", "50 Ohm"},
+                                           {"properties", QJsonObject{{"method", "de"}, {"maxiter", 500}, {"population", 20}, {"tol", "1e-30"}}}}, 60000)));
+        const QJsonObject running = call("rf25_optimize", {{"path", model}, {"timeout", 2}}, 60000);
+        QVERIFY2(!failed(running) && json(running).toObject().value("running").toBool(), qPrintable(text(running)));
+        const QJsonObject stopped = call("rf25_stop", {{"path", model}}, 120000);
+        QVERIFY2(!failed(stopped) && json(stopped).toObject().value("stopped").toBool(), qPrintable(text(stopped)));
+        QCOMPARE(json(call("rf25_optimize", {{"path", model}, {"action", "result"}}, 60000)).toObject().value("status").toString(), QStringLiteral("interrupted"));
+
+        // What the format says.
+        const QJsonObject format = call("fem_describe", {{"what", "format"}, {"space", "RF 2.5D"}}, 60000);
+        QVERIFY2(text(format).contains(QStringLiteral("rf_analyses holds rf_sweep")) && text(format).contains(QStringLiteral("rf_dimension")), qPrintable(text(format).left(300)));
+        QVERIFY(text(format).contains(QStringLiteral("rf_optimization")));
+    }
+
     // rf25_draw (F4 of the open items of 8 November): a model that names no
     // layout drawn on from nothing - a file begun beside it, its Layout
     // naming it, the map's row added -, a strip and a path in one call;
