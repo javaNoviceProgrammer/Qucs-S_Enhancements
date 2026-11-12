@@ -25,6 +25,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QPointF>
+#include <QPolygonF>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
@@ -152,6 +153,16 @@ struct Series {
     int asked = -1;
 };
 
+/// What is drawn over a plot to point things out, not data: an arrow (from
+/// words to a curve) or an ellipse round some curves. Page points.
+struct Annotation {
+    enum class Kind { Arrow, Ellipse };
+    Kind kind = Kind::Arrow;
+    QPolygonF points;          ///< an arrow's tail and tip; an ellipse's outline
+    QString text;              ///< the words at an arrow's tail (an ellipse: of the arrow at it)
+    QStringList names;         ///< the series it names, by their names
+};
+
 /// A plot on a page.
 struct Plot {
     int page = 0;
@@ -176,6 +187,9 @@ struct Plot {
     bool transient = false;
     /// Series found beyond Options::maxSeries and left out (the shortest).
     int seriesLeftOut = 0;
+    /// Arrows and ellipses drawn over the curves (the vector route), set
+    /// apart from the series.
+    QList<Annotation> annotations;
     /// What the call that made it asked for (Claude's digitize_plot: the
     /// scales, colours, references...), kept with it to do it again.
     QJsonObject asked;

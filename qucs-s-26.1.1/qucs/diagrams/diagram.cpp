@@ -905,18 +905,39 @@ void Diagram::calcData(Graph *g) {
             for (i = g->countY; i > 0; i--) {  // every branch of curves
                 const int curve = g->countY - i;
                 px = g->axis(0)->Points;
-                calcCoordinateP(px, pz, py, p, pa);
-                mark(curve, p);
+                // A value not there - NaN, a gap in the data (a digitized
+                // curve's) - ends the line; it starts again after it, its
+                // first point not clipped against the gap.
+                const auto missing = [&] { return !std::isfinite(*px) || !std::isfinite(pz[0]) || !std::isfinite(pz[1]); };
+                bool fresh = missing();
+                if (!fresh) {
+                    calcCoordinateP(px, pz, py, p, pa);
+                    mark(curve, p);
+                    ++p;
+                }
                 ++px;
                 pz += 2;
-                ++p;
                 for (z = g->axis(0)->count - 1; z > 0; z--) {  // every point
                     FIT_MEMORY_SIZE;  // need to enlarge memory block ?
+                    if (missing()) {
+                        // (A hidden point after a stroke's end goes, as at a
+                        // branch's end.)
+                        if (p - g->begin() >= 2 && (p - 2)->isStrokeEnd() && !(p - 2)->isBranchEnd() && !(p - 1)->isStrokeEnd()) p -= 2;
+                        if (!(p - 1)->isStrokeEnd()) (p++)->setStrokeEnd();
+                        fresh = true;
+                        ++px;
+                        pz += 2;
+                        continue;
+                    }
                     calcCoordinateP(px, pz, py, p, pa);
                     mark(curve, p);
                     ++px;
                     pz += 2;
                     ++p;
+                    if (fresh) {
+                        fresh = false;
+                        continue;
+                    }
                     if (Counter >= 2)   // clipping only if an axis is manual
                         clip(p);
                 }

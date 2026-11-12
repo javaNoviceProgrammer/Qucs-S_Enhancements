@@ -234,6 +234,35 @@ QJsonObject plotJson(const dg::Plot& plot, int most)
         o.insert(QStringLiteral("trust"), trustJson(plot));
     }
     if (plot.seriesLeftOut > 0) o.insert(QStringLiteral("series_left_out"), plot.seriesLeftOut);
+    // Arrows and ellipses set apart from the series: an arrow's tail and
+    // tip, an ellipse's centre and box, in the axes' values; the words at
+    // the arrow and the curves it names.
+    if (most >= 0 && !plot.annotations.isEmpty()) {
+        const bool calibrated = plot.calibration.valid();
+        const auto value = [&](QPointF p) {
+            const QPointF v = calibrated ? plot.calibration.toValue(p) : p;
+            return QJsonArray{numberOrNull(rounded(v.x(), 6)), numberOrNull(rounded(v.y(), 6))};
+        };
+        QJsonArray notes;
+        for (const dg::Annotation& a : plot.annotations) {
+            QJsonObject item;
+            if (a.kind == dg::Annotation::Kind::Arrow && a.points.size() == 2) {
+                item.insert(QStringLiteral("kind"), QStringLiteral("arrow"));
+                item.insert(QStringLiteral("tail"), value(a.points.first()));
+                item.insert(QStringLiteral("tip"), value(a.points.last()));
+            } else {
+                const QRectF b = a.points.boundingRect();
+                item.insert(QStringLiteral("kind"), QStringLiteral("ellipse"));
+                item.insert(QStringLiteral("centre"), value(b.center()));
+                const QJsonArray from = value(b.bottomLeft()), to = value(b.topRight());
+                item.insert(QStringLiteral("box"), QJsonArray{from.at(0), from.at(1), to.at(0), to.at(1)});
+            }
+            if (!a.text.isEmpty()) item.insert(QStringLiteral("text"), a.text);
+            if (!a.names.isEmpty()) item.insert(QStringLiteral("names"), QJsonArray::fromStringList(a.names));
+            notes.append(item);
+        }
+        o.insert(calibrated ? QStringLiteral("annotations") : QStringLiteral("annotations_on_the_page"), notes);
+    }
     if (!plot.notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(plot.notes));
     return o;
 }

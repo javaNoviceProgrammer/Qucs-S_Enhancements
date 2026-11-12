@@ -210,7 +210,7 @@ tab (see 2026-11-02-pen-markers.md). The digitizer keeps its own file beside the
 
 ## Tests
 
-- **`test_plot_digitizer`:** the engine alone, about 2,840 lines, 89 cases (QTest's count). It links only the engine and
+- **`test_plot_digitizer`:** the engine alone, about 2,990 lines, 90 cases (QTest's count). It links only the engine and
   Qt Core, Gui, Pdf and Test, so it builds in seconds, under the sanitizers too. It covers:
   - Calibration: two axes, log and reversed, turned and sheared, projective, polar, and each way a calibration can fail.
   - Twenty-seven forms of tick label, both ones that should read as numbers and ones that should not.
@@ -793,6 +793,83 @@ series with a gap, ending at the bar's foot. Each fix undone in turn makes it fa
 **Tests:** through ctest, Release: `test_plot_digitizer` (89), `test_plot_digitizer_app`, `test_pdf_viewer`,
 `test_mcp_server`, `test_mcp_wishlist`, `test_claude_fuzz` and `test_qucs_control` pass. ASan/UBSan (Debug):
 `test_plot_digitizer` and `test_plot_digitizer_app` pass with no report. The four lints are clean.
+
+## The open items, worked through (11 November)
+
+**The request:** "Can you fix them and then archive it?", of the PDF viewer's open items of 9 November:
+A1–A4, B4, B5, B9, the rest of B12, C1 and C2. (B1–B3, B6–B8, B10, B11 were fixed before.) The branch was first
+brought up to main.
+
+**C1, the foot of a page cut off in the tab:** reproduced with pages made for it (a letter page, slides, a media box
+below nought, a crop box inside its media box), not with the review's file, which is gone. The tab draws a page in
+tiles of 512 device pixels. QtPdf's clipped render gives nothing at all for a clip only a few dozen pixels high, so the
+last row of tiles of a page whose height is just over a multiple of 512 was left white: on a letter page at 100 %
+(1056 pixels at 96 dpi), its last 32 pixels, the footer's lower half. A tile at a page's edge is now rendered whole and
+cut to the page (`PageView::tile`). Found on the way, not fixed: QtPdf's clipped render puts ink 1–2 pixels above where
+its whole-page render does (measured: a line at row 1024 of the page comes at 1022 in its tile).
+
+**C2, `screenshot` of a PDF blurred:** the picture is one paint of the tab, and a paint renders tiles for 30 ms and none
+while a zoom settles; the rest are drawn scaled from another zoom's. The tool now has the tiles in sight drawn first
+(`PageView::renderInSight`, at most 5 s; the zoom under way finished), and says how many were left if any.
+
+**B5, arrows and ellipses as series:** in black or grey over curves in colour, these are now set apart: an arrow is a
+2-point shaft with a V of 3 or 4 points (under 18 points across) at one end, its arms going back along it; an ellipse
+is a closed path whose points lie on the ellipse its box holds (90 % within 8 %). The ellipse test comes before the
+legend's rounded box test, which had taken page 18's smallest ellipse for a box (the "third ellipse" B5 found missing).
+With no curve in colour they may be the data (a loop) and are kept. The answer has them as `annotations`: an arrow's
+tail and tip, an ellipse's centre and box, in the axes' values; the record keeps them.
+
+**B4, names from the plot:** the words at an arrow's tail (the nearest phrase within 14 points) name the curves at its
+tip, the nearest of each style within 6 points and 3 of the nearest of all - or, the arrow pointing at an ellipse, those
+with most points inside it. Where an arrow points the curves crowd (on page 16 four within 5 points of one tip), so a
+curve of another style takes the words of the named curve it follows most closely (mean distance under 20 points over
+the x they share) when that is the one it follows most closely of all. The legend's name comes first:
+"SIMS, energy=10keV". Lines of one name with no arrow are numbered from the one drawn highest down, not in the file's
+order. Trust's "more series than most plots have" counts only curves no arrow names.
+
+**B12's rest:** a short piece of a style (under a tenth of its longest curve) that no join or arrow gives to a curve is
+named "…, unassigned piece" (the review's B2 fix 2) and counted in a note. Joining them is still left: page 19/1's ends
+where no curve begins, 19/2's starts 0.1 µm past its curve.
+
+**A1, dataset names that hung on gaps:** every series is now written as NAME over NAME_x, all of it, whether or not it
+has gaps; a gap is a NaN between its pieces, at the middle of the gap. A series with gaps also has its pieces, NAME_1
+… as before. Every series' own name is taken before any piece's, so a series' name no longer hangs on another's gaps.
+The diagrams (`Diagram::calcData`, every kind that draws lines) end a line at a NaN and start it again after, its first
+point not clipped against the gap; they drew it to 0 before.
+
+**A2, rings on Fig. 5 ch1's steep side:** where a line of another colour runs through rings, it fills their middles,
+and the ring finder took the peak of the distance from the ink's edge only up to 0.75 of a marker's width. Up to 0.95
+now: Fig. 5's hand-digitized points with no marker within 2.5 points go from 18 to 9, with no marker added off them,
+and no line changes. The two the review named are still missed: their peak is there, but the test that the ring's
+colour goes round it samples 1.5 pixels from the middle, inside the blue line, and wider radii (tried to +3 pixels)
+find no more. No synthetic figure reproduces it: the measure is the paper's.
+
+**A3:** left, as the review says: the narrow peaks keep 79–86 % and `aNarrowPeakKeepsBothSides` covers a side missing.
+
+**A4:** a scan's trust stays medium on purpose: its points are a trace of a picture, good to 0.18 points, and against the
+hand-digitized curves Fig. 4(b) is off by up to 0.063 of 0.6. An unlabelled scan still needs `references` or the
+ranges: reading its labels needs OCR, a dependency the project does not have.
+
+**B9, the regression set:** `chen_regression.py` (beside this note) runs the eight Chen plots through the tools and checks
+them: the curves one series each, every x axis linear from 0, no black series, the annotations each page draws, and
+each pair named by the words the benchmark's hand assignments say (all 46 of its table agree). The paper is not in the
+repository.
+
+**Chen et al. now:** 10, 4, 8, 10 (+1 piece), 6, 4 (+1), 4 (+1), 4 series; 25 arrows and 3 ellipses set apart; every
+curve named; trust high on all eight (low or medium before). The scanned paper's eight runs are the same, point for
+point.
+
+**Tests:**
+- New in `test_plot_digitizer`: `arrowsNameTheCurvesTheyPointAt` (two pairs, a legend in a rounded box, an arrow to a pair
+  and one to an ellipse, a short piece; the names, the annotations, the record; trust; a black loop alone kept).
+  `resultsCsvAndDataset` checks NAME with its NaNs, the pieces and the names' order.
+- New in `test_pdf_viewer`: `aScreenshotWaitsForTheTiles` and `aPagesFootIsShownWhole`.
+- New in `test_graph_style`: `aNaNIsAGapInTheLine` (in the middle, at the start, beside a point above the range).
+- Each fix undone in turn, eleven breaks, is caught.
+- Through ctest, Release, the whole suite: 188 of 190 at once (-j8). `test_build_commit` failed because the commit was
+  made during the run, and `test_large_schematics` failed under the load (18 s against 6 s alone). Both pass when rerun
+  on their own. ASan/UBSan (Debug): `test_plot_digitizer`, `test_plot_digitizer_app`, `test_pdf_viewer` and
+  `test_graph_style` pass. The four lints are clean.
 
 ## What could not be verified
 

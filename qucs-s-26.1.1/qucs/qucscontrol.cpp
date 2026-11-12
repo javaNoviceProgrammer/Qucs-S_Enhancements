@@ -655,7 +655,7 @@ const char* const kTools = R"JSON([
    "route": {"type": "string", "description": "auto (the default), vector (the file's paths only) or raster (a picture of the page, even if it has paths)"},
    "colours": {"type": "array", "items": {"type": "string"}, "description": "Only these colours, \"#rrggbb\""},
    "seeds": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Points on the curves to follow, [[x, y], ...] in points from the page's top left: one series each, nothing else taken"},
-   "names": {"type": "array", "items": {"type": "string"}, "description": "New names for the series: with 'colours', the first name for the first colour's series and so on; else in the order they come"},
+   "names": {"type": "array", "items": {"type": "string"}, "description": "New names for the series: with 'colours', the first name for the first colour's series and so on; else in the order they come. Unasked, a vector plot's curves are named from its legend and from the words at the tails of the arrows pointing at them; the arrows and ellipses come back as 'annotations', not series"},
    "x_range": {"type": "array", "items": {"type": "number"}, "description": "[left, right]: the x values at the frame's left and right edges - with 'y_range', the quickest calibration of a scan whose labels have no text"},
    "y_range": {"type": "array", "items": {"type": "number"}, "description": "[bottom, top]: the y values at the frame's bottom and top edges"},
    "exclude": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Regions [x1, y1, x2, y2] of the page (points, or fractions) to leave out: an inset, a legend, labels drawn on the plot. Given, insets and legends' boxes are no longer found and left out by themselves; [] leaves out nothing"},
@@ -11877,6 +11877,7 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
                                         {QStringLiteral("text"), tr("%1, %2 on paper - %3 x %4 pixels.").arg(titleOf(doc), what).arg(sent.width()).arg(sent.height())}}}},
                 {QStringLiteral("isError"), false}};
     }
+    int pdfTilesLeft = 0;
     if (sch != nullptr && area == QLatin1String("paper")) {
         const QRect area = qucs_s::graphicsexport::area(sch, false);
         if (area.isEmpty()) return errorResult(tr("%1 is empty.").arg(titleOf(doc)));
@@ -11887,6 +11888,10 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     } else {
         QWidget* w = QucsApp::documentWidget(doc);
         a_app->showDocument(w);
+        // A PDF's pages drawn sharp first: one paint draws what fits in its
+        // time and none while a zoom settles, the rest blurred from another
+        // zoom's tiles (the PDF open items' C2).
+        if (auto* pdf = dynamic_cast<PdfDoc*>(doc)) pdfTilesLeft = pdf->view()->renderInSight(5000);
         image = (sch != nullptr ? sch->viewport() : w)->grab().toImage();
     }
     if (image.isNull()) return errorResult(tr("No picture could be made of %1.").arg(titleOf(doc)));
@@ -11900,6 +11905,7 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     // lines (MCP wishlist N14 - it said only "as its window shows it").
     QString inView = shownInView(doc);
     if (!inView.isEmpty()) inView = QLatin1Char(' ') + inView;
+    if (pdfTilesLeft > 0) inView += tr(" %1 of the pages' tiles were still being drawn: blurred there; take it again.").arg(pdfTilesLeft);
     return {{QStringLiteral("content"),
              QJsonArray{pngContent(sent, asked),
                         QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
