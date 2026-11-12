@@ -11,6 +11,7 @@
  * (at your option) any later version.
  */
 #include "rf25_dense.h"
+#include "rf25_openblas.h"
 
 #include <QByteArray>
 #include <QtGlobal>
@@ -20,6 +21,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 #if defined(QUCS_ACCELERATE_LAPACK)
@@ -36,7 +38,7 @@ namespace {
 using Complex = std::complex<double>;
 
 std::atomic<int> chosen{int(DenseLu::Automatic)};
-std::atomic<long long> byAccelerate{0}, byEigen{0};
+std::atomic<long long> byAccelerate{0}, byOpenBlas{0}, byEigen{0};
 
 #if defined(QUCS_ACCELERATE_LAPACK)
 using LapackInt = __LAPACK_int;
@@ -128,6 +130,9 @@ __attribute__((availability(macos, introduced = 13.3))) double condition(LapackI
 #else
 using LapackInt = int;
 #endif
+// (OpenBLAS's are 32-bit, as Accelerate's are in its LP64 interface: one
+//  vector of pivots for either.)
+static_assert(std::is_same_v<LapackInt, int>, "LAPACK's integers are int");
 
 } // namespace
 
@@ -141,6 +146,7 @@ DenseLu denseLu()
     const QByteArray asked = qgetenv("QUCS_RF25_LU").trimmed().toLower();
     if (asked == "eigen") return DenseLu::Eigen;
     if (asked == "accelerate") return DenseLu::Accelerate;
+    if (asked == "openblas") return DenseLu::OpenBlas;
     if (asked == "auto" || asked == "automatic") return DenseLu::Automatic;
     if (qgetenv("QUCS_FEM_SOLVER").trimmed().toLower() == "eigen") return DenseLu::Eigen;
     return DenseLu(chosen.load());
@@ -154,14 +160,61 @@ bool accelerateLuHere()
     return false;
 }
 
+bool openBlasLuHere()
+{
+    return openblas::here();
+}
+
+bool openBlasSideBySide()
+{
+    return openblas::sideBySide();
+}
+
+QString openBlasLuAbout()
+{
+    return openblas::about();
+}
+
+DenseLu denseLuInEffect()
+{
+    switch (denseLu()) {
+    case DenseLu::Eigen:
+        return DenseLu::Eigen;
+    case DenseLu::Accelerate:
+        return accelerateLuHere() ? DenseLu::Accelerate : DenseLu::Eigen;
+    case DenseLu::OpenBlas:
+        return openBlasLuHere() ? DenseLu::OpenBlas : DenseLu::Eigen;
+    case DenseLu::Automatic:
+        break;
+    }
+    return accelerateLuHere() ? DenseLu::Accelerate : openBlasLuHere() ? DenseLu::OpenBlas : DenseLu::Eigen;
+}
+
+QString denseLuName(DenseLu lu)
+{
+    return lu == DenseLu::Accelerate ? QStringLiteral("Accelerate")
+           : lu == DenseLu::OpenBlas ? QStringLiteral("OpenBLAS")
+                                     : QStringLiteral("Eigen");
+}
+
 bool luOnAccelerate()
 {
-    return denseLu() != DenseLu::Eigen && accelerateLuHere();
+    return denseLuInEffect() == DenseLu::Accelerate;
+}
+
+bool luOnOpenBlas()
+{
+    return denseLuInEffect() == DenseLu::OpenBlas;
 }
 
 long long accelerateLuCount()
 {
     return byAccelerate.load();
+}
+
+long long openBlasLuCount()
+{
+    return byOpenBlas.load();
 }
 
 long long eigenLuCount()
@@ -175,15 +228,31 @@ template <class Scalar> struct DenseFactors<Scalar>::Impl {
     double norm = 0;                 ///< A's 1-norm, for gecon
     LapackInt info = 0;              ///< LAPACK's: a pivot nought
     bool accelerated = false;
+    bool openBlas = false;
+    openblas::Way way = openblas::Way::None;   ///< how OpenBLAS's calls are made
+    double waited = 0;               ///< for OpenBLAS's lane, seconds
     /// Eigen's, on lu where it is.
     std::optional<Eigen::PartialPivLU<Eigen::Ref<Matrix>>> eigen;
 };
 
-template <class Scalar> DenseFactors<Scalar>::DenseFactors(Matrix&& a) : d(std::make_unique<Impl>())
+template <class Scalar> DenseFactors<Scalar>::DenseFactors(Matrix&& a, int threads) : d(std::make_unique<Impl>())
 {
     d->lu = std::move(a);
+    const DenseLu library = denseLuInEffect();
+    if (library == DenseLu::OpenBlas) d->way = openblas::wayFor(threads);
+    if (library == DenseLu::OpenBlas && d->way != openblas::Way::None) {
+        const LapackInt n = LapackInt(d->lu.rows());
+        d->pivots.assign(std::size_t(n), 0);
+        if (n > 0) {
+            d->norm = d->lu.cwiseAbs().colwise().sum().maxCoeff();
+            d->waited += openblas::run([this, n] { d->info = openblas::factorize(n, d->lu.data(), d->pivots.data()); }, d->way);
+        }
+        d->openBlas = true;
+        ++byOpenBlas;
+        return;
+    }
 #if defined(QUCS_ACCELERATE_LAPACK)
-    if (luOnAccelerate()) {
+    if (library == DenseLu::Accelerate) {
         if (__builtin_available(macOS 13.3, *)) {
             const LapackInt n = LapackInt(d->lu.rows());
             d->pivots.assign(std::size_t(n), 0);
@@ -205,6 +274,14 @@ template <class Scalar> DenseFactors<Scalar>::~DenseFactors() = default;
 
 template <class Scalar> typename DenseFactors<Scalar>::Matrix DenseFactors<Scalar>::solve(const Matrix& b) const
 {
+    if (d->openBlas) {
+        const LapackInt n = LapackInt(d->lu.rows()), columns = LapackInt(b.cols());
+        if (n == 0 || columns == 0) return Matrix::Zero(n, columns);
+        Matrix x = b;
+        d->waited += openblas::run([this, n, columns, &x] { openblas::substitute(n, columns, d->lu.data(), d->pivots.data(), x.data()); },
+                                   d->way);
+        return x;
+    }
     if (!d->accelerated) return d->eigen->solve(b);
 #if defined(QUCS_ACCELERATE_LAPACK)
     if (__builtin_available(macOS 13.3, *)) {
@@ -223,6 +300,14 @@ template <class Scalar> typename DenseFactors<Scalar>::Matrix DenseFactors<Scala
 
 template <class Scalar> double DenseFactors<Scalar>::rcond() const
 {
+    if (d->openBlas) {
+        const LapackInt n = LapackInt(d->lu.rows());
+        if (n == 0) return 1;
+        if (d->info > 0 || !(d->norm > 0)) return 0;
+        double r = 0;
+        d->waited += openblas::run([this, n, &r] { r = openblas::condition(n, d->lu.data(), d->norm); }, d->way);
+        return r;
+    }
     if (!d->accelerated) return d->eigen->rcond();
 #if defined(QUCS_ACCELERATE_LAPACK)
     if (__builtin_available(macOS 13.3, *)) {
@@ -239,6 +324,21 @@ template <class Scalar> double DenseFactors<Scalar>::rcond() const
 template <class Scalar> bool DenseFactors<Scalar>::accelerated() const
 {
     return d->accelerated;
+}
+
+template <class Scalar> bool DenseFactors<Scalar>::openBlas() const
+{
+    return d->openBlas;
+}
+
+template <class Scalar> DenseLu DenseFactors<Scalar>::library() const
+{
+    return d->accelerated ? DenseLu::Accelerate : d->openBlas ? DenseLu::OpenBlas : DenseLu::Eigen;
+}
+
+template <class Scalar> double DenseFactors<Scalar>::waited() const
+{
+    return d->waited;
 }
 
 template class DenseFactors<double>;
