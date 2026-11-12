@@ -258,9 +258,10 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("cell"), tr("Cell"), QString(), tr("The cell to solve; the top cell when empty")),
           expr(QStringLiteral("unit"), tr("Unit of its coordinates"), QStringLiteral("m"), QStringLiteral("1[um]"),
                tr("What one unit of the file means, where the file itself does not say"))},
-         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")},
+         {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout"), QStringLiteral("rf_shapes")},
          {QStringLiteral("rf_layer_map"), QStringLiteral("rf_processing"), QStringLiteral("rf_cutout")}, true, true, QString(),
-         tr("The shapes in x and y, read with gdstk as get_layout and find_shapes read them.")});
+         tr("The shapes in x and y, read with gdstk as get_layout and find_shapes read them - and the model's own "
+            "shapes, whose sizes are expressions of its parameters (Shapes).")});
     add({QStringLiteral("rf_layer_map"), tr("Layer map"), QString(), QStringLiteral("map"), none,
          {rows(QStringLiteral("rows"), tr("Layers"), {tr("Layer"), tr("Datatype"), tr("Stack layer")},
                tr("One row per GDS layer and datatype: the metal or via of the stack it belongs to, or nothing to "
@@ -324,6 +325,51 @@ QList<NodeKind> makeKinds()
          tr("A part of the layout, in its coordinates: a rectangle by two corners, a polygon by its corners or a "
             "circle. What is inside it is kept, the rest of the layout masked - or taken out. A shape across its edge "
             "is cut along it.")});
+
+    // The model's own shapes: each number an expression of the parameters,
+    // added to the file's shapes on their layer before the processing.
+    add({QStringLiteral("rf_shapes"), tr("Shapes"), QString(), QStringLiteral("layout"), none, {},
+         {QStringLiteral("rf_shape")}, {}, false, true, QStringLiteral("shapes"),
+         tr("Shapes of the model's own, beside the layout file's: rectangles, polygons, paths and vias whose corners, "
+            "widths and lengths are expressions of the parameters (w, L/2 + 5[um]) - what a Parametric Sweep or an "
+            "Optimization varies. Each is added to its layer of the stack with the file's shapes, before the "
+            "processing's steps; a model of these alone needs no layout file.")});
+    add({QStringLiteral("rf_shape"), tr("Shape"), QStringLiteral("shapes"), QStringLiteral("region"), none,
+         {text(QStringLiteral("layer"), tr("On layer"), QString(),
+               tr("A metal or a via of the stack, by name - or a dielectric or the substrate, where it is (a layer that "
+                  "ends)")),
+          choice(QStringLiteral("shape"), tr("Shape"),
+                 {QStringLiteral("rectangle"), QStringLiteral("polygon"), QStringLiteral("path"), QStringLiteral("via")},
+                 {tr("A rectangle"), tr("A polygon"), tr("A path"), tr("A via")}, QStringLiteral("rectangle")),
+          shownIf(choice(QStringLiteral("anchor"), tr("Placed by"), {QStringLiteral("corner"), QStringLiteral("centre")},
+                         {tr("Its lower left corner"), tr("Its centre")}, QStringLiteral("corner")),
+                  "shape=rectangle"),
+          shownIf(expr(QStringLiteral("x"), tr("x"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("Of the rectangle's lower left corner or centre, or the via's centre, in the layout's coordinates")),
+                  "shape=rectangle|shape=via"),
+          shownIf(expr(QStringLiteral("y"), tr("y"), QStringLiteral("m"), QStringLiteral("0")), "shape=rectangle|shape=via"),
+          shownIf(expr(QStringLiteral("width"), tr("Width"), QStringLiteral("m"), QStringLiteral("100[um]"), tr("Along x")),
+                  "shape=rectangle"),
+          shownIf(expr(QStringLiteral("height"), tr("Height"), QStringLiteral("m"), QStringLiteral("10[um]"), tr("Along y")),
+                  "shape=rectangle"),
+          shownIf(rows(QStringLiteral("points"), tr("Points"), {tr("x"), tr("y")},
+                       tr("A polygon's corners in order, three at least, or a path's points along its spine, two at least: "
+                          "each an x and a y in the layout's coordinates (0, L/2 + 5[um])")),
+                  "shape=polygon|shape=path"),
+          shownIf(expr(QStringLiteral("path_width"), tr("Width"), QStringLiteral("m"), QStringLiteral("10[um]"),
+                       tr("The path's width, across its spine")),
+                  "shape=path"),
+          shownIf(choice(QStringLiteral("ends"), tr("Ends"),
+                         {QStringLiteral("flush"), QStringLiteral("round"), QStringLiteral("extended")},
+                         {tr("Flush with its first and last points"), tr("Round"), tr("Extended by half its width")},
+                         QStringLiteral("flush")),
+                  "shape=path"),
+          shownIf(expr(QStringLiteral("size"), tr("Side"), QStringLiteral("m"), QStringLiteral("1[um]"), tr("Of a square via")),
+                  "shape=via")},
+         {}, {}, false, false, QStringLiteral("shape"),
+         tr("A shape of the model's own on a layer of the stack, its numbers expressions of the parameters: a "
+            "rectangle by a corner or its centre and its width and height, a polygon by its corners, a path by its "
+            "points and width, a square via by its centre and side.")});
 
     // ---- the ports ----
     add({QStringLiteral("rf_ports"), tr("Ports"), QString(), QStringLiteral("ports"), none, {},
@@ -1128,7 +1174,12 @@ QStringList Model::problems() const
     const Stack s = stack();
     QStringList said = s.problems;
     // The layout: a file, and a map that names layers of the stack.
-    if (textOf(layout(), QStringLiteral("file")).trimmed().isEmpty())
+    // (A model of its own shapes alone needs no file.)
+    const Node* own = layout().child(QStringLiteral("rf_shapes"));
+    const bool shapes = own != nullptr && std::any_of(own->children.cbegin(), own->children.cend(), [](const Node& n) {
+        return n.enabled && n.type == QLatin1String("rf_shape");
+    });
+    if (textOf(layout(), QStringLiteral("file")).trimmed().isEmpty() && !shapes)
         said << tr("The layout names no file: there are no shapes to solve on.");
     const QJsonArray map = layout().child(QStringLiteral("rf_layer_map")) != nullptr
                                ? layout().child(QStringLiteral("rf_layer_map"))->props.value(QLatin1String("rows")).toArray()

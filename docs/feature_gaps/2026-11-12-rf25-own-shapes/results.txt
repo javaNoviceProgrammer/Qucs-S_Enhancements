@@ -1,0 +1,15 @@
+===== what each break did =====
+the model's own shapes not added to the file's in the processi theModelsOwnShapesAreItsParameters failed (caught); aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+a rectangle placed by its centre placed by its corner          theModelsOwnShapesAreItsParameters failed (caught)
+a path's ends always flush                                     theModelsOwnShapesAreItsParameters failed (caught)
+a length that is no number read as nought, not refused         theModelsOwnShapesAreItsParameters failed (caught)
+a shape on a ground plane taken                                theModelsOwnShapesAreItsParameters failed (caught)
+a model of its own shapes alone still said to want a file      theModelsOwnShapesAreItsParameters failed (caught); aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+no empty layout under a model of its own shapes alone          aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+the own shapes not drawn on the tab                            aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+Zoom Extents of a model of its own shapes alone fitting the em aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+a click on an own shape choosing nothing                       aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+the Draw menu's choice not given to the tools                  aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+own shapes and the file's drawn in one call                    aModelsOwnShapesAreDrawnSolvedAndV failed (caught)
+
+0 of 12 uncaught

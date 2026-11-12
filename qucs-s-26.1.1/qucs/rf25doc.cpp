@@ -66,6 +66,31 @@ using qucs_s::layout::LayoutView;
 
 namespace {
 
+/// The layout under a model of its own shapes alone, which names no file:
+/// one empty cell, the same one each time (a tab knows it by it).
+std::shared_ptr<const Layout> ownShapesLayout()
+{
+    static const std::shared_ptr<const Layout> empty = [] {
+        auto l = std::make_shared<Layout>();
+        qucs_s::layout::Cell top;
+        top.name = QStringLiteral("TOP");
+        l->cells << top;
+        l->topCells << 0;
+        l->byName.insert(top.name, 0);
+        return std::shared_ptr<const Layout>(l);
+    }();
+    return empty;
+}
+
+/// Whether \a model has a shape of its own (Layout > Shapes) enabled.
+bool hasOwnShapes(const Model& model)
+{
+    const Node* own = model.layout().child(QStringLiteral("rf_shapes"));
+    return own != nullptr && std::any_of(own->children.cbegin(), own->children.cend(), [](const Node& n) {
+        return n.enabled && n.type == QLatin1String("rf_shape");
+    });
+}
+
 const char* const kShowProcessedKey = "RF25/showProcessed";
 const char* const kShowMeshKey = "RF25/showMesh";
 const char* const kShowCurrentsKey = "RF25/showCurrents";
@@ -370,7 +395,7 @@ void RF25Doc::buildUi()
         return b;
     };
     a_fit = button(tr("Zoom Extents"), tr("Show the whole layout"), "rfFit");
-    connect(a_fit, &QToolButton::clicked, this, [this] { a_view->fit(); });
+    connect(a_fit, &QToolButton::clicked, this, [this] { fitView(); });
     a_reread = button(tr("Read the Layout Again"), tr("Read the layout file the model names once more"), "rfReread");
     connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
     // Measured as in a layout's tab: the view's own ruler.
@@ -433,6 +458,7 @@ void RF25Doc::buildUi()
     // button takes the last tool up again, its arrow chooses the tool, the
     // layer, the via's size.
     a_viaSize = std::max(1e-3, settings.value(QLatin1String("RF25/viaSize"), 1.0).toDouble());
+    a_drawParametric = settings.value(QLatin1String("RF25/drawParametric"), false).toBool();
     a_drawButton = button(tr("Draw"),
                           tr("Draw shapes on a layer of the stack - rectangles, polygons, vias -, written at once to the layout "
                              "file (one begun beside the model where it names none); its arrow chooses the tool and the layer. "
@@ -505,9 +531,9 @@ void RF25Doc::buildUi()
             }
             QStringList done;
             QString why;
-            const bool ok = drawShapes(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("rectangle")},
-                                                              {QStringLiteral("layer"), drawLayer()},
-                                                              {QStringLiteral("box"), QJsonArray{r.left(), r.top(), r.right(), r.bottom()}}}},
+            const bool ok = drawShapes(toolEdits(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("rectangle")},
+                                                                        {QStringLiteral("layer"), drawLayer()},
+                                                                        {QStringLiteral("box"), QJsonArray{r.left(), r.top(), r.right(), r.bottom()}}}}),
                                        &done, &why);
             a_status->setText(ok ? done.join(QLatin1Char(' ')) : why);
             return;
@@ -729,6 +755,21 @@ double RF25Doc::zoomBy(double factor)
 
 void RF25Doc::showAll()
 {
+    fitView();
+}
+
+void RF25Doc::fitView()
+{
+    // A model of its own shapes alone: they are what there is to fit.
+    if (a_layout && a_layout == ownShapesLayout()) {
+        QRectF bounds;
+        for (const OwnShape& s : ownShapesOf(a_model)) bounds = bounds.united(s.outline.boundingRect());
+        if (bounds.isValid()) {
+            const double margin = 0.05 * std::max(bounds.width(), bounds.height());
+            a_view->showRegion(bounds.adjusted(-margin, -margin, margin, margin));
+            return;
+        }
+    }
     a_view->fit();
 }
 
@@ -1075,6 +1116,8 @@ void RF25Doc::showLayout()
                                         QLocale().formattedDataSize(QFileInfo(a_job->path).size())));
     } else if (!a_layoutProblem.isEmpty()) {
         a_layoutLabel->setText(a_layoutProblem);
+    } else if (named.isEmpty() && a_layout && a_layout == ownShapesLayout()) {
+        a_layoutLabel->setText(tr("No layout file: the model's own shapes alone (Layout > Shapes)."));
     } else if (named.isEmpty()) {
         a_layoutLabel->setText(tr("The layout names no file yet: its Layout node takes a GDSII or OASIS file."));
     } else if (a_layout) {
@@ -1104,7 +1147,7 @@ void RF25Doc::showLayout()
     // where the user left it; a layout just read is fitted - but for one
     // read again after a drawing, which stays as drawn on.
     if (again || a_keepView) a_view->setView(center, scale);
-    else a_view->fit();
+    else fitView();
     if (!again) a_keepView = false;
     updatePen();
 }
@@ -1134,6 +1177,20 @@ void RF25Doc::prepare()
         return;
     }
     a_prepareAgain = false;
+    // A model of its own shapes alone names no file: they are processed over
+    // an empty layout, which goes when they do.
+    {
+        const bool alone = layoutFile().isEmpty() && !a_job && hasOwnShapes(a_model);
+        if (alone && !a_layout) {
+            a_layout = ownShapesLayout();
+            a_layoutRead.clear();
+            a_layoutProblem.clear();
+            showLayout();
+        } else if (!alone && a_layout && a_layout == ownShapesLayout()) {
+            a_layout.reset();
+            showLayout();
+        }
+    }
     if (!a_layout) {
         // Nothing read: there is nothing to process, and the layout's own
         // problem says why.
@@ -1549,6 +1606,24 @@ void RF25Doc::showOverlays()
             if (stack.layers.at(i).name == layer || stack.layers.at(i).tag == layer) return RF25Doc::layerColor(i);
         return QColor(130, 135, 145);
     };
+    // The model's own shapes, as its parameters make them: filled in their
+    // layers' colours as the layout's shapes are, each named.
+    a_ownShapes = ownShapesOf(a_model);
+    {
+        QMap<QString, QList<QPolygonF>> byLayer;
+        for (const OwnShape& s : std::as_const(a_ownShapes)) byLayer[s.layer] << s.outline;
+        for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
+            LayoutView::Overlay overlay;
+            overlay.shapes = it.value();
+            QColor fill = colourOf(it.key());
+            fill.setAlpha(150);
+            overlay.fill = fill;
+            overlay.line = outlineColor(colourOf(it.key()));
+            overlay.width = 1.0;
+            overlay.name = tr("%1, the model's own shapes").arg(it.key());
+            overlays << overlay;
+        }
+    }
     if (a_showProcessed && a_processed) {
         // Each layer's own overlay, in its own colour told against the
         // canvas, not a tint of it: the shape under the outline is drawn

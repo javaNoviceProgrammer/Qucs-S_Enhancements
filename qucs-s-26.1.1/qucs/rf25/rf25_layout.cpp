@@ -15,6 +15,7 @@
 #include "multiphysics/fem_expr.h"
 
 #include <gdstk/clipper_tools.hpp>
+#include <gdstk/gdstk.hpp>
 #include <gdstk/polygon.hpp>
 
 #include <QCoreApplication>
@@ -31,9 +32,9 @@ namespace qucs_s::rf25 {
 
 namespace {
 
-QString tr(const char* text)
+QString tr(const char* text, const char* disambiguation = nullptr, int n = -1)
 {
-    return QCoreApplication::translate("qucs_s::rf25", text);
+    return QCoreApplication::translate("qucs_s::rf25", text, disambiguation, n);
 }
 
 /// The integer grid the boolean operations work on: the coordinates are
@@ -428,6 +429,149 @@ Cutout cutoutOf(const Model& model, QStringList* problems)
     return out;
 }
 
+QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
+{
+    QList<OwnShape> out;
+    const Node* node = model.layout().child(QStringLiteral("rf_shapes"));
+    if (node == nullptr) return out;
+    const fem::Scope scope = scopeOf(model.parameters());
+    const Stack stack = model.stack();
+    const auto say = [problems](const QString& text) {
+        if (problems != nullptr) *problems << text;
+    };
+    for (const Node& n : node->children) {
+        if (!n.enabled || n.type != QLatin1String("rf_shape")) continue;
+        const QString name = nameOf(n);
+        // A length of it in µm, or nothing and why (the first thing wrong).
+        bool readable = true;
+        const auto length = [&](const QJsonValue& v, const QString& what) {
+            const QString text = v.isDouble() ? QString::number(v.toDouble(), 'g', 17) : v.toString();
+            const fem::Expression e = fem::Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, scope);
+            if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
+                if (readable)
+                    say(tr("Shapes: %1's %2 is not a number (%3).")
+                            .arg(name, what, !e.isValid() ? e.error() : tr("it is not a constant")));
+                readable = false;
+                return 0.0;
+            }
+            return e.constant() / 1e-6;
+        };
+        const auto lengthOf = [&](const char* key, const QString& what) { return length(valueOf(n, QLatin1String(key)), what); };
+        OwnShape shape;
+        shape.tag = n.tag;
+        shape.name = name;
+        shape.layer = textOf(n, QStringLiteral("layer")).trimmed();
+        const Layer* layer = stack.named(shape.layer);
+        if (layer == nullptr) {
+            say(shape.layer.isEmpty() ? tr("Shapes: %1 is on no layer: name a metal or a via of the stack.").arg(name)
+                                      : tr("Shapes: %1 is on %2, which is no layer of the stack.").arg(name, shape.layer));
+            continue;
+        }
+        shape.layer = layer->name;
+        if (layer->kind != Layer::Metal && layer->kind != Layer::Via && layer->kind != Layer::Dielectric && layer->kind != Layer::Substrate) {
+            say(tr("Shapes: %1 is on %2, which is no metal, via, dielectric or substrate: a ground plane has no shapes.").arg(name, layer->name));
+            continue;
+        }
+        const QString kind = textOf(n, QStringLiteral("shape"));
+        const auto pointsOf = [&](const char* what) {
+            QPolygonF points;
+            const QJsonArray rows = valueOf(n, QStringLiteral("points")).toArray();
+            for (int i = 0; i < rows.size(); ++i) {
+                const QJsonArray cells = rows.at(i).toArray();
+                const double x = length(cells.at(0), tr("%1 %2's x").arg(QLatin1String(what)).arg(i + 1));
+                const double y = length(cells.at(1), tr("%1 %2's y").arg(QLatin1String(what)).arg(i + 1));
+                if (points.isEmpty() || points.last() != QPointF(x, y)) points << QPointF(x, y);
+            }
+            return points;
+        };
+        if (kind == QLatin1String("polygon")) {
+            shape.outline = pointsOf("corner");
+            while (shape.outline.size() > 1 && shape.outline.last() == shape.outline.first()) shape.outline.removeLast();
+            if (readable && shape.outline.size() < 3) {
+                say(tr("Shapes: %1 is a polygon of %2 corner(s): it wants three at least.").arg(name).arg(shape.outline.size()));
+                continue;
+            }
+        } else if (kind == QLatin1String("path")) {
+            const QPolygonF spine = pointsOf("point");
+            const double width = lengthOf("path_width", tr("width"));
+            if (!readable) continue;
+            if (spine.size() < 2) {
+                say(tr("Shapes: %1 is a path of %2 point(s): it wants two at least.").arg(name).arg(spine.size()));
+                continue;
+            }
+            if (!(width > 0)) {
+                say(tr("Shapes: %1's width is not a length above zero.").arg(name));
+                continue;
+            }
+            // Outlined as gdstk outlines a path, as the tab's Draw writes one.
+            const QString ends = textOf(n, QStringLiteral("ends"));
+            const auto vec = [](QPointF p) {
+                gdstk::Vec2 v;
+                v.x = p.x();
+                v.y = p.y();
+                return v;
+            };
+            gdstk::FlexPath path = {};
+            path.num_elements = 1;
+            path.elements = static_cast<gdstk::FlexPathElement*>(gdstk::allocate_clear(sizeof(gdstk::FlexPathElement)));
+            path.init(vec(spine.first()), width, 0, 1e-3 * width, 0);
+            path.simple_path = true;
+            path.elements[0].end_type = ends == QLatin1String("round")      ? gdstk::EndType::Round
+                                        : ends == QLatin1String("extended") ? gdstk::EndType::HalfWidth
+                                                                            : gdstk::EndType::Flush;
+            gdstk::Array<gdstk::Vec2> rest = {};
+            for (int i = 1; i < spine.size(); ++i) rest.append(vec(spine.at(i)));
+            path.segment(rest, nullptr, nullptr, false);
+            rest.clear();
+            gdstk::Array<gdstk::Polygon*> outlines = {};
+            path.to_polygons(false, 0, outlines);
+            for (uint64_t i = 0; i < outlines.count; ++i) {
+                gdstk::Polygon* poly = outlines[i];
+                QPolygonF outline;
+                for (uint64_t k = 0; k < poly->point_array.count; ++k) outline << QPointF(poly->point_array[k].x, poly->point_array[k].y);
+                if (outline.size() >= 3) {
+                    OwnShape piece = shape;
+                    piece.outline = outline;
+                    out << piece;
+                }
+                poly->clear();
+                gdstk::free_allocation(poly);
+            }
+            outlines.clear();
+            path.clear();
+            continue;
+        } else if (kind == QLatin1String("via")) {
+            const QPointF centre(lengthOf("x", QStringLiteral("x")), lengthOf("y", QStringLiteral("y")));
+            const double side = lengthOf("size", tr("side"));
+            if (!readable) continue;
+            if (!(side > 0)) {
+                say(tr("Shapes: %1's side is not a length above zero.").arg(name));
+                continue;
+            }
+            shape.outline = QPolygonF(QRectF(centre - QPointF(side / 2, side / 2), QSizeF(side, side)));
+            shape.outline.removeLast();
+        } else {
+            const QPointF at(lengthOf("x", QStringLiteral("x")), lengthOf("y", QStringLiteral("y")));
+            const double w = lengthOf("width", tr("width")), h = lengthOf("height", tr("height"));
+            if (!readable) continue;
+            if (!(w > 0) || !(h > 0)) {
+                say(tr("Shapes: %1's width and height are to be lengths above zero (%2 by %3 µm).").arg(name).arg(w).arg(h));
+                continue;
+            }
+            const QPointF corner = textOf(n, QStringLiteral("anchor")) == QLatin1String("centre") ? at - QPointF(w / 2, h / 2) : at;
+            shape.outline = QPolygonF(QRectF(corner, QSizeF(w, h)));
+            shape.outline.removeLast();
+        }
+        if (!readable) continue;
+        if (!(std::abs(areaOf(shape.outline)) > 0)) {
+            say(tr("Shapes: %1 has no area.").arg(name));
+            continue;
+        }
+        out << shape;
+    }
+    return out;
+}
+
 QList<QPolygonF> cutOf(const QList<QPolygonF>& shapes, const Cutout& cutout, const QString& layer, int* cut, int* masked)
 {
     if (cut != nullptr) *cut = 0;
@@ -789,9 +933,16 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     });
 
     QStringList said;
+    // The model's own shapes, on their layers beside the file's.
+    int own = 0;
+    for (const OwnShape& s : ownShapesOf(model, &said)) {
+        byLayer[s.layer] << s.outline;
+        ++own;
+    }
     Processing how = processingOf(*model.layout().child(QStringLiteral("rf_processing")), model.parameters(), &said);
     how.cutout = cutoutOf(model, &said);
     out = processShapes(byLayer, map.fill, how, model.stack(), 1e-6);
+    if (own > 0) out.report.lines << tr("%n shape(s) of the model's own (Shapes) added to the layout's.", nullptr, own);
     out.report.ignored = ignored;
     if (ignored > 0)
         out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(ignored);

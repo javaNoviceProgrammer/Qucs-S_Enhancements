@@ -3019,6 +3019,144 @@ private slots:
         }
     }
 
+    // The model's own shapes (Layout > Shapes, phase 3 of RF 2.5D's
+    // optimization): a strip that is a rectangle of the model's own, L by w
+    // of its parameters, with no layout file - the tab says so, draws it in
+    // its layer's colour, processes and solves it as the same strip read
+    // from a GDS: the same S. Its parameter changed, it changes, and Undo
+    // puts it back. A click on it in Select chooses its node. The Draw
+    // menu's Keep as Parametric Shapes draws a node, not into a file; a
+    // call may draw such shapes, not mixed with the file's, and none is
+    // deleted as the file's are.
+    void aModelsOwnShapesAreDrawnSolvedAndVaried()
+    {
+        const QString refFile = fullWaveLine(QStringLiteral("ownref.qrf25"));
+        QVERIFY(!refFile.isEmpty());
+        rf::Model m;
+        {
+            QFile f(refFile);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            m = *read;
+        }
+        m.layout().props.insert(QStringLiteral("file"), QString());
+        m.root.child(QStringLiteral("rf_parameters"))
+            ->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "1000[um]"}});
+        QVERIFY(m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) != nullptr);
+        rf::Node strip = m.make(QStringLiteral("rf_shape"));
+        strip.props = QJsonObject{{"layer", "M1"}, {"x", "0"}, {"y", "0"}, {"width", "L"}, {"height", "w"}};
+        const rf::Node* added = m.add(m.layout().child(QStringLiteral("rf_shapes"))->tag, strip);
+        QVERIFY(added != nullptr);
+        const QString stripTag = added->tag;
+        const QString ownFile = path(QStringLiteral("own.qrf25"));
+        {
+            QFile f(ownFile);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* own = open(ownFile);
+        QVERIFY(own != nullptr);
+        QVERIFY(own->waitForPrepared(60000));
+        QVERIFY(own->layout() != nullptr);
+        QVERIFY(own->model().problems().filter(QStringLiteral("names no file")).isEmpty());
+        auto* label = own->findChild<QLabel*>(QStringLiteral("rfLayoutLabel"));
+        QVERIFY(label != nullptr);
+        QVERIFY2(label->text().contains(QStringLiteral("No layout file")), qPrintable(label->text()));
+        const auto stripBox = [own] {
+            QRectF b;
+            for (const rf::Conductor& c : own->processed()->conductors) b = b.united(c.outline.boundingRect());
+            return b;
+        };
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
+        QCOMPARE(int(own->ownShapes().size()), 1);
+        bool drawn = false;
+        for (const LayoutView::Overlay& o : own->view()->overlays()) drawn = drawn || (o.name == QStringLiteral("M1, the model's own shapes") && o.fill.isValid());
+        QVERIFY(drawn);
+        // Zoom Extents: the shapes are what there is to fit.
+        own->view()->resize(600, 300);
+        own->showAll();
+        const QRectF seen = own->view()->visibleRegion();
+        QVERIFY2(seen.contains(QRectF(0, 0, 1000, 50)) && seen.width() < 2000,
+                 qPrintable(QStringLiteral("%1, %2 to %3, %4").arg(seen.left()).arg(seen.top()).arg(seen.right()).arg(seen.bottom())));
+
+        // Solved as the same strip read from a GDS.
+        RF25Doc::SolveRequest wave;
+        wave.solver = QStringLiteral("full_wave");
+        wave.frequencies = {3e9};
+        own->solveWith(wave);
+        QVERIFY(own->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> mine = own->fullWave();
+        QVERIFY2(mine != nullptr && mine->ok(), qPrintable(own->solveProblem()));
+        RF25Doc* ref = open(refFile);
+        QVERIFY(ref != nullptr);
+        QVERIFY(ref->waitForLayout(60000));
+        QVERIFY(ref->waitForPrepared(60000));
+        ref->solveWith(wave);
+        QVERIFY(ref->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> theirs = ref->fullWave();
+        QVERIFY2(theirs != nullptr && theirs->ok(), qPrintable(ref->solveProblem()));
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                QVERIFY2(std::abs(mine->s.at(0).at(i).at(j) - theirs->s.at(0).at(i).at(j)) < 1e-9,
+                         qPrintable(QStringLiteral("S%1%2: %3 against %4").arg(i + 1).arg(j + 1).arg(std::abs(mine->s.at(0).at(i).at(j))).arg(std::abs(theirs->s.at(0).at(i).at(j)))));
+
+        // Its parameter changed: the strip with it; Undo puts it back.
+        const QString parametersTag = own->model().root.child(QStringLiteral("rf_parameters"))->tag;
+        QVERIFY(own->editNode(parametersTag, [](rf::Node& n) {
+            n.props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "80[um]"}, QJsonArray{"L", "1000[um]"}});
+        }, QStringLiteral("w")));
+        QVERIFY(own->waitForPrepared(60000));
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 80));
+        own->undo();
+        QVERIFY(own->waitForPrepared(60000));
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
+
+        // A click on it in Select: its node chosen.
+        LayoutView* view = own->view();
+        view->showRegion(QRectF(QPointF(-100, -150), QPointF(1100, 200)));
+        view->repaint();
+        own->focusNode(QString());
+        drag(view, view->toPixel(QPointF(500, 25)), view->toPixel(QPointF(500, 25)));
+        QCOMPARE(own->focusedNode(), stripTag);
+
+        // Drawn as the model's own by the Draw menu's choice: a node, its
+        // numbers lengths, one step of Undo.
+        own->setDrawsParametric(true);
+        own->setDrawTool(RF25Doc::DrawTool::Rectangle);
+        drag(view, view->toPixel(QPointF(200, 100)), view->toPixel(QPointF(300, 150)));
+        own->setDrawTool(RF25Doc::DrawTool::None);
+        const rf::Node* shapes = own->model().layout().child(QStringLiteral("rf_shapes"));
+        QVERIFY(shapes != nullptr);
+        QCOMPARE(int(shapes->children.size()), 2);
+        const rf::Node& drawnRect = shapes->children.back();
+        QCOMPARE(drawnRect.props.value(QStringLiteral("layer")).toString(), QStringLiteral("M1"));
+        QVERIFY2(drawnRect.props.value(QStringLiteral("width")).toString().endsWith(QStringLiteral("[um]")), qPrintable(drawnRect.props.value(QStringLiteral("width")).toString()));
+        QVERIFY(own->layoutFile().isEmpty());   // (nothing written to a file)
+        own->undo();
+        QCOMPARE(int(own->model().layout().child(QStringLiteral("rf_shapes"))->children.size()), 1);
+        own->setDrawsParametric(false);
+        // A call: a path of the model's own; not mixed with the file's; none
+        // deleted as the file's are.
+        QStringList done;
+        QString why;
+        QVERIFY2(own->drawShapes(QJsonArray{QJsonObject{{"add", "path"}, {"layer", "M1"}, {"parametric", true}, {"width", 10},
+                                                        {"ends", "round"}, {"points", QJsonArray{QJsonArray{0, 200}, QJsonArray{100, 200}}}}},
+                                 &done, &why),
+                 qPrintable(why));
+        QVERIFY2(done.join(' ').contains(QStringLiteral("the model's own")), qPrintable(done.join(' ')));
+        QCOMPARE(int(own->model().layout().child(QStringLiteral("rf_shapes"))->children.size()), 2);
+        QVERIFY(!own->drawShapes(QJsonArray{QJsonObject{{"add", "via"}, {"at", QJsonArray{0, 0}}, {"parametric", true}},
+                                            QJsonObject{{"add", "via"}, {"at", QJsonArray{5, 0}}}},
+                                 &done, &why));
+        QVERIFY2(why.contains(QStringLiteral("one or the other")), qPrintable(why));
+        QVERIFY(!own->drawShapes(QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{50, 200}}, {"parametric", true}}},
+                                 &done, &why));
+        QVERIFY2(why.contains(QStringLiteral("under Layout > Shapes")), qPrintable(why));
+        app->closeAllFiles();
+    }
+
     // A substrate that ends (F2 of the open items of 8 November), drawn on
     // the tab: a rectangle drawn on the Substrate is where it is - the map
     // sending its layer of the file there, the processing keeping it apart

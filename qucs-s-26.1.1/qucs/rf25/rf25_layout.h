@@ -111,6 +111,18 @@ struct Cutout {
 /// three corners, no area, a layer no layer of the stack - is said in
 /// \a problems and left out.
 Cutout cutoutOf(const Model& model, QStringList* problems);
+
+/// A shape of the model's own (Shapes, rf_shape) as its parameters make it:
+/// its outline, µm, on a layer of the stack.
+struct OwnShape {
+    QString tag, name, layer;
+    QPolygonF outline;
+};
+/// The model's own shapes, each evaluated in its parameters - a path
+/// outlined as gdstk outlines one, its joins and ends as a path drawn on the
+/// tab -; one that cannot be read, or is on no layer a shape may be on, left
+/// out and said in \a problems.
+QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems = nullptr);
 /// \a shapes of \a layer cut as \a cutout says: a shape wholly outside what
 /// it keeps dropped, one across a region's edge cut along it, one it leaves
 /// whole returned as it was. \a cut and \a masked, given, count the shapes

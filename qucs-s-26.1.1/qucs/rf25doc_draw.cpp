@@ -181,7 +181,7 @@ void RF25Doc::drawPicked(QPointF at)
         QJsonObject via{{QStringLiteral("add"), QStringLiteral("via")}, {QStringLiteral("at"), QJsonArray{p.x(), p.y()}}};
         // (On the via chosen, else the stack's first.)
         if (chosen != nullptr && chosen->kind == Layer::Via) via.insert(QStringLiteral("layer"), layer);
-        const bool ok = drawShapes(QJsonArray{via}, &done, &why);
+        const bool ok = drawShapes(toolEdits(QJsonArray{via}), &done, &why);
         a_status->setText(ok ? done.join(QLatin1Char(' ')) : why);
         return;
     }
@@ -258,9 +258,9 @@ bool RF25Doc::finishPolygon(QString* why)
     showDrawing();
     QStringList done;
     QString error;
-    const bool ok = drawShapes(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("polygon")},
-                                                      {QStringLiteral("layer"), drawLayer()},
-                                                      {QStringLiteral("points"), pointsJson(corners)}}},
+    const bool ok = drawShapes(toolEdits(QJsonArray{QJsonObject{{QStringLiteral("add"), QStringLiteral("polygon")},
+                                                                {QStringLiteral("layer"), drawLayer()},
+                                                                {QStringLiteral("points"), pointsJson(corners)}}}),
                                &done, &error);
     a_status->setText(ok ? done.join(QLatin1Char(' ')) : error);
     if (!ok && why != nullptr) *why = error;
@@ -341,6 +341,14 @@ void RF25Doc::fillDrawMenu()
         const double v = QInputDialog::getDouble(this, tr("Via Size"), tr("The side of a via the Via tool puts, µm:"), a_viaSize, 1e-3, 1e6, 3, &ok);
         if (ok) setViaSize(v);
     });
+    QAction* own = a_drawMenu->addAction(tr("Keep as Parametric Shapes"));
+    own->setObjectName(QStringLiteral("rfDrawParametric"));
+    own->setCheckable(true);
+    own->setChecked(a_drawParametric);
+    own->setToolTip(tr("What is drawn becomes a Shape of the model's own, under Layout > Shapes, rather than going into the "
+                       "layout file: its numbers lengths to be written as expressions of the parameters (w, L/2), what a "
+                       "Parametric Sweep or an Optimization varies"));
+    connect(own, &QAction::toggled, this, &RF25Doc::setDrawsParametric);
     a_drawMenu->addSeparator();
     QAction* remove = a_drawMenu->addAction(tr("Delete the Selected Shape"));
     remove->setShortcutVisibleInContextMenu(true);
@@ -389,6 +397,32 @@ bool RF25Doc::eventFilter(QObject* watched, QEvent* event)
             return true;
         }
     }
+    // A click on a shape of the model's own, in Select: its node chosen.
+    if (watched == a_view && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease)
+        && a_drawTool == DrawTool::None && a_view->mode() == LayoutView::Mode::Select && !a_ownShapes.isEmpty()) {
+        const auto* mouse = static_cast<QMouseEvent*>(event);
+        if (mouse->button() == Qt::LeftButton) {
+            if (event->type() == QEvent::MouseButtonPress) {
+                a_pressedAt = mouse->position();
+            } else if ((mouse->position() - a_pressedAt).manhattanLength() < 5) {
+                const QPointF at = a_view->toLayout(mouse->position());
+                const OwnShape* hit = nullptr;
+                double area = 0;
+                for (const OwnShape& s : std::as_const(a_ownShapes)) {
+                    if (!s.outline.containsPoint(at, Qt::OddEvenFill)) continue;
+                    const double a = std::abs(areaOf(s.outline));
+                    if (hit == nullptr || a < area) {
+                        hit = &s;
+                        area = a;
+                    }
+                }
+                if (hit != nullptr) {
+                    focusNode(hit->tag);
+                    a_status->setText(tr("%1, a shape of the model's own on %2: its numbers under Layout > Shapes.").arg(hit->name, hit->layer));
+                }
+            }
+        }
+    }
     if (watched == a_view && event->type() == QEvent::MouseButtonDblClick && a_drawTool == DrawTool::Polygon) {
         // (Its first click put the last corner.)
         QString why;
@@ -416,6 +450,127 @@ void RF25Doc::applyDrawn(const Model& model, const QString& path, const std::opt
     refreshLayout();
 }
 
+QJsonArray RF25Doc::toolEdits(QJsonArray edits) const
+{
+    if (!a_drawParametric) return edits;
+    for (int i = 0; i < edits.size(); ++i) {
+        QJsonObject e = edits.at(i).toObject();
+        if (e.contains(QLatin1String("add"))) e.insert(QStringLiteral("parametric"), true);
+        edits[i] = e;
+    }
+    return edits;
+}
+
+void RF25Doc::setDrawsParametric(bool own)
+{
+    a_drawParametric = own;
+    QucsSettingsFile().setValue(QStringLiteral("RF25/drawParametric"), own);
+}
+
+bool RF25Doc::drawOwnShapes(const QJsonArray& edits, QStringList* done, QString* error)
+{
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return false;
+    };
+    const Stack stack = a_model.stack();
+    Model m = a_model;
+    QString why;
+    Node* shapes = m.layout().child(QStringLiteral("rf_shapes"));
+    if (shapes == nullptr) {
+        shapes = m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")), -1, &why);
+        if (shapes == nullptr) return fail(tr("The Shapes could not be added: %1").arg(why));
+    }
+    const QString under = shapes->tag;
+    // A length as a parameter's expression would write it.
+    const auto len = [](double v) { return QString::number(v, 'g', 12) + QStringLiteral("[um]"); };
+    QStringList what;
+    for (int i = 0; i < edits.size(); ++i) {
+        const QJsonObject e = edits.at(i).toObject();
+        const auto bad = [&](const QString& text) { return fail(tr("Shape %1: %2. Nothing was drawn.").arg(i + 1).arg(text)); };
+        static const QSet<QString> known{QStringLiteral("add"),  QStringLiteral("layer"), QStringLiteral("box"),  QStringLiteral("points"),
+                                         QStringLiteral("width"), QStringLiteral("ends"), QStringLiteral("at"),   QStringLiteral("size"),
+                                         QStringLiteral("parametric")};
+        for (auto it = e.begin(); it != e.end(); ++it)
+            if (!known.contains(it.key()))
+                return bad(it.key() == QLatin1String("delete")
+                               ? tr("a shape of the model's own is deleted under Layout > Shapes, as any node is")
+                               : tr("'%1' is not a key of a shape drawn").arg(it.key()));
+        const QString add = e.value(QLatin1String("add")).toString();
+        const bool via = add == QLatin1String("via");
+        if (add != QLatin1String("rectangle") && add != QLatin1String("polygon") && add != QLatin1String("path") && !via)
+            return bad(tr("a shape of the model's own is a rectangle, a polygon, a path or a via"));
+        QString name = e.value(QLatin1String("layer")).toString().trimmed();
+        if (name.isEmpty() && via)
+            for (const Layer& l : stack.layers)
+                if (l.kind == Layer::Via) {
+                    name = l.name;
+                    break;
+                }
+        if (name.isEmpty()) name = drawLayer();
+        const Layer* layer = stack.named(name);
+        if (layer == nullptr) return bad(name.isEmpty() ? tr("the stack has no metal to draw on") : tr("%1 is no layer of the stack").arg(name));
+        if (via && layer->kind != Layer::Via) return bad(tr("%1 is no via of the stack: a via is drawn on one").arg(layer->name));
+        if (layer->kind != Layer::Metal && layer->kind != Layer::Via && layer->kind != Layer::Dielectric && layer->kind != Layer::Substrate)
+            return bad(tr("%1 is no metal, via, dielectric or substrate: shapes are drawn on those (a ground plane has none)").arg(layer->name));
+        Node n = m.make(QStringLiteral("rf_shape"));
+        n.props.insert(QStringLiteral("layer"), layer->name);
+        n.props.insert(QStringLiteral("shape"), add);
+        QString said;
+        if (add == QLatin1String("rectangle")) {
+            QRectF r;
+            if (!boxOf(e.value(QLatin1String("box")), &r)) return bad(tr("a rectangle's 'box' is [x0, y0, x1, y1] in µm"));
+            if (!(r.width() > 0 && r.height() > 0)) return bad(tr("the rectangle has no area"));
+            n.props.insert(QStringLiteral("anchor"), QStringLiteral("corner"));
+            n.props.insert(QStringLiteral("x"), len(r.left()));
+            n.props.insert(QStringLiteral("y"), len(r.top()));
+            n.props.insert(QStringLiteral("width"), len(r.width()));
+            n.props.insert(QStringLiteral("height"), len(r.height()));
+            said = tr("a rectangle of %1 from %2").arg(layer->name, boxSaid(r));
+        } else if (via) {
+            QPointF at;
+            if (!pointOf(e.value(QLatin1String("at")), &at)) return bad(tr("a via is put 'at' [x, y] in µm"));
+            const double side = e.contains(QLatin1String("size")) ? e.value(QLatin1String("size")).toDouble(-1) : a_viaSize;
+            if (!(side > 0) || side > 1e6) return bad(tr("a via's 'size' is its side in µm, more than 0"));
+            n.props.insert(QStringLiteral("x"), len(at.x()));
+            n.props.insert(QStringLiteral("y"), len(at.y()));
+            n.props.insert(QStringLiteral("size"), len(side));
+            said = tr("a via of %1 at (%2, %3) µm, %4 µm square").arg(layer->name, um(at.x()), um(at.y()), um(side));
+        } else {
+            QJsonArray rows;
+            const QJsonArray points = e.value(QLatin1String("points")).toArray();
+            for (const QJsonValue& p : points) {
+                QPointF at;
+                if (!pointOf(p, &at)) return bad(tr("'points' is a list of [x, y] in µm"));
+                rows.append(QJsonArray{len(at.x()), len(at.y())});
+            }
+            const bool path = add == QLatin1String("path");
+            if (rows.size() < (path ? 2 : 3))
+                return bad(path ? tr("a path wants two points at least") : tr("a polygon wants three corners at least"));
+            n.props.insert(QStringLiteral("points"), rows);
+            if (path) {
+                const double width = e.value(QLatin1String("width")).toDouble(-1);
+                if (!(width > 0)) return bad(tr("a path's 'width' is in µm, more than 0"));
+                const QString ends = e.value(QLatin1String("ends")).toString(QStringLiteral("flush"));
+                if (ends != QLatin1String("flush") && ends != QLatin1String("round") && ends != QLatin1String("extended"))
+                    return bad(tr("a path's 'ends' are flush, round or extended"));
+                n.props.insert(QStringLiteral("path_width"), len(width));
+                n.props.insert(QStringLiteral("ends"), ends);
+                said = tr("a path of %1 of %n point(s), %2 µm wide", nullptr, int(rows.size())).arg(layer->name, um(width));
+            } else {
+                said = tr("a polygon of %1 of %n corner(s)", nullptr, int(rows.size())).arg(layer->name);
+            }
+        }
+        const Node* added = m.add(under, n, -1, &why);
+        if (added == nullptr) return bad(why);
+        what << tr("%1, the model's own (%2)").arg(said, added->tag);
+    }
+    if (!setModel(m, tr("shapes of the model's own"))) return fail(tr("The shapes could not be added to the model."));
+    a_drawnSaid = what.join(QStringLiteral("; ")) + QLatin1Char('.');
+    if (done != nullptr) *done = what;
+    return true;
+}
+
 bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* error)
 {
     const auto fail = [error](const QString& why) {
@@ -423,6 +578,15 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
         return false;
     };
     if (edits.isEmpty() || edits.size() > 10000) return fail(tr("What is drawn is a list of 1 to 10000 shapes."));
+    // The model's own shapes, or the layout file's: one or the other in a call.
+    {
+        int own = 0;
+        for (const QJsonValue& e : edits) own += e.toObject().value(QLatin1String("parametric")).toBool() ? 1 : 0;
+        if (own > 0 && own != edits.size())
+            return fail(tr("Shapes of the model's own (\"parametric\": true) and shapes of the layout file at once: one or the "
+                           "other in a call. Nothing was drawn."));
+        if (own > 0) return drawOwnShapes(edits, done, error);
+    }
     if (a_job) return fail(tr("The layout is still being read: draw once it is."));
     const Stack stack = a_model.stack();
     Model m = a_model;
@@ -520,7 +684,7 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
         static const QSet<QString> known{QStringLiteral("add"),   QStringLiteral("delete"), QStringLiteral("layer"),
                                          QStringLiteral("box"),   QStringLiteral("points"), QStringLiteral("width"),
                                          QStringLiteral("ends"),  QStringLiteral("at"),     QStringLiteral("size"),
-                                         QStringLiteral("box_is")};
+                                         QStringLiteral("box_is"), QStringLiteral("parametric")};
         for (auto it = e.begin(); it != e.end(); ++it)
             if (!known.contains(it.key())) return bad(tr("'%1' is not a key of a shape drawn").arg(it.key()));
         const QString add = e.value(QLatin1String("add")).toString(), remove = e.value(QLatin1String("delete")).toString();

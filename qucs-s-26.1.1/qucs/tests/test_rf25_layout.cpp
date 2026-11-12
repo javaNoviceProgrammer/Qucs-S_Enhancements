@@ -406,6 +406,101 @@ private slots:
         QVERIFY2(says(gone.problems, "nothing is left to solve on"), qPrintable(gone.problems.join(" | ")));
     }
 
+    // The model's own shapes (Layout > Shapes): each number an expression of
+    // the parameters, in µm as the layout's; a rectangle by its corner or
+    // its centre, a polygon by its corners, a via by its centre and side, a
+    // path outlined as gdstk outlines one - flush, extended by half its width,
+    // round; added to the file's shapes on their layer by the processing.
+    // One that cannot be read - a width no number, a polygon of two corners,
+    // no layer, a layer of the stack no shape may be on - left out, and said.
+    void theModelsOwnShapesAreItsParameters()
+    {
+        rf::Model m = stacked();
+        rf::Node* parameters = m.root.child(QStringLiteral("rf_parameters"));
+        QVERIFY(parameters != nullptr);
+        parameters->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "50[um]"}, QJsonArray{"L", "2*w + 100[um]"}});
+        QVERIFY(m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) != nullptr);
+        const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+        const auto shape = [&](const QJsonObject& props) {
+            rf::Node n = m.make(QStringLiteral("rf_shape"));
+            n.props = props;
+            const rf::Node* added = m.add(shapes, n);
+            return added != nullptr ? added->tag : QString();
+        };
+        const QString rect = shape({{"layer", "M1"}, {"x", "10[um]"}, {"y", "-5[um]"}, {"width", "L"}, {"height", "w"}});
+        const QString centred = shape({{"layer", "M2"}, {"anchor", "centre"}, {"x", "0"}, {"y", "0"}, {"width", "20[um]"}, {"height", "w/5"}});
+        const QString poly = shape({{"layer", "M1"}, {"shape", "polygon"}, {"points", QJsonArray{QJsonArray{"0", "0"}, QJsonArray{"w", "0"}, QJsonArray{"0", "w"}}}});
+        const QString via = shape({{"layer", "V1"}, {"shape", "via"}, {"x", "5[um]"}, {"y", "5[um]"}, {"size", "2[um]"}});
+        const QString flush = shape({{"layer", "M2"}, {"shape", "path"}, {"points", QJsonArray{QJsonArray{"0", "100[um]"}, QJsonArray{"100[um]", "100[um]"}}}, {"path_width", "10[um]"}});
+        QString problem;
+        QStringList problems;
+        QList<rf::OwnShape> own = rf::ownShapesOf(m, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        QCOMPARE(int(own.size()), 5);
+        const auto of = [&own](const QString& tag) {
+            for (const rf::OwnShape& s : own)
+                if (s.tag == tag) return s;
+            return rf::OwnShape();
+        };
+        QCOMPARE(of(rect).layer, QStringLiteral("M1"));
+        QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 200, 50));
+        QCOMPARE(of(centred).outline.boundingRect(), QRectF(-10, -5, 20, 10));
+        QCOMPARE(std::abs(rf::areaOf(of(poly).outline)), 1250.0);
+        QCOMPARE(of(via).outline.boundingRect(), QRectF(4, 4, 2, 2));
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(flush).outline)) - 1000) < 1e-6, qPrintable(QString::number(rf::areaOf(of(flush).outline))));
+        QCOMPARE(of(flush).outline.boundingRect(), QRectF(0, 95, 100, 10));
+        // Its ends: extended by half its width at each, or round.
+        m.find(flush)->props.insert(QStringLiteral("ends"), QStringLiteral("extended"));
+        own = rf::ownShapesOf(m);
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(flush).outline)) - 1100) < 1e-6, qPrintable(QString::number(rf::areaOf(of(flush).outline))));
+        m.find(flush)->props.insert(QStringLiteral("ends"), QStringLiteral("round"));
+        own = rf::ownShapesOf(m);
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(flush).outline)) - (1000 + M_PI * 25)) < 1.0, qPrintable(QString::number(rf::areaOf(of(flush).outline))));
+
+        // A parameter changed: the shapes with it.
+        parameters->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "80[um]"}, QJsonArray{"L", "2*w + 100[um]"}});
+        own = rf::ownShapesOf(m);
+        QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 260, 80));
+
+        // Processed with the file's shapes, on their layers: a model of its
+        // own shapes alone over an empty layout.
+        rf::Node* map = m.layout().child(QStringLiteral("rf_layer_map"));
+        map->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+        qucs_s::layout::Layout empty;
+        qucs_s::layout::Cell top;
+        top.name = QStringLiteral("TOP");
+        empty.cells << top;
+        empty.byName.insert(top.name, 0);
+        const rf::Processed processed = rf::processRead(m, empty, QStringLiteral("none"));
+        QStringList layers;
+        for (const rf::Conductor& c : processed.conductors) layers << c.layer;
+        QVERIFY2(layers.contains(QStringLiteral("M1")) && layers.contains(QStringLiteral("M2")), qPrintable(layers.join(", ")));
+        QVERIFY2(processed.report.lines.join(' ').contains(QStringLiteral("of the model's own")), qPrintable(processed.report.lines.join(" | ")));
+        QVERIFY(m.problems().filter(QStringLiteral("names no file")).isEmpty());
+
+        // What cannot be read: left out, and said.
+        m.find(rect)->props.insert(QStringLiteral("width"), QStringLiteral("q * 2"));
+        m.find(poly)->props.insert(QStringLiteral("points"), QJsonArray{QJsonArray{"0", "0"}, QJsonArray{"w", "0"}});
+        m.find(via)->props.insert(QStringLiteral("layer"), QStringLiteral("M9"));
+        m.find(centred)->props.insert(QStringLiteral("layer"), QString());
+        problems.clear();
+        own = rf::ownShapesOf(m, &problems);
+        QCOMPARE(int(own.size()), 1);
+        const QString said = problems.join(QStringLiteral(" | "));
+        QVERIFY2(said.contains(QStringLiteral("width is not a number")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("a polygon of 2 corner(s)")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("M9, which is no layer of the stack")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("is on no layer")), qPrintable(said));
+        // A ground plane has no shapes.
+        rf::Node& ground = add(m.stackNode(), "rf_ground", QStringLiteral("g1"), QStringLiteral("GND"));
+        Q_UNUSED(ground);
+        m.find(flush)->props.insert(QStringLiteral("layer"), QStringLiteral("GND"));
+        problems.clear();
+        own = rf::ownShapesOf(m, &problems);
+        QVERIFY2(problems.join(' ').contains(QStringLiteral("a ground plane has no shapes")), qPrintable(problems.join(" | ")));
+        Q_UNUSED(problem);
+    }
+
     // The Cutout: a part of the tree in every model - a new one, and one of
     // a file written before it -, written and read back with its regions,
     // and a layer renamed in the regions that cut it.
