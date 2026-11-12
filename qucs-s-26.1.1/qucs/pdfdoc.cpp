@@ -417,6 +417,61 @@ void PageView::finishZoom()
     a_settle->start(ZoomSettleMs);
 }
 
+QList<std::array<int, 3>> PageView::tilesInSight() const
+{
+    // (As paintPages() goes through them.)
+    QList<std::array<int, 3>> out;
+    if (a_document == nullptr || a_pages.isEmpty()) return out;
+    const qreal dpr = viewport()->devicePixelRatioF();
+    const QRect visible = viewport()->rect();
+    const QPoint off = offset();
+    for (int i = 0; i < a_pages.size(); ++i) {
+        const QRectF r = a_pages.at(i).translated(-QPointF(off));
+        if (r.bottom() < visible.top() - 1) continue;
+        if (r.top() > visible.bottom() + 1) break;
+        const QRectF shown = r.intersected(QRectF(visible));
+        if (shown.isEmpty()) continue;
+        const QRectF local((shown.topLeft() - r.topLeft()) * dpr, shown.size() * dpr);
+        const int tx0 = std::max(0, int(local.left()) / TileSize), tx1 = int(local.right()) / TileSize;
+        const int ty0 = std::max(0, int(local.top()) / TileSize), ty1 = int(local.bottom()) / TileSize;
+        for (int ty = ty0; ty <= ty1; ++ty)
+            for (int tx = tx0; tx <= tx1; ++tx) out.append({i, tx, ty});
+    }
+    return out;
+}
+
+int PageView::renderInSight(int limitMs)
+{
+    finishZoom();
+    a_zoomAnimation->stop();
+    a_settle->stop();
+    a_zooming = false;
+    const qreal scale = pixelsPerPoint() * viewport()->devicePixelRatioF();
+    QElapsedTimer clock;
+    clock.start();
+    int left = 0;
+    for (const auto& [page, tx, ty] : tilesInSight()) {
+        if (a_tiles.contains(tileKey(page, scale, tx, ty))) continue;
+        if (clock.elapsed() >= limitMs) {
+            ++left;
+            continue;
+        }
+        bool cached = false;
+        tile(page, scale, tx, ty, &cached);
+    }
+    viewport()->update();
+    return left;
+}
+
+int PageView::tilesMissingInSight() const
+{
+    const qreal scale = pixelsPerPoint() * viewport()->devicePixelRatioF();
+    int missing = 0;
+    for (const auto& [page, tx, ty] : tilesInSight())
+        if (!a_tiles.contains(tileKey(page, scale, tx, ty))) ++missing;
+    return missing;
+}
+
 qreal PageView::targetZoom() const
 {
     return a_zoomAnimation->state() == QAbstractAnimation::Running ? a_zoomTarget : a_zoom;
@@ -967,8 +1022,14 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
     QPdfDocumentRenderOptions options;
     options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
     options.setScaledSize(full);
-    options.setScaledClipRect(rect);
-    QImage image = a_document->render(page, rect.size(), options);
+    // A tile at the page's edge asked for whole and cut to the page: QtPdf
+    // gives a clip a few dozen pixels high nothing at all - the foot of a
+    // page whose height is just over a multiple of the tile's was left
+    // white (the PDF open items' C1).
+    const QRect cell(tx * TileSize, ty * TileSize, TileSize, TileSize);
+    options.setScaledClipRect(cell);
+    QImage image = a_document->render(page, cell.size(), options);
+    if (!image.isNull() && rect.size() != cell.size()) image = image.copy(QRect(QPoint(0, 0), rect.size()));
     // (Its pixel ratio set once: drawn, the same image each time - the GPU's
     // texture of it kept; set at each paint, it was a copy each time.)
     image.setDevicePixelRatio(viewport()->devicePixelRatioF());

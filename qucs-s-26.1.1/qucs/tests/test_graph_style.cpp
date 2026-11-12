@@ -14,6 +14,7 @@
 #include <QTemporaryDir>
 
 #include <functional>
+#include <limits>
 
 #include "config.h"
 #include "main.h"
@@ -215,6 +216,41 @@ private slots:
                  qPrintable(QString::number(blueIn(img, img.rect()))));
         // Nothing of it further left: the part above 1 is clipped.
         QCOMPARE(blueIn(img, QRect(5, 3, d->x2 * 3 / 4, d->y2 - 6)), 0);
+    }
+
+    // A value not there - NaN, a gap a digitized curve writes between its
+    // pieces - ends the line, which starts again after it: not drawn down to
+    // 0 and up again. The same at the start, and with a point outside the
+    // fixed range next to the gap.
+    void aNaNIsAGapInTheLine_data()
+    {
+        QTest::addColumn<bool>("startsMissing");
+        QTest::addColumn<bool>("aboveBeforeTheGap");
+        QTest::newRow("in the middle") << false << false;
+        QTest::newRow("at the start too") << true << false;
+        QTest::newRow("above the range before it") << false << true;
+    }
+    void aNaNIsAGapInTheLine()
+    {
+        QFETCH(bool, startsMissing);
+        QFETCH(bool, aboveBeforeTheGap);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const QString data = writeDataset(dir.filePath("gap.dat"), 21, {}, [&](int, int i) {
+            if (startsMissing && i < 2) return nan;
+            if (i >= 9 && i <= 11) return nan;
+            if (aboveBeforeTheGap && i == 8) return 2.0;
+            return 0.5;
+        });
+        QScopedPointer<RectDiagram> d(makeDiagram(GRAPHSTYLE_SOLID, 2, data));
+        QVERIFY(d);
+        const QImage img = render(d.data());
+        // Two runs at 0.5: before the gap and after it.
+        QCOMPARE(runsAlong(img, rowOf(d.data(), 0.5)), 2);
+        // Nothing in the gap, from the bottom up: no line to 0 and back.
+        const int x0 = d->x2 * 9 / 20 + 4, x1 = d->x2 * 11 / 20 - 4;
+        QCOMPARE(blueIn(img, QRect(x0, 3, x1 - x0, d->y2 - 6)), 0);
+        QCOMPARE(blueIn(img, QRect(5, rowOf(d.data(), 0.1), d->x2 - 10, rowOf(d.data(), 0) - rowOf(d.data(), 0.1) - 2)), 0);
+        if (startsMissing) QCOMPARE(blueIn(img, QRect(3, 3, d->x2 / 20 - 6, d->y2 - 6)), 0);
     }
 };
 

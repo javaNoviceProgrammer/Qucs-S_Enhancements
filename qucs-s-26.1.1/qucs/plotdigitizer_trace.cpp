@@ -494,6 +494,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
     QList<Series> found;
     QList<QString> foundKeys;    // each line's style, whether it closes on itself, whether it is a scrap
     QList<bool> foundClosed, foundTiny;
+    QList<QPolygonF> foundEllipse;   // an ellipse's outline as drawn; empty: not one
     int counter = 0;
     QImage ink;
     const double inkScale = 3;
@@ -503,8 +504,23 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         const Chain& c = chains.at(ci);
         if (!wanted(options, c.colour)) continue;
         if (sampleChain.at(ci) || isSample(c.points.boundingRect())) continue;
+        // An ellipse in black or grey, round some curves: its points on the
+        // ellipse its box holds (a legend's rounded box has them along its
+        // sides). Set apart below, when there are curves in colour.
+        bool ellipse = false;
+        if (c.closed && achromatic(c.colour) && c.points.size() >= 12) {
+            const QRectF b = c.points.boundingRect();
+            if (std::min(b.width(), b.height()) >= 6) {
+                int on = 0;
+                for (const QPointF& q : c.points) {
+                    const double u = (q.x() - b.center().x()) / (b.width() / 2), v = (q.y() - b.center().y()) / (b.height() / 2);
+                    if (std::abs(std::hypot(u, v) - 1) < 0.08) ++on;
+                }
+                ellipse = on >= 0.9 * c.points.size();
+            }
+        }
         // A legend's frame, rounded or not: a closed outline round a box.
-        if (c.closed && c.curved && achromatic(c.colour)) {
+        if (!ellipse && c.closed && c.curved && achromatic(c.colour)) {
             const QRectF outline = c.points.boundingRect();
             int onEdges = 0;
             for (const QPointF& q : c.points)
@@ -546,6 +562,72 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         foundKeys << key;
         foundClosed << c.closed;
         foundTiny << tiny;
+        foundEllipse << (ellipse ? c.points : QPolygonF());
+    }
+
+    // --- Arrows and ellipses in black or grey drawn over curves in colour:
+    // pointing things out, not data. Set apart (Plot::annotations). (With
+    // no curve in colour they may be the data: kept.)
+    QList<Annotation> annotations;
+    {
+        bool chromatic = false;
+        for (const Series& one : std::as_const(found)) chromatic = chromatic || !achromatic(one.colour);
+        if (chromatic) {
+            QList<bool> gone(found.size(), false);
+            const auto dot = [](QPointF u, QPointF v) { return u.x() * v.x() + u.y() * v.y(); };
+            // An arrow: a straight shaft of two points, and its head - a V of
+            // three or four points, under 18 points across - its point at an
+            // end of the shaft and its arms going back along it.
+            for (int h = 0; h < found.size(); ++h) {
+                const Series& head = found.at(h);
+                if (gone.at(h) || !achromatic(head.colour) || foundClosed.at(h) || head.points.size() < 3 || head.points.size() > 4 || !head.breaks.isEmpty()) continue;
+                const QRectF hb = QPolygonF(head.points).boundingRect();
+                if (std::max(hb.width(), hb.height()) > 18) continue;
+                for (int sh = 0; sh < found.size(); ++sh) {
+                    const Series& shaft = found.at(sh);
+                    if (sh == h || gone.at(sh) || shaft.points.size() != 2 || shaft.colour != head.colour) continue;
+                    if (QLineF(shaft.points.first(), shaft.points.last()).length() < 8) continue;
+                    int k = -1, end = -1;
+                    double best = 1e18;
+                    for (int q = 0; q < head.points.size(); ++q)
+                        for (int e = 0; e < 2; ++e)
+                            if (const double d = QLineF(head.points.at(q), shaft.points.at(e)).length(); d < best) {
+                                best = d;
+                                k = q;
+                                end = e;
+                            }
+                    if (best > 2.5 || k == 0 || k == head.points.size() - 1) continue;
+                    const QPointF tip = shaft.points.at(end), back = shaft.points.at(1 - end) - tip;
+                    if (dot(head.points.first() - head.points.at(k), back) <= 0 || dot(head.points.last() - head.points.at(k), back) <= 0) continue;
+                    Annotation a;
+                    a.kind = Annotation::Kind::Arrow;
+                    a.points << shaft.points.at(1 - end) << tip;
+                    annotations << a;
+                    gone[h] = gone[sh] = true;
+                    break;
+                }
+            }
+            int arrows = int(annotations.size()), ellipses = 0;
+            for (int i = 0; i < found.size(); ++i)
+                if (!foundEllipse.at(i).isEmpty()) {
+                    Annotation a;
+                    a.kind = Annotation::Kind::Ellipse;
+                    a.points = foundEllipse.at(i);
+                    annotations << a;
+                    gone[i] = true;
+                    ++ellipses;
+                }
+            for (int i = int(found.size()) - 1; i >= 0; --i)
+                if (gone.at(i)) {
+                    found.removeAt(i);
+                    foundKeys.removeAt(i);
+                    foundClosed.removeAt(i);
+                    foundTiny.removeAt(i);
+                    foundEllipse.removeAt(i);
+                }
+            if (arrows + ellipses > 0)
+                notes->append(tr("%1 arrows and %2 ellipses drawn in black or grey over the curves were set apart, not data: 'annotations'.").arg(arrows).arg(ellipses));
+        }
     }
 
     // --- A curve the file writes in pieces, one after another along x: it
@@ -594,6 +676,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 foundKeys.removeAt(j);
                 foundClosed.removeAt(j);
                 foundTiny.removeAt(j);
+                foundEllipse.removeAt(j);
             }
         }
         // A bar at one x the file draws before the curve it ends: joined to
@@ -622,6 +705,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
             foundKeys.removeAt(i);
             foundClosed.removeAt(i);
             foundTiny.removeAt(i);
+            foundEllipse.removeAt(i);
         }
         for (int i = found.size() - 1; i >= 0; --i)
             if (foundTiny.at(i)) {
@@ -629,6 +713,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 foundKeys.removeAt(i);
                 foundClosed.removeAt(i);
                 foundTiny.removeAt(i);
+                foundEllipse.removeAt(i);
             }
         if (joinedPieces > 0) notes->append(tr("%1 pieces of curves the file draws one after another along x were joined to the curve before them, with a gap between: where the curve left the axes.").arg(joinedPieces));
     }
@@ -679,10 +764,191 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                     foundKeys.removeAt(i);
                     foundClosed.removeAt(i);
                     foundTiny.removeAt(i);
+                    foundEllipse.removeAt(i);
                 }
             }
         }
         if (clipped > 0) notes->append(tr("%1 points drawn along the frame's edge on a log axis were left out, with a gap: they stand for values beyond the axis, not for the value at its end.").arg(clipped));
+    }
+
+    // --- What the arrows name: the words at an arrow's tail name the curves
+    // at its tip, one of each style (a measurement and its model drawn over
+    // each other) - or, the arrow pointing at an ellipse, those inside it.
+    if (!annotations.isEmpty()) {
+        const QList<Phrase> words = phrasesOf(source.tokens(plot.page, frame.adjusted(-6, -6, 6, 6)));
+        const auto toBox = [](QPointF p, const QRectF& r) {
+            return std::hypot(std::max({r.left() - p.x(), 0.0, p.x() - r.right()}), std::max({r.top() - p.y(), 0.0, p.y() - r.bottom()}));
+        };
+        const auto toLine = [](QPointF p, const QList<QPointF>& pts, const QList<int>& breaks, bool closed) {
+            double best = 1e18;
+            const int n = int(pts.size());
+            for (int i = 0; i < n; ++i) {
+                best = std::min(best, QLineF(p, pts.at(i)).length());
+                const int j = i + 1 < n ? i + 1 : (closed ? 0 : -1);
+                if (j < 0 || breaks.contains(j)) continue;
+                const QPointF a = pts.at(i), d = pts.at(j) - a;
+                const double l2 = d.x() * d.x() + d.y() * d.y();
+                if (l2 <= 0) continue;
+                const double t = std::clamp(((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / l2, 0.0, 1.0);
+                best = std::min(best, QLineF(p, a + t * d).length());
+            }
+            return best;
+        };
+        QSet<int> taken;
+        QHash<int, int> labelOf;   // a curve named: the arrow that named it
+        int named = 0;
+        for (Annotation& a : annotations) {
+            if (a.kind != Annotation::Kind::Arrow) continue;
+            const QPointF tail = a.points.first(), tip = a.points.last();
+            const Phrase* label = nullptr;
+            double nearest = 14;
+            for (const Phrase& w : words)
+                if (const double d = toBox(tail, w.box); d < nearest) {
+                    nearest = d;
+                    label = &w;
+                }
+            if (label == nullptr) continue;
+            a.text = label->text;
+            Annotation* ring = nullptr;
+            for (Annotation& e : annotations)
+                if (e.kind == Annotation::Kind::Ellipse && (e.points.containsPoint(tip, Qt::OddEvenFill) || toLine(tip, e.points, {}, true) <= 6)) ring = &e;
+            // Of each style, the curve nearest the tip (within 6 points, and
+            // 3 of the nearest of all), or with the most points in the ring.
+            QHash<QString, std::pair<int, double>> pick;
+            double closest = 1e18;
+            for (int i = 0; i < found.size(); ++i) {
+                double score;
+                if (ring != nullptr) {
+                    int in = 0;
+                    for (const QPointF& q : found.at(i).points) in += ring->points.containsPoint(q, Qt::OddEvenFill);
+                    if (in < 2) continue;
+                    score = -in;
+                } else {
+                    score = toLine(tip, found.at(i).points, found.at(i).breaks, false);
+                    if (score > 6) continue;
+                    closest = std::min(closest, score);
+                }
+                const auto it = pick.constFind(foundKeys.at(i));
+                if (it == pick.constEnd() || score < it->second) pick.insert(foundKeys.at(i), {i, score});
+            }
+            QList<int> chosen;
+            for (const auto& [i, score] : std::as_const(pick))
+                if (ring != nullptr || score <= closest + 3) chosen << i;
+            std::sort(chosen.begin(), chosen.end());
+            for (const int i : std::as_const(chosen)) {
+                if (taken.contains(i)) continue;
+                Series& one = found[i];
+                one.name = one.name.isEmpty() ? label->text : one.name + QStringLiteral(", ") + label->text;
+                a.names << one.name;
+                taken.insert(i);
+                labelOf.insert(i, int(&a - annotations.data()));
+                ++named;
+            }
+            if (ring != nullptr) {
+                ring->text = a.text;
+                ring->names = a.names;
+            }
+        }
+        // A curve of another style drawn with one an arrow names (its model,
+        // its measurement) takes the arrow's words too: of that style, the one
+        // that follows it most closely, when it follows no other curve named
+        // more closely. (Where an arrow points, the curves crowd: its tip
+        // alone does not tell.)
+        int paired = 0;
+        if (!labelOf.isEmpty()) {
+            const auto apart = [&](int j, int i) {
+                // The mean distance of j's points (at most 200) from i, over
+                // the x i spans; none when they share too little of it.
+                const Series& b = found.at(j);
+                const Series& c = found.at(i);
+                double lo = 1e18, hi = -1e18;
+                for (const QPointF& q : c.points) {
+                    lo = std::min(lo, q.x());
+                    hi = std::max(hi, q.x());
+                }
+                const int step = std::max(1, int(b.points.size()) / 200);
+                int in = 0, all = 0;
+                double sum = 0;
+                for (int k = 0; k < b.points.size(); k += step) {
+                    ++all;
+                    const QPointF q = b.points.at(k);
+                    if (q.x() < lo || q.x() > hi) continue;
+                    ++in;
+                    sum += toLine(q, c.points, c.breaks, false);
+                }
+                return in >= std::max(5, int(0.3 * all)) ? sum / in : 1e18;
+            };
+            QList<int> loose;
+            for (int j = 0; j < found.size(); ++j)
+                if (!taken.contains(j) && found.at(j).points.size() >= 20) loose << j;
+            QHash<int, std::pair<int, double>> bestOf;   // a loose curve: the named curve it follows most closely
+            for (const int j : std::as_const(loose))
+                for (auto it = labelOf.constBegin(); it != labelOf.constEnd(); ++it) {
+                    if (foundKeys.at(it.key()) == foundKeys.at(j)) continue;
+                    const double d = apart(j, it.key());
+                    const auto b = bestOf.constFind(j);
+                    if (d < 20 && (b == bestOf.constEnd() || d < b->second)) bestOf.insert(j, {it.key(), d});
+                }
+            for (auto it = labelOf.constBegin(); it != labelOf.constEnd(); ++it) {
+                const int i = it.key();
+                Annotation& a = annotations[it.value()];
+                // Of each other style, its closest loose curve - if i is that one's too.
+                QHash<QString, std::pair<int, double>> closest;
+                for (const int j : std::as_const(loose)) {
+                    if (taken.contains(j) || foundKeys.at(j) == foundKeys.at(i)) continue;
+                    const auto b = bestOf.constFind(j);
+                    if (b == bestOf.constEnd() || b->first != i) continue;
+                    bool styleNamed = false;
+                    for (const QString& n : std::as_const(a.names))
+                        for (int k = 0; k < found.size(); ++k)
+                            styleNamed = styleNamed || (found.at(k).name == n && foundKeys.at(k) == foundKeys.at(j));
+                    if (styleNamed) continue;
+                    const auto c = closest.constFind(foundKeys.at(j));
+                    if (c == closest.constEnd() || b->second < c->second) closest.insert(foundKeys.at(j), {j, b->second});
+                }
+                for (const auto& [j, d] : std::as_const(closest)) {
+                    Series& one = found[j];
+                    one.name = one.name.isEmpty() ? a.text : one.name + QStringLiteral(", ") + a.text;
+                    a.names << one.name;
+                    taken.insert(j);
+                    ++paired;
+                    for (Annotation& e : annotations)
+                        if (e.kind == Annotation::Kind::Ellipse && e.text == a.text) e.names = a.names;
+                }
+            }
+        }
+        if (named > 0)
+            notes->append(paired > 0 ? tr("%1 curves are named from the words at the tails of the arrows pointing at them, and %2 more from the curve of another style each follows.").arg(named).arg(paired)
+                                     : tr("%1 curves are named from the words at the tails of the arrows pointing at them.").arg(named));
+    }
+
+    // --- A short piece of a style beside its curves, that no join or arrow
+    // gave to one of them (a bit of a curve the file draws apart, out of
+    // order): said to be one, not numbered as a curve of its own.
+    {
+        const auto lengthOfSeries = [](const Series& one) {
+            double l = 0;
+            for (int k = 0; k + 1 < one.points.size(); ++k)
+                if (!one.breaks.contains(k + 1)) l += QLineF(one.points.at(k), one.points.at(k + 1)).length();
+            return l;
+        };
+        QHash<QString, double> longest;
+        QHash<QString, int> count;
+        for (int i = 0; i < found.size(); ++i) {
+            longest[foundKeys.at(i)] = std::max(longest.value(foundKeys.at(i)), lengthOfSeries(found.at(i)));
+            ++count[foundKeys.at(i)];
+        }
+        int pieces = 0;
+        for (int i = 0; i < found.size(); ++i) {
+            Series& one = found[i];
+            if (count.value(foundKeys.at(i)) < 2 || foundClosed.at(i) || lengthOfSeries(one) >= 0.1 * longest.value(foundKeys.at(i))) continue;
+            bool named = false;
+            for (const Annotation& n : std::as_const(annotations)) named = named || n.names.contains(one.name);
+            if (named) continue;
+            one.name = (one.name.isEmpty() ? tr("Curve") : one.name) + tr(", unassigned piece");
+            ++pieces;
+        }
+        if (pieces > 0) notes->append(tr("%1 short pieces, each under a tenth of the longest curve of its style, could not be given to a curve: named 'unassigned piece'.").arg(pieces));
     }
 
     // --- Markers: what repeats.
@@ -763,6 +1029,27 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         plot.seriesLeftOut = int(found.size()) - options.maxSeries;
         found = found.mid(0, options.maxSeries);
     }
+    // Lines of one name (a legend's entry) numbered from the one drawn
+    // highest down, not in the order the file draws them.
+    {
+        QHash<QString, QList<int>> byName;
+        for (int i = 0; i < found.size(); ++i)
+            if (found.at(i).shape == Series::Shape::Line && !found.at(i).name.isEmpty() && !found.at(i).points.isEmpty()) byName[found.at(i).name] << i;
+        bool numbered = false;
+        for (auto it = byName.begin(); it != byName.end(); ++it) {
+            QList<int>& same = it.value();
+            if (same.size() < 2) continue;
+            const auto top = [&](int i) {
+                double y = 1e18;
+                for (const QPointF& q : found.at(i).points) y = std::min(y, q.y());
+                return y;
+            };
+            std::stable_sort(same.begin(), same.end(), [&](int a, int b) { return top(a) < top(b); });
+            for (int k = 1; k < same.size(); ++k) found[same.at(k)].name = it.key() + QLatin1Char(' ') + QString::number(k + 1);
+            numbered = true;
+        }
+        if (numbered) notes->append(tr("Curves of one name are numbered from the one drawn highest down."));
+    }
     int lineNumber = 0, markerNumber = 0;
     QSet<QString> takenNames;
     for (Series& s : found) {
@@ -778,6 +1065,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         takenNames.insert(name);
     }
     plot.series = found;
+    plot.annotations = annotations;
     plot.route = QStringLiteral("vector");
     // Do the page and this reading agree?
     ink = source.render(plot.page, inside, inkScale);
@@ -1206,6 +1494,7 @@ bool extract(Source& source, Plot& plot, const Options& options, QString* why)
 {
     plot.series.clear();
     plot.seriesLeftOut = 0;
+    plot.annotations.clear();
     if (plot.pageBox().isEmpty()) {
         if (why != nullptr) *why = tr("The plot has no region on the page.");
         return false;

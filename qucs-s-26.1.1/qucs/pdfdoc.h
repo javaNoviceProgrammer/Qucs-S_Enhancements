@@ -25,6 +25,8 @@
 #include <QRectF>
 #include <QUrl>
 
+#include <array>
+
 class QComboBox;
 class QFileSystemWatcher;
 class QLabel;
@@ -116,6 +118,14 @@ public:
     qreal targetZoom() const;
     /// A step under way ended at once where it was going (its point kept).
     void finishZoom();
+    /// Every tile of the pages in sight drawn now, at the zoom shown - a
+    /// zoom under way finished and settled at once - within \a limitMs;
+    /// how many are left. (A picture of the tab taken with tiles left shows
+    /// them blurred, from another zoom's or the preview: screenshot's
+    /// area screen.)
+    int renderInSight(int limitMs);
+    /// The tiles of the pages in sight not drawn yet at the zoom shown.
+    int tilesMissingInSight() const;
     /// A zoom under way: a step's frames, a pinch or a trackpad's scroll
     /// (till 100 ms after its last frame or event, or the pinch's end). Meanwhile the pages are
     /// drawn from the tiles at hand, another zoom's scaled, none rendered:
@@ -241,6 +251,9 @@ private:
 
     /// The pages in \a visible (the viewport's), on \a s.
     void paintPages(Surface& s, const QRect& visible);
+    /// The tiles of the pages in the viewport, at the zoom shown: page and
+    /// tile column and row each.
+    QList<std::array<int, 3>> tilesInSight() const;
     void relayout();
     /// The zoom \a zoom, \a inPage of \a page (points) at \a anchor.
     void placeZoom(qreal zoom, QPoint anchor, int page, QPointF inPage);

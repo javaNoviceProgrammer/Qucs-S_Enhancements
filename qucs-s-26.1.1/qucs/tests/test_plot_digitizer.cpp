@@ -2052,6 +2052,141 @@ private slots:
         QCOMPARE_LE(plot.calibration.toValue(blues.first()->points.first()).x(), 0.001);
     }
 
+    void arrowsNameTheCurvesTheyPointAt()
+    {
+        // As Chen et al. (1996) label theirs (the open items' B4, B5): two
+        // pairs of curves, measured (red) and model (blue, a few points off),
+        // a legend in a rounded black box; a black arrow from "dose A" to the
+        // first pair, one from "dose B" to an ellipse round the second.
+        const QString file = path(QStringLiteral("arrows.pdf"));
+        Axes a;
+        a.xMin = 0;
+        a.xMax = 10;
+        a.yMin = 0;
+        a.yMax = 10;
+        a.xTicks = {0, 2, 4, 6, 8, 10};
+        a.yTicks = {0, 2, 4, 6, 8, 10};
+        const auto line = [&](double y0, double slope, double up) {
+            QPolygonF q;
+            for (double x = 0.2; x <= 9.8 + 1e-9; x += 0.2) q << a.at(x, y0 + slope * x) + QPointF(0, -up);
+            return q;
+        };
+        const QPolygonF redA = line(8, -0.4, 0), blueA = line(8, -0.4, 4.5), redB = line(1.5, 0.3, 0), blueB = line(1.5, 0.3, 4.5);
+        const QPointF tipA = a.at(3, 6.8), tailA = a.at(5.2, 8.6);
+        const QRectF ring(a.at(6.6, 3.9) - QPointF(0, 6), QSizeF(a.px(8) - a.px(6.6), 22));
+        const QPointF tipB(ring.left() + 1, ring.center().y()), tailB = a.at(4.4, 5.6);
+        const auto arrow = [](QPainter& p, QPointF tail, QPointF tip) {
+            p.drawLine(tail, tip);
+            const QLineF back(tip, tail);
+            QLineF w1 = QLineF::fromPolar(7, back.angle() + 25).translated(tip), w2 = QLineF::fromPolar(7, back.angle() - 25).translated(tip);
+            p.drawPolyline(QPolygonF{w1.p2(), tip, w2.p2()});
+        };
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawAxes(p, a, u);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(Qt::red, 0.8));
+            p.drawPolyline(redA);
+            p.drawPolyline(redB);
+            p.setPen(QPen(Qt::blue, 0.8));
+            p.drawPolyline(blueA);
+            p.drawPolyline(blueB);
+            // A short piece of red that no join or arrow gives to a curve.
+            p.setPen(QPen(Qt::red, 0.8));
+            p.drawPolyline(QPolygonF{a.at(1, 9), a.at(1.2, 9.1), a.at(1.4, 9)});
+            // The legend, in its rounded box.
+            const QPointF at = a.at(7, 9.6);
+            p.setPen(QPen(Qt::red, 0.8));
+            p.drawLine(at, at + QPointF(18, 0));
+            p.setPen(QPen(Qt::blue, 0.8));
+            p.drawLine(at + QPointF(0, 12), at + QPointF(18, 12));
+            p.setPen(QPen(Qt::black, 0.5));
+            p.drawRoundedRect(QRectF(at - QPointF(6, 9), QSizeF(78, 30)), 5, 5);
+            p.setPen(QPen(Qt::black, 0.6));
+            arrow(p, tailA, tipA);
+            arrow(p, tailB, tipB);
+            p.drawEllipse(ring);
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setFont(plotFont(8, u));
+            const auto text = [&](QPointF left, const QString& s) { p.drawText(QRectF(QPointF(left.x(), left.y() - 6) * u, QSizeF(80, 12) * u), Qt::AlignLeft | Qt::AlignVCenter, s); };
+            text(at + QPointF(22, 0), QStringLiteral("measured"));
+            text(at + QPointF(22, 12), QStringLiteral("model"));
+            text(tailA + QPointF(2, 0), QStringLiteral("dose A"));
+            text(tailB + QPointF(-34, 0), QStringLiteral("dose B"));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = firstPlot(source);
+        QVERIFY(plot.calibration.valid());
+        QVERIFY(extract(source, plot, Options{}));
+        QStringList names;
+        for (const Series& s : std::as_const(plot.series)) {
+            QVERIFY2(s.colour == QColor(Qt::red) || s.colour == QColor(Qt::blue), qPrintable(s.name + QLatin1Char(' ') + s.colour.name()));
+            names << s.name;
+        }
+        names.sort();
+        QCOMPARE(names, (QStringList{QStringLiteral("measured, dose A"), QStringLiteral("measured, dose B"), QStringLiteral("measured, unassigned piece"),
+                                     QStringLiteral("model, dose A"), QStringLiteral("model, dose B")}));
+        // Curves the arrows name are known for what they are: many of them
+        // do not lower trust as many series would.
+        {
+            Plot many = plot;
+            const Series one = many.series.first();
+            Annotation all;
+            for (int k = 0; k < 12; ++k) {
+                Series s = one;
+                s.name = QStringLiteral("dose %1").arg(k);
+                many.series << s;
+                all.names << s.name;
+            }
+            many.annotations << all;
+            for (const QString& r : assess(many).reasons) QVERIFY2(!r.contains(QStringLiteral("more than most plots have")), qPrintable(r));
+            many.annotations.clear();
+            bool said = false;
+            for (const QString& r : assess(many).reasons) said = said || r.contains(QStringLiteral("more than most plots have"));
+            QVERIFY(said);
+        }
+        int arrows = 0, ellipses = 0;
+        for (const Annotation& n : std::as_const(plot.annotations)) {
+            if (n.kind == Annotation::Kind::Arrow) {
+                ++arrows;
+                QVERIFY2(n.text == QStringLiteral("dose A") || n.text == QStringLiteral("dose B"), qPrintable(n.text));
+                QCOMPARE(n.names.size(), 2);
+                const QPointF tip = n.text == QStringLiteral("dose A") ? tipA : tipB;
+                QVERIFY2(QLineF(n.points.last(), tip).length() < 1.5, qPrintable(QStringLiteral("%1, %2").arg(n.points.last().x()).arg(n.points.last().y())));
+            } else {
+                ++ellipses;
+                QCOMPARE(n.text, QStringLiteral("dose B"));
+                QVERIFY(QLineF(n.points.boundingRect().center(), ring.center()).length() < 1.5);
+            }
+        }
+        QCOMPARE(arrows, 2);
+        QCOMPARE(ellipses, 1);   // (the legend's rounded box is not one)
+        // Kept and read back.
+        Plot back;
+        QVERIFY(fromJson(toJson(plot), &back));
+        QCOMPARE(back.annotations.size(), plot.annotations.size());
+        QCOMPARE(back.annotations.first().names, plot.annotations.first().names);
+
+        // In black alone, an ellipse may be the data (a loop): kept as a curve.
+        const QString loops = path(QStringLiteral("loop.pdf"));
+        QVERIFY(writeVector(loops, [&](QPainter& p, double u) {
+            drawAxes(p, a, u);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(Qt::black, 0.8));
+            p.drawEllipse(QRectF(a.at(2, 8), a.at(8, 2)));
+        }));
+        QPdfDocument loopPdf;
+        QCOMPARE(loopPdf.load(loops), QPdfDocument::Error::None);
+        Source loopSource(&loopPdf, loops);
+        Plot loop = firstPlot(loopSource);
+        QVERIFY(extract(loopSource, loop, Options{}));
+        QVERIFY(loop.annotations.isEmpty());
+        QCOMPARE(loop.series.size(), 1);
+    }
+
     void aLegendsSampleAndABarAreTakenRight()
     {
         // As Chen et al. (1996) draw them (the Chen recheck's D1 to D3): a
@@ -2619,8 +2754,10 @@ private slots:
         plot.series << s;
         const QByteArray twice = dataset(plot);
         QVERIFY(twice.contains("<dep SUM_A1_evil_2 SUM_A1_evil_2_x>"));
-        // A series with gaps: its pieces numbered in the csv, and a variable
-        // each in the dataset (a diagram would draw straight across a gap).
+        // A series with gaps: its pieces numbered in the csv; in the dataset
+        // all of it under its name, a NaN in each gap (where a diagram ends
+        // the line), whether it has gaps or not - and a variable each piece
+        // too. Each series' own name taken first (the open items' A1).
         Plot gapped = plot;
         gapped.series.clear();
         Series model;
@@ -2641,11 +2778,19 @@ private slots:
         QCOMPARE(rows.at(12), QStringLiteral("model 1,10,1,1"));
         QStringList variables;
         const QByteArray pieces = dataset(gapped, &variables);
-        QCOMPARE(variables, (QStringList{QStringLiteral("model_1"), QStringLiteral("model_2"), QStringLiteral("model_3"), QStringLiteral("model_1_2")}));
-        QVERIFY2(pieces.contains("<indep model_1_x 2>") && pieces.contains("<indep model_2_x 2>") && pieces.contains("<indep model_3_x 2>"), pieces.constData());
+        QCOMPARE(variables, (QStringList{QStringLiteral("model"), QStringLiteral("model_1_2"), QStringLiteral("model_2"), QStringLiteral("model_3"), QStringLiteral("model_1")}));
+        QVERIFY2(pieces.contains("<indep model_x 8>\n") && pieces.contains("\n  1\n  2.5\n  4\n  5\n  7\n  9\n  10\n</indep>"), pieces.constData());
+        QVERIFY2(pieces.contains("<dep model model_x>\n  0\n  0.1\n  nan\n  0.4\n  0.5\n  nan\n  0.9\n  1\n"), pieces.constData());
+        QVERIFY(pieces.contains("<indep model_1_2_x 2>") && pieces.contains("<indep model_2_x 2>") && pieces.contains("<indep model_3_x 2>"));
         QVERIFY(pieces.contains("<dep model_2 model_2_x>\n  0.4\n  0.5\n"));
-        QVERIFY(pieces.contains("<indep model_1_2_x 6>"));
-        QVERIFY(!pieces.contains("<dep model model_x>"));
+        QVERIFY(pieces.contains("<indep model_1_x 6>"));
+        // Without gaps the same name: done again, a diagram's trace is there.
+        Plot whole = gapped;
+        whole.series[0].breaks.clear();
+        QStringList again;
+        dataset(whole, &again);
+        QCOMPARE(again.first(), QStringLiteral("model"));
+        QCOMPARE(again.last(), QStringLiteral("model_1"));
         QCOMPARE(variableName(QStringLiteral("1 weird name!")), QStringLiteral("s_1_weird_name"));
         QCOMPARE(variableName(QString()), QStringLiteral("s_"));
     }
