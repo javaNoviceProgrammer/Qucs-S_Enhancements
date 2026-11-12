@@ -179,7 +179,7 @@ public:
     /// The selected category of the user's one place up (-1) or down (1).
     void moveContentCategory(int by);
     QComboBox *componentSymbolsCombo;   ///< The symbols new parts get: US or European (qucs_s::symbols::Style).
-    QCheckBox *gpuBoxes[5] = {};        ///< Viewers tab, by qucs_s::gpu::Viewer: drawn by the GPU (Qt's RHI), opt-in.
+    QCheckBox *gpuBoxes[6] = {};        ///< Viewers tab, by qucs_s::gpu::Viewer: drawn by the GPU (Qt's RHI), opt-in.
     QLabel *gpuStatus = nullptr;        ///< What keeps the GPU from drawing here, if anything.
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;

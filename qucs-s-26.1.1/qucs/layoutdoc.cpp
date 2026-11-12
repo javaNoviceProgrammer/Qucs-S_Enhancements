@@ -317,16 +317,17 @@ QString kLayoutProgram()
 
 namespace qucs_s::layout {
 
-LayoutView::LayoutView(QWidget* parent) : QWidget(parent)
+LayoutView::LayoutView(QWidget* parent, gpu::Viewer gpuViewer) : QWidget(parent), a_gpuViewer(gpuViewer)
 {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setMinimumSize(120, 80);
-    // Drawn by the GPU as set, and when the setting changes.
-    setGpu(gpu::used(gpu::Viewer::Layout));
+    // Drawn by the GPU as set, and when the setting changes (the layout
+    // viewer's, or the setting a tab gives it: setGpuViewer()).
+    setGpu(gpu::used(a_gpuViewer));
     connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
-        if (viewer == gpu::Viewer::Layout) setGpu(gpu::used(gpu::Viewer::Layout));
+        if (viewer == a_gpuViewer) setGpu(gpu::used(a_gpuViewer));
     });
     // KLayout's animations: a step a quarter second while a layer shown
     // scrolls or blinks.
@@ -358,6 +359,13 @@ void LayoutView::setGpu(bool on)
     Q_UNUSED(on);
 #endif
     invalidate();
+}
+
+void LayoutView::setGpuViewer(gpu::Viewer viewer)
+{
+    if (viewer == a_gpuViewer) return;
+    a_gpuViewer = viewer;
+    setGpu(gpu::used(viewer));
 }
 
 bool LayoutView::gpu() const

@@ -133,7 +133,7 @@ void QucsApp::initRf25()
   });
   settings->setObjectName(QStringLiteral("rf25SettingsAction"));
   settings->setMenuRole(QAction::NoRole);
-  settings->setStatusTip(tr("The RF 2.5D settings: the dense LU, how large a full wave is held dense, a sweep's memory"));
+  settings->setStatusTip(tr("The RF 2.5D settings: the dense LU, how large a full wave is held dense, a sweep's memory, the layout drawn by the GPU or the CPU"));
   connect(a_rf25Menu, &QMenu::aboutToShow, this, &QucsApp::updateRf25Menu);
   const QList<QAction *> bar = menuBar()->actions();
   const int view = int(bar.indexOf(viewMenu->menuAction()));
