@@ -28,6 +28,7 @@
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_static.h"
 #include "rf25/rf25_model.h"
+#include "rf25/rf25_solve.h"
 
 #include <QElapsedTimer>
 #include <QFrame>
@@ -209,7 +210,7 @@ public:
     /// meshes defaultLevels() says of the model's own mesh's cells across.
     QList<int> convergenceLevels() const;
     /// Whether the study asks for the full-wave solve (its Solver).
-    bool studyIsFullWave() const;
+    bool studyIsFullWave() const { return qucs_s::rf25::studyIsFullWave(a_model); }
     /// Solves it, in the background, on the shapes and the mesh as they
     /// stand, by the solver the study names. A solve going on is let go.
     /// Nothing happens where there is no mesh to solve on; solveProblem()
@@ -219,21 +220,8 @@ public:
     /// the mesh before would be thrown away when they were done.
     void solve();
     /// What a solve may be asked to be in place of what the study says - a
-    /// tool's question, which must leave the model as it was.
-    struct SolveRequest {
-        QString solver;              ///< "quasi_static" or "full_wave"; empty: the study's
-        QList<double> frequencies;   ///< a full-wave solve's, Hz; empty: the study's sweep
-        QString matrix;              ///< "automatic", "dense" or "compressed"; empty: the study's Matrix
-        /// A full-wave sweep's points added where its answer changes
-        /// (rf25_adaptive.h): 1 yes, 0 no, -1 as the study says. Never of
-        /// frequencies asked for, nor of a convergence check.
-        int adaptive = -1;
-        /// A mesh convergence check rather than a solve: the cells across
-        /// the narrowest conductor of each mesh, the coarsest first (a full
-        /// wave at \a frequencies, the top of the study's sweep where none
-        /// are given). Empty: a solve.
-        QList<int> levels;
-    };
+    /// tool's question, which must leave the model as it was (rf25_solve.h).
+    using SolveRequest = qucs_s::rf25::SolveRequest;
     /// solve(), as \a request says.
     void solveWith(const SolveRequest& request);
     /// How far a full-wave solve going on has got: frequencies solved, of
@@ -604,24 +592,10 @@ private:
     struct PrepareJob;
     int a_waiting = 0;      // (Held)
     bool a_closed = false;  // (closeWhenFree())
-    struct SolveJob;
+    using SolveJob = qucs_s::rf25::SolveJob;   ///< (rf25_solve.h)
     void buildUi();
     void prepareDone();
     void solveDone();
-    /// A full-wave solve of \a mesh at \a frequencies, its ports
-    /// de-embedded where they ask - as \a job has them - on the job's
-    /// thread, the strips of its ports' feeds meshed as \a how says (as
-    /// \a mesh was); \a adaptive, its points added where its answer changes
-    /// (\a tolerance on S). What reading the ports said goes to \a notes.
-    static std::shared_ptr<qucs_s::rf25::FullWave> solveWaveOn(SolveJob& job, const qucs_s::rf25::Mesh& mesh,
-                                                               const qucs_s::rf25::MeshSettings& how,
-                                                               const QList<double>& frequencies, bool adaptive,
-                                                               double tolerance, QStringList* notes);
-    /// A convergence check's meshes, each solved, on the job's thread.
-    static void convergeOn(SolveJob& job);
-    /// \a wave calibrated by the job's TRL standards (rf25_trl.h), each
-    /// solved here at its frequencies, on the job's thread.
-    static std::shared_ptr<qucs_s::rf25::FullWave> trlOn(SolveJob& job, const qucs_s::rf25::FullWave& wave);
     /// stopSolving() but for the bar: a solve let go to be started again at
     /// once - on an edit's mesh, or as solveWith() asks - keeps it.
     void letSolveGo();

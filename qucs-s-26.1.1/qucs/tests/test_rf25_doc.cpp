@@ -2903,6 +2903,122 @@ private slots:
         qunsetenv("QUCS_GPU");
     }
 
+    // A model solved without its tab (rf25_solve.h), as a sweep's point or an
+    // optimization's candidate is: from the model and its layout as read,
+    // processed, meshed, set up and solved on the caller's thread - the tab's
+    // own answer, full-wave (each S and Z) and quasi-static (the charge, the
+    // line per metre, the loop's inductance), to the last digit. A stop set
+    // before it starts gives nothing; a layout of nothing on the stack, no
+    // mesh, and says why.
+    void aModelSolvedWithoutItsTabIsTheTabsAnswer()
+    {
+        const QString file = fullWaveLine(QStringLiteral("untabbed.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        const QString folder = QFileInfo(file).absolutePath();
+        const std::shared_ptr<const qucs_s::layout::Layout> read = doc->layout();
+        QVERIFY(read != nullptr);
+        RF25Doc::SolveRequest wave;
+        wave.solver = QStringLiteral("full_wave");
+        doc->solveWith(wave);
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::FullWave> tab = doc->fullWave();
+        QVERIFY2(tab != nullptr && tab->ok(), qPrintable(doc->solveProblem()));
+        {
+            rf::SolveJob job;
+            const rf::ModelSolution m = rf::solveModel(job, doc->model(), *read, QStringLiteral("strip.gds"), folder, wave);
+            QVERIFY2(m.ok() && m.wave != nullptr, qPrintable(m.problem));
+            QCOMPARE(int(m.mesh->cells.size()), int(doc->mesh()->cells.size()));
+            QCOMPARE(m.wave->frequencies, tab->frequencies);
+            QCOMPARE(m.wave->portNames, tab->portNames);
+            for (int k = 0; k < tab->frequencies.size(); ++k)
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j) {
+                        QVERIFY2(std::abs(m.wave->s.at(k).at(i).at(j) - tab->s.at(k).at(i).at(j)) < 1e-12, qPrintable(QStringLiteral("S%1%2 at %3").arg(i + 1).arg(j + 1).arg(k)));
+                        QVERIFY(std::abs(m.wave->z.at(k).at(i).at(j) - tab->z.at(k).at(i).at(j)) <= 1e-12 * std::abs(tab->z.at(k).at(i).at(j)));
+                    }
+            QCOMPARE(m.wave->lines.value(0), tab->lines.value(0));   // (the mesh's note first)
+        }
+        RF25Doc::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        doc->solveWith(quasi);
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+        {
+            rf::SolveJob job;
+            const rf::ModelSolution m = rf::solveModel(job, doc->model(), *read, QStringLiteral("strip.gds"), folder, quasi);
+            QVERIFY2(m.ok() && m.extraction != nullptr, qPrintable(m.problem));
+            QCOMPARE(m.extraction->names, e->names);
+            QCOMPARE(m.extraction->c, e->c);
+            QCOMPARE(m.extraction->perMetre.maxwell, e->perMetre.maxwell);
+            QCOMPARE(m.length, doc->solvedLength());
+            QVERIFY(m.inductance != nullptr && doc->inductance() != nullptr);
+            QCOMPARE(m.inductance->l, doc->inductance()->l);
+        }
+        // A coplanar line, short and wide - three strips 150 µm long across
+        // 332 µm, its gaps 6 µm -, quasi-static: its mesh graded at the gaps
+        // as the tab grades them, and its length its own along the line, not
+        // the longer side solved.
+        {
+            QVERIFY(writeRectangles(path(QStringLiteral("cpw.gds")),
+                                    {QRectF(0, 0, 150, 150), QRectF(0, 156, 150, 20), QRectF(0, 182, 150, 150)}));
+            rf::Model cpw = doc->model();
+            cpw.layout().props.insert(QStringLiteral("file"), QStringLiteral("cpw.gds"));
+            cpw.ports().children.clear();
+            cpw.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("kind"), QStringLiteral("quasi_static"));
+            const QString cpwFile = path(QStringLiteral("cpw.qrf25"));
+            {
+                QFile f(cpwFile);
+                QVERIFY(f.open(QIODevice::WriteOnly));
+                f.write(cpw.toJson());
+            }
+            RF25Doc* line = open(cpwFile);
+            QVERIFY(line != nullptr);
+            QVERIFY(line->waitForLayout(60000));
+            QVERIFY(line->waitForPrepared(60000));
+            line->solve();
+            QVERIFY(line->waitForSolved(300000));
+            const std::shared_ptr<const rf::Extraction> le = line->extraction();
+            QVERIFY2(le != nullptr && le->ok(), qPrintable(line->solveProblem()));
+            QVERIFY(le->perMetre.fromMiddle);
+            rf::SolveJob job;
+            const rf::ModelSolution m = rf::solveModel(job, line->model(), *line->layout(), QStringLiteral("cpw.gds"), folder);
+            QVERIFY2(m.ok() && m.extraction != nullptr, qPrintable(m.problem));
+            QCOMPARE(int(m.mesh->cells.size()), int(line->mesh()->cells.size()));
+            QCOMPARE(m.extraction->c, le->c);
+            QCOMPARE(m.length, line->solvedLength());
+            QVERIFY2(std::abs(m.length - 150e-6) < 1e-9, qPrintable(QString::number(m.length * 1e6)));
+        }
+        // A stop set before it begins: nothing, and said so.
+        {
+            rf::SolveJob job;
+            job.stop = true;
+            const rf::ModelSolution m = rf::solveModel(job, doc->model(), *read, QStringLiteral("strip.gds"), folder, quasi);
+            QVERIFY(m.stopped && !m.ok());
+            QVERIFY(m.extraction == nullptr && m.wave == nullptr);
+        }
+        // A map that sends nothing to the stack: no mesh, and why.
+        {
+            rf::Model none = doc->model();
+            none.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rowsOf({{QStringLiteral("9"), QStringLiteral("0"), QStringLiteral("M1")}}));
+            rf::SolveJob job;
+            const rf::ModelSolution m = rf::solveModel(job, none, *read, QStringLiteral("strip.gds"), folder, quasi);
+            QVERIFY(!m.ok());
+            QVERIFY2(m.problem.contains(QStringLiteral("no mesh to solve on")), qPrintable(m.problem));
+        }
+        // A convergence check is the tab's.
+        {
+            rf::SolveJob job;
+            RF25Doc::SolveRequest check;
+            check.levels = {2, 3};
+            QVERIFY(!rf::solveModel(job, doc->model(), *read, QStringLiteral("strip.gds"), folder, check).ok());
+        }
+    }
+
     // A substrate that ends (F2 of the open items of 8 November), drawn on
     // the tab: a rectangle drawn on the Substrate is where it is - the map
     // sending its layer of the file there, the processing keeping it apart

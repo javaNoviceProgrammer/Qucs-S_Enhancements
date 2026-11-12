@@ -1,0 +1,15 @@
+===== what each break did =====
+a model solved without its tab meshed by its Mesh node alone   aModelSolvedWithoutItsTabIsTheTabs failed (caught)
+its line's length the longer side solved, never the line's own aModelSolvedWithoutItsTabIsTheTabs failed (caught)
+the tab's TRL standards found from no folder                   aTrlCalibrationTakesThePadsOut failed (caught)
+a solve's lines without its mesh's note first                  anAdaptiveSweepSolvesFewOfItsFrequ failed (caught)
+no mesh, without a word of why                                 aModelSolvedWithoutItsTabIsTheTabs failed (caught)
+a convergence check taken as a solve                           aModelSolvedWithoutItsTabIsTheTabs failed (caught)
+a stop set before it begins solved all the same                aModelSolvedWithoutItsTabIsTheTabs failed (caught)
+
+0 of 7 uncaught
+
+(The first run left breaks 1 and 2 uncaught: on the plain strip the tab's
+grading of gaps changes nothing, and a long strip's own length is its longer
+side. The test's coplanar line, short and wide with 6 um gaps, was added for
+them; BRK_ONLY=1,2 then caught both.)
