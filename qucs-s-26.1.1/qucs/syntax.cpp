@@ -693,6 +693,7 @@ int YamlLine::scan(int previous)
   bool atNode = true;    // a node may begin here
   int parent = indent - 1;   // the column a block scalar begun here is under
   int nodeStart = -1;    // where the node being read began (its anchor, its tag...)
+  bool stringTag = false;   // the node is tagged a string (!!str 42): no number, no literal
 
   if (openQuote != 0) {   // a quoted string going on from the line before
     bool closed = false;
@@ -729,6 +730,7 @@ int YamlLine::scan(int previous)
         ++i;
         if (nodeStart >= 0) parent = nodeStart;
         nodeStart = -1;
+        stringTag = false;
         atNode = true;
         continue;
       }
@@ -737,6 +739,7 @@ int YamlLine::scan(int previous)
         if (c != ',') --depth;
         ++i;
         nodeStart = -1;
+        stringTag = false;
         atNode = c == ',';
         continue;
       }
@@ -749,11 +752,17 @@ int YamlLine::scan(int previous)
       mark(i, i + 1, Style::Builtin);
       parent = i;
       nodeStart = -1;
+      stringTag = false;
       ++i;
       continue;
     }
-    if (c == ':' && blank(i + 1)) {   // the value of an empty key
+    if (c == ':' && blank(i + 1)) {   // the value of an empty key (": x", "!!str : x") or of a "? " key
       mark(i, i + 1, Style::Builtin);
+      // The key ends here as one before its ':' does: a block scalar
+      // after it is under the key's column (its tag's), else the ':''s.
+      parent = nodeStart >= 0 ? nodeStart : i;
+      nodeStart = -1;
+      stringTag = false;
       ++i;
       continue;
     }
@@ -762,6 +771,7 @@ int YamlLine::scan(int previous)
       ++depth;
       ++i;
       nodeStart = -1;
+      stringTag = false;
       continue;
     }
     if (depth > 0 && (c == ']' || c == '}' || c == ',')) {   // [] {} [a, ]
@@ -778,6 +788,10 @@ int YamlLine::scan(int previous)
         while (!nameEnd(end)) ++end;
       }
       mark(i, end, c == '!' ? Style::Type : Style::Attribute);
+      if (c == '!') {
+        const QStringView tag = QStringView(t).mid(i, end - i);
+        stringTag = tag == u"!!str" || tag == u"!<tag:yaml.org,2002:str>";
+      }
       i = end;
       if (c == '*') atNode = false;   // an alias is the node
       continue;
@@ -815,7 +829,7 @@ int YamlLine::scan(int previous)
     while (end > i && space(end - 1)) --end;
     if (valueIndicator(next, false)) {
       mark(i, end, Style::Key);
-    } else {
+    } else if (!stringTag) {   // a string tagged one is a string, whatever it looks like
       static const QRegularExpression literal(QStringLiteral("^(?:true|True|TRUE|false|False|FALSE|null|Null|NULL|~)$"));
       static const QRegularExpression number(QStringLiteral(
           "^(?:[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|0o[0-7]+|0x[0-9a-fA-F]+|"
@@ -828,6 +842,7 @@ int YamlLine::scan(int previous)
     }
     i = next;
     atNode = false;
+    stringTag = false;
   }
   return state(0);
 }
@@ -937,8 +952,12 @@ QString styleKey(Style style)
   return QString::fromLatin1(kStyleKeys[int(style)]);
 }
 
-Format defaultFormat(int, Style style)
+Format defaultFormat(int language, Style style)
 {
+  // YAML's escapes: orange. The style's own dark red is its strings' hue,
+  // and on dark paper, where colours keep their hue, the two came out one
+  // pink (Verilog-A's scale factors, VHDL's time units keep it).
+  if (language == LANG_YAML && style == Style::Unit) return {QColor(0xc7, 0x50, 0x00), false, false};
   return general(style);
 }
 
