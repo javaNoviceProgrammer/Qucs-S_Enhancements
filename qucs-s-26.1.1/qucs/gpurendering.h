@@ -1,7 +1,8 @@
 /*
  * gpurendering.h - which viewers the GPU draws: the PDF viewer, the
- *                  Markdown preview, the layout viewer and the multiphysics
- *                  Graphics view, each the user's choice (Qucs-S's
+ *                  Markdown preview, the layout viewer, the multiphysics
+ *                  Graphics view and 3D view, and RF 2.5D's layout, each
+ *                  the user's choice (Qucs-S's
  *                  Settings… > Viewers, the CPU unless chosen), and what keeps the GPU
  *                  from drawing at all
  *
@@ -28,12 +29,14 @@ namespace qucs_s::gpu {
 
 class Canvas2D;
 
-enum class Viewer { Pdf, Markdown, Layout, Multiphysics, Multiphysics3D };
+enum class Viewer { Pdf, Markdown, Layout, Multiphysics, Multiphysics3D, RF25 };
 
 /// The setting's key: Viewers/pdfGpu, Viewers/markdownGpu,
 /// Viewers/layoutGpu, Viewers/multiphysicsGpu (the Graphics view's own menu
 /// and Multiphysics > Settings… set it too), Viewers/multiphysics3dGpu
-/// (Multiphysics 3D's view: its menu, Multiphysics 3D > Settings…).
+/// (Multiphysics 3D's view: its menu, Multiphysics 3D > Settings…),
+/// Viewers/rf25Gpu (an RF 2.5D model's layout: RF 2.5D > Settings… sets it
+/// too).
 QString settingKey(Viewer viewer);
 /// "PDF viewer", "Markdown preview", ...
 QString viewerName(Viewer viewer);

@@ -1,8 +1,8 @@
 /*
  * rf25settings.h - the RF 2.5D menu's Settings: which library factorizes
  *                  the dense systems, how large a full-wave system is held
- *                  dense, and how much memory a dense sweep's frequencies at
- *                  once may hold
+ *                  dense, how much memory a dense sweep's frequencies at
+ *                  once may hold, and whether the GPU draws the layout
  *
  * This file is part of Qucs-S.
  *
@@ -16,6 +16,7 @@
 
 #include <QDialog>
 
+class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -33,7 +34,11 @@ namespace qucs_s::rf25 {
  * - the most runs and cells a full-wave system is held dense for, past which
  *   it is held compressed (RF25/denseLimit; 0 Automatic);
  * - the memory a dense sweep's frequencies at once may hold, GB
- *   (RF25/sweepMemory; 0 Automatic).
+ *   (RF25/sweepMemory; 0 Automatic);
+ * - the layout drawn by the GPU (Qt's RHI: Metal, Direct3D, OpenGL) or the
+ *   CPU: Viewers/rf25Gpu, the CPU's unless chosen, which Settings… >
+ *   Viewers sets too (gpurendering.h); on OK every open model's view drawn
+ *   so. What keeps the GPU from drawing here is said under it.
  */
 class RF25SettingsDialog : public QDialog
 {
@@ -55,12 +60,17 @@ public:
     /// How large a system is held dense and how many of that size are
     /// solved at once, with \a limit and \a gigabytes (0: Automatic).
     static QString sizeStatus(int limit, double gigabytes);
+    /// Who draws the layout with the GPU \a chosen or not: the GPU, or the
+    /// CPU and why.
+    static QString gpuStatus(bool chosen);
 
     QComboBox* luBox() const { return a_lu; }
     QLabel* luStatusLabel() const { return a_luStatus; }
     QSpinBox* limitBox() const { return a_limit; }
     QDoubleSpinBox* memoryBox() const { return a_memory; }
     QLabel* sizeStatusLabel() const { return a_sizeStatus; }
+    QCheckBox* gpuBox() const { return a_gpu; }
+    QLabel* gpuStatusLabel() const { return a_gpuStatus; }
     /// The settings kept and given to the solver (OK).
     void apply();
 
@@ -72,6 +82,8 @@ private:
     QSpinBox* a_limit = nullptr;
     QDoubleSpinBox* a_memory = nullptr;
     QLabel* a_sizeStatus = nullptr;
+    QCheckBox* a_gpu = nullptr;
+    QLabel* a_gpuStatus = nullptr;
 };
 
 } // namespace qucs_s::rf25

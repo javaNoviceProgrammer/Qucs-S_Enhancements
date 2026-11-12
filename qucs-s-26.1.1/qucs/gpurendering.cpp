@@ -40,6 +40,7 @@ QString settingKey(Viewer viewer)
     case Viewer::Layout: return QStringLiteral("Viewers/layoutGpu");
     case Viewer::Multiphysics: return QStringLiteral("Viewers/multiphysicsGpu");
     case Viewer::Multiphysics3D: return QStringLiteral("Viewers/multiphysics3dGpu");
+    case Viewer::RF25: return QStringLiteral("Viewers/rf25Gpu");
     }
     return QString();
 }
@@ -52,6 +53,7 @@ QString viewerName(Viewer viewer)
     case Viewer::Layout: return QCoreApplication::translate("gpu", "Layout viewer (GDS, OASIS)");
     case Viewer::Multiphysics: return QCoreApplication::translate("gpu", "Multiphysics Graphics view");
     case Viewer::Multiphysics3D: return QCoreApplication::translate("gpu", "Multiphysics 3D view");
+    case Viewer::RF25: return QCoreApplication::translate("gpu", "RF 2.5D layout");
     }
     return QString();
 }
@@ -107,7 +109,7 @@ void readyWindow(QWidget* window)
 {
 #ifdef QUCS_GPU_VIEW
     bool any = false;
-    for (Viewer v : {Viewer::Pdf, Viewer::Markdown, Viewer::Layout, Viewer::Multiphysics, Viewer::Multiphysics3D}) any = any || used(v);
+    for (Viewer v : {Viewer::Pdf, Viewer::Markdown, Viewer::Layout, Viewer::Multiphysics, Viewer::Multiphysics3D, Viewer::RF25}) any = any || used(v);
     const QString name = QStringLiteral("qucsGpuWindowReady");
     if (!any || window->findChild<QRhiWidget*>(name, Qt::FindDirectChildrenOnly) != nullptr) return;
     // (Made parentless, then parented, as the viewports are: QRhiWidget's
