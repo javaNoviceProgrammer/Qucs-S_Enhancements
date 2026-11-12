@@ -721,18 +721,22 @@ private slots:
         const rf::Mesh mesh = meshed(three, 10);
         QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
         rf::setDenseLu(rf::DenseLu::Eigen);
-        const long long eigenBefore = rf::eigenLuCount(), acceleratedBefore = rf::accelerateLuCount();
+        const long long eigenBefore = rf::eigenLuCount(), acceleratedBefore = rf::accelerateLuCount(),
+                        openBlasBefore = rf::openBlasLuCount();
         const rf::Extraction eigen = rf::extract(mesh, three, stack);
         QVERIFY2(eigen.ok(), qPrintable(eigen.problems.join(" | ")));
         QCOMPARE(rf::eigenLuCount() - eigenBefore, (long long)eigen.solves);
         QCOMPARE(rf::accelerateLuCount(), acceleratedBefore);
+        QCOMPARE(rf::openBlasLuCount(), openBlasBefore);
         rf::setDenseLu(rf::DenseLu::Automatic);
         const long long eigenThen = rf::eigenLuCount();
         const rf::Extraction automatic = rf::extract(mesh, three, stack);
         QVERIFY2(automatic.ok(), qPrintable(automatic.problems.join(" | ")));
         QCOMPARE(automatic.solves, eigen.solves);
-        QCOMPARE(rf::accelerateLuCount() - acceleratedBefore, rf::accelerateLuHere() ? (long long)automatic.solves : 0LL);
-        QCOMPARE(rf::eigenLuCount() - eigenThen, rf::accelerateLuHere() ? 0LL : (long long)automatic.solves);
+        const rf::DenseLu by = rf::denseLuInEffect();
+        QCOMPARE(rf::accelerateLuCount() - acceleratedBefore, by == rf::DenseLu::Accelerate ? (long long)automatic.solves : 0LL);
+        QCOMPARE(rf::openBlasLuCount() - openBlasBefore, by == rf::DenseLu::OpenBlas ? (long long)automatic.solves : 0LL);
+        QCOMPARE(rf::eigenLuCount() - eigenThen, by == rf::DenseLu::Eigen ? (long long)automatic.solves : 0LL);
         QCOMPARE(eigen.names.size(), 3);
         double apart = 0, largest = 0;
         for (const auto& [a, b] : {std::pair(&eigen.maxwell, &automatic.maxwell), std::pair(&eigen.maxwell0, &automatic.maxwell0)})

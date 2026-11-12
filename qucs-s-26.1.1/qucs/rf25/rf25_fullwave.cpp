@@ -923,10 +923,12 @@ struct AtFrequency {
     MatrixC current;                     ///< runs x ports
     double rcond = 1;
     /// Dense: the seconds its fill took (the Green's functions, the system
-    /// and P, up to its LU) and its LU (the factors, the solve, rcond), and
-    /// whether Accelerate's LAPACK made them (rf25_dense.h).
+    /// and P, up to its LU) and its LU (the factors, the solve, rcond: not
+    /// its wait for OpenBLAS's thread), and whether Accelerate's LAPACK or
+    /// OpenBLAS's made them (rf25_dense.h).
     double fillSeconds = 0, luSeconds = 0;
     bool accelerated = false;
+    bool openBlas = false;
     /// Compressed: what its matrices held, bytes, and their largest rank;
     /// the most iterations a port's GMRES took, and the largest residual.
     double bytes = 0;
@@ -1560,11 +1562,13 @@ AtFrequency solveAt(const Context& c, double f, int threads)
     addSourceFields(c, k, rhs, pathZ);
     out.fillSeconds = double(clock.nsecsElapsed()) * 1e-9;
     // (m factorized where it is: it is not needed past here.)
-    const DenseFactors<Complex> lu(std::move(m));
+    // (On the frequency's share of the threads: rf25_dense.h.)
+    const DenseFactors<Complex> lu(std::move(m), threads);
     out.current = lu.solve(rhs);
     out.rcond = lu.rcond();
     out.accelerated = lu.accelerated();
-    out.luSeconds = double(clock.nsecsElapsed()) * 1e-9 - out.fillSeconds;
+    out.openBlas = lu.openBlas();
+    out.luSeconds = double(clock.nsecsElapsed()) * 1e-9 - out.fillSeconds - lu.waited();
     if (!out.current.allFinite()) {
         out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
         return out;
@@ -3366,6 +3370,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.fillSeconds += a.fillSeconds;
             out.luSeconds += a.luSeconds;
             out.accelerated = out.accelerated || a.accelerated;
+            out.openBlas = out.openBlas || a.openBlas;
         }
     }
     out.lines << out.portsSaid;

@@ -290,6 +290,11 @@ qucs_add_test(test_rf25_inductance)
 qucs_add_test(test_rf25_wave)
 qucs_add_test(test_rf25_fast)
 qucs_add_test(test_rf25_dense)
+# (Whether this build has Accelerate's LAPACK - not every macOS build has:
+# -DQUCS_ACCELERATE_FRAMEWORK=OFF, as Linux's.)
+if(APPLE AND QUCS_ACCELERATE_FRAMEWORK AND QUCS_ACCELERATE_NEW_LAPACK)
+  target_compile_definitions(test_rf25_dense PRIVATE QUCS_TEST_ACCELERATE_LAPACK)
+endif()
 qucs_add_test(test_rf25_fullwave)
 # (The same kind again, and a metal solved as its two faces twice the cells.
 # Since G9's fix of 2 November a port's own path up from the ground has a

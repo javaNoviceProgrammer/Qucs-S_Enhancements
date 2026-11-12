@@ -3817,10 +3817,15 @@ private slots:
         QCOMPARE(out.value("matrix").toObject().value("held").toString(), QStringLiteral("dense"));
         QCOMPARE(brief.value("matrix").toObject().value("held").toString(), QStringLiteral("dense"));
         // Dense: whose LU - Accelerate's LAPACK where the build and the macOS
-        // have it (rf25/rf25_dense.h) - and what a frequency's fill and LU took.
+        // have it, else OpenBLAS's where the build has it (rf25/rf25_dense.h)
+        // - and what a frequency's fill and LU took.
         const QJsonObject dense = out.value("matrix").toObject();
-        const bool accelerated = qucs_s::rf25::denseLu() != qucs_s::rf25::DenseLu::Eigen && qucs_s::rf25::accelerateLuHere();
-        QCOMPARE(dense.value("LU by").toString(), accelerated ? QStringLiteral("Accelerate") : QStringLiteral("Eigen"));
+        // (OpenBLAS's may leave a frequency of fewer than four threads to
+        //  Eigen's where it cannot keep to one.)
+        const QString luBy = dense.value("LU by").toString(), inEffect = qucs_s::rf25::denseLuName(qucs_s::rf25::denseLuInEffect());
+        QVERIFY2(luBy == inEffect
+                     || (inEffect == QLatin1String("OpenBLAS") && !qucs_s::rf25::openBlasSideBySide() && luBy == QLatin1String("Eigen")),
+                 qPrintable(luBy));
         QVERIFY2(dense.value("fill s").toDouble(-1) >= 0 && dense.value("LU s").toDouble(-1) >= 0,
                  qPrintable(QJsonDocument(dense).toJson()));
         const QJsonObject held = json(call("rf25_solve", {{"path", ws + "/rf/wave.qrf25"}, {"solver", "full_wave"},

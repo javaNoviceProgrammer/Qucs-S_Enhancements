@@ -4497,7 +4497,10 @@ private slots:
         const QString accelerated = QStringLiteral("Accelerate's LAPACK factorizes the dense systems.");
         {
             rf::RF25SettingsDialog d(app);
-            QCOMPARE(d.luBox()->count(), 3);
+            QCOMPARE(d.luBox()->count(), 4);
+            QCOMPARE(d.luBox()->itemData(3).toString(), QStringLiteral("openblas"));
+            QCOMPARE(d.luBox()->itemText(3), rf::openBlasLuHere() ? QStringLiteral("OpenBLAS's LAPACK")
+                                                                  : QStringLiteral("OpenBLAS's LAPACK - not in this build"));
             QCOMPARE(d.luBox()->currentIndex(), 0);
             QVERIFY(d.luBox()->itemText(0).startsWith(QLatin1String("Automatic")));
             QCOMPARE(d.limitBox()->value(), 0);
@@ -4505,8 +4508,17 @@ private slots:
             QCOMPARE(d.memoryBox()->value(), 0.0);
             QCOMPARE(d.memoryBox()->text(), QStringLiteral("Automatic"));
             const QString lu = d.luStatusLabel()->text();
-            QVERIFY2(rf::accelerateLuHere() ? lu == accelerated : lu.startsWith(QLatin1String("Eigen's LU factorizes the dense systems")),
+            const QString byOpenBlas = QStringLiteral("OpenBLAS's LAPACK factorizes the dense systems (%1).").arg(rf::openBlasLuAbout());
+            QVERIFY2(rf::accelerateLuHere()  ? lu == accelerated
+                     : rf::openBlasLuHere() ? lu == byOpenBlas
+                                            : lu.startsWith(QLatin1String("Eigen's LU factorizes the dense systems")),
                      qPrintable(lu));
+            // OpenBLAS's chosen: said, where the build has it.
+            d.luBox()->setCurrentIndex(3);
+            QVERIFY2(rf::openBlasLuHere() ? d.luStatusLabel()->text() == byOpenBlas
+                                          : d.luStatusLabel()->text().startsWith(QLatin1String("Eigen's LU factorizes the dense "
+                                                                                               "systems: this build has no OpenBLAS")),
+                     qPrintable(d.luStatusLabel()->text()));
             const QString size = d.sizeStatusLabel()->text();
             qInfo("%s", qPrintable(size));
             QVERIFY2(size.startsWith(QStringLiteral("Automatic: held dense up to %1 runs and cells.").arg(rf::automaticDenseLimit())),
@@ -4560,6 +4572,17 @@ private slots:
             QCOMPARE(d.limitBox()->value(), 1500);
             QCOMPARE(d.memoryBox()->value(), 2.5);
         }
+        // OpenBLAS's kept as "openblas" and given, built with it or not (an
+        // LU asked of a library not here is Eigen's).
+        {
+            rf::RF25SettingsDialog d(app);
+            d.luBox()->setCurrentIndex(3);
+            d.apply();
+        }
+        QCOMPARE(QucsSettingsFile().value(QStringLiteral("RF25/lu")).toString(), QStringLiteral("openblas"));
+        QCOMPARE(rf::RF25SettingsDialog::luWanted(), 3);
+        QVERIFY(rf::denseLu() == rf::DenseLu::OpenBlas);
+        QVERIFY(rf::denseLuInEffect() == (rf::openBlasLuHere() ? rf::DenseLu::OpenBlas : rf::DenseLu::Eigen));
         // The environment's over the choice, said.
         qputenv("QUCS_RF25_LU", "accelerate");
         {
