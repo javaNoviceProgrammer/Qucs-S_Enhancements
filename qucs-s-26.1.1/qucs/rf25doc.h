@@ -119,6 +119,8 @@ public:
     void becomeCurrent(bool) override;
     double zoomBy(double factor) override;
     void showAll() override;
+    /// The whole layout in sight - a model of its own shapes alone, they.
+    void fitView();
     void zoomToSelection() override;
     void showNoZoom() override;
     /// Reads its file again (changed outside Qucs-S): the steps of Undo go.
@@ -532,6 +534,17 @@ public:
      * must be saved, where it names none), then read again.
      */
     bool drawShapes(const QJsonArray& edits, QStringList* done = nullptr, QString* error = nullptr);
+    /// What the Draw tools draw: shapes of the model's own (Layout > Shapes,
+    /// rf_shape - each number a length to be written as an expression of
+    /// the parameters) rather than shapes of the layout file; drawShapes()
+    /// draws them where each edit says "parametric": true. Kept for the next
+    /// model opened.
+    bool drawsParametric() const { return a_drawParametric; }
+    void setDrawsParametric(bool own);
+    /// The model's own shapes as its parameters make them (Shapes): drawn
+    /// over the layout in their layers' colours, a click on one choosing
+    /// its node.
+    const QList<qucs_s::rf25::OwnShape>& ownShapes() const { return a_ownShapes; }
     /// The shape selected in the view deleted from the layout file (one of
     /// the cell solved's own, on a layer the map sends to the stack).
     bool deleteSelectedShape(QString* why = nullptr);
@@ -656,6 +669,13 @@ private:
     DrawTool a_lastTool = DrawTool::Rectangle;   ///< the button's click takes it up again
     QString a_drawLayer;                         ///< chosen in the menu; empty: drawLayer()'s own choice
     double a_viaSize = 1;
+    bool a_drawParametric = false;               ///< setDrawsParametric()
+    QList<qucs_s::rf25::OwnShape> a_ownShapes;   ///< ownShapes(), as shown
+    QPointF a_pressedAt;                         ///< where the button went down in Select: a click there chooses an own shape
+    /// \a edits as the tools draw them: each add "parametric" where the
+    /// Draw menu keeps them so.
+    QJsonArray toolEdits(QJsonArray edits) const;
+    bool drawOwnShapes(const QJsonArray& edits, QStringList* done, QString* error);
     QPolygonF a_polygon;                         ///< the polygon being drawn
     QPointF a_drawPointer;                       ///< where the pointer is, snapped
     bool a_drawPointerIn = false;
