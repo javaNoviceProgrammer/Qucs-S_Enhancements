@@ -230,33 +230,17 @@ const Node* optimizationNode(const Model& model, const QString& tag)
     return nullptr;
 }
 
-std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node& node, const ParameterScope& ps, QString* error)
+bool readOptimizationSettings(const Node& node, const ParameterScope& ps, OptimizationPlan* out, QString* error)
 {
     QString local;
     QString& why = error ? *error : local;
     auto refuse = [&why](const QString& text) {
         why = text;
-        return std::nullopt;
+        return false;
     };
-    OptimizationPlan plan;
-    plan.tag = node.tag;
-    plan.name = node.name();
-    if (model.is3D()) return refuse(tr("%1: a 3D model's optimization is not built yet: a 2D model's is").arg(plan.name));
-    if (!ps.errors.isEmpty()) {
-        QStringList list;
-        for (auto it = ps.errors.cbegin(); it != ps.errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
-        return refuse(tr("%1: the parameters: %2").arg(plan.name, list.join(QLatin1String("; "))));
-    }
-    // The study.
-    const std::vector<const Node*> studies = model.studies();
-    const QString studyTag = node.text(QStringLiteral("study")).trimmed();
-    const Node* study = nullptr;
-    for (const Node* s : studies)
-        if (studyTag.isEmpty() ? !study : s->tag == studyTag) study = s;
-    if (!study) return refuse(studyTag.isEmpty() ? tr("%1: the model has no study to solve").arg(plan.name) : tr("%1: there is no study %2").arg(plan.name, studyTag));
-    plan.study = study->tag;
-    plan.stages << plan.study;
-
+    OptimizationPlan& plan = *out;
+    if (plan.tag.isEmpty()) plan.tag = node.tag;
+    if (plan.name.isEmpty()) plan.name = node.name();
     // Its settings.
     const QString mode = node.text(QStringLiteral("mode")).trimmed();
     if (!mode.isEmpty() && mode != QLatin1String("optimize") && mode != QLatin1String("center"))
@@ -270,10 +254,10 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         return refuse(tr("%1: its method is \"%2\" - one of %3").arg(plan.name, method, ids.join(QStringLiteral(", "))));
     }
     plan.search.method = method;
-    if (!settingInteger(node, QStringLiteral("maxiter"), 1, kMostIterations, &plan.search.maxIter, &why)) return std::nullopt;
-    if (!settingNumber(node, QStringLiteral("tol"), ps, &plan.search.tol, &why)) return std::nullopt;
+    if (!settingInteger(node, QStringLiteral("maxiter"), 1, kMostIterations, &plan.search.maxIter, &why)) return false;
+    if (!settingNumber(node, QStringLiteral("tol"), ps, &plan.search.tol, &why)) return false;
     if (!(plan.search.tol > 0)) return refuse(tr("%1: its tolerance must be above 0").arg(plan.name));
-    if (!settingInteger(node, QStringLiteral("population"), 0, kMostPopulation, &plan.search.population, &why)) return std::nullopt;
+    if (!settingInteger(node, QStringLiteral("population"), 0, kMostPopulation, &plan.search.population, &why)) return false;
     {
         const QJsonValue v = node.value(QStringLiteral("seed"));
         const double s = v.isDouble() ? v.toDouble() : v.isString() ? v.toString().trimmed().toDouble() : 1;
@@ -281,10 +265,10 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         plan.search.seed = static_cast<unsigned long long>(s);
     }
     plan.search.polish = node.flag(QStringLiteral("polish"));
-    if (!settingInteger(node, QStringLiteral("starts"), 0, 1000, &plan.search.starts, &why)) return std::nullopt;
-    if (!settingNumber(node, QStringLiteral("ctol"), ps, &plan.search.ctol, &why)) return std::nullopt;
+    if (!settingInteger(node, QStringLiteral("starts"), 0, 1000, &plan.search.starts, &why)) return false;
+    if (!settingNumber(node, QStringLiteral("ctol"), ps, &plan.search.ctol, &why)) return false;
     if (!(plan.search.ctol > 0)) return refuse(tr("%1: how near a limit counts as met must be above 0").arg(plan.name));
-    if (!settingNumber(node, QStringLiteral("fdstep"), ps, &plan.search.fdStep, &why)) return std::nullopt;
+    if (!settingNumber(node, QStringLiteral("fdstep"), ps, &plan.search.fdStep, &why)) return false;
     if (!(plan.search.fdStep > 0 && plan.search.fdStep < 0.5)) return refuse(tr("%1: its finite difference must be above 0 and below 0.5 of a range").arg(plan.name));
     const QString strategy = node.text(QStringLiteral("strategy")).trimmed();
     {
@@ -294,24 +278,36 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         if (!strategy.isEmpty() && found == 0) return refuse(tr("%1: its variant \"%2\" is not one of differential evolution's").arg(plan.name, strategy));
         if (found > 0) plan.search.strategy = found;
     }
-    if (!settingNumber(node, QStringLiteral("F"), ps, &plan.search.F, &why)) return std::nullopt;
+    if (!settingNumber(node, QStringLiteral("F"), ps, &plan.search.F, &why)) return false;
     if (!(plan.search.F > 0 && plan.search.F <= 2)) return refuse(tr("%1: differential evolution's F must be above 0 and at most 2").arg(plan.name));
-    if (!settingNumber(node, QStringLiteral("CR"), ps, &plan.search.CR, &why)) return std::nullopt;
+    if (!settingNumber(node, QStringLiteral("CR"), ps, &plan.search.CR, &why)) return false;
     if (plan.search.CR < 0 || plan.search.CR > 1) return refuse(tr("%1: differential evolution's crossover must be from 0 to 1 (0: automatic)").arg(plan.name));
-    if (!settingNumber(node, QStringLiteral("mincostvariance"), ps, &plan.search.minCostVariance, &why)) return std::nullopt;
+    if (!settingNumber(node, QStringLiteral("mincostvariance"), ps, &plan.search.minCostVariance, &why)) return false;
     if (plan.search.minCostVariance < 0) return refuse(tr("%1: differential evolution's cost variance must not be below 0").arg(plan.name));
     const QString limits = node.text(QStringLiteral("constraints")).trimmed();
     if (!limits.isEmpty() && limits != QLatin1String("lagrangian") && limits != QLatin1String("penalty"))
         return refuse(tr("%1: its limits are held by \"%2\" - lagrangian or penalty").arg(plan.name, limits));
     plan.penalty = limits == QLatin1String("penalty");
-    if (!settingNumber(node, QStringLiteral("objectiveweight"), ps, &plan.objectiveWeight, &why)) return std::nullopt;
-    if (!settingNumber(node, QStringLiteral("constraintweight"), ps, &plan.constraintWeight, &why)) return std::nullopt;
+    if (!settingNumber(node, QStringLiteral("objectiveweight"), ps, &plan.objectiveWeight, &why)) return false;
+    if (!settingNumber(node, QStringLiteral("constraintweight"), ps, &plan.constraintWeight, &why)) return false;
     if (!(plan.objectiveWeight > 0) || !(plan.constraintWeight > 0)) return refuse(tr("%1: its weights must be above 0").arg(plan.name));
-    if (!settingInteger(node, QStringLiteral("parallel"), 1, 64, &plan.parallel, &why)) return std::nullopt;
-    if (!settingInteger(node, QStringLiteral("refresh"), 0, kMostIterations, &plan.refresh, &why)) return std::nullopt;
-    if (!settingInteger(node, QStringLiteral("samples"), 2, kMostSamples, &plan.samples, &why)) return std::nullopt;
+    if (!settingInteger(node, QStringLiteral("parallel"), 1, 64, &plan.parallel, &why)) return false;
+    if (!settingInteger(node, QStringLiteral("refresh"), 0, kMostIterations, &plan.refresh, &why)) return false;
+    if (!settingInteger(node, QStringLiteral("samples"), 2, kMostSamples, &plan.samples, &why)) return false;
     plan.lhs = node.flag(QStringLiteral("lhs"));
 
+    return true;
+}
+
+bool readOptimizationVariables(const Node& node, const ParameterScope& ps, const QStringList& known, OptimizationPlan* out, QString* error)
+{
+    QString local;
+    QString& why = error ? *error : local;
+    auto refuse = [&why](const QString& text) {
+        why = text;
+        return false;
+    };
+    OptimizationPlan& plan = *out;
     // The parameters it varies.
     QSet<QString> seen;
     const QJsonValue variablesValue = node.value(QStringLiteral("variables"));
@@ -323,8 +319,6 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         const QString name = cellText(r.at(0));
         if (name.isEmpty()) continue;
         if (!ps.values.contains(name)) {
-            QStringList known;
-            for (const Model::Parameter& p : model.parameters()) known << p.name.trimmed();
             return refuse(tr("%1: there is no parameter %2 - the model has: %3").arg(plan.name, name, known.isEmpty() ? tr("none") : known.join(QStringLiteral(", "))));
         }
         if (seen.contains(name)) return refuse(tr("%1: the parameter %2 is varied twice").arg(plan.name, name));
@@ -335,9 +329,9 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         const QString minText = cellText(r.at(2)), maxText = cellText(r.at(3)), startText = cellText(r.at(1));
         if (minText.isEmpty() || maxText.isEmpty()) return refuse(tr("%1: %2 needs a minimum and a maximum").arg(plan.name, name));
         const std::optional<double> lo = rangeValue(minText, ps.scope, dim, tr("%1: %2's minimum").arg(plan.name, name), &why);
-        if (!lo) return std::nullopt;
+        if (!lo) return false;
         const std::optional<double> hi = rangeValue(maxText, ps.scope, dim, tr("%1: %2's maximum").arg(plan.name, name), &why);
-        if (!hi) return std::nullopt;
+        if (!hi) return false;
         if (!(*hi > *lo)) return refuse(tr("%1: %2: the maximum must be above the minimum").arg(plan.name, name));
         if (!std::isfinite(*hi - *lo)) return refuse(tr("%1: %2: its range is too wide to search").arg(plan.name, name));
         v.min = *lo;
@@ -345,7 +339,7 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         v.initial = ps.values.value(name);
         if (!startText.isEmpty()) {
             const std::optional<double> start = rangeValue(startText, ps.scope, dim, tr("%1: %2's start").arg(plan.name, name), &why);
-            if (!start) return std::nullopt;
+            if (!start) return false;
             v.initial = *start;
         }
         if (v.initial < v.min || v.initial > v.max) {
@@ -370,84 +364,92 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
     if (plan.active().empty()) return refuse(tr("%1 varies no parameter: name one, with its minimum and maximum").arg(plan.name));
     if (int(plan.variables.size()) > kMostVariables) return refuse(tr("%1: more than %2 parameters").arg(plan.name).arg(kMostVariables));
 
-    // What it asks of the results.
-    int goals = 0, targets = 0, minmax = 0, constraints = 0;
-    const QJsonValue objectivesValue = node.value(QStringLiteral("objectives"));
-    if (!objectivesValue.isArray()) return refuse(tr("%1: its objectives are not a table").arg(plan.name));
-    for (const QJsonValue& row : objectivesValue.toArray()) {
-        if (!row.isArray()) return refuse(tr("%1: a row of its objectives is not a list").arg(plan.name));
-        const QJsonArray r = row.toArray();
-        OptimizationObjective o;
-        o.expression = cellText(r.at(0));
-        if (o.expression.isEmpty()) continue;
-        const QString kind = cellText(r.at(1)).toUpper();
-        if (kind == QLatin1String("MIN") || kind.isEmpty()) o.kind = OptimizationObjective::Minimize;
-        else if (kind == QLatin1String("MAX")) o.kind = OptimizationObjective::Maximize;
-        else if (kind == QLatin1String("TARGET")) o.kind = OptimizationObjective::Target;
-        else if (kind == QLatin1String("LE")) o.kind = OptimizationObjective::LessEqual;
-        else if (kind == QLatin1String("GE")) o.kind = OptimizationObjective::GreaterEqual;
-        else if (kind == QLatin1String("EQ")) o.kind = OptimizationObjective::Equal;
-        else if (kind == QLatin1String("MON")) o.kind = OptimizationObjective::Monitor;
-        else return refuse(tr("%1: %2's kind \"%3\" is not one of MIN, MAX, TARGET, LE, GE, EQ, MON").arg(plan.name, o.expression, kind));
-        o.valueText = cellText(r.at(2));
-        if (o.kind == OptimizationObjective::Target || o.isLimit()) {
-            if (o.valueText.isEmpty()) return refuse(tr("%1: %2 %3 needs a value").arg(plan.name, o.expression, kind));
-            const Expression e = Expression::compile(o.valueText, ps.scope);
-            if (!e.isValid()) return refuse(tr("%1: %2's value: %3").arg(plan.name, o.expression, e.error()));
-            if (!e.isConstant() || !std::isfinite(e.constant())) return refuse(tr("%1: %2's value \"%3\" is not a constant").arg(plan.name, o.expression, o.valueText));
-        }
-        const QString weight = cellText(r.at(3));
-        if (!weight.isEmpty()) {
-            QString bad;
-            const std::optional<double> w = evaluateConstant(weight, ps.scope, Dim(), &bad);
-            if (!w || !std::isfinite(*w) || !(*w > 0)) return refuse(tr("%1: %2's weight \"%3\" must be a number above 0").arg(plan.name, o.expression, weight));
-            o.weight = *w;
-        }
-        const QString over = cellText(r.at(4)).toLower();
-        if (!over.isEmpty() && over != QLatin1String("worst") && over != QLatin1String("last"))
-            return refuse(tr("%1: %2's \"over\" is \"%3\" - worst or last").arg(plan.name, o.expression, over));
-        o.last = over == QLatin1String("last");
-        o.study = cellText(r.at(5));
-        const QString mode = cellText(r.at(6)).toLower();
-        if (mode == QLatin1String("all")) {
-            o.mode = -1;
-        } else if (!mode.isEmpty()) {
-            bool ok = false;
-            const int n = mode.toInt(&ok);
-            if (!ok || n < 1) return refuse(tr("%1: %2's mode \"%3\" is a mode's number from 1, or all").arg(plan.name, o.expression, mode));
-            o.mode = n;
-        }
-        if (!o.study.isEmpty()) {
-            bool known = false;
-            for (const Node* s : studies) known = known || s->tag == o.study;
-            if (!known) return refuse(tr("%1: %2 is read from study %3, which the model has not").arg(plan.name, o.expression, o.study));
-            if (!plan.stages.contains(o.study)) plan.stages << o.study;
-        }
+    return true;
+}
+
+bool readOptimizationObjective(const QJsonArray& r, const ParameterScope& ps, const QString& planName, OptimizationObjective* out, QString* error)
+{
+    QString local;
+    QString& why = error ? *error : local;
+    auto refuse = [&why](const QString& text) {
+        why = text;
+        return false;
+    };
+    OptimizationObjective& o = *out;
+    const QString& name = planName;
+    o.expression = cellText(r.at(0));
+    if (o.expression.isEmpty()) {
+        why.clear();
+        return false;
+    }
+    const QString kind = cellText(r.at(1)).toUpper();
+    if (kind == QLatin1String("MIN") || kind.isEmpty()) o.kind = OptimizationObjective::Minimize;
+    else if (kind == QLatin1String("MAX")) o.kind = OptimizationObjective::Maximize;
+    else if (kind == QLatin1String("TARGET")) o.kind = OptimizationObjective::Target;
+    else if (kind == QLatin1String("LE")) o.kind = OptimizationObjective::LessEqual;
+    else if (kind == QLatin1String("GE")) o.kind = OptimizationObjective::GreaterEqual;
+    else if (kind == QLatin1String("EQ")) o.kind = OptimizationObjective::Equal;
+    else if (kind == QLatin1String("MON")) o.kind = OptimizationObjective::Monitor;
+    else return refuse(tr("%1: %2's kind \"%3\" is not one of MIN, MAX, TARGET, LE, GE, EQ, MON").arg(name, o.expression, kind));
+    o.valueText = cellText(r.at(2));
+    if (o.kind == OptimizationObjective::Target || o.isLimit()) {
+        if (o.valueText.isEmpty()) return refuse(tr("%1: %2 %3 needs a value").arg(name, o.expression, kind));
+        const Expression e = Expression::compile(o.valueText, ps.scope);
+        if (!e.isValid()) return refuse(tr("%1: %2's value: %3").arg(name, o.expression, e.error()));
+        if (!e.isConstant() || !std::isfinite(e.constant())) return refuse(tr("%1: %2's value \"%3\" is not a constant").arg(name, o.expression, o.valueText));
+    }
+    const QString weight = cellText(r.at(3));
+    if (!weight.isEmpty()) {
+        QString bad;
+        const std::optional<double> w = evaluateConstant(weight, ps.scope, Dim(), &bad);
+        if (!w || !std::isfinite(*w) || !(*w > 0)) return refuse(tr("%1: %2's weight \"%3\" must be a number above 0").arg(name, o.expression, weight));
+        o.weight = *w;
+    }
+    return true;
+}
+
+bool checkOptimizationObjectives(OptimizationPlan* out, QString* error)
+{
+    QString local;
+    QString& why = error ? *error : local;
+    auto refuse = [&why](const QString& text) {
+        why = text;
+        return false;
+    };
+    const OptimizationPlan& plan = *out;
+    int goals = 0, targets = 0, constraints = 0;
+    for (const OptimizationObjective& o : plan.objectives) {
         goals += o.isGoal() ? 1 : 0;
         targets += o.kind == OptimizationObjective::Target ? 1 : 0;
-        minmax += o.kind == OptimizationObjective::Minimize || o.kind == OptimizationObjective::Maximize ? 1 : 0;
         constraints += o.isLimit() ? 1 : 0;
-        plan.objectives.push_back(o);
     }
     if (goals + constraints == 0) return refuse(tr("%1 has nothing to reach (only values to monitor, or none): give an objective, a target or a limit").arg(plan.name));
     if (targets > kMostTargets) return refuse(tr("%1: more than %2 targets").arg(plan.name).arg(kMostTargets));
     if (constraints > kMostLimits) return refuse(tr("%1: more than %2 limits").arg(plan.name).arg(kMostLimits));
-    if (plan.stages.size() > kMostStages) return refuse(tr("%1: more than %2 studies").arg(plan.name).arg(kMostStages));
+    return true;
+}
 
-    // A parameter its study sweeps as well: the sweep's values are what is solved.
-    for (const QString& tag : std::as_const(plan.stages)) {
-        const Node* solved = model.find(tag);
-        if (!solved) continue;
-        for (const Node& step : solved->children) {
-            if (step.type != QLatin1String("sweep") || !step.enabled) continue;
-            for (const QJsonValue& row : step.value(QStringLiteral("parameters")).toArray())
-                if (seen.contains(cellText(row.toArray().at(0))))
-                    plan.warnings << tr("%1 is swept by %2 and varied here: the sweep's values are what is solved, so its value here changes nothing").arg(cellText(row.toArray().at(0)), solved->name());
-        }
+bool checkOptimizationPlan(const Node& node, const ParameterScope& ps,
+                           const std::function<std::shared_ptr<ParameterScope>(const QHash<QString, QString>&)>& evaluate, OptimizationPlan* out,
+                           QString* error)
+{
+    QString local;
+    QString& why = error ? *error : local;
+    auto refuse = [&why](const QString& text) {
+        why = text;
+        return false;
+    };
+    OptimizationPlan& plan = *out;
+    int goals = 0, targets = 0, minmax = 0, constraints = 0;
+    for (const OptimizationObjective& o : plan.objectives) {
+        goals += o.isGoal() ? 1 : 0;
+        targets += o.kind == OptimizationObjective::Target ? 1 : 0;
+        minmax += o.kind == OptimizationObjective::Minimize || o.kind == OptimizationObjective::Maximize ? 1 : 0;
+        constraints += o.isLimit() ? 1 : 0;
     }
-
     // What a method can take.
     const int active = int(plan.active().size());
+    const QString& method = plan.search.method;
     const bool lm = method == QLatin1String("lm") || (method.isEmpty() && !plan.center && targets > 0 && minmax == 0);
     if (plan.center) {
         if (method == QLatin1String("nsga2") || method == QLatin1String("tune") || method == QLatin1String("lm"))
@@ -483,7 +485,7 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
             } else {
                 const std::optional<double> s = rangeValue(text, ps.scope, ps.dims.value(name), tr("%1: %2's spread").arg(plan.name, name), &why);
                 if (!s && why.contains(QLatin1String("give it a unit"))) why += tr(" - or a share of its value: 5 %");
-                if (!s) return std::nullopt;
+                if (!s) return false;
                 if (!(*s > 0)) return refuse(tr("%1: %2's spread must be above 0").arg(plan.name, name));
                 var.spread = *s;
             }
@@ -527,7 +529,7 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
                 valued.push_back(i);
         const auto valueIn = [](const ParameterScope& scope, const QString& text) -> std::optional<double> {
             const Expression e = Expression::compile(text, scope.scope);
-            if (!e.isConstant()) return std::nullopt;
+            if (!e.isConstant()) return false;
             return e.constant();
         };
         for (std::size_t j = 0; j < plan.variables.size() && !valued.empty(); ++j) {
@@ -535,7 +537,7 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
             if (!v.active) continue;
             const double now = ps.values.value(v.name);
             const double other = now != v.max ? v.max : v.min;
-            const std::shared_ptr<ParameterScope> moved = evaluateParameters(model, {{v.name, valueText(other, plan.dims[j])}});
+            const std::shared_ptr<ParameterScope> moved = evaluate({{v.name, valueText(other, plan.dims[j])}});
             if (!moved) continue;
             for (std::size_t i : valued) {
                 const OptimizationObjective& o = plan.objectives[i];
@@ -548,6 +550,97 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
             }
         }
     }
+    return true;
+}
+
+std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node& node, const ParameterScope& ps, QString* error)
+{
+    QString local;
+    QString& why = error ? *error : local;
+    auto refuse = [&why](const QString& text) {
+        why = text;
+        return std::nullopt;
+    };
+    OptimizationPlan plan;
+    plan.tag = node.tag;
+    plan.name = node.name();
+    if (model.is3D()) return refuse(tr("%1: a 3D model's optimization is not built yet: a 2D model's is").arg(plan.name));
+    if (!ps.errors.isEmpty()) {
+        QStringList list;
+        for (auto it = ps.errors.cbegin(); it != ps.errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
+        return refuse(tr("%1: the parameters: %2").arg(plan.name, list.join(QLatin1String("; "))));
+    }
+    // The study.
+    const std::vector<const Node*> studies = model.studies();
+    const QString studyTag = node.text(QStringLiteral("study")).trimmed();
+    const Node* study = nullptr;
+    for (const Node* s : studies)
+        if (studyTag.isEmpty() ? !study : s->tag == studyTag) study = s;
+    if (!study) return refuse(studyTag.isEmpty() ? tr("%1: the model has no study to solve").arg(plan.name) : tr("%1: there is no study %2").arg(plan.name, studyTag));
+    plan.study = study->tag;
+    plan.stages << plan.study;
+
+    // Its settings.
+    if (!readOptimizationSettings(node, ps, &plan, &why)) return std::nullopt;
+
+    // The parameters it varies.
+    QStringList known;
+    for (const Model::Parameter& p : model.parameters()) known << p.name.trimmed();
+    if (!readOptimizationVariables(node, ps, known, &plan, &why)) return std::nullopt;
+    QSet<QString> seen;
+    for (const SearchVariable& v : plan.variables) seen.insert(v.name);
+
+    // What it asks of the results.
+    const QJsonValue objectivesValue = node.value(QStringLiteral("objectives"));
+    if (!objectivesValue.isArray()) return refuse(tr("%1: its objectives are not a table").arg(plan.name));
+    for (const QJsonValue& row : objectivesValue.toArray()) {
+        if (!row.isArray()) return refuse(tr("%1: a row of its objectives is not a list").arg(plan.name));
+        const QJsonArray r = row.toArray();
+        OptimizationObjective o;
+        if (!readOptimizationObjective(r, ps, plan.name, &o, &why)) {
+            if (!why.isEmpty()) return std::nullopt;
+            continue;
+        }
+        const QString over = cellText(r.at(4)).toLower();
+        if (!over.isEmpty() && over != QLatin1String("worst") && over != QLatin1String("last"))
+            return refuse(tr("%1: %2's \"over\" is \"%3\" - worst or last").arg(plan.name, o.expression, over));
+        o.last = over == QLatin1String("last");
+        o.study = cellText(r.at(5));
+        const QString mode = cellText(r.at(6)).toLower();
+        if (mode == QLatin1String("all")) {
+            o.mode = -1;
+        } else if (!mode.isEmpty()) {
+            bool ok = false;
+            const int n = mode.toInt(&ok);
+            if (!ok || n < 1) return refuse(tr("%1: %2's mode \"%3\" is a mode's number from 1, or all").arg(plan.name, o.expression, mode));
+            o.mode = n;
+        }
+        if (!o.study.isEmpty()) {
+            bool there = false;
+            for (const Node* s : studies) there = there || s->tag == o.study;
+            if (!there) return refuse(tr("%1: %2 is read from study %3, which the model has not").arg(plan.name, o.expression, o.study));
+            if (!plan.stages.contains(o.study)) plan.stages << o.study;
+        }
+        plan.objectives.push_back(o);
+    }
+    if (!checkOptimizationObjectives(&plan, &why)) return std::nullopt;
+    if (plan.stages.size() > kMostStages) return refuse(tr("%1: more than %2 studies").arg(plan.name).arg(kMostStages));
+
+    // A parameter its study sweeps as well: the sweep's values are what is solved.
+    for (const QString& tag : std::as_const(plan.stages)) {
+        const Node* solved = model.find(tag);
+        if (!solved) continue;
+        for (const Node& step : solved->children) {
+            if (step.type != QLatin1String("sweep") || !step.enabled) continue;
+            for (const QJsonValue& row : step.value(QStringLiteral("parameters")).toArray())
+                if (seen.contains(cellText(row.toArray().at(0))))
+                    plan.warnings << tr("%1 is swept by %2 and varied here: the sweep's values are what is solved, so its value here changes nothing").arg(cellText(row.toArray().at(0)), solved->name());
+        }
+    }
+
+    // What a method can take.
+    const auto evaluate = [&model](const QHash<QString, QString>& overrides) { return evaluateParameters(model, overrides); };
+    if (!checkOptimizationPlan(node, ps, evaluate, &plan, &why)) return std::nullopt;
     return plan;
 }
 
@@ -772,9 +865,14 @@ QString optimizationSetup(const Model& model, const Node& node)
 
 QString parameterText(const Model& model, const ParameterScope& parameters, const QString& name, double value)
 {
+    return parameterText(model.parameters(), parameters, name, value);
+}
+
+QString parameterText(const QList<Model::Parameter>& rows, const ParameterScope& parameters, const QString& name, double value)
+{
     static const QRegularExpression withUnit(QStringLiteral("^\\s*[-+]?[0-9.]+(?:[eE][-+]?[0-9]+)?\\s*\\[(.+)\\]\\s*$"));
     const Dim dim = parameters.dims.value(name);
-    for (const Model::Parameter& p : model.parameters()) {
+    for (const Model::Parameter& p : rows) {
         if (p.name.trimmed() != name) continue;
         const QRegularExpressionMatch m = withUnit.match(p.expression);
         if (!m.hasMatch()) break;
@@ -790,13 +888,31 @@ QString parameterText(const Model& model, const ParameterScope& parameters, cons
 
 QJsonArray optimizationVariableRow(const Model& model, const ParameterScope& parameters, const QString& name)
 {
+    return optimizationVariableRow(model.parameters(), parameters, name);
+}
+
+QJsonArray optimizationVariableRow(const QList<Model::Parameter>& rows, const ParameterScope& parameters, const QString& name)
+{
     const double value = parameters.values.value(name);
     const double low = value > 0 ? value / 2 : value < 0 ? value * 2 : -1, high = value > 0 ? value * 2 : value < 0 ? value / 2 : 1;
-    return QJsonArray{name, QString(), parameterText(model, parameters, name, low), parameterText(model, parameters, name, high), QStringLiteral("LIN_DOUBLE"), QStringLiteral("yes")};
+    return QJsonArray{name, QString(), parameterText(rows, parameters, name, low), parameterText(rows, parameters, name, high), QStringLiteral("LIN_DOUBLE"), QStringLiteral("yes")};
 }
 
 bool applyOptimum(Model& model, const Node& node, int point, QStringList* written, QString* error)
 {
+    QList<Model::Parameter> parameters = model.parameters();
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
+    QString ignored;
+    const std::optional<OptimizationPlan> plan = optimizationPlan(model, node, *ps, &ignored);
+    if (!applyOptimum(parameters, *ps, node, plan ? &*plan : nullptr, point, written, error)) return false;
+    model.setParameters(parameters);
+    return true;
+}
+
+bool applyOptimum(QList<Model::Parameter>& parameters, const ParameterScope& parameterScope, const Node& node, const OptimizationPlan* plan, int point,
+                  QStringList* written, QString* error)
+{
+    const ParameterScope* ps = &parameterScope;
     QString local;
     QString& why = error ? *error : local;
     const QJsonValue kept = node.value(QStringLiteral("result"));
@@ -831,16 +947,13 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
         why = QCoreApplication::translate("MultiphysicsOptimization", "It found no best point.");
         return false;
     }
-    QList<Model::Parameter> parameters = model.parameters();
-    const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
     // The parameters it held at a start of their own, as the run had them: else
     // the optimum written in is not the one it found.
     QSet<QString> held;
     {
         QSet<QString> named;
         for (const auto& v : std::as_const(values)) named.insert(v.first);
-        QString ignored;
-        if (const std::optional<OptimizationPlan> plan = optimizationPlan(model, node, *ps, &ignored))
+        if (plan != nullptr)
             for (const QJsonValue& row : node.value(QStringLiteral("variables")).toArray()) {
                 const QJsonArray cells = row.toArray();
                 const QString name = cellText(cells.at(0));
@@ -857,7 +970,7 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
     for (const auto& [name, value] : std::as_const(values)) {
         if (!std::isfinite(value)) continue;
         bool found = false;
-        const QString text = parameterText(model, *ps, name, value);
+        const QString text = parameterText(parameters, *ps, name, value);
         for (Model::Parameter& p : parameters) {
             if (p.name.trimmed() != name) continue;
             found = true;
@@ -876,7 +989,6 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
         why = QCoreApplication::translate("MultiphysicsOptimization", "The model has none of its parameters (%1).").arg(notThere.join(QStringLiteral(", ")));
         return false;
     }
-    model.setParameters(parameters);
     if (written) *written = said;
     if (!notThere.isEmpty()) why = QCoreApplication::translate("MultiphysicsOptimization", "The model no longer has: %1").arg(notThere.join(QStringLiteral(", ")));
     return true;
@@ -887,15 +999,7 @@ bool applyOptimum(Model& model, const Node& node, int point, QStringList* writte
 namespace {
 
 /// What a candidate's solve measured.
-struct Measured {
-    bool solved = false;
-    bool stopped = false;     ///< stopped before it had an answer: nothing is known of it
-    bool fatal = false;       ///< solved, but what is asked cannot be read: no candidate's could be
-    QString why;
-    std::vector<double> y;    ///< by objective
-    std::vector<Dim> dims;
-    double yield = kNaN, cpk = kNaN;
-};
+using Measured = OptimizationMeasured;
 
 /// An expression of \a solution as it stands (its snapshot selected): its
 /// globals and parameters, and the values of its Derived Values nodes it names
@@ -935,19 +1039,47 @@ bool solutionValue(Solution& solution, const QString& text, double* value, Dim* 
 
 namespace {
 
-class Runner : public optimization::SearchEvaluator
+/// A multiphysics model's candidate solved: its own geometry and mesh where
+/// what it changes shapes them, else the model's, made once and shared.
+class FemSolver
 {
 public:
-    Runner(const Model& model, const OptimizationPlan& plan, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
-           std::shared_ptr<const Mesh> mesh, const Progress& progress, const OptimizationListener& listener)
-        : a_model(model), a_plan(plan), a_params(std::move(parameters)), a_topology(std::move(topology)), a_baseMesh(std::move(mesh)),
-          a_progress(progress), a_listener(listener), a_active(plan.active())
+    FemSolver(const Model& model, const OptimizationPlan& plan, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
+              std::shared_ptr<const Mesh> mesh)
+        : a_model(model), a_plan(plan), a_params(std::move(parameters)), a_topology(std::move(topology)), a_baseMesh(std::move(mesh))
     {
         const QJsonObject whole = model.toObject();
         const QJsonObject component = whole.value(QStringLiteral("components")).toArray().first().toObject();
         a_shaping.shaping.insert(QStringLiteral("geometry"), component.value(QStringLiteral("geometry")));
         a_shaping.shaping.insert(QStringLiteral("mesh"), component.value(QStringLiteral("mesh")));
         a_shaping.shaping.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
+    }
+
+    Measured solve(const OptimizationCandidate& candidate);
+    /// A candidate had a mesh of its own.
+    bool remeshed() const { return a_remeshed.load(); }
+
+private:
+    const Model& a_model;
+    const OptimizationPlan& a_plan;
+    std::shared_ptr<ParameterScope> a_params;
+    std::shared_ptr<const Topology> a_topology;
+    std::shared_ptr<const Mesh> a_baseMesh;
+    SweepPlan a_shaping;
+    std::atomic<bool> a_remeshed{false};
+    std::mutex a_mutex;   // the base mesh, made once for the solves at once
+    bool a_baseTried = false;
+    QString a_baseError;
+};
+
+class Runner : public optimization::SearchEvaluator
+{
+public:
+    Runner(const OptimizationPlan& plan, std::shared_ptr<ParameterScope> parameters, const OptimizationSolver& solve, const Progress& progress,
+           const OptimizationListener& listener, const std::function<QStringList()>& lastNotes)
+        : a_plan(plan), a_params(std::move(parameters)), a_solve(solve), a_lastNotes(lastNotes), a_progress(progress), a_listener(listener),
+          a_active(plan.active())
+    {
         for (int i : a_active) a_columns << a_plan.variables[std::size_t(i)].name;
         for (const OptimizationObjective& o : a_plan.objectives) a_columns << o.expression;
         a_scale.assign(a_plan.objectives.size(), 1.0);
@@ -975,16 +1107,13 @@ private:
     void makeDraws();
     bool told(double f, const QString& what);
 
-    const Model& a_model;
     const OptimizationPlan& a_plan;
     std::shared_ptr<ParameterScope> a_params;
-    std::shared_ptr<const Topology> a_topology;
-    std::shared_ptr<const Mesh> a_baseMesh;
+    const OptimizationSolver& a_solve;
+    const std::function<QStringList()>& a_lastNotes;
     const Progress& a_progress;
     const OptimizationListener& a_listener;
     const std::vector<int> a_active;
-    SweepPlan a_shaping;
-    std::atomic<bool> a_remeshed{false};   ///< a candidate had a mesh of its own
     QStringList a_columns;
 
     std::map<Key, Measured> a_cache;
@@ -994,9 +1123,7 @@ private:
     std::vector<Dim> a_dims;
     std::atomic<bool> a_stop{false};
     QString a_fatal;
-    std::mutex a_mutex;                // what the solves at once tell, the base mesh, a_warnings
-    bool a_baseTried = false;
-    QString a_baseError;
+    std::mutex a_mutex;                // what the solves at once tell, a_warnings
     double a_fraction = 0;
     double a_estimated = 1;
     QString a_where;
@@ -1075,6 +1202,23 @@ std::vector<double> Runner::startCube() const
 
 Measured Runner::solveOnce(const QHash<QString, QString>& overrides, const Progress& tell)
 {
+    OptimizationCandidate candidate;
+    candidate.overrides = overrides;
+    candidate.progress = tell;
+    candidate.stopped = [this] { return a_stop.load(); };
+    Measured m = a_solve(candidate);
+    if (!m.warnings.isEmpty()) {
+        std::lock_guard<std::mutex> lock(a_mutex);
+        for (const QString& w : std::as_const(m.warnings))
+            if (!a_warnings.contains(w)) a_warnings << w;
+    }
+    return m;
+}
+
+Measured FemSolver::solve(const OptimizationCandidate& asked)
+{
+    const QHash<QString, QString>& overrides = asked.overrides;
+    const Progress& tell = asked.progress;
     Measured m;
     // The candidate as the model itself, not as parameters beside it: a study's
     // sweep reads each of its points' parameters from the model.
@@ -1131,20 +1275,17 @@ Measured Runner::solveOnce(const QHash<QString, QString>& overrides, const Progr
     }
     std::vector<SolutionSet> sets(std::size_t(a_plan.stages.size()));
     for (int s = 0; s < a_plan.stages.size(); ++s) {
-        if (a_stop.load()) {
+        if (asked.stopped && asked.stopped()) {
             m.stopped = true;
             return m;
         }
         StudyRun run = runStudy(candidate, ps, topology, mesh, a_plan.stages.at(s), tell);
-        if (a_stop.load()) {
+        if (asked.stopped && asked.stopped()) {
             m.stopped = true;
             return m;
         }
-        {
-            std::lock_guard<std::mutex> lock(a_mutex);
-            for (const QString& w : std::as_const(run.warnings))
-                if (!a_warnings.contains(w)) a_warnings << w;
-        }
+        for (const QString& w : std::as_const(run.warnings))
+            if (!m.warnings.contains(w)) m.warnings << w;
         if (!run.ok()) {
             m.why = run.error;
             return m;
@@ -1613,10 +1754,9 @@ OptimizationResult Runner::run()
     for (const QString& w : std::as_const(a_warnings))
         if (!result.notes.contains(w)) result.notes << w;
     if (!a_firstFailure.isEmpty()) result.notes << tr("the first that did not solve: %1").arg(a_firstFailure);
-    if (a_remeshed)
-        result.notes << tr("each candidate was meshed again (a varied parameter shapes the geometry or the mesh): what a mesh gives moves a "
-                           "little from one mesh to the next, so the optimum is good to what the mesh resolves - check it there with a Mesh "
-                           "Convergence node, or a finer mesh");
+    if (a_lastNotes)
+        for (const QString& n : a_lastNotes())
+            if (!result.notes.contains(n)) result.notes << n;
 
     const auto measuredAt = [this](const Measured& m, QList<OptimizationResult::Value>* out) {
         for (std::size_t i = 0; i < a_plan.objectives.size(); ++i) {
@@ -1739,10 +1879,26 @@ OptimizationResult runOptimization(const Model& model, const QString& tag, std::
         result.error = why;
         return result;
     }
-    Runner runner(model, *plan, parameters, std::move(topology), std::move(mesh), progress, listener);
-    result = runner.run();
+    FemSolver solver(model, *plan, parameters, std::move(topology), std::move(mesh));
+    const OptimizationSolver solve = [&solver](const OptimizationCandidate& c) { return solver.solve(c); };
+    const std::function<QStringList()> notes = [&solver] {
+        QStringList out;
+        if (solver.remeshed())
+            out << tr("each candidate was meshed again (a varied parameter shapes the geometry or the mesh): what a mesh gives moves a "
+                      "little from one mesh to the next, so the optimum is good to what the mesh resolves - check it there with a Mesh "
+                      "Convergence node, or a finer mesh");
+        return out;
+    };
+    result = runOptimizationPlan(*plan, parameters, solve, progress, listener, notes);
     if (result.error.isEmpty()) result.setup = optimizationSetup(model, *node);
     return result;
+}
+
+OptimizationResult runOptimizationPlan(const OptimizationPlan& plan, std::shared_ptr<ParameterScope> parameters, const OptimizationSolver& solve,
+                                       const Progress& progress, const OptimizationListener& listener, const std::function<QStringList()>& lastNotes)
+{
+    Runner runner(plan, std::move(parameters), solve, progress, listener, lastNotes);
+    return runner.run();
 }
 
 } // namespace qucs_s::fem

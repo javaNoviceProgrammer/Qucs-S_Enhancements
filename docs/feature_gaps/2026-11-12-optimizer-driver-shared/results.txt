@@ -1,0 +1,12 @@
+===== what each break did =====
+what a candidate's solve says not told                         anotherModelsPlanRunsByItsOwnSolve failed (caught)
+the solver's last notes left out                               anotherModelsPlanRunsByItsOwnSolve failed (caught); heldParametersAreWrittenIn failed (caught)
+a candidate never told the run was asked to stop               anotherModelsPlanRunsByItsOwnSolve failed (caught)
+a 2D candidate's stop between its studies not looked at        aStopKeepsTheBest failed (caught)
+the parameters held at a start of their own not written in     heldParametersAreWrittenIn failed (caught)
+a value that moves with a varied parameter not looked for      anotherModelsPlanRunsByItsOwnSolve failed (caught); aValueThatMovesWithAVariedParamete failed (caught)
+an objective's row of no expression refused, not skipped       anotherModelsPlanRunsByItsOwnSolve failed (caught)
+a parameter's unit not kept when its value is written in       anotherModelsPlanRunsByItsOwnSolve failed (caught); theShippedExample failed (caught)
+parameters from rows alone evaluated with their overrides igno anotherModelsPlanRunsByItsOwnSolve failed (caught); theShippedExample failed (caught)
+
+0 of 9 uncaught
