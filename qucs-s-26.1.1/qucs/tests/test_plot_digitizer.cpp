@@ -9,6 +9,8 @@
  * be compared with what the function says at that x.
  */
 #include <QBuffer>
+#include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFont>
 #include <QImage>
@@ -2948,6 +2950,467 @@ private slots:
         }
         qInfo("fuzz of the saved file: %d of 4000 damaged files still read", good);
         QCOMPARE_GE(good, 100);
+    }
+
+    void anyCountOfSeriesIsTaken()
+    {
+        // Options::maxSeries of any value, by either route: INT_MAX's six
+        // times overflowed in the raster route, a negative one counted more
+        // series left out than were found (the robustness hunt's R2).
+        const QString file = path(QStringLiteral("counts.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{sine, Qt::blue}, Curve{cosine, Qt::red}}, u); }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        const Plot found = firstPlot(source);
+        QVERIFY(found.calibration.valid());
+        for (const Options::Route route : {Options::Route::Vector, Options::Route::Raster})
+            for (const int most : {std::numeric_limits<int>::max(), std::numeric_limits<int>::min(), -1, 0, 1, 24}) {
+                Plot plot = found;
+                Options o;
+                o.route = route;
+                o.maxSeries = most;
+                QString why;
+                QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+                QVERIFY2(!plot.series.isEmpty(), qPrintable(QString::number(most)));
+                QCOMPARE_LE(plot.series.size(), qsizetype(std::max(1, most)));
+                QCOMPARE_GE(plot.seriesLeftOut, 0);
+                QCOMPARE_LE(qsizetype(plot.seriesLeftOut), qsizetype(2));
+            }
+    }
+
+    void aHeavyPageIsReadInTime()
+    {
+        // A scatter of 120,000 markers about a plot (a million points of
+        // paths): QtPdf parses the page again at each question about its
+        // text, 0.15 s here, and the fuzzer's page of this kind took 42 s
+        // for one plot's labels (the robustness hunt's R1). Now a heavy page
+        // has its calls in inverse proportion to its weight, each label read
+        // whole by one: the axes still read, the rest left unread, and said.
+        const QString file = path(QStringLiteral("heavy.pdf"));
+        Axes a;
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawPlot(p, a, {Curve{sine, Qt::blue}}, u);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(150, 150, 150));
+            std::mt19937 random(7);
+            for (int i = 0; i < 120000; ++i) p.drawEllipse(QPointF(a.frame.left() + random() % 4000 / 10.0, a.frame.top() + random() % 2800 / 10.0), 0.8, 0.8);
+            // A caption under it, in short words: each a call a letter before.
+            p.save();
+            p.scale(1 / u, 1 / u);
+            p.setPen(Qt::black);
+            p.setFont(plotFont(9, u));
+            for (int line = 0; line < 3; ++line)
+                p.drawText(QPointF(a.frame.left(), a.frame.bottom() + 30 + 11 * line) * u, QStringLiteral("Fig. 1 is the dot of a run at a low and of a set at a end of all the day we saw"));
+            p.restore();
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        qint64 points = 0;
+        for (const vec::Path& path_ : source.graphics(0).paths)
+            for (const vec::Part& part : path_.parts) points += part.points.size();
+        QCOMPARE_GE(points, 1000000);
+        QElapsedTimer clock;
+        clock.start();
+        const QList<Plot> plots = findPlots(source, 0);
+        const qint64 took = clock.elapsed();
+        qInfo("a page of %lld points: its plot found in %lld ms", points, took);
+        QCOMPARE(plots.size(), 1);
+        const Plot& plot = plots.first();
+        QVERIFY2(plot.xAxis.found && plot.yAxis.found, qPrintable(plot.notes.join(QLatin1Char(' '))));
+        QVERIFY(plot.calibration.valid());
+        QVERIFY(source.textCut(0));
+        QVERIFY2(plot.notes.join(QLatin1Char(' ')).contains(QStringLiteral("read only in part")), qPrintable(plot.notes.join(QLatin1Char(' '))));
+        const QPointF corner = plot.calibration.toValue(a.frame.bottomLeft());
+        QVERIFY2(std::abs(corner.x()) < 0.05 && std::abs(corner.y() + 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(corner.x()).arg(corner.y())));
+        QCOMPARE_LE(took, 60000);   // (some 5 s; before, 20 s and more)
+    }
+
+    // QUCS_DIGITIZER_FUZZ=<seconds>: the whole engine on hostile pages, for
+    // the sanitizers. Each round draws a page of its own seed - plots of any
+    // frame (none, a point, past the page), ticks and labels of any text,
+    // curves by the thousand or of 50,000 points, black arrows, rings,
+    // boxes, text strewn, pictures of noise, the plot turned - as vector art
+    // or as a scan (turned, sheared, dark, speckled), then finds its plots
+    // and some region of any size, calibrates them from their axes and from
+    // hostile references, extracts with hostile options, traces from any
+    // point, assigns any values to the ticks, and asks of the result
+    // everything the panel and the tools ask. Never a crash, never a call
+    // past QUCS_DIGITIZER_FUZZ_SLOW ms (30,000; said, the PDF kept in
+    // QUCS_FUZZ_OUT; the drawing not counted). QUCS_DIGITIZER_FUZZ_SEED picks the seeds,
+    // QUCS_DIGITIZER_FUZZ_ROUND replays one round, QUCS_DIGITIZER_FUZZ_VERBOSE
+    // prints each round's calls and their times.
+    void fuzzThePipeline()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_DIGITIZER_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_DIGITIZER_FUZZ to a number of seconds");
+        const quint32 base = quint32(qEnvironmentVariableIntValue("QUCS_DIGITIZER_FUZZ_SEED"));
+        const bool one = qEnvironmentVariableIsSet("QUCS_DIGITIZER_FUZZ_ROUND");
+        const int only = qEnvironmentVariableIntValue("QUCS_DIGITIZER_FUZZ_ROUND");
+        const qint64 slow = qEnvironmentVariableIsSet("QUCS_DIGITIZER_FUZZ_SLOW") ? qEnvironmentVariableIntValue("QUCS_DIGITIZER_FUZZ_SLOW") : 30000;
+        const QString out = qEnvironmentVariable("QUCS_FUZZ_OUT");
+        if (!out.isEmpty()) QDir().mkpath(out);
+        static const double hostile[] = {0, -0.0, 1e-300, 1e300, -1e300, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                                         -std::numeric_limits<double>::infinity(), 1, -1, 1e-9, 7, 1e15, 0.5, 10, 100, 1e-3, -40};
+        static const char* const labels[] = {"0", "1", "2", "10", "100", "1e3", "1e-3", "1e999", "1e-400", "10^-3", "10^999", "×10³", "x10^-6", "−", "-", "", "∞", "NaN", "nan", "1,000",
+                                             "2.5k", "10⁻⁹⁹⁹", "−0", "0x1F", "dB", "(a)", "1/2", "3.3.3", "--5", "1e", "e5", "10¹⁰", "1E+308", "2E+308", "-1E+308", ".", "+", "1 000", "μ", "0.000000000001",
+                                             "99999999999999999999999999", "Frequency (Hz)", "Voltage [V]", "×10", "%", "°", "1e5 1e6", "Fig. 3", "→", "←", "⟶"};
+        static const char* const words[] = {"measured", "model", "dose", "2x10^15", "w/o", "(b)", "Fig.", "1", "μm", "keV", "∞", "A", "", " ", "\t", "€", "日本", "→", "1e999"};
+        int rounds = 0, slowRounds = 0, pagesRead = 0, plotsFound = 0, extracted = 0, seriesMade = 0;
+        qint64 longest = 0;
+        int longestRound = -1;
+        QElapsedTimer clock;
+        clock.start();
+        for (int round = one ? only : 0; one ? round == only : clock.elapsed() < seconds * 1000LL; ++round) {
+            std::mt19937 rng(base * 1000003u + quint32(round));
+            const auto chance = [&](int percent) { return int(rng() % 100) < percent; };
+            // Three rounds in ten wild; the rest plots as they are drawn, each
+            // with a hostile thing or two (else most pages have no plot to find).
+            const bool wild = chance(30);
+            const auto rare = [&](int percent) { return chance(wild ? percent : std::max(1, percent / 5)); };
+            const auto uniform = [&](double a, double b) { return a + (b - a) * (rng() / double(std::mt19937::max())); };
+            const auto pickInt = [&](int n) { return n <= 0 ? 0 : int(rng() % quint32(n)); };
+            const auto anyNumber = [&]() { return chance(70) ? uniform(-1000, 1000) : hostile[pickInt(int(std::size(hostile)))]; };
+            const auto finite = [&](double v) { return std::isfinite(v) ? std::clamp(v, -1e5, 1e5) : uniform(-100, 900); };
+            const auto anyColour = [&]() {
+                static const QColor palette[] = {Qt::black, Qt::white, Qt::red, Qt::blue, QColor(0, 128, 0), QColor(1, 2, 2), QColor(250, 250, 250), QColor(128, 128, 128), Qt::magenta, QColor(255, 0, 1)};
+                return chance(60) ? palette[pickInt(int(std::size(palette)))] : QColor(pickInt(256), pickInt(256), pickInt(256));
+            };
+            const auto anyRect = [&]() {
+                static const double sizes[] = {0, 0.01, 0.5, 2, 6, 20, 80, 200, 400, 600, 2000};
+                const double w = !rare(30) ? uniform(wild ? 30 : 140, 450) : sizes[pickInt(int(std::size(sizes)))];
+                const double h = !rare(30) ? uniform(wild ? 30 : 100, 420) : sizes[pickInt(int(std::size(sizes)))];
+                return QRectF(!rare(15) ? uniform(std::min(70.0, kPageW - w), std::max(70.0, kPageW - w - 10)) : uniform(-300, 900), !rare(15) ? uniform(10, std::max(10.0, kPageH - h - 40)) : uniform(-300, 1100), w, h);
+            };
+            const auto text = [&](QPainter& p, QPointF at, const QString& s, double size) {
+                p.save();
+                p.translate(at);
+                p.scale(1 / 8.0, 1 / 8.0);
+                p.setFont(plotFont(size, 8.0));
+                p.setPen(chance(90) ? QColor(Qt::black) : anyColour());
+                p.drawText(QPointF(0, 0), s);
+                p.restore();
+            };
+
+            // ----- The page: what is drawn, the same for a vector page and a scan.
+            const int plotsOnPage = rare(10) ? 0 : 1 + pickInt(rare(20) ? 4 : 1);
+            const bool turned = rare(10);
+            const double turn = chance(50) ? uniform(-3, 3) : uniform(-180, 180);
+            const quint32 drawSeed = rng();
+            const auto draw = [&](QPainter& p, double) {
+                std::mt19937 local(drawSeed);
+                std::swap(rng, local);
+                if (turned) {
+                    p.translate(kPageW / 2, kPageH / 2);
+                    p.rotate(turn);
+                    p.translate(-kPageW / 2, -kPageH / 2);
+                }
+                for (int k = 0; k < plotsOnPage; ++k) {
+                    Axes a;
+                    a.frame = anyRect();
+                    a.xLog = chance(15);
+                    a.yLog = chance(15);
+                    a.xReversed = chance(10);
+                    a.xMin = !rare(20) ? (a.xLog ? std::pow(10.0, pickInt(5) - 2) : uniform(-100, 100)) : anyNumber();
+                    a.xMax = !rare(15) ? a.xMin + (a.xLog ? a.xMin * std::pow(10.0, 1 + pickInt(6)) : uniform(1e-6, 1000)) : anyNumber();
+                    a.yMin = !rare(20) ? (a.yLog ? std::pow(10.0, pickInt(5) - 3) : uniform(-100, 100)) : anyNumber();
+                    a.yMax = !rare(15) ? a.yMin + (a.yLog ? a.yMin * std::pow(10.0, 1 + pickInt(6)) : uniform(1e-6, 1000)) : anyNumber();
+                    a.grid = chance(30);
+                    a.xTicks.clear();
+                    a.yTicks.clear();
+                    const int nx = rare(10) ? pickInt(80) : 3 + pickInt(6), ny = rare(10) ? pickInt(80) : 3 + pickInt(6);
+                    for (int i = 0; i < nx; ++i) a.xTicks << (a.xLog ? a.xMin * std::pow(10.0, i) : a.xMin + i * (a.xMax - a.xMin) / std::max(1, nx - 1));
+                    for (int i = 0; i < ny; ++i) a.yTicks << (a.yLog ? a.yMin * std::pow(10.0, i) : a.yMin + i * (a.yMax - a.yMin) / std::max(1, ny - 1));
+                    if (rare(15)) a.xTicks << a.xTicks.value(0) << a.xTicks.value(0);   // (the same tick twice)
+                    const bool honestLabels = !rare(30);
+                    a.labels = honestLabels && !rare(10);
+                    // The axes, kept on the page's numbers: what the painter is given finite.
+                    p.save();
+                    p.setBrush(Qt::NoBrush);
+                    p.setPen(QPen(!rare(10) ? QColor(Qt::black) : anyColour(), !rare(10) ? 0.8 : uniform(0, 12)));
+                    if (!rare(10)) p.drawRect(a.frame);
+                    else p.drawLine(a.frame.bottomLeft(), a.frame.bottomRight());
+                    const auto px = [&](double x) { return finite(a.px(x)); };
+                    const auto py = [&](double y) { return finite(a.py(y)); };
+                    for (const double t : std::as_const(a.xTicks)) {
+                        const double x = px(t);
+                        if (a.grid) p.drawLine(QPointF(x, a.frame.top()), QPointF(x, a.frame.bottom()));
+                        p.drawLine(QPointF(x, a.frame.bottom()), QPointF(x, a.frame.bottom() + (!rare(10) ? 4 : uniform(-40, 40))));
+                        if (a.labels) text(p, QPointF(x - 6, a.frame.bottom() + 14), label(t), 9);
+                        else if (!honestLabels && chance(60)) text(p, QPointF(x - 6 + uniform(-8, 8), a.frame.bottom() + uniform(4, 30)), QString::fromUtf8(labels[pickInt(int(std::size(labels)))]), chance(90) ? 9 : uniform(1, 60));
+                    }
+                    for (const double t : std::as_const(a.yTicks)) {
+                        const double y = py(t);
+                        if (a.grid) p.drawLine(QPointF(a.frame.left(), y), QPointF(a.frame.right(), y));
+                        p.drawLine(QPointF(a.frame.left() - (!rare(10) ? 4 : uniform(-40, 40)), y), QPointF(a.frame.left(), y));
+                        if (a.labels) text(p, QPointF(a.frame.left() - 40, y + 3), label(t), 9);
+                        else if (!honestLabels && chance(60)) text(p, QPointF(a.frame.left() - uniform(10, 60), y + uniform(-8, 8)), QString::fromUtf8(labels[pickInt(int(std::size(labels)))]), chance(90) ? 9 : uniform(1, 60));
+                    }
+                    if (chance(30)) text(p, QPointF(a.frame.center().x(), a.frame.bottom() + 30), QString::fromUtf8(labels[pickInt(int(std::size(labels)))]), 10);
+                    if (chance(20)) text(p, a.frame.bottomRight() + QPointF(4, 10), QStringLiteral("×10") + QString::fromUtf8(labels[pickInt(int(std::size(labels)))]), 8);
+                    // The curves.
+                    if (chance(80)) p.setClipRect(a.frame.adjusted(-1, -1, 1, 1));
+                    const int curves = rare(10) ? pickInt(chance(30) ? 400 : 40) : 1 + pickInt(5);
+                    for (int c = 0; c < curves; ++c) {
+                        const int samples = rare(5) ? 50000 : rare(20) ? 1 + pickInt(4) : 20 + pickInt(600);
+                        static const int sane[] = {0, 0, 0, 2, 3, 5, 7};
+                        const int kind = rare(40) ? pickInt(9) : sane[pickInt(int(std::size(sane)))];
+                        const double phase = uniform(0, 6.28), amp = chance(90) ? uniform(0, 0.6) : uniform(0, 50), f0 = uniform(0.1, 40);
+                        QPolygonF line;
+                        for (int i = 0; i < samples; ++i) {
+                            const double t = samples == 1 ? 0.5 : double(i) / (samples - 1);
+                            double u = t, v = 0.5;
+                            switch (kind) {
+                            case 0: v = 0.5 + amp * std::sin(f0 * t + phase); break;
+                            case 1: v = uniform(0, 1); break;                        // noise
+                            case 2: v = 0.5 + amp; break;                            // flat
+                            case 3: v = i % 2 == 0 ? 0.2 : 0.8; u = std::floor(t * 20) / 20; break;   // steps, back and forth
+                            case 4: u = 0.5; v = t; break;                           // vertical
+                            case 5: u = 0.5 + amp * std::cos(6.283 * t); v = 0.5 + amp * std::sin(6.283 * t); break;   // a ring
+                            case 6: u = 0.5 + t * amp * std::cos(f0 * t); v = 0.5 + t * amp * std::sin(f0 * t); break;  // a spiral
+                            case 7: v = (i == samples / 2) ? 40 : 0.5; break;        // a spike far off
+                            default: u = uniform(-2, 3); v = uniform(-2, 3); break;  // scribble, past the frame
+                            }
+                            line << QPointF(finite(a.frame.left() + u * a.frame.width()), finite(a.frame.bottom() - v * a.frame.height()));
+                        }
+                        const QColor colour = anyColour();
+                        const int style = rare(40) ? pickInt(10) : 3 + pickInt(7);
+                        if (style == 0) {   // markers
+                            p.setPen(Qt::NoPen);
+                            p.setBrush(colour);
+                            const double r = chance(90) ? uniform(0.5, 4) : uniform(0, 30);
+                            for (int i = 0; i < std::min<int>(line.size(), 3000); ++i) {
+                                if (chance(50)) p.drawEllipse(line.at(i), r, r);
+                                else p.drawRect(QRectF(line.at(i) - QPointF(r, r), QSizeF(2 * r, 2 * r)));
+                            }
+                        } else if (style == 1) {   // bars
+                            p.setPen(chance(50) ? QPen(Qt::black, 0.5) : QPen(Qt::NoPen));
+                            p.setBrush(colour);
+                            for (int i = 0; i < std::min<int>(line.size(), 300); ++i) p.drawRect(QRectF(QPointF(line.at(i).x(), line.at(i).y()), QPointF(line.at(i).x() + uniform(0.1, 20), a.frame.bottom())));
+                        } else if (style == 2) {   // an area
+                            p.setPen(Qt::NoPen);
+                            p.setBrush(colour);
+                            QPolygonF area = line;
+                            area << a.frame.bottomRight() << a.frame.bottomLeft();
+                            p.drawPolygon(area);
+                        } else {
+                            // (A thick or finely dashed pen along a long scribble takes QPainter minutes: not what is under test.)
+                            const bool longLine = line.size() > 60;
+                            QPen pen(colour, !rare(15) || longLine ? uniform(0.3, 2.5) : (chance(50) ? 0.0 : uniform(5, 60)), Qt::PenStyle(1 + pickInt(5)));
+                            if (rare(10) && line.size() < 1000) pen.setDashPattern({uniform(0.3, 30), uniform(0.3, 30), uniform(0.3, 30), uniform(0.3, 30)});
+                            p.setPen(pen);
+                            p.setBrush(Qt::NoBrush);
+                            if (rare(15)) {   // in many paths
+                                for (int i = 1; i < line.size(); i += 1 + pickInt(3)) p.drawLine(line.at(i - 1), line.at(i));
+                            } else {
+                                p.drawPolyline(line);
+                            }
+                        }
+                        if (chance(20)) text(p, line.value(pickInt(int(line.size()))), QString::fromUtf8(words[pickInt(int(std::size(words)))]), 8);
+                    }
+                    p.setClipping(false);
+                    // A legend, its box at times rounded.
+                    if (chance(30)) {
+                        const QRectF box(a.frame.right() - 120, a.frame.top() + 6, 110, 14.0 * (1 + pickInt(6)));
+                        p.setPen(QPen(Qt::black, 0.5));
+                        p.setBrush(Qt::NoBrush);
+                        if (chance(50)) p.drawRoundedRect(box, 4, 4);
+                        else p.drawRect(box);
+                        for (int i = 0; i * 14 + 7 < box.height(); ++i) {
+                            p.setPen(QPen(anyColour(), 1.2, Qt::PenStyle(1 + pickInt(5))));
+                            p.drawLine(QPointF(box.left() + 4, box.top() + 7 + 14 * i), QPointF(box.left() + 28, box.top() + 7 + 14 * i));
+                            text(p, QPointF(box.left() + 32, box.top() + 10 + 14 * i), QString::fromUtf8(words[pickInt(int(std::size(words)))]), 8);
+                        }
+                    }
+                    // Arrows and rings in black, pointing anywhere.
+                    for (int i = chance(30) ? pickInt(rare(30) ? 30 : 6) : 0; i > 0; --i) {
+                        const QPointF tail(uniform(a.frame.left() - 50, a.frame.right() + 50), uniform(a.frame.top() - 50, a.frame.bottom() + 50));
+                        const QPointF tip = chance(10) ? tail : QPointF(uniform(a.frame.left(), a.frame.right()), uniform(a.frame.top(), a.frame.bottom()));
+                        p.setPen(QPen(Qt::black, chance(90) ? 0.6 : uniform(0, 8)));
+                        p.setBrush(Qt::NoBrush);
+                        if (chance(70)) {
+                            p.drawLine(QPointF(finite(tail.x()), finite(tail.y())), QPointF(finite(tip.x()), finite(tip.y())));
+                            const QPointF d = QLineF(tip, tail).length() > 0 ? (tail - tip) / QLineF(tip, tail).length() : QPointF(1, 0);
+                            const QPointF n(-d.y(), d.x());
+                            const double s = chance(90) ? 4 : uniform(0, 40);
+                            const QPolygonF head{tip + s * d + s * 0.5 * n, tip, tip + s * d - s * 0.5 * n};
+                            if (chance(50)) p.drawPolyline(head);
+                            else {
+                                p.setBrush(Qt::black);
+                                p.drawPolygon(head);
+                            }
+                            if (chance(70)) text(p, tail + QPointF(2, 3), QString::fromUtf8(words[pickInt(int(std::size(words)))]), 8);
+                        } else {
+                            p.drawEllipse(tip, chance(90) ? uniform(3, 30) : uniform(0, 300), chance(90) ? uniform(3, 30) : uniform(0, 300));
+                        }
+                    }
+                    p.restore();
+                }
+                // Junk about the page: text, boxes within boxes, pictures.
+                for (int i = rare(30) ? pickInt(chance(20) ? 2000 : 60) : 0; i > 0; --i) text(p, QPointF(uniform(-20, kPageW), uniform(-20, kPageH)), QString::fromUtf8(chance(50) ? labels[pickInt(int(std::size(labels)))] : words[pickInt(int(std::size(words)))]), chance(95) ? uniform(4, 14) : uniform(0.1, 200));
+                for (int i = rare(15) ? pickInt(chance(30) ? 300 : 8) : 0; i > 0; --i) {
+                    p.setPen(QPen(chance(70) ? QColor(Qt::black) : anyColour(), uniform(0, 3)));
+                    p.setBrush(chance(80) ? QBrush(Qt::NoBrush) : QBrush(anyColour()));
+                    p.drawRect(anyRect());
+                }
+                if (rare(10)) {
+                    static const QSize sizes[] = {{1, 1}, {1, 4000}, {4000, 1}, {64, 64}, {600, 400}, {3000, 3000}};
+                    QImage noise(sizes[pickInt(int(std::size(sizes)))], QImage::Format_RGB32);
+                    for (int y = 0; y < noise.height(); y += 1 + noise.height() / 200)
+                        for (int x = 0; x < noise.width(); ++x) noise.setPixel(x, y, rng());
+                    p.drawImage(anyRect(), noise);
+                }
+                std::swap(rng, local);
+            };
+            QElapsedTimer drawClock;
+            drawClock.start();
+            const QString file = path(QStringLiteral("fz_%1.pdf").arg(round % 4));
+            const int pages = chance(85) ? 1 : 2 + pickInt(2);
+            bool written = false;
+            const int route = pickInt(10);
+            if (route < 6) {
+                written = writeVector(file, draw, pages);
+            } else {
+                // A scan: the same page as a picture, turned, sheared, at any resolution.
+                static const double dpis[] = {12, 30, 72, 100, 150, 200};
+                const double dpi = dpis[pickInt(int(std::size(dpis)))], k = dpi / 72;
+                QImage image(int(kPageW * k), int(kPageH * k), chance(15) ? QImage::Format_Grayscale8 : QImage::Format_RGB32);
+                image.fill(Qt::white);
+                {
+                    QPainter p(&image);
+                    p.setRenderHint(QPainter::Antialiasing, chance(70));
+                    p.scale(k, k);
+                    draw(p, 8.0);
+                }
+                if (rare(15)) image.invertPixels();
+                for (int i = rare(30) ? pickInt(20000) : 0; i > 0; --i) image.setPixelColor(pickInt(image.width()), pickInt(image.height()), chance(50) ? Qt::black : anyColour());
+                written = writeScan(file, image, chance(60) ? 0 : uniform(-8, 8), chance(80) ? 0 : pickInt(80) - 40);
+            }
+            QVERIFY(written);
+            if (!out.isEmpty()) QFile::remove(out + QStringLiteral("/current.pdf")), QFile::copy(file, out + QStringLiteral("/current.pdf"));
+
+            // ----- The engine on it.
+            QElapsedTimer roundClock;
+            roundClock.start();
+            QPdfDocument pdf;
+            if (pdf.load(file) != QPdfDocument::Error::None) continue;
+            Source source(&pdf, file);
+            QStringList steps;
+            qint64 stepStart = 0, longestStep = 0;
+            const auto step = [&](const QString& what) {
+                const qint64 now = roundClock.elapsed();
+                longestStep = std::max(longestStep, now - stepStart);
+                steps << QStringLiteral("%1: %2 ms").arg(what).arg(now - stepStart);
+                stepStart = now;
+            };
+            for (int page = chance(5) ? -1 : 0; page < std::min(pdf.pageCount(), 3) + (chance(5) ? 1 : 0); ++page) {
+                ++pagesRead;
+                QList<Plot> plots = findPlots(source, page, chance(80) ? QRectF() : anyRect());
+                step(QStringLiteral("find %1: %2 plots").arg(page).arg(plots.size()));
+                plotsFound += int(plots.size());
+                if (chance(40)) {
+                    plots << plotInRegion(source, page, chance(90) ? anyRect() : QRectF(uniform(-1e6, 1e6), uniform(-1e6, 1e6), anyNumber(), anyNumber()));
+                    step(QStringLiteral("plotInRegion"));
+                }
+                while (plots.size() > 3) plots.removeAt(pickInt(int(plots.size())));
+                for (Plot plot : plots) {
+                    QString why;
+                    stepStart = roundClock.elapsed();
+                    calibrateFromAxes(plot, &why);
+                    if (chance(25)) {   // references of any kind and value
+                        Calibration& c = plot.calibration;
+                        c.kind = chance(15) ? Kind::Polar : Kind::Cartesian;
+                        c.xScale = chance(30) ? Scale::Log : Scale::Linear;
+                        c.yScale = chance(30) ? Scale::Log : Scale::Linear;
+                        c.model = chance(20) ? Model::Projective : Model::Affine;
+                        c.rAtCentre = chance(80) ? 0 : anyNumber();
+                        c.references.clear();
+                        for (int r = pickInt(7); r > 0; --r) {
+                            Reference ref;
+                            ref.at = chance(80) ? QPointF(uniform(plot.pageBox().left(), plot.pageBox().right()), uniform(plot.pageBox().top(), plot.pageBox().bottom())) : QPointF(anyNumber(), anyNumber());
+                            ref.hasX = chance(80);
+                            ref.hasY = chance(80);
+                            ref.x = anyNumber();
+                            ref.y = anyNumber();
+                            c.references << ref;
+                            if (chance(15)) c.references << ref;
+                        }
+                        c.fit(&why);
+                    }
+                    if (chance(20)) {
+                        QList<double> values_;
+                        for (int v = pickInt(12); v > 0; --v) values_ << anyNumber();
+                        assignTickValues(plot, chance(50), values_, &why);
+                    }
+                    Options o;
+                    o.route = Options::Route(pickInt(3));
+                    for (int c = chance(70) ? 0 : pickInt(4); c > 0; --c) o.colours << (chance(90) ? anyColour() : QColor());
+                    for (int s = chance(80) ? 0 : pickInt(4); s > 0; --s) o.seeds << (chance(80) ? QPointF(uniform(plot.pageBox().left(), plot.pageBox().right()), uniform(plot.pageBox().top(), plot.pageBox().bottom())) : QPointF(anyNumber(), anyNumber()));
+                    static const int counts[] = {-1, 0, 1, 2, 24, 1000, std::numeric_limits<int>::max()};
+                    o.maxSeries = chance(70) ? 24 : counts[pickInt(int(std::size(counts)))];
+                    static const double scales[] = {-3, 0.01, 0.5, 1, 4, 12, 50, 1e6};
+                    o.scale = chance(70) ? 0 : chance(10) ? anyNumber() : scales[pickInt(int(std::size(scales)))];
+                    o.findLeftOut = chance(70);
+                    if (extract(source, plot, o, &why)) ++extracted;
+                    step(QStringLiteral("extract (route %1, scale %2, %3 series)").arg(int(o.route)).arg(o.scale).arg(plot.series.size()));
+                    seriesMade += int(plot.series.size());
+                    if (chance(30)) {
+                        Series traced;
+                        const QPointF seed = chance(70) && !plot.series.isEmpty() && !plot.series.first().points.isEmpty() ? plot.series.first().points.value(pickInt(int(plot.series.first().points.size()))) : QPointF(anyNumber(), anyNumber());
+                        if (traceFrom(source, plot, seed, &traced, &why, chance(50) ? &o : nullptr)) plot.series << traced;
+                        step(QStringLiteral("trace"));
+                    }
+                    if (chance(10)) {   // the hand's edits: points and breaks of any kind
+                        for (Series& s : plot.series) {
+                            if (chance(30) && !s.points.isEmpty()) s.points[pickInt(int(s.points.size()))] = QPointF(anyNumber(), anyNumber());
+                            if (chance(20)) s.breaks << pickInt(int(s.points.size()) + 3) - 1;
+                            if (chance(10)) s.name = QString::fromUtf8(labels[pickInt(int(std::size(labels)))]);
+                        }
+                    }
+                    const Trust t = assess(plot);
+                    QVERIFY(!t.level.isEmpty());
+                    for (const Series& s : std::as_const(plot.series)) {
+                        (void)values(plot, s);
+                        (void)thinned(s.points, chance(50) ? 0 : pickInt(400) - 2);
+                    }
+                    (void)csv(plot);
+                    (void)dataset(plot);
+                    const QJsonObject json = toJson(plot);
+                    Plot back;
+                    if (fromJson(json, &back, &why)) {
+                        (void)assess(back);
+                        (void)toJson(back);
+                    }
+                    if (chance(20)) {
+                        (void)overlay(source, plot, chance(80) ? 0.5 : uniform(0.01, 3));
+                        QImage marks(300, 300, QImage::Format_ARGB32);
+                        marks.fill(Qt::transparent);
+                        QPainter painter(&marks);
+                        paintMarks(painter, plot, chance(80) ? 0.5 : anyNumber(), pickInt(int(plot.series.size()) + 2) - 1, pickInt(50) - 1);
+                        painter.end();
+                    }
+                    step(QStringLiteral("the rest (assess, csv, dataset, record, overlay)"));
+                }
+            }
+            const qint64 took = longestStep;
+            if (qEnvironmentVariableIsSet("QUCS_DIGITIZER_FUZZ_VERBOSE"))
+                qInfo("round %d: drawn and written in %lld ms (route %d, %d pages), the engine %lld ms:\n  %s", round, drawClock.elapsed() - roundClock.elapsed(), route, pages, roundClock.elapsed(), qPrintable(steps.join(QStringLiteral("\n  "))));
+            if (took > longest) {
+                longest = took;
+                longestRound = round;
+            }
+            if (took > slow) {
+                ++slowRounds;
+                qWarning("round %d (seed %u): a call took %lld ms:\n  %s", round, base, took, qPrintable(steps.join(QStringLiteral("\n  "))));
+                if (!out.isEmpty()) QFile::copy(file, out + QStringLiteral("/slow_%1_%2.pdf").arg(base).arg(round));
+            }
+            ++rounds;
+        }
+        qInfo("fuzz of the pipeline: %d rounds (seed %u), %d pages, %d plots found, %d extracted, %d series; the longest call in round %d, %lld ms; %d rounds with one past %lld ms",
+              rounds, base, pagesRead, plotsFound, extracted, seriesMade, longestRound, longest, slowRounds, slow);
+        QCOMPARE(slowRounds, 0);
     }
 
     void aRealPdfFromTheRepository()
