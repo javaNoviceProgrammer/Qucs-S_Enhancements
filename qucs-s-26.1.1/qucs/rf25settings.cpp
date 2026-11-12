@@ -9,11 +9,13 @@
  * (at your option) any later version.
  */
 #include "rf25settings.h"
+#include "gpurendering.h"
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
 #include "settings.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -146,9 +148,31 @@ RF25SettingsDialog::RF25SettingsDialog(QWidget* parent) : QDialog(parent)
     sizeRows->addWidget(a_sizeStatus);
     layout->addWidget(size);
 
+    // The layout drawn by the GPU or the CPU (Settings… > Viewers too).
+    auto* view = new QGroupBox(tr("Layout view"), this);
+    auto* viewRows = new QVBoxLayout(view);
+    a_gpu = new QCheckBox(tr("Draw with the GPU"), view);
+    a_gpu->setObjectName(QStringLiteral("rf25GpuBox"));
+    a_gpu->setChecked(gpu::wanted(gpu::Viewer::RF25));
+    viewRows->addWidget(a_gpu);
+    auto* gpuAbout = new QLabel(tr("The layout drawn as the layout viewer's is: the cell flattened into the GPU's buffers once, "
+                                   "a pan or a zoom then a frame of the GPU's; the processed shapes, the mesh, the currents and "
+                                   "the ports drawn over it. Its own setting, apart from the layout viewer's: Settings… > Viewers "
+                                   "sets it too. Pictures and exports are the CPU's either way. QUCS_GPU=0 in the environment "
+                                   "turns it off, whatever this says."),
+                                view);
+    gpuAbout->setWordWrap(true);
+    viewRows->addWidget(gpuAbout);
+    a_gpuStatus = new QLabel(view);
+    a_gpuStatus->setObjectName(QStringLiteral("rf25GpuStatus"));
+    a_gpuStatus->setWordWrap(true);
+    viewRows->addWidget(a_gpuStatus);
+    layout->addWidget(view);
+
     connect(a_lu, &QComboBox::currentIndexChanged, this, &RF25SettingsDialog::showStatus);
     connect(a_limit, &QSpinBox::valueChanged, this, &RF25SettingsDialog::showStatus);
     connect(a_memory, &QDoubleSpinBox::valueChanged, this, &RF25SettingsDialog::showStatus);
+    connect(a_gpu, &QCheckBox::toggled, this, &RF25SettingsDialog::showStatus);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
         apply();
@@ -232,10 +256,18 @@ QString RF25SettingsDialog::sizeStatus(int limit, double gigabytes)
         .arg(each / 1e6, 0, 'f', 0);
 }
 
+QString RF25SettingsDialog::gpuStatus(bool chosen)
+{
+    const QString hindrance = gpu::hindrance();
+    if (!hindrance.isEmpty()) return hindrance;
+    return chosen ? tr("The GPU draws the layout (%1).").arg(gpu::backendName()) : tr("The CPU draws the layout.");
+}
+
 void RF25SettingsDialog::showStatus()
 {
     a_luStatus->setText(luStatus(a_lu->currentIndex()));
     a_sizeStatus->setText(sizeStatus(a_limit->value(), a_memory->value()));
+    a_gpuStatus->setText(gpuStatus(a_gpu->isChecked()));
 }
 
 void RF25SettingsDialog::apply()
@@ -247,6 +279,8 @@ void RF25SettingsDialog::apply()
         settings.setValue(kMemoryKey, a_memory->value());
     }
     applySettings();
+    // (Told to the open models' views, which draw so at once.)
+    if (a_gpu->isChecked() != gpu::wanted(gpu::Viewer::RF25)) gpu::setWanted(gpu::Viewer::RF25, a_gpu->isChecked());
 }
 
 } // namespace qucs_s::rf25
