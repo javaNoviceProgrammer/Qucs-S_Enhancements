@@ -64,12 +64,17 @@ bool isBox(const std::vector<QPointF>& q)
     return true;
 }
 
-/// What a layer's style adds to its shapes' buffers: crosses (1), marks (2).
+/// What a layer's style adds to its shapes' buffers: crosses (1), marks
+/// (2), paths' spines with their outlines (4: KLayout's look).
 char extrasOf(const QVector<LayerStyle>& styles, std::size_t layer)
 {
     if (int(layer) >= styles.size() || !styles.at(int(layer)).klayout) return 0;
     const LayerStyle& s = styles.at(int(layer));
-    return char((s.xfill ? 1 : 0) | (s.marked ? 2 : 0));
+    char extras = char((s.xfill ? 1 : 0) | (s.marked ? 2 : 0) | 4);
+    // (a layer drawn more than once: what any of its passes adds)
+    if (s.passes)
+        for (const LayerStyle& p : *s.passes) extras = char(extras | (p.xfill ? 1 : 0) | (p.marked ? 2 : 0));
+    return extras;
 }
 
 /// Convex - each turn the same way, once round: fanned.
@@ -172,12 +177,29 @@ Flattened flatten(const Layout& layout, int cell, int depth, const QVector<Layer
             out.outlines.insert(out.outlines.end(), {float(a.x()), float(a.y()), float(b.x()), float(b.y())});
         }
         const char extras = extrasOf(styles, sh.layer);
+        // (KLayout's look: a path's spine drawn as its outline is)
+        if ((extras & 4) && sh.path >= 0 && sh.path < c.paths.size()) {
+            const PathInfo& path = c.paths.at(sh.path);
+            const QPointF* sp = c.points.constData() + path.first;
+            for (quint32 k = 0; k + 1 < path.count; ++k) {
+                const QPointF a = T.map(sp[k] + off) - o, b = T.map(sp[k + 1] + off) - o;
+                out.outlines.insert(out.outlines.end(), {float(a.x()), float(a.y()), float(b.x()), float(b.y())});
+            }
+        }
         if ((extras & 1) && isBox(q))
             out.xfills.insert(out.xfills.end(), {float(q[0].x()), float(q[0].y()), float(q[2].x()), float(q[2].y()),
                                                  float(q[1].x()), float(q[1].y()), float(q[3].x()), float(q[3].y())});
         if (extras & 2) {
-            // (A box's two corners that make it, as KLayout marks a box.)
-            if (isBox(q)) {
+            // (A box's two corners that make it, as KLayout marks a box; a
+            // path's spine's points, as it marks a path.)
+            if (sh.path >= 0 && sh.path < c.paths.size()) {
+                const PathInfo& path = c.paths.at(sh.path);
+                const QPointF* sp = c.points.constData() + path.first;
+                for (quint32 k = 0; k < path.count; ++k) {
+                    const QPointF v = T.map(sp[k] + off) - o;
+                    out.marks.insert(out.marks.end(), {float(v.x()), float(v.y()), 0.0f});
+                }
+            } else if (isBox(q)) {
                 double x0 = q[0].x(), x1 = x0, y0 = q[0].y(), y1 = y0;
                 for (const QPointF& v : q) {
                     x0 = std::min(x0, v.x());
@@ -603,28 +625,42 @@ bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
     };
     const int k = stipplePixels(ratio);
     const int tick = a_view->a_tick;
+    // KLayout's slanted wide edges, dots and marks half a device pixel right
+    // and up (KLayout's pixel for a point is round(x), the row above
+    // round(y) from the top); a hair more. (Its fills and other lines on
+    // KLayout's pixels themselves: the shaders snap them.)
+    const auto asKLayout = [&px](Uniforms u) {
+        const double hair = 1.0 / 256;
+        u.nudge[0] += float(2.0 * (0.5 + hair) / std::max(1, px.width()));
+        u.nudge[1] += float(2.0 * (0.5 + hair) / std::max(1, px.height()));
+        return u;
+    };
     // A KLayout frame's edges (or a box's crosses), \a width device
     // pixels and dashed as \a line: a device pixel and solid, the lines'
     // own pipeline (as QPainter draws them); else quads.
     const auto edges = [&](const Batch& b, const QColor& colour, int width, const LineStyle& line, int blend) {
-        if (b.count <= 0) return;
+        if (b.count <= 0 || width <= 0) return;
         if (width <= 1 && line.isSolid()) {
-            draws.push_back({a_line[blend].get(), b.buffer.get(), b.count, a_plain.get(), uniforms(colour, true, false)});
+            // (through the middles of KLayout's pixels for its ends)
+            Uniforms u = uniforms(colour, false, false);
+            u.always = 1.0f;
+            draws.push_back({a_line[blend].get(), b.buffer.get(), b.count, a_plain.get(), u});
             return;
         }
-        Uniforms u = uniforms(colour, false, false);
+        Uniforms u = asKLayout(uniforms(colour, false, false));
         u.lineWidth = float(width);
         u.cell = float(k);
         u.dashLength = float(line.isSolid() ? 0 : line.length);
         for (int c = 0; c < 4; ++c) u.dash[c] = float((line.bits >> (8 * c)) & 0xffu);
         draws.push_back({a_quad[blend].get(), b.buffer.get(), b.count / 2, a_plain.get(), u});
     };
-    for (int index : drawingOrder(a_view->a_styles, int(a_layers.size()))) {
-        const std::size_t i = std::size_t(index);
+    for (const DrawPass& pass : drawingPasses(a_view->a_styles, int(a_layers.size()))) {
+        const std::size_t i = std::size_t(pass.layer);
         LayerBatches& l = *a_layers[i];
         if (l.fills.count == 0 && l.outlines.count == 0 && l.dots.count == 0) continue;
-        const LayerStyle raw = int(i) < a_view->a_styles.size() ? a_view->a_styles.at(int(i)) : paletteStyle(int(i));
-        if (!raw.visible) continue;
+        const LayerStyle raw = pass.style != nullptr ? *pass.style : paletteStyle(int(i));
+        // (a pass of a layer hidden: hidden with it)
+        if (!raw.visible || (int(i) < a_view->a_styles.size() && !a_view->a_styles.at(int(i)).visible)) continue;
         const LayerStyle style = a_view->shownStyle(raw);
         if (style.klayout) {
             // As KLayout draws it: its bitmap at the screen's pixels from the
@@ -634,22 +670,30 @@ bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
             const int blend = style.transparent ? (mixesByAnd(c.background) ? 1 : 2) : 0;
             if (l.fills.count > 0 && style.stipple && !style.stipple->isEmpty()) {
                 const bool solid = style.stipple->isSolid();
+                // (on the corners of KLayout's pixels for its points)
                 Uniforms u = uniforms(style.fill, false, !solid);
                 u.anchored = 1.0f;
                 u.cell = float(k);
                 u.phase[0] = style.animation == 1 ? float(tick) : 0.0f;
-                draws.push_back({a_fill[blend].get(), l.fills.buffer.get(), l.fills.count, solid ? a_plain.get() : stippleTexture(*style.stipple), u});
+                // (a row lower for each place in KLayout's list)
+                u.phase[1] = -float(stippleOffset(style));
+                QRhiTexture* bits = solid ? a_plain.get() : stippleTexture(*style.stipple);
+                draws.push_back({a_fill[blend].get(), l.fills.buffer.get(), l.fills.count, bits, u});
+                // (again a device pixel right: KLayout fills a row from its
+                // left edge's column to its right edge's, that one too)
+                u.nudge[0] += float(2.0 / std::max(1, px.width()));
+                draws.push_back({a_fill[blend].get(), l.fills.buffer.get(), l.fills.count, bits, u});
             }
             edges(l.outlines, style.frame, style.width * k, style.line, blend);
-            edges(l.xfills, style.frame, style.width * k, LineStyle(), blend);
+            edges(l.xfills, style.frame, std::max(1, style.width) * k, LineStyle(), blend);
             if (l.dots.count > 0) {
-                Uniforms u = uniforms(style.frame, true, false);
+                Uniforms u = asKLayout(uniforms(style.frame, true, false));
                 u.dotSize[0] = u.dotSize[1] = float(k);
                 draws.push_back({a_dot[blend].get(), l.dots.buffer.get(), l.dots.count, a_plain.get(), u});
             }
             if (l.marks.count > 0)
                 for (const QSizeF bar : {QSizeF(9 * k, k), QSizeF(k, 9 * k)}) {
-                    Uniforms u = uniforms(style.frame, true, false);
+                    Uniforms u = asKLayout(uniforms(style.frame, true, false));
                     u.always = 1.0f;
                     u.dotSize[0] = float(bar.width());
                     u.dotSize[1] = float(bar.height());

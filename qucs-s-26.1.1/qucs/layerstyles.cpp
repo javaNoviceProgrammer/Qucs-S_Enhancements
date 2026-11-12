@@ -7,9 +7,10 @@
  *                   layers a source names - for the layout viewer to draw
  *                   them as KLayout does
  *
- * The file's format is KLayout's, as its documentation describes it; the
- * patterns and line styles are drawn here from their names (KLayout's
- * pattern editor and layer toolbox show them), not taken from KLayout.
+ * The file's format is KLayout's, as its documentation describes it. The
+ * built-in patterns and line styles, the default colours and the
+ * brightness are measured from the pictures KLayout draws. No KLayout
+ * source or file is in here.
  *
  * This file is part of Qucs-S.
  *
@@ -45,140 +46,100 @@ int wrap(int a, int n)
 }
 
 // ----------------------------------------------------------------------
-// KLayout's patterns, each drawn from its name: a rule on the pixel (x, y)
-// of a tile w by h, x to the right and y down from its top left.
+// KLayout's patterns by name, each a tile of rows from the top ('*' the
+// pixels drawn), tiled from the screen's lower left - as KLayout draws
+// them for the first layer in its list (each further one a row lower):
+// read from its pictures, each on a box 32 pixels inside, at 1 and 2
+// pixels a micrometre.
 
 struct Rule {
     const char* name;
-    int w, h;
-    bool (*on)(int x, int y);
+    const char* rows;   // its rows, top first, a space between
 };
 
-// Sixteen pixels of 64 strewn about with no order to the eye: the k'th at
-// (37 k + 11) mod 64 - 37 being prime to 64, each once.
-bool strewn(int x, int y)
-{
-    for (int k = 0; k < 16; ++k)
-        if ((37 * k + 11) % 64 == y * 8 + x) return true;
-    return false;
-}
-
-// A wave across the tile, a pixel a column: 1.5 - 1.5 sin, rounded.
-bool wave(int x, int y)
-{
-    static const int rows[8] = {1, 0, 0, 1, 2, 3, 3, 2};
-    return rows[x] == y;
-}
-
-// A small triangle, its apex up, at (ax, ay): rows of 1, 3 and 5 pixels.
-bool triangle(int x, int y, int ax, int ay)
-{
-    const int dy = y - ay;
-    if (dy < 0 || dy > 2) return false;
-    for (int dx = -dy; dx <= dy; ++dx)
-        if (wrap(ax + dx, 8) == x) return true;
-    return false;
-}
-
 const Rule kStipples[] = {
-    {"solid", 1, 1, [](int, int) { return true; }},
-    {"hollow", 1, 1, [](int, int) { return false; }},
-    {"dotted", 2, 2, [](int x, int y) { return (x + y) % 2 == 0; }},
-    {"coarsely dotted", 4, 4, [](int x, int y) { return (x == 0 && y == 0) || (x == 2 && y == 2); }},
-    {"left-hatched", 4, 4, [](int x, int y) { return x == y; }},
-    {"lightly left-hatched", 8, 8, [](int x, int y) { return x == y; }},
-    {"strongly left-hatched dense", 4, 4, [](int x, int y) { return wrap(x - y, 4) < 2; }},
-    {"strongly left-hatched sparse", 8, 8, [](int x, int y) { return wrap(x - y, 8) < 2; }},
-    {"right-hatched", 4, 4, [](int x, int y) { return (x + y) % 4 == 0; }},
-    {"lightly right-hatched", 8, 8, [](int x, int y) { return (x + y) % 8 == 0; }},
-    {"strongly right-hatched dense", 4, 4, [](int x, int y) { return (x + y) % 4 < 2; }},
-    {"strongly right-hatched sparse", 8, 8, [](int x, int y) { return (x + y) % 8 < 2; }},
-    {"cross-hatched", 4, 4, [](int x, int y) { return x == y || (x + y) % 4 == 0; }},
-    {"lightly cross-hatched", 8, 8, [](int x, int y) { return x == y || (x + y) % 8 == 0; }},
-    {"checkerboard 2px", 4, 4, [](int x, int y) { return (x / 2 + y / 2) % 2 == 0; }},
-    {"strongly cross-hatched sparse", 8, 8, [](int x, int y) { return wrap(x - y, 8) < 2 || (x + y) % 8 < 2; }},
-    {"heavy checkerboard", 8, 8, [](int x, int y) { return (x / 4 + y / 4) % 2 == 0; }},
-    {"hollow bubbles", 8, 8,
-     [](int x, int y) {
-         // Rings of eight round an empty middle, every other row of them
-         // half a tile on.
-         for (const auto [cx, cy] : {std::pair{2, 1}, std::pair{6, 5}})
-             if (std::abs(x - cx) <= 1 && std::abs(y - cy) <= 1 && !(x == cx && y == cy)) return true;
-         return false;
-     }},
-    {"solid bubbles", 8, 8,
-     [](int x, int y) {
-         for (const auto [cx, cy] : {std::pair{2, 1}, std::pair{6, 5}})
-             if (std::abs(x - cx) <= 1 && std::abs(y - cy) <= 1) return true;
-         return false;
-     }},
-    {"pyramids", 8, 8, [](int x, int y) { return triangle(x, y, 2, 1) || triangle(x, y, 6, 5); }},
-    {"turned pyramids", 8, 8, [](int x, int y) { return triangle(x, 7 - y, 2, 1) || triangle(x, 7 - y, 6, 5); }},
-    {"plus", 8, 8,
-     [](int x, int y) {
-         for (const auto [cx, cy] : {std::pair{2, 2}, std::pair{6, 6}}) {
-             const int dx = wrap(x - cx + 4, 8) - 4, dy = wrap(y - cy + 4, 8) - 4;
-             if ((dy == 0 && std::abs(dx) <= 2) || (dx == 0 && std::abs(dy) <= 2)) return true;
-         }
-         return false;
-     }},
-    {"minus", 8, 8, [](int x, int y) { return (y == 1 && x <= 4) || (y == 5 && wrap(x - 4, 8) <= 4); }},
-    {"22.5 degree down", 8, 4, [](int x, int y) { return x / 2 == y; }},
-    {"22.5 degree up", 8, 4, [](int x, int y) { return (7 - x) / 2 == y; }},
-    {"67.5 degree down", 4, 8, [](int x, int y) { return y / 2 == x; }},
-    {"67.5 degree up", 4, 8, [](int x, int y) { return y / 2 == 3 - x; }},
-    {"22.5 degree cross hatched", 8, 4, [](int x, int y) { return x / 2 == y || (7 - x) / 2 == y; }},
-    {"zig zag", 4, 4, [](int x, int y) { return (y == 0 && x == 0) || (y == 1 && (x == 1 || x == 3)) || (y == 2 && x == 2); }},
-    {"sine", 8, 4, wave},
-    {"heavy unordered", 8, 8, [](int x, int y) { return !strewn(x, y); }},
-    {"light unordered", 8, 8, strewn},
-    {"vertical dense", 2, 1, [](int x, int) { return x == 0; }},
-    {"vertical", 4, 1, [](int x, int) { return x == 0; }},
-    {"vertical thick", 4, 1, [](int x, int) { return x < 2; }},
-    {"vertical sparse", 8, 1, [](int x, int) { return x == 0; }},
-    {"vertical sparse, thick", 8, 1, [](int x, int) { return x < 2; }},
-    {"horizontal dense", 1, 2, [](int, int y) { return y == 0; }},
-    {"horizontal", 1, 4, [](int, int y) { return y == 0; }},
-    {"horizontal thick", 1, 4, [](int, int y) { return y < 2; }},
-    {"horizontal sparse", 1, 8, [](int, int y) { return y == 0; }},
-    {"horizontal sparse, thick", 1, 8, [](int, int y) { return y < 2; }},
-    {"grid dense", 2, 2, [](int x, int y) { return x == 0 || y == 0; }},
-    {"grid", 4, 4, [](int x, int y) { return x == 0 || y == 0; }},
-    {"grid thick", 4, 4, [](int x, int y) { return x < 2 || y < 2; }},
-    {"grid sparse", 8, 8, [](int x, int y) { return x == 0 || y == 0; }},
-    {"grid sparse, thick", 8, 8, [](int x, int y) { return x < 2 || y < 2; }},
+    {"solid", "*"},
+    {"hollow", "."},
+    {"dotted", "*. .*"},
+    {"coarsely dotted", "*... .... ..*. ...."},
+    {"left-hatched", "*... .*.. ..*. ...*"},
+    {"lightly left-hatched", "*....... .*...... ..*..... ...*.... ....*... .....*.. ......*. .......*"},
+    {"strongly left-hatched dense", "**.. .**. ..** *..*"},
+    {"strongly left-hatched sparse", "**...... .**..... ..**.... ...**... ....**.. .....**. ......** *......*"},
+    {"right-hatched", "*... ...* ..*. .*.."},
+    {"lightly right-hatched", "*....... .......* ......*. .....*.. ....*... ...*.... ..*..... .*......"},
+    {"strongly right-hatched dense", "**.. *..* ..** .**."},
+    {"strongly right-hatched sparse", "**...... *......* ......** .....**. ....**.. ...**... ..**.... .**....."},
+    {"cross-hatched", "*... .*.* ..*. .*.*"},
+    {"lightly cross-hatched", "*....... .*.....* ..*...*. ...*.*.. ....*... ...*.*.. ..*...*. .*.....*"},
+    {"checkerboard 2px", "**.. **.. ..** ..**"},
+    {"strongly cross-hatched sparse", "**...... ***....* ..**..** ...****. ....**.. ...****. ..**..** ***....*"},
+    {"heavy checkerboard", "****.... ****.... ****.... ****.... ....**** ....**** ....**** ....****"},
+    {"hollow bubbles", ".*...*.. *.*..... .*...*.. ....*.*."},
+    {"solid bubbles", ".*...*.. ***..... .*...*.. ....***."},
+    {"pyramids", ".*...... *.*..... ****...* ........ ....*... ...*.*.. ..*****. ........"},
+    {"turned pyramids", "****...* *.*..... .*...... ........ ..*****. ...*.*.. ....*... ........"},
+    {"plus", "..*...*. ..*..... *****... ..*..... ..*...*. ......*. *...**** ......*."},
+    {"minus", "........ ........ *****... ........ ........ ........ *...**** ........"},
+    {"22.5 degree down", "*......* .**..... ...**... .....**."},
+    {"22.5 degree up", "*......* .....**. ...**... .**....."},
+    {"67.5 degree down", "*... .*.. .*.. ..*. ..*. ...* ...* *..."},
+    {"67.5 degree up", "...* ..*. ..*. .*.. .*.. *... *... ...*"},
+    {"22.5 degree cross hatched", "*......* .**..**. ...**... .**..**."},
+    {"zig zag", "..*. .*.* *... ...."},
+    {"sine", "..***... .*...*.. *.....** ........"},
+    {"heavy unordered", "****.*.* **.****. *.**.*** *****.*. .**.**** **.***.* .****.** *.*.****"},
+    {"light unordered", "....*.*. ..*....* .*..*... .....*.* *..*.... ..*...*. *....*.. .*.*...."},
+    {"vertical dense", "*."},
+    {"vertical", ".*.."},
+    {"vertical thick", ".**."},
+    {"vertical sparse", "...*...."},
+    {"vertical sparse, thick", "...**..."},
+    {"horizontal dense", "* ."},
+    {"horizontal", ". * . ."},
+    {"horizontal thick", ". * * ."},
+    {"horizontal sparse", ". . . * . . . ."},
+    {"horizontal sparse, thick", ". . . * * . . ."},
+    {"grid dense", "** *."},
+    {"grid", ".*.. **** .*.. .*.."},
+    {"grid thick", ".**. **** **** .**."},
+    {"grid sparse", "...*.... ...*.... ...*.... ******** ...*.... ...*.... ...*.... ...*...."},
+    {"grid sparse, thick", "...**... ...**... ...**... ******** ******** ...**... ...**... ...**..."},
 };
 
 // KLayout's line styles by name: the pixels drawn ('*') and left ('.')
-// along a line, repeated.
+// along a line, repeated from the screen's left (or bottom) - as KLayout
+// draws them, read from its pictures.
 const std::pair<const char*, const char*> kLines[] = {
     {"solid", ""},
     {"dotted", "*."},
-    {"dashed", "****.."},
-    {"dash-dotted", "******..**.."},
-    {"short dashed", "**.."},
-    {"short dash-dotted", "***.*."},
-    {"long dashed", "**********.."},
-    {"dash-double-dotted", "*****..*.*.."},
+    {"dashed", "**..**"},
+    {"dash-dotted", "***..**..***"},
+    {"short dashed", "*..*"},
+    {"short dash-dotted", "**.*.*"},
+    {"long dashed", "*****..*****"},
+    {"dash-double-dotted", "***..*.*..**"},
 };
 
-// KLayout's colours for a layer given none, by its place in the list -
-// read from the pictures it draws of layers given none (36, then again);
-// its pattern lightly right-hatched at an even place, lightly
+// KLayout's colours for a layer given none, by its layer number - 1 the
+// first, 36 the last, 37 the first again (0 the last), whatever its
+// datatype - read from the pictures it draws of layers given none; its
+// pattern lightly right-hatched at an even place in the list, lightly
 // left-hatched at an odd one.
 const QRgb kDefaultColours[] = {0xff80a8, 0xc080ff, 0x9580ff, 0x8086ff, 0x80a8ff, 0xff0000, 0xff0080, 0xff00ff, 0x8000ff,
                                 0x0000ff, 0x0080ff, 0x800000, 0x800057, 0x800080, 0x500080, 0x000080, 0x004080, 0x80fffb,
                                 0x80ff8d, 0xafff80, 0xf3ff80, 0xffc280, 0xffa080, 0x00ffff, 0x01ff6b, 0x91ff00, 0xddff00,
                                 0xffae00, 0xff8000, 0x008080, 0x008050, 0x008000, 0x508000, 0x808000, 0x805000, 0xff9d9d};
 
-QColor defaultColour(int place)
+QColor defaultColour(quint32 layer)
 {
-    return QColor::fromRgb(kDefaultColours[std::max(0, place) % std::size(kDefaultColours)]);
+    const quint32 n = quint32(std::size(kDefaultColours));
+    return QColor::fromRgb(kDefaultColours[(layer % n + n - 1) % n]);
 }
 
 int defaultStipple(int place)
 {
-    return place % 2 == 0 ? 9 : 5;
+    return std::max(0, place) % 2 == 0 ? 9 : 5;
 }
 
 LineStyle lineFrom(const QString& pattern, const QString& name)
@@ -389,19 +350,17 @@ LayerProperties parse(QIODevice* device, QString* error)
             any = true;
             readTab(xml, &lyp, &stipples, &lines);
         } else if (xml.name() == QLatin1String("layer-properties-tabs")) {
-            // Its first tab, as KLayout opens it; the patterns of every tab.
+            // Its last tab, the one KLayout shows when it has read them;
+            // the patterns of every tab.
             while (xml.readNextStartElement()) {
                 if (xml.name() != QLatin1String("layer-properties")) {
                     xml.skipCurrentElement();
                     continue;
                 }
-                if (!any) {
-                    any = true;
-                    readTab(xml, &lyp, &stipples, &lines);
-                } else {
-                    LayerProperties other;
-                    readTab(xml, &other, &stipples, &lines);
-                }
+                any = true;
+                LayerProperties tab;
+                readTab(xml, &tab, &stipples, &lines);
+                lyp.entries = tab.entries;
             }
         }
     }
@@ -428,10 +387,27 @@ struct Leaf {
     LayerSource source;
     bool visible = true;   // and its groups'
     QVector<int> path;     // the groups it is in, from the top: their indices in groups
+    int place = 0;         // its row in KLayout's list, a group's row counted too
+    int nth = 0;           // its place among the layers' rows alone (groups' not counted)
+    bool everything = false;   // */* (or no source): not KLayout's (it lists the layers instead)
 };
+
+bool namesEverything(const LayerSource& s)
+{
+    return s.name.isEmpty() && (!s.numbered || (s.layerFrom < 0 && s.datatypeFrom < 0));
+}
+
+// Whether KLayout draws an entry of \a s on a layer: one layer named, by
+// its numbers or its name - a wildcard's (*/0, 1/*) draws none.
+bool bindsOne(const LayerSource& s)
+{
+    return s.numbered ? s.layerFrom >= 0 && s.datatypeFrom >= 0 : !s.name.isEmpty();
+}
 
 struct Resolved {
     QVector<Leaf> leaves;
+    int rows = 0;     // the rows of KLayout's list, groups' and layers'
+    int layers = 0;   // the layers' rows alone
     struct Group {
         QString name;
         int parent = -1;
@@ -445,21 +421,31 @@ void resolve(const QVector<LayerEntry>& entries, const LayerEntry* parent, const
     for (const LayerEntry& given : entries) {
         LayerEntry e = given;
         if (parent != nullptr) {
-            if (!e.frame.isValid()) e.frame = parent->frame;
-            if (!e.fill.isValid()) e.fill = parent->fill;
-            if (e.frameBrightness == 0) e.frameBrightness = parent->frameBrightness;
-            if (e.fillBrightness == 0) e.fillBrightness = parent->fillBrightness;
-            if (e.dither.isEmpty()) e.dither = parent->dither;
-            if (e.line.isEmpty()) e.line = parent->line;
-            if (!e.transparent) e.transparent = parent->transparent;
-            if (!e.xfill) e.xfill = parent->xfill;
-            if (!e.marked) e.marked = parent->marked;
-            if (!e.valid) e.valid = parent->valid;
-            if (!e.width) e.width = parent->width;
-            if (!e.animation) e.animation = parent->animation;
+            // As KLayout combines them (read from what its layer list
+            // says of a member): what the group sets over the member's
+            // own - the outermost group's over all; brightness added;
+            // transparent, crossed and marked where either is; valid
+            // where both are; the wider frame.
+            if (parent->frame.isValid()) e.frame = parent->frame;
+            if (parent->fill.isValid()) e.fill = parent->fill;
+            e.frameBrightness = std::clamp(e.frameBrightness + parent->frameBrightness, -255, 255);
+            e.fillBrightness = std::clamp(e.fillBrightness + parent->fillBrightness, -255, 255);
+            if (!parent->dither.isEmpty()) e.dither = parent->dither;
+            if (!parent->line.isEmpty()) e.line = parent->line;
+            const auto either = [](std::optional<bool> a, std::optional<bool> b) -> std::optional<bool> {
+                if (!a && !b) return std::nullopt;
+                return a.value_or(false) || b.value_or(false);
+            };
+            e.transparent = either(e.transparent, parent->transparent);
+            e.xfill = either(e.xfill, parent->xfill);
+            e.marked = either(e.marked, parent->marked);
+            if (e.valid || parent->valid) e.valid = e.valid.value_or(true) && parent->valid.value_or(true);
+            if (parent->width) e.width = e.width ? std::max(*e.width, *parent->width) : *parent->width;
+            if (parent->animation.value_or(0) != 0) e.animation = parent->animation;
         }
         const LayerSource source = parent != nullptr ? withinGroup(parseLayerSource(e.source), parentSource) : parseLayerSource(e.source);
         const bool visible = parentVisible && e.visible.value_or(true);
+        const int place = out->rows++;
         if (e.group) {
             Resolved::Group g;
             g.name = !e.name.isEmpty() ? e.name : e.source;
@@ -475,7 +461,16 @@ void resolve(const QVector<LayerEntry>& entries, const LayerEntry* parent, const
         leaf.source = source;
         leaf.visible = visible;
         leaf.path = path;
+        leaf.place = place;
+        leaf.nth = out->layers++;
         out->leaves.append(leaf);
+        // A layer for every layer (no source, or */*): KLayout lists every
+        // layer in its place instead - here, its row not counted.
+        if (namesEverything(source)) {
+            out->leaves.last().everything = true;
+            --out->rows;
+            --out->layers;
+        }
     }
 }
 
@@ -489,14 +484,16 @@ QString nameOf(const LayerEntry& e)
     return rest.trimmed();
 }
 
-LayerStyle klayoutStyle(const Leaf& leaf, int index, const LayerProperties& lyp)
+LayerStyle klayoutStyle(const Leaf& leaf, const LayerInfo& layer, const LayerProperties& lyp)
 {
     const LayerEntry& e = leaf.entry;
+    const int index = leaf.nth;
     LayerStyle s;
     s.klayout = true;
-    // A colour or a pattern not given: KLayout's default for the layer's
-    // place in the list.
-    const QColor otherwise = defaultColour(index);
+    s.order = leaf.place;
+    // A colour not given: KLayout's default for the layer's number; a
+    // pattern, for its place among the list's layers.
+    const QColor otherwise = defaultColour(layer.key.layer);
     s.frame = brightened(e.frame.isValid() ? e.frame : otherwise, e.frameBrightness);
     s.fill = brightened(e.fill.isValid() ? e.fill : otherwise, e.fillBrightness);
     s.stipple = stippleNamed(e.dither, lyp, index);
@@ -504,7 +501,7 @@ LayerStyle klayoutStyle(const Leaf& leaf, int index, const LayerProperties& lyp)
                 : s.stipple->isEmpty() ? Qt::NoBrush
                                        : patternOf(e.dither.isEmpty() ? QStringLiteral("I%1").arg(defaultStipple(index)) : e.dither);
     s.line = lineNamed(e.line, lyp);
-    s.width = std::max(1, e.width.value_or(1));
+    s.width = std::max(0, e.width.value_or(1));   // (0: no frame, as KLayout draws it)
     s.transparent = e.transparent.value_or(false);
     s.xfill = e.xfill.value_or(false);
     s.marked = e.marked.value_or(false);
@@ -567,13 +564,7 @@ int standardStippleCount()
 Stipple standardStipple(int index)
 {
     const Rule& r = kStipples[index >= 0 && index < standardStippleCount() ? index : 0];
-    Stipple s;
-    s.width = r.w;
-    s.height = r.h;
-    s.name = QCoreApplication::translate("Layout", r.name);
-    for (int y = 0; y < r.h; ++y)
-        for (int x = 0; x < r.w; ++x)
-            if (r.on(x, y)) s.rows[std::size_t(y)] |= 1u << x;
+    Stipple s = stippleFrom(QString::fromLatin1(r.rows).split(QLatin1Char(' ')), QCoreApplication::translate("Layout", r.name));
     return s;
 }
 
@@ -648,10 +639,9 @@ LayerSource parseLayerSource(const QString& text)
             *from = *to = -1;
             return;
         }
-        const QStringList ends = t.split(QLatin1Char('-'));
-        *from = ends.value(0).trimmed().toInt();
-        *to = ends.size() > 1 ? ends.value(1).trimmed().toInt() : *from;
-        if (*to < *from) std::swap(*from, *to);
+        // (a-b: a - KLayout's sources have no ranges; it reads the first
+        // number and takes the rest for a name)
+        *from = *to = t.section(QLatin1Char('-'), 0, 0).trimmed().toInt();
     };
     static const QRegularExpression pair(QStringLiteral("(\\*|\\d+(?:\\s*-\\s*\\d+)?)\\s*/\\s*(\\*|\\d+(?:\\s*-\\s*\\d+)?)"));
     static const QRegularExpression single(QStringLiteral("(?:^|[\\s(])(\\*|\\d+)(?=$|[\\s)])"));
@@ -683,6 +673,17 @@ LayerSource withinGroup(const LayerSource& member, const LayerSource& group)
         s.datatypeFrom = group.datatypeFrom;
         s.datatypeTo = group.datatypeTo;
         s.name = group.name;
+    } else if (member.numbered && group.numbered) {
+        // Each number the member leaves open (*) the group's: */5 in a
+        // group of 1/* is 1/5, as KLayout has it.
+        if (member.layerFrom < 0) {
+            s.layerFrom = group.layerFrom;
+            s.layerTo = group.layerTo;
+        }
+        if (member.datatypeFrom < 0) {
+            s.datatypeFrom = group.datatypeFrom;
+            s.datatypeTo = group.datatypeTo;
+        }
     }
     if (member.layout == 0) s.layout = group.layout;
     return s;
@@ -706,16 +707,22 @@ LayerPlan planLayers(const Layout& layout, const LayerProperties& lyp, bool klay
     plan.styles.resize(n);
     Resolved r;
     resolve(lyp.entries, nullptr, LayerSource(), true, {}, &r);
-    // Each layer's entry: the last naming it (drawn over the others, as
-    // KLayout draws them) - the viewer's own look, the first, as before.
+    // Each layer's entries: as KLayout draws them, every one naming it
+    // alone (not a wildcard's, not */*), each in its place - the last over
+    // the others, the layer's own row; the viewer's own look, the first
+    // naming it, wildcards too, as before.
     QVector<int> leafOf(n, -1);
+    QVector<QVector<int>> leavesOf(n);
     for (int i = 0; i < n; ++i) {
         const LayerInfo& info = layout.layers.at(i);
-        for (int k = 0; k < r.leaves.size(); ++k)
-            if (sourceMatches(r.leaves.at(k).source, info)) {
-                leafOf[i] = k;
-                if (!klayoutLook) break;
-            }
+        for (int k = 0; k < r.leaves.size(); ++k) {
+            const Leaf& leaf = r.leaves.at(k);
+            if (klayoutLook && (leaf.everything || !bindsOne(leaf.source))) continue;
+            if (!sourceMatches(leaf.source, info)) continue;
+            leafOf[i] = k;
+            leavesOf[i].append(k);
+            if (!klayoutLook) break;
+        }
     }
     int unnamed = 0;
     for (int i = 0; i < n; ++i) {
@@ -724,19 +731,31 @@ LayerPlan planLayers(const Layout& layout, const LayerProperties& lyp, bool klay
         if (k < 0) {
             s = paletteStyle(i);
             if (klayoutLook) {
-                // A layer the file names none of: after its layers, as
-                // KLayout adds one - its colour and pattern KLayout's
-                // default for that place in the list.
-                const int place = int(r.leaves.size()) + unnamed++;
+                // A layer the file names none of: after its rows, in order
+                // of layer and datatype, as KLayout adds one - its colour
+                // KLayout's default for its number, its pattern for its
+                // place among the list's layers.
+                const int nth = r.layers + unnamed;
                 s.klayout = true;
-                s.frame = s.fill = defaultColour(place);
-                s.stipple = sharedStipple(defaultStipple(place));
-                s.pattern = place % 2 == 0 ? Qt::BDiagPattern : Qt::FDiagPattern;
-                s.order = place;
+                s.frame = s.fill = defaultColour(layout.layers.at(i).key.layer);
+                s.stipple = sharedStipple(defaultStipple(nth));
+                s.pattern = nth % 2 == 0 ? Qt::BDiagPattern : Qt::FDiagPattern;
+                s.order = r.rows + unnamed++;
             }
+        } else if (!klayoutLook) {
+            s = viewerStyle(r.leaves.at(k), i);
         } else {
-            s = klayoutLook ? klayoutStyle(r.leaves.at(k), k, lyp) : viewerStyle(r.leaves.at(k), i);
-            if (klayoutLook) s.order = k;
+            s = klayoutStyle(r.leaves.at(k), layout.layers.at(i), lyp);
+            if (leavesOf.at(i).size() > 1) {
+                // Named more than once: each entry drawn, the layer shown
+                // where any is (its row hides or shows them all).
+                auto passes = std::make_shared<std::vector<LayerStyle>>();
+                for (int each : std::as_const(leavesOf.at(i))) {
+                    passes->push_back(klayoutStyle(r.leaves.at(each), layout.layers.at(i), lyp));
+                    s.visible = s.visible || passes->back().visible;
+                }
+                s.passes = passes;
+            }
         }
         if (s.name.isEmpty()) s.name = layout.layers.at(i).name;
         plan.styles[i] = s;
@@ -825,6 +844,11 @@ int stipplePixels(qreal ratio)
     return std::max(1, int(std::lround(ratio)));
 }
 
+int stippleOffset(const LayerStyle& style)
+{
+    return style.klayout && style.order > 0 ? style.order % 32 : 0;
+}
+
 bool mixesByAnd(const QColor& canvas)
 {
     return !canvas.isValid() || qGray(canvas.rgb()) >= 128;
@@ -837,6 +861,25 @@ QVector<int> drawingOrder(const QVector<LayerStyle>& styles, int layers)
     const auto key = [&styles](int i) { return i < styles.size() && styles.at(i).order >= 0 ? styles.at(i).order : i; };
     std::stable_sort(order.begin(), order.end(), [&key](int a, int b) { return key(a) < key(b); });
     return order;
+}
+
+std::vector<DrawPass> drawingPasses(const QVector<LayerStyle>& styles, int layers)
+{
+    std::vector<std::pair<int, DrawPass>> all;
+    for (int i = 0; i < layers; ++i) {
+        const LayerStyle* s = i < styles.size() ? &styles.at(i) : nullptr;
+        if (s != nullptr && s->passes) {
+            for (const LayerStyle& p : *s->passes)
+                if (p.visible) all.push_back({p.order >= 0 ? p.order : i, {i, &p}});
+            continue;
+        }
+        all.push_back({s != nullptr && s->order >= 0 ? s->order : i, {i, s}});
+    }
+    std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<DrawPass> out;
+    out.reserve(all.size());
+    for (const auto& [key, pass] : all) out.push_back(pass);
+    return out;
 }
 
 bool shownAtTick(const LayerStyle& style, int tick)

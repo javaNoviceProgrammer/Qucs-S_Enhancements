@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-properties>
+ <properties><name>G</name><fill-color>#ff0000</fill-color><dither-pattern>I4</dither-pattern><width>3</width><fill-brightness>40</fill-brightness><transparent>true</transparent><source>*/*@*</source><group-members><frame-color>#0000ff</frame-color><fill-color>#0000ff</fill-color><dither-pattern>I8</dither-pattern><width>1</width><fill-brightness>-20</fill-brightness><source>1/0@1</source></group-members><group-members><frame-color>#008000</frame-color><source>2/0@1</source></group-members></properties>
+ <properties><frame-color>#00ffff</frame-color><fill-color>#00ffff</fill-color><dither-pattern>I0</dither-pattern><source>*/*@*</source></properties>
+ <properties><name>OUT</name><frame-color>#000080</frame-color><line-style>I2</line-style><source>*/*@*</source><group-members><name>IN</name><frame-color>#00ff00</frame-color><fill-color>#804000</fill-color><dither-pattern>I12</dither-pattern><source>*/*@*</source><group-members><source>3/0@1</source></group-members></group-members></properties>
+ <properties><frame-color>#ff00ff</frame-color><fill-color>#ff00ff</fill-color><dither-pattern>I0</dither-pattern><source>*/0@1</source></properties>
+ <properties><fill-color>#008080</fill-color><dither-pattern>I16</dither-pattern><source>1/*@1</source><group-members><fill-color>#ff8000</fill-color><source>*/5</source></group-members></properties>
+ <properties><source>14/0@1</source></properties>
+ <properties><frame-color>#c08000</frame-color><fill-color>#c08000</fill-color><dither-pattern>I17</dither-pattern><source>4/0@1</source></properties>
+ <properties><frame-color>#000000</frame-color><fill-color>#808080</fill-color><dither-pattern>I0</dither-pattern><width>0</width><source>5/0@1</source></properties>
+ <properties><frame-color>#a000a0</frame-color><fill-color>#a000a0</fill-color><dither-pattern>I1</dither-pattern><line-style>I3</line-style><width>2</width><source>6/0@1</source></properties>
+ <properties><frame-color>#00a0a0</frame-color><fill-color>#00a0a0</fill-color><dither-pattern>I32</dither-pattern><line-style>C0</line-style><width>1</width><source>7/0@1</source></properties>
+ <properties><frame-color>#404040</frame-color><fill-color>#404040</fill-color><dither-pattern>I1</dither-pattern><line-style>I7</line-style><width>3</width><source>8/0@1</source></properties>
+ <properties><frame-color>#0060ff</frame-color><fill-color>#0060ff</fill-color><dither-pattern>I9</dither-pattern><line-style>I2</line-style><marked>true</marked><source>9/0@1</source></properties>
+ <properties><frame-color>#ff6000</frame-color><fill-color>#ff6000</fill-color><dither-pattern>I13</dither-pattern><width>2</width><marked>true</marked><source>10/0@1</source></properties>
+ <properties><frame-color>#000000</frame-color><fill-color>#ff0000</fill-color><dither-pattern>I1</dither-pattern><width>2</width><xfill>true</xfill><marked>true</marked><source>11/0@1</source></properties>
+ <properties><frame-color>#00c000</frame-color><fill-color>#00c000</fill-color><dither-pattern>I23</dither-pattern><valid>false</valid><source>12/0@1</source></properties>
+ <properties><frame-color>#ff0000</frame-color><fill-color>#ff0000</fill-color><visible>false</visible><source>13/0@1</source></properties>
+ <properties><frame-color>#0000c0</frame-color><fill-color>#0000c0</fill-color><dither-pattern>I30</dither-pattern><source>4/0@1</source></properties>
+ <properties><frame-color>#800080</frame-color><fill-color>#800080</fill-color><dither-pattern>I1</dither-pattern><line-style>I4</line-style><source>16/0@1</source></properties>
+ <custom-line-style><pattern>**.*..</pattern><order>1</order><name>mine</name></custom-line-style>
+</layer-properties>

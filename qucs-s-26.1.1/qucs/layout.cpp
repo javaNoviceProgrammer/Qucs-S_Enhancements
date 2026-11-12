@@ -918,6 +918,8 @@ public:
     {
         const int n = int(layout.layers.size());
         polygons.resize(n);
+        spines.resize(n);
+        spineOf.resize(n);
         dots.resize(n);
         seen.resize(n);
         device = o.device.toAlignedRect();
@@ -926,6 +928,11 @@ public:
     bool visible(quint32 layer) const
     {
         return O.styles == nullptr || int(layer) >= O.styles->size() || O.styles->at(int(layer)).visible;
+    }
+    // (KLayout draws a path's spine as it draws its outline.)
+    bool spined(quint32 layer) const
+    {
+        return O.styles != nullptr && int(layer) < O.styles->size() && O.styles->at(int(layer)).klayout;
     }
     bool full()
     {
@@ -971,6 +978,18 @@ public:
                 const QPointF* p = cell.points.constData() + sh.first;
                 for (quint32 k = 0; k < sh.count; ++k) poly[k] = T.map(p[k] + off);
                 polygons[int(sh.layer)].append(poly);
+                int spine = -1;
+                if (sh.path >= 0 && sh.path < cell.paths.size() && spined(sh.layer)) {
+                    const PathInfo& path = cell.paths.at(sh.path);
+                    QPolygonF line(path.count);
+                    const QPointF* q = cell.points.constData() + path.first;
+                    for (quint32 k = 0; k < path.count; ++k) line[k] = T.map(q[k] + off);
+                    if (line.size() > 1) {
+                        spine = int(spines[int(sh.layer)].size());
+                        spines[int(sh.layer)].append(line);
+                    }
+                }
+                if (spined(sh.layer)) spineOf[int(sh.layer)].append(spine);
                 return true;
             };
             if (sh.repetition < 0) {
@@ -984,7 +1003,10 @@ public:
                 if (!meets(e, vis)) continue;
                 if (full()) return;
                 ++used;
-                if (!counting) polygons[int(sh.layer)].append(T.map(QPolygonF(e)));
+                if (!counting) {
+                    polygons[int(sh.layer)].append(T.map(QPolygonF(e)));
+                    if (spined(sh.layer)) spineOf[int(sh.layer)].append(-1);
+                }
                 stats.polygons++;
                 continue;
             }
@@ -1055,9 +1077,10 @@ public:
         p.setRenderHint(QPainter::Antialiasing, false);
         static const QVector<LayerStyle> none;
         const QVector<LayerStyle>& styles = O.styles != nullptr ? *O.styles : none;
-        for (int i : drawingOrder(styles, int(polygons.size()))) {
+        for (const DrawPass& pass : drawingPasses(styles, int(polygons.size()))) {
+            const int i = pass.layer;
             if (polygons[i].isEmpty() && dots[i].isEmpty()) continue;
-            const LayerStyle given = i < styles.size() ? styles.at(i) : paletteStyle(i);
+            const LayerStyle given = pass.style != nullptr ? *pass.style : paletteStyle(i);
             if (given.klayout) {
                 if (shownAtTick(given, O.tick)) paintAsKLayout(p, i, given);
                 continue;
@@ -1122,122 +1145,201 @@ public:
             return;
         }
         const bool byAnd = mixesByAnd(O.canvas);
-        QImage mixed((O.device.size() * ratio).toSize(), QImage::Format_ARGB32_Premultiplied);
-        mixed.setDevicePixelRatio(ratio);
-        mixed.fill(Qt::transparent);
-        {
-            QPainter q(&mixed);
-            q.setRenderHint(QPainter::Antialiasing, false);
-            q.translate(-O.device.topLeft());
-            paintLayerAsKLayout(q, i, s, ratio);
-        }
-        // On a picture (the view's, an export's): each of its pixels ANDed
-        // or ORed with what is there - itself where nothing is (a
-        // transparent picture's empty places stay empty elsewhere). (Qt's
-        // raster operations make every pixel they touch opaque.)
-        auto* target = p.device() != nullptr && p.device()->devType() == QInternal::Image ? static_cast<QImage*>(p.device()) : nullptr;
-        const QTransform dt = p.deviceTransform();
-        if (target != nullptr
-            && (target->format() == QImage::Format_ARGB32_Premultiplied || target->format() == QImage::Format_ARGB32 || target->format() == QImage::Format_RGB32)
-            && dt.type() <= QTransform::TxScale && std::abs(dt.m11() - ratio) < 1e-9 && std::abs(dt.m22() - ratio) < 1e-9) {
-            const QPoint at = dt.map(O.device.topLeft()).toPoint();
-            const QRect clip = p.hasClipping() ? dt.mapRect(p.clipBoundingRect()).toAlignedRect() & target->rect() : target->rect();
-            for (int y = 0; y < mixed.height(); ++y) {
-                const int ty = at.y() + y;
-                if (ty < clip.top() || ty > clip.bottom()) continue;
-                const auto* from = reinterpret_cast<const QRgb*>(mixed.constScanLine(y));
-                // (The buffer the painter draws in - which begin() made the
-                // picture's own -, not detached from it again.)
-                auto* to = reinterpret_cast<QRgb*>(const_cast<uchar*>(target->constScanLine(ty)));
-                for (int x = 0; x < mixed.width(); ++x) {
-                    const int tx = at.x() + x;
-                    if (qAlpha(from[x]) == 0 || tx < clip.left() || tx > clip.right()) continue;
-                    const QRgb under = to[tx];
-                    to[tx] = qAlpha(under) == 0 ? from[x] : 0xff000000u | ((byAnd ? (from[x] & under) : (from[x] | under)) & 0xffffffu);
-                }
+        // Its fills, then its frames and marks, each mixed with what is
+        // there (KLayout mixes a transparent layer's frame with its own
+        // fill too).
+        for (const int part : {FillPart, LinePart}) {
+            QImage mixed((O.device.size() * ratio).toSize(), QImage::Format_ARGB32_Premultiplied);
+            mixed.setDevicePixelRatio(ratio);
+            mixed.fill(Qt::transparent);
+            {
+                QPainter q(&mixed);
+                q.setRenderHint(QPainter::Antialiasing, false);
+                q.translate(-O.device.topLeft());
+                paintLayerAsKLayout(q, i, s, ratio, part);
             }
-            return;
+            // On a picture (the view's, an export's): each of its pixels ANDed
+            // or ORed with what is there - itself where nothing is (a
+            // transparent picture's empty places stay empty elsewhere). (Qt's
+            // raster operations make every pixel they touch opaque.)
+            auto* target = p.device() != nullptr && p.device()->devType() == QInternal::Image ? static_cast<QImage*>(p.device()) : nullptr;
+            const QTransform dt = p.deviceTransform();
+            if (target != nullptr
+                && (target->format() == QImage::Format_ARGB32_Premultiplied || target->format() == QImage::Format_ARGB32 || target->format() == QImage::Format_RGB32)
+                && dt.type() <= QTransform::TxScale && std::abs(dt.m11() - ratio) < 1e-9 && std::abs(dt.m22() - ratio) < 1e-9) {
+                const QPoint at = dt.map(O.device.topLeft()).toPoint();
+                const QRect clip = p.hasClipping() ? dt.mapRect(p.clipBoundingRect()).toAlignedRect() & target->rect() : target->rect();
+                for (int y = 0; y < mixed.height(); ++y) {
+                    const int ty = at.y() + y;
+                    if (ty < clip.top() || ty > clip.bottom()) continue;
+                    const auto* from = reinterpret_cast<const QRgb*>(mixed.constScanLine(y));
+                    // (The buffer the painter draws in - which begin() made the
+                    // picture's own -, not detached from it again.)
+                    auto* to = reinterpret_cast<QRgb*>(const_cast<uchar*>(target->constScanLine(ty)));
+                    for (int x = 0; x < mixed.width(); ++x) {
+                        const int tx = at.x() + x;
+                        if (qAlpha(from[x]) == 0 || tx < clip.left() || tx > clip.right()) continue;
+                        const QRgb under = to[tx];
+                        to[tx] = qAlpha(under) == 0 ? from[x] : 0xff000000u | ((byAnd ? (from[x] & under) : (from[x] | under)) & 0xffffffu);
+                    }
+                }
+                continue;
+            }
+            // Elsewhere (a widget, a pixmap: opaque): Qt's raster operations,
+            // white (ANDed) or black (ORed) where it has nothing - nothing
+            // changed there.
+            QImage over(mixed.size(), QImage::Format_ARGB32_Premultiplied);
+            over.setDevicePixelRatio(ratio);
+            over.fill(byAnd ? Qt::white : Qt::black);
+            {
+                QPainter q(&over);
+                q.drawImage(0, 0, mixed);
+            }
+            p.save();
+            p.setCompositionMode(byAnd ? QPainter::RasterOp_SourceAndDestination : QPainter::RasterOp_SourceOrDestination);
+            p.drawImage(O.device.topLeft(), over);
+            p.restore();
         }
-        // Elsewhere (a widget, a pixmap: opaque): Qt's raster operations,
-        // white (ANDed) or black (ORed) where it has nothing - nothing
-        // changed there.
-        QImage over(mixed.size(), QImage::Format_ARGB32_Premultiplied);
-        over.setDevicePixelRatio(ratio);
-        over.fill(byAnd ? Qt::white : Qt::black);
-        {
-            QPainter q(&over);
-            q.drawImage(0, 0, mixed);
-        }
-        p.save();
-        p.setCompositionMode(byAnd ? QPainter::RasterOp_SourceAndDestination : QPainter::RasterOp_SourceOrDestination);
-        p.drawImage(O.device.topLeft(), over);
-        p.restore();
     }
 
-    void paintLayerAsKLayout(QPainter& p, int i, const LayerStyle& s, qreal ratio)
+    enum { FillPart = 1, LinePart = 2 };   // what of a layer paintLayerAsKLayout() draws
+
+    void paintLayerAsKLayout(QPainter& p, int i, const LayerStyle& s, qreal ratio, int parts = FillPart | LinePart)
     {
         const int k = stipplePixels(ratio);
         const double px = double(k) / ratio;   // a pattern's pixel, in the painter's pixels
-        QBrush brush(Qt::NoBrush);
-        if (s.stipple && s.stipple->isSolid()) {
-            brush = QBrush(s.fill);
-        } else if (s.stipple && !s.stipple->isEmpty()) {
-            const Stipple& st = *s.stipple;
-            QImage texture(st.width * k, st.height * k, QImage::Format_ARGB32_Premultiplied);
-            texture.fill(Qt::transparent);
-            const QRgb ink = s.fill.rgba();
-            for (int y = 0; y < texture.height(); ++y) {
-                auto* line = reinterpret_cast<QRgb*>(texture.scanLine(y));
-                for (int x = 0; x < texture.width(); ++x)
-                    if (st.at(x / k, y / k)) line[x] = ink;
+        // KLayout puts a point on a device pixel first - round(x), the row
+        // above round(y) from the top - and draws from there: a point here
+        // that pixel's top left corner (snapped) or its middle (centred).
+        const auto snapped = [ratio](QPointF q) {
+            return QPointF(std::floor(q.x() * ratio + 0.5) / ratio, (std::ceil(q.y() * ratio - 0.5) - 1) / ratio);
+        };
+        // (a hair right and up of the middle: Qt's lines' ends off its
+        // pixels' edges, as KLayout's are)
+        const QPointF half((0.5 + 1.0 / 256) / ratio, (0.5 - 1.0 / 256) / ratio);
+        const auto centred = [&](QPointF q) { return snapped(q) + half; };
+        const auto snap = [&](const QPolygonF& poly, QPointF by) {
+            QPolygonF out(poly.size());
+            for (int v = 0; v < poly.size(); ++v) out[v] = snapped(poly.at(v)) + by;
+            return out;
+        };
+        p.save();
+        if (parts & FillPart) {
+            QBrush brush(Qt::NoBrush);
+            if (s.stipple && s.stipple->isSolid()) {
+                brush = QBrush(s.fill);
+            } else if (s.stipple && !s.stipple->isEmpty()) {
+                const Stipple& st = *s.stipple;
+                QImage texture(st.width * k, st.height * k, QImage::Format_ARGB32_Premultiplied);
+                texture.fill(Qt::transparent);
+                const QRgb ink = s.fill.rgba();
+                for (int y = 0; y < texture.height(); ++y) {
+                    auto* line = reinterpret_cast<QRgb*>(texture.scanLine(y));
+                    for (int x = 0; x < texture.width(); ++x)
+                        if (st.at(x / k, y / k)) line[x] = ink;
+                }
+                brush = QBrush(texture);
+                // A texture's pixel a device pixel; its last row on the
+                // device's last (KLayout's anchor: the lower left), a row
+                // lower for each place in KLayout's list; scrolling, a
+                // pattern's pixel to the right each step.
+                QTransform t;
+                t.translate(O.device.left() + (s.animation == 1 ? O.tick * px : 0.0), O.device.top() + O.device.height() + stippleOffset(s) * px);
+                t.scale(1.0 / ratio, 1.0 / ratio);
+                brush.setTransform(t);
             }
-            brush = QBrush(texture);
-            // A texture's pixel a device pixel; its last row on the
-            // device's last (KLayout's anchor: the lower left); scrolling,
-            // a pattern's pixel to the right each step.
-            QTransform t;
-            t.translate(O.device.left() + (s.animation == 1 ? O.tick * px : 0.0), O.device.top() + O.device.height());
-            t.scale(1.0 / ratio, 1.0 / ratio);
-            brush.setTransform(t);
+            // KLayout fills a row from its left edge's column to its right
+            // edge's, from its top edge's row to the one above its
+            // bottom's: the polygon on its pixels' corners (Qt fills the
+            // pixels whose top left corners are in) twice, a device pixel
+            // apart.
+            if (brush.style() != Qt::NoBrush) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(brush);
+                QVector<QPolygonF> fills;
+                fills.reserve(polygons[i].size());
+                for (const QPolygonF& poly : polygons[i]) fills.append(snap(poly, QPointF()));
+                for (const QPolygonF& poly : std::as_const(fills)) p.drawPolygon(poly);
+                QBrush moved = brush;   // (its pattern where it is on the screen)
+                moved.setTransform(brush.transform() * QTransform::fromTranslate(-1.0 / ratio, 0));
+                p.setBrush(moved);
+                p.translate(1.0 / ratio, 0);
+                for (const QPolygonF& poly : std::as_const(fills)) p.drawPolygon(poly);
+                p.translate(-1.0 / ratio, 0);
+            }
         }
-        QPen pen(s.frame, s.width * px);
-        pen.setCapStyle(Qt::SquareCap);
-        pen.setJoinStyle(Qt::MiterJoin);
+        if (!(parts & LinePart)) {
+            p.restore();
+            return;
+        }
+        p.setBrush(Qt::NoBrush);
         const bool dashed = !s.line.isSolid();
-        p.setBrush(brush);
-        p.setPen(dashed ? QPen(Qt::NoPen) : pen);
-        for (const QPolygonF& poly : polygons[i]) p.drawPolygon(poly);
-        if (dashed) {
-            pen.setCapStyle(Qt::FlatCap);
-            p.setPen(pen);
-            const double bottom = (O.device.top() + O.device.height()) * ratio;
-            for (const QPolygonF& poly : polygons[i])
-                for (int e = 0; e < poly.size(); ++e) dashedLine(p, poly.at(e), poly.at((e + 1) % poly.size()), s.line, ratio, k, bottom);
+        const int W = std::max(1, s.width) * k;
+        const int lo = (W - 1) / 2, hi = W / 2;
+        const double bottom = (O.device.top() + O.device.height()) * ratio;
+        const QRectF area(O.device.topLeft() * ratio, O.device.size() * ratio);
+        QPen one(s.frame, 1.0 / ratio);   // (a device pixel wide)
+        one.setCapStyle(Qt::SquareCap);
+        // A pixel wide line between two centred points at each place of a W
+        // by W square (the extra place of an even W right and below), as
+        // KLayout widens one; dashed, each of its dashes' pixels W long.
+        const auto wide = [&](QPointF a, QPointF b, bool dashes) {
+            for (int dy = -lo; dy <= hi; ++dy)
+                for (int dx = -lo; dx <= hi; ++dx) {
+                    const QPointF d(dx / ratio, dy / ratio);
+                    if (!dashes) p.drawLine(a + d, b + d);
+                    else dashedLine(p, a + d, b + d, s.line, ratio, W, bottom, area.left(), lo, hi);
+                }
+        };
+        if (s.width > 0) {
+            if (!dashed && W == 1) {
+                // (the frame through its pixels' middles)
+                p.setPen(one);
+                for (const QPolygonF& poly : polygons[i]) p.drawPolygon(snap(poly, half));
+                for (const QPolygonF& spine : spines[i]) p.drawPolyline(snap(spine, half));
+            } else {
+                // Dashed or wider than a pixel: its edges along x or y
+                // KLayout's pixels exactly (klayoutEdge), the others widened.
+                QPen flat = one;
+                flat.setCapStyle(Qt::FlatCap);
+                p.setPen(dashed ? flat : one);
+                const auto edge = [&](QPointF a, QPointF b) {
+                    if (!klayoutEdge(p, a, b, s.line, s.frame, W, ratio, bottom, area)) wide(centred(a), centred(b), dashed);
+                };
+                for (const QPolygonF& poly : polygons[i])
+                    for (int e = 0; e < poly.size(); ++e) edge(poly.at(e), poly.at((e + 1) % poly.size()));
+                for (const QPolygonF& spine : spines[i])
+                    for (int e = 0; e + 1 < spine.size(); ++e) edge(spine.at(e), spine.at(e + 1));
+            }
         }
-        // A box crossed corner to corner, as wide as its frame.
-        if (s.xfill) {
-            QPen cross(s.frame, s.width * px);
-            cross.setCapStyle(Qt::SquareCap);
-            p.setPen(cross);
+        // A box crossed corner to corner, as wide as its frame (its ends at
+        // the corners).
+        p.setPen(one);
+        if (s.xfill)
             for (const QPolygonF& poly : polygons[i])
                 if (isBox(poly)) {
-                    p.drawLine(poly.at(0), poly.at(2));
-                    p.drawLine(poly.at(1), poly.at(3));
+                    wide(centred(poly.at(0)), centred(poly.at(2)), false);
+                    wide(centred(poly.at(1)), centred(poly.at(3)), false);
                 }
-        }
         // Its corners marked: a small cross, 4 pixels each way, at each of
         // a polygon's - a box's two that make it, its lower left and upper
-        // right, as KLayout marks a box.
+        // right, as KLayout marks a box; a path's spine's points.
         QPen thin(s.frame, px);
         thin.setCapStyle(Qt::SquareCap);
         p.setPen(thin);
         if (s.marked) {
             const double arm = 4 * px;
-            const auto mark = [&](QPointF v) {
+            const auto mark = [&](QPointF at) {
+                const QPointF v = centred(at);
                 p.drawLine(v - QPointF(arm, 0), v + QPointF(arm, 0));
                 p.drawLine(v - QPointF(0, arm), v + QPointF(0, arm));
             };
-            for (const QPolygonF& poly : polygons[i]) {
+            for (int e = 0; e < polygons[i].size(); ++e) {
+                const QPolygonF& poly = polygons[i].at(e);
+                if (const int spine = e < spineOf[i].size() ? spineOf[i].at(e) : -1; spine >= 0) {
+                    for (const QPointF& v : spines[i].at(spine)) mark(v);
+                    continue;
+                }
                 if (isBox(poly)) {
                     const QRectF box = poly.boundingRect();
                     mark(box.bottomLeft());
@@ -1248,34 +1350,100 @@ public:
             }
         }
         if (!dots[i].isEmpty()) p.drawPoints(dots[i].constData(), int(dots[i].size()));
+        p.restore();
     }
 
-    // An edge's dashes, counted along it from the device's left (more
-    // across than up) or bottom, in the pattern's pixels - as KLayout
-    // counts them.
-    static void dashedLine(QPainter& p, QPointF a, QPointF b, const LineStyle& line, qreal ratio, int k, double bottom)
+    // An edge along x or y as KLayout draws it, \a W device pixels wide and
+    // dashed as \a line says (each of its pixels W long), its pixels where
+    // KLayout's are: its ends KLayout's pixels for them (round(x), the
+    // last row less round(y)), out by lo = (W - 1) / 2 along it (a solid
+    // one by hi = W / 2 after: its corners square), and across it from lo
+    // before to hi after (the extra pixel of an even width right of it, or
+    // below); its dashes
+    // counted from the device's left, floor((x + lo) / W), or bottom,
+    // floor((b + hi) / W) - as KLayout's pictures of frames 1 to 4 wide
+    // have them. False for a slanted edge (not drawn). \a bottom: the
+    // device's last row's end, \a area what is in sight, device pixels.
+    static bool klayoutEdge(QPainter& p, QPointF a, QPointF b, const LineStyle& line, const QColor& colour, int W, qreal ratio, double bottom,
+                            const QRectF& area)
+    {
+        const double ax = a.x() * ratio, ay = a.y() * ratio, bx = b.x() * ratio, by = b.y() * ratio;
+        const bool flat = std::abs(ay - by) < 1e-6, upright = std::abs(ax - bx) < 1e-6;
+        if (!flat && !upright) return false;
+        const int lo = (W - 1) / 2, hi = W / 2;
+        const int after = line.isSolid() ? hi : lo;   // (a solid one's square corners)
+        const auto column = [](double x) { return int(std::floor(x + 0.5)); };
+        const auto row = [](double y) { return int(std::ceil(y - 0.5)) - 1; };
+        const auto floorDiv = [](int v, int d) { return v >= 0 ? v / d : -((-v + d - 1) / d); };
+        const auto put = [&](int x, int y, int w, int h) { p.fillRect(QRectF(x / ratio, y / ratio, w / ratio, h / ratio), colour); };
+        // (the runs of an edge's pixels from..to that are drawn: on(t))
+        const auto runs = [&](int from, int to, const std::function<bool(int)>& on, const std::function<void(int, int)>& draw) {
+            for (int t = from; t <= to;) {
+                if (!on(t)) {
+                    ++t;
+                    continue;
+                }
+                int end = t;
+                while (end < to && on(end + 1)) ++end;
+                draw(t, end);
+                t = end + 1;
+            }
+        };
+        if (flat) {
+            const int y = row(ay);
+            if (y + hi < area.top() - 1 || y - lo > area.bottom() + 1) return true;
+            const int from = std::max(column(std::min(ax, bx)) - lo, int(std::floor(area.left())) - 1);
+            const int to = std::min(column(std::max(ax, bx)) + after, int(std::ceil(area.right())) + 1);
+            const int left = int(std::lround(area.left()));   // (the column x counts from)
+            runs(from, to, [&](int x) { return line.on(floorDiv(x - left + lo, W)); }, [&](int x0, int x1) { put(x0, y - lo, x1 - x0 + 1, W); });
+            return true;
+        }
+        const int x = column(ax);
+        if (x + hi < area.left() - 1 || x - lo > area.right() + 1) return true;
+        const int last = int(std::lround(bottom)) - 1;   // (the row b counts from)
+        const int from = std::max(row(std::min(ay, by)) - lo, int(std::floor(area.top())) - 1);
+        const int to = std::min(row(std::max(ay, by)) + after, int(std::ceil(area.bottom())) + 1);
+        runs(from, to, [&](int r) { return line.on(floorDiv(last - r + hi, W)); }, [&](int r0, int r1) { put(x - lo, r0, W, r1 - r0 + 1); });
+        return true;
+    }
+
+    // An edge's dashes between two centred points, as KLayout counts them:
+    // its pixels' x from the device's left (\a left; an edge more across
+    // than up), floor((x + lo) / W), or b from its bottom (\a bottom),
+    // floor((b + hi) / W) - a pixel wide (the painter's pen), both its
+    // ends' pixels in.
+    static void dashedLine(QPainter& p, QPointF a, QPointF b, const LineStyle& line, qreal ratio, int W, double bottom, double left, int lo, int hi)
     {
         const bool across = std::abs(b.x() - a.x()) >= std::abs(b.y() - a.y());
-        const auto along = [&](QPointF q) { return across ? q.x() * ratio / k : (bottom - q.y() * ratio) / k; };
+        const double tiny = 1.0 / 512;
+        // (a pixel's middle at t + 0.5 - tiny: its index floor(t))
+        const auto along = [&](QPointF q) {
+            return across ? (q.x() * ratio - left + lo - 0.5 + tiny) / W : (bottom - q.y() * ratio - 0.5 + hi + tiny) / W;
+        };
         double ta = along(a), tb = along(b);
         if (ta > tb) {
             std::swap(a, b);
             std::swap(ta, tb);
         }
-        if (tb - ta < 1e-9) {
+        const double span = tb - ta;
+        if (span < 1e-9) {
             if (line.on(int(std::floor(ta)))) p.drawPoint(a);
             return;
         }
-        const auto at = [&](double t) { return a + (b - a) * ((t - ta) / (tb - ta)); };
+        // Both ends' pixels in: half a pixel out each way.
+        const double out = 0.5 / W;
+        const auto at = [&](double t) { return a + (b - a) * ((t - ta) / span); };
+        const double from = ta - out, to = tb + out;
         double runFrom = -1;
-        for (int t = int(std::floor(ta)); t < int(std::ceil(tb)) + 1; ++t) {
-            const bool on = t < std::ceil(tb) && line.on(t);
-            if (on && runFrom < 0) runFrom = std::max(ta, double(t));
+        for (int t = int(std::floor(from)); t <= int(std::ceil(to)); ++t) {
+            const bool on = t < to && line.on(t);
+            if (on && runFrom < 0) runFrom = std::max(from, double(t));
             if (!on && runFrom >= 0) {
-                p.drawLine(at(runFrom), at(std::min(tb, double(t))));
+                p.drawLine(at(runFrom), at(std::min(to, double(t))));
                 runFrom = -1;
             }
         }
+        if (runFrom >= 0) p.drawLine(at(runFrom), at(to));
     }
 
     static bool isBox(const QPolygonF& q)
@@ -1300,6 +1468,8 @@ public:
     RenderStats stats;
     quint64 used = 0;
     QVector<QVector<QPolygonF>> polygons;
+    QVector<QVector<QPolygonF>> spines;   // (KLayout's look) paths' spines, as open lines
+    QVector<QVector<int>> spineOf;        // (KLayout's look) each polygon's spine in spines, -1 none
     QVector<QVector<QPointF>> dots;
     QVector<QBitArray> seen;
     QVector<QPolygonF> frames;

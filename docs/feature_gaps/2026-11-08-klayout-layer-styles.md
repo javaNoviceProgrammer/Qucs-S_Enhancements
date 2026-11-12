@@ -7,6 +7,14 @@ this an option that the user can choose). Also, add a new menu item called "Rece
 "..." menu of the layotu viewer that keeps a history of the recently opened layouts so that a user can
 quickly re-open them and they should be reopened in a new tab."*
 
+> **Corrected on 12 November.** A check against KLayout's own pictures and layer list found 17 ways in
+> which this did not draw a .lyp as KLayout does - among them 36 of the 47 patterns, the per-row pattern
+> shift, edges a row low, default colours by place rather than layer number, groups' settings losing to
+> their members', `*/*` and `*/0` entries, the first tab, line styles, wide and dashed frames, paths'
+> spines and the GPU's dashes. The claims below that it measured these are wrong where
+> [the bug hunt](../bug_hunts/2026-11-12-klayout-lyp-fidelity.md) says so; the viewer now matches
+> KLayout's pictures of the test's layouts to the pixel.
+
 - **K1.** A .lyp is read whole and drawn as KLayout draws it: its colours and their brightness,
   KLayout's 47 dither patterns and the file's own, at the screen's pixels and sharp on Retina, frame
   widths and line styles, transparency, xfill, marked, blinking and scrolling, the file's order and its
