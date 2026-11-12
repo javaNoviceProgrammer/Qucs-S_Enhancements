@@ -84,11 +84,14 @@ QJsonObject findingJson(const Problem& p, const Finding& f)
     return o;
 }
 
-QJsonArray terminalsJson(const Problem& p, const QVector<TerminalReading>& readings, int most)
+// The terminals as read, \a most at most; with \a warningsOnly those with
+// something to say alone (a large job's hundreds of terminals cost tokens).
+QJsonArray terminalsJson(const Problem& p, const QVector<TerminalReading>& readings, int most, bool warningsOnly = false)
 {
     QJsonArray a;
     for (const TerminalReading& t : readings) {
         if (a.size() >= most) break;
+        if (warningsOnly && t.note.isEmpty()) continue;
         QJsonArray metals;
         for (int m : t.metals) metals.append(p.tech.metals.at(m).name);
         QJsonObject o{{"net", t.net}, {"terminal", t.index == 0 ? QStringLiteral("start") : QStringLiteral("pad %1").arg(t.index)},
@@ -112,6 +115,63 @@ QJsonArray crowdingJson(const Problem& p, const QVector<Crowding>& crowding)
         a.append(QJsonObject{{"box", QJsonArray{um3(p.um(c.where.x0)), um3(p.um(c.where.y0)), um3(p.um(c.where.x1)), um3(p.um(c.where.y1))}},
                              {"tracks wanted %", qRound(c.use * 100)}});
     return a;
+}
+
+// What the files and arguments take, key by key, with an example: route_report
+// what=format (the tools' descriptions cannot hold it all).
+QJsonObject formatReference()
+{
+    const QJsonObject technology{
+        {"name", "text"},
+        {"grid", "µm, the lattice's pitch (> 0); finer routes closer, coarser runs faster"},
+        {"metals", "[{name, layer \"1/0\", direction h|v|any}], bottom first, 1 to 8"},
+        {"vias", "[{name, layer, between [lower, upper metal], size (a cut's side), cuts [columns, rows] (1 x 1), cut_spacing (inside an array), "
+                 "enclosure | landing | landing_lower + landing_upper, spacing (via to via)}], one between each pair of neighbouring metals"},
+        {"classes", "[{name, width, spacing (to another net's line; the larger of the two classes')}], 1 to 32"},
+        {"default_class", "a class's name (the first)"},
+        {"spacing", "{same_layer, to_metal (metal of no net, and a net's metal that is not its terminal's shape), to_terminal (the shape another net's terminal is on), "
+                    "notch (optional: narrower slots against a net's own metal filled, else found)}"},
+        {"obstacles", "[{name, layer, clearance (0: no metal over it), metals (all), landings (a via may sit on a net's own contact in it)}]"},
+        {"costs", "{bend 2, via 10, wrong_way 2} in lattice steps"},
+        {"area", "{margin µm round the terminals (100), or box [x0, y0, x1, y1]}"},
+        {"refused", "any key it does not know, by name; a length that is not a positive number in range"}};
+    const QJsonObject net{
+        {"name", "unique"},
+        {"class", "a class's name (the technology's default)"},
+        {"start", "a terminal"},
+        {"pads", "[terminal, ...]: one or more; several make a tree"},
+        {"guide", "[[x, y], ...] µm: the line keeps within 'band' of it as far as its last point, then is free"},
+        {"band", "µm (three line pitches)"},
+        {"fixed", "true: drawn already, not routed, its terminals kept for it"}};
+    const QJsonObject terminal{
+        {"forms", "[x, y] µm | {\"at\": [x, y]} | {\"text\": a label of the cell}"},
+        {"metal", "a metal's name: the shape under the point on it (else the label's metal, else the lowest metal there)"},
+        {"mode", "centre (the middle of its shape, the default) | exact (the point) | anywhere (wherever the line meets its shape or metal joined to it, its own vias too)"}};
+    const QJsonObject keepOut{
+        {"name", "the same name replaces"},
+        {"outline", "[[x, y], ...] µm, or box [x0, y0, x1, y1], or (route_setup) from_stroke n + box true|false: a pen stroke of the open tab"},
+        {"metals", "[names] (all)"},
+        {"except_nets", "[names] let in"},
+        {"let_through", "way_in (default: a net named, or with a terminal inside, takes its shortest way in) | free | none"}};
+    const QJsonObject options{
+        {"passes", "40"}, {"stall_passes", "8 (0: never)"}, {"threads", "0: all"}, {"max_memory_mb", "4096"},
+        {"negotiate", "true (false: each net once, in order)"}, {"search_weight", "1 to 3: above 1 faster, routes dearer (more vias)"}};
+    const QJsonObject csv{
+        {"without a header", "net, start x, start y, pad x, pad y[, class]  |  net, start label, pad label[, class]"},
+        {"with a header", "columns net, class, start_x, start_y, start_text, start_layer, start_mode, pad_x, pad_y, pad_text, pad_layer, pad_mode, mode (both); "
+                          "a net's further rows add pads"}};
+    const QJsonObject example{
+        {"name", "two metals"},
+        {"grid", 1},
+        {"metals", QJsonArray{QJsonObject{{"name", "M1"}, {"layer", "1/0"}, {"direction", "h"}}, QJsonObject{{"name", "M2"}, {"layer", "2/0"}, {"direction", "v"}}}},
+        {"vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"enclosure", 1}, {"spacing", 2}}}},
+        {"classes", QJsonArray{QJsonObject{{"name", "signal"}, {"width", 4}}, QJsonObject{{"name", "power"}, {"width", 10}, {"spacing", 4}}}},
+        {"spacing", QJsonObject{{"same_layer", 3}, {"to_metal", 3}, {"to_terminal", 4}}}};
+    return QJsonObject{{"technology", technology}, {"net", net}, {"terminal", terminal}, {"keep_out", keepOut},
+                       {"guide (route_setup)", "{net, points [[x, y], ...] | from_stroke n, band}; points [] takes it away"},
+                       {"options", options}, {"nets_csv", csv}, {"example technology", example},
+                       {"workflow", "route_setup (technology, nets) -> route_run -> route_report what=findings -> fix, route_run mode changed -> route_commit. "
+                                    "route_setup with only 'path' reads (terminals, warnings, memory) and changes nothing. A crowded job: route_assign_pads first"}};
 }
 
 // How the session stands: its job, its run, its result and check.
@@ -417,7 +477,10 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
         const Problem& p = router.problem();
         o.insert(QStringLiteral("cell"), job.cell.isEmpty() ? layout->cells.at(layout->mainCell()).name : job.cell);
         o.insert(QStringLiteral("shapes read"), QJsonObject{{"metal", p.metal.size()}, {"cuts", p.cuts.size()}, {"obstacles", p.obstacles.size()}});
-        o.insert(QStringLiteral("terminals"), terminalsJson(p, router.terminals(), call.value(QLatin1String("max")).toInt(60)));
+        const QString listed = call.value(QLatin1String("terminals")).toString(QStringLiteral("all"));
+        if (listed != QLatin1String("none"))
+            o.insert(QStringLiteral("terminals"), terminalsJson(p, router.terminals(), call.value(QLatin1String("max")).toInt(60), listed == QLatin1String("warnings")));
+        o.insert(QStringLiteral("terminals read"), router.terminals().size());
         int warned = 0;
         for (const TerminalReading& r : router.terminals()) warned += !r.note.isEmpty();
         if (warned) o.insert(QStringLiteral("terminals with a warning"), warned);
@@ -493,12 +556,14 @@ void QucsControl::routeRun(const QJsonObject& args, const Done& done)
 
 QJsonObject QucsControl::routeReport(const QJsonObject& args)
 {
+    const QString what = args.value(QLatin1String("what")).toString(QStringLiteral("summary"));
+    // (What the files take needs no job, nor a layout.)
+    if (what == QLatin1String("format")) return jsonResult(formatReference());
     QString error;
     const QString file = layoutFileOf(a_app, args, &error);
     if (file.isEmpty()) return errorResult(error);
     Session* s = Session::of(file, false);
-    if (!s) return errorResult(tr("Nothing is set up to route in %1: route_setup first.").arg(QFileInfo(file).fileName()));
-    const QString what = args.value(QLatin1String("what")).toString(QStringLiteral("summary"));
+    if (!s) return errorResult(tr("Nothing is set up to route in %1: route_setup first (route_report what=format says what it takes).").arg(QFileInfo(file).fileName()));
     const int most = std::clamp(args.value(QLatin1String("max")).toInt(50), 1, 5000);
     if (what == QLatin1String("summary")) return jsonResult(summaryOf(s, std::min(most, 25)));
     if (what == QLatin1String("passes")) {
@@ -508,6 +573,24 @@ QJsonObject QucsControl::routeReport(const QJsonObject& args)
         return jsonResult(QJsonObject{{"state", s->isRunning() ? QStringLiteral("running") : (s->hasResult() ? QStringLiteral("done") : QStringLiteral("not run"))},
                                       {"passes", a}});
     }
+    if (what == QLatin1String("job")) {
+        // The job as its file holds it, the technology as read, whether the
+        // last routes are of it.
+        QJsonObject job = jobJson(s->job);
+        QJsonArray nets = job.value(QLatin1String("nets")).toArray();
+        if (nets.size() > most) {
+            QJsonArray first;
+            for (int i = 0; i < most; ++i) first.append(nets.at(i));
+            job.insert(QStringLiteral("nets"), first);
+            job.insert(QStringLiteral("nets listed"), tr("the first %1 of %2 ('max' for more)").arg(most).arg(nets.size()));
+        }
+        QJsonObject o{{"job file", QDir::toNativeSeparators(s->jobFile())}, {"job", job},
+                      {"routes", !s->hasResult() ? QStringLiteral("none yet") : (s->resultIsOld() ? QStringLiteral("of an earlier job: route_run") : QStringLiteral("of this job"))}};
+        Technology t;
+        if (s->technology(&t, &error)) o.insert(QStringLiteral("technology read"), technologyJson(t));
+        else o.insert(QStringLiteral("technology read"), error);
+        return jsonResult(o);
+    }
     if (what == QLatin1String("terminals") || what == QLatin1String("crowding")) {
         if (!s->prepared()) {
             if (!s->layout()) return errorResult(tr("route_setup reads the terminals; it has not been called since Qucs-S started."));
@@ -515,24 +598,36 @@ QJsonObject QucsControl::routeReport(const QJsonObject& args)
         }
         const Router& r = *s->prepared();
         if (what == QLatin1String("crowding")) return jsonResult(QJsonObject{{"crowded", crowdingJson(r.problem(), r.crowding())}});
-        return jsonResult(QJsonObject{{"terminals", terminalsJson(r.problem(), r.terminals(), most)}});
+        return jsonResult(QJsonObject{{"terminals", terminalsJson(r.problem(), r.terminals(), most, args.value(QLatin1String("terminals")).toString() == QLatin1String("warnings"))},
+                                      {"terminals read", r.terminals().size()}});
     }
     if (s->isRunning()) return errorResult(tr("A run is going on: what 'summary' or 'passes' say how far it is."));
     if (!s->hasResult()) return errorResult(tr("Nothing has been routed yet (route_run)."));
     const Problem& p = *s->resultProblem();
     const Result& r = s->result();
     if (what == QLatin1String("findings")) {
+        // ('kind' and 'net' choose among them: a large job's hundreds.)
+        const QString kind = args.value(QLatin1String("kind")).toString(), net = args.value(QLatin1String("net")).toString();
         QJsonArray a;
+        int matching = 0;
         for (const Finding& f : s->verification().findings) {
-            if (a.size() >= most) break;
-            a.append(findingJson(p, f));
+            if ((!kind.isEmpty() && f.kind != kind) || (!net.isEmpty() && f.net != net && f.other != net)) continue;
+            ++matching;
+            if (a.size() < most) a.append(findingJson(p, f));
         }
-        return jsonResult(QJsonObject{{"clean", s->verification().clean()}, {"findings count", s->verification().findings.size()}, {"findings", a}});
+        QMap<QString, int> kinds;
+        for (const Finding& f : s->verification().findings) ++kinds[f.kind];
+        QJsonObject byKind;
+        for (auto it = kinds.cbegin(); it != kinds.cend(); ++it) byKind.insert(it.key(), it.value());
+        return jsonResult(QJsonObject{{"clean", s->verification().clean()}, {"findings count", s->verification().findings.size()}, {"by kind", byKind},
+                                      {"matching", matching}, {"findings", a}});
     }
     if (what == QLatin1String("nets")) {
         QJsonArray a;
+        const QString status = args.value(QLatin1String("status")).toString();
         for (int n = 0; n < r.nets.size() && a.size() < most; ++n) {
             const NetResult& x = r.nets.at(n);
+            if (!status.isEmpty() && statusName(x.status) != status) continue;
             QJsonObject o{{"net", p.nets.at(n).name}, {"status", statusName(x.status)}, {"class", p.tech.classes.at(p.nets.at(n).netClass).name}};
             if (x.status == NetResult::Status::Routed || x.status == NetResult::Status::Kept) {
                 o.insert(QStringLiteral("length µm"), um3(p.um(x.length)));
@@ -554,8 +649,16 @@ QJsonObject QucsControl::routeReport(const QJsonObject& args)
             runs.append(QJsonArray{p.tech.metals.at(run.metal).name, um3(p.um(run.a.x)), um3(p.um(run.a.y)), um3(p.um(run.b.x)), um3(p.um(run.b.y))});
         }
         for (const ViaPlaced& v : x.vias) vias.append(QJsonArray{p.tech.vias.at(v.via).name, um3(p.um(v.at.x)), um3(p.um(v.at.y))});
+        QJsonArray fills;
+        for (const auto& [metal, poly] : x.fills) {
+            if (fills.size() >= most) break;
+            QJsonArray pts;
+            for (const Pt& q : poly) pts.append(pointJson(p, q));
+            fills.append(QJsonObject{{"metal", p.tech.metals.at(metal).name}, {"outline", pts}});
+        }
         QJsonObject o{{"net", name}, {"status", statusName(x.status)}, {"width µm", p.tech.classes.at(p.nets.at(n).netClass).width},
                       {"runs (metal, x0, y0, x1, y1)", runs}, {"vias (via, x, y)", vias}, {"length µm", um3(p.um(x.length))}};
+        if (!fills.isEmpty()) o.insert(QStringLiteral("notch fills"), fills);
         if (!x.reason.isEmpty()) o.insert(QStringLiteral("reason"), x.reason);
         if (x.hasWhere) o.insert(QStringLiteral("where"), pointJson(p, x.where));
         QJsonArray findings;

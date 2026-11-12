@@ -149,6 +149,19 @@ BREAKS = [
     ("a route_setup that only reads marks the routes old", "qucscontrol_router.cpp", APP,
      "        const bool changed = s->jobEdited(before, &saveError);",
      "        const bool changed = (s->jobChanged(), s->saveJob(&saveError), true);"),
+    # The check of the tools' coverage, 11 November
+    ("route_report's findings ignore 'kind'", "qucscontrol_router.cpp", APP,
+     "            if ((!kind.isEmpty() && f.kind != kind) || (!net.isEmpty() && f.net != net && f.other != net)) continue;",
+     "            if (!net.isEmpty() && f.net != net && f.other != net) continue;"),
+    ("route_report's nets ignore 'status'", "qucscontrol_router.cpp", APP,
+     "            if (!status.isEmpty() && statusName(x.status) != status) continue;",
+     ""),
+    ("route_setup lists every terminal when asked for its warnings", "qucscontrol_router.cpp", APP,
+     "        if (warningsOnly && t.note.isEmpty()) continue;",
+     ""),
+    ("route_report's job leaves out the keep-outs", "qucscontrol_router.cpp", APP,
+     "        QJsonObject job = jobJson(s->job);",
+     "        QJsonObject job = jobJson(s->job);\n        job.remove(QStringLiteral(\"keep_outs\"));"),
 ]
 
 

@@ -367,6 +367,39 @@ contents (a file changed on disk under the same name is a change). Only a job th
 and finds the job file's bytes and time unchanged, the state `done` and a commit through; then changes a net and finds
 `job changed` true and a commit refused. The break that puts the old behaviour back is caught (`breaks.py`).
 
+## The tools checked for coverage (11 November)
+
+The user asked that the MCP tools let Claude use every feature of the router, correctly and efficiently. Read against the
+router, the six tools had four gaps:
+
+| Gap | Now |
+|---|---|
+| No way to read the job back: the nets, keep-outs, guides, options and the technology as read could only be sent, not seen | `route_report what=job`: the job as its file holds it (nets cut at `max`, said), the technology as read, and whether the last routes are of this job |
+| No reference for the files and arguments: `route_setup`'s description held the keys, at 1,987 of its 2,048 characters, with no room for an example | `route_report what=format`: every key of a technology, a net, a terminal, a keep-out, a guide, the options and a nets CSV, an example technology (it reads as it is), and the usual workflow. It needs no job or layout. `route_setup`'s description is shorter (1,596) and points to it, with room left for when to read and when to run |
+| Large jobs cost tokens: every terminal, every finding and every net in each answer | `route_setup` and `route_report what=terminals` take `terminals` (`warnings`, `none`), and `terminals read` counts them; `what=findings` takes `kind` and `net` and counts `by kind` and `matching`; `what=nets` takes `status` |
+| `what=net` left out part of what is drawn | Notch fills, as their outlines |
+
+The descriptions also say how to go about it now. `route_run` says that past its timeout `route_report what=passes` polls
+cheaply and `route_stop` stops it. `route_report` says that a finding's box goes into `show_layout`'s `region` to show the
+place. `route_setup` says to pair pads (`route_assign_pads`) before routing a crowded job.
+
+`theToolsCoverEveryFeature` (`test_layout_routing`) drives every argument of the six tools as Claude would:
+- the format and its example technology, which reads;
+- a technology file, a CSV of nets, `cell`, `route_cell` and `options`;
+- a keep-out and a guide from the open tab's pen strokes, and a guide from points;
+- the terminals with warnings alone, then none;
+- the job read back;
+- the `status`, `kind` and `net` filters;
+- a `selected` run;
+- a commit of some nets as another cell, and that cell's removal;
+- pads paired among given ones with one fixed, applied, leaving the routes current;
+- a new job with `clear`;
+- a run past a one-second timeout: it is stopped when still running, and nothing it reports is wrong.
+
+`claudeRoutesALayoutWithTheTools` filters real findings by kind and net. Four breaks of the new filters and views were
+added to `breaks.py`; all four are caught. The first time, one survived (the `kind` filter, on a job with no findings to
+filter) until that test was added.
+
 ## What could not be verified
 
 - **Qt 6.10.3.** Everything ran on Homebrew's 6.12.0. The router uses `QCryptographicHash::addData(QByteArrayView)` (Qt
