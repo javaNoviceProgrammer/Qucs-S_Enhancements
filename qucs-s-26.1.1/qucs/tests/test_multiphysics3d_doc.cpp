@@ -18,6 +18,8 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QAbstractEventDispatcher>
+#include <ctime>
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
@@ -266,6 +268,16 @@ int drawn(const QImage& image)
     return n;
 }
 
+} // namespace
+
+namespace {
+/// The calling thread's CPU time, ms: what a wait on the GUI thread cost it.
+double threadCpuMs()
+{
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
 } // namespace
 
 class TestMultiphysics3DDoc : public QObject
@@ -664,6 +676,82 @@ private slots:
     /// A step in time computed in the tab: its output times in the Time box,
     /// the last shown; an earlier one chosen, the plot, its range and the
     /// globals are of that time. A model at rest shows no Time box.
+    // Waited for while it solves, the GUI goes on and its run loop sleeps
+    // between events: the wait once called processEvents in a loop of its
+    // own (with a 2 ms nap), which never let it sleep - on Cocoa 312 ms of
+    // the GUI thread's 765 - and on macOS a window opened meanwhile (a Save
+    // panel) reaches the screen as the run loop goes to sleep. It ends as
+    // the solve does.
+    void aModelWaitedForLeavesTheGuiThreadIdle()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        doc->compute();
+        QVERIFY(doc->isBusy());
+        QElapsedTimer t;
+        t.start();
+        qint64 ended = -1;
+        const QMetaObject::Connection c = connect(doc, &Multiphysics3DDoc::stateChanged, this, [&] {
+            if (ended < 0 && !doc->isBusy()) ended = t.elapsed();
+        });
+        // (How often the run loop went to sleep: never, in a loop of
+        //  processEvents - what keeps a new window off macOS's screen.)
+        int slept = 0;
+        const QMetaObject::Connection s = connect(QAbstractEventDispatcher::instance(), &QAbstractEventDispatcher::aboutToBlock, this,
+                                                  [&slept] { ++slept; });
+        const double before = threadCpuMs();
+        QVERIFY(doc->waitForIdle(300000));
+        const double used = threadCpuMs() - before;
+        const qint64 wall = t.elapsed();
+        disconnect(c);
+        disconnect(s);
+        qInfo("solved in %lld ms, the GUI thread busy %.0f ms of it, asleep %d times", wall, used, slept);
+        QVERIFY2(slept >= wall / 100, qPrintable(QStringLiteral("the run loop slept %1 times in %2 ms").arg(slept).arg(wall)));
+        QVERIFY2(ended >= 0 && wall - ended < 500, qPrintable(QStringLiteral("solved at %1 ms, the wait back at %2").arg(ended).arg(wall)));
+        QVERIFY2(wall >= 300, qPrintable(QStringLiteral("solved in %1 ms: too quick to tell").arg(wall)));
+        // (Its CPU said, not judged: the wait takes in drawing the solution
+        //  once solved, 0.1 to 0.3 s on Cocoa; offscreen, a loop of
+        //  processEvents napping 2 ms costs as little as a wait that sleeps.)
+        QVERIFY(doc->solution() && !doc->solutionStale());
+    }
+
+    // Closed with the focus in the plot's expression: the tab's widgets go
+    // after it, and the focus moving off the field as they go (another tab's
+    // page taking it) finished its editing - whose slot set the plot on the
+    // model being destroyed: a crash on Cocoa, SIGSEGV in
+    // Expression::compile (found 12 November). As its widgets go, none of
+    // them is connected to it any more.
+    void closedWithTheFocusInThePlotField()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        doc->compute();   // (its plot field is for a solution)
+        QVERIFY(doc->waitForIdle(300000) && doc->solution());
+        auto* plot = doc->findChild<QComboBox*>(QStringLiteral("mp3Plot"));
+        QVERIFY(plot != nullptr && plot->lineEdit() != nullptr);
+        const QPointer<QLineEdit> field(plot->lineEdit());
+        QList<QPointer<QObject>> children;
+        for (QObject* child : doc->findChildren<QObject*>()) children << child;
+        int reaching = -1, stillThere = 0;
+        // (Its widgets' own destroyed() comes first, in ~QWidget, with its
+        //  children all still there and its own part already gone.)
+        connect(doc, &QObject::destroyed, this, [&, doc] {
+            // (Each child still connected to it told, and let go: the old
+            //  model crashed here as the focus left the field.)
+            reaching = 0;
+            for (const QPointer<QObject>& child : std::as_const(children))
+                if (child) {
+                    ++stillThere;
+                    reaching += QObject::disconnect(child.data(), nullptr, doc, nullptr) ? 1 : 0;
+                }
+            if (field) emit field->editingFinished();   // (as the focus leaving it: harmless now)
+        });
+        doc->setDocChanged(false);
+        QVERIFY(app->closeAllFiles());
+        QVERIFY2(stillThere > 10, qPrintable(QString::number(stillThere)));
+        QCOMPARE(reaching, 0);
+    }
+
     void aModelInTime()
     {
         Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
