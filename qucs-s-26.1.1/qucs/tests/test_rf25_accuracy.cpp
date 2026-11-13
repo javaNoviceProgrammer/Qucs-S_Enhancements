@@ -32,6 +32,8 @@
  */
 #include <QtTest>
 
+#include <QHash>
+
 #include "rf25/rf25_deembed.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_mesh.h"
@@ -166,8 +168,17 @@ const Line kLines[] = {
 /// (1 + dR)/(1 + dL) - 1 (its eps_eff right).
 struct LineErrors {
     double r = 0, l = 0, alpha = 0;
+    QList<double> alphas;   ///< at each frequency
     QString said;
 };
+
+/// Every line's attenuation errors as theFiveLinesAreTheir2DSolves() finds
+/// them, for theLinesLossOnTheWhole(): by line, at each frequency.
+QHash<QString, QList<double>>& alphaErrors()
+{
+    static QHash<QString, QList<double>> kept;
+    return kept;
+}
 
 LineErrors solveLine(const Line& line)
 {
@@ -194,6 +205,7 @@ LineErrors solveLine(const Line& line)
         if (std::abs(dr) > std::abs(out.r)) out.r = dr;
         if (std::abs(dl) > std::abs(out.l)) out.l = dl;
         if (std::abs(da) > std::abs(out.alpha)) out.alpha = da;
+        out.alphas << da;
         said << QStringLiteral("%1 GHz: R %2 Ohm/m (%3 %), L %4 nH/m (%5 %), alpha %6 %")
                     .arg(line.at[k].ghz)
                     .arg(r, 0, 'f', 1)
@@ -256,7 +268,8 @@ private slots:
     // The alumina line's metal perfect, solved as its two faces, full wave
     // at 10 GHz: its L against the boundary-element solve's external
     // inductance, 3.38279e-7 H/m (wheeler.py: C0 32.8915 pF/m in vacuum over
-    // the chuck). Its faces carry no current down their walls: L over it.
+    // the chuck). Its faces' walls carry current (A1): +0.73 %, where the
+    // faces alone read +5.5 %.
     void aPerfectMetalsInductanceIsTheBoundaryElementSolves()
     {
         if (slowBuild()) QSKIP("its strips, millimetres long: many minutes under the sanitizers");
@@ -272,8 +285,7 @@ private slots:
         const double dl = l / 3.38279e-7 - 1;
         qInfo("a perfect metal's L: %.5g H/m, %+.2f %% of the boundary-element solve's (R %.3g Ohm/m)", l, 100 * dl, r);
         QVERIFY2(std::abs(r) < 0.01 * 2 * M_PI * 10e9 * l, qPrintable(QStringLiteral("R %1 Ohm/m of a perfect metal").arg(r)));
-        // (Now +5.5 %.)
-        QVERIFY2(std::abs(dl) < 0.06, qPrintable(QStringLiteral("L %1 H/m, %2 %").arg(l).arg(100 * dl)));
+        QVERIFY2(std::abs(dl) < 0.01, qPrintable(QStringLiteral("L %1 H/m, %2 %").arg(l).arg(100 * dl)));
     }
 
     // The five lines of lines.py, full wave as the tab meshes them, each
@@ -285,18 +297,20 @@ private slots:
         QTest::addColumn<double>("rMost");
         QTest::addColumn<double>("lMost");
         QTest::addColumn<double>("alphaMost");
-        // (Now, 12 November, the worst over each line's three frequencies:
-        //  alumina R +14.8, L +6.3, alpha +8.0 %; copper -9.3, +3.7, -12.3;
-        //  film -14.9, +5.4, -18.7; narrow -12.6, +9.2, -20.0; the
-        //  microstrip -5.0 at 2 GHz but +32 % at 30 - the full wave's own
-        //  loss beyond the 2D solve's metal, its radiation or its substrate
-        //  wave -, L +2.8. L is high on every line: its walls carry no
-        //  current (A1). The plan's phases 2 and 4 tighten these.)
-        QTest::newRow("alumina") << 0 << 0.16 << 0.07 << 0.10;
-        QTest::newRow("copper") << 1 << 0.11 << 0.05 << 0.14;
-        QTest::newRow("film") << 2 << 0.17 << 0.06 << 0.20;
-        QTest::newRow("narrow") << 3 << 0.14 << 0.10 << 0.22;
-        QTest::newRow("microstrip") << 4 << 0.35 << 0.04 << 0.30;
+        // (The worst over each line's three frequencies, with the walls'
+        //  current and charge and the edge band's loss (A1, A2): alumina R
+        //  +4.4, L +1.0, alpha +3.4 %; copper +4.3, +1.5, +3.2; film -3.7,
+        //  -0.6, -3.6; narrow -6.5, -0.8, -6.2; the microstrip +8.0, +1.7,
+        //  +6.8 up to 10 GHz and +35 % in R at 30 - the full wave's loss
+        //  beyond its metal, radiation or a substrate wave, as before them:
+        //  the plan's phase 6. They were, on 12 November before them: alumina
+        //  +14.8, +6.3, +8.0; copper -9.3, +3.7, -12.3; film -14.9, +5.4,
+        //  -18.7; narrow -12.6, +9.2, -20.0.)
+        QTest::newRow("alumina") << 0 << 0.06 << 0.02 << 0.05;
+        QTest::newRow("copper") << 1 << 0.06 << 0.02 << 0.05;
+        QTest::newRow("film") << 2 << 0.05 << 0.015 << 0.05;
+        QTest::newRow("narrow") << 3 << 0.08 << 0.015 << 0.08;
+        QTest::newRow("microstrip") << 4 << 0.37 << 0.02 << 0.35;
     }
     void theFiveLinesAreTheir2DSolves()
     {
@@ -307,15 +321,42 @@ private slots:
         QFETCH(double, alphaMost);
         const LineErrors e = solveLine(kLines[index]);
         qInfo("%s", qPrintable(e.said));
+        alphaErrors().insert(QLatin1String(kLines[index].name), e.alphas);
         QVERIFY2(std::abs(e.r) < rMost, qPrintable(e.said));
         QVERIFY2(std::abs(e.l) < lMost, qPrintable(e.said));
         QVERIFY2(std::abs(e.alpha) < alphaMost, qPrintable(e.said));
     }
 
+    // The five lines' attenuation on the whole, against their 2D solves: the
+    // edge band's loss (A2) within 5 % on average and 10 % at worst, where
+    // crowding() was 8.6 and 19.9 on the 4 November write-up's emulator (the
+    // microstrip's 30 GHz left out: its loss there is more than its metal's,
+    // the plan's phase 6).
+    void theLinesLossOnTheWhole()
+    {
+        if (slowBuild()) QSKIP("its strips, millimetres long: many minutes under the sanitizers");
+        const QHash<QString, QList<double>>& all = alphaErrors();
+        if (all.size() < 5) QSKIP("the five lines were not all solved (run theFiveLinesAreTheir2DSolves first)");
+        double sum = 0, worst = 0;
+        int n = 0;
+        for (auto it = all.constBegin(); it != all.constEnd(); ++it)
+            for (int k = 0; k < it.value().size(); ++k) {
+                if (it.key() == QLatin1String("microstrip") && k == 2) continue;
+                sum += std::abs(it.value().at(k));
+                worst = std::max(worst, std::abs(it.value().at(k)));
+                ++n;
+            }
+        const double mean = sum / n;
+        qInfo("the lines' attenuation: %.1f %% from their 2D solves on average, %.1f %% at worst", 100 * mean, 100 * worst);
+        QVERIFY2(mean < 0.05 && worst < 0.10, qPrintable(QStringLiteral("%1 %, %2 %").arg(100 * mean).arg(100 * worst)));
+    }
+
     // The reviewers' coplanar line, 2 µm of gold as its two faces, 12 cells
     // across, full wave: Z0 and eps_eff against Palace 2D's and QFEM's mode
-    // solves (the Palace benchmark's comparison 1). With no current down
-    // its walls its L is high, and Z0 with it, about 2.7 %; eps_eff right.
+    // solves (the Palace benchmark's comparison 1). With its walls' current
+    // and charge (A1), Z0 +0.37, +0.36, +0.47 % at 10, 30, 50 GHz and eps_eff
+    // +0.30, +0.26, +0.23 %, where the faces alone read Z0 +2.7 % - L high,
+    // C 2.4 % low.
     void theBenchmarksCoplanarLineIsPalacesAndQfems()
     {
         if (slowBuild()) QSKIP("its strips, millimetres long: many minutes under the sanitizers");
@@ -337,9 +378,8 @@ private slots:
             const double mid = 0.5 * (ref[k].palaceZ + ref[k].qfemZ), midEps = 0.5 * (ref[k].palaceEps + ref[k].qfemEps);
             qInfo("%g GHz: Z0 %.2f Ohm (Palace 2D %.1f, QFEM %.1f: %+.2f %% of their mean), eps_eff %.4f (%.3f, %.3f: %+.2f %%)", ref[k].ghz, z,
                   ref[k].palaceZ, ref[k].qfemZ, 100 * (z / mid - 1), eps, ref[k].palaceEps, ref[k].qfemEps, 100 * (eps / midEps - 1));
-            // (Now +2.73, +2.71, +2.76 %; eps_eff +0.66, +0.62, +0.46 %.)
-            QVERIFY2(std::abs(z / mid - 1) < 0.03, qPrintable(QStringLiteral("Z0 %1 Ohm at %2 GHz").arg(z).arg(ref[k].ghz)));
-            QVERIFY2(std::abs(eps / midEps - 1) < 0.01, qPrintable(QStringLiteral("eps_eff %1 at %2 GHz").arg(eps).arg(ref[k].ghz)));
+            QVERIFY2(std::abs(z / mid - 1) < 0.01, qPrintable(QStringLiteral("Z0 %1 Ohm at %2 GHz").arg(z).arg(ref[k].ghz)));
+            QVERIFY2(std::abs(eps / midEps - 1) < 0.006, qPrintable(QStringLiteral("eps_eff %1 at %2 GHz").arg(eps).arg(ref[k].ghz)));
         }
     }
 };

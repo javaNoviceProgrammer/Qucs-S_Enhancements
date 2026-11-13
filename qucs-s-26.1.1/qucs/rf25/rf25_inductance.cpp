@@ -29,6 +29,7 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace qucs_s::rf25 {
 
@@ -125,6 +126,101 @@ Vector widthOf(const Filament& f)
     return {-d.y, d.x, 0};
 }
 
+/// A run's breadth across its direction: its rise standing upright, its
+/// width lying in the plane.
+double breadthOf(const Filament& f)
+{
+    return f.rise > 0 ? f.rise : f.width;
+}
+
+/// Gauss-Legendre's nodes and weights on [-1/2, 1/2], \a n of them (Newton
+/// on Legendre's polynomial from Chebyshev's guesses), the weights summing
+/// to one.
+const std::vector<std::pair<double, double>>& gaussRule(int n)
+{
+    static const auto make = [](int m) {
+        std::vector<std::pair<double, double>> rule;
+        for (int i = 0; i < m; ++i) {
+            double x = std::cos(M_PI * (i + 0.75) / (m + 0.5)), dp = 1;
+            for (int it = 0; it < 100; ++it) {
+                double p0 = 1, p1 = x;
+                for (int k = 2; k <= m; ++k) {
+                    const double p2 = ((2 * k - 1) * x * p1 - (k - 1) * p0) / k;
+                    p0 = p1;
+                    p1 = p2;
+                }
+                dp = m * (x * p1 - p0) / (x * x - 1);
+                const double step = p1 / dp;
+                x -= step;
+                if (std::abs(step) < 1e-16) break;
+            }
+            rule.emplace_back(x / 2, 1 / ((1 - x * x) * dp * dp));
+        }
+        return rule;
+    };
+    static const std::vector<std::pair<double, double>> rule24 = make(24);
+    Q_ASSERT(n == 24);
+    Q_UNUSED(n);
+    return rule24;
+}
+
+/// A segment of a cross-section: from (u0, v0) to (u1, v1), horizontal (v
+/// alike) or vertical (u alike).
+struct Segment {
+    double u0, v0, u1, v1;
+};
+
+/// The mean of ln r from the point (\a u, \a v) over \a s, in closed form:
+/// the integral of ln sqrt(x^2 + y^2) along x is x ln r - x + y atan(x/y).
+double meanLogFrom(double u, double v, const Segment& s)
+{
+    const bool horizontal = std::abs(s.v1 - s.v0) <= std::abs(s.u1 - s.u0);
+    const double a0 = horizontal ? s.u0 : s.v0, a1 = horizontal ? s.u1 : s.v1;
+    const double length = std::abs(a1 - a0);
+    const double y = horizontal ? v - s.v0 : u - s.u0;
+    const double x0 = (horizontal ? u : v) - a0, x1 = (horizontal ? u : v) - a1;
+    if (!(length > 0)) return 0.5 * std::log(x0 * x0 + y * y);
+    const auto F = [y](double x) {
+        const double r2 = x * x + y * y;
+        double term = r2 > 0 ? 0.5 * x * std::log(r2) - x : 0;
+        if (y != 0) term += y * std::atan(x / y);
+        return term;
+    };
+    // (Along the segment from a0 to a1, x runs from x0 to x1 backwards: the
+    //  integral is F(x0) - F(x1) over a1 - a0, signed - ln r is negative
+    //  below a metre, and a mean of it taken whole turned it round.)
+    return (F(x0) - F(x1)) / (a1 - a0);
+}
+
+/*!
+ * The mean of ln r between two segments of a cross-section, m: the inner
+ * integral in closed form, the outer by Gauss-Legendre in pieces split
+ * where the inner segment's ends come nearest, so that two segments that
+ * touch at a corner - a wall's strip and its face's - keep their
+ * logarithm's singularity at a piece's end.
+ */
+double meanLogBetween(const Segment& a, const Segment& b)
+{
+    const bool horizontal = std::abs(a.v1 - a.v0) <= std::abs(a.u1 - a.u0);
+    const double a0 = horizontal ? a.u0 : a.v0, a1 = horizontal ? a.u1 : a.v1;
+    if (!(std::abs(a1 - a0) > 0)) return meanLogFrom(a.u0, a.v0, b);
+    QList<double> cuts{std::min(a0, a1), std::max(a0, a1)};
+    for (const double end : {horizontal ? b.u0 : b.v0, horizontal ? b.u1 : b.v1})
+        if (end > cuts.first() && end < cuts.last()) cuts << end;
+    std::sort(cuts.begin(), cuts.end());
+    const auto& rule = gaussRule(24);
+    double sum = 0;
+    for (int k = 0; k + 1 < cuts.size(); ++k) {
+        const double lo = cuts.at(k), hi = cuts.at(k + 1), span = hi - lo;
+        if (!(span > 0)) continue;
+        for (const auto& [at, weight] : rule) {
+            const double t = lo + (at + 0.5) * span;
+            sum += weight * span * (horizontal ? meanLogFrom(t, a.v0, b) : meanLogFrom(a.u0, t, b));
+        }
+    }
+    return sum / (cuts.last() - cuts.first());
+}
+
 } // namespace
 
 double Filament::length() const
@@ -186,7 +282,7 @@ double partialInductance(const Filament& a, const Filament& b)
     const double apart = offset.norm();
 
     const bool same = &a == &b;
-    const double widest = std::max(a.width, b.width);
+    const double widest = std::max(breadthOf(a), breadthOf(b));
     // The same run, or two runs on the same axis - consecutive pieces of
     // one strip - have no distance between their axes, so the distance
     // that stands in for it is the cross-section's own geometric mean.
@@ -197,8 +293,37 @@ double partialInductance(const Filament& a, const Filament& b)
         return sign * kMu0 / (4 * M_PI) * parallelPair(la, lb, d, rho);
     }
     // Far enough apart that the widths do not matter: between the axes.
-    if (apart > kNearWidths * widest || !(a.width > 0) || !(b.width > 0))
+    if (apart > kNearWidths * widest || !(breadthOf(a) > 0) || !(breadthOf(b) > 0))
         return sign * kMu0 / (4 * M_PI) * parallelPair(la, lb, d, apart);
+    // Near, and one of them standing upright - a wall's strip beside its
+    // face's, or another wall's -: the double integral averaged over both
+    // cross-sections, its logarithm apart. Of the four antiderivatives each
+    // goes as -|s| ln rho as rho goes to nought, so the pair is a smooth
+    // part less K ln rho, K = |d + lb| - |d + lb - la| - |d| + |d - la|
+    // (twice the overlap): the smooth part averaged at four points across
+    // each, the logarithm's mean between the two segments exactly. The
+    // averaged distance below is not good enough for two strips that meet at
+    // a corner, and a geometric mean distance alone is not for runs as short
+    // as their cross-sections are wide (0.3 % at ten times).
+    if (a.rise > 0 || b.rise > 0) {
+        const Vector across = widthOf(a);
+        const auto segmentOf = [&across](const Filament& f, const Vector& centre) {
+            const double u = centre.dot(across), v = centre.z;
+            if (f.rise > 0) return Segment{u, v - f.rise / 2, u, v + f.rise / 2};
+            return Segment{u - f.width / 2, v, u + f.width / 2, v};
+        };
+        const Segment sa = segmentOf(a, Vector{0, 0, 0}), sb = segmentOf(b, offset);
+        const double K = std::abs(d + lb) - std::abs(d + lb - la) - std::abs(d) + std::abs(d - la);
+        double smooth = 0;
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) {
+                const double pu = sa.u0 + (kGaussAt[i] + 0.5) * (sa.u1 - sa.u0), pv = sa.v0 + (kGaussAt[i] + 0.5) * (sa.v1 - sa.v0);
+                const double qu = sb.u0 + (kGaussAt[j] + 0.5) * (sb.u1 - sb.u0), qv = sb.v0 + (kGaussAt[j] + 0.5) * (sb.v1 - sb.v0);
+                const double rho = std::max(std::hypot(pu - qu, pv - qv), 1e-12 * widest);
+                smooth += kGaussWeight[i] * kGaussWeight[j] * (parallelPair(la, lb, d, rho) + K * std::log(rho));
+            }
+        return sign * kMu0 / (4 * M_PI) * (smooth - K * meanLogBetween(sa, sb));
+    }
 
     // Near: the distance averaged across both widths, which is where a
     // neighbour's own breadth is most of the answer.
