@@ -1,0 +1,9 @@
+===== what each break did =====
+misc::waitWhile looking for events in a loop of its own        aSolveWaitedForLeavesTheGuiThreadI failed (caught); aLayoutWaitedForLeavesTheGuiThread failed (caught); aModelWaitedForLeavesTheGuiThreadI failed (caught)
+misc::waitWhile not ending when what it waits for has          aSolveWaitedForLeavesTheGuiThreadI failed (caught); aLayoutWaitedForLeavesTheGuiThread failed (caught); aModelWaitedForLeavesTheGuiThreadI failed (caught)
+the layout's wait spinning again                               aLayoutWaitedForLeavesTheGuiThread failed (caught)
+the 3D model's wait spinning again, with its nap               aModelWaitedForLeavesTheGuiThreadI failed (caught)
+the layout read not held                                       aLayoutWaitedForLeavesTheGuiThread failed (caught)
+a 3D model's widgets still reaching it as they go              closedWithTheFocusInThePlotField failed (caught)
+
+0 of 6 uncaught

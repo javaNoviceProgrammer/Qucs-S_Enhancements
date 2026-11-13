@@ -52,6 +52,16 @@ namespace misc {
   void releaseFreedMemory();
   /// How many times releaseFreedMemory() has been called (tests).
   int memoryReleases();
+  /// Waits on the GUI thread, the GUI going on, until \a going says no or
+  /// \a ms have passed: in an event loop that sleeps between events,
+  /// looking each 20 ms, and at once where \a wake connects a signal to the
+  /// look it is given (with \a context, the loop, as the connection's
+  /// context, so that it goes with the wait). Not a loop of processEvents:
+  /// that never sleeps, and on macOS a window opened meanwhile - a Save
+  /// panel - never reaches the screen, which Core Animation draws as the
+  /// run loop goes to sleep.
+  void waitWhile(const std::function<bool()>& going, int ms,
+                 const std::function<void(QObject* context, const std::function<void()>& look)>& wake = {});
   QColor ColorFromString(const QString& color);
   /// \a timer started again - a file changed, written in pieces maybe -
   /// but not past \a most ms after the first change it waits for

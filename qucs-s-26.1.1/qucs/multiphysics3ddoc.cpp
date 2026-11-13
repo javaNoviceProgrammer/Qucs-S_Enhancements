@@ -226,6 +226,12 @@ Multiphysics3DDoc::~Multiphysics3DDoc()
     // (Its undo stack goes with it, emitting its changes: not to this, half
     // gone, nor to the window.)
     disconnect(a_undo, nullptr, this, nullptr);
+    // (Nor do its widgets reach it as they go, after this: QWidget's own
+    // destructor sends the focus elsewhere as the tab's page goes, and the
+    // plot's expression field, losing it, finished its editing - whose slot
+    // set the plot on this, half gone: a crash on Cocoa, SIGSEGV in
+    // Expression::compile, found 12 November.)
+    for (QObject* child : findChildren<QObject*>()) disconnect(child, nullptr, this, nullptr);
     if (a_job && a_job->thread) {
         a_job->cancel = true;
         // (A build that does not ask whether it is to stop - a geometry
@@ -803,12 +809,12 @@ QThread* Multiphysics3DDoc::jobThread() const
 
 bool Multiphysics3DDoc::waitForIdle(int ms)
 {
-    QElapsedTimer t;
-    t.start();
-    while ((a_job || a_geometryTimer->isActive() || a_geometryWanted || a_meshWanted || a_solveWanted) && t.elapsed() < ms) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-        QThread::msleep(2);
-    }
+    // (In an event loop that sleeps, woken as the model's state moves: a
+    //  loop of processEvents never slept.)
+    misc::waitWhile([this] { return a_job || a_geometryTimer->isActive() || a_geometryWanted || a_meshWanted || a_solveWanted; },
+                    ms, [this](QObject* context, const std::function<void()>& look) {
+                        connect(this, &Multiphysics3DDoc::stateChanged, context, look, Qt::QueuedConnection);
+                    });
     return !a_job && !a_geometryTimer->isActive() && !a_geometryWanted && !a_meshWanted && !a_solveWanted;
 }
 

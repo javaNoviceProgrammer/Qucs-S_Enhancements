@@ -1,8 +1,7 @@
 ===== what each break did =====
 the waits looking for events in a loop of their own again      aSolveWaitedForLeavesTheGuiThreadI failed (caught)
-a wait not ending when what it waits for has                   aSolveWaitedForLeavesTheGuiThreadI failed (caught)
 the count told as a solve changed                              aSolveRunningLeavesThePanelsFormAl failed (caught)
 the panel not told the count                                   aSolveRunningLeavesThePanelsFormAl failed (caught)
 the notes back at their top when rewritten                     aSolveRunningLeavesThePanelsFormAl failed (caught)
 
-0 of 5 uncaught
+0 of 4 uncaught
