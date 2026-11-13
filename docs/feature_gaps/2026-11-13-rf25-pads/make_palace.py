@@ -52,17 +52,23 @@ def polygon(pts, z):
 
 
 tools = [(3, sub)]
+sheet_at = []   # (pec) where each sheet is among the tools
 for poly in (SIG, GND):
     s = polygon(poly, 0.0)
     if kind == "au":
         ext = occ.extrude([(2, s)], 0, 0, T)
         tools += [d for d in ext if d[0] == 3]
     else:
+        sheet_at.append(len(tools))
         tools.append((2, s))
 for xa, xb in PORTS:
     tools.append((2, occ.addRectangle(xa, 40, 0, xb - xa, 30)))
-occ.fragment([(3, box)], tools)
+_, pieces = occ.fragment([(3, box)], tools)
 occ.synchronize()
+# (A perfect sheet's faces: what the sheets became - fragment()'s map, the box first -, not the faces whose centre is
+#  within an outline, which can take the rest of a plane for metal: phase 7's filter did. These pads' meshes were
+#  checked: their metal the pads' area exactly.)
+sheet_faces = {t for k in sheet_at for d, t in pieces[k + 1] if d == 2}
 
 # The volumes: the metal (gold, cut out), the quartz, the air.
 metal_vols, sub_vols, air_vols = [], [], []
@@ -97,7 +103,7 @@ for _, s in gmsh.model.getEntities(2):
         groups["port2"].append(s)
     elif kind == "au" and any(v in metal_vols for v in up):
         groups["metal"].append(s)
-    elif kind == "pec" and abs(z) < eps and (inside(SIG, x, y) or inside(GND, x, y)):
+    elif kind == "pec" and s in sheet_faces:
         groups["metal"].append(s)
 if kind == "au":
     occ.remove([(3, v) for v in metal_vols])
