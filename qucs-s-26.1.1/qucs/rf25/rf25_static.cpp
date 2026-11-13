@@ -337,27 +337,46 @@ double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, doub
 }
 
 /*!
- * What the walls' charge (rf25_edge.h's wallCharges()) changes in a near
- * pair's potential coefficient: the direct path's term over the parts - the
- * charge spread over the source's face and its half walls, the potential
- * taken at each of the point's parts - in place of over the source's face at
- * the point's centre (\a face at \a at, \a dz apart). The stack's images
- * stay at the face, as the full wave's remainder stays at the centres: the
- * quasi-static solve is then the full wave's low frequency. The direct path
- * is the charge itself at one height ({1, 0}), and across two the image as
- * far as the heights are apart; none found, nothing is changed.
+ * What a cell's charge spread over its parts (rf25_edge.h's chargeParts():
+ * its walls where they face a narrow gap, its face as its edges have it)
+ * changes in a near pair's potential coefficient, the near terms being over
+ * the source's face at the point's centre (\a face at \a point, \a dz
+ * apart). The direct path's term over every part, the potential taken at
+ * each of the point's parts: the charge itself at one height ({1, 0}), and
+ * across two the image as far as the heights are apart. An image where the
+ * direct path is - the interface the metal lies on puts one at the charge
+ * itself - over the parts in the plane, a wall's share left at the face:
+ * profiling the direct term alone left a coplanar line's eps_eff 1.9 % low.
+ * The other images, and the rest of the stack, stay at the face, as the
+ * full wave's remainder does: the quasi-static solve is still the full
+ * wave's low frequency.
  */
-double wallCorrection(const Green& g, const QList<ChargePart>& at, const QList<ChargePart>& of, const QRectF& face, const QPointF& point,
-                      double dz)
+double partsCorrection(const Green& g, const QList<ChargePart>& at, const QList<ChargePart>& of, const QRectF& face, const QPointF& point,
+                       double dz)
 {
-    double a = 0;
-    for (const Green::Image& t : g.strongestTerms(kMostNear))
-        if (std::abs(std::abs(t.z) - dz) <= 1e-9 * std::max(dz, 1e-9)) {
-            a = t.a;
-            break;
+    double sum = 0;
+    bool direct = false;
+    for (const Green::Image& t : g.strongestTerms(kMostNear)) {
+        // (The direct path, and an image where it is - the interface the
+        //  metal lies on: what the full wave's singular term holds, the rest
+        //  its remainder at the face.)
+        const bool coincident = std::abs(std::abs(t.z) - dz) <= 1e-9 * std::max(dz, 1e-9);
+        if (!coincident) continue;
+        const bool isDirect = !direct;
+        double v = 0;
+        if (isDirect) {
+            direct = true;
+            v = partsPotential(at, of);
+        } else {
+            for (const ChargePart& p : at) {
+                const QPointF here = p.plane == 0 ? QPointF(p.x, p.y) : point;
+                for (const ChargePart& q : of)
+                    v += p.weight * q.weight * rectanglePotential(q.plane == 0 ? q.rect : face, here, t.z);
+            }
         }
-    if (a == 0) return 0;
-    return a * (partsPotential(at, of) - rectanglePotential(face, point, dz)) / (4 * M_PI * g.epsilon());
+        sum += t.a * (v - rectanglePotential(face, point, t.z));
+    }
+    return sum / (4 * M_PI * g.epsilon());
 }
 
 /// The longest side of either cell's box, in the cells' units: what a
@@ -376,7 +395,8 @@ QRectF scaled(const QRectF& box, double unit)
 Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which,
                              const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit,
                              const ExtractControl* control, const QHash<int, QList<ChargePart>>& charges = {},
-                             const std::function<double(int)>& zOf = {})
+                             const std::function<double(int)>& zOf = {},
+                             const std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>& local = {})
 {
     const int n = int(which.size());
     Eigen::MatrixXd p(n, n);
@@ -397,11 +417,12 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
             p(i, j) = cellPotential(at, rect, g, side, i == j);
             const auto ki = charges.constFind(which.at(i)), kj = charges.constFind(which.at(j));
             if ((ki != charges.constEnd() || kj != charges.constEnd())
-                && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side) {
+                && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side * (1 + 1e-6)) {   // (a margin, as the full wave's)
                 const double zi = zOf(which.at(i)), zj = zOf(which.at(j));
                 const QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.outline.boundingRect(), unit), zi)};
                 const QList<ChargePart> pj = kj != charges.constEnd() ? kj.value() : QList<ChargePart>{wholeCell(rect, zj)};
-                p(i, j) += wallCorrection(g, pi, pj, rect, at, std::abs(zi - zj));
+                const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, at, std::abs(zi - zj)); };
+                p(i, j) += local ? local(g, which.at(i), which.at(j), correction) : correction(g);
             }
         }
     }
@@ -556,11 +577,15 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()).
     const Thickened thick = thickened(stack, conductors, mesh);
-    if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {}, returns, control);
+    // (Each cell's charge spread as its edges and its walls have it:
+    //  chargeParts(), a sheet's too.)
+    if (!thick.any)
+        return extractSheets(mesh, conductors, stack, micrometre, {}, returns, control,
+                             chargeParts(thick, micrometre, [&](int m) { return heightOf(stack, mesh.cells.at(m).layer); }));
     // (And the walls' charge, which neither face holds, on the walls
     //  themselves as the full wave has it: wallCharges().)
     Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns, control,
-                                   wallCharges(thick, micrometre, [&thick](int m) { return heightOf(thick.stack, thick.mesh.cells.at(m).layer); }));
+                                   chargeParts(thick, micrometre, [&thick](int m) { return heightOf(thick.stack, thick.mesh.cells.at(m).layer); }));
     out.lines = thick.said + out.lines;
     return out;
 }
@@ -732,6 +757,65 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         out.lines += dielectric.lines;
     }
     const bool corrected = dielectric.delta.size() > 0;
+
+    // The edge profile's correction (partsCorrection()) where a layer ends:
+    // of the stack as it is where the cell is - each ended layer as inside
+    // its shapes where the cell's centre is within them -, not the
+    // background's. The correction is the charge's own near field, the
+    // images where the charge is; the background's vacuum where the metal
+    // lies on its substrate put the whole of it in air, which the
+    // polarization's coarse panels, solved for even charge, do not take
+    // back: a stub on a substrate ended 30 µm beside it read 4 % more
+    // capacitance than on the substrate everywhere. A pair across the
+    // shapes' edge takes the mean of its cells' two.
+    QHash<int, int> insideOf;   // a cell's: which regions it is within, a bit each
+    QMap<QString, Green> localGreens;
+    if (corrected && !charges.isEmpty()) {
+        for (const int k : std::as_const(which)) {
+            const QPointF c = mesh.cells.at(k).centre * micrometre;
+            int mask = 0;
+            for (int r = 0; r < plan.regions.size() && r < 30; ++r)
+                for (const QPolygonF& o : plan.regions.at(r).outline)
+                    if (o.containsPoint(c, Qt::OddEvenFill)) mask |= 1 << r;
+            if (mask != 0) insideOf.insert(k, mask);
+        }
+        QSet<int> masks;
+        for (const int mask : std::as_const(insideOf)) masks.insert(mask);
+        for (const int mask : std::as_const(masks)) {
+            Layers local = layers0;
+            for (int r = 0; r < plan.regions.size() && r < 30; ++r)
+                if (mask & (1 << r)) local.slabs[plan.regions.at(r).slab].epsr += plan.regions.at(r).delta;
+            for (const QString& a : std::as_const(layers))
+                for (const QString& b : std::as_const(layers)) {
+                    const QString key = keyOf(a, b) + QLatin1Char('#') + QString::number(mask);
+                    if (localGreens.contains(key)) continue;
+                    localGreens.insert(key, Green(local, height.value(a), height.value(b)));
+                    Green& g = localGreens[key];
+                    if (control != nullptr) {
+                        g.stopWith(control->stop);
+                        if (control->mostPairs > 0) g.limitPairs(control->mostPairs);
+                    }
+                    g.images();
+                    if (stopped()) return out;
+                    if (!g.ok()) {
+                        out.problems += g.problems();
+                        return out;
+                    }
+                }
+        }
+    }
+    const auto localCorrection = [&](const Green& g, int a, int b, const std::function<double(const Green&)>& correction) {
+        const auto of = [&](int k) -> const Green& {
+            const int mask = insideOf.value(k, 0);
+            if (mask == 0) return g;
+            const auto it = localGreens.constFind(keyOf(mesh.cells.at(a).layer, mesh.cells.at(b).layer) + QLatin1Char('#') + QString::number(mask));
+            return it != localGreens.constEnd() ? it.value() : g;
+        };
+        const Green& ga = of(a);
+        const Green& gb = of(b);
+        if (&ga == &gb) return correction(ga);
+        return 0.5 * (correction(ga) + correction(gb));
+    };
 
     // Which net each unknown belongs to, in the order they were gathered.
     QList<int> netOf;
@@ -967,9 +1051,9 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                     const double dx = alongX ? k * delta : 0.0, dy = alongX ? 0.0 : k * delta;
                     const QRectF copy = rect.translated(dx, dy);
                     sum += cellPotential(at, copy, g, side, a == b && k == 0);
-                    // (The walls' charge of each copy, near: wallCorrection().)
-                    if (walled && std::hypot(at.x() - copy.center().x(), at.y() - copy.center().y()) < kNearWidths * side)
-                        sum += wallCorrection(g, pa, movedBy(pb, dx, dy), copy, at, std::abs(za - zb));
+                    // (Each copy's charge over its parts, near: partsCorrection().)
+                    if (walled && std::hypot(at.x() - copy.center().x(), at.y() - copy.center().y()) < kNearWidths * side * (1 + 1e-6))
+                        sum += partsCorrection(g, pa, movedBy(pb, dx, dy), copy, at, std::abs(za - zb));
                 }
                 // (A charge per metre on the strip puts delta of it on each copy.)
                 p(a, b) += sum * delta;
@@ -1009,7 +1093,10 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
                            QList<QList<double>>* matrix, QList<double>* crowd = nullptr, bool withDielectric = false) {
-        Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control, charges, zOf);
+        // (The stack's own, with its layers that end: their local images.)
+        Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control, charges, zOf,
+                                         withDielectric && !insideOf.isEmpty() ? localCorrection
+                                                                                : std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>{});
         if (control != nullptr && control->stopped()) return 1.0;
         if (withDielectric && corrected) p += dielectric.delta;
         ++out.solves;

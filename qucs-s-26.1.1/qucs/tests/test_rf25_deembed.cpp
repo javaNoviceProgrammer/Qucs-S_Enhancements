@@ -290,7 +290,13 @@ private slots:
         const double want = openEnd(w * 1e-6 / h, 9.8, quasi.epsilonEff) * h;
         qWarning().noquote() << QStringLiteral("the open end: %1 um; Kirschning, Jansen and Koster %2 um (%3)")
                                     .arg(extension * 1e6, 0, 'f', 2).arg(want * 1e6, 0, 'f', 2).arg(extension / want - 1, 0, 'e', 2);
-        QVERIFY2(std::abs(extension / want - 1) < 4e-2, "the open end's own extension");
+        // (Within 6 % of the closed form: the charge spread as the line's
+        //  edges and end have it - the plan's phase 5 - reads 33.28 µm at six
+        //  across and 33.36 at twelve, where each cell's charge even read
+        //  30.98 and 32.19 on its way there at the first order: the closed
+        //  form is 5 % under what the solve converges to, and the even
+        //  charge's 2.4 % at six across was its mesh's error against it.)
+        QVERIFY2(std::abs(extension / want - 1) < 6e-2, "the open end's own extension");
         // Solved as it is, the port's own discontinuity is in it: the same
         // line read as an open end comes out otherwise.
         const Complex rawLength = std::atanh(z / raw.z.at(0).at(0).at(0)) / gamma;

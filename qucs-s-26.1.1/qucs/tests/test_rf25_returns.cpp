@@ -243,7 +243,7 @@ private slots:
                 counted += b.returnsOf.at(0).at(k).cells;
                 coplanar += a.returnsOf.at(0).at(k).cells;
                 // Half each, by the line's symmetry, as the coplanar port's.
-                QVERIFY2(std::abs(b.returnsOf.at(0).at(k).share - 0.5) < 1e-9, qPrintable(QString::number(std::abs(b.returnsOf.at(0).at(k).share))));
+                QVERIFY2(std::abs(b.returnsOf.at(0).at(k).share - 0.5) < 1e-9, qPrintable(QString::number(std::abs(b.returnsOf.at(0).at(k).share - 0.5), 'g', 6)));
                 QVERIFY2(std::abs(a.returnsOf.at(0).at(k).share - 0.5) < 1e-9, qPrintable(QString::number(std::abs(a.returnsOf.at(0).at(k).share))));
             }
             QCOMPARE(counted, coplanar);
