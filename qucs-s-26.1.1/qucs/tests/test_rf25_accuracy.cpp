@@ -297,6 +297,26 @@ double l2lAlpha(const QList<QList<Complex>>& shorter, const QList<QList<Complex>
     return std::log(lambda).real() / dl * 20 / std::log(10.0);
 }
 
+/// Phase 7's bandstop filter, our own (docs/feature_gaps/2026-11-13-rf25-filter/filter.py): a 50 Ohm microstrip
+/// 250 µm wide on 254 µm of alumina over a ground plane, three pairs of open stubs - one either side -, each 250 µm
+/// wide and 2850 µm from the line's edge, the pairs 2925 µm apart and 1500 µm from each end: 8850 µm in all.
+QList<rf::Conductor> stubFilter()
+{
+    const double w = 250, stub = 2850, pitch = 2925, feed = 1500, length = 2 * feed + 2 * pitch;
+    QList<QPointF> top = {{0, w / 2}};
+    for (int k = 0; k < 3; ++k) {
+        const double c = feed + k * pitch;
+        top << QPointF(c - w / 2, w / 2) << QPointF(c - w / 2, w / 2 + stub) << QPointF(c + w / 2, w / 2 + stub) << QPointF(c + w / 2, w / 2);
+    }
+    top << QPointF(length, w / 2);
+    QList<QPointF> outline = top;
+    for (auto it = top.crbegin(); it != top.crend(); ++it) outline << QPointF(it->x(), -it->y());
+    rf::Conductor c;
+    c.layer = QStringLiteral("M1");
+    c.outline = QPolygonF(outline);
+    return {c};
+}
+
 } // namespace
 
 class TestRf25Accuracy : public QObject
@@ -610,6 +630,61 @@ private slots:
                   alpha, lossy.at(k), lossless.at(k), eddy[k], 100 * (alpha / eddy[k] - 1));
             QVERIFY2(std::abs(alpha / eddy[k] - 1) < 0.03, qPrintable(QStringLiteral("%1 GHz: %2 dB/m").arg(ghz.at(k)).arg(alpha)));
         }
+    }
+
+    // Phase 7 (A4 of the open items of 8 November): a bandstop filter's
+    // stopband against Palace 3D - our own filter, stubFilter(), lossless,
+    // edge ports at its ends. Palace (a half model, wave ports on the board's
+    // ends, 3.5 million unknowns): -20 dB from 7.4377 to 13.6737 GHz, its
+    // centre 10.5557, its width 6.2360 GHz; one pair of stubs alone, 10.2541
+    // to 11.5740 (its null 10.9247). RF 2.5D's within 0.5 % - its centre
+    // and edges - and its width within 2 %, as the plan asked; at 12 across
+    // 7.4507 to 13.7180 GHz, +0.17 and +0.32 %. (Its least |S21| sits in
+    // the stopband's flat floor - -69 dB in RF 2.5D from 10.4 to 11.2 GHz,
+    // -82 in Palace -, where neither says where the least is.)
+    void aStubFiltersStopbandIsPalaces()
+    {
+        const rf::Stack stack = stackOf(QStringLiteral("perfect"), 254e-6, 9.8, 0, 0, false);
+        const QList<rf::Conductor> filter = stubFilter();
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        how.maximum = 400e-6;
+        how.gaps = true;
+        const rf::Mesh mesh = rf::meshOf(filter, how, stack, 0);
+        QList<rf::FullWavePort> ports;
+        for (const auto& [x, facing] : {std::pair<double, double>{0, -1}, {8850, 1}}) {
+            rf::FullWavePort p;
+            p.name = QStringLiteral("P%1").arg(ports.size() + 1);
+            p.at = QPointF(x, 0);
+            p.metal = QStringLiteral("M1");
+            p.facing = QPointF(facing, 0);
+            ports << p;
+        }
+        // Where |S21| crosses -20 dB near \a from (GHz), stepping \a step.
+        const auto crossing = [&](double from, double to, double step, double* at) {
+            QList<double> hz;
+            for (double f = from; f <= to + 1e-9; f += step) hz << f * 1e9;
+            const rf::FullWave w = rf::fullWaveOf(mesh, filter, stack, ports, hz);
+            if (!w.ok() || w.s.size() != hz.size()) return false;
+            for (int k = 0; k + 1 < hz.size(); ++k) {
+                const double a = 20 * std::log10(std::abs(w.s.at(k).at(1).at(0))), b = 20 * std::log10(std::abs(w.s.at(k + 1).at(1).at(0)));
+                if ((a + 20) * (b + 20) < 0) {
+                    *at = (hz.at(k) + (hz.at(k + 1) - hz.at(k)) * (-20 - a) / (b - a)) / 1e9;
+                    return true;
+                }
+            }
+            return false;
+        };
+        double low = 0, high = 0;
+        QVERIFY2(crossing(7.25, 7.75, 0.05, &low), "no -20 dB edge from 7.25 to 7.75 GHz");
+        QVERIFY2(crossing(13.45, 13.95, 0.05, &high), "no -20 dB edge from 13.45 to 13.95 GHz");
+        const double palaceLow = 7.4377, palaceHigh = 13.6737;
+        qInfo("-20 dB from %.4f to %.4f GHz (Palace %.4f to %.4f): edges %+.2f and %+.2f %%, centre %+.2f %%, width %+.2f %%", low, high, palaceLow,
+              palaceHigh, 100 * (low / palaceLow - 1), 100 * (high / palaceHigh - 1), 100 * ((low + high) / (palaceLow + palaceHigh) - 1),
+              100 * ((high - low) / (palaceHigh - palaceLow) - 1));
+        QVERIFY(std::abs(low / palaceLow - 1) < 0.005 && std::abs(high / palaceHigh - 1) < 0.005);
+        QVERIFY(std::abs((low + high) / (palaceLow + palaceHigh) - 1) < 0.005);
+        QVERIFY(std::abs((high - low) / (palaceHigh - palaceLow) - 1) < 0.02);
     }
 };
 
