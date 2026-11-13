@@ -653,6 +653,9 @@ signals:
     void stateChanged();
     /// The shapes and the mesh made again, or being made.
     void preparedChanged();
+    /// A solve's count moved on (each 400 ms while it runs): what it has
+    /// solved is as it was.
+    void progressed();
     /// A solve started, ended, or let go.
     void solvedChanged();
     /// An analysis began or ended.
@@ -664,6 +667,9 @@ private:
     struct PrepareJob;
     int a_waiting = 0;      // (Held)
     bool a_closed = false;  // (closeWhenFree())
+    /// The waits' own: until \a going says no or \a ms have passed, the GUI
+    /// going on meanwhile in an event loop that sleeps between events.
+    void waitWhile(const std::function<bool()>& going, int ms);
     using SolveJob = qucs_s::rf25::SolveJob;   ///< (rf25_solve.h)
     struct AnalysisRun;
     std::shared_ptr<AnalysisRun> a_analysis;

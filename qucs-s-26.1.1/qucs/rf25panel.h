@@ -97,6 +97,10 @@ private:
     void addItems(QTreeWidgetItem* parent, const qucs_s::rf25::Node& node);
     void updateStatusColumn();
     void showSettings();
+    /// What the Results say while a solve runs: its count.
+    QString solvingSaid() const;
+    /// The Results' line brought up to the solve's count, the form kept.
+    void showProgress();
     void scheduleSettings();
     void commit(const QString& key, const QJsonValue& value, const QString& what = {});
     QWidget* makeEditor(const qucs_s::rf25::Node& node, const qucs_s::fem::PropertyDef& p);
