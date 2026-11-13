@@ -91,6 +91,7 @@ QString facesNote(const Stack& stack, const QString& format)
     QStringList faces;
     for (const Layer& l : stack.layers)
         if (l.kind == Layer::Metal && l.twoSheets) faces << l.name;
+        else if (l.kind == Layer::Metal && l.automatic) faces << QCoreApplication::translate("qucs_s::rf25::StackFile", "%1 (Automatic)").arg(l.name);
     if (faces.isEmpty()) return {};
     return QCoreApplication::translate("qucs_s::rf25::StackFile",
                                        "%1 solved as their two faces, which %2 has no place for (it solves each metal at its thickness): "

@@ -547,13 +547,66 @@ private slots:
             const QString one = warned(1, 1, faces);
             QVERIFY2(one.contains(QStringLiteral("M1 is 1 µm thick beside gaps as narrow as 1 µm"))
                          && (faces || one.contains(QStringLiteral("reads low")))
-                         && one.contains(faces ? QStringLiteral("as capacitances between facing edge cells") : QStringLiteral("a sheet has no walls")),
+                         && one.contains(faces ? QStringLiteral("the walls facing across them holding charge") : QStringLiteral("a sheet has no walls")),
                      qPrintable(one));
             QVERIFY2(!warned(0.3, 1, faces).isEmpty(), "a quarter of the gap is said");
             QVERIFY2(warned(0.2, 1, faces).isEmpty(), qPrintable(warned(0.2, 1, faces)));
             QVERIFY2(warned(3, 50, faces).isEmpty(), qPrintable(warned(3, 50, faces)));
             QVERIFY2(warned(0.01, 1, faces).isEmpty(), qPrintable(warned(0.01, 1, faces)));
         }
+    }
+
+    // A metal Solved as Automatic is solved as its two faces where it is at
+    // least a fortieth as thick as the narrowest gap beside it, else a sheet,
+    // and says which (the user's choice of 13 November). A new metal is
+    // Automatic, the starter model's too; a file that says nothing is a
+    // sheet, as it was.
+    void aMetalSolvedAsAutomaticIsItsTwoFacesWhereItIsThickBesideItsGaps()
+    {
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        const auto decided = [&](double thicknessUm, double gapUm, bool alone = false) {
+            rf::Model m = stacked();
+            for (rf::Node& n : m.stackNode().children)
+                if (n.type == QLatin1String("rf_metal")) {
+                    set(n, "model", QStringLiteral("automatic"));
+                    set(n, "thickness", QStringLiteral("%1[um]").arg(thicknessUm));
+                }
+            const rf::Stack stack = m.stack();
+            const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+            if (metal == nullptr || !metal->automatic || metal->twoSheets) return rf::Thickened();
+            QList<rf::Conductor> shapes{on(QStringLiteral("M1"), 0, 0, 200, 50)};
+            if (!alone) shapes << on(QStringLiteral("M1"), 0, 50 + gapUm, 200, 50);
+            return rf::thickened(stack, shapes, rf::meshOf(shapes, how, stack, 30e9));
+        };
+        // 2 µm in 20 µm gaps, a tenth: its two faces.
+        const rf::Thickened tenth = decided(2, 20);
+        QVERIFY(tenth.any);
+        QVERIFY(tenth.stack.named(QStringLiteral("M1"))->twoSheets);
+        QVERIFY2(tenth.said.join(" | ").contains(QStringLiteral("M1 is solved as its two faces (Automatic): 2 µm thick beside gaps as narrow as 20 µm")),
+                 qPrintable(tenth.said.join(" | ")));
+        // At a fortieth, its two faces; under it a sheet.
+        QVERIFY(decided(1, 40).any);
+        QVERIFY(!decided(1, 41).any);
+        // 0.5 µm in 50 µm gaps, a hundredth: a sheet, and said.
+        const rf::Thickened hundredth = decided(0.5, 50);
+        QVERIFY(!hundredth.any && !hundredth.stack.named(QStringLiteral("M1"))->twoSheets);
+        QVERIFY2(hundredth.said.join(" | ").contains(QStringLiteral("M1 is solved as a sheet (Automatic): 0.5 µm thick, its narrowest gap 50 µm")),
+                 qPrintable(hundredth.said.join(" | ")));
+        // Nothing beside it: a sheet.
+        const rf::Thickened alone = decided(2, 0, true);
+        QVERIFY(!alone.any);
+        QVERIFY2(says(alone.said, "no gap faces it"), qPrintable(alone.said.join(" | ")));
+        // The mesh keeps each layer's narrowest gap.
+        rf::Model m = stacked();
+        const QList<rf::Conductor> pair{on(QStringLiteral("M1"), 0, 0, 200, 50), on(QStringLiteral("M1"), 0, 70, 200, 50)};
+        QCOMPARE(rf::meshOf(pair, how, m.stack(), 30e9).gapByLayer.value(QStringLiteral("M1")), 20.0);
+        // A file that says nothing: a sheet, not Automatic.
+        QVERIFY(!m.stack().named(QStringLiteral("M1"))->automatic && !m.stack().named(QStringLiteral("M1"))->twoSheets);
+        // A new metal, and the starter model's: Automatic.
+        const rf::Node made = m.make(QStringLiteral("rf_metal"));
+        QCOMPARE(made.props.value(QStringLiteral("model")).toString(), QStringLiteral("automatic"));
+        QVERIFY(rf::Model::blank().stack().named(QStringLiteral("M1"))->automatic);
     }
 
     // One cross-section, one mesh, however it is drawn: a coplanar line
