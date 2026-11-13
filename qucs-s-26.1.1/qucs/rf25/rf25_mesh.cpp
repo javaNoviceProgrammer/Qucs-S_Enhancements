@@ -92,6 +92,13 @@ constexpr double kThickBesideGap = 0.25;
 /// A metal solved as its two faces whose thickness is under this share of
 /// its narrowest conductor's width is solved as a sheet (thickened()).
 constexpr double kFacesApart = 0.02;
+/// A metal Solved as Automatic is solved as its two faces where it is at
+/// least this much of the narrowest gap beside it thick (thickened()): a
+/// sheet there reads Z0 some per cents high - 2 µm of gold in 20 µm gaps,
+/// a tenth, 4.8 % (Palace: 73.72 Ohm thin, 70.3 at 2 µm) - against B2's
+/// quarter, where its capacitance across the gap goes visibly wrong (the
+/// user's choice of 13 November: "Yes, use 1/40").
+constexpr double kAutomaticFaces = 1.0 / 40;
 
 QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh, double finestLow = 0,
                         double finestHigh = 0)
@@ -1092,18 +1099,21 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             }
         for (const double gap : std::as_const(narrowestGap))
             if (mesh.narrowestGap <= 0 || gap < mesh.narrowestGap) mesh.narrowestGap = gap;
+        mesh.gapByLayer = narrowestGap;
         for (auto it = narrowestGap.constBegin(); it != narrowestGap.constEnd(); ++it) {
             const Layer* metal = stack.named(it.key());
             if (metal == nullptr || metal->kind != Layer::Metal || !(metal->thickness > 0)) continue;
             const double t = metal->thickness / perUnit, gap = it.value();
             if (t < kThickBesideGap * gap) continue;
-            // (Solved as its two faces, the walls' charge is added as
-            //  capacitance between facing edges - wallGapsOf() - from a 2D
-            //  solve of straight walls, which is still an approximation.)
-            const QString w = metal->twoSheets
+            // (Solved as its two faces - Automatic here is - the walls facing
+            //  across a narrow gap hold charge, each edge cell's spread over
+            //  its face and its half of the wall by area: still an
+            //  approximation of the corners' crowding.)
+            const QString w = metal->twoSheets || metal->automatic
                                   ? tr("%1 is %2 µm thick beside gaps as narrow as %3 µm: the field between its side walls "
-                                       "is in this answer as capacitances between facing edge cells, from a 2D solve of "
-                                       "straight walls - its corners, finger tips and slanted walls are taken as straight.")
+                                       "is in this answer, the walls facing across them holding charge - each edge cell's "
+                                       "spread over its face and its half of the wall, its corners and finger tips taken "
+                                       "as straight walls.")
                                         .arg(it.key()).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
                                   : tr("%1 is %2 µm thick beside gaps as narrow as %3 µm: the field between its side walls "
                                        "is not in this answer - a sheet has no walls - so the capacitance across its gaps "
@@ -1175,9 +1185,33 @@ bool Thickened::made(const QString& layer) const
     return l != nullptr && (l->face == Layer::Top || l->face == Layer::Walls);
 }
 
-Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, const Mesh& mesh)
+Thickened thickened(const Stack& given, const QList<Conductor>& conductors, const Mesh& mesh)
 {
     Thickened out;
+    // A metal Solved as Automatic: as its two faces where it is at least a
+    // fortieth as thick as the narrowest gap beside it (kAutomaticFaces) -
+    // where a sheet, which has no thickness in the field and no walls,
+    // reads Z0 a per cent and more high (A1 of the open items of 8
+    // November) -, else a sheet. Said either way, and decided before
+    // anything else reads the stack.
+    Stack stack = given;
+    for (Layer& l : stack.layers) {
+        if (l.kind != Layer::Metal || !l.automatic || l.face != Layer::Whole) continue;
+        l.automatic = false;
+        const double t = l.thickness * 1e6, gap = mesh.gapByLayer.value(l.name, 0);   // (µm, as the mesh)
+        if (t > 0 && gap > 0 && t >= kAutomaticFaces * gap) {
+            l.twoSheets = true;
+            out.said << tr("%1 is solved as its two faces (Automatic): %2 µm thick beside gaps as narrow as %3 µm, a fortieth "
+                           "of them or more.")
+                            .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3);
+        } else {
+            l.twoSheets = false;
+            out.said << (gap > 0 ? tr("%1 is solved as a sheet (Automatic): %2 µm thick, its narrowest gap %3 µm, over forty "
+                                      "times as wide.")
+                                       .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
+                                 : tr("%1 is solved as a sheet (Automatic): no gap faces it.").arg(l.name));
+        }
+    }
     out.stack = stack;
     out.conductors = conductors;
     out.mesh = mesh;

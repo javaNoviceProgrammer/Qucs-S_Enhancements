@@ -1,0 +1,10 @@
+===== what each break did =====
+Automatic always a sheet                                       aMetalSolvedAsAutomaticIsItsTwoFac failed (caught); theBenchmarksCoplanarLineIsPalaces failed (caught)
+Automatic at B2's quarter                                      aMetalSolvedAsAutomaticIsItsTwoFac failed (caught); theBenchmarksCoplanarLineIsPalaces failed (caught)
+the mesh keeping no gap by layer                               aMetalSolvedAsAutomaticIsItsTwoFac failed (caught)
+a file's Automatic not read                                    aMetalSolvedAsAutomaticIsItsTwoFac failed (caught)
+a new metal a sheet                                            aMetalSolvedAsAutomaticIsItsTwoFac failed (caught)
+the starter model's metal a sheet                              aMetalSolvedAsAutomaticIsItsTwoFac failed (caught)
+a file that says nothing read as Automatic                     aMetalSolvedAsAutomaticIsItsTwoFac failed (caught)
+
+0 of 7 uncaught
