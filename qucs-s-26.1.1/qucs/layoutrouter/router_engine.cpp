@@ -1843,26 +1843,25 @@ void Router::Impl::stampBoxes(const std::vector<std::pair<int, Box>>& metal, int
     });
 }
 
-// Whether a routed net's cells are too near another net's lines (its own
-// taken out for the test).
+// Whether a routed net's cells or its vias' landings are too near another
+// net's lines (its own taken out for the test).
 bool Router::Impl::conflicted(int n)
 {
     NetState& st = nets[std::size_t(n)];
     if (!st.routed) return false;
     stamp(n, -1);
     bool bad = false;
-    std::vector<std::size_t> marks;
-    for (std::size_t k = 0; k < st.path.size() && !bad; ++k) {
-        const quint64 s = st.path[k];
-        const int l = planeOf(s);
-        const std::size_t c = cellOf(s);
-        if (use[std::size_t(st.lineType)][std::size_t(l)].get(c) > 0) bad = true;
-        if (k + 1 < st.path.size() && cellOf(st.path[k + 1]) == c && planeOf(st.path[k + 1]) != l) {
-            const int v = std::min(l, planeOf(st.path[k + 1]));
-            if (use[std::size_t(classLandLower[std::size_t(st.cls)][std::size_t(v)])][std::size_t(v)].get(c) > 0
-                || use[std::size_t(classLandUpper[std::size_t(st.cls)][std::size_t(v)])][std::size_t(v + 1)].get(c) > 0)
-                bad = true;
-        }
+    for (std::size_t k = 0; k < st.path.size() && !bad; ++k)
+        bad = use[std::size_t(st.lineType)][std::size_t(planeOf(st.path[k]))].get(cellOf(st.path[k])) > 0;
+    // Its vias' landings, where it drew them: not wherever its path is on
+    // two metals at one cell (lines on both may pass there with no via).
+    for (int k = 0; k < st.result.vias.size() && !bad; ++k) {
+        const ViaPlaced& v = st.result.vias.at(k);
+        const Coord i = (v.at.x - ox) / pitch, j = (v.at.y - oy) / pitch;
+        if (i < 0 || j < 0 || i >= nx || j >= ny) continue;
+        const std::size_t c = cellAt(int(i), int(j));
+        bad = use[std::size_t(classLandLower[std::size_t(st.cls)][std::size_t(v.via)])][std::size_t(v.via)].get(c) > 0
+              || use[std::size_t(classLandUpper[std::size_t(st.cls)][std::size_t(v.via)])][std::size_t(v.via + 1)].get(c) > 0;
     }
     stamp(n, +1);
     return bad;
@@ -2120,6 +2119,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
                     st.result.hasWhere = true;
                 }
             }
+            if (progress.batch) progress.batch();
             // Near the cap: one search at a time, the other threads' arrays
             // given back. Past it even so: stop, with the best pass.
             const qint64 cap = p.options.maxMemory * 1024 * 1024;
@@ -2234,6 +2234,28 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
             }
         }
     }
+    // A net is drawn with tails into its terminals that are not cells of
+    // its own, so a tail too near another net shows as that net's conflict,
+    // and a route kept from the last run is not in the order: one too near
+    // a net's tail is that net's to give way.
+    const Coord near = reach * pitch;
+    const auto boundsOf = [&](int n) {
+        Box b;
+        for (const auto& [l, box] : nets[std::size_t(n)].metal) b = b.united(box);
+        return b;
+    };
+    {
+        std::vector<char> bad(std::size_t(count), 0);
+        for (int n = 0; n < count; ++n) bad[std::size_t(n)] = nets[std::size_t(n)].routed && conflicted(n);
+        for (int n : order) {
+            NetState& st = nets[std::size_t(n)];
+            if (!st.routed) continue;
+            st.contested = bad[std::size_t(n)];
+            const Box around = boundsOf(n).grown(near);
+            for (int m = 0; m < count && !st.contested; ++m)
+                st.contested = nets[std::size_t(m)].kept && bad[std::size_t(m)] && around.meets(boundsOf(m));
+        }
+    }
     std::vector<int> contested;
     for (int n : order)
         if (nets[std::size_t(n)].routed && nets[std::size_t(n)].contested) contested.push_back(n);
@@ -2245,12 +2267,31 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
             stamp(n, -1);
             nets[std::size_t(n)].routed = false;
         }
+        // Each routed again around all the others. The search keeps its
+        // cells clear of them, but not its tails: what it drew is tested both
+        // ways, its own cells against the others' metal and theirs against
+        // its own, and a net that would leave any pair too near is not kept.
+        const auto keepsClear = [&](int n) {
+            if (conflicted(n)) return false;
+            const Box around = boundsOf(n).grown(near);
+            for (int m = 0; m < count; ++m)
+                if (m != n && nets[std::size_t(m)].routed && around.meets(boundsOf(m)) && conflicted(m)) return false;
+            return true;
+        };
         for (int n : contested) {
             NetState& st = nets[std::size_t(n)];
-            if (route(n, true, 0, *buffers[0], true)) {
+            bool clear = route(n, true, 0, *buffers[0], true);
+            if (clear) {
                 st.routed = true;
-                st.contested = false;
                 stamp(n, +1);
+                if (!keepsClear(n)) {
+                    stamp(n, -1);
+                    st.routed = false;
+                    clear = false;
+                }
+            }
+            if (clear) {
+                st.contested = false;
             } else {
                 st.contested = false;
                 st.failed = false;
