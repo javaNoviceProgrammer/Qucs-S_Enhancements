@@ -2145,6 +2145,7 @@ void LayoutDoc::startReading()
         a_toolbar->setEnabled(false);
     }
     QThread* thread = QThread::create([job] {
+        while (readingHeld().load() && !job->cancelled.load()) QThread::msleep(2);
         job->result = read(job->path, &job->error, &job->cancelled, &job->progress);
     });
     // (A main thread's stack, 8 MB: a thread's is 512 kB on macOS, where a
@@ -2159,11 +2160,20 @@ void LayoutDoc::startReading()
     a_progressTimer->start();
 }
 
+std::atomic_bool& LayoutDoc::readingHeld()
+{
+    static std::atomic_bool held{false};
+    return held;
+}
+
 bool LayoutDoc::waitForLoaded(int ms)
 {
-    QElapsedTimer t;
-    t.start();
-    while (a_job && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    // (In an event loop that sleeps, woken as the read ends: a loop of
+    //  processEvents never slept, and a Save panel opened while a layout
+    //  tool waited for a large file never reached the screen on macOS.)
+    misc::waitWhile([this] { return a_job != nullptr; }, ms, [this](QObject* context, const std::function<void()>& look) {
+        connect(this, &LayoutDoc::loaded, context, look, Qt::QueuedConnection);
+    });
     return !a_job;
 }
 

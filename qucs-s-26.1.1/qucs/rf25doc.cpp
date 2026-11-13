@@ -1128,27 +1128,15 @@ void RF25Doc::closeWhenFree()
 
 void RF25Doc::waitWhile(const std::function<bool()>& going, int ms)
 {
-    // An event loop that sleeps till an event comes, looking each 20 ms and
-    // at once when the model says its state moved. The waits once called
-    // processEvents in a loop of their own, which never slept: the GUI
-    // thread spent its whole time looking (4.9 s of the 5 s a solve was
-    // waited for, on macOS), and a window opened meanwhile - the Save
-    // panel - never reached the screen, which Core Animation draws as the
-    // run loop goes to sleep (the user's report of 12 November).
-    QElapsedTimer t;
-    t.start();
-    if (!going() || ms <= 0) return;
-    QEventLoop loop;
-    const auto look = [&] {
-        if (!going() || t.elapsed() >= ms) loop.quit();
-    };
-    QTimer every;
-    every.setInterval(20);
-    connect(&every, &QTimer::timeout, &loop, look);
-    every.start();
-    for (auto signal : {&RF25Doc::stateChanged, &RF25Doc::preparedChanged, &RF25Doc::solvedChanged})
-        connect(this, signal, &loop, look, Qt::QueuedConnection);
-    loop.exec();
+    // (Woken at once when the model says its state moved, else each 20 ms:
+    //  misc::waitWhile. The waits once called processEvents in a loop of
+    //  their own, which never slept: 4.9 s of the GUI thread's 5 while a
+    //  solve was waited for, on macOS, and a Save panel opened meanwhile
+    //  never reached the screen - the user's report of 12 November.)
+    misc::waitWhile(going, ms, [this](QObject* context, const std::function<void()>& look) {
+        for (auto signal : {&RF25Doc::stateChanged, &RF25Doc::preparedChanged, &RF25Doc::solvedChanged})
+            connect(this, signal, context, look, Qt::QueuedConnection);
+    });
 }
 
 bool RF25Doc::waitForLayout(int ms)

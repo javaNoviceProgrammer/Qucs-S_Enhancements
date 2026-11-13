@@ -18,6 +18,8 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QAbstractEventDispatcher>
+#include <ctime>
 #include <QWindow>
 #include <QClipboard>
 #include <QElapsedTimer>
@@ -409,6 +411,16 @@ void waitForReads()
     while (readsGoing() > 0 && t.elapsed() < 120000) QTest::qWait(20);
 }
 
+} // namespace
+
+namespace {
+/// The calling thread's CPU time, ms: what a wait on the GUI thread cost it.
+double threadCpuMs()
+{
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
 } // namespace
 
 class TestLayoutDoc : public QObject
@@ -2940,6 +2952,64 @@ private slots:
     // A million shapes: read in the background (the window answers
     // meanwhile), drawn whole at its full extent and a corner of it in
     // time; a read cancelled, and read again.
+    // Waited for - as Claude's layout tools wait for a file being read -,
+    // the GUI goes on and its thread sleeps between events: the wait once
+    // called processEvents in a loop of its own, which never slept, and on
+    // macOS a window opened meanwhile (a Save panel) never reached the
+    // screen, drawn as the run loop goes to sleep. It ends as the read does.
+    void aLayoutWaitedForLeavesTheGuiThreadIdle()
+    {
+        const QString file = path("idle.gds");
+        {
+            gdstk::Library lib = {};
+            lib.init("IDLE", 1e-6, 1e-9);
+            gdstk::Cell* top = newCell(lib, "TOP");
+            addRectangle(top, {0, 0}, {10, 5}, 1);
+            QCOMPARE(lib.write_gds(QFile::encodeName(file).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
+            lib.free_all();
+        }
+        LayoutDoc::holdReading(true);
+        auto letGo = qScopeGuard([] { LayoutDoc::holdReading(false); });
+        QVERIFY(app->gotoPage(file));
+        auto* doc = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr && doc->isLoading());
+        int ticks = 0;
+        QTimer other;
+        other.setInterval(50);
+        connect(&other, &QTimer::timeout, [&ticks] { ++ticks; });
+        other.start();
+        QElapsedTimer t;
+        t.start();
+        // (How often the run loop went to sleep: never, in a loop of
+        //  processEvents - what keeps a new window off macOS's screen.)
+        int slept = 0;
+        const QMetaObject::Connection s = connect(QAbstractEventDispatcher::instance(), &QAbstractEventDispatcher::aboutToBlock, this,
+                                                  [&slept] { ++slept; });
+        const double before = threadCpuMs();
+        QVERIFY2(!doc->waitForLoaded(1500), "the held read ended");
+        const double used = threadCpuMs() - before;
+        const qint64 wall = t.elapsed();
+        disconnect(s);
+        other.stop();
+        QVERIFY2(slept >= 15, qPrintable(QStringLiteral("the run loop slept %1 times in %2 ms").arg(slept).arg(wall)));
+        QVERIFY2(wall >= 1500 && wall < 3000, qPrintable(QString::number(wall)));
+        QVERIFY2(used < 0.2 * wall, qPrintable(QStringLiteral("the GUI thread was busy %1 ms of %2").arg(used, 0, 'f', 0).arg(wall)));
+        QVERIFY2(ticks >= 15, qPrintable(QStringLiteral("another timer ticked %1 times in %2 ms").arg(ticks).arg(wall)));
+        // Let go, it is waited for to its end, and no longer.
+        qint64 loaded = -1;
+        const QMetaObject::Connection c = connect(doc, &LayoutDoc::loaded, this, [&] {
+            if (loaded < 0) loaded = t.elapsed();
+        });
+        LayoutDoc::holdReading(false);
+        t.restart();
+        QVERIFY(doc->waitForLoaded(60000));
+        const qint64 back = t.elapsed();
+        disconnect(c);
+        QVERIFY2(loaded >= 0 && back - loaded < 500, qPrintable(QStringLiteral("read at %1 ms, the wait back at %2").arg(loaded).arg(back)));
+        QVERIFY(doc->layout() && doc->layout()->shapeCount == 1);
+        closeAll();
+    }
+
     void aMillionShapesAreReadAndDrawnInTime()
     {
         const QString big = path("million.oas");

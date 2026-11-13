@@ -20,11 +20,10 @@ FORM = ("test_rf25_doc", "aSolveRunningLeavesThePanelsFormAlone")
 
 BREAKS = [
  ("the waits looking for events in a loop of their own again",
-  [(D, "    QEventLoop loop;\n    const auto look = [&] {",
-       "    while (going() && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);\n    return;\n"
-       "    QEventLoop loop;\n    const auto look = [&] {")], [IDLE]),
- ("a wait not ending when what it waits for has",
-  [(D, "        if (!going() || t.elapsed() >= ms) loop.quit();", "        if (t.elapsed() >= ms) loop.quit();")], [IDLE]),
+  [(D, "    misc::waitWhile(going, ms, [this](QObject* context, const std::function<void()>& look) {",
+       "    for (QElapsedTimer t; !t.isValid() || (going() && t.elapsed() < ms);) {\n        if (!t.isValid()) t.start();\n"
+       "        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);\n    }\n    return;\n"
+       "    misc::waitWhile(going, ms, [this](QObject* context, const std::function<void()>& look) {")], [IDLE]),
  ("the count told as a solve changed",
   [(D, "        emit progressed();\n", "        emit solvedChanged();\n")], [FORM]),
  ("the panel not told the count",

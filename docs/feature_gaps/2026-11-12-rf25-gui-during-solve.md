@@ -30,6 +30,8 @@ also emitted `solvedChanged()`.
   - It checks every 20 ms, and also as soon as the model emits `stateChanged`, `preparedChanged` or `solvedChanged`.
   - It ends when `going()` is false or the time is up.
   - The waits' answers are what they were.
+  - Its loop is now `misc::waitWhile`, shared with the Layout and 3D multiphysics waits
+    (`2026-11-12-waits-that-sleep.md`).
 - **`RF25Doc::progressed()`** (new signal) is what the 400 ms tick now emits instead of `solvedChanged()`. Nothing
   solved has changed when the count moves.
 - **The panel** connects `progressed` to the new `RF25Panel::showProgress()`. While the Results node is shown,
