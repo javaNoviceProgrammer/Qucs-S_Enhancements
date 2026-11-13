@@ -104,7 +104,14 @@
  * coplanar line's eps_eff feels (3 µm of copper in 50 µm gaps: 2 to 3 %
  * under the sheet's, as QFEM's is), and its current shares its faces as the
  * field has it, each face with its slab's surface impedance from its own
- * side and the two coupled through the metal (faceImpedances()). A port on
+ * side and the two coupled through the metal (faceImpedances()). Its walls
+ * carry current and charge as well: a run along an edge is its face's strip
+ * and its half of the wall, and so is a cell at the edge, each part's share
+ * of the current by length and of the charge by area; and the run's loss is
+ * that band's of the metal's edge solved in its cross-section (rf25_edge.h),
+ * where the current crowds to the corner (A1 and A2 of the open items of 8
+ * November: L 3 to 9 % high without them, Z0 2.7 % on a coplanar line of 2
+ * µm gold, the loss 9 % from 2D solves on average). A port on
  * such a metal drives both faces of its face, half each, and an internal
  * port or a via up from it stands on its top. With no ground plane under
  * the stack a port's current comes back through the layout's own
