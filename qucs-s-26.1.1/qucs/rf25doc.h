@@ -645,6 +645,9 @@ public:
     /// A new model's content (File > New, the panel's New Model).
     static qucs_s::rf25::Model starterModel();
 
+protected:
+    void changeEvent(QEvent* event) override;
+
 signals:
     void signalFileChanged(bool);
     /// The model changed (an edit, an undo, a reload).
@@ -818,6 +821,9 @@ private:
 
     QToolButton* a_fit = nullptr;
     QToolButton* a_reread = nullptr;
+    QList<QToolButton*> a_tools;   ///< the pen and the icons beside it, styled as a layout tab's
+    /// The bar's icons styled as a layout tab's, in the palette of the moment.
+    void restyleTools();
     QToolButton* a_rulerButton = nullptr;
     QToolButton* a_showProcessedButton = nullptr;
     QToolButton* a_showMeshButton = nullptr;
