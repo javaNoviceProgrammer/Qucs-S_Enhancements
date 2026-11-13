@@ -1,0 +1,7 @@
+breaks.py, 13 November 2026, on the checkout's build-rel (macOS, arm64, release).
+
+===== what each break did =====
+the retardation's radiating part dropped                       theRadiationOfGsgPadsIsPalaces failed (caught)
+a two-face edge run's loss even across it, not its edge band's aLineThroughGsgPadsLosesWhatItsCro failed (caught)
+
+0 of 2 uncaught

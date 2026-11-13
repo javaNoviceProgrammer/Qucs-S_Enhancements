@@ -44,6 +44,9 @@
 #include <cmath>
 #include <complex>
 
+#include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
+
 namespace rf = qucs_s::rf25;
 
 namespace {
@@ -217,6 +220,81 @@ LineErrors solveLine(const Line& line)
     }
     out.said = QStringLiteral("%1: ").arg(QLatin1String(line.name)) + said.join(QStringLiteral("; "));
     return out;
+}
+
+using Complex = std::complex<double>;
+
+/// GSG pads with tapers onto the benchmark's coplanar line (S 50, G 20,
+/// grounds 160), a line \a l µm long between them: the signal pad 80 µm
+/// wide and 60 long, an 80 µm taper, the ground pads from 70 µm out
+/// (phase 6 of the accuracy limits, B4's pads). Its length end to end in
+/// \a end.
+QList<rf::Conductor> padsOf(double l, double* end)
+{
+    const double lp = 60, lt = 80, x0 = lp + lt, x1 = lp + lt + l, e = x1 + lt + lp;
+    *end = e;
+    const auto shape = [](const QList<QPointF>& points) {
+        rf::Conductor c;
+        c.layer = QStringLiteral("M1");
+        c.outline = QPolygonF(points);
+        return c;
+    };
+    const QList<QPointF> signal = {{0, -40}, {lp, -40}, {x0, -25}, {x1, -25}, {x1 + lt, -40}, {e, -40},
+                                   {e, 40},  {x1 + lt, 40}, {x1, 25}, {x0, 25}, {lp, 40}, {0, 40}};
+    const QList<QPointF> up = {{0, 70}, {lp, 70}, {x0, 45}, {x1, 45}, {x1 + lt, 70}, {e, 70}, {e, 205}, {0, 205}};
+    QList<QPointF> down;
+    for (auto it = up.crbegin(); it != up.crend(); ++it) down << QPointF(it->x(), -it->y());
+    return {shape(signal), shape(up), shape(down)};
+}
+
+/// The pads' probes: at each end an internal port on the signal pad's first
+/// 10 µm, returning through the ground pads beside it.
+QList<rf::FullWavePort> padProbes(double end)
+{
+    QList<rf::FullWavePort> out;
+    int k = 0;
+    for (const double x : {5.0, end - 5}) {
+        rf::FullWavePort p;
+        p.name = QStringLiteral("P%1").arg(out.size() + 1);
+        p.internal = true;
+        p.at = QPointF(x, 0);
+        p.metal = QStringLiteral("M1");
+        p.size = QSizeF(10, 10);
+        p.terminals = true;
+        for (const double y : {75.0, -75.0}) {
+            rf::PortTerminal t;
+            t.name = QStringLiteral("T%1").arg(++k);
+            t.at = QPointF(x, y);
+            t.metal = QStringLiteral("M1");
+            t.size = QSizeF(10, 10);
+            p.returns << t;
+        }
+        out << p;
+    }
+    return out;
+}
+
+/// The power a two-port's S loses: 1 - |S11|^2 - |S21|^2.
+double lostOf(const QList<QList<Complex>>& s)
+{
+    return 1 - std::norm(s.at(0).at(0)) - std::norm(s.at(1).at(0));
+}
+
+/// L-2L: the attenuation (dB/m) of the line \a dl m longer in \a longer
+/// than in \a shorter, their ends alike - T_long T_short^-1's eigenvalues
+/// exp(-+gamma dl).
+double l2lAlpha(const QList<QList<Complex>>& shorter, const QList<QList<Complex>>& longer, double dl)
+{
+    const auto t = [](const QList<QList<Complex>>& s) {
+        Eigen::Matrix2cd m;
+        const Complex s11 = s.at(0).at(0), s12 = s.at(0).at(1), s21 = s.at(1).at(0), s22 = s.at(1).at(1);
+        m << -(s11 * s22 - s12 * s21) / s21, s11 / s21, -s22 / s21, 1.0 / s21;
+        return m;
+    };
+    const Eigen::Matrix2cd m = t(longer) * t(shorter).inverse();
+    const Eigen::ComplexEigenSolver<Eigen::Matrix2cd> eig(m);
+    const Complex lambda = std::abs(eig.eigenvalues()(0)) > std::abs(eig.eigenvalues()(1)) ? eig.eigenvalues()(0) : eig.eigenvalues()(1);
+    return std::log(lambda).real() / dl * 20 / std::log(10.0);
 }
 
 } // namespace
@@ -432,6 +510,105 @@ private slots:
             //  meshes the metal through its skin depth; +0.29 % without it.)
             QVERIFY2(std::abs(z / mid - 1) < 0.01, qPrintable(QStringLiteral("Z0 %1 Ohm at %2 GHz").arg(z).arg(ref[k].ghz)));
             QVERIFY2(std::abs(eps / midEps - 1) < 0.008, qPrintable(QStringLiteral("eps_eff %1 at %2 GHz").arg(eps).arg(ref[k].ghz)));
+        }
+    }
+
+    // GSG pads with tapers (A3 of the open items of 8 November, phase 6 of
+    // the accuracy limits): what the pads lose above 35 GHz is the
+    // structure's. Their metal perfect, nothing in them dissipates, and what
+    // goes is radiated - into the air and the quartz, open below - by their
+    // ends: Palace 3D (the pads in a half model, lumped ports across the
+    // pads' gaps, 2.3 and 3.4 million unknowns) loses as much, the ends of
+    // the 500 and 1000 µm lines interfering as RF 2.5D's do. L-2L through
+    // the pads then reads the ends' radiation as the line's: an attenuation
+    // where the line has none, up at 60 GHz, down at 80, up at 100, in both.
+    void theRadiationOfGsgPadsIsPalaces()
+    {
+        const rf::Stack stack = stackOf(QStringLiteral("open"), 500e-6, 3.8, 0, 0, false);
+        const QList<double> ghz = {40, 50, 60, 70, 80, 90, 100};
+        // Palace's: the power lost, 1 - |S11|^2 - |S21|^2, at 500 and at
+        // 1000 µm, and L-2L's attenuation (dB/mm) between the two.
+        const double palace500[] = {0.00019, 0.00044, 0.00111, 0.00290, 0.00698, 0.01165, 0.01278};
+        const double palace1000[] = {0.00071, 0.00263, 0.00675, 0.00562, 0.00376, 0.00310, 0.00374};
+        const double palaceAlpha[] = {0.0053, 0.0248, 0.0702, 0.0392, 0.0320, 0.1011, 0.1158};
+        QList<double> hz;
+        for (const double f : ghz) hz << f * 1e9;
+        QList<rf::FullWave> solved;
+        for (const double l : {500.0, 1000.0}) {
+            double end = 0;
+            const QList<rf::Conductor> pads = padsOf(l, &end);
+            rf::MeshSettings how;
+            how.cellsAcross = 3;
+            how.maximum = 100e-6;
+            how.gaps = true;   // (as the tab meshes: its narrow gaps graded)
+            const rf::FullWave w = rf::fullWaveOf(rf::meshOf(pads, how, stack, 0), pads, stack, padProbes(end), hz);
+            QVERIFY2(w.ok() && w.s.size() == ghz.size(), qPrintable(w.problems.join(" | ")));
+            QVERIFY2(w.gain <= 1e-9 && w.asymmetry < 1e-9, qPrintable(QStringLiteral("gain %1, asymmetry %2").arg(w.gain).arg(w.asymmetry)));
+            solved << w;
+        }
+        const auto dB = [](double lost) { return -10 * std::log10(1 - lost); };
+        QList<double> alpha;
+        for (int k = 0; k < ghz.size(); ++k) {
+            const double l500 = lostOf(solved.at(0).s.at(k)), l1000 = lostOf(solved.at(1).s.at(k));
+            alpha << l2lAlpha(solved.at(0).s.at(k), solved.at(1).s.at(k), 500e-6) / 1e3;
+            qInfo("%g GHz: lost %.5f / %.5f (Palace %.5f / %.5f), L-2L %.4f dB/mm (Palace %.4f)", ghz.at(k), l500, l1000, palace500[k],
+                  palace1000[k], alpha.last(), palaceAlpha[k]);
+            // Within 0.02 dB of Palace's, either length.
+            QVERIFY2(std::abs(dB(l500) - dB(palace500[k])) < 0.02 && std::abs(dB(l1000) - dB(palace1000[k])) < 0.02,
+                     qPrintable(QStringLiteral("%1 GHz: %2 and %3").arg(ghz.at(k)).arg(l500).arg(l1000)));
+            QVERIFY2(std::abs(alpha.last() - palaceAlpha[k]) < 0.025, qPrintable(QStringLiteral("%1 GHz: %2 dB/mm").arg(ghz.at(k)).arg(alpha.last())));
+        }
+        // The 1000 µm structure loses most at 60 to 70 GHz, the 500 µm one
+        // the more the higher; L-2L's attenuation swings as Palace's does.
+        QVERIFY(lostOf(solved.at(1).s.at(2)) > lostOf(solved.at(1).s.at(5)) && lostOf(solved.at(0).s.at(6)) > lostOf(solved.at(0).s.at(2)));
+        QVERIFY(alpha.at(2) > alpha.at(4) && alpha.at(6) > alpha.at(4));
+    }
+
+    // The same pads in 2 µm of gold (solved as Automatic: two faces): below
+    // 40 GHz, where their ends radiate nothing to speak of, L-2L through
+    // them is the line's own attenuation - eddy.py's 2D eddy-current solve
+    // of its cross-section (R 904.6, 1243.7, 1542.6, 1797.8 Ohm/m and L
+    // 366.4, 363.4, 361.8, 360.7 nH/m at 10 to 40 GHz; QFEM's 55.3, 76.4,
+    // 95.1, 111.2 dB/m). (Palace's Conductivity boundary on the metal cut
+    // out of its mesh reads 16 to 25 % under both - in its 2D mode solve
+    // too, 41.4 dB/m at 10 GHz -, so its gold is no reference for loss:
+    // the pads' 2D-corrected loss is within 4 to 9 % of it, the radiation
+    // the same in both; the write-up of phase 6.)
+    void aLineThroughGsgPadsLosesWhatItsCrossSectionDoes()
+    {
+        rf::Stack gold = stackOf(QStringLiteral("open"), 500e-6, 3.8, 2e-6, 4.1e7, false);
+        gold.layers.last().automatic = true;
+        const rf::Stack perfect = stackOf(QStringLiteral("open"), 500e-6, 3.8, 0, 0, false);
+        const QList<double> ghz = {10, 20, 30, 40};
+        const double eddy[] = {55.3, 76.4, 94.9, 110.8};   // dB/m: R sqrt(eps_eff)/(2 c L), eps_eff QFEM's
+        QList<double> hz;
+        for (const double f : ghz) hz << f * 1e9;
+        // L-2L's attenuation at each frequency, on each stack.
+        const auto l2l = [&](const rf::Stack& stack, QList<double>* alpha) {
+            QList<rf::FullWave> solved;
+            for (const double l : {500.0, 1000.0}) {
+                double end = 0;
+                const QList<rf::Conductor> pads = padsOf(l, &end);
+                rf::MeshSettings how;
+                how.cellsAcross = 3;
+                how.maximum = 100e-6;
+                how.gaps = true;
+                const rf::FullWave w = rf::fullWaveOf(rf::meshOf(pads, how, stack, 0), pads, stack, padProbes(end), hz);
+                if (!w.ok() || w.s.size() != ghz.size() || w.gain > 1e-9) return false;
+                solved << w;
+            }
+            for (int k = 0; k < ghz.size(); ++k) *alpha << l2lAlpha(solved.at(0).s.at(k), solved.at(1).s.at(k), 500e-6);
+            return true;
+        };
+        QList<double> lossy, lossless;
+        QVERIFY(l2l(gold, &lossy) && l2l(perfect, &lossless));
+        for (int k = 0; k < ghz.size(); ++k) {
+            // (Less what the perfect metal's ends read: their radiation, 3.1
+            //  dB/m at 40 GHz, nothing below 30.)
+            const double alpha = lossy.at(k) - lossless.at(k);
+            qInfo("%g GHz: L-2L through the pads %.1f dB/m (%.1f less the perfect metal's %.1f), the cross-section's %.1f (%+.1f %%)", ghz.at(k),
+                  alpha, lossy.at(k), lossless.at(k), eddy[k], 100 * (alpha / eddy[k] - 1));
+            QVERIFY2(std::abs(alpha / eddy[k] - 1) < 0.03, qPrintable(QStringLiteral("%1 GHz: %2 dB/m").arg(ghz.at(k)).arg(alpha)));
         }
     }
 };
