@@ -292,6 +292,9 @@ struct Result {
 /// What a run is told as it goes, and how it is stopped.
 struct Progress {
     std::function<void(const PassRow&)> pass;    ///< each pass as it ends, from the routing thread
+    /// Each batch of nets as it is drawn, from the routing thread: where a
+    /// test sets 'cancel' to stop a run at a point of its choosing.
+    std::function<void()> batch;
     const std::atomic_bool* cancel = nullptr;
 };
 
