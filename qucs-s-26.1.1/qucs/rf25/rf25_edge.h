@@ -109,6 +109,43 @@ double partsPotential(const QList<ChargePart>& at, const QList<ChargePart>& of);
 /// \a parts moved by (dx, dy) m.
 QList<ChargePart> movedBy(const QList<ChargePart>& parts, double dx, double dy);
 
+/// The sides of each of \a mesh's cells that are its conductor's edge - a
+/// point just past the side's middle on no shape of its layer -: bit 0 its
+/// least y, 1 its most y, 2 its least x, 3 its most x. Cells with none are
+/// left out.
+QHash<int, int> edgeSidesOf(const Mesh& mesh, const QList<Conductor>& conductors);
+
+/*!
+ * \a parts with each part in the plane spread as a charge at an edge is
+ * (Z0's convergence, the plan's phase 5): the edge's field puts it as
+ * d^-alpha from the edge - alpha a half at a sheet's edge, a third on a
+ * face at a thick metal's right-angled corner -, where a cell's even
+ * charge left the solve first order in the cells across (a thin coplanar
+ * line 5.4 % over Palace's Z0 at six across, 1.3 % at 24). Each such part
+ * becomes sub-rectangles graded toward its free \a sides, each with its
+ * share of the density - of both edges' together where both are free -
+ * by its share of the part's.
+ */
+QList<ChargePart> profiled(const QList<ChargePart>& parts, int sides, double alpha);
+
+/// The cuts of [0, \a w] toward its free ends (\a low at 0, \a high at w),
+/// graded as the square, and each piece's share of a density d^-alpha
+/// from each free end: [(from, to), share].
+QList<std::pair<std::pair<double, double>, double>> edgeProfile(double w, bool low, bool high, double alpha);
+
+/// Tests: the edge's profile off (each cell's charge and each edge run's
+/// current even across it, as before phase 5) or on (the default).
+void setEdgeProfiles(bool on);
+bool edgeProfiles();
+
+/// Each cell's parts as both solvers take them: its walls where they face
+/// another's across a narrow gap (wallCharges()), and its face spread as
+/// the edge has it where a side is its conductor's edge (profiled(), a
+/// half: a face of two is a sheet too, its edge a sheet's), unless another
+/// conductor is over or under it nearer than the cell is wide. Of \a thick's mesh and
+/// conductors; \a zOf each cell's height (m).
+QHash<int, QList<ChargePart>> chargeParts(const Thickened& thick, double micrometre, const std::function<double(int)>& zOf);
+
 } // namespace qucs_s::rf25
 
 #endif

@@ -918,10 +918,18 @@ struct Context {
         double weight = 1;
     };
     QList<QList<Part>> parts;
+    /// Each run with parts as one filament where its current is on the whole
+    /// (and its image): what a pair far apart takes (staticPair()).
+    QList<Filament> centroid, centroidImage;
     /// Each cell's charge spread over more than its cell, as Part a run's
     /// current (rf25_edge.h's wallCharges()): empty where it is its cell
     /// alone.
     QList<QList<ChargePart>> charges;
+    /// Each cell's share of what its parts change (staticPotential()) where
+    /// a layer ends: the singular term's strength where the cell is - each
+    /// ended layer as inside its shapes where its centre is within them -
+    /// over the background's. Empty: one everywhere.
+    QList<double> profileScale;
     /// Each run in the plane's own on its metal's other face, where the
     /// metal is solved as its two (thickened()); -1 on a sheet.
     QList<int> twin;
@@ -945,32 +953,70 @@ struct Context {
 void wallsOf(Context& c)
 {
     c.parts = QList<QList<Context::Part>>(c.nr);
+    c.centroid = c.runs;
+    c.centroidImage = c.mirrored;
     for (int a = 0; a < c.planar; ++a) {
         const int twin = c.twin.value(a, -1), mask = c.freeMask.value(a);
         const Filament& run = c.runs.at(a);
-        if (twin < 0 || mask == 0 || !(run.thickness > 0) || !(run.width > 0)) continue;
+        if (mask == 0 || !(run.width > 0)) continue;
         const QPointF d = run.to - run.from;
         const double length = std::hypot(d.x(), d.y());
         if (!(length > 0)) continue;
         const QPointF normal(-d.y() / length, d.x() / length);
-        const bool top = run.z0 > c.runs.at(twin).z0;
-        const double half = run.thickness / 2, middle = top ? run.z0 - half / 2 : run.z0 + half / 2;
-        const int walls = (mask & 1 ? 1 : 0) + (mask & 2 ? 1 : 0);
+        const bool faces = twin >= 0 && run.thickness > 0;
+        const int walls = faces ? (mask & 1 ? 1 : 0) + (mask & 2 ? 1 : 0) : 0;
+        const double half = run.thickness / 2;
         const double total = run.width + walls * half;
-        c.parts[a] << Context::Part{run, c.mirrored.at(a), run.width / total};
-        for (const double side : {-1.0, 1.0}) {
-            if (!(mask & (side < 0 ? 1 : 2))) continue;
-            Filament wall = run;
-            const QPointF shift = side * 0.5 * run.width * normal;
-            wall.from = run.from + shift;
-            wall.to = run.to + shift;
-            wall.z0 = wall.z1 = middle;
-            wall.width = 0;
-            wall.rise = half;
-            Filament image = wall;
-            image.z0 = image.z1 = -middle;
-            c.parts[a] << Context::Part{wall, image, half / total};
+        const double faceShare = faces ? run.width / total : 1.0;
+        // The face's strip as the edge has its current (Z0's convergence,
+        // the plan's phase 5): sub-strips graded toward its free sides, each
+        // its share of d^-alpha - a half on a sheet; a third on a face of
+        // two, whose walls carry current as a solid corner's does -, where an
+        // even current left L first order in the cells across, as the even
+        // charge left C. (A half on the faces' runs too took the lines' R 3
+        // to 11 % under their 2D solves.)
+        const auto pieces = edgeProfiles() ? edgeProfile(run.width, mask & 1, mask & 2, faces ? 1.0 / 3 : 0.5)
+                                           : QList<std::pair<std::pair<double, double>, double>>{{{0.0, run.width}, 1.0}};
+        if (!faces && pieces.size() == 1) continue;   // (a sheet's run, even: no parts)
+        double shiftX = 0, shiftY = 0, shiftZ = 0;
+        for (const auto& [range, share] : pieces) {
+            Filament strip = run;
+            const QPointF shift = (-0.5 * run.width + 0.5 * (range.first + range.second)) * normal;
+            strip.from = run.from + shift;
+            strip.to = run.to + shift;
+            strip.width = range.second - range.first;
+            Filament image = strip;
+            image.z0 = image.z1 = -strip.z0;
+            c.parts[a] << Context::Part{strip, image, faceShare * share};
+            shiftX += faceShare * share * shift.x();
+            shiftY += faceShare * share * shift.y();
         }
+        if (faces) {
+            const bool top = run.z0 > c.runs.at(twin).z0;
+            const double middle = top ? run.z0 - half / 2 : run.z0 + half / 2;
+            for (const double side : {-1.0, 1.0}) {
+                if (!(mask & (side < 0 ? 1 : 2))) continue;
+                Filament wall = run;
+                const QPointF shift = side * 0.5 * run.width * normal;
+                wall.from = run.from + shift;
+                wall.to = run.to + shift;
+                wall.z0 = wall.z1 = middle;
+                wall.width = 0;
+                wall.rise = half;
+                Filament image = wall;
+                image.z0 = image.z1 = -middle;
+                c.parts[a] << Context::Part{wall, image, half / total};
+                shiftX += half / total * shift.x();
+                shiftY += half / total * shift.y();
+                shiftZ += half / total * (middle - run.z0);
+            }
+        }
+        Filament& whole = c.centroid[a];
+        whole.from += QPointF(shiftX, shiftY);
+        whole.to += QPointF(shiftX, shiftY);
+        whole.z0 = whole.z1 = run.z0 + shiftZ;
+        c.centroidImage[a] = whole;
+        c.centroidImage[a].z0 = c.centroidImage[a].z1 = -whole.z0;
     }
 }
 
@@ -990,6 +1036,21 @@ void staticPair(const Context& c, int a, int b, double* direct, double* image)
         *direct = alignedInductance(c.runs.at(a), c.runs.at(b));
         *image = alignedInductance(c.runs.at(a), c.mirrored.at(b));
         return;
+    }
+    // (Far apart - eight of their breadths and their metal's thickness -,
+    //  each its current's centroid: the parts' shift toward the edge, to
+    //  the first order, without their pairs.)
+    if (a != b) {
+        const Filament& ra = c.runs.at(a);
+        const Filament& rb = c.runs.at(b);
+        const double size = std::max({ra.width, rb.width, ra.thickness, rb.thickness});
+        const double apart = std::hypot(0.5 * (ra.from.x() + ra.to.x() - rb.from.x() - rb.to.x()),
+                                        0.5 * (ra.from.y() + ra.to.y() - rb.from.y() - rb.to.y()));
+        if (apart > 8 * size * (1 + 1e-6)) {   // (a margin: staticPotential()'s)
+            *direct = alignedInductance(c.centroid.at(a), c.centroid.at(b));
+            *image = alignedInductance(c.centroid.at(a), c.centroidImage.at(b));
+            return;
+        }
     }
     const Context::Part wholeA{c.runs.at(a), c.mirrored.at(a), 1}, wholeB{c.runs.at(b), c.mirrored.at(b), 1};
     const QList<Context::Part> onlyA{wholeA}, onlyB{wholeB};
@@ -1319,14 +1380,25 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add add)
             // strips' shares; each half wall a surface the metal's breadth
             // behind it deep -, and no edge factor, whose crowding the walls
             // now are.
+            // (Its face's strips - the edge's profile - each its slab's on its
+            //  share, its twin's alike through the metal strip by strip; its
+            //  walls, those with a rise.)
             const QList<Context::Part>& theirs = c.parts.value(twin);
-            const double mine = parts.first().weight, its = theirs.isEmpty() ? 1.0 : theirs.first().weight;
-            Complex self = own * squares * mine * mine;
             Complex wallOwn, wallAcross;
             faceImpedances(run.sigma, run.width, f, &wallOwn, &wallAcross);
-            for (int p = 1; p < parts.size(); ++p)
-                self += wallOwn * (run.length() / parts.at(p).run.rise) * parts.at(p).weight * parts.at(p).weight;
-            const Complex mutual = across * squares * mine * its;
+            Complex self(0, 0), mutual(0, 0);
+            int walls = 0;
+            for (int p = 0; p < parts.size(); ++p) {
+                const Context::Part& part = parts.at(p);
+                if (part.run.rise > 0) {
+                    self += wallOwn * (run.length() / part.run.rise) * part.weight * part.weight;
+                    ++walls;
+                    continue;
+                }
+                self += own * (run.length() / part.run.width) * part.weight * part.weight;
+                const double its = p < theirs.size() && theirs.at(p).run.rise <= 0 ? theirs.at(p).weight : part.weight;
+                mutual += across * (run.length() / part.run.width) * part.weight * its;
+            }
             // Its parts' current is even across each; the edge's is not, and
             // loses more: the band of the edge's cross-section the run is -
             // its face's strip from the edge, its half of the wall -, solved
@@ -1334,7 +1406,7 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add add)
             // resistance is made what leaves the band's loss once its twin's
             // share through the metal is taken (one wall: a strip a cell wide
             // with both its walls is left even).
-            if (parts.size() == 2 && run.sigma > 0) {
+            if (walls == 1 && run.sigma > 0) {
                 const auto edge = edgeSolution(run.sigma, run.thickness, f);
                 if (edge && edge->ok()) {
                     const EdgeBand band = bandOf(*edge, 0, run.width);
@@ -1591,8 +1663,33 @@ double staticPotential(const Context& c, int i, int j)
     const bool partsI = i < c.charges.size() && !c.charges.at(i).isEmpty();
     const bool partsJ = j < c.charges.size() && !c.charges.at(j).isEmpty();
     if (!partsI && !partsJ) return rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
-    return partsPotential(partsI ? c.charges.at(i) : QList<ChargePart>{wholeCell(c.rect.at(i), c.cellZ.at(i))},
-                          partsJ ? c.charges.at(j) : QList<ChargePart>{wholeCell(c.rect.at(j), c.cellZ.at(j))});
+    // (A charge spread only by its edge's profile, far away, is the cell's:
+    //  its parts within four of the longest side of either, as the
+    //  quasi-static solve judges a near pair. Walls are taken at every
+    //  distance: two facing across a gap are many cells apart.)
+    const auto walled = [&c](int k) {
+        for (const ChargePart& p : c.charges.at(k))
+            if (p.plane != 0) return true;
+        return false;
+    };
+    // (Where a layer ends, the parts' change by the singular term's strength
+    //  where the cells are over the background's: Context::profileScale.)
+    const auto scaledParts = [&c, i, j](double plain, double parts) {
+        if (c.profileScale.isEmpty()) return parts;
+        return plain + 0.5 * (c.profileScale.at(i) + c.profileScale.at(j)) * (parts - plain);
+    };
+    if (!(partsI && walled(i)) && !(partsJ && walled(j))) {
+        const double side = std::max({c.rect.at(i).width(), c.rect.at(i).height(), c.rect.at(j).width(), c.rect.at(j).height()});
+        const double apart = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
+        // (A margin past the cut, so that two pairs alike - a symmetric
+        //  layout's mirror images - are taken alike: on an even grid their
+        //  distances fall on the cut, a rounding either side.)
+        if (apart > 4 * side * (1 + 1e-6)) return rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
+    }
+    const double parts = partsPotential(partsI ? c.charges.at(i) : QList<ChargePart>{wholeCell(c.rect.at(i), c.cellZ.at(i))},
+                                        partsJ ? c.charges.at(j) : QList<ChargePart>{wholeCell(c.rect.at(j), c.cellZ.at(j))});
+    if (c.profileScale.isEmpty()) return parts;
+    return scaledParts(rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j))), parts);
 }
 
 void staticPotentialColumn(const Context& c, Eigen::MatrixXd& p, int j)
@@ -3194,7 +3291,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // held 2.4 % less than Palace's and QFEM's per metre; with its walls'
     // current alone its Z0 came within 1.9 %, its eps_eff 1 % under.
     {
-        const QHash<int, QList<ChargePart>> walls = wallCharges(thick, micrometre, [&](int m) { return metalHeight(stack, mesh.cells.at(m).layer); });
+        const QHash<int, QList<ChargePart>> walls = chargeParts(thick, micrometre, [&](int m) { return metalHeight(stack, mesh.cells.at(m).layer); });
         c.charges = QList<QList<ChargePart>>(nc);
         for (int i = 0; i < nc; ++i) c.charges[i] = walls.value(cellOf.at(i));
     }
@@ -3217,6 +3314,37 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         }
         c.corrected = true;
         c.dielectricLines = dielectricPlanned.lines + c.dielectric.lines;
+        // The edge profile's change where a cell is within an ended layer's
+        // shapes (Context::profileScale): its charge's own near field, the
+        // background's air under a metal on its substrate putting it in air,
+        // which the polarization's panels, solved for even charge, do not
+        // take back - a stub on a substrate ended 30 µm beside it read 4 %
+        // more than on the substrate everywhere, as the quasi-static solve
+        // did. The terms' static strength, at a low frequency.
+        bool any = false;
+        QList<double> scale(nc, 1.0);
+        QHash<QString, double> known;
+        for (int i = 0; i < nc; ++i) {
+            // (Every cell's, a profiled cell's pair with one that is not
+            //  scaled by both: Context::profileScale.)
+            int mask = 0;
+            for (int r = 0; r < dielectricPlanned.regions.size() && r < 30; ++r)
+                for (const QPolygonF& o : dielectricPlanned.regions.at(r).outline)
+                    if (o.containsPoint(c.centre.at(i), Qt::OddEvenFill)) mask |= 1 << r;
+            if (mask == 0) continue;
+            const QString key = QString::number(mask) + QLatin1Char('@') + QString::number(zOf.at(i), 'g', 17);
+            if (!known.contains(key)) {
+                Layers local = c.layers;
+                for (int r = 0; r < dielectricPlanned.regions.size() && r < 30; ++r)
+                    if (mask & (1 << r)) local.slabs[dielectricPlanned.regions.at(r).slab].epsr += dielectricPlanned.regions.at(r).delta;
+                const WaveGreen there(local, zOf.at(i), zOf.at(i), 1e6, 1e-3), background(c.layers, zOf.at(i), zOf.at(i), 1e6, 1e-3);
+                const Complex b = background.scalarTerm().coefficient;
+                known.insert(key, there.ok() && background.ok() && std::abs(b) > 0 ? (there.scalarTerm().coefficient / b).real() : 1.0);
+            }
+            scale[i] = known.value(key);
+            any = any || scale.at(i) != 1.0;
+        }
+        if (any) c.profileScale = scale;
     }
     for (int a = 0; a < nr; ++a) c.hRun[a] = a < c.planar ? heightIndex(c.runs.at(a).z0) : -1;
     // Each port's own path to the cells it drives (PortPath): up from the
@@ -3504,8 +3632,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     //  from each metal's edge solved in its cross-section.)
     {
         int alongWalls = 0, charged = 0;
-        for (const QList<Context::Part>& p : std::as_const(c.parts)) alongWalls += p.isEmpty() ? 0 : 1;
-        for (const QList<ChargePart>& p : std::as_const(c.charges)) charged += p.isEmpty() ? 0 : 1;
+        // (Parts that stand: a sheet's runs and cells have parts too, the
+        //  edge's profile, and no walls.)
+        for (const QList<Context::Part>& p : std::as_const(c.parts))
+            alongWalls += std::any_of(p.begin(), p.end(), [](const Context::Part& q) { return q.run.rise > 0; }) ? 1 : 0;
+        for (const QList<ChargePart>& p : std::as_const(c.charges))
+            charged += std::any_of(p.begin(), p.end(), [](const ChargePart& q) { return q.plane != 0; }) ? 1 : 0;
         if (alongWalls > 0 || charged > 0)
             out.lines << tr("The walls of the metals solved as their two faces carry current: %1 run(s) along their edges, "
                             "each its face's strip and its half of the wall, their loss from each metal's edge solved in its "
@@ -3574,9 +3706,21 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     for (int k = 0; k < nf; ++k) {
         AtFrequency a = solved[std::size_t(k)];
         if (c.np != np) {
-            const MatrixC x = Eigen::PartialPivLU<MatrixC>(a.z).solve(ofPort);
-            const MatrixC y = ofPort.transpose() * x;
-            const MatrixC z = Eigen::PartialPivLU<MatrixC>(y).solve(MatrixC::Identity(np, np));
+            MatrixC x = Eigen::PartialPivLU<MatrixC>(a.z).solve(ofPort);
+            MatrixC y = ofPort.transpose() * x;
+            MatrixC z = Eigen::PartialPivLU<MatrixC>(y).solve(MatrixC::Identity(np, np));
+            // Two returns over the same cells are two columns alike, and
+            // their matrix singular to its last digits: of its least squares
+            // there, each of the two half the current - where an LU's pivot
+            // of rounding alone gave numbers or none by the rounding (the
+            // edge profile's, the plan's phase 5, none).
+            if (!z.allFinite() || !x.allFinite()) {
+                Eigen::CompleteOrthogonalDecomposition<MatrixC> cod(a.z);
+                cod.setThreshold(1e-10);
+                x = cod.solve(ofPort);
+                y = ofPort.transpose() * x;
+                z = Eigen::PartialPivLU<MatrixC>(y).solve(MatrixC::Identity(np, np));
+            }
             if (!z.allFinite()) {
                 out.problems << tr("At %1 GHz the returns of the ports that have more than one could not be tied: their "
                                    "columns came out singular.")

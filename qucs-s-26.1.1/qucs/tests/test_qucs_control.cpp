@@ -3635,7 +3635,12 @@ private slots:
         QVERIFY2(!failed(optimized), qPrintable(text(optimized)));
         const QJsonObject o = json(optimized).toObject();
         const double w = o.value("parameters").toArray().first().toObject().value("value").toDouble();
-        QVERIFY2(std::abs(w - 101.8e-6) < 1e-6, qPrintable(QString::number(w * 1e6)));
+        // (99.16 µm at the example's 6 cells across, its charge spread at the
+        //  edges as their field has it - the plan's phase 5 of RF 2.5D's
+        //  accuracy limits; 101.8 when each cell's charge was even. The
+        //  finest meshes approached about 99.5 with even charge; Hammerstad
+        //  and Jensen give 97.2.)
+        QVERIFY2(std::abs(w - 99.16e-6) < 1e-6, qPrintable(QString::number(w * 1e6)));
         QVERIFY(o.contains("history"));
         QVERIFY(json(call("rf25_optimize", {{"path", model}, {"action", "result"}, {"rows", 0}}, 60000)).toObject().value("parameters").isArray());
         const QJsonObject applied = call("rf25_optimize", {{"path", model}, {"action", "apply"}}, 60000);
