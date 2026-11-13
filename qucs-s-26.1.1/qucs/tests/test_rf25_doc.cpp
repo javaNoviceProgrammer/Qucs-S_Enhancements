@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <ctime>
 #include <QThread>
 #include <QElapsedTimer>
 #include <QTimer>
@@ -48,6 +49,7 @@
 #include <QTemporaryDir>
 #include <QRegularExpression>
 #include <QScopeGuard>
+#include <QScrollBar>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
@@ -5306,6 +5308,107 @@ private slots:
                      && doc->fullWave()->deembedding.value(1).done,
                  qPrintable(doc->solveProblem()));
         QVERIFY2(says(doc->fullWave()->lines, "Three strips of the feed"), qPrintable(doc->fullWave()->lines.join(" | ")));
+    }
+
+    // Waited for - by Claude's tools, as rf25_solve waits for a solve -, the
+    // GUI goes on and its thread sleeps between events. The waits once
+    // called processEvents in a loop of their own: the thread looked for
+    // events all the time (4.9 s of the 5 s a solve was waited for, on
+    // macOS), and a window opened meanwhile - the Save panel - never reached
+    // the screen, which Core Animation draws as the run loop goes to sleep
+    // (the user's report of 12 November). The wait still ends when the
+    // solve does.
+    void aSolveWaitedForLeavesTheGuiThreadIdle()
+    {
+        const QString file = fullWaveLine(QStringLiteral("idle.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        doc->allowFrequencies(0);
+        RF25Doc::SolveRequest w;
+        w.solver = QStringLiteral("full_wave");
+        doc->solveWith(w);
+        QVERIFY(doc->isSolving());
+        const auto cpu = [] {
+            timespec ts{};
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+            return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+        };
+        int ticks = 0;
+        QTimer other;
+        other.setInterval(50);
+        connect(&other, &QTimer::timeout, [&ticks] { ++ticks; });
+        other.start();
+        QElapsedTimer t;
+        t.start();
+        const double before = cpu();
+        QVERIFY2(!doc->waitForSolved(1500), "the held solve ended");
+        const double used = cpu() - before;
+        const qint64 wall = t.elapsed();
+        other.stop();
+        QVERIFY2(wall >= 1500 && wall < 3000, qPrintable(QString::number(wall)));
+        QVERIFY2(used < 0.2 * wall, qPrintable(QStringLiteral("the GUI thread was busy %1 ms of %2").arg(used, 0, 'f', 0).arg(wall)));
+        QVERIFY2(ticks >= 15, qPrintable(QStringLiteral("another timer ticked %1 times in %2 ms").arg(ticks).arg(wall)));
+        // Let go, it is waited for to its end, and no longer.
+        qint64 ended = -1;
+        const QMetaObject::Connection c = connect(doc, &RF25Doc::solvedChanged, [&] {
+            if (!doc->isSolving() && ended < 0) ended = t.elapsed();
+        });
+        doc->allowFrequencies(-1);
+        t.restart();
+        QVERIFY(doc->waitForSolved(300000));
+        const qint64 back = t.elapsed();
+        disconnect(c);
+        QVERIFY2(doc->fullWave() && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(ended >= 0 && back - ended < 500, qPrintable(QStringLiteral("solved at %1 ms, the wait back at %2").arg(ended).arg(back)));
+        app->closeAllFiles();
+    }
+
+    // While a solve runs, its count moves on in the Results' line where it
+    // is, the panel's form kept: it was made again at each count, every
+    // 400 ms, losing what the user had open in it and drawing the whole
+    // panel again; and the tab's notes, rewritten as often, went back to
+    // their top (the user's report of 12 November, that the GUI kept
+    // refreshing while RF 2.5D solved).
+    void aSolveRunningLeavesThePanelsFormAlone()
+    {
+        const QString file = fullWaveLine(QStringLiteral("kept.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        const rf::Node* results = doc->model().root.child(QStringLiteral("rf_results"));
+        QVERIFY(results != nullptr);
+        panel()->selectNode(results->tag);
+        auto* notes = doc->findChild<QPlainTextEdit*>(QStringLiteral("rfProblems"));
+        QVERIFY(notes != nullptr);
+        notes->setFixedHeight(40);
+        doc->allowFrequencies(0);
+        RF25Doc::SolveRequest w;
+        w.solver = QStringLiteral("full_wave");
+        doc->solveWith(w);
+        const auto report = [this] { return panel()->findChild<QLabel*>(QStringLiteral("rfNodeReport")); };
+        QTRY_VERIFY(report() != nullptr && report()->text().contains(QStringLiteral("0 of 3")));
+        const QPointer<QWidget> form = panel()->findChild<QWidget*>(QStringLiteral("rfSettings"));
+        const QPointer<QLabel> line = report();
+        QVERIFY(form);
+        // (Scrolled down the notes, as one reading them is.)
+        QTRY_VERIFY(notes->verticalScrollBar()->maximum() > 0);
+        notes->verticalScrollBar()->setValue(notes->verticalScrollBar()->maximum());
+        const int at = notes->verticalScrollBar()->value();
+        QVERIFY(at > 0);
+        doc->allowFrequencies(1);
+        QTRY_VERIFY_WITH_TIMEOUT(line && line->text().contains(QStringLiteral("1 of 3")), 60000);
+        QTRY_VERIFY_WITH_TIMEOUT(notes->toPlainText().contains(QStringLiteral("1 of 3")), 10000);
+        doc->allowFrequencies(1);   // (one more)
+        QTRY_VERIFY_WITH_TIMEOUT(line && line->text().contains(QStringLiteral("2 of 3")), 60000);
+        QVERIFY2(form && form == panel()->findChild<QWidget*>(QStringLiteral("rfSettings")), "the form was made again");
+        QVERIFY(line && line == report());
+        QVERIFY2(notes->verticalScrollBar()->value() > 0, "the notes went back to their top");
+        // Solved: the form made again, saying what it solves to.
+        doc->allowFrequencies(-1);
+        QVERIFY(doc->waitForSolved(300000));
+        QTRY_VERIFY(report() != nullptr && !report()->text().contains(QStringLiteral("Solving")));
+        app->closeAllFiles();
     }
 
     void aSolveWithNothingToSolveOnIsRefused()

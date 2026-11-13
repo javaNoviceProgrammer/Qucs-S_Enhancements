@@ -227,6 +227,7 @@ void RF25Panel::setDocument(RF25Doc* doc)
     // and the Layout say they did is of that run.
     a_connections << connect(doc, &RF25Doc::preparedChanged, this, [this] { scheduleSettings(); });
     a_connections << connect(doc, &RF25Doc::solvedChanged, this, [this] { scheduleSettings(); });
+    a_connections << connect(doc, &RF25Doc::progressed, this, &RF25Panel::showProgress);
     a_connections << connect(doc, &RF25Doc::focusChanged, this, [this](const QString& tag) {
         if (currentTag() != tag) selectNode(tag);
     });
@@ -734,6 +735,28 @@ bool RF25Panel::eventFilter(QObject* watched, QEvent* event)
 
 // ------------------------------------------------------------------ The settings
 
+QString RF25Panel::solvingSaid() const
+{
+    return a_doc->frequenciesToSolve() > 0
+               ? tr("Solving full-wave: %1 of %2 frequencies…").arg(a_doc->frequenciesSolved()).arg(a_doc->frequenciesToSolve())
+               : a_doc->solvingSaid();
+}
+
+void RF25Panel::showProgress()
+{
+    // A solve's count moved on: the Results' line says it, in place. The
+    // form made again at each count (every 400 ms while a solve ran) lost
+    // what the user had open in it - a list dropped down, the place
+    // scrolled to - and drew the whole panel again (the user's report of
+    // 12 November, that the GUI kept refreshing while RF 2.5D solved).
+    if (!a_doc || !a_doc->isSolving()) return;
+    const Node* n = a_doc->model().find(a_shownTag);
+    if (n == nullptr || n->type != QLatin1String("rf_results") || a_shownTag != currentTag()) return;
+    auto* report = a_form->findChild<QLabel*>(QStringLiteral("rfNodeReport"));
+    const QString text = QStringLiteral("• ") + solvingSaid();
+    if (report != nullptr && report->text() != text) report->setText(text);
+}
+
 void RF25Panel::scheduleSettings()
 {
     if (a_settingsPending) return;
@@ -972,10 +995,7 @@ void RF25Panel::showSettings()
         // What the solve found, where there is one: the ports' S of a
         // full-wave solve, or the capacitance of each net and each as a line.
         if (a_doc->isSolving()) {
-            did << (a_doc->frequenciesToSolve() > 0 ? tr("Solving full-wave: %1 of %2 frequencies…")
-                                                          .arg(a_doc->frequenciesSolved())
-                                                          .arg(a_doc->frequenciesToSolve())
-                                                    : a_doc->solvingSaid());
+            did << solvingSaid();
         } else if (a_doc->fullWave() && a_doc->fullWave()->ok()) {
             did = a_doc->fullWave()->lines;
             did += a_doc->fullWaveSummary();

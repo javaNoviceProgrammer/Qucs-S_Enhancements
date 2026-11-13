@@ -51,6 +51,7 @@
 #include <QSet>
 #include <QSplitter>
 #include <QThread>
+#include <QScrollBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QUndoCommand>
@@ -345,7 +346,9 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
         // (A quasi-static solve's too, now that it says what it is doing.)
         if (!a_solveJob) return;
         showProblems();
-        emit solvedChanged();
+        // (Not solvedChanged: nothing solved has changed, and the panel
+        //  made its whole form again at each.)
+        emit progressed();
     });
     buildUi();
     // The starter model's stack, drawn from the first: only an edit or a
@@ -964,7 +967,15 @@ void RF25Doc::showProblems()
         lines << tr("What stands in the way of a solve:");
         for (const QString& line : cannot) lines << QStringLiteral("  • ") + line;
     }
-    a_problemsText->setPlainText(lines.join(QLatin1Char('\n')));
+    // Set only when it says something else, where it was scrolled to kept:
+    // a solve's count rewrote it each 400 ms, back at its top.
+    const QString text = lines.join(QLatin1Char('\n'));
+    if (a_problemsText->toPlainText() != text) {
+        QScrollBar* bar = a_problemsText->verticalScrollBar();
+        const int at = bar->value();
+        a_problemsText->setPlainText(text);
+        bar->setValue(std::min(at, bar->maximum()));
+    }
     const Stack s = a_model.stack();
     // (conductors(): the metals and the ground - what the layer map and a
     // port may name. A via is metal too, but is named by its own metals.)
@@ -1115,12 +1126,35 @@ void RF25Doc::closeWhenFree()
     if (a_waiting == 0) deleteLater();
 }
 
+void RF25Doc::waitWhile(const std::function<bool()>& going, int ms)
+{
+    // An event loop that sleeps till an event comes, looking each 20 ms and
+    // at once when the model says its state moved. The waits once called
+    // processEvents in a loop of their own, which never slept: the GUI
+    // thread spent its whole time looking (4.9 s of the 5 s a solve was
+    // waited for, on macOS), and a window opened meanwhile - the Save
+    // panel - never reached the screen, which Core Animation draws as the
+    // run loop goes to sleep (the user's report of 12 November).
+    QElapsedTimer t;
+    t.start();
+    if (!going() || ms <= 0) return;
+    QEventLoop loop;
+    const auto look = [&] {
+        if (!going() || t.elapsed() >= ms) loop.quit();
+    };
+    QTimer every;
+    every.setInterval(20);
+    connect(&every, &QTimer::timeout, &loop, look);
+    every.start();
+    for (auto signal : {&RF25Doc::stateChanged, &RF25Doc::preparedChanged, &RF25Doc::solvedChanged})
+        connect(this, signal, &loop, look, Qt::QueuedConnection);
+    loop.exec();
+}
+
 bool RF25Doc::waitForLayout(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while (a_job && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return a_job && !a_closed; }, ms);
     return !a_job && !a_closed;
 }
 
@@ -1383,13 +1417,10 @@ void RF25Doc::prepareDone()
 bool RF25Doc::waitForPrepared(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
     // A run waiting its 300 ms is started at once: a test and a tool ask
     // for what the model says now, not for what it said 300 ms ago.
     if (a_prepareSoon->isActive()) prepare();
-    while ((a_prepareJob || a_prepareAgain) && !a_closed && t.elapsed() < ms)
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return (a_prepareJob || a_prepareAgain) && !a_closed; }, ms);
     return !a_prepareJob && !a_closed;
 }
 
@@ -2124,9 +2155,7 @@ bool RF25Doc::waitForSolvesToEnd(int ms)
     // (Closed meanwhile, the solves still end on their own copies: waited
     //  for as before, the model held.)
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while (a_solvesAtWork->load() > 0 && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return a_solvesAtWork->load() > 0; }, ms);
     return a_solvesAtWork->load() == 0;
 }
 
@@ -2373,10 +2402,7 @@ void RF25Doc::keepSolution()
 bool RF25Doc::waitForSolved(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while ((a_solveJob || a_solveWhenPrepared) && !a_closed && t.elapsed() < ms)
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return (a_solveJob || a_solveWhenPrepared) && !a_closed; }, ms);
     return !a_solveJob && !a_solveWhenPrepared;
 }
 
@@ -2531,9 +2557,7 @@ void RF25Doc::stopAnalysis()
 bool RF25Doc::waitForAnalysis(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while (a_analysis && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return a_analysis && !a_closed; }, ms);
     return !a_analysis;
 }
 
