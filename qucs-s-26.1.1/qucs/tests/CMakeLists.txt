@@ -343,6 +343,7 @@ qucs_add_test(test_rf25_measured)
 # twice the memory-heavy ones' below. Skipped under the sanitizers: its
 # coarsest mesh at one frequency was still solving at QtTest's 300 s.)
 set_tests_properties(test_rf25_measured PROPERTIES TIMEOUT 2400)
+qucs_add_test(test_rf25_edge)
 qucs_add_test(test_rf25_accuracy)
 # (RF 2.5D against references that are not itself - 2D solves of each
 # line's cross-section, a boundary-element solve, Palace and QFEM -: seven

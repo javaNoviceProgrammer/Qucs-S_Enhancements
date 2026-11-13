@@ -648,7 +648,9 @@ void TestRf25Stack::whatNeitherFileSaysOfAMetalIsKeptByName()
         QVERIFY2(r, qPrintable(why));
         QStringList notes;
         const Model back = withStackOf(m, *r, &notes);
-        const Layer* metal = back.stack().named(f == StackFormat::Hfss ? QStringLiteral("M2 thick") : QStringLiteral("M2_thick"));
+        // (Each stack kept while its layer is read: stack() makes a new one.)
+        const Stack backStack = back.stack();
+        const Layer* metal = backStack.named(f == StackFormat::Hfss ? QStringLiteral("M2 thick") : QStringLiteral("M2_thick"));
         QVERIFY(metal != nullptr);
         QVERIFY(metal->twoSheets);
         QVERIFY(std::abs(metal->roughness - 0.2e-6) < 1e-15);
@@ -658,7 +660,8 @@ void TestRf25Stack::whatNeitherFileSaysOfAMetalIsKeptByName()
         // every metal that had no namesake to keep them from.
         notes.clear();
         const Model fresh = withStackOf(Model::blank(), *r, &notes);
-        const Layer* other = fresh.stack().named(metal->name);
+        const Stack freshStack = fresh.stack();
+        const Layer* other = freshStack.named(metal->name);
         QVERIFY(other != nullptr);
         QVERIFY(!other->twoSheets);
         QCOMPARE(other->roughness, 0.0);

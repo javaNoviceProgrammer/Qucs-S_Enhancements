@@ -12,6 +12,7 @@
 #include "rf25_static.h"
 
 #include "rf25_dense.h"
+#include "rf25_edge.h"
 
 #include <QCoreApplication>
 #include <QHash>
@@ -335,6 +336,30 @@ double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, doub
     return g.potential(distance);
 }
 
+/*!
+ * What the walls' charge (rf25_edge.h's wallCharges()) changes in a near
+ * pair's potential coefficient: the direct path's term over the parts - the
+ * charge spread over the source's face and its half walls, the potential
+ * taken at each of the point's parts - in place of over the source's face at
+ * the point's centre (\a face at \a at, \a dz apart). The stack's images
+ * stay at the face, as the full wave's remainder stays at the centres: the
+ * quasi-static solve is then the full wave's low frequency. The direct path
+ * is the charge itself at one height ({1, 0}), and across two the image as
+ * far as the heights are apart; none found, nothing is changed.
+ */
+double wallCorrection(const Green& g, const QList<ChargePart>& at, const QList<ChargePart>& of, const QRectF& face, const QPointF& point,
+                      double dz)
+{
+    double a = 0;
+    for (const Green::Image& t : g.strongestTerms(kMostNear))
+        if (std::abs(std::abs(t.z) - dz) <= 1e-9 * std::max(dz, 1e-9)) {
+            a = t.a;
+            break;
+        }
+    if (a == 0) return 0;
+    return a * (partsPotential(at, of) - rectanglePotential(face, point, dz)) / (4 * M_PI * g.epsilon());
+}
+
 /// The longest side of either cell's box, in the cells' units: what a
 /// pair's nearness is judged by.
 double longestSide(const MeshCell& a, const MeshCell& b)
@@ -350,7 +375,8 @@ QRectF scaled(const QRectF& box, double unit)
 
 Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which,
                              const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit,
-                             const ExtractControl* control)
+                             const ExtractControl* control, const QHash<int, QList<ChargePart>>& charges = {},
+                             const std::function<double(int)>& zOf = {})
 {
     const int n = int(which.size());
     Eigen::MatrixXd p(n, n);
@@ -366,7 +392,17 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
         for (int j = 0; j < n; ++j) {
             const MeshCell& cj = cells.at(which.at(j));
             const double side = longestSide(ci, cj) * unit;
-            p(i, j) = cellPotential(at, scaled(cj.outline.boundingRect(), unit), greenOf(ci.layer, cj.layer), side, i == j);
+            const QRectF rect = scaled(cj.outline.boundingRect(), unit);
+            const Green& g = greenOf(ci.layer, cj.layer);
+            p(i, j) = cellPotential(at, rect, g, side, i == j);
+            const auto ki = charges.constFind(which.at(i)), kj = charges.constFind(which.at(j));
+            if ((ki != charges.constEnd() || kj != charges.constEnd())
+                && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side) {
+                const double zi = zOf(which.at(i)), zj = zOf(which.at(j));
+                const QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.outline.boundingRect(), unit), zi)};
+                const QList<ChargePart> pj = kj != charges.constEnd() ? kj.value() : QList<ChargePart>{wholeCell(rect, zj)};
+                p(i, j) += wallCorrection(g, pi, pj, rect, at, std::abs(zi - zj));
+            }
         }
     }
     return p;
@@ -491,7 +527,7 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, const QList<int>& signal
  */
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
                          const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control,
-                         const QList<WallGap>& walls = {});
+                         const QHash<int, QList<ChargePart>>& charges = {});
 
 } // namespace
 
@@ -521,10 +557,10 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     // them, which is what the rest solves (thickened()).
     const Thickened thick = thickened(stack, conductors, mesh);
     if (!thick.any) return extractSheets(mesh, conductors, stack, micrometre, {}, returns, control);
-    // (And the side walls' charge across narrow gaps, which neither face
-    //  holds: wallGapsOf(), as the full wave has it.)
+    // (And the walls' charge, which neither face holds, on the walls
+    //  themselves as the full wave has it: wallCharges().)
     Extraction out = extractSheets(thick.mesh, thick.conductors, thick.stack, micrometre, thick.bottomOf, returns, control,
-                                   wallGapsOf(thick, micrometre));
+                                   wallCharges(thick, micrometre, [&thick](int m) { return heightOf(thick.stack, thick.mesh.cells.at(m).layer); }));
     out.lines = thick.said + out.lines;
     return out;
 }
@@ -533,8 +569,9 @@ namespace {
 
 Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
                          const QHash<int, int>& bottomOf, const QList<ReturnMark>& marks, const ExtractControl* control,
-                         const QList<WallGap>& walls)
+                         const QHash<int, QList<ChargePart>>& charges)
 {
+    const auto zOf = [&mesh, &stack](int m) { return heightOf(stack, mesh.cells.at(m).layer); };
     Extraction out;
     // Stopped: said, and nothing more done.
     const auto stopped = [&out, control] {
@@ -916,10 +953,23 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 const double delta = alongX ? rect.width() : rect.height();
                 const double side = longestSide(ca, cb) * micrometre;
                 const int copies = int(std::ceil(reach / delta));
+                const int ma = which.at(column.at(a)), mb = which.at(column.at(b));
+                const auto ka = charges.constFind(ma), kb = charges.constFind(mb);
+                const bool walled = ka != charges.constEnd() || kb != charges.constEnd();
+                const double za = walled ? zOf(ma) : 0, zb = walled ? zOf(mb) : 0;
+                const QList<ChargePart> pa = !walled ? QList<ChargePart>{}
+                                             : ka != charges.constEnd() ? ka.value()
+                                                                        : QList<ChargePart>{wholeCell(scaled(ca.outline.boundingRect(), micrometre), za)};
+                const QList<ChargePart> pb = !walled ? QList<ChargePart>{}
+                                             : kb != charges.constEnd() ? kb.value() : QList<ChargePart>{wholeCell(rect, zb)};
                 double sum = 0;
                 for (int k = -copies; k <= copies; ++k) {
-                    const QRectF copy = rect.translated(alongX ? k * delta : 0.0, alongX ? 0.0 : k * delta);
+                    const double dx = alongX ? k * delta : 0.0, dy = alongX ? 0.0 : k * delta;
+                    const QRectF copy = rect.translated(dx, dy);
                     sum += cellPotential(at, copy, g, side, a == b && k == 0);
+                    // (The walls' charge of each copy, near: wallCorrection().)
+                    if (walled && std::hypot(at.x() - copy.center().x(), at.y() - copy.center().y()) < kNearWidths * side)
+                        sum += wallCorrection(g, pa, movedBy(pb, dx, dy), copy, at, std::abs(za - zb));
                 }
                 // (A charge per metre on the strip puts delta of it on each copy.)
                 p(a, b) += sum * delta;
@@ -959,7 +1009,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
                            QList<QList<double>>* matrix, QList<double>* crowd = nullptr, bool withDielectric = false) {
-        Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control);
+        Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control, charges, zOf);
         if (control != nullptr && control->stopped()) return 1.0;
         if (withDielectric && corrected) p += dielectric.delta;
         ++out.solves;
@@ -1278,43 +1328,6 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                          "the full-wave solve's.");
         }
         out.lines << pm.said;
-    }
-    // The side walls' capacitance across narrow gaps between two nets
-    // (wallGapsOf()): the whole structure's, its vacuum's over the gap's
-    // permittivity, and per metre those whose walls run along the line
-    // through its middle - after the lossy layers' derivatives, which are of
-    // the faces' field alone (a wall's in a lossy layer is not in the loss).
-    // Left out, a MOM comb of 1 µm metal in 1 µm gaps read 19 % under its
-    // capacitance (B2 of the open items of 8 November).
-    if (!walls.isEmpty()) {
-        QHash<int, int> netOfCell;
-        for (int k = 0; k < n; ++k) netOfCell.insert(which.at(k), netOf.at(k));
-        const auto add = [](QList<QList<double>>& m, int a, int b, double c) {
-            if (a >= m.size() || b >= m.size()) return;
-            m[a][a] += c;
-            m[b][b] += c;
-            m[a][b] -= c;
-            m[b][a] -= c;
-        };
-        double total = 0;
-        int count = 0;
-        for (const WallGap& g : walls) {
-            const int a = netOfCell.value(g.a, -1), b = netOfCell.value(g.b, -1);
-            if (a < 0 || b < 0 || a == b) continue;
-            add(out.maxwell, a, b, g.capacitance);
-            add(out.maxwell0, a, b, g.capacitance / g.epsr);
-            total += g.capacitance;
-            ++count;
-            if (uniform && g.alongX == alongX && g.lo <= middle && middle < g.hi && g.length > 0) {
-                add(out.perMetre.maxwell, a, b, g.capacitance / g.length);
-                add(out.perMetre.maxwell0, a, b, g.capacitance / g.length / g.epsr);
-            }
-        }
-        if (count > 0)
-            out.lines << tr("The side walls across their narrow gaps: %1 capacitance(s) between facing edge cells of "
-                            "different conductors, %2 fF in all - the field between the walls that their two faces "
-                            "leave out, by a 2D solve of straight walls (corners and tips are taken as straight).")
-                             .arg(count).arg(total * 1e15, 0, 'g', 4);
     }
     // One net's own loss tangent, for a single line: its row of the loss
     // matrix over its row of the capacitance - of the line's middle where
