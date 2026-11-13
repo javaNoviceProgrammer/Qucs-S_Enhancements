@@ -360,7 +360,10 @@ private slots:
     void theBenchmarksCoplanarLineIsPalacesAndQfems()
     {
         if (slowBuild()) QSKIP("its strips, millimetres long: many minutes under the sanitizers");
-        const rf::Stack stack = stackOf(QStringLiteral("open"), 500e-6, 3.8, 2e-6, 4.1e7, true);
+        // (Solved as Automatic, as a new model's metal is: 2 µm in 20 µm gaps
+        //  is a tenth of them, past Automatic's fortieth - its two faces.)
+        rf::Stack stack = stackOf(QStringLiteral("open"), 500e-6, 3.8, 2e-6, 4.1e7, false);
+        stack.layers.last().automatic = true;
         QVERIFY2(stack.ok(), qPrintable(stack.problems.join(" | ")));
         rf::MeshSettings how;
         how.cellsAcross = 12;
