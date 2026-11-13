@@ -195,7 +195,11 @@ void RF25Doc::drawPicked(QPointF at)
         QStringList done;
         QString why;
         const QString layer = drawLayer();
-        const Layer* chosen = a_model.stack().named(layer);
+        // (The stack kept while its layer is: stack() makes a new one, and a
+        //  layer of it named in one statement and read in the next was read
+        //  from freed memory - the sanitizers, 12 November.)
+        const Stack stack = a_model.stack();
+        const Layer* chosen = stack.named(layer);
         QJsonObject via{{QStringLiteral("add"), QStringLiteral("via")}, {QStringLiteral("at"), QJsonArray{p.x(), p.y()}}};
         // (On the via chosen, else the stack's first.)
         if (chosen != nullptr && chosen->kind == Layer::Via) via.insert(QStringLiteral("layer"), layer);
