@@ -359,6 +359,23 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     if (app != nullptr) connect(this, SIGNAL(signalFileChanged(bool)), app, SLOT(slotFileChanged(bool)));
 }
 
+void RF25Doc::restyleTools()
+{
+    // (The layout tab's flat icons, hovered and checked as there: each its
+    //  own sheet - one on the bar drew its words' buttons square, Draw
+    //  without its frame.)
+    const QString sheet = LayoutDoc::toolButtonRules(palette());
+    for (QToolButton* b : std::as_const(a_tools))
+        if (b->styleSheet() != sheet) b->setStyleSheet(sheet);
+}
+
+void RF25Doc::changeEvent(QEvent* event)
+{
+    QFrame::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
+        QTimer::singleShot(0, this, &RF25Doc::restyleTools);   // (once the palette has settled)
+}
+
 RF25Doc::~RF25Doc()
 {
     // Its undo stack goes with it, emitting its clean and can-undo changes:
@@ -414,15 +431,6 @@ void RF25Doc::buildUi()
         row->addWidget(b);
         return b;
     };
-    a_fit = button(tr("Zoom Extents"), tr("Show the whole layout"), "rfFit");
-    connect(a_fit, &QToolButton::clicked, this, [this] { fitView(); });
-    a_reread = button(tr("Read the Layout Again"), tr("Read the layout file the model names once more"), "rfReread");
-    connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
-    // Measured as in a layout's tab: the view's own ruler.
-    a_rulerButton = button(tr("Ruler"), tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"),
-                           "rfRuler");
-    a_rulerButton->setCheckable(true);
-    row->addSpacing(10);
     // What the solver would be given, over the layout it came from.
     const QucsSettingsFile settings;
     a_showProcessed = settings.value(QLatin1String(kShowProcessedKey), true).toBool();
@@ -511,7 +519,31 @@ void RF25Doc::buildUi()
     // layout, Claude reads (its menu: the arrow beside it).
     a_penButton = new qucs_s::markup::PenButton(tr("Cell"), bar);
     a_penButton->setObjectName(QStringLiteral("rfPen"));
+    a_penButton->setProperty("layoutTool", true);
     row->addWidget(a_penButton);
+    // Beside it, the view's own tools as a layout's tab has them: icons,
+    // drawn and styled as there (the user's ask of 12 November; they were
+    // words at the bar's start).
+    const auto tool = [&](LayoutDoc::ToolIcon icon, const QString& tip, const char* name) {
+        auto* b = new QToolButton(bar);
+        b->setIcon(LayoutDoc::toolIcon(icon));
+        b->setToolTip(tip);
+        b->setObjectName(QLatin1String(name));
+        LayoutDoc::makeToolButton(b);
+        row->addWidget(b);
+        return b;
+    };
+    a_fit = tool(LayoutDoc::ToolIcon::Fit, tr("Zoom Extents: show the whole layout"), "rfFit");
+    connect(a_fit, &QToolButton::clicked, this, [this] { fitView(); });
+    // Measured as in a layout's tab: the view's own ruler.
+    a_rulerButton = tool(LayoutDoc::ToolIcon::Ruler,
+                         tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"), "rfRuler");
+    a_rulerButton->setCheckable(true);
+    a_reread = tool(LayoutDoc::ToolIcon::Reload, tr("Read the Layout Again: read the layout file the model names once more"),
+                    "rfReread");
+    connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
+    a_tools = {a_penButton, a_fit, a_rulerButton, a_reread};
+    restyleTools();
     all->addWidget(bar);
 
     a_splitter = new QSplitter(Qt::Vertical, this);

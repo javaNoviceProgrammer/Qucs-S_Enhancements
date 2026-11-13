@@ -4247,11 +4247,18 @@ private slots:
         QCOMPARE(view->mode(), qucs_s::layout::LayoutView::Mode::Draw);
         QVERIFY2(json(r).toObject().value("pen").toString().contains(QStringLiteral("taken up")), qPrintable(text(r)));
         QVERIFY(!json(r).toObject().contains("drawings"));
-        // At the toolbar's right end, after the layout's line.
+        // At the toolbar's right end, after the layout's line, the view's own
+        // icons beside it (Zoom Extents, the Ruler, Read the Layout Again: the
+        // user's ask of 12 November).
         {
             QWidget* bar = doc->penButton()->parentWidget();
             QVERIFY(bar != nullptr && bar->layout() != nullptr);
-            QCOMPARE(bar->layout()->itemAt(bar->layout()->count() - 1)->widget(), static_cast<QWidget*>(doc->penButton()));
+            QLayout* row = bar->layout();
+            const int at = row->indexOf(doc->penButton());
+            QVERIFY(at > row->indexOf(doc->findChild<QWidget*>(QStringLiteral("rfLayoutLabel"))));
+            QCOMPARE(at, row->count() - 4);
+            QCOMPARE(row->itemAt(at + 1)->widget()->objectName(), QStringLiteral("rfFit"));
+            QCOMPARE(row->itemAt(at + 3)->widget()->objectName(), QStringLiteral("rfReread"));
         }
 
         // Drawn with the mouse, through send_input: a line across the wire.

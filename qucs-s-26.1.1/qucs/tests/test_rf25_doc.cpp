@@ -2707,13 +2707,46 @@ private slots:
         QToolButton* ruler = doc->rulerButton();
         QVERIFY(ruler != nullptr);
         QCOMPARE(ruler->objectName(), QStringLiteral("rfRuler"));
-        QCOMPARE(ruler->text(), QStringLiteral("Ruler"));
         QVERIFY(ruler->isCheckable() && !ruler->isChecked());
-        QVERIFY(ruler->toolTip().contains(QStringLiteral("drag to measure")));
-        // (On the toolbar, beside Zoom Extents and Read the Layout Again.)
+        QVERIFY(ruler->toolTip().startsWith(QStringLiteral("Ruler: drag to measure")));
+        // On the toolbar as a layout tab has its tools (the user's ask of 12
+        // November): icons, flat, right of the pen - Zoom Extents, the Ruler,
+        // then Read the Layout Again, a reload.
         QToolButton* fit = doc->findChild<QToolButton*>(QStringLiteral("rfFit"));
-        QVERIFY(fit != nullptr && fit->parentWidget() == ruler->parentWidget());
-        QVERIFY(ruler->parentWidget()->layout()->indexOf(ruler) > ruler->parentWidget()->layout()->indexOf(fit));
+        QToolButton* reread = doc->findChild<QToolButton*>(QStringLiteral("rfReread"));
+        QToolButton* pen = doc->findChild<QToolButton*>(QStringLiteral("rfPen"));
+        QVERIFY(fit != nullptr && reread != nullptr && pen != nullptr);
+        QLayout* bar = ruler->parentWidget()->layout();
+        QVERIFY(fit->parentWidget() == ruler->parentWidget() && reread->parentWidget() == ruler->parentWidget());
+        QVERIFY(bar->indexOf(pen) < bar->indexOf(fit) && bar->indexOf(fit) < bar->indexOf(ruler) && bar->indexOf(ruler) < bar->indexOf(reread));
+        QCOMPARE(bar->indexOf(reread), bar->count() - 1);
+        for (QToolButton* b : {fit, ruler, reread, pen}) {
+            QVERIFY2(b->property("layoutTool").toBool(), qPrintable(b->objectName()));
+            if (b == pen) continue;
+            QVERIFY2(!b->icon().isNull() && b->text().isEmpty() && b->toolButtonStyle() == Qt::ToolButtonIconOnly,
+                     qPrintable(b->objectName()));
+            QCOMPARE(b->iconSize(), QSize(16, 16));
+            QVERIFY(b->autoRaise());
+        }
+        QVERIFY(fit->toolTip().startsWith(QStringLiteral("Zoom Extents")));
+        QVERIFY(reread->toolTip().startsWith(QStringLiteral("Read the Layout Again")));
+        // (Each styled as a layout tab's; the bar's words' buttons as they were.)
+        QVERIFY(ruler->parentWidget()->styleSheet().isEmpty());
+        for (QToolButton* b : {fit, ruler, reread, pen}) QVERIFY(b->styleSheet().contains(QStringLiteral("layoutTool")));
+        // (Three different pictures, drawn.)
+        const auto picture = [](QToolButton* b) { return b->icon().pixmap(QSize(16, 16)).toImage(); };
+        QVERIFY(picture(fit) != picture(ruler) && picture(ruler) != picture(reread) && picture(fit) != picture(reread));
+        int inked = 0;
+        const QImage reload = picture(reread);
+        for (int y = 0; y < reload.height(); ++y)
+            for (int x = 0; x < reload.width(); ++x) inked += qAlpha(reload.pixel(x, y)) > 0 ? 1 : 0;
+        QVERIFY2(inked > 20, qPrintable(QString::number(inked)));
+        // Read the Layout Again reads it again (its read begun says so).
+        QSignalSpy read(doc, &RF25Doc::stateChanged);
+        reread->click();
+        QVERIFY(read.count() > 0);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->layout() != nullptr);
 
         ruler->click();
         QVERIFY(ruler->isChecked());
