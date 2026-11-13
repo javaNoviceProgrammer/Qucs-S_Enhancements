@@ -19,6 +19,7 @@
 #include <QMutexLocker>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <map>
 #include <tuple>
@@ -279,6 +280,190 @@ QList<ChargePart> movedBy(const QList<ChargePart>& parts, double dx, double dy)
             p.rect.translate(dy, 0);
             p.at += dx;
         }
+    }
+    return out;
+}
+
+QHash<int, int> edgeSidesOf(const Mesh& mesh, const QList<Conductor>& conductors)
+{
+    QHash<QString, QList<int>> shapesOn;
+    for (int s = 0; s < conductors.size(); ++s) shapesOn[conductors.at(s).layer] << s;
+    QHash<int, int> out;
+    for (int m = 0; m < mesh.cells.size(); ++m) {
+        const MeshCell& cell = mesh.cells.at(m);
+        const QRectF box = cell.outline.boundingRect();
+        const auto outside = [&](const QPointF& probe) {
+            for (const int s : shapesOn.value(cell.layer)) {
+                const Conductor& shape = conductors.at(s);
+                if (shape.outline.boundingRect().contains(probe) && shape.outline.containsPoint(probe, Qt::OddEvenFill)) return false;
+            }
+            return true;
+        };
+        const double ex = 5e-4 * box.width(), ey = 5e-4 * box.height();
+        int sides = 0;
+        if (outside(QPointF(box.center().x(), box.top() - ey))) sides |= 1;
+        if (outside(QPointF(box.center().x(), box.bottom() + ey))) sides |= 2;
+        if (outside(QPointF(box.left() - ex, box.center().y()))) sides |= 4;
+        if (outside(QPointF(box.right() + ex, box.center().y()))) sides |= 8;
+        if (sides != 0) out.insert(m, sides);
+    }
+    return out;
+}
+
+namespace {
+
+/// How many sub-strips a part is cut into toward a free side.
+constexpr int kProfileStrips = 4;
+
+/// The cuts of [0, w] toward its free ends (\a low at 0, \a high at w),
+/// graded as the square - a fourth of the cut's half at the first -, and
+/// each piece's share of a density s^-alpha from each free end (of both
+/// together where both are: s^-alpha (w - s)^-alpha), by the substitution
+/// u = s^(1 - alpha) that takes the singularity out, at 16 points a piece.
+QList<std::pair<std::pair<double, double>, double>> profile1Dimpl(double w, bool low, bool high, double alpha)
+{
+    QList<double> cuts;
+    if (low && high) {
+        for (int k = 0; k <= kProfileStrips; ++k) cuts << 0.5 * w * double(k * k) / (kProfileStrips * kProfileStrips);
+        for (int k = kProfileStrips - 1; k >= 0; --k) cuts << w - 0.5 * w * double(k * k) / (kProfileStrips * kProfileStrips);
+    } else {
+        for (int k = 0; k <= kProfileStrips; ++k) cuts << w * double(k * k) / (kProfileStrips * kProfileStrips);
+        if (high) {
+            QList<double> mirrored;
+            for (auto it = cuts.crbegin(); it != cuts.crend(); ++it) mirrored << w - *it;
+            cuts = mirrored;
+        }
+    }
+    const auto density = [&](double s) {
+        double d = 1;
+        if (low) d *= std::pow(std::max(s, 1e-300 * w), -alpha);
+        if (high) d *= std::pow(std::max(w - s, 1e-300 * w), -alpha);
+        return d;
+    };
+    QList<std::pair<std::pair<double, double>, double>> out;
+    double total = 0;
+    for (int k = 0; k + 1 < cuts.size(); ++k) {
+        const double a = cuts.at(k), b = cuts.at(k + 1);
+        if (!(b > a)) continue;
+        // (Toward the nearer free end, s^-alpha ds = du/(1 - alpha) with
+        //  u = s^(1 - alpha): the rest of the density is smooth in u.)
+        const bool towardLow = low && (!high || a + b < w);
+        const double e = 1 - alpha;
+        const double s0 = towardLow ? a : w - b, s1 = towardLow ? b : w - a;   // (distances from that end)
+        const double u0 = std::pow(s0, e), u1 = std::pow(s1, e);
+        double sum = 0;
+        for (int i = 0; i < 16; ++i) {
+            const double u = u0 + (i + 0.5) / 16 * (u1 - u0);
+            const double d = std::pow(u, 1 / e);   // (its distance from that end)
+            const double s = towardLow ? d : w - d;
+            sum += density(s) * std::pow(std::max(d, 1e-300 * w), alpha);   // (the singular factor taken out)
+        }
+        const double share = sum / 16 * (u1 - u0) / e;
+        out.push_back({{a, b}, share});
+        total += share;
+    }
+    for (auto& piece : out) piece.second /= total;
+    return out;
+}
+
+} // namespace
+
+QList<std::pair<std::pair<double, double>, double>> edgeProfile(double w, bool low, bool high, double alpha)
+{
+    return profile1Dimpl(w, low, high, alpha);
+}
+
+QList<ChargePart> profiled(const QList<ChargePart>& parts, int sides, double alpha)
+{
+    const bool lowY = sides & 1, highY = sides & 2, lowX = sides & 4, highX = sides & 8;
+    if (!(lowY || highY || lowX || highX)) return parts;
+    // (At a corner - free sides across x and across y -, each way's profile
+    //  times the other's: d^-1/2 each would go as r^-1 at the corner, where
+    //  a plate's right-angled corner holds its charge as r^-0.70; 0.35 each
+    //  way goes as it does along the diagonal.)
+    if ((lowY || highY) && (lowX || highX)) alpha = std::min(alpha, 0.35);
+    QList<ChargePart> out;
+    for (const ChargePart& p : parts) {
+        if (p.plane != 0) {
+            out << p;
+            continue;
+        }
+        const auto xs = lowX || highX ? edgeProfile(p.rect.width(), lowX, highX, alpha)
+                                      : QList<std::pair<std::pair<double, double>, double>>{{{0, p.rect.width()}, 1.0}};
+        const auto ys = lowY || highY ? edgeProfile(p.rect.height(), lowY, highY, alpha)
+                                      : QList<std::pair<std::pair<double, double>, double>>{{{0, p.rect.height()}, 1.0}};
+        for (const auto& [xr, wx] : xs)
+            for (const auto& [yr, wy] : ys) {
+                ChargePart q = p;
+                q.rect = QRectF(QPointF(p.rect.left() + xr.first, p.rect.top() + yr.first), QPointF(p.rect.left() + xr.second, p.rect.top() + yr.second));
+                q.x = q.rect.center().x();
+                q.y = q.rect.center().y();
+                q.weight = p.weight * wx * wy;
+                out << q;
+            }
+    }
+    return out;
+}
+
+namespace {
+std::atomic_bool& profilesOn()
+{
+    static std::atomic_bool on{true};
+    return on;
+}
+} // namespace
+
+void setEdgeProfiles(bool on)
+{
+    profilesOn().store(on);
+}
+
+bool edgeProfiles()
+{
+    return profilesOn().load();
+}
+
+QHash<int, QList<ChargePart>> chargeParts(const Thickened& thick, double micrometre, const std::function<double(int)>& zOf)
+{
+    QHash<int, QList<ChargePart>> out = wallCharges(thick, micrometre, zOf);
+    if (!edgeProfiles()) return out;
+    const QHash<int, int> sides = edgeSidesOf(thick.mesh, thick.conductors);
+    // (An edge with another conductor over or under it nearer than its
+    //  cell is wide holds its charge as plates facing do - nearly even, the
+    //  field between them -, not as an edge with nothing near: no profile
+    //  there. Two plates 2 µm apart read under their parallel plate's
+    //  capacitance with one.)
+    QHash<QString, double> heightOf;
+    for (int m = 0; m < thick.mesh.cells.size(); ++m)
+        if (!heightOf.contains(thick.mesh.cells.at(m).layer)) heightOf.insert(thick.mesh.cells.at(m).layer, zOf(m));
+    const auto facedNear = [&](int m) {
+        const MeshCell& cell = thick.mesh.cells.at(m);
+        const QRectF box = cell.outline.boundingRect();
+        const double size = std::max(box.width(), box.height()) * micrometre, z = zOf(m);
+        // (Its metal's own other face is no other conductor.)
+        const int partner = thick.topOf.value(m, thick.bottomOf.value(m, -1));
+        const QString own = partner >= 0 ? thick.mesh.cells.at(partner).layer : QString();
+        for (const Conductor& c : thick.conductors) {
+            if (c.layer == cell.layer || c.layer == own) continue;
+            // (Planes alone: a via's, or the walls joining a metal's faces,
+            //  face no edge - the full wave set the walls at the bottom
+            //  face's height, a top face's edge then facing them.)
+            const Layer* layer = thick.stack.named(c.layer);
+            if (layer == nullptr || layer->kind != Layer::Metal) continue;
+            const double dz = std::abs(heightOf.value(c.layer, z + 2 * size) - z);
+            if (dz > 0 && dz < size && c.outline.boundingRect().intersects(box)) return true;
+        }
+        return false;
+    };
+    for (auto it = sides.constBegin(); it != sides.constEnd(); ++it) {
+        const int m = it.key();
+        if (facedNear(m)) continue;
+        QList<ChargePart> parts = out.value(m);
+        if (parts.isEmpty()) {
+            const QRectF box = thick.mesh.cells.at(m).outline.boundingRect();
+            parts << wholeCell(QRectF(box.left() * micrometre, box.top() * micrometre, box.width() * micrometre, box.height() * micrometre), zOf(m));
+        }
+        out.insert(m, profiled(parts, it.value(), 0.5));
     }
     return out;
 }
