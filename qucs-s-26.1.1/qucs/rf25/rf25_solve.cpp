@@ -429,6 +429,12 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         const bool studyAdaptive = study != nullptr && study->props.value(QStringLiteral("adaptive")).toBool();
         job.adaptive = request.frequencies.isEmpty() && job.levels.isEmpty()
                         && (request.adaptive < 0 ? studyAdaptive : request.adaptive > 0);
+        // (A sweep of so few points that adding them saves nothing is solved
+        //  whole, as a plain sweep and said as one - a new study is adaptive.)
+        if (job.adaptive && job.frequencies.size() <= std::max(AdaptiveSettings().fewest, AdaptiveSettings().first)) {
+            job.adaptive = false;
+            job.tooFewToAdapt = true;
+        }
         if (job.adaptive && study != nullptr) {
             bool ok = true;
             const double tolerance = numberOf(*study, QStringLiteral("adaptive_tolerance"), model, 2e-3, &ok);
@@ -443,9 +449,17 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             if (!n.enabled || n.type != QLatin1String("rf_trl") || !job.levels.isEmpty()) continue;
             if (job.ports.size() != 2)
                 return said(tr("A TRL calibration is of a two-port, and the model has %n port(s).", nullptr, int(job.ports.size())));
-            if (job.adaptive)
-                return said(tr("A TRL calibration wants every frequency solved, its standards at each: untick the study's "
-                                  "Add points where it changes."));
+            // (Its standards at every frequency: the study's adaptive sweep,
+            //  on for a new study, set aside and said; asked of this solve
+            //  alone, refused.)
+            if (job.adaptive && request.adaptive > 0)
+                return said(tr("A TRL calibration wants every frequency solved, its standards at each: it cannot add "
+                                  "points where the answer changes."));
+            if (job.adaptive) {
+                job.adaptive = false;
+                job.notes << tr("A TRL calibration wants every frequency solved, its standards at each: the study's Add "
+                                "points where it changes is set aside, and every frequency is solved.");
+            }
             SolveJob::Trl t;
             const QDir dir(folder);
             const auto pathOf = [&dir](const QString& v) {
@@ -526,6 +540,10 @@ void runSolve(SolveJob& job)
 {
     if (job.fullWave) {
         job.wave = solveWaveOn(job, job.mesh, job.how, job.frequencies, job.adaptive, job.tolerance, &job.notes);
+        if (job.wave->ok() && job.tooFewToAdapt)
+            job.wave->lines.prepend(tr("The study's %1 frequencies are too few for adding points to save anything: every "
+                                       "one is solved.")
+                                        .arg(job.frequencies.size()));
         if (job.wave->ok()) job.wave->lines.prepend(meshNoteOf(job.mesh));
         if (job.trl && job.wave->ok() && !job.stop.load()) job.wave = trlOn(job, *job.wave);
         return;

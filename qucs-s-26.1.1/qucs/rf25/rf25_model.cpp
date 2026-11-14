@@ -580,7 +580,7 @@ QList<NodeKind> makeKinds()
                           tr("Solve a few of the sweep's frequencies and read the rest from a rational fit of the "
                              "ports' Z through them, adding frequencies where the fit is least sure until what it "
                              "says of them is what solving them gives: a sweep of many points in a fraction of the "
-                             "time. A sweep of 12 points or fewer is solved whole")),
+                             "time. A sweep of 12 points or fewer is solved whole. On for a new study")),
                   "kind=full_wave"),
           shownIf(expr(QStringLiteral("adaptive_tolerance"), tr("Tolerance"), QString(), QStringLiteral("0.002"),
                        tr("How far any term of S may be from what the fit said of a frequency before it was solved, "
@@ -930,6 +930,12 @@ Model Model::blank()
     for (const char* type : {"rf_parameters", "rf_stack", "rf_layout", "rf_ports", "rf_mesh", "rf_study",
                              "rf_results", "rf_exports"})
         child(m.root, QLatin1String(type));
+    // A new study's full-wave sweep adaptive: a few frequencies solved and
+    // the rest read from a rational fit through them, which on a sweep of
+    // 100 points or more saves more than any speed of the solve itself (a
+    // sweep of 12 or fewer is solved whole). A file that says nothing of it
+    // is not adaptive, as it was solved before.
+    child(m.root, QStringLiteral("rf_study")).props.insert(QStringLiteral("adaptive"), true);
     // The layout's own fixed children.
     child(m.layout(), QStringLiteral("rf_layer_map"));
     child(m.layout(), QStringLiteral("rf_processing"));

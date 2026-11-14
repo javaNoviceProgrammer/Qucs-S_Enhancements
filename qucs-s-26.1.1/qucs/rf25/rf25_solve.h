@@ -120,6 +120,9 @@ struct SolveJob {
     // tolerance on S, and the frequencies it has asked for so far, which
     // the bar counts against.
     bool adaptive = false;
+    /// The study asked for an adaptive sweep of so few points that it is
+    /// solved whole: said so with the answer.
+    bool tooFewToAdapt = false;
     double tolerance = 2e-3;
     std::atomic_int asked{0};
     // A mesh convergence check's: the cells across of each mesh, the one it

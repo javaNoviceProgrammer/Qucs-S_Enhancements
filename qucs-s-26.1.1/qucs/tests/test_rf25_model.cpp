@@ -337,6 +337,29 @@ private slots:
     // A metal or impedance ground's loss in the full wave is asked for on
     // the ground ("Its loss in the full-wave solve"): read where the plane
     // can lose, and not where it is perfect or open, nor where not asked.
+    // A new model's study sweeps adaptively - a few frequencies solved and
+    // the rest from a rational fit -, written so; a file whose study says
+    // nothing of it is read as it was saved, every point solved, and is not
+    // given it on reading.
+    void aNewStudyIsAdaptiveAndAFileThatSaysNothingIsNot()
+    {
+        const rf::Model blank = rf::Model::blank();
+        const rf::Node* study = blank.root.child(QStringLiteral("rf_study"));
+        QVERIFY(study != nullptr);
+        QCOMPARE(study->props.value(QStringLiteral("adaptive")).toBool(), true);
+        QVERIFY(blank.toJson().contains("\"adaptive\": true"));
+        rf::Model old = blank;
+        old.root.child(QStringLiteral("rf_study"))->props.remove(QStringLiteral("adaptive"));
+        QString why;
+        const std::optional<rf::Model> read = rf::Model::fromJson(old.toJson(), &why);
+        QVERIFY2(read.has_value(), qPrintable(why));
+        const rf::Node* readStudy = read->root.child(QStringLiteral("rf_study"));
+        QVERIFY(readStudy != nullptr && !readStudy->props.contains(QStringLiteral("adaptive")));
+        const rf::NodeKind* kind = rf::nodeKind(QStringLiteral("rf_study"));
+        QVERIFY(kind != nullptr && kind->property(QStringLiteral("adaptive")) != nullptr);
+        QCOMPARE(kind->property(QStringLiteral("adaptive"))->defaultValue.toBool(), false);
+    }
+
     void aGroundsLossInTheFullWaveIsReadWhereItCanLose()
     {
         const auto read = [](const QString& kind, bool asked) {
