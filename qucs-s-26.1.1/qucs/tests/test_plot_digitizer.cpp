@@ -2980,6 +2980,129 @@ private slots:
             }
     }
 
+    void aRasterTraceIsWhereItsInkIs()
+    {
+        // Three plots of one sine down a page, traced from a picture: each
+        // trace sat above its ink, more so lower on the page - +0.15, +0.41,
+        // +0.69 pt at page y 135, 375 and 635 on a vector page (6 pixels a
+        // point), +0.09 to +0.38 pt on an image (the SOI MMI benchmark's E1).
+        // QtPdf drew a clip of w x h as if w - 1 by h - 1. Now under a tenth
+        // of a point, at every height, on both.
+        QList<Axes> plots;
+        for (const double top : {60.0, 300.0, 560.0}) {
+            Axes a;
+            a.frame = QRectF(120, top, 380, 150);
+            plots << a;
+        }
+        const auto draw = [&](QPainter& p, double u) {
+            for (const Axes& a : std::as_const(plots)) drawPlot(p, a, {Curve{sine, Qt::blue, 1.0}}, u);
+        };
+        const QString vector = path(QStringLiteral("e1_vector.pdf")), image = path(QStringLiteral("e1_image.pdf"));
+        QVERIFY(writeVector(vector, draw));
+        {
+            QImage picture(int(kPageW * 4), int(kPageH * 4), QImage::Format_RGB32);   // (288 dpi)
+            picture.fill(Qt::white);
+            QPainter p(&picture);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(4, 4);
+            draw(p, 8.0);
+            p.end();
+            QVERIFY(writeScan(image, picture));
+        }
+        for (const QString& file : {vector, image}) {
+            QPdfDocument pdf;
+            QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+            Source source(&pdf, file);
+            for (const Axes& a : std::as_const(plots)) {
+                Plot plot = plotInRegion(source, 0, a.frame.adjusted(-70, -10, 10, 30));
+                // (The corners give the values: the image's labels have no text.)
+                Reference low, high;
+                low.at = a.frame.bottomLeft();
+                low.hasX = low.hasY = true;
+                low.x = a.xMin;
+                low.y = a.yMin;
+                high.at = a.frame.topRight();
+                high.hasX = high.hasY = true;
+                high.x = a.xMax;
+                high.y = a.yMax;
+                plot.calibration.references = {low, high};
+                QString why;
+                QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+                Options o;
+                o.route = Options::Route::Raster;
+                o.colours = {Qt::blue};
+                QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+                const Series* s = nearest(plot, sine, 2);
+                QVERIFY2(s != nullptr, qPrintable(file));
+                // The mean of the trace's page y less the sine's, where the
+                // sine is not steep (a steep part's y is its slope times x's error).
+                double sum = 0;
+                int n = 0;
+                for (const QPointF& q : s->points) {
+                    const double x = a.xMin + (q.x() - a.frame.left()) / a.frame.width() * (a.xMax - a.xMin);
+                    if (x < 0.3 || x > 9.7 || std::abs(std::cos(x)) > 0.5) continue;
+                    sum += q.y() - a.py(sine(x));
+                    ++n;
+                }
+                QCOMPARE_GE(n, 20);
+                const double shift = sum / n;
+                qInfo("%s, the plot at page y %g: the trace %+.3f pt from its ink (%d points)", file == vector ? "vector page" : "image page", a.frame.center().y(), -shift, n);
+                QVERIFY2(std::abs(shift) < 0.1, qPrintable(QStringLiteral("%1 at page y %2: %3 pt").arg(file).arg(a.frame.center().y()).arg(-shift)));
+            }
+        }
+    }
+
+    void aFlatLineIsNoGrid()
+    {
+        // A curve lying flat across the whole frame, at no tick mark, with a
+        // sine crossing it: taken for a grid line and left out, or kept only
+        // between where the sine touched it, in a blend of the two colours
+        // (the SOI MMI benchmark's E3). A grid line is at a mark, or one of a
+        // set of them in one colour.
+        Axes a;
+        a.frame = QRectF(120, 200, 380, 200);
+        const auto flat = [](double) { return 0.2; };
+        const QString vector = path(QStringLiteral("e3_vector.pdf")), image = path(QStringLiteral("e3_image.pdf"));
+        const auto draw = [&](QPainter& p, double u) { drawPlot(p, a, {Curve{flat, QColor(26, 51, 204), 1.2}, Curve{sine, QColor(220, 30, 40), 1.2}}, u); };
+        QVERIFY(writeVector(vector, draw));
+        QVERIFY(writeScan(image, plotImage(a, {Curve{flat, QColor(26, 51, 204), 1.2}, Curve{sine, QColor(220, 30, 40), 1.2}}, 300)));
+        for (const QString& file : {vector, image}) {
+            QPdfDocument pdf;
+            QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+            Source source(&pdf, file);
+            Plot plot = plotInRegion(source, 0, a.frame.adjusted(-70, -10, 10, 30));
+            Reference low, high;
+            low.at = a.frame.bottomLeft();
+            low.hasX = low.hasY = true;
+            low.x = a.xMin;
+            low.y = a.yMin;
+            high.at = a.frame.topRight();
+            high.hasX = high.hasY = true;
+            high.x = a.xMax;
+            high.y = a.yMax;
+            plot.calibration.references = {low, high};
+            QString why;
+            QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+            Options o;
+            o.route = Options::Route::Raster;
+            QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+            const Series* blue = nullptr;
+            for (const Series& s : std::as_const(plot.series))
+                if (s.shape == Series::Shape::Line && s.colour.blue() > s.colour.red() + 80 && (blue == nullptr || s.points.size() > blue->points.size())) blue = &s;
+            QVERIFY2(blue != nullptr, qPrintable(file + QStringLiteral(": the flat line")));
+            double lo = 1e9, hi = -1e9, worst = 0;
+            for (const QPointF& v : values(plot, *blue)) {
+                lo = std::min(lo, v.x());
+                hi = std::max(hi, v.x());
+                worst = std::max(worst, std::abs(v.y() - 0.2));
+            }
+            qInfo("%s: the flat line from x %.2f to %.2f, %s, at most %.4f off 0.2", file == vector ? "vector page" : "image page", lo, hi, qPrintable(blue->colour.name()), worst);
+            QCOMPARE_GE(hi - lo, 0.9 * (a.xMax - a.xMin));
+            QCOMPARE_LE(worst, 0.03);
+            QVERIFY2(colourDistance(blue->colour, QColor(26, 51, 204)) < colourDistance(blue->colour, QColor(220, 30, 40)), qPrintable(blue->colour.name()));
+        }
+    }
+
     void aHeavyPageIsReadInTime()
     {
         // A scatter of 120,000 markers about a plot (a million points of
