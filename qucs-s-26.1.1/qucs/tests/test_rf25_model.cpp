@@ -334,9 +334,6 @@ private slots:
         }
     }
 
-    // A metal or impedance ground's loss in the full wave is asked for on
-    // the ground ("Its loss in the full-wave solve"): read where the plane
-    // can lose, and not where it is perfect or open, nor where not asked.
     // A new model's study sweeps adaptively - a few frequencies solved and
     // the rest from a rational fit -, written so; a file whose study says
     // nothing of it is read as it was saved, every point solved, and is not
@@ -360,6 +357,9 @@ private slots:
         QCOMPARE(kind->property(QStringLiteral("adaptive"))->defaultValue.toBool(), false);
     }
 
+    // A metal or impedance ground's loss in the full wave is asked for on
+    // the ground ("Its loss in the full-wave solve"): read where the plane
+    // can lose, and not where it is perfect or open, nor where not asked.
     void aGroundsLossInTheFullWaveIsReadWhereItCanLose()
     {
         const auto read = [](const QString& kind, bool asked) {
