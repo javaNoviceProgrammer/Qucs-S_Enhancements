@@ -135,6 +135,16 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
     Strips out;
     const QString& metal = feed.metal;
     const double width = feed.width, offset = feed.offset();
+    // Whether anything of the feed can lose: its metal (a perfect one has no
+    // conductivity or no thickness), a dielectric (a loss tangent or a
+    // conductivity), a ground that is no perfect plane.
+    bool loses = false;
+    for (const Layer& l : stack.layers) {
+        if (l.kind == Layer::Metal && l.name == metal) loses = loses || (l.sigma > 0 && l.thickness > 0);
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && (l.tand > 0 || l.sigma > 0)) loses = true;
+        if (l.kind == Layer::Ground && l.variant != QLatin1String("perfect") && l.variant != QLatin1String("open") && !l.variant.isEmpty())
+            loses = true;
+    }
     double between = base - 2 * offset;
     int periods = 0;
     if (feed.pitch > 0) {
@@ -265,6 +275,23 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
         }
         beta = wave.imag();
         previous = out.at.at(k);
+        // (Where nothing of the feed can lose, the line loses nothing - but
+        //  the strips' two ports reach one another past it through the
+        //  substrate, and two strips read that as the line's loss or gain:
+        //  E L_x fits them as E does, for any x, and what the line is lent E
+        //  is lent back. A perfect metal's microstrip on 100 µm of alumina,
+        //  read as gaining 7 to 22 dB/m from 40 to 90 GHz, its E as losing
+        //  the same, de-embedded gave back 2 % at 80 GHz. There the line is
+        //  taken lossless and the piece x = (l - wave / gamma) / 2 that
+        //  makes it so taken out of E: what the ports radiate stays theirs.)
+        Chain eLossless = e;
+        if (!loses) {
+            const Complex lossless(0, wave.imag() / length);
+            const Complex theta = -lossless * 0.5 * (length - wave / lossless);
+            const Complex z0 = impedanceOf(l1);
+            eLossless = times(e, Chain{std::cosh(theta), z0 * std::sinh(theta), std::sinh(theta) / z0, std::cosh(theta)});
+            wave = Complex(0, wave.imag());
+        }
         const Complex gamma = wave / length;
         // (Where the shorter strip is within a quarter turn of a whole
         //  number of half waves its chain matrix is all but the identity,
@@ -274,7 +301,9 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
         const double turns = wave.imag() / M_PI;
         const bool nearHalf = turns > 0.75 && std::abs(turns - std::round(turns)) < 0.25;
         const Complex z = nearHalf && std::abs(std::sinh(gamma * third)) > std::abs(std::sinh(wave)) ? z3 : z1;
-        out.residual << std::max(apart(l1, lineOf(gamma, z, length), z), apart(l3, lineOf(gamma, z, third), z));
+        const Chain line1 = times(times(inverse(eLossless), t[0]), inverse(reversed(eLossless)));
+        const Chain line3 = times(times(inverse(eLossless), t[2]), inverse(reversed(eLossless)));
+        out.residual << std::max(apart(line1, lineOf(gamma, z, length), z), apart(line3, lineOf(gamma, z, third), z));
         if (turns > 0.9 && std::abs(turns - std::round(turns)) < 0.1) out.halfWaves << out.at.at(k);
         // (A line gives nothing back. Two strips read a little of what the
         //  ports radiate to one another as the line's loss or gain - a few
@@ -286,7 +315,7 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
         // (E P ends at the feed's first via: the line taken back from there
         //  to the face, so that the reference plane is at the face.)
         const Complex lossless(std::max(0.0, wave.real()) / length, wave.imag() / length);
-        out.error << (offset > 0 ? times(e, lineOf(lossless, z, -offset * micrometre)) : e);
+        out.error << (offset > 0 ? times(eLossless, lineOf(lossless, z, -offset * micrometre)) : eLossless);
         out.gamma << gamma;
         out.impedance << z;
     }
@@ -390,18 +419,24 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
     // Where they do not agree on one line between two ends alike at every
     // frequency asked - unless a length was given - shorter strips too; each
     // frequency taken from the longest that agree within a percent there,
-    // whose ports are the furthest apart, else from those that agree best.
+    // whose ports are the furthest apart, else from the longest. None
+    // shorter than the ports' own fields reach, half the strips' first
+    // length - four heights and the width, or a coplanar feed's four of its
+    // signal and gaps and its width -, and agreeing best no ground to take
+    // shorter ones: strips whose ports' fields meet agree with one another
+    // as well as any, all three alike wrong. A perfect metal's microstrip on
+    // 100 µm of alumina, 990 µm strips, read 124 µm ones beside them, that
+    // agreed best from 102 GHz, as losing 247 to 1464 dB/m - the 990 µm
+    // ones -12 to 69 -, and de-embedded lost 3 to 7 % where it loses
+    // nothing; between, it gave back 2 % from 495 µm ones.
     QList<Strips> sets{base};
     const auto best = [&sets](double f) {
-        int b = 0;
-        for (int i = 0; i < sets.size(); ++i) {
-            const double r = sets.at(i).residual.at(sets.at(i).indexOf(f));
-            if (r <= kStripsAgree) return i;
-            if (r < sets.at(b).residual.at(sets.at(b).indexOf(f))) b = i;
-        }
-        return b;
+        for (int i = 0; i < sets.size(); ++i)
+            if (sets.at(i).residual.at(sets.at(i).indexOf(f)) <= kStripsAgree) return i;
+        return 0;
     };
-    for (int halving = 1; halving <= 3 && chosen <= 0; ++halving) {
+    const double shortest = 0.5 * first;   // the layout's units: the ports' own fields' reach
+    for (int halving = 1; halving <= 3 && chosen <= 0 && used / double(1 << halving) >= shortest * (1 - 1e-9); ++halving) {
         bool all = true;
         for (const double f : frequencies) {
             const Strips& s = sets.at(best(f));
@@ -539,9 +574,9 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
     if (sets.size() > 1) {
         QStringList lengths;
         for (int i = 1; i < sets.size(); ++i) lengths << QString::number(sets.at(i).strip, 'g', 4);
-        out.lines << tr("Strips of %1 µm agreed within a percent to %2 GHz; shorter ones, %3 µm, were solved beside them, "
-                        "and each frequency is taken from the longest that agree within a percent there, else from those that agree "
-                        "best - the shorter from %4 GHz.")
+        out.lines << tr("Strips of %1 µm agreed within a percent to %2 GHz; shorter ones, %3 µm - none shorter than the "
+                        "ports' own fields reach -, were solved beside them, and each frequency is taken from the longest that agree "
+                        "within a percent there, else from the longest - the shorter from %4 GHz.")
                          .arg(base.strip, 0, 'g', 4)
                          .arg(baseAgreed / 1e9, 0, 'g', 4)
                          .arg(lengths.join(tr(" and ")))
