@@ -2468,7 +2468,10 @@ private slots:
         QCOMPARE(doc->model().layout().props.value(QStringLiteral("file")).toString(), QStringLiteral("drawn.gds"));
         QCOMPARE(doc->layoutFile(), QFileInfo(gds).absoluteFilePath());
         const QJsonArray rows = doc->model().layout().child(QStringLiteral("rf_layer_map"))->props.value(QStringLiteral("rows")).toArray();
-        QCOMPARE(rows, QJsonArray{row({QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")})});
+        // (A list of one row: the row a QJsonValue, which no compiler reads
+        // as a copy of the list - QJsonArray{row(...)} was the row itself on
+        // CI's macOS; scripts/ci/check-json-nesting.py.)
+        QCOMPARE(rows, QJsonArray{QJsonValue(row({QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}))});
         QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("Begun drawn.gds beside the model")), qPrintable(doc->statusLabel()->text()));
         QVERIFY(doc->processed() != nullptr);
         QCOMPARE(int(doc->processed()->conductors.size()), 1);
