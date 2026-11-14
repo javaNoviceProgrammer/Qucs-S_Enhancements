@@ -1115,6 +1115,20 @@ private slots:
     // it does not send. (Ignored, a solve went on for minutes after.)
     void aCancelledCallStopsAndIsNotAnswered()
     {
+        // How soon a stopped solve ends: at its next step - some 50 ms here
+        // in Release -, never the transient's 200,000 steps (hours). Under
+        // the sanitizers a step of it is a Debug build's at -O0, and CI's
+        // Linux runner took 20.6 s to reach the next one (its answer came,
+        // so the cancel had reached the solve): 120 s there.
+        bool sanitized = qEnvironmentVariableIsSet("QUCS_TEST_SLOW");
+#if defined(__SANITIZE_ADDRESS__)
+        sanitized = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+        sanitized = true;
+#endif
+#endif
+        const qint64 within = sanitized ? 120000 : 20000;
         using Answer = std::shared_ptr<std::optional<QJsonObject>>;
         const auto begin = [this](int id, const QString& tool, const QJsonObject& arguments) {
             Answer answer = std::make_shared<std::optional<QJsonObject>>();
@@ -1156,12 +1170,12 @@ private slots:
         QVERIFY2(!answer->has_value(), "solved before it was cancelled: the test's transient is too short");
         clock.restart();
         cancel(9003);
-        // (Stopped at its next step: within a second here, a few under the
-        // sanitizers - never the transient's minutes.)
-        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        // (Stopped at its next step: within a second here - never the
+        // transient's hours.)
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), within + 10000);
         QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
         qInfo("the solve ended %lld ms after it was cancelled", clock.elapsed());
-        QVERIFY2(clock.elapsed() < 20000, "the solve went on after it was cancelled");
+        QVERIFY2(clock.elapsed() < within, "the solve went on after it was cancelled");
         // (Nothing under way: fem_stop has nothing to stop.)
         const auto idle = [this, &model] { return !structured(callTool("fem_stop", {{"path", model}})).value("stopped").toBool(true); };
         QVERIFY(idle());
@@ -1182,11 +1196,11 @@ private slots:
                            {{"script", QStringLiteral("for (let i = 0; i < 3; i++) { try { qucs.call('fem_solve', {path: %1, timeout: 600}); } catch (e) {} }")
                                            .arg(quoted)},
                             {"timeout", 600}});
-            QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+            QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), within + 10000);
             QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
             qInfo("the script ended %lld ms after it was cancelled", clock.elapsed());
             // (A script runs within its call: its answer is there before any wait for it.)
-            QVERIFY2(clock.elapsed() < 20000, "the script went on after it was cancelled");
+            QVERIFY2(clock.elapsed() < within, "the script went on after it was cancelled");
             QVERIFY(idle());
         }
 
@@ -1211,10 +1225,10 @@ private slots:
         QVERIFY(!answer->has_value());   // (the batch still under way)
         clock.restart();
         cancel(9005);
-        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), 30000);
+        QTRY_VERIFY_WITH_TIMEOUT(answer->has_value(), within + 10000);
         QVERIFY2(answer->value().isEmpty(), qPrintable(QJsonDocument(answer->value()).toJson()));
         qInfo("the batch ended %lld ms after it was cancelled", clock.elapsed());
-        QVERIFY2(clock.elapsed() < 20000, "the batch went on after it was cancelled");
+        QVERIFY2(clock.elapsed() < within, "the batch went on after it was cancelled");
         QVERIFY(idle());
         callTool("close_document", {{"path", model}, {"unsaved", "discard"}});
     }

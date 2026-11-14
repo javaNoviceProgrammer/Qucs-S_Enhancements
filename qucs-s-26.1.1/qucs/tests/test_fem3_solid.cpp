@@ -336,7 +336,11 @@ private slots:
     void lameCylinder()
     {
         const double a = 1e-3, b = 2e-3, E = 100e9, nu = 0.3, p = 1e8;
-        Model m = model3d(slowBuild() ? 0.25 : 0.15);
+        // (0.15 mm in every build: at the 0.25 a sanitized build had, σr
+        // came out 2.5 % off on any platform - -2.53e7 Pa, CI's Linux job's
+        // failure since 48f60760, here too with QUCS_TEST_SLOW -, past its
+        // 1 %; 0.15 is 0.5 % off and some 2 s more in Release.)
+        Model m = model3d(0.15);
         addCylinder(m, QStringLiteral("shell"), 2, 0.3);
         addCylinder(m, QStringLiteral("hole"), 1, 0.3);
         Node d = m.make(QStringLiteral("difference"));
