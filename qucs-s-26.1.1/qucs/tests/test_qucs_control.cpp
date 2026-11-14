@@ -3673,6 +3673,14 @@ private slots:
         QVERIFY(QDir().mkpath(ws + "/rfd"));
         QFile::remove(ws + "/rfd/drawn.gds");
         qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        // (Its oxide left out: the substrate alone under the metal is one
+        // image of the stack, where with the oxide it was 407 - and the
+        // ended substrate's solve below 11 s in Release and past the tool's
+        // 300 s on CI's sanitized Linux job.)
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                   [](const qucs_s::rf25::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                    stack.end());
         QFile f(ws + "/rfd/drawn.qrf25");
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(m.toJson());
@@ -3723,14 +3731,37 @@ private slots:
         QVERIFY(failed(notRf));
         // Drawn on the substrate: where it is (F2 of the open items of 8
         // November) - a row of the map, no conductor, and the quasi-static
-        // solve saying the substrate ends there.
+        // solve saying the substrate ends there. (The path deleted first, and
+        // the substrate's box wide of the strip: the path's 10 µm made cells
+        // of 1 µm, and walls near the strip are panelled as finely - 1,548
+        // cells and 5,136 panels then, 624 and 2,164 now; without the
+        // oxide too, 1.3 s in Release where it was 11.)
+        QVERIFY(!failed(call("rf25_draw", {{"path", model}, {"shapes", QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{600, 401}}}}}}, 120000)));
         const QJsonObject extent = call("rf25_draw", {{"path", model}, {"shapes", QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"},
-                                                                                                        {"box", QJsonArray{-200, -200, 1200, 80}}}}}}, 120000);
+                                                                                                        {"box", QJsonArray{-500, -500, 1500, 100}}}}}}, 120000);
         QVERIFY2(!failed(extent), qPrintable(text(extent)));
         QVERIFY2(!json(extent).toObject().value("processed shapes by layer").toObject().contains("Substrate"), qPrintable(text(extent)));
-        const QJsonObject solved = call("rf25_solve", {{"path", model}, {"solver", "quasi_static"}}, 600000);
-        QVERIFY2(!failed(solved) && text(solved).contains(QStringLiteral("Substrate ends: eps_r")), qPrintable(text(solved)));
-        QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
+        // (Waited for 600 s under the sanitizers, not the tool's 300: the
+        // whole function 188 s sanitized here, CI's Linux runner two or
+        // three times as long.)
+        bool sanitized = qEnvironmentVariableIsSet("QUCS_TEST_SLOW");
+#if defined(__SANITIZE_ADDRESS__)
+        sanitized = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+        sanitized = true;
+#endif
+#endif
+        const QJsonObject solved = call("rf25_solve", {{"path", model}, {"solver", "quasi_static"}, {"timeout", sanitized ? 600 : 300}}, 700000);
+        const bool ends = !failed(solved) && text(solved).contains(QStringLiteral("Substrate ends: eps_r"));
+        // (Not solved in its time, it is stopped and closed before the check
+        // fails: left solving, the tests after it that touch no RF 2.5D model
+        // failed too - closeAllFiles() refused over a running job, and so did
+        // Switch Workspace -, on CI's sanitized Linux job.)
+        if (!ends) call("rf25_stop", {{"path", model}}, 120000);
+        const bool closed = !failed(call("close_document", {{"path", model}, {"unsaved", "discard"}}));
+        QVERIFY2(ends, qPrintable(text(solved)));
+        QVERIFY(closed);
     }
 
     void anRf25ModelIsSolvedFullWaveThroughItsTool()

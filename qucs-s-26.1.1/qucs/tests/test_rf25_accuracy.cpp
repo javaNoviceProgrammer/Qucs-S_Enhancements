@@ -339,7 +339,12 @@ private slots:
         const double length = 1000;
         const QList<rf::Conductor> gsg = {strip(0, -25, length, 50), strip(0, 45, length, 160), strip(0, -205, length, 160)};
         QList<double> z0;
-        for (const int across : {6, 12, 24}) {
+        // (Under the sanitizers 6 and 12 across alone: 24 is 18 of its 22 s
+        // in Release, and CI's sanitized Linux job cut the function at its
+        // 900 s; the first mesh's distance from Palace and the step's sign
+        // are still held there, the order of convergence in Release.)
+        const bool slow = slowBuild();
+        for (const int across : slow ? QList<int>{6, 12} : QList<int>{6, 12, 24}) {
             rf::MeshSettings how;
             how.cellsAcross = across;
             how.maximum = 100e-6;
@@ -351,6 +356,12 @@ private slots:
             z0 << lp.z0;
             qInfo("thin coplanar line, %d across: Z0 %.3f Ohm (%+.2f %% of Palace's 73.72), eps_eff %.4f (%+.2f %% of 2.4005)", across,
                   lp.z0, 100 * (lp.z0 / 73.72 - 1), lp.epsilonEff, 100 * (lp.epsilonEff / 2.4005 - 1));
+        }
+        if (slow) {
+            QVERIFY2(z0.at(0) > z0.at(1), "not converging");
+            QVERIFY2(std::abs(z0.at(0) / 73.72 - 1) < 0.007, qPrintable(QString::number(z0.at(0))));
+            qInfo("a sanitized build: 24 across, the order of convergence and its limit are a Release build's");
+            return;
         }
         const double ratio = (z0.at(1) - z0.at(2)) / (z0.at(0) - z0.at(1));
         qInfo("its steps: %.3f then %.3f Ohm, the second %.3f of the first", z0.at(0) - z0.at(1), z0.at(1) - z0.at(2), ratio);

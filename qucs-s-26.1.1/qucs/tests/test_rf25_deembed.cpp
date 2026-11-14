@@ -663,7 +663,11 @@ private slots:
         open.layers[0].variant = QStringLiteral("open");
         const double length = 1000;
         const QList<rf::Conductor> line = {strip(0, 0, length, 50), strip(0, 56, length, 200), strip(0, -206, length, 200)};
-        const rf::MeshSettings how = meshing(2, 25);
+        // (Cells of 50 µm along the strips under the sanitizers: 0.9 s in
+        // Release where 25 took 6.6, and 600 s sanitized here - CI's Linux
+        // job cut it at 900. The strips' lengths are the gaps', not the
+        // mesh's, and the longer strips are compared on the same mesh.)
+        const rf::MeshSettings how = meshing(2, slowBuild() ? 50 : 25);
         rf::FullWavePort near = edgePort(QPointF(0, 25), QPointF(-1, 0)), far = edgePort(QPointF(length, 25), QPointF(1, 0));
         near.coplanar = far.coplanar = true;
         const QList<double> fs = {20e9, 60e9};

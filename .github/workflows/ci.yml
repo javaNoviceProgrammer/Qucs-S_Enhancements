@@ -284,7 +284,12 @@ jobs:
     # a time as the runner has processors (three). At eb1cece9 the build 33
     # minutes and the tests 53, at 81e8e078 35 and 47 with four tests ended
     # early by QtTest's limit: 120 now, room for those four run through.
-    timeout-minutes: 120
+    # At 48fe4625 (14 November) the build 40 minutes and the tests cut at
+    # 80, test 198 of 199 still running: test_rf25_accuracy, new on 12
+    # November, 344 s alone on an M2 Ultra, where the runner takes some six
+    # times as long - half an hour there, the job some 135 minutes. 180 now;
+    # GitHub's hosted runners allow 360.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 

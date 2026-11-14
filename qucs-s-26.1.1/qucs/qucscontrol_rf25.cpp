@@ -1985,7 +1985,11 @@ QJsonObject QucsControl::rf25Optimize(const QJsonObject& args)
         return errorResult(tr("'action' is run, result or apply."));
     }
     const qucs_s::fem::OptimizationResult r = doc->optimizationResult(tag);
-    if (r.evaluations == 0 && r.error.isEmpty() && !r.hasBest()) return errorResult(tr("%1 has not been run: rf25_optimize runs it.").arg(tag));
+    // (A run stopped before its first point ended has a status, interrupted,
+    // and no point: said as it is - it read as never run, on CI's sanitized
+    // Linux job, where a point takes longer than the test waited.)
+    if (r.evaluations == 0 && r.error.isEmpty() && !r.hasBest() && r.status.isEmpty())
+        return errorResult(tr("%1 has not been run: rf25_optimize runs it.").arg(tag));
     if (!r.error.isEmpty()) return errorResult(r.error);
     QJsonObject out = r.toJson(std::clamp(args.value(QLatin1String("rows")).toInt(20), 0, 20000));
     out.insert(QStringLiteral("node"), tag);

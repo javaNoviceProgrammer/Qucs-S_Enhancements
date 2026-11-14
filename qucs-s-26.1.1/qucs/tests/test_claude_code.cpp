@@ -7324,7 +7324,9 @@ private slots:
         QCOMPARE(lines.size(), 2);
         QVERIFY(lines.at(0).contains(QStringLiteral("/compact\"")));
         QVERIFY(lines.at(1).contains(QStringLiteral("After compacting")));
-        QVERIFY(panel.transcriptText().contains(QStringLiteral("/compact")));
+        // (Waited for: the transcript is drawn on a 40 ms timer, and on CI's
+        // loaded macOS runner it was read before that timer had fired.)
+        QTRY_VERIFY2(panel.transcriptText().contains(QStringLiteral("/compact")), qPrintable(panel.transcriptText().right(400)));
         QTRY_VERIFY(!panel.session()->isBusy());
 
         // Not held: short, or warm, or another choice.
