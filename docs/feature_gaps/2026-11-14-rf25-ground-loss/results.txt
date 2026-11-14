@@ -1,0 +1,14 @@
+breaks.py, 14 November 2026, on the checkout's build-rel (macOS, arm64, release).
+A first run left 'runs side by side not measured' uncaught: on an evenly meshed line, runs that overlap overlap
+wholly, so the break changed nothing. Made the real risk - runs that do not overlap sharing too -, it is caught
+(the ground's loss 118.7 dB/m against 3.34).
+
+===== what each break did =====
+the ground's loss not added in the dense solve                 aMetalGroundsLossIsCountedWhereAsk failed (caught)
+the ground's loss not in the compressed solve's operator       aMetalGroundsLossIsCountedWhereAsk failed (caught)
+the kernel's H one run's height, not the two's                 aMetalGroundsLossIsCountedWhereAsk failed (caught)
+runs that do not run side by side sharing too, each its whole  aMetalGroundsLossIsCountedWhereAsk failed (caught)
+a lossy ground not counted said nowhere                        aMetalGroundsLossIsCountedWhereAsk failed (caught)
+an impedance ground's option not read                          aGroundsLossInTheFullWaveIsReadWhe failed (caught)
+
+0 of 6 uncaught

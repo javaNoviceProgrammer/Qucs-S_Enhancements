@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -933,6 +934,18 @@ struct Context {
     /// Each run in the plane's own on its metal's other face, where the
     /// metal is solved as its two (thickened()); -1 on a sheet.
     QList<int> twin;
+    /// A metal or impedance ground's loss, where it is asked for in the full
+    /// wave too (Layer::lossInFullWave): each pair of planar runs near enough
+    /// to share the ground current their mirror images carry, and what they
+    /// share of it for a unit current in each, K - Ohm per Ohm of the plane's
+    /// surface impedance (groundPairsOf()).
+    struct GroundPair {
+        int a = 0, b = 0;
+        double k = 0;
+    };
+    QList<GroundPair> groundPairs;
+    double groundSigma = 0;          ///< S/m: a metal ground's
+    double groundImpedance = -1;     ///< Ohm per square: an impedance ground's; below nought, a metal's
     double rhoMax = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
@@ -1351,6 +1364,107 @@ Complex Kernels::couplingOf(const Via& a, const Via& b) const
  * more along its edges; a face of a metal solved as its two, its own
  * slab's and its twin's through the metal; a via's, round its four faces.
  */
+/*!
+ * A metal or impedance ground's loss, in the full wave as the quasi-static
+ * extraction counts it: the plane is a perfect one to the fields, and loses
+ * on the current it carries - the runs' mirror images'. A line's wave is
+ * quasi-TEM: at each cross-section the plane carries what the strip's own
+ * current there has it carry, spread across as a 2D solve spreads it - the
+ * Poisson kernel (H / pi) / (H^2 + s^2), H = h_a + h_b, s apart across the
+ * line -, and nothing along it. So two runs share Rs d_a.d_b / (w_a w_b)
+ * times how far they run side by side times that kernel over their two
+ * widths, in closed form: Phi(s) = (s atan(s / H) - H/2 ln(s^2 + H^2)) / pi
+ * at the four corners. (The 3D static kernel, taken along the line too,
+ * lost what a wave's phase along it makes cancel, e^(-k h) at k = beta: on
+ * 100 um of alumina it kept 78 % of the ground's loss at 50 GHz, on 203 um
+ * of laminate 65 %.)
+ * Pairs within ten H across: beyond, the kernel holds 6 % of the current
+ * but 0.04 % of its loss, which goes as its square.
+ */
+void groundPairsOf(Context& c)
+{
+    struct Rect {
+        QPointF o, u, v;   // m: its start, along it, across it
+        double l = 0, w = 0, z = 0;
+    };
+    QList<Rect> rects;
+    QList<int> which;
+    double zMost = 0;
+    for (int a = 0; a < c.planar; ++a) {
+        const Filament& run = c.runs.at(a);
+        const double l = run.length();
+        if (!(run.width > 0) || run.rise > 0 || !(l > 0) || !(run.z0 > 0)) continue;
+        Rect r;
+        r.o = run.from;
+        r.u = (run.to - run.from) / l;
+        r.v = QPointF(-r.u.y(), r.u.x());
+        r.l = l;
+        r.w = run.width;
+        r.z = run.z0;
+        rects << r;
+        which << a;
+        zMost = std::max(zMost, run.z0);
+    }
+    if (rects.isEmpty()) return;
+    const double reach = 20 * zMost;   // (ten of the largest H)
+    // (Binned by the reach, so that each run meets only the bins beside its own.)
+    QHash<qint64, QList<int>> bins;
+    const auto key = [](qint64 x, qint64 y) { return (x << 32) ^ qint64(std::uint32_t(qint32(y))); };
+    QList<QPointF> mids;
+    double longest = 0;
+    for (int i = 0; i < rects.size(); ++i) {
+        const Rect& r = rects.at(i);
+        mids << r.o + r.u * (0.5 * r.l);
+        bins[key(qint64(std::floor(mids.last().x() / reach)), qint64(std::floor(mids.last().y() / reach)))] << i;
+        longest = std::max(longest, r.l);
+    }
+    const int around = 1 + int(std::ceil(longest / reach));
+    const auto phi = [](double s, double h) { return (s * std::atan(s / h) - 0.5 * h * std::log(s * s + h * h)) / M_PI; };
+    for (int i = 0; i < rects.size(); ++i) {
+        const Rect& ri = rects.at(i);
+        const qint64 bx = qint64(std::floor(mids.at(i).x() / reach)), by = qint64(std::floor(mids.at(i).y() / reach));
+        for (qint64 x = bx - around; x <= bx + around; ++x)
+            for (qint64 y = by - around; y <= by + around; ++y) {
+                const auto it = bins.constFind(key(x, y));
+                if (it == bins.constEnd()) continue;
+                for (const int j : it.value()) {
+                    if (j < i) continue;
+                    const Rect& rj = rects.at(j);
+                    const double along = ri.u.x() * rj.u.x() + ri.u.y() * rj.u.y();
+                    if (std::abs(along) < 1e-6) continue;   // (runs across one another share nothing)
+                    // How far they run side by side, along i, and how far
+                    // apart across it.
+                    const QPointF a0 = rj.o - ri.o, a1 = rj.o + rj.u * rj.l - ri.o;
+                    const double s0 = a0.x() * ri.u.x() + a0.y() * ri.u.y(), s1 = a1.x() * ri.u.x() + a1.y() * ri.u.y();
+                    const double side = std::min(ri.l, std::max(s0, s1)) - std::max(0.0, std::min(s0, s1));
+                    if (!(side > 0)) continue;
+                    const QPointF m = mids.at(j) - ri.o;
+                    const double across = m.x() * ri.v.x() + m.y() * ri.v.y(), h = ri.z + rj.z;
+                    if (std::abs(across) > 10 * h + 0.5 * (ri.w + rj.w)) continue;
+                    const double i1 = -0.5 * ri.w, i2 = 0.5 * ri.w, j1 = across - 0.5 * rj.w, j2 = across + 0.5 * rj.w;
+                    const double over = phi(i2 - j1, h) - phi(i1 - j1, h) - phi(i2 - j2, h) + phi(i1 - j2, h);
+                    const double k = along * side * over / (ri.w * rj.w);
+                    if (k == 0) continue;
+                    c.groundPairs << Context::GroundPair{which.at(i), which.at(j), k};
+                    if (j != i) c.groundPairs << Context::GroundPair{which.at(j), which.at(i), k};
+                }
+            }
+    }
+}
+
+/// The ground's own share of the run pairs' impedance (groundPairsOf()), at
+/// \a f: its surface impedance times what each pair shares.
+template <typename Add> void groundImpedances(const Context& c, double f, Add add)
+{
+    if (c.groundPairs.isEmpty() || !(f > 0)) return;
+    Complex zs(c.groundImpedance, 0);
+    if (c.groundImpedance < 0) {
+        const double rs = std::sqrt(M_PI * f * kMu0 / c.groundSigma);
+        zs = Complex(rs, rs);   // (a half space of the metal: its internal inductance too)
+    }
+    for (const Context::GroundPair& g : c.groundPairs) add(g.a, g.b, zs * g.k);
+}
+
 template <typename Add> void ownImpedances(const Context& c, double f, Add add)
 {
     for (int a = 0; a < c.planar; ++a) {
@@ -1767,6 +1881,7 @@ AtFrequency solveAt(const Context& c, double f, int threads)
     });
     sharedOut(nr, threads, [&c, &p, &m, jw](int b) { chargeColumn(c, p, jw, m, b); });
     ownImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
+    groundImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
 
     // A port and a via: the via's potential at the port's cells, by their
     // shares. Along the runs a via's potential telescopes from the via to
@@ -2082,8 +2197,23 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
 
     std::vector<Eigen::Triplet<Complex>> own;
     ownImpedances(c, f, [&own](int a, int b, Complex v) { own.emplace_back(a, b, v); });
+    // (The ground's share in the operator whole, and in the near field's
+    //  LU only among the runs it holds near: its pairs reach ten heights,
+    //  and the LU would fill with them.)
+    std::vector<Eigen::Triplet<Complex>> withGround = own;
+    if (!c.groundPairs.isEmpty()) {
+        QSet<qint64> near;
+        for (const QPair<int, int>& r : z.nearRuns) {
+            near.insert((qint64(r.first) << 32) | qint64(r.second));
+            near.insert((qint64(r.second) << 32) | qint64(r.first));
+        }
+        groundImpedances(c, f, [&](int a, int b, Complex v) {
+            withGround.emplace_back(a, b, v);
+            if (a == b || near.contains((qint64(a) << 32) | qint64(b))) own.emplace_back(a, b, v);
+        });
+    }
     Eigen::SparseMatrix<Complex> d(nr, nr);
-    d.setFromTriplets(own.begin(), own.end());
+    d.setFromTriplets(withGround.begin(), withGround.end());
     const System system{c, z, kx, ky, p, phi, g, d, jw};
     fem::SparseLu<Complex> lu;
     lu.compute(nearField(c, z, k, own));
@@ -2580,6 +2710,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         }
     }
     c.planar = int(c.runs.size());
+    // A metal or impedance ground's loss, where asked for: on the current the
+    // runs' mirror images carry (groundPairsOf()).
+    if (c.layers.groundBelow)
+        for (const Layer& l : stack.layers)
+            if (l.kind == Layer::Ground && l.lossInFullWave && l.sigma > 0) {
+                if (l.variant == QLatin1String("impedance")) c.groundImpedance = l.sigma;
+                else c.groundSigma = l.sigma;
+                groundPairsOf(c);
+            }
     // Which of each run's two sides are its conductor's edge: a point just
     // beyond the side, at the run's middle, on no shape of its layer
     // (shapes that touch are one conductor there).
@@ -3671,13 +3810,34 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "current as coming back through the conductors beside it, and an internal port's through the "
                         "metal it is driven from.")
                          .arg(sheet.left(1).toUpper() + sheet.mid(1));
-    else
+    else {
         out.lines << (coplanar ? tr("The ground plane is taken as perfect, %1; an edge port's current as coming back "
                                     "through the ground, and a coplanar port's through the conductors beside it.")
                                      .arg(sheet)
                                : tr("The ground plane is taken as perfect, %1; an edge port's current as coming back "
                                     "through the ground.")
                                      .arg(sheet));
+        // (Its loss: counted where asked for; where it has one and is not
+        //  asked, said - the quasi-static extraction counts it always.)
+        const Layer* ground = nullptr;
+        for (const Layer& l : stack.layers)
+            if (l.kind == Layer::Ground) ground = &l;
+        const bool lossy = ground != nullptr && ground->sigma > 0
+                           && (ground->variant == QLatin1String("metal") || ground->variant == QLatin1String("impedance"));
+        const QString what = ground == nullptr ? QString()
+                             : ground->variant == QLatin1String("impedance")
+                                 ? tr("a surface impedance of %1 Ohm per square").arg(ground->sigma, 0, 'g', 4)
+                                 : tr("a metal of %1 S/m").arg(ground->sigma, 0, 'g', 4);
+        if (!c.groundPairs.isEmpty())
+            out.lines << tr("The ground plane's own loss, %1, counted on the current each run's mirror image carries - the "
+                            "fields still a perfect plane's -: %2 pair(s) of runs within ten heights of one another.")
+                             .arg(what)
+                             .arg(c.groundPairs.size());
+        else if (lossy)
+            out.lines << tr("The ground plane is %1, and its loss is not counted here - its \"Its loss in the full-wave "
+                            "solve\" counts it; the quasi-static extraction always does.")
+                             .arg(what);
+    }
     if (coplanar && isReturn.contains(true)) out.lines << returnsSaid;
     if (!out.pairs.isEmpty()) {
         QStringList pairs;

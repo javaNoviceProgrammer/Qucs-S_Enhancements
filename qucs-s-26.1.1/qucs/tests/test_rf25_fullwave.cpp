@@ -744,6 +744,72 @@ private slots:
     // face with its slab's surface impedance and the two coupled through
     // the metal. Its walls hold field in the air beside them, and its
     // current shares its faces as the field has it.
+    // A metal ground's loss, where it is asked for in the full wave too
+    // (the ground's "Its loss in the full-wave solve"): the plane is still a
+    // perfect one to the fields, and loses on the current the runs' mirror
+    // images carry, spread across each cross-section as a 2D solve spreads
+    // it. A copper microstrip on 100 µm of alumina over a copper plane: its
+    // ground's loss per metre the quasi-static extraction's share of it
+    // within 3 % at 10 and 30 GHz (3.31 against 3.34 dB/m, 5.81 against
+    // 5.79). Not asked for, the answer is the perfect plane's exactly, and
+    // said; the compressed solve's the dense one's.
+    void aMetalGroundsLossIsCountedWhereAsked()
+    {
+        const rf::Stack perfect = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        rf::Stack metal = perfect;
+        metal.layers[0].variant = QStringLiteral("metal");
+        metal.layers[0].sigma = 5.8e7;
+        rf::Stack counted = metal;
+        counted.layers[0].lossInFullWave = true;
+        const QList<double> fs = {10e9, 30e9};
+        const auto lineOf = [](double l) { return QList<rf::Conductor>{strip(0, -47.5, l, 95)}; };
+        const auto solve = [&](const rf::Stack& st, double l, rf::FullWaveControl::Matrix matrix = rf::FullWaveControl::Matrix::Dense) {
+            const QList<rf::Conductor> line = lineOf(l);
+            rf::FullWaveControl control;
+            control.matrix = matrix;
+            return rf::fullWaveOf(meshed(line, 6, 100e-6), line, st,
+                                  {edgePort(QPointF(0, 0), QStringLiteral("M1"), QPointF(-1, 0)), edgePort(QPointF(l, 0), QStringLiteral("M1"), QPointF(1, 0))},
+                                  fs, 1e-6, &control);
+        };
+        const auto kept = [](const rf::FullWave& w, int k) { return std::norm(w.s.at(k).at(0).at(0)) + std::norm(w.s.at(k).at(1).at(0)); };
+
+        // Not asked for: the perfect plane's answer, and said.
+        const rf::FullWave asPerfect = solve(perfect, 4000), off = solve(metal, 4000);
+        QVERIFY2(asPerfect.ok() && off.ok(), qPrintable(off.problems.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k) QVERIFY(std::abs(off.s.at(k).at(1).at(0) - asPerfect.s.at(k).at(1).at(0)) < 1e-12);
+        QVERIFY2(says(off.lines, "its loss is not counted here"), qPrintable(off.lines.join(" | ")));
+        QVERIFY2(!says(asPerfect.lines, "its loss is not counted here"), qPrintable(asPerfect.lines.join(" | ")));
+
+        // Asked for: said, passive and reciprocal, and its loss per metre
+        // the quasi-static extraction's share of the ground.
+        const rf::FullWave on = solve(counted, 4000);
+        QVERIFY2(on.ok(), qPrintable(on.problems.join(" | ")));
+        QVERIFY2(says(on.lines, "The ground plane's own loss"), qPrintable(on.lines.join(" | ")));
+        QVERIFY2(on.gain <= 1e-9 && on.asymmetry < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(on.gain).arg(on.asymmetry)));
+        const QList<rf::Conductor> piece = lineOf(4000);
+        const rf::Extraction e = rf::extract(meshed(piece, 6, 100e-6), piece, metal);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k) {
+            QList<QList<double>> ground;
+            rf::resistancePerMetre(e, fs.at(k), &ground);
+            const rf::LineParameters lp = rf::lineParameters(e, 0, 4000e-6, fs.at(k));
+            QVERIFY(!ground.isEmpty() && lp.ok());
+            const double want = 20 / std::log(10.0) * ground.at(0).at(0) / (2 * lp.z0);   // dB/m
+            const double got = -10 * std::log10(kept(on, k) / kept(off, k)) / 4000e-6;
+            qWarning().noquote() << QStringLiteral("%1 GHz: the ground's loss %2 dB/m, the quasi-static extraction's %3")
+                                        .arg(fs.at(k) / 1e9).arg(got, 0, 'f', 3).arg(want, 0, 'f', 3);
+            QVERIFY2(std::abs(got / want - 1) < 0.03, qPrintable(QStringLiteral("%1 against %2 dB/m").arg(got).arg(want)));
+        }
+
+        // The compressed solve: its operator the ground's whole, its near
+        // field's LU the near runs' - the same answer.
+        const rf::FullWave held = solve(counted, 4000, rf::FullWaveControl::Matrix::Compressed);
+        QVERIFY2(held.ok(), qPrintable(held.problems.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k)
+            QVERIFY2(std::abs(held.s.at(k).at(1).at(0) - on.s.at(k).at(1).at(0)) < 1e-5,
+                     qPrintable(QString::number(std::abs(held.s.at(k).at(1).at(0) - on.s.at(k).at(1).at(0)))));
+    }
+
     void aMetalSolvedAsItsTwoFacesHoldsItsWallsFieldAndSharesItsCurrent()
     {
         const double h = 100e-6, w = 100, sigma = 5.8e7, t = 3e-6;

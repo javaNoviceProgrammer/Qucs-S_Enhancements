@@ -78,9 +78,13 @@ struct Layer {
     double beyond = 1;
     double roughness = 0;  ///< m, rms
     QString from, to;      ///< a via's metals, by name
-    /// A ground's or a cover's own kind: "perfect", "impedance" or "open"
-    /// for a ground, "open" or "perfect" (a metal lid) for a cover.
+    /// A ground's or a cover's own kind: "perfect", "metal", "impedance" or
+    /// "open" for a ground, "open" or "perfect" (a metal lid) for a cover.
     QString variant;
+    /// A metal or impedance ground's loss counted in the full-wave solve
+    /// too (its "Its loss in the full-wave solve"), on the ground current
+    /// the runs' mirror images carry; the quasi-static counts it always.
+    bool lossInFullWave = false;
     double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom; a ground's is 0)
     /// A metal solved as its two faces - a sheet at its bottom and one at
     /// its top, joined along its edges by its walls - rather than as one
