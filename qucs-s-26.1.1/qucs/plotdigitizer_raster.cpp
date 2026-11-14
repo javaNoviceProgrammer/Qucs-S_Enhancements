@@ -709,7 +709,11 @@ public:
         constexpr double d = 0.5;
         const int count = int(reach / d);
         double values[512];
-        const int size = std::min(2 * count + 1, 512);
+        // (Odd, the middle with as many each side: an even 512 had the
+        // search's last step from the middle read values[512] - a band of
+        // dark fill followed as a line 100 pixels thick; the robustness
+        // hunt's fuzzer, seed 21, round 35.)
+        const int size = std::min(2 * count + 1, 511);
         const int mid = size / 2;
         double peak = 0;
         for (int k = 0; k < size; ++k) {

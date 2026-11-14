@@ -871,6 +871,20 @@ point.
   on their own. ASan/UBSan (Debug): `test_plot_digitizer`, `test_plot_digitizer_app`, `test_pdf_viewer` and
   `test_graph_style` pass. The four lints are clean.
 
+## The release's recheck, and what came of it (12-13 November)
+
+The recheck of 27.1.3 (with the open items above and the robustness hunt's R1 and R2) confirmed every item,
+the Chen plots and the Bahadori datasets alike, and found one regression: R1's text budget left Xu et al.'s
+page 5, plot 2 uncalibrated, and which plot of the page was left depended on the order they were asked in.
+Fixed as R3 of the robustness hunt, with R4 found by the fuzzer after it
+([2026-11-12-digitizer-robustness.md](../bug_hunts/2026-11-12-digitizer-robustness.md)). The SOI MMI
+benchmark's 60 calls, replayed: 59 as on the release, Xu p5/2 calibrated again with 13 references.
+
+Still open from it:
+- **A raised power read flat** on Chen et al.'s p19/2 and p20: "dose=2x1012cm-2", and p20 mixes the two forms,
+  "dose=1x1013cm-2" beside "dose=1x10^12". The curves are named; the names' powers are not all marked.
+- E1-E4 stay with the SOI MMI benchmark's note.
+
 ## What could not be verified
 
 - **Qt 6.10.3.** Built and run against Homebrew's Qt 6.12.0 only. The code uses `QPdfDocument`, `QPdfSelection` and

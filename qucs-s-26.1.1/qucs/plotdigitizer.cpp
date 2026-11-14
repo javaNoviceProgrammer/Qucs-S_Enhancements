@@ -32,6 +32,7 @@
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <limits>
 #include <string_view>
@@ -566,14 +567,20 @@ struct Source::Text {
     QHash<int, QRectF> boxes;
     QHash<qint64, QRectF> words;   // by start << 20 | length
     int calls = 0;
-    // What is left of the page's calls to pdfium (-1: no end). QtPdf loads
-    // the page again at each: a page of a million and a half points of paths
-    // - a scatter of 60,000 markers - took 0.23 s a call, 42 s for one
-    // plot's labels. So a heavy page has calls in inverse proportion to its
-    // weight, some 15 s of them at most (the robustness hunt's R1).
-    int budget = -1;
+    // The calls to pdfium a read of the page's text may make (-1: no end).
+    // QtPdf loads the page again at each: a page of a million and a half
+    // points of paths - a scatter of 60,000 markers - took 0.23 s a call,
+    // 42 s for one plot's labels. So a heavy page has calls in inverse
+    // proportion to its weight, some 15 s of them at most (the robustness
+    // hunt's R1) - each read its own, not the page's between them: one
+    // plot's read took them all and left the next plot of the page unread
+    // (the recheck of 12 November's N1).
+    int allowance = -1;
     bool frugal = false;   // a heavy page: every word by its box, one call each
-    bool cut = false;      // some went unasked
+    bool cut = false;      // the last read left some unasked
+    double cutWidth = 0;   // the narrowest line it left (0: not known, any)
+    QList<QRectF> lines;   // the runs touching along a baseline, together
+    QHash<int, std::pair<int, int>> lineRanges;   // a line's characters, two more each side; -1 none
 };
 
 Source::Source(QPdfDocument* pdf, const QString& file) : a_pdf(pdf)
@@ -591,10 +598,12 @@ Source::~Source() = default;
 
 bool Source::hasVectors() const { return a_reader != nullptr; }
 
-bool Source::textCut(int page) const
+bool Source::textCut(int page, double* narrowest) const
 {
     const auto t = a_text.constFind(page);
-    return t != a_text.cend() && (*t)->cut;
+    const bool cut = t != a_text.cend() && (*t)->cut;
+    if (narrowest != nullptr) *narrowest = cut ? (*t)->cutWidth : 0;
+    return cut;
 }
 
 const pdf::vec::Graphics& Source::graphics(int page)
@@ -667,19 +676,60 @@ QList<Token> Source::tokens(int page, const QRectF& within)
             // (About 150 ns a point a call: 1e8 is 15 s. A paper's page of
             // plots weighs 5,000 to 70,000: 1,400 calls and more, two
             // plots of Chen et al.'s page 14 (60,000) asking 585.)
-            if (weight > 0) t->budget = int(std::clamp<qint64>(qint64(1e8) / weight, 32, 1000000));
+            if (weight > 0) t->allowance = int(std::clamp<qint64>(qint64(1e8) / weight, 32, 1000000));
             // (Past a million points, a short label read as a word: its
             // characters a call each would take the calls of all the rest.
             // A power of ten raised in one is lost: "5x1014".)
-            t->frugal = t->budget >= 0 && t->budget < 100;
+            t->frugal = t->allowance >= 0 && t->allowance < 100;
         }
         const QPdfSelection all = a_pdf->getAllText(page);
         t->all = all.text();
         for (const QPolygonF& run : all.bounds()) t->runs << run.boundingRect();
+        // Runs into lines: a tick label stands alone, a line of a column's
+        // text runs across it in runs that touch - pdfium's runs are a word,
+        // or a few letters of one, as the writer placed its glyphs.
+        {
+            // Two runs are of one line when they overlap in height by half
+            // the lower's, the one no more than twice the other's height (a
+            // turned title beside its axis's labels is not their line), and
+            // stand nearer than a letter's height apart.
+            const int count = int(t->runs.size());
+            QList<int> parent(count);
+            std::iota(parent.begin(), parent.end(), 0);
+            const auto root = [&](int a) {
+                while (parent[a] != a) a = parent[a] = parent[parent[a]];
+                return a;
+            };
+            QList<int> byHeight(count);
+            std::iota(byHeight.begin(), byHeight.end(), 0);
+            std::sort(byHeight.begin(), byHeight.end(), [&](int a, int b) { return t->runs.at(a).top() < t->runs.at(b).top(); });
+            for (int k = 0; k < count; ++k) {
+                const QRectF a = t->runs.at(byHeight.at(k));
+                for (int m = k + 1; m < count; ++m) {
+                    const QRectF b = t->runs.at(byHeight.at(m));
+                    if (b.top() > a.bottom()) break;   // (sorted by top: none after overlaps a)
+                    const double overlap = std::min(a.bottom(), b.bottom()) - std::max(a.top(), b.top());
+                    const double lower = std::max(1.0, std::min(a.height(), b.height()));
+                    const double gap = std::max(a.left(), b.left()) - std::min(a.right(), b.right());
+                    const double higher = std::max(a.height(), b.height());
+                    if (overlap >= 0.5 * lower && higher <= 2 * lower && gap <= std::max(3.0, lower)) parent[root(byHeight.at(k))] = root(byHeight.at(m));
+                }
+            }
+            QHash<int, int> lineOf;
+            for (int r = 0; r < count; ++r) {
+                const int top = root(r);
+                const auto at = lineOf.constFind(top);
+                if (at == lineOf.cend()) {
+                    lineOf.insert(top, int(t->lines.size()));
+                    t->lines << t->runs.at(r);
+                } else t->lines[*at] = t->lines.at(*at).united(t->runs.at(r));
+            }
+        }
         const int n = int(t->all.size());
+        int firstLeft = t->allowance;
         const auto spendFirst = [&] {
-            if (t->budget == 0) return t->cut = true, false;
-            if (t->budget > 0) --t->budget;
+            if (firstLeft == 0) return false;
+            if (firstLeft > 0) --firstLeft;
             return true;
         };
         for (int i = 0; i < std::min(n, 64) && t->first < 0 && spendFirst(); ++i)
@@ -698,6 +748,8 @@ QList<Token> Source::tokens(int page, const QRectF& within)
         have = a_text.insert(page, t);
     }
     Text& t = **have;
+    t.cut = false;
+    t.cutWidth = 0;
     if (t.all.isEmpty()) return out;
     // Which characters to ask about: a box a character costs a call, and the
     // runs meeting the place are few and together in the text.
@@ -708,9 +760,22 @@ QList<Token> Source::tokens(int page, const QRectF& within)
             lastRun = i;
         }
     if (firstRun < 0) return out;
+    int left = t.allowance;
+    double reading = 0;   // the width of the line being read (0: not known)
+    QPointF lastRead;     // the last box read's centre (its line, when the line is not known)
+    bool anyRead = false;
     const auto spend = [&] {
-        if (t.budget == 0) return t.cut = true, false;
-        if (t.budget > 0) --t.budget;
+        if (left == 0) {
+            if (!t.cut) {
+                t.cutWidth = reading;
+                if (reading <= 0 && anyRead)
+                    for (const QRectF& line : std::as_const(t.lines))
+                        if (line.adjusted(-0.5, -0.5, 0.5, 0.5).contains(lastRead)) t.cutWidth = std::max(t.cutWidth, line.width());
+            }
+            t.cut = true;
+            return false;
+        }
+        if (left > 0) --left;
         return true;
     };
     const auto hit = [&](QPointF point) -> int {
@@ -737,11 +802,130 @@ QList<Token> Source::tokens(int page, const QRectF& within)
         to = std::min<int>(int(t.all.size()) - 1, to + 24);
         if (to - from > kMostCharacters) to = from + kMostCharacters;
     }
+    QList<std::pair<int, int>> spans{{from, to}};
+    QList<double> spanWidths{0};   // each span's line's width; read the narrowest first
+    QList<QRectF> spanLines{QRectF()};   // its line: only the letters on it taken (null: any)
+    // (A page past a million points has fewer calls than finding each
+    // line's letters would take: read in the text's order, as before.)
+    if (left >= 0 && !t.frugal && qint64(to - from + 1) * 5 / 4 + 4 > left) {
+        // More than this read may ask (on a page of two columns the text
+        // between the place's first run and its last is the column's
+        // beside it): the lines meeting the place alone, their characters
+        // found by a call each, short lines first - tick labels, a legend's
+        // words - and a column's lines of text, long, last. Each line
+        // counted as if not yet known, so that the same are chosen whatever
+        // was read before.
+        const auto rangeOf = [&](int l) -> std::pair<int, int> {
+            const QRectF line = t.lines.at(l);
+            const bool upright = line.height() > line.width();   // (an axis's title turned)
+            const double inset = std::min(0.6, (upright ? line.height() : line.width()) / 4);
+            const QPointF a = upright ? QPointF(line.center().x(), line.bottom() - inset) : QPointF(line.left() + inset, line.center().y());
+            const QPointF b = upright ? QPointF(line.center().x(), line.top() + inset) : QPointF(line.right() - inset, line.center().y());
+            if (!spend()) return {-1, -1};
+            const QPdfSelection sel = a_pdf->getSelection(page, a, b);
+            const double margin = std::max(3.0, 1.5 * std::min(line.width(), line.height()));
+            const int last = int(t.all.size()) - 1;
+            // (QtPdf's selection ends one past its last letter, and pdfium's
+            // letter under a point near a run's end may be its neighbour:
+            // two letters more each side, and the letters kept by their
+            // boxes, below.)
+            if (sel.isValid() && sel.startIndex() >= 0 && sel.endIndex() > sel.startIndex() && sel.endIndex() <= last + 1)
+                return line.adjusted(-margin, -margin, margin, margin).contains(sel.boundingRectangle())
+                           ? std::pair<int, int>{std::max(0, sel.startIndex() - 2), std::min(last, sel.endIndex() + 1)}
+                           : std::pair<int, int>{-1, -1};
+            const int at = hit(line.center());   // (one character: no selection between two points)
+            return at >= 0 && at <= last ? std::pair<int, int>{std::max(0, at - 2), std::min(last, at + 2)} : std::pair<int, int>{-1, -1};
+        };
+        QList<int> meeting;
+        for (int l = 0; l < t.lines.size(); ++l)
+            if (t.lines.at(l).intersects(within)) meeting << l;
+        std::stable_sort(meeting.begin(), meeting.end(), [&](int a, int b) { return t.lines.at(a).width() < t.lines.at(b).width(); });
+        QList<std::pair<std::pair<int, int>, int>> chosen;   // (range, line)
+        qint64 cost = 0, characters = 0;
+        bool mapped = true;
+        // What reading a range costs, as the loop below reads: a word whole
+        // in two calls (its box, its first letter's), a short one - or one
+        // that may hold a raised power - letter by letter. Letters counted
+        // once, however many lines' ranges hold them.
+        std::vector<bool> counted(size_t(t.all.size()), false);
+        const auto isSpace = [](QChar c) { return c.isSpace() || c == QChar(0xFFFE) || c == QChar(0xFFFF) || c.isNull(); };
+        const auto costOf = [&](std::pair<int, int> range, qint64* fresh) {
+            qint64 calls = 0;
+            *fresh = 0;
+            for (int i = range.first; i <= range.second;) {
+                if (isSpace(t.all.at(i))) {
+                    ++i;
+                    continue;
+                }
+                int e = i;
+                while (e + 1 <= range.second && !isSpace(t.all.at(e + 1))) ++e;
+                int unread = 0;
+                for (int k = i; k <= e; ++k) unread += !counted[size_t(k)];
+                if (unread > 0) calls += (t.frugal || e - i + 1 > 3) ? std::min(2, unread) : unread;
+                *fresh += unread;
+                i = e + 1;
+            }
+            return calls;
+        };
+        for (const int l : std::as_const(meeting)) {
+            // (A line across half the place is a column's text, not the
+            // plot's: it and the rest, wider, left - at some 40 ms a call on
+            // such a page, its calls would be seconds for nothing.)
+            if (t.lines.at(l).width() > std::max(120.0, 0.5 * within.width())) {
+                if (!t.cut) t.cutWidth = t.lines.at(l).width();
+                t.cut = true;
+                break;
+            }
+            std::pair<int, int> range;
+            if (const auto known = t.lineRanges.constFind(l); known != t.lineRanges.cend()) range = *known;
+            else {
+                range = rangeOf(l);
+                if (range.first < 0 && left == 0) {
+                    mapped = false;
+                    break;
+                }
+                t.lineRanges.insert(l, range);
+            }
+            cost += 1;
+            if (range.first < 0) {
+                // (Its letters not found: left, and said as left.)
+                if (!t.cut) t.cutWidth = t.lines.at(l).width();
+                t.cut = true;
+                continue;
+            }
+            qint64 n = 0;
+            const qint64 calls = costOf(range, &n);
+            if (characters + n > kMostCharacters) break;
+            if (cost + calls > t.allowance) {
+                if (!t.cut) t.cutWidth = t.lines.at(l).width();   // (the rest wider)
+                t.cut = true;
+                break;
+            }
+            cost += calls;
+            characters += n;
+            for (int k = range.first; k <= range.second; ++k) counted[size_t(k)] = true;
+            chosen << std::pair{range, l};
+        }
+        if (mapped) {
+            // (Each read at its own line's turn, whole, though its padding
+            // overlaps the next: a letter read twice is asked once.)
+            std::sort(chosen.begin(), chosen.end());
+            spans.clear();
+            spanWidths.clear();
+            spanLines.clear();
+            for (const auto& [range, l] : std::as_const(chosen)) {
+                spans << range;
+                spanWidths << t.lines.at(l).width();
+                spanLines << t.lines.at(l);
+            }
+        }
+    }
     const auto boxOf = [&](int i) {
         if (const auto b = t.boxes.constFind(i); b != t.boxes.cend()) return *b;
         if (!spend()) return QRectF();
         const QRectF b = a_pdf->getSelectionAtIndex(page, i, 1).boundingRectangle();
         t.boxes.insert(i, b);
+        if (!b.isEmpty()) lastRead = b.center(), anyRead = true;
         return b;
     };
     // Characters into words, by place: tick labels are often one line of the
@@ -762,83 +946,107 @@ QList<Token> Source::tokens(int page, const QRectF& within)
     // "104" set as 10 and a raised 4), character by character.
     static const QRegularExpression maybeRaised(QStringLiteral("10[-+\\x{2212}]?\\d"));
     int pendingChars = -1;   // read character by character up to here
-    for (int i = from; i <= to; ++i) {
-        const QChar c = t.all.at(i);
-        if (i > pendingChars && !isGap(c) && cur.text.isEmpty() && (i == from || isGap(t.all.at(i - 1)))) {
-            int e = i;
-            while (e + 1 <= to && !isGap(t.all.at(e + 1))) ++e;
-            const QString word = t.all.mid(i, e - i + 1);
-            // (Short ones - most tick labels - are as cheap by their characters;
-            // and the text may run two lines together with nothing between,
-            // which a word's box taller than its first letter shows.)
-            if (t.frugal || (word.size() > 3 && (!word.contains(maybeRaised) || word.size() > 12))) {
-                const qint64 key = (qint64(i) << 20) | qint64(e - i + 1);
-                QRectF b;
-                if (const auto have = t.words.constFind(key); have != t.words.cend()) b = *have;
-                else if (!spend()) {
+    // The spans read narrowest line first - should the calls run out, a
+    // column's text goes, not a label - their words then put back in the
+    // text's order (a raised power, a line of its own, joins its "10" below).
+    QList<int> readOrder(spans.size());
+    std::iota(readOrder.begin(), readOrder.end(), 0);
+    std::stable_sort(readOrder.begin(), readOrder.end(), [&](int a, int b) { return spanWidths.at(a) < spanWidths.at(b); });
+    QList<QList<Token>> spanTokens(spans.size());
+    for (const int span : std::as_const(readOrder)) {
+        const auto [from, to] = spans.at(span);
+        reading = spanWidths.at(span);
+        const QRectF own = spanLines.at(span);
+        const auto onOwn = [&](const QRectF& b) {
+            const double m = std::max(1.0, 0.3 * own.height());
+            return own.isNull() || own.adjusted(-m, -m, m, m).contains(b.center());
+        };
+        flush();
+        pendingChars = -1;
+        const qsizetype before = out.size();
+        for (int i = from; i <= to; ++i) {
+            const QChar c = t.all.at(i);
+            if (i > pendingChars && !isGap(c) && cur.text.isEmpty() && (i == from || isGap(t.all.at(i - 1)))) {
+                int e = i;
+                while (e + 1 <= to && !isGap(t.all.at(e + 1))) ++e;
+                const QString word = t.all.mid(i, e - i + 1);
+                // (Short ones - most tick labels - are as cheap by their characters;
+                // and the text may run two lines together with nothing between,
+                // which a word's box taller than its first letter shows.)
+                if (t.frugal || (word.size() > 3 && (!word.contains(maybeRaised) || word.size() > 12))) {
+                    const qint64 key = (qint64(i) << 20) | qint64(e - i + 1);
+                    QRectF b;
+                    if (const auto have = t.words.constFind(key); have != t.words.cend()) b = *have;
+                    else if (!spend()) {
+                        i = e;
+                        continue;
+                    } else {
+                        b = a_pdf->getSelectionAtIndex(page, i, e - i + 1).boundingRectangle();
+                        t.words.insert(key, b);
+                        if (!b.isEmpty()) lastRead = b.center(), anyRead = true;
+                    }
+                    const QRectF first = boxOf(i);
+                    const bool oneLine = !first.isNull() && b.height() <= 1.6 * std::max(first.height(), 3.0);
+                    // (Not on this span's line, or across two: letter by letter.)
+                    if (!oneLine || (!b.isNull() && !onOwn(b) && !(b.width() <= 0 && b.height() <= 0))) {
+                        // Character by character, as below.
+                        --i;
+                        cur.text = QString();
+                        pendingChars = e;
+                        continue;
+                    }
+                    if (!b.isNull() && (b.adjusted(-0.5, -0.5, 0.5, 0.5).intersects(within) || within.contains(b.center()))) {
+                        Token word_;
+                        word_.text = word;
+                        word_.box = b;
+                        out.append(word_);
+                    }
                     i = e;
                     continue;
-                } else {
-                    b = a_pdf->getSelectionAtIndex(page, i, e - i + 1).boundingRectangle();
-                    t.words.insert(key, b);
                 }
-                const QRectF first = boxOf(i);
-                const bool oneLine = !first.isNull() && b.height() <= 1.6 * std::max(first.height(), 3.0);
-                if (!oneLine) {
-                    // Character by character, as below.
-                    --i;
-                    cur.text = QString();
-                    pendingChars = e;
-                    continue;
-                }
-                if (!b.isNull() && (b.adjusted(-0.5, -0.5, 0.5, 0.5).intersects(within) || within.contains(b.center()))) {
-                    Token word_;
-                    word_.text = word;
-                    word_.box = b;
-                    out.append(word_);
-                }
-                i = e;
+            }
+            if (isGap(c)) {
+                flush();
                 continue;
             }
+            const QRectF b = boxOf(i);
+            // (pdfium's boxes come in whole points: an "i" can be as wide as nothing.
+            // It is still a letter of the word it is in.)
+            if (b.isNull() || (b.width() <= 0 && b.height() <= 0)) {
+                flush();
+                continue;
+            }
+            if ((!b.adjusted(-0.5, -0.5, 0.5, 0.5).intersects(within) && !within.contains(b.center())) || !onOwn(b)) {
+                flush();
+                continue;
+            }
+            const double height = std::max({b.height(), curHeight, 3.0});
+            if (!cur.text.isEmpty()) {
+                const double dx = std::max({0.0, b.left() - cur.box.right(), cur.box.left() - b.right()});
+                const double dy = std::max({0.0, b.top() - cur.box.bottom(), cur.box.top() - b.bottom()});
+                if (std::max(dx, dy) > 0.55 * height) flush();
+            }
+            // A smaller digit raised after a "10": its power.
+            if (!cur.text.isEmpty() && !raised && cur.text.endsWith(QLatin1String("10")) && curHeight > 0 && b.height() < 0.85 * curHeight &&
+                b.center().y() < base.center().y() - 0.1 * curHeight && (c.isDigit() || c == QLatin1Char('-') || c == QChar(0x2212))) {
+                cur.text += QLatin1Char('^');
+                raised = true;
+            }
+            if (cur.text.isEmpty()) {
+                cur.box = b;
+                base = b;
+            } else cur.box = cur.box.united(b);
+            cur.text += c;
+            if (!raised && c.isDigit()) {
+                curHeight = std::max(curHeight, b.height());
+                base = b;
+            } else if (!raised) curHeight = std::max(curHeight, b.height() > 2 ? b.height() : 0.0);
         }
-        if (isGap(c)) {
-            flush();
-            continue;
-        }
-        const QRectF b = boxOf(i);
-        // (pdfium's boxes come in whole points: an "i" can be as wide as nothing.
-        // It is still a letter of the word it is in.)
-        if (b.isNull() || (b.width() <= 0 && b.height() <= 0)) {
-            flush();
-            continue;
-        }
-        if (!b.adjusted(-0.5, -0.5, 0.5, 0.5).intersects(within) && !within.contains(b.center())) {
-            flush();
-            continue;
-        }
-        const double height = std::max({b.height(), curHeight, 3.0});
-        if (!cur.text.isEmpty()) {
-            const double dx = std::max({0.0, b.left() - cur.box.right(), cur.box.left() - b.right()});
-            const double dy = std::max({0.0, b.top() - cur.box.bottom(), cur.box.top() - b.bottom()});
-            if (std::max(dx, dy) > 0.55 * height) flush();
-        }
-        // A smaller digit raised after a "10": its power.
-        if (!cur.text.isEmpty() && !raised && cur.text.endsWith(QLatin1String("10")) && curHeight > 0 && b.height() < 0.85 * curHeight &&
-            b.center().y() < base.center().y() - 0.1 * curHeight && (c.isDigit() || c == QLatin1Char('-') || c == QChar(0x2212))) {
-            cur.text += QLatin1Char('^');
-            raised = true;
-        }
-        if (cur.text.isEmpty()) {
-            cur.box = b;
-            base = b;
-        } else cur.box = cur.box.united(b);
-        cur.text += c;
-        if (!raised && c.isDigit()) {
-            curHeight = std::max(curHeight, b.height());
-            base = b;
-        } else if (!raised) curHeight = std::max(curHeight, b.height() > 2 ? b.height() : 0.0);
+        flush();
+        spanTokens[span] = out.mid(before);
+        out.resize(before);
     }
-    flush();
+    for (const QList<Token>& tokens : std::as_const(spanTokens)) out << tokens;
     // "10" then, apart in the text, a small number raised beside it.
     QList<Token> joined;
     for (int i = 0; i < out.size(); ++i) {
@@ -1595,7 +1803,9 @@ QList<Plot> findPlots(Source& source, int page, const QRectF& within)
                 marksInPicture(*way.picture, box, &shortV, &shortH);
             }
             readAxes(plot, tokens, shortV, shortH, v, h);
-            if (source.textCut(page))
+            // (Lines of text left unread are no loss: only a run that may be
+            // a label - a word or two, a number - is said.)
+            if (double narrowest = 0; source.textCut(page, &narrowest) && narrowest < 120)
                 plot.notes << tr("The page is so heavy with paths that its text was read only in part: labels may be missing. 'references', or 'x_range' and 'y_range', calibrate it.");
             plot.region = (way.work.isIdentity() ? box : way.work.inverted().mapRect(box)).adjusted(-60, -20, 15, 50).intersected(whole);
             int labelled = 0;

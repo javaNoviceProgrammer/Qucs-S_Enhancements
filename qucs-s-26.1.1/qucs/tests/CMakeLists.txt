@@ -496,9 +496,11 @@ if(TARGET Qt6::Pdf AND QUCS_PDF_VIEWER)
   target_compile_definitions(test_plot_digitizer PRIVATE QUCS_REPO_PDF="${CMAKE_CURRENT_SOURCE_DIR}/../python/qucs-py/test1dat.pdf")
   target_link_libraries(test_plot_digitizer Qt6::Core Qt6::Gui Qt6::Pdf Qt6::Test)
   add_test(NAME test_plot_digitizer COMMAND test_plot_digitizer)
+  # (900: under the sanitizers some 7 minutes since the fuzzer's rounds that
+  # found a bug are replayed.)
   set_tests_properties(test_plot_digitizer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
-    TIMEOUT 600)
+    TIMEOUT 900)
   # In the program: Claude's tools, over stdio too, and the viewer's panel.
   qucs_add_test(test_plot_digitizer_app)
   target_compile_definitions(test_plot_digitizer_app PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>")
