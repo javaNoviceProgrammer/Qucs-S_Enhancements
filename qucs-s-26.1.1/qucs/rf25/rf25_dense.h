@@ -87,13 +87,21 @@ long long eigenLuCount();
  * machine's threads as \a threads says it has (0: all of them; a sweep's
  * frequency its share), which only OpenBLAS's heeds (rf25_openblas.h). Not
  * copied or moved once made.
+ *
+ * A complex \a symmetric one (A^T = A, not Hermitian), its upper triangle
+ * read, Accelerate factorizes as L D L^T by Bunch and Kaufman's pivoting
+ * (zsytrf), half an LU's arithmetic: alone it is the slower - LAPACK's own
+ * blocking, where the LU's is ours over the BLAS (0.36 against 0.15 s at
+ * 3084 rows) -, but where many factorizations share the machine's matrix
+ * units at once the quicker by the half it leaves out (24 at once, 0.055
+ * against 0.090 s each; 12, 0.071 against 0.085). Elsewhere it is ignored.
  */
 template <class Scalar> class DenseFactors
 {
 public:
     using Matrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
 
-    explicit DenseFactors(Matrix&& a, int threads = 0);
+    explicit DenseFactors(Matrix&& a, int threads = 0, bool symmetric = false);
     ~DenseFactors();
     DenseFactors(const DenseFactors&) = delete;
     DenseFactors& operator=(const DenseFactors&) = delete;
@@ -108,6 +116,8 @@ public:
     bool openBlas() const;
     /// The library that factorized it: Eigen, Accelerate or OpenBlas.
     DenseLu library() const;
+    /// It was factorized as a symmetric matrix, L D L^T.
+    bool symmetric() const;
     /// The seconds it waited, factorized and solved, for the turn of
     /// another's call on OpenBLAS's thread (rf25_openblas.h): nought
     /// elsewhere.

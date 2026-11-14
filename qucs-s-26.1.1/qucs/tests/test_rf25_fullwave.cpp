@@ -34,6 +34,7 @@
 #include <atomic>
 #include <cmath>
 #include <complex>
+#include <thread>
 
 namespace rf = qucs_s::rf25;
 using Complex = std::complex<double>;
@@ -1356,6 +1357,77 @@ private slots:
         const rf::FullWave compressed = solve(4, rf::FullWaveControl::Matrix::Compressed);
         QVERIFY2(compressed.ok() && compressed.compressed, qPrintable(why(compressed)));
         QCOMPARE(rf::fillShared().statics, held.statics);
+    }
+
+    // A compressed solve's static parts kept from one frequency to the next
+    // (cacheStatics()) - of the pairs its edge profiles and walls make
+    // dear, and of every pair of its dense blocks and near field, made once
+    // before its frequencies - are the same to the last digit as made at
+    // each frequency as it goes: a copper line solved as its two faces, its
+    // edge runs profiled and its edge cells walled, the walls taken at every
+    // distance.
+    void aCompressedSolvesKeptStaticPartsAreThoseItMadeAsItWent()
+    {
+        const QString m1 = QStringLiteral("M1");
+        rf::Stack stack = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        stack.layers.last().twoSheets = true;
+        const QList<rf::Conductor> one{strip(0, 0, 1200, 100)};
+        const rf::Mesh mesh = meshed(one, 4, 100e-6);
+        const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 50), m1, QPointF(-1, 0)),
+                                            edgePort(QPointF(1200, 50), m1, QPointF(1, 0))};
+        const auto solve = [&mesh, &one, &stack, &ports](bool kept) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.staticCache = kept;
+            return rf::fullWaveOf(mesh, one, stack, ports, {2e9, 20e9}, 1e-6, &control);
+        };
+        const rf::FullWave made = solve(false);
+        const rf::FullWave kept = solve(true);
+        QVERIFY2(made.ok() && kept.ok() && kept.compressed, qPrintable(why(made) + why(kept)));
+        const rf::FillShared counted = rf::fillShared();
+        qWarning("%d runs over %d cells: the static parts of %lld pairs of runs and %lld of cells kept",
+                 kept.runs, kept.cells, counted.keptRuns, counted.keptCells);
+        // (Every run with every run near it, and every cell with every cell
+        //  of a wall.)
+        QVERIFY2(counted.keptRuns > 10LL * kept.runs, qPrintable(QString::number(counted.keptRuns)));
+        QVERIFY2(counted.keptCells > qint64(kept.cells) * kept.cells / 4, qPrintable(QString::number(counted.keptCells)));
+        QVERIFY(kept.z == made.z && kept.s == made.s && kept.currents == made.currents);
+    }
+
+    // A dense sweep's systems factorized as L D L^T where Accelerate's
+    // LAPACK is here (rf25_dense.h) - by default where the machine solves
+    // twelve frequencies or more at once - give the LU's answer to its
+    // rounding, said; elsewhere it is the LU.
+    void aDenseSweepFactorizedAsLdlIsTheLusAnswer()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        const QList<rf::Conductor> one{strip(0, 0, 1500, 100)};
+        const rf::Mesh mesh = meshed(one, 4, 100e-6);
+        const QList<double> fs = {1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
+        const auto solve = [&mesh, &one, &stack, &fs](int symmetric) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Dense;
+            control.symmetricLu = symmetric;
+            return rf::fullWaveOf(mesh, one, stack,
+                                  {edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                   edgePort(QPointF(1500, 50), QStringLiteral("M1"), QPointF(1, 0))},
+                                  fs, 1e-6, &control);
+        };
+        const rf::FullWave lu = solve(0), ldl = solve(1), automatic = solve(-1);
+        QVERIFY2(lu.ok() && ldl.ok() && automatic.ok(), qPrintable(why(lu) + why(ldl) + why(automatic)));
+        QVERIFY(!lu.symmetricLu);
+        QCOMPARE(ldl.symmetricLu, rf::luOnAccelerate());
+        QCOMPARE(says(ldl.lines, "L D L^T"), ldl.symmetricLu);
+        QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12);
+        double most = 0;
+        for (int k = 0; k < fs.size(); ++k)
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) {
+                    most = std::max(most, std::abs(ldl.s.at(k).at(i).at(j) - lu.s.at(k).at(i).at(j)));
+                    QVERIFY(std::abs(ldl.z.at(k).at(i).at(j) - lu.z.at(k).at(i).at(j)) <= 1e-9 * std::abs(lu.z.at(k).at(i).at(j)) + 1e-12);
+                }
+        qWarning("S as L D L^T within %.2g of the LU's", most);
+        QVERIFY2(most < 1e-10, qPrintable(QString::number(most)));
     }
 
     // The current density drawn on the layout, and the Touchstone written,

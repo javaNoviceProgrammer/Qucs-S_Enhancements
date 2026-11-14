@@ -31,6 +31,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <numeric>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -99,6 +101,11 @@ constexpr int kMostCompressed = 2000000;
 /// stands, said doubtful (solveCompressed()); and the share of
 /// kMostIterations past which it is said to be near its limit.
 constexpr double kTrustedResidual = 1e-4;
+/// A dense sweep's systems factorized as L D L^T (rf25_dense.h) where the
+/// machine solves this many frequencies or more at once: there half an
+/// LU's arithmetic is the quicker, 1.2 times at 12 and 1.6 at 24 at 3084
+/// rows; fewer, the LU's own blocking over the BLAS is.
+constexpr int kSymmetricFrom = 12;
 constexpr double kNearMiss = 0.8;
 
 /// The rank a low-rank block is guessed at before it is filled, for the
@@ -164,6 +171,16 @@ int pointsAlong(double length, double scale)
 {
     if (!(scale > 0)) return 2;
     return std::clamp(1 + int(std::ceil(4 * length / scale)), 2, kMostGauss);
+}
+
+/// \a v over \a jw, which is imaginary: each part divided by w. (A complex
+/// division is a library call - __divdc3, scaled against overflow - and the
+/// charges' A^T P A / jw made one for every term of the system: a sixth of
+/// a dense frequency's fill on a filter of 3000 runs.)
+inline Complex overJw(Complex v, Complex jw)
+{
+    const double w = jw.imag();
+    return Complex(v.imag() / w, -v.real() / w);
 }
 
 /// (exp(-j k r) - 1)/r: what the retardation adds to a static 1/r, finite
@@ -863,6 +880,29 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
 
 /// Everything a frequency's solve needs that does not change with the
 /// frequency: made once, and read by every thread.
+/*!
+ * A compressed solve's static parts of the pairs whose parts make them dear
+ * (Context::runStatics and cellStatics): row by row, each row's others in
+ * order and two values for each - a pair of runs' aligned partial
+ * inductances, direct and of the image, or a cell's static potential of a
+ * charge spread over another. Empty: none kept.
+ */
+struct PairTable {
+    std::vector<qint64> start;           ///< each row's first, and one past the last row's
+    std::vector<int> other;
+    std::vector<double> first, second;
+    bool empty() const { return start.empty(); }
+    /// Where row \a a's pair with \a b is, or -1 where it is not kept.
+    qint64 find(int a, int b) const
+    {
+        if (start.empty() || a < 0 || a + 1 >= qint64(start.size())) return -1;
+        const int* begin = other.data() + start[std::size_t(a)];
+        const int* end = other.data() + start[std::size_t(a) + 1];
+        const int* at = std::lower_bound(begin, end, b);
+        return at != end && *at == b ? qint64(at - other.data()) : -1;
+    }
+};
+
 struct Context {
     Layers layers;
     QList<Filament> runs;                ///< in the plane, then the vias
@@ -921,6 +961,13 @@ struct Context {
     /// Each run with parts as one filament where its current is on the whole
     /// (and its image): what a pair far apart takes (staticPair()).
     QList<Filament> centroid, centroidImage;
+    /// A compressed solve's static parts of the pairs whose parts make them
+    /// dear - each of the edge profile's and the walls' pieces with each of
+    /// the other's -, made once before its frequencies (cacheStatics()), so
+    /// that each frequency's fill reads them where it made them again: some
+    /// half of a gold pad's compressed fill, 45 % of its solve. A dense solve
+    /// has them all (lDirect, lImage, pStatic) and keeps none here.
+    PairTable runStatics, cellStatics;
     /// Each cell's charge spread over more than its cell, as Part a run's
     /// current (rf25_edge.h's wallCharges()): empty where it is its cell
     /// alone.
@@ -1040,7 +1087,24 @@ void wallsOf(Context& c)
  * so that a part with itself is the same filament - its own partial
  * inductance by its geometric mean distance.)
  */
-void staticPair(const Context& c, int a, int b, double* direct, double* image)
+/// Whether runs \a a and \a b's static parts are taken over their parts,
+/// not each run whole or as its centroid: either has parts, and they are
+/// near - within eight of their breadths and their metal's thickness.
+bool dearPair(const Context& c, int a, int b)
+{
+    const bool partsA = a < c.parts.size() && !c.parts.at(a).isEmpty();
+    const bool partsB = b < c.parts.size() && !c.parts.at(b).isEmpty();
+    if (!partsA && !partsB) return false;
+    if (a == b) return true;
+    const Filament& ra = c.runs.at(a);
+    const Filament& rb = c.runs.at(b);
+    const double size = std::max({ra.width, rb.width, ra.thickness, rb.thickness});
+    const double apart = std::hypot(0.5 * (ra.from.x() + ra.to.x() - rb.from.x() - rb.to.x()),
+                                    0.5 * (ra.from.y() + ra.to.y() - rb.from.y() - rb.to.y()));
+    return !(apart > 8 * size * (1 + 1e-6));
+}
+
+void staticPairOf(const Context& c, int a, int b, double* direct, double* image)
 {
     const bool partsA = a < c.parts.size() && !c.parts.at(a).isEmpty();
     const bool partsB = b < c.parts.size() && !c.parts.at(b).isEmpty();
@@ -1078,6 +1142,18 @@ void staticPair(const Context& c, int a, int b, double* direct, double* image)
     *image = i;
 }
 
+/// staticPairOf(), read where a compressed solve keeps it (cacheStatics()).
+void staticPair(const Context& c, int a, int b, double* direct, double* image)
+{
+    const qint64 at = c.runStatics.find(a, b);
+    if (at >= 0) {
+        *direct = c.runStatics.first[std::size_t(at)];
+        *image = c.runStatics.second[std::size_t(at)];
+        return;
+    }
+    staticPairOf(c, a, b, direct, image);
+}
+
 double staticPotential(const Context& c, int i, int j);
 
 /// What one frequency solved to.
@@ -1092,6 +1168,7 @@ struct AtFrequency {
     double fillSeconds = 0, luSeconds = 0;
     bool accelerated = false;
     bool openBlas = false;
+    bool symmetric = false;          ///< factorized as L D L^T (DenseFactors)
     /// Compressed: what its matrices held, bytes, and their largest rank;
     /// the most iterations a port's GMRES took, and the largest residual.
     double bytes = 0;
@@ -1187,7 +1264,9 @@ void faceImpedances(double sigma, double thickness, double frequency, Complex* o
 }
 
 /// What fillShared() counts.
-std::atomic<long long> sharedGreens{0}, sharedColumns{0}, sharedStatics{0};
+std::atomic<long long> sharedGreens{0}, sharedColumns{0}, sharedStatics{0}, keptRuns{0}, keptCells{0};
+/// (cacheStatics()'s work on other threads: no dense solve's static parts.)
+std::atomic<long long> sharedKept{0};
 
 /*!
  * The Green's functions of one frequency, and the terms of the solve's
@@ -1311,11 +1390,21 @@ Complex Kernels::potential(int i, int j, double pij, double pji) const
     const WaveGreen::Term t = g.scalarTerm();
     const double rho = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
     const double scale = std::hypot(rho, g.reach());
-    const auto oneWay = [this, &g, &t, rho, scale](int to, int from, double stat) {
-        const Complex v = t.coefficient / (2 * M_PI) * (stat + retardation(t.k, std::hypot(rho, t.dz)));
+    // (The retardation at the centres, and the remainder there where it is
+    //  taken at them, the same both ways round: each made once.)
+    const Complex retarded = retardation(t.k, std::hypot(rho, t.dz));
+    Complex atCentres(0, 0);
+    bool made = false;
+    const auto oneWay = [this, &g, &t, &retarded, &atCentres, &made, rho, scale](int to, int from, double stat) {
+        const Complex v = t.coefficient / (2 * M_PI) * (stat + retarded);
         const double longest = std::max(c.rect.at(from).width(), c.rect.at(from).height());
         const bool centred = to != from && longest * longest < kCentreBound * scale * scale;
-        return v + (centred ? g.scalarRemainder(rho) : remainderOver(g, c.rect.at(from), c.centre.at(to), scale));
+        if (!centred) return v + remainderOver(g, c.rect.at(from), c.centre.at(to), scale);
+        if (!made) {
+            atCentres = g.scalarRemainder(rho);
+            made = true;
+        }
+        return v + atCentres;
     };
     const Complex base = i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
     return c.corrected ? base + c.dielectric.at(i, j) : base;
@@ -1744,7 +1833,7 @@ void chargeColumn(const Context& c, const MatrixC& p, Complex jw, MatrixC& m, in
     const auto pAt = [&p](int i, int j) { return i < 0 || j < 0 ? Complex(0, 0) : p(i, j); };
     const int tail = c.tail.at(b), head = c.head.at(b);
     for (int a = 0; a < c.nr; ++a)
-        m(a, b) += (pAt(c.tail.at(a), tail) - pAt(c.tail.at(a), head) - pAt(c.head.at(a), tail) + pAt(c.head.at(a), head)) / jw;
+        m(a, b) += overJw(pAt(c.tail.at(a), tail) - pAt(c.tail.at(a), head) - pAt(c.head.at(a), tail) + pAt(c.head.at(a), head), jw);
 }
 
 /// Column \a b of a dense solve's static partial inductances, direct and of
@@ -1770,7 +1859,26 @@ void staticInductanceColumn(const Context& c, Eigen::MatrixXd& direct, Eigen::Ma
  * where either has them (Context::charges), each part's potential at each
  * of i's parts' centres by their shares.
  */
-double staticPotential(const Context& c, int i, int j)
+/// Whether cells \a i and \a j's static potential is taken over their
+/// charges' parts: either has parts, and either has a wall or they are near
+/// (staticPotentialOf()).
+bool dearPotential(const Context& c, int i, int j)
+{
+    const bool partsI = i < c.charges.size() && !c.charges.at(i).isEmpty();
+    const bool partsJ = j < c.charges.size() && !c.charges.at(j).isEmpty();
+    if (!partsI && !partsJ) return false;
+    const auto walled = [&c](int k) {
+        for (const ChargePart& p : c.charges.at(k))
+            if (p.plane != 0) return true;
+        return false;
+    };
+    if ((partsI && walled(i)) || (partsJ && walled(j))) return true;
+    const double side = std::max({c.rect.at(i).width(), c.rect.at(i).height(), c.rect.at(j).width(), c.rect.at(j).height()});
+    const double apart = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
+    return !(apart > 4 * side * (1 + 1e-6));
+}
+
+double staticPotentialOf(const Context& c, int i, int j)
 {
     const bool partsI = i < c.charges.size() && !c.charges.at(i).isEmpty();
     const bool partsJ = j < c.charges.size() && !c.charges.at(j).isEmpty();
@@ -1802,6 +1910,86 @@ double staticPotential(const Context& c, int i, int j)
                                         partsJ ? c.charges.at(j) : QList<ChargePart>{wholeCell(c.rect.at(j), c.cellZ.at(j))});
     if (c.profileScale.isEmpty()) return parts;
     return scaledParts(rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j))), parts);
+}
+
+double staticPotential(const Context& c, int i, int j)
+{
+    const qint64 at = c.cellStatics.find(i, j);
+    return at >= 0 ? c.cellStatics.first[std::size_t(at)] : staticPotentialOf(c, i, j);
+}
+
+/*!
+ * Each two of the items within the larger's reach of each other - item i
+ * at (\a x[i], \a y[i]), reaching \a reach[i] - for which \a keep holds,
+ * both ways round and each with itself, each row's in order: found from the
+ * one of the two that reaches the further, in bins of the plane as wide as
+ * the middle reach, on \a threads threads.
+ */
+std::vector<std::vector<int>> pairsWithin(const std::vector<double>& x, const std::vector<double>& y,
+                                          const std::vector<double>& reach, int threads,
+                                          const std::function<bool(int, int)>& keep)
+{
+    const int n = int(x.size());
+    std::vector<std::vector<int>> rows(static_cast<std::size_t>(n));
+    if (n == 0) return rows;
+    std::vector<double> middle = reach;
+    std::nth_element(middle.begin(), middle.begin() + n / 2, middle.end());
+    const double bin = std::max(middle[std::size_t(n / 2)], 1e-12);
+    const auto binOf = [bin](double v) { return qint64(std::floor(v / bin)); };
+    QHash<qint64, std::vector<int>> bins;
+    for (int i = 0; i < n; ++i) bins[(binOf(x[std::size_t(i)]) << 32) ^ (binOf(y[std::size_t(i)]) & 0xffffffffLL)].push_back(i);
+    // (Each pair found once, from the one reaching the further - or, alike,
+    //  the later -, into that one's own list; then both ways round.)
+    std::vector<std::vector<int>> found(static_cast<std::size_t>(n));
+    sharedOut(n, threads, [&](int b) {
+        const double r = reach[std::size_t(b)], xb = x[std::size_t(b)], yb = y[std::size_t(b)];
+        std::vector<int>& mine = found[std::size_t(b)];
+        for (qint64 i = binOf(xb - r); i <= binOf(xb + r); ++i)
+            for (qint64 j = binOf(yb - r); j <= binOf(yb + r); ++j) {
+                const auto in = bins.constFind((i << 32) ^ (j & 0xffffffffLL));
+                if (in == bins.constEnd()) continue;
+                for (const int a : *in) {
+                    const double ra = reach[std::size_t(a)];
+                    if (ra > r || (ra == r && a > b)) continue;
+                    if (std::hypot(x[std::size_t(a)] - xb, y[std::size_t(a)] - yb) > r) continue;
+                    if (keep(a, b)) mine.push_back(a);
+                }
+            }
+    }, sharedKept);
+    for (int b = 0; b < n; ++b)
+        for (const int a : found[std::size_t(b)]) {
+            rows[std::size_t(b)].push_back(a);
+            if (a != b) rows[std::size_t(a)].push_back(b);
+        }
+    sharedOut(n, threads, [&rows](int a) {
+        std::vector<int>& row = rows[std::size_t(a)];
+        std::sort(row.begin(), row.end());
+        row.erase(std::unique(row.begin(), row.end()), row.end());
+    }, sharedKept);
+    return rows;
+}
+
+/// \a rows made a table (PairTable), its values - one or two to a pair - by
+/// \a value on \a threads threads, each row by one of them alone.
+PairTable pairTableOf(const std::vector<std::vector<int>>& rows, bool two, int threads,
+                      const std::function<void(int, int, double*, double*)>& value)
+{
+    PairTable t;
+    t.start.assign(rows.size() + 1, 0);
+    for (std::size_t a = 0; a < rows.size(); ++a) t.start[a + 1] = t.start[a] + qint64(rows[a].size());
+    const std::size_t count = std::size_t(t.start.back());
+    t.other.resize(count);
+    t.first.resize(count);
+    if (two) t.second.resize(count);
+    sharedOut(int(rows.size()), threads, [&t, &rows, &value, two](int a) {
+        double unused = 0;
+        for (std::size_t k = 0; k < rows[std::size_t(a)].size(); ++k) {
+            const std::size_t at = std::size_t(t.start[std::size_t(a)]) + k;
+            t.other[at] = rows[std::size_t(a)][k];
+            value(a, t.other[at], &t.first[at], two ? &t.second[at] : &unused);
+        }
+    }, sharedKept);
+    return t;
 }
 
 void staticPotentialColumn(const Context& c, Eigen::MatrixXd& p, int j)
@@ -1840,7 +2028,7 @@ void makeStatics(Context& c, int threads)
     }, sharedStatics);
 }
 
-AtFrequency solveAt(const Context& c, double f, int threads)
+AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric)
 {
     AtFrequency out;
     QElapsedTimer clock;
@@ -1909,11 +2097,16 @@ AtFrequency solveAt(const Context& c, double f, int threads)
     out.fillSeconds = double(clock.nsecsElapsed()) * 1e-9;
     // (m factorized where it is: it is not needed past here.)
     // (On the frequency's share of the threads: rf25_dense.h.)
-    const DenseFactors<Complex> lu(std::move(m), threads);
+    // (Symmetric, as each column's part below the diagonal is the part
+    //  above's - but for the charges' last digits, added a column at a time
+    //  -: as L D L^T where many frequencies at once share the machine's
+    //  matrix units, its upper triangle read. DenseFactors.)
+    const DenseFactors<Complex> lu(std::move(m), threads, symmetric);
     out.current = lu.solve(rhs);
     out.rcond = lu.rcond();
     out.accelerated = lu.accelerated();
     out.openBlas = lu.openBlas();
+    out.symmetric = lu.symmetric();
     out.luSeconds = double(clock.nsecsElapsed()) * 1e-9 - out.fillSeconds - lu.waited();
     if (!out.current.allFinite()) {
         out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
@@ -2020,6 +2213,133 @@ void plan(Compression& z, const Context& c)
     z.estimate = held + 11 * near + 16.0 * c.nr * (kRestart + 8) + 32.0 * (c.nr + c.nc) * c.np + 1e7;
 }
 
+/*!
+ * A compressed solve's static parts of the pairs whose parts make them
+ * dear (Context::runStatics and cellStatics), made once before its
+ * frequencies on all of its \a threads threads, each by the expression that
+ * makes it as it goes: the pairs of runs within eight of their breadths
+ * where either has parts (dearPair()), and of cells within four of their
+ * sides where either has parts (dearPotential()) - and, where they fit in
+ * \a most bytes too, each cell with a wall with every cell, which
+ * dearPotential() takes at every distance. And every pair of the blocks
+ * the matrices hold dense (\a z's kx, ky and p not low rank), which every
+ * frequency fills whole, and of their near field's: each of their two
+ * partial inductances there was some 8 % of a pad's compressed solve, each
+ * frequency again. What does not fit is made as it goes, as before;
+ * nothing at all where even the near pairs do not.
+ */
+void cacheStatics(Context& c, const Compression& z, int threads, double most)
+{
+    keptRuns = 0;
+    keptCells = 0;
+    const int np = c.planar, nc = c.nc;
+    // The runs: each at its middle, reaching eight of its breadth and
+    // thickness (and a little more, dearPair() deciding).
+    std::vector<double> x(static_cast<std::size_t>(np)), y(static_cast<std::size_t>(np)), reach(static_cast<std::size_t>(np));
+    for (int a = 0; a < np; ++a) {
+        const Filament& r = c.runs.at(a);
+        x[std::size_t(a)] = 0.5 * (r.from.x() + r.to.x());
+        y[std::size_t(a)] = 0.5 * (r.from.y() + r.to.y());
+        reach[std::size_t(a)] = 8.001 * std::max(r.width, r.thickness);
+    }
+    std::vector<std::vector<int>> runRows = pairsWithin(x, y, reach, threads, [&c](int a, int b) { return dearPair(c, a, b); });
+    // The cells: each at its centre, reaching four of its longest side.
+    x.assign(std::size_t(nc), 0);
+    y.assign(std::size_t(nc), 0);
+    reach.assign(std::size_t(nc), 0);
+    for (int i = 0; i < nc; ++i) {
+        x[std::size_t(i)] = c.centre.at(i).x();
+        y[std::size_t(i)] = c.centre.at(i).y();
+        reach[std::size_t(i)] = 4.001 * std::max(c.rect.at(i).width(), c.rect.at(i).height());
+    }
+    std::vector<std::vector<int>> cellRows = pairsWithin(x, y, reach, threads, [&c](int i, int j) {
+        return dearPotential(c, i, j);
+    });
+    // The matrices' dense blocks, by their items' runs or cells, and the
+    // near field's pairs: both ways round, each row then in order.
+    std::vector<std::vector<int>> runRowsAll = runRows;
+    const auto denseBlocks = [](const HMatrix& h, const QList<int>* runs, std::vector<std::vector<int>>& rows) {
+        for (const HMatrix::Block& b : h.blocks()) {
+            if (b.lowRank) continue;
+            const ClusterTree::Node& r = h.rowTree()->nodes()[std::size_t(b.row)];
+            const ClusterTree::Node& s = h.columnTree()->nodes()[std::size_t(b.column)];
+            for (int p = r.begin; p < r.end; ++p)
+                for (int q = s.begin; q < s.end; ++q) {
+                    const int u = h.rowTree()->order()[std::size_t(p)], v = h.columnTree()->order()[std::size_t(q)];
+                    const int i = runs != nullptr ? runs->at(u) : u, j = runs != nullptr ? runs->at(v) : v;
+                    rows[std::size_t(i)].push_back(j);
+                    rows[std::size_t(j)].push_back(i);
+                }
+        }
+    };
+    denseBlocks(z.kx, &z.xRun, runRowsAll);
+    denseBlocks(z.ky, &z.yRun, runRowsAll);
+    for (const QPair<int, int>& r : z.nearRuns) {
+        runRowsAll[std::size_t(r.first)].push_back(r.second);
+        runRowsAll[std::size_t(r.second)].push_back(r.first);
+    }
+    std::vector<std::vector<int>> cellRowsAll = cellRows;
+    denseBlocks(z.p, nullptr, cellRowsAll);
+    for (const QPair<int, int>& q : z.nearCells) {
+        cellRowsAll[std::size_t(q.first)].push_back(q.second);
+        cellRowsAll[std::size_t(q.second)].push_back(q.first);
+    }
+    const auto ordered = [threads](std::vector<std::vector<int>>& rows) {
+        sharedOut(int(rows.size()), threads, [&rows](int a) {
+            std::vector<int>& row = rows[std::size_t(a)];
+            std::sort(row.begin(), row.end());
+            row.erase(std::unique(row.begin(), row.end()), row.end());
+        }, sharedKept);
+    };
+    ordered(runRowsAll);
+    ordered(cellRowsAll);
+    // (The dense blocks too where they fit, else the dear pairs alone.)
+    const auto pairsIn = [](const std::vector<std::vector<int>>& rows) {
+        qint64 n = 0;
+        for (const std::vector<int>& row : rows) n += qint64(row.size());
+        return double(n);
+    };
+    double nearBytes = 20.0 * pairsIn(runRowsAll) + 12.0 * pairsIn(cellRowsAll) + 8.0 * (np + nc);
+    if (nearBytes <= most) {
+        runRows = std::move(runRowsAll);
+        cellRows = std::move(cellRowsAll);
+    } else {
+        nearBytes = 20.0 * pairsIn(runRows) + 12.0 * pairsIn(cellRows) + 8.0 * (np + nc);
+        if (nearBytes > most) return;
+    }
+    // The walls, at every distance, where they fit.
+    QList<int> walled;
+    for (int i = 0; i < nc; ++i)
+        for (const ChargePart& p : c.charges.at(i))
+            if (p.plane != 0) {
+                walled << i;
+                break;
+            }
+    if (!walled.isEmpty() && nearBytes + 12.0 * 2.0 * double(walled.size()) * double(nc) <= most) {
+        std::vector<char> isWalled(std::size_t(nc), 0);
+        for (const int w : std::as_const(walled)) isWalled[std::size_t(w)] = 1;
+        sharedOut(nc, threads, [&](int i) {
+            std::vector<int>& row = cellRows[std::size_t(i)];
+            if (isWalled[std::size_t(i)]) {
+                row.resize(std::size_t(nc));
+                std::iota(row.begin(), row.end(), 0);
+                return;
+            }
+            row.insert(row.end(), walled.begin(), walled.end());
+            std::sort(row.begin(), row.end());
+            row.erase(std::unique(row.begin(), row.end()), row.end());
+        }, sharedKept);
+    }
+    c.runStatics = pairTableOf(runRows, true, threads, [&c](int a, int b, double* direct, double* image) {
+        staticPairOf(c, a, b, direct, image);
+    });
+    c.cellStatics = pairTableOf(cellRows, false, threads, [&c](int i, int j, double* p, double*) {
+        *p = staticPotentialOf(c, i, j);
+    });
+    keptRuns = qint64(c.runStatics.other.size());
+    keptCells = qint64(c.cellStatics.other.size());
+}
+
 /// The system of a compressed solve, M = Zs l/w + jw L + A^T P A / jw and
 /// the vias' terms, multiplying a vector: what GMRES asks of it.
 struct System {
@@ -2056,6 +2376,9 @@ void System::operator()(const VectorC& x, VectorC& y) const
         q[c.head.at(a)] -= x[a];
     }
     p.multiply(q, v);
+    // (Divided, not overJw(): a run's drop once a product, against the whole
+    //  dense system's terms, its cost nothing - and its last digits otherwise
+    //  took a pad on 144 vias at 100 MHz from 80 GMRES iterations to 82.)
     for (int a = 0; a < c.nr; ++a) y[a] += ((c.tail.at(a) >= 0 ? v[c.tail.at(a)] : Complex(0, 0)) - v[c.head.at(a)]) / jw;
     // The vias: W = -A^T Phi, Phi each via's potential at each cell, is a
     // run in the plane's coupling to a via both ways round, and half of it
@@ -2371,6 +2694,8 @@ FillShared fillShared()
     out.greens = sharedGreens.load();
     out.columns = sharedColumns.load();
     out.statics = sharedStatics.load();
+    out.keptRuns = keptRuns.load();
+    out.keptCells = keptCells.load();
     return out;
 }
 
@@ -3635,6 +3960,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (Made in place, and pointed at by the matrices made from it.)
     Compression z;
     int side = 1;   // frequencies at a time
+    bool symmetricLu = false;
     if (!compress) {
         makeStatics(c, threads);
         // The frequencies side by side: each its own Green's functions and
@@ -3646,6 +3972,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // out between them to fill their systems.
         const double perFrequency = 16.0 * (double(nr) * nr + double(nc) * nc) + 1e6;
         side = std::min({threads, nf, std::max(1, int(sweepMemory() / perFrequency))});
+        // The systems factorized as L D L^T where the machine would solve
+        // kSymmetricFrom frequencies or more at once: what the machine has,
+        // not the threads asked, so that a solve is the same to the last
+        // digit on any number of them.
+        const int machine = int(std::max(1u, std::thread::hardware_concurrency()));
+        const int here = std::min({machine, nf, std::max(1, int(sweepMemory() / perFrequency))});
+        symmetricLu = control != nullptr && control->symmetricLu >= 0 ? control->symmetricLu > 0 : here >= kSymmetricFrom;
     } else {
         // Compressed: the trees and the shapes of the matrices, the same at
         // every frequency, and what a frequency will take. As many
@@ -3665,6 +3998,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             return out;
         }
         side = std::min({threads, nf, std::max(1, int(budget / z.estimate))});
+        // (Every frequency's static parts of the pairs that make them dear,
+        //  made once: in what a tenth of the budget holds, 2 GB at most.)
+        if (control == nullptr || control->staticCache) cacheStatics(c, z, threads, std::min(2e9, 0.1 * budget));
     }
     const int inner = std::max(1, threads / side);
     out.threads = side * inner;
@@ -3675,13 +4011,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
     std::atomic_int next{0};
     std::atomic_bool failed{false};
-    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, control, nf, compress, inner] {
+    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, control, nf, compress, inner, symmetricLu] {
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
         for (int k = next++; k < nf; k = next++) {
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
             solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control)
-                                                : solveAt(c, frequencies.at(k), inner);
+                                                : solveAt(c, frequencies.at(k), inner, symmetricLu);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
@@ -3752,7 +4088,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.luSeconds += a.luSeconds;
             out.accelerated = out.accelerated || a.accelerated;
             out.openBlas = out.openBlas || a.openBlas;
+            out.symmetricLu = out.symmetricLu || a.symmetric;
         }
+        if (out.symmetricLu)
+            out.lines << tr("Each frequency's system factorized as the symmetric matrix it is, L D L^T - half an LU's "
+                            "arithmetic, the quicker where %1 frequencies at once share the machine.")
+                             .arg(side);
     }
     out.lines << out.portsSaid;
     if (!naming.isEmpty())

@@ -285,6 +285,50 @@ private slots:
         rf::setDenseLu(rf::DenseLu::Automatic);
     }
 
+    // A complex symmetric matrix factorized as L D L^T (Accelerate's zsytrf,
+    // its upper triangle read; elsewhere the LU, the flag ignored): the
+    // matrix's solution and rcond, as the LU's - a random one, its pivots
+    // swapped throughout, and a method of moments' -; where Accelerate's,
+    // the lower triangle never read; and a singular one said to be.
+    void aSymmetricMatrixIsSolvedAsLdl()
+    {
+        const int n = slowBuild() ? 500 : 900;
+        Mat<Complex> random = randomMatrix<Complex>(n, n, 31);
+        random = (random + random.transpose()).eval();
+        const QList<std::pair<QString, Mat<Complex>>> matrices{{QStringLiteral("random"), random},
+                                                               {QStringLiteral("moment"), momentMatrix<Complex>(n)}};
+        const Mat<Complex> b = randomMatrix<Complex>(n, 3, 32);
+        for (const auto& [what, a] : matrices) {
+            const double exact = !slowBuild() ? trueRcond(a) : 0.0;
+            Mat<Complex> copy = a;
+            if (rf::luOnAccelerate())
+                for (int j = 0; j < n; ++j)
+                    for (int i = j + 1; i < n; ++i) copy(i, j) = Complex(1e3, -7e2);
+            const rf::DenseFactors<Complex> ldl(std::move(copy), 0, true);
+            QCOMPARE(ldl.symmetric(), rf::luOnAccelerate());
+            const Mat<Complex> x = ldl.solve(b);
+            const double backward = backwardError(a, x, b);
+            QVERIFY2(backward < 1e-13, qPrintable(QStringLiteral("%1: a backward error of %2").arg(what).arg(backward)));
+            Mat<Complex> again = a;
+            const rf::DenseFactors<Complex> lu(std::move(again));
+            QVERIFY(!lu.symmetric());
+            const Mat<Complex> y = lu.solve(b);
+            const double apart = (x - y).cwiseAbs().maxCoeff() / y.cwiseAbs().maxCoeff();
+            QVERIFY2(apart < 1e-10, qPrintable(QStringLiteral("%1: L D L^T's and the LU's solutions %2 apart").arg(what).arg(apart)));
+            const double rcond = ldl.rcond();
+            if (exact > 0)
+                QVERIFY2(rcond >= exact * (1 - 1e-6) && rcond <= 3 * exact,
+                         qPrintable(QStringLiteral("%1: rcond %2, the matrix's %3").arg(what).arg(rcond).arg(exact)));
+            QVERIFY2(rcond <= 2 * lu.rcond() && lu.rcond() <= 2 * rcond,
+                     qPrintable(QStringLiteral("%1: rcond %2, the LU's %3").arg(what).arg(rcond).arg(lu.rcond())));
+        }
+        Mat<Complex> singular = random;
+        singular.row(n / 2).setZero();
+        singular.col(n / 2).setZero();
+        const rf::DenseFactors<Complex> none(std::move(singular), 0, true);
+        QVERIFY2(!(none.rcond() >= 1e-14), qPrintable(QString::number(none.rcond())));
+    }
+
     // What chooses: the process's choice; QUCS_RF25_LU over it; and
     // QUCS_FEM_SOLVER=eigen, Eigen everywhere, as on Linux and Windows.
     void theEnvironmentChoosesOverTheProcess()

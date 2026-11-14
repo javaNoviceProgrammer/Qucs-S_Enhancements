@@ -809,10 +809,27 @@ int WaveGreen::prepare(int threads) const
     a_table.clear();
     a_table.reserve(a_rho.size());
     for (int i = 0; i < a_rho.size(); ++i) a_table << Pair{values.at(2 * i), values.at(2 * i + 1)};
+    // What the quintic reads (oneFromTable()), made once here: of the half of a
+    // compressed solve's fill and of a dense one's spent reading remainders,
+    // most was its weights' 30 divisions at every distance read.
+    const int n = int(a_rho.size());
+    a_scaled.assign(std::size_t(2 * n), Complex(0, 0));
+    for (int i = 0; i < n; ++i) {
+        a_scaled[std::size_t(2 * i)] = a_rho.at(i) * a_table.at(i).scalar;
+        a_scaled[std::size_t(2 * i + 1)] = a_rho.at(i) * a_table.at(i).vector;
+    }
+    a_inverse.assign(std::size_t(6 * std::max(0, n - 5)), 0.0);
+    for (int j = 0; j + 6 <= n; ++j)
+        for (int p = 0; p < 6; ++p) {
+            double d = 1;
+            for (int q = 0; q < 6; ++q)
+                if (q != p) d *= a_rho.at(j + p) - a_rho.at(j + q);
+            a_inverse[std::size_t(6 * j + p)] = 1 / d;
+        }
     return elsewhere;
 }
 
-WaveGreen::Pair WaveGreen::fromTable(double rho) const
+Complex WaveGreen::oneFromTable(double rho, bool vector) const
 {
     prepare();
     // Read through const views: the lists are mutable, and their non-const
@@ -820,38 +837,51 @@ WaveGreen::Pair WaveGreen::fromTable(double rho) const
     // at once where a compressed solve fills its blocks, the heap's undoing.
     const QList<double>& nodes = a_rho;
     const QList<Pair>& table = a_table;
-    if (nodes.size() < 8 || rho >= nodes.last()) return integral(std::max(rho, 0.0), 0);
+    if (nodes.size() < 8 || rho >= nodes.last()) {
+        const Pair p = integral(std::max(rho, 0.0), 0);
+        return vector ? p.vector : p.scalar;
+    }
     if (rho <= nodes.at(1)) {
         // The remainder is even in rho: straight in rho^2 to the first.
         const double t = (rho / nodes.at(1)) * (rho / nodes.at(1));
-        const Pair& p0 = table.at(0);
-        const Pair& p1 = table.at(1);
-        return {p0.scalar + t * (p1.scalar - p0.scalar), p0.vector + t * (p1.vector - p0.vector)};
+        const Complex v0 = vector ? table.at(0).vector : table.at(0).scalar;
+        const Complex v1 = vector ? table.at(1).vector : table.at(1).scalar;
+        return v0 + t * (v1 - v0);
     }
     // A quintic through the six nodes about it, of rho times the value -
     // which tends to a constant where the value goes as 1/rho. (A cubic
     // left a part in 1e5 where the far field turns over a wavelength.)
+    // Lagrange's weights, prod_q (rho - rho_q) / (rho_p - rho_q), their
+    // denominators made with the table (prepare()).
     const int i = int(std::upper_bound(nodes.begin(), nodes.end(), rho) - nodes.begin()) - 1;
     const int j = std::clamp(i - 2, 1, int(nodes.size()) - 6);
-    Pair out{Complex(0, 0), Complex(0, 0)};
-    for (int p = j; p < j + 6; ++p) {
-        double weight = 1;
-        for (int q = j; q < j + 6; ++q)
-            if (q != p) weight *= (rho - nodes.at(q)) / (nodes.at(p) - nodes.at(q));
-        out.scalar += weight * nodes.at(p) * table.at(p).scalar;
-        out.vector += weight * nodes.at(p) * table.at(p).vector;
+    const double* x = nodes.constData() + j;
+    const double d[6] = {rho - x[0], rho - x[1], rho - x[2], rho - x[3], rho - x[4], rho - x[5]};
+    // (Each weight's numerator, the product of the others: from the left
+    //  and from the right.)
+    double left[6], right[6];
+    left[0] = right[5] = 1;
+    for (int p = 1; p < 6; ++p) left[p] = left[p - 1] * d[p - 1];
+    for (int p = 4; p >= 0; --p) right[p] = right[p + 1] * d[p + 1];
+    const double* inverse = a_inverse.data() + std::size_t(6 * j);
+    const Complex* scaled = a_scaled.data() + std::size_t(2 * j + (vector ? 1 : 0));
+    double re = 0, im = 0;
+    for (int p = 0; p < 6; ++p) {
+        const double w = left[p] * right[p] * inverse[p];
+        re += w * scaled[2 * p].real();
+        im += w * scaled[2 * p].imag();
     }
-    return {out.scalar / rho, out.vector / rho};
+    return Complex(re / rho, im / rho);
 }
 
 Complex WaveGreen::scalarRemainder(double rho) const
 {
-    return ok() ? fromTable(rho).scalar : Complex(0, 0);
+    return ok() ? oneFromTable(rho, false) : Complex(0, 0);
 }
 
 Complex WaveGreen::vectorRemainder(double rho) const
 {
-    return ok() ? fromTable(rho).vector : Complex(0, 0);
+    return ok() ? oneFromTable(rho, true) : Complex(0, 0);
 }
 
 Complex WaveGreen::scalarRemainderByIntegral(double rho, double ellipse) const
@@ -880,13 +910,13 @@ Complex closedForm(const WaveGreen::Term& t, double rho)
 Complex WaveGreen::scalar(double rho) const
 {
     if (!ok()) return Complex(0, 0);
-    return closedForm(a_scalarTerm, rho) + fromTable(rho).scalar;
+    return closedForm(a_scalarTerm, rho) + oneFromTable(rho, false);
 }
 
 Complex WaveGreen::vector(double rho) const
 {
     if (!ok()) return Complex(0, 0);
-    return closedForm(a_vectorTerm, rho) + closedForm(a_vectorImage, rho) + fromTable(rho).vector;
+    return closedForm(a_vectorTerm, rho) + closedForm(a_vectorImage, rho) + oneFromTable(rho, true);
 }
 
 // ------------------------------------------------------------ A via's kernels

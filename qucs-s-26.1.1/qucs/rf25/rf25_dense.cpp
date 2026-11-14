@@ -83,6 +83,38 @@ __attribute__((availability(macos, introduced = 13.3))) LapackInt factorize(Lapa
     return info;
 }
 
+/// A complex symmetric matrix's L D L^T, its upper triangle read, by
+/// zsytrf whole (DenseFactors). LAPACK's info, as factorize()'s.
+__attribute__((availability(macos, introduced = 13.3))) LapackInt factorizeSymmetric(LapackInt n, Complex* a,
+                                                                                      LapackInt* pivots)
+{
+    LapackInt info = 0, size = -1;
+    Complex best(0, 0);
+    zsytrf_("U", &n, a, &n, pivots, &best, &size, &info);
+    size = std::max<LapackInt>(1, LapackInt(best.real()));
+    std::vector<Complex> work(static_cast<std::size_t>(size));
+    zsytrf_("U", &n, a, &n, pivots, work.data(), &size, &info);
+    return info;
+}
+
+__attribute__((availability(macos, introduced = 13.3))) void substituteSymmetric(LapackInt n, LapackInt columns,
+                                                                                  const Complex* ldl,
+                                                                                  const LapackInt* pivots, Complex* b)
+{
+    LapackInt info = 0;
+    zsytrs_("U", &n, &columns, ldl, &n, pivots, b, &n, &info);
+}
+
+__attribute__((availability(macos, introduced = 13.3))) double conditionSymmetric(LapackInt n, const Complex* ldl,
+                                                                                   const LapackInt* pivots, double norm)
+{
+    LapackInt info = 0;
+    double rcond = 0;
+    std::vector<Complex> work(std::size_t(2 * n));
+    zsycon_("U", &n, ldl, &n, pivots, &norm, &rcond, work.data(), &info);
+    return rcond;
+}
+
 /// A real matrix's: dgetrf whole, 15 to 17 times Eigen at 6000 to 8000.
 __attribute__((availability(macos, introduced = 13.3))) LapackInt factorize(LapackInt n, double* a,
                                                                              LapackInt* pivots)
@@ -228,6 +260,7 @@ template <class Scalar> struct DenseFactors<Scalar>::Impl {
     double norm = 0;                 ///< A's 1-norm, for gecon
     LapackInt info = 0;              ///< LAPACK's: a pivot nought
     bool accelerated = false;
+    bool symmetric = false;          ///< L D L^T, Accelerate's (zsytrf): lu its factors, pivots Bunch and Kaufman's
     bool openBlas = false;
     openblas::Way way = openblas::Way::None;   ///< how OpenBLAS's calls are made
     double waited = 0;               ///< for OpenBLAS's lane, seconds
@@ -235,7 +268,8 @@ template <class Scalar> struct DenseFactors<Scalar>::Impl {
     std::optional<Eigen::PartialPivLU<Eigen::Ref<Matrix>>> eigen;
 };
 
-template <class Scalar> DenseFactors<Scalar>::DenseFactors(Matrix&& a, int threads) : d(std::make_unique<Impl>())
+template <class Scalar> DenseFactors<Scalar>::DenseFactors(Matrix&& a, int threads, bool symmetric)
+    : d(std::make_unique<Impl>())
 {
     d->lu = std::move(a);
     const DenseLu library = denseLuInEffect();
@@ -256,9 +290,28 @@ template <class Scalar> DenseFactors<Scalar>::DenseFactors(Matrix&& a, int threa
         if (__builtin_available(macOS 13.3, *)) {
             const LapackInt n = LapackInt(d->lu.rows());
             d->pivots.assign(std::size_t(n), 0);
-            if (n > 0) {
+            if constexpr (std::is_same_v<Scalar, Complex>) d->symmetric = symmetric;
+            if (n > 0 && d->symmetric) {
+                // (The 1-norm of the matrix its upper triangle is: each
+                //  column on and above the diagonal, and its row beside it.)
+                std::vector<double> column(static_cast<std::size_t>(n), 0.0);
+                for (LapackInt j = 0; j < n; ++j)
+                    for (LapackInt i = 0; i <= j; ++i) {
+                        const double v = std::abs(d->lu(i, j));
+                        column[std::size_t(j)] += v;
+                        if (i != j) column[std::size_t(i)] += v;
+                    }
+                d->norm = *std::max_element(column.begin(), column.end());
+            } else if (n > 0) {
                 d->norm = d->lu.cwiseAbs().colwise().sum().maxCoeff();
-                d->info = factorize(n, d->lu.data(), d->pivots.data());
+            }
+            if (n > 0) {
+                if constexpr (std::is_same_v<Scalar, Complex>) {
+                    d->info = symmetric ? factorizeSymmetric(n, d->lu.data(), d->pivots.data())
+                                        : factorize(n, d->lu.data(), d->pivots.data());
+                } else {
+                    d->info = factorize(n, d->lu.data(), d->pivots.data());
+                }
             }
             d->accelerated = true;
             ++byAccelerate;
@@ -289,7 +342,14 @@ template <class Scalar> typename DenseFactors<Scalar>::Matrix DenseFactors<Scala
         if (n == 0 || columns == 0) return Matrix::Zero(n, columns);
         Matrix x = Matrix::Zero(n, std::max(columns, kSolveColumns));
         x.leftCols(columns) = b;
-        substitute(n, LapackInt(x.cols()), d->lu.data(), d->pivots.data(), x.data());
+        if constexpr (std::is_same_v<Scalar, Complex>) {
+            if (d->symmetric)
+                substituteSymmetric(n, LapackInt(x.cols()), d->lu.data(), d->pivots.data(), x.data());
+            else
+                substitute(n, LapackInt(x.cols()), d->lu.data(), d->pivots.data(), x.data());
+        } else {
+            substitute(n, LapackInt(x.cols()), d->lu.data(), d->pivots.data(), x.data());
+        }
         if (x.cols() != columns) x.conservativeResize(Eigen::NoChange, columns);
         return x;
     }
@@ -315,6 +375,9 @@ template <class Scalar> double DenseFactors<Scalar>::rcond() const
         if (n == 0) return 1;
         // (A pivot of nought: singular, which gecon does not see.)
         if (d->info > 0 || !(d->norm > 0)) return 0;
+        if constexpr (std::is_same_v<Scalar, Complex>) {
+            if (d->symmetric) return conditionSymmetric(n, d->lu.data(), d->pivots.data(), d->norm);
+        }
         return condition(n, d->lu.data(), d->norm);
     }
 #endif
@@ -329,6 +392,11 @@ template <class Scalar> bool DenseFactors<Scalar>::accelerated() const
 template <class Scalar> bool DenseFactors<Scalar>::openBlas() const
 {
     return d->openBlas;
+}
+
+template <class Scalar> bool DenseFactors<Scalar>::symmetric() const
+{
+    return d->symmetric;
 }
 
 template <class Scalar> DenseLu DenseFactors<Scalar>::library() const

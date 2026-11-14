@@ -367,6 +367,14 @@ struct FullWaveControl {
     /// names its returns is - a port from a metal then the same columns as
     /// one returning through a terminal of that metal under it.
     bool portPaths = true;
+    /// Tests: false makes a compressed solve's dear static parts at every
+    /// frequency as it goes, none kept from one to the next (as before
+    /// they were kept): the same to the last digit either way.
+    bool staticCache = true;
+    /// Tests: a dense solve's systems factorized as L D L^T where
+    /// Accelerate's LAPACK factorizes them (1) or never (0); below nought,
+    /// where the machine solves many frequencies at once (rf25_dense.h).
+    int symmetricLu = -1;
 };
 
 /// RF 2.5D > Settings…, for the process: the most runs and cells a dense
@@ -462,6 +470,9 @@ struct FullWave {
     double fillSeconds = 0, luSeconds = 0;
     bool accelerated = false;
     bool openBlas = false;
+    /// Dense: its systems factorized as L D L^T, Accelerate's - where many
+    /// frequencies at once share the machine (rf25_dense.h).
+    bool symmetricLu = false;
     /// Held compressed and solved by iteration (rf25_fast.h), not dense: the
     /// low-rank blocks' tolerance; what the matrices of the frequency that
     /// took the most held, bytes, beside what they would dense; their
@@ -512,6 +523,10 @@ struct FillShared {
     long long greens = 0;    ///< the tables' distances
     long long columns = 0;   ///< columns, or blocks of them
     long long statics = 0;   ///< the static parts' columns
+    /// The pairs whose static parts the last compressed solve kept for all
+    /// of its frequencies (rf25_fullwave.cpp's cacheStatics()): runs', and
+    /// cells'.
+    long long keptRuns = 0, keptCells = 0;
 };
 FillShared fillShared();
 
