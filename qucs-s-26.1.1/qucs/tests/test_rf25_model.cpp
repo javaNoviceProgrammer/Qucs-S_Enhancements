@@ -334,6 +334,38 @@ private slots:
         }
     }
 
+    // A metal or impedance ground's loss in the full wave is asked for on
+    // the ground ("Its loss in the full-wave solve"): read where the plane
+    // can lose, and not where it is perfect or open, nor where not asked.
+    void aGroundsLossInTheFullWaveIsReadWhereItCanLose()
+    {
+        const auto read = [](const QString& kind, bool asked) {
+            rf::Model m = twoMetals();
+            rf::Node ground;
+            ground.type = QStringLiteral("rf_ground");
+            ground.tag = QStringLiteral("gnd1");
+            ground.label = QStringLiteral("GND");
+            ground.props.insert(QStringLiteral("kind"), kind);
+            ground.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+            ground.props.insert(QStringLiteral("impedance"), QStringLiteral("0.02"));
+            if (asked) ground.props.insert(QStringLiteral("fullwave_loss"), true);
+            m.stackNode().children.insert(m.stackNode().children.begin(), ground);
+            const rf::Stack s = m.stack();
+            const rf::Layer* g = s.named(QStringLiteral("GND"));
+            return g != nullptr && s.ok() ? std::optional<rf::Layer>(*g) : std::nullopt;
+        };
+        const std::optional<rf::Layer> metal = read(QStringLiteral("metal"), true), impedance = read(QStringLiteral("impedance"), true);
+        QVERIFY(metal && metal->lossInFullWave && metal->sigma == 5.8e7);
+        QVERIFY(impedance && impedance->lossInFullWave && impedance->sigma == 0.02);
+        QVERIFY(!read(QStringLiteral("metal"), false)->lossInFullWave);
+        QVERIFY(!read(QStringLiteral("perfect"), true)->lossInFullWave);
+        QVERIFY(!read(QStringLiteral("open"), true)->lossInFullWave);
+        // Shown on the ground only where it can lose.
+        const rf::NodeKind* kind = rf::nodeKind(QStringLiteral("rf_ground"));
+        QVERIFY(kind != nullptr && kind->property(QStringLiteral("fullwave_loss")) != nullptr);
+        QCOMPARE(kind->property(QStringLiteral("fullwave_loss"))->showIf, QStringLiteral("kind=metal|kind=impedance"));
+    }
+
     // A ground plane is under the stack wherever the tree puts it: at
     // nought, with no place in the order to get wrong. It was put at the
     // running height, so after the passivation it sat on top, and the one
