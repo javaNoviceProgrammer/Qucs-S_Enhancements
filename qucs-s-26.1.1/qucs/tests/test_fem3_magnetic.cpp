@@ -22,6 +22,7 @@
 #include "fem3_solver.h"
 #include "fem_results.h"
 #include "fem_solver.h"
+#include "fem_sparse.h"
 
 #include <QJsonDocument>
 #include <QtTest>
@@ -57,6 +58,31 @@ QJsonObject objects(const QString& object)
 QJsonObject normal(double x, double y, double z)
 {
     return QJsonObject{{QStringLiteral("normal"), QJsonArray{x, y, z}}};
+}
+
+/// Whether this build is a sanitized one (QUCS_TEST_SLOW: its path in any).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
+/// Whether the saddle point's LDLT is not Accelerate's: Eigen's LU of it
+/// (CI's macOS 15, Linux below MUMPS's size, QUCS_FEM_SOLVER=eigen), or a
+/// sanitized build. There the meshes are coarser: by Eigen's LU the loop
+/// took 140 s and the solenoid 210 s on an M2 Ultra (Accelerate's: 3.6 s),
+/// and CI's macOS runner, some 1.5 times slower, cut the solenoid at 300 s;
+/// sanitized on CI's Linux job uniformInZ alone went past 900 s.
+bool coarse()
+{
+    return slowBuild() || !acceleratedLu();
 }
 
 Model model3d(double hmax)
@@ -219,6 +245,16 @@ class TestFem3Magnetic : public QObject
     Q_OBJECT
 
 private slots:
+    // A sanitized build with MUMPS (CI's Linux job): its LDLTs MUMPS's
+    // whatever their size, not only from 20,000 unknowns - the library is
+    // the distribution's, optimized, where Eigen's LU is compiled into the
+    // test at -O0 with the sanitizers, some hundreds of times slower; what
+    // the sanitizers are to see is this engine's assembly, not the LU.
+    void initTestCase()
+    {
+        if (slowBuild() && !qEnvironmentVariableIsSet("QUCS_FEM_MUMPS_FROM")) qputenv("QUCS_FEM_MUMPS_FROM", "0");
+    }
+
     // A model uniform in z - an iron block of µr 100 beside a bar carrying
     // 1e8 A/m² along z, in air, its outer walls and its top and bottom
     // insulated -: the 2D model of its plan on the 3D model's own plan mesh,
@@ -227,7 +263,9 @@ private slots:
     void uniformInZ()
     {
         for (int order : {1, 2}) {
-            Model m3 = model3d(0.25);
+            // (Coarser where the LU is Eigen's: the 2D model is solved on the
+            // 3D model's own plan, so its answer is still the 3D one's.)
+            Model m3 = model3d(coarse() ? 0.5 : 0.25);
             addBox(m3, QStringLiteral("air"), 0, 0, 0, 4, 3, 0.5);
             addBox(m3, QStringLiteral("iron"), 0.5, 0.5, 0, 1, 2, 0.5);
             addBox(m3, QStringLiteral("bar"), 2.25, 1, 0, 0.5, 1, 0.5);
@@ -296,7 +334,10 @@ private slots:
     {
         double energy[3] = {0, 0, 0};
         for (int order : {1, 2}) {
-            Model m = model3d(0.2);
+            // (0.23 where the LU is Eigen's: 62 s there, the gauge's worst
+            // point 0.06 of its terms; at 0.25 one point read 0.185 of the
+            // 0.2 allowed, at 0.3 past it.)
+            Model m = model3d(coarse() ? 0.23 : 0.2);
             addBox(m, QStringLiteral("air"), 0, 0, 0, 2, 2, 2);
             addBox(m, QStringLiteral("coil"), 0.5, 0.75, 0.5, 1, 0.5, 1);
             zDivisions(m, QStringLiteral("air"), 4);
@@ -335,7 +376,9 @@ private slots:
     {
         // (Its shell several elements thick: at 0.1 mm, one, its two polygons'
         // chords - the edge elements' arcs - left its thickness 0.5 % off.)
-        Model m = model3d(0.07);
+        // (0.12 where the LU is Eigen's: 23 s there, 0.07 % off; at 0.1 its
+        // one element's chords 0.5 % - the arcs fall as they fall.)
+        Model m = model3d(coarse() ? 0.12 : 0.07);
         addCylinder(m, QStringLiteral("world"), 1.6, 0.4);
         addCylinder(m, QStringLiteral("outer"), 1.1, 0.4);
         addCylinder(m, QStringLiteral("bore"), 1.0, 0.4);
