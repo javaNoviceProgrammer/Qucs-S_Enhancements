@@ -22,6 +22,7 @@
 #include "fem_materials.h"
 #include "fem_results.h"
 #include "fem_solver.h"
+#include "fem_sparse.h"
 
 #include <QJsonDocument>
 #include <QElapsedTimer>
@@ -1349,10 +1350,16 @@ private slots:
     // the contacts' shorting of the Hall field, b² W/L, to 1e-3.
     void hallBar()
     {
-        const auto bar = [](double B) {
-            Model m = model3d(0.1);
+        // (Where the LU is not Accelerate's - CI's macOS 15, Linux,
+        // QUCS_FEM_SOLVER=eigen - a coarser bar: 0.2 µm and 25 layers, 4,680
+        // unknowns, 21 s by Eigen's LU on an M2 Ultra and 0.09 % off; the
+        // bar's 28,611 by it took past 500 s there, and CI's macOS runner
+        // cut it at 900. Accelerate's: 20 s, 0.02 % off.)
+        const bool coarse = !acceleratedLu();
+        const auto bar = [coarse](double B) {
+            Model m = model3d(coarse ? 0.2 : 0.1);
             addBox(m, QStringLiteral("bar"), 0, 0, 0, 1, 1, 10);
-            zDivisions(m, QStringLiteral("bar"), 50);
+            zDivisions(m, QStringLiteral("bar"), coarse ? 25 : 50);
             const QString semi = addSemiconductor(m);
             m.find(semi)->props.insert(QStringLiteral("Bx"), QStringLiteral("%1[T]").arg(B));
             modelProp(m, semi, QStringLiteral("rhalln"), QStringLiteral("1.2"));

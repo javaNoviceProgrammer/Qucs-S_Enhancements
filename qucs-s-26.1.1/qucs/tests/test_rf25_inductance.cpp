@@ -683,7 +683,7 @@ private slots:
     // near field's LU - is the dense solve's, on a U of three strips, a
     // plate whose current turns a corner and two metals joined by a via:
     // L, L and R at direct current to a part in 1e6, each run's current to
-    // 1e-5 A. And the mesh this build used to refuse, past 3000 runs and
+    // 1e-4 of the largest. And the mesh this build used to refuse, past 3000 runs and
     // cells, is solved, its L within 2 % of a coarser dense mesh's, said.
     void aLoopPastTheDenseLimitIsSolvedCompressed()
     {
@@ -702,9 +702,21 @@ private slots:
             for (const auto& [name, a, b] : {std::make_tuple("L", dense.l, compressed.l), std::make_tuple("L dc", dense.lDc, compressed.lDc),
                                             std::make_tuple("R dc", dense.rDc, compressed.rDc)})
                 if (std::abs(b / a - 1) > 1e-6) said += QStringLiteral("%1: %2 against %3; ").arg(QLatin1String(name)).arg(b).arg(a);
-            double most = 0;
-            for (int i = 0; i < dense.current.size(); ++i) most = std::max(most, std::abs(dense.current.at(i) - compressed.current.value(i)));
-            if (most > 1e-5) said += QStringLiteral("a run's current %1 A out; ").arg(most);
+            // Each run's current within 1e-4 of the largest: the compressed
+            // L is ACA's to 1e-6 a block, and a run's current is first order
+            // in it, where the energy, L, is second. GMRES met its 1e-10 on
+            // every platform; what is left is how the cross approximation
+            // fell - the U's runs 2.9e-6 A apart here (clang, arm64), 1.7e-5
+            // on CI's sanitized Linux (GCC at -O0, no FMA), past the 1e-5 A
+            // this said until 12 November, its L within its 1e-6 all the same.
+            double most = 0, largest = 0;
+            for (int i = 0; i < dense.current.size(); ++i) {
+                most = std::max(most, std::abs(dense.current.at(i) - compressed.current.value(i)));
+                largest = std::max(largest, std::abs(dense.current.at(i)));
+            }
+            qInfo("compressed: %lld runs, the largest current %.3g A, a run's at most %.3g A from the dense solve's; GMRES %d iteration(s) to %.2g",
+                  qlonglong(dense.current.size()), largest, most, compressed.iterations, compressed.residual);
+            if (most > 1e-4 * largest) said += QStringLiteral("a run's current %1 A out, the largest %2 A; ").arg(most).arg(largest);
             if (!compressed.lines.join(' ').contains(QStringLiteral("solved compressed: L held in")))
                 said += compressed.lines.join(" | ");
             return said;

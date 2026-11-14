@@ -3028,7 +3028,19 @@ private slots:
         QVERIFY2(!plot.notes.join(QLatin1Char(' ')).contains(QStringLiteral("read only in part")), qPrintable(plot.notes.join(QLatin1Char(' '))));
         const QPointF corner = plot.calibration.toValue(a.frame.bottomLeft());
         QVERIFY2(std::abs(corner.x()) < 0.05 && std::abs(corner.y() + 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(corner.x()).arg(corner.y())));
-        QCOMPARE_LE(took, 60000);   // (some 5 s; before, 20 s and more)
+        // (Some 5 s; before, 20 s and more. Not under the sanitizers: a
+        // Debug build with ASan took 78 s on CI's Linux runner - the suite
+        // 697 s -, some fifteen times a Release build's, so that no limit
+        // there tells the fix from what it fixed; Release builds keep it.)
+        bool sanitized = qEnvironmentVariableIsSet("QUCS_TEST_SLOW");
+#if defined(__SANITIZE_ADDRESS__)
+        sanitized = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+        sanitized = true;
+#endif
+#endif
+        if (!sanitized) QCOMPARE_LE(took, 60000);
     }
 
     void twoPlotsOfAPageReadInEitherOrder()
