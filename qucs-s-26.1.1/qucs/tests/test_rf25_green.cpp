@@ -10,6 +10,7 @@
 #include <QtTest>
 
 #include "rf25/rf25_green.h"
+#include "rf25/rf25_wave.h"
 
 #include <Eigen/Dense>
 
@@ -198,6 +199,38 @@ private slots:
         // Even, and decaying like 1/sqrt(x).
         QCOMPARE(rf::besselJ0(-3.5), rf::besselJ0(3.5));
         QVERIFY(std::abs(rf::besselJ0(400.0)) < 0.05);
+    }
+
+    // J0 and Hankel's H0 of the first kind at complex arguments, by their
+    // series below 12 and Hankel's asymptotic form above (their divisions
+    // inline, their square roots by the half-sum: rf25_wave.cpp), against
+    // SciPy's; and H0 of the second kind at the conjugate the conjugate,
+    // which the Sommerfeld tail takes for its downward line.
+    void hankelH0IsItsOwnAndItsConjugatesConjugate()
+    {
+        using C = std::complex<double>;
+        struct Value {
+            C z, h1, j0;
+        };
+        const QList<Value> values{
+            {C(1, 0), C(0.7651976865579664, 0.088256964215677), C(0.7651976865579666, 0)},
+            {C(5, 0), C(-0.1775967713143384, -0.3085176252490338), C(-0.17759677131433835, 0)},
+            {C(20, 0), C(0.1670246643405832, 0.06264059680938383), C(0.16702466434058322, 0)},
+            {C(3, 4), C(-0.0010666528746791273, 0.006321791757978726), C(-8.812143793697905, -4.598437899743034)},
+            {C(8, -6), C(33.05433502503805, 97.0575095865376), C(16.527423602362152, 48.52857950278753)},
+            {C(15, 9), C(4.6303404673357206e-06, 2.2992888853173518e-05), C(-259.65515701718635, -730.9240622719051)},
+            {C(0.3, 2), C(0.025959413659454554, -0.06733491770739915), C(2.213199146721239, -0.4716047739549205)},
+            {C(40, 3), C(0.0006000232414005538, 0.006241691776285965), C(0.026857881747074715, -1.262032856284906)}};
+        for (const Value& v : values) {
+            const C h1 = rf::hankelH0(v.z, 1), j0 = rf::besselJ0(v.z);
+            QVERIFY2(std::abs(h1 - v.h1) <= 1e-10 * std::abs(v.h1),
+                     qPrintable(QStringLiteral("H0(%1, %2): %3 %4").arg(v.z.real()).arg(v.z.imag()).arg(h1.real()).arg(h1.imag())));
+            QVERIFY2(std::abs(j0 - v.j0) <= 1e-10 * std::abs(v.j0),
+                     qPrintable(QStringLiteral("J0(%1, %2): %3 %4").arg(v.z.real()).arg(v.z.imag()).arg(j0.real()).arg(j0.imag())));
+            const C h2 = rf::hankelH0(std::conj(v.z), 2);
+            QVERIFY2(std::abs(h2 - std::conj(h1)) <= 1e-14 * std::abs(h1),
+                     qPrintable(QStringLiteral("H0(2) at (%1, %2)").arg(v.z.real()).arg(v.z.imag())));
+        }
     }
 
     // A stack read as dielectric slabs: the metals take no room, each

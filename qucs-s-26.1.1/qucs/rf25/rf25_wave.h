@@ -81,6 +81,10 @@
 
 namespace qucs_s::rf25 {
 
+/// What a table's integrals share: the spectral functions at the points
+/// of the path every distance takes alike (rf25_wave.cpp).
+struct SharedPath;
+
 using Complex = std::complex<double>;
 
 /// Bessel's J0 of a complex argument, to about 1e-11: its power series
@@ -111,6 +115,9 @@ struct GreensKept {
     double bytes = 0;        ///< what they hold
     long long built = 0;     ///< distances integrated since forgetGreens()
     long long reused = 0;    ///< distances handed over from a kept table
+    /// The spectral functions' points a table's distances read from what
+    /// they share (rf25_wave.cpp's SharedPath), not made again.
+    long long sharedPoints = 0;
 };
 /// What is kept, and what was built and reused since forgetGreens().
 GreensKept greensKept();
@@ -119,6 +126,10 @@ void forgetGreens();
 /// How much may be kept, bytes - 256 MB unless set; nought keeps nothing,
 /// every table built as it is wanted. What no longer fits is forgotten.
 void keepGreens(double bytes);
+/// Tests: false makes every distance of a table integrate its whole path
+/// itself, none of it shared with the others (SharedPath) - the same table
+/// to the last digit either way.
+void sharePaths(bool shared);
 
 /*!
  * The retarded Green's functions of \a layers at a frequency, between a
@@ -205,7 +216,7 @@ private:
     /// What the closed-form terms are spectrally, to take out.
     Pair extracted(Complex kr) const;
     /// The remainders' Sommerfeld integral at \a rho.
-    Pair integral(double rho, double ellipse) const;
+    Pair integral(double rho, double ellipse, SharedPath* shared = nullptr) const;
     /// One of the remainders from the table, \a vector's or the scalar's
     /// (past it, from the integral).
     Complex oneFromTable(double rho, bool vector) const;
@@ -349,7 +360,7 @@ private:
     /// what the closed forms are of them.
     void spectral(Complex kr, Complex* full) const;
     void extracted(Complex kr, Complex* cut) const;
-    void integral(double rho, double ellipse, Complex* out) const;
+    void integral(double rho, double ellipse, Complex* out, SharedPath* shared = nullptr) const;
     Complex fromTable(int component, double rho) const;
     Complex slabK2(int slab) const;   ///< w^2 mu0 eps of a slab
 

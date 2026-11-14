@@ -2376,9 +2376,8 @@ void System::operator()(const VectorC& x, VectorC& y) const
         q[c.head.at(a)] -= x[a];
     }
     p.multiply(q, v);
-    // (Divided, not overJw(): a run's drop once a product, against the whole
-    //  dense system's terms, its cost nothing - and its last digits otherwise
-    //  took a pad on 144 vias at 100 MHz from 80 GMRES iterations to 82.)
+    // (Divided, not overJw(): one a run, against the dense system's one a
+    //  term, its cost is nothing.)
     for (int a = 0; a < c.nr; ++a) y[a] += ((c.tail.at(a) >= 0 ? v[c.tail.at(a)] : Complex(0, 0)) - v[c.head.at(a)]) / jw;
     // The vias: W = -A^T Phi, Phi each via's potential at each cell, is a
     // run in the plane's coupling to a via both ways round, and half of it
@@ -3961,6 +3960,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     Compression z;
     int side = 1;   // frequencies at a time
     bool symmetricLu = false;
+    int machineAtOnce = 1;   // frequencies the machine would solve at once (what chooses L D L^T)
     if (!compress) {
         makeStatics(c, threads);
         // The frequencies side by side: each its own Green's functions and
@@ -3978,6 +3978,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // digit on any number of them.
         const int machine = int(std::max(1u, std::thread::hardware_concurrency()));
         const int here = std::min({machine, nf, std::max(1, int(sweepMemory() / perFrequency))});
+        machineAtOnce = here;
         symmetricLu = control != nullptr && control->symmetricLu >= 0 ? control->symmetricLu > 0 : here >= kSymmetricFrom;
     } else {
         // Compressed: the trees and the shapes of the matrices, the same at
@@ -4092,8 +4093,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         }
         if (out.symmetricLu)
             out.lines << tr("Each frequency's system factorized as the symmetric matrix it is, L D L^T - half an LU's "
-                            "arithmetic, the quicker where %1 frequencies at once share the machine.")
-                             .arg(side);
+                            "arithmetic, the quicker where many frequencies at once share the machine: this machine "
+                            "would solve %1 at once.")
+                             .arg(machineAtOnce);
     }
     out.lines << out.portsSaid;
     if (!naming.isEmpty())
