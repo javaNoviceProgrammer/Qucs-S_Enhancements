@@ -159,6 +159,9 @@ public:
     int columns() const { return a_columns != nullptr ? a_columns->items() : 0; }
     bool symmetric() const { return a_symmetric; }
     const std::vector<Block>& blocks() const { return a_blocks; }
+    /// The trees its blocks' rows and columns are nodes of.
+    const ClusterTree* rowTree() const { return a_rows; }
+    const ClusterTree* columnTree() const { return a_columns; }
     /// What its blocks hold, bytes; and what the dense matrix would.
     double bytes() const;
     double denseBytes() const;

@@ -296,6 +296,7 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
         matrix.insert(QStringLiteral("LU by"), w.accelerated ? QStringLiteral("Accelerate")
                                                : w.openBlas  ? QStringLiteral("OpenBLAS")
                                                              : QStringLiteral("Eigen"));
+        if (w.symmetricLu) matrix.insert(QStringLiteral("factorized"), QStringLiteral("L D L^T"));
         matrix.insert(QStringLiteral("fill s"), std::round(w.fillSeconds / nf * 1e3) / 1e3);
         matrix.insert(QStringLiteral("LU s"), std::round(w.luSeconds / nf * 1e3) / 1e3);
     }

@@ -77,6 +77,7 @@
 #include <QStringList>
 
 #include <complex>
+#include <vector>
 
 namespace qucs_s::rf25 {
 
@@ -205,7 +206,9 @@ private:
     Pair extracted(Complex kr) const;
     /// The remainders' Sommerfeld integral at \a rho.
     Pair integral(double rho, double ellipse) const;
-    Pair fromTable(double rho) const;
+    /// One of the remainders from the table, \a vector's or the scalar's
+    /// (past it, from the integral).
+    Complex oneFromTable(double rho, bool vector) const;
 
     Layers a_layers;
     double a_frequency = 0, a_omega = 0;
@@ -220,6 +223,12 @@ private:
     double a_rhoMax = 0;             ///< m, how far the table goes
     mutable QList<double> a_rho;     ///< the table's distances, m, from nought
     mutable QList<Pair> a_table;     ///< the remainders there
+    /// (What oneFromTable()'s quintic reads, made with the table: each distance times
+    ///  each remainder there - a_scaled[2 i] the scalar's, [2 i + 1] the
+    ///  vector's -, and over each six distances from the i-th, each one's
+    ///  Lagrange denominator, a_inverse[6 i + p] = 1 / prod (rho_p - rho_q).)
+    mutable std::vector<Complex> a_scaled;
+    mutable std::vector<double> a_inverse;
     QStringList a_problems;
 };
 
