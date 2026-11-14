@@ -222,9 +222,10 @@ public:
     const pdf::vec::Graphics& graphics(int page);
     bool hasVectors() const;
     QString vectorProblem() const { return a_problem; }
-    /// Some of the page's text went unread: the page so heavy that its calls
-    /// to pdfium were cut short.
-    bool textCut(int page) const;
+    /// The last read of the page's text left some unread: the page so heavy
+    /// that its calls to pdfium were cut short. \a narrowest: the width of
+    /// the narrowest line of text left (points; 0 if not known).
+    bool textCut(int page, double* narrowest = nullptr) const;
     /// The words and numbers in \a within (page points).
     QList<Token> tokens(int page, const QRectF& within);
     QImage render(int page, const QRectF& region, double scale) const;
