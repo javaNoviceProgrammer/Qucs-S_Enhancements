@@ -1397,37 +1397,66 @@ private slots:
     // A dense sweep's systems factorized as L D L^T where Accelerate's
     // LAPACK is here (rf25_dense.h) - by default where the machine solves
     // twelve frequencies or more at once - give the LU's answer to its
-    // rounding, said; elsewhere it is the LU.
+    // rounding, said; elsewhere it is the LU. L D L^T reads the system's
+    // upper triangle alone, so every term the system has must be as
+    // symmetric as the LU takes it: a sheet's strip; a copper line solved as
+    // its two faces, its walls and their twins' mutual terms, over a copper
+    // ground whose loss the full wave counts; and a via between two metals
+    // over the same ground.
     void aDenseSweepFactorizedAsLdlIsTheLusAnswer()
     {
-        const rf::Stack stack = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
-        const QList<rf::Conductor> one{strip(0, 0, 1500, 100)};
-        const rf::Mesh mesh = meshed(one, 4, 100e-6);
-        const QList<double> fs = {1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
-        const auto solve = [&mesh, &one, &stack, &fs](int symmetric) {
-            rf::FullWaveControl control;
-            control.matrix = rf::FullWaveControl::Matrix::Dense;
-            control.symmetricLu = symmetric;
-            return rf::fullWaveOf(mesh, one, stack,
-                                  {edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
-                                   edgePort(QPointF(1500, 50), QStringLiteral("M1"), QPointF(1, 0))},
-                                  fs, 1e-6, &control);
+        const QString m1 = QStringLiteral("M1"), m2 = QStringLiteral("M2");
+        const auto lossyGround = [](rf::Stack s) {
+            s.layers[0].variant = QStringLiteral("metal");
+            s.layers[0].sigma = 5.8e7;
+            s.layers[0].lossInFullWave = true;
+            return s;
         };
-        const rf::FullWave lu = solve(0), ldl = solve(1), automatic = solve(-1);
-        QVERIFY2(lu.ok() && ldl.ok() && automatic.ok(), qPrintable(why(lu) + why(ldl) + why(automatic)));
-        QVERIFY(!lu.symmetricLu);
-        QCOMPARE(ldl.symmetricLu, rf::luOnAccelerate());
-        QCOMPARE(says(ldl.lines, "L D L^T"), ldl.symmetricLu);
-        QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12);
-        double most = 0;
-        for (int k = 0; k < fs.size(); ++k)
-            for (int i = 0; i < 2; ++i)
-                for (int j = 0; j < 2; ++j) {
-                    most = std::max(most, std::abs(ldl.s.at(k).at(i).at(j) - lu.s.at(k).at(i).at(j)));
-                    QVERIFY(std::abs(ldl.z.at(k).at(i).at(j) - lu.z.at(k).at(i).at(j)) <= 1e-9 * std::abs(lu.z.at(k).at(i).at(j)) + 1e-12);
-                }
-        qWarning("S as L D L^T within %.2g of the LU's", most);
-        QVERIFY2(most < 1e-10, qPrintable(QString::number(most)));
+        struct Case {
+            const char* name;
+            QList<rf::Conductor> conductors;
+            rf::Mesh mesh;
+            rf::Stack stack;
+            QList<rf::FullWavePort> ports;
+        };
+        QList<Case> cases;
+        const QList<rf::Conductor> one{strip(0, 0, 1500, 100)};
+        cases << Case{"sheet", one, meshed(one, 4, 100e-6), grounded(9.8, 100e-6, 0, 3e-6, 5.8e7),
+                      {edgePort(QPointF(0, 50), m1, QPointF(-1, 0)), edgePort(QPointF(1500, 50), m1, QPointF(1, 0))}};
+        rf::Stack faces = lossyGround(grounded(9.8, 100e-6, 0, 3e-6, 5.8e7));
+        faces.layers.last().twoSheets = true;
+        const QList<rf::Conductor> short1{strip(0, 0, 1000, 100)};
+        cases << Case{"faces", short1, meshed(short1, 4, 100e-6), faces,
+                      {edgePort(QPointF(0, 50), m1, QPointF(-1, 0)), edgePort(QPointF(1000, 50), m1, QPointF(1, 0))}};
+        const double w = 50;
+        const QList<rf::Conductor> climbing = {strip(0, 0, 1000, w), on(m2, 1000 - w, 0, 1000, w), on(QStringLiteral("V1"), 1000 - w, 0, w, w)};
+        cases << Case{"via", climbing, evenly(climbing, 2, 100e-6, 2), lossyGround(withVia(twoMetals(), QStringLiteral("V1"), m1, m2)),
+                      {edgePort(QPointF(0, w / 2), m1), edgePort(QPointF(2000 - w, w / 2), m2)}};
+        const QList<double> fs = {1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
+        for (const Case& c : cases) {
+            const auto solve = [&c, &fs](int symmetric) {
+                rf::FullWaveControl control;
+                control.matrix = rf::FullWaveControl::Matrix::Dense;
+                control.symmetricLu = symmetric;
+                return rf::fullWaveOf(c.mesh, c.conductors, c.stack, c.ports, fs, 1e-6, &control);
+            };
+            const rf::FullWave lu = solve(0), ldl = solve(1), automatic = solve(-1);
+            QVERIFY2(lu.ok() && ldl.ok() && automatic.ok(), qPrintable(QLatin1String(c.name) + why(lu) + why(ldl) + why(automatic)));
+            QVERIFY(!lu.symmetricLu);
+            QCOMPARE(ldl.symmetricLu, rf::luOnAccelerate());
+            QCOMPARE(says(ldl.lines, "L D L^T"), ldl.symmetricLu);
+            QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12);
+            double most = 0;
+            for (int k = 0; k < fs.size(); ++k)
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j) {
+                        most = std::max(most, std::abs(ldl.s.at(k).at(i).at(j) - lu.s.at(k).at(i).at(j)));
+                        QVERIFY2(std::abs(ldl.z.at(k).at(i).at(j) - lu.z.at(k).at(i).at(j)) <= 1e-9 * std::abs(lu.z.at(k).at(i).at(j)) + 1e-12,
+                                 c.name);
+                    }
+            qWarning("%s: %d runs over %d cells, S as L D L^T within %.2g of the LU's", c.name, lu.runs, lu.cells, most);
+            QVERIFY2(most < 1e-10, qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.name)).arg(most)));
+        }
     }
 
     // The current density drawn on the layout, and the Touchstone written,
@@ -2236,7 +2265,11 @@ private slots:
             // field's P whole, not its diagonal alone, about halves them (a
             // line 13 against 30, a via 10 against 18, the slant 16 against 29).
             const QLatin1String name(c.name);
-            const int few = name == QLatin1String("line") ? 20 : name == QLatin1String("via") ? 14 : name == QLatin1String("slant") ? 24 : 80;
+            // (The farm at 80 to 82: at its residual's edge, the last digits of
+            //  its kernels - the Green's tables' arithmetic of 14 November -
+            //  sway it by two.)
+            const int few = name == QLatin1String("line") ? 20 : name == QLatin1String("via") ? 14 : name == QLatin1String("slant") ? 24
+                          : name == QLatin1String("farm") ? 86 : 80;
             QVERIFY2(h.iterations <= few, qPrintable(QStringLiteral("%1: %2 iterations").arg(name).arg(h.iterations)));
             if (QLatin1String(c.name) == QLatin1String("slant")) {
                 // Its runs oblique, most of them, and both kernels' own.

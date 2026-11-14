@@ -15,6 +15,8 @@
  */
 #include <QtTest>
 #include <QThread>
+#include <QElapsedTimer>
+#include <QScopeGuard>
 
 #include "rf25/rf25_green.h"
 #include "rf25/rf25_wave.h"
@@ -796,6 +798,82 @@ private slots:
     // second waiting for the first. The wave kernel on 254 µm of 9.8 at
     // 1 GHz, and a via's of four components (two vias, two heights) through
     // 100 µm under 50 at 1 GHz.
+    // How long a stub filter's tables take - its microstrip's kernel and its
+    // ports' paths' via kernel over 254 um of alumina, to 11.2 mm, at 13
+    // frequencies from 4 to 16 GHz on one thread, nothing kept -, with the
+    // path shared among the distances and not. QUCS_RF25_BENCH set.
+    void benchmarkTheTables()
+    {
+        if (qgetenv("QUCS_RF25_BENCH").trimmed().isEmpty()) QSKIP("QUCS_RF25_BENCH not set");
+        const rf::Layers alumina = stackOf({{9.8, 254e-6, 0}}, true);
+        const auto restore = qScopeGuard([] {
+            rf::sharePaths(true);
+            rf::forgetGreens();
+            rf::keepGreens(256e6);
+        });
+        for (const bool shared : {false, true}) {
+            rf::sharePaths(shared);
+            rf::forgetGreens();
+            rf::keepGreens(0);
+            double wave = 0, via = 0;
+            for (int k = 0; k <= 12; ++k) {
+                const double f = 4e9 + 1e9 * k;
+                QElapsedTimer clock;
+                clock.start();
+                const rf::WaveGreen g(alumina, 254e-6, 254e-6, f, 11.2e-3);
+                g.prepare(1);
+                wave += double(clock.nsecsElapsed()) * 1e-9;
+                clock.restart();
+                const rf::ViaGreen v(alumina, {0, 254e-6}, {{0, 254e-6}}, {254e-6}, f, 11.2e-3);
+                v.prepare(1);
+                via += double(clock.nsecsElapsed()) * 1e-9;
+            }
+            qInfo("path %s: the microstrip's tables %.3f s, the via's %.3f s", shared ? "shared" : "each distance's own", wave, via);
+        }
+    }
+
+    // A table's distances share the spectral functions at the points of the
+    // path they take alike - the arc at its two shared heights and the real
+    // axis's panels (SharedPath) -, and the table is what each distance
+    // integrating its whole path itself makes, to the last digit: a
+    // microstrip's kernel and a via's over an oxide on alumina.
+    void aTablesSharedPathIsEachDistancesOwn()
+    {
+        const rf::Layers l = stackOf({{9.8, 100e-6, 0.002}, {4.0, 50e-6, 0}}, true);
+        const QList<rf::ViaGreen::Span> others = {{0, 100e-6}, {100e-6, 150e-6}};
+        QList<double> at{0.0};
+        for (int i = 0; 1e-9 * std::pow(10.0, i / 60.0) < 3e-3; ++i) at << 1e-9 * std::pow(10.0, i / 60.0);
+        const auto made = [&](bool shared, long long* points) {
+            rf::sharePaths(shared);
+            rf::forgetGreens();
+            rf::keepGreens(0);
+            // (At 100 GHz the arc's two shared heights both fall within 3 mm:
+            //  half the real axis's span within some 0.2 mm, a twentieth
+            //  beyond some 2 mm.)
+            const rf::WaveGreen g(l, 150e-6, 100e-6, 100e9, 3e-3);
+            const rf::ViaGreen v(l, {0, 100e-6}, others, {100e-6, 150e-6}, 100e9, 3e-3);
+            g.prepare(3);
+            v.prepare(3);
+            QList<Complex> values;
+            for (const double rho : at)
+                values << g.scalarRemainder(rho) << g.vectorRemainder(rho) << v.couplingRemainder(0, rho)
+                       << v.couplingRemainder(1, rho) << v.potentialRemainder(0, rho) << v.potentialRemainder(1, rho);
+            *points = rf::greensKept().sharedPoints;
+            return values;
+        };
+        const auto restore = qScopeGuard([] {
+            rf::sharePaths(true);
+            rf::forgetGreens();
+            rf::keepGreens(256e6);
+        });
+        long long alone = 0, shared = 0;
+        const QList<Complex> own = made(false, &alone), read = made(true, &shared);
+        QCOMPARE(alone, 0LL);
+        qWarning("%lld of the spectral functions' points read from what the distances share", shared);
+        QVERIFY(shared > 10000);
+        QVERIFY(own == read);
+    }
+
     void aTableIsTheSameOnAnyNumberOfThreads()
     {
         const rf::Layers thick = stackOf({{9.8, 254e-6, 0.002}}, true);
