@@ -758,6 +758,34 @@ private slots:
         QCOMPARE(flattened(*odd, "MAIN").size(), 2);
     }
 
+    // A CBLOCK of a compression gdstk does not know: its bytes skipped from
+    // where they begin, only as many as the file has - a length past an
+    // int64's failed an assert (a Debug build aborted), and Release sought
+    // to it from the file's start (crash hardening, round three, L1).
+    void aCblockOfAnUnknownCompressionIsSkipped()
+    {
+        const auto file = [](const QByteArray& length, const QByteArray& block) {
+            QByteArray b("%SEMI-OASIS\r\n\x01\x03" "1.0", 18);
+            b += QByteArray("\x00\xE8\x07\x00", 4);       // unit 1000 a micron, no offset table
+            b += QByteArray(12, '\0');                    // (its twelve numbers)
+            b += QByteArray("\x22\x01\x0A", 3) + length + block;   // CBLOCK, compression 1, 10 bytes unpacked
+            b += '\x02';                                  // END
+            b += QByteArray(255, '\0');
+            return b;
+        };
+        // Refused, as a block it cannot read must be, for that alone: its
+        // bytes passed over, the END after them read - from the file's
+        // start, its header was read as records of no known type.
+        for (const auto& [name, length, block] : {std::tuple<const char*, QByteArray, QByteArray>{
+                                                      "cblock-far.oas", QByteArray("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x01", 10), QByteArray()},
+                                                  {"cblock-three.oas", QByteArray("\x03", 1), QByteArray("\x2A\x2A\x2A", 3)}}) {
+            QString error;
+            QVERIFY(write(path(name), file(length, block)));
+            QVERIFY(!read(path(name), &error));
+            QVERIFY2(error.contains("CBLOCK compression method not supported") && !error.contains("Unknown record"), qPrintable(error));
+        }
+    }
+
     // Every cut of the sample files, and bytes of them changed at random
     // (the same each run): each read ends - a layout, or why not - and
     // nothing is read or written out of its memory (AddressSanitizer's

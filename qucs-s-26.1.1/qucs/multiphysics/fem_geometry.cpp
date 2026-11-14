@@ -900,6 +900,10 @@ private:
             if (!a_error.isEmpty()) return;
             if (row.name.isEmpty()) return fail(tr("a row of the layer stack has no name"));
             if (!(row.thickness > 0)) return fail(tr("%1: its thickness must be more than 0").arg(row.name));
+            // (A z of 1/0 made a layer from infinity, its height NaN: the
+            // union spun, as the model opened.)
+            if (!std::isfinite(row.z) || !std::isfinite(row.thickness) || !std::isfinite(row.z + row.thickness))
+                return fail(tr("%1: its z and thickness must be finite numbers").arg(row.name));
             if (!row.layer.isEmpty()) {
                 LayoutLayer key;
                 if (!parseLayoutLayer(row.layer, &key)) return fail(tr("%1: %2 is not a layer (as 1/0)").arg(row.name, row.layer));
@@ -1360,7 +1364,22 @@ std::shared_ptr<Topology> formUnionOf(const std::vector<GObject>& objects, const
     // its differences, past a double's range at about 1e77, and a rectangle
     // 1e308 tall sent it flipping edges for ever, on the GUI thread as the
     // model opened.
-    const double farthest = std::max({std::abs(box.left()), std::abs(box.right()), std::abs(box.top()), std::abs(box.bottom()), diag});
+    // (Each tested itself: std::max passes over a NaN not first, and a layer
+    // at z 1/0 made the box's height inf - inf - NaN -, the tolerance with
+    // it, and every point one cell of the vertex pool.)
+    double farthest = 0;
+    const auto reach = [&farthest](double v) { farthest = std::isnan(v) || std::isnan(farthest) ? NAN : std::max(farthest, std::abs(v)); };
+    for (const double v : {box.left(), box.right(), box.top(), box.bottom(), diag, eps}) reach(v);
+    for (const GObject& o : objects) {
+        for (const auto& loop : o.loops)
+            for (const GEdge& e : loop) reach(e.a.x()), reach(e.a.y()), reach(e.b.x()), reach(e.b.y());
+        for (const GEdge& e : o.open) reach(e.a.x()), reach(e.a.y()), reach(e.b.x()), reach(e.b.y());
+        for (QPointF p : o.points) reach(p.x()), reach(p.y());
+    }
+    if (std::isnan(farthest)) {
+        *why = tr("Form Union failed: the geometry has a position or size that is not a number (an infinity less another, say)");
+        return nullptr;
+    }
     if (!(farthest <= 1e60)) {
         *why = tr("Form Union failed: %1")
                    .arg(lostText.isEmpty() ? tr("the geometry reaches %1 %2, past what is meshed (1e60): a size or a position far off")

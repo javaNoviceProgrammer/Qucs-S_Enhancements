@@ -105,7 +105,7 @@ int HistogramDiagram::automaticBins(const QVector<double>& values, double low, d
     // As a double first: a tiny spread with a far value is billions of bins.
     const double count = iqr > 0.0 ? std::ceil((high - low) / (2.0 * iqr / std::cbrt(double(n))))
                                     : std::ceil(std::sqrt(double(n)));
-    return int(std::clamp(count, 1.0, 200.0));
+    return count >= 1.0 ? int(std::min(count, 200.0)) : 1;   // (NaN too: one - std::clamp of NaN is NaN)
 }
 
 HistogramDiagram::Bars HistogramDiagram::bin(const QVector<double>& values, double low, double high, int count)

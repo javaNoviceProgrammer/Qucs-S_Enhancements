@@ -304,7 +304,7 @@ QJsonObject axisJson(const Axis& a, bool units)
 
 // Sets an axis from {"label", "log", "auto", "from", "to", "step",
 // "units"}; what is not given stays.
-bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* error)
+bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* error, bool stepIsACount = false)
 {
     if (o.contains(QLatin1String("label"))) {
         const QString label = o.value(QLatin1String("label")).toString();
@@ -365,12 +365,22 @@ bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* err
             *error = tr("%1 is logarithmic: 'from' must be above 0.").arg(which);
             return false;
         }
-        double step = o.contains(QLatin1String("step")) ? o.value(QLatin1String("step")).toDouble(NaN) : niceStep(from, to);
+        double step = o.contains(QLatin1String("step")) ? o.value(QLatin1String("step")).toDouble(NaN)
+                      : stepIsACount ? (a->step >= 1 && a->step <= Diagram::MaxGridLines ? a->step : 4.0)
+                                     : niceStep(from, to);
         if (!std::isfinite(step) || step <= 0) {
             *error = tr("%1: 'step' must be above 0.").arg(which);
             return false;
         }
-        if ((to - from) / step > Diagram::MaxGridLines) step = niceStep(from, to);
+        if (stepIsACount) {
+            // A Smith chart's step is its number of arcs each way, not a
+            // spacing: none swapped for a spacing (round three, D2).
+            if (step > Diagram::MaxGridLines) {
+                *error = tr("%1: a Smith chart's 'step' is its number of arcs, 1 to %2.").arg(which).arg(Diagram::MaxGridLines);
+                return false;
+            }
+        } else if ((to - from) / step > Diagram::MaxGridLines)
+            step = niceStep(from, to);
         a->limit_min = from;
         a->limit_max = to;
         a->step = step;
@@ -1874,6 +1884,10 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
         const char* key;
         Axis* axis;
     } axes[] = {{"x_axis", &d->xAxis}, {"y_axis", &d->yAxis}, {"y2_axis", &d->zAxis}};
+    // The axis whose step is a Smith chart's count of arcs (calcSmithAxisScale).
+    const Axis* smithAxis = dynamic_cast<SmithDiagram*>(d) ? &d->yAxis
+                            : dynamic_cast<PSDiagram*>(d)  ? (d->Name == QLatin1String("PS") ? &d->yAxis : &d->zAxis)
+                                                           : nullptr;
     for (const auto& a : axes) {
         const QJsonValue v = args.value(QLatin1String(a.key));
         if (v.isUndefined() || v.isNull()) continue;
@@ -1881,7 +1895,7 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
             *error = tr("%1 is an object: {\"label\", \"log\", \"auto\", \"from\", \"to\", \"step\", \"units\"}.").arg(QLatin1String(a.key));
             return false;
         }
-        if (!applyAxis(a.axis, v.toObject(), QLatin1String(a.key), error)) return false;
+        if (!applyAxis(a.axis, v.toObject(), QLatin1String(a.key), error, a.axis == smithAxis)) return false;
     }
     return true;
 }
@@ -3280,7 +3294,13 @@ QJsonArray diagramsJson(Schematic* sch)
             for (const Graph* g : d->Graphs) {
                 ++k;
                 QJsonArray list;
-                for (const PoleZeroDiagram::Root& r : PoleZeroDiagram::rootsOf(g)) {
+                // At most 500 a trace: a pole-zero run finds tens; a
+                // trace of 600,000 numbers answered each, and its JSON was
+                // not done in 120 s (round three of crash hardening, D5).
+                constexpr qsizetype kMostRoots = 500;
+                const QList<PoleZeroDiagram::Root> all = PoleZeroDiagram::rootsOf(g);
+                for (const PoleZeroDiagram::Root& r : all) {
+                    if (list.size() >= kMostRoots) break;
                     QJsonObject ro{{QStringLiteral("re"), number(r.re)}, {QStringLiteral("im"), number(r.im)}, {QStringLiteral("wn"), number(r.wn())},
                                    {QStringLiteral("f"), number(r.wn() / (2 * 3.14159265358979323846))}};
                     // A pole's is stability; a zero's, whether it is in the
@@ -3292,8 +3312,13 @@ QJsonArray diagramsJson(Schematic* sch)
                     if (std::isfinite(r.q())) ro.insert(QStringLiteral("q"), number(r.q()));
                     list << ro;
                 }
-                roots << QJsonObject{{QStringLiteral("trace"), k}, {QStringLiteral("kind"), PoleZeroDiagram::isZero(g) ? QStringLiteral("zeros") : QStringLiteral("poles")},
-                                     {QStringLiteral("roots"), list}};
+                QJsonObject one{{QStringLiteral("trace"), k}, {QStringLiteral("kind"), PoleZeroDiagram::isZero(g) ? QStringLiteral("zeros") : QStringLiteral("poles")},
+                                {QStringLiteral("roots"), list}};
+                if (all.size() > kMostRoots) {
+                    one.insert(QStringLiteral("roots in all"), double(all.size()));
+                    one.insert(QStringLiteral("note"), tr("The first %1 of %2 roots: is this a pole-zero run's?").arg(kMostRoots).arg(all.size()));
+                }
+                roots << one;
             }
             o.insert(QStringLiteral("roots"), roots);
         }

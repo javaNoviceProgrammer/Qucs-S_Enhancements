@@ -18,6 +18,7 @@
 
 #include <QTemporaryDir>
 #include <QtTest>
+#include <QElapsedTimer>
 
 #include <gdstk/gdstk.hpp>
 #include <zlib.h>
@@ -322,6 +323,35 @@ private slots:
         const GeometryBuild g2 = buildGeometry(mm, *evaluateParameters(mm));
         QVERIFY(g2.ok());
         QVERIFY(std::abs(areaOf(*g2.topology, QStringLiteral("chip_2_0")) - 180e-6) < 1e-12);
+    }
+
+    // A row of a cross-section's stack at z 1/0: refused, said - its layer
+    // from infinity had a height of NaN, the union's tolerance with it, and
+    // every point fell in one cell of its vertex pool: opening the model
+    // never returned (crash hardening, round three, G1).
+    void aCrossSectionLayerAtInfinityRefused()
+    {
+        QTemporaryDir dir;
+        QFile f(dir.filePath(QStringLiteral("heater.gds")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(heaterLayout());
+        f.close();
+        QElapsedTimer t;
+        t.start();
+        for (const char* z : {"1/0", "-1/0", "0/0", "1e308*10"}) {
+            QByteArray json = R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um", "geometry": [
+                {"type": "crosssection", "label": "slice", "file": "heater.gds", "start": ["-25", "0"], "end": ["15", "0"],
+                 "stack": [["box", "", "Z", "2"], ["cladding", "", "0", "3"], ["wg", "1/0", "0", "0.22"]]},
+                {"type": "form union"}]}]})json";
+            json.replace("[\"box\", \"\", \"Z\"", QByteArray("[\"box\", \"\", \"") + z + '"');
+            const Model model = modelOf(json, dir.filePath(QStringLiteral("slice.qfem")));
+            const GeometryBuild g = buildGeometry(model, *evaluateParameters(model));
+            QVERIFY2(!g.ok(), z);
+            const QString said = QStringList(g.errors.values()).join(QLatin1String("; "));
+            QVERIFY2(said.contains(QLatin1String("box: its z and thickness must be finite numbers")), qPrintable(said));
+        }
+        QVERIFY2(t.elapsed() < 10000, qPrintable(QString::number(t.elapsed())));
     }
 
     void crossSectionWithHeat()

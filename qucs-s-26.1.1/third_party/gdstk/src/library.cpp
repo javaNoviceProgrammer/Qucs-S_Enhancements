@@ -2624,8 +2624,12 @@ Library read_oas(const char* filename, double unit, double tolerance, ErrorCode*
                     if (error_code) *error_code = ErrorCode::InvalidFile;
                     oasis_read_unsigned_integer(in);
                     len = oasis_read_unsigned_integer(in);
-                    assert(len <= INT64_MAX);
-                    FSEEK64(in.file, (int64_t)len, SEEK_SET);
+                    // Qucs-S: the block's bytes skipped from here, and only those
+                    // the file has - a damaged length failed the assert of a
+                    // Debug build, and Release sought to it from the file's
+                    // start (crash hardening, round three, L1).
+                    if (oasis_count_fits(in, len)) FSEEK64(in.file, (int64_t)len, SEEK_CUR);
+                    else FSEEK64(in.file, 0, SEEK_END);
                 } else {
                     z_stream s = {};
                     s.zalloc = zalloc;
