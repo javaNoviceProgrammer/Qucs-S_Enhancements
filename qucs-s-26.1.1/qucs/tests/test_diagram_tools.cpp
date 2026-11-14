@@ -22,6 +22,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <array>
 #include <cmath>
 #include <functional>
 
@@ -3810,6 +3811,151 @@ private slots:
         QVERIFY(tub && iq);
         QVERIFY2(tub->floor == 1e-14 && tub->ui == 5e-4 && tub->ber == 1e-9, qPrintable(QString::number(tub->floor, 'g', 17)));
         QVERIFY2(iq->offset == 1e-4 && iq->period == 5e-4, qPrintable(QString::number(iq->offset, 'g', 17)));
+    }
+
+    // ---- Crash hardening, round three: diagrams of hostile numbers.
+
+    // D1: a 3D diagram of values whose axes span past a double (1e308 and
+    // -1e308: a NaN in each coordinate) - its hidden lines were walked to
+    // pixels an int of NaN gave, and its buffers read and written past:
+    // the program gone at adding it.
+    void a3dDiagramOfPointsOffItsAxes()
+    {
+        const QVector<double> xs = range(0, -100, 101), ys{-1, 1000000001, 1, 3e-12, -1};
+        QVERIFY(schematicWith("d1", datasetText2("frequency", xs, "sweep", ys, {{"v", [](double x, double y) {
+                                                     return x == 0 ? 1e308 : y > 1 ? -1e308 : std::fmod(-x, 3.0);
+                                                 }}})));
+        QJsonObject r = call("add_diagram", {{"type", "3d"}, {"traces", QJsonArray{"v"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        // (And a range of the axes far smaller than the data.)
+        r = call("add_diagram", {{"type", "3d"}, {"traces", QJsonArray{"v"}}, {"y_axis", QJsonObject{{"from", 0}, {"to", 1e-3}}},
+                                 {"y2_axis", QJsonObject{{"from", -1e-300}, {"to", 1e-300}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (Diagram* d : front()->a_DocDiags)
+            for (const qucs::Line* l : std::as_const(d->Lines))
+                QVERIFY2(std::abs(l->x1) < 100000 && std::abs(l->y1) < 100000 && std::abs(l->x2) < 100000 && std::abs(l->y2) < 100000,
+                         qPrintable(QStringLiteral("%1 %2 %3 %4").arg(l->x1).arg(l->y1).arg(l->x2).arg(l->y2)));
+        // A logarithmic axis from 0.5 to 1e308: its span past a double, a
+        // decade 0 pixels, and its labels appended until memory ran out.
+        r = call("add_diagram", {{"type", "3d"}, {"traces", QJsonArray{"v"}}, {"y2_axis", QJsonObject{{"log", true}, {"from", 0.5}, {"to", 1e308}, {"step", 5e-324}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(front()->a_DocDiags.back()->Texts.size() < 5000, qPrintable(QString::number(front()->a_DocDiags.back()->Texts.size())));
+        const QString file = path("d1.png");
+        r = call("export_image", {{"diagram", 2}, {"save_as", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        closeAll();
+    }
+
+    // D2: a Smith chart's step is its count of arcs: add_diagram swapped
+    // one it took for a spacing too fine for niceStep's, about 1e307 for
+    // -1e308 to 1, and the chart appended arcs until memory ran out.
+    void aSmithChartsStepIsItsArcs()
+    {
+        QVERIFY(schematicWith("d2", datasetText("frequency", range(1, 10, 10), {{"S[1,1]", [](double f) { return 0.1 * f / 10; }, [](double) { return 0.2; }}})));
+        QJsonObject r = call("add_diagram", {{"type", "smith"}, {"traces", QJsonArray{"S[1,1]"}}, {"y_axis", QJsonObject{{"from", -1e308}, {"to", 1}, {"step", 1000}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Diagram* smith = front()->a_DocDiags.back();
+        QCOMPARE(smith->yAxis.step, 1000.0);
+        QVERIFY2(smith->Arcs.size() <= 2 * 2 * 1000 + 8, qPrintable(QString::number(smith->Arcs.size())));
+        // A count past the most a chart draws, refused; none given, the one
+        // it had (not a spacing).
+        r = call("edit_diagram", {{"diagram", 1}, {"y_axis", QJsonObject{{"step", 20000}}}});
+        QVERIFY2(failed(r) && text(r).contains("number of arcs, 1 to 10000"), qPrintable(text(r)));
+        r = call("edit_diagram", {{"diagram", 1}, {"y_axis", QJsonObject{{"to", 2}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(smith->yAxis.step, 1000.0);
+        // The polar and Smith chart in one, its Smith half the same.
+        r = call("add_diagram", {{"type", "smith_polar"}, {"traces", QJsonArray{"S[1,1]"}}, {"y2_axis", QJsonObject{{"from", -1e308}, {"to", 1}, {"step", 6}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(front()->a_DocDiags.back()->zAxis.step, 6.0);
+        // As a file has it: a count of 1e307, a radius not a number - kept to
+        // the most, and one.
+        smith->yAxis.autoScale = false;
+        smith->yAxis.step = 1e307;
+        smith->yAxis.limit_max = NAN;
+        smith->calcDiagram();
+        QVERIFY2(smith->Arcs.size() <= 2 * 2 * Diagram::MaxGridLines + 8, qPrintable(QString::number(smith->Arcs.size())));
+        QCOMPARE(smith->yAxis.up, 1.0);
+        closeAll();
+    }
+
+    // D3: a limit over values of 1e299 and infinity: the trace was drawn
+    // again in red once for each stretch beyond it - 30,000 points with
+    // 7,500 such, the export never done.
+    void aLimitOverFarValuesIsDrawnOnce()
+    {
+        const int n = 4000;
+        QVector<double> xs;
+        for (int i = 0; i < n; ++i) xs << 1e6 * (i + 1);
+        QVERIFY(schematicWith("d3", datasetText("frequency", xs, {{"v(in)", [](double f) {
+                                                    const int i = int(std::lround(f / 1e6)) - 1;
+                                                    return i == 2000 ? INFINITY : std::array<double, 4>{3.1e299, -8.2e299, 0.5, 2e-10}[std::size_t(i % 4)];
+                                                }}})));
+        QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"v(in)"}}, {"limits", QJsonArray{QJsonObject{{"upper", 3}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QElapsedTimer timer;
+        timer.start();
+        for (const char* suffix : {"png", "svg"}) {
+            r = call("export_image", {{"diagram", 1}, {"save_as", path(QStringLiteral("d3.%1").arg(QLatin1String(suffix)))}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+        }
+        // (Clipped to all its stretches at once instead, a diagram 100,000
+        // pixels tall rasterized that clip for minutes: drawn as pieces.)
+        r = call("edit_diagram", {{"diagram", 1}, {"height", 100000}, {"width", 200}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("export_image", {{"diagram", 1}, {"save_as", path("d3-tall.png")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(timer.elapsed() < 30000, qPrintable(QString::number(timer.elapsed())));
+        closeAll();
+    }
+
+    // D4: a Nichols chart's x axis from -1e308: its count of turns an int
+    // of 2.5e13 (undefined, often small), and its grid drawn without end.
+    void aNicholsAxisOfCountlessTurns()
+    {
+        QVERIFY(schematicWith("d4", datasetText("frequency", range(1, 1000, 100), {{"ac.v(g)", [](double f) { return std::polar(0.5, -f * 0.01).real(); },
+                                                                                    [](double f) { return std::polar(0.5, -f * 0.01).imag(); }}})));
+        QJsonObject r = call("add_diagram", {{"type", "nichols"}, {"traces", QJsonArray{"ac.v(g)"}}, {"x_axis", QJsonObject{{"from", -1e308}, {"to", 0}, {"step", 3}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* nichols = dynamic_cast<NicholsDiagram*>(front()->a_DocDiags.front());
+        QVERIFY(nichols);
+        QCOMPARE(nichols->turnsInView(), NicholsDiagram::MostTurns + 1);
+        QElapsedTimer timer;
+        timer.start();
+        r = call("export_image", {{"diagram", 1}, {"save_as", path("d4.png")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(timer.elapsed() < 15000, qPrintable(QString::number(timer.elapsed())));
+        closeAll();
+    }
+
+    // D5: a pole-zero map's answer lists at most 500 roots a trace, and
+    // says how many there are: one of 600,000 numbers was not answered in
+    // 120 s.
+    void aPoleZeroAnswerIsCut()
+    {
+        QVERIFY(schematicWith("d5", datasetText("index", range(1, 2000, 2000), {{"pz.pole(1)", [](double i) { return -i; }, [](double i) { return i / 3; }}})));
+        const QJsonObject r = call("add_diagram", {{"type", "pole_zero"}, {"traces", QJsonArray{"pz.pole(1)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r).left(2000)));
+        const QJsonObject trace = json(r).value("roots").toArray().first().toObject();
+        QCOMPARE(trace.value("roots").toArray().size(), 500);
+        QCOMPARE(trace.value("roots in all").toInt(), 2000);
+        QVERIFY2(trace.value("note").toString().contains("500 of 2000"), qPrintable(trace.value("note").toString()));
+        closeAll();
+    }
+
+    // U6: the diagrams' counts of NaN or past an int (UBSan's build says):
+    // a histogram's bins of an infinite spread over an infinite range, a
+    // spectrogram's rows up to 1e30 Hz.
+    void diagramCountsOfNaNOrPastAnInt()
+    {
+        const QVector<double> far{-1e308, -1e308, 1e308, 1e308};
+        QCOMPARE(HistogramDiagram::automaticBins(far, -1e308, 1e308), 1);
+        constexpr double Pi = 3.14159265358979323846;
+        QVERIFY(schematicWith("u6", datasetText("time", range(0, 10e-3, 2001), {{"tran.v(x)", [](double t) { return std::sin(2 * Pi * 1e3 * t); }}})));
+        const QJsonObject r = call("add_diagram", {{"type", "spectrogram"}, {"traces", QJsonArray{"tran.v(x)"}},
+                                                   {"spectrogram", QJsonObject{{"segment", "2m"}, {"up_to", 1e30}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        closeAll();
     }
 };
 

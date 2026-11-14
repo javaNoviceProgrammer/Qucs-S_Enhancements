@@ -2334,8 +2334,15 @@ void Diagram::calcSmithAxisScale(Axis *Axis, int &GridX, int &GridY) {
         GridX = GridY = 4;
     } else {
         Axis->up = Axis->limit_max = fabs(Axis->limit_max);
-        GridX = GridY = int(Axis->step);
+        // Qucs-S: the step is a count of arcs, taken as a double and kept
+        // to MaxGridLines - of 1e307 an int was undefined, and the arcs
+        // appended until memory ran out (round three of crash hardening, D2).
+        const double arcs = Axis->step;
+        GridX = GridY = arcs >= 0.0 ? int(arcs <= MaxGridLines ? arcs : MaxGridLines) : 0;
     }
+    // Qucs-S: a radius that is not a number, none or past 1e100 has no chart
+    // (its arcs' angles were an int of NaN, U6).
+    if (!(Axis->up >= 1e-100 && Axis->up <= 1e100)) Axis->up = 1.0;
 }
 
 // ------------------------------------------------------------
@@ -2442,7 +2449,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
             if (im >= 1.0)
                 Arcs.append(as(Part::Grid, new struct qucs::Arc(x, (x2 + y) >> 1, y, y, beta, theta, GridPen)));
             else {
-                phi = int(16.0 * 180.0 / pi * acos(im));
+                phi = int(16.0 * 180.0 / pi * acos(std::max(im, -1.0)));   // Qucs-S: below -1 its acos was NaN (U6)
                 len = 16 * 180 - phi;
                 if (Above && Below) len += len;
                 else if (Below) phi = 16 * 180;
@@ -2958,7 +2965,13 @@ void Diagram::paintLimits(QPainter *painter) {
     painter->setRenderHint(QPainter::Antialiasing, true);
     const QColor red(210, 30, 30);
 
-    // The traces again, in red, where they are beyond a limit.
+    // The traces again, in red, where they are beyond a limit: each trace's
+    // lines cut to its stretches beyond (merged where they touch), or its
+    // symbols' points in them, drawn once. Once a stretch, clipped, a trace
+    // of 30,000 points with 7,500 of them was stroked 7,500 times; once,
+    // clipped to all of them, a diagram 100,000 pixels tall rasterized the
+    // clip for minutes (round three of crash hardening, D3).
+    QHash<int, std::vector<std::pair<double, double>>> beyond;
     for (const qucs_s::limits::Violation &v: std::as_const(a_violations)) {
         Graph *g = Graphs.value(v.graph);
         if (g == nullptr || g->begin() == g->end()) continue;
@@ -2967,11 +2980,66 @@ void Diagram::paintLimits(QPainter *painter) {
         const double y0[2] = {a->low, 0};
         calcCoordinate(&v.from, y0, nullptr, &x0, &y, a);
         calcCoordinate(&v.to, y0, nullptr, &x1, &y, a);
+        if (!std::isfinite(x0) || !std::isfinite(x1)) continue;
         if (x1 < x0) std::swap(x0, x1);
+        beyond[v.graph].push_back({double(x0) - 1, double(x1) + 1});
+    }
+    for (auto it = beyond.begin(); it != beyond.end(); ++it) {
+        Graph *g = Graphs.value(it.key());
+        std::vector<std::pair<double, double>> &spans = it.value();
+        std::sort(spans.begin(), spans.end());
+        std::vector<std::pair<double, double>> merged;
+        for (const auto &span: spans)
+            if (!merged.empty() && span.first <= merged.back().second) merged.back().second = std::max(merged.back().second, span.second);
+            else merged.push_back(span);
+        // The first span ending at or after x.
+        const auto from = [&merged](double x) {
+            return std::lower_bound(merged.begin(), merged.end(), x, [](const std::pair<double, double> &s, double v) { return s.second < v; });
+        };
+        const bool symbols = g->Style != GRAPHSTYLE_SOLID && g->Style != GRAPHSTYLE_DASH && g->Style != GRAPHSTYLE_DOT && g->Style != GRAPHSTYLE_LONGDASH;
+        QList<QLineF> pieces;
+        QList<QPointF> points;
+        bool started = false;
+        QPointF last;
+        for (const auto &point: *g) {
+            if (point.isGraphEnd()) break;
+            if (point.isStrokeEnd()) {
+                started = false;
+                continue;
+            }
+            if (!point.isPt()) continue;
+            const QPointF here(point.getScrX(), point.getScrY());
+            if (!std::isfinite(here.x()) || !std::isfinite(here.y())) {
+                started = false;
+                continue;
+            }
+            if (symbols) {
+                const auto s = from(here.x());
+                if (s != merged.end() && s->first <= here.x()) points << here;
+                continue;
+            }
+            if (started) {
+                const QPointF a = last.x() <= here.x() ? last : here, b = last.x() <= here.x() ? here : last;
+                for (auto s = from(a.x()); s != merged.end() && s->first <= b.x(); ++s) {
+                    // The piece of a to b within the span.
+                    const double lo = std::max(a.x(), s->first), hi = std::min(b.x(), s->second);
+                    const auto at = [&](double x) { return b.x() > a.x() ? a.y() + (b.y() - a.y()) * (x - a.x()) / (b.x() - a.x()) : a.y(); };
+                    if (b.x() > a.x()) pieces << QLineF(lo, at(lo), hi, at(hi));
+                    else pieces << QLineF(a, b);
+                }
+            }
+            last = here;
+            started = true;
+        }
         painter->save();
-        painter->setClipRect(QRectF(QPointF(x0 - 1, -1e6), QPointF(x1 + 1, 1e6)), Qt::IntersectClip);
-        painter->setPen(QPen(qucs_s::ink::on(red), g->Thick + 1, Qt::SolidLine));
-        g->paintLines(painter);
+        if (symbols) {
+            QPen dot(qucs_s::ink::on(red), g->Thick + 4, Qt::SolidLine, Qt::RoundCap);
+            painter->setPen(dot);
+            painter->drawPoints(points.constData(), int(points.size()));
+        } else {
+            painter->setPen(QPen(qucs_s::ink::on(red), g->Thick + 1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->drawLines(pieces);
+        }
         painter->restore();
     }
 

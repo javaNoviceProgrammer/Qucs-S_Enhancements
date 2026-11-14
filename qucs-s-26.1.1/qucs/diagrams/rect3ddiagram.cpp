@@ -232,6 +232,11 @@ void Rect3DDiagram::calcCoordinate3D(double x, double y, double zr, double zi,
   else
     y = (y - yAxis.low) / (yAxis.up - yAxis.low);
 
+  // Qucs-S: a point past the axes (or not a number) is kept within one cube
+  // of the axes' own, so its pixels stay an int's and its lines are walked
+  // pixel by pixel in a bounded time (round three of crash hardening, D1).
+  auto bounded = [](double v) { return v >= -1.0 ? (v <= 2.0 ? v : 2.0) : -1.0; };
+  x = bounded(x);  y = bounded(y);  zr = bounded(zr);
   p->x  = int(calcX_2D(x, y, zr) + 0.5 + xorig);
   p->y  = int(calcY_2D(x, y, zr) + 0.5 + yorig);
   p->No = pz->No = p-Mem;
@@ -242,6 +247,9 @@ void Rect3DDiagram::calcCoordinate3D(double x, double y, double zr, double zi,
 // --------------------------------------------------------------
 bool Rect3DDiagram::isHidden(int x, int y, tBound *Bounds, char *zBuffer)
 {
+  // Qucs-S: a pixel off the diagram's area is in neither buffer (D1).
+  if(x < 0 || x > x2 || y < 0 || y > y2)  return false;
+
   // remember the boundings of the polygon
   if( (Bounds+x)->max < y )  (Bounds+x)->max = y;
   if( (Bounds+x)->min > y )  (Bounds+x)->min = y;
@@ -695,7 +703,13 @@ int Rect3DDiagram::calcAxis(Axis *Axis, int x, int y,
 
     int xLen, yLen;
     ystepD = corr * log10(yD / fabs(Axis->low));
-    while(ystepD <= xD) {  // create all grid lines
+    // Qucs-S: a decade's pixels not a positive number - an axis from 0.5
+    // to 1e308 spans past a double, and 0 of them a decade appended labels
+    // until memory ran out - none; and at most a double's 650 decades
+    // (crash hardening, round three).
+    int decades = 0;
+    if(!(corr > 0.0) || !std::isfinite(corr))  ystepD = xD + 1.0;
+    while(ystepD <= xD && ++decades <= 650) {  // create all grid lines
       
       tmp = numberText(yD);
       if(Axis->up < 0.0)  tmp = '-'+tmp;
@@ -719,7 +733,9 @@ int Rect3DDiagram::calcAxis(Axis *Axis, int x, int y,
   }
   else {  // not logarithmical
     calcAxisScale(Axis, GridNum, yD, stepD, GridStep, xD);
-    count = int((xD - yD) / stepD) + 1;  // number of grids
+    // Qucs-S: counted as a double, never past an int's (U6)
+    double grids = (xD - yD) / stepD + 1.0;  // NaN, too, gives none
+    count = grids >= 0.0 ? int(grids <= 1000.0 ? grids : 1000.0) : 0;  // number of grids
     
     xstepD = stepD * cos(phi);
     ystepD = stepD * sin(phi);
@@ -770,7 +786,7 @@ void Rect3DDiagram::createAxis(Axis *Axis, bool Right,
 
   x = x2_ - x1_;
   y = y2_ - y1_;
-  cos_phi = sqrt(double(x*x) + double(y*y));
+  cos_phi = sqrt(double(x)*x + double(y)*y);
   phi = atan2(double(y), double(x));
   
   valid = calcAxis(Axis, x1_, y1_, cos_phi, phi); // axis numbering

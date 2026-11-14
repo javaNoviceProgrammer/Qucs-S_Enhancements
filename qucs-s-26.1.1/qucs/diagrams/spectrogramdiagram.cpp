@@ -153,7 +153,9 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
     for (const sp::Spectrum& s : std::as_const(spectra)) bins = std::min(bins, int(s.amplitude.size()));
     const double df = spectra.first().df;
     if (std::isfinite(upTo) && upTo > 0) {
-        bins = std::clamp(int(std::ceil(upTo / df)) + 1, 2, bins);
+        // (As a double: 1.25e17 was an int's - round three of crash hardening, U6.)
+        const double rows = std::ceil(upTo / df) + 1;
+        bins = rows > double(bins) ? bins : rows >= 2.0 ? int(rows) : 2;   // (NaN: 2)
     } else {
         double loudest = -400;
         for (const sp::Spectrum& s : std::as_const(spectra))
