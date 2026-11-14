@@ -241,11 +241,17 @@ QList<NodeKind> makeKinds()
                   "kind=metal"),
           shownIf(expr(QStringLiteral("impedance"), tr("Surface impedance"), QStringLiteral("Ohm"), QStringLiteral("0"),
                        tr("Of the plane, per square")),
-                  "kind=impedance")},
+                  "kind=impedance"),
+          shownIf(boolean(QStringLiteral("fullwave_loss"), tr("Its loss in the full-wave solve"), false,
+                          tr("Count the plane's loss in the full-wave solve too, on the current its mirror image of each "
+                             "run carries - a microstrip's ground is some 15 to 30 % of its metal's loss. The fields stay a "
+                             "perfect plane's; the quasi-static extraction counts the loss always")),
+                  "kind=metal|kind=impedance")},
          {}, {}, false, true, QStringLiteral("gnd"),
          tr("What closes the stack at the bottom: a plane under the substrate, wherever it is in the tree. One at "
             "most. A perfect plane loses nothing; a metal plane loses as its conductivity says, its share of a "
-            "line's R. Open is no plane at all - the substrate on air.")});
+            "line's R - in the full-wave solve only where its loss there is asked for. Open is no plane at all - the "
+            "substrate on air.")});
     add({QStringLiteral("rf_cover"), tr("Cover"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
          {expr(QStringLiteral("height"), tr("Height above the top"), QStringLiteral("m"), QStringLiteral("1[mm]")),
           choice(QStringLiteral("kind"), tr("Above the stack"),
@@ -1121,6 +1127,8 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
                 read(QStringLiteral("impedance"), &layer.sigma);   // (per square; not a conductivity)
             else if (layer.variant == QLatin1String("metal"))
                 read(QStringLiteral("sigma"), &layer.sigma);
+            layer.lossInFullWave = flagOf(c, QStringLiteral("fullwave_loss"))
+                                   && (layer.variant == QLatin1String("metal") || layer.variant == QLatin1String("impedance"));
             break;
         case Layer::Cover:
             layer.variant = textOf(c, QStringLiteral("kind"));
