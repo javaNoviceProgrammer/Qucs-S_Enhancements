@@ -87,6 +87,10 @@ struct Layer {
     /// sheet: its thickness in the field as well as in its loss (its
     /// "Solved as"; thickened() makes the second sheet).
     bool twoSheets = false;
+    /// Its "Solved as" Automatic: as its two faces where it is at least a
+    /// fortieth as thick as the narrowest gap beside it, else as a sheet -
+    /// what thickened() decides from the mesh (Mesh::gapByLayer).
+    bool automatic = false;
     /// In a stack thickened() made: which part of a metal solved as two
     /// sheets this layer is - its bottom face (the metal itself), its top
     /// face, or the walls that join them - and the metal it is part of.

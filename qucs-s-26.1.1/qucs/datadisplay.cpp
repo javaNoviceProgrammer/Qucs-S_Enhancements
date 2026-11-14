@@ -77,13 +77,18 @@ public:
             p->drawPolyline(QPolygonF{QPointF(6, 13.5), QPointF(2.5, 13.5), QPointF(2.5, 10)});
             break;
         case Reload: {
-            // A circle's arrow, round and back.
+            // A circle's arrow: round clockwise from two o'clock to twelve,
+            // its filled head at the top pointing on, to the right. (The
+            // head was once two strokes off the arc's end at a fixed slant,
+            // across the arc's way, and the glyph read as a "G".)
+            const QRectF circle(3, 3.5, 10, 10);
             QPainterPath arc;
-            arc.arcMoveTo(QRectF(3, 3, 10, 10), 60);
-            arc.arcTo(QRectF(3, 3, 10, 10), 60, 280);
+            arc.arcMoveTo(circle, 30);
+            arc.arcTo(circle, 30, -300);
             p->drawPath(arc);
-            const QPointF tip = arc.pointAtPercent(1);
-            p->drawPolyline(QPolygonF{tip + QPointF(-3.2, -0.6), tip, tip + QPointF(0.4, -3.2)});
+            p->setPen(Qt::NoPen);
+            p->setBrush(c);
+            p->drawPolygon(QPolygonF{QPointF(11, 3.5), QPointF(7.4, 0.8), QPointF(7.4, 6.2)});
             break;
         }
         }

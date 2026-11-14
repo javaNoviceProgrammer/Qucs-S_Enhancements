@@ -1,0 +1,17 @@
+===== what each break did =====
+no current down the walls                                      aPerfectMetalsInductanceIsTheBound failed (caught); theBenchmarksCoplanarLineIsPalaces failed (caught)
+no charge on the walls in the full wave                        theBenchmarksCoplanarLineIsPalaces failed (caught); theSideWallsChargeIsInAThickCombsC failed (caught)
+no charge on the walls in the quasi-static solve               aThickCombsQuasiStaticSolveIsItsFu failed (caught)
+charge on every wall, facing a gap or not                      aMetalSolvedAsItsTwoFacesHoldsItsW failed (caught)
+the edge band's loss not taken                                 theFiveLinesAreTheir2DSolves failed (caught)
+an edge run's loss crowding()'s, its walls counted twice       theFiveLinesAreTheir2DSolves failed (caught)
+an upright strip's pair by the averaged distance               anUprightStripBesideAFlatOneIsThei failed (caught)
+the mean of ln r taken whole, its sign lost                    anUprightStripBesideAFlatOneIsThei failed (caught)
+a short upright pair by its geometric mean distance alone      anUprightStripBesideAFlatOneIsThei failed (caught)
+the edge solved without its mirror at mid-thickness            athighFrequencyTheEdgeCrowds failed (caught); theFiveLinesAreTheir2DSolves failed (caught)
+the compressed solve's inductance without the walls            aCompressedSolveIsTheDenseOne failed (caught); theSideWallsChargeIsInAThickCombsC PASSED - NOT CAUGHT
+the compressed solve's potential without the walls' charge     theSideWallsChargeIsInAThickCombsC failed (caught); aThickCombsQuasiStaticSolveIsItsFu failed (caught)
+
+0 of 12 uncaught
+
+(Break 11 as rerun after aCompressedSolveIsTheDenseOne was added to it: the comb, compressed, does not feel the inductance; the first run had it uncaught. Break 12 listed that test too afterwards; its run above is of the comb alone, caught.)

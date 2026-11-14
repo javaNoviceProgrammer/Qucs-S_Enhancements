@@ -1,0 +1,8 @@
+breaks.py, 13 November 2026, on the checkout's build-rel (macOS, arm64, release). Without the profile the lower
+edge leaves its window, 7.25 to 7.75 GHz; the interface factor dropped, the upper edge leaves 13.45 to 13.95.
+
+===== what each break did =====
+a charge on the alumina's face as if in the alumina alone (the aStubFiltersStopbandIsPalaces failed (caught)
+no charge profile at the edges (phase 5)                       aStubFiltersStopbandIsPalaces failed (caught)
+
+0 of 2 uncaught

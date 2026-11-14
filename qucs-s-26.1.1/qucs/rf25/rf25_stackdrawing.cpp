@@ -267,6 +267,7 @@ StackDrawing stackDrawingOf(const Model& model, const QString& name)
             QString line = tr("%1: t=%2 µm, %3, %4/sq").arg(l->name, g(l->thickness * 1e6), sigmaWords(l->sigma),
                                                            ohms(l->sigma > 0 && l->thickness > 0 ? 1 / (l->sigma * l->thickness) : 0));
             if (l->twoSheets) line += tr(", solved as its two faces");
+            else if (l->automatic) line += tr(", solved as its two faces where it is thick beside its gaps (Automatic)");
             if (l->roughness > 0) line += tr(", roughness %1 µm rms").arg(g(l->roughness * 1e6, 4));
             out.metals << line;
         }

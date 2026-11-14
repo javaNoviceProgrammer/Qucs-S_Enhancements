@@ -645,6 +645,9 @@ public:
     /// A new model's content (File > New, the panel's New Model).
     static qucs_s::rf25::Model starterModel();
 
+protected:
+    void changeEvent(QEvent* event) override;
+
 signals:
     void signalFileChanged(bool);
     /// The model changed (an edit, an undo, a reload).
@@ -653,6 +656,9 @@ signals:
     void stateChanged();
     /// The shapes and the mesh made again, or being made.
     void preparedChanged();
+    /// A solve's count moved on (each 400 ms while it runs): what it has
+    /// solved is as it was.
+    void progressed();
     /// A solve started, ended, or let go.
     void solvedChanged();
     /// An analysis began or ended.
@@ -664,6 +670,9 @@ private:
     struct PrepareJob;
     int a_waiting = 0;      // (Held)
     bool a_closed = false;  // (closeWhenFree())
+    /// The waits' own: until \a going says no or \a ms have passed, the GUI
+    /// going on meanwhile in an event loop that sleeps between events.
+    void waitWhile(const std::function<bool()>& going, int ms);
     using SolveJob = qucs_s::rf25::SolveJob;   ///< (rf25_solve.h)
     struct AnalysisRun;
     std::shared_ptr<AnalysisRun> a_analysis;
@@ -812,6 +821,9 @@ private:
 
     QToolButton* a_fit = nullptr;
     QToolButton* a_reread = nullptr;
+    QList<QToolButton*> a_tools;   ///< the pen and the icons beside it, styled as a layout tab's
+    /// The bar's icons styled as a layout tab's, in the palette of the moment.
+    void restyleTools();
     QToolButton* a_rulerButton = nullptr;
     QToolButton* a_showProcessedButton = nullptr;
     QToolButton* a_showMeshButton = nullptr;

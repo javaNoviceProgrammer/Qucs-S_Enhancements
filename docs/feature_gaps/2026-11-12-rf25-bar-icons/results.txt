@@ -1,0 +1,8 @@
+===== what each break did =====
+the icons left of the pen                                      theRulerMeasuresTheLayout failed (caught)
+no reload of its own: the Fit's picture                        theRulerMeasuresTheLayout failed (caught)
+Read the Layout Again not reading                              theRulerMeasuresTheLayout failed (caught)
+the icons not made a layout tab's buttons                      theRulerMeasuresTheLayout failed (caught)
+the style sheet on the bar, its words' buttons drawn square    theRulerMeasuresTheLayout failed (caught)
+
+0 of 5 uncaught

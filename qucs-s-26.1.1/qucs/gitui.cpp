@@ -581,10 +581,15 @@ void Commands::runJob(const QString& dir, const QStringList& args, const QString
     }
     auto* job = new Job(dir, args, this, input);
     a_job = job;
-    // Its progress, when it takes a moment.
+    // Its progress, when it takes a moment. (The moment's timer is the
+    // job's, gone with it: on this object, a job over sooner and freed left
+    // its timer to find the next one made at its address - running, so
+    // a_job == job - and open a window for it that no one closed, its Cancel
+    // tied to the next job, waiting for an answer: the full check of 13
+    // November under load.)
     auto box = std::make_shared<QPointer<QDialog>>();
     auto line = std::make_shared<QPointer<QLabel>>();
-    QTimer::singleShot(600, this, [this, job, box, line, title] {
+    QTimer::singleShot(600, job, [this, job, box, line, title] {
         if (a_job != job || !job->isRunning()) return;
         auto* d = new QDialog(window());
         d->setObjectName(QStringLiteral("gitProgress"));
@@ -607,7 +612,12 @@ void Commands::runJob(const QString& dir, const QStringList& args, const QString
         if (!line->isNull()) (*line)->setText(text);
     });
     connect(job, &Job::finished, this, [this, job, box, dir, title, then](const Result& r) {
-        if (!box->isNull()) (*box)->deleteLater();
+        // (Out of sight at once, no longer waiting for an answer: freed only
+        // when the event loop gets to it.)
+        if (!box->isNull()) {
+            (*box)->hide();
+            (*box)->deleteLater();
+        }
         job->deleteLater();
         if (a_job == job) a_job = nullptr;
         if (then) then(r);

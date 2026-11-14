@@ -130,10 +130,21 @@ QMenu* submenuNamed(QMenu* menu, const QString& name)
     return nullptr;
 }
 
+// What the answerers below hang on: each test function's, removed when it
+// ends (cleanup()) - an answerer of a function that failed before its
+// dialog came up holds that function's locals, and must not answer the
+// next function's dialog into them.
+QObject* answerers()
+{
+    static QPointer<QObject> one;
+    if (one.isNull()) one = new QObject(qApp);
+    return one;
+}
+
 // Answers the next message box named \a name with its button \a button.
 void answerBox(const QString& name, const QString& button)
 {
-    auto* timer = new QTimer(qApp);
+    auto* timer = new QTimer(answerers());
     auto tries = std::make_shared<int>(0);
     timer->setInterval(20);
     QObject::connect(timer, &QTimer::timeout, [timer, tries, name, button] {
@@ -159,7 +170,7 @@ void answerBox(const QString& name, const QString& button)
 // Types \a text into the next input dialog and accepts it.
 void answerInput(const QString& text)
 {
-    auto* timer = new QTimer(qApp);
+    auto* timer = new QTimer(answerers());
     auto tries = std::make_shared<int>(0);
     timer->setInterval(20);
     QObject::connect(timer, &QTimer::timeout, [timer, tries, text] {
@@ -181,14 +192,15 @@ void answerInput(const QString& text)
     timer->start();
 }
 
-// Does \a with the next New Worktree window, once it is up.
+// Does \a with the next New Worktree window, once it is up (within a
+// minute: a loaded machine's).
 void onWorktreeWindow(const std::function<void(QDialog*)>& with)
 {
-    auto* timer = new QTimer(qApp);
+    auto* timer = new QTimer(answerers());
     auto tries = std::make_shared<int>(0);
     timer->setInterval(20);
     QObject::connect(timer, &QTimer::timeout, [timer, tries, with] {
-        if (++*tries > 500) {
+        if (++*tries > 3000) {
             timer->deleteLater();
             return;
         }
@@ -207,7 +219,7 @@ void onWorktreeWindow(const std::function<void(QDialog*)>& with)
 // Answers the next file dialog (Qt's own, offscreen) with the folder \a in.
 void answerFolder(const QString& in)
 {
-    auto* timer = new QTimer(qApp);
+    auto* timer = new QTimer(answerers());
     auto tries = std::make_shared<int>(0);
     timer->setInterval(20);
     QObject::connect(timer, &QTimer::timeout, [timer, tries, in] {
@@ -442,6 +454,27 @@ private slots:
         app->closeAllFiles();
         delete app;
         QucsMain = nullptr;
+    }
+
+    // Nothing a function began goes on into the next: its answerers
+    // removed, its git job waited for - for as long as it takes -, and no
+    // window left waiting for an answer (one is that function's failure,
+    // not the next one's: the full check of 13 November).
+    void cleanup()
+    {
+        if (app == nullptr) return;
+        qDeleteAll(answerers()->children());
+        QTRY_VERIFY_WITH_TIMEOUT(Commands::instance()->runningJob() == nullptr, 120000);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QStringList left;
+        for (int i = 0; i < 20 && QApplication::activeModalWidget() != nullptr; ++i) {
+            QWidget* modal = QApplication::activeModalWidget();
+            left << (modal->windowTitle().isEmpty() ? QString::fromLatin1(modal->metaObject()->className()) : modal->windowTitle());
+            modal->hide();
+            modal->deleteLater();
+        }
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QVERIFY2(left.isEmpty(), qPrintable("left waiting for an answer: " + left.join(", ")));
     }
 
     // What a repository stands at: the staged, the not staged, a rename,
@@ -3051,7 +3084,7 @@ private slots:
         QVERIFY(write(repo + "/b.txt", "not committed\n"));
         Commands* commands = Commands::instance();
         QSignalSpy shown(commands, &Commands::showFolderRequested);
-        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 30000); };
+        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 120000); };
         const auto trees = [&] { return gitIn(repo, {"worktree", "list", "--porcelain"}).count("worktree "); };
         QMenu entry;
         commands->fillEntryMenu(&entry, {repo});
@@ -3157,7 +3190,7 @@ private slots:
         const QString repo = makeRepo("treecheck");
         QVERIFY(!repo.isEmpty());
         Commands* commands = Commands::instance();
-        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 30000); };
+        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 120000); };
         const auto trees = [&] { return gitIn(repo, {"worktree", "list", "--porcelain"}).count("worktree "); };
         // A branch on a remote alone, with a commit main has not; a name two remotes have.
         QVERIFY(!gitIn(repo, {"remote", "add", "origin", canonical(dir.path()) + "/nowhere.git"}).isNull());
@@ -3300,7 +3333,7 @@ private slots:
         QVERIFY(!repo.isEmpty());
         const QString name = QFileInfo(repo).fileName();
         Commands* commands = Commands::instance();
-        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 30000); };
+        const auto made = [commands] { QTRY_VERIFY_WITH_TIMEOUT(commands->runningJob() == nullptr, 120000); };
         const QString picked = canonical(dir.path()) + "/picked";
         QVERIFY(QDir().mkpath(picked));
 
@@ -3354,7 +3387,10 @@ private slots:
         QVERIFY(app->gotoPage(repo + "/a.txt"));
         QStringList values;
         QJsonObject cancelled;
-        QTimer::singleShot(800, this, [&] {
+        // (Answered once the window is up - not at 800 ms -, by an answerer
+        // of this function's, gone with it when it ends. The test object's timer outlived a failure below and ran
+        // in the next function, into these locals: a SIGSEGV there.)
+        onWorktreeWindow([&](QDialog*) {
             for (const char* typed : {"dup", "MAIN", "upper", ""}) {
                 call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", "Branch"}, {"value", typed}}}}});
                 for (const QJsonValue& c : json(call("get_dialog")).value("controls").toArray())
@@ -3362,7 +3398,7 @@ private slots:
             }
             cancelled = call("set_dialog", {{"press", "Cancel"}});
         });
-        QJsonObject r = call("trigger_action", {{"action", "Git > New Worktree..."}}, 20000);
+        QJsonObject r = call("trigger_action", {{"action", "Git > New Worktree..."}}, 120000);
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QTRY_VERIFY_WITH_TIMEOUT(!cancelled.isEmpty(), 10000);
         QCOMPARE(values, (QStringList{"dup", "MAIN", "upper", ""}));
@@ -3409,11 +3445,59 @@ private slots:
         answerWorktree("from-browser");
         r = call("context_menu", {{"on", QJsonObject{{"file", onFile}}}, {"choose", "Git > New Worktree"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(repo + "-from-browser/.git"), 30000);   // (chosen as the menu would: after the call)
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(repo + "-from-browser/.git"), 120000);   // (chosen as the menu would: after the call)
         made();
         QCOMPARE(read(repo + "-from-browser").branch, QStringLiteral("from-browser"));
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
         app->closeAllFiles();
+    }
+
+    // A job's progress window is its own (the full check of 13 November,
+    // under load): a job over within 600 ms and freed, the next begun
+    // before that moment, at the address the first was freed from, and
+    // running past it - the first's timer took the second for itself and
+    // opened a window that nothing closed, waiting for an answer.
+    void aJobsProgressWindowIsItsOwn()
+    {
+        const QString repo = makeRepo("progress");
+        QVERIFY(!repo.isEmpty());
+        const QString shim = canonical(dir.path()) + "/slow-git.sh";
+        QVERIFY(write(shim, "#!/bin/sh\nif [ \"$1\" = --slowly ]; then shift; sleep 1; fi\nexec '"
+                                + QFile::encodeName(QStandardPaths::findExecutable("git")) + "' \"$@\"\n"));
+        QVERIFY(QFile::setPermissions(shim, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        qputenv("QUCS_GIT", QFile::encodeName(shim));
+        const auto unset = qScopeGuard([] { qunsetenv("QUCS_GIT"); });
+        Commands* commands = Commands::instance();
+        const auto progress = [] {
+            QStringList titles;
+            for (QWidget* w : QApplication::topLevelWidgets())
+                if (w->objectName() == QLatin1String("gitProgress") && w->isVisible()) titles << w->windowTitle();
+            return titles;
+        };
+        int tried = 0, reused = 0;
+        for (int i = 0; i < 4; ++i) {
+            QElapsedTimer clock;
+            clock.start();
+            commands->runJob(repo, {"rev-parse", "HEAD"}, "First", [](const Result&) {});
+            QPointer<Job> first = commands->runningJob();
+            QVERIFY(first != nullptr);
+            const quintptr at = quintptr(first.data());
+            QTRY_VERIFY_WITH_TIMEOUT(first.isNull(), 60000);   // (over, and freed)
+            if (clock.elapsed() > 400) continue;   // (its own window's moment passed: not the case)
+            ++tried;
+            commands->runJob(repo, {"--slowly", "rev-parse", "HEAD"}, "Second", [](const Result&) {});
+            if (quintptr(commands->runningJob()) == at) ++reused;
+            // At most its own window while it runs, never the first's.
+            while (commands->runningJob() != nullptr) {
+                const QStringList shown = progress();
+                QVERIFY2(!shown.contains("First") && shown.size() <= 1, qPrintable(shown.join(", ")));
+                QTest::qWait(20);
+            }
+            // None once it is over, and nothing waiting for an answer.
+            QVERIFY2(progress().isEmpty(), qPrintable(progress().join(", ")));
+            QVERIFY(QApplication::activeModalWidget() == nullptr);
+        }
+        qInfo("%d of %d second jobs at the first's address", reused, tried);
     }
 
     // A look whose filters' guard cannot be told (git's question to it

@@ -3635,7 +3635,12 @@ private slots:
         QVERIFY2(!failed(optimized), qPrintable(text(optimized)));
         const QJsonObject o = json(optimized).toObject();
         const double w = o.value("parameters").toArray().first().toObject().value("value").toDouble();
-        QVERIFY2(std::abs(w - 101.8e-6) < 1e-6, qPrintable(QString::number(w * 1e6)));
+        // (99.16 µm at the example's 6 cells across, its charge spread at the
+        //  edges as their field has it - the plan's phase 5 of RF 2.5D's
+        //  accuracy limits; 101.8 when each cell's charge was even. The
+        //  finest meshes approached about 99.5 with even charge; Hammerstad
+        //  and Jensen give 97.2.)
+        QVERIFY2(std::abs(w - 99.16e-6) < 1e-6, qPrintable(QString::number(w * 1e6)));
         QVERIFY(o.contains("history"));
         QVERIFY(json(call("rf25_optimize", {{"path", model}, {"action", "result"}, {"rows", 0}}, 60000)).toObject().value("parameters").isArray());
         const QJsonObject applied = call("rf25_optimize", {{"path", model}, {"action", "apply"}}, 60000);
@@ -4247,11 +4252,18 @@ private slots:
         QCOMPARE(view->mode(), qucs_s::layout::LayoutView::Mode::Draw);
         QVERIFY2(json(r).toObject().value("pen").toString().contains(QStringLiteral("taken up")), qPrintable(text(r)));
         QVERIFY(!json(r).toObject().contains("drawings"));
-        // At the toolbar's right end, after the layout's line.
+        // At the toolbar's right end, after the layout's line, the view's own
+        // icons beside it (Zoom Extents, the Ruler, Read the Layout Again: the
+        // user's ask of 12 November).
         {
             QWidget* bar = doc->penButton()->parentWidget();
             QVERIFY(bar != nullptr && bar->layout() != nullptr);
-            QCOMPARE(bar->layout()->itemAt(bar->layout()->count() - 1)->widget(), static_cast<QWidget*>(doc->penButton()));
+            QLayout* row = bar->layout();
+            const int at = row->indexOf(doc->penButton());
+            QVERIFY(at > row->indexOf(doc->findChild<QWidget*>(QStringLiteral("rfLayoutLabel"))));
+            QCOMPARE(at, row->count() - 4);
+            QCOMPARE(row->itemAt(at + 1)->widget()->objectName(), QStringLiteral("rfFit"));
+            QCOMPARE(row->itemAt(at + 3)->widget()->objectName(), QStringLiteral("rfReread"));
         }
 
         // Drawn with the mouse, through send_input: a line across the wire.

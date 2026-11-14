@@ -343,6 +343,13 @@ qucs_add_test(test_rf25_measured)
 # twice the memory-heavy ones' below. Skipped under the sanitizers: its
 # coarsest mesh at one frequency was still solving at QtTest's 300 s.)
 set_tests_properties(test_rf25_measured PROPERTIES TIMEOUT 2400)
+qucs_add_test(test_rf25_edge)
+qucs_add_test(test_rf25_accuracy)
+# (RF 2.5D against references that are not itself - 2D solves of each
+# line's cross-section, a boundary-element solve, Palace and QFEM -: seven
+# lines' strips full wave, each millimetres long, and a quasi-static line at
+# three meshes. Skipped under the sanitizers, as the measured line is.)
+set_tests_properties(test_rf25_accuracy PROPERTIES TIMEOUT 2400)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics_optimize)
@@ -489,9 +496,11 @@ if(TARGET Qt6::Pdf AND QUCS_PDF_VIEWER)
   target_compile_definitions(test_plot_digitizer PRIVATE QUCS_REPO_PDF="${CMAKE_CURRENT_SOURCE_DIR}/../python/qucs-py/test1dat.pdf")
   target_link_libraries(test_plot_digitizer Qt6::Core Qt6::Gui Qt6::Pdf Qt6::Test)
   add_test(NAME test_plot_digitizer COMMAND test_plot_digitizer)
+  # (900: under the sanitizers some 7 minutes since the fuzzer's rounds that
+  # found a bug are replayed.)
   set_tests_properties(test_plot_digitizer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
-    TIMEOUT 600)
+    TIMEOUT 900)
   # In the program: Claude's tools, over stdio too, and the viewer's panel.
   qucs_add_test(test_plot_digitizer_app)
   target_compile_definitions(test_plot_digitizer_app PRIVATE QUCS_BINARY="$<TARGET_FILE:${QUCS_NAME}>")
@@ -590,7 +599,7 @@ if(APPLE)
   # (And the RF solver's measured line, one function of long solves: twice
   # that.)
   math(EXPR _qucs_measured_ms "2 * ${_qucs_memory_ms}")
-  set_property(TEST test_rf25_measured APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_measured_ms}")
+  set_property(TEST test_rf25_measured test_rf25_accuracy APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_measured_ms}")
   # (Before macOS 26 - CI's runner has 15 - complex systems are factorized
   # by Eigen's LU, on one thread: the eigenmode expansion's cuts. Its threads
   # function went past QtTest's 300 s there on v27.0.9's tag run, split

@@ -295,6 +295,24 @@ int misc::memoryReleases()
     return freedMemoryReleases.load();
 }
 
+void misc::waitWhile(const std::function<bool()>& going, int ms,
+                     const std::function<void(QObject*, const std::function<void()>&)>& wake)
+{
+  QElapsedTimer t;
+  t.start();
+  if (!going() || ms <= 0) return;
+  QEventLoop loop;
+  const std::function<void()> look = [&] {
+    if (!going() || t.elapsed() >= ms) loop.quit();
+  };
+  QTimer every;
+  every.setInterval(20);
+  QObject::connect(&every, &QTimer::timeout, &loop, look);
+  every.start();
+  if (wake) wake(&loop, look);
+  loop.exec();
+}
+
 void misc::releaseFreedMemory()
 {
     ++freedMemoryReleases;

@@ -138,6 +138,10 @@ struct Mesh {
     int across = 0;
     double acrossCell = 0;
     double narrowestGap = 0;
+    /// Each layer's narrowest gap between two of its pieces facing each
+    /// other across x or y, µm: what a metal's Solved as Automatic goes by
+    /// (thickened()).
+    QMap<QString, double> gapByLayer;
     double smallest = 0, largest = 0;
     bool ok() const { return problems.isEmpty(); }
     QMap<QString, int> byLayer() const;

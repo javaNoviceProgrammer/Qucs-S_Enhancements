@@ -51,6 +51,7 @@
 #include <QSet>
 #include <QSplitter>
 #include <QThread>
+#include <QScrollBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QUndoCommand>
@@ -345,7 +346,9 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
         // (A quasi-static solve's too, now that it says what it is doing.)
         if (!a_solveJob) return;
         showProblems();
-        emit solvedChanged();
+        // (Not solvedChanged: nothing solved has changed, and the panel
+        //  made its whole form again at each.)
+        emit progressed();
     });
     buildUi();
     // The starter model's stack, drawn from the first: only an edit or a
@@ -354,6 +357,23 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     a_stack->setStack(a_model.stack());
     showProblems();
     if (app != nullptr) connect(this, SIGNAL(signalFileChanged(bool)), app, SLOT(slotFileChanged(bool)));
+}
+
+void RF25Doc::restyleTools()
+{
+    // (The layout tab's flat icons, hovered and checked as there: each its
+    //  own sheet - one on the bar drew its words' buttons square, Draw
+    //  without its frame.)
+    const QString sheet = LayoutDoc::toolButtonRules(palette());
+    for (QToolButton* b : std::as_const(a_tools))
+        if (b->styleSheet() != sheet) b->setStyleSheet(sheet);
+}
+
+void RF25Doc::changeEvent(QEvent* event)
+{
+    QFrame::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
+        QTimer::singleShot(0, this, &RF25Doc::restyleTools);   // (once the palette has settled)
 }
 
 RF25Doc::~RF25Doc()
@@ -411,15 +431,6 @@ void RF25Doc::buildUi()
         row->addWidget(b);
         return b;
     };
-    a_fit = button(tr("Zoom Extents"), tr("Show the whole layout"), "rfFit");
-    connect(a_fit, &QToolButton::clicked, this, [this] { fitView(); });
-    a_reread = button(tr("Read the Layout Again"), tr("Read the layout file the model names once more"), "rfReread");
-    connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
-    // Measured as in a layout's tab: the view's own ruler.
-    a_rulerButton = button(tr("Ruler"), tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"),
-                           "rfRuler");
-    a_rulerButton->setCheckable(true);
-    row->addSpacing(10);
     // What the solver would be given, over the layout it came from.
     const QucsSettingsFile settings;
     a_showProcessed = settings.value(QLatin1String(kShowProcessedKey), true).toBool();
@@ -508,7 +519,31 @@ void RF25Doc::buildUi()
     // layout, Claude reads (its menu: the arrow beside it).
     a_penButton = new qucs_s::markup::PenButton(tr("Cell"), bar);
     a_penButton->setObjectName(QStringLiteral("rfPen"));
+    a_penButton->setProperty("layoutTool", true);
     row->addWidget(a_penButton);
+    // Beside it, the view's own tools as a layout's tab has them: icons,
+    // drawn and styled as there (the user's ask of 12 November; they were
+    // words at the bar's start).
+    const auto tool = [&](LayoutDoc::ToolIcon icon, const QString& tip, const char* name) {
+        auto* b = new QToolButton(bar);
+        b->setIcon(LayoutDoc::toolIcon(icon));
+        b->setToolTip(tip);
+        b->setObjectName(QLatin1String(name));
+        LayoutDoc::makeToolButton(b);
+        row->addWidget(b);
+        return b;
+    };
+    a_fit = tool(LayoutDoc::ToolIcon::Fit, tr("Zoom Extents: show the whole layout"), "rfFit");
+    connect(a_fit, &QToolButton::clicked, this, [this] { fitView(); });
+    // Measured as in a layout's tab: the view's own ruler.
+    a_rulerButton = tool(LayoutDoc::ToolIcon::Ruler,
+                         tr("Ruler: drag to measure, snapped to corners and edges (Shift: across or up only; Escape clears)"), "rfRuler");
+    a_rulerButton->setCheckable(true);
+    a_reread = tool(LayoutDoc::ToolIcon::Reload, tr("Read the Layout Again: read the layout file the model names once more"),
+                    "rfReread");
+    connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
+    a_tools = {a_penButton, a_fit, a_rulerButton, a_reread};
+    restyleTools();
     all->addWidget(bar);
 
     a_splitter = new QSplitter(Qt::Vertical, this);
@@ -964,7 +999,15 @@ void RF25Doc::showProblems()
         lines << tr("What stands in the way of a solve:");
         for (const QString& line : cannot) lines << QStringLiteral("  • ") + line;
     }
-    a_problemsText->setPlainText(lines.join(QLatin1Char('\n')));
+    // Set only when it says something else, where it was scrolled to kept:
+    // a solve's count rewrote it each 400 ms, back at its top.
+    const QString text = lines.join(QLatin1Char('\n'));
+    if (a_problemsText->toPlainText() != text) {
+        QScrollBar* bar = a_problemsText->verticalScrollBar();
+        const int at = bar->value();
+        a_problemsText->setPlainText(text);
+        bar->setValue(std::min(at, bar->maximum()));
+    }
     const Stack s = a_model.stack();
     // (conductors(): the metals and the ground - what the layer map and a
     // port may name. A via is metal too, but is named by its own metals.)
@@ -1115,12 +1158,23 @@ void RF25Doc::closeWhenFree()
     if (a_waiting == 0) deleteLater();
 }
 
+void RF25Doc::waitWhile(const std::function<bool()>& going, int ms)
+{
+    // (Woken at once when the model says its state moved, else each 20 ms:
+    //  misc::waitWhile. The waits once called processEvents in a loop of
+    //  their own, which never slept: 4.9 s of the GUI thread's 5 while a
+    //  solve was waited for, on macOS, and a Save panel opened meanwhile
+    //  never reached the screen - the user's report of 12 November.)
+    misc::waitWhile(going, ms, [this](QObject* context, const std::function<void()>& look) {
+        for (auto signal : {&RF25Doc::stateChanged, &RF25Doc::preparedChanged, &RF25Doc::solvedChanged})
+            connect(this, signal, context, look, Qt::QueuedConnection);
+    });
+}
+
 bool RF25Doc::waitForLayout(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while (a_job && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return a_job && !a_closed; }, ms);
     return !a_job && !a_closed;
 }
 
@@ -1383,13 +1437,10 @@ void RF25Doc::prepareDone()
 bool RF25Doc::waitForPrepared(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
     // A run waiting its 300 ms is started at once: a test and a tool ask
     // for what the model says now, not for what it said 300 ms ago.
     if (a_prepareSoon->isActive()) prepare();
-    while ((a_prepareJob || a_prepareAgain) && !a_closed && t.elapsed() < ms)
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return (a_prepareJob || a_prepareAgain) && !a_closed; }, ms);
     return !a_prepareJob && !a_closed;
 }
 
@@ -2124,9 +2175,7 @@ bool RF25Doc::waitForSolvesToEnd(int ms)
     // (Closed meanwhile, the solves still end on their own copies: waited
     //  for as before, the model held.)
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while (a_solvesAtWork->load() > 0 && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return a_solvesAtWork->load() > 0; }, ms);
     return a_solvesAtWork->load() == 0;
 }
 
@@ -2373,10 +2422,7 @@ void RF25Doc::keepSolution()
 bool RF25Doc::waitForSolved(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while ((a_solveJob || a_solveWhenPrepared) && !a_closed && t.elapsed() < ms)
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return (a_solveJob || a_solveWhenPrepared) && !a_closed; }, ms);
     return !a_solveJob && !a_solveWhenPrepared;
 }
 
@@ -2531,9 +2577,7 @@ void RF25Doc::stopAnalysis()
 bool RF25Doc::waitForAnalysis(int ms)
 {
     const Held held(this);
-    QElapsedTimer t;
-    t.start();
-    while (a_analysis && !a_closed && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    waitWhile([this] { return a_analysis && !a_closed; }, ms);
     return !a_analysis;
 }
 

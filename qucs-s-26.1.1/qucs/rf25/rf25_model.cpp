@@ -205,15 +205,17 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("3.3e7")),
           expr(QStringLiteral("roughness"), tr("Roughness"), QStringLiteral("m"), QStringLiteral("0"),
                tr("The rms roughness of its surface; it raises the loss at high frequency.")),
-          choice(QStringLiteral("model"), tr("Solved as"), {QStringLiteral("sheet"), QStringLiteral("faces")},
-                 {tr("A sheet (its thickness in its loss)"), tr("Its two faces, joined at its walls")},
+          choice(QStringLiteral("model"), tr("Solved as"), {QStringLiteral("automatic"), QStringLiteral("sheet"), QStringLiteral("faces")},
+                 {tr("Automatic (its two faces where it is thick beside its gaps)"), tr("A sheet (its thickness in its loss)"),
+                  tr("Its two faces, joined at its walls")},
                  QStringLiteral("sheet"),
                  tr("A sheet is quickest, and right where the metal is thin beside its gaps. Its two faces put its "
-                    "thickness in the field too - its top face higher, what is beside its walls, and how its current "
-                    "shares its top and bottom - at twice its cells, and the charge on its side walls across narrow "
-                    "gaps, as capacitance between facing edges from a 2D solve of straight walls. A sheet has no walls: "
-                    "in gaps as narrow as the metal is thick its capacitance reads low (some 20 % where they are "
-                    "equal), and the solve says so."))},
+                    "thickness in the field too - its top face higher, its walls carrying current and, where they face "
+                    "another conductor's across a narrow gap, charge - at twice its cells. A sheet has no walls: on thick "
+                    "metal in narrow gaps its inductance reads high and its capacitance low (some 20 % where they are "
+                    "equal), and the solve says so. Automatic solves it as its two faces where it is at least a fortieth "
+                    "as thick as the narrowest gap beside it, and as a sheet elsewhere; a new metal is Automatic, and a "
+                    "file that says nothing a sheet."))},
          {}, {}, false, false, QStringLiteral("m"),
          tr("A metal layer. The layout's polygons on the layers mapped to it are its conductors; its name (the label) "
             "is what the layer map and the ports call it.")});
@@ -947,6 +949,7 @@ Model Model::blank()
     metal.type = QStringLiteral("rf_metal");
     metal.tag = QStringLiteral("m1");
     metal.label = QStringLiteral("M1");
+    metal.props.insert(QStringLiteral("model"), QStringLiteral("automatic"));   // (a new metal's; a file that says nothing, a sheet)
     stack.children.push_back(ground);
     stack.children.push_back(substrate);
     stack.children.push_back(oxide);
@@ -1105,6 +1108,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("sigma"), &layer.sigma);
             read(QStringLiteral("roughness"), &layer.roughness);
             layer.twoSheets = textOf(c, QStringLiteral("model")) == QLatin1String("faces");
+            layer.automatic = textOf(c, QStringLiteral("model")) == QLatin1String("automatic");
             break;
         case Layer::Via:
             layer.from = textOf(c, QStringLiteral("from")).trimmed();
@@ -1431,7 +1435,10 @@ Node Model::make(const QString& type) const
         walk(root);
         return stem + QString::number(highest + 1);
     };
-    if (type == QLatin1String("rf_metal")) n.label = numbered(QStringLiteral("M"));
+    if (type == QLatin1String("rf_metal")) {
+        n.label = numbered(QStringLiteral("M"));
+        n.props.insert(QStringLiteral("model"), QStringLiteral("automatic"));   // (a new metal's; a file that says nothing, a sheet)
+    }
     else if (type == QLatin1String("rf_dielectric")) n.label = numbered(QStringLiteral("ILD"));
     else if (type == QLatin1String("rf_via")) n.label = numbered(QStringLiteral("V"));
     else if (type == QLatin1String("rf_edge_port") || type == QLatin1String("rf_internal_port"))
