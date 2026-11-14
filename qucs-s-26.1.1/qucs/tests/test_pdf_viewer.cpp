@@ -970,10 +970,11 @@ private slots:
             QVERIFY2(red.red() > 200 && red.green() < 60 && red.blue() < 60, qPrintable(QStringLiteral("page %1: %2").arg(i + 1).arg(red.name())));
             QVERIFY2(blue.blue() > 200 && blue.red() < 60, qPrintable(QStringLiteral("page %1: %2").arg(i + 1).arg(blue.name())));
             QVERIFY2(white.lightness() > 240, qPrintable(QStringLiteral("page %1: %2").arg(i + 1).arg(white.name())));
-            // (QtPdf's clipped render puts ink up to 2 pixels above where the
-            // whole page's has it: the last point is not looked at.)
-            const QColor last = at(3);
-            QVERIFY2(last.red() > 200 && last.green() < 60, qPrintable(QStringLiteral("page %1, 3 points from its foot: %2").arg(i + 1).arg(last.name())));
+            // The last point too: QtPdf drew a tile's clip a pixel short each
+            // way, its ink up to 2 pixels above the whole page's, until the clip
+            // was asked a pixel larger (the SOI MMI benchmark's E1).
+            const QColor last = at(1);
+            QVERIFY2(last.red() > 200 && last.green() < 60, qPrintable(QStringLiteral("page %1, 1 point from its foot: %2").arg(i + 1).arg(last.name())));
         }
     }
 

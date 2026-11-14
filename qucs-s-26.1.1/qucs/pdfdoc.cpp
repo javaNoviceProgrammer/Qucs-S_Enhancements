@@ -1027,7 +1027,9 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
     // page whose height is just over a multiple of the tile's was left
     // white (the PDF open items' C1).
     const QRect cell(tx * TileSize, ty * TileSize, TileSize, TileSize);
-    options.setScaledClipRect(cell);
+    // (A clip a pixel larger than the picture: QtPdf maps w x h as if w - 1 by
+    // h - 1, and a tile's ink came Y / 512 rows high - 9 at a page's foot.)
+    options.setScaledClipRect(cell.adjusted(0, 0, 1, 1));
     QImage image = a_document->render(page, cell.size(), options);
     if (!image.isNull() && rect.size() != cell.size()) image = image.copy(QRect(QPoint(0, 0), rect.size()));
     // (Its pixel ratio set once: drawn, the same image each time - the GPU's

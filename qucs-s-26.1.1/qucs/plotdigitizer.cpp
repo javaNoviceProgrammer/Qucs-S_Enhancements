@@ -649,7 +649,12 @@ QImage Source::render(int page, const QRectF& region, double scale) const
     QPdfDocumentRenderOptions options;
     options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
     options.setScaledSize(full);
-    options.setScaledClipRect(rect);
+    // (QtPdf maps a clip of w x h onto the picture as if it were w - 1 by
+    // h - 1: the page drawn smaller by a pixel in each, about its corner - a
+    // line at row Y came Y / h rows too high, X / w columns too far left,
+    // 1.8 pixels at the foot of a page. A clip a pixel larger is exact: the
+    // SOI MMI benchmark's E1, every raster trace too high, more so lower.)
+    options.setScaledClipRect(rect.adjusted(0, 0, 1, 1));
     const QImage image = a_pdf->render(page, rect.size(), options);
     if (image.isNull()) return image;
     QImage out(image.size(), QImage::Format_RGB32);

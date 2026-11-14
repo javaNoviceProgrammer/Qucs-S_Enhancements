@@ -885,6 +885,64 @@ Still open from it:
   "dose=1x1013cm-2" beside "dose=1x10^12". The curves are named; the names' powers are not all marked.
 - E1-E4 stay with the SOI MMI benchmark's note.
 
+## The SOI MMI benchmark's E1 and E3, and what they uncovered (14 November)
+
+The user: "Yes, start with E1", then "Yes, fix the tracer". The benchmark of 9 November found every raster trace too high,
+more so lower on the page (E1: −0.0022 pt per point of page y over 127 series, up to some 2 pt), and a flat data line
+across the frame dropped (E3).
+
+**E1, the cause.** QtPdf draws a clipped render as if its clip of w × h were w − 1 by h − 1, scaled about the page's
+corner: in a clip, ink at page row Y lands Y / h rows too high and X / w columns too far left. Measured with lines drawn
+at known heights against the whole page's render: −1.00 px at row 1,200 in a clip 1,200 high, −4.50 at row 1,800 in
+one 400 high, exactly Y / h at both 4 and 6 pixels a point; the same for x. Asking for a clip a pixel larger than the
+picture makes it exact (0.00 px in x and y, every case). Fixed in `Source::render` and in the viewer's tiles (the
+1-2 pixel offset noted with C1 above: a 512-pixel tile's ink was Y / 512 rows high, 9 at a page's foot).
+
+The old clip also redrew an embedded image at 0.999 of its size, through pdfium's downsampling, which thinned
+anti-aliased lines: a narrow peak of a 300 dpi scan had 2,503 dark pixels where the image has 4,203, and the
+clip-free render 4,207. The new clipped render has 4,211. Three raster tests tuned on the thinned pictures failed on
+faithful ones; each was a real weakness of the tracer:
+
+- **A flat curve taken for a grid line (E3).** A thin band of rows inked across 90 % of the frame was a grid line even
+  alone. A peak's flat baseline was taken so: its core cleared, its rims a seeming lighter blue, the hue split in two
+  families, the peak in one and the baseline's scraps in the other. Now a band is a grid line only at a mark of the
+  axis's regular beat (a flat line meeting the frame's edge is found as a mark there too, out of step) or at a labelled
+  tick, or one of two or more such of one colour. `aNarrowPeakKeepsBothSides` (1.2 pt) and the new `aFlatLineIsNoGrid`
+  (the benchmark's synthetic case: a blue line at 0.2 across the frame with a red sine, vector and scanned; before, no
+  blue line at all) pass.
+- **A steep side traced apart.** Under packed rings, the stretch of a peak's side between two breaks of the line was
+  walked on its own and kept as a second curve of the colour. Now a short line of the colour that starts at one side of
+  a longer one's break, ends nearer the other and lies within the break's x is put in the break (x held from going
+  back, a break left where some is still unseen). `ringsPackedOnASteepPeakAndAKey` passes.
+- **Slivers taken for rings' holes.** Rings touching each other along the frame's bottom wall in a sliver between two
+  of them and the frame's line, found as a ring's hole: 28 markers that were not there. A line of the colour across
+  the whole box (the frame's, an axis's, a grid's) is now no wall in the search for holes; a ring sitting on the axis
+  keeps its hole, the halves either side of the line one. `aPapersFigure` passes.
+
+**Test.** `aRasterTraceIsWhereItsInkIs`: three plots of one sine down a page, traced from a picture, vector page
+(6 px/pt) and image page (300 dpi): each trace within 0.012 pt of its ink at every height (the review's check, < 0.1 pt).
+On the old clip, +0.119 pt at the top plot already. The viewer's `aPagesFootIsShownWhole` now looks at 1 pt from the
+page's foot, not 3.
+
+**On the papers.** The benchmark's 60 calls replayed, each kept record scored against its page's ink by the benchmark's
+own `score.py` (its pages rendered by CoreGraphics at 6 pixels a point, pymupdf not being installed), the installed
+27.1.3 against the clip fix and against the clip fix with the tracer's:
+
+| | 27.1.3 | clip | clip + tracer |
+|---|---|---|---|
+| y error, signed median (trace − ink) | −0.502 pt | +0.085 pt | +0.084 pt |
+| y error, median of its size | 0.586 pt | 0.205 pt | 0.208 pt |
+| points off the ink, median | 0.167 pt | 0 | 0 |
+| recall | 0.738 | 0.841 | 0.843 |
+
+Every paper's offset goes from as much as −0.6 pt to under 0.11. On Xu p4/2, a vector plot traced from a picture, the
+trace against the file's own vertices: 1.32 pt to 0.13. The remaining +0.08 pt is about half a pixel at the scorer's 6
+pixels a point: the two renderers' conventions, not measured further. 60 of 60 calls calibrated (59).
+
+Still worse than on 27.1.3: Zhang p5/2, a thick wiggly black curve beside blue and red dash-dot ones, now comes back as a
+16-point piece (was 173) and the blue as markers: the marker finder sees discs along the thick line (87 markers "found
+where they touch others", 6 before). Two calls' trust drops to low (Rosa p7/1, Tahersima's ninth). E2 and E4 not looked at.
+
 ## What could not be verified
 
 - **Qt 6.10.3.** Built and run against Homebrew's Qt 6.12.0 only. The code uses `QPdfDocument`, `QPdfSelection` and
