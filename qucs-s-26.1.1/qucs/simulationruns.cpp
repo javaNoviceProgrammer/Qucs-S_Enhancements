@@ -535,7 +535,10 @@ void Tracker::follow(QObject* document)
     // (A run is seen as it begins and ends, not only at the next reading.)
     if (auto* model = qobject_cast<MultiphysicsDoc*>(document)) connect(model, &MultiphysicsDoc::stateChanged, this, &Tracker::pollSoon);
     else if (auto* model3 = qobject_cast<Multiphysics3DDoc*>(document)) connect(model3, &Multiphysics3DDoc::stateChanged, this, &Tracker::pollSoon);
-    else if (auto* rf = qobject_cast<RF25Doc*>(document)) connect(rf, &RF25Doc::solvedChanged, this, &Tracker::pollSoon);
+    else if (auto* rf = qobject_cast<RF25Doc*>(document)) {
+        connect(rf, &RF25Doc::solvedChanged, this, &Tracker::pollSoon);
+        connect(rf, &RF25Doc::progressed, this, &Tracker::pollSoon);   // (how far, for its job)
+    }
 }
 
 void Tracker::pollSoon()

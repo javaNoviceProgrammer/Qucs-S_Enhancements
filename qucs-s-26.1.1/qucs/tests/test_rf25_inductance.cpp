@@ -302,6 +302,72 @@ private slots:
                  "a far pair is not taken between its middles");
     }
 
+    // A strip standing upright beside one lying in the plane - a metal's
+    // wall and its face, solved as two faces whose edge runs carry current
+    // down their walls (A1 of the open items of 8 November) -: the partial
+    // inductance by the two cross-sections' geometric mean distance, against
+    // the double integral averaged over both cross-sections by a midpoint
+    // rule fine enough to settle. Strips that meet at a corner, two walls end
+    // to end (a top face's half and its bottom's), and a wall across a gap
+    // from a face. The four-point average across widths is not good enough
+    // where they meet.
+    void anUprightStripBesideAFlatOneIsTheirDoubleIntegral()
+    {
+        for (const double l : {200e-6, 30e-6}) {   // (ten times the face's width, and a run as short as a rooftop's)
+        const double w = 20e-6, t = 6e-6;
+        const auto flat = [l](double y, double z, double width) {
+            rf::Filament f;
+            f.from = QPointF(0, y);
+            f.to = QPointF(l, y);
+            f.z0 = f.z1 = z;
+            f.width = width;
+            return f;
+        };
+        const auto upright = [l](double y, double z, double rise) {
+            rf::Filament f;
+            f.from = QPointF(0, y);
+            f.to = QPointF(l, y);
+            f.z0 = f.z1 = z;
+            f.rise = rise;
+            return f;
+        };
+        // (Each a cross-section's segment, (y, z) from and to.)
+        struct Case {
+            const char* what;
+            rf::Filament a, b;
+            double a0y, a0z, a1y, a1z, b0y, b0z, b1y, b1z;
+        };
+        const Case cases[] = {
+            {"a wall meeting its face at a corner", flat(0, 0, w), upright(w / 2, t / 4, t / 2), -w / 2, 0, w / 2, 0, w / 2, 0, w / 2,
+             t / 2},
+            {"two walls end to end", upright(0, t / 4, t / 2), upright(0, 3 * t / 4, t / 2), 0, 0, 0, t / 2, 0, t / 2, 0, t},
+            {"a wall across a gap from a face", upright(w / 2, t / 4, t / 2), flat(w / 2 + 10e-6 + w / 2, 0, w), w / 2, 0, w / 2, t / 2,
+             w / 2 + 10e-6, 0, w / 2 + 10e-6 + w, 0},
+        };
+        for (const Case& c : cases) {
+            const double got = rf::partialInductance(c.a, c.b);
+            const int n = 240;
+            double sum = 0;
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j) {
+                    const double u = (i + 0.5) / n, v = (j + 0.5) / n;
+                    const double ya = c.a0y + u * (c.a1y - c.a0y), za = c.a0z + u * (c.a1z - c.a0z);
+                    const double yb = c.b0y + v * (c.b1y - c.b0y), zb = c.b0z + v * (c.b1z - c.b0z);
+                    sum += exactPair(l, std::max(std::hypot(ya - yb, za - zb), 1e-12));
+                }
+            const double wanted = sum / (double(n) * n);
+            QVERIFY2(std::abs(got / wanted - 1) < 5e-4,
+                     qPrintable(QStringLiteral("%1, %2 µm long: %3 pH vs %4 pH")
+                                    .arg(QLatin1String(c.what)).arg(l * 1e6).arg(got * 1e12).arg(wanted * 1e12)));
+            // (Symmetric.)
+            QVERIFY2(std::abs(rf::partialInductance(c.b, c.a) / got - 1) < 1e-12, c.what);
+        }
+        // An upright strip's own: a strip of its rise's, as a flat one's of
+        // its width.
+        QCOMPARE(rf::partialInductance(upright(0, 0, w), upright(0, 0, w)), rf::partialInductance(flat(0, 0, w), flat(0, 0, w)));
+        }
+    }
+
     // A strip cut into pieces adds back up to the strip: the sum over
     // every pair of pieces is the whole one's own inductance. It is the
     // check that the kernel is consistent with itself, and the reason a

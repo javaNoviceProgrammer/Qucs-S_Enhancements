@@ -692,6 +692,70 @@ private slots:
         QCOMPARE(r.routed() + r.failed(), 6);
     }
 
+    void aRunStoppedAnywhereKeepsOnlyLegalRoutes()
+    {
+        // test_layout_routing's run past its timeout, which a loaded machine
+        // stopped part way and kept two lines 1.75 µm apart (2 needed): the
+        // same 24 nets on a 0.25 µm grid round the same chip, stopped after
+        // each batch of nets in turn. Whenever it stops, what it keeps is
+        // legal - only nets not routed are findings.
+        QJsonObject o = techJson(2, 2, 0.25);
+        o.insert("spacing", QJsonObject{{"same_layer", 2}, {"to_metal", 2}, {"to_terminal", 3}});
+        o.insert("obstacles", QJsonArray{QJsonObject{{"name", "etch"}, {"layer", "30/0"}, {"clearance", 3}}});
+        o.insert("area", QJsonObject{{"margin", 30}});
+        o.remove("costs");
+        Problem p = problemOf(tech(o));
+        for (const auto& [x, y] : {std::pair{0.0, 50.0}, {100.0, 50.0}, {50.0, 0.0}, {50.0, 100.0}, {150.0, 50.0}}) pad(p, 0, x, y);
+        p.metal.append({rect(p, 20, 70, 28, 78), 0});
+        p.obstacles.append({rect(p, 70, 20, 80, 30), 0});
+        for (int i = 0; i < 24; ++i)
+            p.nets.append(net(QStringLiteral("m%1").arg(i), at(p, -20, -60 + 5 * i), at(p, 120, -60 + 5 * ((i * 7) % 24))));
+
+        // The whole run first: how many batches it draws.
+        int batches = 0;
+        {
+            Router router(p);
+            QVERIFY(router.prepare());
+            Progress progress;
+            progress.batch = [&] { ++batches; };
+            const Result r = router.run({}, {}, progress);
+            const Verification v = verify(router.problem(), r);
+            QVERIFY2(v.clean(), qPrintable(describe(v)));
+            // Every net: a via's landing is tested where the via is, not
+            // wherever a net's lines on two metals share a cell.
+            QCOMPARE(r.routed(), 24);
+        }
+        QVERIFY(batches > 40);
+        // Every third batch of the first two passes, where the clean-up has
+        // the most to do (stopped after batch 25 the run kept the finding
+        // above; after 40, a line 1.75 µm from a via's landing).
+        // QUCS_ROUTER_STOPS="1-168" stops at each batch of a range instead.
+        int first = 1, last = 48, step = 3;
+        const QStringList range = qEnvironmentVariable("QUCS_ROUTER_STOPS").split('-');
+        if (range.size() == 2) {
+            first = std::max(1, range.at(0).toInt());
+            last = std::min(batches, range.at(1).toInt());
+            step = 1;
+        }
+        for (int stopAt = first; stopAt <= last; stopAt += step) {
+            Router router(p);
+            QVERIFY(router.prepare());
+            std::atomic_bool cancel{false};
+            int seen = 0;
+            Progress progress;
+            progress.cancel = &cancel;
+            progress.batch = [&] {
+                if (++seen == stopAt) cancel = true;
+            };
+            const Result r = router.run({}, {}, progress);
+            QCOMPARE(r.stopped, QStringLiteral("cancelled"));
+            const Verification v = verify(router.problem(), r);
+            for (const Finding& f : v.findings)
+                QVERIFY2(f.kind == QLatin1String("unroutable"), qPrintable(QStringLiteral("stopped after batch %1 of %2: %3").arg(stopAt).arg(batches).arg(f.text)));
+            QCOMPARE(r.routed() + r.failed(), 24);
+        }
+    }
+
     void aGuideIsFollowed()
     {
         Problem p = problemOf(tech());

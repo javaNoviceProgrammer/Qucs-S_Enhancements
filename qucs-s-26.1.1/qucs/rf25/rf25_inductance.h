@@ -95,6 +95,10 @@ struct Filament {
     double width = 0;        ///< m, across its direction
     double thickness = 0;    ///< m
     double sigma = 0;        ///< S/m; 0: perfect
+    /// A run in the plane standing upright - a metal's side wall carrying
+    /// current along its edge -: its breadth in z, m, its centre at z0, and
+    /// its width in the plane nought. Nought: a run lying in the plane.
+    double rise = 0;
 
     /// Its length, m.
     double length() const;

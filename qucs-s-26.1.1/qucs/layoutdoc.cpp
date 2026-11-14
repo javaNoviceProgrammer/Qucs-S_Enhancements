@@ -135,7 +135,7 @@ constexpr int AllLevels = 100;   // the depth box's "all"
 class GlyphIcon : public QIconEngine
 {
 public:
-    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down, Route };
+    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down, Route, Reload };
     explicit GlyphIcon(Kind kind) : a_kind(kind) {}
     QIconEngine* clone() const override { return new GlyphIcon(a_kind); }
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override
@@ -205,6 +205,15 @@ public:
             p->drawLine(QPointF(5, 5), QPointF(11, 11));
             p->drawLine(QPointF(11, 5), QPointF(5, 11));
             break;
+        case Reload: {
+            // A circle's arrow, open at its top right, turning clockwise:
+            // read again. (Its head at 60 degrees, (8 + 5.5 cos 60,
+            // 8 - 5.5 sin 60), pointing on round the circle.)
+            p->drawArc(QRectF(2.5, 2.5, 11, 11), 60 * 16, 300 * 16);
+            const QPointF tip(10.75, 3.24);
+            p->drawPolyline(QPolygonF{tip + QPointF(-1.1, -3.0), tip, tip + QPointF(-3.15, 0.56)});
+            break;
+        }
         case Up: p->drawPolyline(QPolygonF{QPointF(4, 10), QPointF(8, 6), QPointF(12, 10)}); break;
         case Down: p->drawPolyline(QPolygonF{QPointF(4, 6), QPointF(8, 10), QPointF(12, 6)}); break;
         }
@@ -233,10 +242,7 @@ QToolButton* toolButton(QWidget* parent, const QIcon& icon, const QString& tip)
     auto* b = new QToolButton(parent);
     b->setIcon(icon);
     b->setToolTip(tip);
-    b->setAutoRaise(true);
-    b->setIconSize(QSize(16, 16));
-    b->setFocusPolicy(Qt::NoFocus);
-    b->setProperty("layoutTool", true);
+    LayoutDoc::makeToolButton(b);
     return b;
 }
 
@@ -2041,19 +2047,44 @@ void LayoutDoc::buildUi()
     restyle();
 }
 
+QIcon LayoutDoc::toolIcon(ToolIcon which)
+{
+    switch (which) {
+    case ToolIcon::Fit: return glyph(GlyphIcon::Fit);
+    case ToolIcon::Ruler: return glyph(GlyphIcon::Ruler);
+    case ToolIcon::Reload: break;
+    }
+    return glyph(GlyphIcon::Reload);
+}
+
+void LayoutDoc::makeToolButton(QToolButton* button)
+{
+    button->setAutoRaise(true);
+    button->setIconSize(QSize(16, 16));
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    button->setProperty("layoutTool", true);
+}
+
+QString LayoutDoc::toolButtonRules(const QPalette& pal)
+{
+    return QStringLiteral("QToolButton[layoutTool=\"true\"] { padding: 3px; border: none; border-radius: 4px; }"
+                          "QToolButton[layoutTool=\"true\"]:hover { background: %1; }"
+                          "QToolButton[layoutTool=\"true\"]:checked { background: %2; }"
+                          "QToolButton[layoutTool=\"true\"]::menu-indicator { image: none; }")
+               .arg(pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name())
+        + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton[layoutTool=\"true\"]"));
+}
+
 void LayoutDoc::restyle()
 {
     const QPalette pal = palette();
     const QColor line = pal.color(QPalette::Mid);
     const QString sheet = QStringLiteral(
                               "#layoutToolbar, #layoutSearch { border-bottom: 1px solid %1; }"
-                              "#layoutInfo { border-top: 1px solid %1; }"
-                              "QToolButton[layoutTool=\"true\"] { padding: 3px; border: none; border-radius: 4px; }"
-                              "QToolButton[layoutTool=\"true\"]:hover { background: %2; }"
-                              "QToolButton[layoutTool=\"true\"]:checked { background: %3; }"
-                              "QToolButton[layoutTool=\"true\"]::menu-indicator { image: none; }")
-                              .arg(line.name(), pal.color(QPalette::Midlight).name(), pal.color(QPalette::Mid).name())
-        + qucs_s::apptheme::menuButtonRules(QStringLiteral("QToolButton[layoutTool=\"true\"]"));
+                              "#layoutInfo { border-top: 1px solid %1; }")
+                              .arg(line.name())
+        + toolButtonRules(pal);
     if (sheet != styleSheet()) setStyleSheet(sheet);
     a_view->update();
 }
@@ -2145,6 +2176,7 @@ void LayoutDoc::startReading()
         a_toolbar->setEnabled(false);
     }
     QThread* thread = QThread::create([job] {
+        while (readingHeld().load() && !job->cancelled.load()) QThread::msleep(2);
         job->result = read(job->path, &job->error, &job->cancelled, &job->progress);
     });
     // (A main thread's stack, 8 MB: a thread's is 512 kB on macOS, where a
@@ -2159,11 +2191,20 @@ void LayoutDoc::startReading()
     a_progressTimer->start();
 }
 
+std::atomic_bool& LayoutDoc::readingHeld()
+{
+    static std::atomic_bool held{false};
+    return held;
+}
+
 bool LayoutDoc::waitForLoaded(int ms)
 {
-    QElapsedTimer t;
-    t.start();
-    while (a_job && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    // (In an event loop that sleeps, woken as the read ends: a loop of
+    //  processEvents never slept, and a Save panel opened while a layout
+    //  tool waited for a large file never reached the screen on macOS.)
+    misc::waitWhile([this] { return a_job != nullptr; }, ms, [this](QObject* context, const std::function<void()>& look) {
+        connect(this, &LayoutDoc::loaded, context, look, Qt::QueuedConnection);
+    });
     return !a_job;
 }
 

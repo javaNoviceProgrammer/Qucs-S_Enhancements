@@ -25,6 +25,7 @@
 #include <QSet>
 #include <QWidget>
 
+#include <atomic>
 #include <functional>
 #include <optional>
 
@@ -444,6 +445,19 @@ public:
     /// Waits for a read to end, \a ms at most (for Claude's tools and the
     /// tests); whether it ended.
     bool waitForLoaded(int ms = 60000);
+    /// Tests: while held, every layout read waits before it reads (a
+    /// cancel still ends it), so that a read going on is seen in any build.
+    static void holdReading(bool held) { readingHeld().store(held); }
+    /// The toolbar's icons another tab may show beside its own, drawn as
+    /// this tab draws them (in the text's colour of the moment).
+    enum class ToolIcon { Fit, Ruler, Reload };
+    static QIcon toolIcon(ToolIcon which);
+    /// \a button made one of this tab's toolbar buttons: an icon of 16
+    /// pixels, flat until hovered, taking no focus. toolButtonRules() is the
+    /// style sheet that draws them so, for \a palette.
+    static void makeToolButton(QToolButton* button);
+    static QString toolButtonRules(const QPalette& palette);
+    static std::atomic_bool& readingHeld();
     std::shared_ptr<const qucs_s::layout::Layout> layout() const { return a_layout; }
     /// Why it is not shown (it could not be read, the read was cancelled),
     /// or empty.

@@ -920,9 +920,14 @@ void Diagram::calcData(Graph *g) {
                 for (z = g->axis(0)->count - 1; z > 0; z--) {  // every point
                     FIT_MEMORY_SIZE;  // need to enlarge memory block ?
                     if (missing()) {
-                        // (A hidden point after a stroke's end goes, as at a
-                        // branch's end.)
-                        if (p - g->begin() >= 2 && (p - 2)->isStrokeEnd() && !(p - 2)->isBranchEnd() && !(p - 1)->isStrokeEnd()) p -= 2;
+                        // (A lone point after a stroke's end goes, as at a
+                        // branch's end - only the point: the stroke's end
+                        // before it stays. Taking that too, as "p -= 2" did,
+                        // took the buffer's first entry when the curve's
+                        // first value stood alone, and the look-back below
+                        // then read before the buffer.)
+                        if (p - g->begin() >= 2 && (p - 2)->isStrokeEnd() && !(p - 2)->isBranchEnd() && !(p - 1)->isStrokeEnd()) --p;
+                        QUCS_ASSERT(p != g->begin());
                         if (!(p - 1)->isStrokeEnd()) (p++)->setStrokeEnd();
                         fresh = true;
                         ++px;
