@@ -330,6 +330,71 @@ void prepare(Traced& t, const Plot& plot, const QList<Token>& words, const Optio
         };
         thinOnly(gridRow, rowInk, spanX, y0, y1);
         thinOnly(gridCol, colInk, spanY, x0, x1);
+        // A grid line is at a mark, or one of a set of them in one colour: a
+        // band inked across the frame alone, at no mark, is a curve lying
+        // flat - a reference level, a peak's baseline (the SOI MMI
+        // benchmark's E3: such a line lost, or kept only where a curve
+        // crossed it).
+        const auto atMarksOnly = [&](std::vector<uchar>& flags, int from, int to, bool rows, const Axis& axis) {
+            // (Its marks as they beat: a flat curve meeting the frame's edge
+            // is found as a mark there too, out of step with the rest.)
+            QList<double> marks = axis.marks;
+            std::sort(marks.begin(), marks.end());
+            marks = regularMarks(marks, 1.2);
+            const auto atAMark = [&](double workPosition) {
+                for (const double m : std::as_const(marks))
+                    if (std::abs(m - workPosition) < 1.2) return true;
+                for (const Tick& tick : axis.ticks)
+                    if (tick.hasValue && std::abs(tick.position - workPosition) < 1.2) return true;
+                return false;
+            };
+            struct Band {
+                int a, b;
+                bool atMark;
+                double c0, c1;
+            };
+            QList<Band> bands;
+            for (int k = from; k < to;) {
+                if (!flags[size_t(k)]) {
+                    ++k;
+                    continue;
+                }
+                int e = k;
+                while (e < to && flags[size_t(e)]) ++e;
+                Band band{k, e, atAMark((rows ? p.origin.y() : p.origin.x()) + ((k + e) / 2.0) / p.scale), 0, 0};
+                double c0 = 0, c1 = 0, count = 0;
+                for (int j = k; j < e; ++j)
+                    for (int q = rows ? x0 : y0; q < (rows ? x1 : y1); q += 3) {
+                        const size_t i = size_t(rows ? t.at(q, j) : t.at(j, q));
+                        if (mag[i] == 0) continue;
+                        c0 += chroma0[i];
+                        c1 += chroma1[i];
+                        ++count;
+                    }
+                band.c0 = count > 0 ? c0 / count : 1.0 / 3;
+                band.c1 = count > 0 ? c1 / count : 1.0 / 3;
+                bands << band;
+                k = e;
+            }
+            double m0 = 0, m1 = 0;
+            int marked = 0;
+            for (const Band& band : std::as_const(bands))
+                if (band.atMark) {
+                    m0 += band.c0;
+                    m1 += band.c1;
+                    ++marked;
+                }
+            if (marked > 0) {
+                m0 /= marked;
+                m1 /= marked;
+            }
+            for (const Band& band : std::as_const(bands)) {
+                if (band.atMark || (marked >= 2 && std::hypot(band.c0 - m0, band.c1 - m1) < 0.12)) continue;
+                for (int j = band.a; j < band.b; ++j) flags[size_t(j)] = 0;
+            }
+        };
+        atMarksOnly(gridRow, y0, y1, true, plot.yAxis);
+        atMarksOnly(gridCol, x0, x1, false, plot.xAxis);
     }
     double gridChroma0 = 1.0 / 3, gridChroma1 = 1.0 / 3;
     {
@@ -1227,6 +1292,28 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
     // axis's line being outside, and its hole is still a hole.)
     const int bx0 = std::clamp(int(t.markBox.left()), 0, w - 1), bx1 = std::clamp(int(std::ceil(t.markBox.right())) - 1, 0, w - 1);
     const int by0 = std::clamp(int(t.markBox.top()), 0, h - 1), by1 = std::clamp(int(std::ceil(t.markBox.bottom())) - 1, 0, h - 1);
+    // A line of the colour across the whole box - the frame's, an axis's, a
+    // grid's - is no wall. A ring sitting on the axis still holds its hole,
+    // the halves either side of the line one; but two rings side by side on
+    // it, touching, walled in a sliver between them and the line, taken for a
+    // ring's hole: a row of markers that are not there along a curve lying on
+    // the axis.
+    std::vector<uchar> frameLine(size_t(w) * h, 0);
+    for (int y = by0; y <= by1; ++y) {
+        int inked = 0;
+        for (int x = bx0; x <= bx1; ++x) inked += t.label[size_t(t.at(x, y))] == family;
+        if (inked >= 0.9 * (bx1 - bx0 + 1))
+            for (int x = bx0; x <= bx1; ++x)
+                if (t.label[size_t(t.at(x, y))] == family) frameLine[size_t(t.at(x, y))] = 1;
+    }
+    for (int x = bx0; x <= bx1; ++x) {
+        int inked = 0;
+        for (int y = by0; y <= by1; ++y) inked += t.label[size_t(t.at(x, y))] == family;
+        if (inked >= 0.9 * (by1 - by0 + 1))
+            for (int y = by0; y <= by1; ++y)
+                if (t.label[size_t(t.at(x, y))] == family) frameLine[size_t(t.at(x, y))] = 1;
+    }
+    const auto wall = [&](size_t i) { return t.label[i] == family && !frameLine[i]; };
     std::vector<uchar> outside(size_t(w) * h, 0);
     {
         const double open = 4.0 * markerMost * markerMost;
@@ -1235,7 +1322,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
         for (int y = by0; y <= by1; ++y)
             for (int x = bx0; x <= bx1; ++x) {
                 const size_t start = size_t(t.at(x, y));
-                if (done[start] || t.label[start] == family) continue;
+                if (done[start] || wall(start)) continue;
                 queue.clear();
                 queue.push_back(int(start));
                 done[start] = 1;
@@ -1248,7 +1335,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                         const int nx = cx + d[0], ny = cy + d[1];
                         if (nx < bx0 || nx > bx1 || ny < by0 || ny > by1) continue;
                         const size_t ni = size_t(t.at(nx, ny));
-                        if (done[ni] || t.label[ni] == family) continue;
+                        if (done[ni] || wall(ni)) continue;
                         done[ni] = 1;
                         queue.push_back(int(ni));
                     }
@@ -1272,7 +1359,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x) {
                 const size_t i = size_t(t.at(x, y));
-                if (outside[i] || done[i] || t.label[i] == family) continue;
+                if (outside[i] || done[i] || wall(i)) continue;
                 Hole hole;
                 stack.clear();
                 stack.push_back(int(i));
@@ -1293,7 +1380,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                         const int nx = cx + d[0], ny = cy + d[1];
                         if (!t.inBounds(nx, ny)) continue;
                         const size_t ni = size_t(t.at(nx, ny));
-                        if (t.label[ni] == family) {
+                        if (wall(ni)) {
                             if (hole.owner == 0) hole.owner = ids[ni];
                             continue;
                         }
@@ -2330,6 +2417,77 @@ QList<Series> asFunctions(const QList<Series>& pieces, const QTransform& toWork,
     return out;
 }
 
+// A short line of a colour that fills a break of a longer one of it -
+// starts at one side of the gap and ends nearer the other, within the gap's
+// x - is that stretch of it, walked apart: a steep side under markers,
+// traced on its own (it was taken for a second curve of the colour). Put in
+// the gap, x kept from going back, a break left where some is still unseen.
+// \a reach: page points. Returns how many were put in.
+static int bridgeBreaks(QList<Series>& pieces, double reach)
+{
+    int bridged = 0;
+    for (bool again = true; again;) {
+        again = false;
+        QList<int> order;
+        for (int k = 0; k < pieces.size(); ++k)
+            if (pieces.at(k).shape == Series::Shape::Line && !pieces.at(k).breaks.isEmpty()) order << k;
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return lengthOfSeries(pieces.at(a)) > lengthOfSeries(pieces.at(b)); });
+        for (const int li : std::as_const(order)) {
+            const Series line = pieces.at(li);   // (a copy: replaced below)
+            const double longest = lengthOfSeries(line);
+            for (const int b : line.breaks) {
+                if (b <= 0 || b >= line.points.size()) continue;
+                const QPointF p = line.points.at(b - 1), q = line.points.at(b);
+                const double gap = QLineF(p, q).length();
+                for (int si = 0; si < pieces.size(); ++si) {
+                    const Series& s = pieces.at(si);
+                    if (si == li || s.shape != Series::Shape::Line || !s.breaks.isEmpty() || s.points.size() < 2 || lengthOfSeries(s) > 0.5 * longest) continue;
+                    double lo = 1e18, hi = -1e18;
+                    for (const QPointF& r : s.points) {
+                        lo = std::min(lo, r.x());
+                        hi = std::max(hi, r.x());
+                    }
+                    if (lo < std::min(p.x(), q.x()) - reach || hi > std::max(p.x(), q.x()) + reach) continue;
+                    for (const bool forward : {true, false}) {
+                        const QPointF a = forward ? s.points.first() : s.points.last(), e = forward ? s.points.last() : s.points.first();
+                        const bool fromP = QLineF(a, p).length() <= reach && QLineF(e, q).length() < gap;
+                        const bool toQ = QLineF(e, q).length() <= reach && QLineF(a, p).length() < gap;
+                        if (!fromP && !toQ) continue;
+                        QList<QPointF> stretch = s.points;
+                        if (!forward) std::reverse(stretch.begin(), stretch.end());
+                        Series joined = line;
+                        QList<QPointF> points = line.points.mid(0, b);
+                        const bool openBefore = QLineF(a, p).length() > reach, openAfter = QLineF(e, q).length() > reach;
+                        const int startAt = int(points.size());
+                        for (const QPointF& r : std::as_const(stretch)) points << QPointF(std::max(r.x(), points.last().x()), r.y());
+                        const int afterAt = int(points.size());
+                        for (int k = b; k < line.points.size(); ++k) points << QPointF(std::max(line.points.at(k).x(), points.last().x()), line.points.at(k).y());
+                        QList<int> breaks;
+                        for (const int other : line.breaks) {
+                            if (other < b) breaks << other;
+                            else if (other > b) breaks << other + int(stretch.size());
+                        }
+                        if (openBefore) breaks << startAt;
+                        if (openAfter) breaks << afterAt;
+                        std::sort(breaks.begin(), breaks.end());
+                        joined.points = points;
+                        joined.breaks = breaks;
+                        pieces[li] = joined;
+                        pieces.removeAt(si);
+                        ++bridged;
+                        again = true;
+                        break;
+                    }
+                    if (again) break;
+                }
+                if (again) break;
+            }
+            if (again) break;
+        }
+    }
+    return bridged;
+}
+
 // Bits at the ends of a line standing alone past a gap, shorter than \a least
 // (points), taken out: a legend's sample, a speck, met at the end of a walk.
 // (One between two gaps inside the line is a piece of it seen between
@@ -2622,6 +2780,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
                 }
             }
             for (Series& s : pieces) bits += dropShortBits(s, keepAt / scale);
+            joined += bridgeBreaks(pieces, std::max(4 * thickness / scale, 3.0));
             for (Series& s : pieces) lone += foldLonePoints(s, 16.0);
             // A short line beside the colour's own markers - most of it within
             // two markers' width of them - is what is left of some: a ring
