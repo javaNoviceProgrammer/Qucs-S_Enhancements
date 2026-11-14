@@ -360,6 +360,50 @@ private slots:
     // said. On 254 µm they did from 20 GHz, and the line came out with gain,
     // while the ports' paths up from the ground had no field - G9 of the
     // phase E check, addPortPaths(); with it they agree there.)
+    // De-embedding up to mm-waves: a perfect metal's microstrip, 95 µm on
+    // 100 µm of alumina - which loses nothing: its mode bound, as Palace's
+    // 2D solve has it, its eps_eff RF 2.5D's L-2L's within 0.3 % to 150
+    // GHz -, 1000 µm long, de-embedded at both ends, loses nothing either.
+    // Shorter strips solved where the first disagreed - 124 µm ones, their
+    // ports' fields meeting - agreed best from 102 GHz and were taken,
+    // reading the line as losing 247 to 1464 dB/m: de-embedded, it lost 3
+    // to 7 %. And where nothing of a feed can lose, what two strips read as
+    // the line's loss or gain is their ports reaching one another past it:
+    // read as gaining 7 to 22 dB/m from 40 to 90 GHz, lent to the box as
+    // loss, it gave back 0.3 %. Now no strips shorter than the ports' own
+    // fields reach, the longest taken where none agree, and the line lossless
+    // where nothing loses: within 1e-3 of what it is given, alpha under 3
+    // dB/m (0.18, 0.61, 0.28, 0.27, 1.16 at 60, 90, 102, 110, 130 GHz; at
+    // 102 the 495 µm strips beside the first agree the better, neither
+    // within a percent, and taken there it lost 0.95 %, 51 dB/m).
+    void aMicrostripDeembeddedToMmWavesLosesNothing()
+    {
+        const double h = 100e-6, w = 95, l = 1000;
+        const rf::Stack stack = grounded(9.8, h);
+        const rf::MeshSettings how = meshing(6, 20);
+        const QList<double> fs = {60e9, 90e9, 102e9, 110e9, 130e9};
+        const rf::Calibration cal = rf::calibrate(stack, how, 0, QStringLiteral("M1"), w, fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        for (const double tried : cal.tried)
+            QVERIFY2(tried >= 0.5 * cal.tried.first() * (1 - 1e-9), qPrintable(QStringLiteral("strips of %1 um tried").arg(tried)));
+        const QList<rf::Conductor> line = {strip(0, 0, l, w)};
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line, how, stack, 0), line, stack,
+                                                {edgePort(QPointF(0, w / 2), QPointF(-1, 0)), edgePort(QPointF(l, w / 2), QPointF(1, 0))}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        const rf::FullWave d = rf::deembedded(raw, {{&cal, 0}, {&cal, 0}});
+        QVERIFY2(d.ok(), qPrintable(why(d)));
+        for (int k = 0; k < fs.size(); ++k) {
+            const Complex s11 = d.s.at(k).at(0).at(0), s21 = d.s.at(k).at(1).at(0), s12 = d.s.at(k).at(0).at(1), s22 = d.s.at(k).at(1).at(1);
+            const double lost = 1 - std::norm(s11) - std::norm(s21);
+            // Its attenuation from its chain matrix: (A + D)/2 = cosh(gamma l).
+            const Complex a = ((1.0 + s11) * (1.0 - s22) + s12 * s21) / (2.0 * s21), dd = ((1.0 - s11) * (1.0 + s22) + s12 * s21) / (2.0 * s21);
+            const double alpha = std::abs(std::acosh((a + dd) / 2.0).real()) / (l * 1e-6) * 20 / std::log(10.0);
+            qWarning().noquote() << QStringLiteral("%1 GHz: de-embedded, loses %2 of what it is given, %3 dB/m")
+                                        .arg(fs.at(k) / 1e9).arg(lost, 0, 'e', 2).arg(alpha, 0, 'f', 2);
+            QVERIFY2(std::abs(lost) < 1e-3 && alpha < 3, qPrintable(QStringLiteral("%1 GHz: %2, %3 dB/m").arg(fs.at(k) / 1e9).arg(lost).arg(alpha)));
+        }
+    }
+
     void aLongStripsPhaseIsFollowedFromBelow()
     {
         const double h = 100e-6, w = 100, l = 6000;
@@ -506,7 +550,12 @@ private slots:
         QVERIFY2(thru.ok(), qPrintable(why(thru)));
         for (int k = 0; k < fs.size(); ++k) {
             const Complex s21 = thru.s.at(k).at(1).at(0), s11 = thru.s.at(k).at(0).at(0);
-            QVERIFY2(std::abs(s11) < 1e-6 && std::abs(s21 - 1.0) < 1e-6,
+            // (|S21| 0.99998 at 10 GHz and 0.99979 at 20, |S11| 2e-7 and
+            //  1.2e-6: the strips' ports reach one another past the line,
+            //  which neither the box nor a line that loses nothing holds -
+            //  left in the thru, where it was lent to the line, which then
+            //  read as losing what a perfect metal on alumina cannot.)
+            QVERIFY2(std::abs(s11) < 1e-5 && std::abs(s21 - 1.0) < 1e-3,
                      qPrintable(QStringLiteral("%1 GHz: |S11| %2, S21 %3 %4").arg(fs.at(k) / 1e9).arg(std::abs(s11))
                                     .arg(s21.real()).arg(s21.imag())));
         }
