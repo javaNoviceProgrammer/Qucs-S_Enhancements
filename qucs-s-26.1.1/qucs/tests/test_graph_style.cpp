@@ -252,6 +252,54 @@ private slots:
         QCOMPARE(blueIn(img, QRect(5, rowOf(d.data(), 0.1), d->x2 - 10, rowOf(d.data(), 0) - rowOf(d.data(), 0.1) - 2)), 0);
         if (startsMissing) QCOMPARE(blueIn(img, QRect(3, 3, d->x2 / 20 - 6, d->y2 - 6)), 0);
     }
+
+    // A value alone between gaps is no stroke, and goes - at the curve's
+    // start too, where taking it used to take the buffer's first entry, a
+    // stroke's end, and then read the entry before the buffer (a
+    // heap-buffer-overflow under ASan, test_data_import's dataset of 1, NaN,
+    // 3; a curve with no stroke's end before it otherwise).
+    void aLoneValueBetweenGapsIsNoStroke_data()
+    {
+        QTest::addColumn<QList<int>>("missing");
+        QTest::addColumn<QList<int>>("strokes");   // each stroke's points, in order
+        QTest::newRow("the first value") << QList<int>{1} << QList<int>{19};
+        QTest::newRow("the first value, a gap of two after it") << QList<int>{1, 2} << QList<int>{18};
+        QTest::newRow("the second value, a gap before it") << QList<int>{0, 2} << QList<int>{18};
+        QTest::newRow("in the middle") << QList<int>{9, 11} << QList<int>{9, 9};
+    }
+    void aLoneValueBetweenGapsIsNoStroke()
+    {
+        QFETCH(QList<int>, missing);
+        QFETCH(QList<int>, strokes);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const QString data = writeDataset(dir.filePath("lone.dat"), 21, {}, [&](int, int i) { return missing.contains(i) ? nan : 0.5; });
+        QScopedPointer<RectDiagram> d(makeDiagram(GRAPHSTYLE_SOLID, 2, data));
+        QVERIFY(d);
+        QCOMPARE(d->Graphs.size(), size_t(1));
+        const Graph* g = d->Graphs.at(0);
+        // The screen points: a stroke's end first, then each stroke's points
+        // and its end, the branch's end last.
+        auto p = g->begin();
+        QVERIFY(p != g->end());
+        QVERIFY2(p->isStrokeEnd() && !p->isBranchEnd(), "the first entry is not a stroke's end");
+        ++p;
+        QList<int> found;
+        int run = 0;
+        for (; p != g->end() && !p->isBranchEnd(); ++p) {
+            if (!p->isStrokeEnd()) {
+                ++run;
+            } else if (run > 0) {
+                found << run;
+                run = 0;
+            }
+        }
+        if (run > 0) found << run;
+        QVERIFY(p != g->end());
+        QCOMPARE(found, strokes);
+        // And drawn so: the strokes, nothing where the lone value was.
+        const QImage img = render(d.data());
+        QCOMPARE(runsAlong(img, rowOf(d.data(), 0.5)), int(strokes.size()));
+    }
 };
 
 QTEST_MAIN(TestGraphStyle)
