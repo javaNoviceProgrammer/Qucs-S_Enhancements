@@ -1,0 +1,9 @@
+breaks.py, 14 November 2026, on the checkout's build-rel (macOS, arm64, release).
+
+===== what each break did =====
+strips shorter than the ports' reach                           aMicrostripDeembeddedToMmWavesLose failed (caught)
+where none agree, those that agree best                        (first run: not caught; 102 GHz added to the test, then caught)
+the line not taken lossless where nothing loses                aMicrostripDeembeddedToMmWavesLose failed (caught)
+a perfect metal taken as losing                                aMicrostripDeembeddedToMmWavesLose failed (caught)
+
+0 of 4 uncaught (the second rerun alone after 102 GHz was added: caught, 102 GHz lost 0.95 %, 51 dB/m)
