@@ -53,7 +53,7 @@ struct BondWire {
     double height = 150e-6;         ///< m, the arc's peak over its pads' chord; a ball bond's loop over its first pad
     double diameter = 25e-6;        ///< m
     double sigma = 0;               ///< S/m; nought, perfect
-    int pieces = 3;                 ///< the runs along its span (more than four: rf25_bondwire.cpp says why not)
+    int pieces = 3;                 ///< the runs along its span: one to four (more is refused: rf25_bondwire.cpp says why)
     bool ball = false;              ///< its profile a ball bond's loop, not an arc
     double knee = 0.15;             ///< a ball bond's: the share of the span flat at its height
     bool fit = true;                ///< its runs' heights fitted to its profile's inductance

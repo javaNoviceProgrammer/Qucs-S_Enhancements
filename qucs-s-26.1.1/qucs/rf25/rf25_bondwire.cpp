@@ -251,6 +251,17 @@ BondWired withBondWires(const Stack& stack, const QList<Conductor>& conductors, 
             out.problems << tr("%1 has no diameter, no height or no pieces.").arg(wire.name);
             return out;
         }
+        // (More than four pieces: each step between runs carries an error of
+        //  the mesh's at its joint that grows and turns as the cells shrink -
+        //  15 pieces 0.658 nH at 25 µm cells and 0.415 at 12.5, against 0.580
+        //  -, a fault of the joint not yet found; the review of 7488d77d.)
+        if (wire.pieces > 4) {
+            out.problems << tr("%1 is cut into %2 pieces: more than four is not solved yet - each step between its runs carries "
+                               "an error of the mesh's at its joint, as large as a third of its inductance at some cells. Up to "
+                               "four, its inductance is its profile's within 3 %.")
+                                .arg(wire.name).arg(wire.pieces);
+            return out;
+        }
         if (wire.ball && !(wire.knee >= 0 && wire.knee < 1)) {
             out.problems << tr("%1's loop runs flat over its ball for a share of its span from nought to below one, not %2.")
                                 .arg(wire.name).arg(wire.knee);
@@ -366,11 +377,6 @@ BondWired withBondWires(const Stack& stack, const QList<Conductor>& conductors, 
                              .arg(wire.name).arg(scale, 0, 'f', 3).arg(unfittedL * 1e9, 0, 'g', 4).arg(profileL * 1e9, 0, 'g', 4);
         else if (wire.fit && span > 0)
             out.lines << tr("%1's runs could not be fitted to its profile's inductance: they are at its mean ln heights.").arg(wire.name);
-        if (z.size() > 4)
-            out.lines << tr("%1 is cut into %2 pieces: each step between its runs adds an error of the mesh's to its inductance, "
-                            "some 2 to 5 pH a step at 25 µm cells, and less or more as the cells are; up to four pieces, its "
-                            "inductance is its profile's within 3 %.")
-                             .arg(wire.name).arg(z.size());
         if (wire.sigma > 0)
             out.lines << tr("%1's legs are the round wire's resistance with the skin thin; at direct current, 4/pi of it, and its "
                             "runs' ends run on over them: its resistance there is a little high.")
