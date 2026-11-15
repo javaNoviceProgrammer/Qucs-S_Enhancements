@@ -137,7 +137,26 @@ public:
   // independent variables; -1 when a variable of the dataset is so named
   // (read as one), 0 (and why in loadError) when it does not evaluate.
   int loadExpression(const QString& path, const QString& expression, bool hasExplIndep, const QString& explIndep);
-  int loadIndepVarData(const QString&, char* datfilecontent, DataX* where);
+  /// A text dataset at hand, its blocks found by name (diagram.cpp).
+  struct TextFile;
+  int loadIndepVarData(const QString&, TextFile& file, DataX* where);
+  /// While one lives on this thread, the graphs that load share what they
+  /// read of each dataset: a text one mapped once, its blocks indexed by
+  /// name rather than searched for from the top by each graph, each sweep's
+  /// values parsed once; an expression's dataset read once. A page's
+  /// reload (Schematic::reloadGraphs) reads a file once, not once a trace.
+  /// (Kept to the scope: a file changed after it is read again.) One made
+  /// inside another leaves the outer one's in use.
+  class SharedReading {
+  public:
+    SharedReading();
+    ~SharedReading();
+    SharedReading(const SharedReading&) = delete;
+    SharedReading& operator=(const SharedReading&) = delete;
+    struct Files;
+  private:
+    Files* a_files = nullptr;
+  };
   // The same of a binary dataset (datasetfile.h), from its blocks.
   int loadBinaryDatFile(const QString& path, QString variable, bool hasExplIndep, const QString& explIndep);
   int loadIndepVarData(const QString&, const qucs_s::datasetfile::BinaryReader& data, DataX* where);

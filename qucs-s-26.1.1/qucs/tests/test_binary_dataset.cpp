@@ -845,6 +845,131 @@ private slots:
 
     // Save as Text: a binary dataset written out as text has the same
     // numbers; so does a CSV export of each.
+    // A page's traces read their text dataset together (Graph::SharedReading,
+    // as Schematic::reloadGraphs reads them) as each reads it alone: its
+    // blocks found by name - a name another's beginning (v, v1), a name
+    // twice (the first one's), a block over nothing passed by, a dependent
+    // variable as the x (v@tx), an independent one alone, one short of its
+    // count, none - its sweeps parsed once, an expression's variables only
+    // (Dataset::read's only and sweeps). A file written again while one
+    // lives is read again.
+    void aPagesTracesShareTheirReading()
+    {
+        const auto column = [](const QList<double>& xs) {
+            QByteArray s;
+            for (double x : xs) s += "  " + df::numberText(x) + "\n";
+            return s;
+        };
+        const auto dataset = [&](double scale, const QByteArray& extra, double t0 = 0) {
+            QByteArray s = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 5>\n" + column({t0, 1e-9, 2e-9, 3e-9, 4e-9}) + "</indep>\n";
+            s += "<dep v time>\n" + column({scale * 1, scale * 2, scale * 3, scale * 4, scale * 5}) + "</dep>\n";
+            s += "<dep v1 time>\n" + column({10, 20, 30, 40, 50}) + "</dep>\n";
+            s += "<dep x time>\n" + column({-1, -2, -3, -4, -5}) + "</dep>\n";
+            s += "<dep x time>\n" + column({7, 7, 7, 7, 7}) + "</dep>\n";
+            s += "<dep lonely>\n  1\n</dep>\n";
+            s += "<dep tx time>\n" + column({0.5, 1.5, 2.5, 3.5, 4.5}) + "</dep>\n";
+            s += "<indep freq 3>\n" + column({1e6, 2e6, 4e6}) + "</indep>\n";
+            s += "<dep S[2,1] freq>\n  +1.0e+00+j2.0e+00\n  +5.0e-01-j1.0e+00\n  -2.5e-01+j0.0e+00\n</dep>\n";
+            s += "<dep short time>\n" + column({1, 2, 3}) + "</dep>\n";
+            s += "<dep ac.a-b freq>\n" + column({7, 8, 9}) + "</dep>\n";
+            return s + extra;
+        };
+        const QString path = dir.filePath("shared.dat");
+        const auto write = [&path](const QByteArray& text) {
+            QSaveFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(text) == text.size() && f.commit();
+        };
+        QVERIFY(write(dataset(1, {})));
+
+        const QStringList traces{"v", "v1", "x", "time", "lonely", "v@tx", "S[2,1]", "short", "nothing", "freq",
+                                 "v-v1", "dB(S[2,1])", "2*x", "ac.a-b", "v*time", "2*v@tx"};
+        struct Alone {
+            int loaded;
+            std::unique_ptr<RectDiagram> diagram;
+            Graph* graph;
+        };
+        const auto load = [&path](const QString& trace) {
+            Alone a{0, std::make_unique<RectDiagram>(), nullptr};
+            a.graph = new Graph(a.diagram.get(), trace);
+            a.diagram->Graphs.append(a.graph);
+            a.loaded = a.graph->loadDatFile(path);
+            return a;
+        };
+        const auto same = [](const QString& what, const Alone& a, const Alone& b) {
+            QVERIFY2(a.loaded == b.loaded, qPrintable(what));
+            QVERIFY2(a.graph->numAxes() == b.graph->numAxes() && a.graph->countY == b.graph->countY, qPrintable(what));
+            for (unsigned k = 0; k < a.graph->numAxes(); ++k) {
+                QVERIFY2(a.graph->axisName(k) == b.graph->axisName(k) && a.graph->count(k) == b.graph->count(k), qPrintable(what));
+                for (size_t i = 0; i < a.graph->count(k); ++i) QVERIFY2(a.graph->axis(k)->Points[i] == b.graph->axis(k)->Points[i], qPrintable(what));
+            }
+            if (a.loaded != 2) return;
+            for (size_t i = 0; i < 2 * a.graph->count(0) * size_t(a.graph->countY); ++i)
+                QVERIFY2(a.graph->cPointsY[i] == b.graph->cPointsY[i] || (std::isnan(a.graph->cPointsY[i]) && std::isnan(b.graph->cPointsY[i])),
+                         qPrintable(what + " " + QString::number(i)));
+        };
+
+        std::vector<Alone> alone;
+        for (const QString& trace : traces) alone.push_back(load(trace));
+        // What each is, alone - the cases above.
+        const QMap<QString, int> loaded{{"short", 0}, {"nothing", 0}, {"lonely", 0}};
+        for (int i = 0; i < traces.size(); ++i)
+            QVERIFY2(alone.at(i).loaded == loaded.value(traces.at(i), 2), qPrintable(traces.at(i) + ": " + alone.at(i).graph->loadError));
+        QCOMPARE(alone.at(traces.indexOf("x")).graph->cPointsY[0], -1.0);   // the first x
+        QCOMPARE(alone.at(traces.indexOf("v@tx")).graph->axis(0)->Points[1], 1.5);
+        QCOMPARE(alone.at(traces.indexOf("v-v1")).graph->cPointsY[2], 2.0 - 20.0);
+        QCOMPARE(alone.at(traces.indexOf("2*v@tx")).graph->axis(0)->Points[1], 1.5);   // (an expression against a dependent variable)
+        QCOMPARE(alone.at(traces.indexOf("2*v@tx")).graph->cPointsY[2], 4.0);
+
+        {
+            const Graph::SharedReading shared;
+            for (int round = 0; round < 2; ++round) {   // (the second from what the first read)
+                const Graph::SharedReading inner;   // (the outer one's used)
+                for (int i = 0; i < traces.size(); ++i) same(traces.at(i) + " shared", alone.at(i), load(traces.at(i)));
+            }
+            // Written again while it lives: read again.
+            QVERIFY(write(dataset(100, "\n")));
+            const Alone v = load("v");
+            QCOMPARE(v.loaded, 2);
+            QCOMPARE(v.graph->cPointsY[2], 200.0);
+        }
+        QVERIFY(write(dataset(1, {})));
+
+        // The dataset by its names: its sweeps' values, the others' names and
+        // what they are over; resolved as when read whole; an expression's
+        // variables' values only, its sweeps taken from the names' reading.
+        ds::Dataset whole, names, some;
+        QVERIFY(whole.read(path));
+        QVERIFY(names.read(path, QSet<QString>()));
+        QCOMPARE(names.variables().size(), whole.variables().size());
+        QCOMPARE(names.find("time")->re, whole.find("time")->re);
+        QCOMPARE(names.find("v")->size(), 0);
+        QCOMPARE(names.find("v")->dependencies, QStringList{"time"});
+        for (const QString& n : {"v", "out", "S[2,1]", "time", "ac.a-b", "nothing"}) QCOMPARE(names.resolve(n), whole.resolve(n));
+        QCOMPARE(ds::variablesOf(names, "v-v1*time"), (QSet<QString>{"v", "v1", "time"}));
+        QCOMPARE(ds::variablesOf(names, "v-"), QSet<QString>());   // (it does not parse)
+        QVERIFY(some.read(path, QSet<QString>{"v", "S[2,1]"}, nullptr, &names));
+        QCOMPARE(some.find("v")->re, whole.find("v")->re);
+        QCOMPARE(some.find("S[2,1]")->im, whole.find("S[2,1]")->im);
+        QCOMPARE(some.find("time")->re, whole.find("time")->re);
+        QCOMPARE(some.find("freq")->re, whole.find("freq")->re);
+        QCOMPARE(some.find("v1")->size(), 0);
+        QVERIFY(whole.notes().join(" ").contains("short"));   // (3 values over 5)
+        QVERIFY(some.notes().isEmpty());   // (a block left out says nothing of its count)
+        // The file written again between (its sweep otherwise, as long,
+        // later): its sweeps parsed, not taken.
+        ds::Dataset other;
+        QVERIFY(write(dataset(1, {}, 9)));
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(QFileInfo(path).lastModified().addSecs(5), QFileDevice::FileModificationTime));
+        }
+        QVERIFY(other.read(path, QSet<QString>{"v"}, nullptr, &names));
+        QCOMPARE(other.find("time")->re.size(), 5);
+        QCOMPARE(other.find("time")->re.first(), 9.0);
+        QVERIFY(write(dataset(1, {})));
+    }
+
     void saveAsTextGivesTheSameNumbers()
     {
         const QString binaryPath = dir.filePath("export.dat.ngspice");
