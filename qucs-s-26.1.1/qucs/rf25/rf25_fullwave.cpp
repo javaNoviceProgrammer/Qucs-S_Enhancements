@@ -2980,10 +2980,145 @@ double secondSurfaceWave(const Stack& stack, double most)
     return 0;
 }
 
+FullWave foldLumped(const FullWave& wave, const QList<FullWavePort>& ports, const QList<int>& lumped)
+{
+    FullWave out = wave;
+    const int n = int(wave.portNames.size());
+    QList<int> keep;
+    for (int p = 0; p < n; ++p)
+        if (!lumped.contains(p)) keep << p;
+    const int np = int(keep.size()), nl = int(lumped.size());
+    // Each element's (A, B) at f: A V + B I = 0 on its port.
+    const auto ends = [&](int e, double f, Complex* a, Complex* b) {
+        const FullWavePort::Lumped& el = ports.at(lumped.at(e)).lumped;
+        const Complex jw(0, 2 * M_PI * f);
+        if (el.parallel) {
+            *a = (el.r > 0 ? 1 / el.r : 0.0) + (el.l > 0 ? 1.0 / (jw * el.l) : Complex(0, 0)) + jw * el.c;
+            *b = 1;
+        } else {
+            *a = 1;
+            *b = el.r + jw * el.l + (el.c > 0 ? 1.0 / (jw * el.c) : Complex(0, 0));
+        }
+    };
+    // Z folded at frequency f, and the elements' currents of each measuring
+    // port's ampere.
+    const auto fold = [&](const QList<QList<Complex>>& z, double f, MatrixC* currents) {
+        MatrixC zpp(np, np), zpl(np, nl), zlp(nl, np), zll(nl, nl);
+        for (int i = 0; i < np; ++i) {
+            for (int j = 0; j < np; ++j) zpp(i, j) = z.at(keep.at(i)).at(keep.at(j));
+            for (int j = 0; j < nl; ++j) zpl(i, j) = z.at(keep.at(i)).at(lumped.at(j));
+        }
+        for (int i = 0; i < nl; ++i) {
+            for (int j = 0; j < np; ++j) zlp(i, j) = z.at(lumped.at(i)).at(keep.at(j));
+            for (int j = 0; j < nl; ++j) zll(i, j) = z.at(lumped.at(i)).at(lumped.at(j));
+        }
+        MatrixC a = MatrixC::Zero(nl, nl), b = MatrixC::Zero(nl, nl);
+        for (int e = 0; e < nl; ++e) ends(e, f, &a(e, e), &b(e, e));
+        const MatrixC x = Eigen::PartialPivLU<MatrixC>(a * zll + b).solve(a * zlp);
+        if (currents != nullptr) *currents = -x;
+        return rowsOf(MatrixC(zpp - zpl * x));
+    };
+    const auto pick = [&keep](auto list) {
+        decltype(list) kept;
+        for (const int p : keep)
+            if (p < list.size()) kept << list.at(p);
+        return kept;
+    };
+    out.z.clear();
+    out.s.clear();
+    out.currents.clear();
+    out.references = pick(wave.references);
+    out.gain = 0;
+    for (int k = 0; k < wave.frequencies.size(); ++k) {
+        MatrixC il;
+        const QList<QList<Complex>> z = fold(wave.z.at(k), wave.frequencies.at(k), &il);
+        out.z << z;
+        out.s << scatteringOf(z, out.references);
+        if (k < wave.currents.size()) {
+            // Each measuring port's runs: its own, and each element's as much
+            // as its ampere drives through it.
+            QList<QList<Complex>> perPort;
+            for (int i = 0; i < np; ++i) {
+                QList<Complex> column = wave.currents.at(k).at(keep.at(i));
+                for (int e = 0; e < nl; ++e)
+                    for (int r = 0; r < column.size(); ++r) column[r] += wave.currents.at(k).at(lumped.at(e)).at(r) * il(e, i);
+                perPort << column;
+            }
+            out.currents << perPort;
+        }
+        const MatrixC s = matrixOf(out.s.last());
+        const Eigen::SelfAdjointEigenSolver<MatrixC> eig(s.adjoint() * s);
+        if (eig.info() == Eigen::Success && eig.eigenvalues().maxCoeff() - 1 > out.gain) {
+            out.gain = eig.eigenvalues().maxCoeff() - 1;
+            out.gainAt = wave.frequencies.at(k);
+        }
+    }
+    out.zSolved.clear();
+    for (int k = 0; k < wave.zSolved.size() && k < wave.solvedFrequencies.size(); ++k)
+        out.zSolved << fold(wave.zSolved.at(k), wave.solvedFrequencies.at(k), nullptr);
+    out.portNames = pick(wave.portNames);
+    out.faceWidths = pick(wave.faceWidths);
+    out.faceMetals = pick(wave.faceMetals);
+    out.feeds = pick(wave.feeds);
+    out.deembedding = pick(wave.deembedding);
+    out.returnsOf = pick(wave.returnsOf);
+    out.namesReturns = pick(wave.namesReturns);
+    if (wave.portsSaid.size() == n) out.portsSaid = pick(wave.portsSaid);
+    out.pairs.clear();
+    for (const QPair<int, int>& pq : wave.pairs)
+        if (keep.contains(pq.first) && keep.contains(pq.second)) out.pairs << qMakePair(int(keep.indexOf(pq.first)), int(keep.indexOf(pq.second)));
+    out.portPaths.clear();
+    bool shuntPaths = false;
+    for (const FullWave::PortPathLeg& leg : wave.portPaths) {
+        if (keep.contains(leg.port)) {
+            FullWave::PortPathLeg kept = leg;
+            kept.port = int(keep.indexOf(leg.port));
+            out.portPaths << kept;
+        } else {
+            shuntPaths = true;
+        }
+    }
+    QStringList said;
+    for (const int p : lumped) {
+        const FullWavePort::Lumped& el = ports.at(p).lumped;
+        QStringList parts;
+        if (el.r > 0) parts << tr("R %1 Ohm").arg(el.r, 0, 'g', 4);
+        if (el.l > 0) parts << tr("L %1 nH").arg(el.l * 1e9, 0, 'g', 4);
+        if (el.c > 0) parts << tr("C %1 pF").arg(el.c * 1e12, 0, 'g', 4);
+        said << tr("%1 (%2, %3)").arg(ports.at(p).name, parts.isEmpty() ? tr("nothing") : parts.join(QStringLiteral(", ")),
+                                       el.parallel ? tr("in parallel") : tr("in series"));
+    }
+    out.lines << tr("Lumped elements, each solved as a port and folded in at every frequency by its own impedance: %1. The "
+                    "ports are the measuring ones alone.")
+                     .arg(said.join(QStringLiteral("; ")));
+    if (shuntPaths)
+        out.lines << tr("A shunt element's own path up from the ground is not in the far field's sources.");
+    return out;
+}
+
 FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, const Stack& givenStack,
                     const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre,
                     const FullWaveControl* control, const QList<ReturnMark>& returns)
 {
+    // Lumped elements: solved as the ports they stand as, then folded.
+    QList<int> lumped;
+    for (int p = 0; p < ports.size(); ++p)
+        if (ports.at(p).lumped.on) lumped << p;
+    if (!lumped.isEmpty()) {
+        if (lumped.size() == ports.size()) {
+            FullWave none;
+            none.problems << tr("The model has lumped elements and no port to measure them from.");
+            return none;
+        }
+        QList<FullWavePort> plain = ports;
+        for (const int p : std::as_const(lumped)) {
+            plain[p].lumped.on = false;
+            plain[p].calibrate = false;
+            plain[p].shift = 0;
+        }
+        const FullWave raw = fullWaveOf(given, givenConductors, givenStack, plain, frequencies, micrometre, control, returns);
+        return raw.ok() ? foldLumped(raw, ports, lumped) : raw;
+    }
     FullWave out;
     // (What makes the mesh's answer doubtful - touching conductors it has
     //  apart - is the solve's too.)

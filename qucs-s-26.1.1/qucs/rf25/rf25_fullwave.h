@@ -231,6 +231,19 @@ struct FullWavePort {
     /// m; nought: chosen (rf25_deembed.h).
     double strips = 0;
     /// Whether anything is to be done to it after the solve.
+    /// A lumped element in its place, not a port (rf_lumped): R, L and C, in
+    /// series or in parallel - a nought of each is none of it (a C of nought
+    /// in series none, its two ends joined). Solved as a port - a series
+    /// element across a gap as an internal port over one pad returning
+    /// through a terminal over the other, a shunt one up from the ground -,
+    /// then folded at each frequency by its own impedance (foldLumped()): the
+    /// answer's ports its measuring ones alone, its currents with the
+    /// element's in them. No feed of it calibrated, nor its plane moved.
+    struct Lumped {
+        bool on = false;
+        double r = 0, l = 0, c = 0;   ///< Ohm, H, F
+        bool parallel = false;
+    } lumped;
     bool deembeds() const { return calibrate || shift != 0; }
     /// Whether that wants strips of its feed solved.
     bool wantsStrips() const { return calibrate || (shift != 0 && !(lineImpedance > 0)); }
@@ -559,6 +572,17 @@ QList<QList<Complex>> mixedModeOf(const FullWave& solved, int k, QStringList* or
 
 /// The same with an edge port at each of \a ports (the layout's units),
 /// on whichever face is nearest, each into \a reference Ohm.
+/*!
+ * \a wave solved with \a ports, the lumped elements among them (\a lumped,
+ * their indices) folded into it at each frequency: each element's port
+ * ended by its own impedance, in series V = -Z I, in parallel I = -Y V - so
+ * that an open (a parallel LC at its resonance) or a short is exact -, Z of
+ * the measuring ports Z_pp - Z_pl (A Z_ll + B)^-1 A Z_lp, A and B each
+ * element's (1, Z) or (Y, 1); its S, its currents with the elements' in
+ * them, its per-port lists without them. fullWaveOf() does this itself.
+ */
+FullWave foldLumped(const FullWave& wave, const QList<FullWavePort>& ports, const QList<int>& lumped);
+
 FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, const QList<QPointF>& ports,
                     const QList<double>& frequencies, double reference = 50, double micrometre = 1e-6);
 

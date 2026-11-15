@@ -543,7 +543,21 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("pair"), tr("Pair with"), QString(),
                tr("Another port, by its name: this one the pair's plus, that one its minus - a differential pair, as "
                   "a GSSG's two signals are driven. The solve then gives its mixed-mode S too: the differential and "
-                  "common modes (full wave)"))},
+                  "common modes (full wave)")),
+          choice(QStringLiteral("element"), tr("What it is"), {QStringLiteral("port"), QStringLiteral("lumped")},
+                 {tr("A port to measure at"), tr("A lumped element: R, L and C in its place")}, QStringLiteral("port"),
+                 tr("A lumped element - a chip resistor, an inductor, a capacitor - stands where the port would: across a "
+                    "gap, returning through a terminal over its other pad, or up from the ground. It is solved as a port "
+                    "and folded in at each frequency by its own impedance, so that S is of the measuring ports alone "
+                    "(full wave)")),
+          shownIf(expr(QStringLiteral("r"), tr("Resistance"), QStringLiteral("Ohm"), QStringLiteral("0"), tr("Nought: none")), "element=lumped"),
+          shownIf(expr(QStringLiteral("l"), tr("Inductance"), QStringLiteral("H"), QStringLiteral("0"), tr("Nought: none")), "element=lumped"),
+          shownIf(expr(QStringLiteral("c"), tr("Capacitance"), QStringLiteral("F"), QStringLiteral("0"),
+                       tr("Nought: none - in series its two ends joined")),
+                  "element=lumped"),
+          shownIf(choice(QStringLiteral("topology"), tr("R, L and C"), {QStringLiteral("series"), QStringLiteral("parallel")},
+                         {tr("In series"), tr("In parallel")}, QStringLiteral("series")),
+                  "element=lumped")},
          {}, {}, false, false, QStringLiteral("p"),
          tr("A port between two metals, or between a metal and the ground: at a point, the one cell under it, or over "
             "a rectangle about the point, every cell of the metal in it driven together - as a rectangle drawn on "

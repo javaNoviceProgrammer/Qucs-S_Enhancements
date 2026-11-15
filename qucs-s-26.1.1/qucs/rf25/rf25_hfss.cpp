@@ -1098,6 +1098,12 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
         if (!p.enabled) continue;
         const bool edgePort = p.type == QLatin1String("rf_edge_port");
         if (!edgePort && p.type != QLatin1String("rf_internal_port")) continue;
+        // (A lumped element is no port: not written, and said.)
+        if (!edgePort && textOf(p, QStringLiteral("element")) == QLatin1String("lumped")) {
+            out.notes << tr("%1 is a lumped element: it is not written - set it in Electronics Desktop as a lumped RLC boundary.")
+                             .arg(portName(p));
+            continue;
+        }
         const QString own = portName(p);
         const QString name = safeName(own, &portNames);
         const double impedance = numberOf(p, QStringLiteral("impedance"), model, 50);
@@ -1263,6 +1269,7 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     double firstReference = -1;
     for (const Node& p : model.ports().children) {
         if (!p.enabled || (p.type != QLatin1String("rf_edge_port") && p.type != QLatin1String("rf_internal_port"))) continue;
+        if (textOf(p, QStringLiteral("element")) == QLatin1String("lumped")) continue;
         const double z0 = numberOf(p, QStringLiteral("impedance"), model, 50);
         if (firstReference < 0) firstReference = z0;
         sameReference = sameReference && z0 == firstReference;
