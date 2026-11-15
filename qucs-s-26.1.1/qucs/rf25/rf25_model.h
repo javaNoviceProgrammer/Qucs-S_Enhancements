@@ -107,6 +107,14 @@ struct Layer {
     /// A dielectric's or the substrate's relative permeability and magnetic
     /// loss tangent: a ferrite's, a magnetic film's. 1 and 0: not magnetic.
     double mur = 1, mtand = 0;
+    /// A uniaxial dielectric's or substrate's relative permittivity along z,
+    /// its axis; epsr then the one in the plane. Nought: isotropic.
+    double epsz = 0;
+    /// Where its permittivity in the plane is not the same along x as along
+    /// y: those two as given, epsr then the geometric mean of them - a
+    /// layered solver has no in-plane anisotropy (said beside the answer).
+    double epsx = 0, epsy = 0;
+    bool averaged() const { return epsy > 0 && epsy != epsx; }
     QString from, to;      ///< a via's metals, by name
     /// A ground's or a cover's own kind: "perfect", "metal", "impedance" or
     /// "open" for a ground, "open" or "perfect" (a metal lid) for a cover.

@@ -686,16 +686,20 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // eps_eff mu_eff - its phase constant k0 sqrt(eps_eff mu_eff) and its Z0
     // sqrt(L/C) as the formulas have them.
     Layers vacuum = layers0;
-    bool magnetic = false;
+    bool magnetic = false, magneticLoss = false;
     for (Layers::Slab& slab : vacuum.slabs) {
         magnetic = magnetic || slab.mur != 1;
+        magneticLoss = magneticLoss || slab.mtand > 0;
         slab.epsr = slab.mur > 0 ? 1 / slab.mur : 1;
+        slab.epsz = 0;   // (vacuum is isotropic: a uniaxial slab's along z gone with it)
     }
     vacuum.epsrAbove = vacuum.epsrBelow = 1;
     if (magnetic)
         out.lines << tr("A layer is magnetic: C0, and L = 1/(c0^2 C0), are of the stack with 1/mu_r for each layer's "
                         "permittivity (duality), so eps_eff is eps_eff mu_eff here - its phase constant k0 "
                         "sqrt(eps_eff mu_eff) and Z0 sqrt(L/C). Its magnetic loss is the full wave's alone.");
+    else if (magneticLoss)
+        out.lines << tr("A layer has a magnetic loss tangent: its loss is the full wave's alone, and not in this solve's.");
     // A Green's function for each pair of metals - the potential at a
     // point on one of a charge on the other - built once and shared by
     // every pair of cells on them. They are symmetric, so a pair is

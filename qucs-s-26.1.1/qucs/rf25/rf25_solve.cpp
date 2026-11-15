@@ -533,6 +533,16 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
                                             : tr("No ports: a loop's inductance wants two of them.");
         }
     }
+    // A layer whose permittivity in the plane differs along x and y: a
+    // layered solve has none, and takes their geometric mean - said.
+    for (const Layer& l : job.stack.layers)
+        if (l.averaged()) {
+            const QString said = tr("%1's permittivity in the plane is %2 along x and %3 along y: a layered solve has no "
+                                    "anisotropy in the plane, and takes their geometric mean, %4 - an approximation.")
+                                     .arg(l.name).arg(l.epsx, 0, 'g', 4).arg(l.epsy, 0, 'g', 4).arg(l.epsr, 0, 'g', 4);
+            job.notes << said;
+            job.stackSaid << said;
+        }
     // A quasi-static solve is of one frequency: its dispersive dielectrics
     // taken at the study's highest, where its losses are said - the full
     // wave takes them at each of its own.
@@ -579,6 +589,8 @@ void runSolve(SolveJob& job)
     if (job.stop.load()) return;
     if (job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
     if (job.result->ok() && !job.dispersedSaid.isEmpty()) job.result->lines.prepend(job.dispersedSaid);
+    if (job.result->ok())
+        for (const QString& said : std::as_const(job.stackSaid)) job.result->lines.prepend(said);
     if (job.loop) {
         // (Said, where the tab showed "starting" through it: a charge solve
         //  refused for its size leaves the step where it began.)
