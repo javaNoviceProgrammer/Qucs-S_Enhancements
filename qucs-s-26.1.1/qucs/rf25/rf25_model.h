@@ -128,6 +128,9 @@ struct Layer {
     /// rectangle in the plane, m - the layout's coordinates.
     bool walls = false;
     QRectF box;
+    /// A metal that stands for a round wire (a bond wire's, rf25_bondwire.h):
+    /// a strip 4a wide with no edges for its current to crowd to.
+    bool roundWire = false;
     double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom; a ground's is 0)
     /// A metal solved as its two faces - a sheet at its bottom and one at
     /// its top, joined along its edges by its walls - rather than as one

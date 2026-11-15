@@ -11,6 +11,7 @@
  */
 
 #include "rf25_model.h"
+#include "rf25_bondwire.h"
 
 #include "multiphysics/fem_expr.h"
 
@@ -397,11 +398,28 @@ QList<NodeKind> makeKinds()
     // The model's own shapes: each number an expression of the parameters,
     // added to the file's shapes on their layer before the processing.
     add({QStringLiteral("rf_shapes"), tr("Shapes"), QString(), QStringLiteral("layout"), none, {},
-         {QStringLiteral("rf_shape")}, {}, false, true, QStringLiteral("shapes"),
+         {QStringLiteral("rf_shape"), QStringLiteral("rf_bondwire")}, {}, false, true, QStringLiteral("shapes"),
          tr("Shapes of the model's own, beside the layout file's: rectangles, polygons, paths and vias whose corners, "
             "widths and lengths are expressions of the parameters (w, L/2 + 5[um]) - what a Parametric Sweep or an "
             "Optimization varies. Each is added to its layer of the stack with the file's shapes, before the "
             "processing's steps; a model of these alone needs no layout file.")});
+    add({QStringLiteral("rf_bondwire"), tr("Bond Wire"), QStringLiteral("shapes"), QStringLiteral("region"), none,
+         {text(QStringLiteral("from_metal"), tr("From metal"), QString(), tr("The metal of its first pad")),
+          expr(QStringLiteral("x0"), tr("From x"), QStringLiteral("m"), QStringLiteral("0")),
+          expr(QStringLiteral("y0"), tr("From y"), QStringLiteral("m"), QStringLiteral("0")),
+          text(QStringLiteral("to_metal"), tr("To metal"), QString(), tr("The metal of its second pad")),
+          expr(QStringLiteral("x1"), tr("To x"), QStringLiteral("m"), QStringLiteral("1[mm]")),
+          expr(QStringLiteral("y1"), tr("To y"), QStringLiteral("m"), QStringLiteral("0")),
+          expr(QStringLiteral("height"), tr("Loop height"), QStringLiteral("m"), QStringLiteral("150[um]"),
+               tr("Its arc's peak over its pads' chord: a parabola between them")),
+          expr(QStringLiteral("diameter"), tr("Diameter"), QStringLiteral("m"), QStringLiteral("25[um]")),
+          expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("4.1e7"), tr("Gold's; nought, perfect")),
+          expr(QStringLiteral("pieces"), tr("Pieces"), QString(), QStringLiteral("5"),
+               tr("The runs along its span, each at the height that keeps the arc's mean ln h over it"))},
+         {}, {}, false, true, QStringLiteral("wire"),
+         tr("A bond wire arched in the air between two pads, made of runs on metal layers of its own in air slabs over the "
+            "stack and vias between them and up from its pads (a staircase of its arc: its legs add some 9 % to the arc's "
+            "inductance). Solved full wave and quasi-static alike.")});
     add({QStringLiteral("rf_shape"), tr("Shape"), QStringLiteral("shapes"), QStringLiteral("region"), none,
          {text(QStringLiteral("layer"), tr("On layer"), QString(),
                tr("A metal or a via of the stack, by name - or a dielectric or the substrate, where it is (a layer that "
@@ -1171,7 +1189,17 @@ QList<fem::Model::Parameter> Model::parameters() const
 
 Stack Model::stack() const
 {
-    return stackOf(stackNode(), parameters());
+    // (Its bond wires' air slabs, metals and legs with it: rf25_bondwire.h.)
+    Stack s = stackOf(stackNode(), parameters());
+    QStringList unread;
+    const QList<BondWire> wires = bondWiresOf(*this, &unread);
+    s.problems += unread;
+    if (!wires.isEmpty() && s.ok()) {
+        const BondWired bw = withBondWires(s, {}, wires);
+        if (bw.ok()) s.layers = bw.stack.layers;
+        else s.problems += bw.problems;
+    }
+    return s;
 }
 
 Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)

@@ -10,6 +10,7 @@
  */
 
 #include "rf25_layout.h"
+#include "rf25_bondwire.h"
 
 #include "layout.h"
 #include "multiphysics/fem_expr.h"
@@ -434,6 +435,15 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
     QList<OwnShape> out;
     const Node* node = model.layout().child(QStringLiteral("rf_shapes"));
     if (node == nullptr) return out;
+    // Its bond wires' runs and legs (rf25_bondwire.h), on their own layers of
+    // the model's stack.
+    {
+        const QList<BondWire> wires = bondWiresOf(model);
+        if (!wires.isEmpty()) {
+            const BondWired bw = withBondWires(stackOf(model.stackNode(), model.parameters()), {}, wires);
+            for (const Conductor& c : bw.conductors) out << OwnShape{QStringLiteral("wire"), c.layer, c.layer, c.outline};
+        }
+    }
     const fem::Scope scope = scopeOf(model.parameters());
     const Stack stack = model.stack();
     const auto say = [problems](const QString& text) {

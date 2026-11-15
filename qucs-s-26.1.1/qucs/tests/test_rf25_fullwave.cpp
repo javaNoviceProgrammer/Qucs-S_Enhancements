@@ -28,6 +28,7 @@
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_static.h"
 #include "rf25/rf25_solve.h"
+#include "rf25/rf25_bondwire.h"
 #include "multiphysics/fem_sparse.h"
 
 #include <Eigen/Dense>
@@ -2199,6 +2200,38 @@ private slots:
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("-1"));
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
+            ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
+            // An element is no port elsewhere either (the review of 8abc6cbb):
+            // the quasi-static loop's two ends are the model's two measuring
+            // ports, the element listed before them; and a TRL calibration of
+            // the two-port it is is not refused as a three-port.
+            {
+                const rf::Node element = ports->children.back();
+                ports->children.clear();   // (the blank model's own ports, if any)
+                ports->children.push_back(element);
+            }
+            for (const char* name : {"P8", "P9"}) {
+                rf::Node e2 = m.make(QStringLiteral("rf_edge_port"));
+                e2.label = QLatin1String(name);
+                e2.props.insert(QStringLiteral("x"), name == QByteArray("P8") ? QStringLiteral("10[um]") : QStringLiteral("20[um]"));
+                ports->children.push_back(e2);
+            }
+            rf::Processed processed;
+            processed.conductors << strip(0, 0, 100, 10);
+            rf::SolveRequest quasi;
+            quasi.solver = QStringLiteral("quasi_static");
+            rf::SolveJob loopJob;
+            rf::setUpSolve(loopJob, m, processed, rf::Mesh(), quasi, QString());
+            QVERIFY(loopJob.loop);
+            QCOMPARE(loopJob.in, QPointF(10, 0));
+            QCOMPARE(loopJob.out, QPointF(20, 0));
+            rf::Node trl = m.make(QStringLiteral("rf_trl"));
+            ports->children.push_back(trl);
+            rf::SolveRequest wave;
+            wave.solver = QStringLiteral("full_wave");
+            rf::SolveJob trlJob;
+            const QString trlSaid = rf::setUpSolve(trlJob, m, processed, rf::Mesh(), wave, QString());
+            QVERIFY2(!trlSaid.contains(QStringLiteral("two-port")), qPrintable(trlSaid));
         }
         // The series R across a gap.
         {
@@ -2311,6 +2344,161 @@ private slots:
         qWarning("fed at its edge: eps_eff %.5g, Z0 %.5g Ohm; from below: %.5g, %.5g", ee.at(0), z0.at(0), ee.at(1), z0.at(1));
         QVERIFY2(std::abs(ee.at(1) / ee.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(ee.at(1)).arg(ee.at(0))));
         QVERIFY2(std::abs(z0.at(1) / z0.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(z0.at(1)).arg(z0.at(0))));
+    }
+
+    // A bond wire:
+    // 25 µm across, from a pad on 10 µm of vacuum over a ground to a pad
+    // 1 mm away shorted to the ground, its arc 150 µm over them, driven
+    // from the ground at the first pad. Its L at 100 MHz is the arc's and its
+    // image's (a numerical Neumann integral of the parabola in 400 pieces and
+    // of its mirror, the wire's own by the thin-wire kernel, written here)
+    // within 10 % - 0.631 against 0.580 nH, the staircase's legs over the
+    // arc's rise. Its resistance at 1 GHz, gold, its run as long as its span,
+    // a round wire's Rs/(2 pi a) along it and its legs' within 10 % (0.1405
+    // against 0.1314 Ohm; 7 % over at direct current too, the cells' way
+    // along the strip).
+    void aBondWireIsItsArc()
+    {
+        rf::Stack base = grounded(1, 10e-6);
+        base = withVia(base, QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+        const QList<rf::Conductor> pads{strip(-50, -50, 100, 100), strip(950, -50, 100, 100), on(QStringLiteral("V0"), 975, -25, 50, 50)};
+        const double f = 1e8, a = 12.5e-6, height = 150e-6, za = 10e-6;
+        const auto solved = [&](const rf::BondWire& wire, double frequency) {
+            const rf::BondWired bw = rf::withBondWires(base, pads, {wire});
+            if (!bw.ok()) {
+                qWarning().noquote() << bw.problems.join(" | ");
+                return Complex(0, 0);
+            }
+            const rf::FullWave w = rf::fullWaveOf(evenly(bw.conductors, 1, 25e-6), bw.conductors, bw.stack,
+                                                  {internalPort(QPointF(0, 0), QStringLiteral("M1"))}, {frequency});
+            if (!w.ok()) {
+                qWarning().noquote() << why(w);
+                return Complex(0, 0);
+            }
+            return w.z.at(0).at(0).at(0);
+        };
+        rf::BondWire wire;
+        wire.name = QStringLiteral("W1");
+        wire.fromMetal = wire.toMetal = QStringLiteral("M1");
+        wire.from = QPointF(0, 0);
+        wire.to = QPointF(1000, 0);
+        wire.height = height;
+        wire.diameter = 2 * a;
+        const double l = solved(wire, f).imag() / (2 * M_PI * f);
+        // The reference: the parabola z(x) = za + 4 height u (1 - u) in pieces,
+        // its mirror below the ground carrying the opposite current.
+        const int n = 400;
+        QList<std::array<double, 4>> pieces;   // x0, z0, x1, z1
+        for (int i = 0; i < n; ++i) {
+            const double u0 = double(i) / n, u1 = double(i + 1) / n;
+            pieces << std::array<double, 4>{u0 * 1e-3, za + 4 * height * u0 * (1 - u0), u1 * 1e-3, za + 4 * height * u1 * (1 - u1)};
+        }
+        static const double gx[4] = {-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526};
+        static const double gw[4] = {0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538};
+        double ref = 0;
+        for (const auto& p : pieces)
+            for (const auto& q : pieces)
+                for (const double mirror : {1.0, -1.0}) {
+                    const double qz0 = mirror * q[1], qz1 = mirror * q[3];
+                    const double tx = p[2] - p[0], tz = p[3] - p[1], sx = q[2] - q[0], sz = qz1 - qz0;
+                    double sum = 0;
+                    for (int i = 0; i < 4; ++i)
+                        for (int j = 0; j < 4; ++j) {
+                            const double ui = 0.5 * (1 + gx[i]), uj = 0.5 * (1 + gx[j]);
+                            const double dx = p[0] + ui * tx - (q[0] + uj * sx), dz = p[1] + ui * tz - (qz0 + uj * sz);
+                            const double r = mirror > 0 ? std::sqrt(dx * dx + dz * dz + a * a) : std::hypot(dx, dz);
+                            sum += 0.25 * gw[i] * gw[j] / r;
+                        }
+                    // (The mirror's current opposite, its direction mirrored in z.)
+                    const double dot = mirror > 0 ? tx * sx + tz * sz : -(tx * sx - tz * (-sz));
+                    ref += 1e-7 * dot * sum;
+                }
+        // (However many pieces, the staircase's: 3, 5, 9 and 15 of them 0.641,
+        //  0.631, 0.636 and 0.635 nH - its legs add their length where the
+        //  arc's rise adds in quadrature to its span, some 9 % here. Two
+        //  pieces as high as each other share their metal, no leg between.)
+        rf::BondWire two = wire;
+        two.pieces = 2;
+        const double l2 = solved(two, f).imag() / (2 * M_PI * f);
+        QVERIFY2(std::abs(l2 / ref - 1) < 0.1, qPrintable(QStringLiteral("two pieces: %1 nH").arg(l2 * 1e9)));
+        // A single run at the arc's peak - a rectangle, as a top run at its
+        // height alone would be: well over it (the review: a run at the peak
+        // gives more L per length than the arc).
+        rf::BondWire peak = wire;
+        peak.pieces = 1;
+        peak.height = height - za;
+        const rf::BondWired flat = rf::withBondWires(base, pads, {peak});
+        Q_UNUSED(flat);
+        qWarning("a bond wire's L: %.4g nH in 5 pieces; the arc's %.4g nH", l * 1e9, ref * 1e9);
+        QVERIFY2(std::abs(l / ref - 1) < 0.1, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(ref * 1e9)));
+        // Its resistance: gold at 1 GHz, a low loop so that its run is nearly
+        // its span.
+        rf::BondWire gold = wire;
+        gold.sigma = 4.1e7;
+        gold.height = 30e-6;
+        const double fr = 1e9, rs = std::sqrt(M_PI * fr * 4e-7 * M_PI / gold.sigma);
+        // (Its legs the squares they are, 0.871 d across, their vertical way
+        //  the steps between its pieces' heights: Rs over their perimeter.)
+        const QList<double> z = rf::bondWireLevels(za, za, gold.height, gold.pieces);
+        double legs = std::abs(z.first() - za) + std::abs(z.last() - za);
+        for (int i = 0; i + 1 < z.size(); ++i) legs += std::abs(z.at(i + 1) - z.at(i));
+        const double r = solved(gold, fr).real(), want = rs / (2 * M_PI * a) * 1e-3 + rs / (4 * 0.871 * 2 * a) * legs;
+        qWarning("a gold bond wire's R at 1 GHz: %.4g Ohm, a round wire's along its span and its legs %.4g", r, want);
+        QVERIFY2(std::abs(r / want - 1) < 0.1, qPrintable(QStringLiteral("%1 Ohm against %2").arg(r).arg(want)));
+        // And the strip's edges crowd no loss to them: with them, R was 1.7
+        // times this.
+
+        // The arc's one-piece height: 4 H/e^2 of the arc over a ground (the
+        // mean of ln u(1 - u) -2), 0.541 H.
+        QVERIFY2(std::abs(rf::bondWireLevels(1e-12, 1e-12, 1e-4, 1).first() / (4e-4 * std::exp(-2.0)) - 1) < 0.01,
+                 qPrintable(QString::number(rf::bondWireLevels(1e-12, 1e-12, 1e-4, 1).first())));
+        // What it refuses: a pad on no metal; a loop through the dielectrics.
+        rf::BondWire stray = wire;
+        stray.toMetal = QStringLiteral("M9");
+        QVERIFY(!rf::withBondWires(base, pads, {stray}).ok());
+        rf::Stack buried = grounded(1, 10e-6);
+        rf::Layer over;
+        over.kind = rf::Layer::Dielectric;
+        over.name = QStringLiteral("OX");
+        over.tag = QStringLiteral("ox");
+        over.thickness = 500e-6;
+        over.epsr = 4;
+        buried.layers << over;
+        QVERIFY(!rf::withBondWires(buried, pads, {wire}).ok());
+        // In a model: Layout > Shapes' bond wire, its layers in the model's
+        // stack and its runs and legs among its own shapes.
+        {
+            rf::Model m = rf::Model::blank();
+            rf::Node* shapes = nullptr;
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_layout"))
+                    for (rf::Node& c : n.children)
+                        if (c.type == QStringLiteral("rf_shapes")) shapes = &c;
+            if (shapes == nullptr) {
+                for (rf::Node& n : m.root.children)
+                    if (n.type == QStringLiteral("rf_layout")) {
+                        n.children.push_back(m.make(QStringLiteral("rf_shapes")));
+                        shapes = &n.children.back();
+                    }
+            }
+            QVERIFY(shapes != nullptr);
+            QString metal;
+            for (const rf::Layer& l : m.stack().layers)
+                if (l.kind == rf::Layer::Metal) metal = l.name;
+            rf::Node w = m.make(QStringLiteral("rf_bondwire"));
+            w.label = QStringLiteral("W7");
+            w.props.insert(QStringLiteral("from_metal"), metal);
+            w.props.insert(QStringLiteral("to_metal"), metal);
+            w.props.insert(QStringLiteral("x1"), QStringLiteral("800[um]"));
+            shapes->children.push_back(w);
+            const rf::Stack st = m.stack();
+            QVERIFY2(st.ok(), qPrintable(st.problems.join(" | ")));
+            QVERIFY(st.named(QStringLiteral("W7_3")) != nullptr && st.named(QStringLiteral("W7_v0")) != nullptr);
+            int wireShapes = 0;
+            for (const rf::OwnShape& s : rf::ownShapesOf(m))
+                if (s.layer.startsWith(QStringLiteral("W7_"))) ++wireShapes;
+            QCOMPARE(wireShapes, 11);   // (five runs, six legs)
+        }
     }
 
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its
