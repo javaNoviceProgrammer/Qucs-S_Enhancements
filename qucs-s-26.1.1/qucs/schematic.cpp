@@ -2172,10 +2172,20 @@ void Schematic::reloadGraphs(bool force)
     // read - once (Graph::SharedReading).
     const Graph::SharedReading shared;
     QFileInfo Info(a_DocName);
+    const QString dataSet = Info.path() + QDir::separator() + a_DataSet;
+    // The page's traces read together, several at once (Graph::loadAll),
+    // then each diagram laid out with its own.
+    std::vector<Graph *> graphs;
+    for (Diagram *pd : *a_Diagrams)
+        for (Graph *pg : pd->Graphs) {
+            if (force) pg->lastLoaded = QDateTime();
+            graphs.push_back(pg);
+        }
+    const std::vector<int> loaded = Graph::loadAll(graphs, dataSet);
+    size_t first = 0;
     for (Diagram *pd : *a_Diagrams) {
-        if (force)
-            for (Graph *pg : pd->Graphs) pg->lastLoaded = QDateTime();
-        pd->loadGraphData(Info.path() + QDir::separator() + a_DataSet);
+        pd->loadGraphData(dataSet, loaded.data() + first);
+        first += size_t(pd->Graphs.size());
     }
 }
 

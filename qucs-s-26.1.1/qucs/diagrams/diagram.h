@@ -188,7 +188,11 @@ public:
   virtual const Axis* graphAxis(const Graph* g) const;
   Axis* graphAxis(const Graph* g) { return const_cast<Axis*>(std::as_const(*this).graphAxis(g)); }
   void updateGraphData();
-  void loadGraphData(const QString&);
+  /// Its graphs' data from their datasets (\a defaultDataSet theirs unless
+  /// a graph names another), laid out. \a loaded: their loadDatFile()
+  /// results, in their order, when they were loaded already
+  /// (Graph::loadAll).
+  void loadGraphData(const QString& defaultDataSet, const int* loaded = nullptr);
   void recalcGraphData();
   bool sameDependencies(Graph const*, Graph const*) const;
   int  checkColumnWidth(const QString&, const QFontMetrics&, int, int, int);
