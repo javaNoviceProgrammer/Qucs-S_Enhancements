@@ -2744,6 +2744,16 @@ private slots:
         QVERIFY2(failed(again) && text(again).contains(QStringLiteral("still solving after 1 s")), qPrintable(text(again)));
         QCOMPARE(doc->solvesBegun(), begun + 1);
         QCOMPARE(doc->solvesAtWork(), 1);
+        // get_state: a simulation running - this solve, the model named with
+        // where it is.
+        {
+            const QJsonObject state = json(call("get_state", {}, 30000)).toObject();
+            QVERIFY2(state.value("simulation running").toBool(), qPrintable(text(call("get_state", {}, 30000))));
+            const QJsonArray solving = state.value("rf 2.5d solving").toArray();
+            QVERIFY2(solving.size() == 1 && solving.at(0).toObject().value("title").toString().contains(QStringLiteral("mirror.qrf25"))
+                         && !solving.at(0).toObject().value("solving").toString().isEmpty(),
+                     qPrintable(QJsonDocument(solving).toJson()));
+        }
         // rf25_inductance's loop is of the quasi-static solve: it joins it
         // too, where it let it go and began its own.
         const QJsonObject loop = call("rf25_inductance", {{"path", file}, {"timeout", 1}}, 60000);
@@ -2754,6 +2764,7 @@ private slots:
         QVERIFY2(!failed(stopped) && json(stopped).toObject().value("stopped").toBool(), qPrintable(text(stopped)));
         QVERIFY2(json(stopped).toObject().value("note").toString().contains(QStringLiteral("Stopped mirror.qrf25")), qPrintable(text(stopped)));
         QVERIFY(!doc->isSolving());
+        QVERIFY(!json(call("get_state", {}, 30000)).toObject().value("simulation running").toBool());
         QCOMPARE(doc->solvesAtWork(), 0);
         const QJsonObject idle = call("rf25_stop", {{"path", file}}, 60000);
         QVERIFY2(!failed(idle) && !json(idle).toObject().value("stopped").toBool(true)
@@ -2776,6 +2787,65 @@ private slots:
             QCOMPARE(doc->solvesBegun(), begun + 2);
         }
         closeUnder(ws + "/rfjoin");
+    }
+
+    // P24 of the evening re-test: a tab closed while its loop is solving, opened again,
+    // and rf25_inductance - the loop, not "no loop".
+    void anRf25TabClosedWhileSolvingIsOpenedAgainWithItsLoop()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        // (The strip with its two ports, on the slow model's mirror of forty
+        //  films, so that its solve is still going on a second in.)
+        QVERIFY(QDir().mkpath(ws + "/rfreopen"));
+        qucs_s::rf25::Model m = hfssLineModel();
+        std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
+        for (int i = 0; i < 40; ++i) {
+            qucs_s::rf25::Node film;
+            film.type = QStringLiteral("rf_dielectric");
+            film.tag = QStringLiteral("film%1").arg(i + 1);
+            film.label = QStringLiteral("F%1").arg(i + 1);
+            film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
+            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
+            film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
+            stack.insert(stack.end() - 1, film);
+        }
+        m.normalise();
+        const QString file = ws + "/rfreopen/line.qrf25";
+        QVERIFY(writeStrip(ws + "/rfreopen/strip.gds", 1000, 50));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly) && f.write(m.toJson()) > 0);
+        }
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        auto* doc = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(120000));
+        QVERIFY(doc->waitForPrepared(120000));
+        const QJsonObject first = call("rf25_solve", {{"path", file}, {"solver", "quasi_static"}, {"timeout", 1}}, 60000);
+        QVERIFY2(failed(first) && text(first).contains(QStringLiteral("still solving after 1 s")), qPrintable(text(first)));
+        QVERIFY(!failed(call("close_document", {{"path", file}, {"unsaved", "discard"}}, 60000)));
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        auto* again = dynamic_cast<RF25Doc*>(app->getDoc());
+        QVERIFY(again != nullptr);
+        QVERIFY(again->waitForLayout(120000));
+        QVERIFY(again->waitForPrepared(120000));
+        QElapsedTimer clock;
+        clock.start();
+        const QJsonObject loop = call("rf25_inductance", {{"path", file}}, 600000);
+        const qint64 loopMs = clock.restart();
+        QVERIFY2(!failed(loop), qPrintable(text(loop)));
+        QVERIFY2(json(loop).toObject().value(QStringLiteral("L")).toDouble() > 0, qPrintable(text(loop)));
+        // And the loop alone: no charge solve before it (the review's L02,
+        // L05 and L16, 4 to 11 s in the tab, where the loop was 1 to 3) -
+        // well under the whole quasi-static solve's time, which it was more
+        // than.
+        const QJsonObject whole = call("rf25_solve", {{"path", file}, {"solver", "quasi_static"}, {"brief", true}}, 600000);
+        const qint64 wholeMs = clock.elapsed();
+        QVERIFY2(!failed(whole), qPrintable(text(whole)));
+        qWarning("P24, opened again: its loop %.4g nH in %lld ms; the whole quasi-static solve %lld ms",
+                 json(loop).toObject().value(QStringLiteral("L")).toDouble() * 1e9, loopMs, wholeMs);
+        QVERIFY2(2 * loopMs < wholeMs, qPrintable(QStringLiteral("%1 ms against %2").arg(loopMs).arg(wholeMs)));
+        closeUnder(ws + "/rfreopen");
     }
 
     // A spin box with a special value's words and a suffix, through

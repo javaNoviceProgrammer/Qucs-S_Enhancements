@@ -410,6 +410,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         return said(tr("A plane of symmetry is the full-wave solve's: the quasi-static extraction and the loop inductance solve "
                        "the whole layout, so set the layout's Processing to no symmetry for them."));
     job.levels = request.levels;
+    job.loopOnly = request.loopOnly && !job.fullWave && request.levels.isEmpty();
     {
         QStringList said;
         job.how = tabMeshSettings(model, &said);
@@ -614,12 +615,15 @@ void runSolve(SolveJob& job)
     control.done = &job.stepDone;
     control.all = &job.stepAll;
     control.images = &job.images;
-    job.result =
-        std::make_shared<Extraction>(extract(job.mesh, job.conductors, job.stack, 1e-6, job.returns, &control));
+    // (The loop alone - rf25_inductance's -: no charge solve before it,
+    //  which was most of a spiral's time and nothing of its answer.)
+    if (!job.loopOnly)
+        job.result =
+            std::make_shared<Extraction>(extract(job.mesh, job.conductors, job.stack, 1e-6, job.returns, &control));
     if (job.stop.load()) return;
-    if (job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
-    if (job.result->ok() && !job.dispersedSaid.isEmpty()) job.result->lines.prepend(job.dispersedSaid);
-    if (job.result->ok())
+    if (job.result && job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
+    if (job.result && job.result->ok() && !job.dispersedSaid.isEmpty()) job.result->lines.prepend(job.dispersedSaid);
+    if (job.result && job.result->ok())
         for (const QString& said : std::as_const(job.stackSaid)) job.result->lines.prepend(said);
     if (job.loop) {
         // (Said, where the tab showed "starting" through it: a charge solve
