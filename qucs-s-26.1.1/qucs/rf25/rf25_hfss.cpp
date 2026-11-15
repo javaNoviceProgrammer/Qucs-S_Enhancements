@@ -711,6 +711,12 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     const QList<double> sweep = studySweep(model, &why);
     if (sweep.isEmpty()) out.problems << (why.isEmpty() ? tr("The study asks for no frequency.") : why);
     if (conductors.isEmpty()) out.problems << tr("The model has no shapes to write: its layout has not been read, or nothing of it is mapped to the stack.");
+    // (A plane of symmetry's processing keeps the half beyond it, which is
+    //  not the board.)
+    if (const Node* processing = model.layout().child(QStringLiteral("rf_processing"));
+        processing != nullptr && processingOf(*processing, model.parameters(), nullptr).symmetryAxis != 0)
+        out.problems << tr("The layout's Processing keeps only the half beyond its plane of symmetry: set its Symmetry to none to "
+                           "export the whole.");
     if (options.portType != QLatin1String("auto") && options.portType != QLatin1String("wave") && options.portType != QLatin1String("gap"))
         out.problems << tr("The port type is \"auto\", \"wave\" or \"gap\", not \"%1\".").arg(options.portType);
     if (!(options.maxDelta > 0)) out.problems << tr("The adaptive Delta S is a number above nought.");

@@ -380,6 +380,20 @@ struct FullWaveControl {
     /// names its returns is - a port from a metal then the same columns as
     /// one returning through a terminal of that metal under it.
     bool portPaths = true;
+    /// A plane of symmetry (the layout's Processing): the conductors are the
+    /// half on its far side - x >= at for a plane across x (axis 1), y >= at
+    /// across y (axis 2), m - and every charge, run, via and port path has
+    /// its mirror image in it, signed by the wall: a magnetic wall's charge
+    /// and current along it even, its current across it odd; an electric
+    /// wall's the other way about. A magnetic wall's ports are edge ports on
+    /// the plane, the whole's Z half the half's; or all off it, each driven
+    /// with its mirror in phase. An electric wall's are all off it, each
+    /// driven against its mirror, and nothing touches it. Solved dense.
+    struct Symmetry {
+        int axis = 0;            ///< 0: none; 1: a plane x = at; 2: y = at
+        double at = 0;           ///< m
+        bool magnetic = true;
+    } symmetry;
     /// Tests: a box's split between its guide's modes summed as the
     /// rectangle has them and the rest summed over the walls' images - the
     /// modes whose |Im kr| is under this go to the rectangle's sum, 1/m;

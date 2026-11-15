@@ -165,6 +165,13 @@ struct Processing {
     /// (processRead() reads it with cutoutOf(); processingOf() leaves it
     /// empty).
     Cutout cutout;
+    /// A plane of symmetry (its "Symmetry"): 0 none, 1 a plane x = \a
+    /// symmetryAt, 2 y = it, m; the half beyond it (x or y above it) kept,
+    /// the rest taken out after the cutout, and solved with its mirror
+    /// (FullWaveControl::Symmetry) - a magnetic wall, or an electric one.
+    int symmetryAxis = 0;
+    double symmetryAt = 0;
+    bool symmetryMagnetic = true;
 };
 /// \a node (an rf_processing) read in the model's parameters; what cannot
 /// be read is said in \a problems and left at its default.

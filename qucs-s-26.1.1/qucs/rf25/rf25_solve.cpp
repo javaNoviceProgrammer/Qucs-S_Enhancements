@@ -397,6 +397,18 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         if (!problem.isEmpty()) return said(problem);
     }
     job.fullWave = request.solver.isEmpty() ? studyIsFullWave(model) : request.solver == QLatin1String("full_wave");
+    // A plane of symmetry: the processed conductors are its half, which the
+    // full wave solves with its mirror; the quasi-static solves take the
+    // whole, not the half.
+    if (const Node* node = model.layout().child(QStringLiteral("rf_processing"))) {
+        const Processing how = processingOf(*node, model.parameters(), nullptr);
+        job.symmetry.axis = how.symmetryAxis;
+        job.symmetry.at = how.symmetryAt;
+        job.symmetry.magnetic = how.symmetryMagnetic;
+    }
+    if (job.symmetry.axis != 0 && !job.fullWave)
+        return said(tr("A plane of symmetry is the full-wave solve's: the quasi-static extraction and the loop inductance solve "
+                       "the whole layout, so set the layout's Processing to no symmetry for them."));
     job.levels = request.levels;
     {
         QStringList said;
@@ -695,6 +707,7 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
 {
     FullWaveControl control;
     control.extents = job.extents;
+    control.symmetry = job.symmetry;
     control.stop = &job.stop;
     control.done = &job.done;
     control.gmresIterations = &job.gmresIterations;

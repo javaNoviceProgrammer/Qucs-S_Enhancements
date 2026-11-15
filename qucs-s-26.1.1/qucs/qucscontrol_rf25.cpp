@@ -2035,6 +2035,12 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
     const std::shared_ptr<const FullWave> wave = model->fullWave();
     if (!wave || !wave->ok() || wave->frequencies.isEmpty())
         return errorResult(tr("It has no full-wave solve: rf25_solve it first (solver full_wave), or press Solve on its tab."));
+    // (A solve with a plane of symmetry has the half's currents: its mirror's
+    //  are not among the far field's sources yet.)
+    if (const Node* processing = model->model().layout().child(QStringLiteral("rf_processing"));
+        processing != nullptr && processingOf(*processing, model->model().parameters(), nullptr).symmetryAxis != 0)
+        return errorResult(tr("Its layout has a plane of symmetry: its solve's currents are the half's, and the far field of the "
+                              "half and its mirror is not made yet. Solve it whole for its far field."));
     int port = 0;
     const QString named = args.value(QLatin1String("port")).toString().trimmed();
     if (!named.isEmpty()) {

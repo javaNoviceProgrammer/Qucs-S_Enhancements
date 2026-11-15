@@ -806,6 +806,14 @@ Processing processingOf(const Node& node, const QList<fem::Model::Parameter>& pa
     how.viaDistance = numberIn(node, QStringLiteral("via_distance"), scope, how.viaDistance, problems);
     how.sliverWidth = numberIn(node, QStringLiteral("sliver_width"), scope, how.sliverWidth, problems);
     how.grid = numberIn(node, QStringLiteral("grid"), scope, how.grid, problems);
+    {
+        const QString plane = node.props.value(QLatin1String("symmetry")).toString();
+        how.symmetryAxis = plane == QLatin1String("x") ? 1 : plane == QLatin1String("y") ? 2 : 0;
+        if (how.symmetryAxis != 0) {
+            how.symmetryAt = numberIn(node, QStringLiteral("symmetry_at"), scope, 0, problems);
+            how.symmetryMagnetic = node.props.value(QLatin1String("symmetry_wall")).toString() != QLatin1String("electric");
+        }
+    }
     if (how.viaDistance < 0 && problems != nullptr) *problems << tr("Processing: the via distance is below zero.");
     if (how.sliverWidth < 0 && problems != nullptr) *problems << tr("Processing: the sliver width is below zero.");
     if (how.grid <= 0 && how.snap && problems != nullptr) *problems << tr("Processing: the grid is not a length above zero.");
@@ -843,6 +851,29 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
     Processed out;
     if (!how.cutout.isEmpty())
         out.report.lines << tr("The cutout's %1 region(s) applied first.").arg(how.cutout.regions.size());
+    // A plane of symmetry: the half before it taken out - a region from the
+    // plane to past every shape - and what is left solved with its mirror.
+    Cutout cutout = how.cutout;
+    if (how.symmetryAxis != 0) {
+        QRectF all;
+        for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it)
+            for (const QPolygonF& p : it.value()) all = all.isNull() ? p.boundingRect() : all.united(p.boundingRect());
+        const double at = how.symmetryAt / (micrometre > 0 ? micrometre : 1e-6);
+        const double margin = 1 + 0.1 * std::max(all.width(), all.height());
+        const QRectF around = all.adjusted(-margin, -margin, margin, margin);
+        if (how.symmetryAxis == 1 ? around.left() < at : around.top() < at) {
+            CutRegion half;
+            half.name = tr("the plane of symmetry's near half");
+            half.keep = false;
+            half.outline = QPolygonF(how.symmetryAxis == 1 ? QRectF(QPointF(around.left(), around.top()), QPointF(at, around.bottom()))
+                                                          : QRectF(QPointF(around.left(), around.top()), QPointF(around.right(), at)));
+            cutout.regions << half;
+        }
+        out.report.lines << tr("A %1 wall of symmetry at %2 = %3 µm: the half beyond it kept, and solved with its mirror.")
+                                .arg(how.symmetryMagnetic ? tr("magnetic") : tr("electric"))
+                                .arg(how.symmetryAxis == 1 ? QStringLiteral("x") : QStringLiteral("y"))
+                                .arg(how.symmetryAt * 1e6, 0, 'g', 6);
+    }
     // The settings are metres; the polygons are the layout's own units.
     const double perUnit = micrometre > 0 ? micrometre : 1e-6;
     const double viaDistance = how.viaDistance / perUnit;
@@ -876,10 +907,12 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
         }
 
         // The Cutout first: what it masks is never merged, healed or
-        // meshed, which on a whole chip's layout is most of the work.
-        if (!how.cutout.isEmpty()) {
+        // meshed, which on a whole chip's layout is most of the work. (A
+        // plane of symmetry's near half taken out with it, as a region that
+        // takes out.)
+        if (!cutout.isEmpty()) {
             int cut = 0, masked = 0;
-            shapes = cutOf(shapes, how.cutout, layer, &cut, &masked);
+            shapes = cutOf(shapes, cutout, layer, &cut, &masked);
             out.report.cut += cut;
             out.report.masked += masked;
             if (cut > 0 || masked > 0)

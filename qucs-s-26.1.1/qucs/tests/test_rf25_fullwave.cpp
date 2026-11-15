@@ -2609,6 +2609,149 @@ private slots:
         }
     }
 
+    // A plane of symmetry: the half beyond it, every charge's, run's, via's
+    // and port path's mirror in it, against the whole solved as it is.
+    //  - A magnetic wall along a line's axis, its edge ports on it: the
+    //    whole's Z half the half's. A pair of vias to the ground either side
+    //    of the axis, one of them and its mirror.
+    //  - Two coupled lines either side of the plane, edge ports off it: a
+    //    magnetic wall the even mode, Z11 + Z13, an electric one the odd,
+    //    Z11 - Z13, of the whole's four ports.
+    void aSymmetryPlaneIsTheWholesHalf()
+    {
+        const rf::Stack stack = withVia(grounded(4, 200e-6), QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+        const QList<double> f{1e9, 6e9};
+        const auto solve = [&](const QList<rf::Conductor>& conductors, int across, const QList<rf::FullWavePort>& ports,
+                               const rf::FullWaveControl* control) {
+            return rf::fullWaveOf(evenly(conductors, across, 100e-6), conductors, stack, ports, f, 1e-6, control);
+        };
+        const auto worst = [](const rf::FullWave& a, const std::function<Complex(int, int, int)>& b, int n) {
+            double most = 0, largest = 0;
+            for (int k = 0; k < a.z.size(); ++k)
+                for (int i = 0; i < n; ++i)
+                    for (int j = 0; j < n; ++j) {
+                        most = std::max(most, std::abs(a.z.at(k).at(i).at(j) - b(k, i, j)));
+                        largest = std::max(largest, std::abs(b(k, i, j)));
+                    }
+            return most / largest;
+        };
+        {
+            const QList<rf::Conductor> whole{strip(0, -50, 2000, 100), on(QStringLiteral("V0"), 1000, -50, 25, 25),
+                                             on(QStringLiteral("V0"), 1000, 25, 25, 25)};
+            const QList<rf::Conductor> half{strip(0, 0, 2000, 50), on(QStringLiteral("V0"), 1000, 25, 25, 25)};
+            const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))};
+            const rf::FullWave a = solve(whole, 4, ports, nullptr);
+            rf::FullWaveControl control;
+            control.symmetry.axis = 2;
+            control.symmetry.at = 0;
+            control.symmetry.magnetic = true;
+            const rf::FullWave b = solve(half, 2, ports, &control);
+            QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+            QCOMPARE(b.cells * 2, a.cells);
+            const double off = worst(b, [&a](int k, int i, int j) { return a.z.at(k).at(i).at(j); }, 2);
+            qWarning("a line and two vias, halved by a magnetic wall: %d cells against %d, Z within %.2e; |S21| at 6 GHz %.6f "
+                     "against %.6f",
+                     b.cells, a.cells, off, std::abs(b.s.at(1).at(1).at(0)), std::abs(a.s.at(1).at(1).at(0)));
+            QVERIFY2(off < 1e-9, qPrintable(QString::number(off)));
+            QVERIFY(b.lines.join(QLatin1Char(' ')).contains(QStringLiteral("half the half's")));
+            // (Its time, finer: a quarter of the dense matrix, an eighth of
+            //  its LU.)
+            QElapsedTimer clock;
+            clock.start();
+            const rf::FullWave fine = rf::fullWaveOf(evenly(whole, 8, 25e-6), whole, stack, ports, {6e9}, 1e-6, nullptr);
+            const qint64 wholeMs = clock.restart();
+            const rf::FullWave halfFine = rf::fullWaveOf(evenly(half, 4, 25e-6), half, stack, ports, {6e9}, 1e-6, &control);
+            const qint64 halfMs = clock.elapsed();
+            QVERIFY2(fine.ok() && halfFine.ok(), qPrintable(why(fine) + why(halfFine)));
+            qWarning("finer, %d cells against %d: %lld ms against %lld; |S21| %.6f against %.6f", halfFine.cells, fine.cells, halfMs, wholeMs,
+                     std::abs(halfFine.s.at(0).at(1).at(0)), std::abs(fine.s.at(0).at(1).at(0)));
+        }
+        {
+            const QList<rf::Conductor> whole{strip(0, 50, 2000, 100), strip(0, -150, 2000, 100)};
+            const QList<rf::Conductor> half{strip(0, 50, 2000, 100)};
+            const QList<rf::FullWavePort> four{edgePort(QPointF(0, 100)), edgePort(QPointF(2000, 100)), edgePort(QPointF(0, -100)),
+                                               edgePort(QPointF(2000, -100))};
+            const QList<rf::FullWavePort> two{four.at(0), four.at(1)};
+            const rf::FullWave a = solve(whole, 4, four, nullptr);
+            QVERIFY2(a.ok(), qPrintable(why(a)));
+            for (const bool magnetic : {true, false}) {
+                rf::FullWaveControl control;
+                control.symmetry.axis = 2;
+                control.symmetry.magnetic = magnetic;
+                const rf::FullWave b = solve(half, 4, two, &control);
+                QVERIFY2(b.ok(), qPrintable(why(b)));
+                const double sign = magnetic ? 1 : -1;
+                const double off = worst(b, [&a, sign](int k, int i, int j) { return a.z.at(k).at(i).at(j) + sign * a.z.at(k).at(i).at(j + 2); }, 2);
+                qWarning("coupled lines, a %s wall: Z within %.2e of the whole's %s mode", magnetic ? "magnetic" : "electric", off,
+                         magnetic ? "even" : "odd");
+                QVERIFY2(off < 1e-9, qPrintable(QString::number(off)));
+            }
+        }
+        // Through the layout's Processing: a plane x = 500 µm across a line
+        // along y, its whole drawn - the half beyond it kept, and solved
+        // with its mirror as the whole is.
+        {
+            rf::Processing how;
+            how.symmetryAxis = 1;
+            how.symmetryAt = 500e-6;
+            QMap<QString, QList<QPolygonF>> byLayer;
+            byLayer[QStringLiteral("M1")] << QPolygonF(QRectF(450, 0, 100, 2000));
+            byLayer[QStringLiteral("V0")] << QPolygonF(QRectF(450, 1000, 25, 25)) << QPolygonF(QRectF(525, 1000, 25, 25));
+            const rf::Processed processed = rf::processShapes(byLayer, {}, how, stack, 1e-6);
+            QVERIFY2(processed.ok(), qPrintable(processed.problems.join(" | ")));
+            QRectF kept;
+            for (const rf::Conductor& c : processed.conductors) kept = kept.isNull() ? c.outline.boundingRect() : kept.united(c.outline.boundingRect());
+            QVERIFY2(std::abs(kept.left() - 500) < 1e-6 && std::abs(kept.right() - 550) < 1e-6, qPrintable(QStringLiteral("%1 to %2").arg(kept.left()).arg(kept.right())));
+            QCOMPARE(processed.conductors.size(), 2);
+            // (Against the whole drawn about x = 0: the whole about x = 500
+            //  µm reads 6.8e-5 apart from it - the plain solve's own, moved
+            //  in the plane -, where the half beyond x = 500 and its mirror
+            //  read as the whole about nought does, to its last digits.)
+            const QList<rf::Conductor> whole{on(QStringLiteral("M1"), -50, 0, 100, 2000), on(QStringLiteral("V0"), -50, 1000, 25, 25),
+                                             on(QStringLiteral("V0"), 25, 1000, 25, 25)};
+            const rf::FullWave a = solve(whole, 4, {edgePort(QPointF(0, 0)), edgePort(QPointF(0, 2000))}, nullptr);
+            rf::FullWaveControl control;
+            control.symmetry.axis = 1;
+            control.symmetry.at = 500e-6;
+            const rf::FullWave b = solve(processed.conductors, 2, {edgePort(QPointF(500, 0)), edgePort(QPointF(500, 2000))}, &control);
+            QVERIFY2(a.ok() && b.ok(), qPrintable(why(a) + why(b)));
+            const double off = worst(b, [&a](int k, int i, int j) { return a.z.at(k).at(i).at(j); }, 2);
+            qWarning("a line along y, halved across x = 500 um through the Processing: Z within %.2e of the whole's", off);
+            QVERIFY2(off < 1e-9, qPrintable(QString::number(off)));
+        }
+        // The model's Processing: its Symmetry read; and, with one, no
+        // export of the half as the board.
+        {
+            rf::Model m = rf::Model::blank();
+            rf::Node* processing = m.layout().child(QStringLiteral("rf_processing"));
+            if (processing == nullptr) {
+                m.layout().children.push_back(m.make(QStringLiteral("rf_processing")));
+                processing = &m.layout().children.back();
+            }
+            processing->props.insert(QStringLiteral("symmetry"), QStringLiteral("y"));
+            processing->props.insert(QStringLiteral("symmetry_at"), QStringLiteral("20[um]"));
+            processing->props.insert(QStringLiteral("symmetry_wall"), QStringLiteral("electric"));
+            QStringList problems;
+            const rf::Processing how = rf::processingOf(*processing, m.parameters(), &problems);
+            QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+            QCOMPARE(how.symmetryAxis, 2);
+            QVERIFY(std::abs(how.symmetryAt - 20e-6) < 1e-15);
+            QVERIFY(!how.symmetryMagnetic);
+            const rf::HfssExport hfss = rf::hfssExportOf(m, {strip(0, 20, 100, 50)}, {}, QStringLiteral("half"));
+            QVERIFY(hfss.problems.join(QLatin1Char(' ')).contains(QStringLiteral("plane of symmetry")));
+        }
+        // What it refuses: a conductor across the plane; one touching an
+        // electric wall; a port on it; ports on and off a magnetic one.
+        rf::FullWaveControl electric;
+        electric.symmetry.axis = 2;
+        electric.symmetry.magnetic = false;
+        rf::FullWaveControl magnetic = electric;
+        magnetic.symmetry.magnetic = true;
+        QVERIFY(!solve({strip(0, -50, 2000, 100)}, 4, {edgePort(QPointF(0, 0))}, &magnetic).ok());
+        QVERIFY(!solve({strip(0, 0, 2000, 50)}, 2, {edgePort(QPointF(0, 25))}, &electric).ok());
+        QVERIFY(!solve({strip(0, 50, 2000, 100)}, 4, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 100))}, &magnetic).ok());
+    }
+
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its
     // half-width, its resistance is its length over sigma and its area -
     // the line shorted by it less by an ideal short, in its real part.
