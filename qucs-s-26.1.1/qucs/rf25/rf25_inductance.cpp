@@ -1459,8 +1459,9 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                      .arg(nb).arg(nn).arg(longest * 1e6, 0, 'g', 3);
     for (const Layer& l : stack.layers)
         if (l.kind == Layer::Cover && l.variant == QLatin1String("perfect"))
-            out.lines << tr("The stack has a metal lid, and the loop's partial inductances are of free space: its L is that of "
-                            "the loop with no lid over it, as with no ground under it. The full wave has the lid.");
+            out.lines << tr("The stack has a metal lid%1, and the loop's partial inductances are of free space: its L is that of "
+                            "the loop with no lid over it, as with no ground under it. The full wave has the lid.")
+                             .arg(l.walls ? tr(" and side walls") : QString());
     if (stack.magnetic())
         out.lines << tr("A layer of the stack is magnetic, and the loop's partial inductances are of free space, mu0's: "
                         "its L is that of the loop with no magnetic material near it. The full wave has the material.");

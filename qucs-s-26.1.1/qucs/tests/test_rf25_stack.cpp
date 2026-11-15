@@ -305,6 +305,15 @@ void TestRf25Stack::whatAFileHasNoPlaceForIsSaid()
         QVERIFY2(notes.contains(QLatin1String("relative permeability")), qPrintable(notes));
         QVERIFY2(notes.contains(QLatin1String("Djordjevic-Sarkar dispersion")), qPrintable(notes));
     }
+    // A box's walls, which neither has, said.
+    {
+        const Model boxed = modelOf(twoMetals(QStringLiteral(R"({"type": "rf_ground", "tag": "g", "label": "GND", "properties": {"kind": "perfect"}})"),
+                                              QStringLiteral(R"({"type": "rf_cover", "tag": "c", "label": "Lid", "properties": {"kind": "perfect", "height": "100[um]", "walls": true, "box_x1": "1[mm]", "box_y1": "1[mm]"}})")));
+        for (const StackFormat f : {StackFormat::Hfss, StackFormat::Emx}) {
+            const StackWritten w = f == StackFormat::Hfss ? hfssStackupOf(boxed) : emxProcessOf(boxed);
+            QVERIFY2(w.ok() && w.notes.join(QLatin1Char(' ')).contains(QLatin1String("side walls are not written")), qPrintable(w.notes.join(QLatin1Char('\n'))));
+        }
+    }
     // A magnetic loss alone, its permeability 1, said too (the review of
     // fa249cbd: Stack::magnetic() counted the permeability alone).
     sub->props.insert(QStringLiteral("mur"), QStringLiteral("1"));

@@ -396,7 +396,8 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
                              const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit,
                              const ExtractControl* control, const QHash<int, QList<ChargePart>>& charges = {},
                              const std::function<double(int)>& zOf = {},
-                             const std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>& local = {})
+                             const std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>& local = {},
+                             const QRectF& box = {}, double boxReach = 0)
 {
     const int n = int(which.size());
     Eigen::MatrixXd p(n, n);
@@ -424,6 +425,12 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
                 const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, at, std::abs(zi - zj)); };
                 p(i, j) += local ? local(g, which.at(i), which.at(j), correction) : correction(g);
             }
+            // In a box, the charge's images in its walls, each of the sign
+            // its mirrors give (boxImagesOf()) - a near one over its cell as
+            // a near cell is.
+            if (boxReach > 0)
+                for (const BoxImage& im : boxImagesOf(box, rect, at, boxReach))
+                    p(i, j) += im.sign * cellPotential(at, im.rect, g, side, false);
         }
     }
     return p;
@@ -662,6 +669,30 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     if (!stackLayers.ok()) {
         out.problems += stackLayers.problems;
         return out;
+    }
+    // A box (the lid's side walls): its images out to where, between the
+    // ground and the lid, a charge's potential has died as exp(-pi rho/H) to
+    // a part in 1e11 - eight heights. Every cell inside it; no layer that ends
+    // in it (its correction knows no walls), said.
+    double boxReach = 0;
+    if (stackLayers.walls) {
+        boxReach = 8 * stackLayers.height();
+        for (const MeshCell& c : mesh.cells)
+            if (!stackLayers.box.contains(scaled(c.outline.boundingRect(), micrometre))) {
+                out.problems << tr("A conductor reaches beyond the box: its side walls stand round %1 to %2 µm in x and %3 to %4 µm "
+                                   "in y.")
+                                    .arg(stackLayers.box.left() * 1e6, 0, 'g', 6).arg(stackLayers.box.right() * 1e6, 0, 'g', 6)
+                                    .arg(stackLayers.box.top() * 1e6, 0, 'g', 6).arg(stackLayers.box.bottom() * 1e6, 0, 'g', 6);
+                return out;
+            }
+        if (control != nullptr && !control->extents.isEmpty()) {
+            out.problems << tr("A layer that ends at its shapes is not solved in a box: its correction knows no walls.");
+            return out;
+        }
+        out.lines << tr("A box of %1 by %2 µm: its perfect side walls with the ground and the lid, each charge's images in them "
+                        "out to %3 µm.")
+                         .arg(stackLayers.box.width() * 1e6, 0, 'g', 4).arg(stackLayers.box.height() * 1e6, 0, 'g', 4)
+                         .arg(boxReach * 1e6, 0, 'g', 4);
     }
     // A layer that ends (rf25_dielectric.h): the Green's functions of the
     // background - each such layer as it is beyond its shapes -, and its
@@ -922,7 +953,9 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // stub, a taper or a bend is no line, and its per-metre values are the
     // whole over its length, said as such.
     QList<int> column;   // (into `which')
-    bool uniform = lineLength > 0 && !nets.isEmpty();
+    // (In a box, no line is the same along its length as a cross-section
+    //  without end: the walls across it are its ends.)
+    bool uniform = lineLength > 0 && !nets.isEmpty() && !stackLayers.walls;
     if (uniform) {
         const auto middleSection = sectionAt(middle);
         for (const double at : {lineFrom + lineLength / 4, lineFrom + 3 * lineLength / 4}) {
@@ -1133,7 +1166,8 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         // (The stack's own, with its layers that end: their local images.)
         Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control, charges, zOf,
                                          withDielectric && !insideOf.isEmpty() ? localCorrection
-                                                                                : std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>{});
+                                                                                : std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>{},
+                                         stackLayers.walls ? stackLayers.box : QRectF(), boxReach);
         if (control != nullptr && control->stopped()) return 1.0;
         if (withDielectric && corrected) p += dielectric.delta;
         ++out.solves;

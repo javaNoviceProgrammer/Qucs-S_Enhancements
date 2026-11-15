@@ -307,9 +307,18 @@ QList<NodeKind> makeKinds()
          {expr(QStringLiteral("height"), tr("Height above the top"), QStringLiteral("m"), QStringLiteral("1[mm]")),
           choice(QStringLiteral("kind"), tr("Above the stack"),
                  {QStringLiteral("open"), QStringLiteral("perfect")},
-                 {tr("Open (air above)"), tr("A metal lid")}, QStringLiteral("open"))},
+                 {tr("Open (air above)"), tr("A metal lid")}, QStringLiteral("open")),
+          shownIf(boolean(QStringLiteral("walls"), tr("Side walls"), false,
+                          tr("Four perfect walls from the ground up to the lid round a rectangle: a box, the layout inside "
+                             "it")),
+                  "kind=perfect"),
+          shownIf(expr(QStringLiteral("box_x0"), tr("Box from x"), QStringLiteral("m"), QStringLiteral("0")), "walls=true"),
+          shownIf(expr(QStringLiteral("box_y0"), tr("Box from y"), QStringLiteral("m"), QStringLiteral("0")), "walls=true"),
+          shownIf(expr(QStringLiteral("box_x1"), tr("Box to x"), QStringLiteral("m"), QStringLiteral("1[mm]")), "walls=true"),
+          shownIf(expr(QStringLiteral("box_y1"), tr("Box to y"), QStringLiteral("m"), QStringLiteral("1[mm]")), "walls=true")},
          {}, {}, false, true, QStringLiteral("cov"),
-         tr("What closes the stack at the top: air without end, or a lid at a height.")});
+         tr("What closes the stack at the top: air without end, or a lid at a height - and, with side walls, a box round "
+            "the layout.")});
 
     // ---- the layout: x and y ----
     add({QStringLiteral("rf_layout"), tr("Layout"), QString(), QStringLiteral("layout"), none,
@@ -1267,6 +1276,15 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
         case Layer::Cover:
             layer.variant = textOf(c, QStringLiteral("kind"));
             read(QStringLiteral("height"), &layer.thickness);
+            layer.walls = flagOf(c, QStringLiteral("walls"));
+            if (layer.walls) {
+                double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+                read(QStringLiteral("box_x0"), &x0);
+                read(QStringLiteral("box_y0"), &y0);
+                read(QStringLiteral("box_x1"), &x1);
+                read(QStringLiteral("box_y1"), &y1);
+                layer.box = QRectF(QPointF(x0, y0), QPointF(x1, y1));
+            }
             break;
         }
         out.layers << layer;
@@ -1323,6 +1341,12 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("The cover is not the last layer: it closes the stack at the top.");
         if (l.kind == Layer::Cover && l.thickness < 0 && read("height"))
             out.problems << tr("The cover's height above the top is below nought.");
+        if (l.kind == Layer::Cover && l.walls && l.variant != QLatin1String("perfect"))
+            out.problems << tr("Side walls want a metal lid: a box is closed, its walls from the ground up to the lid - make the "
+                               "cover a metal lid, or take the walls away.");
+        if (l.kind == Layer::Cover && l.walls && !(l.box.width() > 0 && l.box.height() > 0) && read("box_x0") && read("box_y0")
+            && read("box_x1") && read("box_y1"))
+            out.problems << tr("The box's side walls stand round no rectangle: its \"to\" corner must be beyond its \"from\" in x and y.");
         if ((l.kind == Layer::Substrate || l.kind == Layer::Dielectric || l.kind == Layer::Metal) && !(l.thickness > 0)
             && read("thickness"))
             out.problems << tr("%1 has no thickness.").arg(name(l));

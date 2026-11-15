@@ -24,6 +24,7 @@
 
 #include <QJsonObject>
 #include <QList>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 
@@ -123,6 +124,10 @@ struct Layer {
     /// too (its "Its loss in the full-wave solve"), on the ground current
     /// the runs' mirror images carry; the quasi-static counts it always.
     bool lossInFullWave = false;
+    /// A metal lid's side walls (its "Side walls"): a box, perfect, its
+    /// rectangle in the plane, m - the layout's coordinates.
+    bool walls = false;
+    QRectF box;
     double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom; a ground's is 0)
     /// A metal solved as its two faces - a sheet at its bottom and one at
     /// its top, joined along its edges by its walls - rather than as one

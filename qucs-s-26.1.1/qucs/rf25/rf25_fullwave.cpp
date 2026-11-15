@@ -915,6 +915,10 @@ struct Context {
     QList<double> dirX, dirY, midX, midY;
     QList<Filament> mirrored;            ///< each run in the plane's image in the ground
     QList<Filament> lidMirrored;         ///< and in a metal lid's, where there is one (Layers::groundAbove)
+    /// The lid's image folded into the ground's in the static parts (lImage,
+    /// runStatics): both planes there and no layer magnetic, so that their
+    /// images' coefficients are the same - made once, not at every frequency.
+    bool lidFolded = false;
     /// A dense solve's static parts, made once for every frequency and on
     /// every thread (makeStatics()): each pair of runs' aligned partial
     /// inductance (alignedInductance()), direct and of the image, and each
@@ -1105,6 +1109,16 @@ bool dearPair(const Context& c, int a, int b)
     return !(apart > 8 * size * (1 + 1e-6));
 }
 
+void staticPairOf(const Context& c, int a, int b, double* direct, double* image);
+
+/// staticPairOf()'s, the lid's image folded into the ground's where it is
+/// (Context::lidFolded): a run's whole filament, the lid far beside it.
+void staticPairWithLid(const Context& c, int a, int b, double* direct, double* image)
+{
+    staticPairOf(c, a, b, direct, image);
+    if (c.lidFolded) *image += alignedInductance(c.runs.at(a), c.lidMirrored.at(b));
+}
+
 void staticPairOf(const Context& c, int a, int b, double* direct, double* image)
 {
     const bool partsA = a < c.parts.size() && !c.parts.at(a).isEmpty();
@@ -1152,7 +1166,7 @@ void staticPair(const Context& c, int a, int b, double* direct, double* image)
         *image = c.runStatics.second[std::size_t(at)];
         return;
     }
-    staticPairOf(c, a, b, direct, image);
+    staticPairWithLid(c, a, b, direct, image);
 }
 
 double staticPotential(const Context& c, int i, int j);
@@ -1360,8 +1374,9 @@ Complex Kernels::inductance(int a, int b, double direct, double image) const
     const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage();
     const double rho = std::hypot(c.midX.at(a) - c.midX.at(b), c.midY.at(a) - c.midY.at(b));
     Complex l = 2.0 * d.coefficient / kMu0 * direct + 2.0 * i.coefficient / kMu0 * image;
-    // (A metal lid's image: far, a run's whole filament.)
-    if (const WaveGreen::Term lid = g.vectorLid(); lid.coefficient != 0.0 && b < c.lidMirrored.size())
+    // (A metal lid's image: far, a run's whole filament - in `image' already
+    //  where it is folded into the ground's, cached.)
+    if (const WaveGreen::Term lid = g.vectorLid(); !c.lidFolded && lid.coefficient != 0.0 && b < c.lidMirrored.size())
         l += 2.0 * lid.coefficient / kMu0 * alignedInductance(c.runs.at(a), c.lidMirrored.at(b));
     return l + c.runs.at(a).length() * c.runs.at(b).length() * smooth(c.hRun.at(a), c.hRun.at(b), rho);
 }
@@ -2345,7 +2360,7 @@ void cacheStatics(Context& c, const Compression& z, int threads, double most)
         }, sharedKept);
     }
     c.runStatics = pairTableOf(runRows, true, threads, [&c](int a, int b, double* direct, double* image) {
-        staticPairOf(c, a, b, direct, image);
+        staticPairWithLid(c, a, b, direct, image);
     });
     c.cellStatics = pairTableOf(cellRows, false, threads, [&c](int i, int j, double* p, double*) {
         *p = staticPotentialOf(c, i, j);
@@ -2913,6 +2928,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.layers = layersOf(stack);
     if (!c.layers.ok()) {
         out.problems << c.layers.problems;
+        return out;
+    }
+    // A box: its quasi-static solve has its walls; the full wave's kernels
+    // are the open plane's, and do not stand for it.
+    if (c.layers.walls) {
+        out.problems << tr("The full wave of a box is not solved yet: its quasi-static solve is. Take the side walls away for the "
+                           "full wave of the lid alone.");
         return out;
     }
     // A layer that ends (rf25_dielectric.h): the background's Green's
@@ -3990,6 +4012,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     if (c.layers.groundAbove) {
         c.lidMirrored = c.runs;
         for (int a = 0; a < nr; ++a) c.lidMirrored[a].z0 = c.lidMirrored[a].z1 = 2 * c.layers.height() - c.runs.at(a).z0;
+        bool magnetic = false;
+        for (const Layers::Slab& s : c.layers.slabs) magnetic = magnetic || s.mur != 1 || s.mtand != 0;
+        c.lidFolded = c.layers.groundBelow && !magnetic;
     }
     wallsOf(c);
     const int nf = int(frequencies.size());

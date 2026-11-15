@@ -517,6 +517,8 @@ Layers layersOf(const Stack& stack)
                     z = gap.z1;
                 }
                 out.groundAbove = true;
+                out.walls = l.walls;
+                out.box = l.box;
             }
             break;
         case Layer::Metal:
@@ -546,6 +548,42 @@ Layers layersOf(const Stack& stack)
         }
     }
     if (out.slabs.isEmpty()) out.problems << tr("The stack has no dielectric to solve in.");
+    if (out.walls && !out.groundBelow)
+        out.problems << tr("Side walls want a ground plane: a box is closed, its walls from the ground up to the lid.");
+    return out;
+}
+
+QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF& at, double reach, double signX, double signY)
+{
+    QList<BoxImage> out;
+    const double a = box.width(), b = box.height();
+    if (!(a > 0) || !(b > 0) || !(reach > 0)) return out;
+    // Along one axis: the source's interval shifted by 2 a p, and mirrored
+    // about the box's low wall then shifted, each with its sign - kept where
+    // it can come within reach.
+    struct Copy {
+        double lo, hi, sign;
+    };
+    const auto along = [reach](double lo, double hi, double from, double size, double sign, double here) {
+        QList<Copy> copies;
+        const int most = int(std::ceil((reach + (hi - lo) + size) / (2 * size))) + 1;
+        for (int p = -most; p <= most; ++p)
+            for (const bool mirrored : {false, true}) {
+                const double l = mirrored ? 2 * from - hi : lo, h = mirrored ? 2 * from - lo : hi;
+                const Copy c{l + 2 * size * p, h + 2 * size * p, mirrored ? sign : 1.0};
+                if (std::abs(0.5 * (c.lo + c.hi) - here) <= reach + 0.5 * (hi - lo)) copies << c;
+            }
+        return copies;
+    };
+    const QList<Copy> xs = along(rect.left(), rect.right(), box.left(), a, signX, at.x());
+    const QList<Copy> ys = along(rect.top(), rect.bottom(), box.top(), b, signY, at.y());
+    for (const Copy& x : xs)
+        for (const Copy& y : ys) {
+            const QRectF r(QPointF(x.lo, y.lo), QPointF(x.hi, y.hi));
+            if (std::abs(x.lo - rect.left()) < 1e-15 && std::abs(y.lo - rect.top()) < 1e-15 && x.sign > 0 && y.sign > 0) continue;   // (itself)
+            if (std::hypot(r.center().x() - at.x(), r.center().y() - at.y()) > reach + 0.5 * std::hypot(r.width(), r.height())) continue;
+            out << BoxImage{x.sign * y.sign, r};
+        }
     return out;
 }
 
