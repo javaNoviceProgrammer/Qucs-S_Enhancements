@@ -104,6 +104,9 @@ struct Layers {
     };
     QList<Slab> slabs;        ///< from the bottom up, touching
     bool groundBelow = false; ///< a ground plane under the lowest slab
+    /// A perfect metal lid over the top slab (a cover's "A metal lid"): its
+    /// gap of air the top slab, where its height is more than nought.
+    bool groundAbove = false;
     double epsrBelow = 1;     ///< what is below it when there is no ground
     double epsrAbove = 1;     ///< above the top slab, to infinity (air)
     /// The half-spaces' relative permeability (the retarded Green's functions

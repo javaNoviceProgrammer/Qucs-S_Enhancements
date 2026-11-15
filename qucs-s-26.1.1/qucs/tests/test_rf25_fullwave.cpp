@@ -1893,6 +1893,112 @@ private slots:
         QVERIFY2(std::abs(uniaxial / isotropic - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(uniaxial).arg(isotropic)));
     }
 
+    // A metal lid. A centred
+    // stripline - 100 µm of eps_r 4, a 100 µm strip, 100 µm more, the lid on
+    // it - is TEM: the full wave's eps_eff is eps_r within 0.5 % at 1 and 10
+    // GHz (3.9988, 3.9992), its Z0 the quasi-static solve's and Cohn's exact
+    // one within 1 % (50.22 and 50.21 Ohm against 50.216). A microstrip
+    // under a lid over 200 µm of air: at 1 GHz the full wave's eps_eff and
+    // Z0 the quasi-static's within 1 %, its C above the open line's.
+    // (The lines are read from two lengths with the ports' own paths up from
+    // the ground left out: between a ground and a lid those paths couple to
+    // each other as two long wires do, not dying with distance as over an
+    // open ground, and the two lengths do not cancel it - with them the
+    // stripline's L per metre read 4 % high from 1 and 2 mm, 1.9 % from 2
+    // and 4 mm. That coupling is the ports', and the solve says so.) And a
+    // lid near a line, below.
+    void aLidIsInTheFullWave()
+    {
+        const auto lidded = [](double epsUpper, double upper, double gap) {
+            rf::Stack s = grounded(epsUpper > 0 ? epsUpper : 9.8, 100e-6);
+            if (upper > 0) {
+                rf::Layer d;
+                d.kind = rf::Layer::Dielectric;
+                d.name = QStringLiteral("UP");
+                d.tag = QStringLiteral("up");
+                d.thickness = upper;
+                d.epsr = epsUpper;
+                s.layers << d;
+            }
+            rf::Layer lid;
+            lid.kind = rf::Layer::Cover;
+            lid.name = QStringLiteral("LID");
+            lid.tag = QStringLiteral("lid");
+            lid.variant = QStringLiteral("perfect");
+            lid.thickness = gap;
+            s.layers << lid;
+            return s;
+        };
+        const double b = 200e-6, w = 100e-6;
+        const double k = 1 / std::cosh(M_PI * w / (2 * b)), kp = std::tanh(M_PI * w / (2 * b));
+        const auto ellipticK = [](double m) {
+            double a = 1, g = std::sqrt(1 - m * m);
+            for (int i = 0; i < 60 && std::abs(a - g) > 1e-16 * a; ++i) {
+                const double next = (a + g) / 2;
+                g = std::sqrt(a * g);
+                a = next;
+            }
+            return M_PI / (2 * a);
+        };
+        const double cohn = 376.730313668 / 2 / 4 * ellipticK(k) / ellipticK(kp);
+        rf::FullWaveControl noPaths;
+        noPaths.portPaths = false;
+        const auto solve = [&noPaths](const rf::Stack& st, double length, double f) {
+            const QList<rf::Conductor> cs{strip(0, 0, length, 100)};
+            return rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(length, 50))}, {f}, 1e-6, &noPaths);
+        };
+        // A lid near the line - 20 µm over the strip, its runs 100 µm long -:
+        // its L per metre at 1 GHz the quasi-static one's within 1 % (0.9999;
+        // the lid's image left in the remainder, read at the runs' middles,
+        // it was 9 % low).
+        {
+            const rf::Stack st = lidded(0, 0, 20e-6);
+            rf::Extraction e;
+            line(st, 1000, 100, 4, 100e-6, 4, {1e9}, &e);
+            const rf::FullWave a = solve(st, 1000, 1e9), c = solve(st, 2000, 1e9);
+            QVERIFY2(a.ok() && c.ok() && e.ok(), qPrintable(why(a) + why(c)));
+            const LowFrequency lf = lowFrequency(a, c, 0, 1000e-6, 2000e-6);
+            const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, 1e9);
+            QVERIFY2(std::abs(lf.lPer / lp.l - 1) < 0.01, qPrintable(QStringLiteral("L %1 nH/mm against %2").arg(lf.lPer * 1e6).arg(lp.l * 1e6)));
+        }
+        for (const auto& [st, name] : {std::pair{lidded(4, 100e-6, 0), QStringLiteral("stripline")},
+                                       std::pair{lidded(0, 0, 200e-6), QStringLiteral("microstrip under a lid")}}) {
+            rf::Extraction e;
+            line(st, 1000, 100, 4, 100e-6, 4, {1e9}, &e);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            // (The microstrip at 1 GHz alone: at 10 GHz it is dispersive, and
+            //  the quasi-static no reference - eps_eff 6.17 against 6.06.)
+            for (const double fl : name == QStringLiteral("stripline") ? QList<double>{1e9, 10e9} : QList<double>{1e9}) {
+                const double k0 = 2 * M_PI * fl / kC0;
+                const rf::FullWave a = solve(st, 1000, fl), c = solve(st, 2000, fl);
+                QVERIFY2(a.ok() && c.ok(), qPrintable(why(a) + why(c)));
+                QVERIFY2(says(a.lines, "A perfect metal lid closes the stack"), qPrintable(a.lines.join(" | ")));
+                const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, fl);
+                const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(c, 0)), 1000e-6, 2000e-6, k0 * std::sqrt(lp.epsilonEff));
+                const double ee = std::pow(wave.gamma.imag() / k0, 2);
+                qWarning("%s at %g GHz: the full wave's eps_eff %.5g and Z0 %.5g Ohm; the quasi-static %.5g, %.5g (Cohn's Z0 %.5g)", qPrintable(name),
+                         fl / 1e9, ee, wave.z0.real(), lp.epsilonEff, lp.z0, cohn);
+                QVERIFY2(std::abs(ee / lp.epsilonEff - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(ee).arg(lp.epsilonEff)));
+                QVERIFY2(std::abs(wave.z0.real() / lp.z0 - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(wave.z0.real()).arg(lp.z0)));
+                if (name == QStringLiteral("stripline")) {
+                    QVERIFY2(std::abs(ee / 4 - 1) < 0.005, qPrintable(QString::number(ee)));
+                    QVERIFY2(std::abs(wave.z0.real() / cohn - 1) < 0.01, qPrintable(QStringLiteral("%1 against Cohn's %2").arg(wave.z0.real()).arg(cohn)));
+                }
+            }
+            if (name == QStringLiteral("stripline")) {
+                // The guide's second wave, its TE1: a half wave across 200 µm
+                // of eps_r 4, c0 / (2 b sqrt(eps_r)).
+                const double te1 = kC0 / (2 * b * 2);
+                QVERIFY2(std::abs(rf::secondSurfaceWave(st, 1e13) / te1 - 1) < 1e-6,
+                         qPrintable(QStringLiteral("%1 GHz against %2").arg(rf::secondSurfaceWave(st, 1e13) / 1e9).arg(te1 / 1e9)));
+            } else {
+                rf::Extraction open;
+                line(grounded(9.8, 100e-6), 1000, 100, 4, 100e-6, 4, {1e9}, &open);
+                QVERIFY(e.selfCapacitance(0) > open.selfCapacitance(0));
+            }
+        }
+    }
+
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its
     // half-width, its resistance is its length over sigma and its area -
     // the line shorted by it less by an ideal short, in its real part.

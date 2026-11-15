@@ -252,7 +252,7 @@ StackWritten hfssStackupOf(const Model& model, const QString& name, const QStrin
             lid.fill = airMaterial();
             lid.material = material(lid.name, 1, 0, 1e30);
             rows << lid;
-            out.notes << tr("%1: a metal lid, which RF 2.5D does not solve yet.").arg(l.name);
+            out.notes << tr("%1: a metal lid, perfect as RF 2.5D solves it.").arg(l.name);
         }
     }
     // A metal's fill is the material of the dielectric above it, by its name
@@ -503,7 +503,7 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
             if (l.variant == QLatin1String("perfect")) {
                 if (l.thickness > 0) layers << QStringLiteral("layer %1 1 name %2_gap").arg(um(l.thickness), id);
                 layers << QStringLiteral("layer infinity 1 conductivity 5.8e7 name %1   # a metal lid: EMX has none perfect, so of copper").arg(id);
-                out.notes << tr("%1: a perfect lid, written as a layer of copper without end, the nearest EMX has; RF 2.5D does not solve a lid yet.").arg(l.name);
+                out.notes << tr("%1: a perfect lid, written as a layer of copper without end, the nearest EMX has; RF 2.5D solves it perfect.").arg(l.name);
                 cover = true;
                 ++out.layers;
             }
@@ -1347,7 +1347,7 @@ std::optional<StackRead> stackTextRead(const QByteArray& text, StackFormat forma
                 materials.insert(l.material, EdbMaterial{1, 0, 1e30});
                 layers << l;
                 lid = l.name;
-                out.notes << tr("Its top layer, without end, conducts (%1 S/m): a metal lid here, which RF 2.5D does not solve yet.").arg(num(d.sigma));
+                out.notes << tr("Its top layer, without end, conducts (%1 S/m): a metal lid here, read as a perfect one.").arg(num(d.sigma));
                 continue;
             }
             if (d.epsr == 1 && d.tand == 0) continue;   // the air above, as RF 2.5D has it

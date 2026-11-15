@@ -122,6 +122,40 @@ rf::Stack layered(const QList<QPair<double, double>>& each)
     return s;
 }
 
+/// A centred stripline: a ground plane, \a b / 2 (m) of \a epsr, M1 on it,
+/// \a b / 2 more of it, and a perfect metal lid \a gap (m) above that.
+rf::Stack stripline(double epsr, double b, double gap = 0)
+{
+    rf::Stack s = layered({{epsr, b / 2}});
+    rf::Layer upper;
+    upper.kind = rf::Layer::Dielectric;
+    upper.name = QStringLiteral("UP");
+    upper.tag = QStringLiteral("up");
+    upper.thickness = b / 2;
+    upper.epsr = epsr;
+    rf::Layer lid;
+    lid.kind = rf::Layer::Cover;
+    lid.name = QStringLiteral("LID");
+    lid.tag = QStringLiteral("lid");
+    lid.variant = QStringLiteral("perfect");
+    lid.thickness = gap;
+    s.layers << upper << lid;
+    return s;
+}
+
+/// Bessel's K0(\a x), x above nought: its integral of exp(-x cosh t) over t,
+/// by the trapezoid rule - exponentially accurate for an integrand so smooth
+/// and flat at t = 0.
+double besselK0(double x)
+{
+    const double end = std::acosh(std::max(1.0, 60.0 / x)) + 1;
+    const int n = 4000;
+    const double h = end / n;
+    double sum = 0.5 * std::exp(-x);
+    for (int i = 1; i <= n; ++i) sum += std::exp(-x * std::cosh(i * h));
+    return sum * h;
+}
+
 /// Whether this build is one whose dense solves are many times slower - a
 /// sanitized one, as CI's Linux job is (QUCS_TEST_SLOW: its path in any).
 bool slowBuild()
@@ -862,6 +896,70 @@ private slots:
         }
     }
 
+    // A metal lid (a cover's "A metal
+    // lid" was refused). Between two perfect planes H apart, a unit charge's
+    // potential is (1/(pi eps H)) sum sin(n pi z/H) sin(n pi z'/H) K0(n pi
+    // rho/H) - written here independently - and the Green's function's
+    // images are that, at one height and across two, near and far (where
+    // the potential has died to nothing beside a free charge's). And a
+    // centred stripline's C is Cohn's exact one (IEEE Trans. MTT 2(2),
+    // 1954), Z0 = eta/4 K(k)/K(k'), k = sech(pi w / 2b), its eps_eff eps_r,
+    // to 0.5 %, its lid in the stack's last dielectric's top or over a gap.
+    void aLidClosesTheStack()
+    {
+        const double H = 100e-6;
+        rf::Layers plates;
+        plates.groundBelow = plates.groundAbove = true;
+        rf::Layers::Slab lower, upper;
+        lower.z0 = 0;
+        lower.z1 = upper.z0 = 0.4 * H;
+        upper.z1 = H;
+        plates.slabs << lower << upper;
+        const auto series = [H](double rho, double z, double zs) {
+            double sum = 0;
+            for (int n = 1; n < 20000; ++n) {
+                const double x = n * M_PI * rho / H;
+                if (x > 700) break;
+                sum += std::sin(n * M_PI * z / H) * std::sin(n * M_PI * zs / H) * besselK0(x);
+            }
+            return sum / (M_PI * rf::kEps0 * H);
+        };
+        for (const auto& [z, zs] : {std::pair{0.4 * H, 0.4 * H}, std::pair{0.7 * H, 0.4 * H}, std::pair{0.2 * H, 0.4 * H}}) {
+            const rf::Green g(plates, z, zs);
+            QVERIFY2(g.ok(), qPrintable(g.problems().join(" | ")));
+            for (const double rho : {0.05 * H, 0.3 * H, H, 3 * H, 10 * H}) {
+                const double exact = series(rho, z, zs), free = 1 / (4 * M_PI * rf::kEps0 * std::hypot(rho, z - zs));
+                QVERIFY2(std::abs(g.potential(rho) - exact) < 1e-6 * free,
+                         qPrintable(QStringLiteral("%1/%2 µm, rho %3 µm: %4 against %5 (of a free charge's %6)").arg(z * 1e6).arg(zs * 1e6)
+                                        .arg(rho * 1e6).arg(g.potential(rho)).arg(exact).arg(free)));
+            }
+        }
+        // On the lid itself: refused.
+        QVERIFY(!rf::Green(plates, H, 0.4 * H).ok());
+
+        // The stripline.
+        const double epsr = 4, b = 200e-6, w = 100e-6, length = 2000e-6;
+        const double k = 1 / std::cosh(M_PI * w / (2 * b)), kp = std::tanh(M_PI * w / (2 * b));
+        const double z0 = 376.730313668 / std::sqrt(epsr) / 4 * ellipticK(k) / ellipticK(kp);
+        const QList<rf::Conductor> line{strip(0, 0, length * 1e6, w * 1e6)};
+        const rf::Mesh mesh = meshed(line, 25);
+        for (const double gap : {0.0, 50e-6}) {
+            const rf::Stack st = stripline(epsr, b, gap);
+            const rf::Extraction e = rf::extract(mesh, line, st);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            QVERIFY2(says(e.lines, "A perfect metal lid closes the stack at"), qPrintable(e.lines.join(" | ")));
+            const rf::LineParameters lp = rf::lineParameters(e, 0, length);
+            qWarning("stripline, lid over %g µm of air: Z0 %.4f Ohm (Cohn's %.4f), eps_eff %.5f", gap * 1e6, lp.z0, z0, lp.epsilonEff);
+            if (gap == 0) {
+                QVERIFY2(std::abs(lp.z0 / z0 - 1) < 0.005, qPrintable(QStringLiteral("Z0 %1 against Cohn's %2").arg(lp.z0).arg(z0)));
+                QVERIFY2(std::abs(lp.epsilonEff / epsr - 1) < 1e-3, qPrintable(QString::number(lp.epsilonEff)));
+            } else {
+                // Over air, less than eps_r, and Z0 above the closed one's.
+                QVERIFY(lp.epsilonEff < 0.99 * epsr && lp.z0 > z0);
+            }
+        }
+    }
+
     // What it will not answer: a layer that is
     // no metal, a stack with nothing to solve in, and a mesh too large for
     // a dense matrix.
@@ -917,10 +1015,21 @@ private slots:
             QCOMPARE(st.layers.first().variant, QStringLiteral("metal"));
             QCOMPARE(st.layers.first().sigma, 4.1e7);
         }
-        // A metal lid is not solved yet, and says so; an open cover is air.
+        // A metal lid closes the stack, its gap of air (1 mm) a slab of its
+        // own; an open cover is air.
         const rf::Layers lid = rf::layersOf(with(0, QString(), QStringLiteral("perfect")));
-        QVERIFY2(!lid.ok() && says(lid.problems, "metal lid"), qPrintable(lid.problems.join(" | ")));
+        QVERIFY2(lid.ok() && lid.groundAbove && lid.slabs.size() == 3, qPrintable(lid.problems.join(" | ")));
+        QVERIFY(std::abs(lid.slabs.last().z1 - lid.slabs.last().z0 - 1e-3) < 1e-15 && lid.slabs.last().epsr == 1);
         QVERIFY(rf::layersOf(with(0, QString(), QStringLiteral("open"))).ok());
+        QVERIFY(!rf::layersOf(with(0, QString(), QStringLiteral("open"))).groundAbove);
+        {
+            rf::Model m = rf::Model::blank();
+            rf::Node cover = m.make(QStringLiteral("rf_cover"));
+            cover.props.insert(QStringLiteral("kind"), QStringLiteral("perfect"));
+            cover.props.insert(QStringLiteral("height"), QStringLiteral("-1[um]"));
+            m.stackNode().children.push_back(cover);
+            QVERIFY2(says(m.stack().problems, "height above the top is below nought"), qPrintable(m.stack().problems.join(" | ")));
+        }
 
         // And the charge does not care where the tree put the ground: the
         // same capacitance to the last bit, first or last.

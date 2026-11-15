@@ -436,6 +436,45 @@ private slots:
         QVERIFY2(edge < everywhere && edge > flushAir, qPrintable(QStringLiteral("an edge 30 µm off: %1 fF").arg(edge * 1e15)));
     }
 
+    // Under a metal lid, the layer
+    // that ends being the top one, the lid on it: its top is the lid's, with
+    // no face of its own, as a bottom on the ground is the ground's. A plate
+    // 50 µm under the lid, 50 µm over the ground, in 9.8: the layer over it
+    // ending beyond everything is the stack as it is; cut to a mesa, between
+    // that and air over the plate.
+    void aLayerThatEndsUnderALid()
+    {
+        rf::Layers layers;
+        layers.groundBelow = layers.groundAbove = true;
+        rf::Layers::Slab low, top;
+        low.z1 = top.z0 = 50e-6;
+        top.z1 = 100e-6;
+        low.epsr = top.epsr = 9.8;
+        low.name = QStringLiteral("LOW");
+        top.name = QStringLiteral("SUB");
+        layers.slabs << low << top;
+        const QList<rf::ChargedCell> cells = plate(100, 50e-6);
+        const double whole = capacitance(coefficients(layers, cells));
+        rf::Layers air = layers;
+        air.slabs[1].epsr = 1;
+        const double bare = capacitance(coefficients(air, cells));
+        QStringList said;
+        const double everywhere = ended(layers, cells, {square(-1e6, 1e6)}, 1, &said);
+        QVERIFY2(std::abs(everywhere / whole - 1) < 5e-3,
+                 qPrintable(QStringLiteral("%1 against %2 fF | %3").arg(everywhere * 1e15).arg(whole * 1e15).arg(said.join(" | "))));
+        const double mesa = ended(layers, cells, {square(-20, 120)}, 1, &said);
+        QVERIFY2(mesa > bare && mesa < whole * 1.005,
+                 qPrintable(QStringLiteral("a mesa: %1 fF (air %2, whole %3) | %4").arg(mesa * 1e15).arg(bare * 1e15).arg(whole * 1e15).arg(said.join(" | "))));
+        // And the lid is the ground's mirror: the plate midway, the layer
+        // under it ending to the same mesa is the layer over it ending.
+        rf::Layers mirrored = layers;
+        mirrored.slabs[0].name = QStringLiteral("SUB");
+        mirrored.slabs[1].name = QStringLiteral("TOP");
+        const double below = ended(mirrored, cells, {square(-20, 120)}, 1, &said);
+        QVERIFY2(std::abs(below / mesa - 1) < 1e-3,
+                 qPrintable(QStringLiteral("ending under the plate %1 fF, over it %2 | %3").arg(below * 1e15).arg(mesa * 1e15).arg(said.join(" | "))));
+    }
+
     // A plate of 300 µm on a mesa cut flush with it: at least the parallel
     // plate's eps A/h (Thomson's principle: the field straight down under
     // it alone), and its fringing no less than the plate in air has beyond

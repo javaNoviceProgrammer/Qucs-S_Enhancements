@@ -183,8 +183,8 @@ struct Lines {
 };
 
 /// The lines of \a layers at \a kr, \a eps each slab's permittivity and
-/// \a mu its permeability at the angular frequency \a w: the half-space above matched; below, a short
-/// where there is a ground and matched where there is not.
+/// \a mu its permeability at the angular frequency \a w: above, a short where there is a metal lid and the
+/// half-space matched where there is not; below, a short where there is a ground and matched where there is not.
 Lines linesOf(const Layers& layers, const QList<Complex>& eps, const QList<Complex>& epsZ, const QList<Complex>& mu,
               Complex epsAbove, Complex epsBelow, double w, Complex kr)
 {
@@ -202,10 +202,15 @@ Lines linesOf(const Layers& layers, const QList<Complex>& eps, const QList<Compl
         l.ze[n] = over(l.kzE[n], w * eps.at(n));
         l.zh[n] = over(w * mu.at(n), l.kzH[n]);
     }
-    const Complex kzAbove = kzOf(w * w * muAbove * epsAbove, kr);
-    const Complex zeAbove = over(kzAbove, w * epsAbove), zhAbove = over(w * muAbove, kzAbove);
-    l.upE[count - 1] = over(zeAbove - l.ze[count - 1], zeAbove + l.ze[count - 1]);
-    l.upH[count - 1] = over(zhAbove - l.zh[count - 1], zhAbove + l.zh[count - 1]);
+    if (layers.groundAbove) {
+        // (A metal lid: a short at the top, as the ground at the bottom.)
+        l.upE[count - 1] = l.upH[count - 1] = Complex(-1, 0);
+    } else {
+        const Complex kzAbove = kzOf(w * w * muAbove * epsAbove, kr);
+        const Complex zeAbove = over(kzAbove, w * epsAbove), zhAbove = over(w * muAbove, kzAbove);
+        l.upE[count - 1] = over(zeAbove - l.ze[count - 1], zeAbove + l.ze[count - 1]);
+        l.upH[count - 1] = over(zhAbove - l.zh[count - 1], zhAbove + l.zh[count - 1]);
+    }
     for (int n = count - 2; n >= 0; --n) {
         const double depth = layers.slabs.at(n + 1).z1 - layers.slabs.at(n + 1).z0;
         const Complex rE = over(l.ze[n + 1] - l.ze[n], l.ze[n + 1] + l.ze[n]), gE = l.upE[n + 1] * travel(l.kzE[n + 1], 2 * depth);
@@ -539,6 +544,7 @@ struct KeyWriter {
             add(layers.murBelow);
         }
         add(layers.groundBelow);
+        add(layers.groundAbove);
         for (const double v : {layers.epsrBelow, layers.epsrAbove, frequency, low, most}) add(v);
     }
 };
@@ -772,6 +778,10 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
         a_problems << tr("A metal on the ground plane itself is shorted to it, and has no potential of its own.");
         return;
     }
+    if (layers.groundAbove && (zSource >= layers.height() || zField >= layers.height())) {
+        a_problems << tr("A metal on the lid itself is shorted to it, and has no potential of its own.");
+        return;
+    }
 
     // Each slab's permittivity at the frequency: its loss tangent and its
     // conductivity in its imaginary part, eps0 (eps_r (1 - j tand)) - j sigma/w.
@@ -805,7 +815,10 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
     const auto onBottom = [&](int n, double z) { return std::abs(z - layers.slabs.at(n).z0) <= tol; };
     // The static Fresnel coefficients of the TM line, whose impedances go
     // as 1/eps when kr is large: looking up out of slab n, and down.
-    const auto fresnelUp = [&](int n) { return (epsEq(n) - epsHigh(n)) / (epsEq(n) + epsHigh(n)); };
+    const auto fresnelUp = [&](int n) -> Complex {
+        if (n + 1 == count && layers.groundAbove) return Complex(-1, 0);   // (a metal lid)
+        return (epsEq(n) - epsHigh(n)) / (epsEq(n) + epsHigh(n));
+    };
     const auto fresnelDown = [&](int n) -> Complex {
         if (n == 0 && layers.groundBelow) return Complex(-1, 0);
         return (epsEq(n) - epsLow(n)) / (epsEq(n) + epsLow(n));
@@ -854,7 +867,10 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
     // image is its own term, below.
     const auto muHigh = [&](int n) { return n + 1 < count ? a_mu.at(n + 1) : muAbove; };
     const auto muLow = [&](int n) { return n > 0 ? a_mu.at(n - 1) : muBelow; };
-    const auto fresnelUpH = [&](int n) { return (muHigh(n) - a_mu.at(n)) / (muHigh(n) + a_mu.at(n)); };
+    const auto fresnelUpH = [&](int n) -> Complex {
+        if (n + 1 == count && layers.groundAbove) return Complex(-1, 0);   // (a metal lid: a horizontal current's image the opposite)
+        return (muHigh(n) - a_mu.at(n)) / (muHigh(n) + a_mu.at(n));
+    };
     const auto fresnelDownH = [&](int n) -> Complex {
         if (n == 0 && layers.groundBelow) return Complex(0, 0);   // (the ground's image, below)
         return (muLow(n) - a_mu.at(n)) / (muLow(n) + a_mu.at(n));
@@ -933,6 +949,17 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
         a_vectorImage.dz = zSource + zField;
         a_vectorImage.k = std::sqrt((along(0, zSource) + along(0, zField)) / (zSource + zField));
     }
+    // And in a metal lid, the same where mu is the same from both heights up
+    // to it. (Left in the remainder, a lid near a line was read at the runs'
+    // middles alone: 20 µm over a strip of runs 100 µm long, its L 9 % low.)
+    bool evenAbove = true;
+    for (int n = std::min(m, f); n < count; ++n) evenAbove = evenAbove && a_mu.at(n) == a_mu.at(m);
+    if (layers.groundAbove && evenAbove) {
+        const double top = layers.height();
+        a_vectorLid.coefficient = -a_mu.at(m) / 2.0;
+        a_vectorLid.dz = 2 * top - zSource - zField;
+        a_vectorLid.k = std::sqrt((along(zSource, top) + along(zField, top)) / a_vectorLid.dz);
+    }
 
     // How fast what is left dies in kr: as exp(-kr (dz + 2 d)), d the
     // nearest interface that reflects and is at neither height - and as
@@ -947,7 +974,7 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
         if (std::abs(a_eps.at(n) - a_eps.at(n + 1)) > 1e-9 * std::abs(a_eps.at(n)) || muDiffers(a_mu.at(n), a_mu.at(n + 1))
             || muDiffers(a_epsZ.at(n), a_epsZ.at(n + 1)))
             faces << layers.slabs.at(n).z1;
-    if (std::abs(a_epsAbove - a_eps.last()) > 1e-9 * std::abs(a_eps.last()) || muDiffers(a_mu.last(), muAbove))
+    if (layers.groundAbove || std::abs(a_epsAbove - a_eps.last()) > 1e-9 * std::abs(a_eps.last()) || muDiffers(a_mu.last(), muAbove))
         faces << layers.slabs.last().z1;
     double nearest = std::numeric_limits<double>::infinity();
     for (const double face : std::as_const(faces))
@@ -989,7 +1016,7 @@ WaveGreen::Pair WaveGreen::extracted(Complex kr) const
         const Complex u = kJ * kzOf(t.k * t.k, kr);
         return over(t.coefficient * std::exp(-u * t.dz), u);
     };
-    return {term(a_scalarTerm), term(a_vectorTerm) + term(a_vectorImage)};
+    return {term(a_scalarTerm), term(a_vectorTerm) + term(a_vectorImage) + term(a_vectorLid)};
 }
 
 Complex WaveGreen::scalarSpectral(Complex kr) const
@@ -1164,7 +1191,7 @@ Complex WaveGreen::scalar(double rho) const
 Complex WaveGreen::vector(double rho) const
 {
     if (!ok()) return Complex(0, 0);
-    return closedForm(a_vectorTerm, rho) + closedForm(a_vectorImage, rho) + oneFromTable(rho, true);
+    return closedForm(a_vectorTerm, rho) + closedForm(a_vectorImage, rho) + closedForm(a_vectorLid, rho) + oneFromTable(rho, true);
 }
 
 // ------------------------------------------------------------ A via's kernels
@@ -1303,7 +1330,10 @@ ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, c
     const auto slabK2z = [this](int n) { return a_omega * a_omega * a_mu.at(n) * a_epsZ.at(n); };
     const auto epsHigh = [&epsEq, this, count](int n) { return n + 1 < count ? epsEq(n + 1) : a_epsAbove; };
     const auto epsLow = [&epsEq, this](int n) { return n > 0 ? epsEq(n - 1) : a_epsBelow; };
-    const auto fresnelUp = [&epsEq, &epsHigh](int n) { return (epsEq(n) - epsHigh(n)) / (epsEq(n) + epsHigh(n)); };
+    const auto fresnelUp = [&epsEq, &epsHigh, &layers, count](int n) -> Complex {
+        if (n + 1 == count && layers.groundAbove) return Complex(-1, 0);   // (a metal lid)
+        return (epsEq(n) - epsHigh(n)) / (epsEq(n) + epsHigh(n));
+    };
     const auto fresnelDown = [&epsEq, &epsLow, &layers](int n) -> Complex {
         if (n == 0 && layers.groundBelow) return Complex(-1, 0);
         return (epsEq(n) - epsLow(n)) / (epsEq(n) + epsLow(n));

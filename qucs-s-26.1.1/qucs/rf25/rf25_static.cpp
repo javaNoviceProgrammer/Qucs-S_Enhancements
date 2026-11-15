@@ -700,6 +700,10 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                         "sqrt(eps_eff mu_eff) and Z0 sqrt(L/C). Its magnetic loss is the full wave's alone.");
     else if (magneticLoss)
         out.lines << tr("A layer has a magnetic loss tangent: its loss is the full wave's alone, and not in this solve's.");
+    if (layers0.groundAbove)
+        out.lines << tr("A perfect metal lid closes the stack at %1 µm: the charges' images, and C0's, are of the ground and "
+                        "the lid together.")
+                         .arg(layers0.height() * 1e6, 0, 'g', 4);
     // A Green's function for each pair of metals - the potential at a
     // point on one of a charge on the other - built once and shared by
     // every pair of cells on them. They are symmetric, so a pair is

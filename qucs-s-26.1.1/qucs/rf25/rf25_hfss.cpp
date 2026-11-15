@@ -211,6 +211,7 @@ struct HLayer {
 struct HMaterial {
     QString name;
     double epsr = 1, tand = 0, sigma = 0;
+    double mur = 1, mtand = 0;   ///< a magnetic layer's (Layer::mur, mtand)
 };
 
 /// Colours as Electronics Desktop says them: bbggrr.
@@ -339,17 +340,17 @@ oExcitations = oDesign.GetModule("Excitations")
 oSetups = oDesign.GetModule("SolveSetups")
 
 # The materials: one of each layer's own, so that nothing comes of a library's.
-for name, permittivity, tangent, conductivity in MATERIALS:
+for name, permittivity, tangent, conductivity, permeability, magnetic_tangent in MATERIALS:
     attempt("material " + name, oDefinitions.AddMaterial,
             ["NAME:" + name,
              "CoordinateSystemType:=", "Cartesian",
              "BulkOrSurfaceType:=", 1,
              ["NAME:PhysicsTypes", "set:=", ["Electromagnetic"]],
              "permittivity:=", str(permittivity),
-             "permeability:=", "1",
+             "permeability:=", str(permeability),
              "conductivity:=", str(conductivity),
              "dielectric_loss_tangent:=", str(tangent),
-             "magnetic_loss_tangent:=", "0"])
+             "magnetic_loss_tangent:=", str(magnetic_tangent)])
 
 # The stack. (A new design may have layers of its own.)
 try:
@@ -787,6 +788,8 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
             d.z0 = z;
             d.thickness = l.thickness;
             d.material = addMaterial(d.name, l.epsr, l.tand, l.kind == Layer::Substrate ? l.sigma : 0);
+            materials.last().mur = l.mur > 0 ? l.mur : 1;
+            materials.last().mtand = std::max(0.0, l.mtand);
             materialOf.insert(i, d.material);
             z += l.thickness;
             layers << d;
@@ -834,7 +837,7 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
             lid.material = addMaterial(lid.name, 1, 0, 1e30);
             lidLayer = lid.name;
             layers << lid;
-            out.notes << tr("%1: a metal lid, which RF 2.5D does not solve yet: this model has no answer of its own to compare with.").arg(l.name);
+            out.notes << tr("%1: a metal lid, perfect as RF 2.5D solves it.").arg(l.name);
         }
     }
     // (The dielectric above a metal comes after it.)
@@ -1286,6 +1289,26 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     out.notes << tr("RF 2.5D has the stack without end across the plane; here the dielectrics%1 stop %2 µm past the shapes and "
                     "a radiation boundary stands %3 µm past that: make them larger if S moves with them.")
                      .arg(plane ? tr(" and the plane") : QString(), um(out.marginUsed), um(out.airUsed));
+    // What neither file here writes of a dielectric, said per property (the
+    // review of f72ac35b: written isotropic, undispersed, unsaid). A
+    // permeability and its loss the script writes; the control file its
+    // permeability alone.
+    for (const Layer& l : stack.layers)
+        if ((l.kind == Layer::Substrate || l.kind == Layer::Dielectric) && l.epsz > 0 && l.epsz != l.epsr) {
+            out.notes << tr("%1 is uniaxial: its permittivity along z (%2) is not written here, only the one in the plane.").arg(l.name).arg(l.epsz);
+            break;
+        }
+    for (const Layer& l : stack.layers)
+        if ((l.kind == Layer::Substrate || l.kind == Layer::Dielectric) && l.averaged()) {
+            out.notes << tr("%1's permittivity in the plane differs along x and y: their geometric mean is written, as RF 2.5D solves it.").arg(l.name);
+            break;
+        }
+    if (stack.dispersive())
+        out.notes << tr("Djordjevic-Sarkar dispersion is not written here: its dielectrics are written at the values given for the "
+                        "frequency they are given at.");
+    if (stack.magnetic())
+        out.notes << tr("A layer's magnetic loss tangent is in the script's materials, not in the control file's, which has its "
+                        "permeability alone.");
     bool sheets = false, rough = false, huray = false;
     for (const Layer& l : stack.layers) {
         sheets = sheets || (l.kind == Layer::Metal && !l.twoSheets);
@@ -1399,9 +1422,9 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     s += QStringLiteral("RENORMALIZE = %1\n").arg(sameReference && firstReference > 0 ? num(firstReference) : QStringLiteral("0"));
     s += QStringLiteral("# µm throughout, as the layout's own units.\n");
     s += QStringLiteral("DIELECTRIC_PAST = %1\nAIR_PAST = %2\nTRUNCATE_AT_GROUND = %3\n").arg(plane ? QStringLiteral("0") : um(out.marginUsed), um(out.airUsed), plane ? QStringLiteral("True") : QStringLiteral("False"));
-    s += QStringLiteral("\n# name, permittivity, loss tangent, conductivity (S/m)\nMATERIALS = [\n");
+    s += QStringLiteral("\n# name, permittivity, loss tangent, conductivity (S/m), permeability, magnetic loss tangent\nMATERIALS = [\n");
     for (const HMaterial& m : std::as_const(materials))
-        s += QStringLiteral("    (%1, %2, %3, %4),\n").arg(py(m.name), num(m.epsr), num(m.tand), num(m.sigma));
+        s += QStringLiteral("    (%1, %2, %3, %4, %5, %6),\n").arg(py(m.name), num(m.epsr), num(m.tand), num(m.sigma), num(m.mur), num(m.mtand));
     s += QStringLiteral("]\n\n# name, type, lower elevation, thickness, material, fill, colour (bbggrr), roughness (rms), Huray's (whether, "
                         "nodule radius, surface ratio): from the bottom up\nLAYERS = [\n");
     for (const HLayer& l : std::as_const(layers))
@@ -1460,7 +1483,7 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     for (const HMaterial& m : std::as_const(materials)) {
         x += QStringLiteral("      <Material Name=\"%1\">\n").arg(xml(m.name));
         x += QStringLiteral("        <Permittivity><Double>%1</Double></Permittivity>\n").arg(num(m.epsr));
-        x += QStringLiteral("        <Permeability><Double>1</Double></Permeability>\n");
+        x += QStringLiteral("        <Permeability><Double>%1</Double></Permeability>\n").arg(num(m.mur));
         x += QStringLiteral("        <Conductivity><Double>%1</Double></Conductivity>\n").arg(num(m.sigma));
         x += QStringLiteral("        <DielectricLossTangent><Double>%1</Double></DielectricLossTangent>\n").arg(num(m.tand));
         x += QStringLiteral("      </Material>\n");

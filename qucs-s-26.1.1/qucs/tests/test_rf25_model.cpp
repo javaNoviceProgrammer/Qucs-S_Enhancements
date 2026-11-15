@@ -293,6 +293,15 @@ private slots:
         }
         sub.props.insert(QStringLiteral("epsz"), QStringLiteral("0.5"));
         QVERIFY2(m.stack().problems.join(' ').contains(QStringLiteral("along z or y below 1")), qPrintable(m.stack().problems.join(" | ")));
+        // And along y, as given - 0.5 averaged with 4 passed as 1.41 (the
+        // review of f72ac35b); below nought too.
+        sub.props.insert(QStringLiteral("epsz"), QStringLiteral("0"));
+        for (const char* y : {"0.5", "-2"}) {
+            sub.props.insert(QStringLiteral("epsy"), QLatin1String(y));
+            QVERIFY2(m.stack().problems.join(' ').contains(QStringLiteral("along z or y below 1")), qPrintable(y + m.stack().problems.join(" | ")));
+        }
+        sub.props.insert(QStringLiteral("epsy"), QStringLiteral("10"));
+        QVERIFY(m.stack().ok());
         sub.props.insert(QStringLiteral("epsz"), QStringLiteral("0"));
         sub.props.insert(QStringLiteral("epsy"), QStringLiteral("0"));
         QVERIFY(!m.stack().layers.at(0).averaged() && m.stack().layers.at(0).epsz == 0);

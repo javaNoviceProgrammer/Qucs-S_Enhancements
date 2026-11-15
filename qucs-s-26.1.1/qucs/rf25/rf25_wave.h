@@ -172,6 +172,9 @@ public:
     Term scalarTerm() const { return a_scalarTerm; }
     Term vectorTerm() const { return a_vectorTerm; }
     Term vectorImage() const { return a_vectorImage; }
+    /// The vector's image in a metal lid, as vectorImage() is the ground's:
+    /// a coefficient of nothing without one.
+    Term vectorLid() const { return a_vectorLid; }
     /// What is left, smooth and finite at nought, from the table.
     Complex scalarRemainder(double rho) const;
     Complex vectorRemainder(double rho) const;
@@ -232,7 +235,7 @@ private:
     double a_kMax = 0;               ///< 1/m, the largest Re k of the stack
     double a_decay = 0;              ///< 1/m, beyond which the remainder is nothing
     double a_reach = 0;              ///< m, dz and twice the nearest reflecting interface (0: none)
-    Term a_scalarTerm, a_vectorTerm, a_vectorImage;
+    Term a_scalarTerm, a_vectorTerm, a_vectorImage, a_vectorLid;
     double a_rhoMax = 0;             ///< m, how far the table goes
     mutable QList<double> a_rho;     ///< the table's distances, m, from nought
     mutable QList<Pair> a_table;     ///< the remainders there
