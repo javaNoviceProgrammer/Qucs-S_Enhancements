@@ -811,6 +811,26 @@ private slots:
         QVERIFY2(w.lines.join(' ').contains(QStringLiteral("SUB ends at its shapes, and is dispersive")) &&
                      w.lines.join(' ').contains(QStringLiteral("(SUB eps_r 9.8 at 1 GHz)")),
                  qPrintable(w.lines.join(" | ")));
+
+        // A uniaxial one that ends: its shapes' correction is of an
+        // isotropic layer, so it is refused, and said.
+        rf::Stack uniaxial = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
+        for (rf::Layer& l : uniaxial.layers)
+            if (l.kind == rf::Layer::Substrate) l.epsz = 11.6;
+        const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
+        QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
+        // Nor a magnetic one, which would be magnetic across the whole plane
+        // (the review of fa249cbd) - a magnetic loss alone the same.
+        for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
+            rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
+            for (rf::Layer& l : magnetic.layers)
+                if (l.kind == rf::Layer::Substrate) {
+                    l.mur = mur;
+                    l.mtand = mtand;
+                }
+            const rf::FullWave g = rf::fullWaveOf(mesh, conductors, magnetic, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
+            QVERIFY2(!g.ok() && g.problems.join(' ').contains(QStringLiteral("SUB is magnetic and ends at its shapes")), qPrintable(why(g)));
+        }
     }
 
     // A metal solved as its two faces (its "Solved as"): a sheet at its
@@ -1800,6 +1820,77 @@ private slots:
         rf::Extraction plain;
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
+        // A magnetic loss alone, mu_r 1: the quasi-static solve says it
+        // leaves it out (the review of fa249cbd).
+        rf::Stack lossy = grounded(4, 100e-6);
+        for (rf::Layer& layer : lossy.layers)
+            if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
+        rf::Extraction el;
+        line(lossy, 1000, 100, 4, 100e-6, 4, {fl}, &el);
+        QVERIFY2(el.ok() && says(el.lines, "A layer has a magnetic loss tangent") && !says(el.lines, "A layer is magnetic"),
+                 qPrintable(el.lines.join(" | ")));
+    }
+
+    // A uniaxial substrate (sapphire's
+    // eps_t 9.4 in the plane, eps_z 11.6 along z). A microstrip on 100 µm of
+    // it at 1 GHz: the full wave's eps_eff and Z0 are the quasi-static
+    // solve's within 1.5 %, whose C is that of the isotropic substrate of
+    // sqrt(eps_t eps_z) its depth times sqrt(eps_t/eps_z), to the digit (the
+    // static transformation, in the static Green's function); and the via to
+    // the ground's inductance less its port's path's - the case above - is
+    // the isotropic one's, by magnetostatics, within 1 %.
+    void aUniaxialSubstrateIsInTheFullWave()
+    {
+        const double et = 9.4, ez = 11.6, h = 100e-6, fl = 1e9, k0 = 2 * M_PI * fl / kC0;
+        rf::Stack sapphire = grounded(et, h);
+        for (rf::Layer& l : sapphire.layers)
+            if (l.kind == rf::Layer::Substrate) l.epsz = ez;
+        rf::Extraction e;
+        const rf::FullWave a = line(sapphire, 1000, 100, 4, 100e-6, 4, {fl}, &e);
+        const rf::FullWave b = line(sapphire, 2000, 100, 4, 100e-6, 4, {fl});
+        QVERIFY2(a.ok() && b.ok() && e.ok(), qPrintable(why(a) + why(b) + e.problems.join(" | ")));
+        const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, fl);
+        const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(b, 0)), 1000e-6, 2000e-6, k0 * std::sqrt(lp.epsilonEff));
+        const double ee = std::pow(wave.gamma.imag() / k0, 2);
+        rf::Extraction iso;
+        line(grounded(std::sqrt(et * ez), h * std::sqrt(et / ez)), 1000, 100, 4, 100e-6, 4, {fl}, &iso);
+        qWarning("sapphire at 1 GHz: the full wave's eps_eff %.5g and Z0 %.5g Ohm; the quasi-static %.5g, %.5g; its C %.6g pF, "
+                 "the isotropic equivalent's %.6g",
+                 ee, wave.z0.real(), lp.epsilonEff, lp.z0, e.selfCapacitance(0) * 1e12, iso.selfCapacitance(0) * 1e12);
+        QVERIFY2(std::abs(ee / lp.epsilonEff - 1) < 0.015, qPrintable(QStringLiteral("%1 against %2").arg(ee).arg(lp.epsilonEff)));
+        QVERIFY2(std::abs(wave.z0.real() / lp.z0 - 1) < 0.015, qPrintable(QStringLiteral("%1 against %2").arg(wave.z0.real()).arg(lp.z0)));
+        QVERIFY2(std::abs(e.selfCapacitance(0) / iso.selfCapacitance(0) - 1) < 1e-9,
+                 qPrintable(QStringLiteral("%1 against %2").arg(e.selfCapacitance(0)).arg(iso.selfCapacitance(0))));
+        // Not as though it were isotropic of either.
+        rf::Extraction plane;
+        line(grounded(et, h), 1000, 100, 4, 100e-6, 4, {fl}, &plane);
+        QVERIFY(std::abs(e.selfCapacitance(0) / plane.selfCapacitance(0) - 1) > 0.02);
+
+        // The via, as the case above.
+        const double hv = 200e-6, w = 50, l = 2000, f = 1e8, omega = 2 * M_PI * f;
+        const auto inductance = [&](const rf::Stack& bare) {
+            const rf::Stack stack = withVia(bare, QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+            const QList<rf::Conductor> strips = {strip(0, 0, l, w)};
+            const QList<rf::Conductor> shorted = {strip(0, 0, l, w), on(QStringLiteral("V0"), l - w, 0, w, w)};
+            const rf::Mesh meshA = evenly(shorted, 1, 400e-6), meshB = evenly(strips, 1, 400e-6);
+            QList<rf::FullWavePort> points = {edgePort(QPointF(0, w / 2))};
+            for (const rf::MeshCell& c : meshB.cells)
+                if (c.outline.boundingRect().intersects(QRectF(l - w, 0, w, w))) points << internalPort(c.centre, QStringLiteral("M1"));
+            const rf::FullWave va = rf::fullWaveOf(meshA, shorted, stack, {edgePort(QPointF(0, w / 2))}, {f});
+            const rf::FullWave vb = rf::fullWaveOf(meshB, strips, stack, points, {f});
+            if (!va.ok() || !vb.ok()) {
+                qWarning().noquote() << why(va) + why(vb);
+                return 0.0;
+            }
+            return (va.z.at(0).at(0).at(0) - 1.0 / keptAdmittance(vb, 0, 1)(0, 0)).imag() / omega;
+        };
+        rf::Stack tall = grounded(et, hv);
+        for (rf::Layer& layer : tall.layers)
+            if (layer.kind == rf::Layer::Substrate) layer.epsz = ez;
+        const double isotropic = inductance(grounded(et, hv)), uniaxial = inductance(tall);
+        qWarning("the via: %.5g nH uniaxial, %.5g isotropic", uniaxial * 1e9, isotropic * 1e9);
+        QVERIFY(isotropic > 0);
+        QVERIFY2(std::abs(uniaxial / isotropic - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(uniaxial).arg(isotropic)));
     }
 
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its

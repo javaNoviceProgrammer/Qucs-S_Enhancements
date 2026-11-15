@@ -91,6 +91,13 @@ struct Layers {
         /// the retarded Green's functions take mu0 mur (1 - j mtand); a
         /// static charge sees none of it.
         double mur = 1, mtand = 0;
+        /// Uniaxial, its axis along z: its relative permittivity along z, eps_r
+        /// the one in the plane (Layer::epsz). Nought: isotropic, eps_r both.
+        double epsz = 0;
+        /// Its relative permittivity along z at \a frequency: permittivityAt()
+        /// times epsz / epsr, its loss and its dispersion the plane's.
+        std::complex<double> permittivityZAt(double frequency) const;
+        bool uniaxial() const { return epsz > 0 && epsz != epsr; }
         /// Its relative permittivity at \a frequency (Hz), eps' - j eps'' -
         /// its loss tangent in it, its conductivity not.
         std::complex<double> permittivityAt(double frequency) const;

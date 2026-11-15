@@ -170,6 +170,15 @@ void TestRf25StackDrawing::whatIsDrawn()
     QCOMPARE(d.metals, (QStringList{QStringLiteral("M2: t=2 µm, σ=4e+07 S/m, 12.5 mΩ/sq, solved as its two faces, roughness 0.3 µm rms"),
                                     QStringLiteral("M1: t=0.5 µm, σ=3.3e+07 S/m, 60.6 mΩ/sq")}));
     QCOMPARE(d.vias, (QStringList{QStringLiteral("V1: M1 to M2, h=1 µm, σ=2e+07 S/m")}));
+    // A dielectric anisotropic, along z and in the plane: its eps_z said,
+    // and its two in the plane with their mean taken.
+    Model anisotropic = modelOf(twoMetals());
+    anisotropic.find(QStringLiteral("d1"))->props.insert(QStringLiteral("epsz"), QStringLiteral("5"));
+    anisotropic.find(QStringLiteral("d1"))->props.insert(QStringLiteral("epsy"), QStringLiteral("4.5"));
+    const StackDrawing a = stackDrawingOf(anisotropic);
+    QVERIFY2(a.ok(), qPrintable(a.problems.join(QLatin1Char(' '))));
+    const QString ox1 = a.bands.at(1).words.join(QStringLiteral(", "));
+    QVERIFY2(ox1.contains(QStringLiteral("εz=5")) && ox1.contains(QStringLiteral("εx=4.1, εy=4.5 (their mean taken)")), qPrintable(ox1));
 }
 
 void TestRf25StackDrawing::groundsAndCovers()

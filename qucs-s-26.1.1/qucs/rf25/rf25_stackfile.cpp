@@ -268,7 +268,12 @@ StackWritten hfssStackupOf(const Model& model, const QString& name, const QStrin
     }
     if (rough) out.notes << tr("The metals' roughness is not in an XML stackup: set it on each signal layer in Electronics Desktop (rf25_hfss_export's script does).");
     if (stack.magnetic())
-        out.notes << tr("A layer's relative permeability is not in an XML stackup: it is written without it.");
+        out.notes << tr("A layer's relative permeability and magnetic loss tangent are not in an XML stackup: it is written without them.");
+    for (const Layer& l : stack.layers)
+        if (l.epsz > 0 && l.epsz != l.epsr) {
+            out.notes << tr("%1 is uniaxial: %2 has no place for its permittivity along z, and has the one in the plane.").arg(l.name, tr("an XML stackup"));
+            break;
+        }
     if (stack.dispersive())
         out.notes << tr("Djordjevic-Sarkar dispersion is not in an XML stackup: its dielectrics are written at the values given "
                         "for the frequency they are given at.");
@@ -511,7 +516,12 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
     if (!cover) layers << QStringLiteral("layer infinity 1 name air");
     if (rough) out.notes << tr("The metals' roughness has no place in a process file: it is left out.");
     if (stack.magnetic())
-        out.notes << tr("A layer's relative permeability has no place in a process file: it is written without it.");
+        out.notes << tr("A layer's relative permeability and magnetic loss tangent have no place in a process file: it is written without them.");
+    for (const Layer& l : stack.layers)
+        if (l.epsz > 0 && l.epsz != l.epsr) {
+            out.notes << tr("%1 is uniaxial: %2 has no place for its permittivity along z, and has the one in the plane.").arg(l.name, tr("a process file"));
+            break;
+        }
     if (stack.dispersive())
         out.notes << tr("Djordjevic-Sarkar dispersion has no place in a process file: its dielectrics are written at the values "
                         "given for the frequency they are given at.");

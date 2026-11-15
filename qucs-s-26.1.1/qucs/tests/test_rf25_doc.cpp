@@ -1350,6 +1350,22 @@ private slots:
         QVERIFY2(dispersed->lines.join(' ').contains(QStringLiteral("taken at 40 GHz")), qPrintable(dispersed->lines.join(" | ")));
         QVERIFY2(dispersed->selfCapacitance(0) < plain,
                  qPrintable(QStringLiteral("%1 against %2").arg(dispersed->selfCapacitance(0)).arg(plain)));
+
+        // A substrate anisotropic in the plane: the layered solve takes the
+        // geometric mean of its two, and says so beside its answer.
+        QVERIFY(doc->editNode(substrate,
+                              [](rf::Node& n) {
+                                  n.props.remove(QStringLiteral("dispersion"));
+                                  n.props.insert(QStringLiteral("epsy"), QStringLiteral("13"));
+                              },
+                              QStringLiteral("anisotropic in the plane")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solveButton()->click();
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::Extraction> averaged = doc->extraction();
+        QVERIFY2(averaged != nullptr && averaged->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(averaged->lines.join(' ').contains(QStringLiteral("takes their geometric mean, 12.44")),
+                 qPrintable(averaged->lines.join(" | ")));
     }
 
     // Two conductors are coupled lines, and the tab says so: their modes

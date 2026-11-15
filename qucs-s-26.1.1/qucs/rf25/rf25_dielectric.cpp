@@ -204,6 +204,24 @@ DielectricPlan dielectricPlan(const Layers& layers, const QList<Extent>& extents
             plan.problems << tr("%1 is given an extent, but it is no dielectric of the stack.").arg(e.layer);
             continue;
         }
+        // (Its shapes' correction is of an isotropic layer: a uniaxial one
+        //  that ends is not solved, and said.)
+        if (layers.slabs.at(slab).uniaxial()) {
+            plan.problems << tr("%1 is uniaxial and ends at its shapes: a layer that ends is solved isotropic only - make it "
+                                "isotropic, or let it go on beyond its shapes.")
+                                 .arg(e.layer);
+            continue;
+        }
+        // (Nor of a magnetic one: the shapes' correction is of the
+        //  permittivity alone, so it would be magnetic across the whole
+        //  plane - a patterned film under an inductor its L overstated.)
+        if (layers.slabs.at(slab).mur != 1 || layers.slabs.at(slab).mtand > 0) {
+            plan.problems << tr("%1 is magnetic and ends at its shapes: a layer that ends is corrected for its permittivity "
+                                "alone, and would be magnetic across the whole plane - make it not magnetic, or let it go "
+                                "on beyond its shapes.")
+                                 .arg(e.layer);
+            continue;
+        }
         const double eps = layers.slabs.at(slab).epsr;
         if (std::abs(eps - e.beyond) < 1e-12) {
             plan.lines << tr("%1 ends where it is the same beyond its shapes (eps_r %2): nothing changes.").arg(e.layer).arg(eps);

@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -471,6 +472,12 @@ std::complex<double> Layers::Slab::permittivityAt(double frequency) const
     return dispersive ? djordjevicSarkar(epsr, tand, dispersionAt, frequency) : std::complex<double>(epsr, -epsr * tand);
 }
 
+std::complex<double> Layers::Slab::permittivityZAt(double frequency) const
+{
+    const std::complex<double> plane = permittivityAt(frequency);
+    return epsz > 0 && epsr > 0 ? plane * (epsz / epsr) : plane;
+}
+
 Layers layersOf(const Stack& stack)
 {
     Layers out;
@@ -522,6 +529,7 @@ Layers layersOf(const Stack& stack)
                 s.dispersionAt = l.dispersionAt;
                 s.mur = l.mur > 0 ? l.mur : 1;
                 s.mtand = std::max(0.0, l.mtand);
+                s.epsz = l.epsz >= 1 ? l.epsz : 0;
                 out.slabs << s;
                 z = s.z1;
             }
@@ -580,9 +588,52 @@ double Green::downwardAt(int i, double k) const
     return r;
 }
 
-Green::Green(const Layers& layers, double zField, double zSource)
-    : a_layers(layers), a_z(zField), a_zSource(zSource)
+namespace {
+/// \a layers with each uniaxial slab made the isotropic one it is to a static
+/// charge: of sqrt(eps_t eps_z), its depth times sqrt(eps_t/eps_z) - Laplace's
+/// equation in a uniaxial medium, its heights stretched so, is the isotropic
+/// one, and the normal flux across a face is continuous in both. A height
+/// \a z mapped into it by \a heightIn. The same layers where none is.
+Layers isotropicOf(const Layers& layers, std::function<double(double)>* heightIn)
 {
+    bool any = false;
+    for (const Layers::Slab& s : layers.slabs) any = any || s.uniaxial();
+    if (!any) return layers;
+    Layers out = layers;
+    QList<double> from, to, stretch;
+    double z = layers.slabs.isEmpty() ? 0 : layers.slabs.first().z0;
+    for (Layers::Slab& s : out.slabs) {
+        const double k = s.uniaxial() ? std::sqrt(s.epsr / s.epsz) : 1.0;
+        from << s.z0;
+        to << z;
+        stretch << k;
+        if (s.uniaxial()) s.epsr = std::sqrt(s.epsr * s.epsz);
+        s.epsz = 0;
+        const double depth = (s.z1 - s.z0) * k;
+        s.z0 = z;
+        s.z1 = z + depth;
+        z = s.z1;
+    }
+    *heightIn = [layers, from, to, stretch](double h) {
+        for (int i = int(layers.slabs.size()) - 1; i >= 0; --i)
+            if (h >= layers.slabs.at(i).z0) return to.at(i) + stretch.at(i) * (h - from.at(i));
+        return h;
+    };
+    return out;
+}
+} // namespace
+
+Green::Green(const Layers& given, double zField, double zSource)
+{
+    // (A uniaxial slab: the isotropic one it is to a static charge, the
+    //  heights mapped into it.)
+    std::function<double(double)> heightIn = [](double h) { return h; };
+    const Layers layers = isotropicOf(given, &heightIn);
+    a_layers = layers;
+    zField = heightIn(zField);
+    zSource = heightIn(zSource);
+    a_z = zField;
+    a_zSource = zSource;
     if (!layers.ok()) {
         a_problems = layers.problems.isEmpty() ? QStringList{tr("The stack cannot be read as layers.")} : layers.problems;
         return;

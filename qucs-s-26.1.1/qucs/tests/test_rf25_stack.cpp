@@ -185,6 +185,7 @@ private slots:
     void aStackIsWrittenAsAnHfssStackup();
     void anHfssStackupReadsBackTheSameStack();
     void groundsAndLidsGoThereAndBack();
+    void whatAFileHasNoPlaceForIsSaid();
     void aStackIsWrittenAsAnEmxProcess();
     void anEmxProcessReadsBackTheSameStack();
     void anEmxProcessIsReadAsItsGrammarSays();
@@ -278,6 +279,41 @@ void TestRf25Stack::groundsAndLidsGoThereAndBack()
     QVERIFY(e.text.contains(QLatin1String("layer 100 1 name Lid_gap")));
     QVERIFY(e.text.contains(QLatin1String("layer infinity 1 conductivity 5.8e7 name Lid")));
     QVERIFY(!e.text.contains(QLatin1String("name air")));
+}
+
+// A substrate both files have no place for - Djordjevic-Sarkar's
+// dispersion, a permeability, a permittivity along z (uniaxial) -: each
+// written at what it can be, and said.
+void TestRf25Stack::whatAFileHasNoPlaceForIsSaid()
+{
+    Model m = modelOf(twoMetals());
+    QVERIFY(m.stack().ok());
+    for (const StackFormat f : {StackFormat::Hfss, StackFormat::Emx}) {
+        const StackWritten plain = f == StackFormat::Hfss ? hfssStackupOf(m) : emxProcessOf(m);
+        QVERIFY(!plain.notes.join(QLatin1Char(' ')).contains(QLatin1String("uniaxial")));
+    }
+    Node* sub = m.find(QStringLiteral("s"));
+    sub->props.insert(QStringLiteral("dispersion"), QStringLiteral("djordjevic_sarkar"));
+    sub->props.insert(QStringLiteral("mur"), QStringLiteral("2"));
+    sub->props.insert(QStringLiteral("epsz"), QStringLiteral("13"));
+    QVERIFY2(m.stack().ok(), qPrintable(m.stack().problems.join(QLatin1Char('\n'))));
+    for (const StackFormat f : {StackFormat::Hfss, StackFormat::Emx}) {
+        const StackWritten w = f == StackFormat::Hfss ? hfssStackupOf(m) : emxProcessOf(m);
+        QVERIFY(w.ok());
+        const QString notes = w.notes.join(QLatin1Char('\n'));
+        QVERIFY2(notes.contains(QLatin1String("Si is uniaxial")) && notes.contains(QLatin1String("has the one in the plane")), qPrintable(notes));
+        QVERIFY2(notes.contains(QLatin1String("relative permeability")), qPrintable(notes));
+        QVERIFY2(notes.contains(QLatin1String("Djordjevic-Sarkar dispersion")), qPrintable(notes));
+    }
+    // A magnetic loss alone, its permeability 1, said too (the review of
+    // fa249cbd: Stack::magnetic() counted the permeability alone).
+    sub->props.insert(QStringLiteral("mur"), QStringLiteral("1"));
+    sub->props.insert(QStringLiteral("mtand"), QStringLiteral("0.01"));
+    QVERIFY(m.stack().magnetic());
+    for (const StackFormat f : {StackFormat::Hfss, StackFormat::Emx}) {
+        const StackWritten w = f == StackFormat::Hfss ? hfssStackupOf(m) : emxProcessOf(m);
+        QVERIFY2(w.notes.join(QLatin1Char(' ')).contains(QLatin1String("magnetic loss tangent")), qPrintable(w.notes.join(QLatin1Char('\n'))));
+    }
 }
 
 void TestRf25Stack::aStackIsWrittenAsAnEmxProcess()

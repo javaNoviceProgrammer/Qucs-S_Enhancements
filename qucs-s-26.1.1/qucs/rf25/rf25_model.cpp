@@ -192,6 +192,13 @@ QList<NodeKind> makeKinds()
                   "magnetic.")),
           expr(QStringLiteral("mtand"), tr("Magnetic loss tangent"), QString(), QStringLiteral("0"),
                tr("Its permeability's loss, mur (1 - j mtand), in the full wave.")),
+          expr(QStringLiteral("epsz"), tr("Relative permittivity along z"), QString(), QStringLiteral("0"),
+               tr("Uniaxial, its axis vertical - sapphire, LCP, a z-cut crystal -: its relative permittivity along z, the one "
+                  "above then that in the plane. 0: isotropic.")),
+          expr(QStringLiteral("epsy"), tr("Relative permittivity along y"), QString(), QStringLiteral("0"),
+               tr("Where the plane's permittivity differs along x and y - an x-cut crystal -: that along y, the one above "
+                  "that along x. A layered solve has none in the plane: it takes their geometric mean, and says so. 0: the "
+                  "same as along x.")),
           choice(QStringLiteral("dispersion"), tr("Dispersion"), {QStringLiteral("none"), QStringLiteral("djordjevic_sarkar")},
                  {tr("None (the same at every frequency)"), tr("Djordjevic-Sarkar (wideband Debye)")}, QStringLiteral("none"),
                  tr("Djordjevic-Sarkar: its permittivity falls slowly with frequency and its loss tangent stays nearly flat, "
@@ -215,6 +222,13 @@ QList<NodeKind> makeKinds()
                   "magnetic.")),
           expr(QStringLiteral("mtand"), tr("Magnetic loss tangent"), QString(), QStringLiteral("0"),
                tr("Its permeability's loss, mur (1 - j mtand), in the full wave.")),
+          expr(QStringLiteral("epsz"), tr("Relative permittivity along z"), QString(), QStringLiteral("0"),
+               tr("Uniaxial, its axis vertical - sapphire, LCP, a z-cut crystal -: its relative permittivity along z, the one "
+                  "above then that in the plane. 0: isotropic.")),
+          expr(QStringLiteral("epsy"), tr("Relative permittivity along y"), QString(), QStringLiteral("0"),
+               tr("Where the plane's permittivity differs along x and y - an x-cut crystal -: that along y, the one above "
+                  "that along x. A layered solve has none in the plane: it takes their geometric mean, and says so. 0: the "
+                  "same as along x.")),
           choice(QStringLiteral("dispersion"), tr("Dispersion"), {QStringLiteral("none"), QStringLiteral("djordjevic_sarkar")},
                  {tr("None (the same at every frequency)"), tr("Djordjevic-Sarkar (wideband Debye)")}, QStringLiteral("none"),
                  tr("Djordjevic-Sarkar: its permittivity falls slowly with frequency and its loss tangent stays nearly flat, "
@@ -957,7 +971,7 @@ std::complex<double> djordjevicSarkar(double epsr, double tand, double at, doubl
 bool Stack::magnetic() const
 {
     for (const Layer& l : layers)
-        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.mur != 1) return true;
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && (l.mur != 1 || l.mtand > 0)) return true;
     return false;
 }
 
@@ -974,6 +988,8 @@ Stack Stack::atFrequency(double frequency) const
     for (Layer& l : out.layers) {
         if (l.dispersion.isEmpty()) continue;
         const std::complex<double> e = djordjevicSarkar(l.epsr, l.tand, l.dispersionAt, frequency);
+        // (A uniaxial layer's along z the same share of the plane's.)
+        if (l.epsz > 0 && l.epsr > 0) l.epsz *= e.real() / l.epsr;
         l.epsr = e.real();
         l.tand = e.real() > 0 ? -e.imag() / e.real() : 0.0;
         l.dispersion.clear();
@@ -1190,6 +1206,15 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
         const auto readMagnetic = [&] {
             if (c.props.contains(QLatin1String("mur"))) read(QStringLiteral("mur"), &layer.mur);
             if (c.props.contains(QLatin1String("mtand"))) read(QStringLiteral("mtand"), &layer.mtand);
+            // (And anisotropic: none said, isotropic.)
+            if (c.props.contains(QLatin1String("epsz"))) read(QStringLiteral("epsz"), &layer.epsz);
+            if (c.props.contains(QLatin1String("epsy"))) read(QStringLiteral("epsy"), &layer.epsy);
+            if (layer.epsy > 0 && layer.epsy != layer.epsr && layer.epsr > 0) {
+                layer.epsx = layer.epsr;
+                layer.epsr = std::sqrt(layer.epsx * layer.epsy);
+            } else {
+                layer.epsy = 0;
+            }
         };
         switch (layer.kind) {
         case Layer::Substrate:
@@ -1307,6 +1332,9 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("%1 has a relative permeability of no more than nought (%2).").arg(name(l)).arg(l.mur);
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.mtand < 0 && read("mtand"))
             out.problems << tr("%1 has a magnetic loss tangent below zero.").arg(name(l));
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && ((l.epsz != 0 && l.epsz < 1) || l.epsy < 0)
+            && read("epsz") && read("epsy"))
+            out.problems << tr("%1 has a relative permittivity along z or y below 1.").arg(name(l));
         if (!l.dispersion.isEmpty() && !(l.dispersionAt > 0) && read("dispersion_at"))
             out.problems << tr("%1's dispersion is given at no frequency above nought.").arg(name(l));
         // Djordjevic-Sarkar's poles lie from 1 kHz to 1 THz: given outside

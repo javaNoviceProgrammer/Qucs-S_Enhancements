@@ -278,6 +278,24 @@ private slots:
                  qPrintable(m.stack().problems.join(" | ")));
         sub.props.insert(QStringLiteral("mur"), QStringLiteral("1"));
         sub.props.insert(QStringLiteral("mtand"), QStringLiteral("0"));
+        // Uniaxial, read and kept round a file; in-plane anisotropy taken as
+        // the geometric mean, its two kept for the note; below 1 said.
+        sub.props.insert(QStringLiteral("epsz"), QStringLiteral("14"));
+        sub.props.insert(QStringLiteral("epsy"), QStringLiteral("10"));
+        {
+            const rf::Stack us = rf::Model::fromJson(m.toJson())->stack();
+            QVERIFY2(us.ok(), qPrintable(us.problems.join(" | ")));
+            QCOMPARE(us.layers.at(0).epsz, 14.0);
+            QVERIFY(us.layers.at(0).averaged());
+            QCOMPARE(us.layers.at(0).epsx, 11.9);
+            QCOMPARE(us.layers.at(0).epsy, 10.0);
+            QCOMPARE(us.layers.at(0).epsr, std::sqrt(11.9 * 10.0));
+        }
+        sub.props.insert(QStringLiteral("epsz"), QStringLiteral("0.5"));
+        QVERIFY2(m.stack().problems.join(' ').contains(QStringLiteral("along z or y below 1")), qPrintable(m.stack().problems.join(" | ")));
+        sub.props.insert(QStringLiteral("epsz"), QStringLiteral("0"));
+        sub.props.insert(QStringLiteral("epsy"), QStringLiteral("0"));
+        QVERIFY(!m.stack().layers.at(0).averaged() && m.stack().layers.at(0).epsz == 0);
         // A metal's roughness by Huray's model, read with its nodules and
         // their surface ratio, and kept round a file.
         for (rf::Node& c : m.stackNode().children)

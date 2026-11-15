@@ -344,6 +344,113 @@ private slots:
         }
     }
 
+    // A uniaxial slab, its axis along z (sapphire, LCP, a z-cut crystal): on a grounded slab of
+    // eps_t 9.4, eps_z 11.6 (sapphire's), the full wave's spectral kernels at
+    // its top are the equivalent lines' as written here, independently -
+    // the TM line's kz sqrt(eps_t/eps_z) sqrt(k0^2 eps_z - kr^2) and its
+    // impedance kz/(w eps_t), the TE line's of eps_t alone; to a static
+    // charge it is the isotropic slab of sqrt(eps_t eps_z) its depth times
+    // sqrt(eps_t/eps_z), exactly; and at 1 MHz the full wave's kernels are
+    // the static ones through their closed forms and tables, as an
+    // isotropic stack's are (the case above), with an oxide over it.
+    void aUniaxialSlabIsItsTwoLines()
+    {
+        const double et = 9.4, ez = 11.6, h = 100e-6, f = 20e9, w = 2 * M_PI * f, kEps0 = rf::kEps0, k0 = w * std::sqrt(kMu0 * kEps0);
+        rf::Layers sapphire = stackOf({{et, h, 0}}, true);
+        sapphire.slabs[0].epsz = ez;
+        const rf::WaveGreen g(sapphire, h, h, f, 5e-3);
+        QVERIFY2(g.ok(), qPrintable(g.problems().join(" | ")));
+        const auto kz = [](Complex k2, Complex kr) {
+            Complex v = std::sqrt(k2 - kr * kr);
+            return v.imag() > 0 ? -v : v;
+        };
+        for (const Complex kr : {Complex(100, 0), Complex(800, -3), Complex(3e3, 0), Complex(4e4, 0)}) {
+            const Complex kzE = std::sqrt(et / ez) * kz(k0 * k0 * ez, kr), kzH = kz(k0 * k0 * et, kr), kz0 = kz(k0 * k0, kr);
+            const Complex ze = kzE / (w * kEps0 * et), zh = w * kMu0 / kzH, ze0 = kz0 / (w * kEps0), zh0 = w * kMu0 / kz0;
+            const Complex downE = kJ * ze * std::tan(kzE * h), downH = kJ * zh * std::tan(kzH * h);
+            const Complex ve = downE * ze0 / (downE + ze0), vh = downH * zh0 / (downH + zh0);
+            const Complex scalar = kJ * w / (kr * kr) * (ve - vh), vector = vh / (kJ * w);
+            QVERIFY2(std::abs(g.scalarSpectral(kr) / scalar - 1.0) < 1e-10,
+                     qPrintable(QStringLiteral("kr %1: scalar %2 against %3").arg(kr.real()).arg(std::abs(g.scalarSpectral(kr))).arg(std::abs(scalar))));
+            QVERIFY2(std::abs(g.vectorSpectral(kr) / vector - 1.0) < 1e-10,
+                     qPrintable(QStringLiteral("kr %1: vector %2 against %3").arg(kr.real()).arg(std::abs(g.vectorSpectral(kr))).arg(std::abs(vector))));
+        }
+        // Static: the isotropic equivalent, its heights stretched.
+        rf::Layers withOxide = stackOf({{et, h, 0}, {4.0, 3e-6, 0}}, true);
+        withOxide.slabs[0].epsz = ez;
+        const double r = std::sqrt(et / ez);
+        const rf::Layers equivalent = stackOf({{std::sqrt(et * ez), h * r, 0}, {4.0, 3e-6, 0}}, true);
+        const auto mapped = [h, r](double z) { return z <= h ? z * r : h * r + (z - h); };
+        for (const auto& [zf, zs] : {std::pair{h, h}, std::pair{h + 3e-6, h}, std::pair{0.5 * h, h + 3e-6}}) {
+            const rf::Green a(withOxide, zf, zs);
+            const rf::Green b(equivalent, mapped(zf), mapped(zs));
+            QVERIFY2(a.ok() && b.ok(), qPrintable((a.problems() + b.problems()).join(" | ")));
+            for (const double rho : {1e-6, 3e-5, 1e-3})
+                QVERIFY2(std::abs(a.potential(rho) / b.potential(rho) - 1) < 1e-12,
+                         qPrintable(QStringLiteral("%1/%2 µm, %3 µm").arg(zf * 1e6).arg(zs * 1e6).arg(rho * 1e6)));
+        }
+        // At 1 MHz the full wave's scalar is the static, through its closed
+        // forms and tables - on the sapphire and in the oxide over it.
+        for (const auto& [zf, zs] : {std::pair{h, h}, std::pair{h + 3e-6, h + 3e-6}, std::pair{h + 3e-6, h}, std::pair{0.5 * h, h},
+                                     std::pair{h + 3e-6, 0.7 * h}}) {
+            const rf::WaveGreen low(withOxide, zf, zs, 1e6, 6e-3);
+            const rf::Green still(withOxide, zf, zs);
+            QVERIFY2(low.ok() && still.ok(), qPrintable((low.problems() + still.problems()).join(" | ")));
+            // (Its closed form's distance along z the stretched one.)
+            QVERIFY2(std::abs(low.scalarTerm().dz - std::abs(mapped(zf) - mapped(zs))) < 1e-12 * h,
+                     qPrintable(QStringLiteral("%1 against %2").arg(low.scalarTerm().dz).arg(std::abs(mapped(zf) - mapped(zs)))));
+            for (const double rho : {1e-6, 1e-5, 1e-4, 1e-3}) {
+                const double size = std::abs(low.scalarTerm().coefficient) / (2 * M_PI * std::hypot(rho, zf - zs));
+                QVERIFY2(std::abs(low.scalar(rho) - still.potential(rho)) < 1e-6 * size,
+                         qPrintable(QStringLiteral("%1/%2 µm, rho %3 µm: %4 vs the static %5 (%6 of the term)").arg(zf * 1e6).arg(zs * 1e6)
+                                        .arg(rho * 1e6).arg(low.scalar(rho).real()).arg(still.potential(rho))
+                                        .arg(std::abs(low.scalar(rho) - still.potential(rho)) / size)));
+            }
+        }
+        // Kept between solves, a uniaxial slab's table is not taken for the
+        // isotropic one's of its eps_t - whose wavenumbers, and so its grid,
+        // are the same where eps_z is the smaller.
+        rf::forgetGreens();
+        rf::keepGreens(256e6);
+        const auto unkept = qScopeGuard([] {
+            rf::forgetGreens();
+            rf::keepGreens(256e6);
+        });
+        rf::Layers lower = stackOf({{et, h, 0}}, true);
+        lower.slabs[0].epsz = 7.0;
+        const rf::WaveGreen u(lower, h, h, f, 5e-3), iso(stackOf({{et, h, 0}}, true), h, h, f, 5e-3);
+        QVERIFY(u.ok() && iso.ok());
+        QVERIFY(std::abs(u.scalar(300e-6) / iso.scalar(300e-6) - 1.0) > 1e-3);
+        rf::keepGreens(0);
+        rf::forgetGreens();
+        const rf::WaveGreen fresh(stackOf({{et, h, 0}}, true), h, h, f, 5e-3);
+        for (const double rho : {10e-6, 300e-6, 3e-3})
+            QVERIFY2(std::abs(iso.scalar(rho) / fresh.scalar(rho) - 1.0) < 1e-12 && std::abs(iso.vector(rho) / fresh.vector(rho) - 1.0) < 1e-12,
+                     qPrintable(QStringLiteral("%1 µm: a kept table not its own").arg(rho * 1e6)));
+    }
+
+    // A via in a uniaxial slab (sapphire's 9.4 across, 11.6 along z): what
+    // its kernels' closed forms leave dies far out as an isotropic slab's
+    // does. Before, the potential's tail was built from the stretched slab
+    // alone and left 0.9 % of the kernel at every kr; and G_zz's own closed
+    // form, not over the stretch, left the via's inductance 9 % low.
+    void aUniaxialViasRemainderDies()
+    {
+        for (const double ez : {9.4, 11.6}) {
+            rf::Layers l = stackOf({{9.4, 200e-6, 0}}, true);
+            l.slabs[0].epsz = ez;
+            const rf::ViaGreen::Span span{0, 200e-6};
+            const rf::ViaGreen v(l, span, {span}, {200e-6}, 1e8, 5e-3);
+            for (const double kr : {1e6, 1e7}) {
+                const double zz = std::abs(v.couplingSpectral(0, kr)), zzLeft = std::abs(v.couplingSpectral(0, kr, true));
+                const double p = std::abs(v.potentialSpectral(0, kr)), pLeft = std::abs(v.potentialSpectral(0, kr, true));
+                QVERIFY2(zzLeft < 1e-9 * zz && pLeft < 1e-9 * p,
+                         qPrintable(QStringLiteral("eps_z %1, kr %2: G_zz %3 leaves %4, the potential %5 leaves %6").arg(ez).arg(kr)
+                                        .arg(zz).arg(zzLeft).arg(p).arg(pLeft)));
+            }
+        }
+    }
+
     // Djordjevic-Sarkar's wideband Debye model (a review's
     // "features missing": a dielectric's permittivity and loss tangent the
     // same at every frequency, which is not causal): its closed form is the

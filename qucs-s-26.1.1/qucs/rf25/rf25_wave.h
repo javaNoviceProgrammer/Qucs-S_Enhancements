@@ -227,6 +227,7 @@ private:
     int a_fld = -1, a_src = -1;
     QList<Complex> a_eps;            ///< each slab's, F/m
     QList<Complex> a_mu;             ///< each slab's permeability, H/m (mu0 off a magnetic slab)
+    QList<Complex> a_epsZ;           ///< each slab's along z, F/m (a_eps's off a uniaxial slab)
     Complex a_epsAbove, a_epsBelow;  ///< the half-spaces'
     double a_kMax = 0;               ///< 1/m, the largest Re k of the stack
     double a_decay = 0;              ///< 1/m, beyond which the remainder is nothing
@@ -369,6 +370,7 @@ private:
     double a_frequency = 0, a_omega = 0;
     QList<Complex> a_eps;            ///< each slab's, F/m
     QList<Complex> a_mu;             ///< each slab's permeability, H/m
+    QList<Complex> a_epsZ;           ///< each slab's along z, F/m
     Complex a_epsAbove, a_epsBelow;
     double a_kMax = 0, a_decay = 0, a_reach = 0, a_rhoMax = 0;
     QList<Segment> a_own;            ///< this via's parts, a slab each
