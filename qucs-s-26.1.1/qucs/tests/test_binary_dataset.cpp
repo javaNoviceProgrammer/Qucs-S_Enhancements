@@ -16,6 +16,8 @@
 #include <QStandardPaths>
 
 #include <cmath>
+#include <cstdio>
+#include <random>
 #include <cstring>
 #include <limits>
 
@@ -872,6 +874,9 @@ private slots:
             s += "<dep S[2,1] freq>\n  +1.0e+00+j2.0e+00\n  +5.0e-01-j1.0e+00\n  -2.5e-01+j0.0e+00\n</dep>\n";
             s += "<dep short time>\n" + column({1, 2, 3}) + "</dep>\n";
             s += "<dep ac.a-b freq>\n" + column({7, 8, 9}) + "</dep>\n";
+            // (An imaginary part after a space, or a second sign: none.)
+            s += "<dep jspace freq>\n  1+j 2\n  1+j2\n  1+j2\n</dep>\n";
+            s += "<dep jsign freq>\n  1+j-2\n  1+j2\n  1+j2\n</dep>\n";
             return s + extra;
         };
         const QString path = dir.filePath("shared.dat");
@@ -882,7 +887,7 @@ private slots:
         QVERIFY(write(dataset(1, {})));
 
         const QStringList traces{"v", "v1", "x", "time", "lonely", "v@tx", "S[2,1]", "short", "nothing", "freq",
-                                 "v-v1", "dB(S[2,1])", "2*x", "ac.a-b", "v*time", "2*v@tx"};
+                                 "v-v1", "dB(S[2,1])", "2*x", "ac.a-b", "v*time", "2*v@tx", "jspace", "jsign"};
         struct Alone {
             int loaded;
             std::unique_ptr<RectDiagram> diagram;
@@ -911,10 +916,12 @@ private slots:
         std::vector<Alone> alone;
         for (const QString& trace : traces) alone.push_back(load(trace));
         // What each is, alone - the cases above.
-        const QMap<QString, int> loaded{{"short", 0}, {"nothing", 0}, {"lonely", 0}};
+        const QMap<QString, int> loaded{{"short", 0}, {"nothing", 0}, {"lonely", 0}, {"jspace", 0}, {"jsign", 0}};
         for (int i = 0; i < traces.size(); ++i)
             QVERIFY2(alone.at(i).loaded == loaded.value(traces.at(i), 2), qPrintable(traces.at(i) + ": " + alone.at(i).graph->loadError));
         QCOMPARE(alone.at(traces.indexOf("x")).graph->cPointsY[0], -1.0);   // the first x
+        QCOMPARE(alone.at(traces.indexOf("S[2,1]")).graph->cPointsY[1], 2.0);   // (+j2.0e+00)
+        QCOMPARE(alone.at(traces.indexOf("S[2,1]")).graph->cPointsY[3], -1.0);   // (-j1.0e+00)
         QCOMPARE(alone.at(traces.indexOf("v@tx")).graph->axis(0)->Points[1], 1.5);
         QCOMPARE(alone.at(traces.indexOf("v-v1")).graph->cPointsY[2], 2.0 - 20.0);
         QCOMPARE(alone.at(traces.indexOf("2*v@tx")).graph->axis(0)->Points[1], 1.5);   // (an expression against a dependent variable)
@@ -925,6 +932,25 @@ private slots:
             for (int round = 0; round < 2; ++round) {   // (the second from what the first read)
                 const Graph::SharedReading inner;   // (the outer one's used)
                 for (int i = 0; i < traces.size(); ++i) same(traces.at(i) + " shared", alone.at(i), load(traces.at(i)));
+            }
+            // Loaded together, several at once (Graph::loadAll): as alone.
+            for (int round = 0; round < 20; ++round) {
+                std::vector<Alone> together;
+                std::vector<Graph*> graphs;
+                for (const QString& trace : traces) {
+                    Alone a{0, std::make_unique<RectDiagram>(), nullptr};
+                    a.graph = new Graph(a.diagram.get(), trace);
+                    a.diagram->Graphs.append(a.graph);
+                    graphs.push_back(a.graph);
+                    together.push_back(std::move(a));
+                }
+                const Graph::SharedReading own;   // (the outer one's used)
+                const std::vector<int> results = Graph::loadAll(graphs, path);
+                QCOMPARE(results.size(), size_t(traces.size()));
+                for (int i = 0; i < traces.size(); ++i) {
+                    together[i].loaded = results[i];
+                    same(traces.at(i) + " together", alone.at(i), together[i]);
+                }
             }
             // Written again while it lives: read again.
             QVERIFY(write(dataset(100, "\n")));
@@ -968,6 +994,68 @@ private slots:
         QCOMPARE(other.find("time")->re.size(), 5);
         QCOMPARE(other.find("time")->re.first(), 9.0);
         QVERIFY(write(dataset(1, {})));
+    }
+
+    // A value's text read by the C library where it is decimal, by Qt's
+    // otherwise (datasetfile.cpp's toDouble()): what Qt's alone read, the
+    // same double, the same yes or no - for numbers as they are written,
+    // and for what either reader might take and the other not.
+    void readValueTakesWhatQtTakes()
+    {
+        const auto asQt = [](QByteArrayView text, double* re, double* im, bool* complex) {
+            *im = 0;
+            bool ok = false;
+            const qsizetype j = text.indexOf('j');
+            *complex = j >= 0;
+            if (j < 0) {
+                *re = text.toDouble(&ok);
+                return ok;
+            }
+            if (j == 0) return false;
+            const char sign = text.at(j - 1);
+            if (sign != '+' && sign != '-') return false;
+            const QByteArrayView rePart = text.first(j - 1);
+            *re = rePart.isEmpty() ? 0 : rePart.toDouble(&ok);
+            if (!rePart.isEmpty() && !ok) return false;
+            const double i = text.sliced(j + 1).toDouble(&ok);
+            if (!ok) return false;
+            *im = sign == '-' ? -i : i;
+            return true;
+        };
+        QList<QByteArray> texts{"0", "-0", "+0", "1", "-1", "+1", ".5", "5.", "-.5", "+.5", "1e5", "1E5", "1e+05", "1e-05",
+                                "1.7976931348623157e308", "2.2250738585072014e-308", "4.9e-324", "1e400", "-1e400", "1e-400",
+                                "inf", "-inf", "+inf", "INF", "infinity", "nan", "-nan", "NaN", "0x10", "-0x1p3", "0X1",
+                                " 1", "1 ", "\t1", "1,5", "1.5.5", "1e", "1e+", "e5", ".", "+", "-", "", "--1", "+-1", "1d5",
+                                "0001.5000", "123456789012345678901234567890", "0.1000000000000000055511151231257827",
+                                "1.000000000000000000000000000000000000000000000000001",
+                                "1+j2", "1-j2", "+j2", "-j2", "j2", "1+j", "1+j 2", "1+j-2", "1+jinf", "1-jnan",
+                                "1e400+j1", "1+j1e400", "-0-j0", "1.5e-3+j2e-4", " 1+j2", "1 +j2", "1+j2 "};
+        // Numbers as they are written, of every size.
+        std::mt19937_64 random(20261115);
+        std::uniform_real_distribution<double> exponent(-320, 308), mantissa(-10, 10);
+        char buf[64];
+        for (int i = 0; i < 20000; ++i) {
+            const double v = mantissa(random) * std::pow(10.0, exponent(random));
+            texts << df::numberText(v);
+            std::snprintf(buf, sizeof buf, "%.17g", v);
+            texts << buf;
+            std::snprintf(buf, sizeof buf, "%+.12e", v);
+            texts << buf;
+            std::snprintf(buf, sizeof buf, "%.6f", v);
+            texts << buf;
+            std::snprintf(buf, sizeof buf, "%+.12e%cj%.12e", v, i % 2 ? '-' : '+', std::fabs(mantissa(random)));
+            texts << buf;
+        }
+        for (const QByteArray& t : std::as_const(texts)) {
+            double re = 1, im = 1, qRe = 2, qIm = 2;
+            bool complex = false, qComplex = true;
+            const bool ok = df::readValue(t, &re, &im, &complex);
+            const bool qOk = asQt(t, &qRe, &qIm, &qComplex);
+            QVERIFY2(ok == qOk && complex == qComplex, t.constData());
+            if (!ok) continue;
+            const auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0 || (std::isnan(a) && std::isnan(b)); };
+            QVERIFY2(same(re, qRe) && same(im, qIm), t.constData());
+        }
     }
 
     void saveAsTextGivesTheSameNumbers()

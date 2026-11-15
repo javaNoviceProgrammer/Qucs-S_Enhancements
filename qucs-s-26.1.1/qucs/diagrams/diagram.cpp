@@ -46,7 +46,12 @@
 #include <memory>
 #include <clocale>
 #include <cstring>
+#include <exception>
+#include <future>
+#include <mutex>
 #include <new>
+#include <system_error>
+#include <thread>
 
 #include "diagram.h"
 #include "main.h"
@@ -1184,7 +1189,7 @@ void Diagram::getAxisLimits(Graph *pg) {
 }
 
 // --------------------------------------------------------------------------
-void Diagram::loadGraphData(const QString &defaultDataSet) {
+void Diagram::loadGraphData(const QString &defaultDataSet, const int *loaded) {
     a_dataSet = defaultDataSet;
     int yNum = yAxis.numGraphs;
     int zNum = zAxis.numGraphs;
@@ -1199,7 +1204,8 @@ void Diagram::loadGraphData(const QString &defaultDataSet) {
     int No = 0;
     for (Graph *pg: Graphs) {
         qDebug() << "load GraphData load" << defaultDataSet << pg->Var;
-        if (pg->loadDatFile(defaultDataSet) != 1)   // load data, determine max/min values
+        const int read = loaded != nullptr ? *loaded++ : pg->loadDatFile(defaultDataSet);   // load data, determine max/min values
+        if (read != 1)
             No++;
         getAxisLimits(pg);
     }
@@ -1305,7 +1311,8 @@ void Diagram::updateGraphData() {
 // every graph); its last byte made the end of the string. Its blocks found
 // by name: each graph searched it from the top with strstr, for its
 // variable and for its sweep's - on a page of twelve traces over a 42 MB
-// dataset a third of its reload.
+// dataset a third of its reload. Read only once it is open - the graphs
+// loading at once (Graph::loadAll) read it together.
 struct Graph::TextFile {
     QFile file;
     QByteArray content;
@@ -1317,8 +1324,10 @@ struct Graph::TextFile {
     QHash<QByteArray, char *> dep;
     /// A name's first "<indep NAME ": at its '<'.
     QHash<QByteArray, char *> indep;
-    /// The sweeps' values as loadIndepVarData() parsed them (null: it could not).
-    QHash<QByteArray, std::shared_ptr<const QVector<double>>> sweeps;
+    /// The sweeps' values as loadIndepVarData() parsed them (null: it could
+    /// not) - or will have, the graph parsing one first.
+    std::mutex sweepsMutex;
+    QHash<QByteArray, std::shared_future<std::shared_ptr<const QVector<double>>>> sweeps;
 
     bool open(const QString &path) {
         file.setFileName(path);
@@ -1367,12 +1376,50 @@ struct Graph::TextFile {
 };
 
 struct Graph::SharedReading::Files {
-    QHash<QString, std::shared_ptr<TextFile>> texts;          // (null: it does not read)
-    QHash<QString, std::shared_ptr<const qucs_s::dataset::Dataset>> datasets;   // by their names (null: it does not read)
+    std::mutex mutex;
+    QHash<QString, std::shared_future<std::shared_ptr<TextFile>>> texts;          // (null: it does not read)
+    QHash<QString, std::shared_future<std::shared_ptr<const qucs_s::dataset::Dataset>>> datasets;   // by their names (null: it does not read)
 };
 
 namespace {
 thread_local Graph::SharedReading::Files *sharedFiles = nullptr;
+// LC_NUMERIC set to "C" for this thread's loading already: a loader of
+// Graph::loadAll's, set before they began (setlocale() is no call for
+// threads to make at once).
+thread_local bool numbersInC = false;
+
+void numbersReadInC() {
+    /* WORK-AROUND: A bug in SCIM (libscim) which Qt is linked to causes
+       to change the locale to the default. */
+    if (!numbersInC) setlocale(LC_NUMERIC, "C");
+}
+
+// What \a make makes for \a key, made once for all who ask - the first to
+// ask makes it, outside the lock; the others, then or meanwhile, wait for it.
+template <class Key, class T, class Make>
+T madeOnce(std::mutex &mutex, QHash<Key, std::shared_future<T>> &made, const Key &key, Make make) {
+    std::promise<T> promise;
+    std::shared_future<T> result;
+    bool mine = false;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (const auto it = made.constFind(key); it != made.constEnd()) {
+            result = *it;
+        } else {
+            result = promise.get_future().share();
+            made.insert(key, result);
+            mine = true;
+        }
+    }
+    if (mine) {
+        try {
+            promise.set_value(make());
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+        }
+    }
+    return result.get();
+}
 
 // A file as it is now: its name, when it was written and its size.
 QString versionKey(const QFileInfo &info) {
@@ -1388,11 +1435,7 @@ std::shared_ptr<Graph::TextFile> textOf(const QString &path) {
         return text;
     };
     if (sharedFiles == nullptr) return open();
-    const QString key = versionKey(QFileInfo(path));
-    if (const auto it = sharedFiles->texts.constFind(key); it != sharedFiles->texts.constEnd()) return *it;
-    auto text = open();
-    sharedFiles->texts.insert(key, text);
-    return text;
+    return madeOnce(sharedFiles->mutex, sharedFiles->texts, versionKey(QFileInfo(path)), open);
 }
 
 // \a path's dataset by its names: the independent variables' values, the
@@ -1404,11 +1447,7 @@ std::shared_ptr<const qucs_s::dataset::Dataset> namesOf(const QString &path) {
         return data->read(path, QSet<QString>()) ? std::shared_ptr<const qucs_s::dataset::Dataset>(std::move(data)) : nullptr;
     };
     if (sharedFiles == nullptr) return read();
-    const QString key = versionKey(QFileInfo(path));
-    if (const auto it = sharedFiles->datasets.constFind(key); it != sharedFiles->datasets.constEnd()) return *it;
-    auto data = read();
-    sharedFiles->datasets.insert(key, data);
-    return data;
+    return madeOnce(sharedFiles->mutex, sharedFiles->datasets, versionKey(QFileInfo(path)), read);
 }
 } // namespace
 
@@ -1420,6 +1459,58 @@ Graph::SharedReading::~SharedReading() {
     if (a_files == nullptr) return;
     sharedFiles = nullptr;
     delete a_files;
+}
+
+std::vector<int> Graph::loadAll(const std::vector<Graph *> &graphs, const QString &path) {
+    std::vector<int> loaded(graphs.size(), 0);
+    const unsigned cores = std::thread::hardware_concurrency();
+    // (Half the cores, up to four: each expression's reading holds its
+    // variables' values while it evaluates - more at once, more memory.)
+    const size_t threads = std::min<size_t>({graphs.size(), std::max(1u, cores / 2), 4});
+    if (threads <= 1) {
+        for (size_t i = 0; i < graphs.size(); ++i) loaded[i] = graphs[i]->loadDatFile(path);
+        return loaded;
+    }
+    numbersReadInC();   // (once, here: not by each loader at once)
+    Graph::SharedReading::Files *const files = sharedFiles;
+    // The expressions first: each reads its variables' values itself, the
+    // longest to load - begun last, the others waited for it.
+    std::vector<size_t> order(graphs.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_partition(order.begin(), order.end(), [&graphs](size_t i) {
+        return qucs_s::dataset::isExpression(graphs[i]->Var);
+    });
+    std::atomic<size_t> next{0};
+    std::mutex failedMutex;
+    std::exception_ptr failed;
+    // Each takes the next graph not taken, until none is left.
+    const auto load = [&] {
+        Graph::SharedReading::Files *const ownFiles = sharedFiles;
+        const bool ownInC = numbersInC;
+        sharedFiles = files;
+        numbersInC = true;
+        try {
+            for (size_t k; (k = next++) < graphs.size();) loaded[order[k]] = graphs[order[k]]->loadDatFile(path);
+        } catch (...) {
+            const std::lock_guard<std::mutex> lock(failedMutex);
+            if (!failed) failed = std::current_exception();
+            next = graphs.size();
+        }
+        sharedFiles = ownFiles;
+        numbersInC = ownInC;
+    };
+    std::vector<std::thread> helpers;
+    for (size_t k = 1; k < threads; ++k) {
+        try {
+            helpers.emplace_back(load);
+        } catch (const std::system_error &) {
+            break;   // (no thread to be had: fewer load)
+        }
+    }
+    load();   // (this thread too)
+    for (std::thread &t : helpers) t.join();
+    if (failed) std::rethrow_exception(failed);
+    return loaded;
 }
 
 // --------------------------------------------------------------------------
@@ -1435,9 +1526,7 @@ int Graph::loadDatFile(const QString &fileName) {
     QString Variable;
     QFileInfo Info(fileName);
 
-    /* WORK-AROUND: A bug in SCIM (libscim) which Qt is linked to causes
-       to change the locale to the default. */
-    setlocale(LC_NUMERIC, "C");
+    numbersReadInC();
 
     // The simulator's signature (ngspice/: name.dat.ngspice) - not a
     // division's slash (v(out)/v(in)).
@@ -1551,9 +1640,7 @@ int Graph::loadDatFile(const QString &fileName) {
     pFile += Variable.length();
     pPos = strchr(pFile, '>');
     if (!pPos) return 0;   // file corrupt
-    *pPos = 0;
-    Line = QString(pFile);
-    *pPos = '>';
+    Line = QString::fromUtf8(pFile, pPos - pFile);   // (no mark written: others read the text too)
     pFile = pPos + 1;
     if (!isIndep) {
         pos = 0;
@@ -1664,7 +1751,7 @@ int Graph::loadDatFile(const QString &fileName) {
         for (int z = counting; z > 0; z--) {
             pEnd = nullptr;
             while ((*pPos) && (*pPos <= ' ')) pPos++; // find start of next number
-            x = strtod(pPos, &pEnd);  // real part
+            x = qucs_s::datasetfile::strtodC(pPos, &pEnd);  // real part
             if (pEnd == pPos) {
                 // Not a number: the block holds fewer samples than its
                 // header promised, or it is corrupt. Never walk past it.
@@ -1680,14 +1767,18 @@ int Graph::loadDatFile(const QString &fileName) {
                     g->clearData();
                     return 0;
                 }
-                *pPos = *pEnd;  // overwrite 'j' with sign
+                // The imaginary part after the 'j', its sign the one before
+                // it - read where it is, not with the sign written over the
+                // 'j' (the text is others' too). As that was read: no space
+                // or second sign after the 'j'.
+                char *const digits = pPos + 1;
                 pEnd = nullptr;
-                y = strtod(pPos, &pEnd); // imaginary part
-                *pPos = 'j';   // write back old character
-                if (pEnd == pPos) {
+                y = (*digits > ' ' && *digits != '+' && *digits != '-') ? qucs_s::datasetfile::strtodC(digits, &pEnd) : 0.0;
+                if (pEnd == nullptr || pEnd == digits) {
                     g->clearData();
                     return 0;
                 }
+                if (pPos[-1] == '-') y = -y;
                 pPos = pEnd;
             }
             // The part of the value shown (dB, the phase, ...), as read.
@@ -1986,9 +2077,7 @@ int readSweep(const QString &Variable, Graph::TextFile &text, DataX *pD) {
     bool isIndep = false;
     QString Line, tmp;
 
-    /* WORK-AROUND: A bug in SCIM (libscim) which Qt is linked to causes
-       to change the locale to the default. */
-    setlocale(LC_NUMERIC, "C");
+    numbersReadInC();
 
     // (Points, count) must stay consistent: callers trust that a non-null
     // Points holds exactly count values, so a failed load leaves both empty.
@@ -2008,9 +2097,7 @@ int readSweep(const QString &Variable, Graph::TextFile &text, DataX *pD) {
     pFile += Line.length();
     char *pPos = strchr(pFile, '>');
     if (!pPos) return -1;   // file corrupt
-    *pPos = 0;
-    Line = QString(pFile);
-    *pPos = '>';
+    Line = QString::fromUtf8(pFile, pPos - pFile);   // (no mark written: others read the text too)
     pFile = pPos + 1;
     char *pEnd;
     if (!isIndep) {           // dependent variable can also be used...
@@ -2020,9 +2107,7 @@ int readSweep(const QString &Variable, Graph::TextFile &text, DataX *pD) {
         pPos += Line.length() + 8;
         pEnd = strchr(pPos, '>');
         if (!pEnd) return -1;   // file corrupt
-        *pEnd = 0;
-        Line = QString(pPos);
-        *pEnd = '>';
+        Line = QString::fromUtf8(pPos, pEnd - pPos);
     }
 
 
@@ -2047,7 +2132,7 @@ int readSweep(const QString &Variable, Graph::TextFile &text, DataX *pD) {
 
     for (int z = 0; z < n; z++) {
         pEnd = 0;
-        x = strtod(pPos, &pEnd);  // real part
+        x = qucs_s::datasetfile::strtodC(pPos, &pEnd);  // real part
 
         if (pPos == pEnd) {
             // Not a number: fewer values than the header claims, or the
@@ -2083,23 +2168,26 @@ int readSweep(const QString &Variable, Graph::TextFile &text, DataX *pD) {
    (Parsed once for the graphs over it while a SharedReading lives.)
 */
 int Graph::loadIndepVarData(const QString &Variable, TextFile &text, DataX *pD) {
-    const QByteArray key = Variable.toLatin1();
-    if (const auto it = text.sweeps.constFind(key); it != text.sweeps.constEnd()) {
-        if (pD->Points) delete[] pD->Points;
-        pD->Points = nullptr;
-        pD->count = 0;
-        if (!*it) return -1;
-        const QVector<double> &values = **it;
-        double *p = new (std::nothrow) double[values.size()];
-        if (!p) return -1;
-        std::copy(values.cbegin(), values.cend(), p);
-        pD->Points = p;
-        pD->count = int(values.size());
-        return pD->count;
-    }
-    const int n = readSweep(Variable, text, pD);
-    text.sweeps.insert(key, n > 0 ? std::make_shared<const QVector<double>>(pD->Points, pD->Points + n) : nullptr);
-    return n;
+    // (Parsed into \a pD by the graph that asks first, copied from it.)
+    bool parsed = false;
+    int n = -1;
+    const std::shared_ptr<const QVector<double>> values =
+        madeOnce(text.sweepsMutex, text.sweeps, Variable.toLatin1(), [&]() -> std::shared_ptr<const QVector<double>> {
+            parsed = true;
+            n = readSweep(Variable, text, pD);
+            return n > 0 ? std::make_shared<const QVector<double>>(pD->Points, pD->Points + n) : nullptr;
+        });
+    if (parsed) return n;
+    if (pD->Points) delete[] pD->Points;
+    pD->Points = nullptr;
+    pD->count = 0;
+    if (!values) return -1;
+    double *p = new (std::nothrow) double[values->size()];
+    if (!p) return -1;
+    std::copy(values->cbegin(), values->cend(), p);
+    pD->Points = p;
+    pD->count = int(values->size());
+    return pD->count;
 }
 
 /*!

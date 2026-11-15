@@ -56,6 +56,12 @@ bool isBinaryHead(QByteArrayView head);
 /// A number as a dataset's text has it: as many digits as it takes to read
 /// back the same double ("1.5e-03", "1.0000010000000001e+01").
 QByteArray numberText(double v);
+/// strtod() in the C locale, whatever the program's (a point, never a
+/// comma), by a locale of the calling thread's own: threads reading numbers
+/// at once do not wait for each other - macOS's strtod() locks the locale
+/// it reads in for each number, and four threads took fifteen times one
+/// thread's time (Graph::loadAll).
+double strtodC(const char* text, char** end);
 /// "+1.5e-3", "+1.5e-3+j2e-4", "-j2e-4": the real and imaginary parts of a
 /// value as text has it; false when it is no number.
 bool readValue(QByteArrayView text, double* re, double* im, bool* complex);

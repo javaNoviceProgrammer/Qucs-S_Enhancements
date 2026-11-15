@@ -21,8 +21,14 @@
 #include <QtEndian>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <locale.h>
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 #include <limits>
 #include <vector>
 
@@ -50,7 +56,65 @@ void fromLittle(double* values, qint64 count)
     Q_UNUSED(count);
 }
 
+// A number's text as a double. A decimal one - a sign, digits, a point, an
+// exponent - by the C library's reader (strtodC()), where it takes the
+// whole of it: 19 ns a number against Qt's 64 on this Mac, a third of a
+// reload of a page of two expressions over a 42 MB dataset. Anything else
+// (inf, nan, 0x10, a space, out of range) by Qt's, as before. Both round
+// correctly, so both give the same double.
+bool toDouble(QByteArrayView text, double* out)
+{
+    const qsizetype n = text.size();
+    if (n > 0 && n < 48) {
+        const char* s = text.data();
+        const qsizetype k = (s[0] == '+' || s[0] == '-') ? 1 : 0;
+        const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+        if (k < n && (digit(s[k]) || s[k] == '.') && !(k + 1 < n && (s[k + 1] == 'x' || s[k + 1] == 'X'))) {
+            char copy[48];   // (the view is no string: a NUL after it)
+            std::memcpy(copy, s, size_t(n));
+            copy[n] = 0;
+            char* end = nullptr;
+            errno = 0;
+            const double v = strtodC(copy, &end);
+            if (end == copy + n && errno == 0) {
+                *out = v;
+                return true;
+            }
+        }
+    }
+    bool ok = false;
+    *out = text.toDouble(&ok);
+    return ok;
+}
+
 } // namespace
+
+double strtodC(const char* text, char** end)
+{
+#if defined(__APPLE__) || defined(__GLIBC__)
+    // (One a thread: a locale shared by threads is locked as the global one is.)
+    struct Own {
+        locale_t c = newlocale(LC_ALL_MASK, "C", locale_t(nullptr));
+        ~Own()
+        {
+            if (c != locale_t(nullptr)) freelocale(c);
+        }
+    };
+    thread_local const Own own;
+    if (own.c != locale_t(nullptr)) return strtod_l(text, end, own.c);
+#elif defined(_WIN32)
+    struct Own {
+        _locale_t c = _create_locale(LC_ALL, "C");
+        ~Own()
+        {
+            if (c != nullptr) _free_locale(c);
+        }
+    };
+    thread_local const Own own;
+    if (own.c != nullptr) return _strtod_l(text, end, own.c);
+#endif
+    return std::strtod(text, end);
+}
 
 bool isBinaryHead(QByteArrayView head)
 {
@@ -75,21 +139,17 @@ QByteArray numberText(double v)
 bool readValue(QByteArrayView text, double* re, double* im, bool* complex)
 {
     *im = 0;
-    bool ok = false;
     const qsizetype j = text.indexOf('j');
     *complex = j >= 0;
-    if (j < 0) {
-        *re = text.toDouble(&ok);
-        return ok;
-    }
+    if (j < 0) return toDouble(text, re);
     if (j == 0) return false;
     const char sign = text.at(j - 1);
     if (sign != '+' && sign != '-') return false;
     const QByteArrayView rePart = text.first(j - 1);
-    *re = rePart.isEmpty() ? 0 : rePart.toDouble(&ok);
-    if (!rePart.isEmpty() && !ok) return false;
-    const double i = text.sliced(j + 1).toDouble(&ok);
-    if (!ok) return false;
+    *re = 0;
+    if (!rePart.isEmpty() && !toDouble(rePart, re)) return false;
+    double i = 0;
+    if (!toDouble(text.sliced(j + 1), &i)) return false;
     *im = sign == '-' ? -i : i;
     return true;
 }
