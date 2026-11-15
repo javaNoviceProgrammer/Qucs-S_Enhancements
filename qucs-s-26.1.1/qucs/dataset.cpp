@@ -157,7 +157,29 @@ bool Dataset::add(const Variable& v)
 
 bool Dataset::read(const QString& path, QString* error)
 {
+    return readFile(path, nullptr, error);
+}
+
+bool Dataset::read(const QString& path, const QSet<QString>& only, QString* error, const Dataset* sweeps)
+{
+    return readFile(path, &only, error, sweeps);
+}
+
+bool Dataset::readFile(const QString& path, const QSet<QString>* only, QString* error, const Dataset* sweeps)
+{
     if (isTable(path)) return readTable(path, error);
+    {
+        const QFileInfo info(path);
+        a_modified = info.lastModified().toMSecsSinceEpoch();
+        a_size = info.size();
+    }
+    // Sweeps of another reading taken only from the file as it is now.
+    if (sweeps != nullptr && (sweeps->a_path != path || sweeps->a_modified != a_modified || sweeps->a_size != a_size)) sweeps = nullptr;
+    // (A dependent variable \a only leaves out: its name and what it is
+    // over, without values.)
+    const auto leftOut = [only](bool independent, const QString& name) {
+        return only != nullptr && !independent && !only->contains(name);
+    };
     a_path = path;
     a_variables.clear();
     a_index.clear();
@@ -176,6 +198,11 @@ bool Dataset::read(const QString& path, QString* error)
             v.name = b.name();
             v.independent = b.independent();
             v.dependencies = b.dependencies();
+            if (leftOut(v.independent, v.name)) {
+                a_index.insert(v.name, int(a_variables.size()));
+                a_variables.append(v);
+                continue;
+            }
             if (!file.values(b, &v.re, &v.im)) return fail(tr("The values of %1 in %2 cannot be read.").arg(v.name, path));
             // Complex in the file, real in fact: read as real, with its sign.
             if (v.isComplex() && std::all_of(v.im.cbegin(), v.im.cend(), [](double i) { return i == 0; })) {
@@ -239,9 +266,32 @@ bool Dataset::read(const QString& path, QString* error)
                 bool counted = false;
                 const double said = words.value(2).toDouble(&counted);
                 declared.append(counted && said >= 0 && said < 1e15 ? qsizetype(said) : -1);
+                // Read already (sweeps): the block where it stands there,
+                // of its name and as many values as its header says.
+                if (sweeps != nullptr && a_variables.size() < sweeps->a_variables.size()) {
+                    const Variable& known = sweeps->a_variables.at(a_variables.size());
+                    if (known.independent && known.name == words.at(1) && declared.last() >= 0 && known.re.size() == declared.last()) {
+                        a_index.insert(known.name, int(a_variables.size()));
+                        a_variables.append(known);
+                        const char* next = static_cast<const char*>(std::memchr(p, '<', size_t(end - p)));
+                        p = next != nullptr ? next : end;
+                        continue;
+                    }
+                }
                 v.re.reserve(room(words.value(2).toDouble(), 1e7));
             } else if (words.first() == QLatin1String("dep")) {
                 v.dependencies = words.mid(2);
+                if (leftOut(false, words.at(1))) {
+                    // Its values passed over, to the next block's '<' (no
+                    // value holds one).
+                    v.name = words.at(1);
+                    a_index.insert(v.name, int(a_variables.size()));
+                    a_variables.append(v);
+                    declared.append(-1);
+                    const char* next = static_cast<const char*>(std::memchr(p, '<', size_t(end - p)));
+                    p = next != nullptr ? next : end;
+                    continue;
+                }
                 // As many values as its independent variables make.
                 double count = 1;
                 for (const QString& d : std::as_const(v.dependencies)) {
@@ -1057,9 +1107,15 @@ bool isExpression(const QString& text)
 {
     const QString t = text.trimmed();
     if (t.isEmpty()) return false;
-    for (const QString& f : functionNames())
-        if (QRegularExpression(QStringLiteral("(^|[^A-Za-z0-9_.])%1\\s*\\(").arg(f), QRegularExpression::CaseInsensitiveOption).match(t).hasMatch())
-            return true;
+    // A function's call: one pattern of them all, made once (one a name
+    // each, made at each call, was 3% of a page's reload).
+    static const QRegularExpression call = [] {
+        QStringList names;
+        for (const QString& f : functionNames()) names << QRegularExpression::escape(f);
+        return QRegularExpression(QStringLiteral("(^|[^A-Za-z0-9_.])(?:%1)\\s*\\(").arg(names.join(QLatin1Char('|'))),
+                                  QRegularExpression::CaseInsensitiveOption);
+    }();
+    if (call.match(t).hasMatch()) return true;
     // An operator outside a name: + - * / ^ not within v(...) and the like.
     int depth = 0;
     for (qsizetype k = 0; k < t.size(); ++k) {
@@ -1084,6 +1140,20 @@ bool checkExpression(const QString& expression, QString* error)
 {
     Parser parser(expression);
     return parser.parse(error) != nullptr;
+}
+
+QSet<QString> variablesOf(const Dataset& data, const QString& expression)
+{
+    Parser parser(expression);
+    QString error;
+    std::unique_ptr<Term> root = parser.parse(&error);
+    if (!root) return {};
+    QList<Term*> all;
+    namesOf(root.get(), all);
+    QSet<QString> names;
+    for (const Term* n : std::as_const(all))
+        for (const QString& name : data.resolve(n->text)) names.insert(name);
+    return names;
 }
 
 bool evaluate(const Dataset& data, const QString& expression, Variable* out, QString* error)

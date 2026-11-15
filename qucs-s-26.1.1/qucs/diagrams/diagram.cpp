@@ -43,6 +43,7 @@
 #include <cctype>
 #include <climits>
 #include <limits>
+#include <memory>
 #include <clocale>
 #include <cstring>
 #include <new>
@@ -56,6 +57,7 @@
 #include "misc.h"
 #include "datasetfile.h"
 #include "dataset.h"
+#include <QHash>
 #include "ink.h"
 
 #include <QTextStream>
@@ -1297,6 +1299,130 @@ void Diagram::updateGraphData() {
 }
 
 // --------------------------------------------------------------------------
+// A text dataset at hand, as the graphs read it: mapped privately - the
+// parse's end marks go to copies of its pages, never to the file - or read
+// when it cannot be mapped (a 480 MB dataset was read whole into memory for
+// every graph); its last byte made the end of the string. Its blocks found
+// by name: each graph searched it from the top with strstr, for its
+// variable and for its sweep's - on a page of twelve traces over a 42 MB
+// dataset a third of its reload.
+struct Graph::TextFile {
+    QFile file;
+    QByteArray content;
+    char *begin = nullptr;
+    char *end = nullptr;    // past its last byte (the NUL put in place of it)
+    char *stop = nullptr;   // its first NUL: where a search through it stopped
+    /// A name's first "<dep NAME " or "<indep NAME ": at its "dep", where
+    /// the search for "dep NAME " found it.
+    QHash<QByteArray, char *> dep;
+    /// A name's first "<indep NAME ": at its '<'.
+    QHash<QByteArray, char *> indep;
+    /// The sweeps' values as loadIndepVarData() parsed them (null: it could not).
+    QHash<QByteArray, std::shared_ptr<const QVector<double>>> sweeps;
+
+    bool open(const QString &path) {
+        file.setFileName(path);
+        if (!file.open(QIODevice::ReadOnly)) return false;
+        const qint64 size = file.size();
+        if (size <= 0) return false;   // nothing to parse
+        begin = reinterpret_cast<char *>(file.map(0, size, QFileDevice::MapPrivateOption));
+        if (begin == nullptr) {
+            content = file.readAll();
+            // An empty QByteArray hands out a shared read-only buffer;
+            // writing the terminator into it (below) would fault.
+            if (content.size() != size) return false;
+            begin = content.data();
+        }
+        end = begin + size;
+        char *const last = end - 1;
+        if (*last > ' ' && *last != '>') return false;
+        *last = 0;
+        stop = begin + strlen(begin);
+        // Each '<' that begins "dep " or "indep ", its name up to the space
+        // after it (a block over nothing, "<dep x>", the search passed by).
+        for (char *q = begin; q < stop; ++q) {
+            q = static_cast<char *>(memchr(q, '<', size_t(stop - q)));
+            if (q == nullptr) break;
+            const bool isIndep = strncmp(q + 1, "indep ", 6) == 0;
+            if (!isIndep && strncmp(q + 1, "dep ", 4) != 0) continue;
+            char *const name = q + (isIndep ? 7 : 5);
+            char *e = name;
+            while (*e != ' ' && *e != 0 && *e != '\n') ++e;   // (*stop is 0)
+            if (*e != ' ' || e == name) continue;
+            const QByteArray key(name, e - name);
+            if (!dep.contains(key)) dep.insert(key, isIndep ? q + 3 : q + 1);
+            if (isIndep && !indep.contains(key)) indep.insert(key, q);
+            q = e;
+        }
+        return true;
+    }
+
+    /// Where "dep NAME " begins, its block's (null: none); whether it is an
+    /// independent variable's said in \a isIndep (set only when it is).
+    char *findDep(const QByteArray &name, bool *isIndep) const {
+        char *const at = dep.value(name, nullptr);
+        if (at != nullptr && at - begin >= 3 && strncmp(at - 3, "<in", 3) == 0) *isIndep = true;
+        return at;
+    }
+};
+
+struct Graph::SharedReading::Files {
+    QHash<QString, std::shared_ptr<TextFile>> texts;          // (null: it does not read)
+    QHash<QString, std::shared_ptr<const qucs_s::dataset::Dataset>> datasets;   // by their names (null: it does not read)
+};
+
+namespace {
+thread_local Graph::SharedReading::Files *sharedFiles = nullptr;
+
+// A file as it is now: its name, when it was written and its size.
+QString versionKey(const QFileInfo &info) {
+    return info.filePath() + QLatin1Char('\n') + QString::number(info.lastModified().toMSecsSinceEpoch())
+           + QLatin1Char(' ') + QString::number(info.size());
+}
+
+// \a path's text, shared while a reading is; null when it does not read.
+std::shared_ptr<Graph::TextFile> textOf(const QString &path) {
+    const auto open = [&path] {
+        auto text = std::make_shared<Graph::TextFile>();
+        if (!text->open(path)) text.reset();
+        return text;
+    };
+    if (sharedFiles == nullptr) return open();
+    const QString key = versionKey(QFileInfo(path));
+    if (const auto it = sharedFiles->texts.constFind(key); it != sharedFiles->texts.constEnd()) return *it;
+    auto text = open();
+    sharedFiles->texts.insert(key, text);
+    return text;
+}
+
+// \a path's dataset by its names: the independent variables' values, the
+// dependent ones' names and what they are over (Dataset::read's only),
+// shared while a reading is; null when it does not read.
+std::shared_ptr<const qucs_s::dataset::Dataset> namesOf(const QString &path) {
+    const auto read = [&path] {
+        auto data = std::make_shared<qucs_s::dataset::Dataset>();
+        return data->read(path, QSet<QString>()) ? std::shared_ptr<const qucs_s::dataset::Dataset>(std::move(data)) : nullptr;
+    };
+    if (sharedFiles == nullptr) return read();
+    const QString key = versionKey(QFileInfo(path));
+    if (const auto it = sharedFiles->datasets.constFind(key); it != sharedFiles->datasets.constEnd()) return *it;
+    auto data = read();
+    sharedFiles->datasets.insert(key, data);
+    return data;
+}
+} // namespace
+
+Graph::SharedReading::SharedReading() {
+    if (sharedFiles == nullptr) sharedFiles = a_files = new Files;
+}
+
+Graph::SharedReading::~SharedReading() {
+    if (a_files == nullptr) return;
+    sharedFiles = nullptr;
+    delete a_files;
+}
+
+// --------------------------------------------------------------------------
 /*!
  * does not (yet) load a dat file. only part of it.
  * this way, it would belong to graph.cpp. but it's too obsolete, lets see..
@@ -1371,50 +1497,21 @@ int Graph::loadDatFile(const QString &fileName) {
     if (qucs_s::datasetfile::isBinary(file.fileName()))
         return loadBinaryDatFile(file.fileName(), Variable, hasExplIndep, ExplIndep);
 
-    if (!file.open(QIODevice::ReadOnly)) return 0;
-
     // *****************************************************************
-    // The whole file at hand at once: mapped, not read - a 480 MB dataset
-    // was read whole into memory for every graph. Privately: the end marks
-    // the parse writes go to copies of their pages, never to the file. (It
-    // stays open while mapped.) Read when it cannot be mapped.
-    const qint64 fileSize = file.size();
-    if (fileSize <= 0) return 0;   // nothing to parse
-    QByteArray FileContent;
-    char *FileString = reinterpret_cast<char *>(file.map(0, fileSize, QFileDevice::MapPrivateOption));
-    if (FileString == nullptr) {
-        FileContent = file.readAll();
-        // An empty QByteArray hands out a shared read-only buffer; writing
-        // the terminator into it (below) would fault.
-        if (FileContent.size() != fileSize) return 0;
-        FileString = FileContent.data();
-    }
-    if (!FileString) return 0;
-    char *const FileEnd = FileString + fileSize;  // (its last byte is made the terminating NUL below)
-    char *pPos = FileEnd - 1;
-    if (*pPos > ' ') if (*pPos != '>') return 0;
-    *pPos = 0;
+    // The whole file at hand at once (TextFile): the other graphs' too
+    // while a SharedReading lives - a page's reload.
+    const std::shared_ptr<TextFile> text = textOf(file.fileName());
+    if (!text) return 0;
+    char *const FileString = text->begin;
+    char *const FileEnd = text->end;  // (its last byte is the terminating NUL)
+    char *pPos;
 
 
     // *****************************************************************
     // look for variable name in data file  ****************************
     bool isIndep = false;
     const auto findVariable = [&](const QString &name) -> char * {
-        const QByteArray latin1 = ("dep " + name + " ").toLatin1();
-        char *at = strstr(FileString, latin1.constData());
-        while (at) {
-            // A match can sit at the very start of the buffer: never look
-            // behind its beginning.
-            const ptrdiff_t offset = at - FileString;
-            if (offset >= 1 && *(at - 1) == '<')     // is dependent variable ?
-                break;
-            else if (offset >= 3 && strncmp(at - 3, "<in", 3) == 0) {  // is independent variable ?
-                isIndep = true;
-                break;
-            }
-            at = strstr(at + 4, latin1.constData());
-        }
-        return at;
+        return text->findDep(name.toLatin1(), &isIndep);
     };
     // "pFile" is used through-out the whole function and must NOT used
     // for other purposes!
@@ -1524,7 +1621,7 @@ int Graph::loadDatFile(const QString &fileName) {
             }
             else if(pD == bLast)  pa = &yAxis;   // y axis for Rect3D
 #endif
-            counting = loadIndepVarData(pD->Var, FileString, mutable_axis(ii));
+            counting = loadIndepVarData(pD->Var, *text, mutable_axis(ii));
             if (counting <= 0 || g->countY > INT_MAX / counting) {
                 g->clearData();
                 return 0;
@@ -1681,9 +1778,22 @@ int Graph::loadDatFile(const QString &fileName) {
 int Graph::loadExpression(const QString &path, const QString &expression, bool hasExplIndep, const QString &explIndep)
 {
     namespace ds = qucs_s::dataset;
+    // The values of its own variables only: the dataset's names read first
+    // (once for the page's expressions over it, SharedReading), then those
+    // it names - a 42 MB dataset of ten variables was read whole for each
+    // expression over two, two thirds of its page's reload.
+    const std::shared_ptr<const ds::Dataset> names = namesOf(path);
+    if (!names) return -1;   // (its file's own loading says why not)
+    if (names->find(expression) != nullptr) return -1;   // a variable so named
+    // (And what it is plotted against, @x - a dependent variable too - and
+    // what each is over.)
+    QSet<QString> wanted = ds::variablesOf(*names, expression);
+    if (hasExplIndep) wanted.insert(explIndep);
+    for (const QString &n : QSet<QString>(wanted))
+        if (const ds::Variable *v = names->find(n))
+            for (const QString &over : v->dependencies) wanted.insert(over);
     ds::Dataset data;
-    if (!data.read(path)) return -1;   // (its file's own loading says why not)
-    if (data.find(expression) != nullptr) return -1;   // a variable so named
+    if (!data.read(path, wanted, nullptr, names.get())) return -1;
     ds::Variable v;
     QString why;
     if (!ds::evaluate(data, expression, &v, &why)) {
@@ -1869,11 +1979,10 @@ int Graph::loadIndepVarData(const QString &Variable, const qucs_s::datasetfile::
     return int(n);
 }
 
-/*!
-   Reads the data of an independent variable. Returns the number of points.
-*/
-int Graph::loadIndepVarData(const QString &Variable,
-                            char *FileString, DataX *pD) {
+namespace {
+// An independent variable's values from \a text into \a pD; how many
+// (-1: none to read).
+int readSweep(const QString &Variable, Graph::TextFile &text, DataX *pD) {
     bool isIndep = false;
     QString Line, tmp;
 
@@ -1890,22 +1999,9 @@ int Graph::loadIndepVarData(const QString &Variable,
     pD->count = 0;
 
     Line = "dep " + Variable + " ";
-    const QByteArray LineLatin1 = Line.toLatin1();
     // "pFile" is used through-out the whole function and must NOT used
     // for other purposes!
-    char *pFile = strstr(FileString, LineLatin1.constData());
-    while (pFile) {
-        // A match can sit at the very start of the buffer: never look
-        // behind its beginning.
-        const ptrdiff_t offset = pFile - FileString;
-        if (offset >= 1 && *(pFile - 1) == '<')     // is dependent variable ?
-            break;
-        else if (offset >= 3 && strncmp(pFile - 3, "<in", 3) == 0) {  // is independent variable ?
-            isIndep = true;
-            break;
-        }
-        pFile = strstr(pFile + 4, LineLatin1.constData());
-    }
+    char *pFile = text.findDep(Variable.toLatin1(), &isIndep);
 
     if (!pFile) return -1;   // data not found
 
@@ -1919,11 +2015,9 @@ int Graph::loadIndepVarData(const QString &Variable,
     char *pEnd;
     if (!isIndep) {           // dependent variable can also be used...
         if (Line.indexOf(' ') >= 0) return -1; // ...if only one dependency
-        Line = "<indep " + Line + " ";
-        const QByteArray IndepLatin1 = Line.toLatin1();
-        pPos = strstr(FileString, IndepLatin1.constData());
+        pPos = text.indep.value(Line.toLatin1(), nullptr);   // its "<indep NAME "
         if (!pPos) return -1;
-        pPos += Line.length();
+        pPos += Line.length() + 8;
         pEnd = strchr(pPos, '>');
         if (!pEnd) return -1;   // file corrupt
         *pEnd = 0;
@@ -1937,7 +2031,7 @@ int Graph::loadIndepVarData(const QString &Variable,
     // A sample occupies at least two bytes in the file ("0\n"), so a count
     // that cannot fit into the rest of the file is corrupt. Refusing it here
     // also keeps negative or absurd counts away from new[] (upstream #1539).
-    if (!ok || n <= 0 || static_cast<size_t>(n) > strlen(pFile) / 2 + 1) return -1;
+    if (!ok || n <= 0 || static_cast<size_t>(n) > size_t(text.stop - pFile) / 2 + 1) return -1;
 
     double *p = new (std::nothrow) double[n];     // memory for new independent variable
     if (!p) return -1;
@@ -1981,6 +2075,31 @@ int Graph::loadIndepVarData(const QString &Variable,
     }
 
     return n;   // return number of independent data
+}
+} // namespace
+
+/*!
+   Reads the data of an independent variable. Returns the number of points.
+   (Parsed once for the graphs over it while a SharedReading lives.)
+*/
+int Graph::loadIndepVarData(const QString &Variable, TextFile &text, DataX *pD) {
+    const QByteArray key = Variable.toLatin1();
+    if (const auto it = text.sweeps.constFind(key); it != text.sweeps.constEnd()) {
+        if (pD->Points) delete[] pD->Points;
+        pD->Points = nullptr;
+        pD->count = 0;
+        if (!*it) return -1;
+        const QVector<double> &values = **it;
+        double *p = new (std::nothrow) double[values.size()];
+        if (!p) return -1;
+        std::copy(values.cbegin(), values.cend(), p);
+        pD->Points = p;
+        pD->count = int(values.size());
+        return pD->count;
+    }
+    const int n = readSweep(Variable, text, pD);
+    text.sweeps.insert(key, n > 0 ? std::make_shared<const QVector<double>>(pD->Points, pD->Points + n) : nullptr);
+    return n;
 }
 
 /*!

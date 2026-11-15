@@ -14,6 +14,7 @@
 
 #include <complex>
 #include <QHash>
+#include <QSet>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -47,6 +48,17 @@ public:
     /// a .csv, .tsv or .xlsx file (a script's results, a Monte Carlo's
     /// workbook) - is read as one (readTable()).
     bool read(const QString& path, QString* error = nullptr);
+    /// The same, the values only of the dependent variables named in
+    /// \a only (and of every independent one); the others are there by name
+    /// and what they are over, without values - what resolve() and
+    /// variablesOf() look at. (A table is read whole.) An expression's
+    /// graph reads its dataset so: its names first, then its variables'
+    /// values (Graph::loadExpression). The independent variables of
+    /// \a sweeps, a reading of the same file, are taken from it, not
+    /// parsed again (each where it stands in the file, of the name and
+    /// count its header gives) - when \a sweeps read the file as it is now,
+    /// written when and as long as it is.
+    bool read(const QString& path, const QSet<QString>& only, QString* error = nullptr, const Dataset* sweeps = nullptr);
     /// A table's columns as variables: the first row with text names them
     /// (else A, B, ...), each column with numbers under it is one; they
     /// depend on the first column when it rises steadily (time, frequency),
@@ -74,7 +86,9 @@ public:
     bool add(const Variable& v);
 
 private:
+    bool readFile(const QString& path, const QSet<QString>* only, QString* error, const Dataset* sweeps = nullptr);
     QString a_path;
+    qint64 a_modified = -1, a_size = -1;   // the file read: when it was written (ms), how long
     QList<Variable> a_variables;
     QHash<QString, int> a_index;
     QStringList a_notes;
@@ -100,6 +114,10 @@ bool checkExpression(const QString& expression, QString* error);
 /// the variables' independent ones; false and why in \a error when it does
 /// not evaluate.
 bool evaluate(const Dataset& data, const QString& expression, Variable* out, QString* error);
+/// The variables of \a data that evaluate() would look at for
+/// \a expression - what resolve() finds for each name in it; none when it
+/// does not parse.
+QSet<QString> variablesOf(const Dataset& data, const QString& expression);
 
 /// A value of an operating point: an independent variable of one value
 /// that nothing depends on - a node voltage or branch current an op

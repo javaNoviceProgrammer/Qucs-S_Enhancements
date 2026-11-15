@@ -2167,6 +2167,10 @@ Schematic::Selection Schematic::elementsToSelection(const std::list<Element*> &e
 void Schematic::reloadGraphs(bool force)
 {
     ++a_sceneGeneration;   // (new data: not an edit, but a new picture)
+    // Each dataset read once for the page's traces over it, not once a
+    // trace: its blocks indexed, its sweeps parsed, an expression's dataset
+    // read - once (Graph::SharedReading).
+    const Graph::SharedReading shared;
     QFileInfo Info(a_DocName);
     for (Diagram *pd : *a_Diagrams) {
         if (force)
