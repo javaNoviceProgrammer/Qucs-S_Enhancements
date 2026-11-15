@@ -3172,6 +3172,16 @@ private slots:
         QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "none.s2p"}}, 60000)));
         QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"order", QJsonArray{1, 9}}}, 60000)));
         QVERIFY(failed(call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"order", "1, 2"}}, 60000)));
+        // Its far field (rf25_farfield): the figures of its first port at its
+        // one frequency, and its two cuts from -90 to 90 degrees.
+        const QJsonObject far = call("rf25_farfield", {{"path", model}, {"step", 5}}, 60000);
+        QVERIFY2(!failed(far), qPrintable(text(far)));
+        const QJsonObject figures = json(far).toObject();
+        QCOMPARE(figures.value("frequency_hz").toDouble(), 3e9);
+        QVERIFY(figures.value("radiated_w").toDouble() > 0 && figures.value("accepted_w").toDouble() > figures.value("radiated_w").toDouble());
+        QCOMPARE(figures.value("cuts").toArray().size(), 2);
+        QCOMPARE(figures.value("cuts").toArray().at(1).toObject().value("points").toArray().size(), 37);
+        QVERIFY(failed(call("rf25_farfield", {{"path", model}, {"port", "none"}}, 60000)));
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
     }
 

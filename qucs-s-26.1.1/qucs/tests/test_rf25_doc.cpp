@@ -5035,7 +5035,7 @@ private slots:
             QDataStream s(&later);
             s.setVersion(QDataStream::Qt_6_0);
             s.writeRawData("QRF25SOL", 8);
-            s << quint32(5) << QByteArray("a later build's");
+            s << quint32(6) << QByteArray("a later build's");
         }
         doc = open(file);
         QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));

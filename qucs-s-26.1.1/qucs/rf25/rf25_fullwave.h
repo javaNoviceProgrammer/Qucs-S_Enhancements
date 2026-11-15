@@ -450,6 +450,16 @@ struct FullWave {
     QList<QList<PortReturn>> returnsOf;
     QList<bool> namesReturns;
     QList<Filament> geometry;        ///< the runs themselves, beside the currents: in the plane, then the vias
+    /// Each port's own path up from the ground (or the metal it is driven
+    /// from) to a cell it drives, at the cell's centre: its share of the
+    /// port's ampere, up (rf25_farfield.h's far field has them).
+    struct PortPathLeg {
+        int port = 0;
+        QPointF at;                  ///< m
+        double z0 = 0, z1 = 0;       ///< m, the stack's own heights
+        double current = 0;          ///< of the port's ampere, up
+    };
+    QList<PortPathLeg> portPaths;
     /// The cells of the mesh each run goes from and to; -1 from: the ground
     /// a via stands on.
     QList<QPair<int, int>> ends;
