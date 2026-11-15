@@ -566,6 +566,8 @@ QString extractStepSaid(int step, int done, int all, int images)
         return tr("solving the line's middle cross-section");
     case ExtractControl::Losses:
         return tr("solving again for each lossy dielectric's share of the field, %1 of %2").arg(done + 1).arg(all);
+    case ExtractControl::Loop:
+        return tr("finding the loop's inductance over its runs of current");
     default:
         return tr("starting");
     }

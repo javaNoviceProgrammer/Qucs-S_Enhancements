@@ -1601,6 +1601,10 @@ private slots:
         QVERIFY(!huge.ok());
         QVERIFY2(huge.problems.first().contains(QStringLiteral("dense matrix")), qPrintable(huge.problems.join(" | ")));
         QCOMPARE(step.load(), int(rf::ExtractControl::Starting));
+        // And the loop's inductance, after it, is said as itself, not as
+        // "starting".
+        QVERIFY2(rf::extractStepSaid(rf::ExtractControl::Loop, 0, 0, 0).contains(QStringLiteral("loop's inductance")),
+                 qPrintable(rf::extractStepSaid(rf::ExtractControl::Loop, 0, 0, 0)));
     }
 };
 

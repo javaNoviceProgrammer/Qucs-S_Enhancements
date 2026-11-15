@@ -76,6 +76,7 @@
 #include <QStringList>
 
 #include <array>
+#include <functional>
 #include <atomic>
 
 namespace qucs_s::rf25 {
@@ -256,6 +257,10 @@ void setLoopDenseLimit(int runsAndCells);
 /// machine's memory). Past it, inductanceOf() refuses before it fills L or
 /// factorizes its near field, and says what it would have taken.
 void setLoopMemory(double bytes);
+/// Tests: \a hook called on the compressed loop's factorization's own thread
+/// before it factorizes its near field (empty: none) - a test holds it
+/// there to stop the solve while it factorizes.
+void setLoopFactorizing(const std::function<void()>& hook);
 
 /// The runs of current the mesh of \a conductors makes: the pairs of
 /// cells that share an edge, and - unless not \a vias - the vias that join

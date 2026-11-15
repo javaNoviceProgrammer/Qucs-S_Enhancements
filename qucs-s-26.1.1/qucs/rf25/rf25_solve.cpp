@@ -562,9 +562,15 @@ void runSolve(SolveJob& job)
         std::make_shared<Extraction>(extract(job.mesh, job.conductors, job.stack, 1e-6, job.returns, &control));
     if (job.stop.load()) return;
     if (job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
-    if (job.loop)
+    if (job.loop) {
+        // (Said, where the tab showed "starting" through it: a charge solve
+        //  refused for its size leaves the step where it began.)
+        job.stepDone = 0;
+        job.stepAll = 0;
+        job.step = ExtractControl::Loop;
         job.inductance = std::make_shared<Inductance>(
             inductanceOf(job.mesh, job.conductors, job.stack, job.in, job.out, 1e-6, job.frequency, &job.stop));
+    }
 }
 
 std::shared_ptr<FullWave> trlOn(SolveJob& job, const FullWave& wave)

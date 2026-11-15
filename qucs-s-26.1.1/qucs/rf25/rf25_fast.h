@@ -205,9 +205,11 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
  * \a reach times the longer of the two's longest sides in the plane. Of
  * one list (\a b null), each pair once, the first no later than the
  * second. What a compressed solve's near field - its preconditioner - is
- * made of (the full-wave solve's, the loop's inductance).
+ * made of (the full-wave solve's, the loop's inductance). Given \a most,
+ * past that many it stops, says so in \a over and gives none: a mesh of
+ * nanometre slivers beside 15 µm runs made 259 million.
  */
-QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach);
+QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach, qint64 most = 0, bool* over = nullptr);
 
 /// What GMRES did.
 struct Gmres {

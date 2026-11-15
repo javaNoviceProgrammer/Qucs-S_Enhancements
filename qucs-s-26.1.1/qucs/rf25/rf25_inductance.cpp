@@ -24,6 +24,7 @@
 #include <Eigen/Sparse>
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -31,6 +32,7 @@
 #include <limits>
 #include <memory>
 #include <queue>
+#include <thread>
 #include <vector>
 
 namespace qucs_s::rf25 {
@@ -69,6 +71,11 @@ std::atomic<int> loopDenseLimitSet{0};
 /// full-wave solve's measure of an unknown (rf25_fast.h); an octagonal spiral
 /// of 122,000 runs held its in 23 kB a run.
 constexpr double kLoopBytesPerRun = 20e3;
+/// What a pair of the compressed loop's near field takes at the most, bytes:
+/// itself, its two triplets of the preconditioner, and its two entries of
+/// the sparse matrix made of them twice over - Eigen's setFromTriplets()
+/// assembles a copy first (the factors weighed apart, from their analysis).
+constexpr double kLoopBytesPerNearPair = 8 + 2 * 24 + 2 * 2 * 20;
 /// Tests: what a compressed loop may take, bytes (0: half the machine's).
 std::atomic<double> loopMemorySet{0};
 /// Two runs further apart than this many of their widths have their
@@ -747,8 +754,11 @@ double loopKernel(const Filament& a, const Filament& b)
 }
 
 /// \a runs' L held compressed into \a l, filled; false (and why) where it
-/// cannot be, or \a stop was set on the way.
-bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::atomic_bool* stop, QString* why)
+/// cannot be, or \a stop was set on the way - or where its near field, made
+/// first, has more pairs than \a nearBytes holds at kLoopBytesPerNearPair
+/// (0: any), \a nearOver then set.
+bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::atomic_bool* stop, QString* why,
+                 double nearBytes = 0, bool* nearOver = nullptr)
 {
     QList<Box> boxes, xs, ys, zs;
     for (int a = 0; a < runs.size(); ++a) {
@@ -784,6 +794,17 @@ bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::
             zs << box;
         }
     }
+    // The near field first, its size weighed before it is kept or L is
+    // filled: on a mesh of nanometre slivers beside 15 µm runs it was 259
+    // million pairs, and the triplets and matrix made of them took the
+    // machine past 60 GB.
+    bool over = false;
+    const QList<QPair<int, int>> near =
+        nearPairs(boxes, nullptr, kLoopNear, nearBytes > 0 ? qint64(nearBytes / kLoopBytesPerNearPair) : 0, &over);
+    if (over) {
+        if (nearOver != nullptr) *nearOver = true;
+        return false;
+    }
     l.xTree = ClusterTree(xs, kLoopLeaf);
     l.yTree = ClusterTree(ys, kLoopLeaf);
     l.zTree = ClusterTree(zs, kLoopLeaf);
@@ -800,7 +821,7 @@ bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::
         if (why != nullptr) *why = tr("The inductance was stopped.");
         return false;
     }
-    for (const QPair<int, int>& pair : nearPairs(boxes, nullptr, kLoopNear))
+    for (const QPair<int, int>& pair : near)
         if (std::abs(l.cosine(pair.first, pair.second)) >= 1e-9) l.near << pair;
     return true;
 }
@@ -815,6 +836,17 @@ void setLoopDenseLimit(int runsAndCells)
 void setLoopMemory(double bytes)
 {
     loopMemorySet = std::max(0.0, bytes);
+}
+
+namespace {
+/// Tests: called on the near field's factorization's thread before it
+/// factorizes (setLoopFactorizing()).
+std::function<void()> loopFactorizing;
+}
+
+void setLoopFactorizing(const std::function<void()>& hook)
+{
+    loopFactorizing = hook;
 }
 
 int loopDenseLimit()
@@ -1165,8 +1197,20 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         compressed = std::make_unique<LoopL>();
         QString why;
         const int threads = std::max(1, QThread::idealThreadCount());
-        if (!compressedL(*compressed, out.runs, threads, stop, &why)) {
-            out.problems << why;
+        bool nearOver = false;
+        const double vectors = 16.0 * double(kLoopRestart + 4) * rows;
+        const double forNear = budget - kLoopBytesPerRun * nb - vectors;
+        if (!compressedL(*compressed, out.runs, threads, stop, &why, std::max(1.0, forNear), &nearOver)) {
+            if (nearOver)
+                out.problems << tr("The compressed solve of %1 runs of current would take more than the %2 GB a solve may take "
+                                   "here: its near field, which the solve is preconditioned with, has more pairs of runs than "
+                                   "the %3 GB left beside L holds - small cells beside large ones make it so. Mesh the layout "
+                                   "more evenly or more coarsely: fewer cells across a conductor, or a larger largest cell.")
+                                    .arg(nb)
+                                    .arg(budget / 1e9, 0, 'g', 3)
+                                    .arg(std::max(0.0, forNear) / 1e9, 0, 'g', 3);
+            else
+                out.problems << why;
             return out;
         }
         const LoopL& l = *compressed;
@@ -1190,16 +1234,43 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         Eigen::SparseMatrix<Complex> pre(rows, rows);
         pre.setFromTriplets(near.begin(), near.end());
         pre.makeCompressed();
+        // (Its triplets let go before the factors are made, not held beside
+        //  them to the end of the solve.)
+        std::vector<Eigen::Triplet<Complex>>().swap(near);
         // (Symmetric - L's near pairs both ways round, A and its transpose -,
         //  so an L D L^T: Accelerate's, in some fifth of an LU's memory, its
         //  size known from its analysis before it is factorized.)
         const double held = l.kx.bytes() + l.ky.bytes() + l.kz.bytes();
-        const double vectors = 16.0 * double(kLoopRestart + 4) * rows;
-        const double matrix = 20.0 * double(pre.nonZeros());
+        const double matrix = 20.0 * double(pre.nonZeros()) + 8.0 * double(l.near.size());
         const double left = budget - held - vectors - matrix;
-        fem::SparseComplexLdlt lu;
+        // Factorized on a thread of its own, watched: Accelerate's
+        // factorization has no stop of its own, and a solve asked to stop
+        // in it went on, "still at work after 60 s", until Qucs-S was quit
+        // Asked to stop, the solve lets
+        // it finish in the background - it holds what it works on - and
+        // ends at once.
+        const auto factors = std::make_shared<fem::SparseComplexLdlt>();
+        const auto nearField = std::make_shared<const Eigen::SparseMatrix<Complex>>(std::move(pre));
+        fem::SparseComplexLdlt& lu = *factors;
         lu.setMemoryLimit(std::max(1.0, left));
-        if (left > 0) lu.compute(pre);
+        if (left > 0) {
+            const auto finished = std::make_shared<std::atomic_bool>(false);
+            std::thread factorizing([factors, nearField, finished, hook = loopFactorizing] {
+                if (hook) hook();
+                factors->compute(*nearField);
+                finished->store(true);
+            });
+            while (!finished->load()) {
+                if (stop != nullptr && stop->load()) {
+                    factorizing.detach();
+                    out.problems << tr("The inductance was stopped. (The factorization of its near field, which cannot be "
+                                       "interrupted, finishes in the background and is let go.)");
+                    return out;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            factorizing.join();
+        }
         if (left <= 0 || (lu.info() != Eigen::Success && lu.factorBytes() > left)) {
             out.problems << tr("The compressed solve of %1 runs of current would take more than the %2 GB a solve may take "
                                "here: L held in %3 GB, and the factors of its near field, which the solve is preconditioned "
