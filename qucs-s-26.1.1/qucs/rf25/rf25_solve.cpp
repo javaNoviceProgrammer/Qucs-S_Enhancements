@@ -962,7 +962,7 @@ ModelSolution solveModel(SolveJob& job, const Model& model, const qucs_s::layout
         out.length = job.result && job.result->perMetre.fromMiddle && job.result->perMetre.length > 0 ? job.result->perMetre.length : job.length;
         if (job.result && !job.result->ok()) out.problem = job.result->problems.join(QStringLiteral("; "));
     }
-    if (out.problem.isEmpty() && !out.wave && !out.extraction && !out.stopped) out.problem = tr("The solve gave no answer.");
+    if (out.problem.isEmpty() && !out.wave && !out.extraction && !out.inductance && !out.stopped) out.problem = tr("The solve gave no answer.");
     return out;
 }
 
