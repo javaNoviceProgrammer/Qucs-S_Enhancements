@@ -290,6 +290,7 @@ qucs_add_test(test_rf25_inductance)
 qucs_add_test(test_rf25_wave)
 qucs_add_test(test_rf25_box)
 qucs_add_test(test_rf25_farfield)
+qucs_add_test(test_rf25_tdr)
 qucs_add_test(test_rf25_fast)
 qucs_add_test(test_rf25_dense)
 # (Whether this build has Accelerate's LAPACK - not every macOS build has:

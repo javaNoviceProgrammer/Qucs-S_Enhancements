@@ -3187,6 +3187,9 @@ private slots:
         const QJsonObject farOpen = call("rf25_farfield", {{"path", model}, {"others", "open"}}, 60000);
         QVERIFY2(!failed(farOpen) && json(farOpen).toObject().value("others").toString() == QStringLiteral("open"), qPrintable(text(farOpen)));
         QVERIFY(failed(call("rf25_farfield", {{"path", model}, {"others", "shorted"}}, 60000)));
+        // Its time domain (rf25_tdr): one frequency is too few to make one.
+        const QJsonObject tdr = call("rf25_tdr", {{"path", model}}, 60000);
+        QVERIFY2(failed(tdr) && text(tdr).contains(QLatin1String("four frequencies")), qPrintable(text(tdr)));
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
     }
 
