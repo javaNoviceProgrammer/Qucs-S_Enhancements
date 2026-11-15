@@ -603,6 +603,8 @@ QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF
     // it can come within reach.
     struct Copy {
         double lo, hi, sign;
+        bool mirrored;
+        int period;
     };
     const auto along = [reach](double lo, double hi, double from, double size, double sign, double here) {
         QList<Copy> copies;
@@ -610,7 +612,7 @@ QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF
         for (int p = -most; p <= most; ++p)
             for (const bool mirrored : {false, true}) {
                 const double l = mirrored ? 2 * from - hi : lo, h = mirrored ? 2 * from - lo : hi;
-                const Copy c{l + 2 * size * p, h + 2 * size * p, mirrored ? sign : 1.0};
+                const Copy c{l + 2 * size * p, h + 2 * size * p, mirrored ? sign : 1.0, mirrored, p};
                 if (std::abs(0.5 * (c.lo + c.hi) - here) <= reach + 0.5 * (hi - lo)) copies << c;
             }
         return copies;
@@ -620,9 +622,9 @@ QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF
     for (const Copy& x : xs)
         for (const Copy& y : ys) {
             const QRectF r(QPointF(x.lo, y.lo), QPointF(x.hi, y.hi));
-            if (std::abs(x.lo - rect.left()) < 1e-15 && std::abs(y.lo - rect.top()) < 1e-15 && x.sign > 0 && y.sign > 0) continue;   // (itself)
+            if (x.period == 0 && y.period == 0 && !x.mirrored && !y.mirrored) continue;   // (itself)
             if (std::hypot(r.center().x() - at.x(), r.center().y() - at.y()) > reach + 0.5 * std::hypot(r.width(), r.height())) continue;
-            out << BoxImage{x.sign * y.sign, r};
+            out << BoxImage{x.sign * y.sign, r, x.mirrored, y.mirrored};
         }
     return out;
 }

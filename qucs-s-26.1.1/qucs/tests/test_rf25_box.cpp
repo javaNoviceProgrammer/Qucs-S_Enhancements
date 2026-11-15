@@ -110,6 +110,108 @@ private slots:
         QVERIFY2(found, qPrintable(QStringLiteral("TE1 with loss: %1%2j").arg(te1.real()).arg(te1.imag())));
     }
 
+    // The scalar potential's modes (the review of 3c834794: nothing checked
+    // them, the half a box's charges use). Between uniform plates a charge's
+    // potential is Dirichlet at both, sin(n pi z/h) n >= 1: its modes at
+    // k_p^2 = k^2 - (n pi/h)^2 - TM1 and TE1 together, propagating, TM2 and
+    // TE2 below their cutoff - its residues (2/h) sin sin/(2 eps k_p), in
+    // closed form, to 1e-6; the kernel far out their sum; and with loss.
+    void theScalarsModesAreThePlatesOwn()
+    {
+        const double h = 2e-3, zf = 0.6e-3, zs = 1.3e-3, f = 60e9, er = 4;
+        const rf::Layers l = plates(er, h, 1e-3);
+        const double k = 2 * M_PI * f * std::sqrt(kMu0 * rf::kEps0 * er);
+        QStringList problems;
+        const QList<rf::GuideMode> modes = rf::guideModes(l, zf, zs, f, rf::BoxKernel::Scalar, 3000, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        QCOMPARE(modes.size(), 2);
+        for (const rf::GuideMode& m : modes) {
+            const int n = m.kr.real() > 0 ? 1 : 2;
+            const double kz = n * M_PI / h;
+            const Complex kp = std::sqrt(Complex(k * k - kz * kz, 0));
+            const Complex want = n == 1 ? kp : Complex(0, -std::abs(kp));
+            QVERIFY2(std::abs(m.kr / want - 1.0) < 1e-6, qPrintable(QStringLiteral("n %1: %2%3j against %4%5j").arg(n).arg(m.kr.real()).arg(m.kr.imag())
+                                                                    .arg(want.real()).arg(want.imag())));
+            const Complex residue = (2 / h) * std::sin(kz * zf) * std::sin(kz * zs) / (2.0 * rf::kEps0 * er * want);
+            QVERIFY2(std::abs(m.residue / residue - 1.0) < 1e-6,
+                     qPrintable(QStringLiteral("n %1's residue %2 against %3").arg(n).arg(std::abs(m.residue)).arg(std::abs(residue))));
+        }
+        const rf::WaveGreen g(l, zf, zs, f, 12e-3);
+        for (const double rho : {6e-3, 10e-3}) {
+            Complex sum(0, 0);
+            for (const rf::GuideMode& m : modes) sum += rf::modeKernel(m, rho);
+            QVERIFY2(std::abs(g.scalar(rho) / sum - 1.0) < 1e-5,
+                     qPrintable(QStringLiteral("%1 mm: the kernel %2, its modes %3").arg(rho * 1e3).arg(std::abs(g.scalar(rho))).arg(std::abs(sum))));
+        }
+        const QList<rf::GuideMode> lossy = rf::guideModes(plates(er, h, 1e-3, 0.01), zf, zs, f, rf::BoxKernel::Scalar, 3000, &problems);
+        QVERIFY2(problems.isEmpty() && lossy.size() == 2, qPrintable(problems.join(" | ")));
+        const Complex kLossy = 2 * M_PI * f * std::sqrt(kMu0 * rf::kEps0 * er * Complex(1, -0.01));
+        const Complex n1 = std::sqrt(kLossy * kLossy - std::pow(M_PI / h, 2));
+        bool found = false;
+        for (const rf::GuideMode& m : lossy) found = found || std::abs(m.kr / n1 - 1.0) < 1e-6;
+        QVERIFY2(found, qPrintable(QStringLiteral("n 1 with loss: %1%2j").arg(n1.real()).arg(n1.imag())));
+    }
+
+    // A nearly even fill - 1 mm of 4 under 1 mm of 4.04 - puts a TE mode and
+    // a TM one closer than the search's samples (the review of 3c834794: two
+    // sign changes in one sample cancel, and both were missed). The scalar
+    // kernel's modes are its quasi-TEM TM0, TE1 and TM1, TE2 and TM2 below
+    // their cutoff: each the TE or the TM line's transverse resonance, the two
+    // slabs shorted at both ends, Z1 tan(kz1 d) + Z2 tan(kz2 d) = 0, solved
+    // here line by line, to 1e-6.
+    void closeModesAreEachFound()
+    {
+        const double h = 2e-3, d = 1e-3, f = 60e9, w = 2 * M_PI * f;
+        rf::Layers l = plates(4, h, d);
+        l.slabs[1].epsr = 4.04;
+        QStringList problems;
+        const QList<rf::GuideMode> modes = rf::guideModes(l, 0.6e-3, 1.3e-3, f, rf::BoxKernel::Scalar, 3000, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        // The two lines' resonances: along the real axis, and below cutoff
+        // along the imaginary one (kr = -j alpha), each bracketed finely.
+        const auto across = [&](Complex kr, bool tm) {
+            Complex sum(0, 0);
+            for (const double er : {4.0, 4.04}) {
+                const Complex kz = std::sqrt(Complex(w * w * kMu0 * rf::kEps0 * er, 0) - kr * kr);
+                const Complex z = tm ? kz / (w * rf::kEps0 * er) : w * kMu0 / kz;
+                sum += z * std::tan(kz * d);
+            }
+            return tm ? sum.real() : sum.imag() == 0.0 ? sum.real() : sum.real();
+        };
+        QList<Complex> want;
+        for (const bool tm : {true, false})
+            for (const Complex way : {Complex(1, 0), Complex(0, -1)}) {
+                const int n = 200000;
+                const double span = 3000;
+                double t0 = span / n, v0 = across(way * t0, tm);
+                for (int i = 2; i <= n; ++i) {
+                    const double t1 = span * i / n, v1 = across(way * t1, tm);
+                    if (std::isfinite(v0) && std::isfinite(v1) && (v0 > 0) != (v1 > 0) && std::abs(v0 - v1) < 1e3 * (std::abs(v0) + std::abs(v1))) {
+                        double lo = t0, hi = t1, vlo = v0;
+                        for (int k = 0; k < 80; ++k) {
+                            const double mid = 0.5 * (lo + hi), vm = across(way * mid, tm);
+                            if ((vm > 0) == (vlo > 0)) {
+                                lo = mid;
+                                vlo = vm;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        // (A root, not the jump through infinity of tan.)
+                        if (std::abs(across(way * (0.5 * (lo + hi)), tm)) < 1e-3 * (std::abs(v0) + std::abs(v1))) want << way * (0.5 * (lo + hi));
+                    }
+                    t0 = t1;
+                    v0 = v1;
+                }
+            }
+        QCOMPARE(modes.size(), want.size());
+        for (const Complex kr : std::as_const(want)) {
+            bool found = false;
+            for (const rf::GuideMode& m : modes) found = found || std::abs(m.kr / kr - 1.0) < 1e-6;
+            QVERIFY2(found, qPrintable(QStringLiteral("a resonance at %1%2j /m not found").arg(kr.real()).arg(kr.imag())));
+        }
+    }
+
     // The rectangle's Green's function less the free one, plus the free one,
     // is the other series' - each wall's condition either way, at a real k,
     // a complex one and one below the lowest mode - to 1e-8 of it; and less

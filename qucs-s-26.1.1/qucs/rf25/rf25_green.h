@@ -131,6 +131,10 @@ struct Layers {
 struct BoxImage {
     double sign = 1;
     QRectF rect;   ///< m
+    /// Whether it is mirrored across x's walls and y's (else shifted alone):
+    /// a point of the source at x is at rect.left() + rect.right() - x' of
+    /// it, x' the source rectangle's own, where mirrored.
+    bool mirroredX = false, mirroredY = false;
 };
 /// The images of what is spread over \a rect (m) in the perfect walls of
 /// \a box (m), the walls at its edges, whose centres lie within \a reach (m)

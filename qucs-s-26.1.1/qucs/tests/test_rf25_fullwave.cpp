@@ -1941,15 +1941,6 @@ private slots:
             return M_PI / (2 * a);
         };
         const double cohn = 376.730313668 / 2 / 4 * ellipticK(k) / ellipticK(kp);
-        // (A box - side walls too - is the quasi-static solve's alone yet,
-        //  and said.)
-        {
-            rf::Stack boxed = lidded(4, 100e-6, 0);
-            boxed.layers.last().walls = true;
-            boxed.layers.last().box = QRectF(QPointF(-1e-3, -1e-3), QPointF(3e-3, 1e-3));
-            const rf::FullWave refused = line(boxed, 1000, 100, 4, 100e-6, 4, {1e9});
-            QVERIFY2(!refused.ok() && says(refused.problems, "full wave of a box is not solved yet"), qPrintable(why(refused)));
-        }
         rf::FullWaveControl noPaths;
         noPaths.portPaths = false;
         const auto solve = [&noPaths](const rf::Stack& st, double length, double f) {
@@ -2014,6 +2005,141 @@ private slots:
                 line(grounded(9.8, 100e-6), 1000, 100, 4, 100e-6, 4, {1e9}, &open);
                 QVERIFY(e.selfCapacitance(0) > open.selfCapacitance(0));
             }
+        }
+    }
+
+    // A box: a line between two of its
+    // walls, its ports at them, the walls their reference.
+    //  - A centred stripline of eps_r 4, 200 µm, its walls along it 2 mm
+    //    off: TEM - from two lengths eps_eff 4 within 0.5 %, Z0 Cohn's within
+    //    1 % (3.9973, 50.214 Ohm against 50.216): the images across the
+    //    walls it ends on, a current's the same
+    //    and a charge's the opposite, and those along it far.
+    //  - The same in vacuum, its walls along it 100 µm off each edge: its C
+    //    per metre the channel's 2D one (34.19 pF/m, test_rf25_static's
+    //    reference) within 1 % (34.16); and the split between the guide's
+    //    modes the rectangle sums and the rest the images sum, moved, moves
+    //    Z21 by 1.2e-4.
+    //  - A box 5 by 5 mm, 0.25 mm of eps_r 10 under 0.25 mm of air, two
+    //    stubs 0.25 mm long from opposite walls: |S21| peaks at its TM110, by
+    //    the two slabs' transverse resonance (30.908 GHz), within 0.2 %; the
+    //    resonance said beside the answer, and a frequency near it flagged.
+    void aBoxIsInTheFullWave()
+    {
+        const auto boxed = [](double epsr, double b, const QRectF& box) {
+            rf::Stack s = grounded(epsr, b / 2);
+            rf::Layer d;
+            d.kind = rf::Layer::Dielectric;
+            d.name = QStringLiteral("UP");
+            d.tag = QStringLiteral("up");
+            d.thickness = b / 2;
+            d.epsr = epsr;
+            rf::Layer lid;
+            lid.kind = rf::Layer::Cover;
+            lid.name = QStringLiteral("LID");
+            lid.tag = QStringLiteral("lid");
+            lid.variant = QStringLiteral("perfect");
+            lid.walls = true;
+            lid.box = box;
+            s.layers << d << lid;
+            return s;
+        };
+        const auto solve = [](const rf::Stack& st, double length, double width, const QList<double>& fs, const rf::FullWaveControl* control = nullptr) {
+            const QList<rf::Conductor> cs{strip(0, 0, length, width)};
+            return rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st,
+                                  {edgePort(QPointF(0, width / 2), QStringLiteral("M1"), QPointF(-1, 0)),
+                                   edgePort(QPointF(length, width / 2), QStringLiteral("M1"), QPointF(1, 0))},
+                                  fs, 1e-6, control);
+        };
+        const double b = 200e-6, w = 100e-6, er = 4;
+        const auto ellipticK = [](double m) {
+            double a = 1, g = std::sqrt(1 - m * m);
+            for (int i = 0; i < 60 && std::abs(a - g) > 1e-16 * a; ++i) {
+                const double next = (a + g) / 2;
+                g = std::sqrt(a * g);
+                a = next;
+            }
+            return M_PI / (2 * a);
+        };
+        const double cohn = 376.730313668 / std::sqrt(er) / 4 * ellipticK(1 / std::cosh(M_PI * w / (2 * b))) / ellipticK(std::tanh(M_PI * w / (2 * b)));
+        // The stripline, its walls along it far.
+        {
+            const double fl = 1e9, k0 = 2 * M_PI * fl / kC0;
+            const auto stack = [&](double l) { return boxed(er, b, QRectF(QPointF(0, -2e-3), QPointF(l * 1e-6, 2.1e-3))); };
+            const rf::FullWave a = solve(stack(1000), 1000, 100, {fl}), c = solve(stack(2000), 2000, 100, {fl});
+            QVERIFY2(a.ok() && c.ok(), qPrintable(why(a) + why(c)));
+            const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(c, 0)), 1000e-6, 2000e-6, k0 * 2);
+            const double ee = std::pow(wave.gamma.imag() / k0, 2);
+            qWarning("a boxed stripline at 1 GHz: eps_eff %.5g, Z0 %.5g Ohm (Cohn's %.5g)", ee, wave.z0.real(), cohn);
+            QVERIFY2(std::abs(ee / er - 1) < 0.005, qPrintable(QString::number(ee)));
+            QVERIFY2(std::abs(wave.z0.real() / cohn - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(wave.z0.real()).arg(cohn)));
+            QVERIFY2(says(a.lines, "The box resonates"), qPrintable(a.lines.join(" | ")));
+            // A port off the walls: refused.
+            const rf::FullWave off = solve(boxed(er, b, QRectF(QPointF(-100e-6, -2e-3), QPointF(1000e-6, 2.1e-3))), 1000, 100, {fl});
+            QVERIFY2(!off.ok() && says(off.problems, "In a box a port stands at a wall"), qPrintable(why(off)));
+        }
+        // In a channel, in vacuum; and the split moved.
+        {
+            const double fl = 1e9;
+            const auto stack = [&](double l) { return boxed(1, b, QRectF(QPointF(0, -100e-6), QPointF(l * 1e-6, 200e-6))); };
+            const rf::FullWave a = solve(stack(1000), 1000, 100, {fl}), c = solve(stack(2000), 2000, 100, {fl});
+            QVERIFY2(a.ok() && c.ok(), qPrintable(why(a) + why(c)));
+            const LowFrequency lf = lowFrequency(a, c, 0, 1000e-6, 2000e-6);
+            qWarning("a vacuum stripline in a channel: C %.5g pF/m, L %.5g nH/m", lf.cPer * 1e12, lf.lPer * 1e9);
+            QVERIFY2(std::abs(lf.cPer / 34.186e-12 - 1) < 0.01, qPrintable(QStringLiteral("C %1 pF/m against 34.19").arg(lf.cPer * 1e12)));
+            QVERIFY2(std::abs(lf.lPer * lf.cPer * kC0 * kC0 - 1) < 0.01, qPrintable(QStringLiteral("L C c^2 %1").arg(lf.lPer * lf.cPer * kC0 * kC0)));
+            rf::FullWaveControl split;
+            split.boxSplit = 5000;
+            const rf::FullWave moved = solve(stack(1000), 1000, 100, {fl}, &split);
+            QVERIFY2(moved.ok(), qPrintable(why(moved)));
+            // (1.2e-4 apart: the rectangle's sum is read at the cells' middles,
+            //  the images over the cells, and the guide's TE1 and TM1 below
+            //  their cutoff, which it takes at the default split, die over 64
+            //  µm - cells 25 µm wide.)
+            QVERIFY2(std::abs(moved.z.at(0).at(1).at(0) / a.z.at(0).at(1).at(0) - 1.0) < 5e-4,
+                     qPrintable(QStringLiteral("Z21 %1, the split moved %2").arg(std::abs(a.z.at(0).at(1).at(0))).arg(std::abs(moved.z.at(0).at(1).at(0)))));
+        }
+        // The resonator: on 0.25 mm of eps_r 10 under as much air, where a
+        // current on the face couples to the guide's quasi-TEM mode (in one
+        // fill the TM110 mode is E_z alone, and a horizontal current, J.E
+        // nought, does not touch it). Its TM110 by the two slabs' transverse
+        // resonance, written here: the TM line shorted at both ends,
+        // Z1 tan(kz1 d) + Z2 tan(kz2 d) = 0 at kr = sqrt(2) pi/a, Z = kz/(w eps).
+        {
+            const double a = 5e-3, d = 0.25e-3;
+            const auto across = [&](double fr) {
+                const double wr = 2 * M_PI * fr, kr = std::sqrt(2.0) * M_PI / a;
+                const Complex k1 = std::sqrt(Complex(wr * wr * kMu0 * rf::kEps0 * 10 - kr * kr, 0)), k2 = std::sqrt(Complex(wr * wr * kMu0 * rf::kEps0 - kr * kr, 0));
+                return (k1 / (wr * rf::kEps0 * 10) * std::tan(k1 * d) + k2 / (wr * rf::kEps0) * std::tan(k2 * d)).real();
+            };
+            double lo = 10e9, hi = 60e9;
+            for (int i = 0; i < 200; ++i) {
+                const double mid = 0.5 * (lo + hi);
+                if ((across(mid) > 0) == (across(lo) > 0)) lo = mid;
+                else hi = mid;
+            }
+            const double f110 = 0.5 * (lo + hi);
+            rf::Stack st = boxed(10, 2 * d, QRectF(0, 0, a, a));
+            st.layers[st.layers.size() - 2].epsr = 1;   // (the air over the face)
+            // (Stubs 0.25 mm long: their own loading lowers the resonance -
+            //  |S21| peaked 1.12 % low with 1 mm stubs, 0.25 % with 0.5 mm, on
+            //  it within the sweep's eighth of a per cent with these.)
+            const double stub = 250;
+            const QList<rf::Conductor> cs{strip(0, 2400, stub, 200), strip(5000 - stub, 2400, stub, 200)};
+            QList<double> fs;
+            for (int i = 0; i <= 40; ++i) fs << f110 * (0.96 + 0.05 * i / 40);
+            const rf::FullWave r = rf::fullWaveOf(meshed(cs, 2, 100e-6, 4), cs, st,
+                                                  {edgePort(QPointF(0, 2500), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                   edgePort(QPointF(5000, 2500), QStringLiteral("M1"), QPointF(1, 0))},
+                                                  fs);
+            QVERIFY2(r.ok(), qPrintable(why(r)));
+            int peak = 0;
+            for (int k = 0; k < fs.size(); ++k)
+                if (std::abs(r.s.at(k).at(1).at(0)) > std::abs(r.s.at(peak).at(1).at(0))) peak = k;
+            qWarning("the box's resonator: |S21| peaks at %.5g GHz (%.3g), TM110 at %.5g", fs.at(peak) / 1e9, std::abs(r.s.at(peak).at(1).at(0)), f110 / 1e9);
+            QVERIFY2(std::abs(fs.at(peak) / f110 - 1) < 0.002, qPrintable(QStringLiteral("%1 GHz against %2").arg(fs.at(peak) / 1e9).arg(f110 / 1e9)));
+            QVERIFY2(says(r.lines, qPrintable(QString::number(f110 / 1e9, 'g', 5))), qPrintable(r.lines.join(" | ")));
+            QVERIFY(!r.warnings.isEmpty());
         }
     }
 
