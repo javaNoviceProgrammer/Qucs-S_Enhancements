@@ -460,8 +460,11 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         // solved with the structure, on its thread.
         for (const Node& n : model.ports().children) {
             if (!n.enabled || n.type != QLatin1String("rf_trl") || !job.levels.isEmpty()) continue;
-            if (job.ports.size() != 2)
-                return said(tr("A TRL calibration is of a two-port, and the model has %n port(s).", nullptr, int(job.ports.size())));
+            // (Its measuring ports: a lumped element is none - the review of
+            //  8abc6cbb.)
+            const int measuring = int(std::count_if(job.ports.cbegin(), job.ports.cend(), [](const FullWavePort& p) { return !p.lumped.on; }));
+            if (measuring != 2)
+                return said(tr("A TRL calibration is of a two-port, and the model has %n port(s).", nullptr, measuring));
             // (Its standards at every frequency: the study's adaptive sweep,
             //  on for a new study, set aside and said; asked of this solve
             //  alone, refused.)
@@ -525,6 +528,8 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         for (const Node& port : model.ports().children) {
             if (!port.enabled) continue;
             if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
+            // (A lumped element is no end of the loop - the review of 8abc6cbb.)
+            if (port.type == QLatin1String("rf_internal_port") && textOf(port, QStringLiteral("element")) == QLatin1String("lumped")) continue;
             bool ok = true;
             const double x = numberOf(port, QStringLiteral("x"), model, 0, &ok);
             if (!ok) continue;

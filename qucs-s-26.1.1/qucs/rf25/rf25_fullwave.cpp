@@ -952,6 +952,7 @@ struct Context {
     /// which: bit 0 the side at -normal, bit 1 at +normal, the normal the
     /// run's direction turned a quarter anticlockwise.
     QList<int> freeSides, freeMask;
+    QList<bool> roundRuns;               ///< each planar run's: a round wire's, its loss crowding to no edge
     /// A run's current spread over more than its cells: each part a
     /// filament, its image in the ground, and its share of the current.
     /// Empty where the run is its cells alone. On a metal solved as its two
@@ -1687,7 +1688,7 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add rawAd
         const Complex sheet = sheetImpedance(run.sigma, run.thickness, f);
         const double squares = run.length() / run.width;
         const int twin = c.twin.value(a, -1);
-        const double crowd = crowding(run.width, run.thickness, run.sigma, c.freeSides.value(a), f, sheet, twin >= 0);
+        const double crowd = crowding(run.width, run.thickness, run.sigma, c.roundRuns.value(a) ? 0 : c.freeSides.value(a), f, sheet, twin >= 0);
         if (twin < 0) {
             add(a, a, crowd * sheet * squares);
             continue;
@@ -3343,9 +3344,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     c.freeMask = QList<int>(c.planar, 0);
     QHash<QString, QList<int>> shapesOn;   // (each layer's shapes: a via farm's are hundreds of other layers')
     for (int s = 0; s < conductors.size(); ++s) shapesOn[conductors.at(s).layer] << s;
+    // (A metal standing for a round wire, a bond wire's: its strip's edges
+    //  set its current's profile, its inductance a round wire's as a strip 4a
+    //  wide's is with its edges, but crowd no loss to them - a round wire has
+    //  none.)
+    QSet<QString> round;
+    for (const Layer& l : stack.layers)
+        if (l.roundWire) round.insert(l.name);
+    c.roundRuns = QList<bool>(c.planar, false);
     for (int a = 0; a < c.planar; ++a) {
         const Filament& run = c.runs.at(a);
         const QString& layer = mesh.cells.at(ends.at(a).first).layer;
+        c.roundRuns[a] = round.contains(layer);
         const QPointF d = run.to - run.from;
         const double length = std::hypot(d.x(), d.y());
         if (!(length > 0)) continue;
