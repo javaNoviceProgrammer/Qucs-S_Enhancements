@@ -74,6 +74,9 @@ struct SolveJob {
     /// (a full wave's is in its notes).
     QStringList stackSaid;
     QList<Extent> extents;       ///< the layers that end (rf25_dielectric.h)
+    /// The layout's plane of symmetry, if any (Processing): the conductors
+    /// are the half beyond it, solved full wave with its mirror.
+    FullWaveControl::Symmetry symmetry;
     /// A TRL calibration's standards (rf25_trl.h), where the model has one:
     /// each a model's file, a line's how much longer than the thru.
     struct Trl {

@@ -1005,6 +1005,17 @@ struct Context {
     /// boxReach (m) - its runs along x or y, its ports at its walls.
     bool boxed = false;
     double boxSplit = 0, boxReach = 0;
+    /// A plane of symmetry (FullWaveControl::Symmetry): 1 across x, 2 across
+    /// y, at symAt (m); its charge's image's sign (+1 a magnetic wall, -1 an
+    /// electric one) - a current along it the same, across it the opposite;
+    /// and whether the ports are on it, the whole's Z half the half's.
+    int symAxis = 0;
+    double symAt = 0, symCharge = 1;
+    bool halved = false;
+    QPointF symmetric(const QPointF& p) const
+    {
+        return symAxis == 1 ? QPointF(2 * symAt - p.x(), p.y()) : QPointF(p.x(), 2 * symAt - p.y());
+    }
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
 };
@@ -1178,6 +1189,49 @@ void staticPair(const Context& c, int a, int b, double* direct, double* image)
 
 double staticPotential(const Context& c, int i, int j);
 
+/// staticPairWithLid() of run a and run b's mirror in a plane of symmetry
+/// (Context::symAxis): b's parts - its sub-strips graded to its edges -
+/// mirrored with it, or far apart its current's centroid's, as
+/// staticPairOf() takes them; their signs outside.
+void symmetryPair(const Context& c, int a, int b, double* direct, double* image)
+{
+    const auto mirror = [&c](Filament f) {
+        f.from = c.symmetric(f.from);
+        f.to = c.symmetric(f.to);
+        return f;
+    };
+    const bool partsA = a < c.parts.size() && !c.parts.at(a).isEmpty();
+    const bool partsB = b < c.parts.size() && !c.parts.at(b).isEmpty();
+    const Filament mb = mirror(c.runs.at(b));
+    double d = 0, i = 0;
+    if (!partsA && !partsB) {
+        d = alignedInductance(c.runs.at(a), mb);
+        i = alignedInductance(c.runs.at(a), mirror(c.mirrored.at(b)));
+    } else {
+        const Filament& ra = c.runs.at(a);
+        const double size = std::max({ra.width, mb.width, ra.thickness, mb.thickness});
+        const double apart = std::hypot(0.5 * (ra.from.x() + ra.to.x() - mb.from.x() - mb.to.x()),
+                                        0.5 * (ra.from.y() + ra.to.y() - mb.from.y() - mb.to.y()));
+        if (apart > 8 * size * (1 + 1e-6)) {
+            d = alignedInductance(c.centroid.at(a), mirror(c.centroid.at(b)));
+            i = alignedInductance(c.centroid.at(a), mirror(c.centroidImage.at(b)));
+        } else {
+            const Context::Part wholeA{c.runs.at(a), c.mirrored.at(a), 1}, wholeB{c.runs.at(b), c.mirrored.at(b), 1};
+            const QList<Context::Part> onlyA{wholeA}, onlyB{wholeB};
+            const QList<Context::Part>& pa = partsA ? c.parts.at(a) : onlyA;
+            const QList<Context::Part>& pb = partsB ? c.parts.at(b) : onlyB;
+            for (const Context::Part& x : pa)
+                for (const Context::Part& y : pb) {
+                    d += x.weight * y.weight * alignedInductance(x.run, mirror(y.run));
+                    i += x.weight * y.weight * alignedInductance(x.run, mirror(y.image));
+                }
+        }
+    }
+    if (c.lidFolded) i += alignedInductance(c.runs.at(a), mirror(c.lidMirrored.at(b)));
+    *direct = d;
+    *image = i;
+}
+
 /// What one frequency solved to.
 struct AtFrequency {
     MatrixC z;                           ///< ports x ports
@@ -1342,13 +1396,27 @@ struct Kernels {
     /// across x's walls, -1 across y's) and the rectangle's cos-sin sum, of
     /// runs along y A_y's, the other way about; nothing between the two.
     Complex boxInductance(int a, int b) const;
+    /// What a plane of symmetry adds to P(i, j): cell j's charge's mirror
+    /// image's potential at cell i, its sign the wall's - the two ways round
+    /// averaged.
+    Complex symmetryPotential(int i, int j) const;
+    /// What it adds to runs a and b's kernel, H, as inductance() is: run b's
+    /// mirror's, its sign its current's - along the plane the charge's, across
+    /// it the opposite.
+    Complex symmetryInductance(int a, int b) const;
     /// Via \a v's potential at cell \a cell of a unit current up it.
     Complex viaPotential(int v, int cell) const { return potentialOf(c.vias.at(v), cell); }
     /// G_zz: via \a i's voltage of a unit current on via \a j.
     Complex viaCoupling(int i, int j) const { return couplingOf(c.vias.at(i), c.vias.at(j)); }
-    /// The same of any two vias - a port's path among them.
+    /// The same of any two vias - a port's path among them - with, across a
+    /// plane of symmetry, the mirror's (a vertical current runs along the
+    /// plane: its sign the charge's).
     Complex potentialOf(const Via& via, int cell) const;
     Complex couplingOf(const Via& a, const Via& b) const;
+
+private:
+    Complex potentialOfOne(const Via& via, int cell) const;
+    Complex couplingOfOne(const Via& a, const Via& b) const;
 };
 
 Kernels::Kernels(const Context& context, double frequency, int threads)
@@ -1456,8 +1524,95 @@ Complex Kernels::potential(int i, int j, double pij, double pji) const
         return v + atCentres;
     };
     const Complex base = i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
-    const Complex boxed = c.boxed ? base + boxPotential(i, j) : base;
+    Complex boxed = c.boxed ? base + boxPotential(i, j) : base;
+    if (c.symAxis != 0) boxed += symmetryPotential(i, j);
     return c.corrected ? boxed + c.dielectric.at(i, j) : boxed;
+}
+
+Complex Kernels::symmetryPotential(int i, int j) const
+{
+    const WaveGreen& g = green(c.hNode.at(i), c.hNode.at(j));
+    const WaveGreen::Term t = g.scalarTerm();
+    // A charge's part mirrored: its rectangle in its own plane, and where it
+    // stands (ChargePart).
+    const auto mirrorPart = [this](ChargePart p) {
+        const QPointF centre = c.symmetric(QPointF(p.x, p.y));
+        p.x = centre.x();
+        p.y = centre.y();
+        const bool acrossX = c.symAxis == 1;
+        // (Its rectangle's first coordinate: x in the cells' plane and on a
+        //  wall along x, y on a wall along y; its second y, or z.)
+        const bool firstMirrored = p.plane == 0 ? acrossX : p.plane == 1 ? acrossX : !acrossX;
+        const bool secondMirrored = p.plane == 0 && !acrossX;
+        if (firstMirrored) p.rect = QRectF(QPointF(2 * c.symAt - p.rect.right(), p.rect.top()), QSizeF(p.rect.width(), p.rect.height()));
+        if (secondMirrored) p.rect = QRectF(QPointF(p.rect.left(), 2 * c.symAt - p.rect.bottom()), QSizeF(p.rect.width(), p.rect.height()));
+        if ((p.plane == 1 && !acrossX) || (p.plane == 2 && acrossX)) p.at = 2 * c.symAt - p.at;
+        return p;
+    };
+    const auto partsOf = [this](int k) {
+        return k < c.charges.size() && !c.charges.at(k).isEmpty() ? c.charges.at(k) : QList<ChargePart>{wholeCell(c.rect.at(k), c.cellZ.at(k))};
+    };
+    const auto oneWay = [&](int to, int from) {
+        const QPointF at = c.centre.at(to);
+        const QRectF& own = c.rect.at(from);
+        const QRectF image = QRectF(c.symmetric(own.topLeft()), c.symmetric(own.bottomRight())).normalized();
+        const double rho = std::hypot(at.x() - image.center().x(), at.y() - image.center().y());
+        const double scale = std::hypot(rho, g.reach());
+        // (Its static part as a cell's pair's is - staticPotentialOf(): its
+        //  edge's profile, or its walls', where either has one and they are
+        //  near.)
+        const bool partsTo = to < c.charges.size() && !c.charges.at(to).isEmpty();
+        const bool partsFrom = from < c.charges.size() && !c.charges.at(from).isEmpty();
+        const auto walled = [this](int k) {
+            if (k >= c.charges.size()) return false;
+            for (const ChargePart& p : c.charges.at(k))
+                if (p.plane != 0) return true;
+            return false;
+        };
+        double stat = rectanglePotential(image, at, t.dz);
+        if (partsTo || partsFrom) {
+            const double side = std::max({c.rect.at(to).width(), c.rect.at(to).height(), own.width(), own.height()});
+            if (walled(to) || walled(from) || !(rho > 4 * side * (1 + 1e-6))) {
+                QList<ChargePart> of;
+                for (const ChargePart& p : partsOf(from)) of << mirrorPart(p);
+                stat = partsPotential(partsOf(to), of);
+            }
+        }
+        Complex v = t.coefficient / (2 * M_PI) * (stat + retardation(t.k, std::hypot(rho, t.dz)));
+        const double longest = std::max(image.width(), image.height());
+        v += longest * longest < kCentreBound * scale * scale ? g.scalarRemainder(rho) : remainderOver(g, image, at, scale);
+        return c.symCharge * v;
+    };
+    return i == j ? oneWay(i, i) : 0.5 * (oneWay(i, j) + oneWay(j, i));
+}
+
+Complex Kernels::symmetryInductance(int a, int b) const
+{
+    // (Runs along x or y alone - fullWaveOf() refuses an oblique one -, so a
+    //  run's mirror is along its own axis, and the cosine outside takes the
+    //  directions; its sign is its current's: along the plane the charge's,
+    //  across it the opposite. Its static part as the run's own pairs are,
+    //  its parts and all: symmetryPair().)
+    const bool alongX = std::abs(c.dirX.at(b)) > 0.5;
+    const bool across = (c.symAxis == 1) == alongX;
+    const double sign = across ? -c.symCharge : c.symCharge;
+    const WaveGreen& g = green(c.hRun.at(a), c.hRun.at(b));
+    const WaveGreen::Term d = g.vectorTerm(), gi = g.vectorImage(), lid = g.vectorLid();
+    const auto oneWay = [&](int to, int from) {
+        double direct = 0, image = 0;
+        symmetryPair(c, to, from, &direct, &image);
+        Complex l = 2.0 * d.coefficient / kMu0 * direct + 2.0 * gi.coefficient / kMu0 * image;
+        if (!c.lidFolded && lid.coefficient != 0.0 && from < c.lidMirrored.size()) {
+            Filament above = c.lidMirrored.at(from);
+            above.from = c.symmetric(above.from);
+            above.to = c.symmetric(above.to);
+            l += 2.0 * lid.coefficient / kMu0 * alignedInductance(c.runs.at(to), above);
+        }
+        const QPointF mid = c.symmetric(QPointF(c.midX.at(from), c.midY.at(from)));
+        const double rho = std::hypot(c.midX.at(to) - mid.x(), c.midY.at(to) - mid.y());
+        return l + c.runs.at(to).length() * c.runs.at(from).length() * smooth(c.hRun.at(to), c.hRun.at(from), rho);
+    };
+    return sign * (a == b ? oneWay(a, a) : 0.5 * (oneWay(a, b) + oneWay(b, a)));
 }
 
 Complex Kernels::boxPotential(int i, int j) const
@@ -1537,6 +1692,22 @@ Complex Kernels::potential(int i, int j) const
 
 Complex Kernels::potentialOf(const Via& via, int cell) const
 {
+    if (c.symAxis == 0) return potentialOfOne(via, cell);
+    Via image = via;
+    image.at = c.symmetric(via.at);
+    return potentialOfOne(via, cell) + c.symCharge * potentialOfOne(image, cell);
+}
+
+Complex Kernels::couplingOf(const Via& a, const Via& b) const
+{
+    if (c.symAxis == 0) return couplingOfOne(a, b);
+    Via image = b;
+    image.at = c.symmetric(b.at);
+    return couplingOfOne(a, b) + c.symCharge * couplingOfOne(a, image);
+}
+
+Complex Kernels::potentialOfOne(const Via& via, int cell) const
+{
     // Nowhere nearer the via than its cross-section's mean distance with
     // itself: the dielectric's part of its own G_zz, taken across that
     // distance, is what its potential is there (to a part in a thousand
@@ -1546,7 +1717,7 @@ Complex Kernels::potentialOf(const Via& via, int cell) const
     return viaGreens.at(via.span).potential(c.hNode.at(cell), std::max(apart, via.gmd));
 }
 
-Complex Kernels::couplingOf(const Via& a, const Via& b) const
+Complex Kernels::couplingOfOne(const Via& a, const Via& b) const
 {
     // G_zz along both - the closed forms between their axes, statically in
     // closed form and their retardation by Gauss's rule - and the table's
@@ -1908,6 +2079,7 @@ void systemColumn(const Context& c, const Kernels& k, MatrixC& m, int b)
             const double dot = k.cosine(a, b);
             m(a, b) = std::abs(dot) < 1e-9 ? Complex(0, 0) : k.jw * (dot * k.inductance(a, b, c.lDirect(a, b), c.lImage(a, b)));
             if (c.boxed && std::abs(dot) >= 1e-9) m(a, b) += k.jw * (dot * k.boxInductance(a, b));
+            if (c.symAxis != 0 && std::abs(dot) >= 1e-9) m(a, b) += k.jw * (dot * k.symmetryInductance(a, b));
         }
         return;
     }
@@ -3098,28 +3270,32 @@ FullWave foldLumped(const FullWave& wave, const QList<FullWavePort>& ports, cons
 }
 
 FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, const Stack& givenStack,
-                    const QList<FullWavePort>& ports, const QList<double>& frequencies, double micrometre,
+                    const QList<FullWavePort>& givenPorts, const QList<double>& frequencies, double micrometre,
                     const FullWaveControl* control, const QList<ReturnMark>& returns)
 {
     // Lumped elements: solved as the ports they stand as, then folded.
     QList<int> lumped;
-    for (int p = 0; p < ports.size(); ++p)
-        if (ports.at(p).lumped.on) lumped << p;
+    for (int p = 0; p < givenPorts.size(); ++p)
+        if (givenPorts.at(p).lumped.on) lumped << p;
     if (!lumped.isEmpty()) {
-        if (lumped.size() == ports.size()) {
+        if (lumped.size() == givenPorts.size()) {
             FullWave none;
             none.problems << tr("The model has lumped elements and no port to measure them from.");
             return none;
         }
-        QList<FullWavePort> plain = ports;
+        QList<FullWavePort> plain = givenPorts;
         for (const int p : std::as_const(lumped)) {
             plain[p].lumped.on = false;
             plain[p].calibrate = false;
             plain[p].shift = 0;
         }
         const FullWave raw = fullWaveOf(given, givenConductors, givenStack, plain, frequencies, micrometre, control, returns);
-        return raw.ok() ? foldLumped(raw, ports, lumped) : raw;
+        return raw.ok() ? foldLumped(raw, givenPorts, lumped) : raw;
     }
+    // (A port on a plane of symmetry is moved a hair off it, into the half
+    //  solved, below: its face the cut conductor's edge across the plane,
+    //  not the cut along it.)
+    QList<FullWavePort> ports = givenPorts;
     FullWave out;
     // (What makes the mesh's answer doubtful - touching conductors it has
     //  apart - is the solve's too.)
@@ -3190,6 +3366,92 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return out;
             }
         }
+    }
+    // A plane of symmetry: every charge's, run's, via's and port path's
+    // mirror in it, signed by the wall (FullWaveControl::Symmetry).
+    if (control != nullptr && control->symmetry.axis != 0) {
+        const FullWaveControl::Symmetry& sym = control->symmetry;
+        const QString wall = sym.magnetic ? tr("magnetic") : tr("electric");
+        const QString plane = sym.axis == 1 ? tr("x = %1 µm").arg(sym.at * 1e6, 0, 'g', 6) : tr("y = %1 µm").arg(sym.at * 1e6, 0, 'g', 6);
+        if (sym.axis != 1 && sym.axis != 2) {
+            out.problems << tr("A plane of symmetry is across x or across y.");
+            return out;
+        }
+        if (c.boxed) {
+            out.problems << tr("A plane of symmetry in a box is not solved yet: the box's walls would have its images too.");
+            return out;
+        }
+        if (control->extents.size() > 0) {
+            out.problems << tr("A layer that ends at its shapes is not solved with a plane of symmetry: its correction has no "
+                               "mirror.");
+            return out;
+        }
+        c.symAxis = sym.axis;
+        c.symAt = sym.at;
+        c.symCharge = sym.magnetic ? 1 : -1;
+        // Every cell on the plane's far side; on an electric wall none
+        // touching it.
+        const auto offPlane = [&sym](const QPointF& p) { return sym.axis == 1 ? p.x() - sym.at : p.y() - sym.at; };
+        QRectF all;
+        for (const MeshCell& cell : given.cells) all = all.isNull() ? cell.outline.boundingRect() : all.united(cell.outline.boundingRect());
+        const double hair = 1e-6 * std::max(all.width(), all.height()) * micrometre;
+        for (const MeshCell& cell : given.cells) {
+            const QRectF r = cell.outline.boundingRect();
+            const double nearest = std::min(offPlane(r.topLeft() * micrometre), offPlane(r.bottomRight() * micrometre));
+            if (nearest < -hair) {
+                out.problems << tr("A conductor reaches across the plane of symmetry at %1: the half on its far side is what is "
+                                   "solved (the layout's Processing keeps it).")
+                                    .arg(plane);
+                return out;
+            }
+            if (!sym.magnetic && nearest <= hair) {
+                out.problems << tr("A conductor touches the electric wall at %1: its current would run into it, which is not "
+                                   "solved yet - keep it off the plane.")
+                                    .arg(plane);
+                return out;
+            }
+        }
+        // The ports: a magnetic wall's all on the plane - edge ports, each
+        // the half of its face - or all off it; an electric wall's all off it.
+        int on = 0;
+        for (const FullWavePort& port : std::as_const(ports))
+            if (std::abs(offPlane(port.at * micrometre)) <= hair) ++on;
+        if (on > 0 && !sym.magnetic) {
+            out.problems << tr("A port on an electric wall is shorted by it: an electric wall's ports are off the plane, each "
+                               "driven against its mirror.");
+            return out;
+        }
+        if (on > 0 && on < ports.size()) {
+            out.problems << tr("Some of the ports are on the plane of symmetry and some off it: they are all on it - the whole's "
+                               "ports cut in half - or all off it, each driven with its mirror.");
+            return out;
+        }
+        for (FullWavePort& port : ports) {
+            if (on == 0) break;
+            const QString who = port.name.isEmpty() ? tr("a port") : port.name;
+            if (port.internal || port.coplanar || port.terminals || port.deembeds() || !port.pair.isEmpty()) {
+                out.problems << tr("%1 is on the plane of symmetry: a port there is an edge port of its own, not internal, coplanar, "
+                                   "returning through terminals, paired or de-embedded, not yet.")
+                                    .arg(who);
+                return out;
+            }
+            // (A hair into the half: its face the edge across the plane.)
+            const double in = hair / 10 / micrometre;
+            port.at += sym.axis == 1 ? QPointF(in, 0) : QPointF(0, in);
+        }
+        c.halved = on > 0;
+        out.lines << (c.halved ? tr("A %1 wall of symmetry at %2: the half beyond it solved with every charge's and current's mirror "
+                                    "in it; the ports on it, each the half of its face, the whole's Z half the half's.")
+                                     .arg(wall, plane)
+                      : sym.magnetic
+                          ? tr("A magnetic wall of symmetry at %1: the half beyond it solved with every charge's and current's mirror "
+                               "in it; each port driven with its mirror in phase - the network is of each port and its mirror "
+                               "together, the even mode.")
+                                .arg(plane)
+                          : tr("An electric wall of symmetry at %1: the half beyond it solved with every charge's and current's mirror "
+                               "in it, opposite; each port driven against its mirror - the network is the odd mode's.")
+                                .arg(plane));
+        out.lines << tr("Solved dense: a mirror's kernel is no function of the distance between the two cells alone.");
     }
     // A layer that ends (rf25_dielectric.h): the background's Green's
     // functions - each such layer as it is beyond its shapes - and its
@@ -3362,7 +3624,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
         const double reach = 0.5005 * run.width / micrometre;
         for (const double side : {-1.0, 1.0}) {
-            const QPointF probe = middle + side * reach * normal;
+            QPointF probe = middle + side * reach * normal;
+            // (Beyond a magnetic wall of symmetry the conductor's mirror is
+            //  there: the cut along the plane is no edge.)
+            if (c.symAxis != 0 && c.symCharge > 0
+                && (c.symAxis == 1 ? probe.x() * micrometre < c.symAt : probe.y() * micrometre < c.symAt))
+                probe = c.symmetric(probe * micrometre) / micrometre;
             bool inside = false;
             for (const int s : shapesOn.value(layer)) {
                 const Conductor& shape = conductors.at(s);
@@ -3450,7 +3717,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     const int most = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : denseLimit();
     const FullWaveControl::Matrix asked = control != nullptr ? control->matrix : FullWaveControl::Matrix::Automatic;
     // (A box dense: its kernel is no function of distance alone.)
-    const bool compress = !c.boxed
+    const bool compress = !c.boxed && c.symAxis == 0
                           && (asked == FullWaveControl::Matrix::Compressed || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most));
     if (!compress && nr + nc > most) {
         out.tooLarge = true;
@@ -4056,7 +4323,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // held 2.4 % less than Palace's and QFEM's per metre; with its walls'
     // current alone its Z0 came within 1.9 %, its eps_eff 1 % under.
     {
-        const QHash<int, QList<ChargePart>> walls = chargeParts(thick, micrometre, [&](int m) { return metalHeight(stack, mesh.cells.at(m).layer); });
+        // (Beyond a magnetic wall of symmetry the conductors' mirrors: the
+        //  cut along the plane is no edge to profile a charge to.)
+        Thickened mirroredToo = thick;
+        if (c.symAxis != 0 && c.symCharge > 0)
+            for (const Conductor& k : thick.conductors) {
+                Conductor m = k;
+                for (QPointF& p : m.outline) p = c.symmetric(p * micrometre) / micrometre;
+                mirroredToo.conductors << m;
+            }
+        const QHash<int, QList<ChargePart>> walls
+            = chargeParts(c.symAxis != 0 && c.symCharge > 0 ? mirroredToo : thick, micrometre,
+                          [&](int m) { return metalHeight(stack, mesh.cells.at(m).layer); });
         c.charges = QList<QList<ChargePart>>(nc);
         for (int i = 0; i < nc; ++i) c.charges[i] = walls.value(cellOf.at(i));
     }
@@ -4253,6 +4531,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (A box's images out to its reach beyond the box: its tables too, so
     //  that a far image is read, not integrated.)
     if (c.boxed) c.rhoMax = std::max(c.rhoMax, 1.05 * (std::hypot(c.layers.box.width(), c.layers.box.height()) + c.boxReach));
+    // (A plane of symmetry's mirrors: as far as a cell is from another's.)
+    if (c.symAxis != 0) {
+        const QRectF image = QRectF(c.symmetric(extent.topLeft()), c.symmetric(extent.bottomRight())).normalized();
+        const QRectF both = extent.united(image);
+        c.rhoMax = std::max(c.rhoMax, 1.05 * std::hypot(both.width(), both.height()) + 1e-9);
+    }
 
     // What does not change with the frequency: each run's direction and
     // middle, and its image in the ground; for a dense solve, the runs'
@@ -4275,6 +4559,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         c.runs.at(a).direction(&c.dirX[a], &c.dirY[a], nullptr);
         c.runs.at(a).middle(&c.midX[a], &c.midY[a], nullptr);
         c.mirrored[a].z0 = c.mirrored[a].z1 = -c.runs.at(a).z0;
+    }
+    if (c.symAxis != 0) {
+        for (int a = 0; a < c.planar; ++a)
+            if (std::abs(c.dirX.at(a)) > 1e-9 && std::abs(c.dirY.at(a)) > 1e-9) {
+                out.problems << tr("With a plane of symmetry the runs go along x or y: a conductor's slanting outline meshed into runs "
+                                   "at an angle is not solved with one yet.");
+                return out;
+            }
     }
     if (c.boxed) {
         bool oblique = false;
@@ -4583,6 +4875,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             a.z = z;
         } else if (k == topAt) {
             shareOut(ofPort);
+        }
+        // (Ports on a magnetic wall: each the half of its face, carrying half
+        //  of the whole's current at its voltage - the whole's Z half the
+        //  half's, and the half's currents of half an ampere.)
+        if (c.halved) {
+            a.z *= 0.5;
+            a.current *= 0.5;
         }
         const QList<QList<Complex>> zRows = rowsOf(a.z);
         out.frequencies << frequencies.at(k);

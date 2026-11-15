@@ -352,7 +352,21 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("grid"), tr("Grid"), QStringLiteral("m"), QStringLiteral("5[nm]")), "snap=true"),
           boolean(QStringLiteral("heal"), tr("Heal polygons"), true,
                   tr("Self-intersections, repeated points and zero-width necks")),
-          boolean(QStringLiteral("remove_fill"), tr("Remove dummy fill"), false)},
+          boolean(QStringLiteral("remove_fill"), tr("Remove dummy fill"), false),
+          choice(QStringLiteral("symmetry"), tr("Symmetry"), {QStringLiteral("none"), QStringLiteral("x"), QStringLiteral("y")},
+                 {tr("None"), tr("A plane x = constant"), tr("A plane y = constant")}, QStringLiteral("none"),
+                 tr("A plane the layout is the mirror of itself across: the half beyond it solved, with its mirror, in a "
+                    "quarter of the dense matrix - the full-wave solve's")),
+          shownIf(expr(QStringLiteral("symmetry_at"), tr("The plane at"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("Its x, or its y")),
+                  "symmetry!=none"),
+          shownIf(choice(QStringLiteral("symmetry_wall"), tr("Its wall"), {QStringLiteral("magnetic"), QStringLiteral("electric")},
+                         {tr("Magnetic: the even mode, ports on it"), tr("Electric: the odd mode, ports off it")},
+                         QStringLiteral("magnetic"),
+                         tr("A magnetic wall: the fields' mirror even - a line along the plane, its edge ports on it, the "
+                            "whole's ports; or every port off it, each with its mirror in phase. An electric wall: odd, "
+                            "every port off it, each against its mirror, nothing touching it")),
+                  "symmetry!=none")},
          {}, {}, true, true, QString(),
          tr("What is done to the shapes before they are meshed. Each step says what it changed, and the processed "
             "layout is drawn over the original.")});
