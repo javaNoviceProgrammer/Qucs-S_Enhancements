@@ -4,10 +4,13 @@
  */
 #include "rf25_farfield.h"
 
+#include <Eigen/Dense>
+
 #include <QCoreApplication>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 namespace qucs_s::rf25 {
@@ -15,6 +18,7 @@ namespace qucs_s::rf25 {
 namespace {
 
 using Complex = std::complex<double>;
+using MatrixC = Eigen::MatrixXcd;
 const Complex kJ(0, 1);
 constexpr double kMu0 = 4e-7 * M_PI;
 
@@ -223,6 +227,46 @@ Radiation radiationOf(const Layers& layers, double frequency, const QList<FarSou
                 }
             }
     }
+    // The peak between the nodes: the golden section about the best, in
+    // theta and phi in turn, each over a node's spacing either side.
+    const auto intensity = [&](double theta, double phi) {
+        const FarFieldAt e = farFieldOf(layers, frequency, sources, theta, phi);
+        return (std::norm(e.theta) + std::norm(e.phi)) / (2 * eta0);
+    };
+    const double spacing = M_PI / 2 / order * 2;
+    const auto golden = [&](double lo, double hi, const std::function<double(double)>& f) {
+        const double g = 0.5 * (std::sqrt(5.0) - 1);
+        double a = lo, b = hi, c = b - g * (b - a), d = a + g * (b - a), fc = f(c), fd = f(d);
+        for (int i = 0; i < 40; ++i) {
+            if (fc > fd) {
+                b = d;
+                d = c;
+                fd = fc;
+                c = b - g * (b - a);
+                fc = f(c);
+            } else {
+                a = c;
+                c = d;
+                fc = fd;
+                d = a + g * (b - a);
+                fd = f(d);
+            }
+        }
+        return 0.5 * (a + b);
+    };
+    for (int round = 0; round < 3; ++round) {
+        const double t = golden(std::max(0.0, out.thetaMost - spacing), std::min(M_PI / 2 * 0.9999, out.thetaMost + spacing),
+                                [&](double theta) { return intensity(theta, out.phiMost); });
+        if (intensity(t, out.phiMost) > out.most) {
+            out.thetaMost = t;
+            out.most = intensity(t, out.phiMost);
+        }
+        const double p = golden(out.phiMost - 2 * spacing, out.phiMost + 2 * spacing, [&](double phi) { return intensity(out.thetaMost, phi); });
+        if (intensity(out.thetaMost, p) > out.most) {
+            out.phiMost = p;
+            out.most = intensity(out.thetaMost, p);
+        }
+    }
     return out;
 }
 
@@ -255,7 +299,7 @@ QList<FarSource> farSourcesOf(const FullWave& wave, int k, int port, QStringList
     return out;
 }
 
-AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k, int port)
+AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k, int port, bool othersOpen)
 {
     AntennaFigures out;
     const Layers layers = layersOf(stack);
@@ -273,14 +317,53 @@ AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k,
         out.problems << tr("No such port or frequency of the solve.");
         return out;
     }
-    const QList<FarSource> sources = farSourcesOf(wave, k, port, &out.notes);
+    // The ports' currents: the port's alone with the others open, or driven
+    // through its reference, the others ended by theirs - (Z + Z_ref) I =
+    // V_s e_p, V_s a volt.
+    const int n = int(wave.portNames.size());
+    out.othersOpen = othersOpen || n == 1;
+    std::vector<Complex> current(std::size_t(n), Complex(0, 0));
+    Complex vSource(0, 0);
+    const auto ref = [&wave](int q) { return q < wave.references.size() && wave.references.at(q) > 0 ? wave.references.at(q) : 50.0; };
+    if (out.othersOpen) {
+        current[std::size_t(port)] = 1;
+        vSource = wave.z.at(k).at(port).at(port) + ref(port);
+    } else {
+        MatrixC a(n, n);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) a(i, j) = wave.z.at(k).at(i).at(j) + (i == j ? ref(i) : 0.0);
+        Eigen::VectorXcd e = Eigen::VectorXcd::Zero(n);
+        e(port) = 1;
+        const Eigen::VectorXcd i = Eigen::PartialPivLU<MatrixC>(a).solve(e);
+        for (int q = 0; q < n; ++q) current[std::size_t(q)] = i(q);
+        vSource = 1;
+    }
+    Complex vPort(0, 0);
+    for (int q = 0; q < n; ++q) vPort += wave.z.at(k).at(port).at(q) * current[std::size_t(q)];
+    out.accepted = 0.5 * (vPort * std::conj(current[std::size_t(port)])).real();
+    for (int q = 0; q < n; ++q)
+        if (q != port && !out.othersOpen) out.loads += 0.5 * std::norm(current[std::size_t(q)]) * ref(q);
+    out.incident = std::norm(vSource) / (8 * ref(port));
+    QList<FarSource> sources;
+    for (int q = 0; q < n; ++q) {
+        if (std::abs(current[std::size_t(q)]) == 0) continue;
+        for (FarSource s : farSourcesOf(wave, k, q, q == port ? &out.notes : nullptr)) {
+            s.current *= current[std::size_t(q)];
+            sources << s;
+        }
+    }
+    out.notes << (out.othersOpen ? (n == 1 ? QString() : tr("The other ports are open, as the solve's currents are taken."))
+                                 : tr("The other ports are ended by their references, as a measurement's are."));
+    out.notes.removeAll(QString());
     const double f = wave.frequencies.at(k);
-    out.accepted = 0.5 * wave.z.at(k).at(port).at(port).real();
+    out.sources = sources;
     const Radiation r = radiationOf(layers, f, sources);
     out.radiated = r.power;
     out.directivity = r.directivity();
     out.gain = out.accepted > 0 ? 4 * M_PI * r.most / out.accepted : 0;
-    out.efficiency = out.accepted > 0 ? r.power / out.accepted : 0;
+    out.realizedGain = out.incident > 0 ? 4 * M_PI * r.most / out.incident : 0;
+    const double taken = out.accepted - out.loads;
+    out.efficiency = taken > 0 ? r.power / taken : 0;
     out.thetaMost = r.thetaMost;
     out.phiMost = r.phiMost;
     return out;

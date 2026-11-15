@@ -52,7 +52,9 @@ FarFieldAt farFieldOf(const Layers& layers, double frequency, const QList<FarSou
 
 /// The radiated power, W, over the upper half-space, of \a sources (Gauss's
 /// rule in theta and phi, \a order points each way per its own quarter of a
-/// turn); its intensity's largest, W/sr, and where.
+/// turn); its intensity's largest, W/sr, and where - the best node refined
+/// between its neighbours by the golden section in theta and phi in turn, so
+/// that a narrow beam's peak between the nodes is not missed.
 struct Radiation {
     double power = 0;
     double most = 0;             ///< W/sr
@@ -67,17 +69,27 @@ Radiation radiationOf(const Layers& layers, double frequency, const QList<FarSou
 /// them (a coplanar port's legs across its gaps).
 QList<FarSource> farSourcesOf(const FullWave& wave, int k, int port, QStringList* notes = nullptr);
 
-/// A port's figures at frequency index \a k: the power it accepts driven by
-/// an ampere (half Re Z_kk), the radiated power, directivity, gain and the
-/// radiation efficiency, radiated over accepted.
+/*!
+ * A port's figures at frequency index \a k, driven through its reference
+ * with the other ports ended by theirs - their own currents, not open (the
+ * review of eac3641e: FullWave::currents are each port's with the others
+ * open, a line's far end then a standing wave's) - or, \a othersOpen, as they
+ * are: the power it accepts, half Re(V conj I); what the other ports' loads
+ * take; the radiated power; directivity; gain (over accepted); realized
+ * gain (over the power the source offers, |V_s|^2 / 8 Z_ref); and the
+ * radiation efficiency, radiated over what the structure takes - accepted
+ * less the loads'.
+ */
 struct AntennaFigures {
-    double accepted = 0, radiated = 0;
-    double directivity = 0, gain = 0, efficiency = 0;
+    double accepted = 0, radiated = 0, loads = 0, incident = 0;
+    double directivity = 0, gain = 0, realizedGain = 0, efficiency = 0;
     double thetaMost = 0, phiMost = 0;
+    bool othersOpen = false;
+    QList<FarSource> sources;    ///< the currents of that drive, every port's, for its pattern
     QStringList problems, notes;
     bool ok() const { return problems.isEmpty(); }
 };
-AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k, int port);
+AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k, int port, bool othersOpen = false);
 
 } // namespace qucs_s::rf25
 

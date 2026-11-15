@@ -27,6 +27,7 @@
 #include "rf25/rf25_edge.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_static.h"
+#include "rf25/rf25_solve.h"
 #include "multiphysics/fem_sparse.h"
 
 #include <Eigen/Dense>
@@ -2141,6 +2142,175 @@ private slots:
             QVERIFY2(says(r.lines, qPrintable(QString::number(f110 / 1e9, 'g', 5))), qPrintable(r.lines.join(" | ")));
             QVERIFY(!r.warnings.isEmpty());
         }
+    }
+
+    // Lumped elements: each solved as
+    // a port, then folded in by its own impedance at each frequency. On a
+    // line of 100 µm on 100 µm of eps_r 9.8 (some 49 Ohm), 1 mm, edge ports:
+    //  - a series R of 50 Ohm across a 20 µm gap at its middle - an internal
+    //    port over one pad returning through a terminal over the other -:
+    //    S21 = 2 Z0/(2 Z0 + R), 2/3, at 0.2 GHz within 1 %;
+    //  - a shunt C of 3 pF to the ground at its middle: S11 = -j w C Z0/(2 +
+    //    j w C Z0) at 0.5 GHz within 3 %;
+    //  - a parallel L and C to the ground at their exact resonance: the line
+    //    unloaded, to 1e-9 - an open folded as one, its admittance nought -,
+    //    and nothing in parallel, an admittance of nought exactly, to 1e-12;
+    //  - a series L and C to the ground: S21's notch at 1/(2 pi sqrt(LC)),
+    //    3.18 GHz, within 3 % (the element's path up from the ground);
+    //  - each answer's ports the measuring ones alone, and passive.
+    void lumpedElementsAreFoldedIn()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6);
+        const auto element = [](const QString& name, QPointF at, double r, double l, double c, bool parallel) {
+            rf::FullWavePort p = internalPort(at, QStringLiteral("M1"));
+            p.name = name;
+            p.size = QSizeF(20, 100);
+            p.lumped.on = true;
+            p.lumped.r = r;
+            p.lumped.l = l;
+            p.lumped.c = c;
+            p.lumped.parallel = parallel;
+            return p;
+        };
+        const rf::FullWavePort p1 = edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0));
+        const rf::FullWavePort p2 = edgePort(QPointF(1000, 50), QStringLiteral("M1"), QPointF(1, 0));
+        // Read from a model: an internal port whose "What it is" says lumped.
+        {
+            rf::Model m = rf::Model::blank();
+            rf::Node e = m.make(QStringLiteral("rf_internal_port"));
+            e.label = QStringLiteral("R9");
+            e.props.insert(QStringLiteral("element"), QStringLiteral("lumped"));
+            e.props.insert(QStringLiteral("r"), QStringLiteral("47"));
+            e.props.insert(QStringLiteral("l"), QStringLiteral("2[nH]"));
+            e.props.insert(QStringLiteral("topology"), QStringLiteral("parallel"));
+            rf::Node* ports = nullptr;
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_ports")) ports = &n;
+            QVERIFY(ports != nullptr);
+            ports->children.push_back(e);
+            QString problem;
+            const QList<rf::FullWavePort> read = rf::portsOf(m, &problem);
+            QVERIFY2(problem.isEmpty(), qPrintable(problem));
+            bool found = false;
+            for (const rf::FullWavePort& p : read)
+                if (p.name == QStringLiteral("R9"))
+                    found = p.lumped.on && p.lumped.r == 47 && std::abs(p.lumped.l - 2e-9) < 1e-21 && p.lumped.c == 0 && p.lumped.parallel;
+            QVERIFY(found);
+            ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("-1"));
+            rf::portsOf(m, &problem);
+            QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
+        }
+        // The series R across a gap.
+        {
+            const QList<rf::Conductor> halves{strip(0, 0, 490, 100), strip(510, 0, 490, 100)};
+            rf::FullWavePort r = element(QStringLiteral("R1"), QPointF(480, 50), 50, 0, 0, false);
+            rf::PortTerminal pad;
+            pad.name = QStringLiteral("R1-");
+            pad.at = QPointF(520, 50);
+            pad.metal = QStringLiteral("M1");
+            pad.size = QSizeF(20, 100);
+            r.terminals = true;
+            r.returns = {pad};
+            const rf::FullWave w = rf::fullWaveOf(meshed(halves, 4, 50e-6), halves, st, {p1, p2, r}, {0.2e9});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            QCOMPARE(w.portNames.size(), 2);
+            QCOMPARE(w.s.at(0).size(), 2);
+            const double s21 = std::abs(w.s.at(0).at(1).at(0));
+            qWarning("a series R of 50 Ohm across a gap: |S21| %.5g (2/3)", s21);
+            QVERIFY2(std::abs(s21 / (2.0 / 3) - 1) < 0.01, qPrintable(QString::number(s21)));
+            QVERIFY(w.gain < 1e-6);
+            QVERIFY(says(w.lines, "Lumped elements"));
+            // Its currents with the element's in them: the three-port solved
+            // plain, port 1's ampere drives I3 = -Z31/(Z33 + R) through the
+            // element (port 2 open), and the runs carry port 1's own currents
+            // and I3 of the element's.
+            rf::FullWavePort plain = r;
+            plain.lumped.on = false;
+            const rf::FullWave raw = rf::fullWaveOf(meshed(halves, 4, 50e-6), halves, st, {p1, p2, plain}, {0.2e9});
+            QVERIFY2(raw.ok(), qPrintable(why(raw)));
+            const Complex i3 = -raw.z.at(0).at(2).at(0) / (raw.z.at(0).at(2).at(2) + 50.0);
+            double worst = 0, scale = 0;
+            for (int q = 0; q < w.currents.at(0).at(0).size(); ++q) {
+                const Complex want = raw.currents.at(0).at(0).at(q) + i3 * raw.currents.at(0).at(2).at(q);
+                worst = std::max(worst, std::abs(w.currents.at(0).at(0).at(q) - want));
+                scale = std::max(scale, std::abs(want));
+            }
+            QVERIFY2(worst < 1e-9 * scale, qPrintable(QStringLiteral("%1 apart of %2").arg(worst).arg(scale)));
+        }
+        const QList<rf::Conductor> line{strip(0, 0, 1000, 100)};
+        const rf::Mesh mesh = meshed(line, 4, 50e-6);
+        // The shunt C.
+        {
+            const double f = 0.5e9, c = 3e-12, x = 2 * M_PI * f * c * 50;
+            const rf::FullWave w = rf::fullWaveOf(mesh, line, st, {p1, p2, element(QStringLiteral("C1"), QPointF(500, 50), 0, 0, c, true)}, {f});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            const Complex want = -Complex(0, x) / (2.0 + Complex(0, x));
+            qWarning("a shunt C of 3 pF: |S11| %.5g, the circuit's %.5g", std::abs(w.s.at(0).at(0).at(0)), std::abs(want));
+            QVERIFY2(std::abs(std::abs(w.s.at(0).at(0).at(0)) / std::abs(want) - 1) < 0.03, qPrintable(QString::number(std::abs(w.s.at(0).at(0).at(0)))));
+            QVERIFY(w.gain < 1e-6);
+        }
+        // The parallel L and C at their exact resonance: an open.
+        {
+            const double f0 = 2e9, l = 1e-9, c = 1 / (std::pow(2 * M_PI * f0, 2) * l);
+            const rf::FullWave loaded = rf::fullWaveOf(mesh, line, st, {p1, p2, element(QStringLiteral("T1"), QPointF(500, 50), 0, l, c, true)}, {f0});
+            const rf::FullWave bare = rf::fullWaveOf(mesh, line, st, {p1, p2}, {f0});
+            // (And nothing in parallel: an admittance of nought exactly, which
+            //  as an impedance is infinite, and NaN.)
+            const rf::FullWave empty = rf::fullWaveOf(mesh, line, st, {p1, p2, element(QStringLiteral("O1"), QPointF(500, 50), 0, 0, 0, true)}, {f0});
+            QVERIFY2(loaded.ok() && bare.ok() && empty.ok(), qPrintable(why(loaded) + why(bare) + why(empty)));
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j)
+                    QVERIFY2(std::abs(loaded.s.at(0).at(i).at(j) - bare.s.at(0).at(i).at(j)) < 1e-9
+                                 && std::abs(empty.s.at(0).at(i).at(j) - bare.s.at(0).at(i).at(j)) < 1e-12,
+                             qPrintable(QStringLiteral("S%1%2 %3 against %4").arg(i + 1).arg(j + 1).arg(std::abs(loaded.s.at(0).at(i).at(j))).arg(std::abs(bare.s.at(0).at(i).at(j)))));
+        }
+        // The series L and C to the ground: a notch.
+        {
+            const double l = 1e-9, c = 2.5e-12, f0 = 1 / (2 * M_PI * std::sqrt(l * c));
+            QList<double> fs;
+            for (int i = 0; i <= 30; ++i) fs << f0 * (0.85 + 0.2 * i / 30);
+            const rf::FullWave w = rf::fullWaveOf(mesh, line, st, {p1, p2, element(QStringLiteral("N1"), QPointF(500, 50), 0, l, c, false)}, fs);
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            int notch = 0;
+            for (int k = 0; k < fs.size(); ++k)
+                if (std::abs(w.s.at(k).at(1).at(0)) < std::abs(w.s.at(notch).at(1).at(0))) notch = k;
+            qWarning("a series L C to the ground: the notch at %.4g GHz (|S21| %.3g), 1/(2 pi sqrt(LC)) %.4g", fs.at(notch) / 1e9,
+                     std::abs(w.s.at(notch).at(1).at(0)), f0 / 1e9);
+            QVERIFY2(std::abs(fs.at(notch) / f0 - 1) < 0.03, qPrintable(QStringLiteral("%1 GHz").arg(fs.at(notch) / 1e9)));
+            QVERIFY(std::abs(w.s.at(notch).at(1).at(0)) < 0.2);
+            QVERIFY(w.gain < 1e-6);
+        }
+    }
+
+    // A coax or via port: a line fed from below, an internal port at each end up
+    // from the ground through the substrate, its current up a path of its own
+    // with a via's field - a probe's. Its eps_eff and Z0 from two lengths at
+    // 5 GHz are the edge-fed line's within 1 % (each feed's own discontinuity
+    // the same at both lengths, and gone).
+    void aLineFedFromBelowIsTheLineFedAtItsEdge()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6);
+        const double fl = 5e9, k0 = 2 * M_PI * fl / kC0;
+        const auto solve = [&](double length, bool below) {
+            const QList<rf::Conductor> cs{strip(0, 0, length, 100)};
+            const QList<rf::FullWavePort> ports = below
+                                                      ? QList<rf::FullWavePort>{internalPort(QPointF(25, 50), QStringLiteral("M1")),
+                                                                                internalPort(QPointF(length - 25, 50), QStringLiteral("M1"))}
+                                                      : QList<rf::FullWavePort>{edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                                                edgePort(QPointF(length, 50), QStringLiteral("M1"), QPointF(1, 0))};
+            return rf::fullWaveOf(meshed(cs, 4, 50e-6), cs, st, ports, {fl});
+        };
+        QList<double> ee, z0;
+        for (const bool below : {false, true}) {
+            const rf::FullWave a = solve(1000, below), c = solve(2000, below);
+            QVERIFY2(a.ok() && c.ok(), qPrintable(why(a) + why(c)));
+            const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(c, 0)), 1000e-6, 2000e-6, k0 * 2.5);
+            ee << std::pow(wave.gamma.imag() / k0, 2);
+            z0 << wave.z0.real();
+        }
+        qWarning("fed at its edge: eps_eff %.5g, Z0 %.5g Ohm; from below: %.5g, %.5g", ee.at(0), z0.at(0), ee.at(1), z0.at(1));
+        QVERIFY2(std::abs(ee.at(1) / ee.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(ee.at(1)).arg(ee.at(0))));
+        QVERIFY2(std::abs(z0.at(1) / z0.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(z0.at(1)).arg(z0.at(0))));
     }
 
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its

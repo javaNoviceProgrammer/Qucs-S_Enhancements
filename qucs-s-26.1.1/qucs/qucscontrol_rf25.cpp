@@ -2046,10 +2046,13 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
         for (int i = 1; i < wave->frequencies.size(); ++i)
             if (std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)) k = i;
     const Stack stack = model->model().stack();
-    const AntennaFigures a = antennaFiguresOf(*wave, stack, k, port);
+    const QString others = args.value(QLatin1String("others")).toString().trimmed();
+    if (!others.isEmpty() && others != QLatin1String("ended") && others != QLatin1String("open"))
+        return errorResult(tr("'others' is \"ended\" (by their references, as a measurement's) or \"open\", not %1.").arg(others));
+    const AntennaFigures a = antennaFiguresOf(*wave, stack, k, port, others == QLatin1String("open"));
     if (!a.ok()) return errorResult(a.problems.join(QLatin1Char(' ')));
     const Layers layers = layersOf(stack);
-    const QList<FarSource> sources = farSourcesOf(*wave, k, port);
+    const QList<FarSource>& sources = a.sources;
     const double step = std::clamp(args.value(QLatin1String("step")).toDouble(2), 0.1, 30.0);
     const double eta0 = std::sqrt(4e-7 * M_PI / kEps0);
     QJsonArray cuts;
@@ -2074,6 +2077,9 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
                        {QStringLiteral("radiated_w"), a.radiated},
                        {QStringLiteral("directivity_dbi"), a.directivity > 0 ? 10 * std::log10(a.directivity) : -300.0},
                        {QStringLiteral("gain_dbi"), a.gain > 0 ? 10 * std::log10(a.gain) : -300.0},
+                       {QStringLiteral("realized_gain_dbi"), a.realizedGain > 0 ? 10 * std::log10(a.realizedGain) : -300.0},
+                       {QStringLiteral("others"), a.othersOpen ? QStringLiteral("open") : QStringLiteral("ended")},
+                       {QStringLiteral("loads_w"), a.loads},
                        {QStringLiteral("efficiency"), a.efficiency},
                        {QStringLiteral("theta_most_deg"), a.thetaMost * 180 / M_PI},
                        {QStringLiteral("phi_most_deg"), a.phiMost * 180 / M_PI},

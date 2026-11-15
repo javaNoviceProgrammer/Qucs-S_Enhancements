@@ -266,6 +266,19 @@ QList<FullWavePort> portsOf(const Model& model, QString* problem)
         // (The ports are in metres; the cells are in the layout's own.)
         p.at = QPointF(x, y) / 1e-6;
         p.pair = textOf(port, QStringLiteral("pair")).trimmed();
+        // A lumped element in its place (an internal port's "What it is").
+        if (!edge && textOf(port, QStringLiteral("element")) == QLatin1String("lumped")) {
+            bool okR = true, okL = true, okC = true;
+            p.lumped.on = true;
+            p.lumped.r = numberOf(port, QStringLiteral("r"), model, 0, &okR);
+            p.lumped.l = numberOf(port, QStringLiteral("l"), model, 0, &okL);
+            p.lumped.c = numberOf(port, QStringLiteral("c"), model, 0, &okC);
+            p.lumped.parallel = textOf(port, QStringLiteral("topology")) == QLatin1String("parallel");
+            if (!okR || !okL || !okC || p.lumped.r < 0 || p.lumped.l < 0 || p.lumped.c < 0) {
+                *problem = tr("%1's resistance, inductance and capacitance are each a number, nought or above.").arg(p.name);
+                return {};
+            }
+        }
         // Through the terminals and ports it names, wherever they are.
         if (textOf(port, QStringLiteral("return")) == QLatin1String("terminals")) {
             p.terminals = true;
@@ -707,6 +720,14 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
     // and a coplanar one's grounds and vias - and their reference planes
     // moved.
     if (!wave->ok()) return wave;
+    // (Its lumped elements folded in: the ports from here are the measuring
+    //  ones, as the answer's are.)
+    {
+        QList<FullWavePort> measuring;
+        for (const FullWavePort& p : std::as_const(job.ports))
+            if (!p.lumped.on) measuring << p;
+        job.ports = measuring;
+    }
     FullWaveControl quiet;
     quiet.stop = &job.stop;
     quiet.matrix = job.matrix;

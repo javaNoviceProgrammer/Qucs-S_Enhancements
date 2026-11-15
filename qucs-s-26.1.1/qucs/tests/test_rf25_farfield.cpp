@@ -178,6 +178,12 @@ private slots:
             QVERIFY(a.directivity > 2 && a.directivity < 12);
             QVERIFY(std::abs(a.gain / a.directivity - a.efficiency) < 1e-9);
         }
+        // Realized gain: over what the source offers, the port's mismatch in
+        // it - the gain times 1 - |S11|^2, to 1e-9.
+        const rf::AntennaFigures one = rf::antennaFiguresOf(wave, stack, 0, 0);
+        const double mismatch = 1 - std::norm(wave.s.at(0).at(0).at(0));
+        QVERIFY2(std::abs(one.realizedGain / (one.gain * mismatch) - 1) < 1e-9,
+                 qPrintable(QStringLiteral("%1 against %2").arg(one.realizedGain).arg(one.gain * mismatch)));
         // Its ports' paths kept beside the model, with the rest (format 5), so
         // that a solution read back has the same far field.
         QVERIFY(!wave.portPaths.isEmpty());
@@ -196,6 +202,70 @@ private slots:
         rf::Stack open = stack;
         open.layers.removeFirst();
         QVERIFY(!rf::antennaFiguresOf(wave, open, 0, 0).ok());
+    }
+
+    // A two-port (the review of eac3641e: the solve's currents are each
+    // port's with the others open): a line 12 mm over 1 mm of vacuum at 10
+    // GHz, driven at one end. With the other port ended by its reference -
+    // as a measurement has it, and the default - it radiates what it takes,
+    // accepted less what that load takes, within 3 %; with it open (asked
+    // for), what it accepts, as a standing wave; and the two differ.
+    void aTwoPortRadiatesWhatItTakesItsOtherEnded()
+    {
+        rf::Conductor strip;
+        strip.layer = QStringLiteral("M1");
+        strip.outline = QPolygonF(QRectF(0, 0, 12000, 3000));
+        rf::MeshSettings how;
+        how.maximum = 0.5e-3;
+        how.cellsAcross = 6;
+        const rf::Mesh mesh = rf::meshOf({strip}, how, rf::Stack(), 0);
+        rf::FullWavePort a, b;
+        a.name = QStringLiteral("P1");
+        a.at = QPointF(0, 1500);
+        a.metal = QStringLiteral("M1");
+        a.facing = QPointF(-1, 0);
+        b = a;
+        b.name = QStringLiteral("P2");
+        b.at = QPointF(12000, 1500);
+        b.facing = QPointF(1, 0);
+        const rf::Stack stack = stackOf(1, 1e-3);
+        const rf::FullWave wave = rf::fullWaveOf(mesh, {strip}, stack, {a, b}, {10e9});
+        QVERIFY2(wave.ok(), qPrintable(wave.problems.join(" | ")));
+        const rf::AntennaFigures ended = rf::antennaFiguresOf(wave, stack, 0, 0), open = rf::antennaFiguresOf(wave, stack, 0, 0, true);
+        QVERIFY(ended.ok() && open.ok() && !ended.othersOpen && open.othersOpen);
+        qWarning("a line over vacuum: ended, accepted %.4g W, its load %.4g, radiated %.4g (efficiency %.4f); open, accepted %.4g, radiated %.4g (%.4f)",
+                 ended.accepted, ended.loads, ended.radiated, ended.efficiency, open.accepted, open.radiated, open.efficiency);
+        QVERIFY2(std::abs(ended.efficiency - 1) < 0.03 && ended.loads > 0, qPrintable(QString::number(ended.efficiency)));
+        QVERIFY2(std::abs(open.efficiency - 1) < 0.03, qPrintable(QString::number(open.efficiency)));
+        QVERIFY(std::abs(ended.directivity / open.directivity - 1) > 0.01);
+        QVERIFY(ended.notes.join(' ').contains(QStringLiteral("ended by their references")));
+    }
+
+    // A narrow beam: sixteen short dipoles along y half a wavelength apart,
+    // 3 mm over a ground in vacuum at 10 GHz. Its peak falls between the
+    // quadrature's nodes; refined, the directivity is that of a fine search
+    // (the intensity along phi 90 degrees every hundredth of a degree, the
+    // power by four times the order) within 0.2 %.
+    void aNarrowBeamsPeakIsFoundBetweenTheNodes()
+    {
+        const double f = 10e9, lambda = 299792458.0 / f;
+        const rf::Layers layers = grounded(1, 5e-3);
+        QList<rf::FarSource> array;
+        for (int i = 0; i < 16; ++i) {
+            const double y = (i - 7.5) * lambda / 2;
+            array << rf::FarSource{QPointF(-1e-6, y), QPointF(1e-6, y), 3e-3, 3e-3, std::complex<double>(1, 0)};
+        }
+        const rf::Radiation r = rf::radiationOf(layers, f, array);
+        const rf::Radiation fine = rf::radiationOf(layers, f, array, 96);
+        double most = 0;
+        for (int i = 0; i <= 9000; ++i) {
+            const double theta = i * 0.01 * M_PI / 180;
+            const rf::FarFieldAt e = rf::farFieldOf(layers, f, array, theta, M_PI / 2);
+            most = std::max(most, (std::norm(e.theta) + std::norm(e.phi)) / (2 * std::sqrt(kMu0 / rf::kEps0)));
+        }
+        const double want = 4 * M_PI * most / fine.power;
+        qWarning("sixteen dipoles: directivity %.5g, the fine search's %.5g", r.directivity(), want);
+        QVERIFY2(std::abs(r.directivity() / want - 1) < 0.002, qPrintable(QStringLiteral("%1 against %2").arg(r.directivity()).arg(want)));
     }
 };
 

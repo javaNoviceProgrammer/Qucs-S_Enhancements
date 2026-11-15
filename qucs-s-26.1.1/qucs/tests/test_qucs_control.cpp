@@ -3182,6 +3182,11 @@ private slots:
         QCOMPARE(figures.value("cuts").toArray().size(), 2);
         QCOMPARE(figures.value("cuts").toArray().at(1).toObject().value("points").toArray().size(), 37);
         QVERIFY(failed(call("rf25_farfield", {{"path", model}, {"port", "none"}}, 60000)));
+        QCOMPARE(figures.value("others").toString(), QStringLiteral("ended"));
+        QVERIFY(figures.value("loads_w").toDouble() > 0 && figures.contains("realized_gain_dbi"));
+        const QJsonObject farOpen = call("rf25_farfield", {{"path", model}, {"others", "open"}}, 60000);
+        QVERIFY2(!failed(farOpen) && json(farOpen).toObject().value("others").toString() == QStringLiteral("open"), qPrintable(text(farOpen)));
+        QVERIFY(failed(call("rf25_farfield", {{"path", model}, {"others", "shorted"}}, 60000)));
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
     }
 
