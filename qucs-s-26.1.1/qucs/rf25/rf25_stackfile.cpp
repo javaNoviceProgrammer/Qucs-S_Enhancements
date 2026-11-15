@@ -11,6 +11,8 @@
  */
 #include "rf25_stackfile.h"
 
+#include "rf25_bondwire.h"
+
 #include "rf25_sparams.h"
 
 #include <QCoreApplication>
@@ -280,6 +282,7 @@ StackWritten hfssStackupOf(const Model& model, const QString& name, const QStrin
         out.notes << tr("Djordjevic-Sarkar dispersion is not in an XML stackup: its dielectrics are written at the values given "
                         "for the frequency they are given at.");
     if (const QString faces = facesNote(stack, tr("an XML stackup")); !faces.isEmpty()) out.notes << faces;
+    out.notes << bondWiresNotWritten(model, tr("an XML stackup"));
 
     QStringList vias;
     for (const Layer& v : stack.layers) {
@@ -530,6 +533,7 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
         out.notes << tr("Djordjevic-Sarkar dispersion has no place in a process file: its dielectrics are written at the values "
                         "given for the frequency they are given at.");
     if (const QString faces = facesNote(stack, tr("a process file")); !faces.isEmpty()) out.notes << faces;
+    out.notes << bondWiresNotWritten(model, tr("a process file"));
 
     QStringList vias;
     for (const Layer& v : stack.layers) {
