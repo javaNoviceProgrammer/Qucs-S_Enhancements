@@ -1022,6 +1022,19 @@ private slots:
         QVERIFY2(took < 2500, qPrintable(QStringLiteral("%1 ms").arg(took)));
     }
 
+    // A magnetic layer in the stack: the loop's partial inductances are free
+    // space's, and it says so - the full wave has the material.
+    void aLoopOverAMagneticLayerSaysItsLIsOfFreeSpace()
+    {
+        rf::Stack stack = grounded(4, 100e-6, 1e-6, 5.8e7);
+        for (rf::Layer& l : stack.layers)
+            if (l.kind == rf::Layer::Substrate) l.mur = 3;
+        const QList<rf::Conductor> wire{strip(0, 0, 400, 20)};
+        const rf::Inductance loop = rf::inductanceOf(meshed(wire, 10), wire, stack, QPointF(0, 10), QPointF(400, 10));
+        QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+        QVERIFY2(loop.lines.join(' ').contains(QStringLiteral("is magnetic")), qPrintable(loop.lines.join(" | ")));
+    }
+
     // A strip of cells a tenth of a micrometre, solved dense: L's entries a
     // few times 1e-14 H beside A's ones, which the LU's test of whether it
     // is invertible - against its largest pivot - took for nothing, "in

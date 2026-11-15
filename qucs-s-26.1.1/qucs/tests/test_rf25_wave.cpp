@@ -281,6 +281,69 @@ private slots:
     }
 
 
+    // A magnetic stack's kernels (a
+    // slab's mu_r, which no solve had). Immersed whole in one medium of mu_r
+    // - its slab and the half-space above - over a ground, a stack at f is
+    // free space's at f sqrt(mu_r), its wavenumbers alike: the vector
+    // potential mu_r times it and the scalar the same, at every kr; a via's
+    // kernels, which carry j w - G_zz as j w A, the potential its current
+    // puts at a height as a charge over w eps, both ways and in their closed
+    // forms - sqrt(mu_r) times. Exact, whatever the dielectrics, so to the
+    // last digits: every impedance of the lines scales alike.
+    void aMagneticStacksKernelsAreFreeSpacesAtItsWavenumber()
+    {
+        const double mur = 3, f = 10e9, scaled = f * std::sqrt(mur), h = 200e-6, root = std::sqrt(mur);
+        for (const double epsr : {4.0, 9.8}) {
+            rf::Layers magnetic = stackOf({{epsr, h, 0}}, true), free = stackOf({{epsr, h, 0}}, true);
+            magnetic.slabs[0].mur = mur;
+            magnetic.murAbove = mur;
+            for (const auto& [zf, zs] : {std::pair{h, h}, std::pair{0.5 * h, h}, std::pair{0.3 * h, 0.7 * h}}) {
+                const rf::WaveGreen a(magnetic, zf, zs, f, 5e-3), b(free, zf, zs, scaled, 5e-3);
+                QVERIFY2(a.ok() && b.ok(), qPrintable((a.problems() + b.problems()).join(" | ")));
+                // (And at distances, through the closed forms and their
+                //  tables: the extraction's mu too.)
+                for (const double rho : {3e-6, 1e-4, 2e-3})
+                    QVERIFY2(std::abs(a.vector(rho) / (mur * b.vector(rho)) - 1.0) < 1e-6
+                                 && std::abs(a.scalar(rho) / b.scalar(rho) - 1.0) < 1e-6,
+                             qPrintable(QStringLiteral("eps_r %1, %2/%3 µm, %4 µm: x%5 and x%6").arg(epsr).arg(zf * 1e6).arg(zs * 1e6)
+                                            .arg(rho * 1e6).arg(std::abs(a.vector(rho) / b.vector(rho))).arg(std::abs(a.scalar(rho) / b.scalar(rho)))));
+                for (const Complex kr : {Complex(10, 0), Complex(300, -2), Complex(2e3, 0), Complex(5e4, 0)}) {
+                    QVERIFY2(std::abs(a.vectorSpectral(kr) / (mur * b.vectorSpectral(kr)) - 1.0) < 1e-10,
+                             qPrintable(QStringLiteral("eps_r %1, %2/%3 µm, kr %4: vector").arg(epsr).arg(zf * 1e6).arg(zs * 1e6).arg(kr.real())));
+                    QVERIFY2(std::abs(a.scalarSpectral(kr) / b.scalarSpectral(kr) - 1.0) < 1e-10,
+                             qPrintable(QStringLiteral("eps_r %1, %2/%3 µm, kr %4: scalar").arg(epsr).arg(zf * 1e6).arg(zs * 1e6).arg(kr.real())));
+                }
+            }
+            // A via from the ground through the lower half, another beside
+            // it, and the potential at a height on the top: the slab cut in
+            // two of the same.
+            rf::Layers twoM = stackOf({{epsr, h / 2, 0}, {epsr, h / 2, 0}}, true), twoF = twoM;
+            twoM.slabs[0].mur = twoM.slabs[1].mur = mur;
+            twoM.murAbove = mur;
+            const rf::ViaGreen::Span span{0, h / 2};
+            const rf::ViaGreen va(twoM, span, {span}, {h}, f, 5e-3), vb(twoF, span, {span}, {h}, scaled, 5e-3);
+            QVERIFY2(va.ok() && vb.ok(), qPrintable((va.problems() + vb.problems()).join(" | ")));
+            for (const Complex kr : {Complex(10, 0), Complex(300, -2), Complex(2e3, 0), Complex(5e4, 0)}) {
+                QVERIFY2(std::abs(va.couplingSpectral(0, kr) / (root * vb.couplingSpectral(0, kr)) - 1.0) < 1e-10,
+                         qPrintable(QStringLiteral("eps_r %1, kr %2: G_zz").arg(epsr).arg(kr.real())));
+                QVERIFY2(std::abs(va.symmetricSpectral(0, kr) / (root * vb.symmetricSpectral(0, kr)) - 1.0) < 1e-10,
+                         qPrintable(QStringLiteral("eps_r %1, kr %2: G_zz, both ways").arg(epsr).arg(kr.real())));
+                QVERIFY2(std::abs(va.potentialSpectral(0, kr) / (root * vb.potentialSpectral(0, kr)) - 1.0) < 1e-10,
+                         qPrintable(QStringLiteral("eps_r %1, kr %2: the potential at a height").arg(epsr).arg(kr.real())));
+            }
+            const QList<rf::ViaGreen::Term> ta = va.couplingTerms(0), tb = vb.couplingTerms(0);
+            QCOMPARE(ta.size(), tb.size());
+            for (int i = 0; i < ta.size(); ++i) {
+                QVERIFY2(std::abs(ta.at(i).coefficient - root * tb.at(i).coefficient) <= 1e-12 * std::abs(root * tb.at(i).coefficient) + 1e-300,
+                         qPrintable(QStringLiteral("term %1").arg(i)));
+                QVERIFY2(std::abs(ta.at(i).k - tb.at(i).k) <= 1e-12 * std::abs(tb.at(i).k), qPrintable(QStringLiteral("term %1's k").arg(i)));
+            }
+            QVERIFY2(std::abs(va.potentialTail(0).coefficient - root * vb.potentialTail(0).coefficient)
+                         <= 1e-12 * std::abs(vb.potentialTail(0).coefficient) + 1e-300,
+                     "the potential's tail");
+        }
+    }
+
     // Djordjevic-Sarkar's wideband Debye model (a review's
     // "features missing": a dielectric's permittivity and loss tangent the
     // same at every frequency, which is not causal): its closed form is the

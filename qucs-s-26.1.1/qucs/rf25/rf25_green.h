@@ -87,6 +87,10 @@ struct Layers {
         /// is of a stack already taken at one (Stack::atFrequency()).
         bool dispersive = false;
         double dispersionAt = 1e9;   ///< Hz
+        /// Its relative permeability and magnetic loss tangent (Layer::mur):
+        /// the retarded Green's functions take mu0 mur (1 - j mtand); a
+        /// static charge sees none of it.
+        double mur = 1, mtand = 0;
         /// Its relative permittivity at \a frequency (Hz), eps' - j eps'' -
         /// its loss tangent in it, its conductivity not.
         std::complex<double> permittivityAt(double frequency) const;
@@ -95,6 +99,10 @@ struct Layers {
     bool groundBelow = false; ///< a ground plane under the lowest slab
     double epsrBelow = 1;     ///< what is below it when there is no ground
     double epsrAbove = 1;     ///< above the top slab, to infinity (air)
+    /// The half-spaces' relative permeability (the retarded Green's functions
+    /// alone): air's 1, as a stack has it; a test immerses a stack in one
+    /// magnetic medium with them.
+    double murBelow = 1, murAbove = 1;
     QStringList problems;
 
     bool ok() const { return problems.isEmpty() && !slabs.isEmpty(); }

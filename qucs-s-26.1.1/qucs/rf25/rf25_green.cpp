@@ -520,6 +520,8 @@ Layers layersOf(const Stack& stack)
                 s.name = l.name;
                 s.dispersive = !l.dispersion.isEmpty();
                 s.dispersionAt = l.dispersionAt;
+                s.mur = l.mur > 0 ? l.mur : 1;
+                s.mtand = std::max(0.0, l.mtand);
                 out.slabs << s;
                 z = s.z1;
             }

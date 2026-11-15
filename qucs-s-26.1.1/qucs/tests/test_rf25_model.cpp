@@ -262,6 +262,22 @@ private slots:
         const std::optional<rf::Model> back = rf::Model::fromJson(m.toJson());
         QVERIFY(back.has_value());
         QCOMPARE(back->stack().layers.at(0).dispersionAt, 2e9);
+        // A substrate's permeability and its loss, read and kept round a file;
+        // none said is not magnetic; nought or less said.
+        QVERIFY(!m.stack().magnetic());
+        sub.props.insert(QStringLiteral("mur"), QStringLiteral("3"));
+        sub.props.insert(QStringLiteral("mtand"), QStringLiteral("0.01"));
+        {
+            const rf::Stack ms = rf::Model::fromJson(m.toJson())->stack();
+            QVERIFY(ms.magnetic());
+            QCOMPARE(ms.layers.at(0).mur, 3.0);
+            QCOMPARE(ms.layers.at(0).mtand, 0.01);
+        }
+        sub.props.insert(QStringLiteral("mur"), QStringLiteral("0"));
+        QVERIFY2(m.stack().problems.join(' ').contains(QStringLiteral("relative permeability of no more than nought")),
+                 qPrintable(m.stack().problems.join(" | ")));
+        sub.props.insert(QStringLiteral("mur"), QStringLiteral("1"));
+        sub.props.insert(QStringLiteral("mtand"), QStringLiteral("0"));
         // A metal's roughness by Huray's model, read with its nodules and
         // their surface ratio, and kept round a file.
         for (rf::Node& c : m.stackNode().children)

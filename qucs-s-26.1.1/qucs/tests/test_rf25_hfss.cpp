@@ -728,6 +728,32 @@ private slots:
         QCOMPARE(subSays(3, QStringLiteral("Thickness:=")).toString(), QStringLiteral("1.5um"));
         QCOMPARE(subSays(3, QStringLiteral("FillMaterial:=")).toString(), QStringLiteral("rf25_air"));
         QCOMPARE(valueAfter(layers.at(3).at(0).toArray(), QStringLiteral("RMdl:=")).toString(), QStringLiteral("Groisse"));
+        // A metal of Huray's roughness goes out as Huray's, its nodules' radius
+        // and their surface ratio, top, bottom and side, and said - it went
+        // out as Groisse's of its old rms, or smooth with no word (the review
+        // of 2aa2da35).
+        {
+            QString stack = microstripStack();
+            stack.replace(QStringLiteral(R"("roughness": "0.2[um]")"),
+                          QStringLiteral(R"("roughness": "0.2[um]", "roughness_model": "huray", "nodule_radius": "0.5[um]", "surface_ratio": "2")"));
+            const Model huray = modelOf(stack + QLatin1Char(',')
+                                        + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
+                                                               {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "1000[um]", "y": "0", "facing": "+x"}})"))
+                                        + QLatin1Char(',') + QLatin1String(kStudy));
+            const HfssExport h = hfssExportOf(huray, {box(QStringLiteral("M1"), 0, -31, 1000, 31)}, HfssOptions(), QStringLiteral("line"), QStringLiteral("Qucs-S test"));
+            QVERIFY2(h.ok(), qPrintable(h.problems.join(QLatin1Char(' '))));
+            QVERIFY2(h.notes.join(' ').contains(QStringLiteral("Roughness: Huray's")) && !h.notes.join(' ').contains(QStringLiteral("Groisse")),
+                     qPrintable(h.notes.join(" | ")));
+            QTemporaryDir hdir;
+            const Ran hran = runScript(written(h, hdir.path()), hdir.path());
+            QVERIFY2(hran.ok, qPrintable(hran.output));
+            const QList<QJsonArray> hlayers = hran.of(QStringLiteral("oEditor.AddStackupLayer"));
+            QCOMPARE(hlayers.size(), 4);
+            for (const char* key : {"RMdl:=", "BRMdl:=", "SRMdl:="})
+                QCOMPARE(valueAfter(hlayers.at(3).at(0).toArray(), QLatin1String(key)).toString(), QStringLiteral("Huray"));
+            QCOMPARE(valueAfter(hlayers.at(3).at(0).toArray(), QStringLiteral("NR:=")).toString(), QStringLiteral("0.5um"));
+            QCOMPARE(valueAfter(hlayers.at(3).at(0).toArray(), QStringLiteral("HRatio:=")).toString(), QStringLiteral("2"));
+        }
 
         // The plane over the whole, five heights past the shape.
         const QList<QJsonArray> planes = ran.of(QStringLiteral("oEditor.CreateRectangle"));

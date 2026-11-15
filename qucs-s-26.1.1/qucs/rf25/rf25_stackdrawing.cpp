@@ -148,6 +148,8 @@ StackDrawing stackDrawingOf(const Model& model, const QString& name)
             b.words << heightWords(l.thickness) << epsWords(l.epsr);
             if (l.tand > 0) b.words << QStringLiteral("tan δ=%1").arg(g(l.tand, 4));
             if (!l.dispersion.isEmpty()) b.words << tr("Djordjevic-Sarkar, given at %1 GHz").arg(g(l.dispersionAt / 1e9, 4));
+            if (l.mur != 1) b.words << QStringLiteral("μr=%1").arg(g(l.mur, 4));
+            if (l.mtand > 0) b.words << QStringLiteral("tan δm=%1").arg(g(l.mtand, 4));
             if (l.sigma > 0) b.words << sigmaWords(l.sigma) << QStringLiteral("ρ=%1 Ω-cm").arg(g(100 / l.sigma, 4));
             break;
         case Layer::Dielectric:
@@ -155,6 +157,8 @@ StackDrawing stackDrawingOf(const Model& model, const QString& name)
             b.words << heightWords(l.thickness) << epsWords(l.epsr);
             if (l.tand > 0) b.words << QStringLiteral("tan δ=%1").arg(g(l.tand, 4));
             if (!l.dispersion.isEmpty()) b.words << tr("Djordjevic-Sarkar, given at %1 GHz").arg(g(l.dispersionAt / 1e9, 4));
+            if (l.mur != 1) b.words << QStringLiteral("μr=%1").arg(g(l.mur, 4));
+            if (l.mtand > 0) b.words << QStringLiteral("tan δm=%1").arg(g(l.mtand, 4));
             break;
         case Layer::Metal: {
             b.kind = StackDrawing::Band::Room;

@@ -186,6 +186,12 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("0"),
                tr("A lossy silicon substrate: 10[S/m] for 10 Ohm cm. Zero for an insulating one.")),
+          expr(QStringLiteral("mur"), tr("Relative permeability"), QString(), QStringLiteral("1"),
+               tr("A ferrite's or a magnetic film's: the full wave takes it in its fields, the quasi-static solve in its L "
+                  "(a second charge solve with 1/mur for each layer's permittivity, by duality). 1 for anything not "
+                  "magnetic.")),
+          expr(QStringLiteral("mtand"), tr("Magnetic loss tangent"), QString(), QStringLiteral("0"),
+               tr("Its permeability's loss, mur (1 - j mtand), in the full wave.")),
           choice(QStringLiteral("dispersion"), tr("Dispersion"), {QStringLiteral("none"), QStringLiteral("djordjevic_sarkar")},
                  {tr("None (the same at every frequency)"), tr("Djordjevic-Sarkar (wideband Debye)")}, QStringLiteral("none"),
                  tr("Djordjevic-Sarkar: its permittivity falls slowly with frequency and its loss tangent stays nearly flat, "
@@ -203,6 +209,12 @@ QList<NodeKind> makeKinds()
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("1[um]")),
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("4.1")),
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0.002")),
+          expr(QStringLiteral("mur"), tr("Relative permeability"), QString(), QStringLiteral("1"),
+               tr("A ferrite's or a magnetic film's: the full wave takes it in its fields, the quasi-static solve in its L "
+                  "(a second charge solve with 1/mur for each layer's permittivity, by duality). 1 for anything not "
+                  "magnetic.")),
+          expr(QStringLiteral("mtand"), tr("Magnetic loss tangent"), QString(), QStringLiteral("0"),
+               tr("Its permeability's loss, mur (1 - j mtand), in the full wave.")),
           choice(QStringLiteral("dispersion"), tr("Dispersion"), {QStringLiteral("none"), QStringLiteral("djordjevic_sarkar")},
                  {tr("None (the same at every frequency)"), tr("Djordjevic-Sarkar (wideband Debye)")}, QStringLiteral("none"),
                  tr("Djordjevic-Sarkar: its permittivity falls slowly with frequency and its loss tangent stays nearly flat, "
@@ -942,6 +954,13 @@ std::complex<double> djordjevicSarkar(double epsr, double tand, double at, doubl
     return infinite + delta * shape(std::max(0.0, frequency));
 }
 
+bool Stack::magnetic() const
+{
+    for (const Layer& l : layers)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.mur != 1) return true;
+    return false;
+}
+
 bool Stack::dispersive() const
 {
     for (const Layer& l : layers)
@@ -1167,6 +1186,11 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             layer.dispersion = QStringLiteral("djordjevic_sarkar");
             if (c.props.contains(QLatin1String("dispersion_at"))) read(QStringLiteral("dispersion_at"), &layer.dispersionAt);
         };
+        // (A file that says nothing of them is not magnetic, as it was.)
+        const auto readMagnetic = [&] {
+            if (c.props.contains(QLatin1String("mur"))) read(QStringLiteral("mur"), &layer.mur);
+            if (c.props.contains(QLatin1String("mtand"))) read(QStringLiteral("mtand"), &layer.mtand);
+        };
         switch (layer.kind) {
         case Layer::Substrate:
             read(QStringLiteral("thickness"), &layer.thickness);
@@ -1175,6 +1199,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("sigma"), &layer.sigma);
             if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
             readDispersion();
+            readMagnetic();
             break;
         case Layer::Dielectric:
             read(QStringLiteral("thickness"), &layer.thickness);
@@ -1182,6 +1207,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("tand"), &layer.tand);
             if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
             readDispersion();
+            readMagnetic();
             break;
         case Layer::Metal:
             read(QStringLiteral("thickness"), &layer.thickness);
@@ -1277,6 +1303,10 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("%1 has a relative permittivity beyond its shapes below 1 (%2).").arg(name(l)).arg(l.beyond);
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand < 0 && read("tand"))
             out.problems << tr("%1 has a loss tangent below zero.").arg(name(l));
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && !(l.mur > 0) && read("mur"))
+            out.problems << tr("%1 has a relative permeability of no more than nought (%2).").arg(name(l)).arg(l.mur);
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.mtand < 0 && read("mtand"))
+            out.problems << tr("%1 has a magnetic loss tangent below zero.").arg(name(l));
         if (!l.dispersion.isEmpty() && !(l.dispersionAt > 0) && read("dispersion_at"))
             out.problems << tr("%1's dispersion is given at no frequency above nought.").arg(name(l));
         // Djordjevic-Sarkar's poles lie from 1 kHz to 1 THz: given outside

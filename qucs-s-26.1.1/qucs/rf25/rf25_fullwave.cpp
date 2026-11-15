@@ -3785,17 +3785,17 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // static, made once of its permittivity as given - said, as the
         // quasi-static solve says the frequency it takes it at (the review of
         // 3789cfcb).
-        QStringList given;
+        QStringList given, values;
         for (const DielectricPlan::Region& r : std::as_const(dielectricPlanned.regions))
-            if (const Layer* l = stack.named(r.layer); l != nullptr && !l->dispersion.isEmpty() && !given.contains(l->name))
+            if (const Layer* l = stack.named(r.layer); l != nullptr && !l->dispersion.isEmpty() && !given.contains(l->name)) {
                 given << l->name;
+                values << QStringLiteral("%1 eps_r %2 at %3 GHz").arg(l->name).arg(l->epsr, 0, 'g', 4).arg(l->dispersionAt / 1e9, 0, 'g', 4);
+            }
         if (!given.isEmpty())
             c.dielectricLines << tr("%1 ends at its shapes, and is dispersive: inside them it is taken at its permittivity as "
                                     "given (%2), at every frequency - the correction for a layer that ends is made once, of "
                                     "statics - and beyond them it is what is there.")
-                                     .arg(given.join(QStringLiteral(", ")))
-                                     .arg(QStringLiteral("eps_r %1 at %2 GHz").arg(stack.named(given.first())->epsr, 0, 'g', 4)
-                                              .arg(stack.named(given.first())->dispersionAt / 1e9, 0, 'g', 4));
+                                     .arg(given.join(QStringLiteral(", ")), values.join(QStringLiteral("; ")));
         // The edge profile's change where a cell is within an ended layer's
         // shapes (Context::profileScale): its charge's own near field, the
         // background's air under a metal on its substrate putting it in air,

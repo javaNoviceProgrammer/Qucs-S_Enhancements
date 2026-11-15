@@ -678,10 +678,24 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         out.lines += plan.lines;
     }
     const Layers layers0 = plan.isEmpty() ? stackLayers : plan.background;
-    // The same stack with every dielectric vacuum, for C0.
+    // The same stack with every dielectric vacuum, for C0 - and, where a
+    // layer is magnetic, each its 1/mur by duality (Pucel and Masse, IEEE
+    // Trans. MTT 20(5), 1972): the magnetic problem of a quasi-TEM line is
+    // the electric one with eps_r replaced by 1/mu_r, so L = 1/(c0^2 C0) of
+    // that stack is the magnetic line's L, and eps_eff = C/C0 its
+    // eps_eff mu_eff - its phase constant k0 sqrt(eps_eff mu_eff) and its Z0
+    // sqrt(L/C) as the formulas have them.
     Layers vacuum = layers0;
-    for (Layers::Slab& slab : vacuum.slabs) slab.epsr = 1;
+    bool magnetic = false;
+    for (Layers::Slab& slab : vacuum.slabs) {
+        magnetic = magnetic || slab.mur != 1;
+        slab.epsr = slab.mur > 0 ? 1 / slab.mur : 1;
+    }
     vacuum.epsrAbove = vacuum.epsrBelow = 1;
+    if (magnetic)
+        out.lines << tr("A layer is magnetic: C0, and L = 1/(c0^2 C0), are of the stack with 1/mu_r for each layer's "
+                        "permittivity (duality), so eps_eff is eps_eff mu_eff here - its phase constant k0 "
+                        "sqrt(eps_eff mu_eff) and Z0 sqrt(L/C). Its magnetic loss is the full wave's alone.");
     // A Green's function for each pair of metals - the potential at a
     // point on one of a charge on the other - built once and shared by
     // every pair of cells on them. They are symmetric, so a pair is
@@ -1536,12 +1550,6 @@ double hurayFactor(double radius, double ratio, double sigma, double frequency)
     const double depth = std::sqrt(2.0 / (2 * M_PI * frequency * mu0 * sigma));
     const double d = depth / radius;
     return 1 + 1.5 * ratio / (1 + d + 0.5 * d * d);
-}
-
-double roughnessFactor(const Layer& metal, double frequency)
-{
-    return metal.huray ? hurayFactor(metal.nodule, metal.surfaceRatio, metal.sigma, frequency)
-                       : roughnessFactor(metal.roughness, metal.sigma, frequency);
 }
 
 double Extraction::roughnessAt(int k, double frequency) const

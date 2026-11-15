@@ -414,9 +414,7 @@ double roughnessFactor(double rms, double sigma, double frequency);
  * saturates at twice the loss, where a rough foil goes on.
  */
 double hurayFactor(double radius, double ratio, double sigma, double frequency);
-/// What \a metal's roughness multiplies its surface resistance by at
-/// \a frequency: Huray's or Hammerstad's, as it says.
-double roughnessFactor(const Layer& metal, double frequency);
+
 
 /// The surface resistance of the ground of \a extraction at \a frequency,
 /// Ohm a square: nothing for a perfect plane, the given one for a surface

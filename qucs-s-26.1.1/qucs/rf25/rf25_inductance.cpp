@@ -1457,6 +1457,9 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     for (const Filament& f : std::as_const(out.runs)) longest = std::max(longest, f.length());
     out.lines << tr("%1 run(s) of current over %2 cell(s); the longest is %3 µm.")
                      .arg(nb).arg(nn).arg(longest * 1e6, 0, 'g', 3);
+    if (stack.magnetic())
+        out.lines << tr("A layer of the stack is magnetic, and the loop's partial inductances are of free space, mu0's: "
+                        "its L is that of the loop with no magnetic material near it. The full wave has the material.");
     out.lines << tr("In at the cell at %1, %2 µm and out at %3, %4 µm.")
                      .arg(mesh.cells.at(source).centre.x(), 0, 'g', 4)
                      .arg(mesh.cells.at(source).centre.y(), 0, 'g', 4)
