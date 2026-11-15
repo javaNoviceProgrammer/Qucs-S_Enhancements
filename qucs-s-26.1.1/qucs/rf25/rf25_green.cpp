@@ -553,6 +553,46 @@ Layers layersOf(const Stack& stack)
     return out;
 }
 
+double staticDecay(const Layers& layers)
+{
+    if (!layers.groundBelow || !layers.groundAbove || layers.slabs.isEmpty()) return 0;
+    // Shot from the ground, Z nought and eps_z Z' one, to the lid: Z there
+    // as kappa grows, its first nought bisected.
+    const auto atLid = [&layers](double kappa) {
+        double z = 0, flux = 1;   // Z, eps_z Z'
+        for (const Layers::Slab& s : layers.slabs) {
+            const double ez = s.epsz > 0 ? s.epsz : s.epsr, q = kappa * std::sqrt(s.epsr / ez), h = s.z1 - s.z0;
+            const double slope = flux / ez;
+            const double c = std::cos(q * h), sn = std::sin(q * h);
+            const double nz = q > 0 ? z * c + slope * sn / q : z + slope * h;
+            const double nslope = q > 0 ? -z * q * sn + slope * c : slope;
+            z = nz;
+            flux = ez * nslope;
+        }
+        return z;
+    };
+    const double height = layers.height(), step = 0.002 * M_PI / height;
+    double lo = step * 0.01, zlo = atLid(lo);
+    for (double hi = step; hi < 40 * M_PI / height; hi += step) {
+        const double zhi = atLid(hi);
+        if ((zhi > 0) != (zlo > 0)) {
+            for (int i = 0; i < 100; ++i) {
+                const double mid = 0.5 * (lo + hi), zm = atLid(mid);
+                if ((zm > 0) == (zlo > 0)) {
+                    lo = mid;
+                    zlo = zm;
+                } else {
+                    hi = mid;
+                }
+            }
+            return 0.5 * (lo + hi);
+        }
+        lo = hi;
+        zlo = zhi;
+    }
+    return M_PI / height;
+}
+
 QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF& at, double reach, double signX, double signY)
 {
     QList<BoxImage> out;
