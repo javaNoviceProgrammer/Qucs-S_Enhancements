@@ -2139,6 +2139,9 @@ bool RF25Doc::solvingAlike(const SolveRequest& request) const
     };
     if (solverOf(a_solveRequest) != solverOf(request)) return false;
     if (a_solveRequest.levels != request.levels) return false;
+    // (A loop alone joins a whole quasi-static solve, which finds the loop
+    //  too; a whole one does not join a loop alone, which has no charge.)
+    if (a_solveRequest.loopOnly && !request.loopOnly) return false;
     if (solverOf(request) == QLatin1String("quasi_static")) return true;
     const auto matrixOf = [this](const SolveRequest& r) {
         return r.matrix.isEmpty() ? studyMatrix(a_model)
@@ -2331,7 +2334,9 @@ void RF25Doc::solveDone()
     } else {
         a_fullWave.reset();
         a_waveNotes.clear();
-        a_extraction = job->result;
+        // (A loop alone leaves the charge solve shown of this very model as
+        //  it was: it solved none.)
+        if (!job->loopOnly || job->modelStamp != a_solvedModel) a_extraction = job->result;
         a_inductance = job->inductance;
         a_portsSaid = job->portsSaid;
         // A uniform line's own length along it - a short GSSG is wider than
@@ -2339,7 +2344,9 @@ void RF25Doc::solveDone()
         a_solvedLength = job->result && job->result->perMetre.fromMiddle && job->result->perMetre.length > 0
                              ? job->result->perMetre.length
                              : job->length;
-        a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
+        a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; "))
+                         : job->loopOnly && job->inductance && !job->inductance->ok() ? job->inductance->problems.join(QStringLiteral("; "))
+                                                                                       : QString();
     }
     // What it was solved from and by; kept beside the model at once where
     // the model on disk is the one solved, else when it is saved.

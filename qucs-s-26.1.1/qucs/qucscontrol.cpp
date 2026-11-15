@@ -6183,12 +6183,19 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
         if (QucsDoc* current = QucsApp::docIn(pane->currentWidget())) p.insert(QStringLiteral("in front"), titleOf(current));
         paneList.append(p);
     }
+    // A simulation running: the console's, or an RF 2.5D model's solve (its
+    // tab's Solve or rf25_solve) - each such model named, with where it is.
+    QJsonArray solving;
+    for (QucsDoc* doc : a_app->allDocuments())
+        if (auto* rf = dynamic_cast<RF25Doc*>(doc); rf != nullptr && rf->isSolving())
+            solving.append(QJsonObject{{QStringLiteral("title"), titleOf(doc)}, {QStringLiteral("solving"), rf->solvingSaid()}});
     QJsonObject state{{QStringLiteral("documents"), docs},
                       {QStringLiteral("panes"), paneList},
                       {QStringLiteral("workspace"), QucsSettings.qucsWorkspaceDir.absolutePath()},
                       {QStringLiteral("simulator"), simulator},
                       {QStringLiteral("simulation running"),
-                       a_app->simulationConsole() != nullptr && a_app->simulationConsole()->isRunning()}};
+                       (a_app->simulationConsole() != nullptr && a_app->simulationConsole()->isRunning()) || !solving.isEmpty()}};
+    if (!solving.isEmpty()) state.insert(QStringLiteral("rf 2.5d solving"), solving);
     if (QWidget* dialog = openDialog())
         state.insert(QStringLiteral("dialog open"), dialog->windowTitle().isEmpty() ? dialog->metaObject()->className() : dialog->windowTitle());
     if (!pinned.isEmpty())

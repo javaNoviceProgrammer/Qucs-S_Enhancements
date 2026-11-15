@@ -1193,6 +1193,10 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
     RF25Doc::SolveRequest quasiStatic;
     quasiStatic.solver = QStringLiteral("quasi_static");
+    // (The loop alone: no charge solve before it, which was most of a
+    //  spiral's time - L02, L05 and L16 of the review, 4 to 11 s - and
+    //  nothing of this answer.)
+    quasiStatic.loopOnly = true;
     // As rf25_solve: a quasi-static solve going on is joined, one of
     // another kind refused, and past the timeout the solve goes on.
     if (model->isSolving() && !model->solvingAlike(quasiStatic))

@@ -54,6 +54,9 @@ struct SolveRequest {
     /// wave at \a frequencies, the top of the study's sweep where none
     /// are given). Empty: a solve.
     QList<int> levels;
+    /// A quasi-static solve of the loop's inductance alone (rf25_inductance):
+    /// no charge solve before it, whose capacitance the loop does not take.
+    bool loopOnly = false;
 };
 
 /// A solve on a thread of its own: the shapes and the cells as they
@@ -94,6 +97,8 @@ struct SolveJob {
     // magnetic half of the extraction, solved on the same thread and the
     // same copies as the charge.
     bool loop = false;
+    /// Its loop alone, no charge solve first (SolveRequest::loopOnly).
+    bool loopOnly = false;
     QPointF in, out;
     double frequency = 0;
     QString portsSaid;
