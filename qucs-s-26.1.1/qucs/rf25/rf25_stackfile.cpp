@@ -231,7 +231,7 @@ StackWritten hfssStackupOf(const Model& model, const QString& name, const QStrin
             // (A dielectric's name until its material is made, above it.)
             const Layer* fill = fillAbove(stack, i);
             m.fill = fill != nullptr ? QChar(1) + fill->name : airMaterial();
-            rough = rough || l.roughness > 0;
+            rough = rough || l.roughness > 0 || l.huray;
             rowOf.insert(l.name, m.name);
             z += l.thickness;
             rows << m;
@@ -488,7 +488,7 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
                                     : QStringLiteral("   # %1's room, of the air above it").arg(l.name);
             layers << line;
             layers << QStringLiteral("    conductor %1 %2 %3").arg(um(l.thickness), num(l.sigma), idOf.value(l.name));
-            rough = rough || l.roughness > 0;
+            rough = rough || l.roughness > 0 || l.huray;
             ++out.layers;
             break;
         }

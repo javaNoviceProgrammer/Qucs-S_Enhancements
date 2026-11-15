@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <tuple>
 #include <complex>
 #include <thread>
 
@@ -738,6 +739,76 @@ private slots:
                  dwave.gamma.real() / lpd.gamma.real() - 1);
         QVERIFY2(std::abs(dwave.gamma.real() / lpd.gamma.real() - 1) < 0.02,
                  qPrintable(QStringLiteral("alpha %1, phase B %2").arg(dwave.gamma.real()).arg(lpd.gamma.real())));
+    }
+
+    // A metal's roughness in the full wave's loss, which had none: every term of a run's own surface
+    // impedance times its metal's factor, Hammerstad's or Huray's. Both
+    // factors against an independent computation (Python's math); and on a
+    // copper microstrip of 5 µm, eight skin depths at 10 GHz, over a lossless
+    // substrate - its loss all the metal's -, the quasi-static extraction's R
+    // rough over smooth is the factor exactly, and the full wave's
+    // attenuation a little under it and never over: the current, solved, is
+    // spread the more evenly across the strip the more resistive its surface,
+    // its edges' crowding the less (measured x1.865 for Huray's 1.939, x1.748
+    // for Hammerstad's 1.807; a perfect metal's 0.02 Np/m against 2.24).
+    void aMetalsRoughnessIsInItsFullWaveLoss()
+    {
+        for (const auto& [f, huray, hammerstad] : {std::tuple{1e8, 1.0295383317, 1.0204007997}, std::tuple{1e9, 1.2156071030, 1.1974890999},
+                                                   std::tuple{1e10, 1.9389176654, 1.8074968585}, std::tuple{1e11, 2.9929486753, 1.9801471189}}) {
+            QVERIFY2(std::abs(rf::hurayFactor(0.5e-6, 2, 5.8e7, f) - huray) < 1e-9, qPrintable(QString::number(f)));
+            QVERIFY2(std::abs(rf::roughnessFactor(1e-6, 5.8e7, f) - hammerstad) < 1e-9, qPrintable(QString::number(f)));
+        }
+        QCOMPARE(rf::hurayFactor(0.5e-6, 0, 5.8e7, 1e10), 1.0);
+        const double h = 100e-6, w = 100, sigma = 5.8e7, t = 5e-6, f = 1e10;
+        const rf::Stack smooth = grounded(9.8, h, 0, t, sigma);
+        rf::Stack huray = smooth, hammerstad = smooth;
+        for (rf::Layer& l : huray.layers)
+            if (l.kind == rf::Layer::Metal) {
+                l.huray = true;
+                l.nodule = 0.5e-6;
+                l.surfaceRatio = 2;
+            }
+        for (rf::Layer& l : hammerstad.layers)
+            if (l.kind == rf::Layer::Metal) l.roughness = 1e-6;
+        const double k0 = 2 * M_PI * f / kC0;
+        const auto alphaOf = [&](const rf::Stack& stack, double* quasi) {
+            rf::Extraction e;
+            const rf::FullWave a = line(stack, 1000, w, 4, 100e-6, 4, {f}, &e);
+            const rf::FullWave b = line(stack, 2000, w, 4, 100e-6, 4, {f});
+            if (!a.ok() || !b.ok()) return -1.0;
+            const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, f);
+            *quasi = lp.r;
+            return twoLine(chainOf(zOf(a, 0)), chainOf(zOf(b, 0)), 1000e-6, 2000e-6, k0 * std::sqrt(lp.epsilonEff)).gamma.real();
+        };
+        double rSmooth = 0, rHuray = 0, rHammerstad = 0;
+        const double aSmooth = alphaOf(smooth, &rSmooth), aHuray = alphaOf(huray, &rHuray), aHammerstad = alphaOf(hammerstad, &rHammerstad);
+        QVERIFY(aSmooth > 0 && aHuray > 0 && aHammerstad > 0);
+        const double kHuray = rf::hurayFactor(0.5e-6, 2, sigma, f), kHammerstad = rf::roughnessFactor(1e-6, sigma, f);
+        qWarning("10 GHz: alpha %.5g Np/m smooth, %.5g Huray's (x%.4f, its factor %.4f), %.5g Hammerstad's (x%.4f, %.4f); "
+                 "the quasi-static R x%.4f, x%.4f",
+                 aSmooth, aHuray, aHuray / aSmooth, kHuray, aHammerstad, aHammerstad / aSmooth, kHammerstad, rHuray / rSmooth,
+                 rHammerstad / rSmooth);
+        for (const auto& [ratio, factor] : {std::pair{aHuray / aSmooth, kHuray}, std::pair{aHammerstad / aSmooth, kHammerstad}})
+            QVERIFY2(ratio > 0.94 * factor && ratio < 1.001 * factor, qPrintable(QStringLiteral("x%1 against %2").arg(ratio).arg(factor)));
+        QVERIFY2(std::abs(rHuray / rSmooth / kHuray - 1) < 1e-6, qPrintable(QString::number(rHuray / rSmooth)));
+    }
+
+    // A dispersive substrate that ends at its shapes: the full wave's
+    // correction for its shapes is made once, of statics, so inside them it
+    // is its permittivity as given at every frequency - and the answer says
+    // so (the review of 3789cfcb: nothing said it).
+    void aDispersiveLayerThatEndsSaysHowItIsTaken()
+    {
+        rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
+        for (rf::Layer& l : stack.layers)
+            if (l.kind == rf::Layer::Substrate) l.dispersion = QStringLiteral("djordjevic_sarkar");
+        const QList<rf::Conductor> conductors{strip(0, 0, 600, 100)};
+        const rf::Mesh mesh = meshed(conductors, 2, 100e-6, 4);
+        rf::FullWaveControl control;
+        control.extents << rf::Extent{QStringLiteral("SUB"), {QPolygonF(QRectF(-300, -300, 600, 700))}, 1.0};
+        const rf::FullWave w = rf::fullWaveOf(mesh, conductors, stack, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
+        QVERIFY2(w.ok(), qPrintable(why(w)));
+        QVERIFY2(w.lines.join(' ').contains(QStringLiteral("SUB ends at its shapes, and is dispersive")), qPrintable(w.lines.join(" | ")));
     }
 
     // A metal solved as its two faces (its "Solved as"): a sheet at its

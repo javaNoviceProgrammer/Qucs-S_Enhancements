@@ -1454,6 +1454,8 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         out.sigma << (metal != nullptr ? metal->sigma : 0.0);
         out.thickness << (metal != nullptr ? metal->thickness : 0.0);
         out.roughness << (metal != nullptr ? metal->roughness : 0.0);
+        out.nodule << (metal != nullptr && metal->huray ? metal->nodule : 0.0);
+        out.surfaceRatio << (metal != nullptr && metal->huray ? metal->surfaceRatio : 0.0);
     }
 
     // The short-circuit (Maxwell) matrix as the mutual one a circuit uses:
@@ -1527,6 +1529,28 @@ double roughnessFactor(double rms, double sigma, double frequency)
     return 1 + 2 / M_PI * std::atan(1.4 * ratio * ratio);
 }
 
+double hurayFactor(double radius, double ratio, double sigma, double frequency)
+{
+    if (!(radius > 0) || !(ratio > 0) || !(sigma > 0) || !(frequency > 0)) return 1;
+    constexpr double mu0 = 4e-7 * M_PI;
+    const double depth = std::sqrt(2.0 / (2 * M_PI * frequency * mu0 * sigma));
+    const double d = depth / radius;
+    return 1 + 1.5 * ratio / (1 + d + 0.5 * d * d);
+}
+
+double roughnessFactor(const Layer& metal, double frequency)
+{
+    return metal.huray ? hurayFactor(metal.nodule, metal.surfaceRatio, metal.sigma, frequency)
+                       : roughnessFactor(metal.roughness, metal.sigma, frequency);
+}
+
+double Extraction::roughnessAt(int k, double frequency) const
+{
+    const double radius = nodule.value(k), ratio = surfaceRatio.value(k);
+    return radius > 0 ? hurayFactor(radius, ratio, sigma.value(k), frequency)
+                      : roughnessFactor(roughness.value(k), sigma.value(k), frequency);
+}
+
 double groundSurfaceResistance(const Extraction& extraction, double frequency)
 {
     if (extraction.groundKind == QLatin1String("impedance")) return std::max(0.0, extraction.groundValue);
@@ -1552,7 +1576,7 @@ QList<QList<double>> resistancePerMetre(const Extraction& extraction, double fre
     // signals' current comes back through it.
     for (int k = 0; k < n; ++k) {
         const double rs = surfaceImpedance(extraction.sigma.value(k), extraction.thickness.value(k), frequency).real()
-                          * roughnessFactor(extraction.roughness.value(k), extraction.sigma.value(k), frequency);
+                          * extraction.roughnessAt(k, frequency);
         for (int i = 0; i < ns; ++i)
             for (int j = 0; j < ns; ++j) r[i][j] += rs * pm.wheeler.at(k).at(i).at(j);
     }
@@ -1718,7 +1742,7 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     const std::complex<double> zs = surfaceImpedance(sigma, t, frequency);
     // (Its roughness's share in it: the node said it raised the loss, and
     // until the phase B check's round nothing read it.)
-    out.roughnessFactor = roughnessFactor(extraction.roughness.value(index), sigma, frequency);
+    out.roughnessFactor = extraction.roughnessAt(index, frequency);
     out.surfaceResistance = zs.real() * out.roughnessFactor;
     if (sigma > 0) {
         constexpr double mu0 = 4e-7 * M_PI;

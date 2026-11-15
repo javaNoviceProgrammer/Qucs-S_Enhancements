@@ -93,6 +93,12 @@ struct Layer {
     /// shapes, where the layer map gives it any (rf25_dielectric.h).
     double beyond = 1;
     double roughness = 0;  ///< m, rms
+    /// A metal's roughness by Huray's snowball model rather than Hammerstad's
+    /// (hurayFactor()): its nodules' radius, m, and their surface over the
+    /// flat surface's they stand on.
+    bool huray = false;
+    double nodule = 0;
+    double surfaceRatio = 0;
     /// A dielectric's or the substrate's dispersion: empty, its epsr and tand
     /// the same at every frequency; "djordjevic_sarkar", the wideband Debye
     /// model through epsr and tand at \a dispersionAt (djordjevicSarkar()).

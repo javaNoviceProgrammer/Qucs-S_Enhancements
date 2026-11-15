@@ -1552,11 +1552,19 @@ template <typename Add> void groundImpedances(const Context& c, double f, Add ad
     for (const Context::GroundPair& g : c.groundPairs) add(g.a, g.b, zs * g.k);
 }
 
-template <typename Add> void ownImpedances(const Context& c, double f, Add add)
+template <typename Add> void ownImpedances(const Context& c, double f, Add rawAdd)
 {
     for (int a = 0; a < c.planar; ++a) {
         const Filament& run = c.runs.at(a);
         if (!(run.width > 0)) continue;
+        // Its metal's roughness: every term of its own surface impedance -
+        // its slab's, its twin's through the metal, its edge's and its walls'
+        // - the longer path the current takes along a rough surface, as the
+        // quasi-static solve has it in its loss (roughnessFactor()). The full
+        // wave had none, its loss a smooth metal's whatever the node said
+        const double rough = run.nodule > 0 ? hurayFactor(run.nodule, run.surfaceRatio, run.sigma, f)
+                                            : roughnessFactor(run.roughness, run.sigma, f);
+        const auto add = [&rawAdd, rough](int i, int j, Complex v) { rawAdd(i, j, rough * v); };
         const Complex sheet = sheetImpedance(run.sigma, run.thickness, f);
         const double squares = run.length() / run.width;
         const int twin = c.twin.value(a, -1);
@@ -1633,7 +1641,7 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add add)
     // thinner.
     for (const Via& v : c.vias) {
         const Filament& run = c.runs.at(v.run);
-        if (v.side > 0 && run.sigma > 0) add(v.run, v.run, surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side));
+        if (v.side > 0 && run.sigma > 0) rawAdd(v.run, v.run, surfaceImpedance(run.sigma, v.side / 4, f) * run.length() / (4 * v.side));
     }
 }
 
@@ -3773,6 +3781,21 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         }
         c.corrected = true;
         c.dielectricLines = dielectricPlanned.lines + c.dielectric.lines;
+        // A dispersive layer that ends: the correction for its shapes is
+        // static, made once of its permittivity as given - said, as the
+        // quasi-static solve says the frequency it takes it at (the review of
+        // 3789cfcb).
+        QStringList given;
+        for (const DielectricPlan::Region& r : std::as_const(dielectricPlanned.regions))
+            if (const Layer* l = stack.named(r.layer); l != nullptr && !l->dispersion.isEmpty() && !given.contains(l->name))
+                given << l->name;
+        if (!given.isEmpty())
+            c.dielectricLines << tr("%1 ends at its shapes, and is dispersive: inside them it is taken at its permittivity as "
+                                    "given (%2), at every frequency - the correction for a layer that ends is made once, of "
+                                    "statics - and beyond them it is what is there.")
+                                     .arg(given.join(QStringLiteral(", ")))
+                                     .arg(QStringLiteral("eps_r %1 at %2 GHz").arg(stack.named(given.first())->epsr, 0, 'g', 4)
+                                              .arg(stack.named(given.first())->dispersionAt / 1e9, 0, 'g', 4));
         // The edge profile's change where a cell is within an ended layer's
         // shapes (Context::profileScale): its charge's own near field, the
         // background's air under a metal on its substrate putting it in air,

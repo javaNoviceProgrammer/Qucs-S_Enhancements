@@ -493,6 +493,13 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         f.width = edge * micrometre;
         f.thickness = metal != nullptr ? metal->thickness : 0.0;
         f.sigma = metal != nullptr ? metal->sigma : 0.0;
+        if (metal != nullptr) {
+            f.roughness = metal->roughness;
+            if (metal->huray) {
+                f.nodule = metal->nodule;
+                f.surfaceRatio = metal->surfaceRatio;
+            }
+        }
         if (!(f.length() > 0)) continue;
         runs << f;
         if (ends != nullptr) ends->append({a, b});

@@ -220,7 +220,16 @@ QList<NodeKind> makeKinds()
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("0.6[um]")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("3.3e7")),
           expr(QStringLiteral("roughness"), tr("Roughness"), QStringLiteral("m"), QStringLiteral("0"),
-               tr("The rms roughness of its surface; it raises the loss at high frequency.")),
+               tr("The rms roughness of its surface; it raises the loss at high frequency (Hammerstad's model).")),
+          choice(QStringLiteral("roughness_model"), tr("Roughness model"), {QStringLiteral("hammerstad"), QStringLiteral("huray")},
+                 {tr("Hammerstad (its rms roughness)"), tr("Huray (snowballs: nodules on a flat)")}, QStringLiteral("hammerstad"),
+                 tr("Hammerstad's adds at most the loss again, which a rough foil passes at tens of GHz; Huray's, from "
+                    "copper nodules on the foil's surface, does not saturate there - what a board's copper wants above "
+                    "some 10 GHz.")),
+          expr(QStringLiteral("nodule_radius"), tr("Nodule radius"), QStringLiteral("m"), QStringLiteral("0.5[um]"),
+               tr("Huray's: the radius of the copper nodules on the surface.")),
+          expr(QStringLiteral("surface_ratio"), tr("Surface ratio"), QString(), QStringLiteral("2"),
+               tr("Huray's: the nodules' surface over the flat surface's they stand on, N 4 pi a^2 / A.")),
           choice(QStringLiteral("model"), tr("Solved as"), {QStringLiteral("automatic"), QStringLiteral("sheet"), QStringLiteral("faces")},
                  {tr("Automatic (its two faces where it is thick beside its gaps)"), tr("A sheet (its thickness in its loss)"),
                   tr("Its two faces, joined at its walls")},
@@ -1178,6 +1187,13 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("thickness"), &layer.thickness);
             read(QStringLiteral("sigma"), &layer.sigma);
             read(QStringLiteral("roughness"), &layer.roughness);
+            if (textOf(c, QStringLiteral("roughness_model")) == QLatin1String("huray")) {
+                layer.huray = true;
+                layer.nodule = 0.5e-6;
+                layer.surfaceRatio = 2;
+                if (c.props.contains(QLatin1String("nodule_radius"))) read(QStringLiteral("nodule_radius"), &layer.nodule);
+                if (c.props.contains(QLatin1String("surface_ratio"))) read(QStringLiteral("surface_ratio"), &layer.surfaceRatio);
+            }
             layer.twoSheets = textOf(c, QStringLiteral("model")) == QLatin1String("faces");
             layer.automatic = textOf(c, QStringLiteral("model")) == QLatin1String("automatic");
             break;
@@ -1263,12 +1279,35 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("%1 has a loss tangent below zero.").arg(name(l));
         if (!l.dispersion.isEmpty() && !(l.dispersionAt > 0) && read("dispersion_at"))
             out.problems << tr("%1's dispersion is given at no frequency above nought.").arg(name(l));
+        // Djordjevic-Sarkar's poles lie from 1 kHz to 1 THz: given outside
+        // them, or with a loss so high that what is left at an infinite
+        // frequency is under 1, it fits a permittivity of no material - 11.9
+        // and 0.02 given at 10 Hz made eps_inf -481, and eps' at 40 GHz -405
+        // (the review of 3789cfcb).
+        else if (!l.dispersion.isEmpty() && (l.dispersionAt < 1e3 || l.dispersionAt > 1e12) && read("dispersion_at"))
+            out.problems << tr("%1's dispersion is given at %2 Hz, outside Djordjevic-Sarkar's poles from 1 kHz to 1 THz: give "
+                               "its permittivity and loss tangent at a frequency between them.")
+                                .arg(name(l))
+                                .arg(l.dispersionAt, 0, 'g', 4);
+        else if (!l.dispersion.isEmpty() && read("epsr") && read("tand")
+                 && djordjevicSarkar(l.epsr, l.tand, l.dispersionAt, 1e30).real() < 1)
+            out.problems << tr("%1's loss tangent of %2 is too high for Djordjevic-Sarkar's model at %3 GHz: its permittivity "
+                               "at a high frequency would come out at %4, under 1. Give a lower loss tangent, or no "
+                               "dispersion.")
+                                .arg(name(l))
+                                .arg(l.tand, 0, 'g', 3)
+                                .arg(l.dispersionAt / 1e9, 0, 'g', 4)
+                                .arg(djordjevicSarkar(l.epsr, l.tand, l.dispersionAt, 1e30).real(), 0, 'g', 3);
         if (l.kind == Layer::Metal && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("%1 has no conductivity.").arg(name(l));
         if (l.kind == Layer::Via && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("The via %1 has no conductivity.").arg(name(l));
         if (l.kind == Layer::Metal && l.roughness < 0 && read("roughness"))
             out.problems << tr("%1 has a roughness below zero.").arg(name(l));
+        if (l.kind == Layer::Metal && l.huray && !(l.nodule > 0) && read("nodule_radius"))
+            out.problems << tr("%1's nodules have no radius.").arg(name(l));
+        if (l.kind == Layer::Metal && l.huray && l.surfaceRatio < 0 && read("surface_ratio"))
+            out.problems << tr("%1's surface ratio is below nought.").arg(name(l));
         // A via joins the metals it names, or a metal and the ground, and
         // they must be neighbours: nothing but dielectric between them - for
         // the ground, the metal the lowest. (The ground by its name, or by

@@ -161,7 +161,7 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
         for (int p = 0; p < n; ++p) {
             const int i = lines.nets.at(p);
             const double rs = surfaceImpedance(extraction.sigma.value(i), extraction.thickness.value(i), frequency).real()
-                              * roughnessFactor(extraction.roughness.value(i), extraction.sigma.value(i), frequency);
+                              * extraction.roughnessAt(i, frequency);
             out.R[std::size_t(p)][std::size_t(p)] = i < pm.crowding.size() ? rs * pm.crowding.at(i)
                                                                            : rs * length * extraction.crowding.value(i);
         }
