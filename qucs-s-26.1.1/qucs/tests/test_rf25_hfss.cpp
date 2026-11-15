@@ -754,6 +754,36 @@ private slots:
             QCOMPARE(valueAfter(hlayers.at(3).at(0).toArray(), QStringLiteral("NR:=")).toString(), QStringLiteral("0.5um"));
             QCOMPARE(valueAfter(hlayers.at(3).at(0).toArray(), QStringLiteral("HRatio:=")).toString(), QStringLiteral("2"));
         }
+        // A magnetic, uniaxial, dispersive substrate: its permeability and
+        // magnetic loss written in the script's material, its permeability
+        // in the control file; its permittivity along z and its dispersion,
+        // which neither writes, said (the review of f72ac35b: all written
+        // as of none, unsaid).
+        {
+            QString stack = microstripStack();
+            stack.replace(QStringLiteral(R"("epsr": "11.7", "sigma": "6.5[S/m]")"),
+                          QStringLiteral(R"("epsr": "11.7", "sigma": "6.5[S/m]", "mur": "3", "mtand": "0.05", "epsz": "13", "tand": "0.01", "dispersion": "djordjevic_sarkar")"));
+            const Model odd = modelOf(stack + QLatin1Char(',')
+                                      + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
+                                                               {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "1000[um]", "y": "0", "facing": "+x"}})"))
+                                      + QLatin1Char(',') + QLatin1String(kStudy));
+            QVERIFY2(odd.stack().ok(), qPrintable(odd.stack().problems.join(" | ")));
+            const HfssExport o = hfssExportOf(odd, {box(QStringLiteral("M1"), 0, -31, 1000, 31)}, HfssOptions(), QStringLiteral("line"), QStringLiteral("Qucs-S test"));
+            QVERIFY2(o.ok(), qPrintable(o.problems.join(QLatin1Char(' '))));
+            const QString notes = o.notes.join(QLatin1Char(' '));
+            QVERIFY2(notes.contains(QStringLiteral("Si is uniaxial")) && notes.contains(QStringLiteral("Djordjevic-Sarkar dispersion is not written"))
+                         && notes.contains(QStringLiteral("magnetic loss tangent is in the script's materials")),
+                     qPrintable(o.notes.join(" | ")));
+            QVERIFY(o.control.contains(QLatin1String("<Permeability><Double>3</Double></Permeability>")));
+            QTemporaryDir odir;
+            const Ran oran = runScript(written(o, odir.path()), odir.path());
+            QVERIFY2(oran.ok, qPrintable(oran.output));
+            QHash<QString, QJsonArray> mats;
+            for (const QJsonArray& a : oran.of(QStringLiteral("oDefinitions.AddMaterial"))) mats.insert(a.at(0).toArray().at(0).toString(), a.at(0).toArray());
+            QCOMPARE(valueAfter(mats.value(QStringLiteral("NAME:rf25_Si")), QStringLiteral("permeability:=")).toString(), QStringLiteral("3"));
+            QCOMPARE(valueAfter(mats.value(QStringLiteral("NAME:rf25_Si")), QStringLiteral("magnetic_loss_tangent:=")).toString(), QStringLiteral("0.05"));
+            QCOMPARE(valueAfter(mats.value(QStringLiteral("NAME:rf25_PI")), QStringLiteral("permeability:=")).toString(), QStringLiteral("1"));
+        }
 
         // The plane over the whole, five heights past the shape.
         const QList<QJsonArray> planes = ran.of(QStringLiteral("oEditor.CreateRectangle"));
@@ -962,7 +992,7 @@ private slots:
         QVERIFY(std::abs(valueAfter(layerOf(lidRan, QStringLiteral("Lid_gap")), QStringLiteral("Thickness:=")).toString().chopped(2).toDouble() - 300) < 1e-6);
         QVERIFY(std::abs(valueAfter(layerOf(lidRan, QStringLiteral("Lid")), QStringLiteral("LowerElevation:=")).toString().chopped(2).toDouble() - 402) < 1e-6);
         QCOMPARE(ranOf(lid).of(QStringLiteral("oEditor.CreateRectangle")).size(), 2);
-        QVERIFY(lid.notes.join(QLatin1Char('\n')).contains(QLatin1String("Lid: a metal lid, which RF 2.5D does not solve yet")));
+        QVERIFY(lid.notes.join(QLatin1Char('\n')).contains(QLatin1String("Lid: a metal lid, perfect as RF 2.5D solves it")));
 
         // A log sweep: each of its points, as a linear step cannot say them.
         const HfssExport logSweep = exportOf(stackOver(QStringLiteral(R"({"kind": "perfect"})")),

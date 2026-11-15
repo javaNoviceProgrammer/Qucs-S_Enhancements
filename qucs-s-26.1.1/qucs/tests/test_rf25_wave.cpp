@@ -429,6 +429,105 @@ private slots:
                      qPrintable(QStringLiteral("%1 µm: a kept table not its own").arg(rho * 1e6)));
     }
 
+    // A metal lid: 100 µm of eps_r 9.8
+    // on a ground, 150 µm of air, a perfect lid. At its top, at 20 GHz, the
+    // full wave's spectral kernels are its lines' written independently -
+    // the slab's line shorted below, the air's shorted above, j Z tan(kz d)
+    // each - at four kr, one complex; at 1 MHz its scalar, through its closed
+    // forms and tables, is the static Green's function's with the lid, on
+    // the slab and in the air over it; a via's kernels' remainders die; and a
+    // height on the lid is refused.
+    void aLidShortsTheLinesAtTheTop()
+    {
+        const double er = 9.8, h = 100e-6, g = 150e-6, f = 20e9, w = 2 * M_PI * f, kEps0 = rf::kEps0, k0 = w * std::sqrt(kMu0 * kEps0);
+        rf::Layers lidded = stackOf({{er, h, 0}, {1.0, g, 0}}, true);
+        lidded.groundAbove = true;
+        const rf::WaveGreen wg(lidded, h, h, f, 5e-3);
+        QVERIFY2(wg.ok(), qPrintable(wg.problems().join(" | ")));
+        const auto kz = [](Complex k2, Complex kr) {
+            Complex v = std::sqrt(k2 - kr * kr);
+            return v.imag() > 0 ? -v : v;
+        };
+        for (const Complex kr : {Complex(100, 0), Complex(800, -3), Complex(3e3, 0), Complex(4e4, 0)}) {
+            const Complex kzs = kz(k0 * k0 * er, kr), kz0 = kz(k0 * k0, kr);
+            const Complex ze = kzs / (w * kEps0 * er), zh = w * kMu0 / kzs, ze0 = kz0 / (w * kEps0), zh0 = w * kMu0 / kz0;
+            const Complex downE = kJ * ze * std::tan(kzs * h), downH = kJ * zh * std::tan(kzs * h);
+            const Complex upE = kJ * ze0 * std::tan(kz0 * g), upH = kJ * zh0 * std::tan(kz0 * g);
+            const Complex ve = downE * upE / (downE + upE), vh = downH * upH / (downH + upH);
+            const Complex scalar = kJ * w / (kr * kr) * (ve - vh), vector = vh / (kJ * w);
+            QVERIFY2(std::abs(wg.scalarSpectral(kr) / scalar - 1.0) < 1e-10,
+                     qPrintable(QStringLiteral("kr %1: scalar %2 against %3").arg(kr.real()).arg(std::abs(wg.scalarSpectral(kr))).arg(std::abs(scalar))));
+            QVERIFY2(std::abs(wg.vectorSpectral(kr) / vector - 1.0) < 1e-10,
+                     qPrintable(QStringLiteral("kr %1: vector %2 against %3").arg(kr.real()).arg(std::abs(wg.vectorSpectral(kr))).arg(std::abs(vector))));
+        }
+        for (const auto& [zf, zs] : {std::pair{h, h}, std::pair{h + 50e-6, h + 50e-6}, std::pair{h + 50e-6, h}, std::pair{0.5 * h, h}}) {
+            const rf::WaveGreen low(lidded, zf, zs, 1e6, 6e-3);
+            const rf::Green still(lidded, zf, zs);
+            QVERIFY2(low.ok() && still.ok(), qPrintable((low.problems() + still.problems()).join(" | ")));
+            for (const double rho : {1e-6, 1e-5, 1e-4, 1e-3}) {
+                const double size = std::abs(low.scalarTerm().coefficient) / (2 * M_PI * std::hypot(rho, zf - zs));
+                QVERIFY2(std::abs(low.scalar(rho) - still.potential(rho)) < 1e-6 * size,
+                         qPrintable(QStringLiteral("%1/%2 µm, rho %3 µm: %4 vs the static %5 (%6 of the term)").arg(zf * 1e6).arg(zs * 1e6)
+                                        .arg(rho * 1e6).arg(low.scalar(rho).real()).arg(still.potential(rho))
+                                        .arg(std::abs(low.scalar(rho) - still.potential(rho)) / size)));
+            }
+        }
+        // The vector kernel at 1 MHz: a horizontal current's images in the
+        // ground and the lid, magnetostatics - the static potential of the
+        // stack in vacuum, times mu0 eps0.
+        rf::Layers vacuum = lidded;
+        for (rf::Layers::Slab& sl : vacuum.slabs) sl.epsr = 1;
+        for (const auto& [zf, zs] : {std::pair{h, h}, std::pair{h + 50e-6, h}}) {
+            const rf::WaveGreen low(lidded, zf, zs, 1e6, 6e-3);
+            const rf::Green still(vacuum, zf, zs);
+            for (const double rho : {1e-6, 1e-5, 1e-4, 1e-3, 3e-3}) {
+                const double want = kMu0 * kEps0 * still.potential(rho), size = kMu0 / (4 * M_PI * std::hypot(rho, zf - zs));
+                QVERIFY2(std::abs(low.vector(rho) - want) < 1e-6 * size,
+                         qPrintable(QStringLiteral("%1/%2 µm, rho %3 µm: vector %4 against %5").arg(zf * 1e6).arg(zs * 1e6).arg(rho * 1e6)
+                                        .arg(low.vector(rho).real()).arg(want)));
+            }
+        }
+        const rf::ViaGreen::Span span{0, h};
+        const rf::ViaGreen v(lidded, span, {span}, {h}, 1e9, 5e-3);
+        QVERIFY2(v.ok(), qPrintable(v.problems().join(" | ")));
+        // (What they leave falls as 1/kr^2 of them, the lid's reflections
+        //  dying as exp(-2 kr g): beyond kr 1e5 the open stack's to the digit.)
+        rf::Layers open = lidded;
+        open.groundAbove = false;
+        const rf::ViaGreen vo(open, span, {span}, {h}, 1e9, 5e-3);
+        for (const double kr : {1e5, 1e6, 1e7}) {
+            QVERIFY(std::abs(v.couplingSpectral(0, kr) / vo.couplingSpectral(0, kr) - 1.0) < 1e-12);
+            QVERIFY(std::abs(v.potentialSpectral(0, kr) / vo.potentialSpectral(0, kr) - 1.0) < 1e-12);
+        }
+        QVERIFY(std::abs(v.couplingSpectral(0, 1e7, true)) < 1e-9 * std::abs(v.couplingSpectral(0, 1e7)));
+        QVERIFY(std::abs(v.potentialSpectral(0, 1e7, true)) < 1e-9 * std::abs(v.potentialSpectral(0, 1e7)));
+        QVERIFY(std::abs(v.couplingSpectral(0, 1e4) / vo.couplingSpectral(0, 1e4) - 1.0) > 1e-3);
+        QVERIFY(!rf::WaveGreen(lidded, h + g, h, f, 5e-3).ok());
+        // The lid a face the remainder dies over: in vacuum, 50 µm under it
+        // and 200 µm over the ground, the nearest face is the lid's - the
+        // reach twice that.
+        rf::Layers vacuumBox = stackOf({{1.0, h, 0}, {1.0, g, 0}}, true);
+        vacuumBox.groundAbove = true;
+        QVERIFY2(std::abs(rf::WaveGreen(vacuumBox, 200e-6, 200e-6, f, 5e-3).reach() - 100e-6) < 1e-12,
+                 qPrintable(QString::number(rf::WaveGreen(vacuumBox, 200e-6, 200e-6, f, 5e-3).reach())));
+        // Kept between solves, a lidded stack's table is not taken for the
+        // open one's: the lid changes nothing of its grid.
+        rf::forgetGreens();
+        rf::keepGreens(256e6);
+        const auto unkept = qScopeGuard([] {
+            rf::forgetGreens();
+            rf::keepGreens(256e6);
+        });
+        const rf::WaveGreen withLid(lidded, h, h, f, 5e-3), without(open, h, h, f, 5e-3);
+        QVERIFY(std::abs(withLid.scalar(300e-6) / without.scalar(300e-6) - 1.0) > 1e-3);
+        rf::keepGreens(0);
+        rf::forgetGreens();
+        const rf::WaveGreen fresh(open, h, h, f, 5e-3);
+        for (const double rho : {10e-6, 300e-6, 3e-3})
+            QVERIFY2(std::abs(without.scalar(rho) / fresh.scalar(rho) - 1.0) < 1e-12 && std::abs(without.vector(rho) / fresh.vector(rho) - 1.0) < 1e-12,
+                     qPrintable(QStringLiteral("%1 µm: a kept table not its own").arg(rho * 1e6)));
+    }
+
     // A via in a uniaxial slab (sapphire's 9.4 across, 11.6 along z): what
     // its kernels' closed forms leave dies far out as an isotropic slab's
     // does. Before, the potential's tail was built from the stretched slab

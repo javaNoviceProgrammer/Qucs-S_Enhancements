@@ -478,7 +478,7 @@ via m1 m2 { 0.07 => 3.2 ohms/via, 0.12 => 0.9 ohms/via, 1.2e7 S/m } vv name V12
     QVERIFY(notes.contains(QLatin1String("magnetic loss tangent")));
     QVERIFY(notes.contains(QLatin1String("1 encrypted part")));
     QVERIFY(notes.contains(QLatin1String("conducts (58000000 S/m)")));
-    QVERIFY(notes.contains(QLatin1String("does not solve yet")));
+    QVERIFY(notes.contains(QLatin1String("a metal lid here, read as a perfect one")));
 
     // A via's resistance a via is not a conductivity; a name defined nowhere
     // is nought only where part of the file cannot be read.

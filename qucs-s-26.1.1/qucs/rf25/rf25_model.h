@@ -114,7 +114,7 @@ struct Layer {
     /// y: those two as given, epsr then the geometric mean of them - a
     /// layered solver has no in-plane anisotropy (said beside the answer).
     double epsx = 0, epsy = 0;
-    bool averaged() const { return epsy > 0 && epsy != epsx; }
+    bool averaged() const { return epsx > 0 && epsy > 0 && epsy != epsx; }
     QString from, to;      ///< a via's metals, by name
     /// A ground's or a cover's own kind: "perfect", "metal", "impedance" or
     /// "open" for a ground, "open" or "perfect" (a metal lid) for a cover.

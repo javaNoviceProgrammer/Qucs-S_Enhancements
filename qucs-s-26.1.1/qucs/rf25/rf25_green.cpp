@@ -413,7 +413,7 @@ QString hardestOf(const Layers& layers)
         const double below = i > 0 ? layers.slabs.at(i - 1).epsr : layers.epsrBelow;
         const double above = i + 1 < layers.slabs.size() ? layers.slabs.at(i + 1).epsr : layers.epsrAbove;
         const double down = i == 0 && layers.groundBelow ? 1.0 : std::abs((e - below) / (e + below));
-        const double up = std::abs((e - above) / (e + above));
+        const double up = i + 1 == layers.slabs.size() && layers.groundAbove ? 1.0 : std::abs((e - above) / (e + above));
         // (Of two that reflect alike, the thinner: its bounces are the
         //  shorter, and so the more of them before they fade.)
         const bool thinner = worst >= 0 && layers.slabs.at(i).z1 - layers.slabs.at(i).z0
@@ -504,11 +504,20 @@ Layers layersOf(const Stack& stack)
             break;
         case Layer::Cover:
             // An open cover is the air above, which is what is solved. A
-            // metal lid is not solved yet, and is said rather than read
-            // as the air it is not.
-            if (l.variant == QLatin1String("perfect"))
-                out.problems << tr("A metal lid over the stack is not solved yet: make the cover open (air above), or "
-                                   "take it out.");
+            // metal lid closes the stack at its height above the top: its
+            // gap of air a slab of its own, and the lid a short there - a
+            // perfect plane, as the ground's.
+            if (l.variant == QLatin1String("perfect")) {
+                if (l.thickness > 0) {
+                    Layers::Slab gap;
+                    gap.z0 = z;
+                    gap.z1 = z + l.thickness;
+                    gap.name = l.name;
+                    out.slabs << gap;
+                    z = gap.z1;
+                }
+                out.groundAbove = true;
+            }
             break;
         case Layer::Metal:
         case Layer::Via:
@@ -551,6 +560,8 @@ Green::Green(const Layers& layers, double zField, double zSource, int side) : Gr
 
 double Green::interfaceAt(int i) const
 {
+    // (A metal lid over the top slab: a short, as the ground below.)
+    if (i + 1 == a_layers.slabs.size() && a_layers.groundAbove) return -1.0;
     const double here = a_layers.slabs.at(i).epsr;
     const double above = i + 1 < a_layers.slabs.size() ? a_layers.slabs.at(i + 1).epsr : a_layers.epsrAbove;
     return (here - above) / (here + above);
@@ -615,8 +626,13 @@ Layers isotropicOf(const Layers& layers, std::function<double(double)>* heightIn
         z = s.z1;
     }
     *heightIn = [layers, from, to, stretch](double h) {
+        // (A height above the top slab: its stretch to the slab's top, and
+        //  the rest as it is - the review of f72ac35b.)
         for (int i = int(layers.slabs.size()) - 1; i >= 0; --i)
-            if (h >= layers.slabs.at(i).z0) return to.at(i) + stretch.at(i) * (h - from.at(i));
+            if (h >= layers.slabs.at(i).z0) {
+                const double inside = std::min(h, layers.slabs.at(i).z1) - from.at(i);
+                return to.at(i) + stretch.at(i) * inside + (h - from.at(i) - inside);
+            }
         return h;
     };
     return out;
@@ -648,6 +664,10 @@ Green::Green(const Layers& given, double zField, double zSource)
     if (a_fld < 0) {
         a_problems << tr("A point at %1 µm is outside the stack (it is %2 µm high).")
                           .arg(zField * 1e6, 0, 'g', 4).arg(layers.height() * 1e6, 0, 'g', 4);
+        return;
+    }
+    if (layers.groundAbove && (zSource >= layers.height() || zField >= layers.height())) {
+        a_problems << tr("A metal on the lid itself is shorted to it, and has no potential of its own.");
         return;
     }
     a_epsr = layers.slabs.at(a_src).epsr;

@@ -1011,7 +1011,9 @@ DielectricCorrection dielectricCorrection(const DielectricPlan& plan, const QLis
             // the region (in µm, gdstk's grid).
             QRectF all;
             for (const QPolygonF& p : r.outline) all = all.united(p.boundingRect());
-            const bool top = true;   // (a metal lid over the stack is not solved: layersOf() refuses it)
+            // (Under a metal lid with no gap, its top is the lid's, as its
+            //  bottom on the ground is the ground's: no face of its own.)
+            const bool top = !(r.slab + 1 == layers.slabs.size() && layers.groundAbove);
             const bool bottom = !(r.slab == 0 && layers.groundBelow);
             const auto leavesAt = [&](double z) {
                 double dz = std::numeric_limits<double>::infinity();
@@ -1162,6 +1164,7 @@ DielectricCorrection dielectricCorrection(const DielectricPlan& plan, const QLis
                 nearBottom = nearBottom || std::abs(c.z - slab.z0) <= t;
             }
             if (onGround) nearBottom = false;
+            if (r.slab + 1 == layers.slabs.size() && layers.groundAbove) nearTop = false;
             // The fine rows: graded from each face a metal is near.
             QList<double> fine;
             {

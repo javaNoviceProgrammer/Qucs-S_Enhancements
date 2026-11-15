@@ -507,7 +507,6 @@ StackWritten stackPdfOf(const Model& model, const QString& name, const QString& 
     out.pages = int(sheet.pages.size());
     out.layers = int(d.bands.size());
     out.vias = int(d.vias.size());
-    if (d.lid) out.notes << tr("The lid is drawn, though RF 2.5D does not solve a metal lid yet.");
     if (out.pages > 1)
         out.notes << tr("The key of the metals and vias is on a page of its own: the %1 layers fill the first.").arg(out.layers);
     return out;

@@ -1033,6 +1033,17 @@ private slots:
         const rf::Inductance loop = rf::inductanceOf(meshed(wire, 10), wire, stack, QPointF(0, 10), QPointF(400, 10));
         QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
         QVERIFY2(loop.lines.join(' ').contains(QStringLiteral("is magnetic")), qPrintable(loop.lines.join(" | ")));
+        // Nor of a metal lid over it, which it says too.
+        rf::Stack lidded = grounded(4, 100e-6, 1e-6, 5.8e7);
+        rf::Layer lid;
+        lid.kind = rf::Layer::Cover;
+        lid.name = QStringLiteral("LID");
+        lid.tag = QStringLiteral("lid");
+        lid.variant = QStringLiteral("perfect");
+        lid.thickness = 200e-6;
+        lidded.layers << lid;
+        const rf::Inductance under = rf::inductanceOf(meshed(wire, 10), wire, lidded, QPointF(0, 10), QPointF(400, 10));
+        QVERIFY2(under.ok() && under.lines.join(' ').contains(QStringLiteral("has a metal lid")), qPrintable(under.lines.join(" | ") + under.problems.join(" | ")));
     }
 
     // A strip of cells a tenth of a micrometre, solved dense: L's entries a

@@ -914,6 +914,7 @@ struct Context {
     QList<double> cellZ;                 ///< each charge's height, m
     QList<double> dirX, dirY, midX, midY;
     QList<Filament> mirrored;            ///< each run in the plane's image in the ground
+    QList<Filament> lidMirrored;         ///< and in a metal lid's, where there is one (Layers::groundAbove)
     /// A dense solve's static parts, made once for every frequency and on
     /// every thread (makeStatics()): each pair of runs' aligned partial
     /// inductance (alignedInductance()), direct and of the image, and each
@@ -1358,16 +1359,21 @@ Complex Kernels::inductance(int a, int b, double direct, double image) const
     const WaveGreen& g = green(c.hRun.at(a), c.hRun.at(b));
     const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage();
     const double rho = std::hypot(c.midX.at(a) - c.midX.at(b), c.midY.at(a) - c.midY.at(b));
-    const Complex l = 2.0 * d.coefficient / kMu0 * direct + 2.0 * i.coefficient / kMu0 * image;
+    Complex l = 2.0 * d.coefficient / kMu0 * direct + 2.0 * i.coefficient / kMu0 * image;
+    // (A metal lid's image: far, a run's whole filament.)
+    if (const WaveGreen::Term lid = g.vectorLid(); lid.coefficient != 0.0 && b < c.lidMirrored.size())
+        l += 2.0 * lid.coefficient / kMu0 * alignedInductance(c.runs.at(a), c.lidMirrored.at(b));
     return l + c.runs.at(a).length() * c.runs.at(b).length() * smooth(c.hRun.at(a), c.hRun.at(b), rho);
 }
 
 Complex Kernels::smooth(int h0, int h1, double rho) const
 {
     const WaveGreen& g = green(h0, h1);
-    const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage();
+    const WaveGreen::Term d = g.vectorTerm(), i = g.vectorImage(), lid = g.vectorLid();
     return d.coefficient / (2 * M_PI) * retardation(d.k, std::hypot(rho, d.dz))
-           + i.coefficient / (2 * M_PI) * retardation(i.k, std::hypot(rho, i.dz)) + g.vectorRemainder(rho);
+           + i.coefficient / (2 * M_PI) * retardation(i.k, std::hypot(rho, i.dz))
+           + (lid.coefficient != 0.0 ? lid.coefficient / (2 * M_PI) * retardation(lid.k, std::hypot(rho, lid.dz)) : Complex(0, 0))
+           + g.vectorRemainder(rho);
 }
 
 Complex Kernels::inductance(int a, int b) const
@@ -2808,15 +2814,21 @@ double secondSurfaceWave(const Stack& stack, double most)
     // one slab; with none, I nought at both ends, C nought past the TE0 that
     // has no cutoff - a half wave. (With something denser below than above
     // the wave grazes that, which this does not follow.)
-    const double above = layers.epsrAbove;
-    if (!layers.groundBelow && layers.epsrBelow > above + 1e-9) return 0;
+    // (Under a metal lid there is no half-space to graze: the second wave is
+    //  the guide's TE1 between the ground and the lid, at its cutoff kr
+    //  nought, kz = k0 eps^1/2 in each slab and V nought at both ends - B
+    //  nought. Without a ground it has none of its own below.)
+    const bool lid = layers.groundAbove;
+    if (lid && !layers.groundBelow) return 0;
+    const double above = lid ? 0.0 : layers.epsrAbove;
+    if (!lid && !layers.groundBelow && layers.epsrBelow > above + 1e-9) return 0;
     const double c0 = 1.0 / std::sqrt(kMu0 * kEps0);
     double rate = 0;   // d(sum of kz h)/df
     for (const Layers::Slab& slab : layers.slabs)
         rate += 2 * M_PI / c0 * std::sqrt(std::max(0.0, slab.epsr - above)) * (slab.z1 - slab.z0);
     if (!(rate > 0)) return 0;
     const bool grounded = layers.groundBelow;
-    const auto resonance = [&layers, above, grounded, c0](double f) {
+    const auto resonance = [&layers, above, grounded, lid, c0](double f) {
         const double k0 = 2 * M_PI * f / c0, w = 2 * M_PI * f;
         double a = 1, b = 0, c = 0, d = 1;
         for (const Layers::Slab& slab : layers.slabs) {
@@ -2831,7 +2843,7 @@ double secondSurfaceWave(const Stack& stack, double most)
             c = nc;
             d = nd;
         }
-        return grounded ? a : c;
+        return lid ? b : grounded ? a : c;
     };
     // Stepped a twentieth of a radian of the whole stack at a time, then
     // halved down to the root.
@@ -3975,6 +3987,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         c.runs.at(a).middle(&c.midX[a], &c.midY[a], nullptr);
         c.mirrored[a].z0 = c.mirrored[a].z1 = -c.runs.at(a).z0;
     }
+    if (c.layers.groundAbove) {
+        c.lidMirrored = c.runs;
+        for (int a = 0; a < nr; ++a) c.lidMirrored[a].z0 = c.lidMirrored[a].z1 = 2 * c.layers.height() - c.runs.at(a).z0;
+    }
     wallsOf(c);
     const int nf = int(frequencies.size());
     int threads = control != nullptr && control->threads > 0 ? control->threads
@@ -4161,6 +4177,17 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "part of each port's own discontinuity.")
                          .arg(c.paths.size());
     out.lines << viaSaid;
+    // A metal lid: what it is, and what its guide does to the ports.
+    if (c.layers.groundAbove) {
+        double gap = 0;
+        for (const Layer& l : stack.layers)
+            if (l.kind == Layer::Cover) gap = l.thickness;
+        out.lines << tr("A perfect metal lid closes the stack %1 µm over its top. With the ground it is a guide of two "
+                        "plates: a port's path up from the ground couples to the other ports' through it as two long "
+                        "wires do, not dying with distance as over an open ground, and is part of what the ports "
+                        "measure - a port's own de-embedding takes out its own path, not that.")
+                         .arg(gap * 1e6, 0, 'g', 4);
+    }
     int alongEdges = 0;
     for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
     const QString sheet = tr("a metal as a sheet with the surface impedance of its thickness, and more in the cells along "
@@ -4293,7 +4320,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // addPortPaths().)
     const double top = *std::max_element(frequencies.begin(), frequencies.end());
     out.secondWave = secondSurfaceWave(givenStack, 2 * top);
-    if (out.secondWave > 0 && top >= out.secondWave)
+    if (out.secondWave > 0 && top >= out.secondWave && c.layers.groundAbove)
+        out.lines << tr("From %1 GHz the guide between the ground and the lid carries its TE1 beside the wave of every "
+                        "frequency: a line under the lid gives more of what it carries to the guide past it.")
+                         .arg(out.secondWave / 1e9, 0, 'g', 4);
+    else if (out.secondWave > 0 && top >= out.secondWave)
         out.lines << tr("From %1 GHz the stack carries a second surface wave, its TE1, which a strip launches beside the "
                         "TM0 of every frequency: the top of a microstrip's band on it, past which a line gives more of "
                         "what it carries to the substrate.")

@@ -1209,10 +1209,12 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             // (And anisotropic: none said, isotropic.)
             if (c.props.contains(QLatin1String("epsz"))) read(QStringLiteral("epsz"), &layer.epsz);
             if (c.props.contains(QLatin1String("epsy"))) read(QStringLiteral("epsy"), &layer.epsy);
-            if (layer.epsy > 0 && layer.epsy != layer.epsr && layer.epsr > 0) {
+            // (Averaged where it can be; one below 1 kept as given, for the
+            //  stack's check to say - reset to nought, it never could.)
+            if (layer.epsy >= 1 && layer.epsy != layer.epsr && layer.epsr > 0) {
                 layer.epsx = layer.epsr;
                 layer.epsr = std::sqrt(layer.epsx * layer.epsy);
-            } else {
+            } else if (layer.epsy >= 1 || layer.epsy == 0) {
                 layer.epsy = 0;
             }
         };
@@ -1319,6 +1321,8 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("The substrate is not the first layer: it lies below every metal.");
         if (l.kind == Layer::Cover && i != lastPlaced)
             out.problems << tr("The cover is not the last layer: it closes the stack at the top.");
+        if (l.kind == Layer::Cover && l.thickness < 0 && read("height"))
+            out.problems << tr("The cover's height above the top is below nought.");
         if ((l.kind == Layer::Substrate || l.kind == Layer::Dielectric || l.kind == Layer::Metal) && !(l.thickness > 0)
             && read("thickness"))
             out.problems << tr("%1 has no thickness.").arg(name(l));
@@ -1332,7 +1336,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("%1 has a relative permeability of no more than nought (%2).").arg(name(l)).arg(l.mur);
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.mtand < 0 && read("mtand"))
             out.problems << tr("%1 has a magnetic loss tangent below zero.").arg(name(l));
-        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && ((l.epsz != 0 && l.epsz < 1) || l.epsy < 0)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && ((l.epsz != 0 && l.epsz < 1) || (l.epsy != 0 && l.epsy < 1))
             && read("epsz") && read("epsy"))
             out.problems << tr("%1 has a relative permittivity along z or y below 1.").arg(name(l));
         if (!l.dispersion.isEmpty() && !(l.dispersionAt > 0) && read("dispersion_at"))

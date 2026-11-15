@@ -328,7 +328,8 @@ void TestRf25StackDrawing::thePdfIsWrittenAndNotRead()
     QCOMPARE(w.vias, 1);
     QVERIFY(w.data.count("/Type /Page\n") + w.data.count("/Type /Page ") + w.data.count("/Type /Page\r") + w.data.count("/Type /Page/") >= 1
             || w.data.contains("/Type /Page"));
-    QVERIFY2(w.notes.join(QLatin1Char(' ')).contains(QLatin1String("does not solve a metal lid")), qPrintable(w.notes.join(QLatin1Char(' '))));
+    // (A lid is solved now, and nothing says it is not.)
+    QVERIFY2(!w.notes.join(QLatin1Char(' ')).contains(QLatin1String("does not solve a metal lid")), qPrintable(w.notes.join(QLatin1Char(' '))));
     // A stack with problems is not drawn: why is said.
     const StackWritten none = stackPdfOf(modelOf(QStringLiteral(R"({"type": "rf_substrate", "tag": "s", "label": "Si", "properties": {"thickness": "100[um]", "epsr": "11.9"}})")));
     QVERIFY(!none.ok());
