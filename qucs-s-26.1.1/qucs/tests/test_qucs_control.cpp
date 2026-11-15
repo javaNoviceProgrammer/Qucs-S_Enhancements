@@ -2665,6 +2665,18 @@ private slots:
             const QJsonObject none = call("rf25_inductance", {{"path", ws + "/rf/together.qrf25"}}, 300000);
             QVERIFY2(failed(none), qPrintable(text(none)));
             QVERIFY2(text(none).contains(QStringLiteral("same face")), qPrintable(text(none)));
+            // A model with its ports whose solve never gets to the loop - its
+            // layer map sends nothing to a metal, so there is no mesh - says
+            // why, not that it wants two ports: of a model with both it said
+            // so.
+            qucs_s::rf25::Model stranded = wire;
+            for (qucs_s::rf25::Node& c : stranded.layout().children)
+                if (c.type == QLatin1String("rf_layer_map")) c.props.insert(QStringLiteral("rows"), QJsonArray());
+            QVERIFY(put(ws + "/rf/stranded.qrf25", stranded.toJson()));
+            const QJsonObject stuck = call("rf25_inductance", {{"path", ws + "/rf/stranded.qrf25"}}, 300000);
+            QVERIFY2(failed(stuck), qPrintable(text(stuck)));
+            QVERIFY2(!text(stuck).contains(QStringLiteral("two ports")) && text(stuck).contains(QStringLiteral("There is no loop")),
+                     qPrintable(text(stuck)));
             // A model with one port, and one with none, have no loop and
             // say what is wanted rather than answering.
             const QJsonObject alone = call("rf25_inductance", {{"path", ws + "/rf/lossy.qrf25"}}, 300000);

@@ -1212,10 +1212,26 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     }
     const std::shared_ptr<const Inductance> ind = model->inductance();
     if (!ind) {
+        // Why there is none, as the solve said it - its own problem, or its
+        // charge solve's -, and "two ports" only where the model has fewer:
+        // asked of a tab opened again while its last solve was still at work
+        // in the background, it said the model "wants two ports" of a model
+        // with both.
         const QStringList said = model->inductanceSummary();
-        return errorResult(said.isEmpty() ? tr("There is no loop to find an inductance of: the model wants two ports, "
-                                               "one for the current to go in at and one for it to come out of.")
-                                          : said.join(QStringLiteral(" ")));
+        if (!said.isEmpty()) return errorResult(said.join(QStringLiteral(" ")));
+        int ports = 0;
+        for (const Node& port : model->model().ports().children)
+            if (port.enabled && (port.type == QLatin1String("rf_edge_port") || port.type == QLatin1String("rf_internal_port"))) ++ports;
+        if (ports < 2)
+            return errorResult(tr("There is no loop to find an inductance of: the model wants two ports, one for the current to "
+                                  "go in at and one for it to come out of (it has %1).")
+                                   .arg(ports));
+        if (!model->solveProblem().isEmpty())
+            return errorResult(tr("There is no loop: the solve did not get to it. %1").arg(model->solveProblem()));
+        return errorResult(tr("There is no loop: the solve ended without one, and said no reason. %1 has %2 ports; solve it "
+                              "again (rf25_solve with solver quasi_static), or rf25_stop a solve still at work.")
+                               .arg(heldName)
+                               .arg(ports));
     }
     if (!ind->ok())
         return errorResult(ind->problems.isEmpty() ? tr("The loop's inductance came to nothing, and it said no reason.")

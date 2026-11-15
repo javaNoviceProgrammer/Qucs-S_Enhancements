@@ -586,10 +586,11 @@ double physicalMemory()
  * one list (\a b null), each pair once, the first no later than the
  * second. Found by bins in the plane as wide as the widest box.
  */
-QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach)
+QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, double reach, qint64 most, bool* over)
 {
     const QList<Box>& other = b != nullptr ? *b : a;
     QList<QPair<int, int>> out;
+    if (over != nullptr) *over = false;
     if (a.isEmpty() || other.isEmpty()) return out;
     const auto size = [](const Box& x) { return std::max(x.side(0), x.side(1)); };
     double widest = 0, lo[2] = {a.first().lo[0], a.first().lo[1]};
@@ -619,7 +620,13 @@ QList<QPair<int, int>> nearPairs(const QList<Box>& a, const QList<Box>* b, doubl
                     if (seen[std::size_t(j)] == i) continue;
                     seen[std::size_t(j)] = i;
                     if (b == nullptr && j < i) continue;
-                    if (x.distance(other.at(j)) <= reach * std::max(size(x), size(other.at(j)))) out << qMakePair(i, j);
+                    if (x.distance(other.at(j)) <= reach * std::max(size(x), size(other.at(j)))) {
+                        out << qMakePair(i, j);
+                        if (most > 0 && out.size() > most) {
+                            if (over != nullptr) *over = true;
+                            return {};
+                        }
+                    }
                 }
             }
     }

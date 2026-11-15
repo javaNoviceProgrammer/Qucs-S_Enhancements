@@ -17,6 +17,9 @@
 #include "multiphysics/fem_sparse.h"
 
 #include <cmath>
+#include <chrono>
+#include <thread>
+#include <QElapsedTimer>
 #include <tuple>
 
 namespace rf = qucs_s::rf25;
@@ -992,6 +995,33 @@ private slots:
         QVERIFY2(std::abs(held.l / dense.l - 1) < 0.005, qPrintable(QStringLiteral("%1 against %2 nH").arg(held.l * 1e9).arg(dense.l * 1e9)));
     }
 
+    // Stopped while its near field is factorized - which Accelerate's
+    // factorization cannot be, "still at work after 60 s" till Qucs-S was
+    // quit -, the loop ends at once and
+    // lets the factorization finish in the background. (Held there by the
+    // test's hook, which asks it to stop and takes three seconds.)
+    void aLoopStopsWhileItsNearFieldIsFactorized()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6, 1e-6, 5.8e7);
+        const QList<rf::Conductor> big{strip(0, 0, 400, 120)};
+        const rf::Mesh mesh = meshed(big, 5);
+        static std::atomic_bool stop{false};
+        stop = false;
+        rf::setLoopFactorizing([] {
+            stop = true;
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        });
+        QElapsedTimer clock;
+        clock.start();
+        const rf::Inductance stopped = rf::inductanceOf(mesh, big, stack, QPointF(0, 60), QPointF(400, 60), 1e-6, 0, &stop);
+        const qint64 took = clock.elapsed();
+        rf::setLoopFactorizing({});
+        QVERIFY2(!stopped.ok() && stopped.problems.join(' ').contains(QStringLiteral("stopped")) &&
+                     stopped.problems.join(' ').contains(QStringLiteral("in the background")),
+                 qPrintable(stopped.problems.join(" | ")));
+        QVERIFY2(took < 2500, qPrintable(QStringLiteral("%1 ms").arg(took)));
+    }
+
     // A strip of cells a tenth of a micrometre, solved dense: L's entries a
     // few times 1e-14 H beside A's ones, which the LU's test of whether it
     // is invertible - against its largest pivot - took for nothing, "in
@@ -1068,6 +1098,19 @@ private slots:
         // Room for L as it is weighed, and not for the near field's factors
         // beside it: refused there, before they are made - where their size
         // is known before they are made, Accelerate's analysis.
+        // Room for L, and not for its near field's pairs: refused as it
+        // counts them, before the triplets and the matrix are made - a mesh
+        // of nanometre slivers beside 15 µm runs had 259 million of them, and
+        // the solve went past 60 GB (P21).
+        {
+            const double rows = solved.branches + solved.nodes - 1;
+            rf::setLoopMemory(20e3 * solved.branches + 16.0 * 104 * rows + 1e6);
+            const rf::Inductance pairs = rf::inductanceOf(mesh, big, stack, QPointF(0, 60), QPointF(400, 60));
+            rf::setLoopMemory(0);
+            QVERIFY2(!pairs.ok() && pairs.problems.join(' ').contains(QStringLiteral("its near field")) &&
+                         pairs.problems.join(' ').contains(QStringLiteral("more pairs of runs")),
+                     qPrintable(pairs.problems.join(" | ")));
+        }
         if (qucs_s::fem::luBackend() != qucs_s::fem::Backend::Accelerate) {
             qWarning("The near field factorized by %s here, whose size is not known before: not checked.",
                      qPrintable(qucs_s::fem::backendName(qucs_s::fem::luBackend())));

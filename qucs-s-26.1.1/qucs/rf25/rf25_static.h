@@ -257,7 +257,10 @@ struct ExtractControl {
         Charge,         ///< solving the charge on the cells (the matrix filled, then factored)
         Vacuum,         ///< the same with every dielectric vacuum, for C0
         CrossSection,   ///< a uniform line's middle cross-section, per metre
-        Losses          ///< each lossy dielectric's share, a solve each: done of all
+        Losses,         ///< each lossy dielectric's share, a solve each: done of all
+        /// The loop's inductance, after the charge (rf25_inductance.h) - the
+        /// tab said "starting" through it, minutes of it.
+        Loop
     };
     const std::atomic_bool* stop = nullptr;
     std::atomic_int* step = nullptr;   ///< a Step
