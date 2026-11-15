@@ -532,6 +532,7 @@ private:
     QJsonObject rf25StackExport(const QJsonObject& args);
     QJsonObject rf25StackImport(const QJsonObject& args);
     QJsonObject rf25Compare(const QJsonObject& args);
+    QJsonObject rf25FarField(const QJsonObject& args);
     QJsonObject rf25Edit(const QJsonObject& args);
     /// The RF 2.5D model a call names (its 'path'), else the one in front;
     /// null and why where it is none.

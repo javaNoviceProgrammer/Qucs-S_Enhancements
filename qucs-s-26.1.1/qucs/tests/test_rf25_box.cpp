@@ -215,7 +215,8 @@ private slots:
     // The rectangle's Green's function less the free one, plus the free one,
     // is the other series' - each wall's condition either way, at a real k,
     // a complex one and one below the lowest mode - to 1e-8 of it; and less
-    // the free one it is smooth at the source, its value there the limit.
+    // the free one it is smooth at the source, its value there the limit, to
+    // 1e-6.
     void theRectanglesGreenIsTheOtherSeries()
     {
         const QRectF box(QPointF(-1e-3, 2e-3), QPointF(4e-3, 5e-3));
@@ -242,7 +243,9 @@ private slots:
             const Complex there = rf::rectangleGreen(Complex(1500, 0), box, at, at, false, false);
             const Complex one = rf::rectangleGreen(Complex(1500, 0), box, at + 1e-8 * way, at, false, false);
             const Complex two = rf::rectangleGreen(Complex(1500, 0), box, at + 2e-8 * way, at, false, false);
-            QVERIFY2(std::abs(2.0 * one - two - there) < 1e-8 * std::abs(there),
+            // (To 1e-6: at the source one series is summed, a hair away along
+            //  x the other - each with its own tail, some 1e-7 of it.)
+            QVERIFY2(std::abs(2.0 * one - two - there) < 1e-6 * std::abs(there),
                      qPrintable(QStringLiteral("%1 against %2").arg(std::abs(there)).arg(std::abs(2.0 * one - two))));
         }
     }

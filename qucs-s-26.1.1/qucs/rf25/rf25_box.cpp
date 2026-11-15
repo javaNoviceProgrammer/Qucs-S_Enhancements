@@ -203,6 +203,14 @@ Complex modeKernel(const GuideMode& mode, double rho)
 
 Complex rectangleGreen(Complex k, const QRectF& box, const QPointF& field, const QPointF& source, bool neumannX, bool neumannY)
 {
+    // The series over the modes across the way the two are apart least:
+    // each term then dies as exp(-pi m |apart|/side), where across the way
+    // they are apart most it fell as 1/m^3 alone - two cells of a strip along
+    // x, apart in x alone, were 2000 terms each (the review of a02647f6). The
+    // same function, the box turned over its diagonal.
+    if (std::abs(field.x() - source.x()) > std::abs(field.y() - source.y()))
+        return rectangleGreen(k, QRectF(box.top(), box.left(), box.height(), box.width()), QPointF(field.y(), field.x()),
+                              QPointF(source.y(), source.x()), neumannY, neumannX);
     const double a = box.width(), b = box.height();
     const double x = field.x() - box.left(), xs = source.x() - box.left();
     const double y = field.y() - box.top(), ys = source.y() - box.top();

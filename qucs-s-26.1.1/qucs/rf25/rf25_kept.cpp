@@ -34,9 +34,12 @@ QString tr(const char* text) { return QCoreApplication::translate("RF25Kept", te
 // (FullWave::solvedFrequencies); a file of 1 or 2 is read without them.
 // Format 4 adds, after a quasi-static answer, its nets' metals' Huray
 // nodules and surface ratios (Extraction::nodule, surfaceRatio); a file of 1
-// to 3 is read without them, its metals' roughness Hammerstad's.
+// to 3 is read without them, its metals' roughness Hammerstad's. Format 5
+// adds, after a full-wave answer's adaptive frequencies, its ports' own paths
+// up from the ground (FullWave::portPaths), which its far field has; a file of
+// 1 to 4 is read without them.
 const QByteArray kMagic = QByteArrayLiteral("QRF25SOL");
-constexpr quint32 kFormat = 4;
+constexpr quint32 kFormat = 5;
 // A list longer than this is a damaged file's, not a solve's.
 constexpr qint64 kMostItems = qint64(1) << 28;
 
@@ -414,6 +417,8 @@ bool writeSolution(const QString& path, const KeptSolution& kept, QString* error
             put(s, kept.fullWave->returnsOf);
             put(s, kept.fullWave->namesReturns);
             put(s, kept.fullWave->solvedFrequencies);
+            s << qint32(kept.fullWave->portPaths.size());
+            for (const FullWave::PortPathLeg& leg : kept.fullWave->portPaths) s << qint32(leg.port) << leg.at << leg.z0 << leg.z1 << leg.current;
         } else {
             put(s, *kept.extraction);
             put(s, bool(kept.inductance));
@@ -473,6 +478,19 @@ std::optional<KeptSolution> readSolution(const QString& path, QString* why)
         if (format >= 2 && (!get(b, wave->returnsOf) || !get(b, wave->namesReturns)))
             return none(tr("%1 is damaged.").arg(path));
         if (format >= 3 && !get(b, wave->solvedFrequencies)) return none(tr("%1 is damaged.").arg(path));
+        if (format >= 5) {
+            qint32 legs = 0;
+            b >> legs;
+            if (b.status() != QDataStream::Ok || legs < 0 || legs > 10000000) return none(tr("%1 is damaged.").arg(path));
+            for (qint32 i = 0; i < legs; ++i) {
+                FullWave::PortPathLeg leg;
+                qint32 port = 0;
+                b >> port >> leg.at >> leg.z0 >> leg.z1 >> leg.current;
+                leg.port = port;
+                wave->portPaths << leg;
+            }
+            if (b.status() != QDataStream::Ok) return none(tr("%1 is damaged.").arg(path));
+        }
         kept.fullWave = wave;
     } else {
         auto extraction = std::make_shared<Extraction>();

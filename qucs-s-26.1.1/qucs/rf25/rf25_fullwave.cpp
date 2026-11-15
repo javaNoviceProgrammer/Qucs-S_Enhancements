@@ -4507,6 +4507,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "what it carries to the substrate.")
                          .arg(out.secondWave / 1e9, 0, 'g', 4);
     out.geometry = c.runs;
+    for (const PortPath& p : std::as_const(c.paths))
+        out.portPaths << FullWave::PortPathLeg{p.column, p.via.at, c.spans.at(p.via.span).z0, c.spans.at(p.via.span).z1, p.current};
     out.ends = ends;
     // As the caller meshed it: a top face's run in its bottom's - the
     // current through the whole metal there - the walls' runs left out, and

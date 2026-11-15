@@ -25,6 +25,7 @@
 #include "multiphysics/fem_expr.h"
 #include "main.h"
 #include "qucs.h"
+#include "rf25/rf25_farfield.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_sparams.h"
@@ -2008,4 +2009,75 @@ QJsonObject QucsControl::rf25Optimize(const QJsonObject& args)
     out.insert(QStringLiteral("node"), tag);
     out.insert(QStringLiteral("old"), doc->analysisOld(tag));
     return jsonResult(out);
+}
+
+QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_farfield is of one's full-wave solve.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
+    const bool laidOut = model->waitForLayout(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    const std::shared_ptr<const FullWave> wave = model->fullWave();
+    if (!wave || !wave->ok() || wave->frequencies.isEmpty())
+        return errorResult(tr("It has no full-wave solve: rf25_solve it first (solver full_wave), or press Solve on its tab."));
+    int port = 0;
+    const QString named = args.value(QLatin1String("port")).toString().trimmed();
+    if (!named.isEmpty()) {
+        port = int(wave->portNames.indexOf(named));
+        if (port < 0) return errorResult(tr("It has no port %1: its ports are %2.").arg(named, wave->portNames.join(QStringLiteral(", "))));
+    }
+    int k = 0;
+    const double asked = args.value(QLatin1String("frequency")).toDouble(0);
+    if (asked > 0)
+        for (int i = 1; i < wave->frequencies.size(); ++i)
+            if (std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)) k = i;
+    const Stack stack = model->model().stack();
+    const AntennaFigures a = antennaFiguresOf(*wave, stack, k, port);
+    if (!a.ok()) return errorResult(a.problems.join(QLatin1Char(' ')));
+    const Layers layers = layersOf(stack);
+    const QList<FarSource> sources = farSourcesOf(*wave, k, port);
+    const double step = std::clamp(args.value(QLatin1String("step")).toDouble(2), 0.1, 30.0);
+    const double eta0 = std::sqrt(4e-7 * M_PI / kEps0);
+    QJsonArray cuts;
+    for (const double phiDeg : {0.0, 90.0}) {
+        QJsonArray points;
+        for (double t = -90; t <= 90 + 1e-9; t += step) {
+            // (theta below nought: the cut's other half, phi turned half round.)
+            const double theta = std::min(std::abs(t), 89.999) * M_PI / 180, phi = (phiDeg + (t < 0 ? 180 : 0)) * M_PI / 180;
+            const FarFieldAt e = farFieldOf(layers, wave->frequencies.at(k), sources, theta, phi);
+            const double u = (std::norm(e.theta) + std::norm(e.phi)) / (2 * eta0);
+            const double d = a.radiated > 0 ? 4 * M_PI * u / a.radiated : 0;
+            points.append(QJsonObject{{QStringLiteral("theta"), t},
+                                      {QStringLiteral("dbi"), d > 0 ? 10 * std::log10(d) : -300.0},
+                                      {QStringLiteral("e_theta"), std::abs(e.theta)},
+                                      {QStringLiteral("e_phi"), std::abs(e.phi)}});
+        }
+        cuts.append(QJsonObject{{QStringLiteral("phi"), phiDeg}, {QStringLiteral("points"), points}});
+    }
+    QJsonObject result{{QStringLiteral("port"), wave->portNames.value(port)},
+                       {QStringLiteral("frequency_hz"), wave->frequencies.at(k)},
+                       {QStringLiteral("accepted_w"), a.accepted},
+                       {QStringLiteral("radiated_w"), a.radiated},
+                       {QStringLiteral("directivity_dbi"), a.directivity > 0 ? 10 * std::log10(a.directivity) : -300.0},
+                       {QStringLiteral("gain_dbi"), a.gain > 0 ? 10 * std::log10(a.gain) : -300.0},
+                       {QStringLiteral("efficiency"), a.efficiency},
+                       {QStringLiteral("theta_most_deg"), a.thetaMost * 180 / M_PI},
+                       {QStringLiteral("phi_most_deg"), a.phiMost * 180 / M_PI},
+                       {QStringLiteral("cuts"), cuts}};
+    if (!a.notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(a.notes));
+    return jsonResult(result);
 }
