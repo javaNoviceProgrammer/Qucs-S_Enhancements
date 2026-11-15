@@ -1154,9 +1154,14 @@ void LayoutView::paintGrid(QPainter& p, const Colors& c) const
     const qint64 n = std::abs(ratio - std::round(ratio)) < 1e-6 ? std::llround(ratio) : 0;
     const auto major = [n](qint64 k) { return n > 0 && k % n == 0; };
     const QRectF seen = visibleRegion();
-    const qint64 x0 = qint64(std::ceil(seen.left() / step)), x1 = qint64(std::floor(seen.right() / step));
-    const qint64 y0 = qint64(std::ceil(seen.top() / step)), y1 = qint64(std::floor(seen.bottom() / step));
-    if (x1 < x0 || y1 < y0 || (x1 - x0 + 1) * (y1 - y0 + 1) > 4000000) return;
+    // Counted as doubles first: a region reaching 1e308 made a step number
+    // past a qint64, and its cast was undefined.
+    const double fx0 = std::ceil(seen.left() / step), fx1 = std::floor(seen.right() / step);
+    const double fy0 = std::ceil(seen.top() / step), fy1 = std::floor(seen.bottom() / step);
+    const auto fits = [](double v) { return std::isfinite(v) && std::abs(v) < 1e15; };
+    if (!fits(fx0) || !fits(fx1) || !fits(fy0) || !fits(fy1) || fx1 < fx0 || fy1 < fy0 || (fx1 - fx0 + 1) * (fy1 - fy0 + 1) > 4000000)
+        return;
+    const qint64 x0 = qint64(fx0), x1 = qint64(fx1), y0 = qint64(fy0), y1 = qint64(fy1);
     // Whole pixels: each line, each point, as crisp as the screen has it.
     QVector<double> xs, ys;
     for (qint64 i = x0; i <= x1; ++i) xs << std::round(toPixel(QPointF(i * step, 0)).x());

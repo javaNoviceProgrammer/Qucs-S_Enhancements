@@ -55,6 +55,10 @@ qsizetype lineEnd(const QString& text, int line)
     return next < 0 ? text.size() : next;
 }
 
+// The most characters edit_text makes a text of: a replace-all of a common
+// piece with a long one asked for terabytes.
+constexpr qsizetype kMostText = 50'000'000;
+
 } // namespace
 
 TextDoc* QucsControl::textDocument(const QJsonObject& args, QString* error) const
@@ -143,6 +147,15 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
     };
     QList<Change> changes;
     QString work = text->toPlainText();
+    qsizetype made = 0;   // replacements and line edits
+    // (A text past kMostText refused where an edit grows it; one already
+    // that long can still be made shorter.)
+    const auto tooLong = [&](qsizetype size, const QString& which) {
+        return size > kMostText && size > work.size()
+                   ? tr("%1 would make the text %2 characters long, more than the %3 edit_text makes. Nothing was changed.")
+                         .arg(which).arg(size).arg(kMostText)
+                   : QString();
+    };
     for (qsizetype i = 0; i < edits.size(); ++i) {
         const QJsonObject e = edits.at(i).toObject();
         const QString which = tr("edit %1").arg(i + 1);
@@ -152,19 +165,35 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
             if (!e.value(QLatin1String("replace")).isString())
                 return errorResult(tr("%1: 'replace' is the text put in its place (\"\" takes it away). Nothing was changed.").arg(which));
             const QString replace = e.value(QLatin1String("replace")).toString();
-            QList<qsizetype> found;
-            for (qsizetype at = work.indexOf(find); at >= 0; at = work.indexOf(find, at + find.size())) found << at;
-            if (found.isEmpty())
+            qsizetype count = 0, first = -1, last = -1;
+            for (qsizetype at = work.indexOf(find); at >= 0; at = work.indexOf(find, at + find.size())) {
+                if (first < 0) first = at;
+                last = at;
+                ++count;
+            }
+            if (count == 0)
                 return errorResult(tr("%1: \"%2\" is not in the text (as the edits before it left it). Nothing was changed.")
                                        .arg(which, find.left(80)));
-            if (found.size() > 1 && !e.value(QLatin1String("all")).toBool())
+            if (count > 1 && !e.value(QLatin1String("all")).toBool())
                 return errorResult(tr("%1: \"%2\" is there %3 times: give more of the text around it, or 'all': true. Nothing was "
-                                      "changed.").arg(which, find.left(80)).arg(found.size()));
-            // From the last: the places before it stay where they are.
-            for (auto it = found.crbegin(); it != found.crend(); ++it) {
-                changes.append({*it, find.size(), replace});
-                work.replace(*it, find.size(), replace);
+                                      "changed.").arg(which, find.left(80)).arg(count));
+            if (const QString no = tooLong(work.size() + count * (replace.size() - find.size()), which); !no.isEmpty())
+                return errorResult(no);
+            // In one pass, and one change in the document: from the first
+            // place to the end of the last, written out once. One a match -
+            // the copy and the document each moving the rest of the text -
+            // was quadratic: 1,000,000 of them took 148 s on the GUI thread
+            const qsizetype end = last + find.size();
+            QString with;
+            with.reserve(end - first + count * (replace.size() - find.size()));
+            for (qsizetype from = first, at = first; at >= 0 && at < end; at = work.indexOf(find, from)) {
+                with += QStringView(work).sliced(from, at - from);
+                with += replace;
+                from = at + find.size();
             }
+            changes.append({first, end - first, with});
+            work.replace(first, end - first, with);
+            made += count;
         } else if (e.contains(QLatin1String("lines"))) {
             const QJsonArray range = e.value(QLatin1String("lines")).toArray();
             if (range.size() != 2 || !range.at(0).isDouble() || !range.at(1).isDouble() || !e.value(QLatin1String("text")).isString())
@@ -198,8 +227,10 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
                 at = lineStart(work, a);
                 length = lineEnd(work, b) - at;
             }
+            if (const QString no = tooLong(work.size() - length + with.size(), which); !no.isEmpty()) return errorResult(no);
             changes.append({at, length, with});
             work.replace(at, length, with);
+            ++made;
         } else {
             return errorResult(tr("%1: give 'find' and 'replace', or 'lines' and 'text'. Nothing was changed.").arg(which));
         }
@@ -215,10 +246,12 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
     cursor.endEditBlock();
     if (text->toPlainText() != work) {
         text->document()->undo();
+        // (Not left to Redo: Edit > Redo made the edit refused here.)
+        text->document()->clearUndoRedoStacks(QTextDocument::RedoStack);
         return errorResult(tr("The edits came out otherwise in %1 than worked out, and were taken back.").arg(titleOf(text)));
     }
     return jsonResult(QJsonObject{{QStringLiteral("path"), QDir::toNativeSeparators(text->getDocName())},
-                                  {QStringLiteral("changed"), int(changes.size())},
+                                  {QStringLiteral("changed"), double(made)},
                                   {QStringLiteral("revision"), double(text->revision())},
                                   {QStringLiteral("lines"), int(work.count(QLatin1Char('\n'))) + 1},
                                   {QStringLiteral("unsaved"), text->getDocChanged()},

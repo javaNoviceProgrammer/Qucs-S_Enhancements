@@ -11259,6 +11259,170 @@ private slots:
         QVERIFY2(failed(r) && json(r).toObject().value("line").toInt() == 2, qPrintable(text(r)));
     }
 
+    // A value nested 100,000 deep, built by a script's loop: as its result,
+    // given to qucs.log and as a call's arguments it is refused, and the
+    // program goes on. Qt's QJSValue::toVariant recursed a level at a time
+    // and overflowed the stack: the program was gone. A value of shared parts doubling 40 times is refused
+    // past a million values, not written out for ever on the GUI thread.
+    void aDeepValueFromAScriptIsRefused()
+    {
+        if (!control->scriptingBuilt()) QSKIP("no Qml in this build");
+        const QString deep = "let o = {}; let p = o; for (let i = 0; i < 100000; i++) { p.a = {}; p = p.a }\n";
+        QJsonObject r = call("run_script", {{"script", deep + "o"}});
+        QJsonObject o = json(r).toObject();
+        QVERIFY2(!failed(r) && !o.contains("result") && o.value("result not given").toString().contains("nested too deep"), qPrintable(text(r)));
+        r = call("run_script", {{"script", deep + "qucs.log(o); qucs.log({a: [1, 2]}); qucs.log(7); 1"}});
+        o = json(r).toObject();
+        QVERIFY2(!failed(r) && o.value("result").toInt() == 1, qPrintable(text(r)));
+        QCOMPARE(o.value("log").toArray().size(), 3);
+        QVERIFY2(o.value("log").toArray().at(0).toString().startsWith("(not JSON: it is nested too deep"), qPrintable(text(r)));
+        QCOMPARE(o.value("log").toArray().at(1).toString(), QString("{\"a\":[1,2]}"));
+        QCOMPARE(o.value("log").toArray().at(2).toString(), QString("7"));
+        r = call("run_script", {{"script", deep + "qucs.call('get_state', {x: o})"}});
+        QVERIFY2(failed(r) && json(r).toObject().value("error").toString().contains("get_state's arguments are not JSON: it is nested too deep"),
+                 qPrintable(text(r)));
+        // An array as deep, and one past fromJson's 1,024 levels that V4
+        // writes out.
+        r = call("run_script", {{"script", "let a = []; for (let i = 0; i < 100000; i++) a = [a]; a"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("result not given").toString().contains("nested"), qPrintable(text(r)));
+        r = call("run_script", {{"script", "let a = []; for (let i = 0; i < 1100; i++) a = [a]; a"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("result not given").toString().contains("nested deeper than 1,000 levels"), qPrintable(text(r)));
+        // A cycle is not JSON either; what is still comes back as it was.
+        r = call("run_script", {{"script", "const c = {n: 1}; c.self = c; c"}});
+        QVERIFY2(!failed(r) && json(r).toObject().contains("result not given"), qPrintable(text(r)));
+        r = call("run_script", {{"script", "({n: 1.5, s: 'x', list: [true, null], when: new Date(0)})"}});
+        QCOMPARE(json(r).toObject().value("result").toObject(),
+                 QJsonObject({{"n", 1.5}, {"s", "x"}, {"list", QJsonArray{true, QJsonValue::Null}}, {"when", "1970-01-01T00:00:00.000Z"}}));
+        QElapsedTimer clock;
+        clock.start();
+        r = call("run_script", {{"script", "let d = {}; for (let i = 0; i < 40; i++) d = {a: d, b: d}; qucs.log(d); d"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("result not given").toString().contains("more than 1,000,000 values")
+                     && json(r).toObject().value("log").toArray().at(0).toString().contains("more than 1,000,000 values"),
+                 qPrintable(text(r)));
+        r = call("run_script", {{"script", "const s = 'x'.repeat(1e7); const a = []; for (let i = 0; i < 20; i++) a.push(s); a"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("result not given").toString().contains("longer than 100,000,000 characters"),
+                 qPrintable(text(r)));
+        QVERIFY2(clock.elapsed() < 60000, qPrintable(QString::number(clock.elapsed())));
+    }
+
+    // Where V4's own code recursed without its stack check, a script of
+    // values nested 100,000 deep ended the program with no conversion of
+    // ours: an array's toLocaleString, a chain of Proxies read, console.log
+    // of a deep array (the re-check of round four's fixes, 14 November, J4).
+    // Each is now an error the script can catch; their plain uses as before.
+    void aScriptCannotOverflowTheEnginesStack()
+    {
+        if (!control->scriptingBuilt()) QSKIP("no Qml in this build");
+        const QString deep = "let a = []; for (let i = 0; i < 100000; i++) a = [a];\n";
+        for (const QString& js : {deep + "a.toLocaleString()", deep + "console.log(a)", deep + "print(a)",
+                                  QString("let x = {}; for (let i = 0; i < 100000; i++) x = new Proxy(x, {}); x.k"),
+                                  QString("let h = {}; for (let i = 0; i < 100000; i++) h = new Proxy({}, h); h.k"),
+                                  QString("let x = {}; for (let i = 0; i < 100000; i++) x = Proxy.revocable(x, {}).proxy; x.k")}) {
+            const QJsonObject r = call("run_script", {{"script", js}});
+            QVERIFY2(failed(r) && (text(r).contains("Maximum call stack size exceeded") || text(r).contains("proxies nested more than 1,000 deep")),
+                     qPrintable(js.right(60) + ": " + text(r)));
+        }
+        const QJsonObject r = call("run_script", {{"script", "console.log(1, 'x', [1, 2]); print('p');\n"
+                                                              "const p = new Proxy({a: 1}, {get: (t, k) => k === 'b' ? 2 : t[k]});\n"
+                                                              "[[1, 'x', null, [2, 3]].toLocaleString(), p.a, p.b, typeof Proxy.revocable({}, {}).revoke]"}});
+        QCOMPARE(json(r).toObject().value("result").toArray(), (QJsonArray{"1,x,,2,3", 1, 2, "function"}));
+    }
+
+    // A script whose own data grows past the most a script may take is
+    // stopped, and says so; V4's heap grew until the system refused it, 6.3
+    // GB in 12 s. (The most set low here.)
+    void aScriptPastItsMemoryIsStopped()
+    {
+        if (!control->scriptingBuilt()) QSKIP("no Qml in this build");
+        qputenv("QUCS_SCRIPT_MEMORY_MB", "200");
+        const auto unset = qScopeGuard([] { qunsetenv("QUCS_SCRIPT_MEMORY_MB"); });
+        // (Some 1.5 GB if it is not stopped.)
+        QJsonObject r = call("run_script", {{"script", "let a = []; for (let i = 0; i < 2e7; i++) a.push('xxxxxxxxxxxxxxxx' + i); 'all of it'"},
+                                            {"timeout", 120}});
+        QVERIFY2(failed(r) && json(r).toObject().value("error").toString().contains("past the 200 MB a script may take"), qPrintable(text(r)));
+        // A small one runs as before.
+        r = call("run_script", {{"script", "let a = []; for (let i = 0; i < 1000; i++) a.push('x' + i); a.length"}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("result").toInt() == 1000, qPrintable(text(r)));
+    }
+
+    // run_script within a script is refused through batch too: a script
+    // called batch, which ran run_script, an engine on an engine. A batch of run_script from outside runs it.
+    void aScriptCannotRunAScriptThroughBatch()
+    {
+        if (!control->scriptingBuilt()) QSKIP("no Qml in this build");
+        const QJsonObject inner{{"tool", "run_script"}, {"arguments", QJsonObject{{"script", "6 * 7"}}}};
+        QJsonObject r = call("run_script", {{"script", "const b = qucs.call('batch', {calls: [" +
+                                                           QString::fromUtf8(QJsonDocument(inner).toJson(QJsonDocument::Compact)) + "]}); b"}});
+        QVERIFY2(failed(r) && !text(r).contains("42"), qPrintable(text(r)));
+        r = call("batch", {{"calls", QJsonArray{inner}}});
+        QVERIFY2(!failed(r) && text(r).contains("42"), qPrintable(text(r)));
+    }
+
+    // edit_text's replace-all in one pass: 400,000 places at once, in a few
+    // seconds at most, one undo step. One at a time - the copy and the
+    // document each moving the rest of the text - it was quadratic: 148 s
+    // for 1,000,000 on the GUI thread. An edit
+    // making the text past 50,000,000 characters is refused (N9); one
+    // refused for coming out otherwise is not left to Redo (E2).
+    void aReplaceAllIsOnePass()
+    {
+        const QString file = dir.filePath("many.txt");
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            for (int i = 0; i < 40000; ++i) f.write("xxxxxxxxxx\n");
+        }
+        QVERIFY(!failed(call("open_document", {{"path", file}})));
+        auto* tab = dynamic_cast<TextDoc*>(app->findDoc(file));
+        QVERIFY(tab != nullptr);
+        const QString before = tab->toPlainText();
+        QElapsedTimer clock;
+        clock.start();
+        QJsonObject r = call("edit_text", {{"path", file}, {"edits", QJsonArray{QJsonObject{{"find", "x"}, {"replace", "yy"}, {"all", true}}}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("changed").toInt() == 400000, qPrintable(text(r)));
+        QVERIFY2(clock.elapsed() < 20000, qPrintable(QString::number(clock.elapsed())));
+        QString after = before;
+        after.replace("x", "yy");
+        QCOMPARE(tab->toPlainText(), after);
+        // Between the places, and the edits before and after it, as they were.
+        r = call("edit_text", {{"path", file}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 1}}, {"text", "a-b-c-"}},
+                                                                    QJsonObject{{"find", "-"}, {"replace", "+"}, {"all", true}},
+                                                                    QJsonObject{{"find", "a+b"}, {"replace", "ab"}}}}});
+        QVERIFY2(!failed(r) && json(r).toObject().value("changed").toInt() == 5, qPrintable(text(r)));
+        QVERIFY(tab->toPlainText().startsWith("ab+c+\nyyyy"));
+        tab->document()->undo();
+        QCOMPARE(tab->toPlainText(), after);
+        tab->document()->undo();
+        QCOMPARE(tab->toPlainText(), before);
+        // N9: past 50,000,000 characters, refused; nothing changed.
+        r = call("edit_text", {{"path", file}, {"edits", QJsonArray{QJsonObject{{"find", "x"}, {"replace", QString(200, 'z')}, {"all", true}}}}});
+        QVERIFY2(failed(r) && text(r).contains("80040000 characters long, more than the 50000000"), qPrintable(text(r)));
+        QCOMPARE(tab->toPlainText(), before);
+        // E2: a carriage return comes out otherwise in the document: refused,
+        // taken back, and Redo has nothing to make.
+        r = call("edit_text", {{"path", file}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 1}}, {"text", "x\ry"}}}}});
+        QVERIFY2(failed(r) && text(r).contains("came out otherwise"), qPrintable(text(r)));
+        QCOMPARE(tab->toPlainText(), before);
+        QVERIFY(!tab->document()->isRedoAvailable());
+        tab->document()->redo();
+        QCOMPARE(tab->toPlainText(), before);
+        QVERIFY(!failed(call("close_document", {{"path", file}, {"unsaved", "discard"}})));
+    }
+
+    // connect's 'via' points on the plane, as every place: [2147483647, y]
+    // was put on the grid with x += GridX / 2, past an int (UBSan).
+    void aConnectsViaPointsAreOnThePlane()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 300}, {"y", 100}})));
+        for (const QJsonArray& via : {QJsonArray{2147483647, 100}, QJsonArray{100, -2147483647.0 - 1}, QJsonArray{1e300, 0}}) {
+            const QJsonObject r = call("connect", {{"from", "R1.2"}, {"to", "R2.1"}, {"via", QJsonArray{via}}});
+            QVERIFY2(failed(r) && text(r).contains("'via':") && text(r).contains("is off the schematic"), qPrintable(text(r)));
+        }
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // A part replaced by one of another type: its change told by the new
     // type's property names, not by their places ("property 3").
     void aChangeOfTypeIsToldByName()

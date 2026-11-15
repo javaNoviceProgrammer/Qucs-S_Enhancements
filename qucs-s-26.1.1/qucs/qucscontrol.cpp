@@ -11156,7 +11156,12 @@ QJsonObject QucsControl::connectPins(const QJsonObject& args)
         const QJsonArray p = v.toArray();
         if (p.size() != 2 || !p.at(0).isDouble() || !p.at(1).isDouble())
             return errorResult(tr("'via' is a list of points the wire goes through, [[x, y], ...]."));
-        int x = p.at(0).toInt(), y = p.at(1).toInt();
+        // (On the plane, as every place: [2147483647, y] put on the grid
+        // overflowed an int.)
+        for (const QString& why : {offThePlane(p.at(0), "x"), offThePlane(p.at(1), "y")})
+            if (!why.isEmpty()) return errorResult(tr("'via': %1").arg(why));
+        const QPoint at = Schematic::withinModelLimit(QPoint(p.at(0).toInt(), p.at(1).toInt()));
+        int x = at.x(), y = at.y();
         sch->setOnGrid(x, y);
         via << QPoint(x, y);
     }

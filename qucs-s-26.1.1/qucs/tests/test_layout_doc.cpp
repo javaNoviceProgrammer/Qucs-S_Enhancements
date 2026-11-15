@@ -2247,6 +2247,35 @@ private slots:
         doc->setCanvasTheme(LayoutView::Theme::Application);
     }
 
+    // The grid of a view far out - its centre at 2.5e300 µm, or a region
+    // reaching 1e308 shown: its step numbers counted as doubles first, and
+    // nothing drawn of a grid there. Cast to qint64 they were undefined
+    // (UBSan).
+    void aGridFarOutIsLeftOut()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        doc->showCell(doc->layout()->cellIndex("TOP"));
+        LayoutView* view = doc->view();
+        for (LayoutView::GridStyle style : {LayoutView::GridStyle::Lines, LayoutView::GridStyle::Dots}) {
+            doc->setGridStyle(style);
+            doc->setGridShown(true);
+            for (const QPointF& center : {QPointF(2.5e300, -2.5e300), QPointF(-1e308, 1e308), QPointF(1e17, 0)}) {
+                view->setView(center, 1);
+                QVERIFY(!view->picture().isNull());
+            }
+        }
+        for (const QJsonArray& region : {QJsonArray{0, 0, 1e308, 1e308}, QJsonArray{-1e308, -1e308, -1e307, -1e307}}) {
+            const QJsonObject r = call("show_layout", {{"path", "sample.gds"}, {"region", region}, {"grid", true}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+        }
+        // Near, as it was.
+        view->setView(QPointF(11, 0.8), 200);
+        QCOMPARE(view->gridStep(), 0.1);
+        QVERIFY(!view->picture().isNull());
+        doc->setGridStyle(LayoutView::GridStyle::Dots);
+    }
+
     // A KLayout .lyp beside the layout: its colours, fills, names and
     // hidden layers - in a group too; one of another name, chosen.
     void aLypBesideItGivesTheLayersTheirLook()
