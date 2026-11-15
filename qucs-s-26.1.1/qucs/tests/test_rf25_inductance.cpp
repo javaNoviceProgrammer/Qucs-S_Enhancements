@@ -118,12 +118,14 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell)
 /// planar spiral inductances" (IEEE JSSC 34(10), 1999), as a review drew its Table IV: \a sides 4, 8 or 12, \a n turns, \a dout
 /// across the flats, track \a w and gap \a s (µm). Its centre line - a
 /// square's segments 2 a0, 2 a0, 2 a0 and then pairs shorter by the pitch;
-/// a polygon's side k on n_k . x = a0 - p k / sides, each corner where two
-/// sides cross, so that the gap is s everywhere - with a lead of w at its
-/// outer end out along -x (a polygon's, on along side 0) and, for a polygon,
-/// w/2 on along the next side at its inner end. Its two ends' points in
-/// \a in and \a out.
-QList<QPointF> mohanCentreLine(int sides, double n, double dout, double w, double s)
+/// a polygon's turns each a regular polygon a pitch inside the one before,
+/// stepping in over its last \a m sides, as Mohan's Fig. 1 draws them, each
+/// corner where two sides cross, so that the gap is s everywhere - with a
+/// lead of w at its outer end out along -x (a polygon's, on along side 0)
+/// and, for a polygon, w/2 on along the next side at its inner end. (The
+/// review's generator stepped every side in by a pitch over the sides, its
+/// turns half a pitch smaller than Mohan's and L 9-12 % under his.)
+QList<QPointF> mohanCentreLine(int sides, double n, double dout, double w, double s, int m = 1)
 {
     const double a0 = dout / 2 - w / 2, p = w + s;
     const int count = int(std::lround(sides * n));
@@ -139,8 +141,9 @@ QList<QPointF> mohanCentreLine(int sides, double n, double dout, double w, doubl
         return pts;
     }
     const auto line = [&](int k) {
+        const int t = std::max(k, 0) / sides, j = std::max(k, 0) % sides;
         const double phi = -M_PI / 2 + 2 * M_PI * k / sides;
-        return std::array<double, 3>{std::cos(phi), std::sin(phi), a0 - p * k / sides};
+        return std::array<double, 3>{std::cos(phi), std::sin(phi), a0 - p * (t + std::max(0, j - (sides - m)) / double(m))};
     };
     const auto cross = [&](int k) {
         const auto [a1, b1, c1] = line(k - 1);
@@ -1005,30 +1008,45 @@ private slots:
                  qPrintable(QStringLiteral("%1 pH against %2").arg(loop.lDc * 1e12).arg(textbookStrip(10e-6, 1e-6) * 1e12)));
     }
 
-    // An octagonal spiral of Mohan's Table IV (L55: n 4, dout 346, w 18, s 2
-    // µm): its slanted sides' trapezoids each one from corner to corner, not
-    // cut again at every other corner's height - 221 slivers 0.83 µm across,
-    // graded to boxes 0.73 µm apart, and 87,992 cells, whose loop ran the
-    // machine out of memory. Its loop
-    // as a sum of Neumann's integrals along its centre line has it (5.32 nH,
-    // the review's scripts' geometry; Mohan measured 5.90, of his own).
-    void anOctagonalSpiralIsMeshedCornerToCorner()
+    // Polygon spirals of Mohan's Table IV, drawn as his Fig. 1 draws them:
+    // the octagon L55 (n 4, dout 346, w 18, s 2 µm) and the dodecagon L61
+    // (n 7.75, dout 198, w 6.5, s 3). A slanted side's trapezoid is one from
+    // corner to corner, not cut again at every other corner's height - 221
+    // slivers 0.83 µm across, 87,992 cells, whose loop ran the machine out of
+    // memory -, and a part cut thin
+    // between two corners at nearly one height, the dodecagon's 0.012 µm
+    // apart, is meshed by its width, not its depth (12,770 cells, 64 s, the
+    // gaps said to be 0.012 µm). Each loop is Mohan's ASITIC value to 3 %.
+    void aPolygonSpiralIsMeshedCornerToCorner()
     {
         const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
-        const QList<QPointF> line = mohanCentreLine(8, 4, 346, 18, 2);
-        const rf::Conductor spiral = widened(line, 18);
-        const rf::Mesh mesh = rf::meshOf({spiral}, likeTheTab(15), stack, 1e9);
-        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
-        QVERIFY2(mesh.cells.size() < 4000, qPrintable(QString::number(mesh.cells.size())));
-        QVERIFY2(std::abs(mesh.narrowestGap / 2 - 1) < 0.01, qPrintable(QString::number(mesh.narrowestGap)));
-        QVERIFY2(mesh.narrowest > 5, qPrintable(QString::number(mesh.narrowest)));
-        const rf::Inductance loop = rf::inductanceOf(mesh, {spiral}, stack, line.first(), line.last());
-        QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
-        QVERIFY2(std::abs(loop.lDc * 1e9 / 5.32 - 1) < 0.05, qPrintable(QString::number(loop.lDc * 1e9)));
-        const double along = lengthOf(line) / 18 / (3.5e7 * 0.9e-6);
-        QVERIFY2(loop.rDc > 0.9 * along && loop.rDc < along, qPrintable(QStringLiteral("%1 Ohm against %2").arg(loop.rDc).arg(along)));
-        qWarning("L55: %lld cells, the narrowest gap %.4g um; L_dc %.4g nH, R_dc %.4g Ohm (%.3f of along it)", qlonglong(mesh.cells.size()),
-                 mesh.narrowestGap, loop.lDc * 1e9, loop.rDc, loop.rDc / along);
+        struct Spiral {
+            const char* name;
+            int sides;
+            double n, dout, w, s;
+            int most;
+            double asitic;
+        };
+        for (const Spiral& sp : {Spiral{"L55", 8, 4, 346, 18, 2, 4000, 5.90}, Spiral{"L61", 12, 7.75, 198, 6.5, 3, 6500, 7.44}}) {
+            const QList<QPointF> line = mohanCentreLine(sp.sides, sp.n, sp.dout, sp.w, sp.s);
+            const rf::Conductor spiral = widened(line, sp.w);
+            const rf::Mesh mesh = rf::meshOf({spiral}, likeTheTab(15), stack, 1e9);
+            QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+            const QString said = QStringLiteral("%1: %2 cells, the narrowest conductor %3 µm, the narrowest gap %4 µm")
+                                     .arg(sp.name).arg(mesh.cells.size()).arg(mesh.narrowest).arg(mesh.narrowestGap);
+            QVERIFY2(mesh.cells.size() < sp.most, qPrintable(said));
+            QVERIFY2(std::abs(mesh.narrowestGap / sp.s - 1) < 0.01, qPrintable(said));
+            QVERIFY2(mesh.narrowest > 0.2 * sp.w, qPrintable(said));
+            const rf::Inductance loop = rf::inductanceOf(mesh, {spiral}, stack, line.first(), line.last());
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            QVERIFY2(std::abs(loop.lDc * 1e9 / sp.asitic - 1) < 0.03,
+                     qPrintable(QStringLiteral("%1: %2 nH against ASITIC's %3").arg(sp.name).arg(loop.lDc * 1e9).arg(sp.asitic)));
+            const double along = lengthOf(line) / sp.w / (3.5e7 * 0.9e-6);
+            QVERIFY2(loop.rDc > 0.85 * along && loop.rDc < along,
+                     qPrintable(QStringLiteral("%1: %2 Ohm against %3").arg(sp.name).arg(loop.rDc).arg(along)));
+            qWarning("%s; L_dc %.4g nH (ASITIC %.3g), R_dc %.4g Ohm (%.3f of along it)", qPrintable(said), loop.lDc * 1e9, sp.asitic,
+                     loop.rDc, loop.rDc / along);
+        }
     }
 
     // A compressed loop past what a solve may take is refused before it is

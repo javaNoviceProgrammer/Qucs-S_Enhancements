@@ -217,8 +217,15 @@ struct Slab {
     QRectF box;
     bool rectangle = false;
     /// How wide it is: a rectangle's short side; a trapezoid's mean width
-    /// across its slab, or the slab's own depth where that is less.
+    /// across its slab, or the slab's own depth where that is less. Where
+    /// neither of its two sides along the slab is the outline's - both cuts
+    /// between slabs -, its width across the slab alone (a trapezoid's at
+    /// right angles to its slanted sides), and \a along the way across the
+    /// slabs: its depth is no width of the conductor.
     double feature = 0;
+    /// The way its length runs where \a feature says so: 0 along x, 1 along
+    /// y; -1: as its box has it.
+    int along = -1;
 };
 
 /*!
@@ -246,7 +253,8 @@ QList<Slab> piecesOf(const QPolygonF& outline)
     if (m < 3) return {};
     const QRectF bounds = outline.boundingRect();
     const double tol = 1e-9 * std::max(1.0, std::max(bounds.width(), bounds.height()));
-    const auto cut = [&points, m, tol](bool acrossY) {
+    const QPolygonF whole(QList<QPointF>(points.begin(), points.end()));
+    const auto cut = [&points, &whole, m, tol](bool acrossY) {
         // (u: along the slab; c: across it, the corners' coordinates.)
         const auto cOf = [acrossY](QPointF p) { return acrossY ? p.y() : p.x(); };
         const auto uOf = [acrossY](QPointF p) { return acrossY ? p.x() : p.y(); };
@@ -263,14 +271,29 @@ QList<Slab> piecesOf(const QPolygonF& outline)
         };
         QList<Slab> done;
         QList<Span> open;
-        const auto finish = [&done, acrossY, tol](const Span& sp) {
+        const auto finish = [&done, &whole, acrossY, tol](const Span& sp) {
             Slab slab;
             const auto at = [acrossY](double u, double c) { return acrossY ? QPointF(u, c) : QPointF(c, u); };
             slab.outline = QPolygonF({at(sp.u0[0], sp.c0), at(sp.u1[0], sp.c0), at(sp.u1[1], sp.c1), at(sp.u0[1], sp.c1)});
             slab.box = slab.outline.boundingRect();
             slab.rectangle = std::abs(sp.u0[0] - sp.u0[1]) <= tol && std::abs(sp.u1[0] - sp.u1[1]) <= tol;
             const double depth = sp.c1 - sp.c0, wide = 0.5 * ((sp.u1[0] - sp.u0[0]) + (sp.u1[1] - sp.u0[1]));
-            slab.feature = slab.rectangle ? std::min(depth, wide) : std::min(depth, wide);
+            slab.feature = std::min(depth, wide);
+            // Its two sides along the slab: the outline's where just beyond the
+            // middle of either is outside it. Both cuts between slabs, its depth
+            // is only how far apart two corners of the outline are - a
+            // dodecagonal spiral's turns have corners 0.012 µm apart in height,
+            // and the slab between them was meshed as a conductor 0.012 µm wide,
+            // 12,770 cells for a spiral of 6,500 - so it goes by its width across the slab, its length across
+            // the slabs.
+            const double e = 1e3 * tol;
+            const bool lowCut = whole.containsPoint(at(0.5 * (sp.u0[0] + sp.u1[0]), sp.c0 - e), Qt::OddEvenFill);
+            const bool highCut = whole.containsPoint(at(0.5 * (sp.u0[1] + sp.u1[1]), sp.c1 + e), Qt::OddEvenFill);
+            if (lowCut && highCut) {
+                const double sideA = std::hypot(sp.u0[1] - sp.u0[0], depth), sideB = std::hypot(sp.u1[1] - sp.u1[0], depth);
+                slab.feature = slab.rectangle ? wide : std::min(wide, wide * depth / std::max(sideA, sideB));
+                slab.along = acrossY ? 1 : 0;
+            }
             done << slab;
         };
         for (int s = 0; s + 1 < unique.size(); ++s) {
@@ -653,6 +676,8 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         /// for its conductor whole.
         QPolygonF outline;
         double feature = 0;
+        /// The way it runs where its slab says (Slab::along); -1: by its box.
+        int along = -1;
     };
     QList<Piece> pieces;
     int cutInto = 0, cutFrom = 0, slantedFrom = 0, slantedRectangles = 0, slantedParts = 0;
@@ -679,10 +704,9 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                     piece.conductor = c;
                     piece.box = slab.box;
                     piece.rectangle = slab.rectangle;
-                    if (!slab.rectangle) {
-                        piece.outline = slab.outline;
-                        piece.feature = slab.feature;
-                    }
+                    if (!slab.rectangle) piece.outline = slab.outline;
+                    if (!slab.rectangle || slab.along >= 0) piece.feature = slab.feature;
+                    piece.along = slab.along;
                     pieces << piece;
                     ++(slab.rectangle ? slantedRectangles : slantedParts);
                 }
@@ -924,13 +948,14 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             const QPolygonF& shape = piece.outline.isEmpty() ? conductor.outline : piece.outline;
             const double area = piece.rectangle ? bounds.width() * bounds.height() : areaOf(shape);
             const double perimeter = piece.rectangle ? 0 : perimeterOf(shape);
-            const double feature = piece.rectangle ? narrow
-                                   : piece.feature > 0 ? piece.feature
-                                                       : (perimeter > 0 ? 2 * area / perimeter : narrow);
+            const double feature = piece.feature > 0 ? piece.feature : piece.rectangle ? narrow
+                                                                                        : (perimeter > 0 ? 2 * area / perimeter : narrow);
             double across = size;
             if (perFeature > 0 && feature > 0) across = std::min(across, feature / perFeature);
-            const bool strip = piece.rectangle && std::max(bounds.width(), bounds.height()) >= 3 * narrow;
-            const bool alongX = bounds.width() >= bounds.height();
+            // (Its length the way its slab says, where it says: a rectangle
+            //  cut thin between two slabs is no strip along its thin side.)
+            const bool alongX = piece.along >= 0 ? piece.along == 0 : bounds.width() >= bounds.height();
+            const bool strip = piece.rectangle && (alongX ? bounds.width() : bounds.height()) >= 3 * feature;
             double along = across;
             if (strip && how.stretch > 1) along = std::min(size, how.stretch * across);
             const double stepX = strip ? (alongX ? along : across) : across;
@@ -1219,6 +1244,16 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                     gap = gap > 0 && g > 0 ? std::min(gap, g) : std::max(gap, g);
                 }
                 if (gap <= 1e-9 * size) continue;
+                // (Two pieces of one conductor with that conductor between
+                //  them face no gap, as the grading above has it: two parts of
+                //  a dodecagonal spiral's turn with a sliver of a slab between
+                //  them were said to be 0.012 µm apart.)
+                if (pieces.at(a).conductor == pieces.at(b).conductor
+                    && conductors.at(pieces.at(a).conductor)
+                           .outline.containsPoint(QPointF(0.5 * (std::max(A.left(), B.left()) + std::min(A.right(), B.right())),
+                                                          0.5 * (std::max(A.top(), B.top()) + std::min(A.bottom(), B.bottom()))),
+                                                  Qt::OddEvenFill))
+                    continue;
                 // (A slanted side's part: how far apart the outlines are, as
                 //  the grading above has it.)
                 if (!pieces.at(a).rectangle || !pieces.at(b).rectangle)
