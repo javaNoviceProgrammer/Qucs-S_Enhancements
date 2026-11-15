@@ -131,7 +131,8 @@ double selfDistance(double width);
  * closed form, with the transverse distance averaged over both widths by
  * quadrature where they are near enough for it to matter and taken
  * between their middles where it is not. Where they are the same run it
- * is the self term, by selfDistance().
+ * is the self term, by selfDistance(). Two runs in the plane at any other
+ * angle: the cosine between them times alignedInductance(), Neumann's.
  */
 double partialInductance(const Filament& a, const Filament& b);
 
@@ -168,6 +169,9 @@ struct Inductance {
     double l = 0;             ///< H: the loop's inductance, of the least-energy current
     double lDc = 0;           ///< H: the same of the current at direct current
     double rDc = 0;           ///< Ohm: its resistance at direct current
+    /// Ohm: what any current through its runs loses at least, R at direct
+    /// current's check (inductanceOf()); 0 where it is not made.
+    double rDcLeast = 0;
     double q = 0;             ///< wL/R at the frequency asked for; 0 at none
     double frequency = 0;     ///< Hz, for q
     int branches = 0;         ///< the runs of current it solved for
@@ -248,12 +252,21 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
 int loopDenseLimit();
 /// Tests: that limit set (0: as above).
 void setLoopDenseLimit(int runsAndCells);
+/// Tests: what a compressed loop solve may take, bytes (0: half the
+/// machine's memory). Past it, inductanceOf() refuses before it fills L or
+/// factorizes its near field, and says what it would have taken.
+void setLoopMemory(double bytes);
 
 /// The runs of current the mesh of \a conductors makes: the pairs of
 /// cells that share an edge, and - unless not \a vias - the vias that join
 /// one layer to another. Public because it is what the tests count.
+///
+/// The cells' shared edges are found by their middles, to a nanometre:
+/// \a clashes, given, is how many places more than two cells' edges, or two
+/// of one cell's, came to the same middle there - cells under a nanometre
+/// across, whose edges no current crosses.
 QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre = 1e-6,
-                       QList<QPair<int, int>>* ends = nullptr, bool vias = true);
+                       QList<QPair<int, int>>* ends = nullptr, bool vias = true, int* clashes = nullptr);
 
 } // namespace qucs_s::rf25
 

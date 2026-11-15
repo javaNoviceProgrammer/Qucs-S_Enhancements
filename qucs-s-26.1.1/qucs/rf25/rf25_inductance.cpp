@@ -28,7 +28,9 @@
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <queue>
 #include <vector>
 
 namespace qucs_s::rf25 {
@@ -63,6 +65,12 @@ constexpr int kLoopRestart = 100;
 constexpr int kLoopMostIterations = 3000;
 /// Tests: the dense limit, where set (0: kMostRuns and denseLimit()'s).
 std::atomic<int> loopDenseLimitSet{0};
+/// What a compressed loop's L takes a run, bytes, before it is filled: the
+/// full-wave solve's measure of an unknown (rf25_fast.h); an octagonal spiral
+/// of 122,000 runs held its in 23 kB a run.
+constexpr double kLoopBytesPerRun = 20e3;
+/// Tests: what a compressed loop may take, bytes (0: half the machine's).
+std::atomic<double> loopMemorySet{0};
 /// Two runs further apart than this many of their widths have their
 /// transverse distance taken between their middles; nearer than it, it is
 /// averaged across both widths.
@@ -266,6 +274,14 @@ double partialInductance(const Filament& a, const Filament& b)
     // Orthogonal runs put no flux through one another, which is what
     // makes an axis-aligned layout cheap: only x with x and y with y.
     if (std::abs(along) < 1e-9) return 0;
+    // Two runs in the plane neither parallel nor at right angles: Neumann's
+    // cosine between them times their aligned partial inductance, as the
+    // full-wave solve and the compressed loop have it. Measured both along
+    // the first and without the cosine, as this was, a pair at 60 degrees was
+    // 2.11 times Neumann's double integral, and the dense loop of a strip at
+    // 45 degrees came out 30 to 50 % over the same strip along x - the
+    // compressed one, past the dense limit, the same as it to 0.1 % (a review's octagonal spirals).
+    if (std::abs(std::abs(along) - 1) >= 1e-12 && a.z0 == a.z1 && b.z0 == b.z1) return along * alignedInductance(a, b);
     const double sign = along > 0 ? 1.0 : -1.0;
 
     // Both runs measured along a's own direction: a spans [0, la], and b
@@ -412,7 +428,7 @@ double heightOf(const Stack& stack, const QString& metal)
 } // namespace
 
 QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                       QList<QPair<int, int>>* ends, bool vias)
+                       QList<QPair<int, int>>* ends, bool vias, int* clashes)
 {
     Q_UNUSED(conductors);
     QList<Filament> runs;
@@ -434,8 +450,12 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     // random), and the runs' order is what a compressed solve's clusters
     // are cut from - the same model solved twice was some 1e-7 apart.
     QList<QPair<QPair<int, int>, QString>> edges;
-    for (auto it = shared.constBegin(); it != shared.constEnd(); ++it)
-        if (it.value().size() == 2) edges << qMakePair(qMakePair(it.value().at(0), it.value().at(1)), it.key());
+    if (clashes != nullptr) *clashes = 0;
+    for (auto it = shared.constBegin(); it != shared.constEnd(); ++it) {
+        const bool clash = it.value().size() > 2 || (it.value().size() == 2 && it.value().at(0) == it.value().at(1));
+        if (clash && clashes != nullptr) ++*clashes;
+        if (it.value().size() == 2 && !clash) edges << qMakePair(qMakePair(it.value().at(0), it.value().at(1)), it.key());
+    }
     std::sort(edges.begin(), edges.end());
     for (const QPair<QPair<int, int>, QString>& joined : std::as_const(edges)) {
         const int a = joined.first.first, b = joined.first.second;
@@ -792,6 +812,11 @@ void setLoopDenseLimit(int runsAndCells)
     loopDenseLimitSet = std::max(0, runsAndCells);
 }
 
+void setLoopMemory(double bytes)
+{
+    loopMemorySet = std::max(0.0, bytes);
+}
+
 int loopDenseLimit()
 {
     const int set = loopDenseLimitSet.load();
@@ -807,7 +832,15 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         return out;
     }
     QList<QPair<int, int>> ends;
-    out.runs = runsOf(mesh, conductors, stack, micrometre, &ends);
+    int clashes = 0;
+    out.runs = runsOf(mesh, conductors, stack, micrometre, &ends, true, &clashes);
+    // (Cells too thin to tell their edges apart: a run lost at each, and the
+    //  path broken where a column of them crossed it - A review, a spiral's loop "solved" at 0.015 Ohm of its 8.7.)
+    const QString clashSaid = clashes > 0 ? tr(" %1 edge(s) between cells under a nanometre across could not be told "
+                                               "apart, and no current crosses them: the mesh is at fault - a finer or a "
+                                               "coarser largest cell may mesh it cleanly.")
+                                                .arg(clashes)
+                                          : QString();
     out.branches = int(out.runs.size());
     if (out.runs.isEmpty()) {
         out.problems << tr("No two cells of the mesh share an edge, so there is nowhere for a current to flow. Mesh the "
@@ -902,7 +935,13 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         f.sigma = m != nullptr ? m->sigma : 0.0;
         return f;
     };
-    const int portIn = out.nodes, portOut = out.nodes + 1;
+    // (Numbered past every cell of the mesh: they are keys among the cells'
+    //  own numbers in nodeOf. As out.nodes and the next - the cells a run
+    //  reaches - they were the numbers of real cells wherever a cell was
+    //  joined to nothing, and the current went in at a cell turns away: the
+    //  short of A review, a spiral of 8.7 Ohm at
+    //  0.015 where cells too thin to join had been left out.)
+    const int portIn = int(mesh.cells.size()), portOut = int(mesh.cells.size()) + 1;
     int stubs = 0;
     for (const int cell : sourceFace) {
         const Filament a = stub(cell, from, sourceOn, sourceAlong, true);
@@ -934,6 +973,59 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                     "that the path is the whole of it and the face is driven across its breadth.")
                      .arg(sourceFace.size()).arg(sinkFace.size()).arg(stubs);
 
+    // The cells the current can reach from where it goes in: where it comes
+    // out is among them, or there is no loop to solve - and those joined to
+    // neither end are left out, a piece of the layout on its own. Solved
+    // with them, the nodal matrix was singular and its answer anything: a
+    // spiral cut in two by a column of cells too thin to join came out at
+    // 0.015 Ohm and nothing of a nanohenry, and nothing said so.
+    {
+        QList<QList<int>> next(out.nodes);
+        for (int b = 0; b < out.branches; ++b) {
+            const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
+            next[a] << c;
+            next[c] << a;
+        }
+        QList<bool> joined(out.nodes, false);
+        QList<int> todo{nodeOf.value(inAt)};
+        joined[todo.first()] = true;
+        while (!todo.isEmpty()) {
+            const int at = todo.takeLast();
+            for (const int to : std::as_const(next.at(at)))
+                if (!joined.at(to)) {
+                    joined[to] = true;
+                    todo << to;
+                }
+        }
+        if (!joined.at(nodeOf.value(outAt))) {
+            out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout "
+                               "is in pieces that nothing joins.%1")
+                                .arg(clashSaid);
+            return out;
+        }
+        const int alone = int(std::count(joined.begin(), joined.end(), false));
+        if (alone > 0) {
+            QList<Filament> runs;
+            QList<QPair<int, int>> kept;
+            for (int b = 0; b < out.branches; ++b)
+                if (joined.at(nodeOf.value(ends.at(b).first))) {
+                    runs << out.runs.at(b);
+                    kept << ends.at(b);
+                }
+            out.runs = runs;
+            ends = kept;
+            QMap<int, int> renumbered;
+            for (const QPair<int, int>& e : std::as_const(ends))
+                for (const int which : {e.first, e.second})
+                    if (!renumbered.contains(which)) renumbered.insert(which, renumbered.size());
+            nodeOf = renumbered;
+            out.branches = int(out.runs.size());
+            out.nodes = int(nodeOf.size());
+            out.lines << tr("%1 cell(s) joined to neither end of the loop are left out of it.").arg(alone);
+        }
+    }
+    if (clashes > 0) out.lines << clashSaid.trimmed();
+
     const int nb = out.branches, nn = out.nodes;
     // Of every current that obeys Kirchhoff's law and carries the
     // terminal current, the one that flows is the one of least magnetic
@@ -953,6 +1045,56 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         out.problems << tr("The current would go in and out at the same node.");
         return out;
     }
+    // How far the current goes along the runs from where it goes in to
+    // every cell, at the least: no path of runs is shorter than the straight
+    // line between its ends, so one from end to end shorter than the ends
+    // are apart is a mesh or a loop made wrong - the short of a review went in by a stub that landed turns away, 0.6 µm along
+    // runs from where it came out, 241 µm away. (And what R at direct
+    // current is checked against below.)
+    std::vector<double> far(std::size_t(nn), std::numeric_limits<double>::infinity());
+    {
+        QList<QList<std::pair<int, double>>> next(nn);
+        for (int b = 0; b < nb; ++b) {
+            const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
+            next[a].append({c, out.runs.at(b).length()});
+            next[c].append({a, out.runs.at(b).length()});
+        }
+        using Step = std::pair<double, int>;
+        std::priority_queue<Step, std::vector<Step>, std::greater<Step>> queue;
+        far[std::size_t(in)] = 0;
+        queue.push({0.0, in});
+        while (!queue.empty()) {
+            const auto [d, at] = queue.top();
+            queue.pop();
+            if (d > far[std::size_t(at)]) continue;
+            for (const auto& [to, len] : next.at(at))
+                if (d + len < far[std::size_t(to)]) {
+                    far[std::size_t(to)] = d + len;
+                    queue.push({d + len, to});
+                }
+        }
+        // The ends: where the stubs start and finish, else the two cells.
+        QList<QPointF> starts, finishes;
+        for (int b = 0; b < nb; ++b) {
+            if (ends.at(b).first == portIn) starts << out.runs.at(b).from;
+            if (ends.at(b).second == portOut) finishes << out.runs.at(b).to;
+        }
+        if (starts.isEmpty()) starts << mesh.cells.at(source).centre * micrometre;
+        if (finishes.isEmpty()) finishes << mesh.cells.at(sink).centre * micrometre;
+        double apart = std::numeric_limits<double>::infinity();
+        for (const QPointF& a : std::as_const(starts))
+            for (const QPointF& b : std::as_const(finishes)) apart = std::min(apart, std::hypot(a.x() - b.x(), a.y() - b.y()));
+        const double along = far[std::size_t(drop)];
+        if (std::isfinite(apart) && along < (1 - 1e-9) * apart) {
+            out.problems << tr("The runs of current go from one end of the loop to the other in %1 µm, where the ends are "
+                               "%2 µm apart: the loop is made wrong, and is not solved.%3")
+                                .arg(along * 1e6, 0, 'g', 4)
+                                .arg(apart * 1e6, 0, 'g', 4)
+                                .arg(clashSaid);
+            return out;
+        }
+    }
+
     // A, sparse: each run's two cells.
     std::vector<Eigen::Triplet<double>> incidence;
     for (int b = 0; b < nb; ++b) {
@@ -968,10 +1110,19 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     Eigen::VectorXd answer;
     if (dense) {
         lp = partialInductances(out.runs);
+        // L in its own scale, as the compressed solve has it below: its
+        // entries are picohenries and A's ones, and the LU's test of
+        // whether it is invertible - against its largest pivot - took L's
+        // for nothing on a fine mesh, a strip at 45 degrees three cells
+        // across "in pieces that nothing joins". The currents are the same;
+        // the potentials come out over the scale, and are not used.
+        double scale = 0;
+        for (int i = 0; i < nb; ++i) scale += lp.at(i).at(i);
+        scale = scale > 0 ? scale / nb : 1.0;
         Eigen::MatrixXd m = Eigen::MatrixXd::Zero(rows, rows);
         Eigen::VectorXd rhs = Eigen::VectorXd::Zero(rows);
         for (int i = 0; i < nb; ++i)
-            for (int j = 0; j < nb; ++j) m(i, j) = lp.at(i).at(j);
+            for (int j = 0; j < nb; ++j) m(i, j) = lp.at(i).at(j) / scale;
         for (const Eigen::Triplet<double>& t : incidence) {
             m(nb + t.row(), t.col()) += t.value();
             m(t.col(), nb + t.row()) += t.value();
@@ -994,6 +1145,23 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         // by the near field's LU - the near pairs' L with the whole of A.
         QElapsedTimer clock;
         clock.start();
+        // What the solve may take: half the machine's memory, as a full-wave
+        // solve held compressed may (rf25_fullwave.cpp). L first, at some
+        // 20 kB a run as the full wave's is (rf25_fast.h); then the near
+        // field's factors, as their analysis says, before they are made.
+        // Past it, said and refused: an octagonal spiral of 172,000 runs went
+        // on into its near field's LU, 25 GB in 30 s and climbing, until the
+        // system ended Qucs-S without a word.
+        const double memory = physicalMemory();
+        const double set = loopMemorySet.load();
+        const double budget = set > 0 ? set : memory > 0 ? 0.5 * memory : 4e9;
+        if (const double guess = kLoopBytesPerRun * nb; guess > budget) {
+            out.problems << tr("%1 runs of current, held compressed, would take some %2 GB for their L alone, more than the "
+                               "%3 GB a solve may take here. Mesh the layout more coarsely: fewer cells across a conductor, "
+                               "or a larger largest cell.")
+                                .arg(nb).arg(guess / 1e9, 0, 'g', 3).arg(budget / 1e9, 0, 'g', 3);
+            return out;
+        }
         compressed = std::make_unique<LoopL>();
         QString why;
         const int threads = std::max(1, QThread::idealThreadCount());
@@ -1022,12 +1190,32 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         Eigen::SparseMatrix<Complex> pre(rows, rows);
         pre.setFromTriplets(near.begin(), near.end());
         pre.makeCompressed();
-        fem::SparseLu<Complex> lu;
-        lu.compute(pre);
+        // (Symmetric - L's near pairs both ways round, A and its transpose -,
+        //  so an L D L^T: Accelerate's, in some fifth of an LU's memory, its
+        //  size known from its analysis before it is factorized.)
+        const double held = l.kx.bytes() + l.ky.bytes() + l.kz.bytes();
+        const double vectors = 16.0 * double(kLoopRestart + 4) * rows;
+        const double matrix = 20.0 * double(pre.nonZeros());
+        const double left = budget - held - vectors - matrix;
+        fem::SparseComplexLdlt lu;
+        lu.setMemoryLimit(std::max(1.0, left));
+        if (left > 0) lu.compute(pre);
+        if (left <= 0 || (lu.info() != Eigen::Success && lu.factorBytes() > left)) {
+            out.problems << tr("The compressed solve of %1 runs of current would take more than the %2 GB a solve may take "
+                               "here: L held in %3 GB, and the factors of its near field, which the solve is preconditioned "
+                               "with, %4. Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
+                               "cell.")
+                                .arg(nb)
+                                .arg(budget / 1e9, 0, 'g', 3)
+                                .arg(held / 1e9, 0, 'g', 3)
+                                .arg(left <= 0 ? tr("on top") : tr("%1 GB").arg(lu.factorBytes() / 1e9, 0, 'g', 3));
+            return out;
+        }
         if (lu.info() != Eigen::Success) {
             out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout is "
-                               "in pieces that nothing joins (the near field's LU, which the compressed solve is "
-                               "preconditioned with, failed).");
+                               "in pieces that nothing joins (the near field's factors, which the compressed solve is "
+                               "preconditioned with, failed: %1).")
+                                .arg(QString::fromStdString(lu.lastErrorMessage()));
             return out;
         }
         Eigen::SparseMatrix<double> a(nn - 1, nb);
@@ -1064,7 +1252,6 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             l.apply(v.cast<Complex>(), r);
             y = r.real();
         };
-        const double held = l.kx.bytes() + l.ky.bytes() + l.kz.bytes();
         const double whole = 8.0 * double(rows) * rows;
         out.compressed = true;
         out.iterations = solved.iterations;
@@ -1129,7 +1316,19 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         s(at(in)) = 1.0;
         const Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt(g);
         const Eigen::VectorXd u = ldlt.solve(s);
-        if (ldlt.info() == Eigen::Success && u.allFinite()) {
+        // (Its residual too: a stub of no length - a 45-degree face's
+        //  triangular cell held at its box's middle, on the face - put a
+        //  conductance without bound in G, and the factorization said it
+        //  had succeeded with a residual of 0.76, R at direct current a
+        //  third of what it is.)
+        const bool solvedDc = ldlt.info() == Eigen::Success && u.allFinite() && (g * u - s).norm() <= 1e-8 * s.norm();
+        if (ldlt.info() == Eigen::Success && u.allFinite() && !solvedDc) {
+            out.problems << tr("The loop's nodal solve at direct current did not hold: its residual is %1 of its current. "
+                               "The mesh is at fault - a finer or a coarser largest cell may mesh it cleanly.")
+                                .arg((g * u - s).norm() / s.norm(), 0, 'g', 2);
+            return out;
+        }
+        if (solvedDc) {
             Eigen::VectorXd dc(nb);
             for (int b = 0; b < nb; ++b) {
                 const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
@@ -1144,6 +1343,32 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             if (dcLoss > 0 && dcEnergy > 0) {
                 out.rDc = dcLoss;
                 out.lDc = dcEnergy;
+            }
+        }
+        // What no current through these runs can lose less than: of the
+        // potentials that are 0 where it goes in and 1 where it comes out,
+        // the one that rises with the distance along the runs, d / D, clipped
+        // - no run rises by more than its length over D -, holds 1/R at most
+        // its G's energy (Dirichlet's principle). A nodal solve under it is
+        // wrong, whatever made it so: the check a review
+        // asked for, R at direct current against the metal's resistance
+        // along its length, made exact.
+        if (const double whole = far[std::size_t(drop)]; out.rDc > 0 && whole > 0 && std::isfinite(whole)) {
+            double bound = 0;
+            for (int b = 0; b < nb; ++b) {
+                const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
+                const double rise = std::min(1.0, far[std::size_t(a)] / whole) - std::min(1.0, far[std::size_t(c)] / whole);
+                bound += rise * rise / out.runs.at(b).resistance();
+            }
+            const double least = bound > 0 ? 1.0 / bound : 0.0;
+            out.rDcLeast = least;
+            if (out.rDc < (1 - 1e-6) * least) {
+                out.problems << tr("The loop's resistance at direct current came out as %1 Ohm, under the %2 Ohm that any "
+                                   "current through its runs loses at least: the solve is wrong, and its L with it.%3")
+                                    .arg(out.rDc, 0, 'g', 4)
+                                    .arg(least, 0, 'g', 4)
+                                    .arg(clashSaid);
+                return out;
             }
         }
     }
