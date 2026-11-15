@@ -133,7 +133,7 @@ std::optional<FullWave> solvedStandard(const QString& path, const QList<double>&
     const Processed processed = processRead(*model, *read, QFileInfo(layoutPath).fileName());
     if (!processed.ok()) return fail(tr("%1: %2").arg(name, processed.problems.join(QLatin1Char(' '))));
     QStringList said;
-    const Mesh mesh = meshOf(processed.conductors, tabMeshSettings(*model, &said), model->stack(), topFrequency(*model));
+    const Mesh mesh = meshOf(processed.conductors, tabMeshSettings(*model, &said), model->solveStack(), topFrequency(*model));
     QString problem;
     const QList<FullWavePort> ports = portsOf(*model, &problem);
     if (!problem.isEmpty()) return fail(tr("%1: %2").arg(name, problem));
@@ -141,7 +141,7 @@ std::optional<FullWave> solvedStandard(const QString& path, const QList<double>&
     const QList<ReturnMark> returns = returnMarksOf(*model, &problem);
     FullWaveControl c = control;
     c.extents.clear();
-    const Stack stack = model->stack();
+    const Stack stack = model->solveStack();
     for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it)
         if (const Layer* l = stack.named(it.key())) c.extents << Extent{l->name, it.value(), l->beyond};
     // (Raw - fullWaveOf() de-embeds nothing: a standard's ports as solved,
@@ -374,7 +374,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     const auto said = [](const QString& why) { return why; };
     job.mesh = mesh;
     job.conductors = processed.conductors;
-    job.stack = model.stack();
+    job.stack = model.solveStack();
     // The layers that end: their shapes, and what is beyond them.
     for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it) {
         const Layer* layer = job.stack.named(it.key());
@@ -915,7 +915,7 @@ ModelSolution solveModel(SolveJob& job, const Model& model, const qucs_s::layout
     out.processed = processed;
     QStringList said;
     const MeshSettings how = tabMeshSettings(model, &said);
-    auto mesh = std::make_shared<Mesh>(meshOf(processed->conductors, how, model.stack(), topFrequency(model)));
+    auto mesh = std::make_shared<Mesh>(meshOf(processed->conductors, how, model.solveStack(), topFrequency(model)));
     mesh->problems = said + mesh->problems;
     out.mesh = mesh;
     if (mesh->cells.isEmpty()) {

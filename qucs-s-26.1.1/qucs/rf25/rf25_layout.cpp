@@ -445,7 +445,7 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
         }
     }
     const fem::Scope scope = scopeOf(model.parameters());
-    const Stack stack = model.stack();
+    const Stack stack = model.solveStack();
     const auto say = [problems](const QString& text) {
         if (problems != nullptr) *problems << text;
     };
@@ -1078,7 +1078,7 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     }
     Processing how = processingOf(*model.layout().child(QStringLiteral("rf_processing")), model.parameters(), &said);
     how.cutout = cutoutOf(model, &said);
-    out = processShapes(byLayer, map.fill, how, model.stack(), 1e-6);
+    out = processShapes(byLayer, map.fill, how, model.solveStack(), 1e-6);
     if (own > 0) out.report.lines << tr("%n shape(s) of the model's own (Shapes) added to the layout's.", nullptr, own);
     for (int k = 0; k < dimensions.size(); ++k)
         out.report.lines << (moved.at(k) > 0 ? tr("%1 moved %n corner(s) of %2 by %3 µm.", nullptr, moved.at(k))

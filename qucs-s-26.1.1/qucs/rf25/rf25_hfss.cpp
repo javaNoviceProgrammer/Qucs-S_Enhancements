@@ -21,6 +21,8 @@
  */
 #include "rf25_hfss.h"
 
+#include "rf25_bondwire.h"
+
 #include "dataimport.h"
 #include "layout.h"
 #include "multiphysics/fem_import.h"
@@ -882,6 +884,9 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     }
     out.polygons = int(polygons.size());
     for (const HfssPolygon& p : std::as_const(polygons)) out.voids += int(p.holes.size());
+    // (The bond wires' runs and legs are on the solve's stand-in layers, none
+    //  of the board's, so none of them is written above: rf25_bondwire.h.)
+    out.notes << bondWiresNotWritten(model, tr("the export"));
 
     // The box of everything: what the margin is past.
     QRectF box;

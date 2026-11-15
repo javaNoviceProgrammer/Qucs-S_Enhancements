@@ -1329,7 +1329,7 @@ void RF25Doc::prepare()
         job->processed = std::make_shared<Processed>(processRead(job->model, *job->layout, job->called));
         QStringList said;
         const MeshSettings how = tabMeshSettings(job->model, &said);
-        Mesh mesh = meshOf(job->processed->conductors, how, job->model.stack(), topFrequency(job->model));
+        Mesh mesh = meshOf(job->processed->conductors, how, job->model.solveStack(), topFrequency(job->model));
         mesh.problems = said + mesh.problems;
         job->mesh = std::make_shared<Mesh>(std::move(mesh));
     });
@@ -2851,7 +2851,7 @@ QStringList RF25Doc::sParameterSummary(double reference) const
     // its capacitance stops being the whole story.
     if (!a_extraction->perMetre.fromMiddle) {
         out << tr("No uniform line, so no S parameters as one: the full-wave solve gives its ports' S.");
-        const QuasiStaticLimit limit = quasiStaticLimit(a_model.stack(), a_mesh ? *a_mesh : Mesh(), 1e-6, 0, 0, nets, false);
+        const QuasiStaticLimit limit = quasiStaticLimit(a_model.solveStack(), a_mesh ? *a_mesh : Mesh(), 1e-6, 0, 0, nets, false);
         if (limit.frequency > 0)
             out << tr("Its capacitance is quasi-static to about %1 GHz (%2, eps_r %3).")
                        .arg(limit.frequency / 1e9, 0, 'g', 3)
@@ -2920,7 +2920,7 @@ QStringList RF25Doc::sParameterSummary(double reference) const
     // And where the quasi-static answer stops being the whole story,
     // which is the one thing a caller must not have to guess at.
     const QuasiStaticLimit limit =
-        quasiStaticLimit(a_model.stack(), a_mesh ? *a_mesh : Mesh(), 1e-6, slowest, a_solvedLength, nets);
+        quasiStaticLimit(a_model.solveStack(), a_mesh ? *a_mesh : Mesh(), 1e-6, slowest, a_solvedLength, nets);
     if (limit.frequency > 0) {
         out << tr("Quasi-static to about %1 GHz (%2, eps_r %3): above that a mode other than quasi-TEM appears and "
                   "none of this is the whole story.")
@@ -3234,7 +3234,7 @@ QList<bool> RF25Doc::returnShapes() const
     const QList<Conductor>& shapes = a_processed->conductors;
     QString problem;
     const QList<ReturnMark> marks = returnMarksOf(a_model, &problem);
-    const Stack stack = a_model.stack();
+    const Stack stack = a_model.solveStack();
     const QList<Net> nets = netsOf(*a_mesh, shapes, stack);
     const QList<bool> isReturn = returnNetsOf(nets, *a_mesh, shapes, stack, marks);
     if (!isReturn.contains(true)) return shapeReturns;

@@ -29,6 +29,8 @@
 #include "rf25/rf25_static.h"
 #include "rf25/rf25_solve.h"
 #include "rf25/rf25_bondwire.h"
+#include "rf25/rf25_hfss.h"
+#include "rf25/rf25_stackfile.h"
 #include "multiphysics/fem_sparse.h"
 
 #include <Eigen/Dense>
@@ -2385,64 +2387,122 @@ private slots:
         wire.height = height;
         wire.diameter = 2 * a;
         const double l = solved(wire, f).imag() / (2 * M_PI * f);
-        // The reference: the parabola z(x) = za + 4 height u (1 - u) in pieces,
-        // its mirror below the ground carrying the opposite current.
-        const int n = 400;
-        QList<std::array<double, 4>> pieces;   // x0, z0, x1, z1
-        for (int i = 0; i < n; ++i) {
-            const double u0 = double(i) / n, u1 = double(i + 1) / n;
-            pieces << std::array<double, 4>{u0 * 1e-3, za + 4 * height * u0 * (1 - u0), u1 * 1e-3, za + 4 * height * u1 * (1 - u1)};
-        }
-        static const double gx[4] = {-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526};
-        static const double gw[4] = {0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538};
-        double ref = 0;
-        for (const auto& p : pieces)
-            for (const auto& q : pieces)
-                for (const double mirror : {1.0, -1.0}) {
-                    const double qz0 = mirror * q[1], qz1 = mirror * q[3];
-                    const double tx = p[2] - p[0], tz = p[3] - p[1], sx = q[2] - q[0], sz = qz1 - qz0;
-                    double sum = 0;
-                    for (int i = 0; i < 4; ++i)
-                        for (int j = 0; j < 4; ++j) {
-                            const double ui = 0.5 * (1 + gx[i]), uj = 0.5 * (1 + gx[j]);
-                            const double dx = p[0] + ui * tx - (q[0] + uj * sx), dz = p[1] + ui * tz - (qz0 + uj * sz);
-                            const double r = mirror > 0 ? std::sqrt(dx * dx + dz * dz + a * a) : std::hypot(dx, dz);
-                            sum += 0.25 * gw[i] * gw[j] / r;
-                        }
-                    // (The mirror's current opposite, its direction mirrored in z.)
-                    const double dot = mirror > 0 ? tx * sx + tz * sz : -(tx * sx - tz * (-sz));
-                    ref += 1e-7 * dot * sum;
+        // A Neumann integral of a path (s, z) of straight parts, its mirror
+        // below the ground carrying the opposite current: the reference,
+        // written here apart from the model's own (wireLoopInductance()).
+        const auto neumann = [a](const QList<QPointF>& path, int perPart) {
+            QList<std::array<double, 4>> pieces;   // x0, z0, x1, z1
+            for (int k = 0; k + 1 < path.size(); ++k)
+                for (int i = 0; i < perPart; ++i) {
+                    const QPointF p0 = path.at(k) + (path.at(k + 1) - path.at(k)) * (double(i) / perPart);
+                    const QPointF p1 = path.at(k) + (path.at(k + 1) - path.at(k)) * (double(i + 1) / perPart);
+                    if (p0 != p1) pieces << std::array<double, 4>{p0.x(), p0.y(), p1.x(), p1.y()};
                 }
-        // (However many pieces, the staircase's: 3, 5, 9 and 15 of them 0.641,
-        //  0.631, 0.636 and 0.635 nH - its legs add their length where the
-        //  arc's rise adds in quadrature to its span, some 9 % here. Two
-        //  pieces as high as each other share their metal, no leg between.)
-        rf::BondWire two = wire;
-        two.pieces = 2;
-        const double l2 = solved(two, f).imag() / (2 * M_PI * f);
-        QVERIFY2(std::abs(l2 / ref - 1) < 0.1, qPrintable(QStringLiteral("two pieces: %1 nH").arg(l2 * 1e9)));
-        // A single run at the arc's peak - a rectangle, as a top run at its
-        // height alone would be: well over it (the review: a run at the peak
-        // gives more L per length than the arc).
-        rf::BondWire peak = wire;
-        peak.pieces = 1;
-        peak.height = height - za;
-        const rf::BondWired flat = rf::withBondWires(base, pads, {peak});
-        Q_UNUSED(flat);
-        qWarning("a bond wire's L: %.4g nH in 5 pieces; the arc's %.4g nH", l * 1e9, ref * 1e9);
-        QVERIFY2(std::abs(l / ref - 1) < 0.1, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(ref * 1e9)));
+            static const double gx[4] = {-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526};
+            static const double gw[4] = {0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538};
+            double sum = 0;
+            for (const auto& p : pieces)
+                for (const auto& q : pieces)
+                    for (const double mirror : {1.0, -1.0}) {
+                        const double qz0 = mirror * q[1], qz1 = mirror * q[3];
+                        const double tx = p[2] - p[0], tz = p[3] - p[1], sx = q[2] - q[0], sz = qz1 - qz0;
+                        double part = 0;
+                        for (int i = 0; i < 4; ++i)
+                            for (int j = 0; j < 4; ++j) {
+                                const double ui = 0.5 * (1 + gx[i]), uj = 0.5 * (1 + gx[j]);
+                                const double dx = p[0] + ui * tx - (q[0] + uj * sx), dz = p[1] + ui * tz - (qz0 + uj * sz);
+                                const double r = mirror > 0 ? std::sqrt(dx * dx + dz * dz + a * a) : std::hypot(dx, dz);
+                                part += 0.25 * gw[i] * gw[j] / r;
+                            }
+                        // (The mirror's current opposite, its direction mirrored in z.)
+                        const double dot = mirror > 0 ? tx * sx + tz * sz : -(tx * sx - tz * (-sz));
+                        sum += 1e-7 * dot * part;
+                    }
+            return sum;
+        };
+        // The parabola z(x) = za + 4 height u (1 - u) in 400 chords.
+        QList<QPointF> arc;
+        for (int i = 0; i <= 400; ++i) arc << QPointF(i / 400.0 * 1e-3, za + 4 * height * (i / 400.0) * (1 - i / 400.0));
+        const double ref = neumann(arc, 1);
+        // The model's own integral of it, what the heights are fitted to.
+        QVERIFY2(std::abs(rf::wireLoopInductance(rf::bondWirePath(wire, za, za, 1e-3), a) / ref - 1) < 2e-3,
+                 qPrintable(QStringLiteral("%1 against %2").arg(rf::wireLoopInductance(rf::bondWirePath(wire, za, za, 1e-3), a)).arg(ref)));
+        // Its runs' heights fitted: each of one to four pieces within 3 % of
+        // the arc's, at 25 µm cells (and at 12.5 and 6.25 µm: 0.577, 0.577,
+        // 0.574 and 0.576 nH; 0.571, 0.571, 0.564 and 0.565 - the strips
+        // narrower in the field as the cells resolve their edges). Unfitted,
+        // at their mean ln heights, three pieces 0.613 nH, 6 % over: the
+        // staircase's legs add their rise where the arc's adds in quadrature
+        // to its span. (From five pieces on, each step between runs adds an
+        // error of the mesh's: 5, 9 and 15 of them 0.607, 0.629 and 0.658 nH
+        // here, 0.556, 0.520 and 0.415 at 12.5 µm cells - said beside them.)
+        qWarning("a bond wire's L: %.4g nH in 3 pieces; the arc's %.4g nH", l * 1e9, ref * 1e9);
+        QVERIFY2(std::abs(l / ref - 1) < 0.03, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(ref * 1e9)));
+        for (const int count : {1, 2, 4}) {
+            rf::BondWire other = wire;
+            other.pieces = count;
+            const double lc = solved(other, f).imag() / (2 * M_PI * f);
+            QVERIFY2(std::abs(lc / ref - 1) < 0.03, qPrintable(QStringLiteral("%1 pieces: %2 nH").arg(count).arg(lc * 1e9)));
+        }
+        rf::BondWire unfitted = wire;
+        unfitted.fit = false;
+        const double lu = solved(unfitted, f).imag() / (2 * M_PI * f);
+        QVERIFY2(lu / ref - 1 > 0.04, qPrintable(QStringLiteral("unfitted, %1 nH").arg(lu * 1e9)));
+        {
+            rf::BondWire many = wire;
+            many.pieces = 9;
+            const rf::BondWired bw = rf::withBondWires(base, pads, {many});
+            QVERIFY(bw.lines.join(QLatin1Char(' ')).contains(QStringLiteral("9 pieces")));
+        }
+        // A ball bond's loop: straight up 150 µm from the first pad, flat over
+        // a fifth of the span, straight down to the second - against its own
+        // corners' integral, written here.
+        rf::BondWire ball = wire;
+        ball.ball = true;
+        ball.knee = 0.2;
+        const QList<QPointF> loop{QPointF(0, za), QPointF(0, za + height), QPointF(0.2e-3, za + height), QPointF(1e-3, za)};
+        const double refBall = neumann(loop, 100), lb = solved(ball, f).imag() / (2 * M_PI * f);
+        qWarning("a ball bond's L: %.4g nH in 3 pieces; its loop's %.4g nH", lb * 1e9, refBall * 1e9);
+        QVERIFY2(std::abs(lb / refBall - 1) < 0.03, qPrintable(QStringLiteral("%1 nH against %2").arg(lb * 1e9).arg(refBall * 1e9)));
+        {
+            // (Its first piece all over the flat: its run at the loop's height
+            //  itself, its first leg the rise. The fit leaves L its loop's
+            //  whatever the pieces' heights, so they are checked here.)
+            rf::BondWire five = ball;
+            five.pieces = 5;
+            const QList<double> levels = rf::bondWireLevels(five, za, za);
+            QVERIFY2(std::abs(levels.first() / (za + height) - 1) < 1e-9, qPrintable(QString::number(levels.first())));
+            QVERIFY(levels.at(1) < za + height && levels.at(4) < levels.at(1));
+        }
+        QVERIFY2(std::abs(rf::wireLoopInductance(loop, a) / refBall - 1) < 2e-3,
+                 qPrintable(QStringLiteral("%1 against %2").arg(rf::wireLoopInductance(loop, a)).arg(refBall)));
         // Its resistance: gold at 1 GHz, a low loop so that its run is nearly
-        // its span.
+        // its span: a round wire's Rs/(2 pi a) along its span and its legs,
+        // their way the steps between its fitted runs' heights.
         rf::BondWire gold = wire;
         gold.sigma = 4.1e7;
         gold.height = 30e-6;
         const double fr = 1e9, rs = std::sqrt(M_PI * fr * 4e-7 * M_PI / gold.sigma);
-        // (Its legs the squares they are, 0.871 d across, their vertical way
-        //  the steps between its pieces' heights: Rs over their perimeter.)
-        const QList<double> z = rf::bondWireLevels(za, za, gold.height, gold.pieces);
-        double legs = std::abs(z.first() - za) + std::abs(z.last() - za);
-        for (int i = 0; i + 1 < z.size(); ++i) legs += std::abs(z.at(i + 1) - z.at(i));
-        const double r = solved(gold, fr).real(), want = rs / (2 * M_PI * a) * 1e-3 + rs / (4 * 0.871 * 2 * a) * legs;
+        QList<double> z;
+        {
+            const rf::BondWired bw = rf::withBondWires(base, pads, {gold});
+            double h = 0;
+            for (const rf::Layer& layer : bw.stack.layers) {
+                if (layer.kind == rf::Layer::Metal && layer.standsFor == gold.name) z << h;
+                if (layer.kind == rf::Layer::Dielectric || layer.kind == rf::Layer::Substrate) h += layer.thickness;
+            }
+        }
+        QCOMPARE(z.size(), 3);
+        double legs = 0;
+        {
+            const QList<double> levels = rf::bondWireLevels(gold, za, za);
+            const double scale = (z.first() - za) / (levels.first() - za);
+            QList<double> fitted;
+            for (const double v : levels) fitted << za + scale * (v - za);
+            legs = std::abs(fitted.first() - za) + std::abs(fitted.last() - za);
+            for (int i = 0; i + 1 < fitted.size(); ++i) legs += std::abs(fitted.at(i + 1) - fitted.at(i));
+        }
+        const double r = solved(gold, fr).real(), want = rs / (2 * M_PI * a) * (1e-3 + legs);
         qWarning("a gold bond wire's R at 1 GHz: %.4g Ohm, a round wire's along its span and its legs %.4g", r, want);
         QVERIFY2(std::abs(r / want - 1) < 0.1, qPrintable(QStringLiteral("%1 Ohm against %2").arg(r).arg(want)));
         // And the strip's edges crowd no loss to them: with them, R was 1.7
@@ -2491,13 +2551,61 @@ private slots:
             w.props.insert(QStringLiteral("to_metal"), metal);
             w.props.insert(QStringLiteral("x1"), QStringLiteral("800[um]"));
             shapes->children.push_back(w);
-            const rf::Stack st = m.stack();
+            // Its layers in the solve's stack, none of them in the board's.
+            const rf::Stack st = m.solveStack();
             QVERIFY2(st.ok(), qPrintable(st.problems.join(" | ")));
             QVERIFY(st.named(QStringLiteral("W7_3")) != nullptr && st.named(QStringLiteral("W7_v0")) != nullptr);
+            QCOMPARE(st.named(QStringLiteral("W7_3"))->standsFor, QStringLiteral("W7"));
+            const rf::Stack board = m.stack();
+            QVERIFY2(board.ok(), qPrintable(board.problems.join(" | ")));
+            for (const rf::Layer& l : board.layers) QVERIFY2(l.standsFor.isEmpty() && !l.name.startsWith(QStringLiteral("W7")), qPrintable(l.name));
+            // (Two air slabs - the outer runs as high as each other - three
+            //  metals and four legs: every layer the solve adds the wire's.)
+            QCOMPARE(std::count_if(st.layers.cbegin(), st.layers.cend(), [](const rf::Layer& l) { return l.standsFor == QStringLiteral("W7"); }),
+                     qsizetype(st.layers.size() - board.layers.size()));
+            QCOMPARE(st.layers.size() - board.layers.size(), qsizetype(9));
             int wireShapes = 0;
-            for (const rf::OwnShape& s : rf::ownShapesOf(m))
+            QList<rf::Conductor> conductors;
+            for (const rf::OwnShape& s : rf::ownShapesOf(m)) {
                 if (s.layer.startsWith(QStringLiteral("W7_"))) ++wireShapes;
-            QCOMPARE(wireShapes, 11);   // (five runs, six legs)
+                rf::Conductor c;
+                c.layer = s.layer;
+                c.outline = s.outline;
+                conductors << c;
+            }
+            QCOMPARE(wireShapes, 7);   // (three runs, four legs)
+            // What shows or writes the board - the stack drawing, the XML
+            // stackup, the process file, the HFSS export - has no layer of
+            // the wire's, and says it is not written.
+            const rf::StackDrawing drawing = rf::stackDrawingOf(m);
+            QVERIFY2(drawing.ok(), qPrintable(drawing.problems.join(" | ")));
+            for (const auto& band : drawing.bands) QVERIFY2(!band.name.startsWith(QStringLiteral("W7")), qPrintable(band.name));
+            for (const auto& box : drawing.boxes) QVERIFY2(!box.name.startsWith(QStringLiteral("W7")), qPrintable(box.name));
+            for (const rf::StackWritten& written : {rf::hfssStackupOf(m, QStringLiteral("wired")), rf::emxProcessOf(m, QStringLiteral("wired"))}) {
+                QVERIFY2(written.ok(), qPrintable(written.problems.join(" | ")));
+                QVERIFY2(!written.text.contains(QStringLiteral("W7_")), qPrintable(written.text.left(400)));
+                QVERIFY2(written.notes.join(QLatin1Char(' ')).contains(QStringLiteral("The bond wire W7 is not in")),
+                         qPrintable(written.notes.join(" | ")));
+            }
+            // (Its pads, and a port on the first.)
+            for (const double x : {0.0, 800.0}) {
+                rf::Conductor pad;
+                pad.layer = metal;
+                pad.outline = QPolygonF(QRectF(x - 50, -50, 100, 100));
+                conductors << pad;
+            }
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_ports")) {
+                    rf::Node port = m.make(QStringLiteral("rf_internal_port"));
+                    port.label = QStringLiteral("P1");
+                    port.props.insert(QStringLiteral("to"), metal);
+                    port.props.insert(QStringLiteral("from"), QStringLiteral("ground"));
+                    n.children.push_back(port);
+                }
+            const rf::HfssExport hfss = rf::hfssExportOf(m, conductors, {}, QStringLiteral("wired"));
+            QVERIFY2(hfss.ok(), qPrintable(hfss.problems.join(" | ")));
+            QVERIFY(!hfss.script.contains(QStringLiteral("W7_")) && !hfss.control.contains(QStringLiteral("W7_")));
+            QVERIFY2(hfss.notes.join(QLatin1Char(' ')).contains(QStringLiteral("The bond wire W7 is not in")), qPrintable(hfss.notes.join(" | ")));
         }
     }
 

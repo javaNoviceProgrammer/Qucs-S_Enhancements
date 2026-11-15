@@ -410,16 +410,28 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("to_metal"), tr("To metal"), QString(), tr("The metal of its second pad")),
           expr(QStringLiteral("x1"), tr("To x"), QStringLiteral("m"), QStringLiteral("1[mm]")),
           expr(QStringLiteral("y1"), tr("To y"), QStringLiteral("m"), QStringLiteral("0")),
+          choice(QStringLiteral("profile"), tr("Profile"), {QStringLiteral("arc"), QStringLiteral("ball")},
+                 {tr("An arc (a parabola)"), tr("Up from a ball bond (JEDEC-like)")}, QStringLiteral("arc"),
+                 tr("A parabola from pad to pad, or straight up from the first pad, flat over it, and straight down to the "
+                    "second, as a ball-bonded wire's loop is")),
           expr(QStringLiteral("height"), tr("Loop height"), QStringLiteral("m"), QStringLiteral("150[um]"),
-               tr("Its arc's peak over its pads' chord: a parabola between them")),
+               tr("An arc's peak over its pads' chord; a ball bond's loop over its first pad")),
+          shownIf(expr(QStringLiteral("knee"), tr("Flat over the ball"), QString(), QStringLiteral("0.15"),
+                       tr("How much of the span the loop runs flat at its height before it falls to the second pad")),
+                  "profile=ball"),
           expr(QStringLiteral("diameter"), tr("Diameter"), QStringLiteral("m"), QStringLiteral("25[um]")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("4.1e7"), tr("Gold's; nought, perfect")),
-          expr(QStringLiteral("pieces"), tr("Pieces"), QString(), QStringLiteral("5"),
-               tr("The runs along its span, each at the height that keeps the arc's mean ln h over it"))},
+          expr(QStringLiteral("pieces"), tr("Pieces"), QString(), QStringLiteral("3"),
+               tr("The runs along its span, each at the height that keeps the profile's mean ln h over it; up to four, its "
+                  "inductance its profile's within 3 %")),
+          boolean(QStringLiteral("fit"), tr("Fitted to its profile"), true,
+                  tr("Its runs' heights over the chord scaled so that the staircase's inductance over the ground is the "
+                     "profile's own"))},
          {}, {}, false, true, QStringLiteral("wire"),
-         tr("A bond wire arched in the air between two pads, made of runs on metal layers of its own in air slabs over the "
-            "stack and vias between them and up from its pads (a staircase of its arc: its legs add some 9 % to the arc's "
-            "inductance). Solved full wave and quasi-static alike.")});
+         tr("A bond wire looped in the air between two pads, made of runs on metal layers of its own in air slabs over the "
+            "stack and vias between them and up from its pads: a staircase of its profile, its heights fitted so that its "
+            "inductance over the ground is the profile's. Solved full wave and quasi-static alike; the solve's alone, not "
+            "the board's layers.")});
     add({QStringLiteral("rf_shape"), tr("Shape"), QStringLiteral("shapes"), QStringLiteral("region"), none,
          {text(QStringLiteral("layer"), tr("On layer"), QString(),
                tr("A metal or a via of the stack, by name - or a dielectric or the substrate, where it is (a layer that "
@@ -1189,8 +1201,13 @@ QList<fem::Model::Parameter> Model::parameters() const
 
 Stack Model::stack() const
 {
+    return stackOf(stackNode(), parameters());
+}
+
+Stack Model::solveStack() const
+{
     // (Its bond wires' air slabs, metals and legs with it: rf25_bondwire.h.)
-    Stack s = stackOf(stackNode(), parameters());
+    Stack s = stack();
     QStringList unread;
     const QList<BondWire> wires = bondWiresOf(*this, &unread);
     s.problems += unread;
@@ -1496,8 +1513,10 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
 
 QStringList Model::problems() const
 {
+    // (The board's own layers are what a map or a port may name; the solve
+    //  stack's problems, its bond wires' among them, are the model's.)
     const Stack s = stack();
-    QStringList said = s.problems;
+    QStringList said = solveStack().problems;
     // The layout: a file, and a map that names layers of the stack.
     // (A model of its own shapes alone needs no file.)
     const Node* own = layout().child(QStringLiteral("rf_shapes"));

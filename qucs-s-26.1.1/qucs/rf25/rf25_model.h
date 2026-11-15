@@ -131,6 +131,9 @@ struct Layer {
     /// A metal that stands for a round wire (a bond wire's, rf25_bondwire.h):
     /// a strip 4a wide with no edges for its current to crowd to.
     bool roundWire = false;
+    /// A layer that is not the board's but stands in for a bond wire
+    /// (rf25_bondwire.h): that wire's name. Only Model::solveStack() has any.
+    QString standsFor;
     double z0 = 0, z1 = 0; ///< where it sits, m (z0 at the bottom; a ground's is 0)
     /// A metal solved as its two faces - a sheet at its bottom and one at
     /// its top, joined along its edges by its walls - rather than as one
@@ -212,8 +215,14 @@ public:
     Node& mesh();
     const Node& mesh() const;
 
-    /// The stack read out of the tree, in SI, with its problems.
+    /// The stack read out of the tree, in SI, with its problems: the board's
+    /// own layers, what the stack panel, its drawing and the exports show.
     Stack stack() const;
+    /// The stack a solve takes: stack() with its bond wires' stand-ins - air
+    /// slabs, metals and legs (rf25_bondwire.h, Layer::standsFor) - and what
+    /// keeps a wire from being read or placed among its problems. What the
+    /// layout's shapes, the mesh and every solve look their layers up in.
+    Stack solveStack() const;
     /// Everything wrong with the model as it stands: the stack's problems,
     /// a layout that names no file, a port that names no conductor of the
     /// stack. Empty when it is ready for the next step.

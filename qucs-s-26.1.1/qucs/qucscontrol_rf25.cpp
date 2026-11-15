@@ -703,7 +703,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         if (e->names.size() == 1) slowest = lineParameters(*e, 0, length).velocity;
         const std::shared_ptr<const Mesh> mesh = model->mesh();
         const bool line = e->perMetre.fromMiddle;
-        const QuasiStaticLimit limit = quasiStaticLimit(model->model().stack(), mesh ? *mesh : Mesh(), 1e-6, slowest, length,
+        const QuasiStaticLimit limit = quasiStaticLimit(model->model().solveStack(), mesh ? *mesh : Mesh(), 1e-6, slowest, length,
                                                         int(e->names.size()), line);
         QJsonObject said;
         said.insert(QStringLiteral("frequency"), limit.frequency);
@@ -2046,7 +2046,7 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
     if (asked > 0)
         for (int i = 1; i < wave->frequencies.size(); ++i)
             if (std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)) k = i;
-    const Stack stack = model->model().stack();
+    const Stack stack = model->model().solveStack();
     const QString others = args.value(QLatin1String("others")).toString().trimmed();
     if (!others.isEmpty() && others != QLatin1String("ended") && others != QLatin1String("open"))
         return errorResult(tr("'others' is \"ended\" (by their references, as a measurement's) or \"open\", not %1.").arg(others));
