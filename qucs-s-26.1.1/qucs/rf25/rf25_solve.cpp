@@ -737,9 +737,20 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
     QList<Deembedding> each(job.ports.size());
     QMap<QString, std::shared_ptr<Calibration>> feeds;
     bool asked = false;
+    // (In a box the ports stand at its walls, the wall their reference: no
+    //  feed of theirs is calibrated, nor their plane moved - said once.)
+    const bool inBox = layersOf(job.stack).walls;
+    bool boxSaid = false;
     for (int p = 0; p < job.ports.size(); ++p) {
         const FullWavePort& port = job.ports.at(p);
         if (!port.deembeds()) continue;
+        if (inBox) {
+            if (!boxSaid)
+                *notes << tr("In a box the ports stand at its walls, each wall its reference: their feeds are not calibrated, "
+                             "nor their planes moved.");
+            boxSaid = true;
+            continue;
+        }
         asked = true;
         each[p] = Deembedding{nullptr, port.shift, port.lineImpedance, port.lineEps};
         if (!port.wantsStrips()) continue;

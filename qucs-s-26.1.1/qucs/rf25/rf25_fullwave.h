@@ -367,6 +367,12 @@ struct FullWaveControl {
     /// names its returns is - a port from a metal then the same columns as
     /// one returning through a terminal of that metal under it.
     bool portPaths = true;
+    /// Tests: a box's split between its guide's modes summed as the
+    /// rectangle has them and the rest summed over the walls' images - the
+    /// modes whose |Im kr| is under this go to the rectangle's sum, 1/m;
+    /// nought, 25 over the box's smaller side, so that the rest's images
+    /// reach as far as one side (rf25_box.h).
+    double boxSplit = 0;
     /// Tests: false makes a compressed solve's dear static parts at every
     /// frequency as it goes, none kept from one to the next (as before
     /// they were kept): the same to the last digit either way.

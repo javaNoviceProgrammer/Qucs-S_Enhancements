@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace qucs_s::rf25 {
 
@@ -34,11 +35,32 @@ Layers withLoss(const Layers& layers, double t)
     return out;
 }
 
-/// The kernel's spectral function of \a layers at \a kr.
+/// What a pole is looked for in: the kernel itself, or one of the two
+/// lines whose poles it has - the TE line's voltage (the vector kernel's, j w
+/// times it) or the TM line's (k_r^2 K_phi/(j w) + j w G_A). The scalar
+/// kernel has both lines' poles, and where the fill is nearly even a TE and a
+/// TM pole fall so close that their residues nearly cancel and f has a zero
+/// between them: 1/f crosses nought and jumps through infinity in no more than
+/// a sample, and neither is seen (the review of 3c834794). Each line alone has
+/// no such pair.
+enum class Line { Kernel, TE, TM };
+
+/// The function \a line of \a layers' kernel at \a kr.
 struct Spectral {
     WaveGreen green;
     BoxKernel kernel;
-    Complex operator()(Complex kr) const { return kernel == BoxKernel::Scalar ? green.scalarSpectral(kr) : green.vectorSpectral(kr); }
+    Line line = Line::Kernel;
+    Complex operator()(Complex kr) const
+    {
+        const Complex jw(0, 2 * M_PI * green.frequency());
+        switch (line) {
+        case Line::TE: return green.vectorSpectral(kr);
+        // (V_e over j: real where the lossless kernels are, as G_A is.)
+        case Line::TM: return (kr * kr * green.scalarSpectral(kr) / jw + jw * green.vectorSpectral(kr)) / kJ;
+        case Line::Kernel: break;
+        }
+        return kernel == BoxKernel::Scalar ? green.scalarSpectral(kr) : green.vectorSpectral(kr);
+    }
 };
 
 /// A root of 1/f near \a start by the secant method, or NaN.
@@ -61,35 +83,56 @@ Complex rootNear(const Spectral& f, Complex start)
 }
 
 /// The lossless guide's poles of \a f along kr = s t, t from nought to
-/// \a span (s 1 the real axis, -j the imaginary one), where f is real.
+/// \a span (s 1 the real axis, -j the imaginary one), where f is real:
+/// where 1/f passes through nought between samples - and, where it dips
+/// toward nought between three with no sign change, two poles closer than a
+/// sample (a TE and a TM mode of a nearly even fill), that stretch sampled
+/// finely and searched again (the review of 3c834794).
 QList<Complex> polesAlong(const Spectral& f, Complex s, double span)
 {
     QList<Complex> out;
     const int samples = 4000;
     const auto h = [&f, s](double t) { return (1.0 / f(s * t)).real(); };
-    double t0 = span / samples * 0.5, h0 = h(t0);
-    for (int i = 1; i <= samples; ++i) {
-        const double t1 = span * (i + 0.5) / samples, h1 = h(t1);
-        if (std::isfinite(h0) && std::isfinite(h1) && (h0 > 0) != (h1 > 0)) {
-            double lo = t0, hi = t1, hlo = h0;
-            for (int k = 0; k < 80; ++k) {
-                const double mid = 0.5 * (lo + hi), hm = h(mid);
-                if ((hm > 0) == (hlo > 0)) {
-                    lo = mid;
-                    hlo = hm;
-                } else {
-                    hi = mid;
-                }
+    // (Each sign change between t0 and t1 bisected; a pole, where 1/f passes
+    //  through nought - not a zero of f, where it jumps through infinity -
+    //  told by f's size there.)
+    const auto between = [&](double t0, double h0, double t1, double h1) {
+        if (!std::isfinite(h0) || !std::isfinite(h1) || (h0 > 0) == (h1 > 0)) return;
+        double lo = t0, hi = t1, hlo = h0;
+        for (int k = 0; k < 80; ++k) {
+            const double mid = 0.5 * (lo + hi), hm = h(mid);
+            if ((hm > 0) == (hlo > 0)) {
+                lo = mid;
+                hlo = hm;
+            } else {
+                hi = mid;
             }
-            // A pole, where 1/f passes through nought; not a zero of f,
-            // where it jumps through infinity - told by f's size there.
-            const double mid = 0.5 * (lo + hi);
-            const double there = std::abs(f(s * mid)), beside = std::max(std::abs(f(s * t0)), std::abs(f(s * t1)));
-            if (there > 1e3 * beside) out << s * mid;
         }
-        t0 = t1;
-        h0 = h1;
+        const double mid = 0.5 * (lo + hi);
+        const double there = std::abs(f(s * mid)), beside = std::max(std::abs(f(s * t0)), std::abs(f(s * t1)));
+        if (there > 1e3 * beside) out << s * mid;
+    };
+    std::vector<double> t(samples + 1), v(samples + 1);
+    for (int i = 0; i <= samples; ++i) {
+        t[i] = span * (i + 0.5) / (samples + 1);
+        v[i] = h(t[i]);
     }
+    for (int i = 0; i < samples; ++i) between(t[i], v[i], t[i + 1], v[i + 1]);
+    for (int i = 1; i < samples; ++i) {
+        const bool dips = std::abs(v[i]) < std::abs(v[i - 1]) && std::abs(v[i]) < std::abs(v[i + 1]);
+        const bool crossed = (v[i - 1] > 0) != (v[i] > 0) || (v[i] > 0) != (v[i + 1] > 0);
+        if (!dips || crossed) continue;
+        const int fine = 400;
+        double t0 = t[i - 1], h0 = v[i - 1];
+        for (int k = 1; k <= fine; ++k) {
+            const double t1 = t[i - 1] + (t[i + 1] - t[i - 1]) * k / fine, h1 = h(t1);
+            between(t0, h0, t1, h1);
+            t0 = t1;
+            h0 = h1;
+        }
+    }
+    std::sort(out.begin(), out.end(), [](Complex p, Complex q) { return std::abs(p) < std::abs(q); });
+    out.erase(std::unique(out.begin(), out.end(), [](Complex p, Complex q) { return std::abs(p - q) <= 1e-9 * std::abs(p); }), out.end());
     return out;
 }
 
@@ -104,38 +147,51 @@ QList<GuideMode> guideModes(const Layers& layers, double zField, double zSource,
     double kMax = 0;
     for (const Layers::Slab& s : layers.slabs)
         kMax = std::max(kMax, w * std::sqrt(kMu0 * kEps0 * std::max(s.epsr, s.epsz) * std::max(1.0, s.mur)));
-    const Spectral lossless{WaveGreen(withLoss(layers, 0), zField, zSource, frequency, 1e-3), kernel};
-    QList<Complex> starts = polesAlong(lossless, Complex(1, 0), 1.2 * kMax);
-    if (slowerThan > 0) starts += polesAlong(lossless, Complex(0, -1), slowerThan);
     bool lossy = false;
     for (const Layers::Slab& s : layers.slabs) lossy = lossy || s.tand > 0 || s.sigma > 0 || s.mtand > 0;
-    for (Complex z : std::as_const(starts)) {
-        // Followed as the losses are turned up, a tenth at a time.
-        bool lost = false;
-        if (lossy)
-            for (int step = 1; step <= 10 && !lost; ++step) {
-                const Spectral f{WaveGreen(withLoss(layers, step / 10.0), zField, zSource, frequency, 1e-3), kernel};
-                const Complex next = rootNear(f, z);
-                if (!std::isfinite(next.real())) lost = true;
-                else z = next;
+    const Spectral kernelOf{WaveGreen(layers, zField, zSource, frequency, 1e-3), kernel, Line::Kernel};
+    const QList<Line> lines = kernel == BoxKernel::Scalar ? QList<Line>{Line::TM, Line::TE} : QList<Line>{Line::TE};
+    for (const Line line : lines) {
+        const Spectral lossless{WaveGreen(withLoss(layers, 0), zField, zSource, frequency, 1e-3), kernel, line};
+        QList<Complex> starts = polesAlong(lossless, Complex(1, 0), 1.2 * kMax);
+        if (slowerThan > 0) starts += polesAlong(lossless, Complex(0, -1), slowerThan);
+        for (Complex z : std::as_const(starts)) {
+            // Followed as the losses are turned up, a tenth at a time, in its
+            // own line's function.
+            bool lost = false;
+            if (lossy)
+                for (int step = 1; step <= 10 && !lost; ++step) {
+                    const Spectral f{WaveGreen(withLoss(layers, step / 10.0), zField, zSource, frequency, 1e-3), kernel, line};
+                    const Complex next = rootNear(f, z);
+                    if (!std::isfinite(next.real())) lost = true;
+                    else z = next;
+                }
+            if (lost) {
+                if (problems != nullptr)
+                    *problems << tr("A mode of the guide between the ground and the lid near kr %1 /m was lost as its losses were "
+                                    "turned up.").arg(std::abs(z), 0, 'g', 4);
+                continue;
             }
-        if (lost) {
-            if (problems != nullptr)
-                *problems << tr("A mode of the guide between the ground and the lid near kr %1 /m was lost as its losses were "
-                                "turned up.").arg(std::abs(z), 0, 'g', 4);
-            continue;
+            if (!lossy) {
+                const Spectral f{WaveGreen(layers, zField, zSource, frequency, 1e-3), kernel, line};
+                const Complex polished = rootNear(f, z);
+                if (std::isfinite(polished.real())) z = Complex(polished.real(), std::min(0.0, polished.imag()));
+            }
+            // In the lower half-plane, as the Sommerfeld path passes above it.
+            if (z.imag() > 0) z = -z;
+            if (std::abs(z.imag()) >= slowerThan && std::abs(z.real()) < 1e-9 * std::abs(z)) continue;   // (fast enough: the images')
+            // The kernel's residue there, f's two sides about the pole: its
+            // own, whatever its neighbour's (a zero of f beside it leaves 1/f's
+            // slope no measure of it).
+            // (A TE and a TM pole of an even fill are one pole of the scalar
+            //  kernel, its residue both lines': once.)
+            bool known = false;
+            for (const GuideMode& m : std::as_const(out)) known = known || std::abs(m.kr - z) <= 1e-9 * std::abs(z);
+            if (known) continue;
+            const double delta = 1e-7 * std::abs(z);
+            const Complex residue = 0.5 * delta * (kernelOf(z + delta) - kernelOf(z - delta));
+            out << GuideMode{z, residue};
         }
-        const Spectral f{WaveGreen(layers, zField, zSource, frequency, 1e-3), kernel};
-        if (!lossy) {
-            const Complex polished = rootNear(f, z);
-            if (std::isfinite(polished.real())) z = Complex(polished.real(), std::min(0.0, polished.imag()));
-        }
-        // In the lower half-plane, as the Sommerfeld path passes above it.
-        if (z.imag() > 0) z = -z;
-        const double delta = 1e-6 * std::abs(z);
-        const Complex slope = (1.0 / f(z + delta) - 1.0 / f(z - delta)) / (2 * delta);
-        if (std::abs(z.imag()) >= slowerThan && std::abs(z.real()) < 1e-9 * std::abs(z)) continue;   // (fast enough: the images')
-        out << GuideMode{z, 1.0 / slope};
     }
     return out;
 }

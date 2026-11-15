@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "rf25_fullwave.h"
+#include "rf25_box.h"
 #include "rf25_edge.h"
 
 #include "rf25_dense.h"
@@ -998,6 +999,11 @@ struct Context {
     double groundSigma = 0;          ///< S/m: a metal ground's
     double groundImpedance = -1;     ///< Ohm per square: an impedance ground's; below nought, a metal's
     double rhoMax = 0;
+    /// A box (Layers::walls): its guide's modes slower than boxSplit (1/m)
+    /// in the rectangle's own sum, the rest over the walls' images out to
+    /// boxReach (m) - its runs along x or y, its ports at its walls.
+    bool boxed = false;
+    double boxSplit = 0, boxReach = 0;
     int nr = 0, nc = 0, np = 0, nh = 0;
     int planar = 0;                      ///< the runs in the plane, which come first
 };
@@ -1297,6 +1303,9 @@ struct Kernels {
     QList<WaveGreen> greens;
     QList<int> pairOf;
     QList<ViaGreen> viaGreens;
+    /// A box's guide's slow modes, each pair of heights' (as greens): the
+    /// scalar kernel's and the vector's.
+    QList<QList<GuideMode>> boxScalar, boxVector;
     QStringList problems;
 
     /// Made on as many as \a threads threads, a distance of a Green's
@@ -1323,6 +1332,15 @@ struct Kernels {
     /// (rectanglePotential(), \a pij and \a pji) or made here.
     Complex potential(int i, int j, double pij, double pji) const;
     Complex potential(int i, int j) const;
+    /// What a box adds to P(i, j): the walls' images of the layered kernel
+    /// less its slow modes, and those modes as the rectangle has them less
+    /// their free parts - the two ways round averaged.
+    Complex boxPotential(int i, int j) const;
+    /// What a box adds to runs a and b's kernel, H, as inductance() is (its
+    /// cosine times it): of runs along x the walls' images of A_x (+1
+    /// across x's walls, -1 across y's) and the rectangle's cos-sin sum, of
+    /// runs along y A_y's, the other way about; nothing between the two.
+    Complex boxInductance(int a, int b) const;
     /// Via \a v's potential at cell \a cell of a unit current up it.
     Complex viaPotential(int v, int cell) const { return potentialOf(c.vias.at(v), cell); }
     /// G_zz: via \a i's voltage of a unit current on via \a j.
@@ -1356,6 +1374,15 @@ Kernels::Kernels(const Context& context, double frequency, int threads)
             sharedGreens += g.prepare(threads);
             pairOf[i * nh + j] = pairOf[j * nh + i] = int(greens.size());
             greens << std::move(g);
+            if (c.boxed) {
+                QStringList lost;
+                boxScalar << guideModes(c.layers, c.heights.at(i), c.heights.at(j), f, BoxKernel::Scalar, c.boxSplit, &lost);
+                boxVector << guideModes(c.layers, c.heights.at(i), c.heights.at(j), f, BoxKernel::Vector, c.boxSplit, &lost);
+                if (!lost.isEmpty()) {
+                    problems << lost;
+                    return;
+                }
+            }
         }
     for (const ViaGreen::Span& s : c.spans) {
         ViaGreen v(c.layers, s, c.spans, c.heights, f, c.rhoMax);
@@ -1428,7 +1455,78 @@ Complex Kernels::potential(int i, int j, double pij, double pji) const
         return v + atCentres;
     };
     const Complex base = i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
-    return c.corrected ? base + c.dielectric.at(i, j) : base;
+    const Complex boxed = c.boxed ? base + boxPotential(i, j) : base;
+    return c.corrected ? boxed + c.dielectric.at(i, j) : boxed;
+}
+
+Complex Kernels::boxPotential(int i, int j) const
+{
+    const WaveGreen& g = green(c.hNode.at(i), c.hNode.at(j));
+    const QList<GuideMode>& modes = boxScalar.at(pairOf.at(c.hNode.at(i) * c.nh + c.hNode.at(j)));
+    const WaveGreen::Term t = g.scalarTerm();
+    const auto oneWay = [&](int to, int from) {
+        const QPointF at = c.centre.at(to);
+        Complex sum(0, 0);
+        for (const BoxImage& im : boxImagesOf(c.layers.box, c.rect.at(from), at, c.boxReach)) {
+            const double rho = std::hypot(at.x() - im.rect.center().x(), at.y() - im.rect.center().y());
+            const double scale = std::hypot(rho, g.reach());
+            Complex v = t.coefficient / (2 * M_PI) * (rectanglePotential(im.rect, at, t.dz) + retardation(t.k, std::hypot(rho, t.dz)));
+            const double longest = std::max(im.rect.width(), im.rect.height());
+            v += longest * longest < kCentreBound * scale * scale ? g.scalarRemainder(rho) : remainderOver(g, im.rect, at, scale);
+            for (const GuideMode& m : modes) v -= modeKernel(m, rho);
+            sum += im.sign * v;
+        }
+        for (const GuideMode& m : modes)
+            sum += 2.0 * m.kr * m.residue * rectangleGreen(m.kr, c.layers.box, at, c.centre.at(from), false, false);
+        return sum;
+    };
+    return i == j ? oneWay(i, i) : 0.5 * (oneWay(i, j) + oneWay(j, i));
+}
+
+Complex Kernels::boxInductance(int a, int b) const
+{
+    const bool alongX = std::abs(c.dirX.at(a)) > 0.5;
+    if (alongX != (std::abs(c.dirX.at(b)) > 0.5)) return Complex(0, 0);
+    const double signX = alongX ? 1.0 : -1.0, signY = alongX ? -1.0 : 1.0;
+    const WaveGreen& g = green(c.hRun.at(a), c.hRun.at(b));
+    const QList<GuideMode>& modes = boxVector.at(pairOf.at(c.hRun.at(a) * c.nh + c.hRun.at(b)));
+    const WaveGreen::Term d = g.vectorTerm(), gi = g.vectorImage(), lid = g.vectorLid();
+    const double top = c.layers.height();
+    const auto oneWay = [&](int to, int from) {
+        const Filament& source = c.runs.at(from);
+        const QRectF rect = QRectF(source.from, source.to).normalized();
+        const QPointF at(c.midX.at(to), c.midY.at(to)), mid(c.midX.at(from), c.midY.at(from));
+        const double lengths = c.runs.at(to).length() * source.length();
+        Complex sum(0, 0);
+        for (const BoxImage& im : boxImagesOf(c.layers.box, rect, at, c.boxReach, signX, signY)) {
+            // The image run: its ends mapped as its rectangle is - its sign
+            // the mirrors' (a current across a wall it runs into the same,
+            // along one the opposite); its direction no matter, an aligned
+            // partial inductance taking none (the cosine has it).
+            const auto mapped = [&](const QPointF& p) {
+                const double x = im.mirroredX ? im.rect.right() - (p.x() - rect.left()) : p.x() + (im.rect.left() - rect.left());
+                const double y = im.mirroredY ? im.rect.bottom() - (p.y() - rect.top()) : p.y() + (im.rect.top() - rect.top());
+                return QPointF(x, y);
+            };
+            Filament image = source;
+            image.from = mapped(source.from);
+            image.to = mapped(source.to);
+            Filament below = image, above = image;
+            below.z0 = below.z1 = -image.z0;
+            above.z0 = above.z1 = 2 * top - image.z0;
+            Complex l = 2.0 * d.coefficient / kMu0 * alignedInductance(c.runs.at(to), image)
+                        + 2.0 * gi.coefficient / kMu0 * alignedInductance(c.runs.at(to), below);
+            if (lid.coefficient != 0.0) l += 2.0 * lid.coefficient / kMu0 * alignedInductance(c.runs.at(to), above);
+            const double rho = std::hypot(at.x() - im.rect.center().x(), at.y() - im.rect.center().y());
+            Complex rest = smooth(c.hRun.at(to), c.hRun.at(from), rho);
+            for (const GuideMode& m : modes) rest -= modeKernel(m, rho);
+            sum += im.sign * (l + lengths * rest);
+        }
+        for (const GuideMode& m : modes)
+            sum += lengths * 2.0 * m.kr * m.residue * rectangleGreen(m.kr, c.layers.box, at, mid, alongX, !alongX);
+        return sum;
+    };
+    return a == b ? oneWay(a, a) : 0.5 * (oneWay(a, b) + oneWay(b, a));
 }
 
 Complex Kernels::potential(int i, int j) const
@@ -1808,6 +1906,7 @@ void systemColumn(const Context& c, const Kernels& k, MatrixC& m, int b)
         for (int a = 0; a <= b; ++a) {
             const double dot = k.cosine(a, b);
             m(a, b) = std::abs(dot) < 1e-9 ? Complex(0, 0) : k.jw * (dot * k.inductance(a, b, c.lDirect(a, b), c.lImage(a, b)));
+            if (c.boxed && std::abs(dot) >= 1e-9) m(a, b) += k.jw * (dot * k.boxInductance(a, b));
         }
         return;
     }
@@ -2930,12 +3029,31 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.problems << c.layers.problems;
         return out;
     }
-    // A box: its quasi-static solve has its walls; the full wave's kernels
-    // are the open plane's, and do not stand for it.
+    // A box (rf25_box.h): its guide's slow modes as the rectangle has them,
+    // the rest over the walls' images, out to one side of it. Its ports at
+    // its walls, the wall their reference, with no path up from the ground;
+    // no layer that ends in it, no via, its runs along x or y - each said.
     if (c.layers.walls) {
-        out.problems << tr("The full wave of a box is not solved yet: its quasi-static solve is. Take the side walls away for the "
-                           "full wave of the lid alone.");
-        return out;
+        c.boxed = true;
+        const QRectF& box = c.layers.box;
+        c.boxSplit = control != nullptr && control->boxSplit > 0 ? control->boxSplit : 25 / std::min(box.width(), box.height());
+        c.boxReach = 25 / c.boxSplit;
+        if (control != nullptr && !control->extents.isEmpty()) {
+            out.problems << tr("A layer that ends at its shapes is not solved in a box: its correction knows no walls.");
+            return out;
+        }
+        const double hair = 1e-6 * std::max(box.width(), box.height());
+        for (const FullWavePort& port : ports) {
+            const QPointF at = port.at * micrometre;
+            const double off = std::min({std::abs(at.x() - box.left()), std::abs(at.x() - box.right()), std::abs(at.y() - box.top()),
+                                         std::abs(at.y() - box.bottom())});
+            if (port.internal || port.terminals || off > hair) {
+                out.problems << tr("In a box a port stands at a wall: an edge port on the face of a conductor that meets it, the wall "
+                                   "its reference (%1 does not).")
+                                    .arg(port.name.isEmpty() ? tr("a port") : port.name);
+                return out;
+            }
+        }
     }
     // A layer that ends (rf25_dielectric.h): the background's Green's
     // functions - each such layer as it is beyond its shapes - and its
@@ -3186,8 +3304,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // compressed one.
     const int most = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : denseLimit();
     const FullWaveControl::Matrix asked = control != nullptr ? control->matrix : FullWaveControl::Matrix::Automatic;
-    const bool compress = asked == FullWaveControl::Matrix::Compressed
-                          || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most);
+    // (A box dense: its kernel is no function of distance alone.)
+    const bool compress = !c.boxed
+                          && (asked == FullWaveControl::Matrix::Compressed || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most));
     if (!compress && nr + nc > most) {
         out.tooLarge = true;
         out.problems << tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
@@ -3869,7 +3988,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // span one more of the vias' where it is none of theirs. (None for a
     // port that names its returns, or a coplanar port; and none at all
     // where a test asks for none.)
-    for (int k = 0; k < c.np && (control == nullptr || control->portPaths); ++k) {
+    for (int k = 0; k < c.np && !c.boxed && (control == nullptr || control->portPaths); ++k) {
         QList<QPair<int, double>> from;
         double fromWeight = 0, zFrom = 0;
         for (int i = 0; i < nc; ++i)
@@ -3986,6 +4105,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     // As far as any two points of the layout are apart, and a little more.
     c.rhoMax = 1.05 * std::hypot(extent.width(), extent.height()) + 1e-9;
+    // (A box's images out to its reach beyond the box: its tables too, so
+    //  that a far image is read, not integrated.)
+    if (c.boxed) c.rhoMax = std::max(c.rhoMax, 1.05 * (std::hypot(c.layers.box.width(), c.layers.box.height()) + c.boxReach));
 
     // What does not change with the frequency: each run's direction and
     // middle, and its image in the ground; for a dense solve, the runs'
@@ -4008,6 +4130,16 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         c.runs.at(a).direction(&c.dirX[a], &c.dirY[a], nullptr);
         c.runs.at(a).middle(&c.midX[a], &c.midY[a], nullptr);
         c.mirrored[a].z0 = c.mirrored[a].z1 = -c.runs.at(a).z0;
+    }
+    if (c.boxed) {
+        bool oblique = false;
+        for (int a = 0; a < c.planar; ++a) oblique = oblique || (std::abs(c.dirX.at(a)) > 1e-9 && std::abs(c.dirY.at(a)) > 1e-9);
+        if (!c.vias.isEmpty() || oblique) {
+            out.problems << (!c.vias.isEmpty() ? tr("A via in a box is not solved yet: its kernels' walls are a vertical current's.")
+                                               : tr("A box's runs go along x or y: a conductor's slanting outline meshed into runs at an "
+                                                    "angle is not solved in one."));
+            return out;
+        }
     }
     if (c.layers.groundAbove) {
         c.lidMirrored = c.runs;
@@ -4345,6 +4477,26 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // addPortPaths().)
     const double top = *std::max_element(frequencies.begin(), frequencies.end());
     out.secondWave = secondSurfaceWave(givenStack, 2 * top);
+    // A box's resonances up to the study's top, and a frequency near one -
+    // within a hundredth - flagged: there, without loss, the answer is the
+    // box's mode.
+    if (c.boxed) {
+        const QList<BoxResonance> modes = boxResonances(c.layers, top);
+        QStringList said;
+        for (const BoxResonance& r : modes)
+            said << tr("%1 GHz (%2 %3,%4)").arg(r.frequency / 1e9, 0, 'g', 5).arg(r.tm ? QStringLiteral("TM") : QStringLiteral("TE")).arg(r.m).arg(r.n);
+        out.lines << (said.isEmpty() ? tr("The box resonates at no frequency up to the study's top.")
+                                     : tr("The box resonates, up to the study's top, at %1.").arg(said.join(QStringLiteral(", "))));
+        for (const double f : frequencies)
+            for (const BoxResonance& r : modes)
+                if (std::abs(f / r.frequency - 1) < 0.01) {
+                    const QString warning = tr("%1 GHz is within a hundredth of the box's resonance at %2 GHz: there the answer is "
+                                               "the box's mode, as sharp as its losses let it be.")
+                                                .arg(f / 1e9, 0, 'g', 5).arg(r.frequency / 1e9, 0, 'g', 5);
+                    out.lines << warning;
+                    out.warnings << warning;
+                }
+    }
     if (out.secondWave > 0 && top >= out.secondWave && c.layers.groundAbove)
         out.lines << tr("From %1 GHz the guide between the ground and the lid carries its TE1 beside the wave of every "
                         "frequency: a line under the lid gives more of what it carries to the guide past it.")
