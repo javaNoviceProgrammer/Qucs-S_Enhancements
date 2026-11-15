@@ -1051,6 +1051,62 @@ private slots:
         const QList<rf::Conductor> longer{strip(0, 0, 1000, 100)};
         const rf::Extraction beyond = rf::extract(meshed(longer, 25), longer, small);
         QVERIFY2(!beyond.ok() && says(beyond.problems, "reaches beyond the box"), qPrintable(beyond.problems.join(" | ")));
+        // Flush with a wall: shorted to it, refused (the review of a7684188:
+        // QRectF::contains() let a cell on the wall through).
+        small.layers.last().box = QRectF(QPointF(0, -100e-6), QPointF(2e-3, 200e-6));
+        const rf::Extraction flush = rf::extract(meshed(longer, 25), longer, small);
+        QVERIFY2(!flush.ok() && says(flush.problems, "touches the box's wall"), qPrintable(flush.problems.join(" | ")));
+        // How far the images go: the stack's own static decay, kappa_1 - the
+        // review's values, by its own shooting (pi/H units): one fill 1.000;
+        // 100 µm of 10 under 500 µm of air 1.173; a suspended line, 1 mm of
+        // air, 0.25 mm of 10, 1 mm of air, 0.566; 20 µm of air, 160 µm of
+        // 100, 20 µm of air, 0.158 - where eight heights left 2 % out.
+        const auto decay = [](const QList<QPair<double, double>>& each) {
+            rf::Layers l;
+            l.groundBelow = l.groundAbove = true;
+            double z = 0;
+            for (const auto& [er, t] : each) {
+                rf::Layers::Slab s;
+                s.z0 = z;
+                s.z1 = z + t;
+                s.epsr = er;
+                l.slabs << s;
+                z = s.z1;
+            }
+            return rf::staticDecay(l) * z / M_PI;
+        };
+        for (const auto& [each, want] : {std::pair{QList<QPair<double, double>>{{4, 200e-6}}, 1.000},
+                                         std::pair{QList<QPair<double, double>>{{10, 100e-6}, {1, 500e-6}}, 1.173},
+                                         std::pair{QList<QPair<double, double>>{{1, 1e-3}, {10, 0.25e-3}, {1, 1e-3}}, 0.566},
+                                         std::pair{QList<QPair<double, double>>{{1, 20e-6}, {100, 160e-6}, {1, 20e-6}}, 0.158}}) {
+            const double got = decay(each);
+            QVERIFY2(std::abs(got - want) < 6e-4, qPrintable(QStringLiteral("%1 pi/H against %2").arg(got).arg(want)));
+        }
+        // And the solve takes it: a strip on 160 µm of 100 between 20 µm of air
+        // each side reaches 25 / kappa_1, five times eight heights.
+        {
+            rf::Stack spread = layered({{1, 20e-6}, {100, 80e-6}});
+            rf::Layer upper;
+            upper.kind = rf::Layer::Dielectric;
+            upper.name = QStringLiteral("UP");
+            upper.tag = QStringLiteral("up");
+            upper.thickness = 80e-6;
+            upper.epsr = 100;
+            rf::Layer lid;
+            lid.kind = rf::Layer::Cover;
+            lid.name = QStringLiteral("LID");
+            lid.tag = QStringLiteral("lid");
+            lid.variant = QStringLiteral("perfect");
+            lid.thickness = 20e-6;
+            lid.walls = true;
+            lid.box = QRectF(QPointF(-1e-3, -1e-3), QPointF(2e-3, 1e-3));
+            spread.layers << upper << lid;
+            const QList<rf::Conductor> stub{strip(0, 0, 200, 50)};
+            const rf::Extraction s = rf::extract(meshed(stub, 25), stub, spread);
+            const double reach = 25 / rf::staticDecay(rf::layersOf(spread));
+            QVERIFY2(s.ok() && reach > 30 * 200e-6 && s.lines.join(QLatin1Char(' ')).contains(QStringLiteral("out to %1 ").arg(reach * 1e6, 0, 'g', 4)),
+                     qPrintable(s.lines.join(" | ") + s.problems.join(" | ")));
+        }
         // A layer that ends, in a box: refused. Walls with no ground: said.
         small.layers.last().box = QRectF(QPointF(-1e-3, -1e-3), QPointF(2e-3, 1e-3));
         rf::ExtractControl ends;

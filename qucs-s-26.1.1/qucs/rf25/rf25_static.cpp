@@ -671,18 +671,29 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         return out;
     }
     // A box (the lid's side walls): its images out to where, between the
-    // ground and the lid, a charge's potential has died as exp(-pi rho/H) to
-    // a part in 1e11 - eight heights. Every cell inside it; no layer that ends
-    // in it (its correction knows no walls), said.
+    // ground and the lid, a charge's potential has died as K0(kappa_1 rho) to
+    // a part in 1e11 - 25 / kappa_1, kappa_1 the stack's own (staticDecay()):
+    // pi/H for one fill, a fifth of that with a dense layer between thin
+    // ones, where eight heights left 2 % out (the review of a7684188). Every
+    // cell inside it, none touching a wall - shorted to it -; no layer that
+    // ends in it (its correction knows no walls), said.
     double boxReach = 0;
     if (stackLayers.walls) {
-        boxReach = 8 * stackLayers.height();
+        boxReach = 25 / staticDecay(stackLayers);
+        const double hair = 1e-9 * std::max(stackLayers.box.width(), stackLayers.box.height());
+        const QRectF inside = stackLayers.box.adjusted(hair, hair, -hair, -hair);
         for (const MeshCell& c : mesh.cells)
             if (!stackLayers.box.contains(scaled(c.outline.boundingRect(), micrometre))) {
                 out.problems << tr("A conductor reaches beyond the box: its side walls stand round %1 to %2 µm in x and %3 to %4 µm "
                                    "in y.")
                                     .arg(stackLayers.box.left() * 1e6, 0, 'g', 6).arg(stackLayers.box.right() * 1e6, 0, 'g', 6)
                                     .arg(stackLayers.box.top() * 1e6, 0, 'g', 6).arg(stackLayers.box.bottom() * 1e6, 0, 'g', 6);
+                return out;
+            }
+        for (const MeshCell& c : mesh.cells)
+            if (!inside.contains(scaled(c.outline.boundingRect(), micrometre))) {
+                out.problems << tr("A conductor touches the box's wall: it is shorted to it, and has no charge of its own to solve "
+                                   "for - keep it off the walls.");
                 return out;
             }
         if (control != nullptr && !control->extents.isEmpty()) {

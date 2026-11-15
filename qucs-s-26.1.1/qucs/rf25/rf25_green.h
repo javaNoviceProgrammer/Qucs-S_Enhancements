@@ -141,6 +141,14 @@ struct BoxImage {
 QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF& at, double reach, double signX = -1,
                             double signY = -1);
 
+/// How fast a static potential dies sideways between \a layers' ground and
+/// lid: kappa_1 (1/m) of K0(kappa_1 rho), the lowest root of the static
+/// transverse resonance - Z'' = -kappa^2 (eps_t/eps_z) Z in each slab, Z and
+/// eps_z Z' continuous, Z nought at both plates. pi/H for one fill; less with
+/// a dense layer between thin ones at the plates, which spreads it sideways.
+/// Nought without both plates.
+double staticDecay(const Layers& layers);
+
 /// \a stack read as dielectric slabs: its metals and vias left out, its
 /// ground noted, its dielectrics and substrate kept in order. A stack with
 /// nothing to stand on (no dielectric at all) says so.
