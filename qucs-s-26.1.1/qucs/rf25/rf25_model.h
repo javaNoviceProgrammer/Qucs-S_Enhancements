@@ -104,6 +104,9 @@ struct Layer {
     /// model through epsr and tand at \a dispersionAt (djordjevicSarkar()).
     QString dispersion;
     double dispersionAt = 1e9;   ///< Hz: where epsr and tand are given
+    /// A dielectric's or the substrate's relative permeability and magnetic
+    /// loss tangent: a ferrite's, a magnetic film's. 1 and 0: not magnetic.
+    double mur = 1, mtand = 0;
     QString from, to;      ///< a via's metals, by name
     /// A ground's or a cover's own kind: "perfect", "metal", "impedance" or
     /// "open" for a ground, "open" or "perfect" (a metal lid) for a cover.
@@ -143,6 +146,8 @@ struct Stack {
     bool ok() const { return problems.isEmpty(); }
     /// Whether any of its dielectrics is dispersive (Layer::dispersion).
     bool dispersive() const;
+    /// Whether any of its dielectrics is magnetic (Layer::mur not 1).
+    bool magnetic() const;
     /// The same with each dispersive dielectric's epsr and tand as they are
     /// at \a frequency (Hz), and dispersive no more: what a solve of one
     /// frequency, the quasi-static, takes.

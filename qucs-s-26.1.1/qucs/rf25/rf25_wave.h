@@ -226,6 +226,7 @@ private:
     double a_zField = 0, a_zSource = 0;
     int a_fld = -1, a_src = -1;
     QList<Complex> a_eps;            ///< each slab's, F/m
+    QList<Complex> a_mu;             ///< each slab's permeability, H/m (mu0 off a magnetic slab)
     Complex a_epsAbove, a_epsBelow;  ///< the half-spaces'
     double a_kMax = 0;               ///< 1/m, the largest Re k of the stack
     double a_decay = 0;              ///< 1/m, beyond which the remainder is nothing
@@ -362,11 +363,12 @@ private:
     void extracted(Complex kr, Complex* cut) const;
     void integral(double rho, double ellipse, Complex* out, SharedPath* shared = nullptr) const;
     Complex fromTable(int component, double rho) const;
-    Complex slabK2(int slab) const;   ///< w^2 mu0 eps of a slab
+    Complex slabK2(int slab) const;   ///< w^2 mu eps of a slab
 
     Layers a_layers;
     double a_frequency = 0, a_omega = 0;
     QList<Complex> a_eps;            ///< each slab's, F/m
+    QList<Complex> a_mu;             ///< each slab's permeability, H/m
     Complex a_epsAbove, a_epsBelow;
     double a_kMax = 0, a_decay = 0, a_reach = 0, a_rhoMax = 0;
     QList<Segment> a_own;            ///< this via's parts, a slab each

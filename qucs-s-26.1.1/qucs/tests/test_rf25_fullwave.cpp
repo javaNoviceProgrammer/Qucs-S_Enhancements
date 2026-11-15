@@ -808,7 +808,9 @@ private slots:
         control.extents << rf::Extent{QStringLiteral("SUB"), {QPolygonF(QRectF(-300, -300, 600, 700))}, 1.0};
         const rf::FullWave w = rf::fullWaveOf(mesh, conductors, stack, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(w.ok(), qPrintable(why(w)));
-        QVERIFY2(w.lines.join(' ').contains(QStringLiteral("SUB ends at its shapes, and is dispersive")), qPrintable(w.lines.join(" | ")));
+        QVERIFY2(w.lines.join(' ').contains(QStringLiteral("SUB ends at its shapes, and is dispersive")) &&
+                     w.lines.join(' ').contains(QStringLiteral("(SUB eps_r 9.8 at 1 GHz)")),
+                 qPrintable(w.lines.join(" | ")));
     }
 
     // A metal solved as its two faces (its "Solved as"): a sheet at its
@@ -1714,6 +1716,90 @@ private slots:
             //  distance, here 2.5 times the via's.)
             QVERIFY2(std::abs(broader.at(1) / broader.at(0) - 1) < 1e-2, "the dielectric changes nothing");
         }
+    }
+
+    // A magnetic substrate (a slab's
+    // mu_r, which no solve had). By magnetostatics, the via-to-ground's
+    // inductance less its port's broader path's - the case above - would be
+    // mu_r times free space's through one magnetic slab, and through two
+    // slabs of half the height each their mean, were the field round each
+    // vertical current horizontal all along it: it is, and the same across a
+    // horizontal face, B its mu times it - but the currents close at its top
+    // along the magnetic face, and the full wave reads a little over:
+    // measured x1.528, x3.141 and x10.78 for mu_r 1.5, 3 and 10, x2.663 for
+    // the two slabs' 2.5 (the kernels themselves exact: test_rf25_wave's
+    // aMagneticStacksKernelsAreFreeSpacesAtItsWavenumber). Its dielectric
+    // changes it by 0.4 %. And a microstrip on 100 µm of eps_r 4,
+    // mu_r 3: the full wave's phase constant and Z0 at 1 GHz are the
+    // quasi-static solve's, whose L is by duality the charge solve of the
+    // stack with 1/mu_r for each permittivity (its eps_eff then eps_eff
+    // mu_eff), within 2 %.
+    void aMagneticSubstrateIsInTheFullWave()
+    {
+        const double h = 200e-6, w = 50, l = 2000, f = 1e8, omega = 2 * M_PI * f;
+        const auto inductance = [&](const rf::Stack& bare) {
+            const rf::Stack stack = withVia(bare, QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+            const QList<rf::Conductor> line = {strip(0, 0, l, w)};
+            const QList<rf::Conductor> shorted = {strip(0, 0, l, w), on(QStringLiteral("V0"), l - w, 0, w, w)};
+            const rf::Mesh meshA = evenly(shorted, 1, 400e-6), meshB = evenly(line, 1, 400e-6);
+            QList<rf::FullWavePort> points = {edgePort(QPointF(0, w / 2))};
+            for (const rf::MeshCell& c : meshB.cells)
+                if (c.outline.boundingRect().intersects(QRectF(l - w, 0, w, w))) points << internalPort(c.centre, QStringLiteral("M1"));
+            const rf::FullWave a = rf::fullWaveOf(meshA, shorted, stack, {edgePort(QPointF(0, w / 2))}, {f});
+            const rf::FullWave b = rf::fullWaveOf(meshB, line, stack, points, {f});
+            if (!a.ok() || !b.ok()) {
+                qWarning().noquote() << why(a) + why(b);
+                return 0.0;
+            }
+            return (a.z.at(0).at(0).at(0) - 1.0 / keptAdmittance(b, 0, 1)(0, 0)).imag() / omega;
+        };
+        const auto magnetic = [](rf::Stack s, double mur) {
+            for (rf::Layer& layer : s.layers)
+                if (layer.kind == rf::Layer::Substrate) layer.mur = mur;
+            return s;
+        };
+        const double free = inductance(grounded(1, h));
+        QVERIFY(free > 0);
+        for (const auto& [epsr, mur] : {std::pair{1.0, 3.0}, std::pair{9.8, 3.0}}) {
+            const double one = inductance(magnetic(grounded(epsr, h), mur));
+            qWarning("eps_r %g, mu_r %g: %.5g nH, %.4f times free space's", epsr, mur, one * 1e9, one / free);
+            QVERIFY2(one / free > mur && one / free < 1.08 * mur, qPrintable(QStringLiteral("x%1 for mu_r %2").arg(one / free).arg(mur)));
+        }
+        // Two slabs, mu_r 4 under 1, eps_r 9.8 under 4: their mean, 2.5.
+        rf::Stack two = grounded(9.8, h / 2);
+        for (rf::Layer& layer : two.layers)
+            if (layer.kind == rf::Layer::Substrate) layer.mur = 4;
+        rf::Layer upper;
+        upper.kind = rf::Layer::Dielectric;
+        upper.name = QStringLiteral("D1");
+        upper.tag = QStringLiteral("d1");
+        upper.thickness = h / 2;
+        upper.epsr = 4;
+        two.layers.insert(2, upper);
+        const double split = inductance(two);
+        qWarning("mu_r 4 under 1: %.5g nH, %.4f times free space's (their mean 2.5)", split * 1e9, split / free);
+        QVERIFY2(split / free > 2.5 && split / free < 1.08 * 2.5, qPrintable(QStringLiteral("x%1 for their mean 2.5").arg(split / free)));
+
+        // The microstrip, the full wave against the quasi-static solve.
+        const double fl = 1e9, k0 = 2 * M_PI * fl / kC0;
+        const rf::Stack ferrite = magnetic(grounded(4, 100e-6), 3);
+        rf::Extraction e;
+        const rf::FullWave a = line(ferrite, 1000, 100, 4, 100e-6, 4, {fl}, &e);
+        const rf::FullWave b = line(ferrite, 2000, 100, 4, 100e-6, 4, {fl});
+        QVERIFY2(a.ok() && b.ok() && e.ok(), qPrintable(why(a) + why(b) + e.problems.join(" | ")));
+        QVERIFY2(says(e.lines, "A layer is magnetic"), qPrintable(e.lines.join(" | ")));
+        const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, fl);
+        const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(b, 0)), 1000e-6, 2000e-6, k0 * std::sqrt(lp.epsilonEff));
+        const double em = std::pow(wave.gamma.imag() / k0, 2);
+        qWarning("eps_r 4, mu_r 3 at 1 GHz: the full wave's eps_eff mu_eff %.5g and Z0 %.5g Ohm; the quasi-static %.5g, %.5g",
+                 em, wave.z0.real(), lp.epsilonEff, lp.z0);
+        QVERIFY2(std::abs(em / lp.epsilonEff - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2").arg(em).arg(lp.epsilonEff)));
+        QVERIFY2(std::abs(wave.z0.real() / lp.z0 - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2").arg(wave.z0.real()).arg(lp.z0)));
+        // And not as though it were not magnetic: eps_eff mu_eff some 2.5
+        // times the plain substrate's.
+        rf::Extraction plain;
+        line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
+        QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
     }
 
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its

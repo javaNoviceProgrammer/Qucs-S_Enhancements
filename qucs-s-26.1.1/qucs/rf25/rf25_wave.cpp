@@ -181,21 +181,25 @@ struct Lines {
     QVarLengthArray<Complex, 8> kz, ze, zh, upE, upH, downE, downH;
 };
 
-/// The lines of \a layers at \a kr, \a eps each slab's permittivity at the
-/// angular frequency \a w: the half-space above matched; below, a short
+/// The lines of \a layers at \a kr, \a eps each slab's permittivity and
+/// \a mu its permeability at the angular frequency \a w: the half-space above matched; below, a short
 /// where there is a ground and matched where there is not.
-Lines linesOf(const Layers& layers, const QList<Complex>& eps, Complex epsAbove, Complex epsBelow, double w, Complex kr)
+Lines linesOf(const Layers& layers, const QList<Complex>& eps, const QList<Complex>& mu, Complex epsAbove, Complex epsBelow,
+              double w, Complex kr)
 {
+    const double muAbove = kMu0 * layers.murAbove, muBelow = kMu0 * layers.murBelow;
     const int count = int(layers.slabs.size());
     Lines l;
     for (QVarLengthArray<Complex, 8>* a : {&l.kz, &l.ze, &l.zh, &l.upE, &l.upH, &l.downE, &l.downH}) a->resize(count);
+    // (Each slab's own mu in its kz and in the TE line's impedance, w mu/kz:
+    //  a magnetic slab's. The half-spaces are mu0's.)
     for (int n = 0; n < count; ++n) {
-        l.kz[n] = kzOf(w * w * kMu0 * eps.at(n), kr);
+        l.kz[n] = kzOf(w * w * mu.at(n) * eps.at(n), kr);
         l.ze[n] = over(l.kz[n], w * eps.at(n));
-        l.zh[n] = over(w * kMu0, l.kz[n]);
+        l.zh[n] = over(w * mu.at(n), l.kz[n]);
     }
-    const Complex kzAbove = kzOf(w * w * kMu0 * epsAbove, kr);
-    const Complex zeAbove = over(kzAbove, w * epsAbove), zhAbove = over(w * kMu0, kzAbove);
+    const Complex kzAbove = kzOf(w * w * muAbove * epsAbove, kr);
+    const Complex zeAbove = over(kzAbove, w * epsAbove), zhAbove = over(w * muAbove, kzAbove);
     l.upE[count - 1] = over(zeAbove - l.ze[count - 1], zeAbove + l.ze[count - 1]);
     l.upH[count - 1] = over(zhAbove - l.zh[count - 1], zhAbove + l.zh[count - 1]);
     for (int n = count - 2; n >= 0; --n) {
@@ -208,8 +212,8 @@ Lines linesOf(const Layers& layers, const QList<Complex>& eps, Complex epsAbove,
     if (layers.groundBelow) {
         l.downE[0] = l.downH[0] = Complex(-1, 0);
     } else {
-        const Complex kzBelow = kzOf(w * w * kMu0 * epsBelow, kr);
-        const Complex zeBelow = over(kzBelow, w * epsBelow), zhBelow = over(w * kMu0, kzBelow);
+        const Complex kzBelow = kzOf(w * w * muBelow * epsBelow, kr);
+        const Complex zeBelow = over(kzBelow, w * epsBelow), zhBelow = over(w * muBelow, kzBelow);
         l.downE[0] = over(zeBelow - l.ze[0], zeBelow + l.ze[0]);
         l.downH[0] = over(zhBelow - l.zh[0], zhBelow + l.zh[0]);
     }
@@ -520,6 +524,14 @@ struct KeyWriter {
             for (const double v : {s.z0, s.z1, s.epsr, s.tand, s.sigma}) add(v);
             add(s.dispersive);
             if (s.dispersive) add(s.dispersionAt);
+            if (s.mur != 1 || s.mtand != 0) {
+                add(s.mur);
+                add(s.mtand);
+            }
+        }
+        if (layers.murAbove != 1 || layers.murBelow != 1) {
+            add(layers.murAbove);
+            add(layers.murBelow);
         }
         add(layers.groundBelow);
         for (const double v : {layers.epsrBelow, layers.epsrAbove, frequency, low, most}) add(v);
@@ -707,6 +719,14 @@ void keepGreens(double bytes)
 
 // -------------------------------------------------------------- The kernels
 
+namespace {
+/// A slab's permeability, H/m: mu0 mur (1 - j mtand).
+Complex permeabilityOf(const Layers::Slab& s)
+{
+    return kMu0 * Complex(s.mur, -s.mur * s.mtand);
+}
+} // namespace
+
 WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double frequency, double rhoMax)
     : a_layers(layers), a_frequency(frequency), a_zField(zField), a_zSource(zSource)
 {
@@ -750,13 +770,18 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
 
     // Each slab's permittivity at the frequency: its loss tangent and its
     // conductivity in its imaginary part, eps0 (eps_r (1 - j tand)) - j sigma/w.
-    for (const Layers::Slab& s : layers.slabs)
+    for (const Layers::Slab& s : layers.slabs) {
         a_eps << kEps0 * s.permittivityAt(a_omega / (2 * M_PI)) - Complex(0, s.sigma / a_omega);
+        a_mu << permeabilityOf(s);
+    }
     a_epsAbove = kEps0 * layers.epsrAbove;
     a_epsBelow = kEps0 * layers.epsrBelow;
-    const auto k2Of = [this](Complex eps) { return a_omega * a_omega * kMu0 * eps; };
-    for (const Complex& e : a_eps) a_kMax = std::max(a_kMax, std::abs(std::sqrt(k2Of(e))));
-    a_kMax = std::max({a_kMax, std::abs(std::sqrt(k2Of(a_epsAbove))), std::abs(std::sqrt(k2Of(a_epsBelow)))});
+    const Complex muAbove(kMu0 * layers.murAbove, 0), muBelow(kMu0 * layers.murBelow, 0);
+    const auto aboveK2 = [this, muAbove] { return a_omega * a_omega * muAbove * a_epsAbove; };
+    const auto belowK2 = [this, muBelow] { return a_omega * a_omega * muBelow * a_epsBelow; };
+    const auto slabK2 = [this](int n) { return a_omega * a_omega * a_mu.at(n) * a_eps.at(n); };
+    for (int n = 0; n < a_eps.size(); ++n) a_kMax = std::max(a_kMax, std::abs(std::sqrt(slabK2(n))));
+    a_kMax = std::max({a_kMax, std::abs(std::sqrt(aboveK2())), std::abs(std::sqrt(belowK2()))});
 
     const int count = int(layers.slabs.size());
     const int m = a_src, f = a_fld;
@@ -797,7 +822,35 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
     const double dz = std::abs(zField - zSource);
     a_scalarTerm.coefficient = factor / a_eps.at(m);
     a_scalarTerm.dz = dz;
-    a_vectorTerm.coefficient = kMu0 / 2;   // mu0 exp(-jkR)/(4 pi R): TE sees no dielectric as kr grows
+    // The vector kernel's: mu exp(-jkR)/(4 pi R). The TE line's impedances
+    // go as mu when kr is large, as the TM line's go as 1/eps, so a magnetic
+    // slab's faces reflect it as a dielectric's reflect the scalar - by
+    // (mu_b - mu_a)/(mu_b + mu_a) - and a current on such a face has
+    // mu_a mu_b/(mu_a + mu_b) of it. No dielectric changes it; the ground's
+    // image is its own term, below.
+    const auto muHigh = [&](int n) { return n + 1 < count ? a_mu.at(n + 1) : muAbove; };
+    const auto muLow = [&](int n) { return n > 0 ? a_mu.at(n - 1) : muBelow; };
+    const auto fresnelUpH = [&](int n) { return (muHigh(n) - a_mu.at(n)) / (muHigh(n) + a_mu.at(n)); };
+    const auto fresnelDownH = [&](int n) -> Complex {
+        if (n == 0 && layers.groundBelow) return Complex(0, 0);   // (the ground's image, below)
+        return (muLow(n) - a_mu.at(n)) / (muLow(n) + a_mu.at(n));
+    };
+    const auto localUpH = [&](int n, double z) { return onTop(n, z) ? fresnelUpH(n) : Complex(0, 0); };
+    const auto localDownH = [&](int n, double z) { return onBottom(n, z) ? fresnelDownH(n) : Complex(0, 0); };
+    Complex factorH;
+    if (f == m) {
+        const double low = std::min(zSource, zField), high = std::max(zSource, zField);
+        factorH = (1.0 + localDownH(m, low)) * (1.0 + localUpH(m, high)) / 2.0;
+    } else if (f > m) {
+        factorH = (1.0 + localDownH(m, zSource)) / 2.0;
+        for (int n = m; n < f; ++n) factorH *= 1.0 + fresnelUpH(n);
+        factorH *= 1.0 + localUpH(f, zField);
+    } else {
+        factorH = (1.0 + localUpH(m, zSource)) / 2.0;
+        for (int n = m; n > f; --n) factorH *= 1.0 + fresnelDownH(n);
+        factorH *= 1.0 + localDownH(f, zField);
+    }
+    a_vectorTerm.coefficient = a_mu.at(m) * factorH;
     a_vectorTerm.dz = dz;
 
     // Their retardation: chosen so that the 1/kr^3 term matches as well,
@@ -810,16 +863,16 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
         Complex sum(0, 0);
         for (int n = 0; n < count; ++n) {
             const double lo = std::max(from, layers.slabs.at(n).z0), hi = std::min(to, layers.slabs.at(n).z1);
-            if (hi > lo) sum += k2Of(a_eps.at(n)) * (hi - lo);
+            if (hi > lo) sum += slabK2(n) * (hi - lo);
         }
         return sum;
     };
     Complex scalarK2, vectorK2;
     if (dz <= tol) {
-        const Complex ka2 = k2Of(a_eps.at(m));
+        const Complex ka2 = slabK2(m);
         Complex kb2 = ka2;
-        if (onTop(m, zSource)) kb2 = k2Of(epsHigh(m));
-        else if (onBottom(m, zSource) && !layers.groundBelow) kb2 = k2Of(epsLow(m));
+        if (onTop(m, zSource)) kb2 = m + 1 < count ? slabK2(m + 1) : aboveK2();
+        else if (onBottom(m, zSource) && !layers.groundBelow) kb2 = m > 0 ? slabK2(m - 1) : belowK2();
         scalarK2 = 2.0 * ka2 * kb2 / (ka2 + kb2);
         vectorK2 = (ka2 + kb2) / 2.0;
     } else {
@@ -828,9 +881,14 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
     a_scalarTerm.k = std::sqrt(scalarK2);
     a_vectorTerm.k = std::sqrt(vectorK2);
     // The vector potential's image in a ground: a horizontal current's is
-    // the opposite current, and no dielectric changes that as kr grows.
-    if (layers.groundBelow) {
-        a_vectorImage.coefficient = -kMu0 / 2;
+    // the opposite current, and no dielectric changes that as kr grows - nor
+    // a permeability, where it is the same from the ground up to both
+    // heights; where it is not, the image is left in the remainder, the
+    // ground then a face it dies over.
+    bool evenBelow = true;
+    for (int n = 0; n <= std::max(m, f) && n < count; ++n) evenBelow = evenBelow && a_mu.at(n) == a_mu.at(m);
+    if (layers.groundBelow && evenBelow) {
+        a_vectorImage.coefficient = -a_mu.at(m) / 2.0;
         a_vectorImage.dz = zSource + zField;
         a_vectorImage.k = std::sqrt((along(0, zSource) + along(0, zField)) / (zSource + zField));
     }
@@ -841,9 +899,14 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
     QList<double> faces;
     if (layers.groundBelow || std::abs(a_epsBelow - a_eps.first()) > 1e-9 * std::abs(a_eps.first()))
         faces << layers.slabs.first().z0;
+    // (A magnetic slab's faces reflect too.)
+    const auto muDiffers = [](Complex a, Complex b) { return std::abs(a - b) > 1e-9 * std::abs(a); };
+    if (!layers.groundBelow && muDiffers(a_mu.first(), muBelow)) faces << layers.slabs.first().z0;
     for (int n = 0; n + 1 < count; ++n)
-        if (std::abs(a_eps.at(n) - a_eps.at(n + 1)) > 1e-9 * std::abs(a_eps.at(n))) faces << layers.slabs.at(n).z1;
-    if (std::abs(a_epsAbove - a_eps.last()) > 1e-9 * std::abs(a_eps.last())) faces << layers.slabs.last().z1;
+        if (std::abs(a_eps.at(n) - a_eps.at(n + 1)) > 1e-9 * std::abs(a_eps.at(n)) || muDiffers(a_mu.at(n), a_mu.at(n + 1)))
+            faces << layers.slabs.at(n).z1;
+    if (std::abs(a_epsAbove - a_eps.last()) > 1e-9 * std::abs(a_eps.last()) || muDiffers(a_mu.last(), muAbove))
+        faces << layers.slabs.last().z1;
     double nearest = std::numeric_limits<double>::infinity();
     for (const double face : std::as_const(faces))
         for (const double z : {zSource, zField}) {
@@ -863,7 +926,7 @@ Complex WaveGreen::epsilonOf(int slab) const
 
 WaveGreen::Pair WaveGreen::spectral(Complex kr) const
 {
-    const Lines l = linesOf(a_layers, a_eps, a_epsAbove, a_epsBelow, a_omega, kr);
+    const Lines l = linesOf(a_layers, a_eps, a_mu, a_epsAbove, a_epsBelow, a_omega, kr);
     const Complex ve =
         lineVoltage(a_layers, a_src, a_zSource, a_fld, a_zField, l.ze.data(), l.kz.data(), l.upE.data(), l.downE.data());
     const Complex vh =
@@ -1109,13 +1172,15 @@ ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, c
         return;
     }
     a_omega = 2 * M_PI * frequency;
-    for (const Layers::Slab& s : layers.slabs)
+    for (const Layers::Slab& s : layers.slabs) {
         a_eps << kEps0 * s.permittivityAt(a_omega / (2 * M_PI)) - Complex(0, s.sigma / a_omega);
+        a_mu << permeabilityOf(s);
+    }
     a_epsAbove = kEps0 * layers.epsrAbove;
     a_epsBelow = kEps0 * layers.epsrBelow;
     for (int n = 0; n < a_eps.size(); ++n) a_kMax = std::max(a_kMax, std::abs(std::sqrt(slabK2(n))));
-    a_kMax = std::max({a_kMax, std::abs(std::sqrt(a_omega * a_omega * kMu0 * a_epsAbove)),
-                       std::abs(std::sqrt(a_omega * a_omega * kMu0 * a_epsBelow))});
+    a_kMax = std::max({a_kMax, std::abs(std::sqrt(a_omega * a_omega * kMu0 * layers.murAbove * a_epsAbove)),
+                       std::abs(std::sqrt(a_omega * a_omega * kMu0 * layers.murBelow * a_epsBelow))});
 
     // A via's parts, a slab each. Its metals sit on faces of the slabs, so
     // its ends are faces (to a hair: the heights are sums of the same
@@ -1188,11 +1253,15 @@ ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, c
     // direct term again, carried across with 2 eps_n/(eps_n + eps_m). The
     // images are always listed, a coefficient of nothing where a face does
     // not reflect, so that the list is the same at every frequency.
-    const Complex half = kJ * a_omega * kMu0 / 2.0;
+    // (Of a magnetic stack, Michalski and Mosig's formulation C: G_zz is
+    //  mu I_v^e / eps', mu the field's and eps' the source's - n is the
+    //  field's part here, m the source's - so each closed form takes the
+    //  field slab's mu.)
     for (const QList<Segment>& other : std::as_const(a_others)) {
         QList<Term> terms;
         for (const Segment& n : std::as_const(a_own))
             for (const Segment& m : other) {
+                const Complex half = kJ * a_omega * a_mu.at(n.slab) / 2.0;
                 if (n.slab == m.slab) {
                     const Complex k = std::sqrt(slabK2(n.slab));
                     terms << Term{half, k, n.z0, n.z1, m.z0, m.z1};
@@ -1215,12 +1284,12 @@ ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, c
         Tail t;
         if (std::abs(h - a_own.last().z1) <= hair) {
             const Segment& top = a_own.last();
-            t.coefficient = -kJ * a_omega * kMu0 * fresnelUp(top.slab) / 2.0;
+            t.coefficient = -kJ * a_omega * a_mu.at(top.slab) * fresnelUp(top.slab) / 2.0;
             t.d = top.z1 - top.z0;
         } else if (std::abs(h - a_own.first().z0) <= hair && !(layers.groundBelow && a_own.first().slab == 0
                                                                && a_own.first().z0 <= hair)) {
             const Segment& bottom = a_own.first();
-            t.coefficient = kJ * a_omega * kMu0 * fresnelDown(bottom.slab) / 2.0;
+            t.coefficient = kJ * a_omega * a_mu.at(bottom.slab) * fresnelDown(bottom.slab) / 2.0;
             t.d = bottom.z1 - bottom.z0;
         }
         a_tails << t;
@@ -1247,12 +1316,12 @@ ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, c
 
 Complex ViaGreen::slabK2(int slab) const
 {
-    return a_omega * a_omega * kMu0 * a_eps.at(slab);
+    return a_omega * a_omega * a_mu.at(slab) * a_eps.at(slab);
 }
 
 void ViaGreen::spectral(Complex kr, Complex* full) const
 {
-    const Lines l = linesOf(a_layers, a_eps, a_epsAbove, a_epsBelow, a_omega, kr);
+    const Lines l = linesOf(a_layers, a_eps, a_mu, a_epsAbove, a_epsBelow, a_omega, kr);
     const double w = a_omega;
     // V_i between two heights, TM or TE: the voltage at zf of a unit shunt
     // current at zs.
@@ -1260,7 +1329,8 @@ void ViaGreen::spectral(Complex kr, Complex* full) const
         return lineVoltage(a_layers, a_layers.slabAt(zs), zs, a_layers.slabAt(zf), zf, tm ? l.ze.data() : l.zh.data(),
                            l.kz.data(), tm ? l.upE.data() : l.upH.data(), tm ? l.downE.data() : l.downH.data());
     };
-    const Complex jkzZh = kJ * w * kMu0;
+    // (j kz Zh is j w mu: each slab's own.)
+    const auto jkzZh = [this, w](int slab) { return kJ * w * a_mu.at(slab); };
     const auto jkzZe = [&l](int slab) { return kJ * l.kz[slab] * l.ze[slab]; };
     int c = 0;
     for (const QList<Segment>& other : std::as_const(a_others)) {
@@ -1271,29 +1341,33 @@ void ViaGreen::spectral(Complex kr, Complex* full) const
                                        + voltage(true, n.z0, m.z0);
                 const double same = n.slab == m.slab ? n.z1 - n.z0 : 0.0;
                 const Complex currents = over(same - over(second, jkzZe(m.slab)), jkzZe(n.slab));   // Int Int I_v^e
-                sum += over(kMu0 * currents, a_eps.at(m.slab));
+                sum += over(a_mu.at(n.slab) * currents, a_eps.at(m.slab));
             }
         full[c++] = sum;
     }
+    // The potential at a height of the via's current: -(j w mu / kr^2)
+    // times the TM and TE lines' currents' difference integrated along it -
+    // each part's source slab's mu.
     for (const double h : std::as_const(a_heights)) {
         Complex sum(0, 0);
         for (const Segment& m : std::as_const(a_own))
-            sum += over(voltage(true, h, m.z1) - voltage(true, h, m.z0), jkzZe(m.slab))
-                   - over(voltage(false, h, m.z1) - voltage(false, h, m.z0), jkzZh);
-        full[c++] = over(-kJ * w * kMu0, kr * kr) * sum;
+            sum += a_mu.at(m.slab)
+                   * (over(voltage(true, h, m.z1) - voltage(true, h, m.z0), jkzZe(m.slab))
+                      - over(voltage(false, h, m.z1) - voltage(false, h, m.z0), jkzZh(m.slab)));
+        full[c++] = over(-kJ * w, kr * kr) * sum;
     }
 }
 
 Complex ViaGreen::symmetricSpectral(int other, Complex kr) const
 {
     if (!ok() || other < 0 || other >= a_others.size()) return Complex(0, 0);
-    const Lines l = linesOf(a_layers, a_eps, a_epsAbove, a_epsBelow, a_omega, kr);
+    const Lines l = linesOf(a_layers, a_eps, a_mu, a_epsAbove, a_epsBelow, a_omega, kr);
     const double w = a_omega;
     const auto voltage = [this, &l](bool tm, double zf, double zs) {
         return lineVoltage(a_layers, a_layers.slabAt(zs), zs, a_layers.slabAt(zf), zf, tm ? l.ze.data() : l.zh.data(),
                            l.kz.data(), tm ? l.upE.data() : l.upH.data(), tm ? l.downE.data() : l.downH.data());
     };
-    const Complex jkzZh = kJ * w * kMu0;
+    const auto jkzZh = [this, w](int slab) { return kJ * w * a_mu.at(slab); };
     const auto jkzZe = [&l](int slab) { return kJ * l.kz[slab] * l.ze[slab]; };
     Complex sum(0, 0);
     for (const Segment& n : std::as_const(a_own))
@@ -1303,8 +1377,9 @@ Complex ViaGreen::symmetricSpectral(int other, Complex kr) const
             };
             const double same = n.slab == m.slab ? n.z1 - n.z0 : 0.0;
             const Complex ie = (same - second(true) / jkzZe(m.slab)) / jkzZe(n.slab);
-            const Complex ih = (same - second(false) / jkzZh) / jkzZh;
-            sum += kMu0 * ie * (1.0 / a_eps.at(n.slab) + 1.0 / a_eps.at(m.slab)) - w * w * kMu0 * kMu0 / (kr * kr) * (ie - ih);
+            const Complex ih = (same - second(false) / jkzZh(m.slab)) / jkzZh(n.slab);
+            const Complex mn = a_mu.at(n.slab), mm = a_mu.at(m.slab);
+            sum += ie * (mn / a_eps.at(m.slab) + mm / a_eps.at(n.slab)) - w * w * mn * mm / (kr * kr) * (ie - ih);
         }
     return sum;
 }

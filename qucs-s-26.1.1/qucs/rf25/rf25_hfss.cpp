@@ -201,6 +201,10 @@ struct HLayer {
     double z0 = 0, thickness = 0;   ///< m
     QString material, fill;
     double roughness = 0;  ///< m, rms
+    /// Huray's, where its metal's roughness is (Layer::huray): its nodules'
+    /// radius, m, and their surface ratio.
+    bool huray = false;
+    double nodule = 0, ratio = 0;
     int number = 0;        ///< its layer in the GDSII file (0: it has no shapes)
 };
 
@@ -353,7 +357,7 @@ try:
         oEditor.RemoveLayer(name)
 except Exception:
     pass
-for name, kind, elevation, thickness, material, fill, colour, roughness in LAYERS:
+for name, kind, elevation, thickness, material, fill, colour, roughness, huray, nodule, ratio in LAYERS:
     layer = ["NAME:stackup layer",
              "Name:=", name,
              "Type:=", kind,
@@ -375,7 +379,13 @@ for name, kind, elevation, thickness, material, fill, colour, roughness in LAYER
     if kind == "signal":
         sublayer += ["FillMaterial:=", fill]
     layer.append(sublayer)
-    if kind == "signal" and roughness > 0:
+    if kind == "signal" and huray:
+        radius = length(nodule)
+        layer += ["UseR:=", True,
+                  "RMdl:=", "Huray", "NR:=", radius, "HRatio:=", str(ratio),
+                  "BRMdl:=", "Huray", "BNR:=", radius, "BHRatio:=", str(ratio),
+                  "SRMdl:=", "Huray", "SNR:=", radius, "SHRatio:=", str(ratio)]
+    elif kind == "signal" and roughness > 0:
         rough = length(roughness)
         layer += ["UseR:=", True,
                   "RMdl:=", "Groisse", "NR:=", rough, "HRatio:=", "2.9",
@@ -790,6 +800,9 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
             m.number = ++number;
             m.material = addMaterial(m.name, 1, 0, l.sigma);
             m.roughness = l.roughness;
+            m.huray = l.huray;
+            m.nodule = l.nodule;
+            m.ratio = l.surfaceRatio;
             // What is beside it, as the solve's two faces have it: the first
             // dielectric above it short of another metal, else the air.
             m.fill = air;
@@ -1273,10 +1286,11 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     out.notes << tr("RF 2.5D has the stack without end across the plane; here the dielectrics%1 stop %2 µm past the shapes and "
                     "a radiation boundary stands %3 µm past that: make them larger if S moves with them.")
                      .arg(plane ? tr(" and the plane") : QString(), um(out.marginUsed), um(out.airUsed));
-    bool sheets = false, rough = false;
+    bool sheets = false, rough = false, huray = false;
     for (const Layer& l : stack.layers) {
         sheets = sheets || (l.kind == Layer::Metal && !l.twoSheets);
-        rough = rough || (l.kind == Layer::Metal && l.roughness > 0);
+        rough = rough || (l.kind == Layer::Metal && l.roughness > 0 && !l.huray);
+        huray = huray || (l.kind == Layer::Metal && l.huray);
     }
     if (sheets)
         out.notes << (options.thinMetal > 0
@@ -1286,6 +1300,8 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
                                "higher. Its Solved as \"faces\" solves the same geometry."));
     if (rough)
         out.notes << tr("Roughness: RF 2.5D multiplies the surface resistance by Hammerstad's factor of the rms height; here Groisse's model of the same height.");
+    if (huray)
+        out.notes << tr("Roughness: Huray's, its nodules' radius and surface ratio, as RF 2.5D has it (of one nodule size).");
     bool viaFill = false;
     for (const Node& n : model.stackNode().children)
         viaFill = viaFill || (n.type == QLatin1String("rf_via") && numberOf(n, QStringLiteral("fill"), model, 1) != 1);
@@ -1386,12 +1402,15 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     s += QStringLiteral("\n# name, permittivity, loss tangent, conductivity (S/m)\nMATERIALS = [\n");
     for (const HMaterial& m : std::as_const(materials))
         s += QStringLiteral("    (%1, %2, %3, %4),\n").arg(py(m.name), num(m.epsr), num(m.tand), num(m.sigma));
-    s += QStringLiteral("]\n\n# name, type, lower elevation, thickness, material, fill, colour (bbggrr), roughness (rms): from the bottom up\nLAYERS = [\n");
+    s += QStringLiteral("]\n\n# name, type, lower elevation, thickness, material, fill, colour (bbggrr), roughness (rms), Huray's (whether, "
+                        "nodule radius, surface ratio): from the bottom up\nLAYERS = [\n");
     for (const HLayer& l : std::as_const(layers))
-        s += QStringLiteral("    (%1, %2, %3, %4, %5, %6, %7, %8),\n")
+        s += QStringLiteral("    (%1, %2, %3, %4, %5, %6, %7, %8, %9, ")
                  .arg(py(l.name), py(l.signal ? QStringLiteral("signal") : QStringLiteral("dielectric")), um(l.z0), um(l.thickness), py(l.material), py(l.fill))
                  .arg(bgr(layout::paletteStyle(l.number > 0 ? l.number : 8).fill))
-                 .arg(um(l.roughness));
+                 .arg(um(l.roughness))
+                 .arg(l.huray ? QStringLiteral("True") : QStringLiteral("False"))
+             + QStringLiteral("%1, %2),\n").arg(um(l.nodule), num(l.ratio));
     s += QStringLiteral("]\n\n# name, layer, net, the corners of a rectangle\nPLANES = [\n");
     if (plane)
         s += QStringLiteral("    (%1, %2, \"GND\", %3, %4, %5, %6),\n").arg(py(groundLayer + QStringLiteral("_plane")), py(groundLayer), num(outer.left()), num(outer.top()), num(outer.right()), num(outer.bottom()));
