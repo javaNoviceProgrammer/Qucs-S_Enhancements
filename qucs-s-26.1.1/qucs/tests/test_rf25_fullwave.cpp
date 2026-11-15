@@ -2282,6 +2282,37 @@ private slots:
         }
     }
 
+    // A coax or via port: a line fed from below, an internal port at each end up
+    // from the ground through the substrate, its current up a path of its own
+    // with a via's field - a probe's. Its eps_eff and Z0 from two lengths at
+    // 5 GHz are the edge-fed line's within 1 % (each feed's own discontinuity
+    // the same at both lengths, and gone).
+    void aLineFedFromBelowIsTheLineFedAtItsEdge()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6);
+        const double fl = 5e9, k0 = 2 * M_PI * fl / kC0;
+        const auto solve = [&](double length, bool below) {
+            const QList<rf::Conductor> cs{strip(0, 0, length, 100)};
+            const QList<rf::FullWavePort> ports = below
+                                                      ? QList<rf::FullWavePort>{internalPort(QPointF(25, 50), QStringLiteral("M1")),
+                                                                                internalPort(QPointF(length - 25, 50), QStringLiteral("M1"))}
+                                                      : QList<rf::FullWavePort>{edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                                                edgePort(QPointF(length, 50), QStringLiteral("M1"), QPointF(1, 0))};
+            return rf::fullWaveOf(meshed(cs, 4, 50e-6), cs, st, ports, {fl});
+        };
+        QList<double> ee, z0;
+        for (const bool below : {false, true}) {
+            const rf::FullWave a = solve(1000, below), c = solve(2000, below);
+            QVERIFY2(a.ok() && c.ok(), qPrintable(why(a) + why(c)));
+            const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(c, 0)), 1000e-6, 2000e-6, k0 * 2.5);
+            ee << std::pow(wave.gamma.imag() / k0, 2);
+            z0 << wave.z0.real();
+        }
+        qWarning("fed at its edge: eps_eff %.5g, Z0 %.5g Ohm; from below: %.5g, %.5g", ee.at(0), z0.at(0), ee.at(1), z0.at(1));
+        QVERIFY2(std::abs(ee.at(1) / ee.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(ee.at(1)).arg(ee.at(0))));
+        QVERIFY2(std::abs(z0.at(1) / z0.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2").arg(z0.at(1)).arg(z0.at(0))));
+    }
+
     // A via of a metal is a bar: at 10 MHz, the skin far deeper than its
     // half-width, its resistance is its length over sigma and its area -
     // the line shorted by it less by an ideal short, in its real part.
