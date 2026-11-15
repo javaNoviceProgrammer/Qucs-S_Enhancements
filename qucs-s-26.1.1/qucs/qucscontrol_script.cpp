@@ -28,10 +28,22 @@
 #include <QJSValue>
 #include <QScopeGuard>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <mutex>
 #include <thread>
+
+#if defined(Q_OS_MACOS)
+#include <mach/mach.h>
+#include <unistd.h>
+#elif defined(Q_OS_WIN)
+#include <windows.h>
+#include <psapi.h>
+#else
+#include <unistd.h>
+#endif
 #endif
 
 using namespace qucs_s::control;
@@ -49,13 +61,95 @@ bool QucsControl::scriptingBuilt()
 
 namespace {
 
+// The program's memory now, in bytes (0: not known here): what the system
+// counts against it - on macOS its footprint, as Activity Monitor shows it.
+qint64 footprint()
+{
+#if defined(Q_OS_MACOS)
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, task_info_t(&info), &count) == KERN_SUCCESS) return qint64(info.phys_footprint);
+    return 0;
+#elif defined(Q_OS_WIN)
+    PROCESS_MEMORY_COUNTERS_EX counters;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof counters))
+        return qint64(counters.PrivateUsage);
+    return 0;
+#else
+    long pages = 0, resident = 0;
+    FILE* statm = std::fopen("/proc/self/statm", "r");
+    if (statm == nullptr) return 0;
+    const bool read = std::fscanf(statm, "%ld %ld", &pages, &resident) == 2;
+    std::fclose(statm);
+    return read ? qint64(resident) * sysconf(_SC_PAGESIZE) : 0;
+#endif
+}
+
+// The most a script's own data may grow the program by: 4 GB, or a quarter
+// of the machine's memory where that is less (QUCS_SCRIPT_MEMORY_MB sets it).
+qint64 mostScriptMemory()
+{
+    bool given = false;
+    const qint64 mb = qEnvironmentVariableIntValue("QUCS_SCRIPT_MEMORY_MB", &given);
+    if (given && mb > 0) return mb * 1024 * 1024;
+    qint64 most = qint64(4) * 1024 * 1024 * 1024;
+#if defined(Q_OS_WIN)
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof status;
+    if (GlobalMemoryStatusEx(&status)) most = std::min(most, qint64(status.ullTotalPhys / 4));
+#else
+    if (const long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGESIZE); pages > 0 && size > 0)
+        most = std::min(most, qint64(pages) * size / 4);
+#endif
+    return std::max(most, qint64(256) * 1024 * 1024);
+}
+
+// Run before each script: where V4's own code recurses without its stack
+// check, the same done in JavaScript, which has it - or bounded. A value
+// nested 100,000 deep ended the program through Array.prototype.
+// toLocaleString, a chain of 100,000 Proxies through a property read, and
+// console.log of a deep array (the re-check of round four's fixes, 14
+// November, J4); String(), join and sort stop at V4's limit already.
+constexpr const char* kPrelude = R"js((function (global) {
+  const join = Array.prototype.join, Too = RangeError, Real = Proxy, revocable = Proxy.revocable, depth = new WeakMap();
+  Object.defineProperty(Array.prototype, 'toLocaleString', {writable: true, configurable: true, value: function toLocaleString() {
+    const o = Object(this), n = o.length >>> 0, out = [];
+    for (let i = 0; i < n; i++) { const v = o[i]; out.push(v === undefined || v === null ? '' : String(v.toLocaleString())); }
+    return join.call(out, ',');
+  }});
+  const nested = (target, handler) => {
+    const d = Math.max(depth.get(target) || 0, depth.get(handler) || 0) + 1;
+    if (d > 1000) throw new Too('proxies nested more than 1,000 deep');
+    return d;
+  };
+  const made = class Proxy {
+    constructor(target, handler) { const d = nested(target, handler), p = new Real(target, handler); depth.set(p, d); return p; }
+  };
+  Object.defineProperty(made, 'revocable', {writable: true, configurable: true, value: function (target, handler) {
+    const d = nested(target, handler), r = revocable(target, handler); depth.set(r.proxy, d); return r;
+  }});
+  Object.defineProperty(global, 'Proxy', {writable: true, configurable: true, value: made});
+  const said = f => function () { const parts = []; for (let i = 0; i < arguments.length; i++) parts.push(String(arguments[i])); return f(join.call(parts, ' ')); };
+  if (typeof console === 'object' && console)
+    for (const k of ['log', 'debug', 'info', 'warn', 'error'])
+      if (typeof console[k] === 'function') { const f = console[k].bind(console); console[k] = said(f); }
+  if (typeof print === 'function') { const f = print; global.print = said(f); }
+})(this))js";
+
+// Scripts running now: one, at most - run_script is refused within one,
+// called through batch too.
+int scriptsRunning = 0;
+
 // What a script sees: qucs.call(tool, args), qucs.log(text).
 class ScriptApi : public QObject
 {
     Q_OBJECT
 
 public:
-    ScriptApi(QucsControl* control, QJSEngine* engine) : a_control(control), a_engine(engine) {}
+    ScriptApi(QucsControl* control, QJSEngine* engine)
+        : a_control(control), a_engine(engine), a_stringify(engine->evaluate(QLatin1String(kStringify))), a_since(footprint())
+    {
+    }
 
     Q_INVOKABLE QJSValue call(const QString& tool, const QJSValue& args = QJSValue())
     {
@@ -66,7 +160,10 @@ public:
         QJsonObject arguments;
         if (!args.isUndefined() && !args.isNull()) {
             if (!args.isObject() || args.isArray()) return fail(QStringLiteral("%1's arguments are an object: qucs.call(\"%1\", {...})").arg(tool));
-            arguments = QJsonObject::fromVariantMap(a_engine->fromScriptValue<QVariantMap>(args));
+            QJsonValue made;
+            QString why;
+            if (!jsonOf(args, &made, &why)) return fail(QStringLiteral("%1's arguments are not JSON: %2").arg(tool, why));
+            arguments = made.toObject();
         }
         // Its own max_chars, as every tool takes it (and a batch's calls):
         // its answer cut.
@@ -77,7 +174,11 @@ public:
         // (A use the guards name: not unasked from a script.)
         if (const QString no = a_control->unaskedWithin(tool, arguments); !no.isEmpty()) return fail(no);
         a_running = a_last = tool;
+        // (What the tool takes is not the script's own: its memory is
+        // counted between its calls.)
+        callStarts();
         QJsonObject result = a_control->callNow(tool, arguments, 10 * 60 * 1000);
+        callEnds();
         a_running.clear();
         if (most > 0) result = qucs_s::mcp::trimmedTo(result, most);
         QStringList texts;
@@ -101,9 +202,50 @@ public:
     Q_INVOKABLE void log(const QJSValue& value)
     {
         if (a_log.size() >= 500) return;
-        a_log << (value.isString() ? value.toString()
-                                   : QString::fromUtf8(QJsonDocument::fromVariant(value.toVariant()).toJson(QJsonDocument::Compact)).left(4000));
-        if (a_log.last().isEmpty()) a_log.last() = value.toString();
+        QString line = value.toString();
+        if (!value.isString() && value.isObject()) {
+            QJsonValue made;
+            QString why;
+            if (!jsonOf(value, &made, &why)) line = QStringLiteral("(not JSON: %1)").arg(why);
+            else if (made.isObject()) line = QString::fromUtf8(QJsonDocument(made.toObject()).toJson(QJsonDocument::Compact));
+            else if (made.isArray()) line = QString::fromUtf8(QJsonDocument(made.toArray()).toJson(QJsonDocument::Compact));
+        }
+        a_log << (value.isString() ? line : line.left(4000));
+    }
+
+    /// \a value made JSON by the script's own engine (kStringify), read back
+    /// by fromJson, which stops at 1,024 levels. Qt's QJSValue::toVariant
+    /// recursed a level at a time without a limit: a value nested 100,000
+    /// deep overflowed the stack and ended the program. False, with why, where it is not JSON.
+    bool jsonOf(const QJSValue& value, QJsonValue* made, QString* why)
+    {
+        const QJSValue text = a_stringify.call({value});
+        if (text.isError()) {
+            *why = text.property(QStringLiteral("message")).toString();
+            if (why->contains(QLatin1String("stack"), Qt::CaseInsensitive) || why->contains(QLatin1String("recursion"), Qt::CaseInsensitive))
+                *why = QStringLiteral("it is nested too deep (%1)").arg(*why);
+            return false;
+        }
+        if (!text.isString()) {   // undefined, a function
+            *made = QJsonValue(QJsonValue::Undefined);
+            return true;
+        }
+        QJsonParseError error;
+        const QJsonDocument doc = QJsonDocument::fromJson("[" + text.toString().toUtf8() + "]", &error);
+        if (error.error != QJsonParseError::NoError) {
+            *why = error.error == QJsonParseError::DeepNesting ? QStringLiteral("it is nested deeper than 1,000 levels") : error.errorString();
+            return false;
+        }
+        *made = doc.array().at(0);
+        return true;
+    }
+
+    /// The script's own memory: how much it has grown the program by, its
+    /// calls' tools left out - read by the watchdog's thread.
+    qint64 ownMemory() const
+    {
+        std::lock_guard<std::mutex> lock(a_memory);
+        return a_inCall ? a_grown : a_grown + footprint() - a_since;
     }
 
     int calls() const { return a_calls; }
@@ -116,6 +258,38 @@ public:
 
 private:
     static constexpr int kMostCalls = 5000;
+    // JSON.stringify as it was before the script ran: it stops at V4's own
+    // stack limit and on a cycle. Its replacer counts what it writes, and
+    // stops it past a million values or 100 million characters - a value of
+    // shared parts, {a: d, b: d} doubled 40 times, was written out for ever,
+    // V4's own code not stopped by the watchdog's interrupt.
+    static constexpr const char* kStringify =
+        "(function () {\n"
+        "  const stringify = JSON.stringify, Too = RangeError;\n"
+        "  return function (value) {\n"
+        "    let values = 0, chars = 0;\n"
+        "    return stringify(value, function (key, v) {\n"
+        "      chars += key.length + (typeof v === 'string' ? v.length : 0);\n"
+        "      if (++values > 1000000) throw new Too('it has more than 1,000,000 values');\n"
+        "      if (chars > 100000000) throw new Too('it is longer than 100,000,000 characters');\n"
+        "      return v;\n"
+        "    });\n"
+        "  };\n"
+        "})()";
+    void callStarts()
+    {
+        const qint64 now = footprint();
+        std::lock_guard<std::mutex> lock(a_memory);
+        a_grown += now - a_since;
+        a_inCall = true;
+    }
+    void callEnds()
+    {
+        const qint64 now = footprint();
+        std::lock_guard<std::mutex> lock(a_memory);
+        a_since = now;
+        a_inCall = false;
+    }
     QJSValue fail(const QString& message)
     {
         a_engine->throwError(QJSValue::GenericError, message);
@@ -123,6 +297,10 @@ private:
     }
     QucsControl* a_control;
     QJSEngine* a_engine;
+    QJSValue a_stringify;   // (the engine's own, taken before the script could change it)
+    mutable std::mutex a_memory;
+    qint64 a_grown = 0, a_since = 0;   // grown by before the last call; the footprint after it
+    bool a_inCall = false;
     int a_calls = 0;
     QString a_running, a_last;   // the call under way, and the last made
     QStringList a_log;
@@ -135,6 +313,9 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     const QString script = args.value(QLatin1String("script")).toString();
     if (script.trimmed().isEmpty())
         return errorResult(tr("'script' is a JavaScript program: qucs.call(\"add_component\", {type: \"R\", x: 100, y: 100}) calls a tool."));
+    if (scriptsRunning > 0)
+        return errorResult(tr("run_script cannot run from a script, through batch neither: the script that called it is running "
+                              "(its calls are made one by one with qucs.call)."));
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(60), 1, 600);
     // Put back when an atomic script fails: every open schematic.
     struct Kept {
@@ -149,16 +330,24 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
         for (QucsDoc* doc : a_app->allDocuments())
             if (auto* sch = dynamic_cast<Schematic*>(doc)) kept.append(Kept{sch, sch->snapshotAll(), sch->undoStacks(), sch->getDocChanged()});
 
+    ++scriptsRunning;
+    const auto ended = qScopeGuard([] { --scriptsRunning; });
     QJSEngine engine;
     engine.installExtensions(QJSEngine::ConsoleExtension);   // console.log too (to stderr)
     ScriptApi api(this, &engine);
     QJSValue qucs = engine.newQObject(&api);
     engine.globalObject().setProperty(QStringLiteral("qucs"), qucs);
+    if (const QJSValue set = engine.evaluate(QLatin1String(kPrelude)); set.isError())
+        qWarning("run_script's prelude: %s", qPrintable(set.toString()));
     // A script that runs too long is stopped (the engine is told from a
     // thread of its own: it runs on this one).
     std::mutex mutex;
     std::condition_variable over;
     bool finished = false, stopped = false;
+    // A script that takes too much memory is stopped too, at the same
+    // watch: V4's heap grew until the system refused it, 6.3 GB in 12 s
+    const qint64 mostMemory = mostScriptMemory();
+    qint64 tookMemory = 0;
     QElapsedTimer clock;
     clock.start();
     // Cancelled by its client (the user stopped Claude): stopped as at its
@@ -179,6 +368,12 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
                 engine.setInterrupted(true);
                 return;
             }
+            if (const qint64 took = api.ownMemory(); took > mostMemory) {
+                stopped = true;
+                tookMemory = took;
+                engine.setInterrupted(true);
+                return;
+            }
         }
     });
     QJSValue value = engine.evaluate(script, QStringLiteral("script"));
@@ -187,6 +382,12 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     if (value.isError() && value.property(QStringLiteral("name")).toString() == QLatin1String("SyntaxError")
         && value.property(QStringLiteral("message")).toString().contains(QLatin1String("Return statement")))
         value = engine.evaluate(QStringLiteral("(function () {\n%1\n})()").arg(script), QStringLiteral("script"), 0);
+    // Its result made JSON while the watch is kept: a value of shared parts
+    // can take long, or much, to write out.
+    QJsonValue made(QJsonValue::Undefined);
+    QString notJson;
+    if (!value.isError() && !value.isUndefined() && !api.jsonOf(value, &made, &notJson))
+        made = QJsonValue(QJsonValue::Undefined);
     {
         std::lock_guard<std::mutex> lock(mutex);
         finished = true;
@@ -207,7 +408,11 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
         // What it was doing when it was stopped: the call under way (its
         // own code, when there is none), and the user's time told apart.
         QString message;
-        if (stopped) {
+        if (stopped && tookMemory > 0) {
+            message = tr("stopped after %1 s: its own data had grown the program by %2 MB, past the %3 MB a script may take (what "
+                         "the tools it calls take is not counted)")
+                          .arg((clock.elapsed() - userMs) / 1000.0, 0, 'f', 1).arg(tookMemory / (1024 * 1024)).arg(mostMemory / (1024 * 1024));
+        } else if (stopped) {
             if (!api.running().isEmpty())
                 message = tr("stopped after %1 s of its own, while its call %2 of %3 was running (a longer 'timeout' lets it run "
                              "longer; that call's own answer was not waited for)").arg(timeout).arg(api.calls()).arg(api.running());
@@ -224,7 +429,11 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
             message = value.property(QStringLiteral("message")).toString();
         }
         result.insert(QStringLiteral("error"), message);
-        if (!stopped && value.hasProperty(QStringLiteral("lineNumber"))) result.insert(QStringLiteral("line"), value.property(QStringLiteral("lineNumber")).toInt());
+        // (Its line, where it is one: V4's RangeError of a stack overflow
+        // came with 1825783312.)
+        if (const int line = value.property(QStringLiteral("lineNumber")).toInt();
+            !stopped && value.hasProperty(QStringLiteral("lineNumber")) && line >= 1 && line <= script.count(QLatin1Char('\n')) + 1)
+            result.insert(QStringLiteral("line"), line);
         if (atomic && QApplication::activeModalWidget() != nullptr) {
             // (Not under a dialog: one open over a schematic holds its parts,
             // which putting it back freed.)
@@ -244,7 +453,11 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
                                                                               {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))}}}},
                            {QStringLiteral("isError"), true}};
     }
-    if (!value.isUndefined()) result.insert(QStringLiteral("result"), QJsonValue::fromVariant(value.toVariant()));
+    if (!made.isUndefined()) result.insert(QStringLiteral("result"), made);
+    // (It ran to its end, and what it changed stays: only its result is
+    // not given.)
+    if (!notJson.isEmpty())
+        result.insert(QStringLiteral("result not given"), tr("the script ran to its end, but its result is not JSON: %1").arg(notJson));
     return jsonResult(result);
 }
 
