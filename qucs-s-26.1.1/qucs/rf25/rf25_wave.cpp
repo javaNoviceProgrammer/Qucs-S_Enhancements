@@ -516,8 +516,11 @@ struct KeyWriter {
     {
         add(kind);
         add(int(layers.slabs.size()));
-        for (const Layers::Slab& s : layers.slabs)
+        for (const Layers::Slab& s : layers.slabs) {
             for (const double v : {s.z0, s.z1, s.epsr, s.tand, s.sigma}) add(v);
+            add(s.dispersive);
+            if (s.dispersive) add(s.dispersionAt);
+        }
         add(layers.groundBelow);
         for (const double v : {layers.epsrBelow, layers.epsrAbove, frequency, low, most}) add(v);
     }
@@ -748,7 +751,7 @@ WaveGreen::WaveGreen(const Layers& layers, double zField, double zSource, double
     // Each slab's permittivity at the frequency: its loss tangent and its
     // conductivity in its imaginary part, eps0 (eps_r (1 - j tand)) - j sigma/w.
     for (const Layers::Slab& s : layers.slabs)
-        a_eps << kEps0 * Complex(s.epsr, -s.epsr * s.tand) - Complex(0, s.sigma / a_omega);
+        a_eps << kEps0 * s.permittivityAt(a_omega / (2 * M_PI)) - Complex(0, s.sigma / a_omega);
     a_epsAbove = kEps0 * layers.epsrAbove;
     a_epsBelow = kEps0 * layers.epsrBelow;
     const auto k2Of = [this](Complex eps) { return a_omega * a_omega * kMu0 * eps; };
@@ -1107,7 +1110,7 @@ ViaGreen::ViaGreen(const Layers& layers, Span span, const QList<Span>& others, c
     }
     a_omega = 2 * M_PI * frequency;
     for (const Layers::Slab& s : layers.slabs)
-        a_eps << kEps0 * Complex(s.epsr, -s.epsr * s.tand) - Complex(0, s.sigma / a_omega);
+        a_eps << kEps0 * s.permittivityAt(a_omega / (2 * M_PI)) - Complex(0, s.sigma / a_omega);
     a_epsAbove = kEps0 * layers.epsrAbove;
     a_epsBelow = kEps0 * layers.epsrBelow;
     for (int n = 0; n < a_eps.size(); ++n) a_kMax = std::max(a_kMax, std::abs(std::sqrt(slabK2(n))));

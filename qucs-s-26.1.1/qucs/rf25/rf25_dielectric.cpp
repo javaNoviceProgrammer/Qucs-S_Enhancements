@@ -222,6 +222,9 @@ DielectricPlan dielectricPlan(const Layers& layers, const QList<Extent>& extents
         r.inside = true;
         const QList<QPolygonF> region = clipTo(shapes, boxPolygon);
         plan.background.slabs[slab].epsr = e.beyond;
+        // (Beyond its shapes it is what is there, the same at every
+        //  frequency: air, or what the layer map says.)
+        plan.background.slabs[slab].dispersive = false;
         r.delta = eps - e.beyond;
         for (const QPolygonF& p : region) {
             QPolygonF m;

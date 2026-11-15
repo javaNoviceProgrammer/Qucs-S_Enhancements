@@ -233,6 +233,38 @@ private slots:
         QCOMPARE(m.stack().layers.size(), 5);
     }
 
+    // A dielectric's dispersion is read with the frequency it is given at, and
+    // a stack taken at a frequency is Djordjevic-Sarkar's values there and
+    // dispersive no more; a file that says nothing of it is the same at
+    // every frequency, as it was.
+    void aDielectricsDispersionIsReadAndTakenAtAFrequency()
+    {
+        rf::Model m = twoMetals();
+        QVERIFY(!m.stack().dispersive());
+        rf::Node& sub = m.stackNode().children.front();
+        sub.props.insert(QStringLiteral("tand"), QStringLiteral("0.02"));
+        sub.props.insert(QStringLiteral("dispersion"), QStringLiteral("djordjevic_sarkar"));
+        sub.props.insert(QStringLiteral("dispersion_at"), QStringLiteral("2[GHz]"));
+        const rf::Stack s = m.stack();
+        QVERIFY2(s.ok(), qPrintable(s.problems.join(" | ")));
+        QVERIFY(s.dispersive());
+        QCOMPARE(s.layers.at(0).dispersion, QStringLiteral("djordjevic_sarkar"));
+        QCOMPARE(s.layers.at(0).dispersionAt, 2e9);
+        const rf::Stack at = s.atFrequency(20e9);
+        QVERIFY(!at.dispersive());
+        const std::complex<double> e = rf::djordjevicSarkar(11.9, 0.02, 2e9, 20e9);
+        QCOMPARE(at.layers.at(0).epsr, e.real());
+        QCOMPARE(at.layers.at(0).tand, -e.imag() / e.real());
+        QCOMPARE(at.layers.at(1).epsr, s.layers.at(1).epsr);   // (not dispersive: as it was)
+        // Written and read back.
+        const std::optional<rf::Model> back = rf::Model::fromJson(m.toJson());
+        QVERIFY(back.has_value());
+        QCOMPARE(back->stack().layers.at(0).dispersionAt, 2e9);
+        // Its frequency nought or less is said.
+        sub.props.insert(QStringLiteral("dispersion_at"), QStringLiteral("0"));
+        QVERIFY2(m.stack().problems.join(' ').contains(QStringLiteral("given at no frequency")), qPrintable(m.stack().problems.join(" | ")));
+    }
+
     // What the stack says cannot be: each check of the proposal, one at a
     // time, on a stack that is otherwise sound.
     void aStackThatCannotBeSaysWhy()

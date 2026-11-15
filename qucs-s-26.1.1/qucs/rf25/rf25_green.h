@@ -55,6 +55,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <complex>
+
 #include <atomic>
 
 namespace qucs_s::rf25 {
@@ -79,6 +81,15 @@ struct Layers {
         double tand = 0;         ///< its loss tangent (the retarded Green's functions only)
         double sigma = 0;        ///< S/m, a conductive substrate's (the same)
         QString name;
+        /// Djordjevic-Sarkar's, through epsr and tand at \a dispersionAt
+        /// (Layer::dispersion): the retarded Green's functions take its
+        /// permittivity at their frequency (permittivityAt()); a static one
+        /// is of a stack already taken at one (Stack::atFrequency()).
+        bool dispersive = false;
+        double dispersionAt = 1e9;   ///< Hz
+        /// Its relative permittivity at \a frequency (Hz), eps' - j eps'' -
+        /// its loss tangent in it, its conductivity not.
+        std::complex<double> permittivityAt(double frequency) const;
     };
     QList<Slab> slabs;        ///< from the bottom up, touching
     bool groundBelow = false; ///< a ground plane under the lowest slab

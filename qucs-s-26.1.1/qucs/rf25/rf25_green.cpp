@@ -466,6 +466,11 @@ int Layers::slabAt(double z) const
     return -1;
 }
 
+std::complex<double> Layers::Slab::permittivityAt(double frequency) const
+{
+    return dispersive ? djordjevicSarkar(epsr, tand, dispersionAt, frequency) : std::complex<double>(epsr, -epsr * tand);
+}
+
 Layers layersOf(const Stack& stack)
 {
     Layers out;
@@ -513,6 +518,8 @@ Layers layersOf(const Stack& stack)
                 s.tand = std::max(0.0, l.tand);
                 s.sigma = l.kind == Layer::Substrate ? std::max(0.0, l.sigma) : 0.0;
                 s.name = l.name;
+                s.dispersive = !l.dispersion.isEmpty();
+                s.dispersionAt = l.dispersionAt;
                 out.slabs << s;
                 z = s.z1;
             }

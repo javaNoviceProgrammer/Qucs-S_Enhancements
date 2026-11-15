@@ -1328,6 +1328,28 @@ private slots:
         QVERIFY2(doc->extraction() == nullptr, "the capacitance of the mesh before was kept");
         QVERIFY(doc->lineSummary().isEmpty());
         QVERIFY(!doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")));
+
+        // A dispersive substrate: the quasi-static solve, of one frequency,
+        // takes it at the study's highest (40 GHz) and says so - its eps_r
+        // there under the 11.9 given at 1 GHz, so its C is the less.
+        doc->solveButton()->click();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->extraction() != nullptr && doc->extraction()->ok(), qPrintable(doc->solveProblem()));
+        const double plain = doc->extraction()->selfCapacitance(0);
+        QVERIFY(doc->editNode(substrate,
+                              [](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("tand"), QStringLiteral("0.02"));
+                                  n.props.insert(QStringLiteral("dispersion"), QStringLiteral("djordjevic_sarkar"));
+                              },
+                              QStringLiteral("a dispersive substrate")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solveButton()->click();
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::Extraction> dispersed = doc->extraction();
+        QVERIFY2(dispersed != nullptr && dispersed->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(dispersed->lines.join(' ').contains(QStringLiteral("taken at 40 GHz")), qPrintable(dispersed->lines.join(" | ")));
+        QVERIFY2(dispersed->selfCapacitance(0) < plain,
+                 qPrintable(QStringLiteral("%1 against %2").arg(dispersed->selfCapacitance(0)).arg(plain)));
     }
 
     // Two conductors are coupled lines, and the tab says so: their modes

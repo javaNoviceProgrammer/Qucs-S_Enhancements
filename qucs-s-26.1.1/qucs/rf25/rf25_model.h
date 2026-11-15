@@ -27,6 +27,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <complex>
+
 #include <optional>
 
 namespace qucs_s::rf25 {
@@ -64,6 +66,20 @@ QString formatName();
  * One layer of the stack, as the solver will read it: SI throughout, and
  * placed in z by stackOf() from the bottom up.
  */
+/*!
+ * Djordjevic and Sarkar's wideband Debye model (IEEE Trans. EMC 43(4), 2001):
+ * the relative permittivity at \a frequency (Hz), eps' - j eps'', of a
+ * dielectric whose \a epsr and \a tand are given at \a at (Hz):
+ *
+ *     eps(f) = eps_inf + d_eps ln((f2 + j f)/(f1 + j f)) / ln(f2/f1)
+ *
+ * its poles spread evenly in log f from f1 = 1 kHz to f2 = 1 THz, so that its
+ * loss tangent is nearly flat between them and eps' falls slowly with f -
+ * causal, as a constant eps' with a constant tand is not. d_eps and eps_inf
+ * are fixed by the value at \a at. A tand of nought is no dispersion.
+ */
+std::complex<double> djordjevicSarkar(double epsr, double tand, double at, double frequency);
+
 struct Layer {
     enum Kind { Substrate, Dielectric, Metal, Via, Ground, Cover };
     Kind kind = Dielectric;
@@ -77,6 +93,11 @@ struct Layer {
     /// shapes, where the layer map gives it any (rf25_dielectric.h).
     double beyond = 1;
     double roughness = 0;  ///< m, rms
+    /// A dielectric's or the substrate's dispersion: empty, its epsr and tand
+    /// the same at every frequency; "djordjevic_sarkar", the wideband Debye
+    /// model through epsr and tand at \a dispersionAt (djordjevicSarkar()).
+    QString dispersion;
+    double dispersionAt = 1e9;   ///< Hz: where epsr and tand are given
     QString from, to;      ///< a via's metals, by name
     /// A ground's or a cover's own kind: "perfect", "metal", "impedance" or
     /// "open" for a ground, "open" or "perfect" (a metal lid) for a cover.
@@ -114,6 +135,12 @@ struct Stack {
     QList<Layer> layers;
     QStringList problems;
     bool ok() const { return problems.isEmpty(); }
+    /// Whether any of its dielectrics is dispersive (Layer::dispersion).
+    bool dispersive() const;
+    /// The same with each dispersive dielectric's epsr and tand as they are
+    /// at \a frequency (Hz), and dispersive no more: what a solve of one
+    /// frequency, the quasi-static, takes.
+    Stack atFrequency(double frequency) const;
     /// The metals and the ground, in order, by name.
     QStringList conductors() const;
     /// The layer of that name, or null.
