@@ -607,6 +607,38 @@ private slots:
         QVERIFY(rf::Model::blank().stack().named(QStringLiteral("M1"))->automatic);
     }
 
+    // A slanted part's box is not where its metal is: a triangle's box comes
+    // within 2 µm of a pad its metal is 36.8 µm from at the nearest, and the
+    // pad's side was graded to a quarter of those 2 µm. The gap between a
+    // slanted part and another is how far apart their outlines are, for the
+    // grading and as said (a review's octagonal spirals,
+    // whose turns' slivers were graded to boxes 0.73 µm apart beside gaps of
+    // 2).
+    void aSlantedPartsGapIsWhereItsMetalIs()
+    {
+        rf::Model m = stacked();
+        rf::MeshSettings how;
+        how.maximum = 10e-6;
+        how.cellsAcross = 0;
+        how.gaps = true;
+        rf::Conductor wedge;
+        wedge.layer = QStringLiteral("M1");
+        wedge.outline = QPolygonF({QPointF(0, 0), QPointF(100, 100), QPointF(0, 100)});
+        const rf::Mesh mesh = rf::meshOf({wedge, on(QStringLiteral("M1"), 102, 0, 98, 50)}, how, m.stack(), 10e9);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        double padSmallest = 0;
+        for (const rf::MeshCell& c : mesh.cells) {
+            const QRectF b = c.outline.boundingRect();
+            if (b.left() < 102 - 1e-9) continue;
+            const double w = std::min(b.width(), b.height());
+            padSmallest = padSmallest > 0 ? std::min(padSmallest, w) : w;
+        }
+        // (Its edges halved once, 5 µm; graded to the box, 0.5.)
+        QVERIFY2(padSmallest > 4, qPrintable(QString::number(padSmallest)));
+        QCOMPARE(mesh.facing, 0);
+        QVERIFY2(std::abs(mesh.narrowestGap - 52 / M_SQRT2) < 1e-3, qPrintable(QString::number(mesh.narrowestGap)));
+    }
+
     // One cross-section, one mesh, however it is drawn: a coplanar line
     // drawn inside pads with tapers - its signal and its grounds polygons
     // with slanted sides - has the same cells along the line as the line

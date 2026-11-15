@@ -11,8 +11,10 @@
 #include <QtTest>
 
 #include <algorithm>
+#include <array>
 
 #include "rf25/rf25_inductance.h"
+#include "multiphysics/fem_sparse.h"
 
 #include <cmath>
 #include <tuple>
@@ -110,6 +112,92 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell)
     how.edges = false;   // (an even grid, so the cells share whole edges)
     how.cellsAcross = 0; // (and of that size alone, as the tests were written)
     return rf::meshOf(conductors, how, rf::Stack(), 0);
+}
+
+/// A planar spiral of S. S. Mohan et al., "Simple accurate expressions for
+/// planar spiral inductances" (IEEE JSSC 34(10), 1999), as a review drew its Table IV: \a sides 4, 8 or 12, \a n turns, \a dout
+/// across the flats, track \a w and gap \a s (µm). Its centre line - a
+/// square's segments 2 a0, 2 a0, 2 a0 and then pairs shorter by the pitch;
+/// a polygon's side k on n_k . x = a0 - p k / sides, each corner where two
+/// sides cross, so that the gap is s everywhere - with a lead of w at its
+/// outer end out along -x (a polygon's, on along side 0) and, for a polygon,
+/// w/2 on along the next side at its inner end. Its two ends' points in
+/// \a in and \a out.
+QList<QPointF> mohanCentreLine(int sides, double n, double dout, double w, double s)
+{
+    const double a0 = dout / 2 - w / 2, p = w + s;
+    const int count = int(std::lround(sides * n));
+    QList<QPointF> pts;
+    if (sides == 4) {
+        pts << QPointF(-a0, -a0);
+        const QPointF dirs[4] = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
+        for (int k = 0; k < count; ++k) {
+            const double L = k == 0 ? 2 * a0 : 2 * a0 - p * ((k - 1) / 2);
+            pts << pts.last() + dirs[k % 4] * L;
+        }
+        pts.prepend(pts.first() - QPointF(w, 0));
+        return pts;
+    }
+    const auto line = [&](int k) {
+        const double phi = -M_PI / 2 + 2 * M_PI * k / sides;
+        return std::array<double, 3>{std::cos(phi), std::sin(phi), a0 - p * k / sides};
+    };
+    const auto cross = [&](int k) {
+        const auto [a1, b1, c1] = line(k - 1);
+        const auto [a2, b2, c2] = line(k);
+        const double d = a1 * b2 - a2 * b1;
+        return QPointF((c1 * b2 - c2 * b1) / d, (a1 * c2 - a2 * c1) / d);
+    };
+    for (int k = 0; k <= count; ++k) pts << cross(k);
+    pts[0] -= QPointF(w, 0);
+    const auto [nx, ny, c] = line(count);
+    Q_UNUSED(c);
+    pts << pts.last() + QPointF(-ny, nx) * (w / 2);
+    return pts;
+}
+
+/// \a pts widened to \a w, mitred at each bend, on a nanometre's grid as
+/// a GDS has it: one conductor of M1.
+rf::Conductor widened(const QList<QPointF>& pts, double w)
+{
+    QList<QPointF> left, right;
+    const auto normal = [](QPointF a, QPointF b) {
+        const QPointF d = b - a;
+        const double l = std::hypot(d.x(), d.y());
+        return QPointF(-d.y() / l, d.x() / l);
+    };
+    for (int i = 0; i < pts.size(); ++i) {
+        const QPointF n1 = i == 0 ? normal(pts.at(0), pts.at(1)) : normal(pts.at(i - 1), pts.at(i));
+        const QPointF n2 = i + 1 == pts.size() ? n1 : normal(pts.at(i), pts.at(i + 1));
+        QPointF m = n1 + n2;
+        m /= std::hypot(m.x(), m.y());
+        const double k = w / 2 / (m.x() * n1.x() + m.y() * n1.y());
+        left << pts.at(i) + m * k;
+        right.prepend(pts.at(i) - m * k);
+    }
+    rf::Conductor c;
+    c.layer = QStringLiteral("M1");
+    for (const QPointF& q : left + right) c.outline << QPointF(std::round(q.x() * 1e3) / 1e3, std::round(q.y() * 1e3) / 1e3);
+    return c;
+}
+
+/// The length of \a pts, µm.
+double lengthOf(const QList<QPointF>& pts)
+{
+    double sum = 0;
+    for (int i = 1; i < pts.size(); ++i) sum += std::hypot(pts.at(i).x() - pts.at(i - 1).x(), pts.at(i).y() - pts.at(i - 1).y());
+    return sum;
+}
+
+/// As the tab meshes a model whose Mesh node asks for one cell across and
+/// \a largest µm at most.
+rf::MeshSettings likeTheTab(double largest, int across = 1)
+{
+    rf::MeshSettings how;
+    how.maximum = largest * 1e-6;
+    how.cellsAcross = across;
+    how.gaps = true;
+    return how;
 }
 
 } // namespace
@@ -212,8 +300,10 @@ private slots:
     // lengths apart, the cosine times it is Neumann's double integral of
     // dl.dl'/r along them, here by Gauss's rule (to the second order of
     // their length over their distance, which is where the turned runs'
-    // geometry differs). partialInductance() of two oblique runs is as it was:
-    // as though parallel, without the cosine - the quasi-static extraction's.
+    // geometry differs). partialInductance() of two oblique runs is the
+    // cosine times the aligned one too: as though parallel, without the
+    // cosine, as it was until a review, it was 2.11 times
+    // Neumann's here, and a dense loop at 45 degrees 30-50 % high.
     void anObliquePairIsTheCosineTimesItsAlignedOne()
     {
         const double l = 100e-6, w = 1e-6;
@@ -251,9 +341,12 @@ private slots:
         qWarning("60 degrees: cos x aligned %.6g pH, Neumann's %.6g pH; partialInductance %.6g pH", cosine * 1e12, neumann * 1e12,
                  rf::partialInductance(a, slant) * 1e12);
         QVERIFY2(std::abs(cosine / neumann - 1) < 5e-3, qPrintable(QStringLiteral("%1 vs %2").arg(cosine).arg(neumann)));
-        // As it was, without the cosine - and its start, not its middle,
-        // set along a's axis: 2.11 times Neumann's here.
-        QVERIFY2(rf::partialInductance(a, slant) > 1.8 * neumann, qPrintable(QString::number(rf::partialInductance(a, slant) / neumann)));
+        // And partialInductance(), the dense loop's, the same - the cosine
+        // signed, which way round the second points.
+        QCOMPARE(rf::partialInductance(a, slant), cosine);
+        rf::Filament back = slant;
+        std::swap(back.from, back.to);
+        QCOMPARE(rf::partialInductance(a, back), -cosine);
         // At right angles its kernel is still a number, smooth in where they
         // are, though nothing passes between them.
         const double across = rf::alignedInductance(a, alongY(500e-6, 600e-6, 200e-6, w));
@@ -765,6 +858,209 @@ private slots:
         QVERIFY2(coarse.ok() && !coarse.compressed, qPrintable(coarse.problems.join(" | ")));
         QVERIFY2(std::abs(over.l / coarse.l - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 nH").arg(over.l * 1e9).arg(coarse.l * 1e9)));
         qWarning().noquote() << over.lines.join(QStringLiteral(" | "));
+    }
+
+
+    // Mohan's spirals as a review meshed them, at the cell
+    // sizes where their loops came out shorted: "L02 ... 15 µm 0.0151 Ohm",
+    // "L05 ... 10 µm 0.387 Ohm", "L16 ... 15 µm 0.00106 Ohm" (P17). Two
+    // things together: each turn's rectangles graded from their own ends
+    // met in lines a hair apart, cells 0.5 nm wide whose edges the runs could
+    // not tell apart (cells left joined to nothing); and the loop's ports
+    // were numbered as the count of joined cells, which was then a real
+    // cell's number turns away. Now no cell is thinner than a quarter of the
+    // finest grading, and each loop is its metal's resistance along its
+    // length and Mohan's measured inductance.
+    void aSpiralIsMeshedCleanlyAndItsLoopIsItsLength()
+    {
+        const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
+        const double sheet = 1 / (3.5e7 * 0.9e-6);
+        struct Spiral {
+            const char* name;
+            double n, dout, w, s, largest, measured;
+        };
+        for (const Spiral& sp : {Spiral{"L02", 3.75, 292, 13, 1.9, 15, 6.00}, Spiral{"L05", 4.75, 206, 7.8, 1.9, 10, 6.10},
+                                 Spiral{"L16", 12, 180, 3.2, 2.1, 15, 20.5}}) {
+            const QList<QPointF> line = mohanCentreLine(4, sp.n, sp.dout, sp.w, sp.s);
+            const rf::Conductor spiral = widened(line, sp.w);
+            const rf::Mesh mesh = rf::meshOf({spiral}, likeTheTab(sp.largest), stack, 1e9);
+            QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+            // (A quarter of the finest grading at most: its gaps' cells are
+            //  halved to a quarter of 1.9 µm, 0.24 µm, and were 0.0005.)
+            QVERIFY2(mesh.smallest > 0.05, qPrintable(QStringLiteral("%1: a cell %2 µm across").arg(sp.name).arg(mesh.smallest)));
+            const rf::Inductance loop = rf::inductanceOf(mesh, {spiral}, stack, line.first(), line.last());
+            QVERIFY2(loop.ok(), qPrintable(QStringLiteral("%1: %2").arg(sp.name, loop.problems.join(" | "))));
+            // (Its corners counted as whole squares overstate the length a
+            //  little: 0.98-0.99 of it, as the review measured.)
+            const double along = sheet * lengthOf(line) / sp.w;
+            QVERIFY2(loop.rDc > 0.95 * along && loop.rDc < along,
+                     qPrintable(QStringLiteral("%1: %2 Ohm against %3 along it").arg(sp.name).arg(loop.rDc).arg(along)));
+            QVERIFY2(loop.rDcLeast > 0 && loop.rDcLeast <= loop.rDc, qPrintable(QString::number(loop.rDcLeast)));
+            QVERIFY2(std::abs(loop.lDc * 1e9 / sp.measured - 1) < 0.03,
+                     qPrintable(QStringLiteral("%1: %2 nH against %3 measured").arg(sp.name).arg(loop.lDc * 1e9).arg(sp.measured)));
+            qWarning("%s at %g um: %lld cells, the smallest %.3g um; L_dc %.4g nH (measured %.3g), R_dc %.4g Ohm (%.3f of along it)",
+                     sp.name, sp.largest, qlonglong(mesh.cells.size()), mesh.smallest, loop.lDc * 1e9, sp.measured, loop.rDc,
+                     loop.rDc / along);
+        }
+    }
+
+    // A cell joined to nothing - a shape smaller than a cell, on its own -
+    // is no part of the loop, and the current still goes in where the port
+    // is: the ports were numbered as the count of the cells that runs join,
+    // which with one left out was the last cell of the strip's own number,
+    // beside where the current comes out, and the strip was shorted.
+    //
+    // And a piece joined to itself but to neither end - two cells of their
+    // own - is left out, and said: solved with it, the nodal matrix was
+    // singular.
+    void aCellJoinedToNothingIsNoPlaceForTheCurrentToGoIn()
+    {
+        const rf::Stack stack = grounded(1, 100e-6, 1e-6, 5.8e7);
+        const double along = 400.0 / 20 / (5.8e7 * 1e-6);
+        {
+            const QList<rf::Conductor> both{strip(0, 300, 2, 2), strip(100, 0, 400, 20)};
+            const rf::Mesh mesh = meshed(both, 10);
+            const rf::Inductance loop = rf::inductanceOf(mesh, both, stack, QPointF(100, 10), QPointF(500, 10));
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            QVERIFY2(std::abs(loop.rDc / along - 1) < 0.01, qPrintable(QStringLiteral("%1 Ohm against %2").arg(loop.rDc).arg(along)));
+            // (The strip's 80 cells and the two ports': the lone cell is none.)
+            QCOMPARE(loop.nodes, 82);
+        }
+        const QList<rf::Conductor> three{strip(0, 300, 20, 10), strip(100, 0, 400, 20)};
+        const rf::Mesh mesh = meshed(three, 10);
+        const rf::Inductance loop = rf::inductanceOf(mesh, three, stack, QPointF(100, 10), QPointF(500, 10));
+        QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+        QVERIFY2(std::abs(loop.rDc / along - 1) < 0.01, qPrintable(QStringLiteral("%1 Ohm against %2").arg(loop.rDc).arg(along)));
+        QVERIFY2(loop.lines.join(' ').contains(QStringLiteral("2 cell(s) joined to neither end of the loop are left out")),
+                 qPrintable(loop.lines.join(" | ")));
+        QCOMPARE(loop.nodes, 82);
+    }
+
+    // A strip at 45 degrees is the strip along x. Three faults made it 30-50
+    // % high, or a third of its resistance, or "in pieces": two oblique runs'
+    // partial inductance measured along the first without Neumann's cosine
+    // (the dense loop's; the compressed one had the cosine); a cell cut by
+    // the slanted side held at its box's middle, which for a right triangle
+    // is on its hypotenuse, so that a stub to it had no length; and L in
+    // picohenries beside A's ones, which the dense LU took for singular on a
+    // fine mesh. And a U turned as well.
+    void aStripAt45DegreesIsTheStripAlongX()
+    {
+        const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
+        const double L = 400, w = 18, c = M_SQRT1_2;
+        const auto turned = [c](double x, double y) { return QPointF(c * x - c * y, c * x + c * y); };
+        const auto shape = [](const QList<QPointF>& points) {
+            rf::Conductor k;
+            k.layer = QStringLiteral("M1");
+            k.outline = QPolygonF(points);
+            return k;
+        };
+        const auto loopOf = [&](const rf::Conductor& k, QPointF a, QPointF b, const rf::MeshSettings& how) {
+            return rf::inductanceOf(rf::meshOf({k}, how, stack, 1e9), {k}, stack, a, b);
+        };
+        const QList<QPointF> u{{0, 0}, {200, 0}, {200, 200}, {200 - w, 200}, {200 - w, w}, {w, w}, {w, 200}, {0, 200}};
+        QList<QPointF> uTurned;
+        for (const QPointF& q : u) uTurned << turned(q.x(), q.y());
+        for (const auto& [largest, across, within, resistance] :
+             {std::tuple<double, int, double, double>{15, 1, 0.03, 0.2}, {5, 3, 0.015, 0.05}}) {
+            const rf::MeshSettings how = likeTheTab(largest, across);
+            const rf::Inductance flat = loopOf(shape({{0, 0}, {L, 0}, {L, w}, {0, w}}), QPointF(0, w / 2), QPointF(L, w / 2), how);
+            const rf::Inductance slant = loopOf(shape({turned(0, 0), turned(L, 0), turned(L, w), turned(0, w)}), turned(0, w / 2),
+                                                turned(L, w / 2), how);
+            QVERIFY2(flat.ok() && slant.ok() && !slant.compressed, qPrintable((flat.problems + slant.problems).join(" | ")));
+            const QString said = QStringLiteral("%1 µm, %2 across: %3 nH and %4 Ohm at 45 degrees, %5 and %6 along x")
+                                     .arg(largest).arg(across).arg(slant.lDc * 1e9).arg(slant.rDc).arg(flat.lDc * 1e9).arg(flat.rDc);
+            QVERIFY2(std::abs(slant.lDc / flat.lDc - 1) < within, qPrintable(said));
+            QVERIFY2(std::abs(slant.rDc / flat.rDc - 1) < resistance, qPrintable(said));
+            const rf::Inductance u0 = loopOf(shape(u), QPointF(w / 2, 200), QPointF(200 - w / 2, 200), how);
+            const rf::Inductance u45 = loopOf(shape(uTurned), turned(w / 2, 200), turned(200 - w / 2, 200), how);
+            QVERIFY2(u0.ok() && u45.ok(), qPrintable((u0.problems + u45.problems).join(" | ")));
+            QVERIFY2(std::abs(u45.lDc / u0.lDc - 1) < within + 0.01,
+                     qPrintable(QStringLiteral("a U: %1 nH at 45 degrees, %2 along x").arg(u45.lDc * 1e9).arg(u0.lDc * 1e9)));
+            qWarning().noquote() << said;
+        }
+        // Dense and compressed, the same loop alike.
+        const rf::Conductor slanted = shape({turned(0, 0), turned(L, 0), turned(L, w), turned(0, w)});
+        const rf::Inductance dense = loopOf(slanted, turned(0, w / 2), turned(L, w / 2), likeTheTab(5, 3));
+        rf::setLoopDenseLimit(100);
+        const rf::Inductance held = loopOf(slanted, turned(0, w / 2), turned(L, w / 2), likeTheTab(5, 3));
+        rf::setLoopDenseLimit(0);
+        QVERIFY2(dense.ok() && held.ok() && held.compressed && !dense.compressed, qPrintable((dense.problems + held.problems).join(" | ")));
+        QVERIFY2(std::abs(held.l / dense.l - 1) < 0.005, qPrintable(QStringLiteral("%1 against %2 nH").arg(held.l * 1e9).arg(dense.l * 1e9)));
+    }
+
+    // A strip of cells a tenth of a micrometre, solved dense: L's entries a
+    // few times 1e-14 H beside A's ones, which the LU's test of whether it
+    // is invertible - against its largest pivot - took for nothing, "in
+    // pieces that nothing joins", until L was put in its own scale.
+    void aFineStripIsSolvedDense()
+    {
+        const rf::Stack stack = grounded(1, 100e-6, 1e-6, 5.8e7);
+        const QList<rf::Conductor> fine{strip(0, 0, 10, 1)};
+        const rf::Inductance loop = rf::inductanceOf(meshed(fine, 0.1), fine, stack, QPointF(0, 0.5), QPointF(10, 0.5));
+        QVERIFY2(loop.ok() && !loop.compressed, qPrintable(loop.problems.join(" | ")));
+        const double along = 10.0 / 1 / (5.8e7 * 1e-6);
+        QVERIFY2(std::abs(loop.rDc / along - 1) < 0.01, qPrintable(QStringLiteral("%1 Ohm against %2").arg(loop.rDc).arg(along)));
+        QVERIFY2(std::abs(loop.lDc / textbookStrip(10e-6, 1e-6) - 1) < 0.05,
+                 qPrintable(QStringLiteral("%1 pH against %2").arg(loop.lDc * 1e12).arg(textbookStrip(10e-6, 1e-6) * 1e12)));
+    }
+
+    // An octagonal spiral of Mohan's Table IV (L55: n 4, dout 346, w 18, s 2
+    // µm): its slanted sides' trapezoids each one from corner to corner, not
+    // cut again at every other corner's height - 221 slivers 0.83 µm across,
+    // graded to boxes 0.73 µm apart, and 87,992 cells, whose loop ran the
+    // machine out of memory. Its loop
+    // as a sum of Neumann's integrals along its centre line has it (5.32 nH,
+    // the review's scripts' geometry; Mohan measured 5.90, of his own).
+    void anOctagonalSpiralIsMeshedCornerToCorner()
+    {
+        const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
+        const QList<QPointF> line = mohanCentreLine(8, 4, 346, 18, 2);
+        const rf::Conductor spiral = widened(line, 18);
+        const rf::Mesh mesh = rf::meshOf({spiral}, likeTheTab(15), stack, 1e9);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        QVERIFY2(mesh.cells.size() < 4000, qPrintable(QString::number(mesh.cells.size())));
+        QVERIFY2(std::abs(mesh.narrowestGap / 2 - 1) < 0.01, qPrintable(QString::number(mesh.narrowestGap)));
+        QVERIFY2(mesh.narrowest > 5, qPrintable(QString::number(mesh.narrowest)));
+        const rf::Inductance loop = rf::inductanceOf(mesh, {spiral}, stack, line.first(), line.last());
+        QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+        QVERIFY2(std::abs(loop.lDc * 1e9 / 5.32 - 1) < 0.05, qPrintable(QString::number(loop.lDc * 1e9)));
+        const double along = lengthOf(line) / 18 / (3.5e7 * 0.9e-6);
+        QVERIFY2(loop.rDc > 0.9 * along && loop.rDc < along, qPrintable(QStringLiteral("%1 Ohm against %2").arg(loop.rDc).arg(along)));
+        qWarning("L55: %lld cells, the narrowest gap %.4g um; L_dc %.4g nH, R_dc %.4g Ohm (%.3f of along it)", qlonglong(mesh.cells.size()),
+                 mesh.narrowestGap, loop.lDc * 1e9, loop.rDc, loop.rDc / along);
+    }
+
+    // A compressed loop past what a solve may take is refused before it is
+    // made, and says what it would have taken: an octagonal spiral of
+    // 172,000 runs went on into its near field's LU, 25 GB in 30 s and
+    // climbing, until the system ended Qucs-S without a word (P18).
+    void aLoopPastTheMemoryItMayTakeIsRefused()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6, 1e-6, 5.8e7);
+        const QList<rf::Conductor> big{strip(0, 0, 400, 120)};
+        const rf::Mesh mesh = meshed(big, 5);
+        rf::setLoopMemory(1e6);
+        const rf::Inductance refused = rf::inductanceOf(mesh, big, stack, QPointF(0, 60), QPointF(400, 60));
+        rf::setLoopMemory(0);
+        QVERIFY2(!refused.ok() && refused.problems.join(' ').contains(QStringLiteral("for their L alone, more than the 0.001 GB a solve may take")),
+                 qPrintable(refused.problems.join(" | ")));
+        const rf::Inductance solved = rf::inductanceOf(mesh, big, stack, QPointF(0, 60), QPointF(400, 60));
+        QVERIFY2(solved.ok() && solved.compressed, qPrintable(solved.problems.join(" | ")));
+        // Room for L as it is weighed, and not for the near field's factors
+        // beside it: refused there, before they are made - where their size
+        // is known before they are made, Accelerate's analysis.
+        if (qucs_s::fem::luBackend() != qucs_s::fem::Backend::Accelerate) {
+            qWarning("The near field factorized by %s here, whose size is not known before: not checked.",
+                     qPrintable(qucs_s::fem::backendName(qucs_s::fem::luBackend())));
+            return;
+        }
+        rf::setLoopMemory(20e3 * solved.branches * 1.01);
+        const rf::Inductance factors = rf::inductanceOf(mesh, big, stack, QPointF(0, 60), QPointF(400, 60));
+        rf::setLoopMemory(0);
+        QVERIFY2(!factors.ok() && factors.problems.join(' ').contains(QStringLiteral("the factors of its near field")),
+                 qPrintable(factors.problems.join(" | ")));
+        qWarning().noquote() << factors.problems.join(" | ");
     }
 };
 

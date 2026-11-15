@@ -614,6 +614,20 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         out.problems << tr("No cell of the mesh belongs to a conductor of the stack.");
         return out;
     }
+    // More charges than the dense solve takes: said before the stack's
+    // Green's functions are built for it, which took an octagonal spiral of
+    // 88,000 cells five minutes before it was refused.
+    {
+        qsizetype charges = 0;
+        for (const Net& n : nets) charges += n.cells.size();
+        if (charges > kMostCharges) {
+            out.unknowns = int(charges);
+            out.problems << tr("%1 cells is more than this build will solve a dense matrix for (%2 at most): ask for fewer "
+                               "cells across a conductor, or a larger largest cell.")
+                                .arg(charges).arg(kMostCharges);
+            return out;
+        }
+    }
     // Every net is free, held at a volt in turn, and the lines are of the
     // signals with the returns at nought: a via to the ground holds what it
     // lands on at the ground's potential, so it is a return (once refused,

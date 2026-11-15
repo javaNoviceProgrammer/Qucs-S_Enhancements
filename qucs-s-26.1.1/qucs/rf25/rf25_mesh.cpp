@@ -99,6 +99,10 @@ constexpr double kFacesApart = 0.02;
 /// quarter, where its capacitance across the gap goes visibly wrong.
 constexpr double kAutomaticFaces = 1.0 / 40;
 
+/// Lines of two pieces that meet nearer than this share of the finest space
+/// of any piece's own grid are one line (shareLines(), meshOf()).
+constexpr double kMergeShare = 0.25;
+
 QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh, double finestLow = 0,
                         double finestHigh = 0)
 {
@@ -255,6 +259,7 @@ QList<Slab> piecesOf(const QPolygonF& outline)
         struct Span {
             double u0[2], u1[2];   // its two sides at its low and its high c
             double c0, c1;
+            int e0 = -1, e1 = -1;   // the outline's edges its two sides lie on
         };
         QList<Slab> done;
         QList<Span> open;
@@ -270,13 +275,13 @@ QList<Slab> piecesOf(const QPolygonF& outline)
         };
         for (int s = 0; s + 1 < unique.size(); ++s) {
             const double c0 = unique.at(s), c1 = unique.at(s + 1), mid = (c0 + c1) / 2;
-            QList<std::array<double, 3>> crossings;   // (u at mid, at c0, at c1)
+            QList<std::array<double, 4>> crossings;   // (u at mid, at c0, at c1; the edge)
             for (int i = 0; i < m; ++i) {
                 const QPointF a = points.at(i), b = points.at((i + 1) % m);
                 const double ca = cOf(a), cb = cOf(b);
                 if (std::abs(cb - ca) <= tol || mid <= std::min(ca, cb) || mid >= std::max(ca, cb)) continue;
                 const auto uAt = [&](double c) { return uOf(a) + (uOf(b) - uOf(a)) * (c - ca) / (cb - ca); };
-                crossings.push_back({uAt(mid), uAt(c0), uAt(c1)});
+                crossings.push_back({uAt(mid), uAt(c0), uAt(c1), double(i)});
             }
             std::sort(crossings.begin(), crossings.end(), [](const auto& x, const auto& y) { return x[0] < y[0]; });
             QList<Span> next;
@@ -284,18 +289,29 @@ QList<Slab> piecesOf(const QPolygonF& outline)
                 const auto& lo = crossings.at(k);
                 const auto& hi = crossings.at(k + 1);
                 if (hi[0] - lo[0] <= tol) continue;
-                Span sp{{lo[1], lo[2]}, {hi[1], hi[2]}, c0, c1};
+                Span sp{{lo[1], lo[2]}, {hi[1], hi[2]}, c0, c1, int(lo[3]), int(hi[3])};
                 const bool straight = std::abs(lo[1] - lo[2]) <= tol && std::abs(hi[1] - hi[2]) <= tol;
+                // Carried on where the span before it went on straight, or
+                // where both its sides lie on the same edges of the outline
+                // as that one's: a slanted side's trapezoid is one from
+                // corner to corner of its own, not cut again at the height of
+                // every corner elsewhere. Cut so, an octagonal spiral's turns
+                // were 221 slivers along their slanted sides, each meshed by
+                // its own width - 0.83 µm of a turn 18 wide -, ten times the
+                // cells of a square spiral of a longer turn.
                 int carried = -1;
-                for (int o = 0; o < open.size() && carried < 0 && straight; ++o) {
+                for (int o = 0; o < open.size() && carried < 0; ++o) {
                     const Span& was = open.at(o);
-                    if (std::abs(was.u0[0] - was.u0[1]) <= tol && std::abs(was.u1[0] - was.u1[1]) <= tol
-                        && std::abs(was.u0[1] - lo[1]) <= tol && std::abs(was.u1[1] - hi[1]) <= tol && std::abs(was.c1 - c0) <= tol)
-                        carried = o;
+                    if (std::abs(was.c1 - c0) > tol || std::abs(was.u0[1] - lo[1]) > tol || std::abs(was.u1[1] - hi[1]) > tol)
+                        continue;
+                    const bool wasStraight = std::abs(was.u0[0] - was.u0[1]) <= tol && std::abs(was.u1[0] - was.u1[1]) <= tol;
+                    if ((straight && wasStraight) || (was.e0 == sp.e0 && was.e1 == sp.e1)) carried = o;
                 }
                 if (carried >= 0) {
                     sp = open.takeAt(carried);
                     sp.c1 = c1;
+                    sp.u0[1] = lo[2];
+                    sp.u1[1] = hi[2];
                 }
                 next << sp;
             }
@@ -323,11 +339,58 @@ QList<Slab> piecesOf(const QPolygonF& outline)
     return chosen;
 }
 
+/// The centroid of \a outline, whose area is \a area (> 0).
+QPointF centroidOf(const QPolygonF& outline, double area)
+{
+    double cx = 0, cy = 0, twice = 0;
+    const int n = int(outline.size());
+    for (int i = 0; i < n; ++i) {
+        const QPointF p = outline.at(i), q = outline.at((i + 1) % n);
+        const double cross = p.x() * q.y() - q.x() * p.y();
+        twice += cross;
+        cx += (p.x() + q.x()) * cross;
+        cy += (p.y() + q.y()) * cross;
+    }
+    if (!(std::abs(twice) > 1e-12 * area)) return outline.boundingRect().center();
+    return QPointF(cx / (3 * twice), cy / (3 * twice));
+}
+
+/// How far apart outlines \a a and \a b are at their nearest, where they
+/// do not cross: the least distance from a corner of either to a side of
+/// the other.
+double outlineDistance(const QPolygonF& a, const QPolygonF& b)
+{
+    double best = std::numeric_limits<double>::infinity();
+    const auto toSides = [&best](const QPolygonF& points, const QPolygonF& sides) {
+        const int n = int(sides.size());
+        for (const QPointF& p : points)
+            for (int i = 0; i < n; ++i) {
+                const QPointF s = sides.at(i), e = sides.at((i + 1) % n), d = e - s;
+                const double len2 = d.x() * d.x() + d.y() * d.y();
+                const double t = len2 > 0 ? std::clamp(((p.x() - s.x()) * d.x() + (p.y() - s.y()) * d.y()) / len2, 0.0, 1.0) : 0.0;
+                best = std::min(best, std::hypot(p.x() - s.x() - t * d.x(), p.y() - s.y() - t * d.y()));
+            }
+    };
+    toSides(a, b);
+    toSides(b, a);
+    return best;
+}
+
 /// The lines of \a mine and of \a theirs within [\a lo, \a hi] each made
 /// the other's too: where two pieces meet along that stretch, so that
 /// every cell of one there shares a whole edge with a cell of the other.
-/// Whether \a mine or \a theirs gained any.
-bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends = true)
+/// Whether \a mine or \a theirs gained any - or lost one.
+///
+/// Two lines nearer than \a merge are one there, the lower kept - the
+/// stretch's own ends before either -, and the other taken out of both:
+/// each piece's grid graded from its own ends, the two series met in lines
+/// a hair apart, and a spiral's cells came out half a nanometre wide
+/// beside its turns' gradings ("Solved on
+/// 4648 cell(s) from 0.000548 to 14.9 µm", and the loop shorted). The lower
+/// of a cluster, and an end over any, is a choice both pieces make alike
+/// whatever they held, so that rounds of sharing settle.
+bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends = true,
+                double merge = 0)
 {
     // (\a ends false: the lines strictly inside alone, not the stretch's
     //  ends - where a slanted side's part meets another, an end at a slanted
@@ -339,7 +402,41 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
     for (const double x : std::as_const(theirs))
         if (x >= lo + in && x <= hi - in) both << x;
     if (ends) both << lo << hi;
+    std::sort(both.begin(), both.end());
     bool gained = false;
+    if (merge > tol) {
+        // The lines that stay: the ends, then from the lowest up each one
+        // further than \a merge from the last kept and from the next end.
+        const auto isEnd = [&](double x) { return ends && (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol); };
+        QList<double> kept;
+        for (const double x : std::as_const(both)) {
+            if (!kept.isEmpty() && x - kept.last() <= tol) continue;
+            if (isEnd(x)) {
+                // (An end displaces the line kept just under it.)
+                while (!kept.isEmpty() && !isEnd(kept.last()) && x - kept.last() <= merge) kept.removeLast();
+                kept << x;
+                continue;
+            }
+            if (!kept.isEmpty() && x - kept.last() <= merge) continue;
+            if (ends && hi - x <= merge && hi - x > tol) continue;
+            kept << x;
+        }
+        // Each side's lines inside the stretch that are not kept, out.
+        for (QList<double>* lines : {&mine, &theirs}) {
+            const qsizetype was = lines->size();
+            lines->erase(std::remove_if(lines->begin(), lines->end(),
+                                        [&](double x) {
+                                            if (x < lo - tol || x > hi + tol) return false;
+                                            if (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol) return false;
+                                            for (const double k : std::as_const(kept))
+                                                if (std::abs(x - k) <= tol) return false;
+                                            return true;
+                                        }),
+                         lines->end());
+            gained = gained || lines->size() != was;
+        }
+        both = kept;
+    }
     for (QList<double>* lines : {&mine, &theirs})
         for (const double x : std::as_const(both)) {
             bool known = false;
@@ -729,6 +826,9 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     // 10 GHz to 9 % over at 60 on the graded cells. (Pieces swept in order
     // of their left edges: only those within twice the largest cell can face
     // one within reach of its grading.)
+    const auto outlineOfPiece = [&conductors](const Piece& p) {
+        return p.rectangle ? QPolygonF(p.box) : !p.outline.isEmpty() ? p.outline : conductors.at(p.conductor).outline;
+    };
     if (how.edges && how.gaps) {
         QList<int> order(pieces.size());
         std::iota(order.begin(), order.end(), 0);
@@ -760,21 +860,33 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                 };
                 const bool acrossY = acrossY0 && !filled(false);
                 const bool acrossX = acrossX0 && !filled(true);
+                // (Between two rectangles the gap is their boxes'; where
+                //  either is a slanted side's part, its box's corner may be
+                //  nowhere near the other, and the gap is how far apart
+                //  their outlines are - the parts of an octagonal spiral's
+                //  turns, 2 µm apart, were graded to boxes 0.73 µm apart.)
+                const bool slanted = !p.rectangle || !q.rectangle;
+                double apart = -1;
+                const auto gapOf = [&](double boxes) {
+                    if (!slanted || boxes <= 0) return boxes;
+                    if (apart < 0) apart = outlineDistance(outlineOfPiece(p), outlineOfPiece(q));
+                    return std::max(boxes, apart);
+                };
                 if (acrossY && B.left() >= A.right()) {
-                    keep(&p.gap[1], B.left() - A.right());
-                    keep(&q.gap[0], B.left() - A.right());
+                    keep(&p.gap[1], gapOf(B.left() - A.right()));
+                    keep(&q.gap[0], gapOf(B.left() - A.right()));
                 }
                 if (acrossY && A.left() >= B.right()) {
-                    keep(&p.gap[0], A.left() - B.right());
-                    keep(&q.gap[1], A.left() - B.right());
+                    keep(&p.gap[0], gapOf(A.left() - B.right()));
+                    keep(&q.gap[1], gapOf(A.left() - B.right()));
                 }
                 if (acrossX && B.top() >= A.bottom()) {
-                    keep(&p.gap[3], B.top() - A.bottom());
-                    keep(&q.gap[2], B.top() - A.bottom());
+                    keep(&p.gap[3], gapOf(B.top() - A.bottom()));
+                    keep(&q.gap[2], gapOf(B.top() - A.bottom()));
                 }
                 if (acrossX && A.top() >= B.bottom()) {
-                    keep(&p.gap[2], A.top() - B.bottom());
-                    keep(&q.gap[3], A.top() - B.bottom());
+                    keep(&p.gap[2], gapOf(A.top() - B.bottom()));
+                    keep(&q.gap[3], gapOf(A.top() - B.bottom()));
                 }
             }
         }
@@ -851,7 +963,18 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
         QRectF all;
         for (const Piece& p : std::as_const(pieces)) all = all.united(p.box);
         const double tol = 1e-9 * std::max(1.0, std::max(all.width(), all.height()));
-        const auto shareAll = [&pieces, &meetings, tol](bool rectanglesOnly) {
+        // Lines a quarter of the finest space of any piece's own grid apart,
+        // or nearer, are one where two pieces meet (shareLines()): no cell
+        // made by sharing is narrower than a quarter of the narrowest one
+        // asked for.
+        double finestSpace = 0;
+        for (const Piece& p : std::as_const(pieces))
+            for (const QList<double>* lines : {&p.xs, &p.ys})
+                for (int k = 1; k < lines->size(); ++k)
+                    if (const double d = lines->at(k) - lines->at(k - 1); d > tol && (finestSpace <= 0 || d < finestSpace))
+                        finestSpace = d;
+        const double merge = kMergeShare * finestSpace;
+        const auto shareAll = [&pieces, &meetings, tol, merge](bool rectanglesOnly) {
             bool gained = !meetings.isEmpty();
             for (int round = 0; gained && round < 64; ++round) {
                 gained = false;
@@ -860,8 +983,8 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                     Piece& b = pieces[m.b];
                     const bool rectangles = a.rectangle && b.rectangle;
                     if (rectanglesOnly && !rectangles) continue;
-                    gained = (m.alongX ? shareLines(a.xs, b.xs, m.lo, m.hi, tol, rectangles)
-                                       : shareLines(a.ys, b.ys, m.lo, m.hi, tol, rectangles))
+                    gained = (m.alongX ? shareLines(a.xs, b.xs, m.lo, m.hi, tol, rectangles, merge)
+                                       : shareLines(a.ys, b.ys, m.lo, m.hi, tol, rectangles, merge))
                              || gained;
                 }
             }
@@ -956,7 +1079,13 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                         MeshCell cell;
                         cell.layer = conductor.layer;
                         cell.outline = part;
-                        cell.centre = part.boundingRect().center();
+                        // (A cell cut by a slanted side is held at its
+                        //  centroid: its box's middle may be on its edge - a
+                        //  right triangle's is on its hypotenuse -, and a run
+                        //  or a stub to it from that edge had no length, its
+                        //  conductance without bound.)
+                        cell.centre = piece.rectangle || std::abs(a - full) <= full * 1e-9 ? square.center()
+                                                                                           : centroidOf(part, a);
                         cell.area = a;
                         // On the edge where the cut took something off, or
                         // where the square touches the conductor's bounds.
@@ -1090,6 +1219,10 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                     gap = gap > 0 && g > 0 ? std::min(gap, g) : std::max(gap, g);
                 }
                 if (gap <= 1e-9 * size) continue;
+                // (A slanted side's part: how far apart the outlines are, as
+                //  the grading above has it.)
+                if (!pieces.at(a).rectangle || !pieces.at(b).rectangle)
+                    gap = std::max(gap, outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b))));
                 if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
             }
         for (const double gap : std::as_const(narrowestGap))

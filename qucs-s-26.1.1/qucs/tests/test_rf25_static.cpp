@@ -1589,11 +1589,18 @@ private slots:
         QVERIFY2(mirrored.ok(), qPrintable(mirrored.problems.join(" | ")));
         QVERIFY2(says(mirrored.lines, "coarsened"), qPrintable(mirrored.lines.join(" | ")));
 
-        // More cells than a dense matrix of this build may hold.
+        // More cells than a dense matrix of this build may hold - said
+        // before the stack's Green's functions are built for them, which
+        // took an octagonal spiral of 88,000 cells five minutes before it
+        // was refused.
         const QList<rf::Conductor> big{strip(0, 0, 400, 400)};
-        const rf::Extraction huge = rf::extract(meshed(big, 4, false), big, grounded(4.1, 10e-6));
+        std::atomic_int step{-1};
+        rf::ExtractControl watched;
+        watched.step = &step;
+        const rf::Extraction huge = rf::extract(meshed(big, 4, false), big, grounded(4.1, 10e-6), 1e-6, {}, &watched);
         QVERIFY(!huge.ok());
         QVERIFY2(huge.problems.first().contains(QStringLiteral("dense matrix")), qPrintable(huge.problems.join(" | ")));
+        QCOMPARE(step.load(), int(rf::ExtractControl::Starting));
     }
 };
 
