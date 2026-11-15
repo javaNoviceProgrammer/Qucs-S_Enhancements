@@ -1044,6 +1044,10 @@ private slots:
         lidded.layers << lid;
         const rf::Inductance under = rf::inductanceOf(meshed(wire, 10), wire, lidded, QPointF(0, 10), QPointF(400, 10));
         QVERIFY2(under.ok() && under.lines.join(' ').contains(QStringLiteral("has a metal lid")), qPrintable(under.lines.join(" | ") + under.problems.join(" | ")));
+        lidded.layers.last().walls = true;
+        lidded.layers.last().box = QRectF(QPointF(-1e-3, -1e-3), QPointF(1e-3, 1e-3));
+        const rf::Inductance boxed = rf::inductanceOf(meshed(wire, 10), wire, lidded, QPointF(0, 10), QPointF(400, 10));
+        QVERIFY2(boxed.ok() && boxed.lines.join(' ').contains(QStringLiteral("a metal lid and side walls")), qPrintable(boxed.lines.join(" | ")));
     }
 
     // A strip of cells a tenth of a micrometre, solved dense: L's entries a

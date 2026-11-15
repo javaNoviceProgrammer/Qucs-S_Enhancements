@@ -960,6 +960,111 @@ private slots:
         }
     }
 
+    // A box (side walls round the
+    // layout, from the ground up to the lid). A strip 100 µm wide midway
+    // between a ground and a lid 200 µm apart, in vacuum, its walls along it
+    // 100 µm off each edge and those across it far: its C per metre, from two
+    // lengths, is the channel's 2D one - written here independently, the
+    // strip in pieces and the potential the rectangle's sine series - within
+    // 0.5 % (34.09 against 34.19 pF/m); the walls 3 mm off, Cohn's
+    // stripline's (33.13 against 33.21); and the walls' own share, the one
+    // over the other, to 0.1 %. Walls without a lid, round no rectangle, and
+    // a conductor beyond them, said.
+    void aBoxsWallsAreItsImages()
+    {
+        const double b = 200e-6, w = 100e-6, z0 = b / 2;
+        // The 2D reference: the channel's Green's function, pieces of the
+        // strip each a uniform charge, its potential at each piece's middle.
+        const auto channelOf = [&](double width, int pieces) {
+            const double d = w / pieces, from = (width - w) / 2;
+            Eigen::MatrixXd p(pieces, pieces);
+            for (int i = 0; i < pieces; ++i)
+                for (int j = 0; j < pieces; ++j) {
+                    const double yi = from + (i + 0.5) * d, y0 = from + j * d, y1 = y0 + d;
+                    double sum = 0;
+                    for (int n = 1; n < 20000; ++n) {
+                        const double kn = n * M_PI / width;
+                        const double g = (1 - std::exp(-2 * kn * z0)) * (1 - std::exp(-2 * kn * (b - z0))) / (2 * kn * (1 - std::exp(-2 * kn * b)));
+                        const double over = (std::cos(kn * y0) - std::cos(kn * y1)) / (kn * d);
+                        sum += std::sin(kn * yi) * over * g;
+                    }
+                    p(i, j) = 2 * sum / (width * rf::kEps0);
+                }
+            const Eigen::VectorXd one = Eigen::VectorXd::Ones(pieces);
+            return one.dot(p.partialPivLu().solve(one));
+        };
+        // (Pieces of uniform charge converge as one over their number, the
+        //  edges' charge singular: 34.015, 34.100, 34.143, 34.165 pF/m for 40
+        //  to 320 of them - so the two first, extrapolated, 34.186.)
+        const auto channel = [&](double width) { return 2 * channelOf(width, 80) - channelOf(width, 40); };
+        const auto boxed = [&](double width, double length) {
+            rf::Stack st = stripline(1, b);
+            rf::Layer& lid = st.layers.last();
+            lid.walls = true;
+            lid.box = QRectF(QPointF(-1000e-6, 50e-6 - width / 2), QPointF(3000e-6, 50e-6 + width / 2));
+            const QList<rf::Conductor> line{strip(0, 0, length * 1e6, w * 1e6)};
+            const rf::Extraction e = rf::extract(meshed(line, 25), line, st);
+            return e;
+        };
+        QList<double> got, wanted;
+        for (const double width : {300e-6, 6100e-6}) {
+            const rf::Extraction a = boxed(width, 1000e-6), c = boxed(width, 2000e-6);
+            QVERIFY2(a.ok() && c.ok(), qPrintable((a.problems + c.problems).join(" | ")));
+            QVERIFY2(says(a.lines, "A box of"), qPrintable(a.lines.join(" | ")));
+            QVERIFY2(!a.perMetre.fromMiddle, "a box's line read from its middle as a cross-section without end");
+            const double perMetre = (c.selfCapacitance(0) - a.selfCapacitance(0)) / 1000e-6;
+            const double want = width < 1e-3 ? channel(width) : 1.0 / (rf::kLightSpeed * (376.730313668 / 4 * ellipticK(1 / std::cosh(M_PI * w / (2 * b)))
+                                                                                   / ellipticK(std::tanh(M_PI * w / (2 * b)))));
+            qWarning("a box %g µm across: C %.5g pF/m, the reference %.5g", width * 1e6, perMetre * 1e12, want * 1e12);
+            QVERIFY2(std::abs(perMetre / want - 1) < 0.005, qPrintable(QStringLiteral("%1 pF/m against %2").arg(perMetre * 1e12).arg(want * 1e12)));
+            got << perMetre;
+            wanted << want;
+        }
+        // The walls' own share, their channel over the open stripline: 2.89 %
+        // against 2.93 % - the solve's 0.25 % low in both, as its stripline is.
+        QVERIFY2(std::abs((got.at(0) / got.at(1)) / (wanted.at(0) / wanted.at(1)) - 1) < 1e-3,
+                 qPrintable(QStringLiteral("the walls x%1, the reference's x%2").arg(got.at(0) / got.at(1)).arg(wanted.at(0) / wanted.at(1))));
+        // Walls without a lid; a conductor beyond them.
+        {
+            rf::Model m = rf::Model::blank();
+            rf::Node cover = m.make(QStringLiteral("rf_cover"));
+            cover.props.insert(QStringLiteral("kind"), QStringLiteral("open"));
+            cover.props.insert(QStringLiteral("walls"), QStringLiteral("true"));
+            m.stackNode().children.push_back(cover);
+            QVERIFY2(says(m.stack().problems, "Side walls want a metal lid"), qPrintable(m.stack().problems.join(" | ")));
+            m.stackNode().children.back().props.insert(QStringLiteral("kind"), QStringLiteral("perfect"));
+            m.stackNode().children.back().props.insert(QStringLiteral("box_x1"), QStringLiteral("0"));
+            QVERIFY2(says(m.stack().problems, "stand round no rectangle"), qPrintable(m.stack().problems.join(" | ")));
+            // Read, and kept round a file.
+            m.stackNode().children.back().props.insert(QStringLiteral("box_x0"), QStringLiteral("-200[um]"));
+            m.stackNode().children.back().props.insert(QStringLiteral("box_x1"), QStringLiteral("2[mm]"));
+            const rf::Stack read = rf::Model::fromJson(m.toJson())->stack();
+            QVERIFY2(!says(read.problems, "box"), qPrintable(read.problems.join(" | ")));
+            QVERIFY(read.layers.last().walls);
+            QVERIFY(std::abs(read.layers.last().box.left() + 200e-6) < 1e-15 && std::abs(read.layers.last().box.right() - 2e-3) < 1e-15
+                    && std::abs(read.layers.last().box.bottom() - 1e-3) < 1e-15);
+            QVERIFY(rf::layersOf(read).walls);
+        }
+        rf::Stack small = stripline(1, b);
+        small.layers.last().walls = true;
+        small.layers.last().box = QRectF(QPointF(-100e-6, -100e-6), QPointF(500e-6, 200e-6));
+        const QList<rf::Conductor> longer{strip(0, 0, 1000, 100)};
+        const rf::Extraction beyond = rf::extract(meshed(longer, 25), longer, small);
+        QVERIFY2(!beyond.ok() && says(beyond.problems, "reaches beyond the box"), qPrintable(beyond.problems.join(" | ")));
+        // A layer that ends, in a box: refused. Walls with no ground: said.
+        small.layers.last().box = QRectF(QPointF(-1e-3, -1e-3), QPointF(2e-3, 1e-3));
+        rf::ExtractControl ends;
+        rf::Extent e;
+        e.layer = QStringLiteral("UP");
+        e.shapes = {QPolygonF(QRectF(-100, -100, 400, 300))};
+        ends.extents << e;
+        const rf::Extraction ended = rf::extract(meshed(longer, 25), longer, small, 1e-6, {}, &ends);
+        QVERIFY2(!ended.ok() && says(ended.problems, "not solved in a box"), qPrintable(ended.problems.join(" | ")));
+        rf::Stack floating = small;
+        floating.layers[0].variant = QStringLiteral("open");
+        QVERIFY2(says(rf::layersOf(floating).problems, "Side walls want a ground plane"), qPrintable(rf::layersOf(floating).problems.join(" | ")));
+    }
+
     // What it will not answer: a layer that is
     // no metal, a stack with nothing to solve in, and a mesh too large for
     // a dense matrix.

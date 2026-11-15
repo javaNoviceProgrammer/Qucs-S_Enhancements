@@ -107,6 +107,10 @@ struct Layers {
     /// A perfect metal lid over the top slab (a cover's "A metal lid"): its
     /// gap of air the top slab, where its height is more than nought.
     bool groundAbove = false;
+    /// The lid's side walls (Layer::walls): a perfect box round \a box, m,
+    /// from the ground up to the lid.
+    bool walls = false;
+    QRectF box;
     double epsrBelow = 1;     ///< what is below it when there is no ground
     double epsrAbove = 1;     ///< above the top slab, to infinity (air)
     /// The half-spaces' relative permeability (the retarded Green's functions
@@ -121,6 +125,21 @@ struct Layers {
     int slabAt(double z) const;
     double height() const { return slabs.isEmpty() ? 0 : slabs.last().z1; }
 };
+
+/// An image of a charge, or of a current, in a box's perfect walls: its
+/// sign and where it is.
+struct BoxImage {
+    double sign = 1;
+    QRectF rect;   ///< m
+};
+/// The images of what is spread over \a rect (m) in the perfect walls of
+/// \a box (m), the walls at its edges, whose centres lie within \a reach (m)
+/// of \a at - every one but the source itself. Mirrored across a wall at x,
+/// an image takes \a signX (a charge's -1, a current along x +1, along y -1),
+/// across one at y \a signY, each mirror's sign its own; and the box's
+/// period, twice its size, repeats them.
+QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF& at, double reach, double signX = -1,
+                            double signY = -1);
 
 /// \a stack read as dielectric slabs: its metals and vias left out, its
 /// ground noted, its dielectrics and substrate kept in order. A stack with

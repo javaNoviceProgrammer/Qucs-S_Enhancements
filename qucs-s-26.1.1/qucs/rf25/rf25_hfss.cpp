@@ -1306,6 +1306,8 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
     if (stack.dispersive())
         out.notes << tr("Djordjevic-Sarkar dispersion is not written here: its dielectrics are written at the values given for the "
                         "frequency they are given at.");
+    for (const Layer& l : stack.layers)
+        if (l.kind == Layer::Cover && l.walls) out.notes << tr("The box's side walls are not written: the design has the lid alone.");
     if (stack.magnetic())
         out.notes << tr("A layer's magnetic loss tangent is in the script's materials, not in the control file's, which has its "
                         "permeability alone.");

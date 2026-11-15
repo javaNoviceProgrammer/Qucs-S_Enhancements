@@ -1941,6 +1941,15 @@ private slots:
             return M_PI / (2 * a);
         };
         const double cohn = 376.730313668 / 2 / 4 * ellipticK(k) / ellipticK(kp);
+        // (A box - side walls too - is the quasi-static solve's alone yet,
+        //  and said.)
+        {
+            rf::Stack boxed = lidded(4, 100e-6, 0);
+            boxed.layers.last().walls = true;
+            boxed.layers.last().box = QRectF(QPointF(-1e-3, -1e-3), QPointF(3e-3, 1e-3));
+            const rf::FullWave refused = line(boxed, 1000, 100, 4, 100e-6, 4, {1e9});
+            QVERIFY2(!refused.ok() && says(refused.problems, "full wave of a box is not solved yet"), qPrintable(why(refused)));
+        }
         rf::FullWaveControl noPaths;
         noPaths.portPaths = false;
         const auto solve = [&noPaths](const rf::Stack& st, double length, double f) {
@@ -1960,6 +1969,15 @@ private slots:
             const LowFrequency lf = lowFrequency(a, c, 0, 1000e-6, 2000e-6);
             const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, 1e9);
             QVERIFY2(std::abs(lf.lPer / lp.l - 1) < 0.01, qPrintable(QStringLiteral("L %1 nH/mm against %2").arg(lf.lPer * 1e6).arg(lp.l * 1e6)));
+            // The compressed solve's the dense one's: its static parts, kept
+            // once, hold the lid's image as the dense one's do.
+            rf::FullWaveControl compressed = noPaths;
+            compressed.matrix = rf::FullWaveControl::Matrix::Compressed;
+            const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+            const rf::FullWave h = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, {1e9}, 1e-6, &compressed);
+            QVERIFY2(h.ok(), qPrintable(why(h)));
+            QVERIFY2(std::abs(h.z.at(0).at(1).at(0) / c.z.at(0).at(1).at(0) - 1.0) < 1e-4,
+                     qPrintable(QStringLiteral("Z21 %1 compressed, %2 dense").arg(std::abs(h.z.at(0).at(1).at(0))).arg(std::abs(c.z.at(0).at(1).at(0)))));
         }
         for (const auto& [st, name] : {std::pair{lidded(4, 100e-6, 0), QStringLiteral("stripline")},
                                        std::pair{lidded(0, 0, 200e-6), QStringLiteral("microstrip under a lid")}}) {
