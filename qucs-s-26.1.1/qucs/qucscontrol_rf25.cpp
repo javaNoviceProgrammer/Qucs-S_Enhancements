@@ -26,6 +26,7 @@
 #include "main.h"
 #include "qucs.h"
 #include "rf25/rf25_farfield.h"
+#include "rf25/rf25_tdr.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_sparams.h"
@@ -2085,5 +2086,58 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
                        {QStringLiteral("phi_most_deg"), a.phiMost * 180 / M_PI},
                        {QStringLiteral("cuts"), cuts}};
     if (!a.notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(a.notes));
+    return jsonResult(result);
+}
+
+QJsonObject QucsControl::rf25Tdr(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_tdr is of one's full-wave sweep.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    const RF25Doc::Held held(model);
+    const QString heldName = QFileInfo(model->getDocName()).fileName();
+    const bool laidOut = model->waitForLayout(300000);
+    if (model->closedWhenFree()) return closedWhileWaited(heldName);
+    if (!laidOut) return errorResult(tr("Its layout is still being read after %1 s.").arg(300));
+    const std::shared_ptr<const FullWave> wave = model->fullWave();
+    if (!wave || !wave->ok() || wave->frequencies.isEmpty())
+        return errorResult(tr("It has no full-wave solve: rf25_solve it first (solver full_wave), or press Solve on its tab."));
+    const auto portNamed = [&wave](const QString& name, int fallback) {
+        return name.isEmpty() ? fallback : int(wave->portNames.indexOf(name));
+    };
+    const int port = portNamed(args.value(QLatin1String("port")).toString().trimmed(), 0);
+    const QString toName = args.value(QLatin1String("to")).toString().trimmed();
+    const int to = portNamed(toName, port);
+    if (port < 0 || to < 0)
+        return errorResult(tr("It has no such port: its ports are %1.").arg(wave->portNames.join(QStringLiteral(", "))));
+    QList<std::complex<double>> s;
+    for (const auto& sk : wave->s) s << sk.at(to).at(port);
+    const bool reflection = to == port;
+    const double reference = port < wave->references.size() ? wave->references.at(port) : 50;
+    const TimeDomain td = timeDomainOf(wave->frequencies, s, reflection, reference, args.value(QLatin1String("beta")).toDouble(6),
+                                       args.value(QLatin1String("points")).toInt(0));
+    if (!td.ok()) return errorResult(td.problems.join(QLatin1Char(' ')));
+    QJsonArray t, values;
+    for (int i = 0; i < td.t.size(); ++i) {
+        t.append(td.t.at(i) * 1e12);
+        values.append(reflection ? td.impedance.at(i) : td.step.at(i));
+    }
+    QJsonObject result{{QStringLiteral("port"), wave->portNames.value(port)},
+                       {QStringLiteral("kind"), reflection ? QStringLiteral("reflection") : QStringLiteral("transmission")},
+                       {QStringLiteral("df_hz"), td.df},
+                       {QStringLiteral("t_ps"), t},
+                       {reflection ? QStringLiteral("z_ohm") : QStringLiteral("step"), values},
+                       {QStringLiteral("said"), td.lines.join(QLatin1Char(' '))}};
+    if (!reflection) result.insert(QStringLiteral("to"), wave->portNames.value(to));
     return jsonResult(result);
 }
