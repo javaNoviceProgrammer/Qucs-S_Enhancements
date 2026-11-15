@@ -436,8 +436,8 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("diameter"), tr("Diameter"), QStringLiteral("m"), QStringLiteral("25[um]")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("4.1e7"), tr("Gold's; nought, perfect")),
           expr(QStringLiteral("pieces"), tr("Pieces"), QString(), QStringLiteral("3"),
-               tr("The runs along its span, each at the height that keeps the profile's mean ln h over it; up to four, its "
-                  "inductance its profile's within 3 %")),
+               tr("The runs along its span, each at the height that keeps the profile's mean ln h over it: one to four, its "
+                  "inductance its profile's within 3 % (more is not solved yet)")),
           boolean(QStringLiteral("fit"), tr("Fitted to its profile"), true,
                   tr("Its runs' heights over the chord scaled so that the staircase's inductance over the ground is the "
                      "profile's own"))},

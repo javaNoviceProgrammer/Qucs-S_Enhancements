@@ -124,6 +124,57 @@ private slots:
         QVERIFY(std::abs(t.step.at(later) - 1) < 0.01);
     }
 
+    // A matched delay line's transmission swept coarsely - 45 degrees a
+    // step - and resampled four times finer: no echo above the window's
+    // sidelobes (the review of 8b91a9ab: straight lines in Re and Im dip to
+    // cos 22.5 = 0.92 between the points, and echo at the sweep's step's
+    // inverse). And what is said: the phase's steps, a sweep that starts high,
+    // a response that folds back.
+    void aCoarseSweepHasNoFalseEchoes()
+    {
+        const double delay = 1e-9, step = 125e6;
+        QList<double> fs;
+        QList<Complex> s21;
+        for (int k = 1; k <= 160; ++k) {
+            fs << k * step;
+            s21 << std::exp(-kJ * (2 * M_PI * k * step * delay));
+        }
+        const rf::TimeDomain t = rf::timeDomainOf(fs, s21, false, 50, 6, 640);
+        QVERIFY2(t.ok(), qPrintable(t.problems.join(" | ")));
+        double peak = 0, echo = 0, echoAt = 0;
+        for (int i = 0; i < t.t.size(); ++i) {
+            peak = std::max(peak, std::abs(t.impulse.at(i)));
+            if (std::abs(t.t.at(i) - delay) > 2e-9 && std::abs(t.impulse.at(i)) > echo) {
+                echo = std::abs(t.impulse.at(i));
+                echoAt = t.t.at(i);
+            }
+        }
+        qWarning("a coarse sweep's delay line: its largest echo %.2e of the peak, at %.3g ns", echo / peak, echoAt * 1e9);
+        // (Kaiser's sidelobes at beta 6 are some 0.6 % of its peak; the chords
+        //  in Re and Im gave 1.6 % at 9 ns, the sweep's step's inverse.)
+        QVERIFY2(echo < 5e-3 * peak, qPrintable(QStringLiteral("%1 of the peak at %2 ns").arg(echo / peak).arg(echoAt * 1e9)));
+        QVERIFY(t.lines.join(QLatin1Char(' ')).contains(QStringLiteral("phase turns by up to 45 degrees")));
+        // A sweep from 1 GHz on a grid of 31.25 MHz: said.
+        QList<double> high;
+        QList<Complex> sHigh;
+        for (int k = 0; k < 20; ++k) {
+            high << 1e9 + k * 0.5e9;
+            sHigh << Complex(0.1, 0);
+        }
+        const rf::TimeDomain h = rf::timeDomainOf(high, sHigh, true, 50, 6, 320);
+        QVERIFY2(h.lines.join(QLatin1Char(' ')).contains(QStringLiteral("starts at 1 GHz")), qPrintable(h.lines.join(" | ")));
+        // A delay past the window's half (8 ns of 16 at 62.5 MHz): said.
+        QList<double> fine;
+        QList<Complex> late;
+        for (int k = 1; k <= 160; ++k) {
+            fine << k * 62.5e6;
+            late << std::exp(-kJ * (2 * M_PI * k * 62.5e6 * 7.8e-9));
+        }
+        const rf::TimeDomain f = rf::timeDomainOf(fine, late, false);
+        QVERIFY2(f.lines.join(QLatin1Char(' ')).contains(QStringLiteral("folds back")), qPrintable(f.lines.join(" | ")));
+        QVERIFY(!t.lines.join(QLatin1Char(' ')).contains(QStringLiteral("folds back")));
+    }
+
     // A full-wave line: 5 mm of 100 µm on 100 µm of eps_r 9.8, edge ports of
     // 50 Ohm, 100 frequencies to 20 GHz. Halfway along its round trip its
     // profile is its own impedance - the quasi-static solve's - within 2 %.

@@ -68,8 +68,24 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
         const int hi = int(std::lower_bound(frequencies.begin(), frequencies.end(), f) - frequencies.begin());
         if (hi >= n) return s.last();
         const double u = (f - frequencies.at(hi - 1)) / (frequencies.at(hi) - frequencies.at(hi - 1));
-        return s.at(hi - 1) + (s.at(hi) - s.at(hi - 1)) * u;
+        // (Its magnitude and its phase each along the step, not its real and
+        //  imaginary parts: a straight chord between two points a phase
+        //  apart dips to cos(dphi/2) of them - 3.4 % at 30 degrees -, a
+        //  ripple at the sweep's own step that the transform shows as echoes
+        //  at multiples of its inverse - the review of 8b91a9ab.)
+        const Complex lo = s.at(hi - 1), up = s.at(hi);
+        if (std::abs(lo) == 0 || std::abs(up) == 0) return lo + (up - lo) * u;
+        const double turn = std::arg(up / lo);
+        return std::polar(std::abs(lo) * (1 - u) + std::abs(up) * u, std::arg(lo) + turn * u);
     };
+    // How far the phase turns between the sweep's points, where S is not
+    // nothing: past some 20 degrees a step, the resampling between them is
+    // the phase's guess.
+    double largest = 0, turned = 0;
+    for (const Complex& v : s) largest = std::max(largest, std::abs(v));
+    for (int k = 1; k < n; ++k)
+        if (std::abs(s.at(k)) > 1e-3 * largest && std::abs(s.at(k - 1)) > 1e-3 * largest)
+            turned = std::max(turned, std::abs(std::arg(s.at(k) / s.at(k - 1))));
     // Kaiser's window over the band, one at nought and its least at the top.
     const auto window = [&](int k) {
         if (!(beta > 0)) return 1.0;
@@ -100,6 +116,28 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
             const double rho = std::clamp(running, -0.999999, 0.999999);
             out.impedance << reference * (1 + rho) / (1 - rho);
         }
+    }
+    if (turned > 20 * M_PI / 180)
+        out.lines << tr("S's phase turns by up to %1 degrees between the sweep's points: between them it is taken along its "
+                        "magnitude and phase, which is a guess past some 20 degrees - a finer sweep is surer.")
+                         .arg(turned * 180 / M_PI, 0, 'f', 0);
+    if (f0 > 3 * df)
+        out.lines << tr("The sweep starts at %1 GHz, %2 of the grid's steps above nought: below it S is a straight line from "
+                        "S at nought, on which the step's late level rests. A low-pass response wants the sweep to start at "
+                        "its top over its points' count (%3 MHz here).")
+                         .arg(f0 / 1e9, 0, 'g', 4).arg(f0 / df, 0, 'f', 0).arg(top / n / 1e6, 0, 'g', 4);
+    {
+        // (A reflection whose round trip is past the window's half folds back
+        //  into it: the impulse still carrying something at its end.)
+        double peak = 0, late = 0;
+        for (int i = 0; i < out.impulse.size(); ++i) {
+            peak = std::max(peak, std::abs(out.impulse.at(i)));
+            if (i >= int(0.9 * out.impulse.size())) late = std::max(late, std::abs(out.impulse.at(i)));
+        }
+        if (peak > 0 && late > 0.01 * peak)
+            out.lines << tr("The impulse still carries %1 % of its peak at the end of the window (%2 ns): a response from "
+                            "further away folds back into it - a finer grid (more points) sees further.")
+                             .arg(100 * late / peak, 0, 'g', 2).arg(m * dt * 1e9, 0, 'g', 4);
     }
     out.lines << tr("A low-pass response: %1 points to %2 GHz, every %3 MHz; S at nought %4, the real part of the lowest "
                     "three's quadratic; Kaiser's window of beta %5; the time every %6 ps to %7 ns.")
