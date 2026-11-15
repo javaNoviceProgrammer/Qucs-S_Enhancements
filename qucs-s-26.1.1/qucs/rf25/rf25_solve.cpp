@@ -533,6 +533,22 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
                                             : tr("No ports: a loop's inductance wants two of them.");
         }
     }
+    // A quasi-static solve is of one frequency: its dispersive dielectrics
+    // taken at the study's highest, where its losses are said - the full
+    // wave takes them at each of its own.
+    if (!job.fullWave && job.stack.dispersive()) {
+        QStringList taken;
+        const Stack at = job.stack.atFrequency(job.top);
+        for (int i = 0; i < job.stack.layers.size(); ++i)
+            if (!job.stack.layers.at(i).dispersion.isEmpty())
+                taken << tr("%1 eps_r %2, tan d %3").arg(at.layers.at(i).name).arg(at.layers.at(i).epsr, 0, 'g', 4)
+                             .arg(at.layers.at(i).tand, 0, 'g', 3);
+        job.dispersedSaid = (job.top > 0 ? tr("The dispersive dielectrics are taken at %1 GHz, the study's highest frequency: %2.")
+                                                  .arg(job.top / 1e9, 0, 'g', 4)
+                                          : tr("The dispersive dielectrics are taken at direct current: %2."))
+                                .arg(taken.join(QStringLiteral(", ")));
+        job.stack = at;
+    }
     return QString();
 }
 
@@ -562,6 +578,7 @@ void runSolve(SolveJob& job)
         std::make_shared<Extraction>(extract(job.mesh, job.conductors, job.stack, 1e-6, job.returns, &control));
     if (job.stop.load()) return;
     if (job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
+    if (job.result->ok() && !job.dispersedSaid.isEmpty()) job.result->lines.prepend(job.dispersedSaid);
     if (job.loop) {
         // (Said, where the tab showed "starting" through it: a charge solve
         //  refused for its size leaves the step where it began.)

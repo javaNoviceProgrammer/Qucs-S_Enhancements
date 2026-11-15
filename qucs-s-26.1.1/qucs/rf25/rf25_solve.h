@@ -66,6 +66,9 @@ struct SolveJob {
     Mesh mesh;
     QList<Conductor> conductors;
     Stack stack;
+    /// Where a quasi-static solve took its dispersive dielectrics at one
+    /// frequency (Stack::atFrequency()): said beside its answer.
+    QString dispersedSaid;
     QList<Extent> extents;       ///< the layers that end (rf25_dielectric.h)
     /// A TRL calibration's standards (rf25_trl.h), where the model has one:
     /// each a model's file, a line's how much longer than the thru.

@@ -186,6 +186,14 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0")),
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("0"),
                tr("A lossy silicon substrate: 10[S/m] for 10 Ohm cm. Zero for an insulating one.")),
+          choice(QStringLiteral("dispersion"), tr("Dispersion"), {QStringLiteral("none"), QStringLiteral("djordjevic_sarkar")},
+                 {tr("None (the same at every frequency)"), tr("Djordjevic-Sarkar (wideband Debye)")}, QStringLiteral("none"),
+                 tr("Djordjevic-Sarkar: its permittivity falls slowly with frequency and its loss tangent stays nearly flat, "
+                    "as a real board's do and as a constant pair cannot - causal. Its relative permittivity and loss tangent "
+                    "are then those at the frequency below.")),
+          expr(QStringLiteral("dispersion_at"), tr("Given at"), QStringLiteral("Hz"), QStringLiteral("1[GHz]"),
+               tr("The frequency its relative permittivity and loss tangent are measured at, where its dispersion is "
+                  "Djordjevic-Sarkar.")),
           expr(QStringLiteral("beyond"), tr("Beyond its shapes"), QString(), QStringLiteral("1"),
                tr("Where the layer map sends shapes to this layer, it is there only inside them - a chip's or a board's "
                   "edge, a trench -, and this relative permittivity beyond them: 1 for air."))},
@@ -195,6 +203,14 @@ QList<NodeKind> makeKinds()
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("1[um]")),
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("4.1")),
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0.002")),
+          choice(QStringLiteral("dispersion"), tr("Dispersion"), {QStringLiteral("none"), QStringLiteral("djordjevic_sarkar")},
+                 {tr("None (the same at every frequency)"), tr("Djordjevic-Sarkar (wideband Debye)")}, QStringLiteral("none"),
+                 tr("Djordjevic-Sarkar: its permittivity falls slowly with frequency and its loss tangent stays nearly flat, "
+                    "as a real board's do and as a constant pair cannot - causal. Its relative permittivity and loss tangent "
+                    "are then those at the frequency below.")),
+          expr(QStringLiteral("dispersion_at"), tr("Given at"), QStringLiteral("Hz"), QStringLiteral("1[GHz]"),
+               tr("The frequency its relative permittivity and loss tangent are measured at, where its dispersion is "
+                  "Djordjevic-Sarkar.")),
           expr(QStringLiteral("beyond"), tr("Beyond its shapes"), QString(), QStringLiteral("1"),
                tr("Where the layer map sends shapes to this layer, it is there only inside them - an oxide under one part "
                   "alone, a dielectric cut back -, and this relative permittivity beyond them: 1 for air."))},
@@ -903,6 +919,40 @@ QStringList Stack::conductors() const
     return names;
 }
 
+std::complex<double> djordjevicSarkar(double epsr, double tand, double at, double frequency)
+{
+    using C = std::complex<double>;
+    if (!(tand > 0) || !(at > 0)) return C(epsr, -epsr * std::max(0.0, tand));
+    constexpr double f1 = 1e3, f2 = 1e12;
+    const double span = std::log(f2 / f1);
+    const auto shape = [&](double f) { return std::log(C(f2, f) / C(f1, f)) / span; };
+    const C given = shape(at);
+    // eps(at) = eps_inf + d_eps shape(at) = epsr (1 - j tand).
+    const double delta = -epsr * tand / given.imag();
+    const double infinite = epsr - delta * given.real();
+    return infinite + delta * shape(std::max(0.0, frequency));
+}
+
+bool Stack::dispersive() const
+{
+    for (const Layer& l : layers)
+        if (!l.dispersion.isEmpty()) return true;
+    return false;
+}
+
+Stack Stack::atFrequency(double frequency) const
+{
+    Stack out = *this;
+    for (Layer& l : out.layers) {
+        if (l.dispersion.isEmpty()) continue;
+        const std::complex<double> e = djordjevicSarkar(l.epsr, l.tand, l.dispersionAt, frequency);
+        l.epsr = e.real();
+        l.tand = e.real() > 0 ? -e.imag() / e.real() : 0.0;
+        l.dispersion.clear();
+    }
+    return out;
+}
+
 const Layer* Stack::named(const QString& name) const
 {
     for (const Layer& l : layers)
@@ -1101,6 +1151,13 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             failed.insert(key);
             return false;
         };
+        // (Dispersion said, its frequency read: a file that says none of it
+        //  is a dielectric the same at every frequency, as it was.)
+        const auto readDispersion = [&] {
+            if (textOf(c, QStringLiteral("dispersion")) != QLatin1String("djordjevic_sarkar")) return;
+            layer.dispersion = QStringLiteral("djordjevic_sarkar");
+            if (c.props.contains(QLatin1String("dispersion_at"))) read(QStringLiteral("dispersion_at"), &layer.dispersionAt);
+        };
         switch (layer.kind) {
         case Layer::Substrate:
             read(QStringLiteral("thickness"), &layer.thickness);
@@ -1108,12 +1165,14 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("tand"), &layer.tand);
             read(QStringLiteral("sigma"), &layer.sigma);
             if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
+            readDispersion();
             break;
         case Layer::Dielectric:
             read(QStringLiteral("thickness"), &layer.thickness);
             read(QStringLiteral("epsr"), &layer.epsr);
             read(QStringLiteral("tand"), &layer.tand);
             if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
+            readDispersion();
             break;
         case Layer::Metal:
             read(QStringLiteral("thickness"), &layer.thickness);
@@ -1202,6 +1261,8 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("%1 has a relative permittivity beyond its shapes below 1 (%2).").arg(name(l)).arg(l.beyond);
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand < 0 && read("tand"))
             out.problems << tr("%1 has a loss tangent below zero.").arg(name(l));
+        if (!l.dispersion.isEmpty() && !(l.dispersionAt > 0) && read("dispersion_at"))
+            out.problems << tr("%1's dispersion is given at no frequency above nought.").arg(name(l));
         if (l.kind == Layer::Metal && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("%1 has no conductivity.").arg(name(l));
         if (l.kind == Layer::Via && !(l.sigma > 0) && read("sigma"))

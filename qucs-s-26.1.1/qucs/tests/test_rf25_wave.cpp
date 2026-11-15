@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <tuple>
 #include <complex>
 #include <vector>
 
@@ -277,6 +278,89 @@ private slots:
                 }
             }
         }
+    }
+
+
+    // Djordjevic-Sarkar's wideband Debye model (a review's
+    // "features missing": a dielectric's permittivity and loss tangent the
+    // same at every frequency, which is not causal): its closed form is the
+    // even spread in log f of Debye poles, each causal, from 1 kHz to 1 THz;
+    // it is what it is given at; its values are those an independent
+    // computation gives (Python's cmath, FR-4's 4.3 and 0.02 at 1 GHz); and a
+    // full-wave table of a dispersive slab is that of a slab of its
+    // permittivity at the table's frequency, to the digit.
+    void aDispersiveSlabIsItsPermittivityAtEachFrequency()
+    {
+        const double epsr = 4.3, tand = 0.02, at = 1e9;
+        const std::complex<double> given = rf::djordjevicSarkar(epsr, tand, at, at);
+        QVERIFY(std::abs(given.real() - epsr) < 1e-12 && std::abs(-given.imag() / given.real() - tand) < 1e-12);
+        // Independent: (f, eps', tan d).
+        for (const auto& [f, e, t] : {std::tuple{0.0, 5.0568718319, 0.0}, std::tuple{1e6, 4.6784358749, 0.0183822120},
+                                      std::tuple{10e9, 4.1738574018, 0.0204863275}, std::tuple{100e9, 4.0479819134, 0.0199098147}}) {
+            const std::complex<double> v = rf::djordjevicSarkar(epsr, tand, at, f);
+            QVERIFY2(std::abs(v.real() - e) < 1e-9 && std::abs((v.real() > 0 ? -v.imag() / v.real() : 0) - t) < 1e-9,
+                     qPrintable(QStringLiteral("%1 Hz: %2, %3").arg(f).arg(v.real(), 0, 'g', 11).arg(-v.imag() / v.real(), 0, 'g', 11)));
+        }
+        // The spread of Debye poles, summed: eps_inf + d_eps / ln(f2/f1)
+        // Int 1/(1 + j f/p) dp/p over [f1, f2], by the midpoint rule in ln p.
+        const std::complex<double> inf = rf::djordjevicSarkar(epsr, tand, at, 1e30);
+        const std::complex<double> dc = rf::djordjevicSarkar(epsr, tand, at, 0);
+        const double delta = dc.real() - inf.real(), span = std::log(1e12 / 1e3);
+        for (const double f : {1e7, 1e9, 3e10}) {
+            std::complex<double> sum = 0;
+            const int n = 200000;
+            for (int k = 0; k < n; ++k) {
+                const double p = 1e3 * std::exp(span * (k + 0.5) / n);
+                sum += 1.0 / std::complex<double>(1, f / p);
+            }
+            const std::complex<double> poles = inf.real() + delta * sum / double(n);
+            const std::complex<double> closed = rf::djordjevicSarkar(epsr, tand, at, f);
+            QVERIFY2(std::abs(poles - closed) < 1e-6 * std::abs(closed),
+                     qPrintable(QStringLiteral("%1 Hz: poles %2 %3j, closed %4 %5j").arg(f).arg(poles.real()).arg(poles.imag())
+                                    .arg(closed.real()).arg(closed.imag())));
+        }
+        // Its eps' falls with frequency, and its loss tangent stays within a
+        // tenth of what it was given between 1 MHz and 100 GHz.
+        double last = 1e9;
+        for (double f = 1e3; f <= 1e12; f *= 10) {
+            const std::complex<double> v = rf::djordjevicSarkar(epsr, tand, at, f);
+            QVERIFY2(v.real() < last, qPrintable(QString::number(f)));
+            last = v.real();
+            if (f >= 1e6 && f <= 1e11) QVERIFY2(std::abs(-v.imag() / v.real() / tand - 1) < 0.1, qPrintable(QString::number(f)));
+        }
+        // A full-wave table of the dispersive slab is that of its value at the
+        // table's frequency - kept between solves as the app keeps them, so
+        // that a table of the same slab undispersed is not taken for it.
+        rf::forgetGreens();
+        rf::keepGreens(256e6);
+        const auto unkept = qScopeGuard([] {
+            rf::forgetGreens();
+            rf::keepGreens(256e6);
+        });
+        const double f = 20e9;
+        rf::Layers dispersive = stackOf({{epsr, 254e-6, tand}}, true);
+        dispersive.slabs[0].dispersive = true;
+        dispersive.slabs[0].dispersionAt = at;
+        const std::complex<double> there = rf::djordjevicSarkar(epsr, tand, at, f);
+        const rf::Layers fixed = stackOf({{there.real(), 254e-6, -there.imag() / there.real()}}, true);
+        const rf::WaveGreen a(dispersive, 254e-6, 254e-6, f, 5e-3), b(fixed, 254e-6, 254e-6, f, 5e-3);
+        QVERIFY2(a.ok() && b.ok(), qPrintable((a.problems() + b.problems()).join(" | ")));
+        QVERIFY2(std::abs(a.epsilonOf(0) / b.epsilonOf(0) - 1.0) < 1e-14, "the slab's permittivity");
+        for (const double rho : {10e-6, 300e-6, 3e-3}) {
+            QVERIFY2(std::abs(a.scalar(rho) / b.scalar(rho) - 1.0) < 1e-12, qPrintable(QString::number(rho)));
+            QVERIFY2(std::abs(a.vector(rho) / b.vector(rho) - 1.0) < 1e-12, qPrintable(QString::number(rho)));
+        }
+        // And differs from the slab of its value where it is given: the table
+        // is of the frequency, not of that - and that slab's table, kept
+        // after the dispersive one's, is its own, as made with nothing kept.
+        const rf::WaveGreen c(stackOf({{epsr, 254e-6, tand}}, true), 254e-6, 254e-6, f, 5e-3);
+        QVERIFY(std::abs(a.scalar(300e-6) / c.scalar(300e-6) - 1.0) > 1e-3);
+        rf::keepGreens(0);
+        rf::forgetGreens();
+        const rf::WaveGreen fresh(stackOf({{epsr, 254e-6, tand}}, true), 254e-6, 254e-6, f, 5e-3);
+        for (const double rho : {10e-6, 300e-6, 3e-3})
+            QVERIFY2(std::abs(c.scalar(rho) / fresh.scalar(rho) - 1.0) < 1e-12 && std::abs(c.vector(rho) / fresh.vector(rho) - 1.0) < 1e-12,
+                     qPrintable(QStringLiteral("%1 µm: a kept table not its own").arg(rho * 1e6)));
     }
 
     // As the frequency falls the scalar kernel becomes phase B's static
