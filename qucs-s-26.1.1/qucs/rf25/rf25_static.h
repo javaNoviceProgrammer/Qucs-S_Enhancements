@@ -163,6 +163,12 @@ struct Extraction {
     QList<double> sigma, thickness;
     /// Its rms roughness, m, for the loss it adds (roughnessFactor()).
     QList<double> roughness;
+    /// Its Huray's nodules' radius and surface ratio, where its metal's
+    /// roughness is Huray's (0: Hammerstad's, of \a roughness).
+    QList<double> nodule, surfaceRatio;
+    /// What net \a k's metal's roughness multiplies its surface resistance by
+    /// at \a frequency.
+    double roughnessAt(int k, double frequency) const;
     /*!
      * The line's own values per metre, of its middle cross-section as if
      * the line ran on for ever: each cell there a strip, tiled along by
@@ -395,6 +401,22 @@ QList<QList<double>> resistancePerMetre(const Extraction& extraction, double fre
  * following the surface up and down. 1 where there is no roughness.
  */
 double roughnessFactor(double rms, double sigma, double frequency);
+/*!
+ * Huray's snowball model (Huray et al., IEEE Trans. MTT 58(3), 2010), of one
+ * nodule size: what nodules of \a radius (m) whose surface is \a ratio times
+ * the flat surface they stand on multiply a metal's surface resistance by at
+ * \a frequency,
+ *
+ *     1 + (3/2) ratio / (1 + delta/a + delta^2/(2 a^2)),
+ *
+ * delta the skin depth: nothing added while the skin is deep beside the
+ * nodules, and 1 + 3/2 ratio, no less, once it is shallow - Hammerstad's
+ * saturates at twice the loss, where a rough foil goes on.
+ */
+double hurayFactor(double radius, double ratio, double sigma, double frequency);
+/// What \a metal's roughness multiplies its surface resistance by at
+/// \a frequency: Huray's or Hammerstad's, as it says.
+double roughnessFactor(const Layer& metal, double frequency);
 
 /// The surface resistance of the ground of \a extraction at \a frequency,
 /// Ohm a square: nothing for a perfect plane, the given one for a surface

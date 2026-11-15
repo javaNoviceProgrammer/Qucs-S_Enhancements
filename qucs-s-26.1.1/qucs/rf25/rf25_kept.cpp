@@ -32,8 +32,11 @@ QString tr(const char* text) { return QCoreApplication::translate("RF25Kept", te
 // namesReturns) after its notes; a file of format 1 is read without them.
 // Format 3 adds, after those, the frequencies an adaptive sweep solved
 // (FullWave::solvedFrequencies); a file of 1 or 2 is read without them.
+// Format 4 adds, after a quasi-static answer, its nets' metals' Huray
+// nodules and surface ratios (Extraction::nodule, surfaceRatio); a file of 1
+// to 3 is read without them, its metals' roughness Hammerstad's.
 const QByteArray kMagic = QByteArrayLiteral("QRF25SOL");
-constexpr quint32 kFormat = 3;
+constexpr quint32 kFormat = 4;
 // A list longer than this is a damaged file's, not a solve's.
 constexpr qint64 kMostItems = qint64(1) << 28;
 
@@ -417,6 +420,8 @@ bool writeSolution(const QString& path, const KeptSolution& kept, QString* error
             if (kept.inductance) put(s, *kept.inductance);
             put(s, kept.portsSaid);
             put(s, kept.solvedLength);
+            put(s, kept.extraction->nodule);
+            put(s, kept.extraction->surfaceRatio);
         }
     }
     QByteArray all;
@@ -479,6 +484,8 @@ std::optional<KeptSolution> readSolution(const QString& path, QString* why)
             kept.inductance = inductance;
         }
         if (!get(b, kept.portsSaid) || !get(b, kept.solvedLength)) return none(tr("%1 is damaged.").arg(path));
+        if (format >= 4 && (!get(b, extraction->nodule) || !get(b, extraction->surfaceRatio)))
+            return none(tr("%1 is damaged.").arg(path));
         kept.extraction = extraction;
     }
     if (!b.atEnd()) return none(tr("%1 is damaged.").arg(path));

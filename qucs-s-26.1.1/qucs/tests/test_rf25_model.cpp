@@ -12,6 +12,8 @@
 
 #include "rf25/rf25_model.h"
 
+#include <tuple>
+
 namespace rf = qucs_s::rf25;
 
 namespace {
@@ -260,9 +262,52 @@ private slots:
         const std::optional<rf::Model> back = rf::Model::fromJson(m.toJson());
         QVERIFY(back.has_value());
         QCOMPARE(back->stack().layers.at(0).dispersionAt, 2e9);
+        // A metal's roughness by Huray's model, read with its nodules and
+        // their surface ratio, and kept round a file.
+        for (rf::Node& c : m.stackNode().children)
+            if (c.type == QLatin1String("rf_metal")) {
+                c.props.insert(QStringLiteral("roughness_model"), QStringLiteral("huray"));
+                c.props.insert(QStringLiteral("nodule_radius"), QStringLiteral("0.4[um]"));
+                c.props.insert(QStringLiteral("surface_ratio"), QStringLiteral("2.5"));
+                break;
+            }
+        const rf::Layer* rough = nullptr;
+        const rf::Stack withHuray = rf::Model::fromJson(m.toJson())->stack();
+        for (const rf::Layer& l : withHuray.layers)
+            if (l.kind == rf::Layer::Metal) {
+                rough = &l;
+                break;
+            }
+        QVERIFY(rough != nullptr && rough->huray);
+        QCOMPARE(rough->nodule, 0.4e-6);
+        QCOMPARE(rough->surfaceRatio, 2.5);
         // Its frequency nought or less is said.
         sub.props.insert(QStringLiteral("dispersion_at"), QStringLiteral("0"));
         QVERIFY2(m.stack().problems.join(' ').contains(QStringLiteral("given at no frequency")), qPrintable(m.stack().problems.join(" | ")));
+        // And what would fit no material (the review of 3789cfcb, each
+        // computed there independently): given outside the model's poles, 1
+        // kHz to 1 THz - 11.9 and 0.02 at 10 Hz made eps_inf -481, 4.3 and
+        // 0.02 at 100 THz eps' 32 at 40 GHz -, or a loss so high that its
+        // permittivity at a high frequency is under 1 - 4.3 and 0.2 at 1 MHz
+        // made eps_inf -3.27, 4.3 and 0.1 there 0.52.
+        for (const auto& [epsr, tand, at, says] :
+             {std::tuple{"11.9", "0.02", "10", "outside Djordjevic-Sarkar's poles"},
+              std::tuple{"4.3", "0.02", "100[THz]", "outside Djordjevic-Sarkar's poles"},
+              std::tuple{"4.3", "0.2", "1[MHz]", "too high for Djordjevic-Sarkar's model"},
+              std::tuple{"4.3", "0.1", "1[MHz]", "too high for Djordjevic-Sarkar's model"}}) {
+            sub.props.insert(QStringLiteral("epsr"), QLatin1String(epsr));
+            sub.props.insert(QStringLiteral("tand"), QLatin1String(tand));
+            sub.props.insert(QStringLiteral("dispersion_at"), QLatin1String(at));
+            const QString said = m.stack().problems.join(' ');
+            QVERIFY2(said.contains(QLatin1String(says)), qPrintable(QStringLiteral("%1, %2 at %3: %4").arg(epsr, tand, at, said)));
+        }
+        // FR-4's and the substrate's own, at 1 GHz, are sound.
+        for (const auto& [epsr, tand] : {std::pair{"4.3", "0.02"}, std::pair{"11.9", "0.02"}}) {
+            sub.props.insert(QStringLiteral("epsr"), QLatin1String(epsr));
+            sub.props.insert(QStringLiteral("tand"), QLatin1String(tand));
+            sub.props.insert(QStringLiteral("dispersion_at"), QStringLiteral("1[GHz]"));
+            QVERIFY2(m.stack().ok(), qPrintable(m.stack().problems.join(" | ")));
+        }
     }
 
     // What the stack says cannot be: each check of the proposal, one at a
