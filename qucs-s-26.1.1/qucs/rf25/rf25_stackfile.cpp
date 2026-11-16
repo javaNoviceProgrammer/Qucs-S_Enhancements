@@ -496,7 +496,11 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
         case Layer::Metal: {
             // Its room, of the dielectric above it, and the metal in it.
             const Layer* fill = fillAbove(stack, i);
-            QString line = QStringLiteral("layer %1 %2 name %3_room").arg(um(l.thickness), num(fill != nullptr ? fill->epsr : 1), id);
+            QString line = QStringLiteral("layer %1 %2").arg(um(l.thickness), num(fill != nullptr ? fill->epsr : 1));
+            // (Its fill's conductivity too, a dielectric having one: the review
+            //  of f13694ea.)
+            if (fill != nullptr && fill->sigma > 0) line += QStringLiteral(" 1 %1").arg(num(fill->sigma));
+            line += QStringLiteral(" name %1_room").arg(id);
             if (fill != nullptr && fill->tand > 0) line += QStringLiteral(" tan delta %1").arg(num(fill->tand));
             line += fill != nullptr ? QStringLiteral("   # %1's room, of %2 above it").arg(l.name, fill->name)
                                     : QStringLiteral("   # %1's room, of the air above it").arg(l.name);

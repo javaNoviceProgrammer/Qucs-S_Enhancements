@@ -104,6 +104,10 @@ constexpr double kPhi = 1.6180339887498949;
 /// frequency.
 struct Strips {
     double between = 0;            ///< the shorter strip's line between its ends' first vias, the layout's units
+    /// Hz: from where the stack carries a second surface wave, into which a
+    /// lossless feed's line may leak - its loss taken as the strips read it
+    /// from there, not nought; nought where there is none in the sweep.
+    double leakFrom = 0;
     double third = 0;              ///< the third's, which checks the other two
     double strip = 0;              ///< how long the shorter strip is, whole
     QList<double> at;              ///< Hz, as solved: those asked, and one below them to follow the phase up from
@@ -250,6 +254,14 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
     // strip, but not of the change in its effective permittivity.
     const double length = between * micrometre, third = out.third * micrometre;
     double beta = 0, previous = 0;   // (beta l at the frequency before, and that frequency)
+    // (From where the stack carries a second surface wave the line may leak
+    //  into it, its loss its own: a conductor-backed coplanar line on 500 µm
+    //  of alumina lost 15-38 dB/m so at 80-100 GHz, and taken lossless that
+    //  went into its ports' boxes, the line de-embedded gaining - P13 of the
+    //  open items. A microstrip on 100 µm of it carries none to 250 GHz.)
+    double leakFrom = 0;
+    if (!loses && !out.at.isEmpty()) leakFrom = secondSurfaceWave(stack, 2 * *std::max_element(out.at.cbegin(), out.at.cend()));
+    if (leakFrom > 0) out.leakFrom = leakFrom;
     for (int k = 0; k < out.at.size(); ++k) {
         Chain t[3] = {chains[0].at(k), chains[1].at(k), chains[2].at(k)};
         // (Each strip is symmetric: its two ends' terms averaged.)
@@ -285,7 +297,7 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
         //  taken lossless and the piece x = (l - wave / gamma) / 2 that
         //  makes it so taken out of E: what the ports radiate stays theirs.)
         Chain eLossless = e;
-        if (!loses) {
+        if (!loses && !(leakFrom > 0 && out.at.at(k) >= leakFrom)) {
             const Complex lossless(0, wave.imag() / length);
             const Complex theta = -lossless * 0.5 * (length - wave / lossless);
             const Complex z0 = impedanceOf(l1);
@@ -449,6 +461,12 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
         sets << shorter;
     }
     double shorterFrom = 0;   // Hz: the lowest frequency taken from shorter strips
+    // (Where the two strips' lines differ by half a wavelength, or a whole
+    //  number of halves, what they read of the line is ill-conditioned: a
+    //  coplanar line's Zc 67 Ohm for 77, eps_eff 1.5 % low and false loss at
+    //  100-110 GHz, its 1 and 2 mm strips half a wavelength apart, and
+    //  nothing said - P15 of the open items. Within some 12 degrees of it.)
+    double halfFrom = 0, halfTo = 0, halfApart = 0;
     for (const double f : frequencies) {
         const int b = best(f);
         const Strips& s = sets.at(b);
@@ -459,8 +477,25 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
         out.residual << s.residual.at(k);
         out.stripAt << s.strip;
         if (b > 0 && (shorterFrom == 0 || f < shorterFrom)) shorterFrom = f;
+        const double turn = s.gamma.at(k).imag() * s.between * micrometre;
+        if (turn > M_PI / 2 && std::abs(std::sin(turn)) < 0.2) {
+            if (halfFrom == 0 || f < halfFrom) halfFrom = f;
+            halfTo = std::max(halfTo, f);
+            halfApart = s.between;
+        }
     }
+    if (halfFrom > 0)
+        out.warnings << tr("Its strips' lines differ by %1 µm, a whole number of half wavelengths from %2 to %3 GHz: what they "
+                           "read of the line there is ill-conditioned - its impedance and eps_eff, and the de-embedding of a "
+                           "port on it, not to be trusted in that band. Strips of another length (the port's own) move it.")
+                            .arg(halfApart, 0, 'g', 4)
+                            .arg(halfFrom / 1e9, 0, 'g', 4)
+                            .arg(halfTo / 1e9, 0, 'g', 4);
     for (const Strips& s : std::as_const(sets)) out.warnings << s.warnings;
+    if (base.leakFrom > 0)
+        out.lines << tr("Nothing of the feed loses, but from %1 GHz the stack carries a second surface wave, into which its "
+                        "line may leak: there the line's loss is as its strips read it, not taken as nought.")
+                         .arg(base.leakFrom / 1e9, 0, 'g', 4);
     out.length = base.between;
     out.strip = base.strip;
     out.third = base.third;
@@ -796,12 +831,19 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
                                 .arg(said.worst, 0, 'g', 2)
                                 .arg(said.worstAt / 1e9, 0, 'g', 4);
         if (said.reach > 0 && said.feedLength >= 0 && said.feedLength < said.reach)
-            out.warnings << tr("%1's feed is as wide as its face and alone for %2 µm in from it, and the port's own field "
-                               "reaches some %3 µm along it - four heights over the ground and its width: its own "
-                               "discontinuity there is not the one its strips find, and its de-embedding is not to be "
-                               "trusted at any frequency. A feed as long, or a port that returns beside it, keeps them apart.")
+            // (How much it moves the answer is said by how short the feed is,
+            //  not as "not to be trusted at any frequency": a spiral with feeds
+            //  at nine tenths of the reach moved its L and Q by a few tenths of
+            //  a per cent to 15 GHz, 1.4 % at 30 - N6 of the open items.)
+            out.warnings << tr("%1's feed is as wide as its face and alone for %2 µm in from it, %3 % of the some %4 µm the "
+                               "port's own field reaches along it - four heights over the ground and its width: its own "
+                               "discontinuity there is not quite the one its strips find, and its de-embedding leaves the "
+                               "difference in. It grows as the feed is the shorter and the frequency the higher: a spiral's "
+                               "feeds at nine tenths of the reach moved its L and Q by a few tenths of a per cent to 15 GHz, "
+                               "1.4 % at 30. A feed as long, or a port that returns beside it, takes it out.")
                                 .arg(solved.portNames.at(p))
                                 .arg(said.feedLength, 0, 'g', 4)
+                                .arg(int(std::round(100 * said.feedLength / said.reach)))
                                 .arg(said.reach, 0, 'g', 4);
     }
     if (out.gain > 1e-6 && worst >= 0 && solvedGiven.value(worst) < 0.5 * out.gain)

@@ -194,8 +194,12 @@ QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed)
             if (!(std::hypot(d.x(), d.y()) < under)) continue;
             const QPointF before = a - p.at((i + n - 1) % n), after = p.at((i + 2) % n) - b;
             // (A step: the side along one axis, the two beside it along the
-            //  other.)
-            if ((alongX(d) && alongY(before) && alongY(after)) || (alongY(d) && alongX(before) && alongX(after))) at = i;
+            //  other and the same way. Two the opposite ways are a slot's or
+            //  a tab's sides, not a step's: moved, a slot narrower than the
+            //  jogs was filled and a tab cut off with no word - the review of
+            //  791a8ed2.)
+            const bool sameWay = before.x() * after.x() + before.y() * after.y() > 0;
+            if (sameWay && ((alongX(d) && alongY(before) && alongY(after)) || (alongY(d) && alongX(before) && alongX(after)))) at = i;
         }
         if (at < 0) break;
         const QPointF a = p.at(at), b = p.at((at + 1) % n), d = b - a;
@@ -433,6 +437,7 @@ Cutout cutoutOf(const Model& model, QStringList* problems)
         };
         CutRegion region;
         region.name = name;
+        region.tag = r.tag;
         region.keep = textOf(r, QStringLiteral("action")) != QLatin1String("remove");
         region.layers = namesOf(r, QStringLiteral("layers"));
         const QString shape = textOf(r, QStringLiteral("shape"));

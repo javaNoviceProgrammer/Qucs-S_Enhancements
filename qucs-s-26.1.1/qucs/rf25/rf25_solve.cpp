@@ -382,6 +382,8 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     job.mesh = mesh;
     job.conductors = processed.conductors;
     job.stack = model.solveStack();
+    for (const QString& p : processed.problems)
+        if (p.startsWith(QStringLiteral("Cutout: "))) job.processWarnings << p;
     // The layers that end: their shapes, and what is beyond them.
     for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it) {
         const Layer* layer = job.stack.named(it.key());
@@ -640,6 +642,7 @@ void runSolve(SolveJob& job)
                                         .arg(job.frequencies.size()));
         if (job.wave->ok()) job.wave->lines.prepend(meshNoteOf(job.mesh));
         if (job.trl && job.wave->ok() && !job.stop.load()) job.wave = trlOn(job, *job.wave);
+        if (job.wave->ok()) job.wave->warnings += job.processWarnings;
         return;
     }
     // Told to stop, it stops: let go and left to run, an extraction whose
@@ -659,6 +662,10 @@ void runSolve(SolveJob& job)
             std::make_shared<Extraction>(extract(job.mesh, job.conductors, job.stack, 1e-6, job.returns, &control));
     if (job.stop.load()) return;
     if (job.result && job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
+    if (job.result && job.result->ok() && !job.processWarnings.isEmpty()) {
+        job.result->warnings += job.processWarnings;
+        job.result->lines += job.processWarnings;
+    }
     if (job.result && job.result->ok() && !job.dispersedSaid.isEmpty()) job.result->lines.prepend(job.dispersedSaid);
     if (job.result && job.result->ok())
         for (const QString& said : std::as_const(job.stackSaid)) job.result->lines.prepend(said);
@@ -817,6 +824,7 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
     }
     QList<Deembedding> each(job.ports.size());
     QMap<QString, std::shared_ptr<Calibration>> feeds;
+    QStringList uncalibrated;   // (the feeds that could not be calibrated, warned of)
     bool asked = false;
     // (In a box the ports stand at its walls, the wall their reference: no
     //  feed of theirs is calibrated, nor their plane moved - said once.)
@@ -852,6 +860,23 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
             ++job.calibrationsBegun;
             calibration = std::make_shared<Calibration>(
                 calibrate(job.stack, how, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
+            // Its strips' solve not converged - an 8.2 mm strip held
+            // compressed, past the dense bound -: tried once more with its
+            // cells twice as long along them, few enough to solve dense, and
+            // said (P14 of the open items: there was no retry).
+            if (!calibration->ok() && !job.stop.load() && calibration->problems.join(QLatin1Char(' ')).contains(QLatin1String("GMRES"))) {
+                MeshSettings longer = how;
+                longer.stretch = std::max(2 * how.stretch, 8.0);
+                auto again = std::make_shared<Calibration>(
+                    calibrate(job.stack, longer, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
+                if (again->ok()) {
+                    again->lines.prepend(tr("Its strips solved again with cells %1 times as long as wide along them: with "
+                                            "cells as the structure's they did not converge (%2).")
+                                             .arg(longer.stretch, 0, 'g', 3)
+                                             .arg(calibration->problems.join(QLatin1Char(' '))));
+                    calibration = again;
+                }
+            }
             if (calibration->ok() && solvedAt.size() < frequencies.size()) {
                 *calibration = calibrationAt(*calibration, frequencies);
                 calibration->lines << tr("Its strips solved at the %1 frequencies the structure was, and read at the "
@@ -864,14 +889,24 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
             return wave;
         }
         if (!calibration->ok()) {
-            *notes << tr("%1's feed could not be calibrated: %2 It is solved as it is.")
-                          .arg(name, calibration->problems.join(QLatin1Char(' ')));
+            // (A warning too: its S is uncalibrated, its port's own
+            //  discontinuity in it - said in the notes alone, it read as the
+            //  calibrated answer that was asked for: P14 of the open items.)
+            const QString why = tr("%1's feed could not be calibrated: %2 It is solved as it is - its S uncalibrated, the "
+                                   "port's own discontinuity in it.")
+                                    .arg(name, calibration->problems.join(QLatin1Char(' ')));
+            *notes << why;
+            uncalibrated << why;
             continue;
         }
         each[p].calibration = calibration.get();
     }
-    if (!asked) return wave;
+    if (!asked) {
+        wave->warnings << uncalibrated;
+        return wave;
+    }
     *wave = deembedded(*wave, each);
+    wave->warnings << uncalibrated;
     for (const std::shared_ptr<Calibration>& c : std::as_const(feeds))
         if (c->ok()) {
             wave->lines << c->lines;

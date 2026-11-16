@@ -219,15 +219,31 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     QJsonObject s = matrixJson(w.s.at(k), true);
     s.insert(QStringLiteral("frequency"), w.frequencies.at(k));
     QJsonObject checks;
-    checks.insert(QStringLiteral("reciprocal"), w.asymmetry <= 1e-9);
+    // Reciprocal by S, |S - S^T| at its largest over the sweep: Z's asymmetry
+    // over its largest term is a huge shunt reactance's rounding at a low
+    // frequency - a spiral at 100 Hz read "reciprocal: false" at 2.4e-9,
+    // its S right (N5 of the open items) - where S's is nothing.
+    const auto sAsymmetryOf = [](const QList<QList<QList<Complex>>>& s) {
+        double most = 0;
+        for (const QList<QList<Complex>>& at : s)
+            for (int i = 0; i < at.size(); ++i)
+                for (int j = i + 1; j < at.at(i).size() && j < at.size(); ++j) most = std::max(most, std::abs(at.at(i).at(j) - at.at(j).at(i)));
+        return most;
+    };
+    const double sAsymmetry = sAsymmetryOf(w.s);
+    checks.insert(QStringLiteral("reciprocal"), sAsymmetry <= 1e-9);
     checks.insert(QStringLiteral("asymmetry"), w.asymmetry);
+    checks.insert(QStringLiteral("S asymmetry"), sAsymmetry);
     checks.insert(QStringLiteral("passive"), w.gain <= 1e-6);
     checks.insert(QStringLiteral("most returned"), 1 + w.gain);
     // (A de-embedding can leave what its strips and the structure's own feed
     //  differ by: the solve's own checks beside it.)
     if (!w.zSolved.isEmpty()) {
         checks.insert(QStringLiteral("passive as solved"), w.solvedGain <= 1e-6);
-        checks.insert(QStringLiteral("reciprocal as solved"), w.solvedAsymmetry <= 1e-9);
+        QList<QList<QList<Complex>>> solvedS;
+        for (const QList<QList<Complex>>& z : w.zSolved)
+            solvedS << (w.references.size() == z.size() ? scatteringOf(z, w.references) : scatteringOf(z, 50.0));
+        checks.insert(QStringLiteral("reciprocal as solved"), sAsymmetryOf(solvedS) <= 1e-9);
     }
     // What makes it, or part of it, not to be trusted - the brief answer
     // too; and where the stack carries a second surface wave, the top of a

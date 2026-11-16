@@ -199,6 +199,32 @@ private slots:
     // 2 mm, as the calibration chooses), its reference planes moved 1.5 mm
     // in from each end: a thru, S21 one and S11 nothing. Moved 0.5 mm in:
     // the 2 mm of line between, as the calibration's own line says it.
+    // Strips whose lines differ by half a wavelength read an ill-conditioned
+    // line there, and it is said (P15 of the open items: a coplanar line's
+    // 1 and 2 mm strips half a wavelength apart near 89 GHz gave Zc 67 Ohm
+    // for 77 and false loss, with no word): a microstrip's 1 and 2 mm on
+    // 100 µm of 9.8, half a wavelength apart near 58 GHz - said there, and
+    // not at 20 GHz.
+    void stripsHalfAWavelengthApartAreSaid()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const rf::MeshSettings how = meshing(4, 50);
+        const rf::Calibration low = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {20e9});
+        QVERIFY2(low.ok() && !low.warnings.join(' ').contains(QStringLiteral("half wavelengths")), qPrintable((low.problems + low.warnings).join(" | ")));
+        const rf::Calibration high = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {56e9, 58e9, 60e9}, 1e-6, nullptr, 1000);
+        QVERIFY2(high.ok(), qPrintable(high.problems.join(" | ")));
+        qWarning() << "strips" << high.stripAt << "line" << high.length << high.warnings;
+        QVERIFY2(high.warnings.join(' ').contains(QStringLiteral("a whole number of half wavelengths")), qPrintable(high.warnings.join(" | ")));
+        // A lossless feed's line is taken lossless only where it cannot leak
+        // into a second surface wave of the stack (P13 of the open items: a
+        // coplanar line on 500 µm of alumina leaked 15-38 dB/m at 80-100 GHz,
+        // which went into its ports' boxes, the line de-embedded gaining):
+        // on 500 µm, from some 50 GHz, said; on 100 µm, to 250 GHz, not.
+        const rf::Calibration thick = rf::calibrate(grounded(9.8, 500e-6), how, 0, QStringLiteral("M1"), 100, {60e9}, 1e-6, nullptr, 1000);
+        QVERIFY2(thick.ok() && thick.lines.join(' ').contains(QStringLiteral("second surface wave")), qPrintable((thick.problems + thick.lines).join(" | ")));
+        QVERIFY2(!high.lines.join(' ').contains(QStringLiteral("second surface wave")), qPrintable(high.lines.join(" | ")));
+    }
+
     void aLineDeembeddedHalfWayIsAThru()
     {
         const double h = 100e-6, w = 100, l = 3000;
@@ -990,6 +1016,12 @@ private slots:
             QCOMPARE(d.deembedding.value(0).reach, 500.0);
             const bool said = d.warnings.join(' ').contains(QStringLiteral("feed is as wide as its face and alone for"));
             QVERIFY2(said == (feed < 500), qPrintable(d.warnings.join(" | ")));
+            // (Said by how short it is against the reach, not as "not to be
+            //  trusted at any frequency": N6 of the open items.)
+            if (said)
+                QVERIFY2(d.warnings.join(' ').contains(QStringLiteral("%1 % of the some 500 µm").arg(int(std::round(100 * d.deembedding.value(0).feedLength / 500))))
+                             && !d.warnings.join(' ').contains(QStringLiteral("at any frequency")),
+                         qPrintable(d.warnings.join(" | ")));
         }
         // A straight line's feed is as long as was looked: no warning.
         const QList<rf::Conductor> line = {strip(0, 0, 3000, 100)};

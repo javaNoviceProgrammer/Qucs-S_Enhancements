@@ -189,6 +189,21 @@ private slots:
             QVERIFY2(d.x() == 0 || d.y() == 0, qPrintable(QStringLiteral("a slanted side %1, %2").arg(d.x()).arg(d.y())));
         }
         QVERIFY2(std::abs(rf::areaOf(healed) - 5000) < 1, qPrintable(QString::number(rf::areaOf(healed))));
+        // A slot and a tab 3 grid units wide, 40 deep, are no jogs: their sides
+        // run the opposite ways (the review of 791a8ed2: the slot was filled,
+        // the tab cut off).
+        {
+            const QPolygonF slot({QPointF(0, 0), QPointF(100, 0), QPointF(100, 50), QPointF(51.5, 50), QPointF(51.5, 10), QPointF(48.5, 10),
+                                  QPointF(48.5, 50), QPointF(0, 50)});
+            const QPolygonF tab({QPointF(0, 0), QPointF(100, 0), QPointF(100, 50), QPointF(51.5, 50), QPointF(51.5, 90), QPointF(48.5, 90),
+                                 QPointF(48.5, 50), QPointF(0, 50)});
+            for (const QPolygonF& shape : {slot, tab}) {
+                int none = 0;
+                const QPolygonF kept = rf::withoutJogs(shape, 4, &none);
+                QCOMPARE(none, 0);
+                QVERIFY2(std::abs(rf::areaOf(kept) - rf::areaOf(shape)) < 1e-9, qPrintable(QString::number(rf::areaOf(kept))));
+            }
+        }
         // A step of 25 nm is no jog at 20.
         const QPolygonF stepped({QPointF(0, 0), QPointF(100, 0), QPointF(100, 50), QPointF(50, 50), QPointF(50, 50.025), QPointF(0, 50.025)});
         removed = 0;

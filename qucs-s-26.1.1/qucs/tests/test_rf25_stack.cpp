@@ -279,6 +279,12 @@ void TestRf25Stack::groundsAndLidsGoThereAndBack()
     QVERIFY(e.text.contains(QLatin1String("layer 100 1 name Lid_gap")));
     QVERIFY(e.text.contains(QLatin1String("layer infinity 1 conductivity 5.8e7 name Lid")));
     QVERIFY(!e.text.contains(QLatin1String("name air")));
+    // A dielectric's conductivity (F7 of the open items): in its own layer,
+    // and in the room of the metal it fills (the review of f13694ea).
+    QString conducting = twoMetals();
+    conducting.replace(QStringLiteral(R"("epsr": "4.2", "tand": "0")"), QStringLiteral(R"("epsr": "4.2", "tand": "0", "sigma": "5")"));
+    const StackWritten c = emxProcessOf(modelOf(conducting));
+    QVERIFY2(c.text.contains(QLatin1String("layer 1 4.2 1 5 name Ox2")) && c.text.contains(QLatin1String("4.2 1 5 name M1_room")), qPrintable(c.text));
 }
 
 // A substrate both files have no place for - Djordjevic-Sarkar's

@@ -865,16 +865,24 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 }
             }
     }
-    // Pieces on two metals one over the other, a thin dielectric apart -
-    // nearer than their cells are wide -: their lines shared where they
-    // overlap, both ways, so that their cells face cell for cell. Their
+    // Pieces on two metals one over the other, a thin dielectric apart - far
+    // nearer than their cells are wide, a tenth of them - and plates of each
+    // other, their overlap half the larger or more: their lines shared where
+    // they overlap, both ways, so that their cells face cell for cell. (Not
+    // a track crossing a shield, a winding over a winding, fill under a
+    // line, a coplanar line over a lower ground: shared there, each piece
+    // took the union of the others' lines across it, a tartan of cells - the
+    // review of f13694ea; there the gap is no small share of the cells.) Their
     // charges must mirror across the gap, which uniform cells on two grids
     // cannot: a MIM's plates 40 nm apart read their C 52 % low at cells of
     // 5 µm, 25 % at 2.5, the bottom plate's cells under the top's
     // misaligned (P28 of the open items).
     int stackedShared = 0;
-    double narrowestFacing = 0;   // (the narrowest such gap, µm)
-    QSet<int> stackedPieces;      // (and the pieces facing across one)
+    struct Facing {
+        int a, b;
+        double dz;   // µm
+    };
+    QList<Facing> facingPairs;    // (each pair facing across such a gap)
     {
         QHash<QString, QPair<double, double>> span;   // (each metal's faces' heights, µm: a sheet's both its bottom)
         double z = 0;
@@ -895,16 +903,17 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 if (lb == la || !span.contains(lb)) continue;
                 const QPair<double, double> sa = span.value(la), sb = span.value(lb);
                 const double dz = sa.first <= sb.first ? sb.first - sa.second : sa.first - sb.second;
-                if (!(dz > 0) || dz >= size) continue;
+                if (!(dz > 0) || dz >= 0.1 * size) continue;
                 const QRectF& A = pieces.at(a).box;
                 const QRectF& B = pieces.at(b).box;
                 const double xLo = std::max(A.left(), B.left()), xHi = std::min(A.right(), B.right());
                 const double yLo = std::max(A.top(), B.top()), yHi = std::min(A.bottom(), B.bottom());
                 if (xHi - xLo <= tol || yHi - yLo <= tol) continue;
+                const double larger = std::max(A.width() * A.height(), B.width() * B.height());
+                if ((xHi - xLo) * (yHi - yLo) < 0.5 * larger) continue;
                 meetings << Meeting{a, b, true, xLo, xHi} << Meeting{a, b, false, yLo, yHi};
                 ++stackedShared;
-                narrowestFacing = narrowestFacing > 0 ? std::min(narrowestFacing, dz) : dz;
-                stackedPieces << a << b;
+                facingPairs << Facing{a, b, dz};
             }
         }
     }
@@ -1279,10 +1288,20 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     mesh.facing = facing;
     // (Aligned, a MIM's C at cells 125 times its gap is within 1 %, at 250
     //  times some 5 % low: past 150 times, said.)
-    double facingCell = 0;   // (the widest cell of a piece facing another across such a gap, µm)
-    for (const int k : std::as_const(stackedPieces))
-        for (const QList<double>* lines : {&pieces.at(k).xs, &pieces.at(k).ys})
-            for (int i = 1; i < lines->size(); ++i) facingCell = std::max(facingCell, lines->at(i) - lines->at(i - 1));
+    // (Pair by pair, each pair's own gap against its own cells: a fine MIM
+    //  beside a coarse crossing was read as the one's gap under the other's
+    //  cells - the review of f13694ea.)
+    double narrowestFacing = 0, facingCell = 0;
+    for (const Facing& pair : std::as_const(facingPairs)) {
+        double widest = 0;
+        for (const int k : {pair.a, pair.b})
+            for (const QList<double>* lines : {&pieces.at(k).xs, &pieces.at(k).ys})
+                for (int i = 1; i < lines->size(); ++i) widest = std::max(widest, lines->at(i) - lines->at(i - 1));
+        if (narrowestFacing <= 0 || widest / pair.dz > facingCell / narrowestFacing) {
+            narrowestFacing = pair.dz;
+            facingCell = widest;
+        }
+    }
     if (narrowestFacing > 0 && facingCell > 150 * narrowestFacing) {
         const QString w = tr("Metals face each other across %1 µm, under cells some %2 µm across - %3 times the gap: their "
                              "capacitance reads low, by some 5 % at 250 times. A largest cell under %4 µm brings it within a "
@@ -1426,9 +1445,23 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) h += l.thickness / perUnit;
             if (l.kind != Layer::Metal || l.twoSheets || !(l.thickness > 0) || l.roundWire || !narrowestOn.contains(l.name)) continue;
             const double t = l.thickness / perUnit, w = narrowestOn.value(l.name);
-            if (!(h > 0) || 2 * h <= t) continue;
+            if (!(h > 0)) continue;
+            // (Twice as thick as it stands high, or more, Wheeler's log no
+            //  longer holds - and a sheet is furthest off there: said without
+            //  a number - the review of 791a8ed2.)
+            if (2 * h <= t) {
+                const QString warned = tr("%1 is %2 µm thick as a sheet %3 µm over the ground - thicker than twice its height: its "
+                                          "walls and its top are not in this answer, and its capacitance reads well low. Solved as "
+                                          "its two faces (the metal's Solved as), they are in it.")
+                                           .arg(l.name).arg(t, 0, 'g', 3).arg(h, 0, 'g', 4);
+                mesh.warnings << warned;
+                mesh.lines << warned;
+                continue;
+            }
             const double widened = t / M_PI * (1 + std::log(2 * h / t));
-            if (widened < 0.05 * w) continue;   // (an ordinary board's, 35 µm on 0.5 mm, is some 4 %: not said)
+            // (35 µm copper on 1.6 mm of FR-4, 3 mm wide, is some 2 %: not
+            //  said; on 0.5 mm, 0.96 mm wide, 5.1 %: said.)
+            if (widened < 0.05 * w) continue;
             const QString warned = tr("%1 is %2 µm thick as a sheet %3 µm over the ground: its walls and its top are not in this "
                                       "answer, and Wheeler's correction makes its narrowest conductor %4 µm wider than its %5 "
                                       "(%6 %) - its capacitance reads low by up to that much. Solved as its two faces (the "

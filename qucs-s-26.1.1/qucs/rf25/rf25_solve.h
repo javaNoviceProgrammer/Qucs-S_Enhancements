@@ -75,6 +75,11 @@ struct SolveJob {
     /// Where a quasi-static solve took its dispersive dielectrics at one
     /// frequency (Stack::atFrequency()): said beside its answer.
     QString dispersedSaid;
+    /// What the processing could not read but solved without - a Cutout's
+    /// region that is no region -: among the answer's warnings, where a
+    /// region dropped this way solved more metal than meant with no sign in
+    /// the result (C1 of the open items).
+    QStringList processWarnings;
     /// What the stack is taken as where it is not as given - a layer's
     /// permittivity in the plane averaged: said beside a quasi-static answer
     /// (a full wave's is in its notes).
