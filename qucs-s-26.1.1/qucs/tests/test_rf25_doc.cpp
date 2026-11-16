@@ -822,6 +822,15 @@ private slots:
         QVERIFY(doc->layout() == nullptr);
         QVERIFY2(doc->layoutProblem().contains(QStringLiteral("not there")), qPrintable(doc->layoutProblem()));
         QVERIFY(doc->problemsText()->toPlainText().contains(QStringLiteral("not there")));
+        // Named as the Layout gives it, where it was looked for; and a solve
+        // says that, not "give the model a layout" (P25 of the open items).
+        QVERIFY2(doc->layoutProblem().contains(QStringLiteral("the Layout names \"nowhere.gds\", read beside the model")),
+                 qPrintable(doc->layoutProblem()));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(60000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("There is no mesh to solve on: The layout file"))
+                     && doc->solveProblem().contains(QStringLiteral("nowhere.gds")),
+                 qPrintable(doc->solveProblem()));
         QVERIFY(doc->editNode(doc->model().layout().tag,
                               [this](rf::Node& n) { n.props.insert(QStringLiteral("file"), path(QStringLiteral("drawn.qrf25"))); },
                               QStringLiteral("file")));
@@ -1350,6 +1359,20 @@ private slots:
         QVERIFY2(dispersed->lines.join(' ').contains(QStringLiteral("taken at 40 GHz")), qPrintable(dispersed->lines.join(" | ")));
         QVERIFY2(dispersed->selfCapacitance(0) < plain,
                  qPrintable(QStringLiteral("%1 against %2").arg(dispersed->selfCapacitance(0)).arg(plain)));
+        // Asked at 1 GHz (rf25_solve's 'frequency'), it is taken there, the
+        // frequency its 11.9 is given at: C as the plain substrate's (P33 of
+        // the open items - it was taken at 40 GHz whatever was asked).
+        RF25Doc::SolveRequest atOne;
+        atOne.solver = QStringLiteral("quasi_static");
+        atOne.frequencies = {1e9};
+        doc->solveWith(atOne);
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::Extraction> asked = doc->extraction();
+        QVERIFY2(asked != nullptr && asked->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(asked->lines.join(' ').contains(QStringLiteral("taken at 1 GHz, the frequency asked for")),
+                 qPrintable(asked->lines.join(" | ")));
+        QVERIFY2(std::abs(asked->selfCapacitance(0) / plain - 1) < 1e-3,
+                 qPrintable(QStringLiteral("%1 against %2").arg(asked->selfCapacitance(0)).arg(plain)));
 
         // A substrate anisotropic in the plane: the layered solve takes the
         // geometric mean of its two, and says so beside its answer.

@@ -2791,6 +2791,32 @@ private slots:
 
     // P24 of the evening re-test: a tab closed while its loop is solving, opened again,
     // and rf25_inductance - the loop, not "no loop".
+    // rf25_solve's 'frequency' for a quasi-static solve of a dispersive
+    // substrate: its dielectrics taken there, not at the study's highest (P33
+    // of the open items: R and G at 1 GHz came with eps_r at the top).
+    void anRf25QuasiStaticSolveTakesItsDielectricsAtTheFrequencyAsked()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rfdispersed"));
+        qucs_s::rf25::Model m = hfssLineModel();
+        for (qucs_s::rf25::Node& n : m.stackNode().children)
+            if (n.type == QLatin1String("rf_substrate")) {
+                n.props.insert(QStringLiteral("tand"), QStringLiteral("0.01"));
+                n.props.insert(QStringLiteral("dispersion"), QStringLiteral("djordjevic_sarkar"));
+            }
+        const QString file = ws + "/rfdispersed/line.qrf25";
+        QVERIFY(writeStrip(ws + "/rfdispersed/strip.gds", 1000, 50));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly) && f.write(m.toJson()) > 0);
+        }
+        const QJsonObject atOne = call("rf25_solve", {{"path", file}, {"solver", "quasi_static"}, {"frequency", "2[GHz]"}}, 600000);
+        QVERIFY2(!failed(atOne) && text(atOne).contains(QStringLiteral("taken at 2 GHz, the frequency asked for")), qPrintable(text(atOne)));
+        const QJsonObject atTop = call("rf25_solve", {{"path", file}, {"solver", "quasi_static"}}, 600000);
+        QVERIFY2(!failed(atTop) && text(atTop).contains(QStringLiteral("the study's highest frequency")), qPrintable(text(atTop)));
+        QVERIFY(!failed(call("close_document", {{"path", file}, {"unsaved", "discard"}}, 60000)));
+    }
+
     void anRf25TabClosedWhileSolvingIsOpenedAgainWithItsLoop()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();

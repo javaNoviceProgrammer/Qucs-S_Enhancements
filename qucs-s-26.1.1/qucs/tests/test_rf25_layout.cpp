@@ -117,13 +117,18 @@ private slots:
         QVERIFY(map.fill.contains(QStringLiteral("M1")));
         QVERIFY(!map.fill.contains(QStringLiteral("M2")));
 
-        // A datatype left empty is 0; a layer sent twice, and one sent
-        // where the stack has nothing, are said.
+        // A datatype left empty is 0; a layer sent twice is noted, the later
+        // row taking it - it stands in no solve's way, where it was listed
+        // as standing in the way of one that ran (the review of the MIMs) -;
+        // one sent where the stack has nothing is a problem.
         rows.append(QJsonArray{QStringLiteral("31"), QString(), QStringLiteral("M2")});
         rows.append(QJsonArray{QStringLiteral("50"), QStringLiteral("0"), QStringLiteral("M9")});
         set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", rows);
         const rf::LayerMap again = rf::layerMapOf(m);
-        QVERIFY2(says(again.problems, "two layers of the stack"), qPrintable(again.problems.join(" | ")));
+        QVERIFY2(!says(again.problems, "two layers of the stack"), qPrintable(again.problems.join(" | ")));
+        QVERIFY2(says(again.notes, "two layers of the stack") && says(again.notes, "its shapes go to M2"),
+                 qPrintable(again.notes.join(" | ")));
+        QCOMPARE(again.toLayer.value(QStringLiteral("31/0")), QStringLiteral("M2"));
         QVERIFY2(says(again.problems, "no layer of the stack"), qPrintable(again.problems.join(" | ")));
     }
 
@@ -164,6 +169,43 @@ private slots:
 
     // Merging: the metal of a layout is drawn as many rectangles, and the
     // solver wants one conductor - but only where they touch.
+    // A jog - a step of a few grid units in a side along x or y - is healed
+    // away, its sides kept along x and y, and said (P41 of the open items: a
+    // review's octagon with 5 nm jogs meshed to 153,590 cells, refused at
+    // 3.2 TB, where snapped it was 7,418). One a grid unit long and one of
+    // three both go; a step of five grid units stays.
+    void aJogOfAFewGridUnitsIsHealed()
+    {
+        // A rectangle 100 by 50 µm whose top steps down 5 nm half way along,
+        // and whose right side steps out 15 nm.
+        const QPolygonF jogged({QPointF(0, 0), QPointF(100, 0), QPointF(100, 20), QPointF(100.015, 20), QPointF(100.015, 50),
+                                QPointF(50, 50), QPointF(50, 49.995), QPointF(0, 49.995)});
+        int removed = 0;
+        const QPolygonF healed = rf::withoutJogs(jogged, 0.02, &removed);
+        QCOMPARE(removed, 2);
+        QCOMPARE(healed.size(), 4);
+        for (int i = 0; i < healed.size(); ++i) {
+            const QPointF d = healed.at((i + 1) % healed.size()) - healed.at(i);
+            QVERIFY2(d.x() == 0 || d.y() == 0, qPrintable(QStringLiteral("a slanted side %1, %2").arg(d.x()).arg(d.y())));
+        }
+        QVERIFY2(std::abs(rf::areaOf(healed) - 5000) < 1, qPrintable(QString::number(rf::areaOf(healed))));
+        // A step of 25 nm is no jog at 20.
+        const QPolygonF stepped({QPointF(0, 0), QPointF(100, 0), QPointF(100, 50), QPointF(50, 50), QPointF(50, 50.025), QPointF(0, 50.025)});
+        removed = 0;
+        QCOMPARE(rf::withoutJogs(stepped, 0.02, &removed).size(), 6);
+        QCOMPARE(removed, 0);
+        // Through the processing, on its 5 nm grid: healed, and said.
+        const rf::Stack stack = stacked().stack();
+        rf::Processing how;
+        QMap<QString, QList<QPolygonF>> shapes;
+        shapes[QStringLiteral("M1")] = {jogged};
+        const rf::Processed done = rf::processShapes(shapes, {}, how, stack);
+        QVERIFY2(done.problems.isEmpty(), qPrintable(done.problems.join(" | ")));
+        QCOMPARE(done.conductors.size(), 1);
+        QCOMPARE(done.conductors.first().outline.size() - (done.conductors.first().outline.isClosed() ? 1 : 0), 4);
+        QVERIFY2(done.report.summary().contains(QStringLiteral("2 jog(s) under 0.02 µm")), qPrintable(done.report.summary()));
+    }
+
     void touchingShapesAreMergedIntoOne()
     {
         const rf::Stack stack = stacked().stack();
@@ -463,6 +505,23 @@ private slots:
         parameters->props.insert(QStringLiteral("rows"), QJsonArray{QJsonArray{"w", "80[um]"}, QJsonArray{"L", "2*w + 100[um]"}});
         own = rf::ownShapesOf(m);
         QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 260, 80));
+
+        // A bare number is in the Layout's unit, as its coordinates are drawn
+        // (P6 of the open items: it was read as metres, a strip of "100" a
+        // hundred metres long); a JSON number too; a length with a unit, or
+        // of the parameters, as it says.
+        {
+            const QString bare = shape({{"layer", "M1"}, {"x", "100"}, {"y", QJsonValue(-20.0)}, {"width", "300"}, {"height", "w"}});
+            own = rf::ownShapesOf(m);
+            QCOMPARE(of(bare).outline.boundingRect(), QRectF(100, -20, 300, 80));
+            m.layout().props.insert(QStringLiteral("unit"), QStringLiteral("1[mm]"));
+            own = rf::ownShapesOf(m);
+            QCOMPARE(of(bare).outline.boundingRect(), QRectF(100000, -20000, 300000, 80));
+            QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 260, 80));
+            m.layout().props.remove(QStringLiteral("unit"));
+            m.remove(bare);
+            own = rf::ownShapesOf(m);
+        }
 
         // Processed with the file's shapes, on their layers: a model of its
         // own shapes alone over an empty layout.

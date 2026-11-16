@@ -1085,7 +1085,16 @@ void RF25Doc::refreshLayout()
         emit stateChanged();
     };
     if (path.isEmpty()) return nothing(QString());
-    if (!QFileInfo::exists(path)) return nothing(tr("The layout file %1 is not there.").arg(QDir::toNativeSeparators(path)));
+    if (!QFileInfo::exists(path)) {
+        // (The name as the Layout gives it, and where a relative one was
+        //  looked for: beside the model, which a copy elsewhere moves.)
+        const QString named = textOf(a_model.layout(), QStringLiteral("file")).trimmed();
+        return nothing(QFileInfo(named).isAbsolute()
+                           ? tr("The layout file %1 is not there.").arg(QDir::toNativeSeparators(path))
+                           : tr("The layout file %1 is not there: the Layout names \"%2\", read beside the model, in %3.")
+                                 .arg(QDir::toNativeSeparators(path), named,
+                                      QDir::toNativeSeparators(QFileInfo(path).absolutePath())));
+    }
     if (!qucs_s::layout::isLayoutFile(path))
         return nothing(tr("%1 is not a GDSII or OASIS layout.").arg(QFileInfo(path).fileName()));
     auto job = std::make_shared<Job>();
@@ -1315,6 +1324,17 @@ void RF25Doc::prepare()
             showProblems();
             emit preparedChanged();
         }
+        // A solve waiting for this is told now - there is nothing to solve,
+        // and why -, from the event loop: it waited on for ever, its button
+        // "Stop" (found with P25 of the open items).
+        // (Still wanted until it has said so, so that what waits for it
+        //  waits for the answer.)
+        if (a_solveWhenPrepared && !a_solveJob)
+            QTimer::singleShot(0, this, [this] {
+                if (!a_solveWhenPrepared || a_solveJob) return;
+                a_solveWhenPrepared = false;
+                if (!a_closed) solve();
+            });
         return;
     }
     auto job = std::make_shared<PrepareJob>();
@@ -2037,8 +2057,19 @@ void RF25Doc::solveWith(const SolveRequest& request)
         emit solvedChanged();
         return;
     }
-    if (!a_mesh || a_mesh->cells.isEmpty())
-        return nothing(tr("There is no mesh to solve on: give the model a layout and a layer map first."));
+    if (!a_mesh || a_mesh->cells.isEmpty()) {
+        // What is missing, said: a layout file that is not there (a relative
+        // path, the model copied elsewhere), the processing's and the mesh's
+        // own problems - where it said only "give the model a layout and a
+        // layer map", a layout that was there all along (P25 of the open
+        // items, and P6: shapes a hundred metres long).
+        QStringList why{tr("There is no mesh to solve on:")};
+        if (!a_layoutProblem.isEmpty()) why << a_layoutProblem;
+        if (a_processed) why += a_processed->problems;
+        if (a_mesh) why += a_mesh->problems;
+        if (why.size() == 1) why << tr("give the model a layout and a layer map, or shapes of its own, first.");
+        return nothing(why.join(QLatin1Char(' ')));
+    }
     if (!a_processed) return nothing(tr("The layout has not been processed."));
     auto job = std::make_shared<SolveJob>();
     job->modelStamp = solveStampOf(a_model);
@@ -2233,6 +2264,18 @@ RF25Doc::Count RF25Doc::countNow() const
         // where it cannot, a matrix being filled and factored.
         const int step = job->step.load(), done = job->stepDone.load(), all = job->stepAll.load();
         c.said = tr("Solving quasi-statically: %1…").arg(extractStepSaid(step, done, all, job->images.load()));
+        // The loop: how large, and how far its GMRES has got where it is held
+        // compressed (P26 of the open items).
+        if (step == ExtractControl::Loop) {
+            const LoopProgress& lp = job->loopProgress;
+            if (const int runs = lp.runs.load(); runs > 0)
+                c.said += lp.compressed.load() ? tr(" %1 runs over %2 cells, held compressed").arg(runs).arg(lp.cells.load())
+                                               : tr(" %1 runs over %2 cells, dense").arg(runs).arg(lp.cells.load());
+            if (const int iterations = lp.iterations.load(); iterations > 0)
+                c.said += tr("; GMRES at iteration %1, residual %2.").arg(iterations).arg(lp.residual.load(), 0, 'g', 2);
+            else if (lp.runs.load() > 0)
+                c.said += QLatin1Char('.');
+        }
         if (all > 0) {
             c.of = all;
             c.done = std::min(done, all);

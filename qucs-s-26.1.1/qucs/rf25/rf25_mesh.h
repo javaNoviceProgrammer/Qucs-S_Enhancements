@@ -79,6 +79,13 @@ struct MeshSettings {
     /// halved down to (\a gaps); not read from the node: a convergence
     /// check's meshes refine it with the rest (refinedBy()).
     double gapShare = 0.25;
+    /// The layout's plane of symmetry (Processing), whose half the
+    /// conductors are: 1 x = symmetryAt, 2 y = it (µm, the conductors'
+    /// units); 0 none. A side lying on it is no edge - the conductor's mirror
+    /// is beyond it -, and a piece cut across by it is as wide as it and its
+    /// mirror together. Not read from the node: the tab sets it.
+    int symmetryAxis = 0;
+    double symmetryAt = 0;
     /// The most cells, as the solver has it.
     int mostCells() const;
 };
@@ -158,6 +165,11 @@ struct Mesh {
  */
 Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const Stack& stack, double top,
             double micrometre = 1e-6);
+/// \a conductors with their mirrors across a plane of symmetry (1: x = \a at,
+/// 2: y = it, in the conductors' units): each that reaches the plane united
+/// with its own mirror - one outline, as the whole has it -, the rest beside
+/// theirs. As they are where \a axis is nought.
+QList<Conductor> withMirrors(const QList<Conductor>& conductors, int axis, double at);
 
 /// What a mesh of that many unknowns would cost, and whether this build
 /// will hold it: a dense matrix of complex doubles, both triangles - or,

@@ -250,8 +250,7 @@ StackBuilt stackFrom(const QList<EdbLayer>& given, const QHash<QString, EdbMater
             QJsonObject props{{QStringLiteral("thickness"), lengthText(s.z1 - s.z0)},
                               {QStringLiteral("epsr"), numberText(material.epsr)},
                               {QStringLiteral("tand"), numberText(material.tand)}};
-            if (substrate) props.insert(QStringLiteral("sigma"), numberText(material.sigma));
-            else if (material.sigma > 0) notes->append(tr("%1 has a conductivity of %2 S/m: only a substrate's is solved.").arg(s.name, numberText(material.sigma)));
+            if (substrate || material.sigma > 0) props.insert(QStringLiteral("sigma"), numberText(material.sigma));
             const QString name = unique(s.name);
             put(substrate ? QStringLiteral("rf_substrate") : QStringLiteral("rf_dielectric"), name, props);
             out.layers << name;

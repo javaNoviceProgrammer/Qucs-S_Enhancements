@@ -4328,13 +4328,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     {
         // (Beyond a magnetic wall of symmetry the conductors' mirrors: the
         //  cut along the plane is no edge to profile a charge to.)
+        // (Each that reaches the plane united with its mirror, as the whole
+        //  has it: beside it, the cut read as a gap of nothing, with walls.)
         Thickened mirroredToo = thick;
-        if (c.symAxis != 0 && c.symCharge > 0)
-            for (const Conductor& k : thick.conductors) {
-                Conductor m = k;
-                for (QPointF& p : m.outline) p = c.symmetric(p * micrometre) / micrometre;
-                mirroredToo.conductors << m;
-            }
+        if (c.symAxis != 0 && c.symCharge > 0) mirroredToo.conductors = withMirrors(thick.conductors, c.symAxis, c.symAt / micrometre);
         const QHash<int, QList<ChargePart>> walls
             = chargeParts(c.symAxis != 0 && c.symCharge > 0 ? mirroredToo : thick, micrometre,
                           [&](int m) { return metalHeight(stack, mesh.cells.at(m).layer); });
@@ -4773,6 +4770,19 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "wires do, not dying with distance as over an open ground, and is part of what the ports "
                         "measure - a port's own de-embedding takes out its own path, not that.")
                          .arg(gap * 1e6, 0, 'g', 4);
+        // Open at its sides, the guide takes what a port returning through
+        // the ground puts into it away along it and back: a warning, not a
+        // note alone (P38 of the open items: a stripline under such a lid
+        // read eps_eff 3.14 for 3, its loss four times its metal's).
+        bool fromGround = false;
+        for (const FullWavePort& p : ports) fromGround = fromGround || !p.coplanar;
+        if (!c.boxed && fromGround) {
+            const QString w = tr("The lid has no side walls: with the ground it is a guide of two plates open on every side, "
+                                 "and a port returning through the ground feeds it - what it carries away and back is in S, "
+                                 "so a line's eps_eff and loss read the guide's too. Side walls round the layout (a box) "
+                                 "close it; ports returning through the conductors beside them (coplanar) feed it the less.");
+            out.warnings << w;
+        }
     }
     int alongEdges = 0;
     for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
@@ -4913,7 +4923,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // addPortPaths().)
     const double top = *std::max_element(frequencies.begin(), frequencies.end());
     out.secondWave = secondSurfaceWave(givenStack, 2 * top);
-    // A box's resonances up to the study's top, and a frequency near one -
+    // A box's resonances up to the highest frequency solved, and one near one -
     // within a hundredth - flagged: there, without loss, the answer is the
     // box's mode.
     if (c.boxed) {
@@ -4921,8 +4931,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         QStringList said;
         for (const BoxResonance& r : modes)
             said << tr("%1 GHz (%2 %3,%4)").arg(r.frequency / 1e9, 0, 'g', 5).arg(r.tm ? QStringLiteral("TM") : QStringLiteral("TE")).arg(r.m).arg(r.n);
-        out.lines << (said.isEmpty() ? tr("The box resonates at no frequency up to the study's top.")
-                                     : tr("The box resonates, up to the study's top, at %1.").arg(said.join(QStringLiteral(", "))));
+        // (Up to the highest frequency solved, which a solve asked at one
+        //  frequency may put past the study's top: said as a number.)
+        out.lines << (said.isEmpty() ? tr("The box resonates at no frequency up to %1 GHz, the highest solved.").arg(top / 1e9, 0, 'g', 5)
+                                     : tr("The box resonates, up to %1 GHz, the highest solved, at %2.")
+                                           .arg(top / 1e9, 0, 'g', 5)
+                                           .arg(said.join(QStringLiteral(", "))));
         for (const double f : frequencies)
             for (const BoxResonance& r : modes)
                 if (std::abs(f / r.frequency - 1) < 0.01) {

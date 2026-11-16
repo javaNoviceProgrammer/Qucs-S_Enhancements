@@ -905,6 +905,109 @@ private slots:
     // centred stripline's C is Cohn's exact one (IEEE Trans. MTT 2(2),
     // 1954), Z0 = eta/4 K(k)/K(k'), k = sech(pi w / 2b), its eps_eff eps_r,
     // to 0.5 %, its lid in the stack's last dielectric's top or over a gap.
+    // A sheet thick against how high it stands over its ground is warned
+    // of, with Wheeler's correction as the size of what it leaves out (P39
+    // of the open items: laminate copper 15 µm thick on 60 µm, 120 µm wide,
+    // read its C 7 % under a 3D solve's, and said nothing). 15 µm: 14.7 µm
+    // wider, 12 %; 1 µm thin, and the 15 µm solved as its two faces: nothing.
+    // A capacitance matrix that is no Maxwell matrix is said (P27 of the open
+    // items: C12 positive, reported without a word): a mutual capacitance
+    // above nought, and a row summing below it; a Maxwell one says nothing.
+    // A MIM's plates, 40 nm apart, face each other cell for cell where they
+    // overlap, so that its C hardly hangs on the cells (P28 of the open
+    // items: 52 % low at cells of 5 µm, 125 times its gap, 25 % at 2.5 µm,
+    // the bottom plate's cells under the top's misaligned): a 10 µm square
+    // over an 11.2 µm one, 6.892 between, within 1 % at 5, 2.5, 1.25 and
+    // 0.625 µm, and said. Cells some 250 times the gap warned of; 125 times
+    // not. And an 80 µm one, which the charge solve's bound kept from fine
+    // cells (P29), at 5 µm.
+    void aMimsPlatesFaceEachOtherCellForCell()
+    {
+        rf::Stack st = layered({{4.1, 5e-6}});
+        rf::Layer gap;
+        gap.kind = rf::Layer::Dielectric;
+        gap.name = QStringLiteral("MIM");
+        gap.tag = QStringLiteral("mim");
+        gap.thickness = 40e-9;
+        gap.epsr = 6.892;
+        rf::Layer top;
+        top.kind = rf::Layer::Metal;
+        top.name = QStringLiteral("M2");
+        top.tag = QStringLiteral("m2");
+        rf::Layer over;
+        over.kind = rf::Layer::Dielectric;
+        over.name = QStringLiteral("OX");
+        over.tag = QStringLiteral("ox");
+        over.thickness = 2e-6;
+        over.epsr = 4.1;
+        st.layers << gap << top << over;
+        const auto solved = [&st](double side, double cell, QStringList* warned = nullptr, QStringList* lines = nullptr) {
+            rf::Conductor plate = strip(0, 0, side, side);
+            plate.layer = QStringLiteral("M2");
+            const QList<rf::Conductor> both{strip(-0.6, -0.6, side + 1.2, side + 1.2), plate};
+            rf::MeshSettings how;
+            how.maximum = cell * 1e-6;
+            how.cellsAcross = 0;
+            const rf::Mesh mesh = rf::meshOf(both, how, st, 1e9);
+            if (warned != nullptr) *warned = mesh.warnings;
+            if (lines != nullptr) *lines = mesh.lines;
+            const rf::Extraction e = rf::extract(mesh, both, st);
+            return e.ok() ? -e.maxwell.at(0).at(1) : 0.0;
+        };
+        QStringList warned, lines;
+        const double fine = solved(10, 0.625);
+        for (const double cell : {5.0, 2.5, 1.25}) {
+            const double c = solved(10, cell, &warned, &lines);
+            QVERIFY2(std::abs(c / fine - 1) < 0.01, qPrintable(QStringLiteral("%1 fF at %2 µm cells, %3 at 0.625").arg(c * 1e15).arg(cell).arg(fine * 1e15)));
+            QVERIFY2(warned.isEmpty(), qPrintable(warned.join(" | ")));
+        }
+        QVERIFY2(lines.join(' ').contains(QStringLiteral("cells are cut alike where they overlap")), qPrintable(lines.join(" | ")));
+        // (The area term, 6.892 eps0 over 40 nm: the edges add a little.)
+        const double area = 6.892 * 8.8541878128e-12 / 40e-9 * 100e-12;
+        QVERIFY2(fine > area && fine < 1.03 * area, qPrintable(QStringLiteral("%1 fF, its area %2").arg(fine * 1e15).arg(area * 1e15)));
+        const double big = solved(80, 5, &warned);
+        QVERIFY2(std::abs(big / (64 * area) - 1) < 0.02, qPrintable(QStringLiteral("80 µm: %1 fF, its area %2").arg(big * 1e15).arg(64 * area * 1e15)));
+        QVERIFY2(warned.isEmpty(), qPrintable(warned.join(" | ")));
+        solved(80, 10, &warned);
+        QVERIFY2(warned.join(' ').contains(QStringLiteral("times the gap")), qPrintable(warned.join(" | ")));
+    }
+
+    void aCapacitanceMatrixThatIsNoMaxwellMatrixIsSaid()
+    {
+        const QStringList names{QStringLiteral("A"), QStringLiteral("B")};
+        QVERIFY(rf::maxwellDoubts({{2e-15, -1e-15}, {-1e-15, 2e-15}}, names).isEmpty());
+        const QStringList positive = rf::maxwellDoubts({{2e-15, 0.5e-15}, {0.5e-15, 2e-15}}, names);
+        QVERIFY2(positive.size() == 1 && positive.first().contains(QStringLiteral("mutual capacitance of A and B is +0.5 fF")),
+                 qPrintable(positive.join(" | ")));
+        const QStringList below = rf::maxwellDoubts({{1e-15, -2e-15}, {-2e-15, 3e-15}}, names);
+        QVERIFY2(below.size() == 1 && below.first().contains(QStringLiteral("A's row sums to -1 fF")), qPrintable(below.join(" | ")));
+        // (Within a part in 1e6 of the largest: rounding, not said.)
+        QVERIFY(rf::maxwellDoubts({{2e-15, 1e-22}, {1e-22, 2e-15}}, names).isEmpty());
+    }
+
+    void aThickSheetOverItsGroundIsWarnedOf()
+    {
+        const QList<rf::Conductor> trace{strip(0, 0, 600, 120)};
+        const auto warned = [&trace](double t, bool faces) {
+            rf::Stack st = layered({{3.5, 60e-6}});
+            for (rf::Layer& l : st.layers)
+                if (l.kind == rf::Layer::Metal) {
+                    l.thickness = t;
+                    l.sigma = 5.8e7;
+                    l.twoSheets = faces;
+                }
+            rf::MeshSettings how;
+            how.maximum = 50e-6;
+            return rf::meshOf(trace, how, st, 1e9).warnings.join(QLatin1Char(' '));
+        };
+        const QString thick = warned(15e-6, false);
+        QVERIFY2(thick.contains(QStringLiteral("M1 is 15 µm thick as a sheet 60 µm over the ground"))
+                     && thick.contains(QStringLiteral("14.7 µm wider than its 120 (12 %)")),
+                 qPrintable(thick));
+        QVERIFY2(!warned(1e-6, false).contains(QStringLiteral("Wheeler")), qPrintable(warned(1e-6, false)));
+        QVERIFY2(!warned(15e-6, true).contains(QStringLiteral("Wheeler")), qPrintable(warned(15e-6, true)));
+    }
+
     void aLidClosesTheStack()
     {
         const double H = 100e-6;
@@ -957,6 +1060,28 @@ private slots:
                 // Over air, less than eps_r, and Z0 above the closed one's.
                 QVERIFY(lp.epsilonEff < 0.99 * epsr && lp.z0 > z0);
             }
+        }
+        // Lossy, its G: all of the field in the one dielectric, w C tan
+        // delta to the nudge's rounding (P32 of the open items: it read
+        // -0.257 S/m against +7.1e-3).
+        // A sheet, and copper 5 µm thick under 195 µm (the open items' own).
+        for (const double t : {5e-6, 0.0}) {
+            rf::Stack lossy = stripline(epsr, b);
+            for (rf::Layer& l : lossy.layers) {
+                if (l.kind == rf::Layer::Dielectric || l.kind == rf::Layer::Substrate) l.tand = 0.01;
+                if (l.kind == rf::Layer::Metal) {
+                    l.thickness = t;
+                    l.sigma = 5.8e7;
+                }
+                if (l.name == QLatin1String("UP")) l.thickness = b / 2 - t;
+            }
+            const rf::Extraction e = rf::extract(mesh, line, lossy);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            const rf::LineParameters lp = rf::lineParameters(e, 0, length, 1e9);
+            const double expected = 2 * M_PI * 1e9 * lp.c * 0.01;
+            QVERIFY2(lp.ok() && std::abs(lp.g / expected - 1) < 1e-3,
+                     qPrintable(QStringLiteral("metal %1 µm: G %2 S/m against w C tan delta %3 | %4").arg(t * 1e6).arg(lp.g)
+                                    .arg(expected).arg(lp.problems.join(" | "))));
         }
     }
 

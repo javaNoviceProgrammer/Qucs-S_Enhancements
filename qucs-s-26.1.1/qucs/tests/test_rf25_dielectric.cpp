@@ -398,6 +398,23 @@ private slots:
         const rf::DielectricPlan flush = rf::dielectricPlan(layers, {e}, around);
         const rf::DielectricCorrection whole = rf::dielectricCorrection(flush, cells);
         QVERIFY2(whole.ok(), qPrintable(whole.problems.join(" | ")));
+        // Its Green's functions counted as they are built, on every thread,
+        // up to all of them, and then its panels' system said (P40 of the open
+        // items: thousands of them built one after another with nothing said,
+        // the tab at the stack's "20 of 20" through twenty minutes). The
+        // answer is the one without the count to the last digit.
+        {
+            QList<QPair<int, int>> told;
+            const rf::DielectricCorrection counted
+                = rf::dielectricCorrection(flush, cells, false, nullptr, 0, [&told](int done, int all) { told << qMakePair(done, all); });
+            QVERIFY(counted.ok() && counted.delta == whole.delta);
+            QVERIFY2(told.size() >= 3, qPrintable(QString::number(told.size())));
+            const int all = told.first().second;
+            QVERIFY(all > 1);
+            QCOMPARE(told.at(told.size() - 2), qMakePair(all, all));
+            QCOMPARE(told.last(), qMakePair(-1, all));
+            for (int i = 0; i + 2 < told.size(); ++i) QVERIFY(told.at(i).first >= 1 && told.at(i).first <= all);
+        }
         const rf::DielectricCorrection squeezed = rf::dielectricCorrection(flush, cells, false, nullptr, int(0.8 * whole.panels));
         QVERIFY2(!squeezed.ok() && squeezed.problems.join(' ').contains(QStringLiteral("coarsened as far as it goes")),
                  qPrintable(squeezed.lines.join(" | ") + squeezed.problems.join(" | ")));

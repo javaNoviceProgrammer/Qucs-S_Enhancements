@@ -217,6 +217,12 @@ QList<NodeKind> makeKinds()
          {expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("m"), QStringLiteral("1[um]")),
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("4.1")),
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0.002")),
+          // (Any layer's, not the substrate's alone: epi on bulk, an SOI
+          //  device layer, a trap-rich layer - F7 of the open items.)
+          expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("0"),
+               tr("A conducting layer over the substrate - an epitaxial layer, an SOI device layer, a trap-rich layer, a "
+                  "well: 5[S/m] for 20 Ohm cm. The full wave takes it in its fields, as it takes the substrate's; the "
+                  "quasi-static solve takes the layer as a dielectric of its permittivity. Zero for an insulator.")),
           expr(QStringLiteral("mur"), tr("Relative permeability"), QString(), QStringLiteral("1"),
                tr("A ferrite's or a magnetic film's: the full wave takes it in its fields, the quasi-static solve in its L "
                   "(a second charge solve with 1/mur for each layer's permittivity, by duality). 1 for anything not "
@@ -1314,6 +1320,7 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             read(QStringLiteral("thickness"), &layer.thickness);
             read(QStringLiteral("epsr"), &layer.epsr);
             read(QStringLiteral("tand"), &layer.tand);
+            if (c.props.contains(QLatin1String("sigma"))) read(QStringLiteral("sigma"), &layer.sigma);
             if (c.props.contains(QLatin1String("beyond"))) read(QStringLiteral("beyond"), &layer.beyond);
             readDispersion();
             readMagnetic();
