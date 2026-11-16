@@ -29,6 +29,7 @@
 #include <Eigen/Dense>
 #include <QColorDialog>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -649,6 +650,12 @@ void RF25Doc::buildUi()
     connect(a_penButton, &qucs_s::markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(); });
     connect(a_penButton, &qucs_s::markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(true); });
     connect(a_view, &LayoutView::drawingChanged, this, &RF25Doc::updatePen);
+    // (Strokes that cannot be kept beside the model: said, once.)
+    connect(a_view, &LayoutView::drawingNotKept, this, [this](const QString& why) {
+        a_drawingSaid = why;
+        if (a_status != nullptr) a_status->setText(why);
+        showProblems();
+    });
     // The canvas went light or dark: the outlines and the cells' ink are
     // told against it, so they are taken again.
     connect(a_view, &LayoutView::colorsChanged, this, &RF25Doc::showOverlays);
@@ -819,7 +826,7 @@ int RF25Doc::save()
     // The solution shown, where it is of the model as saved, beside it; and
     // the pen's strokes (an untitled model's, or Save As: there now).
     keepSolution();
-    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));
+    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"), false);
     // The date and size the file itself has, not the clock's reading of
     // this moment: the two differ by a little, and changedOnDisk() would
     // then take the file this just wrote for another program's.
@@ -999,6 +1006,7 @@ void RF25Doc::showProblems()
     // and what the last Read the Layout Again found (V3).
     if (!a_keptSaid.isEmpty()) lines << a_keptSaid;
     if (!a_rereadSaid.isEmpty()) lines << a_rereadSaid;
+    if (!a_drawingSaid.isEmpty()) lines << a_drawingSaid;
     QStringList cannot;
     if (a_processed) cannot += a_processed->problems;
     if (a_mesh) cannot += a_mesh->problems;
@@ -1111,8 +1119,12 @@ void RF25Doc::refreshLayout()
     a_job = job;
     QThread* thread = QThread::create([job] {
         job->result = qucs_s::layout::read(job->path, &job->error, &job->cancelled, &job->progress);
+        // (Hashed as it is read: readAll() of a GB layout was a second copy
+        //  of it in memory - the review of 6dce480e. The same SHA-1 as
+        //  stampOf().)
         QFile bytes(job->path);
-        if (job->result && bytes.open(QIODevice::ReadOnly)) job->stamp = qucs_s::rf25::stampOf(bytes.readAll());
+        QCryptographicHash hash(QCryptographicHash::Sha1);
+        if (job->result && bytes.open(QIODevice::ReadOnly) && hash.addData(&bytes)) job->stamp = hash.result();
     });
     // (A main thread's stack is 8 MB and a thread's 512 kB on macOS, where
     // a layout's hierarchy is walked by recursion: layoutdoc.cpp's note.)

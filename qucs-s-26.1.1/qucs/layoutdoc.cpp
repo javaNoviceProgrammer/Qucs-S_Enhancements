@@ -827,11 +827,12 @@ QJsonArray LayoutView::readDrawing(bool points) const
     return out;
 }
 
-void LayoutView::keepDrawingIn(const QString& path)
+void LayoutView::keepDrawingIn(const QString& path, bool read)
 {
     a_drawingFile = path;
+    a_drawingUnkept = false;
     if (path.isEmpty()) return;
-    if (a_drawing.isEmpty()) {
+    if (read && a_drawing.isEmpty()) {
         QFile file(path);
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject o = QJsonDocument::fromJson(file.readAll()).object();
@@ -843,11 +844,11 @@ void LayoutView::keepDrawingIn(const QString& path)
             }
         }
     } else {
-        saveDrawing();   // (drawn before it had a file: kept there now)
+        saveDrawing();   // (drawn before it had a file, or saved elsewhere: kept there now)
     }
 }
 
-void LayoutView::saveDrawing() const
+void LayoutView::saveDrawing()
 {
     if (a_drawingFile.isEmpty()) return;
     if (a_drawing.isEmpty()) {
@@ -855,11 +856,19 @@ void LayoutView::saveDrawing() const
         return;
     }
     QSaveFile file(a_drawingFile);
-    if (!file.open(QIODevice::WriteOnly)) return;
-    file.write(QJsonDocument(QJsonObject{{QStringLiteral("format"), QStringLiteral("qucs-s pen strokes 1")},
-                                         {QStringLiteral("strokes"), markup::strokesJson(a_drawing.strokes())}})
-                   .toJson(QJsonDocument::Indented));
-    file.commit();
+    const bool written = file.open(QIODevice::WriteOnly)
+                         && file.write(QJsonDocument(QJsonObject{{QStringLiteral("format"), QStringLiteral("qucs-s pen strokes 1")},
+                                                                 {QStringLiteral("strokes"), markup::strokesJson(a_drawing.strokes())}})
+                                           .toJson(QJsonDocument::Indented))
+                                > 0
+                         && file.commit();
+    if (written) {
+        a_drawingUnkept = false;
+    } else if (!a_drawingUnkept) {
+        a_drawingUnkept = true;
+        emit drawingNotKept(tr("The pen's strokes cannot be kept in %1 (%2): they go when the tab is closed.")
+                                .arg(QDir::toNativeSeparators(a_drawingFile), file.errorString()));
+    }
 }
 
 void LayoutView::clearRulers()
@@ -1962,6 +1971,7 @@ void LayoutDoc::buildUi()
     connect(a_penButton, &markup::PenButton::clearPartRequested, this, [this] { a_view->clearDrawing(); });
     connect(a_penButton, &markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(true); });
     connect(a_view, &LayoutView::drawingChanged, this, &LayoutDoc::updatePen);
+    connect(a_view, &LayoutView::drawingNotKept, this, [this](const QString& why) { a_info->setText(why); });
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
         const QSignalBlocker block(a_rulerButton), blockPen(a_penButton);
         a_rulerButton->setChecked(mode == LayoutView::Mode::Ruler);
@@ -2180,7 +2190,7 @@ int LayoutDoc::save()
     }
     a_source = a_DocName;
     a_watcher->addPath(a_DocName);
-    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));   // (with the copy)
+    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"), false);   // (with the copy: written there)
     return 0;
 }
 

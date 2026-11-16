@@ -774,6 +774,7 @@ private:
     quint64 a_rereadShapes = 0;
     QByteArray a_readStamp, a_rereadStamp;
     QString a_rereadSaid;
+    QString a_drawingSaid;   ///< the pen's strokes not kept beside it: why
     int a_rulersKept = 0, a_rulersDropped = 0;
     void rereadLayout();
     bool a_keepView = false;                     ///< the layout read next is shown where the view is: a drawing's
